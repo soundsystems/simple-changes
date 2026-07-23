@@ -1,0 +1,99 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://simple-changes.dev/schemas/run-state.schema.json",
+  "title": "Simple Changes resumable run state",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "runId",
+    "mode",
+    "createdAt",
+    "updatedAt",
+    "baselineDigest",
+    "unitStates",
+    "approvals",
+    "receipts",
+    "concurrentArrivals",
+    "blockers",
+    "resumeBoundary",
+    "cleanupTargets"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "runId": { "type": "string", "minLength": 1 },
+    "mode": {
+      "enum": ["queue", "sweep", "integrate", "ship", "reconcile", "resume"]
+    },
+    "createdAt": { "type": "string", "format": "date-time" },
+    "updatedAt": { "type": "string", "format": "date-time" },
+    "baselineDigest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "unitStates": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["unitId", "status", "headRevision", "fingerprint"],
+        "properties": {
+          "unitId": { "type": "string", "minLength": 1 },
+          "status": {
+            "enum": [
+              "planned",
+              "packaged",
+              "proposed",
+              "reviewed",
+              "merged",
+              "deployed",
+              "blocked"
+            ]
+          },
+          "headRevision": {
+            "anyOf": [{ "type": "string", "minLength": 1 }, { "type": "null" }]
+          },
+          "fingerprint": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+        }
+      }
+    },
+    "approvals": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["unitId", "reviewer", "revision", "verdict", "observedAt"],
+        "properties": {
+          "unitId": { "type": "string", "minLength": 1 },
+          "reviewer": { "type": "string", "minLength": 1 },
+          "revision": { "type": "string", "minLength": 1 },
+          "verdict": { "enum": ["approved", "changes-requested"] },
+          "observedAt": { "type": "string", "format": "date-time" }
+        }
+      }
+    },
+    "receipts": {
+      "type": "array",
+      "items": { "$ref": "provider-receipt.schema.json" }
+    },
+    "concurrentArrivals": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "blockers": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "resumeBoundary": { "type": "string", "minLength": 1 },
+    "cleanupTargets": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "identity", "proof"],
+        "properties": {
+          "kind": { "enum": ["branch", "worktree", "generated"] },
+          "identity": { "type": "string", "minLength": 1 },
+          "proof": { "type": "string", "minLength": 1 }
+        }
+      }
+    }
+  }
+}

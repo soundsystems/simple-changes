@@ -1,0 +1,7 @@
+{
+  "provider": "github",
+  "objectIdentity": "repository:pull/17",
+  "baseRevision": "1111111111111111111111111111111111111111",
+  "headRevision": "2222222222222222222222222222222222222222",
+  "approvalRevision": "2222222222222222222222222222222222222222"
+}

@@ -1,0 +1,247 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://simple-changes.dev/schemas/inventory.schema.json",
+  "title": "Simple Changes repository inventory",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "generatedAt",
+    "repository",
+    "targetRef",
+    "worktrees",
+    "branches",
+    "stashes",
+    "localChanges",
+    "proposals",
+    "capabilities",
+    "policy",
+    "baselineDigest"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "generatedAt": { "type": "string", "format": "date-time" },
+    "repository": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "root",
+        "gitDirectory",
+        "commonGitDirectory",
+        "primaryCheckout",
+        "currentCheckout",
+        "headSha",
+        "branch",
+        "bare"
+      ],
+      "properties": {
+        "root": { "type": "string", "minLength": 1 },
+        "gitDirectory": { "type": "string", "minLength": 1 },
+        "commonGitDirectory": { "type": "string", "minLength": 1 },
+        "primaryCheckout": { "type": "string", "minLength": 1 },
+        "currentCheckout": { "type": "string", "minLength": 1 },
+        "headSha": {
+          "anyOf": [
+            { "type": "string", "pattern": "^[0-9a-f]{40,64}$" },
+            { "type": "null" }
+          ]
+        },
+        "branch": {
+          "anyOf": [{ "type": "string", "minLength": 1 }, { "type": "null" }]
+        },
+        "bare": { "type": "boolean" }
+      }
+    },
+    "targetRef": { "type": "string", "minLength": 1 },
+    "worktrees": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/worktree" }
+    },
+    "branches": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/branch" }
+    },
+    "stashes": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/stash" }
+    },
+    "localChanges": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/change" }
+    },
+    "proposals": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/proposal" }
+    },
+    "capabilities": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/capability" }
+    },
+    "policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source", "path", "value"],
+      "properties": {
+        "source": { "enum": ["default", "repository"] },
+        "path": {
+          "anyOf": [{ "type": "string", "minLength": 1 }, { "type": "null" }]
+        },
+        "value": {
+          "$ref": "repo-policy.schema.json"
+        }
+      }
+    },
+    "baselineDigest": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+  },
+  "$defs": {
+    "change": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "originalPath",
+        "indexStatus",
+        "worktreeStatus",
+        "untracked",
+        "conflicted",
+        "symlink",
+        "worktreePath"
+      ],
+      "properties": {
+        "path": { "type": "string", "minLength": 1 },
+        "originalPath": {
+          "anyOf": [{ "type": "string", "minLength": 1 }, { "type": "null" }]
+        },
+        "indexStatus": { "type": "string", "minLength": 1, "maxLength": 1 },
+        "worktreeStatus": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1
+        },
+        "untracked": { "type": "boolean" },
+        "conflicted": { "type": "boolean" },
+        "symlink": { "type": "boolean" },
+        "worktreePath": { "type": "string", "minLength": 1 }
+      }
+    },
+    "worktree": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "headSha",
+        "branch",
+        "detached",
+        "bare",
+        "prunable",
+        "locked",
+        "isPrimary",
+        "isCurrent",
+        "changes",
+        "changeDigest"
+      ],
+      "properties": {
+        "path": { "type": "string", "minLength": 1 },
+        "headSha": {
+          "anyOf": [
+            { "type": "string", "pattern": "^[0-9a-f]{40,64}$" },
+            { "type": "null" }
+          ]
+        },
+        "branch": {
+          "anyOf": [{ "type": "string", "minLength": 1 }, { "type": "null" }]
+        },
+        "detached": { "type": "boolean" },
+        "bare": { "type": "boolean" },
+        "prunable": { "type": "boolean" },
+        "locked": { "type": "boolean" },
+        "isPrimary": { "type": "boolean" },
+        "isCurrent": { "type": "boolean" },
+        "changes": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/change" }
+        },
+        "changeDigest": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+      }
+    },
+    "branch": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "sha",
+        "upstream",
+        "ahead",
+        "behind",
+        "current",
+        "worktreePath"
+      ],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "sha": { "type": "string", "pattern": "^[0-9a-f]{40,64}$" },
+        "upstream": {
+          "anyOf": [{ "type": "string", "minLength": 1 }, { "type": "null" }]
+        },
+        "ahead": { "type": "integer", "minimum": 0 },
+        "behind": { "type": "integer", "minimum": 0 },
+        "current": { "type": "boolean" },
+        "worktreePath": {
+          "anyOf": [{ "type": "string", "minLength": 1 }, { "type": "null" }]
+        }
+      }
+    },
+    "stash": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ref", "sha", "subject"],
+      "properties": {
+        "ref": { "type": "string", "pattern": "^stash@\\{[0-9]+\\}$" },
+        "sha": { "type": "string", "pattern": "^[0-9a-f]{40,64}$" },
+        "subject": { "type": "string" }
+      }
+    },
+    "proposal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "provider",
+        "objectId",
+        "url",
+        "state",
+        "baseRevision",
+        "headRevision"
+      ],
+      "properties": {
+        "provider": { "type": "string", "minLength": 1 },
+        "objectId": { "type": "string", "minLength": 1 },
+        "url": {
+          "anyOf": [{ "type": "string", "format": "uri" }, { "type": "null" }]
+        },
+        "state": { "enum": ["open", "closed", "merged", "draft"] },
+        "baseRevision": {
+          "anyOf": [{ "type": "string", "minLength": 1 }, { "type": "null" }]
+        },
+        "headRevision": { "type": "string", "minLength": 1 }
+      }
+    },
+    "capability": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["category", "provider", "status", "detail"],
+      "properties": {
+        "category": { "enum": ["git", "forge", "deployment"] },
+        "provider": { "type": "string", "minLength": 1 },
+        "status": {
+          "enum": [
+            "supported",
+            "unsupported",
+            "configuration",
+            "unavailable",
+            "partial"
+          ]
+        },
+        "detail": { "type": "string" }
+      }
+    }
+  }
+}

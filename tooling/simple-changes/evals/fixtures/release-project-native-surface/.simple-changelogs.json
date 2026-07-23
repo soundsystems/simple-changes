@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "guidance": {
+    "version": 4,
+    "backfillStatus": "completed"
+  },
+  "developerChangelog": "required",
+  "signatures": "none",
+  "newReleaseNoteSurfaces": "existing-only"
+}

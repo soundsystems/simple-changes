@@ -1,0 +1,9 @@
+{
+  "name": "stash",
+  "description": "A pre-existing stash alongside independent stable work.",
+  "expected": {
+    "stashInventoried": true,
+    "stashApplied": false,
+    "temporaryStashCreated": false
+  }
+}

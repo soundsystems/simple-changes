@@ -1,0 +1,101 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://simple-changes.dev/schemas/eval-manifest.schema.json",
+  "title": "Simple Changes eval manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "skillName",
+    "triggers",
+    "journeys",
+    "releaseCases"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "skillName": { "const": "simple-changes" },
+    "triggers": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "prompt", "expected"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "prompt": { "type": "string", "minLength": 1 },
+          "expected": { "type": "boolean" }
+        }
+      }
+    },
+    "journeys": {
+      "type": "array",
+      "minItems": 12,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "prompt", "mode", "authority", "expectedBehaviors"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "prompt": { "type": "string", "minLength": 1 },
+          "mode": {
+            "enum": [
+              "preview",
+              "queue",
+              "sweep",
+              "integrate",
+              "ship",
+              "reconcile",
+              "resume",
+              "pause"
+            ]
+          },
+          "authority": {
+            "type": "array",
+            "items": { "type": "string", "minLength": 1 }
+          },
+          "expectedBehaviors": {
+            "type": "array",
+            "minItems": 1,
+            "items": { "type": "string", "minLength": 1 }
+          }
+        }
+      }
+    },
+    "releaseCases": {
+      "type": "array",
+      "minItems": 5,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "fixture", "prompt", "assertions"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "fixture": { "type": "string", "minLength": 1 },
+          "prompt": { "type": "string", "minLength": 1 },
+          "assertions": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["path", "exists", "contains", "notContains"],
+              "properties": {
+                "path": { "type": "string", "minLength": 1 },
+                "exists": { "type": "boolean" },
+                "contains": {
+                  "type": "array",
+                  "items": { "type": "string", "minLength": 1 }
+                },
+                "notContains": {
+                  "type": "array",
+                  "items": { "type": "string", "minLength": 1 }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

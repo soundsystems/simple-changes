@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://simple-changes.dev/schemas/repo-policy.schema.json",
+  "title": "Simple Changes repository policy",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "guidance",
+    "defaultFinish",
+    "questions",
+    "review",
+    "productionDeploy",
+    "concurrentWork"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "guidance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version"],
+      "properties": {
+        "version": { "const": 1 }
+      }
+    },
+    "defaultFinish": {
+      "enum": ["open-change-request", "integrate", "ship", "preview"]
+    },
+    "questions": {
+      "enum": ["blocking-only", "always", "never"]
+    },
+    "review": {
+      "enum": ["repository-policy", "independent", "provider-policy"]
+    },
+    "productionDeploy": {
+      "enum": ["ask", "allow", "deny"]
+    },
+    "concurrentWork": {
+      "enum": ["preserve"]
+    }
+  }
+}

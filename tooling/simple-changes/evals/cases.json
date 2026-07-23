@@ -1,0 +1,369 @@
+{
+  "schemaVersion": 1,
+  "skillName": "simple-changes",
+  "triggers": [
+    {
+      "id": "queue-put-this-up",
+      "prompt": "Put this up as a focused change.",
+      "expected": true
+    },
+    {
+      "id": "sweep-everything-ready",
+      "prompt": "Open focused changes for everything ready.",
+      "expected": true
+    },
+    {
+      "id": "integrate-ready",
+      "prompt": "Merge what's ready and leave active work alone.",
+      "expected": true
+    },
+    {
+      "id": "ship-ready",
+      "prompt": "Ship everything ready.",
+      "expected": true
+    },
+    {
+      "id": "reconcile-repository",
+      "prompt": "Clean this repository up without losing work.",
+      "expected": true
+    },
+    {
+      "id": "preview-plan",
+      "prompt": "Show me what you would do with all ready changes.",
+      "expected": true
+    },
+    {
+      "id": "resume-established-loop",
+      "prompt": "again",
+      "expected": true
+    },
+    {
+      "id": "near-miss-read-only-review",
+      "prompt": "Review this PR and give me read-only feedback.",
+      "expected": false
+    },
+    {
+      "id": "near-miss-commit-message",
+      "prompt": "Write a commit message for this diff.",
+      "expected": false
+    },
+    {
+      "id": "near-miss-deploy-only",
+      "prompt": "Deploy production.",
+      "expected": false
+    },
+    {
+      "id": "near-miss-again-no-context",
+      "prompt": "again",
+      "expected": false
+    },
+    {
+      "id": "queue-data-migration",
+      "prompt": "Queue the database migration and ORM schema change.",
+      "expected": true
+    },
+    {
+      "id": "near-miss-release-notes-writing",
+      "prompt": "Curate the public CLI release notes for this change.",
+      "expected": false
+    },
+    {
+      "id": "audit-complete-proposal-corpus",
+      "prompt": "Audit every change proposal in every state for malformed escaped newlines.",
+      "expected": true
+    },
+    {
+      "id": "repair-complete-proposal-corpus",
+      "prompt": "Fix all merge requests with malformed summaries.",
+      "expected": true
+    }
+  ],
+  "journeys": [
+    {
+      "id": "preview-multi-worktree",
+      "prompt": "Show me what you would do with everything ready.",
+      "mode": "preview",
+      "authority": [],
+      "expectedBehaviors": [
+        "Capture two read-only inventories",
+        "Emit a validated plan",
+        "Create no Git or provider state"
+      ]
+    },
+    {
+      "id": "queue-single-unit",
+      "prompt": "Put this up.",
+      "mode": "queue",
+      "authority": ["local-write", "proposal-write"],
+      "expectedBehaviors": [
+        "Package one coherent unit",
+        "Verify it",
+        "Open but do not merge a proposal"
+      ]
+    },
+    {
+      "id": "sweep-mixed-ready-work",
+      "prompt": "Open focused changes for everything ready.",
+      "mode": "sweep",
+      "authority": ["local-write", "proposal-write"],
+      "expectedBehaviors": [
+        "Split by outcome and dependency",
+        "Preserve paused and concurrent work"
+      ]
+    },
+    {
+      "id": "integrate-current-heads",
+      "prompt": "Merge what's ready.",
+      "mode": "integrate",
+      "authority": ["local-write", "proposal-write", "merge"],
+      "expectedBehaviors": [
+        "Refresh required checks and discussions",
+        "Require approval for the exact current revision"
+      ]
+    },
+    {
+      "id": "ship-authorized-work",
+      "prompt": "Ship what's ready.",
+      "mode": "ship",
+      "authority": ["local-write", "proposal-write", "merge", "preview-deploy"],
+      "expectedBehaviors": [
+        "Integrate eligible proposals",
+        "Require policy or current authority for production",
+        "Verify immutable revision and canonical target"
+      ]
+    },
+    {
+      "id": "reconcile-proven-state",
+      "prompt": "Clean this repo up.",
+      "mode": "reconcile",
+      "authority": ["local-write", "proposal-write", "merge"],
+      "expectedBehaviors": [
+        "Prune only proven merged or obsolete state",
+        "Restore the original primary checkout"
+      ]
+    },
+    {
+      "id": "resume-interrupted-run",
+      "prompt": "continue",
+      "mode": "resume",
+      "authority": [],
+      "expectedBehaviors": [
+        "Reconstruct scope from conversation and fresh evidence",
+        "Avoid duplicate operations"
+      ]
+    },
+    {
+      "id": "pause-named-checkout",
+      "prompt": "Leave this checkout alone.",
+      "mode": "pause",
+      "authority": [],
+      "expectedBehaviors": [
+        "Preserve the named checkout",
+        "Continue independent units"
+      ]
+    },
+    {
+      "id": "queue-migration-without-apply",
+      "prompt": "Queue this migration change.",
+      "mode": "queue",
+      "authority": ["local-write", "proposal-write"],
+      "expectedBehaviors": [
+        "Audit migration read-only",
+        "Do not infer remote apply authority"
+      ]
+    },
+    {
+      "id": "integrate-open-proposals",
+      "prompt": "Finish the open changes.",
+      "mode": "integrate",
+      "authority": ["local-write", "proposal-write", "merge"],
+      "expectedBehaviors": [
+        "Merge dependencies first",
+        "Invalidate approval after any revision change"
+      ]
+    },
+    {
+      "id": "ship-with-stale-live-target",
+      "prompt": "Integrate and ship all ready work.",
+      "mode": "ship",
+      "authority": ["local-write", "proposal-write", "merge", "preview-deploy"],
+      "expectedBehaviors": [
+        "Discover the complete configured canonical-target inventory",
+        "Reject ready status when any expected live target is missing or stale",
+        "Promote the existing verified artifact once before bounded same-project managed-target reconciliation",
+        "Refresh every canonical target after each attempt without creating a duplicate deployment",
+        "Run a focused smoke journey"
+      ]
+    },
+    {
+      "id": "sweep-cross-surface-parity",
+      "prompt": "Open focused changes for this shared account workflow across the web client, native app, and CLI. Keep platform-specific interactions native.",
+      "mode": "sweep",
+      "authority": ["local-write", "proposal-write"],
+      "expectedBehaviors": [
+        "Discover repository-defined counterpart surfaces",
+        "Record each surface as matched, intentional, not-applicable, or blocked",
+        "Compare intent, authorization, states, copy meaning, and accessibility without demanding identical UI",
+        "Keep store publication and other separate release actions behind their own authority"
+      ]
+    },
+    {
+      "id": "audit-complete-proposal-corpus",
+      "prompt": "Audit every change proposal in every state for malformed escaped newlines.",
+      "mode": "preview",
+      "authority": [],
+      "expectedBehaviors": [
+        "Paginate the complete provider result set",
+        "Include open, closed, merged, and draft states when supported",
+        "Record queried state and cursor coverage instead of reporting a partial listing as complete"
+      ]
+    },
+    {
+      "id": "resume-historical-pause",
+      "prompt": "Continue the loop; the checkout I paused earlier is ready now.",
+      "mode": "resume",
+      "authority": [],
+      "expectedBehaviors": [
+        "Re-evaluate the historical pause from the newest request and fresh evidence",
+        "Resume the released work without reviving unrelated old authority",
+        "Preserve only work that is currently paused, changing, unsafe, or unresolved"
+      ]
+    },
+    {
+      "id": "sweep-with-concurrent-arrival",
+      "prompt": "Package all ready work, but leave new worktrees alone.",
+      "mode": "sweep",
+      "authority": ["local-write", "proposal-write"],
+      "expectedBehaviors": [
+        "Capture opening worktree baseline",
+        "Preserve mid-run worktree arrivals",
+        "Treat stable wip-named work as ready"
+      ]
+    },
+    {
+      "id": "queue-orm-generated-migration",
+      "prompt": "Queue the ORM schema and generated migration, but do not apply it remotely.",
+      "mode": "queue",
+      "authority": ["local-write", "proposal-write"],
+      "expectedBehaviors": [
+        "Discover every canonical and generated migration history",
+        "Inspect generated database operations rather than trusting generation success",
+        "Audit remote state read-only without inferring apply authority"
+      ]
+    },
+    {
+      "id": "ship-nonrelational-index-change",
+      "prompt": "Ship the ready search index mapping and bounded data backfill.",
+      "mode": "ship",
+      "authority": ["local-write", "proposal-write", "merge", "preview-deploy"],
+      "expectedBehaviors": [
+        "Treat index rollout and backfill as separate data operations",
+        "Require exact remote-write authority before mutation",
+        "Verify counts, restart behavior, live target, and postconditions"
+      ]
+    }
+  ],
+  "releaseCases": [
+    {
+      "id": "release-first-use",
+      "fixture": "release-first-use",
+      "prompt": "Adopt the repository's release-note workflow for this pending CLI capability. Create the required policy and histories, classify the visible and technical outcomes, and leave the work unreleased.",
+      "assertions": [
+        {
+          "path": ".simple-changelogs.json",
+          "exists": true,
+          "contains": ["\"version\": 4", "\"signatures\""],
+          "notContains": ["token", "credential"]
+        },
+        {
+          "path": "CHANGELOG.md",
+          "exists": true,
+          "contains": ["## Unreleased", "simple-changelogs-signature"],
+          "notContains": ["implementation detail"]
+        },
+        {
+          "path": "DEVELOPER_CHANGELOG.md",
+          "exists": true,
+          "contains": ["## Unreleased", "simple-changelogs-signature"],
+          "notContains": []
+        }
+      ]
+    },
+    {
+      "id": "release-merge-reconciliation",
+      "fixture": "release-merge-reconciliation",
+      "prompt": "Finalize the target-contained pending work as release 0.2.0 dated 2026-07-23. Reconcile both histories and the package version, then verify the release.",
+      "assertions": [
+        {
+          "path": "CHANGELOG.md",
+          "exists": true,
+          "contains": ["## 0.2.0 - 2026-07-23"],
+          "notContains": ["## Unreleased"]
+        },
+        {
+          "path": "DEVELOPER_CHANGELOG.md",
+          "exists": true,
+          "contains": ["## 0.2.0 - 2026-07-23"],
+          "notContains": ["## Unreleased"]
+        }
+      ]
+    },
+    {
+      "id": "release-guidance-backfill",
+      "fixture": "release-guidance-backfill",
+      "prompt": "Upgrade this Simple Changes source repository from changelog guidance 1 to 4. The historical audit is approved; reconstruct the missing developer history from the supplied release evidence and record an honest completed disposition.",
+      "assertions": [
+        {
+          "path": ".simple-changelogs.json",
+          "exists": true,
+          "contains": ["\"version\": 4", "\"backfillStatus\": \"completed\""],
+          "notContains": ["\"backfillStatus\": \"partial\""]
+        },
+        {
+          "path": "DEVELOPER_CHANGELOG.md",
+          "exists": true,
+          "contains": ["## 0.1.0 - 2026-06-01"],
+          "notContains": []
+        }
+      ]
+    },
+    {
+      "id": "release-stable-major",
+      "fixture": "release-stable-major",
+      "prompt": "Finalize the documented 1.0.0 stable CLI contract dated 2026-07-23. Preserve the 0.x archive and synthesize the stable public and developer histories.",
+      "assertions": [
+        {
+          "path": "CHANGELOG.md",
+          "exists": true,
+          "contains": ["## 1.0.0 - 2026-07-23", "## 0.9.0"],
+          "notContains": ["## Unreleased"]
+        },
+        {
+          "path": "package.json",
+          "exists": true,
+          "contains": ["\"version\": \"1.0.0\""],
+          "notContains": []
+        }
+      ]
+    },
+    {
+      "id": "release-cli-only-surface",
+      "fixture": "release-project-native-surface",
+      "prompt": "Finalize Simple Changes release 1.1.0 dated 2026-07-23. Its public surface is the read-only CLI renderer; do not create JSON feeds, UI, or another destination.",
+      "assertions": [
+        {
+          "path": "release-notes.json",
+          "exists": false,
+          "contains": [],
+          "notContains": []
+        },
+        {
+          "path": "CHANGELOG.md",
+          "exists": true,
+          "contains": ["## 1.1.0 - 2026-07-23"],
+          "notContains": ["## Unreleased"]
+        }
+      ]
+    }
+  ]
+}

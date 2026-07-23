@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://simple-changes.dev/schemas/runner-request.schema.json",
+  "title": "Portable behavior runner request",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "caseId",
+    "prompt",
+    "repository",
+    "readOnly",
+    "guidanceDirectory",
+    "responseSchema"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "caseId": { "type": "string", "minLength": 1 },
+    "prompt": { "type": "string", "minLength": 1 },
+    "repository": { "type": "string", "minLength": 1 },
+    "readOnly": { "type": "boolean" },
+    "guidanceDirectory": { "type": "string", "minLength": 1 },
+    "responseSchema": { "type": "string", "minLength": 1 }
+  }
+}

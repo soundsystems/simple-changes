@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "guidance": {
+    "version": 1
+  },
+  "defaultFinish": "open-change-request",
+  "questions": "blocking-only",
+  "review": "repository-policy",
+  "productionDeploy": "ask",
+  "concurrentWork": "preserve"
+}

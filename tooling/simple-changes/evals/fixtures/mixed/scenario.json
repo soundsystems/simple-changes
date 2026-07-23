@@ -1,0 +1,8 @@
+{
+  "name": "mixed",
+  "description": "Stable application and documentation paths representing separate outcomes.",
+  "expected": {
+    "conservation": "every path exactly once",
+    "broadStaging": false
+  }
+}

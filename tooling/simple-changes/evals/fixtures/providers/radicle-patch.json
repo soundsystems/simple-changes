@@ -1,0 +1,9 @@
+{
+  "provider": "radicle",
+  "objectIdentity": "rad:patch:z42example",
+  "baseRevision": "1111111111111111111111111111111111111111",
+  "headRevision": "rad:revision:z6example",
+  "approvalRevision": "rad:revision:z6example",
+  "numericId": null,
+  "hostedUrl": null
+}

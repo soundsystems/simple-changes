@@ -1,0 +1,9 @@
+{
+  "name": "dirty",
+  "description": "A stable tracked modification and untracked file in the primary checkout.",
+  "expected": {
+    "classification": "stable",
+    "readyByDefault": true,
+    "mutationsInPreview": 0
+  }
+}

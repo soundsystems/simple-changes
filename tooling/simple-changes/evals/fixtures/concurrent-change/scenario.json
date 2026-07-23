@@ -1,0 +1,9 @@
+{
+  "name": "concurrent-change",
+  "description": "A new worktree and edits in an existing worktree appear after baseline.",
+  "expected": {
+    "newWorktree": "concurrent-arrival",
+    "changedDigest": "actively-changing",
+    "preserved": true
+  }
+}

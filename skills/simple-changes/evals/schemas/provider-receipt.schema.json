@@ -1,0 +1,130 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://simple-changes.dev/schemas/provider-receipt.schema.json",
+  "title": "Simple Changes normalized provider receipt",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "kind",
+    "provider",
+    "action",
+    "status",
+    "objectId",
+    "url",
+    "baseRevision",
+    "headRevision",
+    "approvalRevision",
+    "immutableResultId",
+    "intendedRevision",
+    "observedRevision",
+    "project",
+    "environment",
+    "deliveryModel",
+    "canonicalTargets",
+    "smoke",
+    "evidence",
+    "observedAt"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "kind": { "enum": ["forge", "deployment"] },
+    "provider": { "type": "string", "minLength": 1 },
+    "action": { "type": "string", "minLength": 1 },
+    "status": {
+      "enum": [
+        "succeeded",
+        "failed",
+        "unsupported",
+        "configuration",
+        "unavailable",
+        "partial"
+      ]
+    },
+    "objectId": { "type": "string", "minLength": 1 },
+    "url": {
+      "anyOf": [{ "type": "string", "format": "uri" }, { "type": "null" }]
+    },
+    "baseRevision": {
+      "anyOf": [{ "type": "string", "minLength": 1 }, { "type": "null" }]
+    },
+    "headRevision": {
+      "anyOf": [{ "type": "string", "minLength": 1 }, { "type": "null" }]
+    },
+    "approvalRevision": {
+      "anyOf": [{ "type": "string", "minLength": 1 }, { "type": "null" }]
+    },
+    "immutableResultId": {
+      "anyOf": [{ "type": "string", "minLength": 1 }, { "type": "null" }]
+    },
+    "intendedRevision": {
+      "anyOf": [{ "type": "string", "minLength": 1 }, { "type": "null" }]
+    },
+    "observedRevision": {
+      "anyOf": [{ "type": "string", "minLength": 1 }, { "type": "null" }]
+    },
+    "project": {
+      "anyOf": [{ "type": "string", "minLength": 1 }, { "type": "null" }]
+    },
+    "environment": {
+      "anyOf": [
+        { "enum": ["preview", "staging", "production"] },
+        { "type": "null" }
+      ]
+    },
+    "deliveryModel": {
+      "anyOf": [
+        {
+          "enum": [
+            "git-connected",
+            "atomic-artifact",
+            "container-rollout",
+            "edge-publish",
+            "self-hosted-control-plane"
+          ]
+        },
+        { "type": "null" }
+      ]
+    },
+    "canonicalTargets": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["url", "resolvedResultId", "matches"],
+        "properties": {
+          "url": { "type": "string", "format": "uri" },
+          "resolvedResultId": { "type": "string", "minLength": 1 },
+          "matches": { "type": "boolean" }
+        }
+      }
+    },
+    "expectedCanonicalTargets": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "type": "string", "format": "uri" }
+    },
+    "providerReady": {
+      "anyOf": [{ "type": "boolean" }, { "type": "null" }]
+    },
+    "smoke": {
+      "anyOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["journey", "passed"],
+          "properties": {
+            "journey": { "type": "string", "minLength": 1 },
+            "passed": { "type": "boolean" }
+          }
+        },
+        { "type": "null" }
+      ]
+    },
+    "evidence": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "observedAt": { "type": "string", "format": "date-time" }
+  }
+}

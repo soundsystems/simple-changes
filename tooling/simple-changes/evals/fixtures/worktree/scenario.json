@@ -1,0 +1,9 @@
+{
+  "name": "worktree",
+  "description": "A dirty linked worktree whose stable branch name contains wip.",
+  "expected": {
+    "readyByDefault": true,
+    "excludedByName": false,
+    "primaryCheckout": "opening worktree entry"
+  }
+}

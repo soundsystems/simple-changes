@@ -1,0 +1,8 @@
+node_modules/
+coverage/
+dist/
+*.log
+.DS_Store
+/BUILD_PLAN.md
+.simple-changes-codex-*.json
+.simple-changes-skill-*/

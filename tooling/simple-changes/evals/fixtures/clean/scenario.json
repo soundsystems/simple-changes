@@ -1,0 +1,9 @@
+{
+  "name": "clean",
+  "description": "One primary checkout on main with no local changes, worktrees, or stashes.",
+  "expected": {
+    "readyUnits": 0,
+    "preserved": 0,
+    "mutations": 0
+  }
+}

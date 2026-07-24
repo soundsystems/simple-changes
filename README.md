@@ -58,9 +58,20 @@ tooling/simple-changes/check-fork-sync.sh \
 Port applicable changes, preserve the documented local deltas, run canonical
 and fork-native checks, and update the pin only after reviewing the complete
 upstream range. Repository maintainers can invoke
-`skills/publish-simple-changes-forks` for the complete propagation workflow.
+`skills/publish-skill` for the complete canonical, fork, and consumer
+propagation workflow.
 Repository names and paths are discovered at runtime and are not embedded in
 the public package.
+
+Install that workflow project-locally from a source checkout:
+
+```sh
+bunx skills add . --skill publish-skill --agent codex -y
+```
+
+Skill repositories may bundle the same generic `publish-skill` workflow. Use
+the project-local copy from the canonical repository being published so
+discovery and the production release map stay scoped to that repository.
 
 ## What the current source provides
 

@@ -1,5 +1,16 @@
 # Developer changelog
 
+## Unreleased
+
+- Replaced the `publish-simple-changes-forks` package with the repository-local
+  `publish-skill` workflow and updated its installation and invocation
+  documentation.
+- Made consumer discovery, Skills CLI installation, complete package-tree
+  verification, temporary-install cleanup, lock or manifest integration,
+  consumer proposal integration, and remote default-branch proof mandatory in
+  every complete production run.
+<!-- simple-changelogs-signature agent="gpt-5.6-sol" at="2026-07-24T00:19:40-05:00" -->
+
 ## 0.1.0 - 2026-07-23
 
 <!-- simple-changelogs-signature agent="gpt-5.6-sol" at="2026-07-23T18:15:57-0500" -->

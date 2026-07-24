@@ -1,4 +1,0 @@
-interface:
-  display_name: "Publish Simple Changes Forks"
-  short_description: "Synchronize and verify downstream skill forks"
-  default_prompt: "Use $publish-simple-changes-forks to propagate a canonical Simple Changes update through maintained forks."

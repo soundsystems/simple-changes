@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- Renamed the repository-local production workflow from
+  `publish-simple-changes-forks` to `publish-skill`; install and invoke the new
+  name for future production runs.
+- Complete production runs now require installing Simple Changes into a real
+  Skills CLI consumer and integrating its lock or manifest update before the
+  workflow can report convergence.
+<!-- simple-changelogs-signature agent="gpt-5.6-sol" at="2026-07-24T00:19:40-05:00" -->
+
 ## 0.1.0 - 2026-07-23
 
 <!-- simple-changelogs-signature agent="gpt-5.6-sol" at="2026-07-23T18:15:57-0500" -->

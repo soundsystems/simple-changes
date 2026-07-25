@@ -1,6 +1,6 @@
 # Release notes
 
-Forked from `simple-changelogs` @ `bf64294`. Simple Changes-specific deltas:
+Forked from `simple-changelogs` @ `b096f8d`. Simple Changes-specific deltas:
 repository-maintainer scope, one read-only CLI surface, and portable
 model-adapter verification. CMS-only variants and general surface-curation
 machinery are intentionally omitted because Simple Changes has no selectable
@@ -11,7 +11,7 @@ customer and developer history while working in this source repository. Never
 package or install this module with the public `simple-changes` skill, and never
 apply it to an end user's repository.
 
-Current maintainer guidance version: 4
+Current maintainer guidance version: 5
 
 ## Contents
 
@@ -69,6 +69,13 @@ operators:
 - durable interaction or error-recovery changes;
 - documentation changes that alter setup, compatibility, pricing, permission,
   trust, or support obligations.
+
+The public history is an expert CLI and skill-package archive. Include public
+commands, flags, output formats, compatibility constraints, and precise
+user-observable workflow changes that help agents, integrators, and maintainers
+evaluate or use a release. Comprehensive means every verified
+audience-relevant package change, not every commit or internal implementation
+detail.
 
 Exclude refactors, tests, linting, formatting, dependency churn, CI, build
 configuration, release plumbing, and internal architecture unless they change

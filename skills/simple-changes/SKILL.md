@@ -26,7 +26,9 @@ Classify the user's language without requiring commands:
 
 When wording is ambiguous, choose the least consequential mode that still
 answers the request. Queue is the default mutation boundary; preview is the
-default when the user explicitly asks to see a plan.
+default when the user explicitly asks to see a plan. Queue does not mean
+"report only the unit that was queued": it must account for every stable
+baseline unit found in the opening inventory.
 
 ## Initialize preferences
 
@@ -114,7 +116,9 @@ authority for those operations.
    intentional, not-applicable, or blocked parity using
    [surface parity](references/surface-parity.md).
 6. Build and validate a change plan. Every changed path must belong to exactly
-   one unit or an explicit preserved/excluded set.
+   one unit or an explicit preserved/excluded set. Keep an outstanding-work
+   ledger for all units: location, branch or proposal, stable/active state,
+   disposition, evidence, and the next action.
 7. Finish safe independent units before asking about a genuinely blocking
    decision.
 8. Run repository-native, proportionate checks. Distinguish failures introduced
@@ -180,6 +184,10 @@ result.
 - Capture the opening baseline before mutation and attribute this run's objects.
 - Stable baseline work is ready unless evidence says otherwise; changing or new
   concurrent work is preserved.
+- Queue mode may defer a stable unit, but may not silently omit it: the final
+  response must name it, explain why it was not queued, and state the exact
+  next action. A separate dirty worktree is not by itself evidence that the
+  work is active; use the repeated snapshot and baseline timing.
 - Refresh the target before divergence, checks, or mergeability decisions.
 - Validate path containment and reject symlink or traversal surprises.
 - Use command argument arrays, never interpolate untrusted repository text into
@@ -234,9 +242,14 @@ capability is unsupported or configuration-blocked, never guessed success.
 ## Reports
 
 Report queued, merged, deployed, preserved, and blocked items separately. Name
-the exact proposal/revision or deployment identity when one exists. Include only
-decisions that still require a person. Never claim completion until the final
-inventory proves the requested scope and the original primary checkout state.
+the exact proposal/revision or deployment identity when one exists. In Queue
+mode, include an explicit **Outstanding work** section for every discovered
+unit not queued in this run, including clean branches and separate worktrees;
+for each give its location, current revision/state, why it was deferred, and
+the next action. State "none" only after the final inventory proves there are
+no such units. Include only decisions that still require a person. Never claim
+completion until the final inventory proves the requested scope and the
+original primary checkout state.
 For production deployment, report the expected canonical-target inventory and
 each refreshed target-to-deployment identity mapping, not only the generated
 deployment URL.

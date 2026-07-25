@@ -1,6 +1,6 @@
 # Developer changelog
 
-## Unreleased
+## 0.2.0 - 2026-07-25
 
 - Replaced `publish-simple-changes-forks` with the generic `publish-skill`
   workflow:
@@ -28,9 +28,19 @@
   - Made inventory capture accept explicit changelog environment and home inputs
     so fixtures and CLI subprocesses isolate installed skill roots while runtime
     global discovery remains enabled and covered.
+- Strengthened Queue mode's stable-unit accounting contract:
+  - Carries every unit from the opening inventory through an outstanding-work
+    ledger with its location, revision or proposal, stability, disposition,
+    evidence, and next action.
+  - Requires final reports to identify every deferred unit, including clean
+    branches and separate worktrees, instead of treating the queued unit as the
+    complete scope.
+  - Added focused skill-contract coverage that protects the required ledger and
+    deferred-unit report fields.
 <!-- simple-changelogs-signature agent="gpt-5.6-sol" at="2026-07-24T15:47:44-05:00" -->
 <!-- simple-changelogs-signature agent="gpt-5.6-sol" at="2026-07-25T03:51:17-05:00" -->
 <!-- simple-changelogs-signature agent="gpt-5.6-sol" at="2026-07-25T04:01:03-05:00" -->
+<!-- simple-changelogs-signature agent="gpt-5.6-sol" at="2026-07-25T11:15:46-05:00" -->
 
 ## 0.1.0 - 2026-07-23
 

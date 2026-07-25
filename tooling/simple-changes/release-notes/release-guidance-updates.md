@@ -29,6 +29,22 @@ Separated complete customer history from compact announcements. Durable,
 identifiable product polish may remain in `CHANGELOG.md` even when it is too
 minor for a short announcement; incidental cosmetic churn remains omitted.
 
+## Guidance 5
+
+Added evidence-based expert public release notes so the established Simple
+Changes CLI and skill-package archive retains public commands, compatibility
+details, and narrow workflow changes its technical audience needs without
+copying internal developer history.
+
+Added destination-level scope verification. This repository has one public
+release-note destination: `skills/simple-changes/CHANGELOG.md`, rendered by the
+installed CLI from the canonical customer history. Web, mobile, store, CMS, and
+internal product-surface curation remain not applicable.
+
+The released `0.1.0` history was audited against this guidance. Its public CLI
+and package details match the expert audience, its developer-only architecture
+remains private, and no meaning or visibility changes were required.
+
 When moving between guidance versions, summarize the applicable entries and
 record one honest historical-audit disposition. Current guidance applies
 prospectively regardless of that disposition.

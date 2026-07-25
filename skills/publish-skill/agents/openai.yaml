@@ -1,4 +1,4 @@
 interface:
   display_name: "Publish Skill"
-  short_description: "Run a complete skill production loop"
-  default_prompt: "Use $publish-skill to run the complete production loop for this skill update."
+  short_description: "Publish through every fork and local install"
+  default_prompt: "Use $publish-skill to publish this skill update through every maintained fork and discovered local consumer."

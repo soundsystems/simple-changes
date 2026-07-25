@@ -21,7 +21,7 @@
     "format": "bunx ultracite fix",
     "lint": "bunx ultracite check",
     "simple-changes": "bun skills/simple-changes/scripts/simple-changes.ts",
-    "test": "bun test tooling/simple-changes/tests",
+    "test": "bun test tooling/simple-changes/tests && bun tooling/publish-skill/scripts/test.ts",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {

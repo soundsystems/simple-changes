@@ -53,7 +53,11 @@ describe("Git inventory and concurrency", () => {
   test("reports changelog relevance separately from skill availability", () => {
     const fixture = repository();
     writeFixture(fixture.root, "CHANGELOG.md", "# Changelog\n");
-    const inventory = captureInventory(fixture.root);
+    const inventory = captureInventory(fixture.root, {
+      changelogEnvironment: {
+        SIMPLE_CHANGES_SKILL_ROOTS: "",
+      },
+    });
 
     expect(inventory.capabilities).toContainEqual(
       expect.objectContaining({

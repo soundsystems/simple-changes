@@ -2,13 +2,18 @@
 
 ## Unreleased
 
-- Renamed the repository-local production workflow from
-  `publish-simple-changes-forks` to `publish-skill`; install and invoke the new
-  name for future production runs.
-- Complete production runs now require installing Simple Changes into a real
-  Skills CLI consumer and integrating its lock or manifest update before the
-  workflow can report convergence.
-<!-- simple-changelogs-signature agent="gpt-5.6-sol" at="2026-07-24T00:19:40-05:00" -->
+- Skill publishing:
+  - The generic `publish-skill` workflow now carries canonical updates through
+    maintained forks and every discovered exact-source local consumer.
+  - Consumer installs are validated independently while maintained installs and
+    intentional pins retain their declared behavior.
+- Changelog coordination:
+  - Simple Changes now asks how changelogs should be handled only when a
+    changelog surface or compatible workflow is available.
+  - Delegated changelog changes are accepted only when a source- and
+    digest-bound receipt proves the current files and their release impact.
+<!-- simple-changelogs-signature agent="gpt-5.6-sol" at="2026-07-24T15:47:44-05:00" -->
+<!-- simple-changelogs-signature agent="gpt-5.6-sol" at="2026-07-25T03:51:17-05:00" -->
 
 ## 0.1.0 - 2026-07-23
 

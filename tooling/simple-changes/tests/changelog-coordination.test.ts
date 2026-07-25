@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { join } from "node:path";
 import { inspectChangelogCoordination } from "../../../skills/simple-changes/scripts/lib/changelog-coordination.ts";
 import {
   createTestRepository,
@@ -67,5 +68,30 @@ describe("changelog coordination discovery", () => {
       relevant: true,
     });
     expect(result.providers[0]).toEndWith("/skills/simple-changelogs/SKILL.md");
+  });
+
+  test("discovers a compatible skill from configured global roots", () => {
+    const fixture = createTestRepository();
+    repositories.push(fixture);
+    const skillRoot = join(fixture.base, "global-skills");
+    writeFixture(
+      skillRoot,
+      "simple-changelogs/SKILL.md",
+      "---\nname: simple-changelogs\ndescription: Test fixture.\n---\n"
+    );
+
+    const result = inspectChangelogCoordination(fixture.root, {
+      environment: {
+        SIMPLE_CHANGES_SKILL_ROOTS: skillRoot,
+      },
+    });
+
+    expect(result).toMatchObject({
+      capabilityAvailable: true,
+      relevant: true,
+    });
+    expect(result.providers).toEqual([
+      join(skillRoot, "simple-changelogs/SKILL.md"),
+    ]);
   });
 });

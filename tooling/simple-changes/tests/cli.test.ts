@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { spawnSync } from "bun";
+import { spawnSync as bunSpawnSync } from "bun";
 import {
   createTestRepository,
   git,
@@ -16,6 +16,27 @@ const cliPath = resolve(
   testDirectory,
   "../../../skills/simple-changes/scripts/simple-changes.ts"
 );
+
+interface CliSpawnOptions {
+  cwd?: string;
+  env?: Record<string, string | undefined>;
+  stderr?: "pipe";
+  stdout?: "pipe";
+}
+
+const spawnSync = (
+  command: string[],
+  options: CliSpawnOptions = {}
+): ReturnType<typeof bunSpawnSync> =>
+  bunSpawnSync(command, {
+    ...options,
+    env: {
+      ...process.env,
+      SIMPLE_CHANGES_SKILL_ROOTS: "",
+      ...options.env,
+    },
+  });
+
 let repositories: TestRepository[] = [];
 
 afterEach(() => {

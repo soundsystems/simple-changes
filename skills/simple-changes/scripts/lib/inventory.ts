@@ -215,7 +215,15 @@ const providerFromRemote = (remoteUrl: string): string => {
   }
 };
 
-const discoverCapabilities = (root: string): Capability[] => {
+export interface CaptureInventoryOptions {
+  changelogEnvironment?: Record<string, string | undefined>;
+  changelogHomeDirectory?: string;
+}
+
+const discoverCapabilities = (
+  root: string,
+  options: CaptureInventoryOptions
+): Capability[] => {
   const capabilities: Capability[] = [
     {
       category: "git",
@@ -287,7 +295,14 @@ const discoverCapabilities = (root: string): Capability[] => {
       });
     }
   }
-  const changelog = inspectChangelogCoordination(root);
+  const changelog = inspectChangelogCoordination(root, {
+    ...(options.changelogEnvironment
+      ? { environment: options.changelogEnvironment }
+      : {}),
+    ...(options.changelogHomeDirectory
+      ? { homeDirectory: options.changelogHomeDirectory }
+      : {}),
+  });
   let changelogDetail =
     "No changelog surfaces or compatible changelog skill were discovered.";
   let changelogProvider = "repository-native";
@@ -339,7 +354,10 @@ const resolveTargetRef = (root: string, branch: string | null): string => {
   return branch ?? "main";
 };
 
-export const captureInventory = (directory: string): RepositoryInventory => {
+export const captureInventory = (
+  directory: string,
+  options: CaptureInventoryOptions = {}
+): RepositoryInventory => {
   const rootOutput = runGit(directory, ["rev-parse", "--show-toplevel"]).stdout;
   const root = realpathSync(rootOutput.trim());
   const currentCheckout = root;
@@ -378,7 +396,7 @@ export const captureInventory = (directory: string): RepositoryInventory => {
   const stashes = inventoryStashes(root);
   const localChanges = worktrees.flatMap((worktree) => worktree.changes);
   const targetRef = resolveTargetRef(root, branch);
-  const capabilities = discoverCapabilities(primaryCheckout);
+  const capabilities = discoverCapabilities(primaryCheckout, options);
   const policy = loadPolicy(primaryCheckout);
   const digestInput = JSON.stringify({
     branches,

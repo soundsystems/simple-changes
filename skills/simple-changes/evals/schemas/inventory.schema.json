@@ -229,7 +229,9 @@
       "additionalProperties": false,
       "required": ["category", "provider", "status", "detail"],
       "properties": {
-        "category": { "enum": ["git", "forge", "deployment"] },
+        "category": {
+          "enum": ["git", "forge", "deployment", "changelog"]
+        },
         "provider": { "type": "string", "minLength": 1 },
         "status": {
           "enum": [

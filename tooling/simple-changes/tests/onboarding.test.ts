@@ -15,7 +15,11 @@ import {
   writePolicyFile,
 } from "../../../skills/simple-changes/scripts/lib/policy.ts";
 import type { RepoPolicy } from "../../../skills/simple-changes/scripts/lib/types.ts";
-import { createTestRepository, type TestRepository } from "./helpers.ts";
+import {
+  createTestRepository,
+  type TestRepository,
+  writeFixture,
+} from "./helpers.ts";
 
 let repositories: TestRepository[] = [];
 
@@ -114,6 +118,32 @@ describe("preference storage", () => {
       value: DEFAULT_POLICY,
     });
   });
+
+  test("normalizes legacy v1 policies to the safe changelog default", () => {
+    const fixture = createTestRepository();
+    repositories.push(fixture);
+    writeFixture(
+      fixture.root,
+      ".simple-changes.json",
+      `${JSON.stringify(
+        {
+          concurrentWork: "preserve",
+          defaultFinish: "integrate",
+          guidance: { version: 1 },
+          productionDeploy: "ask",
+          questions: "blocking-only",
+          review: "repository-policy",
+          schemaVersion: 1,
+        },
+        null,
+        2
+      )}\n`
+    );
+
+    expect(loadPolicy(fixture.root).value.changelogHandling).toBe(
+      "preserve-and-report"
+    );
+  });
 });
 
 describe("onboarding conversation", () => {
@@ -152,6 +182,44 @@ describe("onboarding conversation", () => {
     ]);
     expect(selection.policy.productionDeploy).toBe("ask");
     expect(selection.scope).toBe("user");
+  });
+
+  test("asks the changelog question only when coordination is relevant", async () => {
+    const questions: string[] = [];
+    const answers = new Map<string, string>([
+      [ONBOARDING_QUESTIONS.finish, "open-change-request"],
+      [ONBOARDING_QUESTIONS.changelog, "delegate-if-available"],
+      [ONBOARDING_QUESTIONS.permission, "blocking-only"],
+      [ONBOARDING_QUESTIONS.scope, "repository"],
+    ]);
+    const selection = await collectOnboardingSelection(
+      DEFAULT_POLICY,
+      {},
+      {
+        choose: (question: string) => {
+          questions.push(question);
+          return Promise.resolve(answers.get(question) ?? "");
+        },
+        confirm: () => Promise.resolve(true),
+      },
+      {
+        capabilityAvailable: false,
+        providers: [],
+        releaseSurfaces: ["CHANGELOG.md"],
+        relevant: true,
+      }
+    );
+
+    expect(questions).toEqual([
+      ONBOARDING_QUESTIONS.finish,
+      ONBOARDING_QUESTIONS.changelog,
+      ONBOARDING_QUESTIONS.permission,
+      ONBOARDING_QUESTIONS.scope,
+    ]);
+    expect(selection.policy.changelogHandling).toBe("delegate-if-available");
+    expect(selection.summary).toContain(
+      "otherwise it will be preserved and reported"
+    );
   });
 
   test("builds and confirms the full ship workflow", async () => {

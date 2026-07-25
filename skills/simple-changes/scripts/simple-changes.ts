@@ -5,6 +5,7 @@ import { dirname, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { fileURLToPath } from "node:url";
 import { sleep } from "bun";
+import { inspectChangelogCoordination } from "./lib/changelog-coordination.ts";
 import { EXIT_CODES, SimpleChangesError } from "./lib/errors.ts";
 import {
   type InitializationStatus,
@@ -44,10 +45,12 @@ const HELP = `Simple Changes ${VERSION}
 
 Usage:
   simple-changes initialize --mode MODE
+    [--changelog delegate-if-available|preserve-and-report|ask]
     [--production ask|allow|deny]
     [--questions blocking-only|always|never]
     [--scope user|repository|run] [--yes] [--json] [--repo PATH]
   simple-changes setup [--finish review|integrate|ship]
+    [--changelog delegate-if-available|preserve-and-report|ask]
     [--production ask|allow|deny]
     [--questions blocking-only|always|never]
     [--scope user|repository|run] [--yes] [--json] [--repo PATH]
@@ -59,14 +62,15 @@ Usage:
   simple-changes help
 
 Schema kinds:
-  repo-policy, initialization, inventory, change-plan, run-state, provider-receipt,
-  release-consistency, release-notes
+  repo-policy, changelog-receipt, initialization, inventory, change-plan,
+  run-state, provider-receipt, release-consistency, release-notes
 
 Exit codes:
   0 success, 2 usage, 3 invalid contract, 4 inventory failure, 5 unsafe state
 `;
 
 interface CliOptions {
+  changelogHandling?: RepoPolicy["changelogHandling"];
   check: boolean;
   defaultFinish?: "open-change-request" | "integrate" | "ship";
   json: boolean;
@@ -83,6 +87,7 @@ interface CliOptions {
 }
 
 const VALUED_OPTIONS = new Set([
+  "--changelog",
   "--finish",
   "--mode",
   "--production",
@@ -108,11 +113,29 @@ const requiredOptionValue = (
   return value;
 };
 
+const changelogHandlingValue = (
+  value: string
+): RepoPolicy["changelogHandling"] => {
+  if (
+    !["delegate-if-available", "preserve-and-report", "ask"].includes(value)
+  ) {
+    throw new SimpleChangesError(
+      "--changelog must be delegate-if-available, preserve-and-report, or ask",
+      EXIT_CODES.usage
+    );
+  }
+  return value as RepoPolicy["changelogHandling"];
+};
+
 const applyValuedOption = (
   options: CliOptions,
   option: string,
   value: string
 ): void => {
+  if (option === "--changelog") {
+    options.changelogHandling = changelogHandlingValue(value);
+    return;
+  }
   if (option === "--finish") {
     const finishAliases = {
       integrate: "integrate",
@@ -343,9 +366,13 @@ const createCliPrompter = (
   };
 };
 
-const setupNeedsPrompt = (options: CliOptions): boolean =>
+const setupNeedsPrompt = (
+  options: CliOptions,
+  changelogRelevant: boolean
+): boolean =>
   !(
     options.defaultFinish &&
+    (!changelogRelevant || options.changelogHandling) &&
     options.questions &&
     options.scope &&
     (options.defaultFinish !== "ship" || options.productionDeploy) &&
@@ -388,32 +415,43 @@ const setupOutcome = (
 const setupContext = (
   repositoryPath: string
 ): {
+  changelog: ReturnType<typeof inspectChangelogCoordination>;
   policy: RepoPolicy;
   primaryCheckout: string | null;
 } => {
   const probe = runGit(repositoryPath, ["rev-parse", "--show-toplevel"], true);
   if (probe.exitCode !== 0) {
     return {
+      changelog: inspectChangelogCoordination(null),
       policy: loadPersonalPolicy().value,
       primaryCheckout: null,
     };
   }
   const inventory = captureInventory(repositoryPath);
   return {
+    changelog: inspectChangelogCoordination(
+      inventory.repository.primaryCheckout
+    ),
     policy: inventory.policy.value,
     primaryCheckout: inventory.repository.primaryCheckout,
   };
 };
 
 const runSetup = async (options: CliOptions): Promise<void> => {
-  if (setupNeedsPrompt(options) && !process.stdin.isTTY) {
+  const context = setupContext(options.repo);
+  if (
+    setupNeedsPrompt(options, context.changelog.relevant) &&
+    !process.stdin.isTTY
+  ) {
     throw new SimpleChangesError(
-      "Interactive setup requires a terminal. Supply --finish, --questions, --scope, --production when shipping, and --yes.",
+      "Interactive setup requires a terminal. Supply --finish, --questions, --scope, --production when shipping, --changelog when relevant, and --yes.",
       EXIT_CODES.usage
     );
   }
-  const context = setupContext(options.repo);
   const inputs: OnboardingInputs = {
+    ...(options.changelogHandling
+      ? { changelogHandling: options.changelogHandling }
+      : {}),
     ...(options.defaultFinish ? { defaultFinish: options.defaultFinish } : {}),
     ...(options.productionDeploy
       ? { productionDeploy: options.productionDeploy }
@@ -426,7 +464,8 @@ const runSetup = async (options: CliOptions): Promise<void> => {
     const selection = await collectOnboardingSelection(
       context.policy,
       inputs,
-      interactive.prompter
+      interactive.prompter,
+      context.changelog
     );
     const path = setupPolicyPath(selection.scope, context.primaryCheckout);
     const written = selection.confirmed && path !== null;
@@ -434,6 +473,7 @@ const runSetup = async (options: CliOptions): Promise<void> => {
       writePolicyFile(path, selection.policy, selection.scope === "user");
     }
     const result = {
+      changelogCoordination: context.changelog,
       confirmed: selection.confirmed,
       path,
       policy: selection.policy,
@@ -456,6 +496,14 @@ const renderInitialization = (
     `Mode: ${status.mode}`,
     `Write-capable: ${status.writeCapable ? "yes" : "no"}`,
     `Policy: ${status.policySource}`,
+    `Changelog coordination: ${
+      status.changelogCoordination.relevant ? "relevant" : "not detected"
+    }`,
+    `Changelog capability: ${
+      status.changelogCoordination.capabilityAvailable
+        ? "available"
+        : "not available"
+    }`,
     `Onboarding required: ${status.onboardingRequired ? "yes" : "no"}`,
     `Reason: ${status.reason}`,
   ];
@@ -473,9 +521,12 @@ const runInitialize = async (options: CliOptions): Promise<void> => {
     );
   }
   const inventory = captureInventory(options.repo);
+  const changelogCoordination = inspectChangelogCoordination(
+    inventory.repository.primaryCheckout
+  );
   const status = validateSchema<InitializationStatus>(
     "initialization",
-    inspectInitialization(options.mode, inventory.policy)
+    inspectInitialization(options.mode, inventory.policy, changelogCoordination)
   );
   if (!status.onboardingRequired) {
     writeOutput(status, options.json, renderInitialization(status));
@@ -487,7 +538,10 @@ const runInitialize = async (options: CliOptions): Promise<void> => {
       ? { defaultFinish: status.inferredDefaultFinish }
       : {}),
   };
-  if (process.stdin.isTTY || !setupNeedsPrompt(setupOptions)) {
+  if (
+    process.stdin.isTTY ||
+    !setupNeedsPrompt(setupOptions, changelogCoordination.relevant)
+  ) {
     await runSetup(setupOptions);
     return;
   }

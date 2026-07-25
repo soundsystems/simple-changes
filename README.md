@@ -32,11 +32,11 @@ same directory under `~/.agents/skills/simple-changes`.
 
 The installed directory is self-contained. Its release-note surface is
 read-only: `release-notes` displays Simple Changes' packaged public history. It
-does not create or edit changelogs, does not provide release-writing guidance
-to users' agents, and does not contain the repository's release harness or
-model adapters. Installing `simple-changelogs` alongside it is unambiguous:
-that skill owns changelog authoring; Simple Changes only displays its own
-published notes.
+does not author changelogs or provide release-writing guidance to users'
+agents, and does not contain the repository's release harness or model
+adapters. When `simple-changelogs` is available, Simple Changes can delegate a
+focused changelog unit and validate its handoff receipt; the changelog skill
+still owns classification and writing.
 
 ## Repository-specific forks
 
@@ -79,6 +79,8 @@ discovery and the production release map stay scoped to that repository.
 - Resolves the canonical primary checkout across linked worktrees.
 - Detects first write-capable use and requires onboarding when neither
   repository nor personal preferences exist.
+- Detects changelog relevance separately from compatible skill availability and
+  coordinates delegation through a closed, digest-bound handoff receipt.
 - Inventories branches, stashes, local changes, worktrees, policy, and Git
   capabilities using argument-array subprocess calls.
 - Takes two read-only snapshots and preserves work that appeared or changed
@@ -114,10 +116,12 @@ by agents and provider adapters.
 
 ```text
 simple-changes initialize --mode MODE
+  [--changelog delegate-if-available|preserve-and-report|ask]
   [--production ask|allow|deny]
   [--questions blocking-only|always|never]
   [--scope user|repository|run] [--yes] [--json] [--repo PATH]
 simple-changes setup [--finish review|integrate|ship]
+  [--changelog delegate-if-available|preserve-and-report|ask]
   [--production ask|allow|deny]
   [--questions blocking-only|always|never]
   [--scope user|repository|run] [--yes] [--json] [--repo PATH]
@@ -129,8 +133,9 @@ simple-changes verify-markdown FILE [--json]
 simple-changes help
 ```
 
-`KIND` is one of `repo-policy`, `initialization`, `inventory`, `change-plan`,
-`run-state`, `provider-receipt`, `release-consistency`, or `release-notes`.
+`KIND` is one of `repo-policy`, `changelog-receipt`, `initialization`,
+`inventory`, `change-plan`, `run-state`, `provider-receipt`,
+`release-consistency`, or `release-notes`.
 
 Exit codes are stable: `0` success, `2` usage, `3` invalid input or contract,
 `4` inventory failure, and `5` unsafe repository state.
@@ -163,8 +168,9 @@ It asks:
 
 1. **How far should I usually take ready work?**
 2. For shipping, **What should happen with production?**
-3. **When should I ask for permission or help?**
-4. **For what scope should I save these preferences?**
+3. When relevant, **How should changelog work be handled?**
+4. **When should I ask for permission or help?**
+5. **For what scope should I save these preferences?**
 
 Personal preferences are saved under the platform configuration directory and
 apply only when the repository has no policy. Teams may commit
@@ -176,6 +182,7 @@ apply only when the repository has no policy. Teams may commit
   "guidance": {
     "version": 1
   },
+  "changelogHandling": "delegate-if-available",
   "defaultFinish": "open-change-request",
   "questions": "blocking-only",
   "review": "repository-policy",
@@ -195,6 +202,7 @@ For non-interactive setup:
 ```sh
 bun run simple-changes setup \
   --finish ship \
+  --changelog delegate-if-available \
   --production ask \
   --questions blocking-only \
   --scope user \

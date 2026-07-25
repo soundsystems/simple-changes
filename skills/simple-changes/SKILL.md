@@ -1,6 +1,6 @@
 ---
 name: simple-changes
-description: Use when a user asks to package, queue, publish, integrate, review, merge, ship, reconcile, or clean up one or more local changes, branches, worktrees, pull requests, merge requests, or related deployments—including “put this up,” “merge what’s ready,” “ship everything ready,” “run the loop,” “again,” or “continue.” Detect the Git forge and deployment capabilities, preserve paused or concurrent work, create focused change proposals, satisfy repository-native checks and review policy, merge only current approved heads, and verify any authorized deployment. Do not use for changelog or release-note writing, a read-only code review, a commit-message-only request, or an unrelated deploy with no change integration work.
+description: Use when a user asks to package, queue, publish, integrate, review, merge, ship, reconcile, or clean up one or more local changes, branches, worktrees, pull requests, merge requests, or related deployments—including “put this up,” “merge what’s ready,” “ship everything ready,” “run the loop,” “again,” or “continue.” Detect Git, forge, changelog, and deployment capabilities; preserve paused or concurrent work; coordinate compatible changelog skills without authoring release text directly; create focused change proposals; satisfy repository-native checks and review policy; merge only current approved heads; and verify any authorized deployment. Do not use for direct changelog or release-note writing, a read-only code review, a commit-message-only request, or an unrelated deploy with no change integration work.
 ---
 
 # Simple Changes
@@ -54,7 +54,9 @@ invoke `setup` with the answers.
 Use the current request to avoid redundant questions. Queue and sweep prefill
 **Put it up for review**; integrate and reconcile prefill **Merge when
 approved**; ship prefills **Ship when approved**. Still ask whether that choice
-should be saved and ask the conditional production preference for ship.
+should be saved, ask the conditional production preference for ship, and ask
+the changelog preference only when changelog surfaces or a compatible
+changelog skill are discovered.
 
 Ask, in order:
 
@@ -62,9 +64,11 @@ Ask, in order:
    when approved, or ship when approved.
 2. Only for ship: **What should happen with production?** Ask first, deploy
    automatically when repository rules allow it, or never deploy production.
-3. **When should I ask for permission or help?** Only when blocked, at major
+3. When relevant: **How should changelog work be handled?** Delegate to a
+   compatible skill when available, preserve and report it, or ask first.
+4. **When should I ask for permission or help?** Only when blocked, at major
    steps, or do not interrupt and skip unauthorized work.
-4. **For what scope should I save these preferences?** Just for the user, for
+5. **For what scope should I save these preferences?** Just for the user, for
    this repository, or this run only.
 
 Re-read the plain-language summary and confirm it before writing preferences.
@@ -116,10 +120,11 @@ authority for those operations.
 8. Run repository-native, proportionate checks. Distinguish failures introduced
    by the unit from failures already present. Follow
    [verification](references/verification.md).
-9. Report potential release impact without creating or editing changelogs,
-   release notes, release-policy files, version fields, or release-note
-   destinations. Changelog work belongs to repository-specific maintainer
-   tooling or a separately installed changelog skill.
+9. Report potential release impact without authoring changelogs, release notes,
+   release-policy files, version fields, or release-note destinations. When
+   changelog work exists, apply the configured delegation behavior and follow
+   [changelog coordination](references/changelog-coordination.md). Accept
+   delegated files only with a current validated handoff receipt.
 10. Package only the intended paths without resetting, hiding, or staging
    unrelated work. Do not use cleanup stashes.
 11. Create or update the provider's neutral change proposal using real Markdown
@@ -169,8 +174,9 @@ result.
 ## Non-negotiable invariants
 
 - Preserve work. Never reset, discard, rewrite, or hide uncertain changes.
-- Never create or edit changelogs, release notes, changelog policy, version
-  fields, or release-note destinations. Report release impact for handoff only.
+- Never author changelogs, release notes, changelog policy, version fields, or
+  release-note destinations directly. Delegate only to a discovered compatible
+  workflow, validate its handoff receipt, then re-inventory before packaging.
 - Capture the opening baseline before mutation and attribute this run's objects.
 - Stable baseline work is ready unless evidence says otherwise; changing or new
   concurrent work is preserved.
@@ -196,6 +202,8 @@ Read only the references required by the current mode:
 
 - Setup, defaults, capability discovery:
   [setup and policy](references/setup-and-policy.md)
+- Changelog ownership and delegation receipts:
+  [changelog coordination](references/changelog-coordination.md)
 - Baselines, worktrees, attribution:
   [inventory and concurrency](references/inventory-and-concurrency.md)
 - Unit boundaries and dependencies:

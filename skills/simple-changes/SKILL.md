@@ -28,6 +28,64 @@ When wording is ambiguous, choose the least consequential mode that still
 answers the request. Queue is the default mutation boundary; preview is the
 default when the user explicitly asks to see a plan.
 
+## Initialize preferences
+
+Before every write-capable mode—queue, sweep, integrate, ship, reconcile, or
+resume—run the initialization checkpoint before any mutation:
+
+```sh
+bun skills/simple-changes/scripts/simple-changes.ts initialize \
+  --mode <classified-mode> \
+  --json
+```
+
+When repository or personal preferences exist, continue without onboarding.
+When initialization reports `onboardingRequired: true`, automatically start the
+onboarding conversation. Do not ask whether the user wants to start setup.
+Finish or explicitly choose run-only setup, then continue the original request
+without making the user repeat it.
+
+Preview and pause are read-only or preservation-only and never start
+onboarding. Inventory remains non-interactive. In a terminal, `initialize`
+launches onboarding directly. In a non-TTY agent runtime, its JSON result is the
+handshake that requires the agent to ask the same questions in chat and then
+invoke `setup` with the answers.
+
+Use the current request to avoid redundant questions. Queue and sweep prefill
+**Put it up for review**; integrate and reconcile prefill **Merge when
+approved**; ship prefills **Ship when approved**. Still ask whether that choice
+should be saved and ask the conditional production preference for ship.
+
+Ask, in order:
+
+1. **How far should I usually take ready work?** Put it up for review, merge
+   when approved, or ship when approved.
+2. Only for ship: **What should happen with production?** Ask first, deploy
+   automatically when repository rules allow it, or never deploy production.
+3. **When should I ask for permission or help?** Only when blocked, at major
+   steps, or do not interrupt and skip unauthorized work.
+4. **For what scope should I save these preferences?** Just for the user, for
+   this repository, or this run only.
+
+Re-read the plain-language summary and confirm it before writing preferences.
+Repository policy overrides personal preferences; the current request overrides
+both. Missing preferences retain the safe open-for-review default and must not
+permit mutation until onboarding finishes.
+
+The user may also establish personal defaults during global skill setup, outside
+a Git repository:
+
+```sh
+bun skills/simple-changes/scripts/simple-changes.ts setup --scope user
+```
+
+Repository scope requires a Git repository. Run-only scope writes nothing.
+
+Saved preferences never authorize remote migrations or backfills,
+secret/environment changes, DNS/domain changes, mobile/store releases, or
+exceptional history rewrites. Continue to require explicit, exact-target
+authority for those operations.
+
 ## Core workflow
 
 1. Read repository instructions and

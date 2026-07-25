@@ -2,12 +2,30 @@
 
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
+import { createInterface } from "node:readline/promises";
 import { fileURLToPath } from "node:url";
 import { sleep } from "bun";
 import { EXIT_CODES, SimpleChangesError } from "./lib/errors.ts";
+import {
+  type InitializationStatus,
+  inspectInitialization,
+} from "./lib/initialization.ts";
 import { captureInventory, compareSnapshots } from "./lib/inventory.ts";
 import { auditMarkdown } from "./lib/markdown.ts";
+import {
+  collectOnboardingSelection,
+  type OnboardingChoice,
+  type OnboardingInputs,
+  type OnboardingPrompter,
+  type SetupScope,
+} from "./lib/onboarding.ts";
 import { buildPreviewPlan } from "./lib/planner.ts";
+import {
+  loadPersonalPolicy,
+  resolvePersonalPolicyPath,
+  writePolicyFile,
+} from "./lib/policy.ts";
+import { runGit } from "./lib/process.ts";
 import { redactSecrets } from "./lib/redact.ts";
 import {
   checkReleaseConsistency,
@@ -18,13 +36,21 @@ import type { ReleaseNotes } from "./lib/release-notes.ts";
 import { extractReleaseNotes } from "./lib/release-notes.ts";
 import { renderInventory, renderPlan } from "./lib/report.ts";
 import { validateSchema } from "./lib/schema.ts";
-import type { SchemaName } from "./lib/types.ts";
+import type { RepoPolicy, RequestMode, SchemaName } from "./lib/types.ts";
 
 const VERSION = "0.1.0";
 const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const HELP = `Simple Changes ${VERSION}
 
 Usage:
+  simple-changes initialize --mode MODE
+    [--production ask|allow|deny]
+    [--questions blocking-only|always|never]
+    [--scope user|repository|run] [--yes] [--json] [--repo PATH]
+  simple-changes setup [--finish review|integrate|ship]
+    [--production ask|allow|deny]
+    [--questions blocking-only|always|never]
+    [--scope user|repository|run] [--yes] [--json] [--repo PATH]
   simple-changes inventory [--json] [--repo PATH]
   simple-changes preview [--json] [--repo PATH] [--settle-ms N]
   simple-changes release-notes [--check] [--json] [--repo PATH] [--version VERSION]
@@ -33,7 +59,7 @@ Usage:
   simple-changes help
 
 Schema kinds:
-  repo-policy, inventory, change-plan, run-state, provider-receipt,
+  repo-policy, initialization, inventory, change-plan, run-state, provider-receipt,
   release-consistency, release-notes
 
 Exit codes:
@@ -42,15 +68,30 @@ Exit codes:
 
 interface CliOptions {
   check: boolean;
+  defaultFinish?: "open-change-request" | "integrate" | "ship";
   json: boolean;
+  mode?: RequestMode;
   positional: string[];
+  productionDeploy?: RepoPolicy["productionDeploy"];
+  questions?: RepoPolicy["questions"];
   releaseVersion?: string;
   repo: string;
   repoProvided: boolean;
+  scope?: SetupScope;
   settleMs: number;
+  yes: boolean;
 }
 
-const VALUED_OPTIONS = new Set(["--repo", "--settle-ms", "--version"]);
+const VALUED_OPTIONS = new Set([
+  "--finish",
+  "--mode",
+  "--production",
+  "--questions",
+  "--repo",
+  "--scope",
+  "--settle-ms",
+  "--version",
+]);
 
 const requiredOptionValue = (
   args: string[],
@@ -72,9 +113,77 @@ const applyValuedOption = (
   option: string,
   value: string
 ): void => {
+  if (option === "--finish") {
+    const finishAliases = {
+      integrate: "integrate",
+      merge: "integrate",
+      "open-change-request": "open-change-request",
+      review: "open-change-request",
+      ship: "ship",
+    } as const;
+    const finish = finishAliases[value as keyof typeof finishAliases];
+    if (!finish) {
+      throw new SimpleChangesError(
+        "--finish must be review, integrate, or ship",
+        EXIT_CODES.usage
+      );
+    }
+    options.defaultFinish = finish;
+    return;
+  }
+  if (option === "--mode") {
+    const modes: RequestMode[] = [
+      "preview",
+      "queue",
+      "sweep",
+      "integrate",
+      "ship",
+      "reconcile",
+      "resume",
+      "pause",
+    ];
+    if (!modes.includes(value as RequestMode)) {
+      throw new SimpleChangesError(
+        `--mode must be one of ${modes.join(", ")}`,
+        EXIT_CODES.usage
+      );
+    }
+    options.mode = value as RequestMode;
+    return;
+  }
+  if (option === "--production") {
+    if (!["ask", "allow", "deny"].includes(value)) {
+      throw new SimpleChangesError(
+        "--production must be ask, allow, or deny",
+        EXIT_CODES.usage
+      );
+    }
+    options.productionDeploy = value as RepoPolicy["productionDeploy"];
+    return;
+  }
+  if (option === "--questions") {
+    if (!["blocking-only", "always", "never"].includes(value)) {
+      throw new SimpleChangesError(
+        "--questions must be blocking-only, always, or never",
+        EXIT_CODES.usage
+      );
+    }
+    options.questions = value as RepoPolicy["questions"];
+    return;
+  }
   if (option === "--repo") {
     options.repo = resolve(value);
     options.repoProvided = true;
+    return;
+  }
+  if (option === "--scope") {
+    if (!["user", "repository", "run"].includes(value)) {
+      throw new SimpleChangesError(
+        "--scope must be user, repository, or run",
+        EXIT_CODES.usage
+      );
+    }
+    options.scope = value as SetupScope;
     return;
   }
   if (option === "--version") {
@@ -99,12 +208,23 @@ const parseOptions = (args: string[]): CliOptions => {
     repo: process.cwd(),
     repoProvided: false,
     settleMs: 0,
+    yes: false,
   };
   let index = 0;
   while (index < args.length) {
     const argument = args[index];
-    if (argument === "--json" || argument === "--check") {
-      options[argument === "--json" ? "json" : "check"] = true;
+    if (
+      argument === "--json" ||
+      argument === "--check" ||
+      argument === "--yes"
+    ) {
+      if (argument === "--json") {
+        options.json = true;
+      } else if (argument === "--check") {
+        options.check = true;
+      } else {
+        options.yes = true;
+      }
       index += 1;
       continue;
     }
@@ -149,6 +269,229 @@ const runPreview = async (options: CliOptions): Promise<void> => {
   const comparison = compareSnapshots(opening, current);
   const plan = buildPreviewPlan(opening, current, comparison);
   writeOutput(plan, options.json, renderPlan(plan));
+};
+
+const defaultChoiceIndex = (
+  choices: readonly OnboardingChoice[],
+  defaultValue: string
+): number => {
+  const index = choices.findIndex((choice) => choice.value === defaultValue);
+  return index >= 0 ? index : 0;
+};
+
+const createCliPrompter = (
+  options: CliOptions
+): {
+  close: () => void;
+  prompter: OnboardingPrompter;
+} => {
+  const output = options.json ? process.stderr : process.stdout;
+  const reader = createInterface({
+    input: process.stdin,
+    output,
+    terminal: true,
+  });
+  const choose = (
+    question: string,
+    choices: readonly OnboardingChoice[],
+    defaultValue: string
+  ): Promise<string> => {
+    const selectedDefault = defaultChoiceIndex(choices, defaultValue);
+    output.write(`\n${question}\n\n`);
+    for (const [index, choice] of choices.entries()) {
+      const recommendation = index === selectedDefault ? " (Recommended)" : "";
+      output.write(
+        `  ${index + 1}. ${choice.label}${recommendation}\n     ${choice.description}\n`
+      );
+    }
+    const askForChoice = async (): Promise<string> => {
+      const answer = (
+        await reader.question(
+          `\nChoose 1-${choices.length} [${selectedDefault + 1}]: `
+        )
+      ).trim();
+      if (!answer) {
+        return choices[selectedDefault]?.value ?? choices[0]?.value ?? "";
+      }
+      const selectedIndex = Number(answer) - 1;
+      const selected = choices[selectedIndex];
+      if (selected && Number.isInteger(selectedIndex)) {
+        return selected.value;
+      }
+      output.write(`Please choose a number from 1 to ${choices.length}.\n`);
+      return askForChoice();
+    };
+    return askForChoice();
+  };
+  return {
+    close: () => reader.close(),
+    prompter: {
+      choose,
+      confirm: async (summary: string): Promise<boolean> => {
+        if (options.yes) {
+          return true;
+        }
+        output.write(`\n${summary}\n`);
+        const answer = (
+          await reader.question("\nConfirm these preferences? [Y/n]: ")
+        )
+          .trim()
+          .toLowerCase();
+        return answer === "" || answer === "y" || answer === "yes";
+      },
+    },
+  };
+};
+
+const setupNeedsPrompt = (options: CliOptions): boolean =>
+  !(
+    options.defaultFinish &&
+    options.questions &&
+    options.scope &&
+    (options.defaultFinish !== "ship" || options.productionDeploy) &&
+    options.yes
+  );
+
+const setupPolicyPath = (
+  scope: SetupScope,
+  primaryCheckout: string | null
+): string | null => {
+  if (scope === "repository") {
+    if (!primaryCheckout) {
+      throw new SimpleChangesError(
+        "Repository-scoped setup requires a Git repository.",
+        EXIT_CODES.usage
+      );
+    }
+    return resolve(primaryCheckout, ".simple-changes.json");
+  }
+  if (scope === "user") {
+    return resolvePersonalPolicyPath();
+  }
+  return null;
+};
+
+const setupOutcome = (
+  confirmed: boolean,
+  written: boolean,
+  path: string | null
+): string => {
+  if (!confirmed) {
+    return "Preferences were not saved.";
+  }
+  if (written) {
+    return `Saved preferences to ${path}.`;
+  }
+  return "Selected these preferences for this run; no file was written.";
+};
+
+const setupContext = (
+  repositoryPath: string
+): {
+  policy: RepoPolicy;
+  primaryCheckout: string | null;
+} => {
+  const probe = runGit(repositoryPath, ["rev-parse", "--show-toplevel"], true);
+  if (probe.exitCode !== 0) {
+    return {
+      policy: loadPersonalPolicy().value,
+      primaryCheckout: null,
+    };
+  }
+  const inventory = captureInventory(repositoryPath);
+  return {
+    policy: inventory.policy.value,
+    primaryCheckout: inventory.repository.primaryCheckout,
+  };
+};
+
+const runSetup = async (options: CliOptions): Promise<void> => {
+  if (setupNeedsPrompt(options) && !process.stdin.isTTY) {
+    throw new SimpleChangesError(
+      "Interactive setup requires a terminal. Supply --finish, --questions, --scope, --production when shipping, and --yes.",
+      EXIT_CODES.usage
+    );
+  }
+  const context = setupContext(options.repo);
+  const inputs: OnboardingInputs = {
+    ...(options.defaultFinish ? { defaultFinish: options.defaultFinish } : {}),
+    ...(options.productionDeploy
+      ? { productionDeploy: options.productionDeploy }
+      : {}),
+    ...(options.questions ? { questions: options.questions } : {}),
+    ...(options.scope ? { scope: options.scope } : {}),
+  };
+  const interactive = createCliPrompter(options);
+  try {
+    const selection = await collectOnboardingSelection(
+      context.policy,
+      inputs,
+      interactive.prompter
+    );
+    const path = setupPolicyPath(selection.scope, context.primaryCheckout);
+    const written = selection.confirmed && path !== null;
+    if (written && path) {
+      writePolicyFile(path, selection.policy, selection.scope === "user");
+    }
+    const result = {
+      confirmed: selection.confirmed,
+      path,
+      policy: selection.policy,
+      scope: selection.scope,
+      summary: selection.summary,
+      written,
+    };
+    const outcome = setupOutcome(selection.confirmed, written, path);
+    writeOutput(result, options.json, `${selection.summary}\n\n${outcome}\n`);
+  } finally {
+    interactive.close();
+  }
+};
+
+const renderInitialization = (
+  status: ReturnType<typeof inspectInitialization>
+): string => {
+  const lines = [
+    "Simple Changes initialization",
+    `Mode: ${status.mode}`,
+    `Write-capable: ${status.writeCapable ? "yes" : "no"}`,
+    `Policy: ${status.policySource}`,
+    `Onboarding required: ${status.onboardingRequired ? "yes" : "no"}`,
+    `Reason: ${status.reason}`,
+  ];
+  if (status.inferredDefaultFinish) {
+    lines.push(`Inferred finish: ${status.inferredDefaultFinish}`);
+  }
+  return `${lines.join("\n")}\n`;
+};
+
+const runInitialize = async (options: CliOptions): Promise<void> => {
+  if (!options.mode) {
+    throw new SimpleChangesError(
+      "initialize requires --mode",
+      EXIT_CODES.usage
+    );
+  }
+  const inventory = captureInventory(options.repo);
+  const status = validateSchema<InitializationStatus>(
+    "initialization",
+    inspectInitialization(options.mode, inventory.policy)
+  );
+  if (!status.onboardingRequired) {
+    writeOutput(status, options.json, renderInitialization(status));
+    return;
+  }
+  const setupOptions: CliOptions = {
+    ...options,
+    ...(status.inferredDefaultFinish
+      ? { defaultFinish: status.inferredDefaultFinish }
+      : {}),
+  };
+  if (process.stdin.isTTY || !setupNeedsPrompt(setupOptions)) {
+    await runSetup(setupOptions);
+    return;
+  }
+  writeOutput(status, options.json, renderInitialization(status));
 };
 
 const runValidation = (options: CliOptions): void => {
@@ -227,41 +570,53 @@ const runReleaseNotes = (options: CliOptions): number => {
   return EXIT_CODES.success;
 };
 
+const executeCommand = async (
+  command: string,
+  options: CliOptions
+): Promise<number> => {
+  switch (command) {
+    case "help":
+    case "--help":
+    case "-h":
+      process.stdout.write(HELP);
+      return EXIT_CODES.success;
+    case "version":
+    case "--version":
+    case "-v":
+      process.stdout.write(`${VERSION}\n`);
+      return EXIT_CODES.success;
+    case "inventory":
+      runInventory(options);
+      return EXIT_CODES.success;
+    case "initialize":
+      await runInitialize(options);
+      return EXIT_CODES.success;
+    case "setup":
+      await runSetup(options);
+      return EXIT_CODES.success;
+    case "preview":
+      await runPreview(options);
+      return EXIT_CODES.success;
+    case "release-notes":
+      return runReleaseNotes(options);
+    case "validate":
+      runValidation(options);
+      return EXIT_CODES.success;
+    case "verify-markdown":
+      runMarkdownAudit(options);
+      return EXIT_CODES.success;
+    default:
+      throw new SimpleChangesError(
+        `Unknown command: ${command}`,
+        EXIT_CODES.usage
+      );
+  }
+};
+
 export const runCli = async (args: string[]): Promise<number> => {
   const [command = "help", ...rest] = args;
   try {
-    const options = parseOptions(rest);
-    if (command === "help" || command === "--help" || command === "-h") {
-      process.stdout.write(HELP);
-      return EXIT_CODES.success;
-    }
-    if (command === "version" || command === "--version" || command === "-v") {
-      process.stdout.write(`${VERSION}\n`);
-      return EXIT_CODES.success;
-    }
-    if (command === "inventory") {
-      runInventory(options);
-      return EXIT_CODES.success;
-    }
-    if (command === "preview") {
-      await runPreview(options);
-      return EXIT_CODES.success;
-    }
-    if (command === "release-notes") {
-      return runReleaseNotes(options);
-    }
-    if (command === "validate") {
-      runValidation(options);
-      return EXIT_CODES.success;
-    }
-    if (command === "verify-markdown") {
-      runMarkdownAudit(options);
-      return EXIT_CODES.success;
-    }
-    throw new SimpleChangesError(
-      `Unknown command: ${command}`,
-      EXIT_CODES.usage
-    );
+    return await executeCommand(command, parseOptions(rest));
   } catch (error) {
     const simpleError =
       error instanceof SimpleChangesError

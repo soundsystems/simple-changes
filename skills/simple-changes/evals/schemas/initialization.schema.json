@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://simple-changes.dev/schemas/initialization.schema.json",
+  "title": "Simple Changes initialization status",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "mode",
+    "writeCapable",
+    "onboardingRequired",
+    "policySource",
+    "policyPath",
+    "inferredDefaultFinish",
+    "reason"
+  ],
+  "properties": {
+    "mode": {
+      "enum": [
+        "preview",
+        "queue",
+        "sweep",
+        "integrate",
+        "ship",
+        "reconcile",
+        "resume",
+        "pause"
+      ]
+    },
+    "writeCapable": { "type": "boolean" },
+    "onboardingRequired": { "type": "boolean" },
+    "policySource": { "enum": ["default", "user", "repository"] },
+    "policyPath": {
+      "anyOf": [{ "type": "string", "minLength": 1 }, { "type": "null" }]
+    },
+    "inferredDefaultFinish": {
+      "anyOf": [
+        { "enum": ["open-change-request", "integrate", "ship"] },
+        { "type": "null" }
+      ]
+    },
+    "reason": { "type": "string", "minLength": 1 }
+  }
+}

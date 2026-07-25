@@ -10,6 +10,7 @@ const moduleDirectory = dirname(fileURLToPath(import.meta.url));
 const schemaDirectory = resolve(moduleDirectory, "../../evals/schemas");
 const schemaNames: SchemaName[] = [
   "repo-policy",
+  "initialization",
   "inventory",
   "change-plan",
   "run-state",

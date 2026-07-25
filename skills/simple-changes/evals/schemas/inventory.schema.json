@@ -82,7 +82,7 @@
       "additionalProperties": false,
       "required": ["source", "path", "value"],
       "properties": {
-        "source": { "enum": ["default", "repository"] },
+        "source": { "enum": ["default", "user", "repository"] },
         "path": {
           "anyOf": [{ "type": "string", "minLength": 1 }, { "type": "null" }]
         },

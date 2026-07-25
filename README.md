@@ -14,6 +14,7 @@ Requires [Bun](https://bun.sh/) 1.2 or later and Git.
 
 ```sh
 bun install
+bun run simple-changes initialize --mode queue
 bun run simple-changes preview
 bun run simple-changes preview --json
 bun run simple-changes release-notes
@@ -76,6 +77,8 @@ discovery and the production release map stay scoped to that repository.
 ## What the current source provides
 
 - Resolves the canonical primary checkout across linked worktrees.
+- Detects first write-capable use and requires onboarding when neither
+  repository nor personal preferences exist.
 - Inventories branches, stashes, local changes, worktrees, policy, and Git
   capabilities using argument-array subprocess calls.
 - Takes two read-only snapshots and preserves work that appeared or changed
@@ -110,6 +113,14 @@ by agents and provider adapters.
 ## CLI
 
 ```text
+simple-changes initialize --mode MODE
+  [--production ask|allow|deny]
+  [--questions blocking-only|always|never]
+  [--scope user|repository|run] [--yes] [--json] [--repo PATH]
+simple-changes setup [--finish review|integrate|ship]
+  [--production ask|allow|deny]
+  [--questions blocking-only|always|never]
+  [--scope user|repository|run] [--yes] [--json] [--repo PATH]
 simple-changes inventory [--json] [--repo PATH]
 simple-changes preview [--json] [--repo PATH] [--settle-ms N]
 simple-changes release-notes [--check] [--json] [--repo PATH] [--version VERSION]
@@ -118,8 +129,8 @@ simple-changes verify-markdown FILE [--json]
 simple-changes help
 ```
 
-`KIND` is one of `repo-policy`, `inventory`, `change-plan`, `run-state`,
-`provider-receipt`, `release-consistency`, or `release-notes`.
+`KIND` is one of `repo-policy`, `initialization`, `inventory`, `change-plan`,
+`run-state`, `provider-receipt`, `release-consistency`, or `release-notes`.
 
 Exit codes are stable: `0` success, `2` usage, `3` invalid input or contract,
 `4` inventory failure, and `5` unsafe repository state.
@@ -134,7 +145,30 @@ version without changing them.
 
 ## Policy
 
-Teams may commit `.simple-changes.json`:
+Write-capable Simple Changes tasks automatically initialize onboarding when no
+repository or personal policy exists. Run the same checkpoint directly:
+
+```sh
+bun run simple-changes initialize --mode queue
+```
+
+Or establish global personal defaults explicitly, including outside a Git
+repository:
+
+```sh
+bun run simple-changes setup --scope user
+```
+
+It asks:
+
+1. **How far should I usually take ready work?**
+2. For shipping, **What should happen with production?**
+3. **When should I ask for permission or help?**
+4. **For what scope should I save these preferences?**
+
+Personal preferences are saved under the platform configuration directory and
+apply only when the repository has no policy. Teams may commit
+`.simple-changes.json`:
 
 ```json
 {
@@ -150,8 +184,27 @@ Teams may commit `.simple-changes.json`:
 }
 ```
 
-Policy stores decisions, never credentials or transient run state. Resumable
-state for future mutation adapters belongs under `.git/simple-changes/`.
+The active request overrides repository policy, repository policy overrides
+personal preferences, and personal preferences override the safe defaults.
+Run-only setup writes no file. Policy stores decisions, never credentials or
+transient run state. Resumable state for future mutation adapters belongs under
+`.git/simple-changes/`.
+
+For non-interactive setup:
+
+```sh
+bun run simple-changes setup \
+  --finish ship \
+  --production ask \
+  --questions blocking-only \
+  --scope user \
+  --yes
+```
+
+Even an automatic ship preference does not authorize remote migrations,
+backfills, secrets or environment changes, DNS changes, store releases, or
+history rewrites. Those operations still require explicit, exact-target
+permission.
 
 ## Development
 

@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { inspectInitialization } from "../../../skills/simple-changes/scripts/lib/initialization.ts";
 import { DEFAULT_POLICY } from "../../../skills/simple-changes/scripts/lib/policy.ts";
 import { validateSchema } from "../../../skills/simple-changes/scripts/lib/schema.ts";
 import type { RepoPolicy } from "../../../skills/simple-changes/scripts/lib/types.ts";
@@ -8,6 +9,22 @@ describe("closed schemas", () => {
     expect(validateSchema<RepoPolicy>("repo-policy", DEFAULT_POLICY)).toEqual(
       DEFAULT_POLICY
     );
+  });
+
+  test("accepts a closed first-run initialization status", () => {
+    const status = inspectInitialization("queue", {
+      path: null,
+      source: "default",
+    });
+    expect(validateSchema<typeof status>("initialization", status)).toEqual(
+      status
+    );
+    expect(() =>
+      validateSchema("initialization", {
+        ...status,
+        credentials: "never",
+      })
+    ).toThrow("additional properties");
   });
 
   test("rejects unknown policy fields", () => {

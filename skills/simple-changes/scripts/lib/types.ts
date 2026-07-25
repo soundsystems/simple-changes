@@ -27,6 +27,8 @@ export interface RepoPolicy {
   schemaVersion: 1;
 }
 
+export type PolicySource = "default" | "user" | "repository";
+
 export interface GitChange {
   conflicted: boolean;
   indexStatus: string;
@@ -91,7 +93,7 @@ export interface RepositoryInventory {
   generatedAt: string;
   localChanges: GitChange[];
   policy: {
-    source: "default" | "repository";
+    source: PolicySource;
     path: string | null;
     value: RepoPolicy;
   };
@@ -232,6 +234,7 @@ export interface SnapshotComparison {
 
 export type SchemaName =
   | "repo-policy"
+  | "initialization"
   | "inventory"
   | "change-plan"
   | "run-state"

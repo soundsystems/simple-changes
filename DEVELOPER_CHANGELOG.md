@@ -2,14 +2,35 @@
 
 ## Unreleased
 
-- Replaced the `publish-simple-changes-forks` package with the repository-local
-  `publish-skill` workflow and updated its installation and invocation
-  documentation.
-- Made consumer discovery, Skills CLI installation, complete package-tree
-  verification, temporary-install cleanup, lock or manifest integration,
-  consumer proposal integration, and remote default-branch proof mandatory in
-  every complete production run.
-<!-- simple-changelogs-signature agent="gpt-5.6-sol" at="2026-07-24T00:19:40-05:00" -->
+- Replaced `publish-simple-changes-forks` with the generic `publish-skill`
+  workflow:
+  - Added deterministic consumer discovery that normalizes owner/repository,
+    HTTPS, and SSH source identities and classifies installed, multiple-install,
+    lock-only, and unlocked states.
+  - Added concurrent isolated-worktree reinstalls with maintained,
+    validation-only, intentional-pin, and stale retention modes and an
+    independent result for every consumer.
+  - Added focused scanner and package-design contract tests covering consumer
+    states, supported install roots, bounded all-settled validation, and shared
+    agent metadata.
+- Added conditional changelog coordination while preserving the boundary that
+  Simple Changes does not author release text:
+  - Separated changelog relevance from compatible workflow availability and
+    added delegation, preservation, and ask-first preferences to onboarding and
+    repository policy.
+  - Added a closed handoff receipt with provider status, source revision,
+    SHA-256 file digests, checks, evidence, release impact, and blocking reason.
+  - Added validation that prepared receipts belong to the current stable
+    worktree and delegated unit, still match every recorded digest, and trigger
+    fresh inventory before packaging.
+  - Added CLI schema validation and focused coverage for capability discovery,
+    conditional onboarding, preference precedence, and receipt parsing.
+  - Made inventory capture accept explicit changelog environment and home inputs
+    so fixtures and CLI subprocesses isolate installed skill roots while runtime
+    global discovery remains enabled and covered.
+<!-- simple-changelogs-signature agent="gpt-5.6-sol" at="2026-07-24T15:47:44-05:00" -->
+<!-- simple-changelogs-signature agent="gpt-5.6-sol" at="2026-07-25T03:51:17-05:00" -->
+<!-- simple-changelogs-signature agent="gpt-5.6-sol" at="2026-07-25T04:01:03-05:00" -->
 
 ## 0.1.0 - 2026-07-23
 

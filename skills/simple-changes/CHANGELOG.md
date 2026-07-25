@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.2.0 - 2026-07-25
+
+- Skill publishing:
+  - The generic `publish-skill` workflow now carries canonical updates through
+    maintained forks and every discovered exact-source local consumer.
+  - Consumer installs are validated independently while maintained installs and
+    intentional pins retain their declared behavior.
+- Changelog coordination:
+  - Simple Changes now asks how changelogs should be handled only when a
+    changelog surface or compatible workflow is available.
+  - Delegated changelog changes are accepted only when a source- and
+    digest-bound receipt proves the current files and their release impact.
+- Queue mode now accounts for every stable unit discovered at the start of a
+  run and reports each deferred branch or worktree with its current state,
+  reason, and next action.
+
 ## 0.1.0 - 2026-07-23
 
 - Production deployment verification now checks the complete configured set of

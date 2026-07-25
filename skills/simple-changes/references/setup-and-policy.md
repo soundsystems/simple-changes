@@ -6,7 +6,7 @@
 2. Read repository and directory-scoped agent instructions.
 3. Load `.simple-changes.json` from the canonical primary checkout when present.
 4. Otherwise load the user's saved Simple Changes preferences when present.
-5. Discover Git, forge, review, CI, release, migration, and deployment
+5. Discover Git, forge, changelog, review, CI, release, migration, and deployment
    capabilities from tracked repository evidence.
 6. Treat remote/provider state as discovered fact, never durable policy.
 
@@ -35,6 +35,12 @@ this up?" prompt. The request mode supplies the finish choice for queue, sweep,
 integrate, reconcile, and ship. Ask only unresolved questions, confirm the
 summary, persist the selected scope, and continue the original task.
 
+Ask **How should changelog work be handled?** only when established changelog
+surfaces or a compatible changelog skill are discovered. Offer delegation when
+available, preservation and reporting, or asking before delegation. The safe
+fallback is preservation; setup never grants release, version, or publication
+authority.
+
 In an interactive terminal, `initialize` directly launches setup. In a
 non-interactive agent runtime, it emits a closed machine-readable status. The
 agent must translate that status into the same onboarding questions in chat,
@@ -47,6 +53,7 @@ Use these safe defaults when no committed policy exists:
 {
   "schemaVersion": 1,
   "guidance": { "version": 1 },
+  "changelogHandling": "preserve-and-report",
   "defaultFinish": "open-change-request",
   "questions": "blocking-only",
   "review": "repository-policy",
@@ -69,6 +76,7 @@ requires a repository. For deterministic agent or automation use, supply:
 ```sh
 simple-changes setup \
   --finish review \
+  --changelog preserve-and-report \
   --questions blocking-only \
   --scope user \
   --yes

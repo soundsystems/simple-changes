@@ -15,6 +15,7 @@ import { validateSchema } from "./schema.ts";
 import type { PolicySource, RepoPolicy } from "./types.ts";
 
 export const DEFAULT_POLICY: RepoPolicy = {
+  changelogHandling: "preserve-and-report",
   concurrentWork: "preserve",
   defaultFinish: "open-change-request",
   guidance: {
@@ -24,6 +25,10 @@ export const DEFAULT_POLICY: RepoPolicy = {
   questions: "blocking-only",
   review: "repository-policy",
   schemaVersion: 1,
+};
+
+type StoredRepoPolicy = Omit<RepoPolicy, "changelogHandling"> & {
+  changelogHandling?: RepoPolicy["changelogHandling"];
 };
 
 interface PersonalPolicyPathOptions {
@@ -44,7 +49,12 @@ export interface LoadedPolicy {
 
 const parsePolicyFile = (path: string): RepoPolicy => {
   const parsed = JSON.parse(readFileSync(path, "utf8")) as unknown;
-  return validateSchema<RepoPolicy>("repo-policy", parsed);
+  const validated = validateSchema<StoredRepoPolicy>("repo-policy", parsed);
+  return {
+    ...validated,
+    changelogHandling:
+      validated.changelogHandling ?? DEFAULT_POLICY.changelogHandling,
+  };
 };
 
 export const resolvePersonalPolicyPath = (

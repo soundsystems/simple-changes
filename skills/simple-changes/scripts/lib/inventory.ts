@@ -1,5 +1,6 @@
 import { existsSync, realpathSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
+import { inspectChangelogCoordination } from "./changelog-coordination.ts";
 import { sha256 } from "./hash.ts";
 import { assertSafeRelativePath } from "./path-safety.ts";
 import { loadPolicy } from "./policy.ts";
@@ -286,6 +287,27 @@ const discoverCapabilities = (root: string): Capability[] => {
       });
     }
   }
+  const changelog = inspectChangelogCoordination(root);
+  let changelogDetail =
+    "No changelog surfaces or compatible changelog skill were discovered.";
+  let changelogProvider = "repository-native";
+  let changelogStatus: Capability["status"] = "unsupported";
+  if (changelog.relevant) {
+    changelogDetail =
+      "Changelog surfaces were discovered, but no compatible changelog skill is available.";
+    changelogStatus = "configuration";
+  }
+  if (changelog.capabilityAvailable) {
+    changelogDetail = `Compatible changelog capability discovered at ${changelog.providers.length} path(s).`;
+    changelogProvider = "simple-changelogs";
+    changelogStatus = "supported";
+  }
+  capabilities.push({
+    category: "changelog",
+    detail: changelogDetail,
+    provider: changelogProvider,
+    status: changelogStatus,
+  });
   return capabilities;
 };
 

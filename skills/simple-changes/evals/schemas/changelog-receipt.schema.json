@@ -1,0 +1,90 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://simple-changes.dev/schemas/changelog-receipt.schema.json",
+  "title": "Simple Changes changelog delegation receipt",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "provider",
+    "status",
+    "observedAt",
+    "sourceRevision",
+    "paths",
+    "checks",
+    "evidence",
+    "releaseImpact",
+    "reason"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "provider": { "type": "string", "minLength": 1 },
+    "status": { "enum": ["prepared", "not-applicable", "blocked"] },
+    "observedAt": { "type": "string", "format": "date-time" },
+    "sourceRevision": {
+      "anyOf": [
+        { "type": "string", "pattern": "^[0-9a-f]{40,64}$" },
+        { "type": "null" }
+      ]
+    },
+    "paths": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "digest"],
+        "properties": {
+          "path": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+$"
+          },
+          "digest": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+        }
+      }
+    },
+    "checks": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "evidence": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "releaseImpact": {
+      "enum": ["none", "patch", "minor", "major", "unknown"]
+    },
+    "reason": {
+      "anyOf": [{ "type": "string", "minLength": 1 }, { "type": "null" }]
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "status": { "const": "prepared" } },
+        "required": ["status"]
+      },
+      "then": {
+        "properties": {
+          "sourceRevision": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{40,64}$"
+          },
+          "paths": { "minItems": 1 }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": { "status": { "const": "blocked" } },
+        "required": ["status"]
+      },
+      "then": {
+        "properties": {
+          "reason": { "type": "string", "minLength": 1 }
+        }
+      }
+    }
+  ]
+}

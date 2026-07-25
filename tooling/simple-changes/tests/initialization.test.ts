@@ -25,6 +25,31 @@ describe("first-run initialization", () => {
     });
   });
 
+  test("reports conditional changelog coordination evidence", () => {
+    expect(
+      inspectInitialization(
+        "integrate",
+        {
+          path: null,
+          source: "default",
+        },
+        {
+          capabilityAvailable: false,
+          providers: [],
+          releaseSurfaces: ["CHANGELOG.md"],
+          relevant: true,
+        }
+      )
+    ).toMatchObject({
+      changelogCoordination: {
+        capabilityAvailable: false,
+        releaseSurfaces: ["CHANGELOG.md"],
+        relevant: true,
+      },
+      onboardingRequired: true,
+    });
+  });
+
   test("does not onboard read-only or preservation-only modes", () => {
     for (const mode of ["preview", "pause"] as const) {
       expect(

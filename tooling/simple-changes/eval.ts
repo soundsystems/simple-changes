@@ -86,6 +86,7 @@ const requiredSkillFiles = [
   "SKILL.md",
   "CHANGELOG.md",
   "scripts/simple-changes.ts",
+  "evals/schemas/changelog-receipt.schema.json",
   "evals/schemas/repo-policy.schema.json",
   "evals/schemas/inventory.schema.json",
   "evals/schemas/change-plan.schema.json",
@@ -93,6 +94,7 @@ const requiredSkillFiles = [
   "evals/schemas/provider-receipt.schema.json",
   "evals/schemas/release-consistency.schema.json",
   "evals/schemas/release-notes.schema.json",
+  "references/changelog-coordination.md",
 ];
 for (const filename of requiredSkillFiles) {
   if (!existsSync(resolve(skillDirectory, filename))) {

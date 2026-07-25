@@ -15,7 +15,20 @@ export type CapabilityStatus =
   | "unavailable"
   | "partial";
 
+export type ChangelogHandling =
+  | "delegate-if-available"
+  | "preserve-and-report"
+  | "ask";
+
+export interface ChangelogCoordination {
+  capabilityAvailable: boolean;
+  providers: string[];
+  releaseSurfaces: string[];
+  relevant: boolean;
+}
+
 export interface RepoPolicy {
+  changelogHandling: ChangelogHandling;
   concurrentWork: "preserve";
   defaultFinish: "open-change-request" | "integrate" | "ship" | "preview";
   guidance: {
@@ -80,7 +93,7 @@ export interface ProposalInventory {
 }
 
 export interface Capability {
-  category: "git" | "forge" | "deployment";
+  category: "git" | "forge" | "deployment" | "changelog";
   detail: string;
   provider: string;
   status: CapabilityStatus;
@@ -226,6 +239,22 @@ export interface ProviderReceipt {
   url: string | null;
 }
 
+export interface ChangelogReceipt {
+  checks: string[];
+  evidence: string[];
+  observedAt: string;
+  paths: Array<{
+    digest: string;
+    path: string;
+  }>;
+  provider: string;
+  reason: string | null;
+  releaseImpact: "none" | "patch" | "minor" | "major" | "unknown";
+  schemaVersion: 1;
+  sourceRevision: string | null;
+  status: "prepared" | "not-applicable" | "blocked";
+}
+
 export interface SnapshotComparison {
   activelyChangingWorktrees: WorktreeInventory[];
   concurrentWorktrees: WorktreeInventory[];
@@ -234,6 +263,7 @@ export interface SnapshotComparison {
 
 export type SchemaName =
   | "repo-policy"
+  | "changelog-receipt"
   | "initialization"
   | "inventory"
   | "change-plan"

@@ -50,6 +50,38 @@ describe("Git inventory and concurrency", () => {
     expect(existsSync(join(fixture.root, ".git/simple-changes"))).toBe(false);
   });
 
+  test("reports changelog relevance separately from skill availability", () => {
+    const fixture = repository();
+    writeFixture(fixture.root, "CHANGELOG.md", "# Changelog\n");
+    const inventory = captureInventory(fixture.root);
+
+    expect(inventory.capabilities).toContainEqual(
+      expect.objectContaining({
+        category: "changelog",
+        provider: "repository-native",
+        status: "configuration",
+      })
+    );
+  });
+
+  test("reports a repository-local changelog skill as supported", () => {
+    const fixture = repository();
+    writeFixture(
+      fixture.root,
+      "skills/simple-changelogs/SKILL.md",
+      "---\nname: simple-changelogs\ndescription: Test fixture.\n---\n"
+    );
+    const inventory = captureInventory(fixture.root);
+
+    expect(inventory.capabilities).toContainEqual(
+      expect.objectContaining({
+        category: "changelog",
+        provider: "simple-changelogs",
+        status: "supported",
+      })
+    );
+  });
+
   test("treats a stable wip-named worktree as ready", () => {
     const fixture = repository();
     const linked = join(fixture.base, "wip-linked");

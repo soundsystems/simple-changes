@@ -287,6 +287,77 @@ describe("contract CLI", () => {
     );
   });
 
+  test("requires an explicit changelog preference when surfaces are present", () => {
+    const fixture = createTestRepository();
+    repositories.push(fixture);
+    writeFixture(fixture.root, "CHANGELOG.md", "# Changelog\n");
+    const incomplete = spawnSync(
+      [
+        process.execPath,
+        cliPath,
+        "setup",
+        "--finish",
+        "review",
+        "--questions",
+        "blocking-only",
+        "--scope",
+        "run",
+        "--yes",
+        "--repo",
+        fixture.root,
+      ],
+      {
+        env: {
+          ...process.env,
+          SIMPLE_CHANGES_SKILL_ROOTS: "",
+        },
+        stderr: "pipe",
+        stdout: "pipe",
+      }
+    );
+
+    expect(incomplete.exitCode).toBe(2);
+    expect(decoder.decode(incomplete.stderr)).toContain(
+      "--changelog when relevant"
+    );
+
+    const complete = spawnSync(
+      [
+        process.execPath,
+        cliPath,
+        "setup",
+        "--finish",
+        "review",
+        "--changelog",
+        "delegate-if-available",
+        "--questions",
+        "blocking-only",
+        "--scope",
+        "run",
+        "--yes",
+        "--json",
+        "--repo",
+        fixture.root,
+      ],
+      {
+        env: {
+          ...process.env,
+          SIMPLE_CHANGES_SKILL_ROOTS: "",
+        },
+        stderr: "pipe",
+        stdout: "pipe",
+      }
+    );
+    const output = JSON.parse(decoder.decode(complete.stdout)) as {
+      policy: {
+        changelogHandling: string;
+      };
+    };
+
+    expect(complete.exitCode).toBe(0);
+    expect(output.policy.changelogHandling).toBe("delegate-if-available");
+  });
+
   test("returns run-only onboarding preferences without writing a file", () => {
     const fixture = createTestRepository();
     repositories.push(fixture);

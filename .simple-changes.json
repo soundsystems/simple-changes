@@ -3,7 +3,8 @@
   "guidance": {
     "version": 1
   },
-  "defaultFinish": "open-change-request",
+  "changelogHandling": "delegate-if-available",
+  "defaultFinish": "integrate",
   "questions": "blocking-only",
   "review": "repository-policy",
   "productionDeploy": "ask",

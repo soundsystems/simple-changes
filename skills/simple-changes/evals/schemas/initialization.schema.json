@@ -6,6 +6,7 @@
   "additionalProperties": false,
   "required": [
     "mode",
+    "changelogCoordination",
     "writeCapable",
     "onboardingRequired",
     "policySource",
@@ -14,6 +15,30 @@
     "reason"
   ],
   "properties": {
+    "changelogCoordination": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "relevant",
+        "capabilityAvailable",
+        "releaseSurfaces",
+        "providers"
+      ],
+      "properties": {
+        "relevant": { "type": "boolean" },
+        "capabilityAvailable": { "type": "boolean" },
+        "releaseSurfaces": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "providers": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
     "mode": {
       "enum": [
         "preview",

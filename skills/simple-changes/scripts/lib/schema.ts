@@ -10,6 +10,7 @@ const moduleDirectory = dirname(fileURLToPath(import.meta.url));
 const schemaDirectory = resolve(moduleDirectory, "../../evals/schemas");
 const schemaNames: SchemaName[] = [
   "repo-policy",
+  "changelog-receipt",
   "initialization",
   "inventory",
   "change-plan",
@@ -180,6 +181,58 @@ const validateObject = (
   }
 };
 
+const validateAllOf = (
+  value: unknown,
+  candidates: unknown[],
+  rootSchema: JsonSchema,
+  path: string,
+  errors: string[]
+): void => {
+  for (const candidate of candidates) {
+    if (isRecord(candidate)) {
+      validateValue(value, candidate, rootSchema, path, errors);
+    }
+  }
+};
+
+const validateConditional = (
+  value: unknown,
+  schema: JsonSchema,
+  rootSchema: JsonSchema,
+  path: string,
+  errors: string[]
+): void => {
+  if (!isRecord(schema.if)) {
+    return;
+  }
+  const conditionErrors: string[] = [];
+  validateValue(value, schema.if, rootSchema, path, conditionErrors);
+  let branch: JsonSchema | null = null;
+  if (conditionErrors.length === 0 && isRecord(schema.then)) {
+    branch = schema.then;
+  } else if (conditionErrors.length > 0 && isRecord(schema.else)) {
+    branch = schema.else;
+  }
+  if (branch) {
+    validateValue(value, branch, rootSchema, path, errors);
+  }
+};
+
+const matchesAnyOf = (
+  value: unknown,
+  candidates: unknown[],
+  rootSchema: JsonSchema,
+  path: string
+): boolean =>
+  candidates.some((candidate) => {
+    if (!isRecord(candidate)) {
+      return false;
+    }
+    const candidateErrors: string[] = [];
+    validateValue(value, candidate, rootSchema, path, candidateErrors);
+    return candidateErrors.length === 0;
+  });
+
 const validateValue = (
   value: unknown,
   schema: JsonSchema,
@@ -203,16 +256,14 @@ const validateValue = (
     return;
   }
 
+  if (Array.isArray(schema.allOf)) {
+    validateAllOf(value, schema.allOf, rootSchema, path, errors);
+  }
+
+  validateConditional(value, schema, rootSchema, path, errors);
+
   if (Array.isArray(schema.anyOf)) {
-    const matched = schema.anyOf.some((candidate) => {
-      if (!isRecord(candidate)) {
-        return false;
-      }
-      const candidateErrors: string[] = [];
-      validateValue(value, candidate, rootSchema, path, candidateErrors);
-      return candidateErrors.length === 0;
-    });
-    if (!matched) {
+    if (!matchesAnyOf(value, schema.anyOf, rootSchema, path)) {
       errors.push(`${path} must match one allowed schema`);
     }
     return;

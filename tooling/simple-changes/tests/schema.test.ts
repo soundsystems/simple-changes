@@ -2,7 +2,10 @@ import { describe, expect, test } from "bun:test";
 import { inspectInitialization } from "../../../skills/simple-changes/scripts/lib/initialization.ts";
 import { DEFAULT_POLICY } from "../../../skills/simple-changes/scripts/lib/policy.ts";
 import { validateSchema } from "../../../skills/simple-changes/scripts/lib/schema.ts";
-import type { RepoPolicy } from "../../../skills/simple-changes/scripts/lib/types.ts";
+import type {
+  ChangelogReceipt,
+  RepoPolicy,
+} from "../../../skills/simple-changes/scripts/lib/types.ts";
 
 describe("closed schemas", () => {
   test("accepts the default repository policy", () => {
@@ -46,6 +49,67 @@ describe("closed schemas", () => {
         },
       })
     ).toThrow("additional properties");
+  });
+
+  test("accepts the closed changelog coordination preference", () => {
+    expect(
+      validateSchema<RepoPolicy>("repo-policy", {
+        ...DEFAULT_POLICY,
+        changelogHandling: "delegate-if-available",
+      })
+    ).toMatchObject({
+      changelogHandling: "delegate-if-available",
+    });
+    expect(() =>
+      validateSchema("repo-policy", {
+        ...DEFAULT_POLICY,
+        changelogHandling: "write-it-yourself",
+      })
+    ).toThrow("changelogHandling");
+  });
+
+  test("accepts a digest-bound changelog delegation receipt", () => {
+    const receipt: ChangelogReceipt = {
+      checks: ["release policy"],
+      evidence: ["Prepared by simple-changelogs"],
+      observedAt: new Date().toISOString(),
+      paths: [
+        {
+          digest: "a".repeat(64),
+          path: "CHANGELOG.md",
+        },
+      ],
+      provider: "simple-changelogs",
+      reason: null,
+      releaseImpact: "minor",
+      schemaVersion: 1,
+      sourceRevision: "b".repeat(40),
+      status: "prepared",
+    };
+
+    expect(
+      validateSchema<ChangelogReceipt>("changelog-receipt", receipt)
+    ).toEqual(receipt);
+    expect(() =>
+      validateSchema("changelog-receipt", {
+        ...receipt,
+        paths: [{ digest: "short", path: "../CHANGELOG.md" }],
+      })
+    ).toThrow();
+    expect(() =>
+      validateSchema("changelog-receipt", {
+        ...receipt,
+        paths: [],
+        sourceRevision: null,
+      })
+    ).toThrow();
+    expect(() =>
+      validateSchema("changelog-receipt", {
+        ...receipt,
+        reason: null,
+        status: "blocked",
+      })
+    ).toThrow();
   });
 
   test("rejects run approvals without a revision", () => {

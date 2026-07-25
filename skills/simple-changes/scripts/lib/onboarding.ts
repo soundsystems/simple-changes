@@ -1,4 +1,4 @@
-import type { RepoPolicy } from "./types.ts";
+import type { ChangelogCoordination, RepoPolicy } from "./types.ts";
 
 export type SetupScope = "user" | "repository" | "run";
 
@@ -18,6 +18,7 @@ export interface OnboardingPrompter {
 }
 
 export interface OnboardingInputs {
+  changelogHandling?: RepoPolicy["changelogHandling"];
   defaultFinish?: RepoPolicy["defaultFinish"];
   productionDeploy?: RepoPolicy["productionDeploy"];
   questions?: RepoPolicy["questions"];
@@ -32,11 +33,19 @@ export interface OnboardingSelection {
 }
 
 export const ONBOARDING_QUESTIONS = {
+  changelog: "How should changelog work be handled?",
   finish: "How far should I usually take ready work?",
   permission: "When should I ask for permission or help?",
   production: "What should happen with production?",
   scope: "For what scope should I save these preferences?",
 } as const;
+
+const DEFAULT_CHANGELOG_CONTEXT: ChangelogCoordination = {
+  capabilityAvailable: false,
+  providers: [],
+  releaseSurfaces: [],
+  relevant: false,
+};
 
 export const FINISH_CHOICES = [
   {
@@ -92,6 +101,26 @@ export const PERMISSION_CHOICES = [
   },
 ] as const satisfies readonly OnboardingChoice[];
 
+export const CHANGELOG_CHOICES = [
+  {
+    description:
+      "Use a compatible changelog skill when present; otherwise preserve and report the work.",
+    label: "Delegate when available",
+    value: "delegate-if-available",
+  },
+  {
+    description:
+      "Leave changelog destinations untouched and report the remaining work.",
+    label: "Preserve and report",
+    value: "preserve-and-report",
+  },
+  {
+    description: "Ask before handing changelog work to a compatible skill.",
+    label: "Ask before delegating",
+    value: "ask",
+  },
+] as const satisfies readonly OnboardingChoice[];
+
 export const SCOPE_CHOICES = [
   {
     description:
@@ -140,9 +169,28 @@ const permissionLabel = (questions: RepoPolicy["questions"]): string =>
 const scopeLabel = (scope: SetupScope): string =>
   SCOPE_CHOICES.find((choice) => choice.value === scope)?.label ?? scope;
 
+const changelogSummary = (
+  policy: RepoPolicy,
+  context: ChangelogCoordination
+): string | null => {
+  if (!context.relevant) {
+    return null;
+  }
+  if (policy.changelogHandling === "delegate-if-available") {
+    return context.capabilityAvailable
+      ? "Changelog work will be delegated to a compatible skill and accepted only with a verified handoff receipt."
+      : "Changelog work will be delegated when a compatible skill is available; otherwise it will be preserved and reported.";
+  }
+  if (policy.changelogHandling === "ask") {
+    return "I'll ask before delegating changelog work to a compatible skill.";
+  }
+  return "Changelog destinations will be preserved and reported for a separate workflow.";
+};
+
 export const renderOnboardingSummary = (
   policy: RepoPolicy,
-  scope: SetupScope
+  scope: SetupScope,
+  context: ChangelogCoordination = DEFAULT_CHANGELOG_CONTEXT
 ): string => {
   let actions =
     "I'll create focused MRs, run checks, and stop with the work ready for review.";
@@ -167,6 +215,7 @@ export const renderOnboardingSummary = (
     `Your workflow is set to ${finishLabel(policy.defaultFinish)}.`,
     actions,
     production,
+    changelogSummary(policy, context),
     `Permission and help: ${permissionLabel(policy.questions)}.`,
     `Preference scope: ${scopeLabel(scope)}.`,
     "Remote migrations, backfills, secrets, DNS changes, store releases, and history rewrites still require explicit, exact-target authorization.",
@@ -178,7 +227,8 @@ export const renderOnboardingSummary = (
 export const collectOnboardingSelection = async (
   defaults: RepoPolicy,
   inputs: OnboardingInputs,
-  prompter: OnboardingPrompter
+  prompter: OnboardingPrompter,
+  context: ChangelogCoordination = DEFAULT_CHANGELOG_CONTEXT
 ): Promise<OnboardingSelection> => {
   const defaultFinish = inputs.defaultFinish
     ? choiceValue<"open-change-request" | "integrate" | "ship">(
@@ -208,6 +258,18 @@ export const collectOnboardingSelection = async (
           ONBOARDING_QUESTIONS.production
         ))
       : (inputs.productionDeploy ?? "ask");
+  const changelogHandling = context.relevant
+    ? (inputs.changelogHandling ??
+      choiceValue<RepoPolicy["changelogHandling"]>(
+        await prompter.choose(
+          ONBOARDING_QUESTIONS.changelog,
+          CHANGELOG_CHOICES,
+          defaults.changelogHandling
+        ),
+        CHANGELOG_CHOICES,
+        ONBOARDING_QUESTIONS.changelog
+      ))
+    : (inputs.changelogHandling ?? defaults.changelogHandling);
   const questions =
     inputs.questions ??
     choiceValue<RepoPolicy["questions"]>(
@@ -227,6 +289,7 @@ export const collectOnboardingSelection = async (
       ONBOARDING_QUESTIONS.scope
     );
   const policy: RepoPolicy = {
+    changelogHandling,
     concurrentWork: "preserve",
     defaultFinish,
     guidance: {
@@ -237,7 +300,7 @@ export const collectOnboardingSelection = async (
     review: defaults.review,
     schemaVersion: 1,
   };
-  const summary = renderOnboardingSummary(policy, scope);
+  const summary = renderOnboardingSummary(policy, scope, context);
   return {
     confirmed: await prompter.confirm(summary),
     policy,

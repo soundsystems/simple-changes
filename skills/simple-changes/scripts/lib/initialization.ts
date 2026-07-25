@@ -1,6 +1,12 @@
-import type { PolicySource, RepoPolicy, RequestMode } from "./types.ts";
+import type {
+  ChangelogCoordination,
+  PolicySource,
+  RepoPolicy,
+  RequestMode,
+} from "./types.ts";
 
 export interface InitializationStatus {
+  changelogCoordination: ChangelogCoordination;
   inferredDefaultFinish: Exclude<RepoPolicy["defaultFinish"], "preview"> | null;
   mode: RequestMode;
   onboardingRequired: boolean;
@@ -39,6 +45,12 @@ export const inspectInitialization = (
   policy: {
     path: string | null;
     source: PolicySource;
+  },
+  changelogCoordination: ChangelogCoordination = {
+    capabilityAvailable: false,
+    providers: [],
+    releaseSurfaces: [],
+    relevant: false,
   }
 ): InitializationStatus => {
   const writeCapable = WRITE_CAPABLE_MODES.has(mode);
@@ -51,6 +63,7 @@ export const inspectInitialization = (
       "No repository or personal preferences exist; onboarding must finish before mutation.";
   }
   return {
+    changelogCoordination,
     inferredDefaultFinish: inferredFinishForMode(mode),
     mode,
     onboardingRequired,

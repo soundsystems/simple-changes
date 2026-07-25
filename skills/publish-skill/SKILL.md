@@ -1,12 +1,13 @@
 ---
 name: publish-skill
-description: Publish a canonical skill-package update through upstream validation, default-branch merge, downstream fork synchronization and guidance backfills, real Skills CLI consumer installation, merge-request verification, and final remote-state cleanup. Use when asked to run or rerun a skill production loop, propagate a skill update across maintained forks, validate that a complete skill and its references install correctly, update a consumer repository's skill lock, or prove that all related changes reached each repository's default branch.
+description: Publish a canonical skill-package update through upstream validation, default-branch merge, downstream fork synchronization and guidance backfills, concurrent Skills CLI reinstallation across every discovered local consumer, merge-request verification, and final remote-state cleanup. Use when asked to run or rerun a skill production loop, propagate a skill update across maintained forks, discover or update local skill installs, validate that a complete skill and its references install correctly, update consumer skill locks, or prove that all related changes reached each repository's default branch.
 ---
 
 # Publish Skill
 
-Publish one canonical skill update and carry it through every maintained fork and
-consumer without overwriting local adaptations or disturbing unrelated work.
+Publish one canonical skill update and carry it through every maintained fork
+and discovered consumer without overwriting local adaptations or disturbing
+unrelated work.
 
 ## Establish The Release Map
 
@@ -17,7 +18,8 @@ repositories:
 
 - the canonical repository, skill directory, remote, and default branch;
 - each downstream fork repository, fork path, local adaptations, and checks;
-- one consumer repository used for a real Skills CLI installation;
+- every local consumer with an exact-source lock entry or matching installed
+  package, including validation-only and lock-only consumers;
 - the provider CLI, merge policy, and repository-native validation commands.
 
 Do not ask for values that repository evidence resolves. Ask one concise
@@ -54,16 +56,25 @@ Read [references/production-loop.md](references/production-loop.md), then:
    audit required by the fork's changelog policy.
 6. Open, verify, and merge every downstream MR or PR. Focused changes may use
    separate MRs or PRs; all required work still has to reach the default branch.
-7. From the canonical merged ref, install the skill into the consumer with the
-   Skills CLI. Validate the complete installed package, execute its installed
-   self-check when available, remove the temporary installation, and retain only
-   the intended lock or manifest update.
-8. Remove stale duplicate copies of the same skill from the consumer only when
-   their identity and obsolescence are proven. Never remove a distinct skill
-   merely because its name is similar.
-9. Open, verify, and merge the consumer MR or PR. Fetch every target default
-   branch and prove the expected pins, policy versions, lock hashes, and files
-   exist there.
+7. Run
+   `scripts/discover-local-consumers.ts` for the canonical source and every
+   published skill name. Reconcile its results with repository instructions,
+   remotes, prior production changes, and duplicate worktrees. Do not reduce the
+   inventory to one convenient validation repository.
+8. From the canonical merged ref, reinstall every confirmed local consumer with
+   the Skills CLI in independent isolated worktrees. Run consumers concurrently
+   with bounded parallelism and collect every result; one failure must not cancel
+   or hide the others.
+9. Validate each complete installed package, execute its installed self-check
+   when available, and apply its declared retention mode. Preserve maintained
+   installs, remove temporary validation-only installs, and leave intentional
+   pins unchanged with an explicit report.
+10. Repair a stale lock or remove a stale duplicate only when its identity,
+    intended retention mode, and obsolescence are proven. Never remove a
+    distinct skill merely because its name is similar.
+11. Open, verify, and merge one consumer MR or PR per changed repository. Fetch
+    every target default branch and prove the expected pins, policy versions,
+    lock hashes, and retained files exist there.
 
 ## Validate Installation
 
@@ -109,6 +120,7 @@ Report a compact repository matrix containing:
 - canonical merged commit;
 - each downstream pin and merged MR or PR;
 - guidance audit outcome and any semantic candidate left unchanged;
-- consumer installation result, lock or manifest result, and cleanup status;
+- every discovered consumer, its classification and retention mode,
+  installation result, lock or manifest result, and cleanup status;
 - required CI and local validation outcomes;
 - final remote default-branch verification.

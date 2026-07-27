@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.0 - 2026-07-27
+
+- Onboarding now explains the consequence of every available option before a
+  user chooses how far to take work, handle production and changelogs, request
+  help, or save preferences.
+- Ship and resumed Ship runs now refresh the canonical remote target after all
+  merges and refuse to report completion when the live deployment revision
+  differs from that target.
+
 ## 0.2.0 - 2026-07-25
 
 - Skill publishing:

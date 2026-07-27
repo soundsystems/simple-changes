@@ -20,13 +20,13 @@ export interface DeploymentReceiptInput {
   environment: "preview" | "staging" | "production";
   evidence: string[];
   expectedCanonicalTargets?: string[];
-  intendedRevision: string;
   observedRevision: string | null;
   project: string;
   provider: string;
   providerReady?: boolean;
   smoke: { journey: string; passed: boolean } | null;
   status: ProviderStatus;
+  targetRevision: string;
   url: string | null;
 }
 
@@ -262,7 +262,7 @@ export const normalizeDeploymentReceipt = (
     expectedCanonicalTargets,
     headRevision: null,
     immutableResultId: input.deploymentId,
-    intendedRevision: input.intendedRevision,
+    intendedRevision: input.targetRevision,
     kind: "deployment",
     objectId: input.deploymentId,
     observedAt: new Date().toISOString(),

@@ -188,6 +188,8 @@
       "mode": "ship",
       "authority": ["local-write", "proposal-write", "merge", "preview-deploy"],
       "expectedBehaviors": [
+        "Resolve the latest canonical remote target revision after all merges",
+        "Compare the observed live deployment revision with that exact target revision even when this run created no deployment",
         "Discover the complete configured canonical-target inventory",
         "Reject ready status when any expected live target is missing or stale",
         "Promote the existing verified artifact once before bounded same-project managed-target reconciliation",

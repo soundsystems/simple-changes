@@ -45,6 +45,14 @@ The released `0.1.0` history was audited against this guidance. Its public CLI
 and package details match the expert audience, its developer-only architecture
 remains private, and no meaning or visibility changes were required.
 
+The later `simple-changelogs` skill-repository setup update is also portable:
+initial adoption now recommends a complete accessible-history backfill, asks
+last whether to defer or decline it, and records completion only after every
+range and established mirror is accounted for. Product archive design,
+component selection, web/mobile feed placement, CMS, and store workflows remain
+not applicable because Simple Changes exposes one read-only packaged archive
+and no writable product surface.
+
 When moving between guidance versions, summarize the applicable entries and
 record one honest historical-audit disposition. Current guidance applies
 prospectively regardless of that disposition.

@@ -60,18 +60,36 @@ should be saved, ask the conditional production preference for ship, and ask
 the changelog preference only when changelog surfaces or a compatible
 changelog skill are discovered.
 
-Ask, in order:
+Ask, in order. When presenting a question, show every option with its
+one-sentence consequence; do not present bare labels:
 
-1. **How far should I usually take ready work?** Put it up for review, merge
-   when approved, or ship when approved.
-2. Only for ship: **What should happen with production?** Ask first, deploy
-   automatically when repository rules allow it, or never deploy production.
-3. When relevant: **How should changelog work be handled?** Delegate to a
-   compatible skill when available, preserve and report it, or ask first.
-4. **When should I ask for permission or help?** Only when blocked, at major
-   steps, or do not interrupt and skip unauthorized work.
-5. **For what scope should I save these preferences?** Just for the user, for
-   this repository, or this run only.
+1. **How far should I usually take ready work?**
+   - **Put it up for review:** Create focused proposals, run checks, and stop.
+   - **Merge when approved:** Also merge after checks and required reviews pass.
+   - **Ship when approved:** Also deploy and verify the merged work.
+2. Only for ship: **What should happen with production?**
+   - **Ask me first:** Merge automatically, but confirm before production.
+   - **Deploy automatically:** Deploy when repository rules allow it.
+   - **Never deploy production:** Stop after merge or a preview deployment.
+3. When relevant: **How should changelog work be handled?**
+   - **Delegate when available:** Use a compatible changelog skill when present;
+     otherwise preserve and report the work.
+   - **Preserve and report:** Leave changelog destinations untouched and report
+     the remaining work.
+   - **Ask before delegating:** Confirm before handing changelog work to a
+     compatible skill.
+4. **When should I ask for permission or help?**
+   - **Only when blocked:** Keep working unless a decision is genuinely
+     required.
+   - **At major steps:** Confirm before consequential workflow steps.
+   - **Don't interrupt me:** Skip anything that lacks authority and report it
+     afterward.
+5. **For what scope should I save these preferences?**
+   - **Just for me:** Use them as personal defaults when a repository has no
+     policy.
+   - **For this repository:** Save a visible `.simple-changes.json` in the
+     primary checkout.
+   - **This run only:** Use the choices now without writing a policy file.
 
 Re-read the plain-language summary and confirm it before writing preferences.
 Repository policy overrides personal preferences; the current request overrides
@@ -144,9 +162,12 @@ authority for those operations.
 14. Audit detected migrations, but cross the authority checkpoint before any
     remote write. Follow
     [high-risk actions](references/migrations-and-high-risk-actions.md).
-15. Deploy only when authorized. Verify immutable revision, readiness, complete
-    canonical-target coverage, and the changed journey. Reconcile stale
-    provider-managed targets with the existing artifact through a bounded
+15. Deploy only when authorized. After all merges, refresh the canonical remote
+    target branch (normally `main`) and capture its exact head revision. Verify
+    the live deployment observes that revision, even when no deployment was
+    created during this run, together with readiness, complete canonical-target
+    coverage, and the changed journey. Reconcile stale provider-managed targets
+    with the existing artifact through a bounded
     promote/recheck/managed-target sequence. Follow
     [deployments](references/deployments.md).
 16. Re-inventory local and remote state. Clean only proven merged, obsolete, or
@@ -197,8 +218,10 @@ result.
 - Bind approval to the exact proposal revision and invalidate it after change.
 - Honor branch protection and independent-review requirements.
 - Never infer deploy or data-write authority from integration authority.
-- Deploy committed code from the intended merged revision and verify the live
-  target rather than trusting command success or a ready label.
+- Resolve the canonical target branch after the final merge and require every
+  in-scope live deployment to match that exact revision. Never substitute the
+  revision requested at the start of the run or the newest deployment's own
+  source revision.
 - Existing stashes are inventory, not workflow storage.
 - Make completed steps idempotent and resumable without duplicate proposals,
   merges, deployments, or ledger entries.
@@ -250,9 +273,12 @@ the next action. State "none" only after the final inventory proves there are
 no such units. Include only decisions that still require a person. Never claim
 completion until the final inventory proves the requested scope and the
 original primary checkout state.
-For production deployment, report the expected canonical-target inventory and
+For production deployment, report the refreshed canonical Git target revision,
+the observed deployment revision, the expected canonical-target inventory, and
 each refreshed target-to-deployment identity mapping, not only the generated
-deployment URL.
+deployment URL. A Ship or resumed Ship loop is incomplete when the live
+revision differs from the latest canonical target revision; deploy or promote
+only with authority, otherwise report the exact drift as blocked.
 
 For preview, prefer the bundled deterministic command:
 

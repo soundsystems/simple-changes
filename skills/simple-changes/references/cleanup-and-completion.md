@@ -14,8 +14,9 @@ Before reporting completion:
 
 1. Refresh local worktree, branch, stash, and status inventory.
 2. Refresh proposal, revision, check, review, discussion, and merge evidence.
-3. Refresh deployment and canonical-endpoint evidence when deployment was in
-   scope.
+3. When deployment was in scope, refresh the canonical remote target revision
+   after all merges, then refresh deployment and canonical-endpoint evidence
+   and prove the observed live revision matches it.
 4. Confirm each planned path is queued, merged, deployed, preserved, excluded,
    or blocked exactly once.
 5. Return to and verify the exact original primary checkout; do not substitute a

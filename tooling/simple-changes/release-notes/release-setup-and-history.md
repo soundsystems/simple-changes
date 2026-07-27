@@ -46,9 +46,11 @@ For write-capable changelog work when `.simple-changelogs.json` is absent:
    tags, package metadata, and established release-note destinations.
 2. If no released history exists, create the policy at the current guidance
    version with `backfillStatus: "not-applicable"`.
-3. If released history exists and the current request does not already decide
-   whether to audit it, ask once before writing policy or changelog files. No
-   answer is not `deferred` or `declined`.
+3. If released history exists, recommend a comprehensive audit of the complete
+   accessible history. Ask last whether the user wants to defer or decline that
+   default, then require confirmation of the displayed setup receipt before
+   writing policy or changelog files. Silence is not confirmation, `deferred`,
+   or `declined`.
 4. Create `CHANGELOG.md` and, when policy requires it,
    `DEVELOPER_CHANGELOG.md`. Continue the original task after setup.
 
@@ -122,8 +124,12 @@ For a requested backfill:
 6. Preserve established versions and dates. Mark uncertainty rather than
    inventing a boundary or shipped behavior.
 
-For large histories, propose reviewable batches. Conservative omission is safer
-than fabricated completeness.
+An initial adoption backfill covers the complete accessible history from the
+oldest trustworthy evidence through setup. Account for every intervening range
+and record why abandoned, reverted, noisy, private, or unsupported candidates
+were omitted. For large histories, use reviewable batches and continue through
+the remaining ranges. Conservative omission is safer than fabricated
+completeness, but an unexplained gap is not a completed initial backfill.
 
 ## Released-history authority
 
@@ -159,3 +165,6 @@ Report:
 
 Do not claim historical completeness when shallow history, missing tags,
 unavailable release data, or vague commits limit the evidence.
+For an initial backfill, keep the audit `partial` or `failed` until the oldest
+reachable boundary, every intervening range, the setup boundary, and all
+established mirrors are verified.

@@ -164,13 +164,19 @@ repository:
 bun run simple-changes setup --scope user
 ```
 
-It asks:
+It asks the following questions and explains the effect of every option as it
+goes:
 
-1. **How far should I usually take ready work?**
-2. For shipping, **What should happen with production?**
-3. When relevant, **How should changelog work be handled?**
-4. **When should I ask for permission or help?**
-5. **For what scope should I save these preferences?**
+1. **How far should I usually take ready work?** Stop with a checked proposal,
+   merge after approval, or also deploy and verify.
+2. For shipping, **What should happen with production?** Confirm first, deploy
+   automatically when repository rules permit it, or stop before production.
+3. When relevant, **How should changelog work be handled?** Delegate when a
+   compatible skill exists, preserve and report the work, or ask first.
+4. **When should I ask for permission or help?** Only when blocked, before major
+   steps, or skip unauthorized work without interrupting.
+5. **For what scope should I save these preferences?** Personal defaults,
+   repository policy, or this run without writing a policy file.
 
 Personal preferences are saved under the platform configuration directory and
 apply only when the repository has no policy. Teams may commit

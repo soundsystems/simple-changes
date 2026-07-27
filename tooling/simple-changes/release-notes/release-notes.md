@@ -1,6 +1,6 @@
 # Release notes
 
-Forked from `simple-changelogs` @ `b096f8d`. Simple Changes-specific deltas:
+Forked from `simple-changelogs` @ `1a7a03a`. Simple Changes-specific deltas:
 repository-maintainer scope, one read-only CLI surface, and portable
 model-adapter verification. CMS-only variants and general surface-curation
 machinery are intentionally omitted because Simple Changes has no selectable

@@ -75,13 +75,13 @@ describe("normalized deployment contract", () => {
       environment: "production",
       evidence: ["Ready"],
       expectedCanonicalTargets: ["https://app.invalid"],
-      intendedRevision: "4".repeat(40),
       observedRevision: "4".repeat(40),
       project: "simple-changes",
       provider: "fixture",
       providerReady: true,
       smoke: { journey: "preview", passed: true },
       status: "succeeded",
+      targetRevision: "4".repeat(40),
       url: "https://deployment.invalid",
     });
     expect(receipt.status).toBe("succeeded");
@@ -89,6 +89,48 @@ describe("normalized deployment contract", () => {
       issues: [],
       valid: true,
     });
+  });
+
+  test("rejects a live deployment behind the latest target revision", () => {
+    const receipt = normalizeDeploymentReceipt({
+      action: "inspect",
+      canonicalTargets: [
+        {
+          resolvedResultId: "deployment-42",
+          url: "https://app.invalid",
+        },
+      ],
+      deliveryModel: "git-connected",
+      deploymentId: "deployment-42",
+      environment: "production",
+      evidence: ["Ready production deployment inspected after merge."],
+      expectedCanonicalTargets: ["https://app.invalid"],
+      observedRevision: "4".repeat(40),
+      project: "simple-changes",
+      provider: "fixture",
+      providerReady: true,
+      smoke: { journey: "production", passed: true },
+      status: "succeeded",
+      targetRevision: "5".repeat(40),
+      url: "https://deployment.invalid",
+    });
+
+    expect(receipt.intendedRevision).toBe("5".repeat(40));
+    expect(receipt.status).toBe("partial");
+    expect(receipt.evidence.join(" ")).toContain(
+      "Observed deployment revision does not match the intended revision"
+    );
+    expect(
+      nextDeploymentReconciliation(receipt, {
+        managedTargetReconciliationAttempts: 0,
+        managedTargetReconciliationSupported: true,
+        productionDeployAuthorized: true,
+        promotionAttempts: 0,
+        promotionSupported: true,
+        providerReportsCurrent: false,
+        targetOwnershipProven: true,
+      }).action
+    ).toBe("blocked");
   });
 
   test("does not accept ready status behind a stale canonical target", () => {
@@ -105,13 +147,13 @@ describe("normalized deployment contract", () => {
       environment: "production",
       evidence: ["Ready"],
       expectedCanonicalTargets: ["https://app.invalid"],
-      intendedRevision: "4".repeat(40),
       observedRevision: "4".repeat(40),
       project: "simple-changes",
       provider: "fixture",
       providerReady: true,
       smoke: { journey: "preview", passed: true },
       status: "succeeded",
+      targetRevision: "4".repeat(40),
       url: "https://deployment.invalid",
     });
     expect(receipt.status).toBe("partial");
@@ -134,13 +176,13 @@ describe("normalized deployment contract", () => {
       environment: "production",
       evidence: ["Ready"],
       expectedCanonicalTargets: ["https://app.invalid", "https://www.invalid"],
-      intendedRevision: "4".repeat(40),
       observedRevision: "4".repeat(40),
       project: "simple-changes",
       provider: "fixture",
       providerReady: true,
       smoke: { journey: "production", passed: true },
       status: "succeeded",
+      targetRevision: "4".repeat(40),
       url: "https://deployment.invalid",
     });
 
@@ -164,13 +206,13 @@ describe("normalized deployment contract", () => {
       environment: "production",
       evidence: ["Ready"],
       expectedCanonicalTargets: ["https://app.invalid"],
-      intendedRevision: "4".repeat(40),
       observedRevision: "4".repeat(40),
       project: "simple-changes",
       provider: "fixture",
       providerReady: true,
       smoke: { journey: "production", passed: false },
       status: "succeeded",
+      targetRevision: "4".repeat(40),
       url: "https://deployment.invalid",
     });
 
@@ -223,13 +265,13 @@ describe("normalized deployment contract", () => {
       environment: "production",
       evidence: ["Ready"],
       expectedCanonicalTargets: ["https://app.invalid"],
-      intendedRevision: "4".repeat(40),
       observedRevision: "4".repeat(40),
       project: "simple-changes",
       provider: "fixture",
       providerReady: true,
       smoke: { journey: "production", passed: false },
       status: "succeeded",
+      targetRevision: "4".repeat(40),
       url: "https://deployment.invalid",
     });
 
@@ -270,13 +312,13 @@ describe("normalized deployment contract", () => {
       deploymentId: "deployment-42",
       environment: "production",
       evidence: ["Ready"],
-      intendedRevision: "4".repeat(40),
       observedRevision: "4".repeat(40),
       project: "simple-changes",
       provider: "fixture",
       providerReady: true,
       smoke: { journey: "production", passed: false },
       status: "succeeded",
+      targetRevision: "4".repeat(40),
       url: "https://deployment.invalid",
     });
 

@@ -33,7 +33,11 @@ commit, push, proposal, merge, cleanup, or deployment mutation.
 Start onboarding automatically; do not add a separate "would you like to set
 this up?" prompt. The request mode supplies the finish choice for queue, sweep,
 integrate, reconcile, and ship. Ask only unresolved questions, confirm the
-summary, persist the selected scope, and continue the original task.
+summary, persist the selected scope, and continue the original task. For each
+question, show every option with a short explanation of what selecting it will
+do; option labels alone are not sufficient. Use the labels and consequence
+descriptions from the onboarding section in the main skill so chat and terminal
+setup communicate the same behavior.
 
 Ask **How should changelog work be handled?** only when established changelog
 surfaces or a compatible changelog skill are discovered. Offer delegation when

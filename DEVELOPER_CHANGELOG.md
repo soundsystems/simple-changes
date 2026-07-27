@@ -1,5 +1,25 @@
 # Developer changelog
 
+## 0.3.0 - 2026-07-27
+
+- Made Ship completion evidence derive from a freshly resolved canonical target
+  after all merges, including resumed runs and runs that did not create a new
+  deployment, so stale, divergent, or ahead-of-target production revisions
+  remain incomplete.
+- Renamed `DeploymentReceiptInput.intendedRevision` to `targetRevision` so
+  provider adapters distinguish the caller-supplied canonical target from the
+  normalized receipt's intended revision.
+- Added contract and evaluation coverage for consequence-aware onboarding,
+  post-merge target refresh, live revision comparison, and stale production
+  rejection.
+- Synchronized the repository-only release-note guidance with
+  `simple-changelogs` at `1a7a03a`, carrying forward complete
+  accessible-history initial backfills and withholding completion until every
+  range and established mirror is accounted for. Product UI, mobile, CMS, and
+  store guidance remains outside this skill repository's release surface.
+<!-- simple-changelogs-signature agent="gpt-5.6-sol" at="2026-07-27T01:40:57-05:00" -->
+<!-- simple-changelogs-signature agent="gpt-5.6-sol" at="2026-07-27T01:44:10-05:00" -->
+
 ## 0.2.0 - 2026-07-25
 
 - Replaced `publish-simple-changes-forks` with the generic `publish-skill`

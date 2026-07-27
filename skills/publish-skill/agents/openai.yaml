@@ -1,4 +1,4 @@
 interface:
   display_name: "Publish Skill"
   short_description: "Publish safely through every fork and local install"
-  default_prompt: "Use $publish-skill to publish this skill update through every maintained fork and discovered local consumer while preserving externally-owned active work."
+  default_prompt: "Use $publish-skill to publish this skill update through every maintained fork and discovered local consumer. Preserve dirty baseline checkouts without treating them as externally owned; only newly observed active external work blocks its exact target."

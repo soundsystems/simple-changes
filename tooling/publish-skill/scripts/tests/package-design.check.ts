@@ -63,31 +63,41 @@ describe("publish-skill package design", () => {
     expect(productionLoop).toContain("one failure must not cancel");
   });
 
-  test("treats active external work as owned, never stale", () => {
+  test("distinguishes dirty baseline state from newly active external work", () => {
     expect(skill).toContain("externally-owned");
     expect(skill).toContain("do not transfer ownership");
     expect(skill).toContain("explicit handoff");
     expect(skill).toContain("Repeat the ownership check immediately");
     expect(skill).toContain("outstanding-work ledger");
+    expect(skill).toContain("not by itself active");
+    expect(skill).toContain("do not classify the repository");
 
     expect(releaseMap).toContain("Classify Ownership Before Scope");
-    expect(releaseMap).toContain("An active worktree");
+    expect(releaseMap).toContain("Preserved baseline");
+    expect(releaseMap).toContain("Externally-owned active");
+    expect(releaseMap).toContain("Active ownership requires");
+    expect(releaseMap).toContain("continue the loop");
     expect(releaseMap).toContain("Proven stale");
     expect(releaseMap).toContain("Repeat this classification immediately");
 
     expect(productionLoop).toContain("Ownership Gate");
     expect(productionLoop).toContain("Do not delegate the takeover");
-    expect(productionLoop).toContain("create an independent worktree");
+    expect(productionLoop).toContain("independent remote-default worktree");
+    expect(productionLoop).toContain(
+      "Static dirty state found at the first observation does not trigger"
+    );
 
     expect(mergeVerification).toContain("is not stale");
+    expect(mergeVerification).toContain("baseline existence alone is also not");
     expect(mergeVerification).toContain(
-      "explicit handoff naming that exact work"
+      "informational rather than outstanding"
     );
   });
 
   test("advertises the same scope in agent metadata", () => {
     expect(agentMetadata).toContain("every maintained fork");
     expect(agentMetadata).toContain("discovered local consumer");
-    expect(agentMetadata).toContain("externally-owned active work");
+    expect(agentMetadata).toContain("Preserve dirty baseline checkouts");
+    expect(agentMetadata).toContain("newly observed active external work");
   });
 });

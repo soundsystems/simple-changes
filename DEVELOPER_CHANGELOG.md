@@ -3,6 +3,20 @@
 ## Unreleased
 
 - Synchronized the bundled generic `publish-skill` workflow with canonical
+  `simple-changelogs` merged commit `919a3d85`:
+  - Ownership mapping now captures a concrete baseline and classifies dirty
+    original checkouts plus pre-existing worktrees, commits, and proposals as
+    preserved information rather than active ownership or publication blockers.
+  - Production and cleanup gates classify only post-baseline activity or a live
+    exact-target claim as externally owned active work, recheck before
+    mutation, and continue unaffected canonical, fork, and consumer publication
+    through isolated remote-default worktrees.
+  - Final reporting and package-design regression coverage now separate
+    published results, preserved baseline state, externally-owned active work,
+    and other genuinely failed or blocked targets.
+<!-- simple-changelogs-signature agent="gpt-5.6-sol" at="2026-07-27T09:17:52-05:00" -->
+
+- Synchronized the bundled generic `publish-skill` workflow with canonical
   `simple-changelogs` merged state `0cc206f`:
   - Added ownership classification and pre-mutation gates across `SKILL.md`,
     release mapping, production execution, merge verification, cleanup, and

@@ -28,19 +28,34 @@ ambiguous.
 
 ## Protect Existing Work
 
-- Inspect every original checkout before changing anything.
-- Treat dirty or unrelated branches as user-owned and leave them untouched.
-- Classify any branch, worktree, or open MR or PR already being changed by
-  another agent, task, or person as **externally-owned**. Its active state is
-  evidence to preserve it, never evidence that it is stale.
+- Inspect every original checkout and capture an ownership baseline before
+  changing anything. Include its branch, HEAD, porcelain status, worktree list,
+  relevant local and remote refs, open proposal source SHA and update time, and
+  any live task claiming an exact target.
+- Treat dirty or unrelated original checkouts as preserved baseline state:
+  leave them untouched, but do not classify the repository or its maintained
+  forks as externally owned and do not stop the publication loop. Continue
+  from an isolated worktree based on the latest remote default branch.
+- Classify an exact branch, worktree, or MR or PR as **externally-owned active
+  work** only when new activity is observed after the baseline or a live agent,
+  task, or person explicitly claims that exact target. New activity includes a
+  changed HEAD or ref, a changed tracked, staged, or untracked status
+  fingerprint, a new commit or proposal update, or a live task advancing it.
+- A dirty tree, unrelated branch, existing worktree, pre-existing unpushed
+  commit, or open proposal observed only at baseline is not by itself active
+  ownership evidence. Preserve that exact pre-existing artifact and continue
+  the loop independently.
 - Do not rebase, merge, push, force-push, commit, clean, delete, or delegate
-  externally-owned work. Read-only inspection is allowed. Mutation requires an
-  explicit handoff from the user or current owner that names the exact work.
+  externally-owned active work. Read-only inspection is allowed. Mutation
+  requires an explicit handoff from the user or current owner that names the
+  exact work.
 - Broad terminal requests such as "ship everything", "finish the loop", or
   "leave no stale branches" do not transfer ownership of active work.
 - Repeat the ownership check immediately before every branch, worktree, or MR
-  mutation. If ownership changed or is uncertain, stop that target and report
-  it in the outstanding-work ledger.
+  mutation by comparing it with the captured baseline. Stop only the exact
+  target with observed external activity and report the activity evidence in
+  the outstanding-work ledger; do not turn static dirty state or mere
+  uncertainty into repository-wide external ownership.
 - Create isolated worktrees from the latest remote default branches for edits.
 - Keep one branch and MR or PR per repository unless local policy requires a
   different grouping.
@@ -87,9 +102,10 @@ Read [references/production-loop.md](references/production-loop.md), then:
     every target default branch and prove the expected pins, policy versions,
     lock hashes, and retained files exist there.
 
-Never absorb an externally-owned branch or MR into this loop merely because it
+Never absorb externally-owned active work into this loop merely because it
 overlaps a target repository. Continue independent work when safe; otherwise
-leave that target outstanding until an explicit handoff occurs.
+leave only the actively changing target outstanding until an explicit handoff
+occurs.
 
 ## Validate Installation
 
@@ -140,5 +156,10 @@ Report a compact repository matrix containing:
 - required CI and local validation outcomes;
 - final remote default-branch verification.
 
-List every externally-owned branch, worktree, and open MR or PR that remains
-outstanding, including why it was preserved and what authority is still needed.
+Separate the finished response into published and verified results, preserved
+baseline state, and genuinely outstanding work. Preserved dirty checkouts,
+branches, worktrees, commits, and proposals are informational and do not become
+outstanding merely because they existed before the loop. List an
+externally-owned branch, worktree, or MR or PR as outstanding only with the new
+activity observed during the run, why that exact target was preserved, and what
+authority is still needed.

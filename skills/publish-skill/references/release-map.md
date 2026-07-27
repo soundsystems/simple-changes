@@ -27,17 +27,33 @@ whether it belongs to this run:
 | Ownership | Evidence | Allowed action |
 | --- | --- | --- |
 | Current loop | Created by this run, or explicitly handed off by the user or current owner | Mutate within the authorized publication scope |
-| Externally-owned | Another active agent, task, or person is changing it; an open proposal belongs to another loop; ownership is uncertain | Read-only audit and outstanding-work report only |
+| Preserved baseline | Dirty checkout, unrelated branch, existing worktree, unpushed commit, or open proposal present at the first observation but not observed changing | Leave the exact artifact untouched; continue publication from an independent remote-default worktree |
+| Externally-owned active | Its HEAD, ref, status fingerprint, commits, or proposal changed after the baseline; or a live agent, task, or person explicitly claims and advances the exact target | Read-only audit and outstanding-work report for that exact target only |
 | Proven stale | No active owner, no unmerged or unpushed commits, no open proposal, and obsolescence is established against the remote default branch | Remove only when cleanup is in scope |
 
-An active worktree, recent commit, open proposal, or live agent is positive
-ownership evidence. Do not reinterpret it as cleanup evidence. A broad request
-to ship, finish, integrate, prune, or remove stale branches does not hand off
-externally-owned work. Handoff must identify the exact branch, worktree, or
-proposal.
+Capture a baseline before classifying scope:
+
+- current branch and HEAD;
+- `git status --porcelain=v2` including staged, tracked, and untracked paths;
+- worktree inventory and relevant local and remote refs;
+- each open proposal's source SHA and update time;
+- any live agent or task assignment naming an exact branch, worktree, or
+  proposal.
+
+Compare the same evidence immediately before mutation. Active ownership requires
+new activity observed after that baseline or a real-time claim from a live
+owner. A dirty tree, worktree, recent commit, unpushed commit, or open proposal
+that merely existed at baseline is preserved state, not proof that work is
+currently being made. Do not reinterpret preserved or active state as cleanup
+evidence. A broad request to ship, finish, integrate, prune, or remove stale
+branches does not hand off externally-owned active work. Handoff must identify
+the exact branch, worktree, or proposal.
 
 Repeat this classification immediately before mutation because another task can
-claim or advance work after initial discovery.
+claim or advance work after initial discovery. Ignore changes made by the
+current loop itself when comparing its owned worktree. If no new external
+activity is observed, continue the loop rather than escalating static dirty
+state into repository-wide ownership.
 
 ## Discover Every Consumer
 
@@ -74,9 +90,10 @@ changes. Record divergent copies as a conflict to reconcile, not as independent
 consumers. The final release map must account for every inventory row, including
 rows intentionally left unchanged.
 
-Do not reconcile by taking over an externally-owned copy. Preserve it and
-either continue from an independent remote-default worktree or mark that target
-outstanding.
+Do not reconcile by taking over externally-owned active work. Preserve it and
+either continue from an independent remote-default worktree or mark only that
+exact target outstanding. Treat baseline-only dirty copies as preserved
+informational state and continue independently.
 
 ## Resolve Default Branches
 

@@ -2,20 +2,26 @@
 
 ## Ownership Gate
 
-Before each mutation in this loop, confirm that the exact branch, worktree, and
-MR or PR are owned by the current run or were explicitly handed off. Do not
+Before each mutation in this loop, compare the exact branch, worktree, and MR or
+PR with the ownership baseline. Confirm that it is owned by the current run,
+was explicitly handed off, or has no newly observed external activity. Do not
 inherit authority from a repository-wide request when evidence shows another
-agent, task, or person owns active work.
+agent, task, or person is actively advancing exact work.
 
-If overlapping externally-owned work appears:
+Static dirty state found at the first observation does not trigger this gate.
+Leave the original checkout and every pre-existing artifact untouched, create
+an isolated worktree from the latest remote default branch, and continue the
+canonical, fork, or consumer publication.
+
+If overlapping externally-owned active work appears after the baseline:
 
 1. Stop mutations against that work immediately.
 2. Preserve its branch, worktree, index, untracked files, proposal, and remote
    ref.
 3. Continue through an independent remote-default worktree only when the
    changes do not overlap.
-4. Otherwise record the target as outstanding, name the ownership evidence,
-   and state the exact handoff needed.
+4. Otherwise record only that target as outstanding, name the new activity
+   observed during the run, and state the exact handoff needed.
 
 Do not delegate the takeover to another agent. Delegation does not create
 authority.
@@ -88,9 +94,11 @@ For every confirmed consumer:
    - **stale**: repair or remove only after proving obsolescence.
 2. Base an independent isolated worktree on the consumer's latest remote default
    branch. Never reinstall in the original checkout merely because it is clean.
-   If another task already owns a worktree or proposal in the repository, do
-   not reuse, rebase, or finish it; create an independent worktree or leave the
-   target outstanding.
+   If another task is observed actively advancing a worktree or proposal in the
+   repository, do not reuse, rebase, or finish it; create an independent
+   worktree or leave only the overlapping target outstanding. A pre-existing
+   dirty checkout or proposal that does not change during the run does not
+   block the independent worktree.
 3. Start Skills CLI reinstallations concurrently with bounded parallelism.
    Capture each exit status independently and wait for all consumers to finish;
    one failure must not cancel the remaining validations.
@@ -129,6 +137,9 @@ remote objects rather than from feature worktrees:
 
 Only then remove temporary worktrees and artifacts.
 
-Externally-owned work remains in the final outstanding-work ledger and does not
-make an otherwise independent publication result disappear. Do not call it
-stale, completed, or cleaned.
+Externally-owned active work remains in the final outstanding-work ledger and
+does not make an otherwise independent publication result disappear. Include
+the baseline and later observation that proved activity. Report unchanged dirty
+checkouts and other pre-existing artifacts separately as preserved baseline
+state; they are not outstanding and do not block a completed independent
+publication. Do not call either category stale, completed, or cleaned.

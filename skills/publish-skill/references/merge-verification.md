@@ -52,13 +52,17 @@ metadata. Verify the temporary paths no longer exist.
 
 Never remove an original checkout, unrelated branch, user-authored file, or
 distinct skill. If cleanup would be destructive or its ownership is uncertain,
-leave it in place and report it.
+leave it in place as preserved baseline state and report it without blocking
+the independent publication.
 
-An active worktree, open MR or PR, unmerged commit, unpushed commit, dirty tree,
-or branch owned by another task is not stale. Do not rebase, push, merge, clean,
-delete, or delegate it without an explicit handoff naming that exact work.
-Recheck ownership immediately before cleanup; an earlier classification can
-expire when another task advances the branch.
+A worktree, open MR or PR, unmerged commit, unpushed commit, dirty tree, or
+unrelated branch is not stale, but its baseline existence alone is also not
+evidence of active external ownership. Preserve it without rebasing, pushing,
+merging, cleaning, deleting, or delegating it, and continue independently.
+Classify the exact artifact as externally-owned active work only when a later
+observation shows new activity or a live owner explicitly claims it. Recheck
+immediately before cleanup; a preserved-baseline classification can change
+when another task advances the branch.
 
 ## Final Matrix
 
@@ -73,6 +77,10 @@ Add concise notes for:
 - semantic candidates intentionally left unchanged;
 - CI jobs skipped or blocked and the exact reason;
 - installation tree comparison, installed self-check, and deletion result;
-- original dirty checkouts preserved.
-- externally-owned work preserved, its ownership evidence, and the exact
-  handoff needed before anyone may mutate it.
+- original dirty checkouts and other unchanged baseline artifacts preserved,
+  listed as informational rather than outstanding;
+- externally-owned active work preserved, the baseline and later observation
+  that proved new activity, and the exact handoff needed before anyone may
+  mutate it;
+- failed or blocked targets that still prevent publication, distinct from both
+  preserved baseline state and actively owned work.

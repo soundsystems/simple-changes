@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Skill publishing now distinguishes preserved baseline state from active
+  external work. Dirty or unrelated original checkouts and pre-existing
+  worktrees, commits, or proposals stay untouched but do not block publication
+  through an isolated remote-default worktree. Only activity observed after
+  the baseline or a live claim on the exact target is treated as externally
+  owned active work, and finished reports separately list published results,
+  preserved baseline information, and genuinely outstanding targets.
+<!-- simple-changelogs-signature agent="gpt-5.6-sol" at="2026-07-27T09:17:52-05:00" -->
+
 - Skill publishing now preserves branches, worktrees, and merge or pull
   requests owned by another active agent, task, or person. Broad requests to
   ship, integrate, or prune do not transfer ownership: mutation requires an

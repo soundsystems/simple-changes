@@ -1,5 +1,21 @@
 # Developer changelog
 
+## Unreleased
+
+- Synchronized the bundled generic `publish-skill` workflow with canonical
+  `simple-changelogs` merged state `0cc206f`:
+  - Added ownership classification and pre-mutation gates across `SKILL.md`,
+    release mapping, production execution, merge verification, cleanup, and
+    agent metadata. Active external work requires an exact handoff, cannot be
+    delegated into scope, and remains explicit in the outstanding-work ledger.
+  - Consumer discovery now resolves installation paths to physical identities,
+    reports `installationCount`, collapses compatibility symlinks into one
+    install, and preserves distinct physical copies as `multiple-installs`.
+  - Expanded scanner coverage distinguishes aliased and duplicate installs,
+    while package-design regression checks protect ownership, handoff,
+    revalidation, cleanup, reporting, and metadata contracts.
+<!-- simple-changelogs-signature agent="gpt-5.6-sol" at="2026-07-27T02:48:43-05:00" -->
+
 ## 0.3.0 - 2026-07-27
 
 - Made Ship completion evidence derive from a freshly resolved canonical target

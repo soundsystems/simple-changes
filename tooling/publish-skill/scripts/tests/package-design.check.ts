@@ -9,12 +9,14 @@ const skillRoot = resolve(import.meta.dir, "../../../../skills/publish-skill");
 const readPackageFile = (path: string): Promise<string> =>
   readFile(resolve(skillRoot, path), "utf8");
 
-const [skill, releaseMap, productionLoop, agentMetadata] = await Promise.all([
-  readPackageFile("SKILL.md"),
-  readPackageFile("references/release-map.md"),
-  readPackageFile("references/production-loop.md"),
-  readPackageFile("agents/openai.yaml"),
-]);
+const [skill, releaseMap, productionLoop, mergeVerification, agentMetadata] =
+  await Promise.all([
+    readPackageFile("SKILL.md"),
+    readPackageFile("references/release-map.md"),
+    readPackageFile("references/production-loop.md"),
+    readPackageFile("references/merge-verification.md"),
+    readPackageFile("agents/openai.yaml"),
+  ]);
 
 describe("publish-skill package design", () => {
   test("defines the shared all-consumer publication lifecycle", () => {
@@ -61,8 +63,31 @@ describe("publish-skill package design", () => {
     expect(productionLoop).toContain("one failure must not cancel");
   });
 
+  test("treats active external work as owned, never stale", () => {
+    expect(skill).toContain("externally-owned");
+    expect(skill).toContain("do not transfer ownership");
+    expect(skill).toContain("explicit handoff");
+    expect(skill).toContain("Repeat the ownership check immediately");
+    expect(skill).toContain("outstanding-work ledger");
+
+    expect(releaseMap).toContain("Classify Ownership Before Scope");
+    expect(releaseMap).toContain("An active worktree");
+    expect(releaseMap).toContain("Proven stale");
+    expect(releaseMap).toContain("Repeat this classification immediately");
+
+    expect(productionLoop).toContain("Ownership Gate");
+    expect(productionLoop).toContain("Do not delegate the takeover");
+    expect(productionLoop).toContain("create an independent worktree");
+
+    expect(mergeVerification).toContain("is not stale");
+    expect(mergeVerification).toContain(
+      "explicit handoff naming that exact work"
+    );
+  });
+
   test("advertises the same scope in agent metadata", () => {
     expect(agentMetadata).toContain("every maintained fork");
     expect(agentMetadata).toContain("discovered local consumer");
+    expect(agentMetadata).toContain("externally-owned active work");
   });
 });

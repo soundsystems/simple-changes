@@ -30,6 +30,17 @@ ambiguous.
 
 - Inspect every original checkout before changing anything.
 - Treat dirty or unrelated branches as user-owned and leave them untouched.
+- Classify any branch, worktree, or open MR or PR already being changed by
+  another agent, task, or person as **externally-owned**. Its active state is
+  evidence to preserve it, never evidence that it is stale.
+- Do not rebase, merge, push, force-push, commit, clean, delete, or delegate
+  externally-owned work. Read-only inspection is allowed. Mutation requires an
+  explicit handoff from the user or current owner that names the exact work.
+- Broad terminal requests such as "ship everything", "finish the loop", or
+  "leave no stale branches" do not transfer ownership of active work.
+- Repeat the ownership check immediately before every branch, worktree, or MR
+  mutation. If ownership changed or is uncertain, stop that target and report
+  it in the outstanding-work ledger.
 - Create isolated worktrees from the latest remote default branches for edits.
 - Keep one branch and MR or PR per repository unless local policy requires a
   different grouping.
@@ -75,6 +86,10 @@ Read [references/production-loop.md](references/production-loop.md), then:
 11. Open, verify, and merge one consumer MR or PR per changed repository. Fetch
     every target default branch and prove the expected pins, policy versions,
     lock hashes, and retained files exist there.
+
+Never absorb an externally-owned branch or MR into this loop merely because it
+overlaps a target repository. Continue independent work when safe; otherwise
+leave that target outstanding until an explicit handoff occurs.
 
 ## Validate Installation
 
@@ -124,3 +139,6 @@ Report a compact repository matrix containing:
   installation result, lock or manifest result, and cleanup status;
 - required CI and local validation outcomes;
 - final remote default-branch verification.
+
+List every externally-owned branch, worktree, and open MR or PR that remains
+outstanding, including why it was preserved and what authority is still needed.

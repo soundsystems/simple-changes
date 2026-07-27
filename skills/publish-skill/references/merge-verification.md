@@ -54,6 +54,12 @@ Never remove an original checkout, unrelated branch, user-authored file, or
 distinct skill. If cleanup would be destructive or its ownership is uncertain,
 leave it in place and report it.
 
+An active worktree, open MR or PR, unmerged commit, unpushed commit, dirty tree,
+or branch owned by another task is not stale. Do not rebase, push, merge, clean,
+delete, or delegate it without an explicit handoff naming that exact work.
+Recheck ownership immediately before cleanup; an earlier classification can
+expire when another task advances the branch.
+
 ## Final Matrix
 
 Use one row per repository:
@@ -68,3 +74,5 @@ Add concise notes for:
 - CI jobs skipped or blocked and the exact reason;
 - installation tree comparison, installed self-check, and deletion result;
 - original dirty checkouts preserved.
+- externally-owned work preserved, its ownership evidence, and the exact
+  handoff needed before anyone may mutate it.

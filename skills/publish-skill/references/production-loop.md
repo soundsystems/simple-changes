@@ -1,5 +1,25 @@
 # Production Loop
 
+## Ownership Gate
+
+Before each mutation in this loop, confirm that the exact branch, worktree, and
+MR or PR are owned by the current run or were explicitly handed off. Do not
+inherit authority from a repository-wide request when evidence shows another
+agent, task, or person owns active work.
+
+If overlapping externally-owned work appears:
+
+1. Stop mutations against that work immediately.
+2. Preserve its branch, worktree, index, untracked files, proposal, and remote
+   ref.
+3. Continue through an independent remote-default worktree only when the
+   changes do not overlap.
+4. Otherwise record the target as outstanding, name the ownership evidence,
+   and state the exact handoff needed.
+
+Do not delegate the takeover to another agent. Delegation does not create
+authority.
+
 ## 1. Canonical Source
 
 Inspect the final diff and decide whether the canonical source already contains
@@ -53,8 +73,9 @@ verify its output against repository policy before committing it.
 
 Inventory every exact-source consumer with
 `scripts/discover-local-consumers.ts`. Reconcile duplicate worktrees, aliases,
-unlocked installs, and lock-only records before writing. Do not select only one
-consumer for convenience.
+unlocked installs, and lock-only records before writing. Treat paths resolving
+to the same physical package as compatibility aliases, not duplicate installs.
+Do not select only one consumer for convenience.
 
 For every confirmed consumer:
 
@@ -67,6 +88,9 @@ For every confirmed consumer:
    - **stale**: repair or remove only after proving obsolescence.
 2. Base an independent isolated worktree on the consumer's latest remote default
    branch. Never reinstall in the original checkout merely because it is clean.
+   If another task already owns a worktree or proposal in the repository, do
+   not reuse, rebase, or finish it; create an independent worktree or leave the
+   target outstanding.
 3. Start Skills CLI reinstallations concurrently with bounded parallelism.
    Capture each exit status independently and wait for all consumers to finish;
    one failure must not cancel the remaining validations.
@@ -104,3 +128,7 @@ remote objects rather than from feature worktrees:
 - MR or PR state and required pipeline status.
 
 Only then remove temporary worktrees and artifacts.
+
+Externally-owned work remains in the final outstanding-work ledger and does not
+make an otherwise independent publication result disappear. Do not call it
+stale, completed, or cleaned.

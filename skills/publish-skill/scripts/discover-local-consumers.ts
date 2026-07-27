@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 
 import { type Dirent, existsSync } from "node:fs";
-import { readdir, readFile } from "node:fs/promises";
+import { readdir, readFile, realpath } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 
 const ignoredDirectories = new Set([
@@ -36,6 +36,7 @@ interface LockFile {
 
 interface Candidate {
   computedHash?: string;
+  installIdentities: Set<string>;
   installPaths: Set<string>;
   lockPath?: string;
   ref?: string;
@@ -48,6 +49,7 @@ interface Candidate {
 
 interface Consumer {
   computedHash?: string;
+  installationCount: number;
   installPaths: string[];
   lockPath?: string;
   ref?: string;
@@ -200,6 +202,14 @@ const sourcesMatch = (left: unknown, right: unknown): boolean => {
 const keyFor = (repositoryRoot: string, skill: string): string =>
   `${repositoryRoot}\u0000${skill}`;
 
+const recordInstallPath = async (
+  candidate: Candidate,
+  installPath: string
+): Promise<void> => {
+  candidate.installPaths.add(installPath);
+  candidate.installIdentities.add(await realpath(installPath));
+};
+
 const options = parseOptions();
 const candidates = new Map<string, Candidate>();
 const diagnostics: string[] = [];
@@ -216,36 +226,41 @@ const collectLockCandidates = async (path: string): Promise<void> => {
     return;
   }
   const repositoryRoot = dirname(path);
-  for (const [skill, entry] of Object.entries(lock.skills ?? {})) {
-    const key = keyFor(repositoryRoot, skill);
-    lockedSources.set(key, stringValue(entry.source));
-    if (
-      !sourcesMatch(entry.source, options.source) ||
-      (options.skills.size > 0 && !options.skills.has(skill))
-    ) {
-      continue;
-    }
-    const candidate =
-      candidates.get(key) ??
-      ({
-        installPaths: new Set<string>(),
-        repositoryRoot,
-        skill,
-        source: stringValue(entry.source) ?? options.source,
-      } satisfies Candidate);
-    candidate.lockPath = path;
-    candidate.computedHash = stringValue(entry.computedHash);
-    candidate.ref = stringValue(entry.ref);
-    candidate.skillPath = stringValue(entry.skillPath);
-    candidate.sourceType = stringValue(entry.sourceType);
-    for (const segments of installRoots) {
-      const installPath = join(repositoryRoot, ...segments, skill);
-      if (existsSync(join(installPath, "SKILL.md"))) {
-        candidate.installPaths.add(installPath);
+  await Promise.all(
+    Object.entries(lock.skills ?? {}).map(async ([skill, entry]) => {
+      const key = keyFor(repositoryRoot, skill);
+      lockedSources.set(key, stringValue(entry.source));
+      if (
+        !sourcesMatch(entry.source, options.source) ||
+        (options.skills.size > 0 && !options.skills.has(skill))
+      ) {
+        return;
       }
-    }
-    candidates.set(key, candidate);
-  }
+      const candidate =
+        candidates.get(key) ??
+        ({
+          installIdentities: new Set<string>(),
+          installPaths: new Set<string>(),
+          repositoryRoot,
+          skill,
+          source: stringValue(entry.source) ?? options.source,
+        } satisfies Candidate);
+      candidate.lockPath = path;
+      candidate.computedHash = stringValue(entry.computedHash);
+      candidate.ref = stringValue(entry.ref);
+      candidate.skillPath = stringValue(entry.skillPath);
+      candidate.sourceType = stringValue(entry.sourceType);
+      await Promise.all(
+        installRoots.map(async (segments) => {
+          const installPath = join(repositoryRoot, ...segments, skill);
+          if (existsSync(join(installPath, "SKILL.md"))) {
+            await recordInstallPath(candidate, installPath);
+          }
+        })
+      );
+      candidates.set(key, candidate);
+    })
+  );
 };
 
 await Promise.all(
@@ -270,7 +285,7 @@ if (options.skills.size > 0) {
     options.roots.map((root) =>
       walk(
         root,
-        (path, directory) => {
+        async (path, directory) => {
           if (!(directory && options.skills.has(basename(path)))) {
             return;
           }
@@ -296,12 +311,13 @@ if (options.skills.size > 0) {
           const candidate =
             candidates.get(key) ??
             ({
+              installIdentities: new Set<string>(),
               installPaths: new Set<string>(),
               repositoryRoot,
               skill,
               source: options.source,
             } satisfies Candidate);
-          candidate.installPaths.add(path);
+          await recordInstallPath(candidate, path);
           candidates.set(key, candidate);
         },
         root,
@@ -315,18 +331,20 @@ if (options.skills.size > 0) {
 const consumers: Consumer[] = [...candidates.values()]
   .map((candidate) => {
     const installPaths = [...candidate.installPaths].sort(compareText);
+    const installationCount = candidate.installIdentities.size;
     let state: Consumer["state"] = "lock-only";
     if (!candidate.lockPath) {
       state = "unlocked-install";
-    } else if (installPaths.length > 1) {
+    } else if (installationCount > 1) {
       state = "multiple-installs";
-    } else if (installPaths.length === 1) {
+    } else if (installationCount === 1) {
       state = "installed";
     }
     return {
       ...(candidate.computedHash
         ? { computedHash: candidate.computedHash }
         : {}),
+      installationCount,
       installPaths,
       ...(candidate.lockPath ? { lockPath: candidate.lockPath } : {}),
       ...(candidate.ref ? { ref: candidate.ref } : {}),

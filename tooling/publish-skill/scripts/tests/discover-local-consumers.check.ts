@@ -2,7 +2,7 @@
 
 import { afterAll, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -18,7 +18,15 @@ const writeJson = async (path: string, value: unknown): Promise<void> => {
 };
 
 const install = async (repository: string, skill: string): Promise<void> => {
-  const directory = join(repository, ".agents", "skills", skill);
+  await installAt(repository, ".agents", skill);
+};
+
+const installAt = async (
+  repository: string,
+  agentRoot: ".agents" | ".claude",
+  skill: string
+): Promise<void> => {
+  const directory = join(repository, agentRoot, "skills", skill);
   await mkdir(directory, { recursive: true });
   await writeFile(
     join(directory, "SKILL.md"),
@@ -151,6 +159,81 @@ describe("discover-local-consumers", () => {
       {
         source: "https://gitlab.com/soundsystems/example.git",
         state: "installed",
+      },
+    ]);
+  });
+
+  test("counts compatibility symlinks as one physical installation", async () => {
+    const repository = join(fixtureRoot, "aliased-install");
+    await Promise.all([
+      writeJson(
+        join(repository, "skills-lock.json"),
+        lock("soundsystems/example", "example-skill")
+      ),
+      install(repository, "example-skill"),
+    ]);
+    await mkdir(join(repository, ".claude", "skills"), { recursive: true });
+    await symlink(
+      "../../.agents/skills/example-skill",
+      join(repository, ".claude", "skills", "example-skill")
+    );
+
+    const result = spawnSync(
+      "bun",
+      [
+        script,
+        "--source",
+        "soundsystems/example",
+        "--skill",
+        "example-skill",
+        "--root",
+        repository,
+        "--json",
+      ],
+      { encoding: "utf8" }
+    );
+
+    expect(result.status).toBe(0);
+    expect(JSON.parse(result.stdout).consumers).toMatchObject([
+      {
+        installationCount: 1,
+        state: "installed",
+      },
+    ]);
+    expect(JSON.parse(result.stdout).consumers[0].installPaths).toHaveLength(2);
+  });
+
+  test("reports distinct physical copies as multiple installations", async () => {
+    const repository = join(fixtureRoot, "duplicate-install");
+    await Promise.all([
+      writeJson(
+        join(repository, "skills-lock.json"),
+        lock("soundsystems/example", "example-skill")
+      ),
+      installAt(repository, ".agents", "example-skill"),
+      installAt(repository, ".claude", "example-skill"),
+    ]);
+
+    const result = spawnSync(
+      "bun",
+      [
+        script,
+        "--source",
+        "soundsystems/example",
+        "--skill",
+        "example-skill",
+        "--root",
+        repository,
+        "--json",
+      ],
+      { encoding: "utf8" }
+    );
+
+    expect(result.status).toBe(0);
+    expect(JSON.parse(result.stdout).consumers).toMatchObject([
+      {
+        installationCount: 2,
+        state: "multiple-installs",
       },
     ]);
   });

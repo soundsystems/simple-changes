@@ -19,6 +19,26 @@ history, skill lockfiles, and fork headers. Record:
 Repository names and paths are runtime data. Do not bake one organization's
 topology into this public skill.
 
+## Classify Ownership Before Scope
+
+Classify every discovered branch, worktree, and open MR or PR before deciding
+whether it belongs to this run:
+
+| Ownership | Evidence | Allowed action |
+| --- | --- | --- |
+| Current loop | Created by this run, or explicitly handed off by the user or current owner | Mutate within the authorized publication scope |
+| Externally-owned | Another active agent, task, or person is changing it; an open proposal belongs to another loop; ownership is uncertain | Read-only audit and outstanding-work report only |
+| Proven stale | No active owner, no unmerged or unpushed commits, no open proposal, and obsolescence is established against the remote default branch | Remove only when cleanup is in scope |
+
+An active worktree, recent commit, open proposal, or live agent is positive
+ownership evidence. Do not reinterpret it as cleanup evidence. A broad request
+to ship, finish, integrate, prune, or remove stale branches does not hand off
+externally-owned work. Handoff must identify the exact branch, worktree, or
+proposal.
+
+Repeat this classification immediately before mutation because another task can
+claim or advance work after initial discovery.
+
 ## Discover Every Consumer
 
 Resolve the canonical source identity exactly as recorded by the Skills CLI,
@@ -38,7 +58,8 @@ lock entries and matching installed directories under `.agents/skills`,
 `.claude/skills`, and `.cursor/skills`. Classify each result:
 
 - `installed`: lock and one installed package both exist;
-- `multiple-installs`: one lock resolves to more than one local copy;
+- `multiple-installs`: one lock resolves to more than one distinct physical
+  package; compatibility symlinks to the same package remain one installation;
 - `lock-only`: no installed directory exists; determine whether this is a
   validation-only consumer, an intentional lock, or stale state;
 - `unlocked-install`: an installed package exists without a matching lock;
@@ -52,6 +73,10 @@ Group duplicate checkouts and worktrees by repository identity before creating
 changes. Record divergent copies as a conflict to reconcile, not as independent
 consumers. The final release map must account for every inventory row, including
 rows intentionally left unchanged.
+
+Do not reconcile by taking over an externally-owned copy. Preserve it and
+either continue from an independent remote-default worktree or mark that target
+outstanding.
 
 ## Resolve Default Branches
 

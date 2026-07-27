@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+- Skill publishing now preserves branches, worktrees, and merge or pull
+  requests owned by another active agent, task, or person. Broad requests to
+  ship, integrate, or prune do not transfer ownership: mutation requires an
+  exact explicit handoff, ownership is rechecked immediately beforehand, and
+  protected work is reported with the authority still needed.
+- Consumer discovery now treats compatibility paths that resolve to one
+  physical skill package as a single installation while continuing to flag
+  distinct copies for reconciliation.
+<!-- simple-changelogs-signature agent="gpt-5.6-sol" at="2026-07-27T02:48:43-05:00" -->
+
 ## 0.3.0 - 2026-07-27
 
 - Onboarding now explains the consequence of every available option before a

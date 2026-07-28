@@ -25,7 +25,7 @@ Classify the request mode, then run:
 simple-changes initialize --mode <mode> --json
 ```
 
-Queue, sweep, integrate, ship, reconcile, and resume are write-capable.
+Queue, sweep, integrate, ship, reconcile, resume, and handoff are write-capable.
 Preview and pause are read-only or preservation-only. When a write-capable mode
 has policy source `default`, onboarding is required before any local branch,
 commit, push, proposal, merge, cleanup, or deployment mutation.
@@ -45,6 +45,13 @@ available, preservation and reporting, or asking before delegation. The safe
 fallback is preservation; setup never grants release, version, or publication
 authority.
 
+Ask **When I save multiple UI iterations, how should their version names be
+chosen?** only when the current task will preserve multiple UI artifacts and no
+repository convention already answers it. Offer repository convention
+(recommended), number and ISO date, ISO date only, or zero-padded number only.
+This preference applies to saved screenshots, design exports, and static
+previews—not source files, Git revisions, deployments, packages, or releases.
+
 In an interactive terminal, `initialize` directly launches setup. In a
 non-interactive agent runtime, it emits a closed machine-readable status. The
 agent must translate that status into the same onboarding questions in chat,
@@ -59,6 +66,8 @@ Use these safe defaults when no committed policy exists:
   "guidance": { "version": 1 },
   "changelogHandling": "preserve-and-report",
   "defaultFinish": "open-change-request",
+  "handoffTiming": "confirm-ready",
+  "uiArtifactVersioning": "repository-convention",
   "questions": "blocking-only",
   "review": "repository-policy",
   "productionDeploy": "ask",
@@ -75,7 +84,28 @@ Use `simple-changes setup` for interactive onboarding. It can save the same
 closed policy contract for the user, in the platform configuration directory,
 or for the repository, at the canonical primary checkout. Run-only setup writes
 nothing. Personal and run-only setup can run outside Git; repository scope
-requires a repository. For deterministic agent or automation use, supply:
+requires a repository.
+
+After scope is known, inspect for one established instruction target. Repository
+scope checks existing root `AGENTS.md` and `CLAUDE.md`; if both exist, require an
+exact choice. Personal scope accepts only the current runtime's explicitly
+established global instruction path. Run-only scope offers no instruction edit.
+Never guess a global path, create a missing instruction file, follow a symlink,
+or append a duplicate managed block.
+
+When a target exists, ask whether to add the managed pointer. Only after the
+user chooses **Add the pointer**, ask:
+
+> When an agent finishes implementation and verification, when should Simple
+> Changes take over?
+
+Offer **Ask if it's ready** as the recommended default, **Automatically after
+implementation**, and **When I say it's ready**. The confirmation summary must
+show the exact target path and proposed managed block. Apply an authorized edit
+atomically, preserve existing content and newline style, and re-read it after
+writing.
+
+For deterministic agent or automation use, supply:
 
 ```sh
 simple-changes setup \
@@ -83,12 +113,45 @@ simple-changes setup \
   --changelog preserve-and-report \
   --questions blocking-only \
   --scope user \
+  --instruction-file /exact/existing/AGENTS.md \
+  --instruction-pointer add \
+  --handoff ask \
   --yes
 ```
 
 For `--finish ship`, also supply `--production ask|allow|deny`.
+For a task that will save multiple UI artifact iterations, also supply
+`--ui-artifacts` and
+`--ui-versioning repository|number-and-date|date-only|number-only`.
 `SIMPLE_CHANGES_CONFIG_DIR` may override the personal configuration root for
 isolated automation and tests.
+
+## Completed-work handoff checkpoint
+
+An automatic or confirmation-based instruction pointer starts with:
+
+```sh
+simple-changes initialize --mode handoff --json
+```
+
+The closed status separates a write-capable mode from current mutation
+permission:
+
+- `confirm-readiness`: ask whether the implementation and checks are complete;
+  when the user confirms, rerun with `--ready`;
+- `wait-for-user`: do not hand off until the user signals readiness;
+- `proceed`: continue only when `mutationAllowed` is true and use
+  `resolvedMode` as the finish boundary.
+
+The readiness question is: **The implementation and checks are complete. Is
+this ready for Simple Changes, or do you want more changes first?** The choices
+are **Ready—hand it off** and **More changes first**.
+
+The pointer may be considered only after completed, attributable implementation
+that changed repository files and passed proportionate verification. Planning,
+diagnosis, read-only work, blocked or incomplete changes, no-change tasks,
+changelog-only work, Simple Changes itself, and another agent's active work do
+not qualify. Handoff timing never grants production or high-risk authority.
 
 ## Capability status
 

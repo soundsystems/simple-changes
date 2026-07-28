@@ -1,0 +1,63 @@
+# Simple Changes behavioral specification
+
+## Triggers
+
+- Explicit requests to package, queue, integrate, merge, ship, reconcile, or
+  preview repository changes.
+- A managed completed-work pointer after attributable implementation and
+  proportionate verification.
+- A user signal that completed implementation is ready to put up, merge, ship,
+  finish, or reconcile.
+
+## Non-triggers
+
+- Read-only review, explanation, planning, or diagnosis.
+- Blocked or incomplete implementation, failing required checks, or work that
+  changed no repository files.
+- Commit-message-only, changelog-only, or release-note-only requests.
+- UI generation without a request to package or integrate the resulting work.
+- Completion of a Simple Changes run or work owned by another active agent.
+
+## Inputs
+
+- The current user request and authority.
+- Repository and directory-scoped instructions.
+- Repository policy, then personal preferences, then safe defaults.
+- Fresh Git, provider, deployment, changelog, and verification evidence.
+- For completed-work handoff, the closed initialization status and attributable
+  implementation scope.
+- When multiple UI iterations will be saved, the repository convention or
+  closed fallback artifact-naming preference.
+
+## Outputs
+
+- A validated initialization status before mutation.
+- A focused plan and explicit outstanding-work ledger.
+- Verified proposals, merges, deployments, or preserved work within the
+  authorized finish boundary.
+- Exact receipts for policy and managed instruction-pointer writes.
+
+## Guarantees
+
+- Existing and concurrent work is preserved unless ownership and scope are
+  proven.
+- Missing onboarding defaults to checked proposal creation and confirmation
+  before completed-work handoff.
+- Instruction setup updates only an existing exact file after confirmation,
+  rejects symlinks and malformed managed blocks, and never creates a missing
+  instruction file.
+- Completed-work handoff cannot mutate while readiness confirmation is pending.
+- UI artifact naming never overrides an established repository convention and
+  never controls source, Git, deployment, package, or release versions.
+- Deployment and high-risk actions retain their independent authority checks.
+
+## Forbidden behaviors
+
+- Treating implementation completion as production, migration, secret, DNS,
+  store-release, or history-rewrite authority.
+- Automatically handing off planning, diagnosis, blocked work, no-change work,
+  or another agent's work.
+- Creating an instruction file, guessing a global instruction path, or
+  duplicating the managed pointer.
+- Directly authoring changelogs, release notes, version fields, or release
+  policy.

@@ -84,6 +84,7 @@ for (const journey of manifest.journeys) {
 
 const requiredSkillFiles = [
   "SKILL.md",
+  "SPEC.md",
   "CHANGELOG.md",
   "scripts/simple-changes.ts",
   "evals/schemas/changelog-receipt.schema.json",

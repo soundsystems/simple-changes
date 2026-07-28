@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.5.0 - 2026-07-28
+
+- Onboarding can now add or update a managed Simple Changes pointer in an exact
+  existing agent instruction file and save whether completed, verified work
+  should wait for confirmation, hand off automatically, or wait for an explicit
+  user signal. The new `initialize --mode handoff` workflow reports the
+  readiness gate and resolved review, integration, ship, or preview boundary;
+  `--ready` records confirmation when required.
+- Tasks that preserve multiple UI iterations can now save a fallback artifact
+  naming preference with `--ui-artifacts` and `--ui-versioning`. Repository
+  conventions remain authoritative, and the preference never controls source,
+  Git, deployment, package, or release versions.
+
 ## 0.4.0 - 2026-07-27
 
 - Web production deployments now require a complete product release: Simple

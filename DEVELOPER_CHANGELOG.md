@@ -1,5 +1,28 @@
 # Developer changelog
 
+## 0.5.0 - 2026-07-28
+
+- Added completed-work onboarding and handoff contracts:
+  - Repository and personal policy now carry closed `handoffTiming` and
+    `uiArtifactVersioning` preferences, with schema validation and safe defaults
+    for existing policy files.
+  - Setup discovers only established repository or explicitly supplied global
+    instruction files, rejects symlinks and malformed managed blocks, and
+    atomically adds or updates one confirmed pointer without creating an
+    instruction file.
+  - Initialization now accepts `handoff` mode and returns closed readiness,
+    action, mutation, and resolved-mode fields. Confirmation through `--ready`
+    unlocks only the configured ordinary finish boundary; automatic and
+    user-signaled timing retain the same attribution, verification, and
+    independent high-risk authority gates.
+  - Conditional UI artifact naming adds repository-convention, number-and-date,
+    date-only, and number-only fallbacks without extending the preference to
+    source, Git, deployment, package, or release versions.
+  - Added a packaged behavioral specification plus CLI, schema, onboarding,
+    instruction-file safety, skill-contract, and behavior-evaluation coverage
+    for the new contracts.
+<!-- simple-changelogs-signature agent="gpt-5.6-sol" at="2026-07-28T09:15:09-05:00" -->
+
 ## 0.4.0 - 2026-07-27
 
 - Added the Web production release gate for 0.4.0:

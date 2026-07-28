@@ -68,6 +68,49 @@ describe("closed schemas", () => {
     ).toThrow("changelogHandling");
   });
 
+  test("accepts only closed handoff timing preferences", () => {
+    for (const handoffTiming of [
+      "confirm-ready",
+      "automatic",
+      "user-signaled",
+    ] as const) {
+      expect(
+        validateSchema<RepoPolicy>("repo-policy", {
+          ...DEFAULT_POLICY,
+          handoffTiming,
+        })
+      ).toMatchObject({ handoffTiming });
+    }
+    expect(() =>
+      validateSchema("repo-policy", {
+        ...DEFAULT_POLICY,
+        handoffTiming: "always-ship",
+      })
+    ).toThrow("handoffTiming");
+  });
+
+  test("accepts only closed UI artifact versioning preferences", () => {
+    for (const uiArtifactVersioning of [
+      "repository-convention",
+      "number-and-date",
+      "date-only",
+      "number-only",
+    ] as const) {
+      expect(
+        validateSchema<RepoPolicy>("repo-policy", {
+          ...DEFAULT_POLICY,
+          uiArtifactVersioning,
+        })
+      ).toMatchObject({ uiArtifactVersioning });
+    }
+    expect(() =>
+      validateSchema("repo-policy", {
+        ...DEFAULT_POLICY,
+        uiArtifactVersioning: "semantic-release",
+      })
+    ).toThrow("uiArtifactVersioning");
+  });
+
   test("accepts a digest-bound changelog delegation receipt", () => {
     const receipt: ChangelogReceipt = {
       checks: ["release policy"],

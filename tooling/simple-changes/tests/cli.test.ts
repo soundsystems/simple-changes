@@ -463,7 +463,190 @@ describe("contract CLI", () => {
     expect(output.path).toBe(resolve(fixture.root, ".simple-changes.json"));
     expect(policy).toMatchObject({
       defaultFinish: "integrate",
+      handoffTiming: "confirm-ready",
       productionDeploy: "ask",
+    });
+  });
+
+  test("adds a confirmed instruction pointer and gates completed-work handoff", () => {
+    const fixture = createTestRepository();
+    repositories.push(fixture);
+    writeFixture(fixture.root, "AGENTS.md", "# Agent guidance\n");
+    const setup = spawnSync(
+      [
+        process.execPath,
+        cliPath,
+        "setup",
+        "--finish",
+        "review",
+        "--questions",
+        "blocking-only",
+        "--scope",
+        "repository",
+        "--instruction-pointer",
+        "add",
+        "--handoff",
+        "ask",
+        "--yes",
+        "--json",
+        "--repo",
+        fixture.root,
+      ],
+      { stderr: "pipe", stdout: "pipe" }
+    );
+    const setupOutput = JSON.parse(decoder.decode(setup.stdout)) as {
+      instructionPointer: {
+        action: string;
+        written: boolean;
+      };
+      policy: {
+        handoffTiming: string;
+      };
+    };
+
+    expect(setup.exitCode).toBe(0);
+    expect(setupOutput).toMatchObject({
+      instructionPointer: {
+        action: "add",
+        written: true,
+      },
+      policy: {
+        handoffTiming: "confirm-ready",
+      },
+    });
+    expect(readFileSync(resolve(fixture.root, "AGENTS.md"), "utf8")).toContain(
+      "Is this ready for Simple Changes, or do you want more changes first?"
+    );
+
+    const waiting = spawnSync(
+      [
+        process.execPath,
+        cliPath,
+        "initialize",
+        "--mode",
+        "handoff",
+        "--json",
+        "--repo",
+        fixture.root,
+      ],
+      { stderr: "pipe", stdout: "pipe" }
+    );
+    expect(JSON.parse(decoder.decode(waiting.stdout))).toMatchObject({
+      handoffAction: "confirm-readiness",
+      mutationAllowed: false,
+      resolvedMode: null,
+    });
+
+    const ready = spawnSync(
+      [
+        process.execPath,
+        cliPath,
+        "initialize",
+        "--mode",
+        "handoff",
+        "--ready",
+        "--json",
+        "--repo",
+        fixture.root,
+      ],
+      { stderr: "pipe", stdout: "pipe" }
+    );
+    expect(JSON.parse(decoder.decode(ready.stdout))).toMatchObject({
+      handoffAction: "proceed",
+      mutationAllowed: true,
+      resolvedMode: "queue",
+    });
+  });
+
+  test("requires explicit pointer answers in non-interactive setup", () => {
+    const fixture = createTestRepository();
+    repositories.push(fixture);
+    writeFixture(fixture.root, "AGENTS.md", "# Agent guidance\n");
+    const result = spawnSync(
+      [
+        process.execPath,
+        cliPath,
+        "setup",
+        "--finish",
+        "review",
+        "--questions",
+        "blocking-only",
+        "--scope",
+        "repository",
+        "--yes",
+        "--repo",
+        fixture.root,
+      ],
+      { stderr: "pipe", stdout: "pipe" }
+    );
+
+    expect(result.exitCode).toBe(2);
+    expect(decoder.decode(result.stderr)).toContain(
+      "--instruction-pointer when an instruction file exists"
+    );
+  });
+
+  test("supports conditional saved UI artifact versioning", () => {
+    const fixture = createTestRepository();
+    repositories.push(fixture);
+    const incomplete = spawnSync(
+      [
+        process.execPath,
+        cliPath,
+        "setup",
+        "--finish",
+        "review",
+        "--questions",
+        "blocking-only",
+        "--scope",
+        "run",
+        "--ui-artifacts",
+        "--yes",
+        "--repo",
+        fixture.root,
+      ],
+      { stderr: "pipe", stdout: "pipe" }
+    );
+
+    expect(incomplete.exitCode).toBe(2);
+    expect(decoder.decode(incomplete.stderr)).toContain(
+      "--ui-versioning with --ui-artifacts"
+    );
+
+    const complete = spawnSync(
+      [
+        process.execPath,
+        cliPath,
+        "setup",
+        "--finish",
+        "review",
+        "--questions",
+        "blocking-only",
+        "--scope",
+        "run",
+        "--ui-artifacts",
+        "--ui-versioning",
+        "number-and-date",
+        "--yes",
+        "--json",
+        "--repo",
+        fixture.root,
+      ],
+      { stderr: "pipe", stdout: "pipe" }
+    );
+    const output = JSON.parse(decoder.decode(complete.stdout)) as {
+      policy: {
+        uiArtifactVersioning: string;
+      };
+      uiArtifactsRelevant: boolean;
+    };
+
+    expect(complete.exitCode).toBe(0);
+    expect(output).toMatchObject({
+      policy: {
+        uiArtifactVersioning: "number-and-date",
+      },
+      uiArtifactsRelevant: true,
     });
   });
 

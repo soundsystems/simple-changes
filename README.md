@@ -81,6 +81,9 @@ discovery and the production release map stay scoped to that repository.
   repository nor personal preferences exist.
 - Detects changelog relevance separately from compatible skill availability and
   coordinates delegation through a closed, digest-bound handoff receipt.
+- Treats every Web production deployment as a product release, requires the
+  delegated workflow to version and integrate target-contained pending work,
+  and deploys only after that reconciliation is merged into a refreshed target.
 - Inventories branches, stashes, local changes, worktrees, policy, and Git
   capabilities using argument-array subprocess calls.
 - Takes two read-only snapshots and preserves work that appeared or changed

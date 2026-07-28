@@ -1,6 +1,32 @@
 # Developer changelog
 
-## Unreleased
+## 0.4.0 - 2026-07-27
+
+- Added the Web production release gate for 0.4.0:
+  - After final feature merges, changelog reconciliation is delegated or
+    re-delegated against the exact refreshed target. Every target-contained
+    `Unreleased` item must enter a dated, versioned release with established Web
+    mirrors and proven product-version metadata before deployment.
+  - Extended the changelog receipt schema and TypeScript contract with a
+    structured release record containing `version`, `date`, and
+    `targetContainedUnreleased: "integrated"`. A prepared receipt must carry
+    this record; `not-applicable` requires evidence that the exact target is
+    already reconciled.
+  - Blocked or unavailable delegation, preserve-and-report disposition, version
+    ambiguity, unmerged reconciliation, and unaccounted target-contained
+    pending work now block production without discarding independently
+    completed integration work.
+  - Deployment and completion contracts now require the refreshed reconciled
+    target, bind deployment evidence to its product release version, and report
+    that version alongside canonical and observed revisions.
+  - Advanced canonical `simple-changelogs` provenance from `1a7a03a` to merged
+    commit `6a94bbe`. Reviewed its onboarding-pointer and Web-production
+    updates; product-surface onboarding remains inapplicable to this
+    repository-only release module.
+  - Added deterministic schema and skill-contract tests for structured release
+    receipts, exact-target reconciliation, blocking conditions, and the
+    production deployment boundary.
+<!-- simple-changelogs-signature agent="gpt-5.6-sol" at="2026-07-27T22:12:07-05:00" -->
 
 - Synchronized the bundled generic `publish-skill` workflow with canonical
   `simple-changelogs` merged commit `919a3d85`:

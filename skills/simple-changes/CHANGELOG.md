@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.4.0 - 2026-07-27
+
+- Web production deployments now require a complete product release: Simple
+  Changes reconciles target-contained pending work into a dated, versioned
+  release, deploys only the refreshed reconciled target, and reports the product
+  version.
+
+- Skill publishing now distinguishes preserved baseline state from active
+  external work. Dirty or unrelated original checkouts and pre-existing
+  worktrees, commits, or proposals stay untouched but do not block publication
+  through an isolated remote-default worktree. Only activity observed after
+  the baseline or a live claim on the exact target is treated as externally
+  owned active work, and finished reports separately list published results,
+  preserved baseline information, and genuinely outstanding targets.
+
+- Skill publishing now preserves branches, worktrees, and merge or pull
+  requests owned by another active agent, task, or person. Broad requests to
+  ship, integrate, or prune do not transfer ownership: mutation requires an
+  exact explicit handoff, ownership is rechecked immediately beforehand, and
+  protected work is reported with the authority still needed.
+- Consumer discovery now treats compatibility paths that resolve to one
+  physical skill package as a single installation while continuing to flag
+  distinct copies for reconciliation.
+
 ## 0.3.0 - 2026-07-27
 
 - Onboarding now explains the consequence of every available option before a

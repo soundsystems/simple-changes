@@ -56,3 +56,39 @@ report the exact missing capability, authority, evidence, or decision.
 
 Never treat an installed skill name, a policy file, or a receipt alone as proof
 that file contents are current and safe.
+
+## Web production release gate
+
+A production deployment of a Web product is always a product release. Preview,
+branch, staging, and internal test deployments do not cross this boundary.
+
+After the final feature merge and before production:
+
+1. Refresh the canonical deployment target and delegate changelog
+   reconciliation against that exact revision.
+2. Require the workflow to classify every nonempty `Unreleased` customer and
+   developer item by target containment. Every target-contained item must enter
+   one dated, versioned release and every established Web mirror and proven
+   product-version field must be integrated with it.
+3. For a `prepared` receipt, require a non-null `release` record naming the
+   version and date and reporting `targetContainedUnreleased: "integrated"`.
+   Its checks and evidence must identify the inspected target and account for
+   any item that remains pending as absent from that target or assigned to a
+   different unshipped train.
+4. Package and merge the release reconciliation. Refresh the canonical target
+   again and verify the recorded version, released headings, established
+   mirrors, and proven version metadata are present and no target-contained item
+   remains under `Unreleased`.
+5. Deploy only that refreshed reconciled target.
+
+A `not-applicable` receipt satisfies this gate only when its evidence proves the
+exact refreshed target already contains a dated, versioned release
+reconciliation with no target-contained pending work. `blocked`, unavailable,
+preserve-and-report, version ambiguity, an unmerged reconciliation, or an
+unaccounted pending item blocks production but does not erase independently
+completed integration work.
+
+An exact retry or promotion may reuse a release version only when the immutable
+target was already reconciled into that version. If production already happened
+without this gate, leave the deployment incomplete and prepare a forward
+release-reconciliation change; do not rewrite deployed history to hide the gap.

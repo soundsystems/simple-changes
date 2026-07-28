@@ -7,11 +7,16 @@
   "required": [
     "mode",
     "changelogCoordination",
+    "handoffAction",
+    "handoffTiming",
     "writeCapable",
+    "mutationAllowed",
     "onboardingRequired",
     "policySource",
     "policyPath",
     "inferredDefaultFinish",
+    "readinessConfirmed",
+    "resolvedMode",
     "reason"
   ],
   "properties": {
@@ -48,10 +53,26 @@
         "ship",
         "reconcile",
         "resume",
-        "pause"
+        "pause",
+        "handoff"
+      ]
+    },
+    "handoffAction": {
+      "enum": [
+        "not-applicable",
+        "confirm-readiness",
+        "wait-for-user",
+        "proceed"
+      ]
+    },
+    "handoffTiming": {
+      "anyOf": [
+        { "enum": ["confirm-ready", "automatic", "user-signaled"] },
+        { "type": "null" }
       ]
     },
     "writeCapable": { "type": "boolean" },
+    "mutationAllowed": { "type": "boolean" },
     "onboardingRequired": { "type": "boolean" },
     "policySource": { "enum": ["default", "user", "repository"] },
     "policyPath": {
@@ -60,6 +81,24 @@
     "inferredDefaultFinish": {
       "anyOf": [
         { "enum": ["open-change-request", "integrate", "ship"] },
+        { "type": "null" }
+      ]
+    },
+    "readinessConfirmed": { "type": "boolean" },
+    "resolvedMode": {
+      "anyOf": [
+        {
+          "enum": [
+            "preview",
+            "queue",
+            "sweep",
+            "integrate",
+            "ship",
+            "reconcile",
+            "resume",
+            "pause"
+          ]
+        },
         { "type": "null" }
       ]
     },

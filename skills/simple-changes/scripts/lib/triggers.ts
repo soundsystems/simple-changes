@@ -1,7 +1,7 @@
 import type { RequestMode } from "./types.ts";
 
 const INTEGRATION_PATTERN =
-  /\b(package|queue|publish|integrate|merge|ship|reconcile)\b|\bput (?:this|it) up\b|\bfocused (?:pr|prs|mr|mrs|change|changes)\b|\brun the (?:integration )?loop\b/iu;
+  /\b(package|queue|publish|integrate|merge|ship|reconcile)\b|\bput (?:this|it|these|them)(?:\s+\w+){0,6}\s+up\b|\bfocused (?:pr|prs|mr|mrs|change|changes)\b|\brun the (?:integration )?loop\b/iu;
 const CLEAN_REPOSITORY_PATTERN =
   /\bclean(?: up)?\b.*\b(repo|repository|branches|worktrees?|changes?)\b/iu;
 const READ_ONLY_REVIEW_PATTERN =

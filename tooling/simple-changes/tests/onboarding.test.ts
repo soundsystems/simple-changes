@@ -3,9 +3,11 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import {
   collectOnboardingSelection,
+  HANDOFF_CHOICES,
   ONBOARDING_QUESTIONS,
   type OnboardingChoice,
   renderOnboardingSummary,
+  UI_ARTIFACT_VERSIONING_CHOICES,
 } from "../../../skills/simple-changes/scripts/lib/onboarding.ts";
 import {
   DEFAULT_POLICY,
@@ -143,6 +145,10 @@ describe("preference storage", () => {
     expect(loadPolicy(fixture.root).value.changelogHandling).toBe(
       "preserve-and-report"
     );
+    expect(loadPolicy(fixture.root).value.handoffTiming).toBe("confirm-ready");
+    expect(loadPolicy(fixture.root).value.uiArtifactVersioning).toBe(
+      "repository-convention"
+    );
   });
 });
 
@@ -180,6 +186,7 @@ describe("onboarding conversation", () => {
       ONBOARDING_QUESTIONS.permission,
       ONBOARDING_QUESTIONS.scope,
     ]);
+    expect(questions).not.toContain(ONBOARDING_QUESTIONS.uiArtifactVersioning);
     expect(selection.policy.productionDeploy).toBe("ask");
     expect(selection.scope).toBe("user");
   });
@@ -274,5 +281,144 @@ describe("onboarding conversation", () => {
     expect(summary).toContain("Your workflow is set to Put it up for review.");
     expect(summary).not.toContain("Production deployment");
     expect(summary).toContain("Preference scope: This run only.");
+  });
+
+  test("asks how to name saved UI iterations only when they are relevant", async () => {
+    const questions: string[] = [];
+    const defaults: string[] = [];
+    const answers = new Map<string, string>([
+      [ONBOARDING_QUESTIONS.finish, "open-change-request"],
+      [ONBOARDING_QUESTIONS.uiArtifactVersioning, "number-and-date"],
+      [ONBOARDING_QUESTIONS.permission, "blocking-only"],
+      [ONBOARDING_QUESTIONS.scope, "run"],
+    ]);
+    const selection = await collectOnboardingSelection(
+      DEFAULT_POLICY,
+      {},
+      {
+        choose: (question, _choices, defaultValue) => {
+          questions.push(question);
+          defaults.push(defaultValue);
+          return Promise.resolve(answers.get(question) ?? "");
+        },
+        confirm: () => Promise.resolve(true),
+      },
+      undefined,
+      null,
+      true
+    );
+
+    expect(questions).toEqual([
+      ONBOARDING_QUESTIONS.finish,
+      ONBOARDING_QUESTIONS.uiArtifactVersioning,
+      ONBOARDING_QUESTIONS.permission,
+      ONBOARDING_QUESTIONS.scope,
+    ]);
+    expect(defaults[1]).toBe("repository-convention");
+    expect(
+      UI_ARTIFACT_VERSIONING_CHOICES.map((choice) => choice.value)
+    ).toEqual([
+      "repository-convention",
+      "number-and-date",
+      "date-only",
+      "number-only",
+    ]);
+    expect(selection.policy.uiArtifactVersioning).toBe("number-and-date");
+    expect(selection.summary).toContain(
+      "Saved UI iteration naming: Number and date."
+    );
+    expect(selection.summary).toContain(
+      "Repository conventions still take precedence."
+    );
+  });
+
+  test("offers an existing instruction file and recommends asking if work is ready", async () => {
+    const fixture = createTestRepository();
+    repositories.push(fixture);
+    writeFixture(fixture.root, "AGENTS.md", "# Agent guidance\n");
+    const questions: string[] = [];
+    const defaults: string[] = [];
+    const pointerQuestion = ONBOARDING_QUESTIONS.instructionPointer(
+      resolve(fixture.root, "AGENTS.md")
+    );
+    const answers = new Map<string, string>([
+      [ONBOARDING_QUESTIONS.finish, "open-change-request"],
+      [ONBOARDING_QUESTIONS.permission, "blocking-only"],
+      [ONBOARDING_QUESTIONS.scope, "repository"],
+      [pointerQuestion, "add"],
+      [ONBOARDING_QUESTIONS.handoff, "confirm-ready"],
+    ]);
+    const selection = await collectOnboardingSelection(
+      DEFAULT_POLICY,
+      {},
+      {
+        choose: (question, _choices, defaultValue) => {
+          questions.push(question);
+          defaults.push(defaultValue);
+          return Promise.resolve(answers.get(question) ?? "");
+        },
+        confirm: () => Promise.resolve(true),
+      },
+      undefined,
+      fixture.root
+    );
+
+    expect(questions).toEqual([
+      ONBOARDING_QUESTIONS.finish,
+      ONBOARDING_QUESTIONS.permission,
+      ONBOARDING_QUESTIONS.scope,
+      pointerQuestion,
+      ONBOARDING_QUESTIONS.handoff,
+    ]);
+    expect(defaults.at(-1)).toBe("confirm-ready");
+    expect(HANDOFF_CHOICES.map((choice) => choice.value)).toEqual([
+      "confirm-ready",
+      "automatic",
+      "user-signaled",
+    ]);
+    expect(selection.policy.handoffTiming).toBe("confirm-ready");
+    expect(selection.instructionPointer).toMatchObject({
+      action: "add",
+      target: {
+        path: resolve(fixture.root, "AGENTS.md"),
+        scope: "repository",
+      },
+    });
+    expect(selection.summary).toContain(
+      "Is this ready for Simple Changes, or do you want more changes first?"
+    );
+  });
+
+  test("skips handoff timing when instructions remain unchanged", async () => {
+    const fixture = createTestRepository();
+    repositories.push(fixture);
+    writeFixture(fixture.root, "AGENTS.md", "# Agent guidance\n");
+    const questions: string[] = [];
+    const pointerQuestion = ONBOARDING_QUESTIONS.instructionPointer(
+      resolve(fixture.root, "AGENTS.md")
+    );
+    const answers = new Map<string, string>([
+      [ONBOARDING_QUESTIONS.finish, "open-change-request"],
+      [ONBOARDING_QUESTIONS.permission, "blocking-only"],
+      [ONBOARDING_QUESTIONS.scope, "repository"],
+      [pointerQuestion, "leave"],
+    ]);
+    const selection = await collectOnboardingSelection(
+      DEFAULT_POLICY,
+      {},
+      {
+        choose: (question) => {
+          questions.push(question);
+          return Promise.resolve(answers.get(question) ?? "");
+        },
+        confirm: () => Promise.resolve(true),
+      },
+      undefined,
+      fixture.root
+    );
+
+    expect(questions).not.toContain(ONBOARDING_QUESTIONS.handoff);
+    expect(selection.policy.handoffTiming).toBe("confirm-ready");
+    expect(selection.instructionPointer.action).toBe("leave");
   });
 });

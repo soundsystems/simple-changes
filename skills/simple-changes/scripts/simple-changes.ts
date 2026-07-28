@@ -36,21 +36,38 @@ import {
 import type { ReleaseNotes } from "./lib/release-notes.ts";
 import { extractReleaseNotes } from "./lib/release-notes.ts";
 import { renderInventory, renderPlan } from "./lib/report.ts";
+import {
+  discoverInstructionTargets,
+  writeInstructionPointer,
+} from "./lib/repository-instructions.ts";
 import { validateSchema } from "./lib/schema.ts";
-import type { RepoPolicy, RequestMode, SchemaName } from "./lib/types.ts";
+import type {
+  InitializationMode,
+  RepoPolicy,
+  SchemaName,
+} from "./lib/types.ts";
 
-const VERSION = "0.4.0";
+const VERSION = "0.5.0";
 const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const HELP = `Simple Changes ${VERSION}
 
 Usage:
   simple-changes initialize --mode MODE
+    [--ready]
     [--changelog delegate-if-available|preserve-and-report|ask]
+    [--handoff ask|automatic|user-signaled]
+    [--instruction-pointer add|leave] [--instruction-file PATH]
+    [--ui-artifacts]
+    [--ui-versioning repository|number-and-date|date-only|number-only]
     [--production ask|allow|deny]
     [--questions blocking-only|always|never]
     [--scope user|repository|run] [--yes] [--json] [--repo PATH]
   simple-changes setup [--finish review|integrate|ship]
     [--changelog delegate-if-available|preserve-and-report|ask]
+    [--handoff ask|automatic|user-signaled]
+    [--instruction-pointer add|leave] [--instruction-file PATH]
+    [--ui-artifacts]
+    [--ui-versioning repository|number-and-date|date-only|number-only]
     [--production ask|allow|deny]
     [--questions blocking-only|always|never]
     [--scope user|repository|run] [--yes] [--json] [--repo PATH]
@@ -73,29 +90,47 @@ interface CliOptions {
   changelogHandling?: RepoPolicy["changelogHandling"];
   check: boolean;
   defaultFinish?: "open-change-request" | "integrate" | "ship";
+  handoffTiming?: RepoPolicy["handoffTiming"];
+  instructionFile?: string;
+  instructionPointer?: "add" | "leave";
   json: boolean;
-  mode?: RequestMode;
+  mode?: InitializationMode;
   positional: string[];
   productionDeploy?: RepoPolicy["productionDeploy"];
   questions?: RepoPolicy["questions"];
+  ready: boolean;
   releaseVersion?: string;
   repo: string;
   repoProvided: boolean;
   scope?: SetupScope;
   settleMs: number;
+  uiArtifacts: boolean;
+  uiArtifactVersioning?: RepoPolicy["uiArtifactVersioning"];
   yes: boolean;
 }
 
 const VALUED_OPTIONS = new Set([
   "--changelog",
   "--finish",
+  "--handoff",
+  "--instruction-file",
+  "--instruction-pointer",
   "--mode",
   "--production",
   "--questions",
   "--repo",
   "--scope",
   "--settle-ms",
+  "--ui-versioning",
   "--version",
+]);
+
+const BOOLEAN_OPTIONS = new Set([
+  "--check",
+  "--json",
+  "--ready",
+  "--ui-artifacts",
+  "--yes",
 ]);
 
 const requiredOptionValue = (
@@ -127,14 +162,14 @@ const changelogHandlingValue = (
   return value as RepoPolicy["changelogHandling"];
 };
 
-const applyValuedOption = (
+const applySetupValuedOption = (
   options: CliOptions,
   option: string,
   value: string
-): void => {
+): boolean => {
   if (option === "--changelog") {
     options.changelogHandling = changelogHandlingValue(value);
-    return;
+    return true;
   }
   if (option === "--finish") {
     const finishAliases = {
@@ -152,10 +187,73 @@ const applyValuedOption = (
       );
     }
     options.defaultFinish = finish;
+    return true;
+  }
+  if (option === "--handoff") {
+    const timingAliases = {
+      ask: "confirm-ready",
+      automatic: "automatic",
+      "confirm-ready": "confirm-ready",
+      "user-signaled": "user-signaled",
+    } as const;
+    const timing = timingAliases[value as keyof typeof timingAliases];
+    if (!timing) {
+      throw new SimpleChangesError(
+        "--handoff must be ask, automatic, or user-signaled",
+        EXIT_CODES.usage
+      );
+    }
+    options.handoffTiming = timing;
+    return true;
+  }
+  if (option === "--instruction-file") {
+    options.instructionFile = value;
+    return true;
+  }
+  if (option === "--instruction-pointer") {
+    if (!["add", "leave"].includes(value)) {
+      throw new SimpleChangesError(
+        "--instruction-pointer must be add or leave",
+        EXIT_CODES.usage
+      );
+    }
+    options.instructionPointer = value as "add" | "leave";
+    return true;
+  }
+  if (option === "--ui-versioning") {
+    const versioningAliases = {
+      "date-only": "date-only",
+      "number-and-date": "number-and-date",
+      "number-only": "number-only",
+      repository: "repository-convention",
+      "repository-convention": "repository-convention",
+    } as const;
+    const versioning =
+      versioningAliases[value as keyof typeof versioningAliases];
+    if (!versioning) {
+      throw new SimpleChangesError(
+        "--ui-versioning must be repository, number-and-date, date-only, or number-only",
+        EXIT_CODES.usage
+      );
+    }
+    options.uiArtifacts = true;
+    options.uiArtifactVersioning = versioning;
+    return true;
+  }
+  return false;
+};
+
+const applyValuedOption = (
+  options: CliOptions,
+  option: string,
+  value: string
+): void => {
+  if (applySetupValuedOption(options, option, value)) {
     return;
   }
   if (option === "--mode") {
-    const modes: RequestMode[] = [
+    const modes: InitializationMode[] = [
+      "handoff",
       "preview",
       "queue",
       "sweep",
@@ -165,13 +263,13 @@ const applyValuedOption = (
       "resume",
       "pause",
     ];
-    if (!modes.includes(value as RequestMode)) {
+    if (!modes.includes(value as InitializationMode)) {
       throw new SimpleChangesError(
         `--mode must be one of ${modes.join(", ")}`,
         EXIT_CODES.usage
       );
     }
-    options.mode = value as RequestMode;
+    options.mode = value as InitializationMode;
     return;
   }
   if (option === "--production") {
@@ -223,31 +321,37 @@ const applyValuedOption = (
   options.settleMs = settleMs;
 };
 
+const applyBooleanOption = (options: CliOptions, option: string): void => {
+  if (option === "--json") {
+    options.json = true;
+  } else if (option === "--check") {
+    options.check = true;
+  } else if (option === "--ready") {
+    options.ready = true;
+  } else if (option === "--ui-artifacts") {
+    options.uiArtifacts = true;
+  } else {
+    options.yes = true;
+  }
+};
+
 const parseOptions = (args: string[]): CliOptions => {
   const options: CliOptions = {
     check: false,
     json: false,
     positional: [],
+    ready: false,
     repo: process.cwd(),
     repoProvided: false,
     settleMs: 0,
+    uiArtifacts: false,
     yes: false,
   };
   let index = 0;
   while (index < args.length) {
     const argument = args[index];
-    if (
-      argument === "--json" ||
-      argument === "--check" ||
-      argument === "--yes"
-    ) {
-      if (argument === "--json") {
-        options.json = true;
-      } else if (argument === "--check") {
-        options.check = true;
-      } else {
-        options.yes = true;
-      }
+    if (argument && BOOLEAN_OPTIONS.has(argument)) {
+      applyBooleanOption(options, argument);
       index += 1;
       continue;
     }
@@ -368,7 +472,8 @@ const createCliPrompter = (
 
 const setupNeedsPrompt = (
   options: CliOptions,
-  changelogRelevant: boolean
+  changelogRelevant: boolean,
+  instructionTargetCount: number
 ): boolean =>
   !(
     options.defaultFinish &&
@@ -376,6 +481,12 @@ const setupNeedsPrompt = (
     options.questions &&
     options.scope &&
     (options.defaultFinish !== "ship" || options.productionDeploy) &&
+    (!options.uiArtifacts || options.uiArtifactVersioning) &&
+    (instructionTargetCount === 0 ||
+      options.instructionPointer === "leave" ||
+      (instructionTargetCount === 1 &&
+        options.instructionPointer === "add" &&
+        options.handoffTiming)) &&
     options.yes
   );
 
@@ -439,12 +550,23 @@ const setupContext = (
 
 const runSetup = async (options: CliOptions): Promise<void> => {
   const context = setupContext(options.repo);
+  const instructionTargets = options.scope
+    ? discoverInstructionTargets(
+        options.scope,
+        context.primaryCheckout,
+        options.instructionFile
+      )
+    : [];
   if (
-    setupNeedsPrompt(options, context.changelog.relevant) &&
+    setupNeedsPrompt(
+      options,
+      context.changelog.relevant,
+      instructionTargets.length
+    ) &&
     !process.stdin.isTTY
   ) {
     throw new SimpleChangesError(
-      "Interactive setup requires a terminal. Supply --finish, --questions, --scope, --production when shipping, --changelog when relevant, and --yes.",
+      "Interactive setup requires a terminal. Supply --finish, --questions, --scope, --production when shipping, --changelog when relevant, --ui-versioning with --ui-artifacts, --instruction-pointer when an instruction file exists, --handoff when adding the pointer, --instruction-file when selecting among targets, and --yes.",
       EXIT_CODES.usage
     );
   }
@@ -453,11 +575,21 @@ const runSetup = async (options: CliOptions): Promise<void> => {
       ? { changelogHandling: options.changelogHandling }
       : {}),
     ...(options.defaultFinish ? { defaultFinish: options.defaultFinish } : {}),
+    ...(options.handoffTiming ? { handoffTiming: options.handoffTiming } : {}),
+    ...(options.instructionFile
+      ? { instructionFile: options.instructionFile }
+      : {}),
+    ...(options.instructionPointer
+      ? { instructionPointer: options.instructionPointer }
+      : {}),
     ...(options.productionDeploy
       ? { productionDeploy: options.productionDeploy }
       : {}),
     ...(options.questions ? { questions: options.questions } : {}),
     ...(options.scope ? { scope: options.scope } : {}),
+    ...(options.uiArtifactVersioning
+      ? { uiArtifactVersioning: options.uiArtifactVersioning }
+      : {}),
   };
   const interactive = createCliPrompter(options);
   try {
@@ -465,20 +597,42 @@ const runSetup = async (options: CliOptions): Promise<void> => {
       context.policy,
       inputs,
       interactive.prompter,
-      context.changelog
+      context.changelog,
+      context.primaryCheckout,
+      options.uiArtifacts
     );
     const path = setupPolicyPath(selection.scope, context.primaryCheckout);
     const written = selection.confirmed && path !== null;
+    let instructionPointerWritten = false;
+    let instructionPointerChanged = false;
+    if (
+      selection.confirmed &&
+      selection.instructionPointer.action === "add" &&
+      selection.instructionPointer.target
+    ) {
+      const pointerResult = writeInstructionPointer(
+        selection.instructionPointer.target,
+        selection.policy.handoffTiming
+      );
+      instructionPointerWritten = pointerResult.written;
+      instructionPointerChanged = pointerResult.changed;
+    }
     if (written && path) {
       writePolicyFile(path, selection.policy, selection.scope === "user");
     }
     const result = {
       changelogCoordination: context.changelog,
       confirmed: selection.confirmed,
+      instructionPointer: {
+        ...selection.instructionPointer,
+        changed: instructionPointerChanged,
+        written: instructionPointerWritten,
+      },
       path,
       policy: selection.policy,
       scope: selection.scope,
       summary: selection.summary,
+      uiArtifactsRelevant: options.uiArtifacts,
       written,
     };
     const outcome = setupOutcome(selection.confirmed, written, path);
@@ -495,6 +649,7 @@ const renderInitialization = (
     "Simple Changes initialization",
     `Mode: ${status.mode}`,
     `Write-capable: ${status.writeCapable ? "yes" : "no"}`,
+    `Mutation allowed: ${status.mutationAllowed ? "yes" : "no"}`,
     `Policy: ${status.policySource}`,
     `Changelog coordination: ${
       status.changelogCoordination.relevant ? "relevant" : "not detected"
@@ -505,10 +660,14 @@ const renderInitialization = (
         : "not available"
     }`,
     `Onboarding required: ${status.onboardingRequired ? "yes" : "no"}`,
+    `Handoff action: ${status.handoffAction}`,
     `Reason: ${status.reason}`,
   ];
   if (status.inferredDefaultFinish) {
     lines.push(`Inferred finish: ${status.inferredDefaultFinish}`);
+  }
+  if (status.resolvedMode) {
+    lines.push(`Resolved mode: ${status.resolvedMode}`);
   }
   return `${lines.join("\n")}\n`;
 };
@@ -520,13 +679,26 @@ const runInitialize = async (options: CliOptions): Promise<void> => {
       EXIT_CODES.usage
     );
   }
+  if (options.ready && options.mode !== "handoff") {
+    throw new SimpleChangesError(
+      "--ready is valid only with --mode handoff",
+      EXIT_CODES.usage
+    );
+  }
   const inventory = captureInventory(options.repo);
   const changelogCoordination = inspectChangelogCoordination(
     inventory.repository.primaryCheckout
   );
   const status = validateSchema<InitializationStatus>(
     "initialization",
-    inspectInitialization(options.mode, inventory.policy, changelogCoordination)
+    inspectInitialization(
+      options.mode,
+      inventory.policy,
+      changelogCoordination,
+      {
+        readinessConfirmed: options.ready,
+      }
+    )
   );
   if (!status.onboardingRequired) {
     writeOutput(status, options.json, renderInitialization(status));
@@ -540,7 +712,17 @@ const runInitialize = async (options: CliOptions): Promise<void> => {
   };
   if (
     process.stdin.isTTY ||
-    !setupNeedsPrompt(setupOptions, changelogCoordination.relevant)
+    !setupNeedsPrompt(
+      setupOptions,
+      changelogCoordination.relevant,
+      setupOptions.scope
+        ? discoverInstructionTargets(
+            setupOptions.scope,
+            inventory.repository.primaryCheckout,
+            setupOptions.instructionFile
+          ).length
+        : 0
+    )
   ) {
     await runSetup(setupOptions);
     return;

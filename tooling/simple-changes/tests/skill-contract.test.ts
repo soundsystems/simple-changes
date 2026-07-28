@@ -87,6 +87,42 @@ describe("Simple Changes skill contract", () => {
     expect(normalizedSource).toContain(
       "**This run only:** Use the choices now without writing a policy file."
     );
+    expect(normalizedSource).toContain(
+      "**Ask if it's ready:** Recommended. Ask whether the implementation is ready"
+    );
+    expect(normalizedSource).toContain(
+      "**Automatically after implementation:** Hand off completed, verified implementation work immediately"
+    );
+    expect(normalizedSource).toContain(
+      "**When I say it's ready:** Wait for the user to ask to put up, merge, ship"
+    );
+    expect(normalizedSource).toContain(
+      "**Follow repository convention:** Recommended. Use the established format"
+    );
+    expect(normalizedSource).toContain(
+      "**Number and date:** Use zero-padded sequence and ISO date names"
+    );
+    expect(normalizedSource).toContain(
+      "Ordinary UI source files, Git revisions, deployment identities, package versions, and release versions do not use this preference"
+    );
+  });
+
+  test("Completed-work handoff requires the configured readiness gate", async () => {
+    const source = await readFile(skillPath, "utf8");
+    const normalizedSource = source.replace(/\s+/g, " ");
+
+    expect(normalizedSource).toContain(
+      "initialize \\ --mode handoff \\ --json"
+    );
+    expect(normalizedSource).toContain(
+      "Is this ready for Simple Changes, or do you want more changes first?"
+    );
+    expect(normalizedSource).toContain(
+      "Continue only when `mutationAllowed` is true"
+    );
+    expect(normalizedSource).toContain(
+      "Do not invoke it after planning, diagnosis, read-only work"
+    );
   });
 
   test("Queue mode reports every discovered deferred unit", async () => {

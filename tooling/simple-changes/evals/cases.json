@@ -8,6 +8,16 @@
       "expected": true
     },
     {
+      "id": "queue-completed-work-ready",
+      "prompt": "The implementation and checks are complete. Put this up.",
+      "expected": true
+    },
+    {
+      "id": "queue-versioned-ui-artifacts",
+      "prompt": "Put these generated UI surface iterations up.",
+      "expected": true
+    },
+    {
       "id": "sweep-everything-ready",
       "prompt": "Open focused changes for everything ready.",
       "expected": true
@@ -58,6 +68,16 @@
       "expected": false
     },
     {
+      "id": "near-miss-more-changes-first",
+      "prompt": "More changes first.",
+      "expected": false
+    },
+    {
+      "id": "near-miss-generate-ui-surfaces",
+      "prompt": "Generate three UI surface iterations for comparison.",
+      "expected": false
+    },
+    {
       "id": "queue-data-migration",
       "prompt": "Queue the database migration and ORM schema change.",
       "expected": true
@@ -99,6 +119,28 @@
         "Package one coherent unit",
         "Verify it",
         "Open but do not merge a proposal"
+      ]
+    },
+    {
+      "id": "queue-confirmed-completed-work",
+      "prompt": "The implementation and checks are complete. Put this up.",
+      "mode": "queue",
+      "authority": ["local-write", "proposal-write"],
+      "expectedBehaviors": [
+        "Treat the user's signal as readiness confirmation",
+        "Scope the handoff to the completed attributable work",
+        "Preserve and report unrelated work"
+      ]
+    },
+    {
+      "id": "queue-versioned-ui-artifacts",
+      "prompt": "Put these generated UI surface iterations up.",
+      "mode": "queue",
+      "authority": ["local-write", "proposal-write"],
+      "expectedBehaviors": [
+        "Use an existing repository artifact naming convention when present",
+        "Otherwise apply the saved UI artifact naming fallback",
+        "Do not alter source, package, deployment, or release versions"
       ]
     },
     {

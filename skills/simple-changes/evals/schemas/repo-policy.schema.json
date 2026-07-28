@@ -29,6 +29,17 @@
     "changelogHandling": {
       "enum": ["delegate-if-available", "preserve-and-report", "ask"]
     },
+    "handoffTiming": {
+      "enum": ["confirm-ready", "automatic", "user-signaled"]
+    },
+    "uiArtifactVersioning": {
+      "enum": [
+        "repository-convention",
+        "number-and-date",
+        "date-only",
+        "number-only"
+      ]
+    },
     "questions": {
       "enum": ["blocking-only", "always", "never"]
     },

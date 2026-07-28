@@ -8,6 +8,16 @@ export type RequestMode =
   | "resume"
   | "pause";
 
+export type InitializationMode = RequestMode | "handoff";
+
+export type HandoffTiming = "confirm-ready" | "automatic" | "user-signaled";
+
+export type UiArtifactVersioning =
+  | "repository-convention"
+  | "number-and-date"
+  | "date-only"
+  | "number-only";
+
 export type CapabilityStatus =
   | "supported"
   | "unsupported"
@@ -34,10 +44,12 @@ export interface RepoPolicy {
   guidance: {
     version: 1;
   };
+  handoffTiming: HandoffTiming;
   productionDeploy: "ask" | "allow" | "deny";
   questions: "blocking-only" | "always" | "never";
   review: "repository-policy" | "independent" | "provider-policy";
   schemaVersion: 1;
+  uiArtifactVersioning: UiArtifactVersioning;
 }
 
 export type PolicySource = "default" | "user" | "repository";

@@ -119,11 +119,19 @@ by agents and provider adapters.
 
 ```text
 simple-changes initialize --mode MODE
+  [--ready] [--handoff ask|automatic|user-signaled]
+  [--instruction-pointer add|leave] [--instruction-file PATH]
+  [--ui-artifacts]
+  [--ui-versioning repository|number-and-date|date-only|number-only]
   [--changelog delegate-if-available|preserve-and-report|ask]
   [--production ask|allow|deny]
   [--questions blocking-only|always|never]
   [--scope user|repository|run] [--yes] [--json] [--repo PATH]
 simple-changes setup [--finish review|integrate|ship]
+  [--handoff ask|automatic|user-signaled]
+  [--instruction-pointer add|leave] [--instruction-file PATH]
+  [--ui-artifacts]
+  [--ui-versioning repository|number-and-date|date-only|number-only]
   [--changelog delegate-if-available|preserve-and-report|ask]
   [--production ask|allow|deny]
   [--questions blocking-only|always|never]
@@ -176,10 +184,18 @@ goes:
    automatically when repository rules permit it, or stop before production.
 3. When relevant, **How should changelog work be handled?** Delegate when a
    compatible skill exists, preserve and report the work, or ask first.
-4. **When should I ask for permission or help?** Only when blocked, before major
+4. When saving multiple UI artifact iterations, **How should their version
+   names be chosen?** Follow the repository convention (recommended), use a
+   number and ISO date, use an ISO date only, or use a number only.
+5. **When should I ask for permission or help?** Only when blocked, before major
    steps, or skip unauthorized work without interrupting.
-5. **For what scope should I save these preferences?** Personal defaults,
+6. **For what scope should I save these preferences?** Personal defaults,
    repository policy, or this run without writing a policy file.
+7. When that scope has an existing instruction file, whether to add a short,
+   managed Simple Changes pointer to the exact file.
+8. When adding the pointer, whether to ask if completed work is ready
+   (recommended), hand it off automatically after implementation and checks, or
+   wait until the user says it is ready.
 
 Personal preferences are saved under the platform configuration directory and
 apply only when the repository has no policy. Teams may commit
@@ -193,6 +209,8 @@ apply only when the repository has no policy. Teams may commit
   },
   "changelogHandling": "delegate-if-available",
   "defaultFinish": "open-change-request",
+  "handoffTiming": "confirm-ready",
+  "uiArtifactVersioning": "repository-convention",
   "questions": "blocking-only",
   "review": "repository-policy",
   "productionDeploy": "ask",
@@ -206,6 +224,19 @@ Run-only setup writes no file. Policy stores decisions, never credentials or
 transient run state. Resumable state for future mutation adapters belongs under
 `.git/simple-changes/`.
 
+Instruction setup edits only an existing exact `AGENTS.md`, `CLAUDE.md`, or
+runtime-established global instruction file after confirmation. It never
+creates a missing file or duplicates its managed block. The recommended pointer
+asks whether implementation and checks are complete before Simple Changes takes
+over. A completed-work agent can inspect the saved behavior with
+`initialize --mode handoff`; after confirmation, `--ready` resolves the normal
+queue, integrate, ship, or preview boundary.
+
+UI iteration naming is conditional and applies only to deliberately preserved
+screenshots, design exports, static previews, or similar artifacts. Repository
+conventions always win. It does not rename UI source files or set Git,
+deployment, package, or release versions.
+
 For non-interactive setup:
 
 ```sh
@@ -215,8 +246,14 @@ bun run simple-changes setup \
   --production ask \
   --questions blocking-only \
   --scope user \
+  --instruction-file /exact/existing/AGENTS.md \
+  --instruction-pointer add \
+  --handoff ask \
   --yes
 ```
+
+For a task that will preserve multiple UI iterations, add `--ui-artifacts` and
+`--ui-versioning repository|number-and-date|date-only|number-only`.
 
 Even an automatic ship preference does not authorize remote migrations,
 backfills, secrets or environment changes, DNS changes, store releases, or

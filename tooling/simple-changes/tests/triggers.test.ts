@@ -7,6 +7,9 @@ import {
 describe("trigger classification", () => {
   test("recognizes integration requests", () => {
     expect(shouldTrigger("Put this up as a focused change.")).toBe(true);
+    expect(shouldTrigger("Put these generated UI surface iterations up.")).toBe(
+      true
+    );
     expect(shouldTrigger("Ship everything ready.")).toBe(true);
     expect(
       shouldTrigger(
@@ -28,6 +31,9 @@ describe("trigger classification", () => {
     expect(shouldTrigger("Write a commit message.")).toBe(false);
     expect(shouldTrigger("Deploy production.")).toBe(false);
     expect(shouldTrigger("Curate the public CLI release notes.")).toBe(false);
+    expect(
+      shouldTrigger("Generate three UI surface iterations for comparison.")
+    ).toBe(false);
   });
 
   test("uses established context for resume", () => {

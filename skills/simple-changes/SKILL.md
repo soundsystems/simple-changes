@@ -1,6 +1,6 @@
 ---
 name: simple-changes
-description: Use when a user asks to package, queue, publish, integrate, review, merge, ship, reconcile, or clean up one or more local changes, branches, worktrees, pull requests, merge requests, or related deployments—including “put this up,” “merge what’s ready,” “ship everything ready,” “run the loop,” “again,” or “continue.” Detect Git, forge, changelog, and deployment capabilities; preserve paused or concurrent work; coordinate compatible changelog skills without authoring release text directly; create focused change proposals; satisfy repository-native checks and review policy; merge only current approved heads; and verify any authorized deployment. Do not use for direct changelog or release-note writing, a read-only code review, a commit-message-only request, or an unrelated deploy with no change integration work.
+description: Use when a user asks to package, queue, publish, integrate, review, merge, ship, reconcile, or clean up one or more local changes, branches, worktrees, pull requests, merge requests, or related deployments—including “put this up,” “put these up,” “merge what’s ready,” “ship everything ready,” “run the loop,” “again,” or “continue.” Detect Git, forge, changelog, and deployment capabilities; preserve paused or concurrent work; coordinate compatible changelog skills without authoring release text directly; create focused change proposals; satisfy repository-native checks and review policy; merge only current approved heads; and verify any authorized deployment. Do not use for direct changelog or release-note writing, a read-only code review, a commit-message-only request, unrelated UI generation, or an unrelated deploy with no change integration work.
 ---
 
 # Simple Changes
@@ -78,18 +78,43 @@ one-sentence consequence; do not present bare labels:
      the remaining work.
    - **Ask before delegating:** Confirm before handing changelog work to a
      compatible skill.
-4. **When should I ask for permission or help?**
+4. Only when the current task will save multiple UI iteration artifacts and no
+   repository convention already answers it: **When I save multiple UI
+   iterations, how should their version names be chosen?**
+   - **Follow repository convention:** Recommended. Use the established format;
+     if none exists, ask before choosing one.
+   - **Number and date:** Use zero-padded sequence and ISO date names such as
+     `v003-2026-07-28`.
+   - **Date only:** Use ISO dates such as `2026-07-28`, adding a sequence for
+     same-day versions.
+   - **Number only:** Use zero-padded sequential names such as `v003`.
+5. **When should I ask for permission or help?**
    - **Only when blocked:** Keep working unless a decision is genuinely
      required.
    - **At major steps:** Confirm before consequential workflow steps.
    - **Don't interrupt me:** Skip anything that lacks authority and report it
      afterward.
-5. **For what scope should I save these preferences?**
+6. **For what scope should I save these preferences?**
    - **Just for me:** Use them as personal defaults when a repository has no
      policy.
    - **For this repository:** Save a visible `.simple-changes.json` in the
      primary checkout.
    - **This run only:** Use the choices now without writing a policy file.
+7. When the selected scope has an existing, established instruction file:
+   **Should I add a short Simple Changes instruction to `<exact-path>`?**
+   - **Add the pointer:** Add or update one managed pointer so agents know when
+     Simple Changes should take over.
+   - **Leave instructions unchanged:** Rely on explicit requests or runtime
+     skill discovery.
+8. Only when adding the pointer: **When an agent finishes implementation and
+   verification, when should Simple Changes take over?**
+   - **Ask if it's ready:** Recommended. Ask whether the implementation is ready
+     or whether more changes are needed before handing it off.
+   - **Automatically after implementation:** Hand off completed, verified
+     implementation work immediately, subject to the current request and
+     policy.
+   - **When I say it's ready:** Wait for the user to ask to put up, merge, ship,
+     finish, or reconcile the completed work.
 
 Re-read the plain-language summary and confirm it before writing preferences.
 Repository policy overrides personal preferences; the current request overrides
@@ -104,6 +129,43 @@ bun skills/simple-changes/scripts/simple-changes.ts setup --scope user
 ```
 
 Repository scope requires a Git repository. Run-only scope writes nothing.
+Ask about the instruction pointer only after scope is known. Update only an
+existing exact target, never create an instruction file, never write a symlink,
+and never add a second managed block.
+
+Treat UI artifact naming as a fallback for saved screenshots, design exports,
+static previews, or other deliberately preserved iterations. Existing
+repository conventions always win. Ordinary UI source files, Git revisions,
+deployment identities, package versions, and release versions do not use this
+preference. When onboarding from a qualifying task, pass `--ui-artifacts`; in a
+non-interactive runtime also pass the selected `--ui-versioning` value.
+
+## Completed-work handoff
+
+An instruction pointer may invoke this skill after implementation. That event
+does not mean the work is automatically ready and does not grant new authority.
+Run:
+
+```sh
+bun skills/simple-changes/scripts/simple-changes.ts initialize \
+  --mode handoff \
+  --json
+```
+
+If `handoffAction` is `confirm-readiness`, ask: **The implementation and checks
+are complete. Is this ready for Simple Changes, or do you want more changes
+first?** If the user wants changes, return to implementation. After
+confirmation, rerun with `--ready`. If the action is `wait-for-user`, stop until
+the user signals readiness. Continue only when `mutationAllowed` is true, using
+`resolvedMode` as the finish boundary.
+
+Automatic or confirmed handoff applies only when the current assignment changed
+repository work, the implementation is complete, proportionate checks pass, and
+the work is attributable to the current agent. Do not invoke it after planning,
+diagnosis, read-only work, blocked or incomplete implementation, a no-change
+task, changelog-only work, another Simple Changes run, or work owned by another
+active agent. Scope the handoff to the completed assignment and account for all
+other work without taking it over.
 
 Saved preferences never authorize remote migrations or backfills,
 secret/environment changes, DNS/domain changes, mobile/store releases, or

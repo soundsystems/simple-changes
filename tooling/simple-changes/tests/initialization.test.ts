@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { inspectInitialization } from "../../../skills/simple-changes/scripts/lib/initialization.ts";
+import { DEFAULT_POLICY } from "../../../skills/simple-changes/scripts/lib/policy.ts";
 
 describe("first-run initialization", () => {
   test("requires onboarding for write-capable modes without saved policy", () => {
@@ -94,6 +95,72 @@ describe("first-run initialization", () => {
     ).toMatchObject({
       inferredDefaultFinish: null,
       onboardingRequired: true,
+    });
+  });
+
+  test("gates the recommended handoff until readiness is confirmed", () => {
+    const policy = {
+      path: "/repo/.simple-changes.json",
+      source: "repository" as const,
+      value: DEFAULT_POLICY,
+    };
+    expect(inspectInitialization("handoff", policy)).toMatchObject({
+      handoffAction: "confirm-readiness",
+      handoffTiming: "confirm-ready",
+      mutationAllowed: false,
+      resolvedMode: null,
+    });
+    expect(
+      inspectInitialization("handoff", policy, undefined, {
+        readinessConfirmed: true,
+      })
+    ).toMatchObject({
+      handoffAction: "proceed",
+      mutationAllowed: true,
+      resolvedMode: "queue",
+    });
+  });
+
+  test("supports automatic and user-signaled handoff timing", () => {
+    expect(
+      inspectInitialization("handoff", {
+        path: "/repo/.simple-changes.json",
+        source: "repository",
+        value: { ...DEFAULT_POLICY, handoffTiming: "automatic" },
+      })
+    ).toMatchObject({
+      handoffAction: "proceed",
+      mutationAllowed: true,
+      resolvedMode: "queue",
+    });
+    expect(
+      inspectInitialization("handoff", {
+        path: "/repo/.simple-changes.json",
+        source: "repository",
+        value: { ...DEFAULT_POLICY, handoffTiming: "user-signaled" },
+      })
+    ).toMatchObject({
+      handoffAction: "wait-for-user",
+      mutationAllowed: false,
+      resolvedMode: null,
+    });
+  });
+
+  test("keeps preview-only handoff read-only", () => {
+    expect(
+      inspectInitialization("handoff", {
+        path: "/repo/.simple-changes.json",
+        source: "repository",
+        value: {
+          ...DEFAULT_POLICY,
+          defaultFinish: "preview",
+          handoffTiming: "automatic",
+        },
+      })
+    ).toMatchObject({
+      handoffAction: "proceed",
+      mutationAllowed: false,
+      resolvedMode: "preview",
     });
   });
 });

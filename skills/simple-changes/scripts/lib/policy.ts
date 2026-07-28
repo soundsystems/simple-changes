@@ -21,14 +21,21 @@ export const DEFAULT_POLICY: RepoPolicy = {
   guidance: {
     version: 1,
   },
+  handoffTiming: "confirm-ready",
   productionDeploy: "ask",
   questions: "blocking-only",
   review: "repository-policy",
   schemaVersion: 1,
+  uiArtifactVersioning: "repository-convention",
 };
 
-type StoredRepoPolicy = Omit<RepoPolicy, "changelogHandling"> & {
+type StoredRepoPolicy = Omit<
+  RepoPolicy,
+  "changelogHandling" | "handoffTiming" | "uiArtifactVersioning"
+> & {
   changelogHandling?: RepoPolicy["changelogHandling"];
+  handoffTiming?: RepoPolicy["handoffTiming"];
+  uiArtifactVersioning?: RepoPolicy["uiArtifactVersioning"];
 };
 
 interface PersonalPolicyPathOptions {
@@ -54,6 +61,9 @@ const parsePolicyFile = (path: string): RepoPolicy => {
     ...validated,
     changelogHandling:
       validated.changelogHandling ?? DEFAULT_POLICY.changelogHandling,
+    handoffTiming: validated.handoffTiming ?? DEFAULT_POLICY.handoffTiming,
+    uiArtifactVersioning:
+      validated.uiArtifactVersioning ?? DEFAULT_POLICY.uiArtifactVersioning,
   };
 };
 
@@ -116,6 +126,16 @@ export const writePolicyFile = (
       unlinkSync(temporaryPath);
     }
     throw error;
+  }
+  const persisted = validateSchema<RepoPolicy>(
+    "repo-policy",
+    JSON.parse(readFileSync(path, "utf8")) as unknown
+  );
+  if (JSON.stringify(persisted) !== JSON.stringify(validated)) {
+    throw new SimpleChangesError(
+      `Policy verification failed after writing: ${path}`,
+      EXIT_CODES.validation
+    );
   }
 };
 

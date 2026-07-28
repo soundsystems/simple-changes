@@ -5,6 +5,15 @@
 **Scope:** Personal defaults, repository onboarding, technology expectations,
 repository-instruction pointers, and automatic post-implementation handoff
 
+**Implementation note (2026-07-28):** The focused instruction-pointer and
+completed-work timing slice is implemented: existing-file discovery, managed
+pointer updates, `confirm-ready`/`automatic`/`user-signaled` policy, and the
+closed `handoff` initialization checkpoint. Conditional saved UI artifact
+naming is also implemented in the current version 1 policy contract. The
+broader personal technology profile, repository-inspection recommendations,
+version 2 personal/repository policy split, and persisted duplicate-handoff
+provenance remain planned work.
+
 ## Outcome
 
 Expand Simple Changes onboarding so a globally installed skill can learn
@@ -336,6 +345,26 @@ Then ask:
 - **Offer a separate setup task** — Ask for explicit authorization before
   configuring a provider, resources, keys, or environments.
 
+### Saved UI iteration naming
+
+Ask only when the current task will deliberately preserve multiple UI
+iterations and the repository has not already established a naming convention:
+
+> When I save multiple UI iterations, how should their version names be chosen?
+
+- **Follow repository convention** — Recommended. Use the established format;
+  if none exists, ask before choosing one.
+- **Number and date** — Use zero-padded sequence and ISO date names such as
+  `v003-2026-07-28`.
+- **Date only** — Use ISO dates such as `2026-07-28`, adding a sequence for
+  multiple same-day iterations.
+- **Number only** — Use zero-padded sequential names such as `v003`.
+
+Store this as `uiArtifactVersioning`. It is a fallback for saved screenshots,
+design exports, static previews, or similar long-lived UI artifacts. It does
+not version source files, Git history, deployments, packages, changelogs, or
+releases.
+
 Do not make deployment verification optional. Every completed deployment still
 requires the intended immutable revision, provider readiness, complete
 canonical-target coverage, and focused verification of the changed journey.
@@ -411,15 +440,19 @@ the wider effect of the global edit.
 
 Ask this immediately after the user chooses to add the pointer:
 
-> When should agents hand completed work to Simple Changes?
+> When an agent finishes implementation and verification, when should Simple
+> Changes take over?
 
+- **Ask if it's ready** — Recommended safe default. After implementation and
+  verification, ask whether the work is ready for Simple Changes or whether the
+  user wants more changes first. Hand it off only after confirmation.
 - **Automatically after implementation** — After an agent completes and
   verifies its assigned implementation work, invoke Simple Changes and continue
   only to the finish point authorized by the current request and applicable
   policy.
-- **When I say the work is ready** — Recommended safe default. Leave completed
-  work in place until the user asks to put it up, merge it, ship it, finish it,
-  or reconcile the repository.
+- **When I say the work is ready** — Leave completed work in place until the
+  user asks to put it up, merge it, ship it, finish it, or reconcile the
+  repository.
 
 This wording is preferable to “trigger automatically” because it explains the
 event, the scope, and the resulting workflow boundary.
@@ -431,6 +464,18 @@ reliability the setup did not establish.
 ### Pointer templates
 
 Use managed markers so rerunning setup updates the block in place.
+
+Repository confirmation-gated handoff:
+
+```md
+<!-- simple-changes:start -->
+After an agent completes and verifies assigned implementation work, ask whether
+the implementation and checks are complete and ready for Simple Changes, or
+whether more changes are needed. Use the `simple-changes` skill only after the
+user confirms readiness, then follow the current request and
+`.simple-changes.json`.
+<!-- simple-changes:end -->
+```
 
 Repository automatic handoff:
 
@@ -462,6 +507,18 @@ the current request and the repository's own policy.
 <!-- simple-changes:end -->
 ```
 
+Global confirmation-gated handoff:
+
+```md
+<!-- simple-changes:start -->
+After an agent completes and verifies assigned implementation work, ask whether
+the implementation and checks are complete and ready for Simple Changes, or
+whether more changes are needed. Use the applicable `simple-changes` skill only
+after the user confirms readiness, then follow the current request and the
+repository's own policy.
+<!-- simple-changes:end -->
+```
+
 Global user-signaled handoff:
 
 ```md
@@ -483,10 +540,11 @@ which skill owns it, and which policy controls the finish boundary.
 
 ### Pointer state and repeat behavior
 
-Do not duplicate the instruction path or handoff timing into personal or
-repository policy. The managed pointer is the durable evidence of the selected
-trigger, while the confirmed setup receipt records whether the pointer was
-added or declined.
+Do not store the instruction path in personal or repository policy. Store the
+closed handoff timing so initialization can enforce the readiness gate
+deterministically; the managed pointer remains the durable instruction that
+tells agents when to consult it. The confirmed setup receipt records the exact
+target and whether the pointer was added or declined.
 
 Valid saved preferences suppress repeat first-use onboarding. A later guidance
 update may inspect an existing managed pointer and offer an in-place update.
@@ -499,8 +557,8 @@ Run-only setup writes neither preferences nor an instruction pointer.
 
 ### Add a handoff mode
 
-Add a deterministic `handoff` initialization mode for the
-`automatic-after-implementation` pointer.
+Add a deterministic `handoff` initialization mode for automatic and
+confirmation-gated post-implementation pointers.
 
 `handoff` should:
 
@@ -573,7 +631,7 @@ instructions, show a plain-language receipt containing:
 - preference scope and every path to be written;
 - exact instruction-file path;
 - proposed managed pointer;
-- automatic or user-signaled handoff timing; and
+- confirmation-gated, automatic, or user-signaled handoff timing; and
 - the high-risk operations that remain separately authorized.
 
 One confirmation may authorize the exact writes named in the receipt. A changed
@@ -659,8 +717,8 @@ Work:
 - require personal targets to equal the runtime's established global
   instruction path;
 - reject symlinks, traversal, arbitrary global paths, and missing targets;
-- render the four repository/global and automatic/user-signaled pointer
-  variants;
+- render the six repository/global and confirmation-gated, automatic, or
+  user-signaled pointer variants;
 - preview the exact edit in the receipt;
 - update atomically after confirmation without creating a missing instruction
   file;
@@ -686,7 +744,8 @@ Files:
 
 Work:
 
-- add `handoff` to the request-mode contract;
+- add `handoff` to the initialization-mode contract without treating it as a
+  natural-language request mode;
 - resolve the effective finish boundary deterministically;
 - constrain automatic scope to the completed assignment;
 - add recursion and duplicate-handoff guards;

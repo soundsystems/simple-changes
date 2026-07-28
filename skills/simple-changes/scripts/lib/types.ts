@@ -249,6 +249,11 @@ export interface ChangelogReceipt {
   }>;
   provider: string;
   reason: string | null;
+  release?: {
+    date: string;
+    targetContainedUnreleased: "integrated";
+    version: string;
+  } | null;
   releaseImpact: "none" | "patch" | "minor" | "major" | "unknown";
   schemaVersion: 1;
   sourceRevision: string | null;

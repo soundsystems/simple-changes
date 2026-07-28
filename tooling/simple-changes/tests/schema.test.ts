@@ -81,6 +81,11 @@ describe("closed schemas", () => {
       ],
       provider: "simple-changelogs",
       reason: null,
+      release: {
+        date: "2026-07-27",
+        targetContainedUnreleased: "integrated",
+        version: "1.4.0",
+      },
       releaseImpact: "minor",
       schemaVersion: 1,
       sourceRevision: "b".repeat(40),
@@ -94,6 +99,15 @@ describe("closed schemas", () => {
       validateSchema("changelog-receipt", {
         ...receipt,
         paths: [{ digest: "short", path: "../CHANGELOG.md" }],
+      })
+    ).toThrow();
+    expect(() =>
+      validateSchema("changelog-receipt", {
+        ...receipt,
+        release: {
+          ...receipt.release,
+          targetContainedUnreleased: "pending",
+        },
       })
     ).toThrow();
     expect(() =>

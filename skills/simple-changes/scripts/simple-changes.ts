@@ -39,7 +39,7 @@ import { renderInventory, renderPlan } from "./lib/report.ts";
 import { validateSchema } from "./lib/schema.ts";
 import type { RepoPolicy, RequestMode, SchemaName } from "./lib/types.ts";
 
-const VERSION = "0.3.0";
+const VERSION = "0.4.0";
 const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const HELP = `Simple Changes ${VERSION}
 

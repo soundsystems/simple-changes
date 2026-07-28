@@ -1,6 +1,12 @@
 # Changelog
 
-## Unreleased
+## 0.4.0 - 2026-07-27
+
+- Web production deployments now require a complete product release: Simple
+  Changes reconciles target-contained pending work into a dated, versioned
+  release, deploys only the refreshed reconciled target, and reports the product
+  version.
+<!-- simple-changelogs-signature agent="gpt-5.6-sol" at="2026-07-27T22:12:07-05:00" -->
 
 - Skill publishing now distinguishes preserved baseline state from active
   external work. Dirty or unrelated original checkouts and pre-existing

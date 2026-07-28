@@ -16,7 +16,10 @@ Before reporting completion:
 2. Refresh proposal, revision, check, review, discussion, and merge evidence.
 3. When deployment was in scope, refresh the canonical remote target revision
    after all merges, then refresh deployment and canonical-endpoint evidence
-   and prove the observed live revision matches it.
+   and prove the observed live revision matches it. For Web production, also
+   prove the target contains the merged dated/versioned release reconciliation,
+   report its product version, and confirm no target-contained work remains
+   under `Unreleased`.
 4. Confirm each planned path is queued, merged, deployed, preserved, excluded,
    or blocked exactly once.
 5. Return to and verify the exact original primary checkout; do not substitute a

@@ -146,7 +146,9 @@ authority for those operations.
    release-policy files, version fields, or release-note destinations. When
    changelog work exists, apply the configured delegation behavior and follow
    [changelog coordination](references/changelog-coordination.md). Accept
-   delegated files only with a current validated handoff receipt.
+   delegated files only with a current validated handoff receipt. A production
+   Web deployment always requires a dated, versioned release receipt that
+   accounts for every target-contained `Unreleased` item.
 10. Package only the intended paths without resetting, hiding, or staging
    unrelated work. Do not use cleanup stashes.
 11. Create or update the provider's neutral change proposal using real Markdown
@@ -162,13 +164,15 @@ authority for those operations.
 14. Audit detected migrations, but cross the authority checkpoint before any
     remote write. Follow
     [high-risk actions](references/migrations-and-high-risk-actions.md).
-15. Deploy only when authorized. After all merges, refresh the canonical remote
+15. Deploy only when authorized. After all feature merges, complete and merge
+    any production Web release reconciliation, then refresh the canonical remote
     target branch (normally `main`) and capture its exact head revision. Verify
-    the live deployment observes that revision, even when no deployment was
-    created during this run, together with readiness, complete canonical-target
-    coverage, and the changed journey. Reconcile stale provider-managed targets
-    with the existing artifact through a bounded
-    promote/recheck/managed-target sequence. Follow
+    that revision contains the dated, versioned release and no target-contained
+    `Unreleased` work. Verify the live deployment observes the same revision,
+    even when no deployment was created during this run, together with
+    readiness, complete canonical-target coverage, and the changed journey.
+    Reconcile stale provider-managed targets with the existing artifact through
+    a bounded promote/recheck/managed-target sequence. Follow
     [deployments](references/deployments.md).
 16. Re-inventory local and remote state. Clean only proven merged, obsolete, or
     generated objects, then restore and verify the original primary checkout.
@@ -202,6 +206,9 @@ result.
 - Never author changelogs, release notes, changelog policy, version fields, or
   release-note destinations directly. Delegate only to a discovered compatible
   workflow, validate its handoff receipt, then re-inventory before packaging.
+- Treat every production Web deployment as a product release. Do not deploy
+  until the refreshed canonical target contains the merged dated/versioned
+  release reconciliation and no target-contained work remains `Unreleased`.
 - Capture the opening baseline before mutation and attribute this run's objects.
 - Stable baseline work is ready unless evidence says otherwise; changing or new
   concurrent work is preserved.
@@ -274,11 +281,13 @@ no such units. Include only decisions that still require a person. Never claim
 completion until the final inventory proves the requested scope and the
 original primary checkout state.
 For production deployment, report the refreshed canonical Git target revision,
-the observed deployment revision, the expected canonical-target inventory, and
-each refreshed target-to-deployment identity mapping, not only the generated
-deployment URL. A Ship or resumed Ship loop is incomplete when the live
-revision differs from the latest canonical target revision; deploy or promote
-only with authority, otherwise report the exact drift as blocked.
+the product release version when the product is Web, the observed deployment
+revision, the expected canonical-target inventory, and each refreshed
+target-to-deployment identity mapping, not only the generated deployment URL. A
+Ship or resumed Ship loop is incomplete when the live revision differs from the
+latest canonical target revision, or when Web production lacks its merged
+versioned release reconciliation; deploy or promote only with authority,
+otherwise report the exact drift as blocked.
 
 For preview, prefer the bundled deterministic command:
 

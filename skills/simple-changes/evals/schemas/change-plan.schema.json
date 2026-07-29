@@ -26,6 +26,7 @@
     "mode": {
       "enum": [
         "preview",
+        "sync",
         "queue",
         "sweep",
         "integrate",
@@ -106,6 +107,7 @@
           "items": {
             "enum": [
               "local-write",
+              "local-sync",
               "proposal-write",
               "merge",
               "preview-deploy",
@@ -122,6 +124,9 @@
           "type": "array",
           "items": {
             "enum": [
+              "fetch-target",
+              "fast-forward-target",
+              "merge-target",
               "branch",
               "commit",
               "push",

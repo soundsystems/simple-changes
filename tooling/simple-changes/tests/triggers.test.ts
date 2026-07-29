@@ -11,6 +11,14 @@ describe("trigger classification", () => {
       true
     );
     expect(shouldTrigger("Ship everything ready.")).toBe(true);
+    expect(shouldTrigger("sync")).toBe(true);
+    expect(shouldTrigger("Sync with remote main.")).toBe(true);
+    expect(shouldTrigger("Get us inline with main.")).toBe(true);
+    expect(shouldTrigger("Pull the latest changes from origin.")).toBe(true);
+    expect(classifyRequestMode("sync")).toBe("sync");
+    expect(classifyRequestMode("Sync with remote main.")).toBe("sync");
+    expect(classifyRequestMode("Get us in line with main.")).toBe("sync");
+    expect(classifyRequestMode("Sync with main, then ship it.")).toBe("ship");
     expect(
       shouldTrigger(
         "Audit every change proposal in every state for malformed newlines."
@@ -34,6 +42,8 @@ describe("trigger classification", () => {
     expect(
       shouldTrigger("Generate three UI surface iterations for comparison.")
     ).toBe(false);
+    expect(shouldTrigger("Sync the customer records to the CRM.")).toBe(false);
+    expect(shouldTrigger("Sync the database schema.")).toBe(false);
   });
 
   test("uses established context for resume", () => {

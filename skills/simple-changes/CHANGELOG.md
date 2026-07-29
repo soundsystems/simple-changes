@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- Added a guarded Sync mode for requests to update from the canonical remote
+  target. It refreshes only the resolved target, safely updates clean local
+  branches when possible, preserves unsafe checkout state, and never treats
+  synchronization as permission to push, rewrite history, deploy, or change
+  remote data.
+- Authorized Ship runs now begin with a concise scope and delivery-path brief
+  while work proceeds, then finish with exact delivery receipts, review-driven
+  changes, re-verification, and preserved or blocked work.
+
 ## 0.5.0 - 2026-07-28
 
 - Onboarding can now add or update a managed Simple Changes pointer in an exact

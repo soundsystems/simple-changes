@@ -16,6 +16,7 @@ const MODE_AUTHORITIES: Record<RequestMode, ReadonlySet<Authority>> = {
   resume: new Set(),
   ship: new Set(["local-write", "proposal-write", "merge", "preview-deploy"]),
   sweep: new Set(["local-write", "proposal-write"]),
+  sync: new Set(["local-sync"]),
 };
 
 const OPERATION_AUTHORITY: Partial<Record<PlannedOperation, Authority>> = {
@@ -25,7 +26,10 @@ const OPERATION_AUTHORITY: Partial<Record<PlannedOperation, Authority>> = {
   commit: "local-write",
   "deploy-preview": "preview-deploy",
   "deploy-production": "production-deploy",
+  "fast-forward-target": "local-sync",
+  "fetch-target": "local-sync",
   merge: "merge",
+  "merge-target": "local-sync",
   "open-proposal": "proposal-write",
   "promote-deployment": "production-deploy",
   push: "proposal-write",

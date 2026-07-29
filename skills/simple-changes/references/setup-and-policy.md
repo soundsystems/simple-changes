@@ -25,10 +25,12 @@ Classify the request mode, then run:
 simple-changes initialize --mode <mode> --json
 ```
 
-Queue, sweep, integrate, ship, reconcile, resume, and handoff are write-capable.
-Preview and pause are read-only or preservation-only. When a write-capable mode
-has policy source `default`, onboarding is required before any local branch,
-commit, push, proposal, merge, cleanup, or deployment mutation.
+Sync, queue, sweep, integrate, ship, reconcile, resume, and handoff are
+write-capable. Preview and pause are read-only or preservation-only. Sync uses
+fixed local-only preservation guardrails and does not start workflow-preference
+onboarding. When any other write-capable mode has policy source `default`,
+onboarding is required before any local branch, commit, push, proposal, merge,
+cleanup, or deployment mutation.
 
 Start onboarding automatically; do not add a separate "would you like to set
 this up?" prompt. The request mode supplies the finish choice for queue, sweep,

@@ -25,8 +25,19 @@ const SHIP_MODE_PATTERN = /\bship\b/iu;
 const INTEGRATE_MODE_PATTERN =
   /\bmerge\b(?!\s+requests?\b)|\bintegrate\b|\bfinish the open\b/iu;
 const RECONCILE_MODE_PATTERN = /\breconcile\b|\bclean(?: up)?\b/iu;
+const SYNC_MODE_PATTERN =
+  /^(?:please\s+)?sync(?:\s+(?:us|this\s+(?:repo|repository)|the\s+(?:repo|repository)))?(?:\s+with\s+(?:(?:the\s+)?remote(?:\s+(?:main|master))?|origin(?:\/(?:main|master))?|upstream(?:\/(?:main|master))?|(?:main|master)|the\s+default\s+branch))?[.!]?$/iu;
+const ALIGN_WITH_TARGET_PATTERN =
+  /\bget us (?:in\s*line|aligned|up to date) with (?:(?:the )?remote(?:\s+(?:main|master))?|origin(?:\/(?:main|master))?|upstream(?:\/(?:main|master))?|(?:main|master)|the default branch)\b/iu;
+const PULL_TARGET_PATTERN =
+  /\bpull (?:the )?latest(?: changes)? from (?:origin|upstream|(?:remote )?(?:main|master)|the default branch)\b/iu;
 const SWEEP_MODE_PATTERN =
   /\beverything\b|\ball (?:ready|changes|work)\b|\bfocused changes\b/iu;
+
+const isSyncRequest = (prompt: string): boolean =>
+  SYNC_MODE_PATTERN.test(prompt) ||
+  ALIGN_WITH_TARGET_PATTERN.test(prompt) ||
+  PULL_TARGET_PATTERN.test(prompt);
 
 export const shouldTrigger = (
   prompt: string,
@@ -53,6 +64,7 @@ export const shouldTrigger = (
   }
   return (
     INTEGRATION_PATTERN.test(normalized) ||
+    isSyncRequest(normalized) ||
     CLEAN_REPOSITORY_PATTERN.test(normalized) ||
     COMPLETE_PROPOSAL_PATTERN.test(normalized) ||
     PREVIEW_TRIGGER_PATTERN.test(normalized)
@@ -87,6 +99,9 @@ export const classifyRequestMode = (
   }
   if (RECONCILE_MODE_PATTERN.test(normalized)) {
     return "reconcile";
+  }
+  if (isSyncRequest(normalized)) {
+    return "sync";
   }
   if (
     COMPLETE_PROPOSAL_PATTERN.test(normalized) &&

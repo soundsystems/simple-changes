@@ -6,8 +6,9 @@ repository.
 
 Run `bun run eval` from the repository root. The credential-free suite checks:
 
-- positive and near-miss trigger classification;
-- fourteen representative behavior journeys and their authority ceilings;
+- twenty-four positive and near-miss trigger cases, including Git Sync versus
+  non-Git synchronization;
+- twenty-two representative behavior journeys and their authority ceilings;
 - five release-note behavior cases and safe filesystem assertions;
 - closed schema validity and runner request/response parity;
 - package shape, links, and one discoverable `SKILL.md`;

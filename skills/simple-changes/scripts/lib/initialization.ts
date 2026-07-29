@@ -30,6 +30,7 @@ export interface InitializationStatus {
 
 const WRITE_CAPABLE_MODES = new Set<InitializationMode>([
   "handoff",
+  "sync",
   "queue",
   "sweep",
   "integrate",
@@ -105,6 +106,7 @@ const inspectHandoff = (
 };
 
 const initializationReason = (
+  mode: InitializationMode,
   writeCapable: boolean,
   onboardingRequired: boolean,
   handoff: HandoffState
@@ -114,6 +116,9 @@ const initializationReason = (
   }
   if (onboardingRequired) {
     return "No repository or personal preferences exist; onboarding must finish before mutation.";
+  }
+  if (mode === "sync") {
+    return "Sync uses fixed local-only preservation guardrails and does not require workflow preference onboarding.";
   }
   if (handoff.action === "confirm-readiness") {
     return "Ask whether the implementation and checks are complete before handing work to Simple Changes.";
@@ -145,7 +150,8 @@ export const inspectInitialization = (
   } = {}
 ): InitializationStatus => {
   const writeCapable = WRITE_CAPABLE_MODES.has(mode);
-  const onboardingRequired = writeCapable && policy.source === "default";
+  const onboardingRequired =
+    writeCapable && mode !== "sync" && policy.source === "default";
   const readinessConfirmed = options.readinessConfirmed ?? false;
   const handoff = inspectHandoff(mode, policy.value, readinessConfirmed);
   const mutationAllowed =
@@ -164,7 +170,12 @@ export const inspectInitialization = (
     policyPath: policy.path,
     policySource: policy.source,
     readinessConfirmed,
-    reason: initializationReason(writeCapable, onboardingRequired, handoff),
+    reason: initializationReason(
+      mode,
+      writeCapable,
+      onboardingRequired,
+      handoff
+    ),
     resolvedMode: handoff.resolvedMode,
     writeCapable,
   };

@@ -33,6 +33,26 @@
       "expected": true
     },
     {
+      "id": "sync-bare-command",
+      "prompt": "sync",
+      "expected": true
+    },
+    {
+      "id": "sync-remote-main",
+      "prompt": "Sync this repo with remote main.",
+      "expected": true
+    },
+    {
+      "id": "sync-inline-with-main",
+      "prompt": "Get us inline with main.",
+      "expected": true
+    },
+    {
+      "id": "sync-pull-latest-origin",
+      "prompt": "Pull the latest changes from origin.",
+      "expected": true
+    },
+    {
       "id": "reconcile-repository",
       "prompt": "Clean this repository up without losing work.",
       "expected": true
@@ -78,6 +98,11 @@
       "expected": false
     },
     {
+      "id": "near-miss-non-git-sync",
+      "prompt": "Sync the customer records to the CRM.",
+      "expected": false
+    },
+    {
       "id": "queue-data-migration",
       "prompt": "Queue the database migration and ORM schema change.",
       "expected": true
@@ -119,6 +144,44 @@
         "Package one coherent unit",
         "Verify it",
         "Open but do not merge a proposal"
+      ]
+    },
+    {
+      "id": "sync-clean-canonical-target",
+      "prompt": "Sync with remote main.",
+      "mode": "sync",
+      "authority": ["remote-read", "local-fast-forward"],
+      "expectedBehaviors": [
+        "Resolve the exact canonical remote and target without guessing among remotes",
+        "Fetch only that target and record its old and new revisions",
+        "Fast-forward a clean behind-only local target",
+        "Never push, prune, stash, reset, rebase, deploy, or mutate provider state",
+        "Report original and resulting HEAD plus final ahead and behind counts"
+      ]
+    },
+    {
+      "id": "sync-dirty-feature-branch",
+      "prompt": "Get us in line with main.",
+      "mode": "sync",
+      "authority": ["remote-read"],
+      "expectedBehaviors": [
+        "Capture dirty and in-progress state before contacting the remote",
+        "Refresh the exact target without changing the checkout",
+        "Preserve every local change without creating a cleanup stash",
+        "Report fetch-only preservation rather than claiming the branch is synchronized"
+      ]
+    },
+    {
+      "id": "sync-clean-feature-branch",
+      "prompt": "Pull the latest changes from origin.",
+      "mode": "sync",
+      "authority": ["remote-read", "local-write"],
+      "expectedBehaviors": [
+        "Preflight conflicts before changing the feature branch",
+        "Use the established repository strategy or default to a normal local merge",
+        "Require explicit or established safe authority before any rebase",
+        "Never force-push rewritten or published history",
+        "Run proportionate repository checks after integrating the target"
       ]
     },
     {
@@ -169,9 +232,12 @@
       "mode": "ship",
       "authority": ["local-write", "proposal-write", "merge", "preview-deploy"],
       "expectedBehaviors": [
+        "Summarize the ready scope and planned shipping path before consequential mutation without adding a redundant permission gate",
         "Integrate eligible proposals",
         "Require policy or current authority for production",
-        "Verify immutable revision and canonical target"
+        "Track changes made during review against each original proposal head",
+        "Verify immutable revision and canonical target",
+        "Summarize what actually shipped, review-driven changes, re-verification, and preserved work"
       ]
     },
     {
@@ -230,13 +296,15 @@
       "mode": "ship",
       "authority": ["local-write", "proposal-write", "merge", "preview-deploy"],
       "expectedBehaviors": [
+        "Send the pre-ship brief and proceed in the same run when authority already exists",
         "Resolve the latest canonical remote target revision after all merges",
         "Compare the observed live deployment revision with that exact target revision even when this run created no deployment",
         "Discover the complete configured canonical-target inventory",
         "Reject ready status when any expected live target is missing or stale",
         "Promote the existing verified artifact once before bounded same-project managed-target reconciliation",
         "Refresh every canonical target after each attempt without creating a duplicate deployment",
-        "Run a focused smoke journey"
+        "Run a focused smoke journey",
+        "Compare the final shipped state with the pre-ship brief and include any review delta"
       ]
     },
     {

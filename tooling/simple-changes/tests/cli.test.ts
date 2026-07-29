@@ -113,6 +113,38 @@ describe("contract CLI", () => {
     });
   });
 
+  test("accepts first-run Sync with fixed preservation guardrails", () => {
+    const fixture = createTestRepository();
+    repositories.push(fixture);
+    const result = spawnSync(
+      [
+        process.execPath,
+        cliPath,
+        "initialize",
+        "--mode",
+        "sync",
+        "--json",
+        "--repo",
+        fixture.root,
+      ],
+      { stderr: "pipe", stdout: "pipe" }
+    );
+    const output = JSON.parse(decoder.decode(result.stdout)) as {
+      mode: string;
+      mutationAllowed: boolean;
+      onboardingRequired: boolean;
+      writeCapable: boolean;
+    };
+
+    expect(result.exitCode).toBe(0);
+    expect(output).toMatchObject({
+      mode: "sync",
+      mutationAllowed: true,
+      onboardingRequired: false,
+      writeCapable: true,
+    });
+  });
+
   test("automatically runs setup during non-interactive initialization when answers are complete", () => {
     const fixture = createTestRepository();
     repositories.push(fixture);

@@ -65,6 +65,22 @@ describe("first-run initialization", () => {
     }
   });
 
+  test("uses fixed local-only guardrails for a first Sync run", () => {
+    expect(
+      inspectInitialization("sync", {
+        path: null,
+        source: "default",
+      })
+    ).toMatchObject({
+      inferredDefaultFinish: null,
+      mutationAllowed: true,
+      onboardingRequired: false,
+      reason:
+        "Sync uses fixed local-only preservation guardrails and does not require workflow preference onboarding.",
+      writeCapable: true,
+    });
+  });
+
   test("does not repeat onboarding when personal or repository policy exists", () => {
     expect(
       inspectInitialization("integrate", {

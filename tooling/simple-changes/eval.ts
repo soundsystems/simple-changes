@@ -22,6 +22,7 @@ interface JourneyCase {
   id: string;
   mode:
     | "preview"
+    | "sync"
     | "queue"
     | "sweep"
     | "integrate"
@@ -96,6 +97,8 @@ const requiredSkillFiles = [
   "evals/schemas/release-consistency.schema.json",
   "evals/schemas/release-notes.schema.json",
   "references/changelog-coordination.md",
+  "references/ship-communication.md",
+  "references/sync.md",
 ];
 for (const filename of requiredSkillFiles) {
   if (!existsSync(resolve(skillDirectory, filename))) {

@@ -16,6 +16,11 @@ Self-review is never represented as independent review.
 Address actionable findings inside the intended unit, rerun relevant checks,
 push the new revision, and request/re-run review against that revision. Keep
 unrelated findings out of the unit unless they are required for correctness.
+For Ship, record each material review-driven change against the proposal's
+original reviewed head: the request or discussion, resulting commit and
+behavioral delta, checks rerun, approval invalidation, and approval obtained for
+the replacement head. This evidence feeds the final shipped-state summary; when
+review changed nothing, record that explicitly instead of inventing a delta.
 
 Merge in dependency order only when the current revision satisfies policy.
 Return the canonical merged commit/revision and refresh downstream units after

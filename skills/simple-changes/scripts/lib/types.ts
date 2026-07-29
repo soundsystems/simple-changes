@@ -1,5 +1,6 @@
 export type RequestMode =
   | "preview"
+  | "sync"
   | "queue"
   | "sweep"
   | "integrate"
@@ -141,6 +142,7 @@ export interface RepositoryInventory {
 
 export type Authority =
   | "local-write"
+  | "local-sync"
   | "proposal-write"
   | "merge"
   | "preview-deploy"
@@ -152,6 +154,9 @@ export type Authority =
   | "history-rewrite";
 
 export type PlannedOperation =
+  | "fetch-target"
+  | "fast-forward-target"
+  | "merge-target"
   | "branch"
   | "commit"
   | "push"

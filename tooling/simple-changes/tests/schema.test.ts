@@ -28,6 +28,14 @@ describe("closed schemas", () => {
         credentials: "never",
       })
     ).toThrow("additional properties");
+
+    const syncStatus = inspectInitialization("sync", {
+      path: null,
+      source: "default",
+    });
+    expect(
+      validateSchema<typeof syncStatus>("initialization", syncStatus)
+    ).toEqual(syncStatus);
   });
 
   test("rejects unknown policy fields", () => {

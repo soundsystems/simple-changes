@@ -1,5 +1,22 @@
 # Developer changelog
 
+## Unreleased
+
+- Added first-class Sync and two-stage Ship contracts:
+  - Sync initialization bypasses workflow-preference onboarding and grants only
+    the new `local-sync` authority for exact-target fetch, fast-forward, and
+    conflict-preflighted local target integration operations.
+  - Sync trigger classification distinguishes canonical Git target requests
+    from non-Git synchronization, while closed schemas and run-state types now
+    carry the new mode, authority, and operation vocabulary.
+  - Ship guidance records a pre-mutation scope brief and a final delivery
+    receipt, including material review deltas from each proposal's original
+    head, approval invalidation, replacement heads, and re-verification.
+  - Added CLI, initialization, planner, trigger, schema, skill-contract, and
+    behavior-evaluation coverage for the local-only Sync boundary and the
+    two-stage Ship communication contract.
+<!-- simple-changelogs-signature agent="gpt-5.6-sol" at="2026-07-29T13:30:44-05:00" -->
+
 ## 0.5.0 - 2026-07-28
 
 - Added completed-work onboarding and handoff contracts:

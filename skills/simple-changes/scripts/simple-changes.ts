@@ -255,6 +255,7 @@ const applyValuedOption = (
     const modes: InitializationMode[] = [
       "handoff",
       "preview",
+      "sync",
       "queue",
       "sweep",
       "integrate",

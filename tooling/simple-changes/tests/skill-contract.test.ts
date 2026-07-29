@@ -17,6 +17,14 @@ const changelogReceiptSchemaPath = new URL(
   "../../../skills/simple-changes/evals/schemas/changelog-receipt.schema.json",
   import.meta.url
 );
+const syncPath = new URL(
+  "../../../skills/simple-changes/references/sync.md",
+  import.meta.url
+);
+const shipCommunicationPath = new URL(
+  "../../../skills/simple-changes/references/ship-communication.md",
+  import.meta.url
+);
 
 describe("Simple Changes skill contract", () => {
   test("Ship loops prove production matches the refreshed target head", async () => {
@@ -139,5 +147,58 @@ describe("Simple Changes skill contract", () => {
     expect(normalizedSource).toContain("current revision/state");
     expect(normalizedSource).toContain("why it was deferred");
     expect(normalizedSource).toContain("the next action");
+  });
+
+  test("Sync is local-only and preserves unsafe checkout state", async () => {
+    const [skill, sync] = await Promise.all([
+      readFile(skillPath, "utf8"),
+      readFile(syncPath, "utf8"),
+    ]);
+    const normalizedSkill = skill.replace(/\s+/g, " ");
+    const normalizedSync = sync.replace(/\s+/g, " ");
+
+    expect(normalizedSkill).toContain(
+      "A bare Sync request authorizes exact-target fetch and a guarded local update"
+    );
+    expect(normalizedSync).toContain(
+      "Do not select an unrelated remote because it is alphabetically first"
+    );
+    expect(normalizedSync).toContain(
+      "Dirty, conflicted, detached, or mid-operation"
+    );
+    expect(normalizedSync).toContain(
+      "Fast-forward only to the refreshed target"
+    );
+    expect(normalizedSync).toContain(
+      "Generic Sync never authorizes a force push or rewriting shared history"
+    );
+  });
+
+  test("Ship communicates scope before mutation and review deltas after", async () => {
+    const [skill, communication] = await Promise.all([
+      readFile(skillPath, "utf8"),
+      readFile(shipCommunicationPath, "utf8"),
+    ]);
+    const normalizedSkill = skill.replace(/\s+/g, " ");
+    const normalizedCommunication = communication.replace(/\s+/g, " ");
+
+    expect(normalizedSkill).toContain(
+      "before the first consequential Ship mutation, send a concise pre-ship brief in the same assistant turn"
+    );
+    expect(normalizedSkill).toContain(
+      "this is an interruption window rather than a permission gate"
+    );
+    expect(normalizedCommunication).toContain(
+      "state that the run is proceeding and continue in the same assistant turn"
+    );
+    expect(normalizedCommunication).toContain(
+      "Record the proposal's original reviewed head"
+    );
+    expect(normalizedCommunication).toContain(
+      "If review caused no code or behavior change, say so explicitly"
+    );
+    expect(normalizedCommunication).toContain(
+      "The final response compares the pre-ship brief with the observed result"
+    );
   });
 });

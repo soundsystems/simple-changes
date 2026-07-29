@@ -47,6 +47,7 @@
     "mode": {
       "enum": [
         "preview",
+        "sync",
         "queue",
         "sweep",
         "integrate",
@@ -90,6 +91,7 @@
         {
           "enum": [
             "preview",
+            "sync",
             "queue",
             "sweep",
             "integrate",

@@ -2,8 +2,8 @@
 
 ## Triggers
 
-- Explicit requests to package, queue, integrate, merge, ship, reconcile, or
-  preview repository changes.
+- Explicit requests to sync with the canonical Git target, package, queue,
+  integrate, merge, ship, reconcile, or preview repository changes.
 - A managed completed-work pointer after attributable implementation and
   proportionate verification.
 - A user signal that completed implementation is ready to put up, merge, ship,
@@ -24,6 +24,8 @@
 - Repository and directory-scoped instructions.
 - Repository policy, then personal preferences, then safe defaults.
 - Fresh Git, provider, deployment, changelog, and verification evidence.
+- For Sync, the exact canonical remote target, original local HEAD, status, and
+  ahead/behind/ancestry evidence.
 - For completed-work handoff, the closed initialization status and attributable
   implementation scope.
 - When multiple UI iterations will be saved, the repository convention or
@@ -35,6 +37,9 @@
 - A focused plan and explicit outstanding-work ledger.
 - Verified proposals, merges, deployments, or preserved work within the
   authorized finish boundary.
+- For Sync, the fetched target and resulting or preserved local branch state.
+- For Ship, a pre-mutation scope brief and a final shipped-state receipt with
+  review-driven deltas.
 - Exact receipts for policy and managed instruction-pointer writes.
 
 ## Guarantees
@@ -49,6 +54,10 @@
 - Completed-work handoff cannot mutate while readiness confirmation is pending.
 - UI artifact naming never overrides an established repository convention and
   never controls source, Git, deployment, package, or release versions.
+- Sync never pushes, guesses an ambiguous remote, stashes dirty work, rewrites
+  shared history, or leaves the checkout conflicted.
+- Authorized Ship runs communicate scope before mutation without adding a
+  redundant permission gate, then account for review-driven revisions.
 - Deployment and high-risk actions retain their independent authority checks.
 
 ## Forbidden behaviors
@@ -59,5 +68,9 @@
   or another agent's work.
 - Creating an instruction file, guessing a global instruction path, or
   duplicating the managed pointer.
+- Treating a generic Sync request as push, reset, rebase, proposal, deployment,
+  or data-write authority.
+- Reporting the original Ship plan as delivered without reconciling review
+  changes and final provider evidence.
 - Directly authoring changelogs, release notes, version fields, or release
   policy.

@@ -14,6 +14,7 @@ Requires [Bun](https://bun.sh/) 1.2 or later and Git.
 
 ```sh
 bun install
+bun run simple-changes initialize --mode sync
 bun run simple-changes initialize --mode queue
 bun run simple-changes preview
 bun run simple-changes preview --json
@@ -77,6 +78,10 @@ discovery and the production release map stay scoped to that repository.
 ## What the current source provides
 
 - Resolves the canonical primary checkout across linked worktrees.
+- Treats `sync`, `pull latest`, and `get us in line with main` as a guarded
+  local-only mode: exact-target fetch, fast-forward-only target updates, and
+  conflict-preflighted feature-branch integration without push or history
+  rewrite.
 - Detects first write-capable use and requires onboarding when neither
   repository nor personal preferences exist.
 - Detects changelog relevance separately from compatible skill availability and
@@ -108,6 +113,9 @@ discovery and the production release map stay scoped to that repository.
   release authority.
 - Treats requests for all proposals as complete-corpus operations that must
   paginate every relevant provider state.
+- Starts Ship runs with a concise proceed-without-waiting scope brief when
+  authority already exists, then closes with exact shipped receipts and any
+  review-driven changes made after the original proposal head.
 - Emits human-readable or JSON reports with stable exit codes.
 
 The deterministic CLI does **not** create, push, merge, deploy, apply
@@ -162,7 +170,9 @@ version without changing them.
 ## Policy
 
 Write-capable Simple Changes tasks automatically initialize onboarding when no
-repository or personal policy exists. Run the same checkpoint directly:
+repository or personal policy exists, except Sync: it uses fixed local-only
+guardrails and never starts workflow-preference onboarding. Run the same
+checkpoint directly:
 
 ```sh
 bun run simple-changes initialize --mode queue
@@ -259,6 +269,13 @@ Even an automatic ship preference does not authorize remote migrations,
 backfills, secrets or environment changes, DNS changes, store releases, or
 history rewrites. Those operations still require explicit, exact-target
 permission.
+
+Before an authorized Ship run mutates repository or provider state, the agent
+summarizes the ready scope, planned checks/merge/release/deploy path, separate
+authority boundaries, and preserved work. This update is delivered while the
+run proceeds; it does not add a redundant permission prompt. The final response
+reports what actually shipped and identifies every material change made during
+review, including the new exact head and re-verification.
 
 ## Development
 

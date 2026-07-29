@@ -25,6 +25,8 @@ Before reporting completion:
 5. Return to and verify the exact original primary checkout; do not substitute a
    clean auxiliary worktree.
 6. Report queued, merged, deployed, preserved, and blocked outcomes separately.
+7. For Ship, reconcile the pre-ship brief with the final receipts and report
+   material review-driven changes from the original proposal heads.
 
 Completion comes from fresh evidence, not the run ledger or conversational
 memory. For every preserved or blocked item, include the evidence supporting its

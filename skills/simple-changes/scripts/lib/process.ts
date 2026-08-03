@@ -84,6 +84,28 @@ const terminateLingeringProcessGroup = async (
   return waitForProcessGroupExit(processGroupId, PROCESS_GROUP_EXIT_GRACE_MS);
 };
 
+const lingeringProcessGroupError = async (
+  command: string,
+  firstArgument: string | undefined,
+  processGroupId: number
+): Promise<SimpleChangesError | null> => {
+  if (process.platform === "win32" || !processGroupIsAlive(processGroupId)) {
+    return null;
+  }
+  let terminated = false;
+  try {
+    terminated = await terminateLingeringProcessGroup(processGroupId);
+  } catch {
+    terminated = !processGroupIsAlive(processGroupId);
+  }
+  return terminated
+    ? new SimpleChangesError(
+        `${command} ${firstArgument ?? ""} left background processes in guarded process group ${processGroupId}; they were terminated before releasing the loop lease.`,
+        EXIT_CODES.unsafe
+      )
+    : new GuardedProcessGroupStillAliveError(command, processGroupId);
+};
+
 export const runCommand = (
   command: string,
   args: readonly string[],
@@ -162,6 +184,15 @@ export const runCommandInProcessGroup = (
     }
     child.once("close", async (code) => {
       const exitCode = code ?? 1;
+      const processGroupError = await lingeringProcessGroupError(
+        command,
+        args[0],
+        childPid
+      );
+      if (processGroupError) {
+        rejectPromise(processGroupError);
+        return;
+      }
       if (exitCode !== 0) {
         const detail = redactSecrets(stderr.trim() || stdout.trim());
         rejectPromise(
@@ -169,18 +200,6 @@ export const runCommandInProcessGroup = (
             `${command} ${args[0] ?? ""} failed${detail ? `: ${detail}` : ""}`,
             EXIT_CODES.inventory
           )
-        );
-        return;
-      }
-      if (process.platform !== "win32" && processGroupIsAlive(childPid)) {
-        const terminated = await terminateLingeringProcessGroup(childPid);
-        rejectPromise(
-          terminated
-            ? new SimpleChangesError(
-                `${command} ${args[0] ?? ""} left background processes in guarded process group ${childPid}; they were terminated before releasing the loop lease.`,
-                EXIT_CODES.unsafe
-              )
-            : new GuardedProcessGroupStillAliveError(command, childPid)
         );
         return;
       }

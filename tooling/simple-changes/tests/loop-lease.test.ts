@@ -280,6 +280,31 @@ describe("active integration-loop lease", () => {
     20_000
   );
 
+  test.skipIf(process.platform === "win32")(
+    "terminates background descendants after a failed command leader",
+    async () => {
+      const fixture = repository();
+      const lease = startLoop(fixture.root, "controller", "ship");
+      const pidPath = join(fixture.root, "failed-lingering.pid");
+
+      await expect(
+        executeLoopMutation(fixture.root, lease.runId, "controller", [
+          "sh",
+          "-c",
+          `sleep 30 >/dev/null 2>&1 & echo $! > ${pidPath}; exit 7`,
+        ])
+      ).rejects.toThrow("left background processes");
+
+      const lingeringPid = Number.parseInt(readFileSync(pidPath, "utf8"), 10);
+      expect(Number.isInteger(lingeringPid)).toBe(true);
+      expect(() => process.kill(lingeringPid, 0)).toThrow();
+      expect(
+        guardLoopMutation(fixture.root, lease.runId, "controller").ok
+      ).toBe(true);
+    },
+    20_000
+  );
+
   test("awaits an asynchronous callback before releasing the lease", async () => {
     const fixture = repository();
     const lease = startLoop(fixture.root, "controller", "ship");

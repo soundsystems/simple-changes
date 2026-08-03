@@ -133,7 +133,7 @@ describe("contract CLI", () => {
         "--",
         process.execPath,
         "-e",
-        "await Bun.sleep(500)",
+        "await Bun.sleep(10_000)",
       ],
       {
         env: {

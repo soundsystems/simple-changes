@@ -46,30 +46,47 @@ as `simple-changes/active-loop.json` beneath the repository's common Git
 directory. `loop start` creates it atomically and records:
 
 - the run and controller identities;
-- the opening inventory digest and canonical target ref;
-- every worktree's exact path, branch, head, and status digest;
+- the opening inventory digest, canonical target ref, and exact target revision;
+- every worktree's exact path, branch, head, and content-sensitive change
+  digest, including staged and unstaged patches plus untracked contents;
 - whether the worktree is controller-owned, author-owned, or preserved; and
 - exact user-approved overrides, when any exist.
 
-The lock directory prevents two agents from updating the manifest at once. A
-second controller cannot replace an active lease. Do not remove or rewrite the
-state file by hand to bypass a conflict.
+The lock directory prevents two cooperating agents from updating the manifest
+or performing guarded local mutations at once. It records the owning PID, host,
+operation, start time, and random token. A second controller cannot replace an
+active lease. Do not remove or rewrite the lock or state file by hand.
 
-Run `loop guard` immediately before a mutation from the checkout that will
-change. The guard requires that the caller's agent ID owns that registered
-controller or author worktree. It also rejects any new unregistered worktree,
-any missing baseline worktree, and any head or status change in a preserved
-worktree. Run `loop verify` before merge, deployment, cleanup, and completion
-even when every earlier guard passed.
+`loop guard` is a moment-in-time read-only preflight. It does not reserve a
+future mutation. Run local Git and repository commands through `loop exec` so
+the same atomic lock covers a fresh manifest check, one argument-array command,
+and a fresh post-command check. The operation requires that the caller's agent
+ID owns the exact registered controller or author worktree. It rejects any new
+unregistered worktree, incomplete preparation, missing baseline worktree, or
+head/content change in a preserved worktree. Run `loop verify` before merge,
+deployment, cleanup, and completion even when every earlier operation passed.
+
+An external provider mutation that cannot execute inside `loop exec` uses the
+narrow fallback: `loop guard` immediately before the call and `loop verify`
+immediately after it. Never describe that fallback as an atomic local mutation
+lock.
+
+If a process crashes, `loop recover` removes a lock only when its ownership
+metadata is valid, it is older than the recovery boundary, the recorded host is
+the current host, the recorded PID is provably dead, and the caller owns the
+active lease. A live, remote-host, young, ownerless, or malformed lock remains a
+blocker.
 
 ## New agents during an active loop
 
-An authoring agent must begin with `prepare-agent`. The command creates a unique
-branch and sibling worktree from the recorded canonical target, registers the
-worktree with the active run, and returns the exact path. Use that path as the
-agent's working directory before it edits, formats, generates, stages, or
-commits files. Repeating the command for the same agent ID returns the existing
-registration instead of creating another branch.
+An authoring agent must begin with `prepare-agent`. The command records a
+pending preparation before creating a unique branch and sibling worktree from
+the pinned target revision, then registers the completed worktree with the
+active run and returns its exact path. Use that path as the agent's working
+directory before it edits, formats, generates, stages, or commits files.
+Repeating the command for the same agent ID returns the existing registration;
+if creation stopped partway through, the same command validates and resumes the
+recorded preparation instead of guessing or creating another branch.
 
 Read-only review can inspect commit objects or provider diffs without an
 authoring worktree. The moment a reviewer needs to make a change, it becomes an
@@ -80,9 +97,9 @@ author and must prepare an isolated worktree first.
 An override is an exceptional user handoff, not a way to suppress the guard.
 Record it through `loop allow` only after the user explicitly names the work to
 include. The command verifies and stores the preserved worktree's absolute
-path, current status digest, current head, approver identity, and reason. It
-does not accept a wildcard, repository-wide permission, or stale digest. A
-later edit or commit changes the evidence and blocks the loop again.
+path, current content-sensitive change digest, current head, approver identity,
+and reason. It does not accept a wildcard, repository-wide permission, or stale
+digest. A later edit or commit changes the evidence and blocks the loop again.
 
 After all run-created worktrees are removed, `loop end` performs one last
 manifest verification and releases the lease. It refuses to end while any

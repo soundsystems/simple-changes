@@ -305,6 +305,15 @@ export interface LoopOverride {
   reason: string;
 }
 
+export interface LoopWorktreePreparation {
+  agentId: string;
+  baseRevision: string;
+  branch: string;
+  createdAt: string;
+  path: string;
+  purpose: string;
+}
+
 export interface LoopLease {
   baselineDigest: string;
   commonGitDirectory: string;
@@ -312,10 +321,12 @@ export interface LoopLease {
   mode: Exclude<RequestMode, "pause" | "preview" | "sync">;
   overrides: LoopOverride[];
   ownerAgentId: string;
+  preparations: LoopWorktreePreparation[];
   primaryCheckout: string;
   runId: string;
   schemaVersion: 1;
   targetRef: string;
+  targetRevision: string;
   updatedAt: string;
   worktrees: LoopWorktreeLease[];
 }
@@ -325,6 +336,7 @@ export interface LoopViolation {
   code:
     | "common-git-directory-mismatch"
     | "missing-preserved-worktree"
+    | "incomplete-worktree-preparation"
     | "preserved-worktree-changed"
     | "unregistered-worktree";
   headSha: string | null;

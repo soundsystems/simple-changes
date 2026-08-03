@@ -213,10 +213,12 @@ describe("closed schemas", () => {
       mode: "integrate",
       overrides: [],
       ownerAgentId: "controller",
+      preparations: [],
       primaryCheckout: "/repo",
       runId: "run-test-1234",
       schemaVersion: 1,
       targetRef: "origin/main",
+      targetRevision: "d".repeat(40),
       updatedAt: new Date().toISOString(),
       worktrees: [
         {

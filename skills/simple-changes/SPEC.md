@@ -49,9 +49,14 @@
 - Write-capable integration modes hold one atomic active-loop lease with an
   opening worktree manifest; a second controller, unregistered worktree, or
   changed preserved worktree blocks mutation.
+- Local mutations hold the lease lock across fresh preflight inventory, one
+  bounded argument-array command, and post-mutation verification. Change
+  digests include actual staged, unstaged, and untracked contents.
 - New authoring agents receive an isolated, run-registered worktree before
-  editing. Exact user overrides bind to one path, head, and status digest and
-  become invalid after another change.
+  editing. Worktree creation is resumable from a pinned target revision, and a
+  stale lock is recoverable only after proof that its recorded local owner died.
+  Exact user overrides bind to one path, head, and content digest and become
+  invalid after another change.
 - Missing onboarding defaults to checked proposal creation and confirmation
   before completed-work handoff.
 - Instruction setup updates only an existing exact file after confirmation,
@@ -73,7 +78,8 @@
 - Automatically handing off planning, diagnosis, blocked work, no-change work,
   or another agent's work.
 - Starting a competing integration loop, mutating from another agent's
-  checkout, or bypassing an active manifest with a blanket exception.
+  checkout, running a local mutation outside the atomic executor, or bypassing
+  an active manifest with a blanket exception.
 - Creating an instruction file, guessing a global instruction path, or
   duplicating the managed pointer.
 - Treating a generic Sync request as push, reset, rebase, proposal, deployment,

@@ -1,4 +1,10 @@
-import { existsSync, realpathSync } from "node:fs";
+import {
+  existsSync,
+  lstatSync,
+  readFileSync,
+  readlinkSync,
+  realpathSync,
+} from "node:fs";
 import { isAbsolute, resolve } from "node:path";
 import { inspectChangelogCoordination } from "./changelog-coordination.ts";
 import { sha256 } from "./hash.ts";
@@ -113,6 +119,7 @@ const inventoryWorktree = (
   currentPath: string
 ): WorktreeInventory => {
   let changes: GitChange[] = [];
+  let changeDigest = sha256("");
   if (!(worktree.bare || worktree.prunable) && existsSync(worktree.path)) {
     const status = runGit(worktree.path, [
       "status",
@@ -121,10 +128,39 @@ const inventoryWorktree = (
       "--untracked-files=all",
     ]).stdout;
     changes = parseStatus(worktree.path, status);
+    const stagedDiff = runGit(worktree.path, [
+      "diff",
+      "--cached",
+      "--binary",
+      "--no-ext-diff",
+      "--",
+    ]).stdout;
+    const unstagedDiff = runGit(worktree.path, [
+      "diff",
+      "--binary",
+      "--no-ext-diff",
+      "--",
+    ]).stdout;
+    const untrackedContent = changes
+      .filter((change) => change.untracked)
+      .map((change) => {
+        const safePath = assertSafeRelativePath(worktree.path, change.path);
+        const stat = lstatSync(safePath.absolutePath);
+        const contents = stat.isSymbolicLink()
+          ? `symlink:${readlinkSync(safePath.absolutePath)}`
+          : `file:${readFileSync(safePath.absolutePath).toString("base64")}`;
+        return {
+          contentDigest: sha256(contents),
+          path: change.path,
+        };
+      });
+    changeDigest = sha256(
+      JSON.stringify({ changes, stagedDiff, unstagedDiff, untrackedContent })
+    );
   }
   return {
     ...worktree,
-    changeDigest: sha256(JSON.stringify(changes)),
+    changeDigest,
     changes,
     isCurrent: worktree.path === currentPath,
     isPrimary: worktree.path === primaryPath,
@@ -330,7 +366,19 @@ const resolveTargetRef = (root: string, branch: string | null): string => {
   const remotes = runGit(root, ["remote"], true)
     .stdout.split("\n")
     .filter(Boolean);
-  for (const remote of remotes) {
+  const configuredRemote = branch
+    ? runGit(
+        root,
+        ["config", "--get", `branch.${branch}.remote`],
+        true
+      ).stdout.trim()
+    : "";
+  const preferredRemotes = [
+    ...(configuredRemote && configuredRemote !== "." ? [configuredRemote] : []),
+    ...(remotes.includes("origin") ? ["origin"] : []),
+    ...remotes,
+  ].filter((remote, index, candidates) => candidates.indexOf(remote) === index);
+  for (const remote of preferredRemotes) {
     const symbolic = runGit(
       root,
       ["symbolic-ref", "--quiet", "--short", `refs/remotes/${remote}/HEAD`],

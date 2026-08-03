@@ -94,9 +94,10 @@ discovery and the production release map stay scoped to that repository.
 - Takes two read-only snapshots and preserves work that appeared or changed
   between them.
 - Holds one atomic active-loop lease for write-capable integration runs,
-  persists the opening worktree manifest, rejects competing controllers and
-  unregistered mutations, and prepares one isolated worktree for each new
-  authoring agent.
+  persists a content-sensitive opening worktree manifest, runs local mutations
+  under the lock from preflight through post-verification, recovers only locks
+  whose recorded owner is proven dead, and prepares one resumable isolated
+  worktree for each new authoring agent from a pinned revision.
 - Builds a deterministic preview plan for stable work and validates path
   conservation, authority, and closed JSON schemas.
 - Classifies database and data-system changes without prescribing a provider,
@@ -123,10 +124,11 @@ discovery and the production release map stay scoped to that repository.
 - Emits human-readable or JSON reports with stable exit codes.
 
 The deterministic CLI creates only explicitly requested, lease-registered
-authoring branches and worktrees. It does **not** commit, push, merge, deploy,
-apply migrations, change secrets, update DNS, or clean branches. Those
-mutations remain capability- and authority-gated extensions followed by agents
-and provider adapters.
+authoring branches and worktrees. `loop exec` can run one explicitly supplied
+local argument-array command while the lease lock is held, but it does not
+decide to commit, push, merge, deploy, apply migrations, change secrets, update
+DNS, or clean branches. Those decisions remain capability- and authority-gated
+extensions followed by agents and provider adapters.
 
 ## CLI
 
@@ -155,6 +157,9 @@ simple-changes loop start --mode MODE --agent-id ID [--json] [--repo PATH]
 simple-changes loop status [--json] [--repo PATH]
 simple-changes loop verify --run-id ID [--json] [--repo PATH]
 simple-changes loop guard --run-id ID --agent-id ID [--json] [--repo PATH]
+simple-changes loop exec --run-id ID --agent-id ID [--json] [--repo PATH]
+  -- COMMAND [ARG ...]
+simple-changes loop recover --agent-id ID [--json] [--repo PATH]
 simple-changes loop allow --run-id ID --agent-id ID --worktree PATH
   --status-digest SHA256 --approved-by ID --reason TEXT [--json] [--repo PATH]
 simple-changes loop end --run-id ID --agent-id ID [--json] [--repo PATH]

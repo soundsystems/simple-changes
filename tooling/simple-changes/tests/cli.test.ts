@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { spawnSync as bunSpawnSync } from "bun";
+import { spawn as bunSpawn, spawnSync as bunSpawnSync } from "bun";
 import {
   createTestRepository,
   git,
@@ -37,6 +37,23 @@ const spawnSync = (
     },
   });
 
+const waitForPath = (path: string): Promise<void> =>
+  new Promise((resolvePromise, rejectPromise) => {
+    let attempts = 0;
+    const interval = setInterval(() => {
+      attempts += 1;
+      if (existsSync(path)) {
+        clearInterval(interval);
+        resolvePromise();
+        return;
+      }
+      if (attempts >= 100) {
+        clearInterval(interval);
+        rejectPromise(new Error(`Timed out waiting for ${path}`));
+      }
+    }, 10);
+  });
+
 let repositories: TestRepository[] = [];
 
 afterEach(() => {
@@ -47,6 +64,81 @@ afterEach(() => {
 });
 
 describe("contract CLI", () => {
+  test("holds the loop lock for the full guarded command", async () => {
+    const fixture = createTestRepository();
+    repositories.push(fixture);
+    const started = spawnSync(
+      [
+        process.execPath,
+        cliPath,
+        "loop",
+        "start",
+        "--mode",
+        "ship",
+        "--agent-id",
+        "controller",
+        "--json",
+        "--repo",
+        fixture.root,
+      ],
+      { stderr: "pipe", stdout: "pipe" }
+    );
+    const { lease } = JSON.parse(decoder.decode(started.stdout)) as {
+      lease: { runId: string };
+    };
+    const running = bunSpawn(
+      [
+        process.execPath,
+        cliPath,
+        "loop",
+        "exec",
+        "--run-id",
+        lease.runId,
+        "--agent-id",
+        "controller",
+        "--repo",
+        fixture.root,
+        "--",
+        process.execPath,
+        "-e",
+        "await Bun.sleep(500)",
+      ],
+      {
+        env: {
+          ...process.env,
+          SIMPLE_CHANGES_SKILL_ROOTS: "",
+        },
+        stderr: "pipe",
+        stdout: "pipe",
+      }
+    );
+    const lockPath = resolve(
+      fixture.root,
+      ".git/simple-changes/active-loop.lock"
+    );
+    await waitForPath(lockPath);
+    expect(existsSync(lockPath)).toBe(true);
+
+    const competing = spawnSync(
+      [
+        process.execPath,
+        cliPath,
+        "loop",
+        "guard",
+        "--run-id",
+        lease.runId,
+        "--agent-id",
+        "controller",
+        "--repo",
+        fixture.root,
+      ],
+      { stderr: "pipe", stdout: "pipe" }
+    );
+    expect(competing.exitCode).toBe(5);
+    expect(decoder.decode(competing.stderr)).toContain("state is busy");
+    expect(await running.exited).toBe(0);
+  });
+
   test("starts a lease and prepares an isolated agent worktree", () => {
     const fixture = createTestRepository();
     repositories.push(fixture);
@@ -117,6 +209,35 @@ describe("contract CLI", () => {
       active: true,
       ok: true,
     });
+
+    const executed = spawnSync(
+      [
+        process.execPath,
+        cliPath,
+        "loop",
+        "exec",
+        "--run-id",
+        startedOutput.lease.runId,
+        "--agent-id",
+        "author",
+        "--json",
+        "--repo",
+        preparedOutput.path,
+        "--",
+        process.execPath,
+        "-e",
+        "await Bun.write('cli-atomic.txt', 'ok\\n')",
+      ],
+      { stderr: "pipe", stdout: "pipe" }
+    );
+    expect(executed.exitCode).toBe(0);
+    expect(JSON.parse(decoder.decode(executed.stdout))).toMatchObject({
+      result: { exitCode: 0 },
+      verification: { ok: true },
+    });
+    expect(
+      readFileSync(resolve(preparedOutput.path, "cli-atomic.txt"), "utf8")
+    ).toBe("ok\n");
   });
 
   test("blocks a new authoring agent in the controller checkout", () => {

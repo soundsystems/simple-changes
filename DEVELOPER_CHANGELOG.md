@@ -2,25 +2,41 @@
 
 ## 0.6.0 - 2026-08-03
 
-- Added an executable active-loop lease and worktree-manifest contract:
+- Added an executable active-loop lease and content-sensitive worktree-manifest
+  contract:
   - Queue, Sweep, Integrate, Ship, Reconcile, and Resume runs atomically persist
-    one controller lease beneath the common Git directory, including the
-    canonical target, opening inventory digest, and each worktree's path,
-    branch, head, status digest, role, and mutation authority.
-  - Added `loop start`, `loop status`, `loop verify`, `loop guard`, `loop allow`,
-    and `loop end`, plus `prepare-agent` for creating an idempotent,
-    run-registered sibling worktree from the recorded target revision.
-  - Mutation guards require the calling agent to own the exact controller or
-    author worktree and reject competing controllers, unregistered worktrees,
-    missing preserved worktrees, and changed preserved state.
-  - User-approved overrides bind to one preserved worktree's absolute path,
-    current head, and status digest. Further changes invalidate the exception,
-    and the lease cannot end until manifest violations are resolved and
-    run-created worktrees are removed.
-  - Added the closed `loop-lease` schema, TypeScript contracts, CLI coverage,
-    skill-contract assertions, and behavior evaluation for exclusive
-    controllers, isolated authoring agents, exact overrides, and cleanup.
-<!-- simple-changelogs-signature agent="gpt-5.6-sol" at="2026-08-03T12:01:25-05:00" -->
+    one controller lease beneath the common Git directory. Loop start resolves
+    and records the target ref's exact `targetRevision`, then captures a fresh
+    under-lock inventory of each worktree's path, branch, head, content digest,
+    role, and mutation authority.
+    Target discovery prefers the current branch's configured remote, then
+    `origin`, before considering auxiliary remotes.
+  - Worktree change digests now cover staged binary diffs, unstaged binary
+    diffs, and the contents or symlink targets of every untracked path. Exact
+    user-approved overrides therefore become invalid when file contents change,
+    even if the porcelain status shape remains the same.
+  - Added `loop exec` and the reusable `withLoopMutationLease` callback. Both
+    retain the atomic loop lock across fresh preflight inventory, ownership and
+    manifest validation, the complete local mutation, fresh post-mutation
+    inventory, and closing verification.
+  - Repository setup and instruction-pointer writes now run through the same
+    atomic mutation callback whenever a loop is active, instead of performing
+    writes after a one-time advisory guard.
+  - Lock ownership metadata records the operation, hostname, PID, creation
+    time, and unique token. `loop recover` refuses recovery without valid
+    metadata, on another host, below the minimum age, while the PID remains
+    alive, or when the caller does not own the active lease.
+  - Agent worktree creation now records a pending preparation before Git
+    mutation, including the agent, path, branch, purpose, and pinned base
+    revision. A repeated `prepare-agent` resumes interrupted setup only when the
+    existing branch or worktree still matches that exact revision, then
+    atomically converts the pending preparation into a registered author
+    worktree.
+  - Added closed schema and TypeScript support for `targetRevision`, lock-safe
+    preparations, and content-bound state, plus CLI, schema, skill-contract, and
+    behavior coverage for full-execution locking, dead-lock recovery,
+    interrupted preparation, exact overrides, and cleanup.
+<!-- simple-changelogs-signature agent="gpt-5.6-sol" at="2026-08-03T12:33:15-05:00" -->
 
 - Added first-class Sync and two-stage Ship contracts:
   - Sync initialization bypasses workflow-preference onboarding and grants only

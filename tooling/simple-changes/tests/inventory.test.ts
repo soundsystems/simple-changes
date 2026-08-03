@@ -50,6 +50,38 @@ describe("Git inventory and concurrency", () => {
     expect(existsSync(join(fixture.root, ".git/simple-changes"))).toBe(false);
   });
 
+  test("prefers the branch remote over an alphabetically earlier auxiliary remote", () => {
+    const fixture = repository();
+    git(fixture.root, [
+      "remote",
+      "add",
+      "auxiliary",
+      "https://example.invalid/aux.git",
+    ]);
+    git(fixture.root, [
+      "remote",
+      "add",
+      "origin",
+      "https://example.invalid/canonical.git",
+    ]);
+    git(fixture.root, ["update-ref", "refs/remotes/auxiliary/main", "HEAD"]);
+    git(fixture.root, [
+      "symbolic-ref",
+      "refs/remotes/auxiliary/HEAD",
+      "refs/remotes/auxiliary/main",
+    ]);
+    git(fixture.root, ["update-ref", "refs/remotes/origin/main", "HEAD"]);
+    git(fixture.root, [
+      "symbolic-ref",
+      "refs/remotes/origin/HEAD",
+      "refs/remotes/origin/main",
+    ]);
+    git(fixture.root, ["config", "branch.main.remote", "origin"]);
+    git(fixture.root, ["config", "branch.main.merge", "refs/heads/main"]);
+
+    expect(captureInventory(fixture.root).targetRef).toBe("origin/main");
+  });
+
   test("reports changelog relevance separately from skill availability", () => {
     const fixture = repository();
     writeFixture(fixture.root, "CHANGELOG.md", "# Changelog\n");

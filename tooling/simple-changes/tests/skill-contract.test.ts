@@ -222,13 +222,19 @@ describe("Simple Changes skill contract", () => {
       "When an active loop exists, a new authoring agent's first action is to prepare its own isolated worktree"
     );
     expect(normalizedSkill).toContain(
+      "Run each local Git or repository mutation through `loop exec`"
+    );
+    expect(normalizedSkill).toContain(
+      'use `loop recover --agent-id "$AGENT_ID"`'
+    );
+    expect(normalizedSkill).toContain(
       "Before merge, deployment, cleanup, and completion, run `loop verify`"
     );
     expect(normalizedConcurrency).toContain(
       "A second controller cannot replace an active lease"
     );
     expect(normalizedConcurrency).toContain(
-      "It also rejects any new unregistered worktree"
+      "It rejects any new unregistered worktree, incomplete preparation"
     );
     expect(normalizedConcurrency).toContain(
       "An override is an exceptional user handoff, not a way to suppress the guard"

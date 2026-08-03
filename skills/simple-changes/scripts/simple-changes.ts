@@ -14,14 +14,17 @@ import {
 import { captureInventory, compareSnapshots } from "./lib/inventory.ts";
 import {
   endLoop,
+  executeLoopMutation,
   grantLoopOverride,
   guardLoopMutation,
   loopManifestDigest,
   loopStatus,
   prepareAgentWorktree,
   readLoopLease,
+  recoverLoopLock,
   startLoop,
   verifyLoop,
+  withLoopMutationLease,
 } from "./lib/loop-lease.ts";
 import { auditMarkdown } from "./lib/markdown.ts";
 import {
@@ -82,13 +85,16 @@ Usage:
     [--ui-versioning repository|number-and-date|date-only|number-only]
     [--production ask|allow|deny]
     [--questions blocking-only|always|never]
-    [--scope user|repository|run] [--yes] [--json] [--repo PATH]
+    [--scope user|repository|run] [--agent-id ID] [--yes] [--json] [--repo PATH]
   simple-changes inventory [--json] [--repo PATH]
   simple-changes preview [--json] [--repo PATH] [--settle-ms N]
   simple-changes loop start --mode MODE --agent-id ID [--json] [--repo PATH]
   simple-changes loop status [--json] [--repo PATH]
   simple-changes loop verify --run-id ID [--json] [--repo PATH]
   simple-changes loop guard --run-id ID --agent-id ID [--json] [--repo PATH]
+  simple-changes loop exec --run-id ID --agent-id ID [--json] [--repo PATH]
+    -- COMMAND [ARG ...]
+  simple-changes loop recover --agent-id ID [--json] [--repo PATH]
   simple-changes loop allow --run-id ID --agent-id ID --worktree PATH
     --status-digest SHA256 --approved-by ID --reason TEXT [--json] [--repo PATH]
   simple-changes loop end --run-id ID --agent-id ID [--json] [--repo PATH]
@@ -414,6 +420,10 @@ const parseOptions = (args: string[]): CliOptions => {
   let index = 0;
   while (index < args.length) {
     const argument = args[index];
+    if (argument === "--") {
+      options.positional.push(...args.slice(index + 1));
+      break;
+    }
     if (argument && BOOLEAN_OPTIONS.has(argument)) {
       applyBooleanOption(options, argument);
       index += 1;
@@ -667,30 +677,51 @@ const runSetup = async (options: CliOptions): Promise<void> => {
     );
     const path = setupPolicyPath(selection.scope, context.primaryCheckout);
     const written = selection.confirmed && path !== null;
-    let instructionPointerWritten = false;
-    let instructionPointerChanged = false;
-    if (
-      selection.confirmed &&
-      selection.instructionPointer.action === "add" &&
-      selection.instructionPointer.target
-    ) {
-      const pointerResult = writeInstructionPointer(
-        selection.instructionPointer.target,
-        selection.policy.handoffTiming
-      );
-      instructionPointerWritten = pointerResult.written;
-      instructionPointerChanged = pointerResult.changed;
-    }
-    if (written && path) {
-      writePolicyFile(path, selection.policy, selection.scope === "user");
-    }
+    const applyWrites = (): {
+      instructionPointerChanged: boolean;
+      instructionPointerWritten: boolean;
+    } => {
+      let instructionPointerWritten = false;
+      let instructionPointerChanged = false;
+      if (
+        selection.confirmed &&
+        selection.instructionPointer.action === "add" &&
+        selection.instructionPointer.target
+      ) {
+        const pointerResult = writeInstructionPointer(
+          selection.instructionPointer.target,
+          selection.policy.handoffTiming
+        );
+        instructionPointerWritten = pointerResult.written;
+        instructionPointerChanged = pointerResult.changed;
+      }
+      if (written && path) {
+        writePolicyFile(path, selection.policy, selection.scope === "user");
+      }
+      return { instructionPointerChanged, instructionPointerWritten };
+    };
+    const activeLoop = context.primaryCheckout
+      ? readLoopLease(options.repo)
+      : null;
+    const writeResult = activeLoop
+      ? withLoopMutationLease(
+          options.repo,
+          activeLoop.runId,
+          requireCliOption(
+            options.agentId,
+            "--agent-id while an integration loop is active"
+          ),
+          "setup write",
+          applyWrites
+        ).result
+      : applyWrites();
     const result = {
       changelogCoordination: context.changelog,
       confirmed: selection.confirmed,
       instructionPointer: {
         ...selection.instructionPointer,
-        changed: instructionPointerChanged,
-        written: instructionPointerWritten,
+        changed: writeResult.instructionPointerChanged,
+        written: writeResult.instructionPointerWritten,
       },
       path,
       policy: selection.policy,
@@ -872,11 +903,49 @@ const renderLoopVerification = (
   return `${lines.join("\n")}\n`;
 };
 
+const runLoopRecovery = (options: CliOptions): void => {
+  const recovery = recoverLoopLock(
+    options.repo,
+    requireCliOption(options.agentId, "--agent-id")
+  );
+  writeOutput(
+    recovery,
+    options.json,
+    `Recovered dead active-loop lock owned by PID ${recovery.staleOwner.pid}.\n`
+  );
+};
+
+const runLoopExec = (
+  options: CliOptions,
+  runId: string,
+  agentId: string
+): void => {
+  const result = executeLoopMutation(
+    options.repo,
+    runId,
+    agentId,
+    options.positional.slice(1)
+  );
+  if (options.json) {
+    writeOutput(result, true, "");
+    return;
+  }
+  if (result.result.stdout) {
+    process.stdout.write(result.result.stdout);
+  }
+  if (result.result.stderr) {
+    process.stderr.write(result.result.stderr);
+  }
+  process.stdout.write(
+    `Loop mutation completed under ${runId}; manifest is clean.\n`
+  );
+};
+
 const runLoopCommand = (options: CliOptions): void => {
   const [action] = options.positional;
   if (!action) {
     throw new SimpleChangesError(
-      "loop requires start, status, verify, guard, allow, or end",
+      "loop requires start, status, verify, guard, exec, recover, allow, or end",
       EXIT_CODES.usage
     );
   }
@@ -906,6 +975,10 @@ const runLoopCommand = (options: CliOptions): void => {
       options.json,
       renderLoopVerification(status.verification)
     );
+    return;
+  }
+  if (action === "recover") {
+    runLoopRecovery(options);
     return;
   }
   const runId = requireCliOption(options.runId, "--run-id");
@@ -939,6 +1012,10 @@ const runLoopCommand = (options: CliOptions): void => {
       options.json,
       `Mutation guard passed for ${agentId} in ${lease.runId}.\n`
     );
+    return;
+  }
+  if (action === "exec") {
+    runLoopExec(options, runId, agentId);
     return;
   }
   if (action === "allow") {

@@ -370,8 +370,9 @@
       "authority": ["local-write"],
       "expectedBehaviors": [
         "Reuse the exclusive active-loop lease instead of starting a second controller",
-        "Prepare and register an isolated authoring worktree before the new agent mutates files",
-        "Reject unregistered or changed preserved worktrees at the next mutation guard"
+        "Prepare or resume registration of an isolated authoring worktree from the pinned target revision before the new agent mutates files",
+        "Execute local mutations while the lease lock covers fresh preflight and post-mutation inventory",
+        "Reject unregistered, incompletely prepared, or content-changed preserved worktrees"
       ]
     },
     {

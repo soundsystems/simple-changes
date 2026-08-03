@@ -23,8 +23,8 @@ Before reporting completion:
 4. Confirm each planned path is queued, merged, deployed, preserved, excluded,
    or blocked exactly once.
 5. Run the active-loop manifest verification. Treat every unregistered,
-   missing, or changed preserved worktree as a blocker unless an exact
-   path-and-digest user override is recorded.
+   missing, incompletely prepared, or changed preserved worktree as a blocker
+   unless an exact path-and-digest user override is recorded where applicable.
 6. Remove every run-created authoring worktree only after its branch is merged,
    otherwise accounted for, or explicitly preserved. `loop end` must refuse to
    release the lease while one remains registered and live.

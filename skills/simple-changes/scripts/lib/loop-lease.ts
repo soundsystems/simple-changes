@@ -8,11 +8,12 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
+import { hostname } from "node:os";
 import { basename, dirname, resolve } from "node:path";
 import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
 import { sha256 } from "./hash.ts";
 import { captureInventory } from "./inventory.ts";
-import { runGit } from "./process.ts";
+import { type CommandResult, runCommand, runGit } from "./process.ts";
 import { validateSchema } from "./schema.ts";
 import type {
   LoopLease,
@@ -20,6 +21,7 @@ import type {
   LoopVerification,
   LoopViolation,
   LoopWorktreeLease,
+  LoopWorktreePreparation,
   RepositoryInventory,
   RequestMode,
   WorktreeInventory,
@@ -28,6 +30,8 @@ import type {
 const STATE_DIRECTORY = "simple-changes";
 const STATE_FILENAME = "active-loop.json";
 const LOCK_DIRECTORY = "active-loop.lock";
+const LOCK_OWNER_FILENAME = "owner.json";
+const STALE_LOCK_MINIMUM_AGE_MS = 5000;
 const RUN_ID_PATTERN = /^run-[a-z0-9-]+$/u;
 const DIGEST_PATTERN = /^[0-9a-f]{64}$/u;
 const LOOP_MODES = new Set<RequestMode>([
@@ -45,11 +49,50 @@ const stateDirectory = (commonGitDirectory: string): string =>
 export const loopLeasePath = (commonGitDirectory: string): string =>
   resolve(stateDirectory(commonGitDirectory), STATE_FILENAME);
 
-const loopLockPath = (commonGitDirectory: string): string =>
+export const loopLockPath = (commonGitDirectory: string): string =>
   resolve(stateDirectory(commonGitDirectory), LOCK_DIRECTORY);
+
+const loopLockOwnerPath = (commonGitDirectory: string): string =>
+  resolve(loopLockPath(commonGitDirectory), LOCK_OWNER_FILENAME);
+
+export interface LoopLockOwner {
+  createdAt: string;
+  hostname: string;
+  operation: string;
+  pid: number;
+  token: string;
+}
+
+const readLockOwner = (commonGitDirectory: string): LoopLockOwner | null => {
+  const path = loopLockOwnerPath(commonGitDirectory);
+  if (!existsSync(path)) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(
+      readFileSync(path, "utf8")
+    ) as Partial<LoopLockOwner>;
+    if (
+      typeof parsed.createdAt === "string" &&
+      typeof parsed.hostname === "string" &&
+      typeof parsed.operation === "string" &&
+      typeof parsed.pid === "number" &&
+      Number.isInteger(parsed.pid) &&
+      parsed.pid > 0 &&
+      typeof parsed.token === "string" &&
+      parsed.token.length > 0
+    ) {
+      return parsed as LoopLockOwner;
+    }
+  } catch {
+    return null;
+  }
+  return null;
+};
 
 const withStateLock = <T>(
   commonGitDirectory: string,
+  operationName: string,
   operation: () => T
 ): T => {
   const directory = stateDirectory(commonGitDirectory);
@@ -59,19 +102,43 @@ const withStateLock = <T>(
     mkdirSync(lockPath, { mode: 0o700 });
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+      const owner = readLockOwner(commonGitDirectory);
+      const detail = owner
+        ? ` PID ${owner.pid} on ${owner.hostname} has held ${owner.operation} since ${owner.createdAt}.`
+        : " Its ownership metadata is missing or invalid.";
       // biome-ignore lint/style/useErrorCause: SimpleChangesError forwards ErrorOptions to Error.
       throw new SimpleChangesError(
-        `Active-loop state is busy at ${lockPath}; retry after the current lease operation finishes.`,
+        `Active-loop state is busy at ${lockPath}.${detail} Retry after it finishes, or use loop recover only after proving the owner process is dead.`,
         EXIT_CODES.unsafe,
         { cause: error }
       );
     }
     throw error;
   }
+  const owner: LoopLockOwner = {
+    createdAt: new Date().toISOString(),
+    hostname: hostname(),
+    operation: operationName,
+    pid: process.pid,
+    token: randomUUID(),
+  };
+  try {
+    writeFileSync(
+      loopLockOwnerPath(commonGitDirectory),
+      `${JSON.stringify(owner, null, 2)}\n`,
+      { encoding: "utf8", flag: "wx", mode: 0o600 }
+    );
+  } catch (error) {
+    rmSync(lockPath, { force: true, recursive: true });
+    throw error;
+  }
   try {
     return operation();
   } finally {
-    rmSync(lockPath, { force: true, recursive: true });
+    const currentOwner = readLockOwner(commonGitDirectory);
+    if (currentOwner?.token === owner.token) {
+      rmSync(lockPath, { force: true, recursive: true });
+    }
   }
 };
 
@@ -120,6 +187,82 @@ const requiredRunId = (value: string): string => {
     );
   }
   return runId;
+};
+
+const processIsAlive = (pid: number): boolean => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    const { code } = error as NodeJS.ErrnoException;
+    if (code === "ESRCH") {
+      return false;
+    }
+    return true;
+  }
+};
+
+export interface LoopLockRecovery {
+  recovered: boolean;
+  recoveredAt: string;
+  staleOwner: LoopLockOwner;
+}
+
+export const recoverLoopLock = (
+  repositoryPath: string,
+  agentIdInput: string
+): LoopLockRecovery => {
+  const agentId = requiredText(agentIdInput, "agent ID");
+  const inventory = captureInventory(repositoryPath);
+  const { commonGitDirectory } = inventory.repository;
+  const lockPath = loopLockPath(commonGitDirectory);
+  if (!existsSync(lockPath)) {
+    throw new SimpleChangesError(
+      "No active-loop lock exists to recover.",
+      EXIT_CODES.unsafe
+    );
+  }
+  const owner = readLockOwner(commonGitDirectory);
+  if (!owner) {
+    throw new SimpleChangesError(
+      `Cannot recover ${lockPath}: ownership metadata is missing or invalid. Inspect it manually rather than guessing.`,
+      EXIT_CODES.unsafe
+    );
+  }
+  if (owner.hostname !== hostname()) {
+    throw new SimpleChangesError(
+      `Cannot recover a lock owned on ${owner.hostname} from ${hostname()}.`,
+      EXIT_CODES.unsafe
+    );
+  }
+  const age = Date.now() - Date.parse(owner.createdAt);
+  if (!(Number.isFinite(age) && age >= STALE_LOCK_MINIMUM_AGE_MS)) {
+    throw new SimpleChangesError(
+      `Cannot recover a lock younger than ${STALE_LOCK_MINIMUM_AGE_MS}ms.`,
+      EXIT_CODES.unsafe
+    );
+  }
+  if (processIsAlive(owner.pid)) {
+    throw new SimpleChangesError(
+      `Cannot recover active lock owner PID ${owner.pid}.`,
+      EXIT_CODES.unsafe
+    );
+  }
+  const lease = readLeaseFromCommonDirectory(commonGitDirectory);
+  if (lease && lease.ownerAgentId !== agentId) {
+    throw new SimpleChangesError(
+      `Only loop owner ${lease.ownerAgentId} may recover its dead lock.`,
+      EXIT_CODES.unsafe
+    );
+  }
+  const recoveryPath = `${lockPath}.recovery-${randomUUID()}`;
+  renameSync(lockPath, recoveryPath);
+  rmSync(recoveryPath, { force: true, recursive: true });
+  return {
+    recovered: true,
+    recoveredAt: new Date().toISOString(),
+    staleOwner: owner,
+  };
 };
 
 const slug = (value: string, fallback: string): string => {
@@ -189,9 +332,20 @@ const verificationAgainst = (
   const currentByPath = new Map(
     inventory.worktrees.map((worktree) => [worktree.path, worktree])
   );
+  const preparationByPath = new Map(
+    lease.preparations.map((preparation) => [preparation.path, preparation])
+  );
   for (const worktree of inventory.worktrees) {
     const registered = registeredByPath.get(worktree.path);
     if (!registered) {
+      const preparation = preparationByPath.get(worktree.path);
+      if (
+        preparation &&
+        worktree.branch === preparation.branch &&
+        worktree.headSha === preparation.baseRevision
+      ) {
+        continue;
+      }
       violations.push({
         changeDigest: worktree.changeDigest,
         code: "unregistered-worktree",
@@ -217,6 +371,16 @@ const verificationAgainst = (
         path: worktree.path,
       });
     }
+  }
+  for (const preparation of lease.preparations) {
+    violations.push({
+      changeDigest: currentByPath.get(preparation.path)?.changeDigest ?? null,
+      code: "incomplete-worktree-preparation",
+      headSha: currentByPath.get(preparation.path)?.headSha ?? null,
+      message:
+        "An agent worktree preparation did not finish registration. Resume prepare-agent for that agent before any other mutation.",
+      path: preparation.path,
+    });
   }
   for (const registered of lease.worktrees) {
     if (
@@ -256,6 +420,23 @@ const requireLease = (inventory: RepositoryInventory): LoopLease => {
   return lease;
 };
 
+const assertAgentMutationAllowed = (
+  lease: LoopLease,
+  inventory: RepositoryInventory,
+  agentId: string
+): void => {
+  const currentPath = inventory.repository.currentCheckout;
+  const registered = lease.worktrees.find(
+    (worktree) => worktree.path === currentPath
+  );
+  if (!registered?.mutationAllowed || registered.agentId !== agentId) {
+    throw new SimpleChangesError(
+      `Agent ${agentId} is not allowed to mutate ${currentPath}. Run prepare-agent first and continue from its returned worktree path.`,
+      EXIT_CODES.unsafe
+    );
+  }
+};
+
 export const readLoopLease = (repositoryPath: string): LoopLease | null => {
   const inventory = captureInventory(repositoryPath);
   return readLeaseFromCommonDirectory(inventory.repository.commonGitDirectory);
@@ -273,64 +454,83 @@ export const startLoop = (
       EXIT_CODES.usage
     );
   }
-  const inventory = captureInventory(repositoryPath);
-  return withStateLock(inventory.repository.commonGitDirectory, () => {
-    const existing = readLeaseFromCommonDirectory(
-      inventory.repository.commonGitDirectory
-    );
-    if (existing) {
-      if (existing.ownerAgentId === agentId && existing.mode === mode) {
-        return existing;
-      }
-      throw new SimpleChangesError(
-        `Loop ${existing.runId} is already active for ${existing.ownerAgentId}. Start no second shipping loop in this repository.`,
-        EXIT_CODES.unsafe
+  const opening = captureInventory(repositoryPath);
+  return withStateLock(
+    opening.repository.commonGitDirectory,
+    "loop start",
+    () => {
+      const inventory = captureInventory(repositoryPath);
+      const existing = readLeaseFromCommonDirectory(
+        inventory.repository.commonGitDirectory
       );
+      if (existing) {
+        if (existing.ownerAgentId === agentId && existing.mode === mode) {
+          return existing;
+        }
+        throw new SimpleChangesError(
+          `Loop ${existing.runId} is already active for ${existing.ownerAgentId}. Start no second shipping loop in this repository.`,
+          EXIT_CODES.unsafe
+        );
+      }
+      const now = new Date().toISOString();
+      const currentPath = inventory.repository.currentCheckout;
+      const targetRevision = runGit(inventory.repository.primaryCheckout, [
+        "rev-parse",
+        "--verify",
+        `${inventory.targetRef}^{commit}`,
+      ]).stdout.trim();
+      const worktrees = inventory.worktrees.map((worktree) =>
+        worktreeLease(
+          worktree,
+          worktree.path === currentPath ? "controller" : "preserved",
+          worktree.path === currentPath ? agentId : null,
+          false
+        )
+      );
+      const lease: LoopLease = {
+        baselineDigest: inventory.baselineDigest,
+        commonGitDirectory: inventory.repository.commonGitDirectory,
+        createdAt: now,
+        mode: mode as LoopLease["mode"],
+        overrides: [],
+        ownerAgentId: agentId,
+        preparations: [],
+        primaryCheckout: inventory.repository.primaryCheckout,
+        runId: `run-${Date.now().toString(36)}-${randomUUID().slice(0, 8)}`,
+        schemaVersion: 1,
+        targetRef: inventory.targetRef,
+        targetRevision,
+        updatedAt: now,
+        worktrees,
+      };
+      return writeLease(lease);
     }
-    const now = new Date().toISOString();
-    const currentPath = inventory.repository.currentCheckout;
-    const worktrees = inventory.worktrees.map((worktree) =>
-      worktreeLease(
-        worktree,
-        worktree.path === currentPath ? "controller" : "preserved",
-        worktree.path === currentPath ? agentId : null,
-        false
-      )
-    );
-    const lease: LoopLease = {
-      baselineDigest: inventory.baselineDigest,
-      commonGitDirectory: inventory.repository.commonGitDirectory,
-      createdAt: now,
-      mode: mode as LoopLease["mode"],
-      overrides: [],
-      ownerAgentId: agentId,
-      primaryCheckout: inventory.repository.primaryCheckout,
-      runId: `run-${Date.now().toString(36)}-${randomUUID().slice(0, 8)}`,
-      schemaVersion: 1,
-      targetRef: inventory.targetRef,
-      updatedAt: now,
-      worktrees,
-    };
-    return writeLease(lease);
-  });
+  );
 };
 
 export const verifyLoop = (repositoryPath: string): LoopVerification => {
-  const inventory = captureInventory(repositoryPath);
-  const lease = readLeaseFromCommonDirectory(
-    inventory.repository.commonGitDirectory
+  const opening = captureInventory(repositoryPath);
+  return withStateLock(
+    opening.repository.commonGitDirectory,
+    "loop verify",
+    () => {
+      const inventory = captureInventory(repositoryPath);
+      const lease = readLeaseFromCommonDirectory(
+        inventory.repository.commonGitDirectory
+      );
+      if (!lease) {
+        return {
+          active: false,
+          checkedAt: new Date().toISOString(),
+          currentBaselineDigest: inventory.baselineDigest,
+          ok: true,
+          runId: null,
+          violations: [],
+        };
+      }
+      return verificationAgainst(lease, inventory);
+    }
   );
-  if (!lease) {
-    return {
-      active: false,
-      checkedAt: new Date().toISOString(),
-      currentBaselineDigest: inventory.baselineDigest,
-      ok: true,
-      runId: null,
-      violations: [],
-    };
-  }
-  return verificationAgainst(lease, inventory);
 };
 
 export const guardLoopMutation = (
@@ -339,35 +539,138 @@ export const guardLoopMutation = (
   agentIdInput: string
 ): LoopVerification => {
   const agentId = requiredText(agentIdInput, "agent ID");
-  const inventory = captureInventory(repositoryPath);
-  return withStateLock(inventory.repository.commonGitDirectory, () => {
-    const lease = requireLease(inventory);
-    assertMatchingRun(lease, runId);
-    const currentPath = inventory.repository.currentCheckout;
-    const registered = lease.worktrees.find(
-      (worktree) => worktree.path === currentPath
+  const opening = captureInventory(repositoryPath);
+  return withStateLock(
+    opening.repository.commonGitDirectory,
+    "loop guard",
+    () => {
+      const inventory = captureInventory(repositoryPath);
+      const lease = requireLease(inventory);
+      assertMatchingRun(lease, runId);
+      assertAgentMutationAllowed(lease, inventory, agentId);
+      const verification = verificationAgainst(lease, inventory);
+      if (!verification.ok) {
+        throw new SimpleChangesError(
+          `Loop guard rejected mutation: ${verification.violations
+            .map((violation) => `${violation.code}:${violation.path}`)
+            .join(", ")}`,
+          EXIT_CODES.unsafe
+        );
+      }
+      writeLease({
+        ...lease,
+        updatedAt: verification.checkedAt,
+      });
+      return verification;
+    }
+  );
+};
+
+export interface LoopMutationResult {
+  command: string[];
+  result: CommandResult;
+  verification: LoopVerification;
+}
+
+export interface LoopOperationResult<T> {
+  result: T;
+  verification: LoopVerification;
+}
+
+export const withLoopMutationLease = <T>(
+  repositoryPath: string,
+  runId: string,
+  agentIdInput: string,
+  operationNameInput: string,
+  operation: () => T
+): LoopOperationResult<T> => {
+  const agentId = requiredText(agentIdInput, "agent ID");
+  const operationName = requiredText(operationNameInput, "operation name");
+  const opening = captureInventory(repositoryPath);
+  return withStateLock(
+    opening.repository.commonGitDirectory,
+    operationName,
+    () => {
+      const before = captureInventory(repositoryPath);
+      const lease = requireLease(before);
+      assertMatchingRun(lease, runId);
+      assertAgentMutationAllowed(lease, before, agentId);
+      const openingVerification = verificationAgainst(lease, before);
+      if (!openingVerification.ok) {
+        throw new SimpleChangesError(
+          `Loop operation rejected mutation: ${openingVerification.violations
+            .map((violation) => `${violation.code}:${violation.path}`)
+            .join(", ")}`,
+          EXIT_CODES.unsafe
+        );
+      }
+
+      let operationError: unknown;
+      let result: T | undefined;
+      try {
+        result = operation();
+      } catch (error) {
+        operationError = error;
+      }
+
+      const after = captureInventory(repositoryPath);
+      const currentLease = requireLease(after);
+      assertMatchingRun(currentLease, runId);
+      const closingVerification = verificationAgainst(currentLease, after);
+      writeLease({
+        ...currentLease,
+        updatedAt: closingVerification.checkedAt,
+      });
+      if (!closingVerification.ok) {
+        throw new SimpleChangesError(
+          `Loop operation detected a manifest violation after mutation: ${closingVerification.violations
+            .map((violation) => `${violation.code}:${violation.path}`)
+            .join(", ")}`,
+          EXIT_CODES.unsafe,
+          operationError === undefined ? undefined : { cause: operationError }
+        );
+      }
+      if (operationError !== undefined) {
+        throw operationError;
+      }
+      return {
+        result: result as T,
+        verification: closingVerification,
+      };
+    }
+  );
+};
+
+export const executeLoopMutation = (
+  repositoryPath: string,
+  runId: string,
+  agentIdInput: string,
+  commandInput: readonly string[]
+): LoopMutationResult => {
+  const [command, ...args] = commandInput;
+  if (!command) {
+    throw new SimpleChangesError(
+      "loop exec requires a command after --.",
+      EXIT_CODES.usage
     );
-    if (!registered?.mutationAllowed || registered.agentId !== agentId) {
-      throw new SimpleChangesError(
-        `Agent ${agentId} is not allowed to mutate ${currentPath}. Run prepare-agent first and continue from its returned worktree path.`,
-        EXIT_CODES.unsafe
-      );
-    }
-    const verification = verificationAgainst(lease, inventory);
-    if (!verification.ok) {
-      throw new SimpleChangesError(
-        `Loop guard rejected mutation: ${verification.violations
-          .map((violation) => `${violation.code}:${violation.path}`)
-          .join(", ")}`,
-        EXIT_CODES.unsafe
-      );
-    }
-    writeLease({
-      ...lease,
-      updatedAt: verification.checkedAt,
-    });
-    return verification;
-  });
+  }
+  const guarded = withLoopMutationLease(
+    repositoryPath,
+    runId,
+    agentIdInput,
+    "loop exec",
+    () =>
+      runCommand(
+        command,
+        args,
+        captureInventory(repositoryPath).repository.currentCheckout
+      )
+  );
+  return {
+    command: [command, ...args],
+    result: guarded.result,
+    verification: guarded.verification,
+  };
 };
 
 export interface PreparedAgentWorktree {
@@ -387,107 +690,211 @@ export const prepareAgentWorktree = (
 ): PreparedAgentWorktree => {
   const agentId = requiredText(agentIdInput, "agent ID");
   const purpose = slug(requiredText(purposeInput, "purpose"), "work");
-  const inventory = captureInventory(repositoryPath);
-  return withStateLock(inventory.repository.commonGitDirectory, () => {
-    const lease = requireLease(inventory);
-    assertMatchingRun(lease, runId);
-    const existing = lease.worktrees.find(
-      (worktree) => worktree.agentId === agentId
-    );
-    if (existing) {
-      if (!(existing.branch && existing.mutationAllowed)) {
+  const opening = captureInventory(repositoryPath);
+  return withStateLock(
+    opening.repository.commonGitDirectory,
+    "prepare agent worktree",
+    () => {
+      let inventory = captureInventory(repositoryPath);
+      const lease = requireLease(inventory);
+      assertMatchingRun(lease, runId);
+      const existing = lease.worktrees.find(
+        (worktree) => worktree.agentId === agentId
+      );
+      if (existing) {
+        if (!(existing.branch && existing.mutationAllowed)) {
+          throw new SimpleChangesError(
+            `Agent ${agentId} is registered without an authoring worktree.`,
+            EXIT_CODES.unsafe
+          );
+        }
+        return {
+          agentId,
+          baseRevision: existing.baselineHeadSha ?? lease.targetRevision,
+          branch: existing.branch,
+          created: false,
+          path: existing.path,
+          runId: lease.runId,
+        };
+      }
+
+      const finalizePreparation = (
+        currentLease: LoopLease,
+        preparation: LoopWorktreePreparation
+      ): PreparedAgentWorktree => {
+        inventory = captureInventory(repositoryPath);
+        const preparedPath = existsSync(preparation.path)
+          ? realpathSync(preparation.path)
+          : preparation.path;
+        const createdWorktree = inventory.worktrees.find(
+          (worktree) => worktree.path === preparedPath
+        );
+        if (
+          !createdWorktree ||
+          createdWorktree.branch !== preparation.branch ||
+          createdWorktree.headSha !== preparation.baseRevision
+        ) {
+          throw new SimpleChangesError(
+            `Agent worktree preparation at ${preparation.path} is incomplete or no longer matches branch ${preparation.branch} at ${preparation.baseRevision}. Resume only after restoring that exact state.`,
+            EXIT_CODES.unsafe
+          );
+        }
+        const completedLease: LoopLease = {
+          ...currentLease,
+          preparations: currentLease.preparations.filter(
+            (item) => item.agentId !== preparation.agentId
+          ),
+          updatedAt: new Date().toISOString(),
+          worktrees: [
+            ...currentLease.worktrees,
+            worktreeLease(createdWorktree, "author", agentId, true),
+          ],
+        };
+        writeLease(completedLease);
+        const closingVerification = verificationAgainst(
+          completedLease,
+          inventory
+        );
+        if (!closingVerification.ok) {
+          throw new SimpleChangesError(
+            `Agent worktree registered, but concurrent manifest violations now block mutation: ${closingVerification.violations
+              .map((violation) => `${violation.code}:${violation.path}`)
+              .join(", ")}`,
+            EXIT_CODES.unsafe
+          );
+        }
+        return {
+          agentId,
+          baseRevision: preparation.baseRevision,
+          branch: preparation.branch,
+          created: true,
+          path: createdWorktree.path,
+          runId: currentLease.runId,
+        };
+      };
+
+      const resumePreparation = (
+        currentLease: LoopLease,
+        preparation: LoopWorktreePreparation
+      ): PreparedAgentWorktree => {
+        const preparedPath = existsSync(preparation.path)
+          ? realpathSync(preparation.path)
+          : preparation.path;
+        const currentWorktree = inventory.worktrees.find(
+          (worktree) => worktree.path === preparedPath
+        );
+        if (currentWorktree) {
+          return finalizePreparation(currentLease, preparation);
+        }
+        if (existsSync(preparation.path)) {
+          throw new SimpleChangesError(
+            `Prepared path ${preparation.path} exists but is not the registered Git worktree. Preserve it for inspection.`,
+            EXIT_CODES.unsafe
+          );
+        }
+        const branchResult = runGit(
+          currentLease.primaryCheckout,
+          [
+            "rev-parse",
+            "--verify",
+            `refs/heads/${preparation.branch}^{commit}`,
+          ],
+          true
+        );
+        const branchRevision = branchResult.stdout.trim();
+        if (
+          branchResult.exitCode === 0 &&
+          branchRevision !== preparation.baseRevision
+        ) {
+          throw new SimpleChangesError(
+            `Prepared branch ${preparation.branch} moved to ${branchRevision}; expected ${preparation.baseRevision}.`,
+            EXIT_CODES.unsafe
+          );
+        }
+        mkdirSync(dirname(preparation.path), { recursive: true });
+        if (branchResult.exitCode === 0) {
+          runGit(currentLease.primaryCheckout, [
+            "worktree",
+            "add",
+            preparation.path,
+            preparation.branch,
+          ]);
+        } else {
+          runGit(currentLease.primaryCheckout, [
+            "worktree",
+            "add",
+            "-b",
+            preparation.branch,
+            preparation.path,
+            preparation.baseRevision,
+          ]);
+        }
+        return finalizePreparation(currentLease, preparation);
+      };
+
+      const pending = lease.preparations.find(
+        (preparation) => preparation.agentId === agentId
+      );
+      if (pending) {
+        return resumePreparation(lease, pending);
+      }
+      const verification = verificationAgainst(lease, inventory);
+      if (!verification.ok) {
         throw new SimpleChangesError(
-          `Agent ${agentId} is registered without an authoring worktree.`,
+          `Cannot prepare an agent worktree while the loop manifest has violations: ${verification.violations
+            .map((violation) => `${violation.code}:${violation.path}`)
+            .join(", ")}`,
           EXIT_CODES.unsafe
         );
       }
-      return {
+      const agentSlug = slug(agentId, "agent");
+      const runSlug = lease.runId.slice(4, 16);
+      const repositorySlug = slug(
+        basename(lease.primaryCheckout),
+        "repository"
+      );
+      const branch = `simple-changes/${purpose}-${agentSlug}-${runSlug}`;
+      const path = resolve(
+        dirname(lease.primaryCheckout),
+        ".simple-changes-worktrees",
+        repositorySlug,
+        `${runSlug}-${purpose}-${agentSlug}`
+      );
+      if (existsSync(path)) {
+        throw new SimpleChangesError(
+          `Refusing to reuse unregistered agent worktree path ${path}.`,
+          EXIT_CODES.unsafe
+        );
+      }
+      const branchExists =
+        runGit(
+          lease.primaryCheckout,
+          ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`],
+          true
+        ).exitCode === 0;
+      if (branchExists) {
+        throw new SimpleChangesError(
+          `Refusing to reuse unregistered agent branch ${branch}.`,
+          EXIT_CODES.unsafe
+        );
+      }
+      const baseRevision = lease.targetRevision;
+      const newPreparation: LoopWorktreePreparation = {
         agentId,
-        baseRevision: existing.baselineHeadSha ?? lease.targetRef,
-        branch: existing.branch,
-        created: false,
-        path: existing.path,
-        runId: lease.runId,
+        baseRevision,
+        branch,
+        createdAt: new Date().toISOString(),
+        path,
+        purpose,
       };
+      const preparingLease = writeLease({
+        ...lease,
+        preparations: [...lease.preparations, newPreparation],
+        updatedAt: newPreparation.createdAt,
+      });
+      return resumePreparation(preparingLease, newPreparation);
     }
-    const verification = verificationAgainst(lease, inventory);
-    if (!verification.ok) {
-      throw new SimpleChangesError(
-        `Cannot prepare an agent worktree while the loop manifest has violations: ${verification.violations
-          .map((violation) => `${violation.code}:${violation.path}`)
-          .join(", ")}`,
-        EXIT_CODES.unsafe
-      );
-    }
-    const agentSlug = slug(agentId, "agent");
-    const runSlug = lease.runId.slice(4, 16);
-    const repositorySlug = slug(basename(lease.primaryCheckout), "repository");
-    const branch = `simple-changes/${purpose}-${agentSlug}-${runSlug}`;
-    const path = resolve(
-      dirname(lease.primaryCheckout),
-      ".simple-changes-worktrees",
-      repositorySlug,
-      `${runSlug}-${purpose}-${agentSlug}`
-    );
-    if (existsSync(path)) {
-      throw new SimpleChangesError(
-        `Refusing to reuse unregistered agent worktree path ${path}.`,
-        EXIT_CODES.unsafe
-      );
-    }
-    const branchExists =
-      runGit(
-        lease.primaryCheckout,
-        ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`],
-        true
-      ).exitCode === 0;
-    if (branchExists) {
-      throw new SimpleChangesError(
-        `Refusing to reuse unregistered agent branch ${branch}.`,
-        EXIT_CODES.unsafe
-      );
-    }
-    const baseRevision = runGit(lease.primaryCheckout, [
-      "rev-parse",
-      "--verify",
-      `${lease.targetRef}^{commit}`,
-    ]).stdout.trim();
-    mkdirSync(dirname(path), { recursive: true });
-    runGit(lease.primaryCheckout, [
-      "worktree",
-      "add",
-      "-b",
-      branch,
-      path,
-      baseRevision,
-    ]);
-    const refreshed = captureInventory(path);
-    const createdWorktree = refreshed.worktrees.find(
-      (worktree) => worktree.path === realpathSync(path)
-    );
-    if (!createdWorktree) {
-      throw new SimpleChangesError(
-        `Git created ${path}, but inventory could not register it.`,
-        EXIT_CODES.inventory
-      );
-    }
-    writeLease({
-      ...lease,
-      updatedAt: new Date().toISOString(),
-      worktrees: [
-        ...lease.worktrees,
-        worktreeLease(createdWorktree, "author", agentId, true),
-      ],
-    });
-    return {
-      agentId,
-      baseRevision,
-      branch,
-      created: true,
-      path: createdWorktree.path,
-      runId: lease.runId,
-    };
-  });
+  );
 };
 
 export const grantLoopOverride = (
@@ -509,64 +916,69 @@ export const grantLoopOverride = (
       EXIT_CODES.usage
     );
   }
-  const inventory = captureInventory(repositoryPath);
-  return withStateLock(inventory.repository.commonGitDirectory, () => {
-    const lease = requireLease(inventory);
-    assertMatchingRun(lease, runId);
-    if (lease.ownerAgentId !== ownerAgentId) {
-      throw new SimpleChangesError(
-        `Only loop owner ${lease.ownerAgentId} may record an override.`,
-        EXIT_CODES.unsafe
+  const opening = captureInventory(repositoryPath);
+  return withStateLock(
+    opening.repository.commonGitDirectory,
+    "loop allow",
+    () => {
+      const inventory = captureInventory(repositoryPath);
+      const lease = requireLease(inventory);
+      assertMatchingRun(lease, runId);
+      if (lease.ownerAgentId !== ownerAgentId) {
+        throw new SimpleChangesError(
+          `Only loop owner ${lease.ownerAgentId} may record an override.`,
+          EXIT_CODES.unsafe
+        );
+      }
+      const path = existsSync(pathInput)
+        ? realpathSync(pathInput)
+        : resolve(pathInput);
+      const registered = lease.worktrees.find(
+        (worktree) => worktree.path === path && worktree.role === "preserved"
       );
-    }
-    const path = existsSync(pathInput)
-      ? realpathSync(pathInput)
-      : resolve(pathInput);
-    const registered = lease.worktrees.find(
-      (worktree) => worktree.path === path && worktree.role === "preserved"
-    );
-    const current = inventory.worktrees.find(
-      (worktree) => worktree.path === path
-    );
-    if (!(registered && current)) {
-      throw new SimpleChangesError(
-        `Override path must name a current preserved baseline worktree: ${path}`,
-        EXIT_CODES.unsafe
+      const current = inventory.worktrees.find(
+        (worktree) => worktree.path === path
       );
+      if (!(registered && current)) {
+        throw new SimpleChangesError(
+          `Override path must name a current preserved baseline worktree: ${path}`,
+          EXIT_CODES.unsafe
+        );
+      }
+      if (current.changeDigest !== changeDigest) {
+        throw new SimpleChangesError(
+          `Override digest does not match ${path}; expected current digest ${current.changeDigest}.`,
+          EXIT_CODES.unsafe
+        );
+      }
+      const override: LoopOverride = {
+        approvedBy,
+        changeDigest,
+        createdAt: new Date().toISOString(),
+        headSha: current.headSha,
+        path,
+        reason,
+      };
+      const candidate = {
+        ...lease,
+        overrides: [
+          ...lease.overrides.filter((item) => item.path !== path),
+          override,
+        ],
+        updatedAt: override.createdAt,
+      };
+      const verification = verificationAgainst(candidate, inventory);
+      if (!verification.ok) {
+        throw new SimpleChangesError(
+          `Override is exact but other loop violations remain: ${verification.violations
+            .map((violation) => `${violation.code}:${violation.path}`)
+            .join(", ")}`,
+          EXIT_CODES.unsafe
+        );
+      }
+      return writeLease(candidate);
     }
-    if (current.changeDigest !== changeDigest) {
-      throw new SimpleChangesError(
-        `Override digest does not match ${path}; expected current digest ${current.changeDigest}.`,
-        EXIT_CODES.unsafe
-      );
-    }
-    const override: LoopOverride = {
-      approvedBy,
-      changeDigest,
-      createdAt: new Date().toISOString(),
-      headSha: current.headSha,
-      path,
-      reason,
-    };
-    const candidate = {
-      ...lease,
-      overrides: [
-        ...lease.overrides.filter((item) => item.path !== path),
-        override,
-      ],
-      updatedAt: override.createdAt,
-    };
-    const verification = verificationAgainst(candidate, inventory);
-    if (!verification.ok) {
-      throw new SimpleChangesError(
-        `Override is exact but other loop violations remain: ${verification.violations
-          .map((violation) => `${violation.code}:${violation.path}`)
-          .join(", ")}`,
-        EXIT_CODES.unsafe
-      );
-    }
-    return writeLease(candidate);
-  });
+  );
 };
 
 export const endLoop = (
@@ -575,49 +987,76 @@ export const endLoop = (
   ownerAgentIdInput: string
 ): LoopVerification => {
   const ownerAgentId = requiredText(ownerAgentIdInput, "agent ID");
-  const inventory = captureInventory(repositoryPath);
-  return withStateLock(inventory.repository.commonGitDirectory, () => {
-    const lease = requireLease(inventory);
-    assertMatchingRun(lease, runId);
-    if (lease.ownerAgentId !== ownerAgentId) {
-      throw new SimpleChangesError(
-        `Only loop owner ${lease.ownerAgentId} may end this loop.`,
-        EXIT_CODES.unsafe
+  const opening = captureInventory(repositoryPath);
+  return withStateLock(
+    opening.repository.commonGitDirectory,
+    "loop end",
+    () => {
+      const inventory = captureInventory(repositoryPath);
+      const lease = requireLease(inventory);
+      assertMatchingRun(lease, runId);
+      if (lease.ownerAgentId !== ownerAgentId) {
+        throw new SimpleChangesError(
+          `Only loop owner ${lease.ownerAgentId} may end this loop.`,
+          EXIT_CODES.unsafe
+        );
+      }
+      const verification = verificationAgainst(lease, inventory);
+      if (!verification.ok) {
+        throw new SimpleChangesError(
+          `Cannot end loop with manifest violations: ${verification.violations
+            .map((violation) => `${violation.code}:${violation.path}`)
+            .join(", ")}`,
+          EXIT_CODES.unsafe
+        );
+      }
+      const liveRunWorktrees = lease.worktrees.filter(
+        (worktree) =>
+          worktree.createdByRun &&
+          inventory.worktrees.some((current) => current.path === worktree.path)
       );
+      if (liveRunWorktrees.length > 0) {
+        throw new SimpleChangesError(
+          `Remove run-created worktrees before ending the loop: ${liveRunWorktrees
+            .map((worktree) => worktree.path)
+            .join(", ")}`,
+          EXIT_CODES.unsafe
+        );
+      }
+      rmSync(loopLeasePath(lease.commonGitDirectory), { force: true });
+      return verification;
     }
-    const verification = verificationAgainst(lease, inventory);
-    if (!verification.ok) {
-      throw new SimpleChangesError(
-        `Cannot end loop with manifest violations: ${verification.violations
-          .map((violation) => `${violation.code}:${violation.path}`)
-          .join(", ")}`,
-        EXIT_CODES.unsafe
-      );
-    }
-    const liveRunWorktrees = lease.worktrees.filter(
-      (worktree) =>
-        worktree.createdByRun &&
-        inventory.worktrees.some((current) => current.path === worktree.path)
-    );
-    if (liveRunWorktrees.length > 0) {
-      throw new SimpleChangesError(
-        `Remove run-created worktrees before ending the loop: ${liveRunWorktrees
-          .map((worktree) => worktree.path)
-          .join(", ")}`,
-        EXIT_CODES.unsafe
-      );
-    }
-    rmSync(loopLeasePath(lease.commonGitDirectory), { force: true });
-    return verification;
-  });
+  );
 };
 
 export const loopStatus = (
   repositoryPath: string
-): { lease: LoopLease | null; verification: LoopVerification } => ({
-  lease: readLoopLease(repositoryPath),
-  verification: verifyLoop(repositoryPath),
-});
+): { lease: LoopLease | null; verification: LoopVerification } => {
+  const opening = captureInventory(repositoryPath);
+  return withStateLock(
+    opening.repository.commonGitDirectory,
+    "loop status",
+    () => {
+      const inventory = captureInventory(repositoryPath);
+      const lease = readLeaseFromCommonDirectory(
+        inventory.repository.commonGitDirectory
+      );
+      return {
+        lease,
+        verification: lease
+          ? verificationAgainst(lease, inventory)
+          : {
+              active: false,
+              checkedAt: new Date().toISOString(),
+              currentBaselineDigest: inventory.baselineDigest,
+              ok: true,
+              runId: null,
+              violations: [],
+            },
+      };
+    }
+  );
+};
 
 export const loopManifestDigest = (lease: LoopLease): string =>
   sha256(JSON.stringify(lease));

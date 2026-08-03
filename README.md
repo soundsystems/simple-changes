@@ -93,6 +93,10 @@ discovery and the production release map stay scoped to that repository.
   capabilities using argument-array subprocess calls.
 - Takes two read-only snapshots and preserves work that appeared or changed
   between them.
+- Holds one atomic active-loop lease for write-capable integration runs,
+  persists the opening worktree manifest, rejects competing controllers and
+  unregistered mutations, and prepares one isolated worktree for each new
+  authoring agent.
 - Builds a deterministic preview plan for stable work and validates path
   conservation, authority, and closed JSON schemas.
 - Classifies database and data-system changes without prescribing a provider,
@@ -118,10 +122,11 @@ discovery and the production release map stay scoped to that repository.
   review-driven changes made after the original proposal head.
 - Emits human-readable or JSON reports with stable exit codes.
 
-The deterministic CLI does **not** create, push, merge, deploy, apply
-migrations, change secrets, update DNS, or clean branches. Those mutations
-remain capability- and authority-gated extensions of the v1 contract followed
-by agents and provider adapters.
+The deterministic CLI creates only explicitly requested, lease-registered
+authoring branches and worktrees. It does **not** commit, push, merge, deploy,
+apply migrations, change secrets, update DNS, or clean branches. Those
+mutations remain capability- and authority-gated extensions followed by agents
+and provider adapters.
 
 ## CLI
 
@@ -146,6 +151,15 @@ simple-changes setup [--finish review|integrate|ship]
   [--scope user|repository|run] [--yes] [--json] [--repo PATH]
 simple-changes inventory [--json] [--repo PATH]
 simple-changes preview [--json] [--repo PATH] [--settle-ms N]
+simple-changes loop start --mode MODE --agent-id ID [--json] [--repo PATH]
+simple-changes loop status [--json] [--repo PATH]
+simple-changes loop verify --run-id ID [--json] [--repo PATH]
+simple-changes loop guard --run-id ID --agent-id ID [--json] [--repo PATH]
+simple-changes loop allow --run-id ID --agent-id ID --worktree PATH
+  --status-digest SHA256 --approved-by ID --reason TEXT [--json] [--repo PATH]
+simple-changes loop end --run-id ID --agent-id ID [--json] [--repo PATH]
+simple-changes prepare-agent --run-id ID --agent-id ID --purpose SLUG
+  [--json] [--repo PATH]
 simple-changes release-notes [--check] [--json] [--repo PATH] [--version VERSION]
 simple-changes validate KIND FILE [--json]
 simple-changes verify-markdown FILE [--json]
@@ -154,7 +168,7 @@ simple-changes help
 
 `KIND` is one of `repo-policy`, `changelog-receipt`, `initialization`,
 `inventory`, `change-plan`, `run-state`, `provider-receipt`,
-`release-consistency`, or `release-notes`.
+`release-consistency`, `release-notes`, or `loop-lease`.
 
 Exit codes are stable: `0` success, `2` usage, `3` invalid input or contract,
 `4` inventory failure, and `5` unsafe repository state.

@@ -25,6 +25,10 @@ const shipCommunicationPath = new URL(
   "../../../skills/simple-changes/references/ship-communication.md",
   import.meta.url
 );
+const inventoryConcurrencyPath = new URL(
+  "../../../skills/simple-changes/references/inventory-and-concurrency.md",
+  import.meta.url
+);
 
 describe("Simple Changes skill contract", () => {
   test("Ship loops prove production matches the refreshed target head", async () => {
@@ -199,6 +203,35 @@ describe("Simple Changes skill contract", () => {
     );
     expect(normalizedCommunication).toContain(
       "The final response compares the pre-ship brief with the observed result"
+    );
+  });
+
+  test("Active loops enforce exclusive leases and isolated agent worktrees", async () => {
+    const [skill, concurrency] = await Promise.all([
+      readFile(skillPath, "utf8"),
+      readFile(inventoryConcurrencyPath, "utf8"),
+    ]);
+    const normalizedSkill = skill.replace(/\s+/g, " ");
+    const normalizedConcurrency = concurrency.replace(/\s+/g, " ");
+
+    expect(normalizedSkill).toContain(
+      "start one active loop before the first mutation"
+    );
+    expect(normalizedSkill).toContain("simple-changes.ts prepare-agent");
+    expect(normalizedSkill).toContain(
+      "When an active loop exists, a new authoring agent's first action is to prepare its own isolated worktree"
+    );
+    expect(normalizedSkill).toContain(
+      "Before merge, deployment, cleanup, and completion, run `loop verify`"
+    );
+    expect(normalizedConcurrency).toContain(
+      "A second controller cannot replace an active lease"
+    );
+    expect(normalizedConcurrency).toContain(
+      "It also rejects any new unregistered worktree"
+    );
+    expect(normalizedConcurrency).toContain(
+      "An override is an exceptional user handoff, not a way to suppress the guard"
     );
   });
 });

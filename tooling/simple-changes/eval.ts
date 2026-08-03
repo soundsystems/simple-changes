@@ -93,6 +93,7 @@ const requiredSkillFiles = [
   "evals/schemas/inventory.schema.json",
   "evals/schemas/change-plan.schema.json",
   "evals/schemas/run-state.schema.json",
+  "evals/schemas/loop-lease.schema.json",
   "evals/schemas/provider-receipt.schema.json",
   "evals/schemas/release-consistency.schema.json",
   "evals/schemas/release-notes.schema.json",

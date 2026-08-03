@@ -47,6 +47,118 @@ afterEach(() => {
 });
 
 describe("contract CLI", () => {
+  test("starts a lease and prepares an isolated agent worktree", () => {
+    const fixture = createTestRepository();
+    repositories.push(fixture);
+    const started = spawnSync(
+      [
+        process.execPath,
+        cliPath,
+        "loop",
+        "start",
+        "--mode",
+        "integrate",
+        "--agent-id",
+        "controller",
+        "--json",
+        "--repo",
+        fixture.root,
+      ],
+      { stderr: "pipe", stdout: "pipe" }
+    );
+    const startedOutput = JSON.parse(decoder.decode(started.stdout)) as {
+      lease: { runId: string };
+    };
+    expect(started.exitCode).toBe(0);
+
+    const prepared = spawnSync(
+      [
+        process.execPath,
+        cliPath,
+        "prepare-agent",
+        "--run-id",
+        startedOutput.lease.runId,
+        "--agent-id",
+        "author",
+        "--purpose",
+        "focused unit",
+        "--json",
+        "--repo",
+        fixture.root,
+      ],
+      { stderr: "pipe", stdout: "pipe" }
+    );
+    const preparedOutput = JSON.parse(decoder.decode(prepared.stdout)) as {
+      created: boolean;
+      path: string;
+    };
+    expect(prepared.exitCode).toBe(0);
+    expect(preparedOutput.created).toBe(true);
+    expect(preparedOutput.path).not.toBe(fixture.root);
+
+    const guarded = spawnSync(
+      [
+        process.execPath,
+        cliPath,
+        "loop",
+        "guard",
+        "--run-id",
+        startedOutput.lease.runId,
+        "--agent-id",
+        "author",
+        "--json",
+        "--repo",
+        preparedOutput.path,
+      ],
+      { stderr: "pipe", stdout: "pipe" }
+    );
+    expect(guarded.exitCode).toBe(0);
+    expect(JSON.parse(decoder.decode(guarded.stdout))).toMatchObject({
+      active: true,
+      ok: true,
+    });
+  });
+
+  test("blocks a new authoring agent in the controller checkout", () => {
+    const fixture = createTestRepository();
+    repositories.push(fixture);
+    const started = spawnSync(
+      [
+        process.execPath,
+        cliPath,
+        "loop",
+        "start",
+        "--mode",
+        "integrate",
+        "--agent-id",
+        "controller",
+        "--json",
+        "--repo",
+        fixture.root,
+      ],
+      { stderr: "pipe", stdout: "pipe" }
+    );
+    expect(started.exitCode).toBe(0);
+
+    const blocked = spawnSync(
+      [
+        process.execPath,
+        cliPath,
+        "initialize",
+        "--mode",
+        "queue",
+        "--agent-id",
+        "new-author",
+        "--json",
+        "--repo",
+        fixture.root,
+      ],
+      { stderr: "pipe", stdout: "pipe" }
+    );
+    expect(blocked.exitCode).toBe(5);
+    expect(decoder.decode(blocked.stderr)).toContain("prepare-agent first");
+  });
+
   test("reports onboarding before a first write-capable run", () => {
     const fixture = createTestRepository();
     repositories.push(fixture);

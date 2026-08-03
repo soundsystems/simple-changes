@@ -1,6 +1,26 @@
 # Developer changelog
 
-## Unreleased
+## 0.6.0 - 2026-08-03
+
+- Added an executable active-loop lease and worktree-manifest contract:
+  - Queue, Sweep, Integrate, Ship, Reconcile, and Resume runs atomically persist
+    one controller lease beneath the common Git directory, including the
+    canonical target, opening inventory digest, and each worktree's path,
+    branch, head, status digest, role, and mutation authority.
+  - Added `loop start`, `loop status`, `loop verify`, `loop guard`, `loop allow`,
+    and `loop end`, plus `prepare-agent` for creating an idempotent,
+    run-registered sibling worktree from the recorded target revision.
+  - Mutation guards require the calling agent to own the exact controller or
+    author worktree and reject competing controllers, unregistered worktrees,
+    missing preserved worktrees, and changed preserved state.
+  - User-approved overrides bind to one preserved worktree's absolute path,
+    current head, and status digest. Further changes invalidate the exception,
+    and the lease cannot end until manifest violations are resolved and
+    run-created worktrees are removed.
+  - Added the closed `loop-lease` schema, TypeScript contracts, CLI coverage,
+    skill-contract assertions, and behavior evaluation for exclusive
+    controllers, isolated authoring agents, exact overrides, and cleanup.
+<!-- simple-changelogs-signature agent="gpt-5.6-sol" at="2026-08-03T12:01:25-05:00" -->
 
 - Added first-class Sync and two-stage Ship contracts:
   - Sync initialization bypasses workflow-preference onboarding and grants only

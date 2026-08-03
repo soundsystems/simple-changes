@@ -1,0 +1,106 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://simple-changes.dev/schemas/loop-lease.schema.json",
+  "title": "Simple Changes active integration-loop lease",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "runId",
+    "mode",
+    "ownerAgentId",
+    "createdAt",
+    "updatedAt",
+    "baselineDigest",
+    "commonGitDirectory",
+    "primaryCheckout",
+    "targetRef",
+    "worktrees",
+    "overrides"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "runId": { "type": "string", "pattern": "^run-[a-z0-9-]+$" },
+    "mode": {
+      "enum": ["queue", "sweep", "integrate", "ship", "reconcile", "resume"]
+    },
+    "ownerAgentId": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "createdAt": { "type": "string", "format": "date-time" },
+    "updatedAt": { "type": "string", "format": "date-time" },
+    "baselineDigest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "commonGitDirectory": { "type": "string", "minLength": 1 },
+    "primaryCheckout": { "type": "string", "minLength": 1 },
+    "targetRef": { "type": "string", "minLength": 1 },
+    "worktrees": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "path",
+          "branch",
+          "baselineHeadSha",
+          "baselineChangeDigest",
+          "role",
+          "agentId",
+          "mutationAllowed",
+          "createdByRun"
+        ],
+        "properties": {
+          "path": { "type": "string", "minLength": 1 },
+          "branch": {
+            "anyOf": [{ "type": "string", "minLength": 1 }, { "type": "null" }]
+          },
+          "baselineHeadSha": {
+            "anyOf": [
+              { "type": "string", "pattern": "^[0-9a-f]{40,64}$" },
+              { "type": "null" }
+            ]
+          },
+          "baselineChangeDigest": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "role": { "enum": ["controller", "author", "preserved"] },
+          "agentId": {
+            "anyOf": [
+              { "type": "string", "minLength": 1, "maxLength": 128 },
+              { "type": "null" }
+            ]
+          },
+          "mutationAllowed": { "type": "boolean" },
+          "createdByRun": { "type": "boolean" }
+        }
+      }
+    },
+    "overrides": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "path",
+          "headSha",
+          "changeDigest",
+          "approvedBy",
+          "reason",
+          "createdAt"
+        ],
+        "properties": {
+          "path": { "type": "string", "minLength": 1 },
+          "headSha": {
+            "anyOf": [
+              { "type": "string", "pattern": "^[0-9a-f]{40,64}$" },
+              { "type": "null" }
+            ]
+          },
+          "changeDigest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+          "approvedBy": { "type": "string", "minLength": 1, "maxLength": 128 },
+          "reason": { "type": "string", "minLength": 1, "maxLength": 500 },
+          "createdAt": { "type": "string", "format": "date-time" }
+        }
+      }
+    }
+  }
+}

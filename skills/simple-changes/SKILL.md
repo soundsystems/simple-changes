@@ -168,6 +168,45 @@ summarize what actually shipped, exact receipts, review-driven changes and
 re-verification, and anything preserved or blocked. Follow
 [ship communication](references/ship-communication.md).
 
+## Hold an executable integration lease
+
+For Queue, Sweep, Integrate, Ship, Reconcile, and Resume, start one active loop
+before the first mutation. This persists the complete opening worktree manifest
+under the common Git directory and takes an exclusive repository lease:
+
+```sh
+bun skills/simple-changes/scripts/simple-changes.ts loop start \
+  --mode ship --agent-id "$AGENT_ID" --json
+```
+
+Reuse the returned `runId` for every guard. A second controller is rejected
+while the lease exists. Before each Git or repository mutation, run `loop
+guard` from the checkout that will change. Before merge, deployment, cleanup,
+and completion, run `loop verify`; an unregistered worktree or a changed
+preserved worktree blocks the next mutation.
+
+When an active loop exists, a new authoring agent's first action is to prepare
+its own isolated worktree:
+
+```sh
+bun skills/simple-changes/scripts/simple-changes.ts prepare-agent \
+  --run-id "$RUN_ID" --agent-id "$NEW_AGENT_ID" --purpose "$PURPOSE" --json
+```
+
+The command derives a branch and sibling worktree from the canonical target,
+registers both atomically with the lease, and returns the exact working path.
+Start or redirect the agent there before it edits anything. The command is
+idempotent for one agent ID. A reviewer may remain in read-only mode without a
+worktree; if review turns into authorship, prepare an authoring worktree first.
+
+Never weaken the lease with a blanket exception. If the user explicitly takes
+over a preserved worktree that changed after the baseline, record only its
+exact absolute path, current status digest, current head, approver identity,
+and reason through `loop allow`. Any subsequent change invalidates that
+exception. Remove run-created worktrees, verify the manifest again, and run
+`loop end` only after cleanup. Follow
+[inventory and concurrency](references/inventory-and-concurrency.md).
+
 ## Completed-work handoff
 
 An instruction pointer may invoke this skill after implementation. That event
@@ -212,6 +251,11 @@ authority for those operations.
    bun skills/simple-changes/scripts/simple-changes.ts inventory --json
    ```
 
+   For every write-capable integration mode except guarded Sync, immediately
+   start the executable loop lease and retain its `runId`. If a lease is already
+   active, join it only through a registered agent worktree; never start a
+   competing loop.
+
 3. Refresh the intended target ref before diff-derived decisions. Never refresh
    during a preview when it would contact a remote. In Sync mode, follow the
    guarded [sync workflow](references/sync.md) after the opening inventory, then
@@ -242,8 +286,10 @@ authority for those operations.
    delegated files only with a current validated handoff receipt. A production
    Web deployment always requires a dated, versioned release receipt that
    accounts for every target-contained `Unreleased` item.
-10. Package only the intended paths without resetting, hiding, or staging
-   unrelated work. Do not use cleanup stashes.
+10. Run the exact lease guard from the worktree that will mutate, then package
+    only the intended paths without resetting, hiding, or staging unrelated
+    work. Do not use cleanup stashes. Repeat the guard before every later
+    mutation; it is not a one-time advisory check.
 11. Create or update the provider's neutral change proposal using real Markdown
     newlines. Re-read the stored source and rendered body. Follow
     [change proposals](references/change-requests.md).
@@ -267,9 +313,11 @@ authority for those operations.
     Reconcile stale provider-managed targets with the existing artifact through
     a bounded promote/recheck/managed-target sequence. Follow
     [deployments](references/deployments.md).
-16. Re-inventory local and remote state. Clean only proven merged, obsolete, or
-    generated objects, then restore and verify the original primary checkout.
-    Follow [cleanup and completion](references/cleanup-and-completion.md).
+16. Run `loop verify`, re-inventory local and remote state, and clean only
+    proven merged, obsolete, or generated objects. Restore and verify the
+    original primary checkout, remove run-created worktrees, run the final
+    verification, and release the lease with `loop end`. Follow
+    [cleanup and completion](references/cleanup-and-completion.md).
 
 ## Authority checkpoint
 
@@ -310,6 +358,9 @@ result.
   until the refreshed canonical target contains the merged dated/versioned
   release reconciliation and no target-contained work remains `Unreleased`.
 - Capture the opening baseline before mutation and attribute this run's objects.
+- Persist one active-loop lease for write-capable integration modes. A new
+  authoring agent must use its registered isolated worktree, and every mutation
+  must pass the executable guard from that exact checkout.
 - Stable baseline work is ready unless evidence says otherwise; changing or new
   concurrent work is preserved.
 - Queue mode may defer a stable unit, but may not silently omit it: the final

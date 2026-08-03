@@ -1,6 +1,14 @@
 # Changelog
 
-## Unreleased
+## 0.6.0 - 2026-08-03
+
+- Write-capable integration runs now hold one exclusive active-loop lease with a
+  recorded worktree manifest. Competing controllers, unregistered worktrees,
+  and unexpected changes to preserved work block further mutation. New
+  authoring agents use `prepare-agent` to receive an isolated, registered
+  worktree, while user-approved exceptions remain bound to one exact worktree
+  state and expire after another change.
+<!-- simple-changelogs-signature agent="gpt-5.6-sol" at="2026-08-03T12:01:25-05:00" -->
 
 - Added a guarded Sync mode for requests to update from the canonical remote
   target. It refreshes only the resolved target, safely updates clean local

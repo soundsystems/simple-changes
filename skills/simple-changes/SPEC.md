@@ -46,6 +46,12 @@
 
 - Existing and concurrent work is preserved unless ownership and scope are
   proven.
+- Write-capable integration modes hold one atomic active-loop lease with an
+  opening worktree manifest; a second controller, unregistered worktree, or
+  changed preserved worktree blocks mutation.
+- New authoring agents receive an isolated, run-registered worktree before
+  editing. Exact user overrides bind to one path, head, and status digest and
+  become invalid after another change.
 - Missing onboarding defaults to checked proposal creation and confirmation
   before completed-work handoff.
 - Instruction setup updates only an existing exact file after confirmation,
@@ -66,6 +72,8 @@
   store-release, or history-rewrite authority.
 - Automatically handing off planning, diagnosis, blocked work, no-change work,
   or another agent's work.
+- Starting a competing integration loop, mutating from another agent's
+  checkout, or bypassing an active manifest with a blanket exception.
 - Creating an instruction file, guessing a global instruction path, or
   duplicating the managed pointer.
 - Treating a generic Sync request as push, reset, rebase, proposal, deployment,

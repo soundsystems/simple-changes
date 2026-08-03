@@ -283,6 +283,64 @@ export interface SnapshotComparison {
   stableWorktrees: WorktreeInventory[];
 }
 
+export type LoopWorktreeRole = "controller" | "author" | "preserved";
+
+export interface LoopWorktreeLease {
+  agentId: string | null;
+  baselineChangeDigest: string;
+  baselineHeadSha: string | null;
+  branch: string | null;
+  createdByRun: boolean;
+  mutationAllowed: boolean;
+  path: string;
+  role: LoopWorktreeRole;
+}
+
+export interface LoopOverride {
+  approvedBy: string;
+  changeDigest: string;
+  createdAt: string;
+  headSha: string | null;
+  path: string;
+  reason: string;
+}
+
+export interface LoopLease {
+  baselineDigest: string;
+  commonGitDirectory: string;
+  createdAt: string;
+  mode: Exclude<RequestMode, "pause" | "preview" | "sync">;
+  overrides: LoopOverride[];
+  ownerAgentId: string;
+  primaryCheckout: string;
+  runId: string;
+  schemaVersion: 1;
+  targetRef: string;
+  updatedAt: string;
+  worktrees: LoopWorktreeLease[];
+}
+
+export interface LoopViolation {
+  changeDigest: string | null;
+  code:
+    | "common-git-directory-mismatch"
+    | "missing-preserved-worktree"
+    | "preserved-worktree-changed"
+    | "unregistered-worktree";
+  headSha: string | null;
+  message: string;
+  path: string;
+}
+
+export interface LoopVerification {
+  active: boolean;
+  checkedAt: string;
+  currentBaselineDigest: string | null;
+  ok: boolean;
+  runId: string | null;
+  violations: LoopViolation[];
+}
+
 export type SchemaName =
   | "repo-policy"
   | "changelog-receipt"
@@ -292,4 +350,5 @@ export type SchemaName =
   | "run-state"
   | "provider-receipt"
   | "release-consistency"
-  | "release-notes";
+  | "release-notes"
+  | "loop-lease";

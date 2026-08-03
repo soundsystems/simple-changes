@@ -8,35 +8,37 @@
     one controller lease beneath the common Git directory. Loop start resolves
     and records the target ref's exact `targetRevision`, then captures a fresh
     under-lock inventory of each worktree's path, branch, head, content digest,
-    role, and mutation authority.
-    Target discovery prefers the current branch's configured remote, then
-    `origin`, before considering auxiliary remotes.
-  - Worktree change digests now cover staged binary diffs, unstaged binary
-    diffs, and the contents or symlink targets of every untracked path. Exact
+    role, and mutation authority. Target discovery prefers the current branch's
+    configured remote, then `origin`, before considering auxiliary remotes.
+  - Worktree change digests cover staged binary diffs, unstaged binary diffs,
+    and the contents or symlink targets of every untracked path. Exact
     user-approved overrides therefore become invalid when file contents change,
     even if the porcelain status shape remains the same.
-  - Added `loop exec` and the reusable `withLoopMutationLease` callback. Both
-    retain the atomic loop lock across fresh preflight inventory, ownership and
-    manifest validation, the complete local mutation, fresh post-mutation
-    inventory, and closing verification.
-  - Repository setup and instruction-pointer writes now run through the same
-    atomic mutation callback whenever a loop is active, instead of performing
-    writes after a one-time advisory guard.
-  - Lock ownership metadata records the operation, hostname, PID, creation
-    time, and unique token. `loop recover` refuses recovery without valid
-    metadata, on another host, below the minimum age, while the PID remains
-    alive, or when the caller does not own the active lease.
-  - Agent worktree creation now records a pending preparation before Git
-    mutation, including the agent, path, branch, purpose, and pinned base
-    revision. A repeated `prepare-agent` resumes interrupted setup only when the
-    existing branch or worktree still matches that exact revision, then
-    atomically converts the pending preparation into a registered author
-    worktree.
-  - Added closed schema and TypeScript support for `targetRevision`, lock-safe
-    preparations, and content-bound state, plus CLI, schema, skill-contract, and
-    behavior coverage for full-execution locking, dead-lock recovery,
-    interrupted preparation, exact overrides, and cleanup.
-<!-- simple-changelogs-signature agent="gpt-5.6-sol" at="2026-08-03T12:33:15-05:00" -->
+  - Mutation-authorized worktrees are bound to their registered branch.
+    Verification, mutation guards, and repeated `prepare-agent` calls reject a
+    checkout that has switched branches.
+  - Added `loop exec` and the reusable asynchronous
+    `withLoopMutationLease` callback. Both retain the atomic loop lock across
+    fresh preflight inventory, ownership and manifest validation, the complete
+    awaited mutation, fresh post-mutation inventory, and closing verification.
+  - `loop exec` marks child launch as unresolved before spawning, then records
+    the guarded child PID and process-group ID while the command runs.
+    `loop recover` refuses recovery while launch state is unresolved, the
+    guarded process group remains alive, a recorded child remains alive, or the
+    controller process is not proven dead.
+  - Repository setup and instruction-pointer writes run through the same atomic
+    mutation callback whenever a loop is active, instead of performing writes
+    after a one-time advisory guard.
+  - Agent worktree creation records a pending preparation before Git mutation,
+    including the agent, path, branch, purpose, and pinned base revision. A
+    repeated `prepare-agent` resumes interrupted setup only when the worktree
+    still matches that exact branch and revision and contains no staged,
+    unstaged, or untracked changes.
+  - Added closed contract support and regression coverage for branch-bound
+    authoring, clean interrupted preparation, awaited callback execution,
+    guarded process groups, conservative dead-lock recovery, exact overrides,
+    and cleanup.
+<!-- simple-changelogs-signature agent="gpt-5.6-sol" at="2026-08-03T13:33:34-05:00" -->
 
 - Added first-class Sync and two-stage Ship contracts:
   - Sync initialization bypasses workflow-preference onboarding and grants only

@@ -50,11 +50,14 @@
   opening worktree manifest; a second controller, unregistered worktree, or
   changed preserved worktree blocks mutation.
 - Local mutations hold the lease lock across fresh preflight inventory, one
-  bounded argument-array command, and post-mutation verification. Change
-  digests include actual staged, unstaged, and untracked contents.
+  bounded argument-array command or awaited asynchronous callback, and
+  post-mutation verification. Guarded child/process-group identity remains
+  recorded while commands run. Change digests include actual staged, unstaged,
+  and untracked contents.
 - New authoring agents receive an isolated, run-registered worktree before
-  editing. Worktree creation is resumable from a pinned target revision, and a
-  stale lock is recoverable only after proof that its recorded local owner died.
+  editing. Worktree creation is resumable only from a clean pinned branch and
+  target revision; switching branches invalidates mutation authority. A stale
+  lock is recoverable only after proof that every recorded local process died.
   Exact user overrides bind to one path, head, and content digest and become
   invalid after another change.
 - Missing onboarding defaults to checked proposal creation and confirmation

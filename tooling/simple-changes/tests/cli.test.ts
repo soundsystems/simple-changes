@@ -54,6 +54,36 @@ const waitForPath = (path: string): Promise<void> =>
     }, 10);
   });
 
+const waitForGuardedProcess = (
+  ownerPath: string
+): Promise<{ childProcessId: number; processGroupId: number }> =>
+  new Promise((resolvePromise, rejectPromise) => {
+    let attempts = 0;
+    const interval = setInterval(() => {
+      attempts += 1;
+      try {
+        const owner = JSON.parse(readFileSync(ownerPath, "utf8")) as {
+          childProcessId?: number;
+          processGroupId?: number;
+        };
+        if (owner.childProcessId && owner.processGroupId) {
+          clearInterval(interval);
+          resolvePromise({
+            childProcessId: owner.childProcessId,
+            processGroupId: owner.processGroupId,
+          });
+          return;
+        }
+      } catch {
+        // The lock owner file may be between creation and its atomic update.
+      }
+      if (attempts >= 100) {
+        clearInterval(interval);
+        rejectPromise(new Error(`Timed out waiting for ${ownerPath}`));
+      }
+    }, 10);
+  });
+
 let repositories: TestRepository[] = [];
 
 afterEach(() => {
@@ -118,6 +148,10 @@ describe("contract CLI", () => {
     );
     await waitForPath(lockPath);
     expect(existsSync(lockPath)).toBe(true);
+    const guardedProcess = await waitForGuardedProcess(
+      resolve(lockPath, "owner.json")
+    );
+    expect(guardedProcess.processGroupId).toBe(guardedProcess.childProcessId);
 
     const competing = spawnSync(
       [

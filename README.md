@@ -95,9 +95,10 @@ discovery and the production release map stay scoped to that repository.
   between them.
 - Holds one atomic active-loop lease for write-capable integration runs,
   persists a content-sensitive opening worktree manifest, runs local mutations
-  under the lock from preflight through post-verification, recovers only locks
-  whose recorded owner is proven dead, and prepares one resumable isolated
-  worktree for each new authoring agent from a pinned revision.
+  under the lock from preflight through post-verification, awaits asynchronous
+  callbacks, tracks guarded command process groups, and recovers only locks
+  whose recorded processes are proven dead. Each new authoring agent receives
+  one branch-bound, resumable isolated worktree from a pinned clean revision.
 - Builds a deterministic preview plan for stable work and validates path
   conservation, authority, and closed JSON schemas.
 - Classifies database and data-system changes without prescribing a provider,
@@ -123,9 +124,11 @@ discovery and the production release map stay scoped to that repository.
   review-driven changes made after the original proposal head.
 - Emits human-readable or JSON reports with stable exit codes.
 
-The deterministic CLI creates only explicitly requested, lease-registered
-authoring branches and worktrees. `loop exec` can run one explicitly supplied
-local argument-array command while the lease lock is held, but it does not
+The deterministic CLI creates only explicitly requested, lease-registered,
+branch-bound authoring worktrees. Interrupted registration resumes only from a
+clean checkout on the recorded branch and revision. `loop exec` can run one
+explicitly supplied local argument-array command while the lease lock is held,
+but it does not
 decide to commit, push, merge, deploy, apply migrations, change secrets, update
 DNS, or clean branches. Those decisions remain capability- and authority-gated
 extensions followed by agents and provider adapters.

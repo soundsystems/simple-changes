@@ -54,17 +54,20 @@ directory. `loop start` creates it atomically and records:
 
 The lock directory prevents two cooperating agents from updating the manifest
 or performing guarded local mutations at once. It records the owning PID, host,
-operation, start time, and random token. A second controller cannot replace an
+operation, start time, random token, unresolved child-launch state, and any
+guarded child/process-group identity. A second controller cannot replace an
 active lease. Do not remove or rewrite the lock or state file by hand.
 
 `loop guard` is a moment-in-time read-only preflight. It does not reserve a
 future mutation. Run local Git and repository commands through `loop exec` so
 the same atomic lock covers a fresh manifest check, one argument-array command,
-and a fresh post-command check. The operation requires that the caller's agent
-ID owns the exact registered controller or author worktree. It rejects any new
-unregistered worktree, incomplete preparation, missing baseline worktree, or
-head/content change in a preserved worktree. Run `loop verify` before merge,
-deployment, cleanup, and completion even when every earlier operation passed.
+and a fresh post-command check. The reusable callback awaits asynchronous work
+under that same boundary. The operation requires that the caller's agent ID owns
+the exact registered controller or author worktree on its recorded branch. It
+rejects any new unregistered worktree, branch switch, incomplete preparation,
+missing baseline worktree, or head/content change in a preserved worktree. Run
+`loop verify` before merge, deployment, cleanup, and completion even when every
+earlier operation passed.
 
 An external provider mutation that cannot execute inside `loop exec` uses the
 narrow fallback: `loop guard` immediately before the call and `loop verify`
@@ -73,9 +76,10 @@ lock.
 
 If a process crashes, `loop recover` removes a lock only when its ownership
 metadata is valid, it is older than the recovery boundary, the recorded host is
-the current host, the recorded PID is provably dead, and the caller owns the
-active lease. A live, remote-host, young, ownerless, or malformed lock remains a
-blocker.
+the current host, the controller PID is provably dead, child launch is fully
+recorded, every recorded child/process group is inactive, and the caller owns
+the active lease. A live, remote-host, young, ownerless, malformed, unresolved,
+or still-running process-group lock remains a blocker.
 
 ## New agents during an active loop
 
@@ -86,7 +90,9 @@ active run and returns its exact path. Use that path as the agent's working
 directory before it edits, formats, generates, stages, or commits files.
 Repeating the command for the same agent ID returns the existing registration;
 if creation stopped partway through, the same command validates and resumes the
-recorded preparation instead of guessing or creating another branch.
+recorded preparation instead of guessing or creating another branch. It refuses
+to adopt staged, unstaged, or untracked content, and a registered author loses
+mutation authority after switching away from the recorded branch.
 
 Read-only review can inspect commit objects or provider diffs without an
 authoring worktree. The moment a reviewer needs to make a change, it becomes an

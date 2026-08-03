@@ -234,7 +234,16 @@ describe("Simple Changes skill contract", () => {
       "A second controller cannot replace an active lease"
     );
     expect(normalizedConcurrency).toContain(
-      "It rejects any new unregistered worktree, incomplete preparation"
+      "It rejects any new unregistered worktree, branch switch, incomplete preparation"
+    );
+    expect(normalizedConcurrency).toContain(
+      "the same command validates and resumes the recorded preparation"
+    );
+    expect(normalizedConcurrency).toContain(
+      "It refuses to adopt staged, unstaged, or untracked content"
+    );
+    expect(normalizedConcurrency).toContain(
+      "every recorded child/process group is inactive"
     );
     expect(normalizedConcurrency).toContain(
       "An override is an exceptional user handoff, not a way to suppress the guard"

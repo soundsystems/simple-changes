@@ -704,15 +704,17 @@ const runSetup = async (options: CliOptions): Promise<void> => {
       ? readLoopLease(options.repo)
       : null;
     const writeResult = activeLoop
-      ? withLoopMutationLease(
-          options.repo,
-          activeLoop.runId,
-          requireCliOption(
-            options.agentId,
-            "--agent-id while an integration loop is active"
-          ),
-          "setup write",
-          applyWrites
+      ? (
+          await withLoopMutationLease(
+            options.repo,
+            activeLoop.runId,
+            requireCliOption(
+              options.agentId,
+              "--agent-id while an integration loop is active"
+            ),
+            "setup write",
+            applyWrites
+          )
         ).result
       : applyWrites();
     const result = {
@@ -915,12 +917,12 @@ const runLoopRecovery = (options: CliOptions): void => {
   );
 };
 
-const runLoopExec = (
+const runLoopExec = async (
   options: CliOptions,
   runId: string,
   agentId: string
-): void => {
-  const result = executeLoopMutation(
+): Promise<void> => {
+  const result = await executeLoopMutation(
     options.repo,
     runId,
     agentId,
@@ -941,7 +943,7 @@ const runLoopExec = (
   );
 };
 
-const runLoopCommand = (options: CliOptions): void => {
+const runLoopCommand = async (options: CliOptions): Promise<void> => {
   const [action] = options.positional;
   if (!action) {
     throw new SimpleChangesError(
@@ -1015,7 +1017,7 @@ const runLoopCommand = (options: CliOptions): void => {
     return;
   }
   if (action === "exec") {
-    runLoopExec(options, runId, agentId);
+    await runLoopExec(options, runId, agentId);
     return;
   }
   if (action === "allow") {
@@ -1127,7 +1129,7 @@ const executeCommand = async (
       await runPreview(options);
       return EXIT_CODES.success;
     case "loop":
-      runLoopCommand(options);
+      await runLoopCommand(options);
       return EXIT_CODES.success;
     case "prepare-agent":
       runPrepareAgent(options);

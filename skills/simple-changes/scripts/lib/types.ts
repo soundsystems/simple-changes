@@ -338,6 +338,7 @@ export interface LoopViolation {
     | "missing-preserved-worktree"
     | "incomplete-worktree-preparation"
     | "preserved-worktree-changed"
+    | "registered-worktree-branch-changed"
     | "unregistered-worktree";
   headSha: string | null;
   message: string;

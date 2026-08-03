@@ -207,15 +207,20 @@ bun skills/simple-changes/scripts/simple-changes.ts prepare-agent \
 The command pins the opening target revision, records a pending preparation
 before asking Git to create a branch or sibling worktree, finishes registration,
 and returns the exact working path. If the process stops between those steps,
-rerun `prepare-agent` for the same agent ID to resume exact registration. Start
-or redirect the agent there before it edits anything. A reviewer may remain in
+rerun `prepare-agent` for the same agent ID to resume exact registration. Resume
+is allowed only when the worktree is still clean on the recorded branch and
+pinned revision. Later branch switching invalidates mutation authority. Start or
+redirect the agent there before it edits anything. A reviewer may remain in
 read-only mode without a worktree; if review turns into authorship, prepare an
 authoring worktree first.
 
-The lock contains process, host, operation, age, and ownership metadata. If a
-process dies while holding it, prove that the recorded same-host PID is dead,
-wait for the stale-age boundary, then use `loop recover --agent-id
-"$AGENT_ID"`. Never delete the lock directory or state file by hand.
+The lock contains process, process-group, host, operation, age, and ownership
+metadata. `loop exec` records unresolved child launch before spawning and then
+the guarded child and process group. Recovery requires the same-host controller,
+every recorded child, and the guarded process group to be proven inactive after
+the stale-age boundary; unresolved launch state remains a manual blocker. Only
+then use `loop recover --agent-id "$AGENT_ID"`. Never delete the lock directory
+or state file by hand.
 
 Never weaken the lease with a blanket exception. If the user explicitly takes
 over a preserved worktree that changed after the baseline, record only its

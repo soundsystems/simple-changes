@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { spawn } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { hostname } from "node:os";
 import { join } from "node:path";
+import { sleep } from "bun";
 import { captureInventory } from "../../../skills/simple-changes/scripts/lib/inventory.ts";
 import {
   endLoop,
@@ -15,6 +17,7 @@ import {
   recoverLoopLock,
   startLoop,
   verifyLoop,
+  withLoopMutationLease,
 } from "../../../skills/simple-changes/scripts/lib/loop-lease.ts";
 import {
   createTestRepository,
@@ -205,10 +208,35 @@ describe("active integration-loop lease", () => {
     );
   });
 
-  test("executes one mutation while holding the lease lock", () => {
+  test("rejects a registered author worktree that switches branches", () => {
+    const fixture = repository();
+    const lease = startLoop(fixture.root, "controller", "integrate");
+    const prepared = prepareAgentWorktree(
+      fixture.root,
+      lease.runId,
+      "author",
+      "branch-bound"
+    );
+    git(prepared.path, ["switch", "-c", "unrelated-author-branch"]);
+
+    expect(() =>
+      guardLoopMutation(prepared.path, lease.runId, "author")
+    ).toThrow("must resume");
+    expect(() =>
+      prepareAgentWorktree(prepared.path, lease.runId, "author", "ignored")
+    ).toThrow("registered branch");
+    expect(verifyLoop(fixture.root).violations).toContainEqual(
+      expect.objectContaining({
+        code: "registered-worktree-branch-changed",
+        path: prepared.path,
+      })
+    );
+  });
+
+  test("executes one mutation while holding the lease lock", async () => {
     const fixture = repository();
     const lease = startLoop(fixture.root, "controller", "ship");
-    const result = executeLoopMutation(
+    const result = await executeLoopMutation(
       fixture.root,
       lease.runId,
       "controller",
@@ -224,6 +252,31 @@ describe("active integration-loop lease", () => {
       "guarded mutation\n"
     );
     expect(result.verification.ok).toBe(true);
+  });
+
+  test("awaits an asynchronous callback before releasing the lease", async () => {
+    const fixture = repository();
+    const lease = startLoop(fixture.root, "controller", "ship");
+    const mutation = withLoopMutationLease(
+      fixture.root,
+      lease.runId,
+      "controller",
+      "async test mutation",
+      async () => {
+        await sleep(100);
+        writeFixture(fixture.root, "async.txt", "complete\n");
+        return "done";
+      }
+    );
+    await sleep(20);
+
+    expect(() =>
+      guardLoopMutation(fixture.root, lease.runId, "controller")
+    ).toThrow("state is busy");
+    expect((await mutation).result).toBe("done");
+    expect(readFileSync(join(fixture.root, "async.txt"), "utf8")).toBe(
+      "complete\n"
+    );
   });
 
   test("recovers only a stale lock whose local owner process is dead", () => {
@@ -259,6 +312,42 @@ describe("active integration-loop lease", () => {
     expect(() => recoverLoopLock(fixture.root, "controller")).toThrow(
       "active lock owner"
     );
+  });
+
+  test("refuses recovery while a guarded process group remains alive", () => {
+    const fixture = repository();
+    startLoop(fixture.root, "controller", "ship");
+    const inventory = captureInventory(fixture.root);
+    const lockPath = loopLockPath(inventory.repository.commonGitDirectory);
+    const child = spawn(process.execPath, ["-e", "await Bun.sleep(30_000)"], {
+      detached: true,
+      stdio: "ignore",
+    });
+    const childPid = child.pid;
+    if (!childPid) {
+      throw new Error("Expected detached child PID");
+    }
+    child.unref();
+    mkdirSync(lockPath, { recursive: true });
+    writeFileSync(
+      join(lockPath, "owner.json"),
+      `${JSON.stringify({
+        childProcessId: childPid,
+        createdAt: new Date(Date.now() - 60_000).toISOString(),
+        hostname: hostname(),
+        operation: "crashed loop exec",
+        pid: 2_147_483_647,
+        processGroupId: childPid,
+        token: "dead-wrapper-live-group",
+      })}\n`
+    );
+    try {
+      expect(() => recoverLoopLock(fixture.root, "controller")).toThrow(
+        "process group"
+      );
+    } finally {
+      process.kill(-childPid, "SIGTERM");
+    }
   });
 
   test("resumes registration after worktree creation was interrupted", () => {
@@ -319,6 +408,52 @@ describe("active integration-loop lease", () => {
     expect(resumed.path).toBe(prepared.path);
     expect(readLoopLease(fixture.root)?.preparations).toEqual([]);
     expect(verifyLoop(fixture.root).ok).toBe(true);
+  });
+
+  test("refuses to adopt dirty content from an interrupted preparation", () => {
+    const fixture = repository();
+    const lease = startLoop(fixture.root, "controller", "integrate");
+    const prepared = prepareAgentWorktree(
+      fixture.root,
+      lease.runId,
+      "author",
+      "dirty-resume"
+    );
+    const inventory = captureInventory(fixture.root);
+    const statePath = loopLeasePath(inventory.repository.commonGitDirectory);
+    const currentLease = readLoopLease(fixture.root);
+    if (!currentLease) {
+      throw new Error("Expected active loop lease");
+    }
+    writeFileSync(
+      statePath,
+      `${JSON.stringify(
+        {
+          ...currentLease,
+          preparations: [
+            {
+              agentId: "author",
+              baseRevision: prepared.baseRevision,
+              branch: prepared.branch,
+              createdAt: new Date().toISOString(),
+              path: prepared.path,
+              purpose: "dirty-resume",
+            },
+          ],
+          worktrees: currentLease.worktrees.filter(
+            (worktree) => worktree.agentId !== "author"
+          ),
+        },
+        null,
+        2
+      )}\n`
+    );
+    writeFixture(prepared.path, "unexpected.txt", "unreviewed\n");
+
+    expect(() =>
+      prepareAgentWorktree(fixture.root, lease.runId, "author", "ignored")
+    ).toThrow("contains staged, unstaged, or untracked changes");
+    expect(readLoopLease(fixture.root)?.preparations).toHaveLength(1);
   });
 
   test("requires run-created worktree cleanup before releasing the lease", () => {

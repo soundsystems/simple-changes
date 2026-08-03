@@ -13,7 +13,12 @@ import { basename, dirname, resolve } from "node:path";
 import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
 import { sha256 } from "./hash.ts";
 import { captureInventory } from "./inventory.ts";
-import { type CommandResult, runCommand, runGit } from "./process.ts";
+import {
+  type CommandProcess,
+  type CommandResult,
+  runCommandInProcessGroup,
+  runGit,
+} from "./process.ts";
 import { validateSchema } from "./schema.ts";
 import type {
   LoopLease,
@@ -56,10 +61,13 @@ const loopLockOwnerPath = (commonGitDirectory: string): string =>
   resolve(loopLockPath(commonGitDirectory), LOCK_OWNER_FILENAME);
 
 export interface LoopLockOwner {
+  childProcessId?: number;
+  childStarting?: boolean;
   createdAt: string;
   hostname: string;
   operation: string;
   pid: number;
+  processGroupId?: number;
   token: string;
 }
 
@@ -79,6 +87,16 @@ const readLockOwner = (commonGitDirectory: string): LoopLockOwner | null => {
       typeof parsed.pid === "number" &&
       Number.isInteger(parsed.pid) &&
       parsed.pid > 0 &&
+      (parsed.childProcessId === undefined ||
+        (typeof parsed.childProcessId === "number" &&
+          Number.isInteger(parsed.childProcessId) &&
+          parsed.childProcessId > 0)) &&
+      (parsed.childStarting === undefined ||
+        typeof parsed.childStarting === "boolean") &&
+      (parsed.processGroupId === undefined ||
+        (typeof parsed.processGroupId === "number" &&
+          Number.isInteger(parsed.processGroupId) &&
+          parsed.processGroupId > 0)) &&
       typeof parsed.token === "string" &&
       parsed.token.length > 0
     ) {
@@ -90,11 +108,41 @@ const readLockOwner = (commonGitDirectory: string): LoopLockOwner | null => {
   return null;
 };
 
-const withStateLock = <T>(
+interface StateLock {
+  release: () => void;
+  update: (updates: Partial<LoopLockOwner>) => LoopLockOwner;
+}
+
+const writeLockOwner = (
   commonGitDirectory: string,
-  operationName: string,
-  operation: () => T
-): T => {
+  owner: LoopLockOwner,
+  exclusive: boolean
+): void => {
+  const ownerPath = loopLockOwnerPath(commonGitDirectory);
+  if (exclusive) {
+    writeFileSync(ownerPath, `${JSON.stringify(owner, null, 2)}\n`, {
+      encoding: "utf8",
+      flag: "wx",
+      mode: 0o600,
+    });
+    return;
+  }
+  const temporaryPath = resolve(
+    loopLockPath(commonGitDirectory),
+    `${LOCK_OWNER_FILENAME}.${process.pid}.${randomUUID()}.tmp`
+  );
+  writeFileSync(temporaryPath, `${JSON.stringify(owner, null, 2)}\n`, {
+    encoding: "utf8",
+    flag: "wx",
+    mode: 0o600,
+  });
+  renameSync(temporaryPath, ownerPath);
+};
+
+const acquireStateLock = (
+  commonGitDirectory: string,
+  operationName: string
+): StateLock => {
   const directory = stateDirectory(commonGitDirectory);
   const lockPath = loopLockPath(commonGitDirectory);
   mkdirSync(directory, { mode: 0o700, recursive: true });
@@ -115,7 +163,7 @@ const withStateLock = <T>(
     }
     throw error;
   }
-  const owner: LoopLockOwner = {
+  let owner: LoopLockOwner = {
     createdAt: new Date().toISOString(),
     hostname: hostname(),
     operation: operationName,
@@ -123,22 +171,56 @@ const withStateLock = <T>(
     token: randomUUID(),
   };
   try {
-    writeFileSync(
-      loopLockOwnerPath(commonGitDirectory),
-      `${JSON.stringify(owner, null, 2)}\n`,
-      { encoding: "utf8", flag: "wx", mode: 0o600 }
-    );
+    writeLockOwner(commonGitDirectory, owner, true);
   } catch (error) {
     rmSync(lockPath, { force: true, recursive: true });
     throw error;
   }
+  return {
+    release: () => {
+      const currentOwner = readLockOwner(commonGitDirectory);
+      if (currentOwner?.token === owner.token) {
+        rmSync(lockPath, { force: true, recursive: true });
+      }
+    },
+    update: (updates) => {
+      const currentOwner = readLockOwner(commonGitDirectory);
+      if (currentOwner?.token !== owner.token) {
+        throw new SimpleChangesError(
+          "Active-loop lock ownership changed during the guarded operation.",
+          EXIT_CODES.unsafe
+        );
+      }
+      owner = { ...owner, ...updates };
+      writeLockOwner(commonGitDirectory, owner, false);
+      return owner;
+    },
+  };
+};
+
+const withStateLock = <T>(
+  commonGitDirectory: string,
+  operationName: string,
+  operation: () => T
+): T => {
+  const lock = acquireStateLock(commonGitDirectory, operationName);
   try {
     return operation();
   } finally {
-    const currentOwner = readLockOwner(commonGitDirectory);
-    if (currentOwner?.token === owner.token) {
-      rmSync(lockPath, { force: true, recursive: true });
-    }
+    lock.release();
+  }
+};
+
+const withAsyncStateLock = async <T>(
+  commonGitDirectory: string,
+  operationName: string,
+  operation: (lock: StateLock) => Promise<T>
+): Promise<T> => {
+  const lock = acquireStateLock(commonGitDirectory, operationName);
+  try {
+    return await operation(lock);
+  } finally {
+    lock.release();
   }
 };
 
@@ -202,6 +284,22 @@ const processIsAlive = (pid: number): boolean => {
   }
 };
 
+const processGroupIsAlive = (processGroupId: number): boolean => {
+  if (process.platform === "win32") {
+    return true;
+  }
+  try {
+    process.kill(-processGroupId, 0);
+    return true;
+  } catch (error) {
+    const { code } = error as NodeJS.ErrnoException;
+    if (code === "ESRCH") {
+      return false;
+    }
+    return true;
+  }
+};
+
 export interface LoopLockRecovery {
   recovered: boolean;
   recoveredAt: string;
@@ -245,6 +343,31 @@ export const recoverLoopLock = (
   if (processIsAlive(owner.pid)) {
     throw new SimpleChangesError(
       `Cannot recover active lock owner PID ${owner.pid}.`,
+      EXIT_CODES.unsafe
+    );
+  }
+  if (owner.childStarting) {
+    throw new SimpleChangesError(
+      "Cannot recover a loop-exec lock whose child launch did not finish recording. Inspect the operation manually before removing the lock.",
+      EXIT_CODES.unsafe
+    );
+  }
+  if (
+    owner.processGroupId !== undefined &&
+    processGroupIsAlive(owner.processGroupId)
+  ) {
+    throw new SimpleChangesError(
+      `Cannot recover active guarded process group ${owner.processGroupId}.`,
+      EXIT_CODES.unsafe
+    );
+  }
+  if (
+    owner.processGroupId === undefined &&
+    owner.childProcessId !== undefined &&
+    processIsAlive(owner.childProcessId)
+  ) {
+    throw new SimpleChangesError(
+      `Cannot recover active guarded child PID ${owner.childProcessId}.`,
       EXIT_CODES.unsafe
     );
   }
@@ -311,6 +434,59 @@ const matchingOverride = (
       override.changeDigest === worktree.changeDigest
   );
 
+const currentWorktreeViolations = (
+  lease: LoopLease,
+  worktree: WorktreeInventory,
+  registered: LoopWorktreeLease | undefined,
+  preparation: LoopWorktreePreparation | undefined
+): LoopViolation[] => {
+  if (!registered) {
+    if (
+      preparation &&
+      worktree.branch === preparation.branch &&
+      worktree.headSha === preparation.baseRevision
+    ) {
+      return [];
+    }
+    return [
+      {
+        changeDigest: worktree.changeDigest,
+        code: "unregistered-worktree",
+        headSha: worktree.headSha,
+        message:
+          "A worktree appeared after loop start without run registration. Preserve it and prepare an isolated agent worktree instead.",
+        path: worktree.path,
+      },
+    ];
+  }
+  const violations: LoopViolation[] = [];
+  if (
+    registered.role === "preserved" &&
+    (registered.baselineHeadSha !== worktree.headSha ||
+      registered.baselineChangeDigest !== worktree.changeDigest) &&
+    !matchingOverride(lease, worktree)
+  ) {
+    violations.push({
+      changeDigest: worktree.changeDigest,
+      code: "preserved-worktree-changed",
+      headSha: worktree.headSha,
+      message:
+        "A baseline worktree changed after loop start. Its exact path and current status digest need a recorded user-approved override before integration continues.",
+      path: worktree.path,
+    });
+  }
+  if (registered.mutationAllowed && registered.branch !== worktree.branch) {
+    violations.push({
+      changeDigest: worktree.changeDigest,
+      code: "registered-worktree-branch-changed",
+      headSha: worktree.headSha,
+      message: `A mutation-authorized worktree moved from registered branch ${registered.branch ?? "(detached)"} to ${worktree.branch ?? "(detached)"}. Resume only from its recorded branch.`,
+      path: worktree.path,
+    });
+  }
+  return violations;
+};
+
 const verificationAgainst = (
   lease: LoopLease,
   inventory: RepositoryInventory
@@ -336,41 +512,14 @@ const verificationAgainst = (
     lease.preparations.map((preparation) => [preparation.path, preparation])
   );
   for (const worktree of inventory.worktrees) {
-    const registered = registeredByPath.get(worktree.path);
-    if (!registered) {
-      const preparation = preparationByPath.get(worktree.path);
-      if (
-        preparation &&
-        worktree.branch === preparation.branch &&
-        worktree.headSha === preparation.baseRevision
-      ) {
-        continue;
-      }
-      violations.push({
-        changeDigest: worktree.changeDigest,
-        code: "unregistered-worktree",
-        headSha: worktree.headSha,
-        message:
-          "A worktree appeared after loop start without run registration. Preserve it and prepare an isolated agent worktree instead.",
-        path: worktree.path,
-      });
-      continue;
-    }
-    if (
-      registered.role === "preserved" &&
-      (registered.baselineHeadSha !== worktree.headSha ||
-        registered.baselineChangeDigest !== worktree.changeDigest) &&
-      !matchingOverride(lease, worktree)
-    ) {
-      violations.push({
-        changeDigest: worktree.changeDigest,
-        code: "preserved-worktree-changed",
-        headSha: worktree.headSha,
-        message:
-          "A baseline worktree changed after loop start. Its exact path and current status digest need a recorded user-approved override before integration continues.",
-        path: worktree.path,
-      });
-    }
+    violations.push(
+      ...currentWorktreeViolations(
+        lease,
+        worktree,
+        registeredByPath.get(worktree.path),
+        preparationByPath.get(worktree.path)
+      )
+    );
   }
   for (const preparation of lease.preparations) {
     violations.push({
@@ -429,9 +578,18 @@ const assertAgentMutationAllowed = (
   const registered = lease.worktrees.find(
     (worktree) => worktree.path === currentPath
   );
+  const current = inventory.worktrees.find(
+    (worktree) => worktree.path === currentPath
+  );
   if (!registered?.mutationAllowed || registered.agentId !== agentId) {
     throw new SimpleChangesError(
       `Agent ${agentId} is not allowed to mutate ${currentPath}. Run prepare-agent first and continue from its returned worktree path.`,
+      EXIT_CODES.unsafe
+    );
+  }
+  if (!current || current.branch !== registered.branch) {
+    throw new SimpleChangesError(
+      `Agent ${agentId} must resume ${currentPath} on registered branch ${registered.branch ?? "(detached)"}; current branch is ${current?.branch ?? "(detached or missing)"}.`,
       EXIT_CODES.unsafe
     );
   }
@@ -577,20 +735,25 @@ export interface LoopOperationResult<T> {
   verification: LoopVerification;
 }
 
+export interface LoopMutationLeaseContext {
+  markChildStarting: () => void;
+  registerProcess: (process: CommandProcess) => void;
+}
+
 export const withLoopMutationLease = <T>(
   repositoryPath: string,
   runId: string,
   agentIdInput: string,
   operationNameInput: string,
-  operation: () => T
-): LoopOperationResult<T> => {
+  operation: (context: LoopMutationLeaseContext) => T | Promise<T>
+): Promise<LoopOperationResult<T>> => {
   const agentId = requiredText(agentIdInput, "agent ID");
   const operationName = requiredText(operationNameInput, "operation name");
   const opening = captureInventory(repositoryPath);
-  return withStateLock(
+  return withAsyncStateLock(
     opening.repository.commonGitDirectory,
     operationName,
-    () => {
+    async (lock) => {
       const before = captureInventory(repositoryPath);
       const lease = requireLease(before);
       assertMatchingRun(lease, runId);
@@ -608,7 +771,20 @@ export const withLoopMutationLease = <T>(
       let operationError: unknown;
       let result: T | undefined;
       try {
-        result = operation();
+        result = await operation({
+          markChildStarting: () => {
+            lock.update({ childStarting: true });
+          },
+          registerProcess: (guardedProcess) => {
+            lock.update({
+              childProcessId: guardedProcess.childPid,
+              childStarting: false,
+              ...(guardedProcess.processGroupId === null
+                ? {}
+                : { processGroupId: guardedProcess.processGroupId }),
+            });
+          },
+        });
       } catch (error) {
         operationError = error;
       }
@@ -641,12 +817,12 @@ export const withLoopMutationLease = <T>(
   );
 };
 
-export const executeLoopMutation = (
+export const executeLoopMutation = async (
   repositoryPath: string,
   runId: string,
   agentIdInput: string,
   commandInput: readonly string[]
-): LoopMutationResult => {
+): Promise<LoopMutationResult> => {
   const [command, ...args] = commandInput;
   if (!command) {
     throw new SimpleChangesError(
@@ -654,17 +830,20 @@ export const executeLoopMutation = (
       EXIT_CODES.usage
     );
   }
-  const guarded = withLoopMutationLease(
+  const guarded = await withLoopMutationLease(
     repositoryPath,
     runId,
     agentIdInput,
     "loop exec",
-    () =>
-      runCommand(
+    (context) => {
+      context.markChildStarting();
+      return runCommandInProcessGroup(
         command,
         args,
-        captureInventory(repositoryPath).repository.currentCheckout
-      )
+        captureInventory(repositoryPath).repository.currentCheckout,
+        context.registerProcess
+      );
+    }
   );
   return {
     command: [command, ...args],
@@ -708,6 +887,15 @@ export const prepareAgentWorktree = (
             EXIT_CODES.unsafe
           );
         }
+        const existingWorktree = inventory.worktrees.find(
+          (worktree) => worktree.path === existing.path
+        );
+        if (!existingWorktree || existingWorktree.branch !== existing.branch) {
+          throw new SimpleChangesError(
+            `Agent ${agentId} must resume prepared path ${existing.path} on registered branch ${existing.branch}; current branch is ${existingWorktree?.branch ?? "missing or detached"}.`,
+            EXIT_CODES.unsafe
+          );
+        }
         return {
           agentId,
           baseRevision: existing.baselineHeadSha ?? lease.targetRevision,
@@ -736,6 +924,12 @@ export const prepareAgentWorktree = (
         ) {
           throw new SimpleChangesError(
             `Agent worktree preparation at ${preparation.path} is incomplete or no longer matches branch ${preparation.branch} at ${preparation.baseRevision}. Resume only after restoring that exact state.`,
+            EXIT_CODES.unsafe
+          );
+        }
+        if (createdWorktree.changes.length > 0) {
+          throw new SimpleChangesError(
+            `Agent worktree preparation at ${preparation.path} contains staged, unstaged, or untracked changes. Preserve it for inspection; only a clean interrupted preparation may be registered.`,
             EXIT_CODES.unsafe
           );
         }

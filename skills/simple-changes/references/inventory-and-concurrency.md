@@ -81,6 +81,12 @@ recorded, every recorded child/process group is inactive, and the caller owns
 the active lease. A live, remote-host, young, ownerless, malformed, unresolved,
 or still-running process-group lock remains a blocker.
 
+Normal command completion is also process-group scoped. A direct command
+leader that exits while background descendants remain does not complete the
+guarded mutation. Terminate those descendants and reject the command before
+releasing the lock. If the process group cannot be terminated, retain the lock
+so explicit recovery must prove the remaining processes inactive.
+
 ## New agents during an active loop
 
 An authoring agent must begin with `prepare-agent`. The command records a

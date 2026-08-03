@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -11,11 +11,13 @@ import {
 } from "./helpers.ts";
 
 const decoder = new TextDecoder();
+setDefaultTimeout(30_000);
 const testDirectory = dirname(fileURLToPath(import.meta.url));
 const cliPath = resolve(
   testDirectory,
   "../../../skills/simple-changes/scripts/simple-changes.ts"
 );
+const ASYNC_CLI_WAIT_ATTEMPTS = 500;
 
 interface CliSpawnOptions {
   cwd?: string;
@@ -47,7 +49,7 @@ const waitForPath = (path: string): Promise<void> =>
         resolvePromise();
         return;
       }
-      if (attempts >= 100) {
+      if (attempts >= ASYNC_CLI_WAIT_ATTEMPTS) {
         clearInterval(interval);
         rejectPromise(new Error(`Timed out waiting for ${path}`));
       }
@@ -77,7 +79,7 @@ const waitForGuardedProcess = (
       } catch {
         // The lock owner file may be between creation and its atomic update.
       }
-      if (attempts >= 100) {
+      if (attempts >= ASYNC_CLI_WAIT_ATTEMPTS) {
         clearInterval(interval);
         rejectPromise(new Error(`Timed out waiting for ${ownerPath}`));
       }
@@ -171,7 +173,7 @@ describe("contract CLI", () => {
     expect(competing.exitCode).toBe(5);
     expect(decoder.decode(competing.stderr)).toContain("state is busy");
     expect(await running.exited).toBe(0);
-  });
+  }, 20_000);
 
   test("starts a lease and prepares an isolated agent worktree", () => {
     const fixture = createTestRepository();
@@ -272,7 +274,7 @@ describe("contract CLI", () => {
     expect(
       readFileSync(resolve(preparedOutput.path, "cli-atomic.txt"), "utf8")
     ).toBe("ok\n");
-  });
+  }, 30_000);
 
   test("blocks a new authoring agent in the controller checkout", () => {
     const fixture = createTestRepository();

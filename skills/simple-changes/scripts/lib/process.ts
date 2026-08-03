@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { setTimeout as delay } from "node:timers/promises";
 import { spawnSync } from "bun";
 import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
 import { redactSecrets } from "./redact.ts";
@@ -14,7 +15,74 @@ export interface CommandProcess {
   processGroupId: number | null;
 }
 
+export class GuardedProcessGroupStillAliveError extends SimpleChangesError {
+  readonly processGroupId: number;
+
+  constructor(command: string, processGroupId: number) {
+    super(
+      `${command} left guarded process group ${processGroupId} alive and it could not be terminated; the active-loop lock was retained for explicit recovery.`,
+      EXIT_CODES.unsafe
+    );
+    this.name = "GuardedProcessGroupStillAliveError";
+    this.processGroupId = processGroupId;
+  }
+}
+
 const textDecoder = new TextDecoder();
+const PROCESS_GROUP_EXIT_GRACE_MS = 1000;
+const PROCESS_GROUP_POLL_MS = 25;
+
+const processGroupIsAlive = (processGroupId: number): boolean => {
+  if (process.platform === "win32") {
+    return false;
+  }
+  try {
+    process.kill(-processGroupId, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "EPERM";
+  }
+};
+
+const waitForProcessGroupExit = async (
+  processGroupId: number,
+  timeoutMs: number
+): Promise<boolean> => {
+  const deadline = Date.now() + timeoutMs;
+  while (processGroupIsAlive(processGroupId)) {
+    if (Date.now() >= deadline) {
+      return false;
+    }
+    // biome-ignore lint/performance/noAwaitInLoops: process-group exit must be polled sequentially.
+    await delay(PROCESS_GROUP_POLL_MS);
+  }
+  return true;
+};
+
+const terminateLingeringProcessGroup = async (
+  processGroupId: number
+): Promise<boolean> => {
+  try {
+    process.kill(-processGroupId, "SIGTERM");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ESRCH") {
+      throw error;
+    }
+  }
+  if (
+    await waitForProcessGroupExit(processGroupId, PROCESS_GROUP_EXIT_GRACE_MS)
+  ) {
+    return true;
+  }
+  try {
+    process.kill(-processGroupId, "SIGKILL");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ESRCH") {
+      throw error;
+    }
+  }
+  return waitForProcessGroupExit(processGroupId, PROCESS_GROUP_EXIT_GRACE_MS);
+};
 
 export const runCommand = (
   command: string,
@@ -92,7 +160,7 @@ export const runCommandInProcessGroup = (
       rejectPromise(error);
       return;
     }
-    child.once("close", (code) => {
+    child.once("close", async (code) => {
       const exitCode = code ?? 1;
       if (exitCode !== 0) {
         const detail = redactSecrets(stderr.trim() || stdout.trim());
@@ -101,6 +169,18 @@ export const runCommandInProcessGroup = (
             `${command} ${args[0] ?? ""} failed${detail ? `: ${detail}` : ""}`,
             EXIT_CODES.inventory
           )
+        );
+        return;
+      }
+      if (process.platform !== "win32" && processGroupIsAlive(childPid)) {
+        const terminated = await terminateLingeringProcessGroup(childPid);
+        rejectPromise(
+          terminated
+            ? new SimpleChangesError(
+                `${command} ${args[0] ?? ""} left background processes in guarded process group ${childPid}; they were terminated before releasing the loop lease.`,
+                EXIT_CODES.unsafe
+              )
+            : new GuardedProcessGroupStillAliveError(command, childPid)
         );
         return;
       }

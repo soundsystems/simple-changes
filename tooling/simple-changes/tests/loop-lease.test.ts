@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { spawn } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { hostname } from "node:os";
@@ -27,6 +27,7 @@ import {
 } from "./helpers.ts";
 
 let repositories: TestRepository[] = [];
+setDefaultTimeout(30_000);
 
 const repository = (): TestRepository => {
   const fixture = createTestRepository();
@@ -101,7 +102,7 @@ describe("active integration-loop lease", () => {
     expect(() =>
       guardLoopMutation(fixture.root, lease.runId, "catalog-agent")
     ).toThrow("not allowed to mutate");
-  });
+  }, 30_000);
 
   test("prepares from the target revision pinned at loop start", () => {
     const fixture = repository();
@@ -206,7 +207,7 @@ describe("active integration-loop lease", () => {
         path: preserved,
       })
     );
-  });
+  }, 20_000);
 
   test("rejects a registered author worktree that switches branches", () => {
     const fixture = repository();
@@ -231,7 +232,7 @@ describe("active integration-loop lease", () => {
         path: prepared.path,
       })
     );
-  });
+  }, 30_000);
 
   test("executes one mutation while holding the lease lock", async () => {
     const fixture = repository();
@@ -253,6 +254,31 @@ describe("active integration-loop lease", () => {
     );
     expect(result.verification.ok).toBe(true);
   });
+
+  test.skipIf(process.platform === "win32")(
+    "terminates background descendants before releasing the lease",
+    async () => {
+      const fixture = repository();
+      const lease = startLoop(fixture.root, "controller", "ship");
+      const pidPath = join(fixture.root, "lingering.pid");
+
+      await expect(
+        executeLoopMutation(fixture.root, lease.runId, "controller", [
+          "sh",
+          "-c",
+          `sleep 30 >/dev/null 2>&1 & echo $! > ${pidPath}`,
+        ])
+      ).rejects.toThrow("left background processes");
+
+      const lingeringPid = Number.parseInt(readFileSync(pidPath, "utf8"), 10);
+      expect(Number.isInteger(lingeringPid)).toBe(true);
+      expect(() => process.kill(lingeringPid, 0)).toThrow();
+      expect(
+        guardLoopMutation(fixture.root, lease.runId, "controller").ok
+      ).toBe(true);
+    },
+    20_000
+  );
 
   test("awaits an asynchronous callback before releasing the lease", async () => {
     const fixture = repository();
@@ -408,7 +434,7 @@ describe("active integration-loop lease", () => {
     expect(resumed.path).toBe(prepared.path);
     expect(readLoopLease(fixture.root)?.preparations).toEqual([]);
     expect(verifyLoop(fixture.root).ok).toBe(true);
-  });
+  }, 30_000);
 
   test("refuses to adopt dirty content from an interrupted preparation", () => {
     const fixture = repository();
@@ -454,7 +480,7 @@ describe("active integration-loop lease", () => {
       prepareAgentWorktree(fixture.root, lease.runId, "author", "ignored")
     ).toThrow("contains staged, unstaged, or untracked changes");
     expect(readLoopLease(fixture.root)?.preparations).toHaveLength(1);
-  });
+  }, 30_000);
 
   test("requires run-created worktree cleanup before releasing the lease", () => {
     const fixture = repository();

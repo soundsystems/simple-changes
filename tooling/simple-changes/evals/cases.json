@@ -372,7 +372,7 @@
         "Reuse the exclusive active-loop lease instead of starting a second controller",
         "Prepare or resume registration of a clean branch-bound authoring worktree from the pinned target revision before the new agent mutates files",
         "Execute local mutations and await asynchronous callbacks while the lease lock covers fresh preflight and post-mutation inventory",
-        "Track guarded child process groups and refuse recovery while any recorded process may still mutate",
+        "Track guarded child process groups, terminate and reject lingering background descendants before lease release, and refuse recovery while any recorded process may still mutate",
         "Reject unregistered, branch-switched, incompletely prepared, dirty-resumed, or content-changed preserved worktrees"
       ]
     },

@@ -16,6 +16,7 @@ import { captureInventory } from "./inventory.ts";
 import {
   type CommandProcess,
   type CommandResult,
+  GuardedProcessGroupStillAliveError,
   runCommandInProcessGroup,
   runGit,
 } from "./process.ts";
@@ -110,6 +111,7 @@ const readLockOwner = (commonGitDirectory: string): LoopLockOwner | null => {
 
 interface StateLock {
   release: () => void;
+  retain: () => void;
   update: (updates: Partial<LoopLockOwner>) => LoopLockOwner;
 }
 
@@ -170,6 +172,7 @@ const acquireStateLock = (
     pid: process.pid,
     token: randomUUID(),
   };
+  let retained = false;
   try {
     writeLockOwner(commonGitDirectory, owner, true);
   } catch (error) {
@@ -178,10 +181,23 @@ const acquireStateLock = (
   }
   return {
     release: () => {
+      if (retained) {
+        return;
+      }
       const currentOwner = readLockOwner(commonGitDirectory);
       if (currentOwner?.token === owner.token) {
         rmSync(lockPath, { force: true, recursive: true });
       }
+    },
+    retain: () => {
+      const currentOwner = readLockOwner(commonGitDirectory);
+      if (currentOwner?.token !== owner.token) {
+        throw new SimpleChangesError(
+          "Active-loop lock ownership changed before it could be retained.",
+          EXIT_CODES.unsafe
+        );
+      }
+      retained = true;
     },
     update: (updates) => {
       const currentOwner = readLockOwner(commonGitDirectory);
@@ -786,6 +802,9 @@ export const withLoopMutationLease = <T>(
           },
         });
       } catch (error) {
+        if (error instanceof GuardedProcessGroupStillAliveError) {
+          lock.retain();
+        }
         operationError = error;
       }
 

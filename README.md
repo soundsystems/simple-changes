@@ -96,7 +96,8 @@ discovery and the production release map stay scoped to that repository.
 - Holds one atomic active-loop lease for write-capable integration runs,
   persists a content-sensitive opening worktree manifest, runs local mutations
   under the lock from preflight through post-verification, awaits asynchronous
-  callbacks, tracks guarded command process groups, and recovers only locks
+  callbacks, tracks guarded command process groups, terminates and rejects
+  background descendants before normal lease release, and recovers only locks
   whose recorded processes are proven dead. Each new authoring agent receives
   one branch-bound, resumable isolated worktree from a pinned clean revision.
 - Builds a deterministic preview plan for stable work and validates path

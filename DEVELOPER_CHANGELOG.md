@@ -23,6 +23,11 @@
     awaited mutation, fresh post-mutation inventory, and closing verification.
   - `loop exec` marks child launch as unresolved before spawning, then records
     the guarded child PID and process-group ID while the command runs.
+  - When a guarded command leader exits while same-group descendants remain,
+    `loop exec` attempts bounded process-group termination and rejects the
+    command even when cleanup succeeds. If descendants cannot be proven
+    terminated, the mutation callback retains the lock and requires explicit
+    recovery instead of releasing concurrent mutation.
     `loop recover` refuses recovery while launch state is unresolved, the
     guarded process group remains alive, a recorded child remains alive, or the
     controller process is not proven dead.
@@ -38,7 +43,7 @@
     authoring, clean interrupted preparation, awaited callback execution,
     guarded process groups, conservative dead-lock recovery, exact overrides,
     and cleanup.
-<!-- simple-changelogs-signature agent="gpt-5.6-sol" at="2026-08-03T13:33:34-05:00" -->
+<!-- simple-changelogs-signature agent="gpt-5.6-sol" at="2026-08-03T13:54:04-05:00" -->
 
 - Added first-class Sync and two-stage Ship contracts:
   - Sync initialization bypasses workflow-preference onboarding and grants only

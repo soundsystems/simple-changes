@@ -218,9 +218,12 @@ The lock contains process, process-group, host, operation, age, and ownership
 metadata. `loop exec` records unresolved child launch before spawning and then
 the guarded child and process group. Recovery requires the same-host controller,
 every recorded child, and the guarded process group to be proven inactive after
-the stale-age boundary; unresolved launch state remains a manual blocker. Only
-then use `loop recover --agent-id "$AGENT_ID"`. Never delete the lock directory
-or state file by hand.
+the stale-age boundary; unresolved launch state remains a manual blocker. A
+command leader that exits while background descendants remain does not complete
+the guarded mutation: terminate the group and reject the command before lease
+release, or retain the lock when the group cannot be terminated. Only then use
+`loop recover --agent-id "$AGENT_ID"`. Never delete the lock directory or state
+file by hand.
 
 Never weaken the lease with a blanket exception. If the user explicitly takes
 over a preserved worktree that changed after the baseline, record only its

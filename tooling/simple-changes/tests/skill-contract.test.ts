@@ -246,6 +246,9 @@ describe("Simple Changes skill contract", () => {
       "every recorded child/process group is inactive"
     );
     expect(normalizedConcurrency).toContain(
+      "background descendants remain does not complete the guarded mutation"
+    );
+    expect(normalizedConcurrency).toContain(
       "An override is an exceptional user handoff, not a way to suppress the guard"
     );
   });

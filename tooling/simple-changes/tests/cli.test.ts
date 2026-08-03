@@ -1,8 +1,8 @@
-import { afterEach, describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { spawnSync as bunSpawnSync } from "bun";
+import { spawn as bunSpawn, spawnSync as bunSpawnSync } from "bun";
 import {
   createTestRepository,
   git,
@@ -11,11 +11,13 @@ import {
 } from "./helpers.ts";
 
 const decoder = new TextDecoder();
+setDefaultTimeout(30_000);
 const testDirectory = dirname(fileURLToPath(import.meta.url));
 const cliPath = resolve(
   testDirectory,
   "../../../skills/simple-changes/scripts/simple-changes.ts"
 );
+const ASYNC_CLI_WAIT_ATTEMPTS = 500;
 
 interface CliSpawnOptions {
   cwd?: string;
@@ -37,6 +39,53 @@ const spawnSync = (
     },
   });
 
+const waitForPath = (path: string): Promise<void> =>
+  new Promise((resolvePromise, rejectPromise) => {
+    let attempts = 0;
+    const interval = setInterval(() => {
+      attempts += 1;
+      if (existsSync(path)) {
+        clearInterval(interval);
+        resolvePromise();
+        return;
+      }
+      if (attempts >= ASYNC_CLI_WAIT_ATTEMPTS) {
+        clearInterval(interval);
+        rejectPromise(new Error(`Timed out waiting for ${path}`));
+      }
+    }, 10);
+  });
+
+const waitForGuardedProcess = (
+  ownerPath: string
+): Promise<{ childProcessId: number; processGroupId: number }> =>
+  new Promise((resolvePromise, rejectPromise) => {
+    let attempts = 0;
+    const interval = setInterval(() => {
+      attempts += 1;
+      try {
+        const owner = JSON.parse(readFileSync(ownerPath, "utf8")) as {
+          childProcessId?: number;
+          processGroupId?: number;
+        };
+        if (owner.childProcessId && owner.processGroupId) {
+          clearInterval(interval);
+          resolvePromise({
+            childProcessId: owner.childProcessId,
+            processGroupId: owner.processGroupId,
+          });
+          return;
+        }
+      } catch {
+        // The lock owner file may be between creation and its atomic update.
+      }
+      if (attempts >= ASYNC_CLI_WAIT_ATTEMPTS) {
+        clearInterval(interval);
+        rejectPromise(new Error(`Timed out waiting for ${ownerPath}`));
+      }
+    }, 10);
+  });
+
 let repositories: TestRepository[] = [];
 
 afterEach(() => {
@@ -47,6 +96,226 @@ afterEach(() => {
 });
 
 describe("contract CLI", () => {
+  test("holds the loop lock for the full guarded command", async () => {
+    const fixture = createTestRepository();
+    repositories.push(fixture);
+    const started = spawnSync(
+      [
+        process.execPath,
+        cliPath,
+        "loop",
+        "start",
+        "--mode",
+        "ship",
+        "--agent-id",
+        "controller",
+        "--json",
+        "--repo",
+        fixture.root,
+      ],
+      { stderr: "pipe", stdout: "pipe" }
+    );
+    const { lease } = JSON.parse(decoder.decode(started.stdout)) as {
+      lease: { runId: string };
+    };
+    const running = bunSpawn(
+      [
+        process.execPath,
+        cliPath,
+        "loop",
+        "exec",
+        "--run-id",
+        lease.runId,
+        "--agent-id",
+        "controller",
+        "--repo",
+        fixture.root,
+        "--",
+        process.execPath,
+        "-e",
+        "await Bun.sleep(10_000)",
+      ],
+      {
+        env: {
+          ...process.env,
+          SIMPLE_CHANGES_SKILL_ROOTS: "",
+        },
+        stderr: "pipe",
+        stdout: "pipe",
+      }
+    );
+    const lockPath = resolve(
+      fixture.root,
+      ".git/simple-changes/active-loop.lock"
+    );
+    await waitForPath(lockPath);
+    expect(existsSync(lockPath)).toBe(true);
+    const guardedProcess = await waitForGuardedProcess(
+      resolve(lockPath, "owner.json")
+    );
+    expect(guardedProcess.processGroupId).toBe(guardedProcess.childProcessId);
+
+    const competing = spawnSync(
+      [
+        process.execPath,
+        cliPath,
+        "loop",
+        "guard",
+        "--run-id",
+        lease.runId,
+        "--agent-id",
+        "controller",
+        "--repo",
+        fixture.root,
+      ],
+      { stderr: "pipe", stdout: "pipe" }
+    );
+    expect(competing.exitCode).toBe(5);
+    expect(decoder.decode(competing.stderr)).toContain("state is busy");
+    expect(await running.exited).toBe(0);
+  }, 20_000);
+
+  test("starts a lease and prepares an isolated agent worktree", () => {
+    const fixture = createTestRepository();
+    repositories.push(fixture);
+    const started = spawnSync(
+      [
+        process.execPath,
+        cliPath,
+        "loop",
+        "start",
+        "--mode",
+        "integrate",
+        "--agent-id",
+        "controller",
+        "--json",
+        "--repo",
+        fixture.root,
+      ],
+      { stderr: "pipe", stdout: "pipe" }
+    );
+    const startedOutput = JSON.parse(decoder.decode(started.stdout)) as {
+      lease: { runId: string };
+    };
+    expect(started.exitCode).toBe(0);
+
+    const prepared = spawnSync(
+      [
+        process.execPath,
+        cliPath,
+        "prepare-agent",
+        "--run-id",
+        startedOutput.lease.runId,
+        "--agent-id",
+        "author",
+        "--purpose",
+        "focused unit",
+        "--json",
+        "--repo",
+        fixture.root,
+      ],
+      { stderr: "pipe", stdout: "pipe" }
+    );
+    const preparedOutput = JSON.parse(decoder.decode(prepared.stdout)) as {
+      created: boolean;
+      path: string;
+    };
+    expect(prepared.exitCode).toBe(0);
+    expect(preparedOutput.created).toBe(true);
+    expect(preparedOutput.path).not.toBe(fixture.root);
+
+    const guarded = spawnSync(
+      [
+        process.execPath,
+        cliPath,
+        "loop",
+        "guard",
+        "--run-id",
+        startedOutput.lease.runId,
+        "--agent-id",
+        "author",
+        "--json",
+        "--repo",
+        preparedOutput.path,
+      ],
+      { stderr: "pipe", stdout: "pipe" }
+    );
+    expect(guarded.exitCode).toBe(0);
+    expect(JSON.parse(decoder.decode(guarded.stdout))).toMatchObject({
+      active: true,
+      ok: true,
+    });
+
+    const executed = spawnSync(
+      [
+        process.execPath,
+        cliPath,
+        "loop",
+        "exec",
+        "--run-id",
+        startedOutput.lease.runId,
+        "--agent-id",
+        "author",
+        "--json",
+        "--repo",
+        preparedOutput.path,
+        "--",
+        process.execPath,
+        "-e",
+        "await Bun.write('cli-atomic.txt', 'ok\\n')",
+      ],
+      { stderr: "pipe", stdout: "pipe" }
+    );
+    expect(executed.exitCode).toBe(0);
+    expect(JSON.parse(decoder.decode(executed.stdout))).toMatchObject({
+      result: { exitCode: 0 },
+      verification: { ok: true },
+    });
+    expect(
+      readFileSync(resolve(preparedOutput.path, "cli-atomic.txt"), "utf8")
+    ).toBe("ok\n");
+  }, 30_000);
+
+  test("blocks a new authoring agent in the controller checkout", () => {
+    const fixture = createTestRepository();
+    repositories.push(fixture);
+    const started = spawnSync(
+      [
+        process.execPath,
+        cliPath,
+        "loop",
+        "start",
+        "--mode",
+        "integrate",
+        "--agent-id",
+        "controller",
+        "--json",
+        "--repo",
+        fixture.root,
+      ],
+      { stderr: "pipe", stdout: "pipe" }
+    );
+    expect(started.exitCode).toBe(0);
+
+    const blocked = spawnSync(
+      [
+        process.execPath,
+        cliPath,
+        "initialize",
+        "--mode",
+        "queue",
+        "--agent-id",
+        "new-author",
+        "--json",
+        "--repo",
+        fixture.root,
+      ],
+      { stderr: "pipe", stdout: "pipe" }
+    );
+    expect(blocked.exitCode).toBe(5);
+    expect(decoder.decode(blocked.stderr)).toContain("prepare-agent first");
+  });
+
   test("reports onboarding before a first write-capable run", () => {
     const fixture = createTestRepository();
     repositories.push(fixture);

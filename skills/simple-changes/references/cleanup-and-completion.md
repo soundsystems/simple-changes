@@ -22,10 +22,17 @@ Before reporting completion:
    under `Unreleased`.
 4. Confirm each planned path is queued, merged, deployed, preserved, excluded,
    or blocked exactly once.
-5. Return to and verify the exact original primary checkout; do not substitute a
-   clean auxiliary worktree.
-6. Report queued, merged, deployed, preserved, and blocked outcomes separately.
-7. For Ship, reconcile the pre-ship brief with the final receipts and report
+5. Run the active-loop manifest verification. Treat every unregistered,
+   missing, incompletely prepared, or changed preserved worktree as a blocker
+   unless an exact path-and-digest user override is recorded where applicable.
+6. Remove every run-created authoring worktree only after its branch is merged,
+   otherwise accounted for, or explicitly preserved. `loop end` must refuse to
+   release the lease while one remains registered and live.
+7. Return to and verify the exact original primary checkout; do not substitute a
+   clean auxiliary worktree. Run the final manifest verification and release
+   the active lease.
+8. Report queued, merged, deployed, preserved, and blocked outcomes separately.
+9. For Ship, reconcile the pre-ship brief with the final receipts and report
    material review-driven changes from the original proposal heads.
 
 Completion comes from fresh evidence, not the run ledger or conversational

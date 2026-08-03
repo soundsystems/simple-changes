@@ -18,6 +18,7 @@ const schemaNames: SchemaName[] = [
   "provider-receipt",
   "release-consistency",
   "release-notes",
+  "loop-lease",
 ];
 const schemas = new Map<string, JsonSchema>();
 

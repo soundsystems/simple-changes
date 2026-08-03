@@ -168,6 +168,71 @@ summarize what actually shipped, exact receipts, review-driven changes and
 re-verification, and anything preserved or blocked. Follow
 [ship communication](references/ship-communication.md).
 
+## Hold an executable integration lease
+
+For Queue, Sweep, Integrate, Ship, Reconcile, and Resume, start one active loop
+before the first mutation. This persists the complete opening worktree manifest
+under the common Git directory and takes an exclusive repository lease:
+
+```sh
+bun skills/simple-changes/scripts/simple-changes.ts loop start \
+  --mode ship --agent-id "$AGENT_ID" --json
+```
+
+Reuse the returned `runId` for the full run. A second controller is rejected
+while the lease exists. `loop guard` is a read-only preflight, not a mutation
+permit. Run each local Git or repository mutation through `loop exec`, which
+holds the lease lock across fresh preflight inventory, the bounded argument-
+array command, and post-mutation verification:
+
+```sh
+bun skills/simple-changes/scripts/simple-changes.ts loop exec \
+  --run-id "$RUN_ID" --agent-id "$AGENT_ID" -- git add -- path/to/intended-file
+```
+
+Before merge, deployment, cleanup, and completion, run `loop verify`; an
+unregistered worktree, incomplete worktree preparation, or changed preserved
+worktree blocks the next mutation. Provider mutations that cannot run as a
+local command still require `loop guard` immediately before the call and `loop
+verify` immediately after it.
+
+When an active loop exists, a new authoring agent's first action is to prepare
+its own isolated worktree:
+
+```sh
+bun skills/simple-changes/scripts/simple-changes.ts prepare-agent \
+  --run-id "$RUN_ID" --agent-id "$NEW_AGENT_ID" --purpose "$PURPOSE" --json
+```
+
+The command pins the opening target revision, records a pending preparation
+before asking Git to create a branch or sibling worktree, finishes registration,
+and returns the exact working path. If the process stops between those steps,
+rerun `prepare-agent` for the same agent ID to resume exact registration. Resume
+is allowed only when the worktree is still clean on the recorded branch and
+pinned revision. Later branch switching invalidates mutation authority. Start or
+redirect the agent there before it edits anything. A reviewer may remain in
+read-only mode without a worktree; if review turns into authorship, prepare an
+authoring worktree first.
+
+The lock contains process, process-group, host, operation, age, and ownership
+metadata. `loop exec` records unresolved child launch before spawning and then
+the guarded child and process group. Recovery requires the same-host controller,
+every recorded child, and the guarded process group to be proven inactive after
+the stale-age boundary; unresolved launch state remains a manual blocker. A
+command leader that exits while background descendants remain does not complete
+the guarded mutation: terminate the group and reject the command before lease
+release, or retain the lock when the group cannot be terminated. Only then use
+`loop recover --agent-id "$AGENT_ID"`. Never delete the lock directory or state
+file by hand.
+
+Never weaken the lease with a blanket exception. If the user explicitly takes
+over a preserved worktree that changed after the baseline, record only its
+exact absolute path, current status digest, current head, approver identity,
+and reason through `loop allow`. Any subsequent change invalidates that
+exception. Remove run-created worktrees, verify the manifest again, and run
+`loop end` only after cleanup. Follow
+[inventory and concurrency](references/inventory-and-concurrency.md).
+
 ## Completed-work handoff
 
 An instruction pointer may invoke this skill after implementation. That event
@@ -212,6 +277,11 @@ authority for those operations.
    bun skills/simple-changes/scripts/simple-changes.ts inventory --json
    ```
 
+   For every write-capable integration mode except guarded Sync, immediately
+   start the executable loop lease and retain its `runId`. If a lease is already
+   active, join it only through a registered agent worktree; never start a
+   competing loop.
+
 3. Refresh the intended target ref before diff-derived decisions. Never refresh
    during a preview when it would contact a remote. In Sync mode, follow the
    guarded [sync workflow](references/sync.md) after the opening inventory, then
@@ -242,8 +312,11 @@ authority for those operations.
    delegated files only with a current validated handoff receipt. A production
    Web deployment always requires a dated, versioned release receipt that
    accounts for every target-contained `Unreleased` item.
-10. Package only the intended paths without resetting, hiding, or staging
-   unrelated work. Do not use cleanup stashes.
+10. Run each local Git or repository mutation through `loop exec` from the
+    exact registered worktree, then package only the intended paths without
+    resetting, hiding, or staging unrelated work. Do not use cleanup stashes.
+    Use `loop guard` only as a read-only preflight for an external provider call
+    that cannot be wrapped, and run `loop verify` immediately afterward.
 11. Create or update the provider's neutral change proposal using real Markdown
     newlines. Re-read the stored source and rendered body. Follow
     [change proposals](references/change-requests.md).
@@ -267,9 +340,11 @@ authority for those operations.
     Reconcile stale provider-managed targets with the existing artifact through
     a bounded promote/recheck/managed-target sequence. Follow
     [deployments](references/deployments.md).
-16. Re-inventory local and remote state. Clean only proven merged, obsolete, or
-    generated objects, then restore and verify the original primary checkout.
-    Follow [cleanup and completion](references/cleanup-and-completion.md).
+16. Run `loop verify`, re-inventory local and remote state, and clean only
+    proven merged, obsolete, or generated objects. Restore and verify the
+    original primary checkout, remove run-created worktrees, run the final
+    verification, and release the lease with `loop end`. Follow
+    [cleanup and completion](references/cleanup-and-completion.md).
 
 ## Authority checkpoint
 
@@ -310,6 +385,10 @@ result.
   until the refreshed canonical target contains the merged dated/versioned
   release reconciliation and no target-contained work remains `Unreleased`.
 - Capture the opening baseline before mutation and attribute this run's objects.
+- Persist one active-loop lease for write-capable integration modes. A new
+  authoring agent must use its registered isolated worktree, and every local
+  mutation must execute while the lease lock is held from preflight through
+  post-verification.
 - Stable baseline work is ready unless evidence says otherwise; changing or new
   concurrent work is preserved.
 - Queue mode may defer a stable unit, but may not silently omit it: the final

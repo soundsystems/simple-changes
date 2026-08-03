@@ -46,6 +46,22 @@
 
 - Existing and concurrent work is preserved unless ownership and scope are
   proven.
+- Write-capable integration modes hold one atomic active-loop lease with an
+  opening worktree manifest; a second controller, unregistered worktree, or
+  changed preserved worktree blocks mutation.
+- Local mutations hold the lease lock across fresh preflight inventory, one
+  bounded argument-array command or awaited asynchronous callback, and
+  post-mutation verification. Guarded child/process-group identity remains
+  recorded while commands run. Background descendants are terminated and the
+  command rejected before lease release, or the lock is retained when the
+  process group cannot be stopped. Change digests include actual staged,
+  unstaged, and untracked contents.
+- New authoring agents receive an isolated, run-registered worktree before
+  editing. Worktree creation is resumable only from a clean pinned branch and
+  target revision; switching branches invalidates mutation authority. A stale
+  lock is recoverable only after proof that every recorded local process died.
+  Exact user overrides bind to one path, head, and content digest and become
+  invalid after another change.
 - Missing onboarding defaults to checked proposal creation and confirmation
   before completed-work handoff.
 - Instruction setup updates only an existing exact file after confirmation,
@@ -66,6 +82,9 @@
   store-release, or history-rewrite authority.
 - Automatically handing off planning, diagnosis, blocked work, no-change work,
   or another agent's work.
+- Starting a competing integration loop, mutating from another agent's
+  checkout, running a local mutation outside the atomic executor, or bypassing
+  an active manifest with a blanket exception.
 - Creating an instruction file, guessing a global instruction path, or
   duplicating the managed pointer.
 - Treating a generic Sync request as push, reset, rebase, proposal, deployment,

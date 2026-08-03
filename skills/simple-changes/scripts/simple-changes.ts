@@ -12,6 +12,20 @@ import {
   inspectInitialization,
 } from "./lib/initialization.ts";
 import { captureInventory, compareSnapshots } from "./lib/inventory.ts";
+import {
+  endLoop,
+  executeLoopMutation,
+  grantLoopOverride,
+  guardLoopMutation,
+  loopManifestDigest,
+  loopStatus,
+  prepareAgentWorktree,
+  readLoopLease,
+  recoverLoopLock,
+  startLoop,
+  verifyLoop,
+  withLoopMutationLease,
+} from "./lib/loop-lease.ts";
 import { auditMarkdown } from "./lib/markdown.ts";
 import {
   collectOnboardingSelection,
@@ -44,10 +58,11 @@ import { validateSchema } from "./lib/schema.ts";
 import type {
   InitializationMode,
   RepoPolicy,
+  RequestMode,
   SchemaName,
 } from "./lib/types.ts";
 
-const VERSION = "0.5.0";
+const VERSION = "0.6.0";
 const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const HELP = `Simple Changes ${VERSION}
 
@@ -61,7 +76,7 @@ Usage:
     [--ui-versioning repository|number-and-date|date-only|number-only]
     [--production ask|allow|deny]
     [--questions blocking-only|always|never]
-    [--scope user|repository|run] [--yes] [--json] [--repo PATH]
+    [--scope user|repository|run] [--agent-id ID] [--yes] [--json] [--repo PATH]
   simple-changes setup [--finish review|integrate|ship]
     [--changelog delegate-if-available|preserve-and-report|ask]
     [--handoff ask|automatic|user-signaled]
@@ -70,9 +85,21 @@ Usage:
     [--ui-versioning repository|number-and-date|date-only|number-only]
     [--production ask|allow|deny]
     [--questions blocking-only|always|never]
-    [--scope user|repository|run] [--yes] [--json] [--repo PATH]
+    [--scope user|repository|run] [--agent-id ID] [--yes] [--json] [--repo PATH]
   simple-changes inventory [--json] [--repo PATH]
   simple-changes preview [--json] [--repo PATH] [--settle-ms N]
+  simple-changes loop start --mode MODE --agent-id ID [--json] [--repo PATH]
+  simple-changes loop status [--json] [--repo PATH]
+  simple-changes loop verify --run-id ID [--json] [--repo PATH]
+  simple-changes loop guard --run-id ID --agent-id ID [--json] [--repo PATH]
+  simple-changes loop exec --run-id ID --agent-id ID [--json] [--repo PATH]
+    -- COMMAND [ARG ...]
+  simple-changes loop recover --agent-id ID [--json] [--repo PATH]
+  simple-changes loop allow --run-id ID --agent-id ID --worktree PATH
+    --status-digest SHA256 --approved-by ID --reason TEXT [--json] [--repo PATH]
+  simple-changes loop end --run-id ID --agent-id ID [--json] [--repo PATH]
+  simple-changes prepare-agent --run-id ID --agent-id ID --purpose SLUG
+    [--json] [--repo PATH]
   simple-changes release-notes [--check] [--json] [--repo PATH] [--version VERSION]
   simple-changes validate KIND FILE [--json]
   simple-changes verify-markdown FILE [--json]
@@ -80,13 +107,15 @@ Usage:
 
 Schema kinds:
   repo-policy, changelog-receipt, initialization, inventory, change-plan,
-  run-state, provider-receipt, release-consistency, release-notes
+  run-state, provider-receipt, release-consistency, release-notes, loop-lease
 
 Exit codes:
   0 success, 2 usage, 3 invalid contract, 4 inventory failure, 5 unsafe state
 `;
 
 interface CliOptions {
+  agentId?: string;
+  approvedBy?: string;
   changelogHandling?: RepoPolicy["changelogHandling"];
   check: boolean;
   defaultFinish?: "open-change-request" | "integrate" | "ship";
@@ -97,19 +126,26 @@ interface CliOptions {
   mode?: InitializationMode;
   positional: string[];
   productionDeploy?: RepoPolicy["productionDeploy"];
+  purpose?: string;
   questions?: RepoPolicy["questions"];
   ready: boolean;
+  reason?: string;
   releaseVersion?: string;
   repo: string;
   repoProvided: boolean;
+  runId?: string;
   scope?: SetupScope;
   settleMs: number;
+  statusDigest?: string;
   uiArtifacts: boolean;
   uiArtifactVersioning?: RepoPolicy["uiArtifactVersioning"];
+  worktreePath?: string;
   yes: boolean;
 }
 
 const VALUED_OPTIONS = new Set([
+  "--agent-id",
+  "--approved-by",
   "--changelog",
   "--finish",
   "--handoff",
@@ -117,12 +153,17 @@ const VALUED_OPTIONS = new Set([
   "--instruction-pointer",
   "--mode",
   "--production",
+  "--purpose",
   "--questions",
+  "--reason",
   "--repo",
+  "--run-id",
   "--scope",
   "--settle-ms",
+  "--status-digest",
   "--ui-versioning",
   "--version",
+  "--worktree",
 ]);
 
 const BOOLEAN_OPTIONS = new Set([
@@ -243,12 +284,40 @@ const applySetupValuedOption = (
   return false;
 };
 
+const applyLoopValuedOption = (
+  options: CliOptions,
+  option: string,
+  value: string
+): boolean => {
+  const textOptions: Record<string, keyof CliOptions> = {
+    "--agent-id": "agentId",
+    "--approved-by": "approvedBy",
+    "--purpose": "purpose",
+    "--reason": "reason",
+    "--run-id": "runId",
+    "--status-digest": "statusDigest",
+  };
+  const key = textOptions[option];
+  if (key) {
+    Object.assign(options, { [key]: value });
+    return true;
+  }
+  if (option === "--worktree") {
+    options.worktreePath = resolve(value);
+    return true;
+  }
+  return false;
+};
+
 const applyValuedOption = (
   options: CliOptions,
   option: string,
   value: string
 ): void => {
-  if (applySetupValuedOption(options, option, value)) {
+  if (
+    applySetupValuedOption(options, option, value) ||
+    applyLoopValuedOption(options, option, value)
+  ) {
     return;
   }
   if (option === "--mode") {
@@ -351,6 +420,10 @@ const parseOptions = (args: string[]): CliOptions => {
   let index = 0;
   while (index < args.length) {
     const argument = args[index];
+    if (argument === "--") {
+      options.positional.push(...args.slice(index + 1));
+      break;
+    }
     if (argument && BOOLEAN_OPTIONS.has(argument)) {
       applyBooleanOption(options, argument);
       index += 1;
@@ -604,30 +677,53 @@ const runSetup = async (options: CliOptions): Promise<void> => {
     );
     const path = setupPolicyPath(selection.scope, context.primaryCheckout);
     const written = selection.confirmed && path !== null;
-    let instructionPointerWritten = false;
-    let instructionPointerChanged = false;
-    if (
-      selection.confirmed &&
-      selection.instructionPointer.action === "add" &&
-      selection.instructionPointer.target
-    ) {
-      const pointerResult = writeInstructionPointer(
-        selection.instructionPointer.target,
-        selection.policy.handoffTiming
-      );
-      instructionPointerWritten = pointerResult.written;
-      instructionPointerChanged = pointerResult.changed;
-    }
-    if (written && path) {
-      writePolicyFile(path, selection.policy, selection.scope === "user");
-    }
+    const applyWrites = (): {
+      instructionPointerChanged: boolean;
+      instructionPointerWritten: boolean;
+    } => {
+      let instructionPointerWritten = false;
+      let instructionPointerChanged = false;
+      if (
+        selection.confirmed &&
+        selection.instructionPointer.action === "add" &&
+        selection.instructionPointer.target
+      ) {
+        const pointerResult = writeInstructionPointer(
+          selection.instructionPointer.target,
+          selection.policy.handoffTiming
+        );
+        instructionPointerWritten = pointerResult.written;
+        instructionPointerChanged = pointerResult.changed;
+      }
+      if (written && path) {
+        writePolicyFile(path, selection.policy, selection.scope === "user");
+      }
+      return { instructionPointerChanged, instructionPointerWritten };
+    };
+    const activeLoop = context.primaryCheckout
+      ? readLoopLease(options.repo)
+      : null;
+    const writeResult = activeLoop
+      ? (
+          await withLoopMutationLease(
+            options.repo,
+            activeLoop.runId,
+            requireCliOption(
+              options.agentId,
+              "--agent-id while an integration loop is active"
+            ),
+            "setup write",
+            applyWrites
+          )
+        ).result
+      : applyWrites();
     const result = {
       changelogCoordination: context.changelog,
       confirmed: selection.confirmed,
       instructionPointer: {
         ...selection.instructionPointer,
-        changed: instructionPointerChanged,
-        written: instructionPointerWritten,
+        changed: writeResult.instructionPointerChanged,
+        written: writeResult.instructionPointerWritten,
       },
       path,
       policy: selection.policy,
@@ -687,6 +783,14 @@ const runInitialize = async (options: CliOptions): Promise<void> => {
     );
   }
   const inventory = captureInventory(options.repo);
+  const activeLoop = readLoopLease(options.repo);
+  if (activeLoop && !["preview", "pause"].includes(options.mode)) {
+    const agentId = requireCliOption(
+      options.agentId,
+      "--agent-id while an integration loop is active"
+    );
+    guardLoopMutation(options.repo, activeLoop.runId, agentId);
+  }
   const changelogCoordination = inspectChangelogCoordination(
     inventory.repository.primaryCheckout
   );
@@ -772,6 +876,196 @@ const runMarkdownAudit = (options: CliOptions): void => {
   }
 };
 
+const requireCliOption = (
+  value: string | undefined,
+  option: string
+): string => {
+  if (!value?.trim()) {
+    throw new SimpleChangesError(
+      `${option} is required for this command`,
+      EXIT_CODES.usage
+    );
+  }
+  return value;
+};
+
+const renderLoopVerification = (
+  result: ReturnType<typeof verifyLoop>
+): string => {
+  const lines = [
+    `Active loop: ${result.active ? "yes" : "no"}`,
+    `Run: ${result.runId ?? "none"}`,
+    `Manifest: ${result.ok ? "clean" : "blocked"}`,
+  ];
+  for (const violation of result.violations) {
+    lines.push(
+      `- ${violation.code}: ${violation.path} (${violation.changeDigest ?? "no digest"})`
+    );
+  }
+  return `${lines.join("\n")}\n`;
+};
+
+const runLoopRecovery = (options: CliOptions): void => {
+  const recovery = recoverLoopLock(
+    options.repo,
+    requireCliOption(options.agentId, "--agent-id")
+  );
+  writeOutput(
+    recovery,
+    options.json,
+    `Recovered dead active-loop lock owned by PID ${recovery.staleOwner.pid}.\n`
+  );
+};
+
+const runLoopExec = async (
+  options: CliOptions,
+  runId: string,
+  agentId: string
+): Promise<void> => {
+  const result = await executeLoopMutation(
+    options.repo,
+    runId,
+    agentId,
+    options.positional.slice(1)
+  );
+  if (options.json) {
+    writeOutput(result, true, "");
+    return;
+  }
+  if (result.result.stdout) {
+    process.stdout.write(result.result.stdout);
+  }
+  if (result.result.stderr) {
+    process.stderr.write(result.result.stderr);
+  }
+  process.stdout.write(
+    `Loop mutation completed under ${runId}; manifest is clean.\n`
+  );
+};
+
+const runLoopCommand = async (options: CliOptions): Promise<void> => {
+  const [action] = options.positional;
+  if (!action) {
+    throw new SimpleChangesError(
+      "loop requires start, status, verify, guard, exec, recover, allow, or end",
+      EXIT_CODES.usage
+    );
+  }
+  if (action === "start") {
+    const agentId = requireCliOption(options.agentId, "--agent-id");
+    if (!options.mode) {
+      throw new SimpleChangesError(
+        "loop start requires --mode",
+        EXIT_CODES.usage
+      );
+    }
+    const lease = startLoop(options.repo, agentId, options.mode as RequestMode);
+    writeOutput(
+      { lease, manifestDigest: loopManifestDigest(lease) },
+      options.json,
+      `Started ${lease.runId} for ${lease.ownerAgentId}.\nManifest: ${loopManifestDigest(lease)}\n`
+    );
+    return;
+  }
+  if (action === "status") {
+    const status = loopStatus(options.repo);
+    writeOutput(
+      {
+        ...status,
+        manifestDigest: status.lease ? loopManifestDigest(status.lease) : null,
+      },
+      options.json,
+      renderLoopVerification(status.verification)
+    );
+    return;
+  }
+  if (action === "recover") {
+    runLoopRecovery(options);
+    return;
+  }
+  const runId = requireCliOption(options.runId, "--run-id");
+  const lease = readLoopLease(options.repo);
+  if (!lease || lease.runId !== runId) {
+    throw new SimpleChangesError(
+      `Active loop does not match ${runId}.`,
+      EXIT_CODES.unsafe
+    );
+  }
+  if (action === "verify") {
+    const verification = verifyLoop(options.repo);
+    writeOutput(
+      verification,
+      options.json,
+      renderLoopVerification(verification)
+    );
+    if (!verification.ok) {
+      throw new SimpleChangesError(
+        "Active-loop manifest verification failed.",
+        EXIT_CODES.unsafe
+      );
+    }
+    return;
+  }
+  const agentId = requireCliOption(options.agentId, "--agent-id");
+  if (action === "guard") {
+    const verification = guardLoopMutation(options.repo, runId, agentId);
+    writeOutput(
+      verification,
+      options.json,
+      `Mutation guard passed for ${agentId} in ${lease.runId}.\n`
+    );
+    return;
+  }
+  if (action === "exec") {
+    await runLoopExec(options, runId, agentId);
+    return;
+  }
+  if (action === "allow") {
+    const updated = grantLoopOverride(
+      options.repo,
+      runId,
+      agentId,
+      requireCliOption(options.worktreePath, "--worktree"),
+      requireCliOption(options.statusDigest, "--status-digest"),
+      requireCliOption(options.approvedBy, "--approved-by"),
+      requireCliOption(options.reason, "--reason")
+    );
+    writeOutput(
+      { lease: updated, manifestDigest: loopManifestDigest(updated) },
+      options.json,
+      `Recorded an exact override for ${options.worktreePath}.\nManifest: ${loopManifestDigest(updated)}\n`
+    );
+    return;
+  }
+  if (action === "end") {
+    const verification = endLoop(options.repo, runId, agentId);
+    writeOutput(
+      verification,
+      options.json,
+      `Ended ${runId} after a clean manifest verification.\n`
+    );
+    return;
+  }
+  throw new SimpleChangesError(
+    `Unknown loop action: ${action}`,
+    EXIT_CODES.usage
+  );
+};
+
+const runPrepareAgent = (options: CliOptions): void => {
+  const prepared = prepareAgentWorktree(
+    options.repo,
+    requireCliOption(options.runId, "--run-id"),
+    requireCliOption(options.agentId, "--agent-id"),
+    requireCliOption(options.purpose, "--purpose")
+  );
+  writeOutput(
+    prepared,
+    options.json,
+    `${prepared.created ? "Created" : "Reused"} ${prepared.path}\nBranch: ${prepared.branch}\nRun: ${prepared.runId}\n`
+  );
+};
+
 const runReleaseNotes = (options: CliOptions): number => {
   if (options.check) {
     if (options.releaseVersion) {
@@ -833,6 +1127,12 @@ const executeCommand = async (
       return EXIT_CODES.success;
     case "preview":
       await runPreview(options);
+      return EXIT_CODES.success;
+    case "loop":
+      await runLoopCommand(options);
+      return EXIT_CODES.success;
+    case "prepare-agent":
+      runPrepareAgent(options);
       return EXIT_CODES.success;
     case "release-notes":
       return runReleaseNotes(options);

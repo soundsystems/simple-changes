@@ -1,6 +1,49 @@
 # Developer changelog
 
-## Unreleased
+## 0.6.0 - 2026-08-03
+
+- Added an executable active-loop lease and content-sensitive worktree-manifest
+  contract:
+  - Queue, Sweep, Integrate, Ship, Reconcile, and Resume runs atomically persist
+    one controller lease beneath the common Git directory. Loop start resolves
+    and records the target ref's exact `targetRevision`, then captures a fresh
+    under-lock inventory of each worktree's path, branch, head, content digest,
+    role, and mutation authority. Target discovery prefers the current branch's
+    configured remote, then `origin`, before considering auxiliary remotes.
+  - Worktree change digests cover staged binary diffs, unstaged binary diffs,
+    and the contents or symlink targets of every untracked path. Exact
+    user-approved overrides therefore become invalid when file contents change,
+    even if the porcelain status shape remains the same.
+  - Mutation-authorized worktrees are bound to their registered branch.
+    Verification, mutation guards, and repeated `prepare-agent` calls reject a
+    checkout that has switched branches.
+  - Added `loop exec` and the reusable asynchronous
+    `withLoopMutationLease` callback. Both retain the atomic loop lock across
+    fresh preflight inventory, ownership and manifest validation, the complete
+    awaited mutation, fresh post-mutation inventory, and closing verification.
+  - `loop exec` marks child launch as unresolved before spawning, then records
+    the guarded child PID and process-group ID while the command runs.
+  - When a guarded command leader exits while same-group descendants remain,
+    `loop exec` attempts bounded process-group termination and rejects the
+    command even when cleanup succeeds. If descendants cannot be proven
+    terminated, the mutation callback retains the lock and requires explicit
+    recovery instead of releasing concurrent mutation.
+    `loop recover` refuses recovery while launch state is unresolved, the
+    guarded process group remains alive, a recorded child remains alive, or the
+    controller process is not proven dead.
+  - Repository setup and instruction-pointer writes run through the same atomic
+    mutation callback whenever a loop is active, instead of performing writes
+    after a one-time advisory guard.
+  - Agent worktree creation records a pending preparation before Git mutation,
+    including the agent, path, branch, purpose, and pinned base revision. A
+    repeated `prepare-agent` resumes interrupted setup only when the worktree
+    still matches that exact branch and revision and contains no staged,
+    unstaged, or untracked changes.
+  - Added closed contract support and regression coverage for branch-bound
+    authoring, clean interrupted preparation, awaited callback execution,
+    guarded process groups, conservative dead-lock recovery, exact overrides,
+    and cleanup.
+<!-- simple-changelogs-signature agent="gpt-5.6-sol" at="2026-08-03T13:54:04-05:00" -->
 
 - Added first-class Sync and two-stage Ship contracts:
   - Sync initialization bypasses workflow-preference onboarding and grants only

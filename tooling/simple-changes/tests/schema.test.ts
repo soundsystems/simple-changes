@@ -4,6 +4,7 @@ import { DEFAULT_POLICY } from "../../../skills/simple-changes/scripts/lib/polic
 import { validateSchema } from "../../../skills/simple-changes/scripts/lib/schema.ts";
 import type {
   ChangelogReceipt,
+  LoopLease,
   RepoPolicy,
 } from "../../../skills/simple-changes/scripts/lib/types.ts";
 
@@ -202,5 +203,42 @@ describe("closed schemas", () => {
         updatedAt: new Date().toISOString(),
       })
     ).toThrow("revision");
+  });
+
+  test("accepts a closed active-loop lease manifest", () => {
+    const lease: LoopLease = {
+      baselineDigest: "a".repeat(64),
+      commonGitDirectory: "/repo/.git",
+      createdAt: new Date().toISOString(),
+      mode: "integrate",
+      overrides: [],
+      ownerAgentId: "controller",
+      preparations: [],
+      primaryCheckout: "/repo",
+      runId: "run-test-1234",
+      schemaVersion: 1,
+      targetRef: "origin/main",
+      targetRevision: "d".repeat(40),
+      updatedAt: new Date().toISOString(),
+      worktrees: [
+        {
+          agentId: "controller",
+          baselineChangeDigest: "b".repeat(64),
+          baselineHeadSha: "c".repeat(40),
+          branch: "main",
+          createdByRun: false,
+          mutationAllowed: true,
+          path: "/repo",
+          role: "controller",
+        },
+      ],
+    };
+    expect(validateSchema<LoopLease>("loop-lease", lease)).toEqual(lease);
+    expect(() =>
+      validateSchema("loop-lease", {
+        ...lease,
+        unrestrictedMutation: true,
+      })
+    ).toThrow("additional properties");
   });
 });

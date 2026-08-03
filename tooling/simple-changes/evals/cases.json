@@ -364,6 +364,19 @@
       ]
     },
     {
+      "id": "resume-with-new-authoring-agent",
+      "prompt": "Continue the active shipping loop and have a new agent implement the remaining fix.",
+      "mode": "resume",
+      "authority": ["local-write"],
+      "expectedBehaviors": [
+        "Reuse the exclusive active-loop lease instead of starting a second controller",
+        "Prepare or resume registration of a clean branch-bound authoring worktree from the pinned target revision before the new agent mutates files",
+        "Execute local mutations and await asynchronous callbacks while the lease lock covers fresh preflight and post-mutation inventory",
+        "Track guarded child process groups, terminate and reject lingering background descendants before lease release, and refuse recovery while any recorded process may still mutate",
+        "Reject unregistered, branch-switched, incompletely prepared, dirty-resumed, or content-changed preserved worktrees"
+      ]
+    },
+    {
       "id": "ship-nonrelational-index-change",
       "prompt": "Ship the ready search index mapping and bounded data backfill.",
       "mode": "ship",

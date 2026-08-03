@@ -1,6 +1,15 @@
 # Changelog
 
-## Unreleased
+## 0.6.0 - 2026-08-03
+
+- Write-capable integration runs now hold one exclusive active-loop lease and
+  keep local mutations, including asynchronous operations, guarded from
+  preflight through post-verification. New authoring agents receive isolated,
+  branch-bound worktrees through `prepare-agent`, with interrupted setup
+  resuming only from the pinned clean state. Worktree approvals track actual
+  staged, unstaged, and untracked content. Guarded commands stop and reject
+  lingering same-group background work before lock release; if cleanup cannot
+  be proven, the lock remains for explicit recovery.
 
 - Added a guarded Sync mode for requests to update from the canonical remote
   target. It refreshes only the resolved target, safely updates clean local

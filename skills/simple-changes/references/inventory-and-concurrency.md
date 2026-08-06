@@ -125,12 +125,13 @@ remains protected until `loop dispose-worktree` records a removal disposition
 under the active lease. The command accepts only the exact current path and
 content-sensitive status digest, requires the loop owner and named approver,
 rejects the canonical primary checkout, and audits that the worktree is clean
-and its head has zero commits outside the freshly resolved canonical target.
-The manifest records its branch, head, digest, target ref and revision,
+and its head has zero commits outside the lease's pinned canonical target
+revision. The manifest records its branch, head, digest, target ref and revision,
 approver, reason, and zero-unique-commit result before deletion.
 
 The disposition permits only that opening worktree's absence. It does not
 remove the path, authorize `--force`, delete its branch, suppress other
-violations, or survive an intervening worktree change. Run the exact removal
+violations, survive an intervening worktree change, or match when its recorded
+target ref or revision differs from the active lease. Run the exact removal
 through `loop exec` so preflight sees the recorded disposition and postflight
 proves only the authorized path disappeared.

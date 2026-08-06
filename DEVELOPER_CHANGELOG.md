@@ -11,12 +11,15 @@
   - Manifest verification accepts a missing preserved worktree only when that
     exact opening state was disposed. Any later branch, revision, or content
     change invalidates the disposition while the worktree exists.
+  - Removal audits now compare against the lease's pinned target revision, and
+    preflight/postflight accept disposition target evidence only when both its
+    ref and revision exactly match the lease.
   - Added runtime, CLI, schema, contract, and behavior-evaluation coverage for
     approved cleanup and the protected dirty, unique-commit, unapproved, and
     canonical-primary cases.
   - Bound the CLI's reported version to this 0.6.1 release and added a
     package-to-CLI consistency regression test.
-<!-- simple-changelogs-signature agent="gpt-5.6-sol" at="2026-08-06T14:59:06-05:00" -->
+<!-- simple-changelogs-signature agent="gpt-5.6-sol" at="2026-08-06T15:27:26-05:00" -->
 
 ## 0.6.0 - 2026-08-03
 

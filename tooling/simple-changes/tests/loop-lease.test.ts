@@ -333,6 +333,78 @@ describe("active integration-loop lease", () => {
     ).toThrow("unique commit");
   }, 20_000);
 
+  test("audits removal against the pinned target after the target ref moves", () => {
+    const fixture = repository();
+    const unique = join(fixture.base, "unique-after-start");
+    git(fixture.root, ["worktree", "add", "-b", "unique-after-start", unique]);
+    writeFixture(unique, "unique.ts", "export const unique = true;\n");
+    git(unique, ["add", "unique.ts"]);
+    git(unique, ["commit", "-m", "Unique opening work"]);
+    const lease = startLoop(fixture.root, "controller", "reconcile");
+
+    const current = captureInventory(fixture.root).worktrees.find(
+      (worktree) => worktree.path === unique
+    );
+    if (!current?.headSha) {
+      throw new Error("Expected the unique opening worktree HEAD");
+    }
+    git(fixture.root, ["update-ref", "refs/heads/main", current.headSha]);
+    expect(git(fixture.root, ["rev-parse", lease.targetRef])).toBe(
+      current.headSha
+    );
+    expect(() =>
+      authorizeWorktreeRemoval(
+        fixture.root,
+        lease.runId,
+        "controller",
+        unique,
+        current.changeDigest,
+        "user",
+        "Target moved after loop start"
+      )
+    ).toThrow("unique commit");
+  }, 20_000);
+
+  test("does not trust disposition target evidence that differs from the lease", () => {
+    const fixture = repository();
+    const obsolete = join(fixture.base, "tampered-target");
+    git(fixture.root, ["worktree", "add", "-b", "tampered-target", obsolete]);
+    const lease = startLoop(fixture.root, "controller", "reconcile");
+    const inventory = captureInventory(fixture.root);
+    const current = inventory.worktrees.find(
+      (worktree) => worktree.path === obsolete
+    );
+    authorizeWorktreeRemoval(
+      fixture.root,
+      lease.runId,
+      "controller",
+      obsolete,
+      current?.changeDigest ?? "",
+      "user",
+      "Audited obsolete with no unique work"
+    );
+
+    const leasePath = loopLeasePath(inventory.repository.commonGitDirectory);
+    const stored = JSON.parse(readFileSync(leasePath, "utf8")) as {
+      dispositions: Array<{ targetRevision: string }>;
+    };
+    const [disposition] = stored.dispositions;
+    expect(disposition).toBeDefined();
+    if (!disposition) {
+      throw new Error("Expected an opening-worktree disposition");
+    }
+    disposition.targetRevision = "0".repeat(40);
+    writeFileSync(leasePath, `${JSON.stringify(stored, null, 2)}\n`, "utf8");
+    git(fixture.root, ["worktree", "remove", obsolete]);
+
+    expect(verifyLoop(fixture.root).violations).toContainEqual(
+      expect.objectContaining({
+        code: "missing-preserved-worktree",
+        path: obsolete,
+      })
+    );
+  }, 20_000);
+
   test("never authorizes removal of the canonical primary checkout", () => {
     const fixture = repository();
     const controller = join(fixture.base, "controller");

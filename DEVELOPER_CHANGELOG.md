@@ -14,6 +14,8 @@
   - Added runtime, CLI, schema, contract, and behavior-evaluation coverage for
     approved cleanup and the protected dirty, unique-commit, unapproved, and
     canonical-primary cases.
+  - Bound the CLI's reported version to this 0.6.1 release and added a
+    package-to-CLI consistency regression test.
 <!-- simple-changelogs-signature agent="gpt-5.6-sol" at="2026-08-06T14:59:06-05:00" -->
 
 ## 0.6.0 - 2026-08-03

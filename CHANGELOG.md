@@ -7,7 +7,8 @@
   obsolete and removed without invalidating the active-loop manifest. The
   disposition is bound to the worktree's exact path, branch, revision, and
   content; dirty, changed, uniquely committed, unapproved, or canonical primary
-  worktrees remain protected.
+  worktrees remain protected. The CLI now reports the matching 0.6.1 package
+  version.
 <!-- simple-changelogs-signature agent="gpt-5.6-sol" at="2026-08-06T14:59:06-05:00" -->
 
 ## 0.6.0 - 2026-08-03

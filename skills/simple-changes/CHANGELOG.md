@@ -7,7 +7,8 @@
   obsolete and removed without invalidating the active-loop manifest. The
   disposition is bound to the worktree's exact path, branch, revision, and
   content; dirty, changed, uniquely committed, unapproved, or canonical primary
-  worktrees remain protected.
+  worktrees remain protected. The CLI now reports the matching 0.6.1 package
+  version.
 
 ## 0.6.0 - 2026-08-03
 

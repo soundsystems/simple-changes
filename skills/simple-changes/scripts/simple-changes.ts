@@ -63,7 +63,7 @@ import type {
   SchemaName,
 } from "./lib/types.ts";
 
-const VERSION = "0.6.0";
+const VERSION = "0.6.1";
 const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const HELP = `Simple Changes ${VERSION}
 

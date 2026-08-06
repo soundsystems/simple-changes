@@ -1214,6 +1214,21 @@ describe("contract CLI", () => {
     expect(decoder.decode(result.stderr)).toContain("Unknown command");
   });
 
+  test("reports the package release version", () => {
+    const packageVersion = (
+      JSON.parse(
+        readFileSync(resolve(testDirectory, "../../../package.json"), "utf8")
+      ) as { version: string }
+    ).version;
+    const result = spawnSync([process.execPath, cliPath, "version"], {
+      stderr: "pipe",
+      stdout: "pipe",
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(decoder.decode(result.stdout).trim()).toBe(packageVersion);
+  });
+
   test("renders public release notes from the latest released changelog section", () => {
     const fixture = createTestRepository();
     repositories.push(fixture);

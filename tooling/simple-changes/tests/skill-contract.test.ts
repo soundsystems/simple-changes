@@ -251,5 +251,12 @@ describe("Simple Changes skill contract", () => {
     expect(normalizedConcurrency).toContain(
       "An override is an exceptional user handoff, not a way to suppress the guard"
     );
+    expect(normalizedSkill).toContain("loop dispose-worktree");
+    expect(normalizedSkill).toContain(
+      "clean and has zero unique commits outside the refreshed canonical target"
+    );
+    expect(normalizedConcurrency).toContain(
+      "The disposition permits only that opening worktree's absence"
+    );
   });
 });

@@ -106,6 +106,44 @@
         }
       }
     },
+    "dispositions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "path",
+          "branch",
+          "headSha",
+          "changeDigest",
+          "targetRef",
+          "targetRevision",
+          "uniqueCommitCount",
+          "outcome",
+          "approvedBy",
+          "reason",
+          "createdAt"
+        ],
+        "properties": {
+          "path": { "type": "string", "minLength": 1 },
+          "branch": {
+            "anyOf": [{ "type": "string", "minLength": 1 }, { "type": "null" }]
+          },
+          "headSha": { "type": "string", "pattern": "^[0-9a-f]{40,64}$" },
+          "changeDigest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+          "targetRef": { "type": "string", "minLength": 1 },
+          "targetRevision": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{40,64}$"
+          },
+          "uniqueCommitCount": { "const": 0 },
+          "outcome": { "const": "remove-after-audit" },
+          "approvedBy": { "type": "string", "minLength": 1, "maxLength": 128 },
+          "reason": { "type": "string", "minLength": 1, "maxLength": 500 },
+          "createdAt": { "type": "string", "format": "date-time" }
+        }
+      }
+    },
     "overrides": {
       "type": "array",
       "items": {

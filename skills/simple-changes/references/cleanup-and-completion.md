@@ -24,8 +24,13 @@ Before reporting completion:
    or blocked exactly once.
 5. Run the active-loop manifest verification. Treat every unregistered,
    missing, incompletely prepared, or changed preserved worktree as a blocker
-   unless an exact path-and-digest user override is recorded where applicable.
-6. Remove every run-created authoring worktree only after its branch is merged,
+   unless an exact path-and-digest override or audited removal disposition is
+   recorded where applicable.
+6. For an opening worktree proven obsolete, refresh the target and record a
+   user-approved `loop dispose-worktree` disposition only when it is clean and
+   has zero unique commits. Remove that exact path through `loop exec`; audit
+   its branch separately. Remove every run-created authoring worktree only after
+   its branch is merged,
    otherwise accounted for, or explicitly preserved. `loop end` must refuse to
    release the lease while one remains registered and live.
 7. Return to and verify the exact original primary checkout; do not substitute a

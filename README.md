@@ -166,6 +166,8 @@ simple-changes loop exec --run-id ID --agent-id ID [--json] [--repo PATH]
 simple-changes loop recover --agent-id ID [--json] [--repo PATH]
 simple-changes loop allow --run-id ID --agent-id ID --worktree PATH
   --status-digest SHA256 --approved-by ID --reason TEXT [--json] [--repo PATH]
+simple-changes loop dispose-worktree --run-id ID --agent-id ID --worktree PATH
+  --status-digest SHA256 --approved-by ID --reason TEXT [--json] [--repo PATH]
 simple-changes loop end --run-id ID --agent-id ID [--json] [--repo PATH]
 simple-changes prepare-agent --run-id ID --agent-id ID --purpose SLUG
   [--json] [--repo PATH]

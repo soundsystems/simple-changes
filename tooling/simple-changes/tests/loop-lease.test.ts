@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { sleep } from "bun";
 import { captureInventory } from "../../../skills/simple-changes/scripts/lib/inventory.ts";
 import {
+  authorizeWorktreeRemoval,
   endLoop,
   executeLoopMutation,
   grantLoopOverride,
@@ -208,6 +209,151 @@ describe("active integration-loop lease", () => {
       })
     );
   }, 20_000);
+
+  test("authorizes removal of an audited obsolete opening worktree", () => {
+    const fixture = repository();
+    const obsolete = join(fixture.base, "obsolete");
+    git(fixture.root, ["worktree", "add", "-b", "obsolete-work", obsolete]);
+    const lease = startLoop(fixture.root, "controller", "reconcile");
+    const current = captureInventory(fixture.root).worktrees.find(
+      (worktree) => worktree.path === obsolete
+    );
+    expect(current).toBeDefined();
+
+    const updated = authorizeWorktreeRemoval(
+      fixture.root,
+      lease.runId,
+      "controller",
+      obsolete,
+      current?.changeDigest ?? "",
+      "user",
+      "Audited obsolete with no unique work"
+    );
+    expect(updated.dispositions).toContainEqual(
+      expect.objectContaining({
+        approvedBy: "user",
+        branch: "obsolete-work",
+        changeDigest: current?.changeDigest,
+        headSha: current?.headSha,
+        outcome: "remove-after-audit",
+        path: obsolete,
+        targetRef: lease.targetRef,
+        uniqueCommitCount: 0,
+      })
+    );
+    expect(verifyLoop(fixture.root).ok).toBe(true);
+
+    git(fixture.root, ["worktree", "remove", obsolete]);
+    expect(verifyLoop(fixture.root).ok).toBe(true);
+    expect(endLoop(fixture.root, lease.runId, "controller").ok).toBe(true);
+  }, 20_000);
+
+  test("keeps an opening worktree protected without an approved disposition", () => {
+    const fixture = repository();
+    const preserved = join(fixture.base, "preserved");
+    git(fixture.root, ["worktree", "add", "-b", "preserved-work", preserved]);
+    startLoop(fixture.root, "controller", "reconcile");
+
+    git(fixture.root, ["worktree", "remove", preserved]);
+    expect(verifyLoop(fixture.root).violations).toContainEqual(
+      expect.objectContaining({
+        code: "missing-preserved-worktree",
+        path: preserved,
+      })
+    );
+  });
+
+  test("invalidates an opening-worktree disposition after any change", () => {
+    const fixture = repository();
+    const obsolete = join(fixture.base, "obsolete");
+    git(fixture.root, ["worktree", "add", "-b", "obsolete-work", obsolete]);
+    const lease = startLoop(fixture.root, "controller", "reconcile");
+    const current = captureInventory(fixture.root).worktrees.find(
+      (worktree) => worktree.path === obsolete
+    );
+    authorizeWorktreeRemoval(
+      fixture.root,
+      lease.runId,
+      "controller",
+      obsolete,
+      current?.changeDigest ?? "",
+      "user",
+      "Audited obsolete with no unique work"
+    );
+
+    writeFixture(obsolete, "new-work.ts", "export const newWork = true;\n");
+    expect(verifyLoop(fixture.root).violations).toContainEqual(
+      expect.objectContaining({
+        code: "preserved-worktree-changed",
+        path: obsolete,
+      })
+    );
+  });
+
+  test("rejects removal disposition for dirty or unique opening work", () => {
+    const fixture = repository();
+    const dirty = join(fixture.base, "dirty");
+    const unique = join(fixture.base, "unique");
+    git(fixture.root, ["worktree", "add", "-b", "dirty-work", dirty]);
+    git(fixture.root, ["worktree", "add", "-b", "unique-work", unique]);
+    writeFixture(unique, "unique.ts", "export const unique = true;\n");
+    git(unique, ["add", "unique.ts"]);
+    git(unique, ["commit", "-m", "Unique opening work"]);
+    const lease = startLoop(fixture.root, "controller", "reconcile");
+
+    writeFixture(dirty, "dirty.ts", "export const dirty = true;\n");
+    const inventory = captureInventory(fixture.root);
+    const dirtyInventory = inventory.worktrees.find(
+      (worktree) => worktree.path === dirty
+    );
+    const uniqueInventory = inventory.worktrees.find(
+      (worktree) => worktree.path === unique
+    );
+    expect(() =>
+      authorizeWorktreeRemoval(
+        fixture.root,
+        lease.runId,
+        "controller",
+        dirty,
+        dirtyInventory?.changeDigest ?? "",
+        "user",
+        "Remove dirty work"
+      )
+    ).toThrow("must be clean");
+    expect(() =>
+      authorizeWorktreeRemoval(
+        fixture.root,
+        lease.runId,
+        "controller",
+        unique,
+        uniqueInventory?.changeDigest ?? "",
+        "user",
+        "Remove unique work"
+      )
+    ).toThrow("unique commit");
+  }, 20_000);
+
+  test("never authorizes removal of the canonical primary checkout", () => {
+    const fixture = repository();
+    const controller = join(fixture.base, "controller");
+    git(fixture.root, ["worktree", "add", "-b", "controller-work", controller]);
+    const lease = startLoop(controller, "controller", "reconcile");
+    const primary = captureInventory(controller).worktrees.find(
+      (worktree) => worktree.path === fixture.root
+    );
+
+    expect(() =>
+      authorizeWorktreeRemoval(
+        controller,
+        lease.runId,
+        "controller",
+        fixture.root,
+        primary?.changeDigest ?? "",
+        "user",
+        "Remove primary"
+      )
+    ).toThrow("canonical primary checkout");
+  });
 
   test("rejects a registered author worktree that switches branches", () => {
     const fixture = repository();

@@ -62,6 +62,10 @@
   lock is recoverable only after proof that every recorded local process died.
   Exact user overrides bind to one path, head, and content digest and become
   invalid after another change.
+- Opening worktrees remain protected until an exact user-approved removal
+  disposition proves the path is not primary, the worktree is clean, and its
+  head has zero commits outside the refreshed canonical target. The disposition
+  authorizes only that exact path's absence and becomes invalid after a change.
 - Missing onboarding defaults to checked proposal creation and confirmation
   before completed-work handoff.
 - Instruction setup updates only an existing exact file after confirmation,
@@ -85,6 +89,9 @@
 - Starting a competing integration loop, mutating from another agent's
   checkout, running a local mutation outside the atomic executor, or bypassing
   an active manifest with a blanket exception.
+- Removing an opening worktree without its exact audited disposition, or using
+  that disposition to force deletion, delete a branch, or remove the primary
+  checkout.
 - Creating an instruction file, guessing a global instruction path, or
   duplicating the managed pointer.
 - Treating a generic Sync request as push, reset, rebase, proposal, deployment,

@@ -305,6 +305,20 @@ export interface LoopOverride {
   reason: string;
 }
 
+export interface LoopWorktreeDisposition {
+  approvedBy: string;
+  branch: string | null;
+  changeDigest: string;
+  createdAt: string;
+  headSha: string;
+  outcome: "remove-after-audit";
+  path: string;
+  reason: string;
+  targetRef: string;
+  targetRevision: string;
+  uniqueCommitCount: 0;
+}
+
 export interface LoopWorktreePreparation {
   agentId: string;
   baseRevision: string;
@@ -318,6 +332,7 @@ export interface LoopLease {
   baselineDigest: string;
   commonGitDirectory: string;
   createdAt: string;
+  dispositions?: LoopWorktreeDisposition[];
   mode: Exclude<RequestMode, "pause" | "preview" | "sync">;
   overrides: LoopOverride[];
   ownerAgentId: string;

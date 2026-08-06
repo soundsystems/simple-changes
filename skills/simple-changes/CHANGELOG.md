@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.6.1 - 2026-08-06
+
+- Opening worktrees that are proven clean, contain no commits beyond the
+  pinned target, and receive explicit user approval can now be recorded as
+  obsolete and removed without invalidating the active-loop manifest. The
+  disposition is bound to the worktree's exact path, branch, revision, and
+  content; dirty, changed, uniquely committed, unapproved, or canonical primary
+  worktrees remain protected.
+
 ## 0.6.0 - 2026-08-03
 
 - Write-capable integration runs now hold one exclusive active-loop lease and

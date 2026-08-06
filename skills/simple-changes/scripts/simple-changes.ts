@@ -13,6 +13,7 @@ import {
 } from "./lib/initialization.ts";
 import { captureInventory, compareSnapshots } from "./lib/inventory.ts";
 import {
+  authorizeWorktreeRemoval,
   endLoop,
   executeLoopMutation,
   grantLoopOverride,
@@ -96,6 +97,8 @@ Usage:
     -- COMMAND [ARG ...]
   simple-changes loop recover --agent-id ID [--json] [--repo PATH]
   simple-changes loop allow --run-id ID --agent-id ID --worktree PATH
+    --status-digest SHA256 --approved-by ID --reason TEXT [--json] [--repo PATH]
+  simple-changes loop dispose-worktree --run-id ID --agent-id ID --worktree PATH
     --status-digest SHA256 --approved-by ID --reason TEXT [--json] [--repo PATH]
   simple-changes loop end --run-id ID --agent-id ID [--json] [--repo PATH]
   simple-changes prepare-agent --run-id ID --agent-id ID --purpose SLUG
@@ -947,7 +950,7 @@ const runLoopCommand = async (options: CliOptions): Promise<void> => {
   const [action] = options.positional;
   if (!action) {
     throw new SimpleChangesError(
-      "loop requires start, status, verify, guard, exec, recover, allow, or end",
+      "loop requires start, status, verify, guard, exec, recover, allow, dispose-worktree, or end",
       EXIT_CODES.usage
     );
   }
@@ -1034,6 +1037,23 @@ const runLoopCommand = async (options: CliOptions): Promise<void> => {
       { lease: updated, manifestDigest: loopManifestDigest(updated) },
       options.json,
       `Recorded an exact override for ${options.worktreePath}.\nManifest: ${loopManifestDigest(updated)}\n`
+    );
+    return;
+  }
+  if (action === "dispose-worktree") {
+    const updated = authorizeWorktreeRemoval(
+      options.repo,
+      runId,
+      agentId,
+      requireCliOption(options.worktreePath, "--worktree"),
+      requireCliOption(options.statusDigest, "--status-digest"),
+      requireCliOption(options.approvedBy, "--approved-by"),
+      requireCliOption(options.reason, "--reason")
+    );
+    writeOutput(
+      { lease: updated, manifestDigest: loopManifestDigest(updated) },
+      options.json,
+      `Recorded an audited removal disposition for ${options.worktreePath}.\nManifest: ${loopManifestDigest(updated)}\n`
     );
     return;
   }

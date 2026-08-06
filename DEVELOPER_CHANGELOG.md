@@ -1,5 +1,21 @@
 # Developer changelog
 
+## 0.6.1 - 2026-08-06
+
+- Added an explicit audited-removal disposition for opening worktrees:
+  - `loop dispose-worktree` verifies loop ownership, a clean exact content
+    digest, the original preserved role, a non-primary path, and zero commits
+    beyond the lease's pinned target revision before recording user approval.
+  - Loop leases now persist optional exact path, branch, head, digest, target,
+    audit, reason, and approval evidence. Existing leases remain schema-valid.
+  - Manifest verification accepts a missing preserved worktree only when that
+    exact opening state was disposed. Any later branch, revision, or content
+    change invalidates the disposition while the worktree exists.
+  - Added runtime, CLI, schema, contract, and behavior-evaluation coverage for
+    approved cleanup and the protected dirty, unique-commit, unapproved, and
+    canonical-primary cases.
+<!-- simple-changelogs-signature agent="gpt-5.6-sol" at="2026-08-06T14:59:06-05:00" -->
+
 ## 0.6.0 - 2026-08-03
 
 - Added an executable active-loop lease and content-sensitive worktree-manifest

@@ -229,8 +229,25 @@ Never weaken the lease with a blanket exception. If the user explicitly takes
 over a preserved worktree that changed after the baseline, record only its
 exact absolute path, current status digest, current head, approver identity,
 and reason through `loop allow`. Any subsequent change invalidates that
-exception. Remove run-created worktrees, verify the manifest again, and run
-`loop end` only after cleanup. Follow
+exception.
+
+An opening preserved worktree remains protected unless the user explicitly
+approves its removal after a fresh audit proves it is clean and has zero unique
+commits outside the refreshed canonical target. Before removing it, record the
+exact path, status digest, branch, head, target revision, approver, and reason:
+
+```sh
+bun skills/simple-changes/scripts/simple-changes.ts loop dispose-worktree \
+  --run-id "$RUN_ID" --agent-id "$AGENT_ID" --worktree "$WORKTREE" \
+  --status-digest "$DIGEST" --approved-by "$APPROVER" --reason "$REASON" --json
+```
+
+The command records authority but does not delete anything. Remove only that
+exact clean worktree through `loop exec`; any intervening change invalidates
+the disposition. It never authorizes primary-checkout removal, force deletion,
+or branch deletion. Run-created worktrees use their existing accounted-work
+cleanup gate and do not need this disposition. Verify the manifest again and
+run `loop end` only after cleanup. Follow
 [inventory and concurrency](references/inventory-and-concurrency.md).
 
 ## Completed-work handoff
@@ -341,9 +358,11 @@ authority for those operations.
     a bounded promote/recheck/managed-target sequence. Follow
     [deployments](references/deployments.md).
 16. Run `loop verify`, re-inventory local and remote state, and clean only
-    proven merged, obsolete, or generated objects. Restore and verify the
-    original primary checkout, remove run-created worktrees, run the final
-    verification, and release the lease with `loop end`. Follow
+    proven merged, obsolete, or generated objects. Record an audited,
+    user-approved disposition before removing any opening worktree; remove
+    run-created worktrees after their work is accounted for. Restore and verify
+    the original primary checkout, run the final verification, and release the
+    lease with `loop end`. Follow
     [cleanup and completion](references/cleanup-and-completion.md).
 
 ## Authority checkpoint

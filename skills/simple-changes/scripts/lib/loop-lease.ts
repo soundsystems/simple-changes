@@ -26,6 +26,7 @@ import type {
   LoopOverride,
   LoopVerification,
   LoopViolation,
+  LoopWorktreeDisposition,
   LoopWorktreeLease,
   LoopWorktreePreparation,
   RepositoryInventory,
@@ -450,6 +451,28 @@ const matchingOverride = (
       override.changeDigest === worktree.changeDigest
   );
 
+const matchingRemovalDisposition = (
+  lease: LoopLease,
+  worktree: WorktreeInventory
+): LoopWorktreeDisposition | undefined =>
+  (lease.dispositions ?? []).find(
+    (disposition) =>
+      disposition.outcome === "remove-after-audit" &&
+      disposition.path === worktree.path &&
+      disposition.branch === worktree.branch &&
+      disposition.headSha === worktree.headSha &&
+      disposition.changeDigest === worktree.changeDigest
+  );
+
+const removalDispositionForPath = (
+  lease: LoopLease,
+  path: string
+): LoopWorktreeDisposition | undefined =>
+  (lease.dispositions ?? []).find(
+    (disposition) =>
+      disposition.outcome === "remove-after-audit" && disposition.path === path
+  );
+
 const currentWorktreeViolations = (
   lease: LoopLease,
   worktree: WorktreeInventory,
@@ -480,7 +503,8 @@ const currentWorktreeViolations = (
     registered.role === "preserved" &&
     (registered.baselineHeadSha !== worktree.headSha ||
       registered.baselineChangeDigest !== worktree.changeDigest) &&
-    !matchingOverride(lease, worktree)
+    !matchingOverride(lease, worktree) &&
+    !matchingRemovalDisposition(lease, worktree)
   ) {
     violations.push({
       changeDigest: worktree.changeDigest,
@@ -550,7 +574,8 @@ const verificationAgainst = (
   for (const registered of lease.worktrees) {
     if (
       registered.role === "preserved" &&
-      !currentByPath.has(registered.path)
+      !currentByPath.has(registered.path) &&
+      !removalDispositionForPath(lease, registered.path)
     ) {
       violations.push({
         changeDigest: null,
@@ -665,6 +690,7 @@ export const startLoop = (
         baselineDigest: inventory.baselineDigest,
         commonGitDirectory: inventory.repository.commonGitDirectory,
         createdAt: now,
+        dispositions: [],
         mode: mode as LoopLease["mode"],
         overrides: [],
         ownerAgentId: agentId,
@@ -1106,6 +1132,160 @@ export const prepareAgentWorktree = (
         updatedAt: newPreparation.createdAt,
       });
       return resumePreparation(preparingLease, newPreparation);
+    }
+  );
+};
+
+interface WorktreeRemovalAudit {
+  current: WorktreeInventory & { headSha: string };
+  path: string;
+  targetRevision: string;
+}
+
+const auditWorktreeRemoval = (
+  lease: LoopLease,
+  inventory: RepositoryInventory,
+  pathInput: string,
+  changeDigest: string
+): WorktreeRemovalAudit => {
+  const path = existsSync(pathInput)
+    ? realpathSync(pathInput)
+    : resolve(pathInput);
+  if (path === lease.primaryCheckout) {
+    throw new SimpleChangesError(
+      "The canonical primary checkout cannot be disposed by the active loop.",
+      EXIT_CODES.unsafe
+    );
+  }
+  const registered = lease.worktrees.find(
+    (worktree) =>
+      worktree.path === path &&
+      worktree.role === "preserved" &&
+      !worktree.createdByRun
+  );
+  const current = inventory.worktrees.find(
+    (worktree) => worktree.path === path
+  );
+  if (!(registered && current)) {
+    throw new SimpleChangesError(
+      `Disposition path must name a current preserved opening worktree: ${path}`,
+      EXIT_CODES.unsafe
+    );
+  }
+  if (current.changeDigest !== changeDigest) {
+    throw new SimpleChangesError(
+      `Disposition digest does not match ${path}; expected current digest ${current.changeDigest}.`,
+      EXIT_CODES.unsafe
+    );
+  }
+  if (current.changes.length > 0) {
+    throw new SimpleChangesError(
+      `Opening worktree ${path} must be clean before removal can be authorized.`,
+      EXIT_CODES.unsafe
+    );
+  }
+  if (!current.headSha) {
+    throw new SimpleChangesError(
+      `Opening worktree ${path} has no auditable HEAD revision.`,
+      EXIT_CODES.unsafe
+    );
+  }
+  const targetRevision = runGit(lease.primaryCheckout, [
+    "rev-parse",
+    "--verify",
+    `${lease.targetRef}^{commit}`,
+  ]).stdout.trim();
+  const uniqueCommitCount = Number.parseInt(
+    runGit(lease.primaryCheckout, [
+      "rev-list",
+      "--count",
+      `${targetRevision}..${current.headSha}`,
+    ]).stdout.trim(),
+    10
+  );
+  if (!(Number.isInteger(uniqueCommitCount) && uniqueCommitCount === 0)) {
+    throw new SimpleChangesError(
+      `Opening worktree ${path} has ${uniqueCommitCount} unique commit(s) outside ${lease.targetRef} at ${targetRevision}.`,
+      EXIT_CODES.unsafe
+    );
+  }
+  return {
+    current: current as WorktreeInventory & { headSha: string },
+    path,
+    targetRevision,
+  };
+};
+
+export const authorizeWorktreeRemoval = (
+  repositoryPath: string,
+  runId: string,
+  ownerAgentIdInput: string,
+  pathInput: string,
+  changeDigestInput: string,
+  approvedByInput: string,
+  reasonInput: string
+): LoopLease => {
+  const ownerAgentId = requiredText(ownerAgentIdInput, "agent ID");
+  const approvedBy = requiredText(approvedByInput, "approved-by identity");
+  const reason = requiredText(reasonInput, "disposition reason");
+  const changeDigest = requiredText(changeDigestInput, "status digest");
+  if (!DIGEST_PATTERN.test(changeDigest)) {
+    throw new SimpleChangesError(
+      "status digest must be a 64-character lowercase SHA-256 value.",
+      EXIT_CODES.usage
+    );
+  }
+  const opening = captureInventory(repositoryPath);
+  return withStateLock(
+    opening.repository.commonGitDirectory,
+    "authorize opening worktree removal",
+    () => {
+      const inventory = captureInventory(repositoryPath);
+      const lease = requireLease(inventory);
+      assertMatchingRun(lease, runId);
+      if (lease.ownerAgentId !== ownerAgentId) {
+        throw new SimpleChangesError(
+          `Only loop owner ${lease.ownerAgentId} may record a worktree disposition.`,
+          EXIT_CODES.unsafe
+        );
+      }
+      const { current, path, targetRevision } = auditWorktreeRemoval(
+        lease,
+        inventory,
+        pathInput,
+        changeDigest
+      );
+      const disposition: LoopWorktreeDisposition = {
+        approvedBy,
+        branch: current.branch,
+        changeDigest,
+        createdAt: new Date().toISOString(),
+        headSha: current.headSha,
+        outcome: "remove-after-audit",
+        path,
+        reason,
+        targetRef: lease.targetRef,
+        targetRevision,
+        uniqueCommitCount: 0,
+      };
+      const candidate: LoopLease = {
+        ...lease,
+        dispositions: [
+          ...(lease.dispositions ?? []).filter((item) => item.path !== path),
+          disposition,
+        ],
+        updatedAt: disposition.createdAt,
+      };
+      const verification = verificationAgainst(candidate, inventory);
+      if (!verification.ok) {
+        throw new SimpleChangesError(
+          `Worktree disposition is exact but other loop violations remain: ${verification.violations
+            .map((violation) => `${violation.code}:${violation.path}`)
+            .join(", ")}`,
+          EXIT_CODES.unsafe
+        );
+      }
+      return writeLease(candidate);
     }
   );
 };

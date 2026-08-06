@@ -3,6 +3,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn as bunSpawn, spawnSync as bunSpawnSync } from "bun";
+import { captureInventory } from "../../../skills/simple-changes/scripts/lib/inventory.ts";
 import {
   createTestRepository,
   git,
@@ -275,6 +276,93 @@ describe("contract CLI", () => {
       readFileSync(resolve(preparedOutput.path, "cli-atomic.txt"), "utf8")
     ).toBe("ok\n");
   }, 30_000);
+
+  test("records an audited opening-worktree removal disposition", () => {
+    const fixture = createTestRepository();
+    repositories.push(fixture);
+    const obsolete = resolve(fixture.base, "obsolete");
+    git(fixture.root, ["worktree", "add", "-b", "obsolete-work", obsolete]);
+    const started = spawnSync(
+      [
+        process.execPath,
+        cliPath,
+        "loop",
+        "start",
+        "--mode",
+        "reconcile",
+        "--agent-id",
+        "controller",
+        "--json",
+        "--repo",
+        fixture.root,
+      ],
+      { stderr: "pipe", stdout: "pipe" }
+    );
+    const startedOutput = JSON.parse(decoder.decode(started.stdout)) as {
+      lease: { runId: string };
+    };
+    const worktree = captureInventory(fixture.root).worktrees.find(
+      (item) => item.path === obsolete
+    );
+    expect(worktree).toBeDefined();
+
+    const disposed = spawnSync(
+      [
+        process.execPath,
+        cliPath,
+        "loop",
+        "dispose-worktree",
+        "--run-id",
+        startedOutput.lease.runId,
+        "--agent-id",
+        "controller",
+        "--worktree",
+        obsolete,
+        "--status-digest",
+        worktree?.changeDigest ?? "",
+        "--approved-by",
+        "user",
+        "--reason",
+        "Audited obsolete with no unique work",
+        "--json",
+        "--repo",
+        fixture.root,
+      ],
+      { stderr: "pipe", stdout: "pipe" }
+    );
+    expect(disposed.exitCode).toBe(0);
+    expect(JSON.parse(decoder.decode(disposed.stdout))).toMatchObject({
+      lease: {
+        dispositions: [
+          {
+            outcome: "remove-after-audit",
+            path: obsolete,
+            uniqueCommitCount: 0,
+          },
+        ],
+      },
+    });
+
+    git(fixture.root, ["worktree", "remove", obsolete]);
+    const verified = spawnSync(
+      [
+        process.execPath,
+        cliPath,
+        "loop",
+        "verify",
+        "--run-id",
+        startedOutput.lease.runId,
+        "--json",
+        "--repo",
+        fixture.root,
+      ],
+      { stderr: "pipe", stdout: "pipe" }
+    );
+    expect(verified.exitCode).toBe(0);
+    expect(JSON.parse(decoder.decode(verified.stdout))).toMatchObject({
+      ok: true,
+    });
+  }, 20_000);
 
   test("blocks a new authoring agent in the controller checkout", () => {
     const fixture = createTestRepository();

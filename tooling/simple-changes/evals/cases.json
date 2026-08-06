@@ -377,6 +377,19 @@
       ]
     },
     {
+      "id": "resume-remove-audited-opening-worktree",
+      "prompt": "Continue the active loop. I reviewed the old opening worktree: it is obsolete and you may remove it if it has no unique work.",
+      "mode": "resume",
+      "authority": ["local-write"],
+      "expectedBehaviors": [
+        "Keep every opening worktree protected until an explicit removal disposition is recorded",
+        "Require explicit user approval, a clean exact content digest, the original preserved role, a non-primary path, and zero commits beyond the pinned target revision",
+        "Bind the disposition to the exact path, branch, head, content digest, and target revision so later changes invalidate it",
+        "Allow the disposed opening worktree to be removed without a missing-preserved-worktree violation",
+        "Continue to reject removal of dirty, uniquely committed, unapproved, changed, or canonical primary worktrees"
+      ]
+    },
+    {
       "id": "ship-nonrelational-index-change",
       "prompt": "Ship the ready search index mapping and bounded data backfill.",
       "mode": "ship",

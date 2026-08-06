@@ -50,7 +50,8 @@ directory. `loop start` creates it atomically and records:
 - every worktree's exact path, branch, head, and content-sensitive change
   digest, including staged and unstaged patches plus untracked contents;
 - whether the worktree is controller-owned, author-owned, or preserved; and
-- exact user-approved overrides, when any exist.
+- exact user-approved overrides and audited removal dispositions, when any
+  exist.
 
 The lock directory prevents two cooperating agents from updating the manifest
 or performing guarded local mutations at once. It records the owning PID, host,
@@ -116,3 +117,20 @@ digest. A later edit or commit changes the evidence and blocks the loop again.
 After all run-created worktrees are removed, `loop end` performs one last
 manifest verification and releases the lease. It refuses to end while any
 run-created worktree remains or any manifest violation is unresolved.
+
+## Opening-worktree dispositions
+
+Do not reinterpret an opening preserved worktree as run-created cleanup. It
+remains protected until `loop dispose-worktree` records a removal disposition
+under the active lease. The command accepts only the exact current path and
+content-sensitive status digest, requires the loop owner and named approver,
+rejects the canonical primary checkout, and audits that the worktree is clean
+and its head has zero commits outside the freshly resolved canonical target.
+The manifest records its branch, head, digest, target ref and revision,
+approver, reason, and zero-unique-commit result before deletion.
+
+The disposition permits only that opening worktree's absence. It does not
+remove the path, authorize `--force`, delete its branch, suppress other
+violations, or survive an intervening worktree change. Run the exact removal
+through `loop exec` so preflight sees the recorded disposition and postflight
+proves only the authorized path disappeared.

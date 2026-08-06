@@ -461,7 +461,9 @@ const matchingRemovalDisposition = (
       disposition.path === worktree.path &&
       disposition.branch === worktree.branch &&
       disposition.headSha === worktree.headSha &&
-      disposition.changeDigest === worktree.changeDigest
+      disposition.changeDigest === worktree.changeDigest &&
+      disposition.targetRef === lease.targetRef &&
+      disposition.targetRevision === lease.targetRevision
   );
 
 const removalDispositionForPath = (
@@ -470,7 +472,10 @@ const removalDispositionForPath = (
 ): LoopWorktreeDisposition | undefined =>
   (lease.dispositions ?? []).find(
     (disposition) =>
-      disposition.outcome === "remove-after-audit" && disposition.path === path
+      disposition.outcome === "remove-after-audit" &&
+      disposition.path === path &&
+      disposition.targetRef === lease.targetRef &&
+      disposition.targetRevision === lease.targetRevision
   );
 
 const currentWorktreeViolations = (
@@ -1193,8 +1198,14 @@ const auditWorktreeRemoval = (
   const targetRevision = runGit(lease.primaryCheckout, [
     "rev-parse",
     "--verify",
-    `${lease.targetRef}^{commit}`,
+    `${lease.targetRevision}^{commit}`,
   ]).stdout.trim();
+  if (targetRevision !== lease.targetRevision) {
+    throw new SimpleChangesError(
+      `Pinned target revision ${lease.targetRevision} no longer resolves exactly.`,
+      EXIT_CODES.unsafe
+    );
+  }
   const uniqueCommitCount = Number.parseInt(
     runGit(lease.primaryCheckout, [
       "rev-list",

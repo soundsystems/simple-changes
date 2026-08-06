@@ -233,8 +233,9 @@ exception.
 
 An opening preserved worktree remains protected unless the user explicitly
 approves its removal after a fresh audit proves it is clean and has zero unique
-commits outside the refreshed canonical target. Before removing it, record the
-exact path, status digest, branch, head, target revision, approver, and reason:
+commits outside the lease's pinned canonical target revision. Before removing
+it, record the exact path, status digest, branch, head, pinned target revision,
+approver, and reason:
 
 ```sh
 bun skills/simple-changes/scripts/simple-changes.ts loop dispose-worktree \
@@ -244,10 +245,11 @@ bun skills/simple-changes/scripts/simple-changes.ts loop dispose-worktree \
 
 The command records authority but does not delete anything. Remove only that
 exact clean worktree through `loop exec`; any intervening change invalidates
-the disposition. It never authorizes primary-checkout removal, force deletion,
-or branch deletion. Run-created worktrees use their existing accounted-work
-cleanup gate and do not need this disposition. Verify the manifest again and
-run `loop end` only after cleanup. Follow
+the disposition. Preflight and postflight also require the disposition's target
+ref and revision to match the lease exactly. It never authorizes
+primary-checkout removal, force deletion, or branch deletion. Run-created
+worktrees use their existing accounted-work cleanup gate and do not need this
+disposition. Verify the manifest again and run `loop end` only after cleanup. Follow
 [inventory and concurrency](references/inventory-and-concurrency.md).
 
 ## Completed-work handoff

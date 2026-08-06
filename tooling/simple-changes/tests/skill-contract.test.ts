@@ -253,10 +253,13 @@ describe("Simple Changes skill contract", () => {
     );
     expect(normalizedSkill).toContain("loop dispose-worktree");
     expect(normalizedSkill).toContain(
-      "clean and has zero unique commits outside the refreshed canonical target"
+      "clean and has zero unique commits outside the lease's pinned canonical target revision"
     );
     expect(normalizedConcurrency).toContain(
       "The disposition permits only that opening worktree's absence"
+    );
+    expect(normalizedConcurrency).toContain(
+      "target ref or revision differs from the active lease"
     );
   });
 });

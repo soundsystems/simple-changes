@@ -290,10 +290,133 @@ export interface LoopWorktreeLease {
   baselineChangeDigest: string;
   baselineHeadSha: string | null;
   branch: string | null;
+  claimId?: string;
+  coordinationState?: "adopted-preserved" | "resume-ready";
   createdByRun: boolean;
   mutationAllowed: boolean;
   path: string;
+  pauseReceiptId?: string;
   role: LoopWorktreeRole;
+}
+
+export type WorktreeCoordinationState =
+  | "active"
+  | "pause-requested"
+  | "paused"
+  | "adopted-preserved"
+  | "detach-requested"
+  | "detached"
+  | "attached"
+  | "resume-ready"
+  | "released"
+  | "stale"
+  | "blocked";
+
+export interface WorktreeClaimOwner {
+  adapter: string;
+  agentId: string;
+  ownerRef: string | null;
+}
+
+export interface WorktreeResumeTarget {
+  createdAt: string;
+  runId: string;
+  targetRef: string;
+  targetSha: string;
+}
+
+export interface WorktreeClaim {
+  branch: string | null;
+  changeDigest: string;
+  claimId: string;
+  commonGitDirectory: string;
+  createdAt: string;
+  headSha: string | null;
+  owner: WorktreeClaimOwner;
+  path: string;
+  repositoryId: string;
+  resumeTarget?: WorktreeResumeTarget;
+  schemaVersion: 1;
+  state: WorktreeCoordinationState;
+  updatedAt: string;
+}
+
+export interface WorktreePauseReceipt {
+  acknowledgedAt: string;
+  branch: string | null;
+  changeDigest: string;
+  claimId: string;
+  disposition: "preserve-in-place" | "detach-clean-checkout";
+  headSha: string | null;
+  ownerAgentId: string;
+  path: string;
+  reason: string;
+  receiptId: string;
+  requestingRunId: string;
+  schemaVersion: 1;
+}
+
+export interface WorktreeCoordinationEvent {
+  actorAgentId: string;
+  claimId: string;
+  createdAt: string;
+  eventId: string;
+  state: WorktreeCoordinationState;
+}
+
+export interface WorktreeCoordinationDocument {
+  claims: WorktreeClaim[];
+  events: WorktreeCoordinationEvent[];
+  receipts: WorktreePauseReceipt[];
+  repositoryId: string;
+  schemaVersion: 1;
+}
+
+export type CoordinationDiscoveryCapability =
+  | "exact-ref"
+  | "enumerate-local"
+  | "enumerate-account"
+  | "none";
+export type CoordinationDeliveryCapability =
+  | "live-bidirectional"
+  | "follow-up"
+  | "interactive-manual"
+  | "none";
+export type CoordinationWaitCapability = "event" | "poll" | "none";
+export type CoordinationScope =
+  | "same-process"
+  | "same-host"
+  | "account-remote"
+  | "manual";
+
+export interface CoordinationAdapterCapabilities {
+  adapter: string;
+  conditions: string[];
+  delivery: CoordinationDeliveryCapability;
+  discovery: CoordinationDiscoveryCapability;
+  scope: CoordinationScope;
+  wait: CoordinationWaitCapability;
+  worktreeIdentity: "native" | "claim-only";
+}
+
+export interface CoordinationRequest {
+  action: "request-pause" | "request-detach" | "notify-resume";
+  claimId: string;
+  owner: WorktreeClaimOwner;
+  repository: {
+    commonGitDirectory: string;
+    worktreePath: string;
+  };
+  runId: string;
+  safeMessage: string;
+}
+
+export interface CoordinationBlocker {
+  adapter: string;
+  capability: "discovery" | "delivery" | "wait" | "scope" | "owner-ref";
+  code: "manual-coordination-required" | "unsupported-capability";
+  manualNextAction: string;
+  scope: CoordinationScope;
 }
 
 export interface LoopOverride {
@@ -353,6 +476,7 @@ export interface LoopViolation {
     | "missing-preserved-worktree"
     | "incomplete-worktree-preparation"
     | "preserved-worktree-changed"
+    | "coordination-claim-stale"
     | "registered-worktree-branch-changed"
     | "unregistered-worktree";
   headSha: string | null;
@@ -379,4 +503,5 @@ export type SchemaName =
   | "provider-receipt"
   | "release-consistency"
   | "release-notes"
-  | "loop-lease";
+  | "loop-lease"
+  | "worktree-coordination";

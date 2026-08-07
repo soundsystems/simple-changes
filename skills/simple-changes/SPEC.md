@@ -66,6 +66,18 @@
   disposition proves the path is not primary, the worktree is clean, and its
   head has zero commits outside the refreshed canonical target. The disposition
   authorizes only that exact path's absence and becomes invalid after a change.
+- A worktree owner can persist an opaque local claim and acknowledge a pause
+  only for its current path, branch, HEAD, and content digest. A controller can
+  adopt that exact state only as mutation-forbidden preserved work. Any later
+  edit, commit, branch switch, release, or claim mismatch re-blocks the lease.
+- Clean non-primary claimed worktrees may be detached only from an exact
+  detach receipt, without force or branch deletion. Reattachment requires the
+  absent recorded path and the same local branch at the same HEAD; an active
+  loop blocks reattachment.
+- Harness automation is capability-gated. An unsupported discovery, delivery,
+  wait, scope, or owner-reference requirement produces a structured manual
+  blocker and no repository mutation. Vendor APIs and credentials never enter
+  the upstream runtime or durable coordination metadata.
 - Missing onboarding defaults to checked proposal creation and confirmation
   before completed-work handoff.
 - Instruction setup updates only an existing exact file after confirmation,
@@ -92,6 +104,10 @@
 - Removing an opening worktree without its exact audited disposition, or using
   that disposition to force deletion, delete a branch, or remove the primary
   checkout.
+- Manufacturing a pause receipt, adopting a stale receipt, guessing an owner
+  from a session title, treating eval-adapter support as live-session API
+  support, detaching dirty work, or concurrently resuming a live harness
+  session.
 - Creating an instruction file, guessing a global instruction path, or
   duplicating the managed pointer.
 - Treating a generic Sync request as push, reset, rebase, proposal, deployment,

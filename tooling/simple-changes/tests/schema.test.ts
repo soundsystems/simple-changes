@@ -6,6 +6,7 @@ import type {
   ChangelogReceipt,
   LoopLease,
   RepoPolicy,
+  WorktreeCoordinationDocument,
 } from "../../../skills/simple-changes/scripts/lib/types.ts";
 
 describe("closed schemas", () => {
@@ -253,6 +254,56 @@ describe("closed schemas", () => {
       validateSchema("loop-lease", {
         ...lease,
         unrestrictedMutation: true,
+      })
+    ).toThrow("additional properties");
+  });
+
+  test("accepts closed worktree coordination state and rejects secrets", () => {
+    const now = new Date().toISOString();
+    const document: WorktreeCoordinationDocument = {
+      claims: [
+        {
+          branch: "feature",
+          changeDigest: "b".repeat(64),
+          claimId: "claim-example",
+          commonGitDirectory: "/repo/.git",
+          createdAt: now,
+          headSha: "a".repeat(40),
+          owner: {
+            adapter: "claude-code",
+            agentId: "owner",
+            ownerRef: "session-1",
+          },
+          path: "/repo/worktree",
+          repositoryId: "c".repeat(64),
+          schemaVersion: 1,
+          state: "active",
+          updatedAt: now,
+        },
+      ],
+      events: [
+        {
+          actorAgentId: "owner",
+          claimId: "claim-example",
+          createdAt: now,
+          eventId: "event-example",
+          state: "active",
+        },
+      ],
+      receipts: [],
+      repositoryId: "c".repeat(64),
+      schemaVersion: 1,
+    };
+    expect(
+      validateSchema<WorktreeCoordinationDocument>(
+        "worktree-coordination",
+        document
+      )
+    ).toEqual(document);
+    expect(() =>
+      validateSchema("worktree-coordination", {
+        ...document,
+        providerToken: "never-store-this",
       })
     ).toThrow("additional properties");
   });

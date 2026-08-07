@@ -1,5 +1,32 @@
 # Developer changelog
 
+## 0.7.0 - 2026-08-07
+
+- Added a provider-neutral cross-thread worktree coordination protocol:
+  - Claims and append-only transition events are written atomically beneath the
+    common Git directory with mode `0600`. Exact canonical path, Git directory,
+    branch or detached identity, HEAD, and content digest evidence bind owner
+    pauses, preserved adoption, changed-baseline acceptance, resume readiness,
+    release, and stale-state detection.
+  - Active-loop leases can adopt an owner-paused concurrent checkout without
+    granting mutation authority, accept an opening preserved checkout only from
+    its exact new receipt, and invalidate linked leases when claims or evidence
+    become stale.
+  - Clean non-primary worktrees with unique commits can be detached without
+    force or branch deletion and reattached only when their recorded path,
+    branch, and HEAD still match. Active-loop path requirements prevent unsafe
+    detach or attach transitions.
+  - Added capability profiles and bounded request construction for Codex
+    desktop, same-host Claude Code, Cursor Cloud/SDK, Hermes gateway, and Grok
+    Build controller scopes. Profiles require exact owner references and expose
+    actionable manual blockers when discovery, delivery, waiting, scope, or
+    worktree identity cannot be proven.
+  - Added closed coordination and lease schemas, CLI commands, repository and
+    behavioral documentation, eval journeys, and regression coverage for dirty
+    preservation, exact adoption, changed opening state, detach/attach, stale
+    claims, credential rejection, file permissions, and capability gating.
+<!-- simple-changelogs-signature agent="gpt-5.6-sol" at="2026-08-07T17:44:36-05:00" -->
+
 ## 0.6.1 - 2026-08-06
 
 - Added an explicit audited-removal disposition for opening worktrees:

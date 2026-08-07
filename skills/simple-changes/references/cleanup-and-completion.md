@@ -40,6 +40,21 @@ Before reporting completion:
 9. For Ship, reconcile the pre-ship brief with the final receipts and report
    material review-driven changes from the original proposal heads.
 
+Temporary detach is not disposal. `worktree detach` is owner-controlled and
+requires an exact `detach-clean-checkout` receipt, a clean non-primary checkout,
+no active Git operation or conflict, an attached local branch resolving to the
+exact HEAD, and no live lease that still requires the path. It calls `git
+worktree remove` without force, proves every other worktree and local branch ref
+is unchanged, and retains the detached branch even when it has unique commits.
+
+`worktree attach` is allowed only after the active loop has ended. It rejects
+path reuse, symlinked parents, detached claims, missing branches, and unexpected
+branch movement, then recreates the recorded path from the existing branch
+without creating or moving a ref. After final target and manifest verification,
+the controller uses `worktree resume-ready` to record the freshly resolved
+target ref and exact SHA. The owner refreshes its claim before resuming; dirty
+work remains preserved for owner-controlled reconciliation.
+
 Completion comes from fresh evidence, not the run ledger or conversational
 memory. For every preserved or blocked item, include the evidence supporting its
 classification, the missing completion condition or decision, and the exact

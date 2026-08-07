@@ -214,6 +214,28 @@ redirect the agent there before it edits anything. A reviewer may remain in
 read-only mode without a worktree; if review turns into authorship, prepare an
 authoring worktree first.
 
+Claim every owner-created worktree immediately with `worktree claim`, using a
+bounded adapter slug and an opaque local `ownerRef`. Claims and pause receipts
+live beneath the common Git directory with mode `0600`; never store task titles,
+prompts, message bodies, credentials, or provider tokens there. Before a host
+adapter contacts an owner, require its capability probe to prove discovery,
+delivery, waiting, scope, and worktree identity, and verify every condition the
+probe lists. Unsupported Codex CLI, local Cursor, separate-process Hermes,
+dashboard-only Grok, cross-machine or native-Windows Claude Code, or other
+configurations must return the structured manual next action without mutating
+Git or the lease.
+
+When a claimed worktree blocks the manifest, ask only its exact owner to pause
+at a safe boundary and run `worktree pause`. Adopt a newly arrived paused
+worktree through `loop adopt-worktree`; refresh a changed opening preserved
+worktree through `loop accept-paused-change`. Both operations require the exact
+current receipt and keep `mutationAllowed: false`. A later change or claim
+release re-blocks the lease. Dirty worktrees stay in place. A clean non-primary
+checkout may use owner-controlled `worktree detach` without force; it preserves
+the branch and exact HEAD. Reattach only after the active loop ends, then refresh
+the claim before resuming. The controller records `worktree resume-ready` only
+after final target and manifest verification.
+
 The lock contains process, process-group, host, operation, age, and ownership
 metadata. `loop exec` records unresolved child launch before spawning and then
 the guarded child and process group. Recovery requires the same-host controller,

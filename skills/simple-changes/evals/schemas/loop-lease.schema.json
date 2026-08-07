@@ -102,7 +102,13 @@
             ]
           },
           "mutationAllowed": { "type": "boolean" },
-          "createdByRun": { "type": "boolean" }
+          "createdByRun": { "type": "boolean" },
+          "claimId": { "type": "string", "pattern": "^claim-[a-z0-9-]+$" },
+          "pauseReceiptId": {
+            "type": "string",
+            "pattern": "^pause-[a-z0-9-]+$"
+          },
+          "coordinationState": { "enum": ["adopted-preserved", "resume-ready"] }
         }
       }
     },

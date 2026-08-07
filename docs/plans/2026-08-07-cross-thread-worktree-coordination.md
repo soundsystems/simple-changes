@@ -2,16 +2,18 @@
 
 **Date:** 2026-08-07
 
-**Status:** Proposed
+**Status:** Upstream implementation complete; downstream host adapters and release pending
 
-**Scope:** Worktree ownership, pause receipts, active-loop adoption, safe detach/attach, controller-to-owner coordination, and the Thor/Codex integration
-**Upstream baseline inspected:** `origin/main` at `d5e2721`
+**Scope:** Worktree ownership, pause receipts, active-loop adoption, safe detach/attach, controller-to-owner coordination, and capability-gated harness integrations
+**Upstream baseline inspected:** `origin/main` at `58d523e`
 
 **Local workspace note:** the opening checkout was 26 commits behind
 `origin/main` and carried unrelated uncommitted onboarding/initialization work.
 The reconciliation loop proved that work integrated or superseded, preserved a
-recovery copy, and fast-forwarded local `main` to `d5e2721`. Implement from a
-fresh isolated worktree after re-verifying the baseline. See "Workspace
+recovery copy, and fast-forwarded local `main`. It later published this plan and
+released the repository at `58d523e` with local `main` exactly synchronized to
+`origin/main`. Implementation began from a fresh isolated worktree after the
+full typecheck, lint, test, and eval baseline passed. See "Workspace
 prerequisites" under the rollout plan.
 
 ## Outcome
@@ -29,7 +31,13 @@ When a controller encounters work owned by another task, it should be able to:
 7. recreate a detached worktree after synchronization; and
 8. notify the owning task that it may safely resume.
 
-The upstream skill must remain platform-neutral. Thor should provide the Codex-specific adapter that discovers tasks, sends messages, waits for acknowledgements, and posts resume instructions.
+The upstream skill must remain platform-neutral. Harness integrations should
+discover owners, send messages, wait for acknowledgements, and post resume
+instructions only when a capability probe proves those operations are
+supported. Codex desktop and qualifying Claude Code installations can provide
+the complete automated flow; narrower Cursor, Hermes, and Grok Build modes must
+fail closed to an actionable manual coordination path when their controller
+surface cannot address the exact live owner.
 
 ## Motivation
 
@@ -46,6 +54,33 @@ The missing piece is a safe recovery path. Today:
 This creates a coordination deadlock. The controller can discover the responsible task manually and ask it to remove a clean worktree, but the workflow is not encoded, portable, or automatically verifiable.
 
 The desired behavior is not a weaker guard. It is a stronger protocol that converts an unknown concurrent arrival into exact, acknowledged, preserved state.
+
+## Harness research findings
+
+Simple Changes currently evaluates five harness adapters: Codex CLI, Claude
+Code, Hermes Agent, Cursor Agent, and Grok Build. Eval support proves that a
+harness can follow release guidance in a disposable fixture; it does not prove
+that the harness exposes a controller API for arbitrary live sessions.
+
+| Harness mode | Discovery and delivery | Coordination level | Required fallback |
+| --- | --- | --- | --- |
+| Codex desktop | App-owned task listing, exact task messaging, and cursor-aware waits are available to the orchestration layer. Public Codex worktree documentation covers parallel desktop chats but does not document the app-internal task API. | Automatic when the desktop task tools are present. | Codex CLI or environments without task tools return a manual blocker. |
+| Claude Code 2.1.224+ on the same supported host | `ListAgents` discovers sessions and `SendMessage` addresses an exact name or short ID. Messages are delivered between tool calls; held, refused, and unavailable states must remain visible. | Automatic on qualifying same-machine macOS/Linux configurations. | Cross-machine reply-only sessions, unsupported providers, disabled feature flags, and native Windows return a manual blocker. |
+| Cursor Cloud/SDK-managed agents | The SDK and Cloud Agent surfaces expose durable agent/run identities, status, follow-ups, waits, and cancellation. | Automatic only for agents created or managed through that controller surface. | Arbitrary existing local IDE/Agents Window sessions remain interactive/manual because no stable public controller API is documented. |
+| Hermes TUI gateway or Kanban worker | A single TUI gateway exposes session listing, status, steering, prompting, interruption, and history. Kanban adds durable tasks, comments, worktrees, and worker state. | Automatic only when the exact owner is reachable through the same gateway; Kanban is qualified because comments are documented for the next run, not as a safe-boundary live interrupt. | Separate CLI processes, profiles without a shared gateway, or comment-only workers return a manual blocker. |
+| Grok Build dashboard or controller-owned ACP/headless session | The dashboard lists session state and queues replies to busy sessions. ACP/headless can coordinate sessions it owns. | Interactive in the dashboard; automatic only for a stable controller-owned session endpoint. | Arbitrary existing sessions remain manual; the runtime must not concurrently resume a live session by ID. |
+
+The adapter contract therefore models capabilities instead of assuming parity.
+Every adapter must report its discovery, delivery, wait, scope, and worktree
+identity guarantees before the controller sends a message or mutates Git.
+
+Official sources, accessed 2026-08-07:
+
+- [Codex worktrees](https://learn.chatgpt.com/docs/environments/git-worktrees)
+- [Claude Code cross-session messaging](https://code.claude.com/docs/en/cross-session-messaging), [agent teams](https://code.claude.com/docs/en/agent-teams), and [worktrees](https://code.claude.com/docs/en/worktrees)
+- [Cursor SDK release](https://cursor.com/changelog/sdk-release), [TypeScript SDK](https://cursor.com/blog/typescript-sdk), and [background agents](https://cursor.com/docs/cloud-agent)
+- [Hermes Git worktrees](https://hermes-agent.nousresearch.com/docs/user-guide/git-worktrees), [Kanban](https://hermes-agent.nousresearch.com/docs/user-guide/features/kanban), and [programmatic integration](https://github.com/NousResearch/hermes-agent/blob/main/website/docs/developer-guide/programmatic-integration.md)
+- [Grok Build dashboard](https://docs.x.ai/build/features/dashboard), [sessions](https://docs.x.ai/build/features/sessions), and [headless scripting](https://docs.x.ai/build/cli/headless-scripting)
 
 ## Incident-derived requirements
 
@@ -158,8 +193,8 @@ Add a `worktree-coordination` schema with a claim shaped like:
   "changeDigest": "<sha256>",
   "owner": {
     "agentId": "agent-id",
-    "adapter": "codex|manual|none",
-    "taskRef": "opaque-local-reference"
+    "adapter": "codex-desktop|claude-code|cursor-cloud|hermes-gateway|grok-build|manual|none",
+    "ownerRef": "opaque-local-reference"
   },
   "state": "active",
   "createdAt": "<date-time>",
@@ -167,7 +202,10 @@ Add a `worktree-coordination` schema with a claim shaped like:
 }
 ```
 
-`taskRef` is opaque and local. The upstream runtime must not parse it or store task titles, prompts, user messages, credentials, or provider tokens.
+`ownerRef` is opaque and local. The upstream runtime must not parse it or store
+task titles, prompts, user messages, credentials, or provider tokens. Adapter
+IDs are bounded lowercase slugs, not a closed vendor enum, so a future adapter
+does not require a durable schema-version bump.
 
 ### Pause receipt
 
@@ -214,8 +252,8 @@ The schema document itself still needs an additive edit: `loop-lease.schema.json
 simple-changes worktree claim \
   --agent-id AGENT \
   --worktree PATH \
-  --adapter codex \
-  --task-ref OPAQUE_REF \
+  --adapter codex-desktop \
+  --owner-ref OPAQUE_REF \
   --json
 ```
 
@@ -386,7 +424,7 @@ interface CoordinationRequest {
   owner: {
     adapter: string;
     agentId: string;
-    taskRef: string | null;
+    ownerRef: string | null;
   };
   repository: {
     commonGitDirectory: string;
@@ -395,42 +433,105 @@ interface CoordinationRequest {
   runId: string;
   safeMessage: string;
 }
+
+interface CoordinationAdapterCapabilities {
+  discovery: "exact-ref" | "enumerate-local" | "enumerate-account" | "none";
+  delivery: "live-bidirectional" | "follow-up" | "interactive-manual" | "none";
+  wait: "event" | "poll" | "none";
+  scope: "same-process" | "same-host" | "account-remote" | "manual";
+  worktreeIdentity: "native" | "claim-only";
+  conditions: string[];
+}
 ```
 
 The `safeMessage` is advisory text assembled from bounded fields. Adapters must still call the runtime commands and return verifiable receipt IDs.
 
-If no adapter can resolve the owner, output a blocked receipt with the exact missing evidence. Do not guess based on task titles or automatically remove the worktree.
+`conditions` are bounded, host-verifiable prerequisites (for example the
+qualifying Claude Code version, same-host constraint, and held/refused-delivery
+handling). A probe with unmet or unverifiable conditions must be treated as
+manual. The upstream runtime additionally gates what it can check itself:
+native Windows returns a structured manual blocker for same-host POSIX-only
+adapters such as Claude Code.
 
-## Thor and Codex integration
+Before resolving an owner, the adapter must emit a capability probe. Full
+automation requires exact or uniquely enumerated discovery, a delivery channel,
+event or bounded-poll waiting, and every listed condition verified by the host
+layer. A missing capability returns a structured
+blocker naming the adapter, capability, scope, and safe manual next action. If
+no adapter can resolve the owner, output a blocked receipt with the exact
+missing evidence. Do not guess based on task titles or automatically remove the
+worktree.
 
-This section lands in the Thor repository, not this one. It is recorded here so the upstream contract stays portable and the fork-sync delta stays reviewable.
+## Harness integrations
 
-Thor should add `skills/thor-simple-changes/references/codex-thread-coordination.md` and a Site Secure orchestration path around the upstream protocol.
+The upstream repository owns the portable request, capability, blocker, and
+receipt contracts. Vendor API calls remain in host orchestration layers. Thor
+is one downstream consumer, not the definition of the adapter boundary.
 
 ### Owner discovery
 
 Preferred evidence order:
 
-1. exact `taskRef` from the worktree claim;
-2. exact worktree path recorded in Codex task metadata or recent task output;
+1. exact `ownerRef` from the worktree claim;
+2. exact worktree path recorded in harness session metadata or recent bounded output;
 3. exact branch plus repository identity, only when unique; and
 4. user selection when ownership remains ambiguous.
 
 Task titles and summaries are untrusted discovery hints, never sufficient proof.
 
-### Message flow
+### Portable message flow
 
-Use the Codex task tools to:
+An automatic adapter must:
 
-1. list candidate tasks for the current repository;
-2. read only the smallest candidate set needed to prove ownership;
-3. send the bounded pause request to the exact task;
+1. probe and report its capabilities and scope;
+2. list the smallest candidate set needed to prove exact ownership;
+3. send the bounded pause request to the exact owner;
 4. wait for completion or attention using a cursor-aware wait;
 5. validate the returned pause receipt through the upstream runtime;
 6. continue the guarded main synchronization; and
 7. send the exact synchronized main SHA and resume instructions to every paused owner.
 
-Do not create a new task when an existing owner is known. Do not send messages to unrelated tasks.
+Do not create a new session when an existing owner is known. Do not send
+messages to unrelated sessions. Held, refused, timed-out, or unsupported
+delivery leaves the lease unchanged and returns the adapter's manual next step.
+
+### Codex desktop
+
+Use the desktop task tools to list candidate tasks, read only exact candidates,
+send the bounded request, and wait with the returned cursor. Codex CLI without
+those tools reports that interactive coordination is required.
+
+### Claude Code
+
+On a qualifying same-host installation, use `ListAgents` and `SendMessage` with
+the exact session identifier. Treat held or refused messages as blockers. Do
+not represent cross-machine reply-only messaging as initiatable coordination.
+
+### Cursor
+
+Use the SDK or Cloud Agents API only when the owner claim contains the exact
+controller-managed agent/run identity. Require the configured API credential at
+the host layer; never persist it in Simple Changes metadata. Local IDE sessions
+without that managed identity use the manual path.
+
+### Hermes
+
+Use the TUI gateway only when its process-local session listing resolves the
+exact owner. A Kanban comment may record durable intent but does not by itself
+prove a live safe-boundary pause; require a runtime pause receipt or remain
+blocked.
+
+### Grok Build
+
+Use ACP/headless control only for a session endpoint owned by the coordinating
+process. Dashboard-only or arbitrary live sessions produce instructions for an
+interactive queued reply; never concurrently resume a live session by ID.
+
+### Thor routing
+
+Thor should add a Site Secure orchestration path around the upstream protocol,
+including a Codex desktop adapter and any other capability-proven harness modes
+enabled by its host environment.
 
 ### Thor CLI routing
 
@@ -440,7 +541,9 @@ Add a Thor-facing command or preset such as:
 pnpm thor agent coordinate-worktrees --run-id RUN --json
 ```
 
-The command should route runtime evidence and produce coordination requests. Codex task API calls remain in the agent orchestration layer because the local CLI should not embed app credentials or depend on one desktop client.
+The command should route runtime evidence and produce coordination requests.
+Vendor task/session API calls remain in the agent orchestration layer because
+the local CLI should not embed app credentials or depend on one client.
 
 ### Fork maintenance
 
@@ -459,6 +562,7 @@ Keep only Site Secure paths, `pnpm thor` routing, and Codex-task guidance as dow
 Primary files:
 
 - `skills/simple-changes/scripts/lib/worktree-coordination.ts` — claims, receipts, state transitions, atomic persistence, and path validation.
+- `skills/simple-changes/scripts/lib/coordination-adapter.ts` — capability probes, portable requests, and structured unsupported/manual blockers; no vendor API calls.
 - `skills/simple-changes/scripts/lib/loop-lease.ts` — adoption and paused-change acceptance under the existing state lock.
 - `skills/simple-changes/scripts/lib/types.ts` — coordination types and additive lease linkage.
 - `skills/simple-changes/scripts/lib/hash.ts` — reuse the existing content-digest helpers for claim and receipt digests; do not introduce a second digest scheme.
@@ -531,10 +635,14 @@ The implementation is acceptable only if all of these remain true:
 
 ### Adapter behavior
 
-- Exact task reference resolves to one owner.
-- Missing task reference returns a structured manual-coordination blocker.
+- Every supported adapter profile reports discovery, delivery, wait, scope, and worktree-identity capabilities.
+- Exact owner reference resolves to one owner.
+- Missing owner reference returns a structured manual-coordination blocker.
 - Ambiguous discovery never auto-selects a task.
-- Timeout or owner refusal leaves the lease unchanged.
+- Held delivery, timeout, owner refusal, or a missing capability leaves the lease unchanged.
+- Codex desktop and qualifying Claude Code profiles can represent the full automatic flow.
+- Cursor Cloud/SDK, Hermes gateway, and Grok controller-owned profiles are accepted only with their narrower proven scopes.
+- Arbitrary local Cursor, separate-process Hermes, dashboard-only Grok, and Codex CLI profiles fall back without mutation.
 - Resume messages include the exact canonical SHA and preserved-work disposition.
 
 ### End-to-end regression
@@ -558,10 +666,10 @@ The test must assert object IDs and content digests before and after the sequenc
 ### Workspace prerequisites
 
 - Confirm local `main` still equals `origin/main`; the reconciliation loop
-  fast-forwarded both to `d5e2721` before this plan was published.
+  published the plan and released both at `58d523e`.
 - Create an isolated implementation worktree and branch rather than editing the
   primary checkout (this plan's own protocol, applied manually).
-- Re-verify the baseline before starting; the implementation map is valid only at `d5e2721` or newer.
+- Re-verify the baseline before starting; the implementation map is valid only at `58d523e` or newer.
 
 ### Phase 0 — Specification and schemas
 
@@ -587,10 +695,13 @@ The test must assert object IDs and content digests before and after the sequenc
 - Implement exact attach and resume-ready receipts.
 - Keep obsolete disposal behavior unchanged.
 
-### Phase 4 — Thor/Codex adapter
+### Phase 4 — Harness adapters and Thor integration
 
-- Add task discovery, exact-owner messaging, bounded waits, and resume notifications.
-- Add Thor routing and documentation.
+- Add the upstream capability and structured-blocker contract.
+- Implement Codex desktop and qualifying Claude Code as full automatic host adapters.
+- Add capability-gated Cursor Cloud/SDK, Hermes gateway, and Grok controller-owned profiles; keep unsupported modes manual.
+- Add exact-owner discovery, bounded waits, held/refused/timeout handling, and resume notifications.
+- Add Thor routing and documentation without embedding vendor credentials upstream.
 - Dogfood against multiple paused Site Secure worktrees.
 
 ### Phase 5 — Upstream release and fork sync
@@ -611,11 +722,13 @@ The project is complete when:
 - a changed preserved worktree can be refreshed only from an exact owner pause receipt;
 - a clean worktree with unique commits can be detached and reattached without branch movement;
 - a controller can synchronize the canonical checkout while dirty paused work remains unchanged;
-- Codex can contact the exact responsible task without relying on title guesses;
+- a capability-proven Codex desktop or Claude Code adapter can contact the exact responsible owner without relying on title guesses;
+- capability-proven Cursor, Hermes, and Grok modes expose only the automation their controller surface can guarantee;
+- unsupported harness configurations return an actionable structured manual blocker without mutating Git or the lease;
 - every paused task receives an exact-SHA resume notification after final verification;
 - all new failure modes stop before mutation and return actionable structured evidence;
 - upstream tests and evals cover the complete incident sequence; and
-- Thor consumes the upstream implementation with only repository- and Codex-specific deltas.
+- Thor consumes the upstream implementation with only repository- and host-adapter-specific deltas.
 
 ## Release and compatibility
 
@@ -630,7 +743,9 @@ This is an internal workflow/runtime feature. It does not change a product deplo
 ## Resolved decisions
 
 - Build the generic protocol upstream first, then fork-sync into Thor.
-- Keep vendor task APIs out of the upstream runtime.
+- Keep vendor task/session APIs and credentials out of the upstream runtime.
+- Model coordination through capability probes; supported eval harnesses do not imply live-session API parity.
+- Use `ownerRef` as the provider-neutral opaque identity rather than a Codex-shaped task reference.
 - Require explicit owner claims; use task discovery only as a bounded fallback.
 - Adopt concurrent worktrees as preserved, never mutation-authorized.
 - Keep dirty worktrees in place.

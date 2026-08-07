@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.7.0 - 2026-08-07
+
+- Added coordinated ownership for worktrees shared across agent tasks. Owners
+  can bind a checkout to exact local evidence, pause with a content-sensitive
+  receipt, and let an active loop adopt that checkout as immutable preserved
+  state. Controllers can also accept an exact paused update, mark the work safe
+  to resume, or temporarily detach and later restore a clean checkout while
+  retaining its branch and unique commits.
+- Coordination adapters now report their proven discovery, delivery, waiting,
+  scope, and worktree-identity capabilities before automating contact with
+  another task. Unsupported host modes fail closed with a structured manual
+  next action, and durable coordination records exclude prompts, message
+  bodies, credentials, and provider tokens.
+<!-- simple-changelogs-signature agent="gpt-5.6-sol" at="2026-08-07T17:44:36-05:00" -->
+
 ## 0.6.1 - 2026-08-06
 
 - Opening worktrees that are proven clean, contain no commits beyond the

@@ -105,6 +105,34 @@ Read-only review can inspect commit objects or provider diffs without an
 authoring worktree. The moment a reviewer needs to make a change, it becomes an
 author and must prepare an isolated worktree first.
 
+## Owner claims and safe pauses
+
+Every owner-created worktree should be claimed immediately with `worktree
+claim`. The claim lives beneath the common Git directory, binds the canonical
+path, repository identity, branch, HEAD, content-sensitive digest, owner agent,
+adapter slug, and opaque `ownerRef`, and is written atomically with mode `0600`.
+Do not put titles, prompts, message bodies, credentials, or tokens in the owner
+reference.
+
+When a concurrent worktree blocks a loop, contact only the exact claimed owner.
+The owner runs `worktree pause` at a safe boundary. `preserve-in-place` accepts
+dirty work but rejects active Git operations and conflicts;
+`detach-clean-checkout` additionally requires no changes. The resulting receipt
+is evidence, not permission to edit the worktree.
+
+Use `loop adopt-worktree` for a paused worktree that appeared after loop start.
+Use `loop accept-paused-change` for an opening preserved worktree whose owner
+changed it before pausing. Both commands require the receipt's run, repository,
+path, branch, HEAD, digest, claim owner, and current state to match, register the
+worktree as preserved with `mutationAllowed: false`, and reject the update when
+any unrelated manifest violation remains. `loop allow` remains the separate
+exceptional user-approved override path.
+
+Harness support is not uniform. The host orchestration layer must probe exact
+discovery, delivery, waiting, scope, and worktree-identity capabilities before
+sending a request. Missing capability returns the structured manual next step;
+it never selects an owner from a title or weak hint.
+
 ## Exact overrides
 
 An override is an exceptional user handoff, not a way to suppress the guard.

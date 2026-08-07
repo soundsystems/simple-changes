@@ -277,6 +277,148 @@ describe("contract CLI", () => {
     ).toBe("ok\n");
   }, 30_000);
 
+  test("claims, pauses, and adopts a concurrent worktree through the CLI", () => {
+    const fixture = createTestRepository();
+    repositories.push(fixture);
+    const started = spawnSync(
+      [
+        process.execPath,
+        cliPath,
+        "loop",
+        "start",
+        "--mode",
+        "integrate",
+        "--agent-id",
+        "controller",
+        "--json",
+        "--repo",
+        fixture.root,
+      ],
+      { stderr: "pipe", stdout: "pipe" }
+    );
+    const startedOutput = JSON.parse(decoder.decode(started.stdout)) as {
+      lease: { runId: string };
+    };
+    const concurrent = resolve(fixture.base, "cli-concurrent");
+    git(fixture.root, ["worktree", "add", "-b", "cli-concurrent", concurrent]);
+
+    const claimed = spawnSync(
+      [
+        process.execPath,
+        cliPath,
+        "worktree",
+        "claim",
+        "--agent-id",
+        "owner",
+        "--worktree",
+        concurrent,
+        "--adapter",
+        "claude-code",
+        "--owner-ref",
+        "session-123",
+        "--json",
+        "--repo",
+        concurrent,
+      ],
+      { stderr: "pipe", stdout: "pipe" }
+    );
+    expect(claimed.exitCode).toBe(0);
+    expect(JSON.parse(decoder.decode(claimed.stdout))).toMatchObject({
+      capabilityProbe: { automatic: true },
+      claim: { owner: { ownerRef: "session-123" } },
+    });
+    const claimedOutput = JSON.parse(decoder.decode(claimed.stdout)) as {
+      claim: { claimId: string };
+    };
+
+    const requested = spawnSync(
+      [
+        process.execPath,
+        cliPath,
+        "worktree",
+        "request",
+        "--claim-id",
+        claimedOutput.claim.claimId,
+        "--run-id",
+        startedOutput.lease.runId,
+        "--request-action",
+        "request-pause",
+        "--json",
+        "--repo",
+        fixture.root,
+      ],
+      { stderr: "pipe", stdout: "pipe" }
+    );
+    expect(requested.exitCode).toBe(0);
+    expect(JSON.parse(decoder.decode(requested.stdout))).toMatchObject({
+      capabilityProbe: { automatic: true },
+      request: {
+        action: "request-pause",
+        claimId: claimedOutput.claim.claimId,
+        owner: { ownerRef: "session-123" },
+        runId: startedOutput.lease.runId,
+      },
+    });
+
+    const paused = spawnSync(
+      [
+        process.execPath,
+        cliPath,
+        "worktree",
+        "pause",
+        "--agent-id",
+        "owner",
+        "--worktree",
+        concurrent,
+        "--run-id",
+        startedOutput.lease.runId,
+        "--disposition",
+        "preserve-in-place",
+        "--reason",
+        "Pause for CLI adoption",
+        "--json",
+        "--repo",
+        concurrent,
+      ],
+      { stderr: "pipe", stdout: "pipe" }
+    );
+    const pauseReceipt = JSON.parse(decoder.decode(paused.stdout)) as {
+      receiptId: string;
+    };
+    expect(paused.exitCode).toBe(0);
+
+    const adopted = spawnSync(
+      [
+        process.execPath,
+        cliPath,
+        "loop",
+        "adopt-worktree",
+        "--run-id",
+        startedOutput.lease.runId,
+        "--agent-id",
+        "controller",
+        "--pause-receipt",
+        pauseReceipt.receiptId,
+        "--json",
+        "--repo",
+        fixture.root,
+      ],
+      { stderr: "pipe", stdout: "pipe" }
+    );
+    expect(adopted.exitCode).toBe(0);
+    expect(JSON.parse(decoder.decode(adopted.stdout))).toMatchObject({
+      lease: {
+        worktrees: expect.arrayContaining([
+          expect.objectContaining({
+            coordinationState: "adopted-preserved",
+            mutationAllowed: false,
+            path: concurrent,
+          }),
+        ]),
+      },
+    });
+  }, 30_000);
+
   test("records an audited opening-worktree removal disposition", () => {
     const fixture = createTestRepository();
     repositories.push(fixture);

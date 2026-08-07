@@ -168,7 +168,26 @@ simple-changes loop allow --run-id ID --agent-id ID --worktree PATH
   --status-digest SHA256 --approved-by ID --reason TEXT [--json] [--repo PATH]
 simple-changes loop dispose-worktree --run-id ID --agent-id ID --worktree PATH
   --status-digest SHA256 --approved-by ID --reason TEXT [--json] [--repo PATH]
+simple-changes loop adopt-worktree --run-id ID --agent-id ID
+  --pause-receipt ID [--json] [--repo PATH]
+simple-changes loop accept-paused-change --run-id ID --agent-id ID
+  --pause-receipt ID [--json] [--repo PATH]
 simple-changes loop end --run-id ID --agent-id ID [--json] [--repo PATH]
+simple-changes worktree status [--json] [--repo PATH]
+simple-changes worktree request --claim-id ID --run-id ID
+  --request-action request-pause|request-detach|notify-resume
+  [--json] [--repo PATH]
+simple-changes worktree claim --agent-id ID --worktree PATH --adapter ID
+  [--owner-ref REF] [--json] [--repo PATH]
+simple-changes worktree pause --agent-id ID --worktree PATH --run-id ID
+  --disposition preserve-in-place|detach-clean-checkout --reason TEXT
+  [--json] [--repo PATH]
+simple-changes worktree detach --agent-id ID --worktree PATH
+  --pause-receipt ID [--json] [--repo PATH]
+simple-changes worktree attach --agent-id ID --claim-id ID [--json] [--repo PATH]
+simple-changes worktree resume-ready --run-id ID --agent-id ID --claim-id ID
+  [--json] [--repo PATH]
+simple-changes worktree release --agent-id ID --claim-id ID [--json] [--repo PATH]
 simple-changes prepare-agent --run-id ID --agent-id ID --purpose SLUG
   [--json] [--repo PATH]
 simple-changes release-notes [--check] [--json] [--repo PATH] [--version VERSION]
@@ -179,7 +198,32 @@ simple-changes help
 
 `KIND` is one of `repo-policy`, `changelog-receipt`, `initialization`,
 `inventory`, `change-plan`, `run-state`, `provider-receipt`,
-`release-consistency`, `release-notes`, or `loop-lease`.
+`release-consistency`, `release-notes`, `loop-lease`, or
+`worktree-coordination`.
+
+Worktree claims and pause receipts are local, mode-`0600` coordination evidence
+stored beneath the repository's common Git directory. A claim records only an
+opaque provider-neutral owner reference; it never stores prompts, message
+bodies, credentials, or provider tokens. `loop adopt-worktree` converts an
+exact owner-paused concurrent worktree into immutable preserved state.
+`loop accept-paused-change` refreshes an opening preserved baseline only from an
+exact receipt. `worktree detach` is deliberately separate from disposal: it
+allows a clean non-primary checkout with unique commits to be removed without
+force while retaining its branch at the exact HEAD, and `worktree attach`
+recreates only that recorded branch and path.
+
+Host integrations must probe their capabilities before automating owner
+contact. `worktree request` returns the portable bounded request, a capability
+profile listing the exact conditions the host layer must verify before
+automating, and any structured manual blocker, without changing coordination or
+Git state. Codex desktop task tooling and qualifying same-host Claude Code
+installations (cross-session messaging enabled on macOS or Linux) can support
+exact discovery, delivery, and waiting once every probe condition is verified;
+native-Windows and cross-machine Claude Code sessions return a manual blocker.
+Cursor Cloud/SDK, Hermes TUI gateway, and controller-owned Grok Build sessions
+are supported only within their proven scopes. Every other mode returns a
+structured manual coordination blocker and leaves Git and the active lease
+unchanged.
 
 Exit codes are stable: `0` success, `2` usage, `3` invalid input or contract,
 `4` inventory failure, and `5` unsafe repository state.

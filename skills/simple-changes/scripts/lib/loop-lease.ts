@@ -33,6 +33,12 @@ import type {
   RequestMode,
   WorktreeInventory,
 } from "./types.ts";
+import {
+  coordinationEvidence,
+  coordinationLinkIsCurrent,
+  markCoordinationAdopted,
+  markCoordinationResumeReady,
+} from "./worktree-coordination.ts";
 
 const STATE_DIRECTORY = "simple-changes";
 const STATE_FILENAME = "active-loop.json";
@@ -517,6 +523,37 @@ const currentWorktreeViolations = (
       headSha: worktree.headSha,
       message:
         "A baseline worktree changed after loop start. Its exact path and current status digest need a recorded user-approved override before integration continues.",
+      path: worktree.path,
+    });
+  }
+  if (
+    registered.claimId &&
+    registered.pauseReceiptId &&
+    !coordinationLinkIsCurrent(
+      lease.commonGitDirectory,
+      registered.claimId,
+      registered.pauseReceiptId,
+      worktree
+    )
+  ) {
+    violations.push({
+      changeDigest: worktree.changeDigest,
+      code: "coordination-claim-stale",
+      headSha: worktree.headSha,
+      message:
+        "The adopted worktree claim or pause receipt no longer matches current coordination and Git evidence.",
+      path: worktree.path,
+    });
+  }
+  if (
+    (registered.claimId && !registered.pauseReceiptId) ||
+    (!registered.claimId && registered.pauseReceiptId)
+  ) {
+    violations.push({
+      changeDigest: worktree.changeDigest,
+      code: "coordination-claim-stale",
+      headSha: worktree.headSha,
+      message: "The worktree lease has an incomplete coordination linkage.",
       path: worktree.path,
     });
   }
@@ -1381,6 +1418,262 @@ export const grantLoopOverride = (
         );
       }
       return writeLease(candidate);
+    }
+  );
+};
+
+const exactPausedEvidence = (
+  lease: LoopLease,
+  inventory: RepositoryInventory,
+  pauseReceiptIdInput: string
+): {
+  claimId: string;
+  current: WorktreeInventory;
+  pauseReceiptId: string;
+} => {
+  const pauseReceiptId = requiredText(pauseReceiptIdInput, "pause receipt ID");
+  const { claim, receipt } = coordinationEvidence(
+    lease.commonGitDirectory,
+    pauseReceiptId
+  );
+  if (
+    claim.commonGitDirectory !== lease.commonGitDirectory ||
+    receipt.requestingRunId !== lease.runId ||
+    !["paused", "adopted-preserved"].includes(claim.state)
+  ) {
+    throw new SimpleChangesError(
+      "Pause receipt does not belong to this active loop and paused claim.",
+      EXIT_CODES.unsafe
+    );
+  }
+  const current = inventory.worktrees.find(
+    (worktree) => worktree.path === receipt.path
+  );
+  if (
+    !(
+      current &&
+      coordinationLinkIsCurrent(
+        lease.commonGitDirectory,
+        claim.claimId,
+        pauseReceiptId,
+        current
+      )
+    )
+  ) {
+    throw new SimpleChangesError(
+      "Pause receipt no longer matches current worktree evidence.",
+      EXIT_CODES.unsafe
+    );
+  }
+  return { claimId: claim.claimId, current, pauseReceiptId };
+};
+
+export const adoptPausedWorktree = (
+  repositoryPath: string,
+  runId: string,
+  ownerAgentIdInput: string,
+  pauseReceiptIdInput: string
+): LoopLease => {
+  const ownerAgentId = requiredText(ownerAgentIdInput, "agent ID");
+  const opening = captureInventory(repositoryPath);
+  return withStateLock(
+    opening.repository.commonGitDirectory,
+    "loop adopt-worktree",
+    () => {
+      const inventory = captureInventory(repositoryPath);
+      const lease = requireLease(inventory);
+      assertMatchingRun(lease, runId);
+      if (lease.ownerAgentId !== ownerAgentId) {
+        throw new SimpleChangesError(
+          `Only loop owner ${lease.ownerAgentId} may adopt a paused worktree.`,
+          EXIT_CODES.unsafe
+        );
+      }
+      const evidence = exactPausedEvidence(
+        lease,
+        inventory,
+        pauseReceiptIdInput
+      );
+      if (
+        lease.worktrees.some(
+          (worktree) => worktree.path === evidence.current.path
+        )
+      ) {
+        throw new SimpleChangesError(
+          "loop adopt-worktree requires a current unregistered worktree.",
+          EXIT_CODES.unsafe
+        );
+      }
+      const adopted: LoopWorktreeLease = {
+        ...worktreeLease(evidence.current, "preserved", null, false),
+        claimId: evidence.claimId,
+        coordinationState: "adopted-preserved",
+        pauseReceiptId: evidence.pauseReceiptId,
+      };
+      const candidate: LoopLease = {
+        ...lease,
+        updatedAt: new Date().toISOString(),
+        worktrees: [...lease.worktrees, adopted],
+      };
+      const verification = verificationAgainst(candidate, inventory);
+      if (!verification.ok) {
+        throw new SimpleChangesError(
+          `Paused worktree is exact but other loop violations remain: ${verification.violations
+            .map((violation) => `${violation.code}:${violation.path}`)
+            .join(", ")}`,
+          EXIT_CODES.unsafe
+        );
+      }
+      markCoordinationAdopted(
+        lease.commonGitDirectory,
+        evidence.claimId,
+        evidence.pauseReceiptId,
+        ownerAgentId
+      );
+      return writeLease(candidate);
+    }
+  );
+};
+
+export const acceptPausedWorktreeChange = (
+  repositoryPath: string,
+  runId: string,
+  ownerAgentIdInput: string,
+  pauseReceiptIdInput: string
+): LoopLease => {
+  const ownerAgentId = requiredText(ownerAgentIdInput, "agent ID");
+  const opening = captureInventory(repositoryPath);
+  return withStateLock(
+    opening.repository.commonGitDirectory,
+    "loop accept-paused-change",
+    () => {
+      const inventory = captureInventory(repositoryPath);
+      const lease = requireLease(inventory);
+      assertMatchingRun(lease, runId);
+      if (lease.ownerAgentId !== ownerAgentId) {
+        throw new SimpleChangesError(
+          `Only loop owner ${lease.ownerAgentId} may accept a paused change.`,
+          EXIT_CODES.unsafe
+        );
+      }
+      const evidence = exactPausedEvidence(
+        lease,
+        inventory,
+        pauseReceiptIdInput
+      );
+      const registered = lease.worktrees.find(
+        (worktree) =>
+          worktree.path === evidence.current.path &&
+          worktree.role === "preserved"
+      );
+      if (!registered) {
+        throw new SimpleChangesError(
+          "loop accept-paused-change requires an opening preserved worktree.",
+          EXIT_CODES.unsafe
+        );
+      }
+      const candidate: LoopLease = {
+        ...lease,
+        updatedAt: new Date().toISOString(),
+        worktrees: lease.worktrees.map((worktree) =>
+          worktree.path === evidence.current.path
+            ? {
+                ...worktree,
+                baselineChangeDigest: evidence.current.changeDigest,
+                baselineHeadSha: evidence.current.headSha,
+                branch: evidence.current.branch,
+                claimId: evidence.claimId,
+                coordinationState: "adopted-preserved" as const,
+                mutationAllowed: false,
+                pauseReceiptId: evidence.pauseReceiptId,
+              }
+            : worktree
+        ),
+      };
+      const verification = verificationAgainst(candidate, inventory);
+      if (!verification.ok) {
+        throw new SimpleChangesError(
+          `Paused change is exact but other loop violations remain: ${verification.violations
+            .map((violation) => `${violation.code}:${violation.path}`)
+            .join(", ")}`,
+          EXIT_CODES.unsafe
+        );
+      }
+      markCoordinationAdopted(
+        lease.commonGitDirectory,
+        evidence.claimId,
+        evidence.pauseReceiptId,
+        ownerAgentId
+      );
+      return writeLease(candidate);
+    }
+  );
+};
+
+export const markWorktreeResumeReady = (
+  repositoryPath: string,
+  runId: string,
+  ownerAgentIdInput: string,
+  claimIdInput: string
+): {
+  claimId: string;
+  lease: LoopLease;
+  targetRef: string;
+  targetSha: string;
+} => {
+  const ownerAgentId = requiredText(ownerAgentIdInput, "agent ID");
+  const claimId = requiredText(claimIdInput, "claim ID");
+  const opening = captureInventory(repositoryPath);
+  return withStateLock(
+    opening.repository.commonGitDirectory,
+    "worktree resume-ready",
+    () => {
+      const inventory = captureInventory(repositoryPath);
+      const lease = requireLease(inventory);
+      assertMatchingRun(lease, runId);
+      if (lease.ownerAgentId !== ownerAgentId) {
+        throw new SimpleChangesError(
+          `Only loop owner ${lease.ownerAgentId} may mark a worktree resume-ready.`,
+          EXIT_CODES.unsafe
+        );
+      }
+      const verification = verificationAgainst(lease, inventory);
+      if (!verification.ok) {
+        throw new SimpleChangesError(
+          `Cannot mark resume-ready while manifest violations remain: ${verification.violations
+            .map((violation) => `${violation.code}:${violation.path}`)
+            .join(", ")}`,
+          EXIT_CODES.unsafe
+        );
+      }
+      const targetSha = runGit(lease.primaryCheckout, [
+        "rev-parse",
+        "--verify",
+        `${lease.targetRef}^{commit}`,
+      ]).stdout.trim();
+      markCoordinationResumeReady(
+        lease.commonGitDirectory,
+        claimId,
+        ownerAgentId,
+        lease.runId,
+        lease.targetRef,
+        targetSha
+      );
+      const candidate: LoopLease = {
+        ...lease,
+        updatedAt: new Date().toISOString(),
+        worktrees: lease.worktrees.map((worktree) =>
+          worktree.claimId === claimId
+            ? { ...worktree, coordinationState: "resume-ready" as const }
+            : worktree
+        ),
+      };
+      return {
+        claimId,
+        lease: writeLease(candidate),
+        targetRef: lease.targetRef,
+        targetSha,
+      };
     }
   );
 };

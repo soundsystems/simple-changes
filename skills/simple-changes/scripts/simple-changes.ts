@@ -6,6 +6,11 @@ import { createInterface } from "node:readline/promises";
 import { fileURLToPath } from "node:url";
 import { sleep } from "bun";
 import { inspectChangelogCoordination } from "./lib/changelog-coordination.ts";
+import {
+  buildCoordinationRequest,
+  type CoordinationCapabilityProbe,
+  probeCoordinationAdapter,
+} from "./lib/coordination-adapter.ts";
 import { EXIT_CODES, SimpleChangesError } from "./lib/errors.ts";
 import {
   type InitializationStatus,
@@ -13,6 +18,8 @@ import {
 } from "./lib/initialization.ts";
 import { captureInventory, compareSnapshots } from "./lib/inventory.ts";
 import {
+  acceptPausedWorktreeChange,
+  adoptPausedWorktree,
   authorizeWorktreeRemoval,
   endLoop,
   executeLoopMutation,
@@ -20,6 +27,7 @@ import {
   guardLoopMutation,
   loopManifestDigest,
   loopStatus,
+  markWorktreeResumeReady,
   prepareAgentWorktree,
   readLoopLease,
   recoverLoopLock,
@@ -62,8 +70,16 @@ import type {
   RequestMode,
   SchemaName,
 } from "./lib/types.ts";
+import {
+  attachClaimedWorktree,
+  claimWorktree,
+  detachClaimedWorktree,
+  pauseClaimedWorktree,
+  readWorktreeCoordination,
+  releaseWorktreeClaim,
+} from "./lib/worktree-coordination.ts";
 
-const VERSION = "0.6.1";
+const VERSION = "0.7.0";
 const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const HELP = `Simple Changes ${VERSION}
 
@@ -100,7 +116,26 @@ Usage:
     --status-digest SHA256 --approved-by ID --reason TEXT [--json] [--repo PATH]
   simple-changes loop dispose-worktree --run-id ID --agent-id ID --worktree PATH
     --status-digest SHA256 --approved-by ID --reason TEXT [--json] [--repo PATH]
+  simple-changes loop adopt-worktree --run-id ID --agent-id ID
+    --pause-receipt ID [--json] [--repo PATH]
+  simple-changes loop accept-paused-change --run-id ID --agent-id ID
+    --pause-receipt ID [--json] [--repo PATH]
   simple-changes loop end --run-id ID --agent-id ID [--json] [--repo PATH]
+  simple-changes worktree status [--json] [--repo PATH]
+  simple-changes worktree request --claim-id ID --run-id ID
+    --request-action request-pause|request-detach|notify-resume
+    [--json] [--repo PATH]
+  simple-changes worktree claim --agent-id ID --worktree PATH --adapter ID
+    [--owner-ref REF] [--json] [--repo PATH]
+  simple-changes worktree pause --agent-id ID --worktree PATH --run-id ID
+    --disposition preserve-in-place|detach-clean-checkout --reason TEXT
+    [--json] [--repo PATH]
+  simple-changes worktree detach --agent-id ID --worktree PATH
+    --pause-receipt ID [--json] [--repo PATH]
+  simple-changes worktree attach --agent-id ID --claim-id ID [--json] [--repo PATH]
+  simple-changes worktree resume-ready --run-id ID --agent-id ID --claim-id ID
+    [--json] [--repo PATH]
+  simple-changes worktree release --agent-id ID --claim-id ID [--json] [--repo PATH]
   simple-changes prepare-agent --run-id ID --agent-id ID --purpose SLUG
     [--json] [--repo PATH]
   simple-changes release-notes [--check] [--json] [--repo PATH] [--version VERSION]
@@ -110,23 +145,29 @@ Usage:
 
 Schema kinds:
   repo-policy, changelog-receipt, initialization, inventory, change-plan,
-  run-state, provider-receipt, release-consistency, release-notes, loop-lease
+  run-state, provider-receipt, release-consistency, release-notes, loop-lease,
+  worktree-coordination
 
 Exit codes:
   0 success, 2 usage, 3 invalid contract, 4 inventory failure, 5 unsafe state
 `;
 
 interface CliOptions {
+  adapter?: string;
   agentId?: string;
   approvedBy?: string;
   changelogHandling?: RepoPolicy["changelogHandling"];
   check: boolean;
+  claimId?: string;
   defaultFinish?: "open-change-request" | "integrate" | "ship";
+  disposition?: "preserve-in-place" | "detach-clean-checkout";
   handoffTiming?: RepoPolicy["handoffTiming"];
   instructionFile?: string;
   instructionPointer?: "add" | "leave";
   json: boolean;
   mode?: InitializationMode;
+  ownerRef?: string;
+  pauseReceiptId?: string;
   positional: string[];
   productionDeploy?: RepoPolicy["productionDeploy"];
   purpose?: string;
@@ -136,6 +177,7 @@ interface CliOptions {
   releaseVersion?: string;
   repo: string;
   repoProvided: boolean;
+  requestAction?: "request-pause" | "request-detach" | "notify-resume";
   runId?: string;
   scope?: SetupScope;
   settleMs: number;
@@ -147,18 +189,24 @@ interface CliOptions {
 }
 
 const VALUED_OPTIONS = new Set([
+  "--adapter",
   "--agent-id",
   "--approved-by",
   "--changelog",
+  "--claim-id",
+  "--disposition",
   "--finish",
   "--handoff",
   "--instruction-file",
   "--instruction-pointer",
   "--mode",
+  "--owner-ref",
+  "--pause-receipt",
   "--production",
   "--purpose",
   "--questions",
   "--reason",
+  "--request-action",
   "--repo",
   "--run-id",
   "--scope",
@@ -293,8 +341,12 @@ const applyLoopValuedOption = (
   value: string
 ): boolean => {
   const textOptions: Record<string, keyof CliOptions> = {
+    "--adapter": "adapter",
     "--agent-id": "agentId",
     "--approved-by": "approvedBy",
+    "--claim-id": "claimId",
+    "--owner-ref": "ownerRef",
+    "--pause-receipt": "pauseReceiptId",
     "--purpose": "purpose",
     "--reason": "reason",
     "--run-id": "runId",
@@ -307,6 +359,28 @@ const applyLoopValuedOption = (
   }
   if (option === "--worktree") {
     options.worktreePath = resolve(value);
+    return true;
+  }
+  if (option === "--disposition") {
+    if (!["preserve-in-place", "detach-clean-checkout"].includes(value)) {
+      throw new SimpleChangesError(
+        "--disposition must be preserve-in-place or detach-clean-checkout",
+        EXIT_CODES.usage
+      );
+    }
+    options.disposition = value as
+      | "preserve-in-place"
+      | "detach-clean-checkout";
+    return true;
+  }
+  if (option === "--request-action") {
+    if (!["request-pause", "request-detach", "notify-resume"].includes(value)) {
+      throw new SimpleChangesError(
+        "--request-action must be request-pause, request-detach, or notify-resume",
+        EXIT_CODES.usage
+      );
+    }
+    options.requestAction = value as NonNullable<CliOptions["requestAction"]>;
     return true;
   }
   return false;
@@ -950,7 +1024,7 @@ const runLoopCommand = async (options: CliOptions): Promise<void> => {
   const [action] = options.positional;
   if (!action) {
     throw new SimpleChangesError(
-      "loop requires start, status, verify, guard, exec, recover, allow, dispose-worktree, or end",
+      "loop requires start, status, verify, guard, exec, recover, allow, dispose-worktree, adopt-worktree, accept-paused-change, or end",
       EXIT_CODES.usage
     );
   }
@@ -1057,6 +1131,34 @@ const runLoopCommand = async (options: CliOptions): Promise<void> => {
     );
     return;
   }
+  if (action === "adopt-worktree") {
+    const updated = adoptPausedWorktree(
+      options.repo,
+      runId,
+      agentId,
+      requireCliOption(options.pauseReceiptId, "--pause-receipt")
+    );
+    writeOutput(
+      { lease: updated, manifestDigest: loopManifestDigest(updated) },
+      options.json,
+      `Adopted the exact paused worktree into ${runId} as preserved state.\n`
+    );
+    return;
+  }
+  if (action === "accept-paused-change") {
+    const updated = acceptPausedWorktreeChange(
+      options.repo,
+      runId,
+      agentId,
+      requireCliOption(options.pauseReceiptId, "--pause-receipt")
+    );
+    writeOutput(
+      { lease: updated, manifestDigest: loopManifestDigest(updated) },
+      options.json,
+      `Accepted the exact owner-paused state into ${runId}.\n`
+    );
+    return;
+  }
   if (action === "end") {
     const verification = endLoop(options.repo, runId, agentId);
     writeOutput(
@@ -1068,6 +1170,179 @@ const runLoopCommand = async (options: CliOptions): Promise<void> => {
   }
   throw new SimpleChangesError(
     `Unknown loop action: ${action}`,
+    EXIT_CODES.usage
+  );
+};
+
+const automationSummary = (probe: CoordinationCapabilityProbe): string => {
+  if (!probe.automatic) {
+    return "manual fallback required";
+  }
+  if (probe.capabilities.conditions.length > 0) {
+    return "available once the host verifies the probe conditions";
+  }
+  return "available";
+};
+
+const runWorktreeRequest = (options: CliOptions): void => {
+  const state = readWorktreeCoordination(options.repo);
+  const claimId = requireCliOption(options.claimId, "--claim-id");
+  const claim = state.claims.find((item) => item.claimId === claimId);
+  if (!claim) {
+    throw new SimpleChangesError(
+      `Unknown worktree claim: ${claimId}`,
+      EXIT_CODES.unsafe
+    );
+  }
+  const { requestAction } = options;
+  if (!requestAction) {
+    throw new SimpleChangesError(
+      "--request-action is required for this command",
+      EXIT_CODES.usage
+    );
+  }
+  const capabilityProbe = probeCoordinationAdapter(
+    claim.owner.adapter,
+    claim.owner.ownerRef
+  );
+  const request = buildCoordinationRequest(
+    requestAction,
+    claim,
+    requireCliOption(options.runId, "--run-id")
+  );
+  writeOutput(
+    { capabilityProbe, request },
+    options.json,
+    capabilityProbe.automatic
+      ? `${request.safeMessage}\n`
+      : `${capabilityProbe.blocker?.manualNextAction}\n`
+  );
+};
+
+const runWorktreeClaim = (options: CliOptions, agentId: string): void => {
+  const adapter = requireCliOption(options.adapter, "--adapter");
+  const claim = claimWorktree(
+    options.repo,
+    agentId,
+    requireCliOption(options.worktreePath, "--worktree"),
+    adapter,
+    options.ownerRef
+  );
+  const capabilityProbe = probeCoordinationAdapter(
+    claim.owner.adapter,
+    claim.owner.ownerRef
+  );
+  writeOutput(
+    { capabilityProbe, claim },
+    options.json,
+    `Claimed ${claim.path} as ${claim.claimId}.\nAdapter automation: ${automationSummary(capabilityProbe)}.\n`
+  );
+};
+
+const runWorktreeCommand = (options: CliOptions): void => {
+  const [action] = options.positional;
+  if (!action) {
+    throw new SimpleChangesError(
+      "worktree requires status, request, claim, pause, detach, attach, resume-ready, or release",
+      EXIT_CODES.usage
+    );
+  }
+  if (action === "status") {
+    const state = readWorktreeCoordination(options.repo);
+    writeOutput(
+      state,
+      options.json,
+      `Worktree claims: ${state.claims.length}\nPause receipts: ${state.receipts.length}\n`
+    );
+    return;
+  }
+  if (action === "request") {
+    runWorktreeRequest(options);
+    return;
+  }
+  const agentId = requireCliOption(options.agentId, "--agent-id");
+  if (action === "claim") {
+    runWorktreeClaim(options, agentId);
+    return;
+  }
+  if (action === "pause") {
+    const receipt = pauseClaimedWorktree(
+      options.repo,
+      agentId,
+      requireCliOption(options.worktreePath, "--worktree"),
+      requireCliOption(options.runId, "--run-id"),
+      options.disposition ??
+        (() => {
+          throw new SimpleChangesError(
+            "--disposition is required for this command",
+            EXIT_CODES.usage
+          );
+        })(),
+      requireCliOption(options.reason, "--reason")
+    );
+    writeOutput(
+      receipt,
+      options.json,
+      `Paused exact worktree state as ${receipt.receiptId}.\n`
+    );
+    return;
+  }
+  if (action === "detach") {
+    const claim = detachClaimedWorktree(
+      options.repo,
+      agentId,
+      requireCliOption(options.worktreePath, "--worktree"),
+      requireCliOption(options.pauseReceiptId, "--pause-receipt")
+    );
+    writeOutput(
+      claim,
+      options.json,
+      `Detached ${claim.path}; branch ${claim.branch} remains at ${claim.headSha}.\n`
+    );
+    return;
+  }
+  if (action === "attach") {
+    const claim = attachClaimedWorktree(
+      options.repo,
+      agentId,
+      requireCliOption(options.claimId, "--claim-id")
+    );
+    writeOutput(
+      claim,
+      options.json,
+      `Attached ${claim.path} on ${claim.branch}.\n`
+    );
+    return;
+  }
+  if (action === "resume-ready") {
+    const result = markWorktreeResumeReady(
+      options.repo,
+      requireCliOption(options.runId, "--run-id"),
+      agentId,
+      requireCliOption(options.claimId, "--claim-id")
+    );
+    writeOutput(
+      result,
+      options.json,
+      `Marked ${result.claimId} resume-ready at ${result.targetRef} ${result.targetSha}.\n`
+    );
+    return;
+  }
+  if (action === "release") {
+    const claim = releaseWorktreeClaim(
+      options.repo,
+      agentId,
+      requireCliOption(options.claimId, "--claim-id")
+    );
+    writeOutput(
+      claim,
+      options.json,
+      `Released ${claim.claimId} without deleting work.\n`
+    );
+    return;
+  }
+  throw new SimpleChangesError(
+    `Unknown worktree action: ${action}`,
     EXIT_CODES.usage
   );
 };
@@ -1150,6 +1425,9 @@ const executeCommand = async (
       return EXIT_CODES.success;
     case "loop":
       await runLoopCommand(options);
+      return EXIT_CODES.success;
+    case "worktree":
+      runWorktreeCommand(options);
       return EXIT_CODES.success;
     case "prepare-agent":
       runPrepareAgent(options);

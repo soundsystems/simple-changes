@@ -360,6 +360,7 @@
       "expectedBehaviors": [
         "Keep one integration-controller lease for push, proposal, merge, deployment, and cleanup actions",
         "Allow distinct non-primary actively claimed worktrees to keep editing and committing by default without pause receipts or integration adoption",
+        "Bind each late concurrent author's exact claim ID and owner at first guarded observation, then fail closed after claim release or reassignment",
         "Exclude concurrent-author worktrees from packaging, merge, and cleanup unless their owners explicitly hand them off",
         "Continue to block an unclaimed worktree, primary or target-branch mutation, branch switch, released claim, conflict, or second integration controller"
       ]

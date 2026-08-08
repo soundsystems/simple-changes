@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.8.1 - 2026-08-07
+
+- Worktrees on the integration target branch can no longer become concurrent
+  authors. Claimed worktrees that arrive after a loop starts are now durably
+  bound to their exact claim and owner at first guarded observation, so later
+  claim release or reassignment blocks integration instead of inheriting the
+  replacement claim.
+
 ## 0.8.0 - 2026-08-07
 
 - Independent agents can now keep editing and committing in distinct, actively

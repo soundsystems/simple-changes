@@ -202,6 +202,41 @@ describe("active integration-loop lease", () => {
     );
   });
 
+  test("rejects a claimed author worktree on the target branch", () => {
+    const fixture = repository();
+    const remotePath = join(fixture.base, "remote.git");
+    git(fixture.base, ["init", "--bare", remotePath]);
+    git(fixture.root, ["remote", "add", "origin", remotePath]);
+    git(fixture.root, ["push", "-u", "origin", "main"]);
+    git(fixture.root, ["branch", "-m", "feature-controller"]);
+    const targetPath = join(fixture.base, "target-main");
+    git(fixture.root, [
+      "worktree",
+      "add",
+      "-b",
+      "main",
+      targetPath,
+      "origin/main",
+    ]);
+    claimWorktree(
+      fixture.root,
+      "target-agent",
+      targetPath,
+      "codex",
+      "task-target"
+    );
+
+    const lease = startLoop(fixture.root, "controller", "integrate");
+    const targetRegistration = lease.worktrees.find(
+      (worktree) => worktree.path === targetPath
+    );
+    expect(lease.targetRef).toBe("main");
+    expect(targetRegistration).toMatchObject({
+      mutationAllowed: false,
+      role: "preserved",
+    });
+  });
+
   test("allows a newly arrived claimed author without adopting or pausing it", () => {
     const fixture = repository();
     startLoop(fixture.root, "controller", "integrate");
@@ -217,6 +252,51 @@ describe("active integration-loop lease", () => {
 
     writeFixture(authorPath, "late.ts", "export const late = true;\n");
     expect(verifyLoop(fixture.root).ok).toBe(true);
+  });
+
+  test("binds a late claimed author and rejects claim reassignment", () => {
+    const fixture = repository();
+    startLoop(fixture.root, "controller", "integrate");
+    const authorPath = join(fixture.base, "late-bound-author");
+    git(fixture.root, [
+      "worktree",
+      "add",
+      "-b",
+      "late-bound-author-work",
+      authorPath,
+    ]);
+    const firstClaim = claimWorktree(
+      fixture.root,
+      "first-agent",
+      authorPath,
+      "codex",
+      "task-first"
+    );
+
+    expect(verifyLoop(fixture.root).ok).toBe(true);
+    expect(readLoopLease(fixture.root)?.worktrees).toContainEqual(
+      expect.objectContaining({
+        agentId: "first-agent",
+        claimId: firstClaim.claimId,
+        path: authorPath,
+        role: "concurrent-author",
+      })
+    );
+
+    releaseWorktreeClaim(fixture.root, "first-agent", firstClaim.claimId);
+    claimWorktree(
+      fixture.root,
+      "second-agent",
+      authorPath,
+      "codex",
+      "task-second"
+    );
+    expect(verifyLoop(fixture.root).violations).toContainEqual(
+      expect.objectContaining({
+        code: "coordination-claim-stale",
+        path: authorPath,
+      })
+    );
   });
 
   test("strict concurrent-work policy preserves repository-wide serialization", () => {

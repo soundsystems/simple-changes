@@ -1,5 +1,22 @@
 # Developer changelog
 
+## 0.8.1 - 2026-08-07
+
+- Closed two fail-closed gaps in concurrent-author admission:
+  - The runtime now resolves the target branch from the symbolic target ref,
+    including local and remote-tracking refs, and excludes that branch from
+    concurrent-author eligibility even when the integration controller is
+    running on a separate feature branch.
+  - A qualifying late claimed worktree is admitted once and persisted into the
+    loop lease with its exact claim ID and owner. Subsequent verification uses
+    that durable registration; an unregistered claimed worktree no longer
+    receives an unbound pass, and claim release or reassignment fails closed.
+  - Added regressions for a feature-branch controller with a claimed `main`
+    target worktree and for late claim reassignment from owner A to owner B.
+    Updated the behavioral contract, evaluation expectation, documentation,
+    package version, and CLI version for the 0.8.1 correction.
+<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-07T19:42:35-05:00" -->
+
 ## 0.8.0 - 2026-08-07
 
 - Split independent authoring from shared integration serialization:

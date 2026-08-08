@@ -487,6 +487,26 @@ const removalDispositionForPath = (
       disposition.targetRevision === lease.targetRevision
   );
 
+const targetBranchForRef = (
+  repositoryPath: string,
+  targetRef: string
+): string | null => {
+  const symbolicRef = runGit(repositoryPath, [
+    "rev-parse",
+    "--symbolic-full-name",
+    targetRef,
+  ]).stdout.trim();
+  if (symbolicRef.startsWith("refs/heads/")) {
+    return symbolicRef.slice("refs/heads/".length);
+  }
+  if (symbolicRef.startsWith("refs/remotes/")) {
+    const remoteAndBranch = symbolicRef.slice("refs/remotes/".length);
+    const separator = remoteAndBranch.indexOf("/");
+    return separator === -1 ? null : remoteAndBranch.slice(separator + 1);
+  }
+  return null;
+};
+
 const concurrentClaimFor = (
   lease: Pick<
     LoopLease,
@@ -494,14 +514,16 @@ const concurrentClaimFor = (
   >,
   worktree: WorktreeInventory,
   document: WorktreeCoordinationDocument,
-  primaryBranch: string | null
+  primaryBranch: string | null,
+  targetBranch: string | null
 ): WorktreeClaim | undefined => {
   if (
     lease.concurrentWork !== "allow-claimed" ||
     worktree.isPrimary ||
     worktree.path === lease.primaryCheckout ||
     !worktree.branch ||
-    worktree.branch === primaryBranch
+    worktree.branch === primaryBranch ||
+    worktree.branch === targetBranch
   ) {
     return;
   }
@@ -512,6 +534,61 @@ const concurrentClaimFor = (
       claim.branch === worktree.branch &&
       claim.state === "active"
   );
+};
+
+const admitLateConcurrentAuthors = (
+  lease: LoopLease,
+  inventory: RepositoryInventory
+): LoopLease => {
+  if (lease.concurrentWork !== "allow-claimed") {
+    return lease;
+  }
+  const registeredPaths = new Set(
+    lease.worktrees.map((worktree) => worktree.path)
+  );
+  const coordination = readCoordinationDocumentFromCommonDirectory(
+    lease.commonGitDirectory
+  );
+  const primaryBranch =
+    inventory.worktrees.find(
+      (worktree) => worktree.path === lease.primaryCheckout
+    )?.branch ?? null;
+  const targetBranch = targetBranchForRef(
+    lease.primaryCheckout,
+    lease.targetRef
+  );
+  const admissions: LoopWorktreeLease[] = [];
+  for (const worktree of inventory.worktrees) {
+    if (registeredPaths.has(worktree.path)) {
+      continue;
+    }
+    const claim = concurrentClaimFor(
+      lease,
+      worktree,
+      coordination,
+      primaryBranch,
+      targetBranch
+    );
+    if (claim) {
+      admissions.push({
+        ...worktreeLease(
+          worktree,
+          "concurrent-author",
+          claim.owner.agentId,
+          false
+        ),
+        claimId: claim.claimId,
+      });
+    }
+  }
+  if (admissions.length === 0) {
+    return lease;
+  }
+  return writeLease({
+    ...lease,
+    updatedAt: new Date().toISOString(),
+    worktrees: [...lease.worktrees, ...admissions],
+  });
 };
 
 const concurrentClaimViolations = (
@@ -547,9 +624,6 @@ const currentWorktreeViolations = (
   concurrentClaim: WorktreeClaim | undefined
 ): LoopViolation[] => {
   if (!registered) {
-    if (concurrentClaim) {
-      return [];
-    }
     if (
       preparation &&
       worktree.branch === preparation.branch &&
@@ -665,12 +739,17 @@ const verificationAgainst = (
     inventory.worktrees.find(
       (worktree) => worktree.path === lease.primaryCheckout
     )?.branch ?? null;
+  const targetBranch = targetBranchForRef(
+    lease.primaryCheckout,
+    lease.targetRef
+  );
   for (const worktree of inventory.worktrees) {
     const concurrentClaim = concurrentClaimFor(
       lease,
       worktree,
       coordination,
-      primaryBranch
+      primaryBranch,
+      targetBranch
     );
     violations.push(
       ...currentWorktreeViolations(
@@ -728,7 +807,7 @@ const requireLease = (inventory: RepositoryInventory): LoopLease => {
       EXIT_CODES.unsafe
     );
   }
-  return lease;
+  return admitLateConcurrentAuthors(lease, inventory);
 };
 
 const assertAgentMutationAllowed = (
@@ -804,6 +883,10 @@ export const startLoop = (
       const primaryBranch =
         inventory.worktrees.find((worktree) => worktree.isPrimary)?.branch ??
         null;
+      const targetBranch = targetBranchForRef(
+        inventory.repository.primaryCheckout,
+        inventory.targetRef
+      );
       const targetRevision = runGit(inventory.repository.primaryCheckout, [
         "rev-parse",
         "--verify",
@@ -821,7 +904,8 @@ export const startLoop = (
           },
           worktree,
           coordination,
-          primaryBranch
+          primaryBranch,
+          targetBranch
         );
         if (claim) {
           return {
@@ -866,10 +950,10 @@ export const verifyLoop = (repositoryPath: string): LoopVerification => {
     "loop verify",
     () => {
       const inventory = captureInventory(repositoryPath);
-      const lease = readLeaseFromCommonDirectory(
+      const storedLease = readLeaseFromCommonDirectory(
         inventory.repository.commonGitDirectory
       );
-      if (!lease) {
+      if (!storedLease) {
         return {
           active: false,
           checkedAt: new Date().toISOString(),
@@ -879,6 +963,7 @@ export const verifyLoop = (repositoryPath: string): LoopVerification => {
           violations: [],
         };
       }
+      const lease = admitLateConcurrentAuthors(storedLease, inventory);
       return verificationAgainst(lease, inventory);
     }
   );
@@ -1844,9 +1929,12 @@ export const loopStatus = (
     "loop status",
     () => {
       const inventory = captureInventory(repositoryPath);
-      const lease = readLeaseFromCommonDirectory(
+      const storedLease = readLeaseFromCommonDirectory(
         inventory.repository.commonGitDirectory
       );
+      const lease = storedLease
+        ? admitLateConcurrentAuthors(storedLease, inventory)
+        : null;
       return {
         lease,
         verification: lease

@@ -354,16 +354,26 @@
     },
     {
       "id": "resume-coordinate-claimed-worktree",
-      "prompt": "Continue the active loop. A claimed worktree appeared after the baseline; coordinate with its owner without losing or editing that work.",
+      "prompt": "Continue the active loop while two other agents keep implementing unrelated features in their own claimed worktrees.",
       "mode": "resume",
       "authority": ["local-write"],
       "expectedBehaviors": [
-        "Resolve the exact opaque owner reference without guessing from task or session titles",
-        "Probe harness discovery, delivery, wait, scope, and worktree-identity capabilities before contact",
-        "Require the owner to pause at a safe boundary and return an exact path, branch, head, digest, claim, owner, repository, and run-bound receipt",
-        "Adopt the paused worktree only as mutation-forbidden preserved state and re-block after any later evidence change or claim release",
-        "Return an actionable manual coordination blocker without mutation when the harness capability is unavailable",
-        "Detach only a clean non-primary checkout without force while preserving its branch and unique commits"
+        "Keep one integration-controller lease for push, proposal, merge, deployment, and cleanup actions",
+        "Allow distinct non-primary actively claimed worktrees to keep editing and committing by default without pause receipts or integration adoption",
+        "Exclude concurrent-author worktrees from packaging, merge, and cleanup unless their owners explicitly hand them off",
+        "Continue to block an unclaimed worktree, primary or target-branch mutation, branch switch, released claim, conflict, or second integration controller"
+      ]
+    },
+    {
+      "id": "resume-strict-concurrent-work",
+      "prompt": "Continue the active loop under this repository's strict concurrent-work policy and coordinate the changed claimed worktree safely.",
+      "mode": "resume",
+      "authority": ["local-write"],
+      "expectedBehaviors": [
+        "Preserve repository-wide serialization when concurrentWork is strict",
+        "Resolve the exact opaque owner reference without guessing from titles",
+        "Require an exact run-bound pause receipt before accepting changed preserved evidence",
+        "Keep the paused worktree mutation-forbidden and re-block after later evidence change or claim release"
       ]
     },
     {

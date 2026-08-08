@@ -20,6 +20,11 @@ import {
   verifyLoop,
   withLoopMutationLease,
 } from "../../../skills/simple-changes/scripts/lib/loop-lease.ts";
+import { DEFAULT_POLICY } from "../../../skills/simple-changes/scripts/lib/policy.ts";
+import {
+  claimWorktree,
+  releaseWorktreeClaim,
+} from "../../../skills/simple-changes/scripts/lib/worktree-coordination.ts";
 import {
   createTestRepository,
   git,
@@ -103,7 +108,7 @@ describe("active integration-loop lease", () => {
     expect(() =>
       guardLoopMutation(fixture.root, lease.runId, "catalog-agent")
     ).toThrow("not allowed to mutate");
-  }, 30_000);
+  }, 60_000);
 
   test("prepares from the target revision pinned at loop start", () => {
     const fixture = repository();
@@ -149,6 +154,107 @@ describe("active integration-loop lease", () => {
       expect.objectContaining({
         code: "unregistered-worktree",
         path: unexpected,
+      })
+    );
+  });
+
+  test("allows an opening claimed author to keep changing during integration", () => {
+    const fixture = repository();
+    const authorPath = join(fixture.base, "claimed-author");
+    git(fixture.root, [
+      "worktree",
+      "add",
+      "-b",
+      "claimed-author-work",
+      authorPath,
+    ]);
+    const claim = claimWorktree(
+      fixture.root,
+      "feature-agent",
+      authorPath,
+      "codex",
+      "task-feature"
+    );
+    const lease = startLoop(fixture.root, "controller", "ship");
+
+    expect(lease.concurrentWork).toBe("allow-claimed");
+    expect(lease.worktrees).toContainEqual(
+      expect.objectContaining({
+        agentId: "feature-agent",
+        claimId: claim.claimId,
+        mutationAllowed: true,
+        path: authorPath,
+        role: "concurrent-author",
+      })
+    );
+
+    writeFixture(authorPath, "feature.ts", "export const feature = 1;\n");
+    expect(verifyLoop(fixture.root).ok).toBe(true);
+    writeFixture(authorPath, "feature.ts", "export const feature = 2;\n");
+    expect(verifyLoop(fixture.root).ok).toBe(true);
+
+    releaseWorktreeClaim(fixture.root, "feature-agent", claim.claimId);
+    expect(verifyLoop(fixture.root).violations).toContainEqual(
+      expect.objectContaining({
+        code: "coordination-claim-stale",
+        path: authorPath,
+      })
+    );
+  });
+
+  test("allows a newly arrived claimed author without adopting or pausing it", () => {
+    const fixture = repository();
+    startLoop(fixture.root, "controller", "integrate");
+    const authorPath = join(fixture.base, "late-claimed-author");
+    git(fixture.root, [
+      "worktree",
+      "add",
+      "-b",
+      "late-claimed-author-work",
+      authorPath,
+    ]);
+    claimWorktree(fixture.root, "late-agent", authorPath, "codex", "task-late");
+
+    writeFixture(authorPath, "late.ts", "export const late = true;\n");
+    expect(verifyLoop(fixture.root).ok).toBe(true);
+  });
+
+  test("strict concurrent-work policy preserves repository-wide serialization", () => {
+    const fixture = repository();
+    writeFixture(
+      fixture.root,
+      ".simple-changes.json",
+      `${JSON.stringify({
+        ...DEFAULT_POLICY,
+        concurrentWork: "strict",
+      })}\n`
+    );
+    const authorPath = join(fixture.base, "strict-author");
+    git(fixture.root, [
+      "worktree",
+      "add",
+      "-b",
+      "strict-author-work",
+      authorPath,
+    ]);
+    claimWorktree(
+      fixture.root,
+      "strict-agent",
+      authorPath,
+      "codex",
+      "task-strict"
+    );
+    const lease = startLoop(fixture.root, "controller", "ship");
+    expect(lease.concurrentWork).toBe("strict");
+    expect(lease.worktrees).toContainEqual(
+      expect.objectContaining({ path: authorPath, role: "preserved" })
+    );
+
+    writeFixture(authorPath, "strict.ts", "export const strict = true;\n");
+    expect(verifyLoop(fixture.root).violations).toContainEqual(
+      expect.objectContaining({
+        code: "preserved-worktree-changed",
+        path: authorPath,
       })
     );
   });

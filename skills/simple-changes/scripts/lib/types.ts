@@ -40,7 +40,7 @@ export interface ChangelogCoordination {
 
 export interface RepoPolicy {
   changelogHandling: ChangelogHandling;
-  concurrentWork: "preserve";
+  concurrentWork: "allow-claimed" | "strict" | "preserve";
   defaultFinish: "open-change-request" | "integrate" | "ship" | "preview";
   guidance: {
     version: 1;
@@ -283,7 +283,11 @@ export interface SnapshotComparison {
   stableWorktrees: WorktreeInventory[];
 }
 
-export type LoopWorktreeRole = "controller" | "author" | "preserved";
+export type LoopWorktreeRole =
+  | "controller"
+  | "author"
+  | "concurrent-author"
+  | "preserved";
 
 export interface LoopWorktreeLease {
   agentId: string | null;
@@ -454,6 +458,7 @@ export interface LoopWorktreePreparation {
 export interface LoopLease {
   baselineDigest: string;
   commonGitDirectory: string;
+  concurrentWork?: "allow-claimed" | "strict";
   createdAt: string;
   dispositions?: LoopWorktreeDisposition[];
   mode: Exclude<RequestMode, "pause" | "preview" | "sync">;

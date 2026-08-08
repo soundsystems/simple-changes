@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.8.0 - 2026-08-07
+
+- Independent agents can now keep editing and committing in distinct, actively
+  claimed non-primary worktrees while one integration controller handles shared
+  push, proposal, merge, deployment, target, and cleanup operations. The
+  controller excludes concurrent-author worktrees unless their owners hand
+  them off, while lost claims, branch changes, target collisions, and competing
+  integration controllers still fail closed.
+- Concurrent claimed worktrees are enabled by default. Repositories that need
+  the previous repository-wide pause behavior can select `strict` through
+  `--concurrent-work strict` or repository policy.
+
 ## 0.7.0 - 2026-08-07
 
 - Added coordinated ownership for worktrees shared across agent tasks. Owners

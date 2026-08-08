@@ -31,6 +31,7 @@
     "updatedAt": { "type": "string", "format": "date-time" },
     "baselineDigest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
     "commonGitDirectory": { "type": "string", "minLength": 1 },
+    "concurrentWork": { "enum": ["allow-claimed", "strict"] },
     "primaryCheckout": { "type": "string", "minLength": 1 },
     "targetRef": { "type": "string", "minLength": 1 },
     "targetRevision": {
@@ -94,7 +95,9 @@
             "type": "string",
             "pattern": "^[0-9a-f]{64}$"
           },
-          "role": { "enum": ["controller", "author", "preserved"] },
+          "role": {
+            "enum": ["controller", "author", "concurrent-author", "preserved"]
+          },
           "agentId": {
             "anyOf": [
               { "type": "string", "minLength": 1, "maxLength": 128 },

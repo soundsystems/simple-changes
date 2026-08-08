@@ -79,7 +79,7 @@ import {
   releaseWorktreeClaim,
 } from "./lib/worktree-coordination.ts";
 
-const VERSION = "0.7.0";
+const VERSION = "0.8.0";
 const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const HELP = `Simple Changes ${VERSION}
 
@@ -87,6 +87,7 @@ Usage:
   simple-changes initialize --mode MODE
     [--ready]
     [--changelog delegate-if-available|preserve-and-report|ask]
+    [--concurrent-work allow-claimed|strict]
     [--handoff ask|automatic|user-signaled]
     [--instruction-pointer add|leave] [--instruction-file PATH]
     [--ui-artifacts]
@@ -96,6 +97,7 @@ Usage:
     [--scope user|repository|run] [--agent-id ID] [--yes] [--json] [--repo PATH]
   simple-changes setup [--finish review|integrate|ship]
     [--changelog delegate-if-available|preserve-and-report|ask]
+    [--concurrent-work allow-claimed|strict]
     [--handoff ask|automatic|user-signaled]
     [--instruction-pointer add|leave] [--instruction-file PATH]
     [--ui-artifacts]
@@ -159,6 +161,7 @@ interface CliOptions {
   changelogHandling?: RepoPolicy["changelogHandling"];
   check: boolean;
   claimId?: string;
+  concurrentWork?: RepoPolicy["concurrentWork"];
   defaultFinish?: "open-change-request" | "integrate" | "ship";
   disposition?: "preserve-in-place" | "detach-clean-checkout";
   handoffTiming?: RepoPolicy["handoffTiming"];
@@ -193,6 +196,7 @@ const VALUED_OPTIONS = new Set([
   "--agent-id",
   "--approved-by",
   "--changelog",
+  "--concurrent-work",
   "--claim-id",
   "--disposition",
   "--finish",
@@ -261,6 +265,16 @@ const applySetupValuedOption = (
 ): boolean => {
   if (option === "--changelog") {
     options.changelogHandling = changelogHandlingValue(value);
+    return true;
+  }
+  if (option === "--concurrent-work") {
+    if (!["allow-claimed", "strict"].includes(value)) {
+      throw new SimpleChangesError(
+        "--concurrent-work must be allow-claimed or strict",
+        EXIT_CODES.usage
+      );
+    }
+    options.concurrentWork = value as "allow-claimed" | "strict";
     return true;
   }
   if (option === "--finish") {
@@ -724,6 +738,9 @@ const runSetup = async (options: CliOptions): Promise<void> => {
   const inputs: OnboardingInputs = {
     ...(options.changelogHandling
       ? { changelogHandling: options.changelogHandling }
+      : {}),
+    ...(options.concurrentWork
+      ? { concurrentWork: options.concurrentWork }
       : {}),
     ...(options.defaultFinish ? { defaultFinish: options.defaultFinish } : {}),
     ...(options.handoffTiming ? { handoffTiming: options.handoffTiming } : {}),

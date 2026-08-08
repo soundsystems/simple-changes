@@ -168,22 +168,27 @@ summarize what actually shipped, exact receipts, review-driven changes and
 re-verification, and anything preserved or blocked. Follow
 [ship communication](references/ship-communication.md).
 
-## Hold an executable integration lease
+## Hold one integration-controller lease
 
 For Queue, Sweep, Integrate, Ship, Reconcile, and Resume, start one active loop
-before the first mutation. This persists the complete opening worktree manifest
-under the common Git directory and takes an exclusive repository lease:
+before the first integration mutation. This persists the complete opening
+worktree manifest under the common Git directory and takes an exclusive lease
+for push, proposal, merge, deployment, target movement, and cleanup actions:
 
 ```sh
 bun skills/simple-changes/scripts/simple-changes.ts loop start \
   --mode ship --agent-id "$AGENT_ID" --json
 ```
 
-Reuse the returned `runId` for the full run. A second controller is rejected
-while the lease exists. `loop guard` is a read-only preflight, not a mutation
-permit. Run each local Git or repository mutation through `loop exec`, which
-holds the lease lock across fresh preflight inventory, the bounded argument-
-array command, and post-mutation verification:
+Reuse the returned `runId` for the full run. A second integration controller is
+rejected while the lease exists. The lease is not a repository-wide authoring
+mutex: with the default `concurrentWork: "allow-claimed"` policy, independent
+agents may keep editing and committing in distinct actively claimed non-primary
+worktrees. The controller must exclude those worktrees from its package, merge,
+and cleanup scope. `loop guard` is a read-only preflight, not a mutation permit.
+Run each controller or run-author integration mutation through `loop exec`,
+which holds the lease lock across fresh preflight inventory, the bounded
+argument-array command, and post-mutation verification:
 
 ```sh
 bun skills/simple-changes/scripts/simple-changes.ts loop exec \
@@ -191,13 +196,15 @@ bun skills/simple-changes/scripts/simple-changes.ts loop exec \
 ```
 
 Before merge, deployment, cleanup, and completion, run `loop verify`; an
-unregistered worktree, incomplete worktree preparation, or changed preserved
-worktree blocks the next mutation. Provider mutations that cannot run as a
+unclaimed worktree, incomplete worktree preparation, lost/reassigned claim,
+branch switch, target/primary collision, or changed preserved worktree blocks
+the next integration mutation. Head and content changes in a healthy
+`concurrent-author` worktree do not block. Provider mutations that cannot run as a
 local command still require `loop guard` immediately before the call and `loop
 verify` immediately after it.
 
-When an active loop exists, a new authoring agent's first action is to prepare
-its own isolated worktree:
+When an active loop assigns a new author into that same integration unit, its
+first action is to prepare its own run-registered isolated worktree:
 
 ```sh
 bun skills/simple-changes/scripts/simple-changes.ts prepare-agent \
@@ -214,7 +221,10 @@ redirect the agent there before it edits anything. A reviewer may remain in
 read-only mode without a worktree; if review turns into authorship, prepare an
 authoring worktree first.
 
-Claim every owner-created worktree immediately with `worktree claim`, using a
+An independent feature agent creates its own isolated branch/worktree, claims it
+immediately with `worktree claim`, and works normally without acquiring a
+second integration lease. Claim every owner-created worktree before editing,
+using a
 bounded adapter slug and an opaque local `ownerRef`. Claims and pause receipts
 live beneath the common Git directory with mode `0600`; never store task titles,
 prompts, message bodies, credentials, or provider tokens there. Before a host
@@ -225,8 +235,11 @@ dashboard-only Grok, cross-machine or native-Windows Claude Code, or other
 configurations must return the structured manual next action without mutating
 Git or the lease.
 
-When a claimed worktree blocks the manifest, ask only its exact owner to pause
-at a safe boundary and run `worktree pause`. Adopt a newly arrived paused
+With `allow-claimed`, a distinct healthy claimed worktree does not block merely
+because it changes. Set repository policy `concurrentWork` to `strict` only when
+repository-wide serialization is desired. When strict policy or a genuine
+collision blocks the manifest, ask only its exact owner to pause at a safe
+boundary and run `worktree pause`. Adopt a newly arrived paused
 worktree through `loop adopt-worktree`; refresh a changed opening preserved
 worktree through `loop accept-paused-change`. Both operations require the exact
 current receipt and keep `mutationAllowed: false`. A later change or claim
@@ -428,10 +441,12 @@ result.
   until the refreshed canonical target contains the merged dated/versioned
   release reconciliation and no target-contained work remains `Unreleased`.
 - Capture the opening baseline before mutation and attribute this run's objects.
-- Persist one active-loop lease for write-capable integration modes. A new
-  authoring agent must use its registered isolated worktree, and every local
-  mutation must execute while the lease lock is held from preflight through
-  post-verification.
+- Persist one integration-controller lease for write-capable integration modes.
+  Agents assigned to that run use registered isolated worktrees, and every
+  controller, target, proposal, merge, deployment, or cleanup mutation executes
+  while the lease lock is held from preflight through post-verification.
+  Independent agents may continue ordinary edits and commits only in distinct
+  actively claimed concurrent-author worktrees.
 - Stable baseline work is ready unless evidence says otherwise; changing or new
   concurrent work is preserved.
 - Queue mode may defer a stable unit, but may not silently omit it: the final

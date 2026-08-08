@@ -24,6 +24,7 @@ export interface OnboardingPrompter {
 
 export interface OnboardingInputs {
   changelogHandling?: RepoPolicy["changelogHandling"];
+  concurrentWork?: RepoPolicy["concurrentWork"];
   defaultFinish?: RepoPolicy["defaultFinish"];
   handoffTiming?: RepoPolicy["handoffTiming"];
   instructionFile?: string;
@@ -321,6 +322,9 @@ export const renderOnboardingSummary = (
     actions,
     production,
     changelogSummary(policy, context),
+    policy.concurrentWork === "strict"
+      ? "Concurrent worktrees: strict repository-wide serialization; claimed owners must pause before integration continues."
+      : "Concurrent worktrees: independent agents may keep working in distinct actively claimed worktrees while integration stays single-controller.",
     uiArtifactsRelevant
       ? `Saved UI iteration naming: ${uiArtifactVersioningLabel(policy.uiArtifactVersioning)}. Repository conventions still take precedence.`
       : null,
@@ -520,7 +524,7 @@ export const collectOnboardingSelection = async (
   );
   const policy: RepoPolicy = {
     changelogHandling,
-    concurrentWork: "preserve",
+    concurrentWork: inputs.concurrentWork ?? defaults.concurrentWork,
     defaultFinish,
     guidance: {
       version: 1,

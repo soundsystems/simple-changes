@@ -31,6 +31,8 @@ import type {
   LoopWorktreePreparation,
   RepositoryInventory,
   RequestMode,
+  WorktreeClaim,
+  WorktreeCoordinationDocument,
   WorktreeInventory,
 } from "./types.ts";
 import {
@@ -38,6 +40,7 @@ import {
   coordinationLinkIsCurrent,
   markCoordinationAdopted,
   markCoordinationResumeReady,
+  readCoordinationDocumentFromCommonDirectory,
 } from "./worktree-coordination.ts";
 
 const STATE_DIRECTORY = "simple-changes";
@@ -484,13 +487,69 @@ const removalDispositionForPath = (
       disposition.targetRevision === lease.targetRevision
   );
 
+const concurrentClaimFor = (
+  lease: Pick<
+    LoopLease,
+    "commonGitDirectory" | "concurrentWork" | "primaryCheckout"
+  >,
+  worktree: WorktreeInventory,
+  document: WorktreeCoordinationDocument,
+  primaryBranch: string | null
+): WorktreeClaim | undefined => {
+  if (
+    lease.concurrentWork !== "allow-claimed" ||
+    worktree.isPrimary ||
+    worktree.path === lease.primaryCheckout ||
+    !worktree.branch ||
+    worktree.branch === primaryBranch
+  ) {
+    return;
+  }
+  return document.claims.find(
+    (claim) =>
+      claim.commonGitDirectory === lease.commonGitDirectory &&
+      claim.path === worktree.path &&
+      claim.branch === worktree.branch &&
+      claim.state === "active"
+  );
+};
+
+const concurrentClaimViolations = (
+  registered: LoopWorktreeLease,
+  concurrentClaim: WorktreeClaim | undefined,
+  worktree: WorktreeInventory
+): LoopViolation[] => {
+  if (
+    registered.role !== "concurrent-author" ||
+    (concurrentClaim &&
+      concurrentClaim.claimId === registered.claimId &&
+      concurrentClaim.owner.agentId === registered.agentId)
+  ) {
+    return [];
+  }
+  return [
+    {
+      changeDigest: worktree.changeDigest,
+      code: "coordination-claim-stale",
+      headSha: worktree.headSha,
+      message:
+        "A concurrent author worktree lost or changed its active ownership claim. Refresh the original claim or use strict paused-worktree coordination before integration continues.",
+      path: worktree.path,
+    },
+  ];
+};
+
 const currentWorktreeViolations = (
   lease: LoopLease,
   worktree: WorktreeInventory,
   registered: LoopWorktreeLease | undefined,
-  preparation: LoopWorktreePreparation | undefined
+  preparation: LoopWorktreePreparation | undefined,
+  concurrentClaim: WorktreeClaim | undefined
 ): LoopViolation[] => {
   if (!registered) {
+    if (concurrentClaim) {
+      return [];
+    }
     if (
       preparation &&
       worktree.branch === preparation.branch &&
@@ -509,7 +568,11 @@ const currentWorktreeViolations = (
       },
     ];
   }
-  const violations: LoopViolation[] = [];
+  const violations = concurrentClaimViolations(
+    registered,
+    concurrentClaim,
+    worktree
+  );
   if (
     registered.role === "preserved" &&
     (registered.baselineHeadSha !== worktree.headSha ||
@@ -527,6 +590,7 @@ const currentWorktreeViolations = (
     });
   }
   if (
+    registered.role === "preserved" &&
     registered.claimId &&
     registered.pauseReceiptId &&
     !coordinationLinkIsCurrent(
@@ -546,8 +610,9 @@ const currentWorktreeViolations = (
     });
   }
   if (
-    (registered.claimId && !registered.pauseReceiptId) ||
-    (!registered.claimId && registered.pauseReceiptId)
+    registered.role === "preserved" &&
+    ((registered.claimId && !registered.pauseReceiptId) ||
+      (!registered.claimId && registered.pauseReceiptId))
   ) {
     violations.push({
       changeDigest: worktree.changeDigest,
@@ -593,13 +658,27 @@ const verificationAgainst = (
   const preparationByPath = new Map(
     lease.preparations.map((preparation) => [preparation.path, preparation])
   );
+  const coordination = readCoordinationDocumentFromCommonDirectory(
+    lease.commonGitDirectory
+  );
+  const primaryBranch =
+    inventory.worktrees.find(
+      (worktree) => worktree.path === lease.primaryCheckout
+    )?.branch ?? null;
   for (const worktree of inventory.worktrees) {
+    const concurrentClaim = concurrentClaimFor(
+      lease,
+      worktree,
+      coordination,
+      primaryBranch
+    );
     violations.push(
       ...currentWorktreeViolations(
         lease,
         worktree,
         registeredByPath.get(worktree.path),
-        preparationByPath.get(worktree.path)
+        preparationByPath.get(worktree.path),
+        concurrentClaim
       )
     );
   }
@@ -709,28 +788,58 @@ export const startLoop = (
           return existing;
         }
         throw new SimpleChangesError(
-          `Loop ${existing.runId} is already active for ${existing.ownerAgentId}. Start no second shipping loop in this repository.`,
+          `Integration-controller loop ${existing.runId} is already active for ${existing.ownerAgentId}. Independent agents may continue in distinct actively claimed worktrees; start no second push/MR/merge/cleanup controller.`,
           EXIT_CODES.unsafe
         );
       }
       const now = new Date().toISOString();
       const currentPath = inventory.repository.currentCheckout;
+      const concurrentWork =
+        inventory.policy.value.concurrentWork === "strict"
+          ? "strict"
+          : "allow-claimed";
+      const coordination = readCoordinationDocumentFromCommonDirectory(
+        inventory.repository.commonGitDirectory
+      );
+      const primaryBranch =
+        inventory.worktrees.find((worktree) => worktree.isPrimary)?.branch ??
+        null;
       const targetRevision = runGit(inventory.repository.primaryCheckout, [
         "rev-parse",
         "--verify",
         `${inventory.targetRef}^{commit}`,
       ]).stdout.trim();
-      const worktrees = inventory.worktrees.map((worktree) =>
-        worktreeLease(
+      const worktrees = inventory.worktrees.map((worktree) => {
+        if (worktree.path === currentPath) {
+          return worktreeLease(worktree, "controller", agentId, false);
+        }
+        const claim = concurrentClaimFor(
+          {
+            commonGitDirectory: inventory.repository.commonGitDirectory,
+            concurrentWork,
+            primaryCheckout: inventory.repository.primaryCheckout,
+          },
           worktree,
-          worktree.path === currentPath ? "controller" : "preserved",
-          worktree.path === currentPath ? agentId : null,
-          false
-        )
-      );
+          coordination,
+          primaryBranch
+        );
+        if (claim) {
+          return {
+            ...worktreeLease(
+              worktree,
+              "concurrent-author",
+              claim.owner.agentId,
+              false
+            ),
+            claimId: claim.claimId,
+          };
+        }
+        return worktreeLease(worktree, "preserved", null, false);
+      });
       const lease: LoopLease = {
         baselineDigest: inventory.baselineDigest,
         commonGitDirectory: inventory.repository.commonGitDirectory,
+        concurrentWork,
         createdAt: now,
         dispositions: [],
         mode: mode as LoopLease["mode"],

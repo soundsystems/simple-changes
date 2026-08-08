@@ -109,11 +109,10 @@ const acquireNamedLock = (
     mkdirSync(lockPath, { mode: 0o700 });
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "EEXIST") {
-      // biome-ignore lint/style/useErrorCause: SimpleChangesError forwards ErrorOptions to Error.
-      throw new SimpleChangesError(
+      throw SimpleChangesError.withCause(
         `${label} is busy at ${lockPath}. Retry after the current operation finishes.`,
         EXIT_CODES.unsafe,
-        { cause: error }
+        error
       );
     }
     throw error;
@@ -145,11 +144,10 @@ const acquireNamedLock = (
         rmSync(lockPath, { force: true, recursive: true });
       }
     } catch (error) {
-      // biome-ignore lint/style/useErrorCause: SimpleChangesError forwards ErrorOptions to Error.
-      throw new SimpleChangesError(
+      throw SimpleChangesError.withCause(
         `${label} lock ownership changed during the operation.`,
         EXIT_CODES.unsafe,
-        { cause: error }
+        error
       );
     }
   };

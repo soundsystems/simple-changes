@@ -1,5 +1,21 @@
 # Developer changelog
 
+## 0.8.2 - 2026-08-07
+
+- Removed version-sensitive inline Biome suppression dependencies from the
+  distributed runtime:
+  - Reworked process-group exit waiting into deadline-bound recursive polling,
+    preserving sequential bounded termination checks without
+    `noAwaitInLoops`.
+  - Added `SimpleChangesError.withCause` and used it for lease and coordination
+    lock failures, preserving error causes without the unsupported
+    `lint/style/useErrorCause` category.
+  - Added direct regression coverage for cause and exit-code preservation plus
+    contract coverage forbidding obsolete suppression markers. Current
+    Ultracite lint now validates the distributed sources without those
+    diagnostics.
+<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-07T21:05:24-05:00" -->
+
 ## 0.8.1 - 2026-08-07
 
 - Closed three fail-closed gaps in concurrent-author admission and authority:

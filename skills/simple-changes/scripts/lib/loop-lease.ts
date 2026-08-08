@@ -166,11 +166,10 @@ const acquireStateLock = (
       const detail = owner
         ? ` PID ${owner.pid} on ${owner.hostname} has held ${owner.operation} since ${owner.createdAt}.`
         : " Its ownership metadata is missing or invalid.";
-      // biome-ignore lint/style/useErrorCause: SimpleChangesError forwards ErrorOptions to Error.
-      throw new SimpleChangesError(
+      throw SimpleChangesError.withCause(
         `Active-loop state is busy at ${lockPath}.${detail} Retry after it finishes, or use loop recover only after proving the owner process is dead.`,
         EXIT_CODES.unsafe,
-        { cause: error }
+        error
       );
     }
     throw error;

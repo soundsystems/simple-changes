@@ -73,9 +73,16 @@ Use these safe defaults when no committed policy exists:
   "questions": "blocking-only",
   "review": "repository-policy",
   "productionDeploy": "ask",
-  "concurrentWork": "preserve"
+  "concurrentWork": "allow-claimed"
 }
 ```
+
+`allow-claimed` is the default. It permits independent authoring in distinct,
+actively claimed, non-primary worktrees while retaining one integration
+controller for push, proposal, merge, deployment, target movement, and cleanup.
+Use `strict` only when the team deliberately wants repository-wide
+serialization. The legacy `preserve` value is accepted as an alias for the
+concurrent default.
 
 Validate policy with `evals/schemas/repo-policy.schema.json`. Reject unknown
 fields so misspellings cannot silently weaken safeguards. Policy may record team

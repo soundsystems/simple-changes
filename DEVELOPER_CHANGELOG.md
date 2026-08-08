@@ -1,5 +1,31 @@
 # Developer changelog
 
+## 0.8.0 - 2026-08-07
+
+- Split independent authoring from shared integration serialization:
+  - Loop manifests add an `allow-claimed` or `strict` concurrency mode and a
+    `concurrent-author` worktree role. One integration-controller lease still
+    serializes shared target, proposal, merge, deployment, and cleanup work;
+    it no longer acts as a repository-wide authoring mutex by default.
+  - Opening and newly arrived non-primary worktrees become concurrent authors
+    only when an active coordination claim matches their exact repository,
+    path, branch, owner, and claim identity. Their HEAD and content may change
+    normally, while claim release or reassignment, branch switches, primary or
+    target-branch collisions, unclaimed worktrees, and competing controllers
+    continue to block integration.
+  - Concurrent-author worktrees remain outside the current package, merge, and
+    cleanup scope unless explicitly handed off. The existing preserved-worktree
+    pause, receipt, adoption, override, and audited-removal paths remain
+    available for strict mode and genuine ownership collisions.
+  - Repository and onboarding policy now defaults to `allow-claimed` and exposes
+    `--concurrent-work allow-claimed|strict`. The legacy `preserve` policy value
+    remains accepted and resolves to the concurrent default; existing lease
+    documents without the optional mode remain schema-compatible.
+  - Added runtime and manifest regressions for opening and late claimed authors,
+    continued content drift, released claims, and strict serialization, plus
+    behavioral eval coverage for both concurrent-default and strict workflows.
+<!-- simple-changelogs-signature agent="gpt-5.6-sol" at="2026-08-07T18:58:51-05:00" -->
+
 ## 0.7.0 - 2026-08-07
 
 - Added a provider-neutral cross-thread worktree coordination protocol:

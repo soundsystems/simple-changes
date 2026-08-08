@@ -50,7 +50,7 @@
       "enum": ["ask", "allow", "deny"]
     },
     "concurrentWork": {
-      "enum": ["preserve"]
+      "enum": ["allow-claimed", "strict", "preserve"]
     }
   }
 }

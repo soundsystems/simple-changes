@@ -46,9 +46,12 @@
 
 - Existing and concurrent work is preserved unless ownership and scope are
   proven.
-- Write-capable integration modes hold one atomic active-loop lease with an
-  opening worktree manifest; a second controller, unregistered worktree, or
-  changed preserved worktree blocks mutation.
+- Write-capable integration modes hold one atomic integration-controller lease
+  with an opening worktree manifest. A second controller, unclaimed worktree,
+  target/primary collision, lost claim, branch switch, or changed preserved
+  worktree blocks integration. By default, distinct actively claimed
+  non-primary worktrees remain concurrent-author worktrees and may keep
+  changing without pausing.
 - Local mutations hold the lease lock across fresh preflight inventory, one
   bounded argument-array command or awaited asynchronous callback, and
   post-mutation verification. Guarded child/process-group identity remains
@@ -66,10 +69,14 @@
   disposition proves the path is not primary, the worktree is clean, and its
   head has zero commits outside the refreshed canonical target. The disposition
   authorizes only that exact path's absence and becomes invalid after a change.
-- A worktree owner can persist an opaque local claim and acknowledge a pause
-  only for its current path, branch, HEAD, and content digest. A controller can
-  adopt that exact state only as mutation-forbidden preserved work. Any later
-  edit, commit, branch switch, release, or claim mismatch re-blocks the lease.
+- A worktree owner can persist an opaque local claim. Under the default
+  `allow-claimed` policy, its distinct non-primary branch may continue changing
+  while integration proceeds; the controller must exclude it from packaging,
+  merge, and cleanup. Branch switches, claim release, ownership changes, and
+  target/primary collisions re-block integration. Under `strict`, an owner may
+  acknowledge a pause only for its exact path, branch, HEAD, and content digest,
+  and the controller adopts that state only as mutation-forbidden preserved
+  work.
 - Clean non-primary claimed worktrees may be detached only from an exact
   detach receipt, without force or branch deletion. Reattachment requires the
   absent recorded path and the same local branch at the same HEAD; an active
@@ -98,9 +105,9 @@
   store-release, or history-rewrite authority.
 - Automatically handing off planning, diagnosis, blocked work, no-change work,
   or another agent's work.
-- Starting a competing integration loop, mutating from another agent's
-  checkout, running a local mutation outside the atomic executor, or bypassing
-  an active manifest with a blanket exception.
+- Starting a competing integration loop, mutating another owner's checkout,
+  running controller/target integration mutations outside the atomic executor,
+  or bypassing an active manifest with a blanket exception.
 - Removing an opening worktree without its exact audited disposition, or using
   that disposition to force deletion, delete a branch, or remove the primary
   checkout.

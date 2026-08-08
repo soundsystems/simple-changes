@@ -126,8 +126,11 @@ discovery and the production release map stay scoped to that repository.
 - Emits human-readable or JSON reports with stable exit codes.
 
 The deterministic CLI creates only explicitly requested, lease-registered,
-branch-bound authoring worktrees. Interrupted registration resumes only from a
-clean checkout on the recorded branch and revision. `loop exec` can run one
+branch-bound authoring worktrees for agents assigned to the same integration
+unit. Independent agents claim their own distinct worktrees and may keep editing
+and committing concurrently by default; only shared integration actions remain
+single-controller. Interrupted registration resumes only from a clean checkout
+on the recorded branch and revision. `loop exec` can run one
 explicitly supplied local argument-array command while the lease lock is held,
 but it does not
 decide to commit, push, merge, deploy, apply migrations, change secrets, update
@@ -143,6 +146,7 @@ simple-changes initialize --mode MODE
   [--ui-artifacts]
   [--ui-versioning repository|number-and-date|date-only|number-only]
   [--changelog delegate-if-available|preserve-and-report|ask]
+  [--concurrent-work allow-claimed|strict]
   [--production ask|allow|deny]
   [--questions blocking-only|always|never]
   [--scope user|repository|run] [--yes] [--json] [--repo PATH]
@@ -152,6 +156,7 @@ simple-changes setup [--finish review|integrate|ship]
   [--ui-artifacts]
   [--ui-versioning repository|number-and-date|date-only|number-only]
   [--changelog delegate-if-available|preserve-and-report|ask]
+  [--concurrent-work allow-claimed|strict]
   [--production ask|allow|deny]
   [--questions blocking-only|always|never]
   [--scope user|repository|run] [--yes] [--json] [--repo PATH]
@@ -293,9 +298,15 @@ apply only when the repository has no policy. Teams may commit
   "questions": "blocking-only",
   "review": "repository-policy",
   "productionDeploy": "ask",
-  "concurrentWork": "preserve"
+  "concurrentWork": "allow-claimed"
 }
 ```
+
+`allow-claimed` is the default: independent agents may keep editing and
+committing on distinct, non-primary claimed worktrees while one integration
+controller handles push, proposal, merge, deployment, and cleanup operations.
+Set `concurrentWork` to `strict` to require repository-wide pauses. The legacy
+`preserve` value remains accepted and now follows the safe concurrent default.
 
 The active request overrides repository policy, repository policy overrides
 personal preferences, and personal preferences override the safe defaults.

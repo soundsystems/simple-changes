@@ -208,8 +208,8 @@ describe("worktree coordination", () => {
     const fixture = repository();
     const preserved = join(fixture.base, "preserved");
     git(fixture.root, ["worktree", "add", "-b", "preserved-work", preserved]);
-    claimWorktree(preserved, "owner", preserved, "hermes-gateway", "session-1");
     const lease = startLoop(fixture.root, "controller", "reconcile");
+    claimWorktree(preserved, "owner", preserved, "hermes-gateway", "session-1");
     writeFixture(preserved, "change.ts", "export const change = true;\n");
     claimWorktree(preserved, "owner", preserved, "hermes-gateway", "session-1");
     const receipt = pauseClaimedWorktree(

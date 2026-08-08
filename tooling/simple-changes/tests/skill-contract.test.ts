@@ -206,7 +206,7 @@ describe("Simple Changes skill contract", () => {
     );
   });
 
-  test("Active loops enforce exclusive leases and isolated agent worktrees", async () => {
+  test("Active loops serialize integration while allowing claimed authors", async () => {
     const [skill, concurrency] = await Promise.all([
       readFile(skillPath, "utf8"),
       readFile(inventoryConcurrencyPath, "utf8"),
@@ -215,14 +215,14 @@ describe("Simple Changes skill contract", () => {
     const normalizedConcurrency = concurrency.replace(/\s+/g, " ");
 
     expect(normalizedSkill).toContain(
-      "start one active loop before the first mutation"
+      "start one active loop before the first integration mutation"
     );
     expect(normalizedSkill).toContain("simple-changes.ts prepare-agent");
     expect(normalizedSkill).toContain(
-      "When an active loop exists, a new authoring agent's first action is to prepare its own isolated worktree"
+      "When an active loop assigns a new author into that same integration unit"
     );
     expect(normalizedSkill).toContain(
-      "Run each local Git or repository mutation through `loop exec`"
+      "Run each controller or run-author integration mutation through `loop exec`"
     );
     expect(normalizedSkill).toContain(
       'use `loop recover --agent-id "$AGENT_ID"`'
@@ -234,7 +234,10 @@ describe("Simple Changes skill contract", () => {
       "A second controller cannot replace an active lease"
     );
     expect(normalizedConcurrency).toContain(
-      "It rejects any new unregistered worktree, branch switch, incomplete preparation"
+      "It rejects any new unclaimed worktree, branch switch, incomplete preparation"
+    );
+    expect(normalizedConcurrency).toContain(
+      "The author may keep editing and committing without a pause receipt"
     );
     expect(normalizedConcurrency).toContain(
       "the same command validates and resumes the recorded preparation"

@@ -16,7 +16,7 @@ import type { PolicySource, RepoPolicy } from "./types.ts";
 
 export const DEFAULT_POLICY: RepoPolicy = {
   changelogHandling: "preserve-and-report",
-  concurrentWork: "preserve",
+  concurrentWork: "allow-claimed",
   defaultFinish: "open-change-request",
   guidance: {
     version: 1,

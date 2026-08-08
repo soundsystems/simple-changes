@@ -50,8 +50,11 @@
   with an opening worktree manifest. A second controller, unclaimed worktree,
   target/primary collision, lost claim, branch switch, or changed preserved
   worktree blocks integration. By default, distinct actively claimed
-  non-primary worktrees remain concurrent-author worktrees and may keep
-  changing without pausing.
+  non-primary, non-target-branch worktrees remain concurrent-author worktrees
+  and may keep changing without pausing. The first guarded observation binds a
+  late author's exact claim ID and owner into the lease so reassignment fails
+  closed. Concurrent authors may not use the guarded integration executor;
+  only the controller and its run-prepared authors may do so.
 - Local mutations hold the lease lock across fresh preflight inventory, one
   bounded argument-array command or awaited asynchronous callback, and
   post-mutation verification. Guarded child/process-group identity remains

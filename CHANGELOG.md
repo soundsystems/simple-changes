@@ -6,8 +6,11 @@
   authors. Claimed worktrees that arrive after a loop starts are now durably
   bound to their exact claim and owner at first guarded observation, so later
   claim release or reassignment blocks integration instead of inheriting the
-  replacement claim.
+  replacement claim. Concurrent authors may keep making ordinary local edits
+  and commits, but cannot use the guarded integration executor even when they
+  know the active run ID.
 <!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-07T19:42:35-05:00" -->
+<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-07T19:53:09-05:00" -->
 
 ## 0.8.0 - 2026-08-07
 

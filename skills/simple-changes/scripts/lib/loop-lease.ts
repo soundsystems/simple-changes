@@ -822,9 +822,15 @@ const assertAgentMutationAllowed = (
   const current = inventory.worktrees.find(
     (worktree) => worktree.path === currentPath
   );
-  if (!registered?.mutationAllowed || registered.agentId !== agentId) {
+  const integrationAuthorized =
+    registered?.role === "controller" || registered?.role === "author";
+  if (
+    !registered?.mutationAllowed ||
+    registered.agentId !== agentId ||
+    !integrationAuthorized
+  ) {
     throw new SimpleChangesError(
-      `Agent ${agentId} is not allowed to mutate ${currentPath}. Run prepare-agent first and continue from its returned worktree path.`,
+      `Agent ${agentId} is not allowed to run guarded integration mutations from ${currentPath}. The controller and its run-prepared authors may use loop guard or loop exec; independent concurrent authors keep ordinary edits and commits outside the integration executor.`,
       EXIT_CODES.unsafe
     );
   }

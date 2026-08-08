@@ -107,7 +107,7 @@ describe("active integration-loop lease", () => {
     ).toBe(true);
     expect(() =>
       guardLoopMutation(fixture.root, lease.runId, "catalog-agent")
-    ).toThrow("not allowed to mutate");
+    ).toThrow("not allowed to run guarded integration mutations");
   }, 60_000);
 
   test("prepares from the target revision pinned at loop start", () => {
@@ -187,6 +187,9 @@ describe("active integration-loop lease", () => {
         role: "concurrent-author",
       })
     );
+    expect(() =>
+      guardLoopMutation(authorPath, lease.runId, "feature-agent")
+    ).toThrow("not allowed to run guarded integration mutations");
 
     writeFixture(authorPath, "feature.ts", "export const feature = 1;\n");
     expect(verifyLoop(fixture.root).ok).toBe(true);
@@ -256,7 +259,7 @@ describe("active integration-loop lease", () => {
 
   test("binds a late claimed author and rejects claim reassignment", () => {
     const fixture = repository();
-    startLoop(fixture.root, "controller", "integrate");
+    const lease = startLoop(fixture.root, "controller", "integrate");
     const authorPath = join(fixture.base, "late-bound-author");
     git(fixture.root, [
       "worktree",
@@ -282,6 +285,9 @@ describe("active integration-loop lease", () => {
         role: "concurrent-author",
       })
     );
+    expect(() =>
+      guardLoopMutation(authorPath, lease.runId, "first-agent")
+    ).toThrow("not allowed to run guarded integration mutations");
 
     releaseWorktreeClaim(fixture.root, "first-agent", firstClaim.claimId);
     claimWorktree(

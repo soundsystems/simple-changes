@@ -188,7 +188,9 @@ worktrees that are also off the canonical target branch. The first guarded
 observation durably binds a late author's exact claim ID and owner into the
 lease; later release or reassignment blocks integration. The controller must
 exclude those worktrees from its package, merge, and cleanup scope. `loop guard`
-is a read-only preflight, not a mutation permit.
+and `loop exec` remain controller/run-prepared-author integration boundaries;
+independent concurrent authors keep ordinary edits and commits outside them.
+`loop guard` is a read-only preflight, not a mutation permit.
 Run each controller or run-author integration mutation through `loop exec`,
 which holds the lease lock across fresh preflight inventory, the bounded
 argument-array command, and post-mutation verification:

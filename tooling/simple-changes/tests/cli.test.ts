@@ -543,7 +543,9 @@ describe("contract CLI", () => {
       { stderr: "pipe", stdout: "pipe" }
     );
     expect(blocked.exitCode).toBe(5);
-    expect(decoder.decode(blocked.stderr)).toContain("prepare-agent first");
+    expect(decoder.decode(blocked.stderr)).toContain(
+      "not allowed to run guarded integration mutations"
+    );
   });
 
   test("reports onboarding before a first write-capable run", () => {

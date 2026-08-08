@@ -29,8 +29,29 @@ const inventoryConcurrencyPath = new URL(
   "../../../skills/simple-changes/references/inventory-and-concurrency.md",
   import.meta.url
 );
+const runtimeSourcePaths = [
+  "process.ts",
+  "loop-lease.ts",
+  "worktree-coordination.ts",
+].map(
+  (file) =>
+    new URL(
+      `../../../skills/simple-changes/scripts/lib/${file}`,
+      import.meta.url
+    )
+);
 
 describe("Simple Changes skill contract", () => {
+  test("runtime sources do not carry obsolete Biome suppressions", async () => {
+    const sources = await Promise.all(
+      runtimeSourcePaths.map((path) => readFile(path, "utf8"))
+    );
+    const combinedSource = sources.join("\n");
+
+    expect(combinedSource).not.toContain("noAwaitInLoops");
+    expect(combinedSource).not.toContain("lint/style/useErrorCause");
+  });
+
   test("Ship loops prove production matches the refreshed target head", async () => {
     const source = await readFile(skillPath, "utf8");
     const normalizedSource = source.replace(/\s+/g, " ");

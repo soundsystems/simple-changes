@@ -44,20 +44,25 @@ const processGroupIsAlive = (processGroupId: number): boolean => {
   }
 };
 
-const waitForProcessGroupExit = async (
+const pollForProcessGroupExit = async (
+  processGroupId: number,
+  deadline: number
+): Promise<boolean> => {
+  if (!processGroupIsAlive(processGroupId)) {
+    return true;
+  }
+  if (Date.now() >= deadline) {
+    return false;
+  }
+  await delay(PROCESS_GROUP_POLL_MS);
+  return pollForProcessGroupExit(processGroupId, deadline);
+};
+
+const waitForProcessGroupExit = (
   processGroupId: number,
   timeoutMs: number
-): Promise<boolean> => {
-  const deadline = Date.now() + timeoutMs;
-  while (processGroupIsAlive(processGroupId)) {
-    if (Date.now() >= deadline) {
-      return false;
-    }
-    // biome-ignore lint/performance/noAwaitInLoops: process-group exit must be polled sequentially.
-    await delay(PROCESS_GROUP_POLL_MS);
-  }
-  return true;
-};
+): Promise<boolean> =>
+  pollForProcessGroupExit(processGroupId, Date.now() + timeoutMs);
 
 const terminateLingeringProcessGroup = async (
   processGroupId: number

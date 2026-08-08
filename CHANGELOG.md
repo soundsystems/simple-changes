@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.8.2 - 2026-08-07
+
+- Runtime sources now pass current Biome and Ultracite checks across consuming
+  repositories without stale or version-sensitive suppression diagnostics.
+<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-07T21:05:24-05:00" -->
+
 ## 0.8.1 - 2026-08-07
 
 - Worktrees on the integration target branch can no longer become concurrent

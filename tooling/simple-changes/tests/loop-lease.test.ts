@@ -952,6 +952,39 @@ describe("active integration-loop lease", () => {
       "complete remote-branch reconciliation receipt"
     );
 
+    expect(() =>
+      recordRemoteBranchReconciliation(
+        fixture.root,
+        lease.runId,
+        "controller",
+        {
+          branches: [
+            {
+              classification: "canonical-target",
+              disposition: "preserved-target",
+              evidence: ["A claimed inventory from the wrong project."],
+              finalHeadRevision: targetRevision,
+              initialHeadRevision: targetRevision,
+              name: "main",
+              obsoleteProof: null,
+              proposals: [],
+              protected: true,
+            },
+          ],
+          finalBranchCount: 1,
+          finalInventoryComplete: true,
+          initialBranchCount: 1,
+          initialInventoryComplete: true,
+          observedAt: new Date().toISOString(),
+          project: "group/other-project",
+          provider: "gitlab",
+          schemaVersion: 1,
+          targetBranch: "main",
+          targetRevision,
+        }
+      )
+    ).toThrow("must bind GitLab project group/project");
+
     const updated = recordRemoteBranchReconciliation(
       fixture.root,
       lease.runId,

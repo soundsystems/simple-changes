@@ -52,6 +52,8 @@ const LOCK_OWNER_FILENAME = "owner.json";
 const STALE_LOCK_MINIMUM_AGE_MS = 5000;
 const RUN_ID_PATTERN = /^run-[a-z0-9-]+$/u;
 const DIGEST_PATTERN = /^[0-9a-f]{64}$/u;
+const SCP_REMOTE_URL_PATTERN = /^[^@/\s]+@([^:/\s]+):(.+)$/u;
+const REMOTE_PROJECT_PATH_PATTERN = /^\/+|\.git\/?$/gu;
 const LOOP_MODES = new Set<RequestMode>([
   "queue",
   "sweep",
@@ -520,6 +522,68 @@ const detectsGitLab = (inventory: RepositoryInventory): boolean =>
       capability.category === "forge" && capability.provider === "gitlab"
   );
 
+const targetRemoteForRef = (
+  repositoryPath: string,
+  targetRef: string
+): string | null => {
+  const symbolicRef = runGit(repositoryPath, [
+    "rev-parse",
+    "--symbolic-full-name",
+    targetRef,
+  ]).stdout.trim();
+  if (!symbolicRef.startsWith("refs/remotes/")) {
+    return null;
+  }
+  const remoteAndBranch = symbolicRef.slice("refs/remotes/".length);
+  const separator = remoteAndBranch.indexOf("/");
+  return separator === -1 ? null : remoteAndBranch.slice(0, separator);
+};
+
+const projectPathFromRemoteUrl = (remoteUrl: string): string | null => {
+  const scpLike = remoteUrl.match(SCP_REMOTE_URL_PATTERN);
+  let path: string;
+  if (scpLike) {
+    path = scpLike[2] ?? "";
+  } else {
+    try {
+      path = new URL(remoteUrl).pathname;
+    } catch {
+      return null;
+    }
+  }
+  const normalized = path.replace(REMOTE_PROJECT_PATH_PATTERN, "");
+  return normalized.includes("/") ? normalized : null;
+};
+
+const gitLabProjectForTargetRef = (
+  repositoryPath: string,
+  targetRef: string
+): string | null => {
+  const remote = targetRemoteForRef(repositoryPath, targetRef);
+  if (remote) {
+    const remoteUrl = runGit(repositoryPath, [
+      "config",
+      "--get",
+      `remote.${remote}.url`,
+    ]).stdout.trim();
+    return remoteUrl ? projectPathFromRemoteUrl(remoteUrl) : null;
+  }
+  const gitLabProjects = runGit(repositoryPath, ["remote"])
+    .stdout.split("\n")
+    .filter(Boolean)
+    .map((candidate) =>
+      runGit(repositoryPath, [
+        "config",
+        "--get",
+        `remote.${candidate}.url`,
+      ]).stdout.trim()
+    )
+    .filter((remoteUrl) => remoteUrl.toLowerCase().includes("gitlab"))
+    .map(projectPathFromRemoteUrl)
+    .filter((project): project is string => project !== null);
+  return gitLabProjects.length === 1 ? (gitLabProjects[0] ?? null) : null;
+};
+
 const currentTargetRevision = (lease: LoopLease): string =>
   runGit(lease.primaryCheckout, [
     "rev-parse",
@@ -549,8 +613,13 @@ const assertCurrentRemoteBranchReconciliation = (
     lease.targetRef
   );
   const targetRevision = currentTargetRevision(lease);
+  const project = gitLabProjectForTargetRef(
+    inventory.repository.primaryCheckout,
+    lease.targetRef
+  );
   if (
     receipt.provider !== "gitlab" ||
+    receipt.project !== project ||
     receipt.targetBranch !== targetBranch ||
     receipt.targetRevision !== targetRevision
   ) {
@@ -1977,12 +2046,17 @@ export const recordRemoteBranchReconciliation = (
         lease.targetRef
       );
       const targetRevision = currentTargetRevision(lease);
+      const project = gitLabProjectForTargetRef(
+        inventory.repository.primaryCheckout,
+        lease.targetRef
+      );
       if (
+        receipt.project !== project ||
         receipt.targetBranch !== targetBranch ||
         receipt.targetRevision !== targetRevision
       ) {
         throw new SimpleChangesError(
-          `Remote branch reconciliation must bind the refreshed target ${targetBranch ?? "(unresolved)"} at ${targetRevision}.`,
+          `Remote branch reconciliation must bind GitLab project ${project ?? "(unresolved)"} and refreshed target ${targetBranch ?? "(unresolved)"} at ${targetRevision}.`,
           EXIT_CODES.validation
         );
       }

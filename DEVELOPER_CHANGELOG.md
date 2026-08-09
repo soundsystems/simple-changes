@@ -19,10 +19,13 @@
     obsolete.
   - Integration, Ship, Reconcile, and resumed GitLab loops now carry explicit
     remote-branch deletion authority, persist a target-bound reconciliation
-    receipt, and refuse to end when the receipt is missing, unsafe, or stale.
-    Added CLI, lease, schema, contract, documentation, evaluation, and focused
-    regression coverage for the new gate.
+    receipt, and refuse to end when the receipt is missing, unsafe, stale, or
+    names a project other than the exact project parsed from the selected target
+    remote. Added CLI, lease, schema, contract, documentation, evaluation, and
+    focused regression coverage for the gate, including wrong-project receipt
+    rejection.
 <!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-09T00:42:26-05:00" -->
+<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-09T00:57:18-05:00" -->
 
 ## 0.8.2 - 2026-08-07
 

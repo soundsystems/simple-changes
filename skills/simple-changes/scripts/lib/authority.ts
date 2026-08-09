@@ -8,13 +8,29 @@ import type {
 } from "./types.ts";
 
 const MODE_AUTHORITIES: Record<RequestMode, ReadonlySet<Authority>> = {
-  integrate: new Set(["local-write", "proposal-write", "merge"]),
+  integrate: new Set([
+    "local-write",
+    "proposal-write",
+    "merge",
+    "remote-branch-delete",
+  ]),
   pause: new Set(),
   preview: new Set(),
   queue: new Set(["local-write", "proposal-write"]),
-  reconcile: new Set(["local-write", "proposal-write", "merge"]),
+  reconcile: new Set([
+    "local-write",
+    "proposal-write",
+    "merge",
+    "remote-branch-delete",
+  ]),
   resume: new Set(),
-  ship: new Set(["local-write", "proposal-write", "merge", "preview-deploy"]),
+  ship: new Set([
+    "local-write",
+    "proposal-write",
+    "merge",
+    "preview-deploy",
+    "remote-branch-delete",
+  ]),
   sweep: new Set(["local-write", "proposal-write"]),
   sync: new Set(["local-sync"]),
 };
@@ -34,6 +50,7 @@ const OPERATION_AUTHORITY: Partial<Record<PlannedOperation, Authority>> = {
   "promote-deployment": "production-deploy",
   push: "proposal-write",
   "reconcile-managed-targets": "production-deploy",
+  "reconcile-remote-branches": "remote-branch-delete",
   "update-proposal": "proposal-write",
 };
 

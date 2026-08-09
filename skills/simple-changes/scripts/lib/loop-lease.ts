@@ -20,6 +20,7 @@ import {
   runCommandInProcessGroup,
   runGit,
 } from "./process.ts";
+import { validateRemoteBranchReconciliation } from "./remote-branch-reconciliation.ts";
 import { validateSchema } from "./schema.ts";
 import type {
   LoopLease,
@@ -29,6 +30,7 @@ import type {
   LoopWorktreeDisposition,
   LoopWorktreeLease,
   LoopWorktreePreparation,
+  RemoteBranchReconciliationReceipt,
   RepositoryInventory,
   RequestMode,
   WorktreeClaim,
@@ -53,6 +55,12 @@ const DIGEST_PATTERN = /^[0-9a-f]{64}$/u;
 const LOOP_MODES = new Set<RequestMode>([
   "queue",
   "sweep",
+  "integrate",
+  "ship",
+  "reconcile",
+  "resume",
+]);
+const REMOTE_RECONCILIATION_MODES = new Set<LoopLease["mode"]>([
   "integrate",
   "ship",
   "reconcile",
@@ -504,6 +512,53 @@ const targetBranchForRef = (
     return separator === -1 ? null : remoteAndBranch.slice(separator + 1);
   }
   return null;
+};
+
+const detectsGitLab = (inventory: RepositoryInventory): boolean =>
+  inventory.capabilities.some(
+    (capability) =>
+      capability.category === "forge" && capability.provider === "gitlab"
+  );
+
+const currentTargetRevision = (lease: LoopLease): string =>
+  runGit(lease.primaryCheckout, [
+    "rev-parse",
+    "--verify",
+    `${lease.targetRef}^{commit}`,
+  ]).stdout.trim();
+
+const assertCurrentRemoteBranchReconciliation = (
+  lease: LoopLease,
+  inventory: RepositoryInventory
+): void => {
+  if (
+    !(REMOTE_RECONCILIATION_MODES.has(lease.mode) && detectsGitLab(inventory))
+  ) {
+    return;
+  }
+  const receipt = lease.remoteBranchReconciliation;
+  if (!receipt) {
+    throw new SimpleChangesError(
+      "Cannot end a GitLab integration loop before recording a complete remote-branch reconciliation receipt.",
+      EXIT_CODES.unsafe
+    );
+  }
+  validateRemoteBranchReconciliation(receipt);
+  const targetBranch = targetBranchForRef(
+    inventory.repository.primaryCheckout,
+    lease.targetRef
+  );
+  const targetRevision = currentTargetRevision(lease);
+  if (
+    receipt.provider !== "gitlab" ||
+    receipt.targetBranch !== targetBranch ||
+    receipt.targetRevision !== targetRevision
+  ) {
+    throw new SimpleChangesError(
+      "Cannot end the loop with a stale or mismatched remote-branch reconciliation receipt; refresh every GitLab branch and record the final accounted inventory again.",
+      EXIT_CODES.unsafe
+    );
+  }
 };
 
 const concurrentClaimFor = (
@@ -1877,6 +1932,71 @@ export const markWorktreeResumeReady = (
   );
 };
 
+export const recordRemoteBranchReconciliation = (
+  repositoryPath: string,
+  runId: string,
+  ownerAgentIdInput: string,
+  receiptInput: unknown
+): LoopLease & {
+  remoteBranchReconciliation: RemoteBranchReconciliationReceipt;
+} => {
+  const ownerAgentId = requiredText(ownerAgentIdInput, "agent ID");
+  const receipt: RemoteBranchReconciliationReceipt =
+    validateRemoteBranchReconciliation(receiptInput);
+  const opening = captureInventory(repositoryPath);
+  return withStateLock(
+    opening.repository.commonGitDirectory,
+    "record remote branch reconciliation",
+    () => {
+      const inventory = captureInventory(repositoryPath);
+      const lease = requireLease(inventory);
+      assertMatchingRun(lease, runId);
+      if (lease.ownerAgentId !== ownerAgentId) {
+        throw new SimpleChangesError(
+          `Only loop owner ${lease.ownerAgentId} may record remote branch reconciliation.`,
+          EXIT_CODES.unsafe
+        );
+      }
+      const verification = verificationAgainst(lease, inventory);
+      if (!verification.ok) {
+        throw new SimpleChangesError(
+          `Cannot record remote branch reconciliation with manifest violations: ${verification.violations
+            .map((violation) => `${violation.code}:${violation.path}`)
+            .join(", ")}`,
+          EXIT_CODES.unsafe
+        );
+      }
+      if (!(detectsGitLab(inventory) && receipt.provider === "gitlab")) {
+        throw new SimpleChangesError(
+          "Remote branch reconciliation provider must match a discovered GitLab remote.",
+          EXIT_CODES.validation
+        );
+      }
+      const targetBranch = targetBranchForRef(
+        inventory.repository.primaryCheckout,
+        lease.targetRef
+      );
+      const targetRevision = currentTargetRevision(lease);
+      if (
+        receipt.targetBranch !== targetBranch ||
+        receipt.targetRevision !== targetRevision
+      ) {
+        throw new SimpleChangesError(
+          `Remote branch reconciliation must bind the refreshed target ${targetBranch ?? "(unresolved)"} at ${targetRevision}.`,
+          EXIT_CODES.validation
+        );
+      }
+      return writeLease({
+        ...lease,
+        remoteBranchReconciliation: receipt,
+        updatedAt: new Date().toISOString(),
+      }) as LoopLease & {
+        remoteBranchReconciliation: RemoteBranchReconciliationReceipt;
+      };
+    }
+  );
+};
+
 export const endLoop = (
   repositoryPath: string,
   runId: string,
@@ -1919,6 +2039,7 @@ export const endLoop = (
           EXIT_CODES.unsafe
         );
       }
+      assertCurrentRemoteBranchReconciliation(lease, inventory);
       rmSync(loopLeasePath(lease.commonGitDirectory), { force: true });
       return verification;
     }

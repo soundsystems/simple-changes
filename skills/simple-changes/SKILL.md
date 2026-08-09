@@ -50,6 +50,15 @@ not ask whether the user wants to start setup. Finish or explicitly choose
 run-only setup, then continue the original request without making the user
 repeat it.
 
+The JSON result is not user-facing onboarding copy. Before asking for any
+preference, explain that first-use onboarding is available, why it appeared,
+what the current request already decided, the exact recommended workflow and
+storage behavior, and that nothing has been written or sent yet. Offer
+**Use recommended setup**, **Customize**, and **Use recommended setup for this
+run only**. Then follow
+[conversational onboarding](references/onboarding.md), including its
+question-by-question contract, compact diagrams, and confirmation receipt.
+
 Preview and pause are read-only or preservation-only and never start
 onboarding. Inventory remains non-interactive. In a terminal, `initialize`
 launches onboarding directly. In a non-TTY agent runtime, its JSON result is the
@@ -97,11 +106,11 @@ one-sentence consequence; do not present bare labels:
    - **At major steps:** Confirm before consequential workflow steps.
    - **Don't interrupt me:** Skip anything that lacks authority and report it
      afterward.
-6. **For what scope should I save these preferences?**
-   - **Just for me:** Use them as personal defaults when a repository has no
-     policy.
-   - **For this repository:** Save a visible `.simple-changes.json` in the
-     primary checkout.
+6. **Where should these preferences live?**
+   - **This repository:** Save a visible `.simple-changes.json` in the primary
+     checkout so teammates and future agents use the same workflow.
+   - **All my repositories:** Save private personal defaults used only when a
+     repository has no policy.
    - **This run only:** Use the choices now without writing a policy file.
 7. When the selected scope has an existing, established instruction file:
    **Should I add a short Simple Changes instruction to `<exact-path>`?**
@@ -400,7 +409,10 @@ authority for those operations.
     a bounded promote/recheck/managed-target sequence. Follow
     [deployments](references/deployments.md).
 16. Run `loop verify`, re-inventory local and remote state, and clean only
-    proven merged, obsolete, or generated objects. Record an audited,
+    proven merged, obsolete, or generated objects. When GitLab is discovered,
+    complete the remote-branch reconciliation gate across every paginated
+    branch before completion; do not delegate repository cleanup to each MR's
+    source-branch setting. Record an audited,
     user-approved disposition before removing any opening worktree; remove
     run-created worktrees after their work is accounted for. Restore and verify
     the original primary checkout, run the final verification, and release the
@@ -417,6 +429,7 @@ authority. The user's current request authorizes only the matching column:
 | Local branches, focused commits | No | Yes | Yes | Yes |
 | Push and open/update proposals | No | Yes | Yes | Yes |
 | Merge current approved heads | No | No | Yes | Yes |
+| Delete proven-obsolete remote branches | No | No | Yes | Yes |
 | Preview deployment | No | No | No | Policy/current request |
 | Production deployment | No | No | No | Explicit or stored policy |
 
@@ -474,6 +487,10 @@ result.
   revision requested at the start of the run or the newest deployment's own
   source revision.
 - Existing stashes are inventory, not workflow storage.
+- Whole-repository integration cleanup includes a complete provider branch
+  ledger. Preserve canonical and protected branches, every open-proposal branch,
+  concurrent movement, and ambiguous work; never infer deletion safety from an
+  MR source-branch preference.
 - Make completed steps idempotent and resumable without duplicate proposals,
   merges, deployments, or ledger entries.
 - Finish from fresh local and provider evidence, not memory.
@@ -528,6 +545,11 @@ the next action. State "none" only after the final inventory proves there are
 no such units. Include only decisions that still require a person. Never claim
 completion until the final inventory proves the requested scope and the
 original primary checkout state.
+For Integrate, Ship, Reconcile, or a resumed integration on GitLab, report the
+remote-branch reconciliation totals by disposition and name every preserved or
+blocked closed/unmerged, no-MR, concurrent, or ambiguous branch. Completion
+requires a refreshed final inventory proving that every remaining provider
+branch is represented in the ledger.
 For production deployment, report the refreshed canonical Git target revision,
 the product release version when the product is Web, the observed deployment
 revision, the expected canonical-target inventory, and each refreshed

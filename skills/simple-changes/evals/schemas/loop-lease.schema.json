@@ -33,6 +33,9 @@
     "commonGitDirectory": { "type": "string", "minLength": 1 },
     "concurrentWork": { "enum": ["allow-claimed", "strict"] },
     "primaryCheckout": { "type": "string", "minLength": 1 },
+    "remoteBranchReconciliation": {
+      "$ref": "remote-branch-reconciliation.schema.json"
+    },
     "targetRef": { "type": "string", "minLength": 1 },
     "targetRevision": {
       "type": "string",

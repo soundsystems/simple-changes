@@ -84,6 +84,13 @@
   detach receipt, without force or branch deletion. Reattachment requires the
   absent recorded path and the same local branch at the same HEAD; an active
   loop blocks reattachment.
+- GitLab Integrate, Ship, Reconcile, and resumed integration runs cannot finish
+  without a target-bound remote-branch reconciliation receipt covering the
+  union of complete initial and final provider inventories. The canonical
+  target, protected branches, open-MR branches, concurrent movement, and
+  ambiguous work are preserved. Merged source branches are deleted only at the
+  exact recorded merged head; closed/unmerged and no-MR branches require a
+  separate audit and exact obsolescence proof.
 - Harness automation is capability-gated. An unsupported discovery, delivery,
   wait, scope, or owner-reference requirement produces a structured manual
   blocker and no repository mutation. Vendor APIs and credentials never enter

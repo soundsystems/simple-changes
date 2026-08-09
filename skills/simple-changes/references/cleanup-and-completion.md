@@ -10,6 +10,53 @@ Never use broad globs, unresolved variables, guessed branch names, force, reset,
 or cleanup stashes to manufacture a clean repository. Existing stashes remain
 inventory. Uncertain work remains untouched.
 
+## Remote-branch reconciliation gate
+
+Whole-repository integration and cleanup includes provider branches. Do not
+delegate that responsibility to an MR's `remove source branch` checkbox or the
+project default: either may be overridden, closed MRs retain their source
+branches, and branches may exist outside an MR lifecycle.
+
+For Integrate, Ship, Reconcile, and resumed integration when GitLab is
+discovered:
+
+1. Fetch/prune remote-tracking refs for local evidence, then paginate an initial
+   provider inventory of **every** project branch. Record its exact name, head
+   revision, protected/default status, and every matching MR across open,
+   merged, and closed states. Remote-tracking refs alone are not a complete
+   provider inventory.
+2. Build one ledger over the union of the initial and final inventories. A
+   branch appearing in either inventory must occur exactly once.
+3. Always preserve the canonical target, protected branches, branches used by
+   any open MR, branches that arrive or move during reconciliation, and any work
+   whose ownership or obsolescence is ambiguous.
+4. Delete a merged-MR branch only when the branch's current head is the exact
+   recorded head of that merged MR, no open MR uses it, it is unprotected, and
+   provider evidence proves there are no later commits. Record
+   `merged-proposal-head` proof; an MR setting or branch name is not proof.
+5. Audit closed/unmerged branches separately from branches with no MR. Preserve
+   either class unless exact Git/provider evidence proves the target contains
+   the head or the provider diff is empty. Only then may it be deleted as
+   `deleted-proven-obsolete`.
+6. Run `loop guard` immediately before each provider deletion and `loop verify`
+   immediately after it. Never batch by prefix, wildcard, or age.
+7. Paginate a fresh final provider inventory. Reclassify any new or moved branch
+   as ambiguous and preserve it. Verify that every remaining branch has a
+   preserved ledger disposition and every deleted branch is absent.
+8. Validate and bind the complete receipt to the final canonical target, then
+   record the completion gate:
+
+   ```sh
+   bun skills/simple-changes/scripts/simple-changes.ts loop reconcile-remote-branches \
+     --run-id "$RUN_ID" --agent-id "$AGENT_ID" --receipt "$RECEIPT" --json
+   ```
+
+`loop end` refuses a detected GitLab integration/reconciliation run when this
+receipt is missing, semantically unsafe, or stale against the final target
+revision. Closed/unmerged and no-MR branches that remain uncertain are valid
+preserved outcomes, but they must be named and reported; they cannot disappear
+from the ledger.
+
 Before reporting completion:
 
 1. Refresh local worktree, branch, stash, and status inventory.
@@ -33,11 +80,13 @@ Before reporting completion:
    its branch is merged,
    otherwise accounted for, or explicitly preserved. `loop end` must refuse to
    release the lease while one remains registered and live.
-7. Return to and verify the exact original primary checkout; do not substitute a
+7. Complete the remote-branch reconciliation gate when required and verify that
+   only accounted-for provider branches remain.
+8. Return to and verify the exact original primary checkout; do not substitute a
    clean auxiliary worktree. Run the final manifest verification and release
    the active lease.
-8. Report queued, merged, deployed, preserved, and blocked outcomes separately.
-9. For Ship, reconcile the pre-ship brief with the final receipts and report
+9. Report queued, merged, deployed, preserved, and blocked outcomes separately.
+10. For Ship, reconcile the pre-ship brief with the final receipts and report
    material review-driven changes from the original proposal heads.
 
 Temporary detach is not disposal. `worktree detach` is owner-controlled and

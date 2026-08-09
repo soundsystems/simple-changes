@@ -15,6 +15,7 @@ import {
   loopLockPath,
   prepareAgentWorktree,
   readLoopLease,
+  recordRemoteBranchReconciliation,
   recoverLoopLock,
   startLoop,
   verifyLoop,
@@ -935,4 +936,54 @@ describe("active integration-loop lease", () => {
     expect(endLoop(fixture.root, lease.runId, "controller").ok).toBe(true);
     expect(readLoopLease(fixture.root)).toBeNull();
   }, 20_000);
+
+  test("requires a final accounted GitLab branch inventory before integration completion", () => {
+    const fixture = repository();
+    git(fixture.root, [
+      "remote",
+      "add",
+      "origin",
+      "git@gitlab.com:group/project.git",
+    ]);
+    const targetRevision = git(fixture.root, ["rev-parse", "HEAD"]);
+    const lease = startLoop(fixture.root, "controller", "integrate");
+
+    expect(() => endLoop(fixture.root, lease.runId, "controller")).toThrow(
+      "complete remote-branch reconciliation receipt"
+    );
+
+    const updated = recordRemoteBranchReconciliation(
+      fixture.root,
+      lease.runId,
+      "controller",
+      {
+        branches: [
+          {
+            classification: "canonical-target",
+            disposition: "preserved-target",
+            evidence: ["GitLab final inventory contains the canonical target."],
+            finalHeadRevision: targetRevision,
+            initialHeadRevision: targetRevision,
+            name: "main",
+            obsoleteProof: null,
+            proposals: [],
+            protected: true,
+          },
+        ],
+        finalBranchCount: 1,
+        finalInventoryComplete: true,
+        initialBranchCount: 1,
+        initialInventoryComplete: true,
+        observedAt: new Date().toISOString(),
+        project: "group/project",
+        provider: "gitlab",
+        schemaVersion: 1,
+        targetBranch: "main",
+        targetRevision,
+      }
+    );
+
+    expect(updated.remoteBranchReconciliation?.project).toBe("group/project");
+    expect(endLoop(fixture.root, lease.runId, "controller").ok).toBe(true);
+  });
 });

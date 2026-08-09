@@ -110,6 +110,7 @@
               "local-sync",
               "proposal-write",
               "merge",
+              "remote-branch-delete",
               "preview-deploy",
               "production-deploy",
               "remote-data-write",
@@ -137,6 +138,7 @@
               "deploy-production",
               "promote-deployment",
               "reconcile-managed-targets",
+              "reconcile-remote-branches",
               "audit-migration",
               "apply-migration",
               "cleanup"

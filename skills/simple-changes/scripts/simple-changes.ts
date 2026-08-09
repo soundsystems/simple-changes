@@ -30,6 +30,7 @@ import {
   markWorktreeResumeReady,
   prepareAgentWorktree,
   readLoopLease,
+  recordRemoteBranchReconciliation,
   recoverLoopLock,
   startLoop,
   verifyLoop,
@@ -79,7 +80,7 @@ import {
   releaseWorktreeClaim,
 } from "./lib/worktree-coordination.ts";
 
-const VERSION = "0.8.2";
+const VERSION = "0.9.0";
 const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const HELP = `Simple Changes ${VERSION}
 
@@ -122,6 +123,8 @@ Usage:
     --pause-receipt ID [--json] [--repo PATH]
   simple-changes loop accept-paused-change --run-id ID --agent-id ID
     --pause-receipt ID [--json] [--repo PATH]
+  simple-changes loop reconcile-remote-branches --run-id ID --agent-id ID
+    --receipt FILE [--json] [--repo PATH]
   simple-changes loop end --run-id ID --agent-id ID [--json] [--repo PATH]
   simple-changes worktree status [--json] [--repo PATH]
   simple-changes worktree request --claim-id ID --run-id ID
@@ -147,8 +150,8 @@ Usage:
 
 Schema kinds:
   repo-policy, changelog-receipt, initialization, inventory, change-plan,
-  run-state, provider-receipt, release-consistency, release-notes, loop-lease,
-  worktree-coordination
+  run-state, provider-receipt, remote-branch-reconciliation,
+  release-consistency, release-notes, loop-lease, worktree-coordination
 
 Exit codes:
   0 success, 2 usage, 3 invalid contract, 4 inventory failure, 5 unsafe state
@@ -177,6 +180,7 @@ interface CliOptions {
   questions?: RepoPolicy["questions"];
   ready: boolean;
   reason?: string;
+  receiptPath?: string;
   releaseVersion?: string;
   repo: string;
   repoProvided: boolean;
@@ -210,6 +214,7 @@ const VALUED_OPTIONS = new Set([
   "--purpose",
   "--questions",
   "--reason",
+  "--receipt",
   "--request-action",
   "--repo",
   "--run-id",
@@ -363,6 +368,7 @@ const applyLoopValuedOption = (
     "--pause-receipt": "pauseReceiptId",
     "--purpose": "purpose",
     "--reason": "reason",
+    "--receipt": "receiptPath",
     "--run-id": "runId",
     "--status-digest": "statusDigest",
   };
@@ -592,9 +598,10 @@ const createCliPrompter = (
     output.write(`\n${question}\n\n`);
     for (const [index, choice] of choices.entries()) {
       const recommendation = index === selectedDefault ? " (Recommended)" : "";
-      output.write(
-        `  ${index + 1}. ${choice.label}${recommendation}\n     ${choice.description}\n`
-      );
+      output.write(`  ${index + 1}. ${choice.label}${recommendation}\n`);
+      for (const line of choice.description.split("\n")) {
+        output.write(`     ${line}\n`);
+      }
     }
     const askForChoice = async (): Promise<string> => {
       const answer = (
@@ -630,6 +637,9 @@ const createCliPrompter = (
           .trim()
           .toLowerCase();
         return answer === "" || answer === "y" || answer === "yes";
+      },
+      present: (message: string): void => {
+        output.write(`\n${message}\n`);
       },
     },
   };
@@ -767,7 +777,8 @@ const runSetup = async (options: CliOptions): Promise<void> => {
       interactive.prompter,
       context.changelog,
       context.primaryCheckout,
-      options.uiArtifacts
+      options.uiArtifacts,
+      { showFirstScreen: process.stdin.isTTY }
     );
     const path = setupPolicyPath(selection.scope, context.primaryCheckout);
     const written = selection.confirmed && path !== null;
@@ -822,6 +833,7 @@ const runSetup = async (options: CliOptions): Promise<void> => {
       path,
       policy: selection.policy,
       scope: selection.scope,
+      setupStyle: selection.setupStyle,
       summary: selection.summary,
       uiArtifactsRelevant: options.uiArtifacts,
       written,
@@ -1037,6 +1049,56 @@ const runLoopExec = async (
   );
 };
 
+const runLoopFinalizationAction = (
+  action: string,
+  options: CliOptions,
+  runId: string,
+  agentId: string
+): boolean => {
+  if (action === "accept-paused-change") {
+    const updated = acceptPausedWorktreeChange(
+      options.repo,
+      runId,
+      agentId,
+      requireCliOption(options.pauseReceiptId, "--pause-receipt")
+    );
+    writeOutput(
+      { lease: updated, manifestDigest: loopManifestDigest(updated) },
+      options.json,
+      `Accepted the exact owner-paused state into ${runId}.\n`
+    );
+    return true;
+  }
+  if (action === "reconcile-remote-branches") {
+    const receiptPath = requireCliOption(options.receiptPath, "--receipt");
+    const receipt = JSON.parse(
+      readFileSync(resolve(receiptPath), "utf8")
+    ) as unknown;
+    const updated = recordRemoteBranchReconciliation(
+      options.repo,
+      runId,
+      agentId,
+      receipt
+    );
+    writeOutput(
+      { lease: updated, manifestDigest: loopManifestDigest(updated) },
+      options.json,
+      `Recorded a complete GitLab remote-branch reconciliation for ${updated.remoteBranchReconciliation.project}.\nManifest: ${loopManifestDigest(updated)}\n`
+    );
+    return true;
+  }
+  if (action === "end") {
+    const verification = endLoop(options.repo, runId, agentId);
+    writeOutput(
+      verification,
+      options.json,
+      `Ended ${runId} after a clean manifest verification.\n`
+    );
+    return true;
+  }
+  return false;
+};
+
 const runLoopCommand = async (options: CliOptions): Promise<void> => {
   const [action] = options.positional;
   if (!action) {
@@ -1162,27 +1224,7 @@ const runLoopCommand = async (options: CliOptions): Promise<void> => {
     );
     return;
   }
-  if (action === "accept-paused-change") {
-    const updated = acceptPausedWorktreeChange(
-      options.repo,
-      runId,
-      agentId,
-      requireCliOption(options.pauseReceiptId, "--pause-receipt")
-    );
-    writeOutput(
-      { lease: updated, manifestDigest: loopManifestDigest(updated) },
-      options.json,
-      `Accepted the exact owner-paused state into ${runId}.\n`
-    );
-    return;
-  }
-  if (action === "end") {
-    const verification = endLoop(options.repo, runId, agentId);
-    writeOutput(
-      verification,
-      options.json,
-      `Ended ${runId} after a clean manifest verification.\n`
-    );
+  if (runLoopFinalizationAction(action, options, runId, agentId)) {
     return;
   }
   throw new SimpleChangesError(

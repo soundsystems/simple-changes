@@ -506,6 +506,101 @@ describe("contract CLI", () => {
     });
   }, 20_000);
 
+  test("records a complete remote-branch reconciliation receipt", () => {
+    const fixture = createTestRepository();
+    repositories.push(fixture);
+    git(fixture.root, [
+      "remote",
+      "add",
+      "origin",
+      "git@gitlab.com:group/project.git",
+    ]);
+    const targetRevision = git(fixture.root, ["rev-parse", "HEAD"]);
+    const started = spawnSync(
+      [
+        process.execPath,
+        cliPath,
+        "loop",
+        "start",
+        "--mode",
+        "reconcile",
+        "--agent-id",
+        "controller",
+        "--json",
+        "--repo",
+        fixture.root,
+      ],
+      { stderr: "pipe", stdout: "pipe" }
+    );
+    const {
+      lease: { runId },
+    } = JSON.parse(decoder.decode(started.stdout)) as {
+      lease: { runId: string };
+    };
+    writeFixture(
+      fixture.root,
+      "remote-branches.json",
+      `${JSON.stringify(
+        {
+          branches: [
+            {
+              classification: "canonical-target",
+              disposition: "preserved-target",
+              evidence: ["Final GitLab inventory includes main."],
+              finalHeadRevision: targetRevision,
+              initialHeadRevision: targetRevision,
+              name: "main",
+              obsoleteProof: null,
+              proposals: [],
+              protected: true,
+            },
+          ],
+          finalBranchCount: 1,
+          finalInventoryComplete: true,
+          initialBranchCount: 1,
+          initialInventoryComplete: true,
+          observedAt: new Date().toISOString(),
+          project: "group/project",
+          provider: "gitlab",
+          schemaVersion: 1,
+          targetBranch: "main",
+          targetRevision,
+        },
+        null,
+        2
+      )}\n`
+    );
+
+    const reconciled = spawnSync(
+      [
+        process.execPath,
+        cliPath,
+        "loop",
+        "reconcile-remote-branches",
+        "--run-id",
+        runId,
+        "--agent-id",
+        "controller",
+        "--receipt",
+        resolve(fixture.root, "remote-branches.json"),
+        "--json",
+        "--repo",
+        fixture.root,
+      ],
+      { stderr: "pipe", stdout: "pipe" }
+    );
+
+    expect(reconciled.exitCode).toBe(0);
+    expect(JSON.parse(decoder.decode(reconciled.stdout))).toMatchObject({
+      lease: {
+        remoteBranchReconciliation: {
+          project: "group/project",
+          targetRevision,
+        },
+      },
+    });
+  }, 30_000);
+
   test("blocks a new authoring agent in the controller checkout", () => {
     const fixture = createTestRepository();
     repositories.push(fixture);

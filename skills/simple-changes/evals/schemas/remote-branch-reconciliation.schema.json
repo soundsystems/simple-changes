@@ -1,0 +1,128 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://simple-changes.dev/schemas/remote-branch-reconciliation.schema.json",
+  "title": "Simple Changes remote branch reconciliation receipt",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "provider",
+    "project",
+    "targetBranch",
+    "targetRevision",
+    "initialInventoryComplete",
+    "initialBranchCount",
+    "finalInventoryComplete",
+    "finalBranchCount",
+    "branches",
+    "observedAt"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "provider": { "type": "string", "minLength": 1 },
+    "project": { "type": "string", "minLength": 1 },
+    "targetBranch": { "type": "string", "minLength": 1 },
+    "targetRevision": { "type": "string", "pattern": "^[0-9a-f]{40,64}$" },
+    "initialInventoryComplete": { "const": true },
+    "initialBranchCount": { "type": "integer", "minimum": 1 },
+    "finalInventoryComplete": { "const": true },
+    "finalBranchCount": { "type": "integer", "minimum": 1 },
+    "branches": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/branch" }
+    },
+    "observedAt": { "type": "string", "format": "date-time" }
+  },
+  "$defs": {
+    "proposal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["objectId", "state", "headRevision"],
+      "properties": {
+        "objectId": { "type": "string", "minLength": 1 },
+        "state": { "enum": ["open", "merged", "closed"] },
+        "headRevision": {
+          "anyOf": [
+            { "type": "string", "pattern": "^[0-9a-f]{40,64}$" },
+            { "type": "null" }
+          ]
+        }
+      }
+    },
+    "branch": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "initialHeadRevision",
+        "finalHeadRevision",
+        "protected",
+        "proposals",
+        "classification",
+        "disposition",
+        "obsoleteProof",
+        "evidence"
+      ],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "initialHeadRevision": {
+          "anyOf": [
+            { "type": "string", "pattern": "^[0-9a-f]{40,64}$" },
+            { "type": "null" }
+          ]
+        },
+        "finalHeadRevision": {
+          "anyOf": [
+            { "type": "string", "pattern": "^[0-9a-f]{40,64}$" },
+            { "type": "null" }
+          ]
+        },
+        "protected": { "type": "boolean" },
+        "proposals": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/proposal" }
+        },
+        "classification": {
+          "enum": [
+            "canonical-target",
+            "protected",
+            "open-proposal",
+            "merged-obsolete",
+            "closed-unmerged",
+            "no-proposal",
+            "ambiguous"
+          ]
+        },
+        "disposition": {
+          "enum": [
+            "preserved-target",
+            "preserved-protected",
+            "preserved-open-proposal",
+            "preserved-audited",
+            "preserved-ambiguous",
+            "deleted-merged",
+            "deleted-proven-obsolete"
+          ]
+        },
+        "obsoleteProof": {
+          "anyOf": [
+            {
+              "enum": [
+                "merged-proposal-head",
+                "target-contains-head",
+                "provider-diff-empty"
+              ]
+            },
+            { "type": "null" }
+          ]
+        },
+        "evidence": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 }
+        }
+      }
+    }
+  }
+}

@@ -29,6 +29,18 @@ const inventoryConcurrencyPath = new URL(
   "../../../skills/simple-changes/references/inventory-and-concurrency.md",
   import.meta.url
 );
+const onboardingPath = new URL(
+  "../../../skills/simple-changes/references/onboarding.md",
+  import.meta.url
+);
+const cleanupCompletionPath = new URL(
+  "../../../skills/simple-changes/references/cleanup-and-completion.md",
+  import.meta.url
+);
+const gitlabProviderPath = new URL(
+  "../../../skills/simple-changes/references/providers/gitlab.md",
+  import.meta.url
+);
 const runtimeSourcePaths = [
   "process.ts",
   "loop-lease.ts",
@@ -42,6 +54,29 @@ const runtimeSourcePaths = [
 );
 
 describe("Simple Changes skill contract", () => {
+  test("first-use onboarding explains the workflow before preference questions", async () => {
+    const [skill, onboarding] = await Promise.all([
+      readFile(skillPath, "utf8"),
+      readFile(onboardingPath, "utf8"),
+    ]);
+    const normalizedSkill = skill.replace(/\s+/g, " ");
+    const normalizedOnboarding = onboarding.replace(/\s+/g, " ");
+
+    expect(normalizedSkill).toContain(
+      "The JSON result is not user-facing onboarding copy"
+    );
+    expect(normalizedOnboarding).toContain(
+      "Use recommended setup — Recommended"
+    );
+    expect(normalizedOnboarding).toContain("Ask one question at a time");
+    expect(normalizedOnboarding).toContain(
+      "This choice controls only where the workflow is remembered"
+    );
+    expect(normalizedOnboarding).toContain(
+      "Never expose the raw handshake as though it were the onboarding question"
+    );
+  });
+
   test("runtime sources do not carry obsolete Biome suppressions", async () => {
     const sources = await Promise.all(
       runtimeSourcePaths.map((path) => readFile(path, "utf8"))
@@ -172,6 +207,41 @@ describe("Simple Changes skill contract", () => {
     expect(normalizedSource).toContain("current revision/state");
     expect(normalizedSource).toContain("why it was deferred");
     expect(normalizedSource).toContain("the next action");
+  });
+
+  test("GitLab integration cleanup accounts for every remote branch", async () => {
+    const [skill, cleanup, gitlab] = await Promise.all([
+      readFile(skillPath, "utf8"),
+      readFile(cleanupCompletionPath, "utf8"),
+      readFile(gitlabProviderPath, "utf8"),
+    ]);
+    const normalizedSkill = skill.replace(/\s+/g, " ");
+    const normalizedCleanup = cleanup.replace(/\s+/g, " ");
+    const normalizedGitlab = gitlab.replace(/\s+/g, " ");
+
+    expect(normalizedSkill).toContain(
+      "complete the remote-branch reconciliation gate across every paginated branch before completion"
+    );
+    expect(normalizedSkill).toContain("Delete proven-obsolete remote branches");
+    expect(normalizedCleanup).toContain(
+      "union of the initial and final inventories"
+    );
+    expect(normalizedCleanup).toContain(
+      "preserve the canonical target, protected branches, branches used by any open MR"
+    );
+    expect(normalizedCleanup).toContain(
+      "Audit closed/unmerged branches separately from branches with no MR"
+    );
+    expect(normalizedCleanup).toContain("loop reconcile-remote-branches");
+    expect(normalizedCleanup).toContain(
+      "`loop end` refuses a detected GitLab integration/reconciliation run"
+    );
+    expect(normalizedGitlab).toContain(
+      "`should_remove_source_branch` value as proof"
+    );
+    expect(normalizedGitlab).toContain(
+      "paginate all branches again and record the final remote-branch reconciliation receipt"
+    );
   });
 
   test("Sync is local-only and preserves unsafe checkout state", async () => {

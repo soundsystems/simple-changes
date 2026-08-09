@@ -158,8 +158,49 @@ describe("onboarding conversation", () => {
       "When should I ask for permission or help?"
     );
     expect(ONBOARDING_QUESTIONS.scope).toBe(
-      "For what scope should I save these preferences?"
+      "Where should these preferences live?"
     );
+  });
+
+  test("starts with explained recommended, customized, and run-only setup", async () => {
+    const messages: string[] = [];
+    const choicesByQuestion = new Map<string, readonly OnboardingChoice[]>();
+    const selection = await collectOnboardingSelection(
+      DEFAULT_POLICY,
+      { defaultFinish: "integrate" },
+      {
+        choose: (question, choices) => {
+          choicesByQuestion.set(question, choices);
+          if (question === ONBOARDING_QUESTIONS.start) {
+            return Promise.resolve("run");
+          }
+          return Promise.resolve(choices[0]?.value ?? "");
+        },
+        confirm: () => Promise.resolve(true),
+        present: (message) => messages.push(message),
+      },
+      undefined,
+      "/work/project",
+      false,
+      { showFirstScreen: true }
+    );
+
+    expect(messages.join("\n")).toContain(
+      "This is first-use onboarding inside your original Simple Changes task."
+    );
+    expect(messages.join("\n")).toContain(
+      "ready work -> focused proposal -> checks -> required approval -> merge -> STOP"
+    );
+    expect(
+      choicesByQuestion
+        .get(ONBOARDING_QUESTIONS.start)
+        ?.map((choice) => choice.label)
+    ).toEqual([
+      "Use recommended setup",
+      "Customize",
+      "Use recommended setup for this run only",
+    ]);
+    expect(selection).toMatchObject({ scope: "run", setupStyle: "run" });
   });
 
   test("asks about production only when shipping is selected", async () => {

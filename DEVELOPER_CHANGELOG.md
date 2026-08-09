@@ -1,5 +1,32 @@
 # Developer changelog
 
+## 0.9.0 - 2026-08-09
+
+- Added durable conversational onboarding for first write-capable use:
+  - The onboarding contract now presents a request-aware first screen with
+    recommended, customized, and run-only paths before collecting preferences.
+    Recommended setup uses the resolved finish boundary, safe production and
+    changelog defaults, and repository-first storage when a primary checkout is
+    available; customized setup explains and asks only unresolved decisions.
+  - Added explicit setup-style output, presentation hooks, workflow and storage
+    diagrams, repository-versus-personal scope language, confirmation receipts,
+    CLI coverage, behavioral evaluation expectations, and packaged guidance.
+- Added a fail-closed GitLab remote-branch reconciliation completion gate:
+  - Introduced a closed receipt schema and semantic validator over the union of
+    complete initial and final provider inventories. Exact proposal heads,
+    protected and target status, concurrent movement, audit evidence, and
+    per-branch dispositions determine whether work is preserved or proven
+    obsolete.
+  - Integration, Ship, Reconcile, and resumed GitLab loops now carry explicit
+    remote-branch deletion authority, persist a target-bound reconciliation
+    receipt, and refuse to end when the receipt is missing, unsafe, stale, or
+    names a project other than the exact project parsed from the selected target
+    remote. Added CLI, lease, schema, contract, documentation, evaluation, and
+    focused regression coverage for the gate, including wrong-project receipt
+    rejection.
+<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-09T00:42:26-05:00" -->
+<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-09T00:57:18-05:00" -->
+
 ## 0.8.2 - 2026-08-07
 
 - Removed version-sensitive inline Biome suppression dependencies from the

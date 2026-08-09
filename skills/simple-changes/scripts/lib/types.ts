@@ -145,6 +145,7 @@ export type Authority =
   | "local-sync"
   | "proposal-write"
   | "merge"
+  | "remote-branch-delete"
   | "preview-deploy"
   | "production-deploy"
   | "remote-data-write"
@@ -167,6 +168,7 @@ export type PlannedOperation =
   | "deploy-production"
   | "promote-deployment"
   | "reconcile-managed-targets"
+  | "reconcile-remote-branches"
   | "audit-migration"
   | "apply-migration"
   | "cleanup";
@@ -455,6 +457,56 @@ export interface LoopWorktreePreparation {
   purpose: string;
 }
 
+export interface RemoteBranchProposalEvidence {
+  headRevision: string | null;
+  objectId: string;
+  state: "open" | "merged" | "closed";
+}
+
+export interface RemoteBranchReconciliationEntry {
+  classification:
+    | "canonical-target"
+    | "protected"
+    | "open-proposal"
+    | "merged-obsolete"
+    | "closed-unmerged"
+    | "no-proposal"
+    | "ambiguous";
+  disposition:
+    | "preserved-target"
+    | "preserved-protected"
+    | "preserved-open-proposal"
+    | "preserved-audited"
+    | "preserved-ambiguous"
+    | "deleted-merged"
+    | "deleted-proven-obsolete";
+  evidence: string[];
+  finalHeadRevision: string | null;
+  initialHeadRevision: string | null;
+  name: string;
+  obsoleteProof:
+    | "merged-proposal-head"
+    | "target-contains-head"
+    | "provider-diff-empty"
+    | null;
+  proposals: RemoteBranchProposalEvidence[];
+  protected: boolean;
+}
+
+export interface RemoteBranchReconciliationReceipt {
+  branches: RemoteBranchReconciliationEntry[];
+  finalBranchCount: number;
+  finalInventoryComplete: true;
+  initialBranchCount: number;
+  initialInventoryComplete: true;
+  observedAt: string;
+  project: string;
+  provider: string;
+  schemaVersion: 1;
+  targetBranch: string;
+  targetRevision: string;
+}
+
 export interface LoopLease {
   baselineDigest: string;
   commonGitDirectory: string;
@@ -466,6 +518,7 @@ export interface LoopLease {
   ownerAgentId: string;
   preparations: LoopWorktreePreparation[];
   primaryCheckout: string;
+  remoteBranchReconciliation?: RemoteBranchReconciliationReceipt;
   runId: string;
   schemaVersion: 1;
   targetRef: string;
@@ -506,6 +559,7 @@ export type SchemaName =
   | "change-plan"
   | "run-state"
   | "provider-receipt"
+  | "remote-branch-reconciliation"
   | "release-consistency"
   | "release-notes"
   | "loop-lease"

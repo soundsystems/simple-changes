@@ -247,6 +247,10 @@
       "authority": ["local-write", "proposal-write", "merge"],
       "expectedBehaviors": [
         "Prune only proven merged or obsolete state",
+        "Paginate every GitLab branch and correlate protected status plus open, merged, and closed merge requests",
+        "Preserve protected, open-MR, concurrent, and ambiguous branches",
+        "Delete exact merged-MR heads only when proven obsolete and separately audit closed/unmerged and no-MR branches",
+        "Verify a final provider inventory in which every remaining remote branch has an accounted disposition",
         "Restore the original primary checkout"
       ]
     },

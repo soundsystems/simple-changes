@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.9.0 - 2026-08-09
+
+- First-use onboarding now opens with a request-aware explanation of why setup
+  appeared, the recommended workflow and storage behavior, and the assurance
+  that nothing has been written or sent. Users can accept the recommendation,
+  customize unresolved preferences one at a time, or use the recommendation
+  for only the current run before confirming a complete receipt.
+- GitLab integration runs now reconcile every remote branch before completion.
+  The final ledger preserves canonical, protected, open-proposal, concurrent,
+  and ambiguous work, and removes only branches whose exact provider evidence
+  proves them obsolete.
+
 ## 0.8.2 - 2026-08-07
 
 - Runtime sources now pass current Biome and Ultracite checks across consuming

@@ -16,6 +16,7 @@ const schemaNames: SchemaName[] = [
   "change-plan",
   "run-state",
   "provider-receipt",
+  "remote-branch-reconciliation",
   "release-consistency",
   "release-notes",
   "loop-lease",

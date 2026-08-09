@@ -259,8 +259,18 @@ repository:
 bun run simple-changes setup --scope user
 ```
 
-It asks the following questions and explains the effect of every option as it
-goes:
+On first use, it explains why onboarding appeared, shows the exact recommended
+workflow, and makes clear that nothing has been pushed, merged, deployed, or
+saved yet. The first choice is:
+
+1. **Use recommended setup** — Apply the safe, request-aware defaults and show a
+   receipt before saving them.
+2. **Customize** — Explain and ask only unresolved preferences, one at a time.
+3. **Use recommended setup for this run only** — Continue without a preference
+   file and ask again next time.
+
+Customized setup uses small workflow and storage diagrams where they make a
+boundary clearer. It then asks:
 
 1. **How far should I usually take ready work?** Stop with a checked proposal,
    merge after approval, or also deploy and verify.
@@ -273,8 +283,8 @@ goes:
    number and ISO date, use an ISO date only, or use a number only.
 5. **When should I ask for permission or help?** Only when blocked, before major
    steps, or skip unauthorized work without interrupting.
-6. **For what scope should I save these preferences?** Personal defaults,
-   repository policy, or this run without writing a policy file.
+6. **Where should these preferences live?** Visible repository policy, private
+   personal fallback defaults, or this run without writing a preference file.
 7. When that scope has an existing instruction file, whether to add a short,
    managed Simple Changes pointer to the exact file.
 8. When adding the pointer, whether to ask if completed work is ready

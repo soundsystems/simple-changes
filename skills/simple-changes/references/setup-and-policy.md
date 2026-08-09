@@ -19,6 +19,10 @@ Effective preference precedence is:
 
 ## Automatic initialization checkpoint
 
+For the first screen, question-by-question presentation, diagrams, preference
+storage explanation, and confirmation receipt, follow
+[conversational onboarding](onboarding.md).
+
 Classify the request mode, then run:
 
 ```sh
@@ -32,14 +36,11 @@ onboarding. When any other write-capable mode has policy source `default`,
 onboarding is required before any local branch, commit, push, proposal, merge,
 cleanup, or deployment mutation.
 
-Start onboarding automatically; do not add a separate "would you like to set
-this up?" prompt. The request mode supplies the finish choice for queue, sweep,
-integrate, reconcile, and ship. Ask only unresolved questions, confirm the
-summary, persist the selected scope, and continue the original task. For each
-question, show every option with a short explanation of what selecting it will
-do; option labels alone are not sufficient. Use the labels and consequence
-descriptions from the onboarding section in the main skill so chat and terminal
-setup communicate the same behavior.
+Start onboarding automatically; do not add a separate “would you like to set
+this up?” gate. Explain that onboarding is available and offer recommended,
+customized, and run-only setup. The request mode supplies the finish choice for
+queue, sweep, integrate, reconcile, and ship. Ask only unresolved questions,
+confirm the receipt, persist the selected scope, and continue the original task.
 
 Ask **How should changelog work be handled?** only when established changelog
 surfaces or a compatible changelog skill are discovered. Offer delegation when

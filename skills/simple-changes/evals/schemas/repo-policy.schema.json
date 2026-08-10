@@ -20,7 +20,10 @@
       "additionalProperties": false,
       "required": ["version"],
       "properties": {
-        "version": { "const": 1 }
+        "disposition": {
+          "enum": ["accepted", "reviewed", "deferred"]
+        },
+        "version": { "type": "integer", "minimum": 1 }
       }
     },
     "defaultFinish": {

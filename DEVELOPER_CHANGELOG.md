@@ -1,5 +1,49 @@
 # Developer changelog
 
+## 0.10.0 - 2026-08-10
+
+- Added a provider-negotiated public-release transaction for Ship workflows:
+  - New closed capability, request, receipt-v2, and release-delivery contracts
+    negotiate exact schema digests and supported protocol versions before
+    delegation. Legacy receipts remain limited to non-release or already
+    reconciled compatibility paths.
+  - Release classification, release-file preparation, and final read-only
+    verification share a transaction ID, decision digest, effective-policy
+    digest, release train, and complete input/reconciliation/finalized revision
+    lineage. Structured reason and action codes drive approval, retry, and
+    blocker behavior without parsing provider prose.
+  - Version approval and production authority compose without becoming the
+    same permission. The release gate invalidates stale decisions, prevents a
+    new version on an unchanged deployment retry, and requires a verified
+    target before the deployment adapter emits a composite delivery receipt.
+  - Added coordinated onboarding primitives that retain separate policy owners
+    and destinations, preserve successful partial writes, and resume only the
+    incomplete owner. Added protocol CLI commands, closed schema coverage,
+    release-gate and deployment regressions, and updated behavioral guidance.
+- Added a versioned installed-guidance checkpoint for Simple Changes:
+  - Repository and personal policy now persist a guidance version plus an
+    `accepted`, `reviewed`, or `deferred` disposition. Policies written before
+    the disposition field remain compatible, while newly initialized policies
+    start at the current guidance version.
+  - Write-capable initialization emits a structured notice for meaningful
+    behavior, onboarding, or integration updates and blocks mutation until the
+    user records an actual choice through `acknowledge-update`; read-only modes
+    remain unblocked, and already-acknowledged write-capable runs continue.
+  - The notice exposes practical settings actions and read-only Simple Changes
+    release notes. A Simple Changelogs settings or history review appears only
+    as a separately owned handoff when that capability is discovered, preserving
+    the boundary that Simple Changes never authors or audits changelog history.
+  - Added closed initialization and policy schema coverage plus focused runtime,
+    CLI, onboarding, and skill-contract regressions for one-time persistence,
+    absent-provider behavior, and mutation gating.
+- Closed the opening-worktree claim race under `allow-claimed`: a qualifying
+  active claim now promotes an existing preserved lease entry to
+  `concurrent-author` at the next guarded observation, binds the exact claim and
+  owner, and rejects redundant user overrides. Documentation and lease tests
+  now require claiming a newly created independent worktree before any project
+  inspection or mutation.
+<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-10T18:28:40-05:00" -->
+
 ## 0.9.0 - 2026-08-09
 
 - Added durable conversational onboarding for first write-capable use:

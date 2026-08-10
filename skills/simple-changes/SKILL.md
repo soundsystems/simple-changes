@@ -65,6 +65,16 @@ launches onboarding directly. In a non-TTY agent runtime, its JSON result is the
 handshake that requires the agent to ask the same questions in chat and then
 invoke `setup` with the answers.
 
+When initialization instead reports a meaningful installed guidance update,
+explain the practical Simple Changes behavior or setting changes once before
+mutation. Offer settings review, keeping the current settings, deferring this
+version, and the advertised detailed Simple Changes release notes. Record only
+the user's actual disposition, then resume the original request. If Simple
+Changelogs is present, offer its historical/settings review only as a separate
+owner-controlled handoff; omit that action when absent. Never call the Simple
+Changes checkpoint a backfill or perform changelog-history work directly.
+Follow [installed guidance updates](references/guidance-updates.md).
+
 Use the current request to avoid redundant questions. Queue and sweep prefill
 **Put it up for review**; integrate and reconcile prefill **Merge when
 approved**; ship prefills **Ship when approved**. Still ask whether that choice
@@ -177,6 +187,15 @@ summarize what actually shipped, exact receipts, review-driven changes and
 re-verification, and anything preserved or blocked. Follow
 [ship communication](references/ship-communication.md).
 
+For a public release, negotiate the changelog provider's exact protocol and
+schema digests before delegation. Use one revision-bound transaction per
+release train through read-only `classify`, release-file-only `prepare`, and
+final read-only `verify`. Treat `decision-required` as normal user direction,
+bind approval to the effective-policy and decision digests, and route failures
+only through structured reason/action codes. Simple Changes never stores the
+patch/minor/major policy. Follow
+[changelog coordination](references/changelog-coordination.md).
+
 ## Hold one integration-controller lease
 
 For Queue, Sweep, Integrate, Ship, Reconcile, and Resume, start one active loop
@@ -195,10 +214,12 @@ mutex: with the default `concurrentWork: "allow-claimed"` policy, independent
 agents may keep editing and committing in distinct actively claimed non-primary
 worktrees that are also off the canonical target branch. The first guarded
 observation durably binds a late author's exact claim ID and owner into the
-lease; later release or reassignment blocks integration. The controller must
-exclude those worktrees from its package, merge, and cleanup scope. `loop guard`
-and `loop exec` remain controller/run-prepared-author integration boundaries;
-independent concurrent authors keep ordinary edits and commits outside them.
+lease, including when that worktree was initially recorded as `preserved`
+before its owner claimed it; later release or reassignment blocks integration.
+The controller must exclude those worktrees from its package, merge, and cleanup
+scope. `loop guard` and `loop exec` remain controller/run-prepared-author
+integration boundaries; independent concurrent authors keep ordinary edits and
+commits outside them.
 `loop guard` is a read-only preflight, not a mutation permit.
 Run each controller or run-author integration mutation through `loop exec`,
 which holds the lease lock across fresh preflight inventory, the bounded
@@ -235,11 +256,20 @@ redirect the agent there before it edits anything. A reviewer may remain in
 read-only mode without a worktree; if review turns into authorship, prepare an
 authoring worktree first.
 
-An independent feature agent creates its own isolated branch/worktree, claims it
-immediately with `worktree claim`, and works normally without acquiring a
-second integration lease. Claim every owner-created worktree before editing,
-using a
-bounded adapter slug and an opaque local `ownerRef`. Claims and pause receipts
+An independent feature agent creates its own isolated branch/worktree, then
+claims it with `worktree claim` as the immediate next command:
+
+```sh
+git worktree add "$WORKTREE" -b "$BRANCH"
+bun skills/simple-changes/scripts/simple-changes.ts worktree claim \
+  --agent-id "$AGENT_ID" --worktree "$WORKTREE" \
+  --adapter "$ADAPTER" --owner-ref "$OWNER_REF" --json
+```
+
+Do not read project files from the new checkout, install dependencies, format,
+generate, edit, stage, or commit there until the claim succeeds. The agent then
+works normally without acquiring a second integration lease. Use a bounded
+adapter slug and an opaque local `ownerRef`. Claims and pause receipts
 live beneath the common Git directory with mode `0600`; never store task titles,
 prompts, message bodies, credentials, or provider tokens there. Before a host
 adapter contacts an owner, require its capability probe to prove discovery,
@@ -250,7 +280,10 @@ configurations must return the structured manual next action without mutating
 Git or the lease.
 
 With `allow-claimed`, a distinct healthy claimed worktree does not block merely
-because it changes. Set repository policy `concurrentWork` to `strict` only when
+because it changes. If the worktree was already in the opening manifest as
+`preserved`, the next guarded observation automatically promotes it to
+`concurrent-author`; no user approval, `loop allow`, pause, or adoption is
+needed. Set repository policy `concurrentWork` to `strict` only when
 repository-wide serialization is desired. When strict policy or a genuine
 collision blocks the manifest, ask only its exact owner to pause at a safe
 boundary and run `worktree pause`. Adopt a newly arrived paused
@@ -377,9 +410,11 @@ authority for those operations.
    release-policy files, version fields, or release-note destinations. When
    changelog work exists, apply the configured delegation behavior and follow
    [changelog coordination](references/changelog-coordination.md). Accept
-   delegated files only with a current validated handoff receipt. A production
-   Web deployment always requires a dated, versioned release receipt that
-   accounts for every target-contained `Unreleased` item.
+   delegated files only with a current validated handoff receipt. For a newly
+   formed public version, validate negotiated phase-specific requests and v2
+   receipts; v1 remains only for documented non-release and already-reconciled
+   compatibility. A production Web deployment requires final verification of
+   the exact refreshed target.
 10. Run each local Git or repository mutation through `loop exec` from the
     exact registered worktree, then package only the intended paths without
     resetting, hiding, or staging unrelated work. Do not use cleanup stashes.
@@ -398,13 +433,16 @@ authority for those operations.
 14. Audit detected migrations, but cross the authority checkpoint before any
     remote write. Follow
     [high-risk actions](references/migrations-and-high-risk-actions.md).
-15. Deploy only when authorized. After all feature merges, complete and merge
-    any production Web release reconciliation, then refresh the canonical remote
-    target branch (normally `main`) and capture its exact head revision. Verify
-    that revision contains the dated, versioned release and no target-contained
-    `Unreleased` work. Verify the live deployment observes the same revision,
-    even when no deployment was created during this run, together with
-    readiness, complete canonical-target coverage, and the changed journey.
+15. Deploy only when authorized. After all feature merges, classify and prepare
+    any production Web release reconciliation, merge it only with the next
+    required authority, then refresh the canonical remote target branch
+    (normally `main`) and capture its exact head revision. Require a read-only
+    `verified` receipt proving the target contains the reconciliation head and
+    exact version. Verify the live deployment observes the same revision, even
+    when no deployment was created during this run, together with readiness,
+    complete canonical-target coverage, and the changed journey. Emit a
+    composite delivery receipt binding the transaction, decision digest, full
+    revision lineage, and provider result.
     Reconcile stale provider-managed targets with the existing artifact through
     a bounded promote/recheck/managed-target sequence. Follow
     [deployments](references/deployments.md).
@@ -455,9 +493,13 @@ result.
 - Never author changelogs, release notes, changelog policy, version fields, or
   release-note destinations directly. Delegate only to a discovered compatible
   workflow, validate its handoff receipt, then re-inventory before packaging.
+- Never treat skill-path discovery as compatibility. Negotiate supported
+  versions/features and exact schema digests, and never pass raw prompt text as
+  the inter-skill request.
 - Treat every production Web deployment as a product release. Do not deploy
-  until the refreshed canonical target contains the merged dated/versioned
-  release reconciliation and no target-contained work remains `Unreleased`.
+  until a read-only final changelog verification proves the refreshed canonical
+  target contains the merged dated/versioned reconciliation and no
+  target-contained work remains `Unreleased`.
 - Capture the opening baseline before mutation and attribute this run's objects.
 - Persist one integration-controller lease for write-capable integration modes.
   Agents assigned to that run use registered isolated worktrees, and every
@@ -552,7 +594,8 @@ requires a refreshed final inventory proving that every remaining provider
 branch is represented in the ledger.
 For production deployment, report the refreshed canonical Git target revision,
 the product release version when the product is Web, the observed deployment
-revision, the expected canonical-target inventory, and each refreshed
+revision, the input/reconciliation/finalized revision lineage, decision digest,
+composite delivery receipt, expected canonical-target inventory, and each refreshed
 target-to-deployment identity mapping, not only the generated deployment URL. A
 Ship or resumed Ship loop is incomplete when the live revision differs from the
 latest canonical target revision, or when Web production lacks its merged

@@ -1,12 +1,15 @@
 {
   "schemaVersion": 1,
   "guidance": {
-    "version": 1
+    "disposition": "accepted",
+    "version": 2
   },
   "changelogHandling": "delegate-if-available",
   "defaultFinish": "integrate",
   "questions": "blocking-only",
   "review": "repository-policy",
   "productionDeploy": "ask",
-  "concurrentWork": "preserve"
+  "concurrentWork": "preserve",
+  "handoffTiming": "confirm-ready",
+  "uiArtifactVersioning": "repository-convention"
 }

@@ -1,3 +1,7 @@
+import {
+  type GuidanceUpdateNotice,
+  inspectGuidanceUpdate,
+} from "./guidance-updates.ts";
 import type {
   ChangelogCoordination,
   InitializationMode,
@@ -14,6 +18,7 @@ export type HandoffAction =
 
 export interface InitializationStatus {
   changelogCoordination: ChangelogCoordination;
+  guidanceUpdate: GuidanceUpdateNotice;
   handoffAction: HandoffAction;
   handoffTiming: RepoPolicy["handoffTiming"] | null;
   inferredDefaultFinish: Exclude<RepoPolicy["defaultFinish"], "preview"> | null;
@@ -109,6 +114,7 @@ const initializationReason = (
   mode: InitializationMode,
   writeCapable: boolean,
   onboardingRequired: boolean,
+  updateActionRequired: boolean,
   handoff: HandoffState
 ): string => {
   if (!writeCapable) {
@@ -116,6 +122,9 @@ const initializationReason = (
   }
   if (onboardingRequired) {
     return "No repository or personal preferences exist; onboarding must finish before mutation.";
+  }
+  if (updateActionRequired) {
+    return "A meaningful Simple Changes update changed behavior, onboarding, or integration guidance; review or defer it once before mutation.";
   }
   if (mode === "sync") {
     return "Sync uses fixed local-only preservation guardrails and does not require workflow preference onboarding.";
@@ -141,6 +150,8 @@ export const inspectInitialization = (
   },
   changelogCoordination: ChangelogCoordination = {
     capabilityAvailable: false,
+    capabilityHelpers: [],
+    capabilityStatus: "absent",
     providers: [],
     releaseSurfaces: [],
     relevant: false,
@@ -152,15 +163,23 @@ export const inspectInitialization = (
   const writeCapable = WRITE_CAPABLE_MODES.has(mode);
   const onboardingRequired =
     writeCapable && mode !== "sync" && policy.source === "default";
+  const guidanceUpdate = inspectGuidanceUpdate(
+    policy.source === "default" ? null : (policy.value ?? null),
+    changelogCoordination
+  );
+  const updateActionRequired =
+    writeCapable && guidanceUpdate.status === "update-available";
   const readinessConfirmed = options.readinessConfirmed ?? false;
   const handoff = inspectHandoff(mode, policy.value, readinessConfirmed);
   const mutationAllowed =
     writeCapable &&
     !onboardingRequired &&
+    !updateActionRequired &&
     (mode !== "handoff" ||
       (handoff.action === "proceed" && handoff.resolvedMode !== "preview"));
   return {
     changelogCoordination,
+    guidanceUpdate,
     handoffAction: handoff.action,
     handoffTiming: handoff.timing,
     inferredDefaultFinish: handoff.finish,
@@ -174,6 +193,7 @@ export const inspectInitialization = (
       mode,
       writeCapable,
       onboardingRequired,
+      updateActionRequired,
       handoff
     ),
     resolvedMode: handoff.resolvedMode,

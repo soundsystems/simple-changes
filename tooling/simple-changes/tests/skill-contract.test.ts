@@ -17,6 +17,14 @@ const changelogReceiptSchemaPath = new URL(
   "../../../skills/simple-changes/evals/schemas/changelog-receipt.schema.json",
   import.meta.url
 );
+const changelogRequestSchemaPath = new URL(
+  "../../../skills/simple-changes/evals/schemas/changelog-request.schema.json",
+  import.meta.url
+);
+const releaseDeliverySchemaPath = new URL(
+  "../../../skills/simple-changes/evals/schemas/release-delivery-receipt.schema.json",
+  import.meta.url
+);
 const syncPath = new URL(
   "../../../skills/simple-changes/references/sync.md",
   import.meta.url
@@ -102,35 +110,51 @@ describe("Simple Changes skill contract", () => {
     );
   });
 
-  test("Web production requires merged versioned release reconciliation", async () => {
-    const [skill, coordination, deployment, receiptSchema] = await Promise.all([
+  test("Web production requires negotiated phased release verification", async () => {
+    const [
+      skill,
+      coordination,
+      deployment,
+      receiptSchema,
+      requestSchema,
+      deliverySchema,
+    ] = await Promise.all([
       readFile(skillPath, "utf8"),
       readFile(changelogCoordinationPath, "utf8"),
       readFile(deploymentPath, "utf8"),
       readFile(changelogReceiptSchemaPath, "utf8"),
+      readFile(changelogRequestSchemaPath, "utf8"),
+      readFile(releaseDeliverySchemaPath, "utf8"),
     ]);
 
     const normalizedSkill = skill.replace(/\s+/g, " ");
     const normalizedCoordination = coordination.replace(/\s+/g, " ");
     const normalizedDeployment = deployment.replace(/\s+/g, " ");
 
-    expect(normalizedSkill).toContain(
-      "A production Web deployment always requires a dated, versioned release receipt"
-    );
+    expect(normalizedSkill).toContain("read-only `verified` receipt");
     expect(normalizedSkill).toContain(
       "Treat every production Web deployment as a product release"
+    );
+    expect(normalizedSkill).toContain(
+      "Negotiate supported versions/features and exact schema digests"
     );
     expect(normalizedCoordination).toContain(
       'targetContainedUnreleased: "integrated"'
     );
     expect(normalizedCoordination).toContain(
-      "Deploy only that refreshed reconciled target"
+      "Deploy only that verified finalized target"
     );
     expect(normalizedDeployment).toContain(
-      "An unresolved version, unavailable or blocked delegation, preserve-and-report disposition, unmerged reconciliation, or target-contained pending item blocks production"
+      "require a v2 `verified` changelog receipt"
     );
+    expect(normalizedDeployment).toContain(
+      "composite `release-delivery-receipt`"
+    );
+    expect(requestSchema).toContain('"prepare-release-files"');
     expect(receiptSchema).toContain('"targetContainedUnreleased"');
     expect(receiptSchema).toContain('"const": "integrated"');
+    expect(receiptSchema).toContain('"decision-required"');
+    expect(deliverySchema).toContain('"deployedRevision"');
   });
 
   test("Onboarding explains the consequence of every option", async () => {

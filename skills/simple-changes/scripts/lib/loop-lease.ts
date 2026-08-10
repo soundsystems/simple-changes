@@ -659,15 +659,15 @@ const concurrentClaimFor = (
   );
 };
 
-const admitLateConcurrentAuthors = (
+const admitConcurrentAuthors = (
   lease: LoopLease,
   inventory: RepositoryInventory
 ): LoopLease => {
   if (lease.concurrentWork !== "allow-claimed") {
     return lease;
   }
-  const registeredPaths = new Set(
-    lease.worktrees.map((worktree) => worktree.path)
+  const registeredByPath = new Map(
+    lease.worktrees.map((worktree) => [worktree.path, worktree])
   );
   const coordination = readCoordinationDocumentFromCommonDirectory(
     lease.commonGitDirectory
@@ -680,11 +680,8 @@ const admitLateConcurrentAuthors = (
     lease.primaryCheckout,
     lease.targetRef
   );
-  const admissions: LoopWorktreeLease[] = [];
+  const admissions = new Map<string, LoopWorktreeLease>();
   for (const worktree of inventory.worktrees) {
-    if (registeredPaths.has(worktree.path)) {
-      continue;
-    }
     const claim = concurrentClaimFor(
       lease,
       worktree,
@@ -692,25 +689,37 @@ const admitLateConcurrentAuthors = (
       primaryBranch,
       targetBranch
     );
-    if (claim) {
-      admissions.push({
-        ...worktreeLease(
-          worktree,
-          "concurrent-author",
-          claim.owner.agentId,
-          false
-        ),
-        claimId: claim.claimId,
-      });
+    if (!claim) {
+      continue;
     }
+    const registered = registeredByPath.get(worktree.path);
+    if (registered && registered.role !== "preserved") {
+      continue;
+    }
+    admissions.set(worktree.path, {
+      ...worktreeLease(
+        worktree,
+        "concurrent-author",
+        claim.owner.agentId,
+        false
+      ),
+      claimId: claim.claimId,
+    });
   }
-  if (admissions.length === 0) {
+  if (admissions.size === 0) {
     return lease;
   }
   return writeLease({
     ...lease,
     updatedAt: new Date().toISOString(),
-    worktrees: [...lease.worktrees, ...admissions],
+    worktrees: [
+      ...lease.worktrees.map(
+        (worktree) => admissions.get(worktree.path) ?? worktree
+      ),
+      ...[...admissions.values()].filter(
+        (worktree) => !registeredByPath.has(worktree.path)
+      ),
+    ],
   });
 };
 
@@ -930,7 +939,7 @@ const requireLease = (inventory: RepositoryInventory): LoopLease => {
       EXIT_CODES.unsafe
     );
   }
-  return admitLateConcurrentAuthors(lease, inventory);
+  return admitConcurrentAuthors(lease, inventory);
 };
 
 const assertAgentMutationAllowed = (
@@ -1092,7 +1101,7 @@ export const verifyLoop = (repositoryPath: string): LoopVerification => {
           violations: [],
         };
       }
-      const lease = admitLateConcurrentAuthors(storedLease, inventory);
+      const lease = admitConcurrentAuthors(storedLease, inventory);
       return verificationAgainst(lease, inventory);
     }
   );
@@ -1700,9 +1709,19 @@ export const grantLoopOverride = (
       const registered = lease.worktrees.find(
         (worktree) => worktree.path === path && worktree.role === "preserved"
       );
+      const concurrentAuthor = lease.worktrees.find(
+        (worktree) =>
+          worktree.path === path && worktree.role === "concurrent-author"
+      );
       const current = inventory.worktrees.find(
         (worktree) => worktree.path === path
       );
+      if (concurrentAuthor) {
+        throw new SimpleChangesError(
+          `Worktree ${path} is already recognized as an actively claimed concurrent author; no user-approved override is allowed or needed.`,
+          EXIT_CODES.unsafe
+        );
+      }
       if (!(registered && current)) {
         throw new SimpleChangesError(
           `Override path must name a current preserved baseline worktree: ${path}`,
@@ -2133,7 +2152,7 @@ export const loopStatus = (
         inventory.repository.commonGitDirectory
       );
       const lease = storedLease
-        ? admitLateConcurrentAuthors(storedLease, inventory)
+        ? admitConcurrentAuthors(storedLease, inventory)
         : null;
       return {
         lease,

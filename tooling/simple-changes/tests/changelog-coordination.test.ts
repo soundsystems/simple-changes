@@ -30,6 +30,8 @@ describe("changelog coordination discovery", () => {
 
     expect(inspect(fixture)).toEqual({
       capabilityAvailable: false,
+      capabilityHelpers: [],
+      capabilityStatus: "absent",
       providers: [],
       releaseSurfaces: [],
       relevant: false,
@@ -61,12 +63,21 @@ describe("changelog coordination discovery", () => {
       "skills/simple-changelogs/SKILL.md",
       "---\nname: simple-changelogs\ndescription: Test fixture.\n---\n"
     );
+    writeFixture(
+      fixture.root,
+      "skills/simple-changelogs/scripts/setup.ts",
+      "export {};\n"
+    );
 
     const result = inspect(fixture);
     expect(result).toMatchObject({
       capabilityAvailable: true,
+      capabilityStatus: "unverified",
       relevant: true,
     });
+    expect(result.capabilityHelpers).toEqual([
+      join(fixture.root, "skills/simple-changelogs/scripts/setup.ts"),
+    ]);
     expect(result.providers[0]).toEndWith("/skills/simple-changelogs/SKILL.md");
   });
 

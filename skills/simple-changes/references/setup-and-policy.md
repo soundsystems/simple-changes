@@ -48,6 +48,19 @@ available, preservation and reporting, or asking before delegation. The safe
 fallback is preservation; setup never grants release, version, or publication
 authority.
 
+Public patch/minor/major behavior remains owned by Simple Changelogs and is
+never stored in `.simple-changes.json`. When first Ship use needs both products'
+preferences, Simple Changes may present one coordinated conversation using a
+structured onboarding contribution from Simple Changelogs. The confirmation
+names both owner-controlled destinations, then each canonical helper writes
+only its own policy.
+
+Persist coordinated setup as `pending`, `completed`, or `partial` with policy
+and write-receipt digests rather than copied values. If one owner write fails,
+preserve the valid write and resume only the incomplete owner after fresh
+inspection. Do not ask public-version questions when the changelog workflow
+reports that no version-owning release train applies.
+
 Ask **When I save multiple UI iterations, how should their version names be
 chosen?** only when the current task will preserve multiple UI artifacts and no
 repository convention already answers it. Offer repository convention
@@ -61,12 +74,19 @@ agent must translate that status into the same onboarding questions in chat,
 then call `setup` with explicit flags. A valid repository or personal policy
 suppresses repeat onboarding.
 
+A saved policy with an older meaningful guidance version triggers the separate
+installed-update checkpoint before write-capable mutation. It does not restart
+first-use onboarding. Present Simple Changes changes and settings only, persist
+the user's reviewed, accepted, or deferred disposition for that version, and
+keep any Simple Changelogs review behind an optional owner-controlled handoff.
+Follow [installed guidance updates](guidance-updates.md).
+
 Use these safe defaults when no committed policy exists:
 
 ```json
 {
   "schemaVersion": 1,
-  "guidance": { "version": 1 },
+  "guidance": { "disposition": "accepted", "version": 2 },
   "changelogHandling": "preserve-and-report",
   "defaultFinish": "open-change-request",
   "handoffTiming": "confirm-ready",

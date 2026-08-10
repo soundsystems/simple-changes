@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://simple-changes.dev/schemas/changelog-capabilities.schema.json",
+  "title": "Simple Changelogs integration capabilities",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "provider",
+    "distribution",
+    "guidanceVersion",
+    "requestVersions",
+    "receiptVersions",
+    "features",
+    "schemaDigests"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "provider": { "const": "simple-changelogs" },
+    "distribution": { "type": "string", "minLength": 1 },
+    "guidanceVersion": { "type": "integer", "minimum": 1 },
+    "requestVersions": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "const": 1 }
+    },
+    "receiptVersions": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "enum": [1, 2] }
+    },
+    "features": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "public-version-policy",
+          "classify-prepare-verify",
+          "multi-train-receipts"
+        ]
+      }
+    },
+    "schemaDigests": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["changelogRequest", "changelogReceipt"],
+      "properties": {
+        "changelogRequest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "changelogReceipt": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+      }
+    }
+  }
+}

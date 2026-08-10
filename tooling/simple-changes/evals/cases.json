@@ -312,6 +312,40 @@
       ]
     },
     {
+      "id": "ship-public-version-transaction",
+      "prompt": "Ship the ready Web changes. Follow the repository's public-version preference and deploy automatically only if every release gate is current.",
+      "mode": "ship",
+      "authority": [
+        "local-write",
+        "proposal-write",
+        "merge",
+        "production-deploy"
+      ],
+      "expectedBehaviors": [
+        "Negotiate Simple Changelogs request and receipt versions plus exact schema digests before delegation",
+        "Classify against the refreshed input target without passing raw prompt prose",
+        "Treat decision-required as user direction rather than an operational blocker",
+        "Bind version approval to the effective-policy and decision digests",
+        "Allow release-file mutation only during prepare and retain the reconciliation-head revision",
+        "Refresh after merge and require a read-only verified receipt for the exact finalized target",
+        "Deploy or observe only that verified target without selecting another version on retry",
+        "Emit a composite receipt with input, reconciliation, finalized, and deployed revisions"
+      ]
+    },
+    {
+      "id": "resume-interrupted-public-release",
+      "prompt": "Continue the interrupted Ship run after release preparation; do not repeat any version, merge, or deployment operation.",
+      "mode": "resume",
+      "authority": [],
+      "expectedBehaviors": [
+        "Reconstruct the release phase from transaction and schema, policy, decision, request, and receipt digests",
+        "Refresh Git and provider evidence before reusing approval",
+        "Resume final verification when the prepared reconciliation is already merged",
+        "Avoid a duplicate bump, reconciliation, deployment, or owner-policy write",
+        "Keep independent release trains separate even when they share a release-set ID"
+      ]
+    },
+    {
       "id": "sweep-cross-surface-parity",
       "prompt": "Open focused changes for this shared account workflow across the web client, native app, and CLI. Keep platform-specific interactions native.",
       "mode": "sweep",

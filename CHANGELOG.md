@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.10.0 - 2026-08-10
+
+- Public releases now use a negotiated, revision-bound handoff with Simple
+  Changelogs:
+  - Ship runs verify the provider's exact protocol and schema capabilities,
+    then carry each release train through read-only classification,
+    release-file preparation, and final target verification.
+  - Version direction and production approval remain independent decisions,
+    stale approvals fail closed when their policy, decision, schema, or target
+    changes, and completed deployments carry a composite receipt that binds the
+    selected version to the observed live revision.
+- Meaningful installed guidance updates now pause the next write-capable run
+  once before mutation. Users can review affected Simple Changes settings, keep
+  their current choices, defer that guidance version, or view its detailed
+  release notes. Any Simple Changelogs settings or history review remains a
+  separate, optional owner-controlled handoff.
+- Independent agents can now claim a worktree immediately after creating it
+  even when an active loop first recorded that checkout as preserved. The next
+  guarded observation recognizes the claimed concurrent author automatically,
+  without a pause, adoption, override, or extra approval.
+<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-10T18:28:40-05:00" -->
+
 ## 0.9.0 - 2026-08-09
 
 - First-use onboarding now opens with a request-aware explanation of why setup

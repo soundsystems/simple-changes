@@ -149,6 +149,10 @@ describe("preference storage", () => {
     expect(loadPolicy(fixture.root).value.uiArtifactVersioning).toBe(
       "repository-convention"
     );
+    expect(loadPolicy(fixture.root).value.guidance).toEqual({
+      disposition: "accepted",
+      version: 1,
+    });
   });
 });
 
@@ -252,6 +256,8 @@ describe("onboarding conversation", () => {
       },
       {
         capabilityAvailable: false,
+        capabilityHelpers: [],
+        capabilityStatus: "absent",
         providers: [],
         releaseSurfaces: ["CHANGELOG.md"],
         relevant: true,

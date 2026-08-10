@@ -4,6 +4,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn as bunSpawn, spawnSync as bunSpawnSync } from "bun";
 import { captureInventory } from "../../../skills/simple-changes/scripts/lib/inventory.ts";
+import { DEFAULT_POLICY } from "../../../skills/simple-changes/scripts/lib/policy.ts";
 import {
   createTestRepository,
   git,
@@ -678,6 +679,93 @@ describe("contract CLI", () => {
       inferredDefaultFinish: "open-change-request",
       onboardingRequired: true,
       writeCapable: true,
+    });
+  });
+
+  test("records one installed-update decision and unblocks initialization", () => {
+    const fixture = createTestRepository();
+    repositories.push(fixture);
+    writeFixture(
+      fixture.root,
+      ".simple-changes.json",
+      `${JSON.stringify(
+        {
+          ...DEFAULT_POLICY,
+          guidance: { disposition: "accepted", version: 1 },
+        },
+        null,
+        2
+      )}\n`
+    );
+
+    const pending = spawnSync(
+      [
+        process.execPath,
+        cliPath,
+        "initialize",
+        "--mode",
+        "queue",
+        "--json",
+        "--repo",
+        fixture.root,
+      ],
+      { stderr: "pipe", stdout: "pipe" }
+    );
+    const pendingOutput = JSON.parse(decoder.decode(pending.stdout)) as {
+      guidanceUpdate: { status: string };
+      mutationAllowed: boolean;
+    };
+    expect(pending.exitCode).toBe(0);
+    expect(pendingOutput).toMatchObject({
+      guidanceUpdate: { status: "update-available" },
+      mutationAllowed: false,
+    });
+
+    const acknowledged = spawnSync(
+      [
+        process.execPath,
+        cliPath,
+        "acknowledge-update",
+        "--guidance-decision",
+        "deferred",
+        "--json",
+        "--repo",
+        fixture.root,
+      ],
+      { stderr: "pipe", stdout: "pipe" }
+    );
+    expect(acknowledged.exitCode).toBe(0);
+    expect(JSON.parse(decoder.decode(acknowledged.stdout))).toMatchObject({
+      currentVersion: 2,
+      disposition: "deferred",
+      previousVersion: 1,
+      written: true,
+    });
+    expect(
+      JSON.parse(
+        readFileSync(resolve(fixture.root, ".simple-changes.json"), "utf8")
+      )
+    ).toMatchObject({
+      guidance: { disposition: "deferred", version: 2 },
+    });
+
+    const resumed = spawnSync(
+      [
+        process.execPath,
+        cliPath,
+        "initialize",
+        "--mode",
+        "queue",
+        "--json",
+        "--repo",
+        fixture.root,
+      ],
+      { stderr: "pipe", stdout: "pipe" }
+    );
+    expect(resumed.exitCode).toBe(0);
+    expect(JSON.parse(decoder.decode(resumed.stdout))).toMatchObject({
+      guidanceUpdate: { status: "current" },
+      mutationAllowed: true,
     });
   });
 

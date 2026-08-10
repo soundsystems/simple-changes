@@ -36,6 +36,8 @@ describe("first-run initialization", () => {
         },
         {
           capabilityAvailable: false,
+          capabilityHelpers: [],
+          capabilityStatus: "absent",
           providers: [],
           releaseSurfaces: ["CHANGELOG.md"],
           relevant: true,
@@ -44,6 +46,8 @@ describe("first-run initialization", () => {
     ).toMatchObject({
       changelogCoordination: {
         capabilityAvailable: false,
+        capabilityHelpers: [],
+        capabilityStatus: "absent",
         releaseSurfaces: ["CHANGELOG.md"],
         relevant: true,
       },
@@ -99,6 +103,68 @@ describe("first-run initialization", () => {
     ).toMatchObject({
       onboardingRequired: false,
       policySource: "repository",
+    });
+  });
+
+  test("pauses once for a meaningful installed guidance update", () => {
+    const status = inspectInitialization(
+      "queue",
+      {
+        path: "/repo/.simple-changes.json",
+        source: "repository",
+        value: {
+          ...DEFAULT_POLICY,
+          guidance: { disposition: "accepted", version: 1 },
+        },
+      },
+      {
+        capabilityAvailable: true,
+        capabilityHelpers: ["/skills/simple-changelogs/scripts/setup.ts"],
+        capabilityStatus: "unverified",
+        providers: ["/skills/simple-changelogs/SKILL.md"],
+        releaseSurfaces: ["CHANGELOG.md"],
+        relevant: true,
+      }
+    );
+
+    expect(status).toMatchObject({
+      guidanceUpdate: {
+        actions: [
+          "review-settings",
+          "keep-current-settings",
+          "defer",
+          "review-with-simple-changelogs",
+          "view-release-notes",
+        ],
+        changelogHandoff: {
+          available: true,
+          owner: "simple-changelogs",
+        },
+        currentVersion: 2,
+        status: "update-available",
+        storedVersion: 1,
+      },
+      mutationAllowed: false,
+      onboardingRequired: false,
+    });
+  });
+
+  test("keeps changelog review out of the update when its owner is absent", () => {
+    const status = inspectInitialization("queue", {
+      path: "/repo/.simple-changes.json",
+      source: "repository",
+      value: {
+        ...DEFAULT_POLICY,
+        guidance: { disposition: "deferred", version: 1 },
+      },
+    });
+
+    expect(status.guidanceUpdate.actions).not.toContain(
+      "review-with-simple-changelogs"
+    );
+    expect(status.guidanceUpdate.changelogHandoff).toMatchObject({
+      available: false,
+      owner: null,
     });
   });
 

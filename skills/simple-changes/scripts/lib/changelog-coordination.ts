@@ -59,8 +59,13 @@ export const inspectChangelogCoordination = (
     .map((root) => resolve(root, "simple-changelogs", "SKILL.md"))
     .filter(existsSync);
   const providers = [...new Set([...repositoryProviders, ...globalProviders])];
+  const capabilityHelpers = providers
+    .map((provider) => resolve(provider, "..", "scripts", "setup.ts"))
+    .filter(existsSync);
   return {
     capabilityAvailable: providers.length > 0,
+    capabilityHelpers,
+    capabilityStatus: providers.length > 0 ? "unverified" : "absent",
     providers,
     releaseSurfaces: [...releaseSurfaces],
     relevant: releaseSurfaces.length > 0 || providers.length > 0,

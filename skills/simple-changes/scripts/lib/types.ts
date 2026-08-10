@@ -33,6 +33,8 @@ export type ChangelogHandling =
 
 export interface ChangelogCoordination {
   capabilityAvailable: boolean;
+  capabilityHelpers: string[];
+  capabilityStatus: "absent" | "unverified";
   providers: string[];
   releaseSurfaces: string[];
   relevant: boolean;
@@ -43,7 +45,8 @@ export interface RepoPolicy {
   concurrentWork: "allow-claimed" | "strict" | "preserve";
   defaultFinish: "open-change-request" | "integrate" | "ship" | "preview";
   guidance: {
-    version: 1;
+    disposition: "accepted" | "reviewed" | "deferred";
+    version: number;
   };
   handoffTiming: HandoffTiming;
   productionDeploy: "ask" | "allow" | "deny";
@@ -258,7 +261,99 @@ export interface ProviderReceipt {
   url: string | null;
 }
 
-export interface ChangelogReceipt {
+export type ReleaseBoundary =
+  | "release-bearing-merge"
+  | "web-production"
+  | "package-publication"
+  | "store-release"
+  | "other-public-release"
+  | "none";
+
+export type ReleasePhase = "classify" | "prepare" | "verify";
+
+export type ReleaseReasonCode =
+  | "version-direction-required"
+  | "target-moved"
+  | "policy-changed"
+  | "release-train-ambiguous"
+  | "version-owner-ambiguous"
+  | "unsupported-protocol"
+  | "unsupported-consumer"
+  | "schema-digest-mismatch"
+  | "malformed-request"
+  | "malformed-policy"
+  | "invalid-version-direction"
+  | "final-verification-failed";
+
+export type ReleaseRequiredAction =
+  | "choose-version"
+  | "refresh-and-reclassify"
+  | "resolve-release-train"
+  | "resolve-version-owner"
+  | "upgrade-producer"
+  | "upgrade-consumer"
+  | "repair-integration"
+  | "repair-request"
+  | "repair-policy"
+  | "review-finalization";
+
+export interface ChangelogCapabilities {
+  distribution: string;
+  features: Array<
+    "public-version-policy" | "classify-prepare-verify" | "multi-train-receipts"
+  >;
+  guidanceVersion: number;
+  provider: "simple-changelogs";
+  receiptVersions: Array<1 | 2>;
+  requestVersions: 1[];
+  schemaDigests: {
+    changelogReceipt: string;
+    changelogRequest: string;
+  };
+  schemaVersion: 1;
+}
+
+export interface ChangelogRequest {
+  approvedDecisionDigest: string | null;
+  approvedVersion: string | null;
+  attempt: number;
+  boundary: ReleaseBoundary;
+  environment: string;
+  finalizedTargetRevision: string | null;
+  inputTargetRevision: string;
+  mutationScope: "read-only" | "prepare-release-files";
+  phase: ReleasePhase;
+  priorReceiptDigest: string | null;
+  releaseSetId: string | null;
+  releaseTrain: string;
+  schemaVersion: 1;
+  supportedReceiptVersions: Array<1 | 2>;
+  transactionId: string;
+}
+
+export interface VersionDecision {
+  boundary: ReleaseBoundary;
+  bumpLevel: "none" | "patch" | "minor" | "major" | "unknown";
+  currentVersion: string | null;
+  policyAction: "ask" | "automatic" | "not-applicable";
+  releaseTrain: string;
+  resolution:
+    | "not-required"
+    | "automatic"
+    | "explicit-direction"
+    | "repository-automation"
+    | "approval-required"
+    | "blocked";
+  selectedVersion: string | null;
+  source:
+    | "current-request"
+    | "repository-policy"
+    | "run-only"
+    | "repository-convention";
+  suggestedVersion: string | null;
+}
+
+export interface ChangelogReceiptV1 {
   checks: string[];
   evidence: string[];
   observedAt: string;
@@ -277,6 +372,99 @@ export interface ChangelogReceipt {
   schemaVersion: 1;
   sourceRevision: string | null;
   status: "prepared" | "not-applicable" | "blocked";
+}
+
+export interface ChangelogReceiptV2 {
+  checks: string[];
+  decisionDigest: string;
+  effectivePolicyDigest: string;
+  evidence: string[];
+  observedAt: string;
+  paths: Array<{
+    digest: string;
+    path: string;
+  }>;
+  phase: ReleasePhase;
+  provider: "simple-changelogs";
+  reason: string | null;
+  reasonCode: ReleaseReasonCode | null;
+  release: {
+    date: string;
+    targetContainedUnreleased: "prepared" | "integrated";
+    version: string;
+  } | null;
+  releaseImpact: "none" | "patch" | "minor" | "major" | "unknown";
+  releaseSetId: string | null;
+  requiredAction: ReleaseRequiredAction | null;
+  revisionLineage: {
+    finalizedTargetRevision: string | null;
+    inputTargetRevision: string;
+    reconciliationHeadRevision: string | null;
+  };
+  schemaVersion: 2;
+  sourceRevision: string;
+  status:
+    | "decision-required"
+    | "prepared"
+    | "verified"
+    | "not-applicable"
+    | "blocked";
+  transactionId: string;
+  versionDecision: VersionDecision | null;
+}
+
+export type ChangelogReceipt = ChangelogReceiptV1 | ChangelogReceiptV2;
+
+export interface ReleaseDeliveryReceipt {
+  decisionDigest: string;
+  deployedRevision: string | null;
+  deploymentReceiptId: string | null;
+  finalizedTargetRevision: string;
+  inputTargetRevision: string;
+  reasonCode:
+    | "deployment-revision-mismatch"
+    | "provider-observation-incomplete"
+    | null;
+  reconciliationHeadRevision: string;
+  releaseSetId: string | null;
+  releaseTrain: string;
+  requiredAction: "inspect-deployment" | "retry-observation" | null;
+  schemaVersion: 1;
+  status: "complete" | "partial" | "blocked";
+  transactionId: string;
+  version: string;
+}
+
+export interface ReleaseDecisionLedgerEntry {
+  approval: {
+    productionAuthorized: boolean;
+    versionAuthorized: boolean;
+  };
+  attempt: number;
+  boundary: ReleaseBoundary;
+  compositeReceipt: ReleaseDeliveryReceipt | null;
+  currentVersion: string | null;
+  decisionDigest: string;
+  deployedRevision: string | null;
+  effectivePolicyDigest: string;
+  finalizedTargetRevision: string | null;
+  inputTargetRevision: string;
+  lastCompletedBoundary: string;
+  phase: ReleasePhase;
+  priorReceiptDigest: string | null;
+  reasonCode: ReleaseReasonCode | null;
+  receiptSchemaDigest: string;
+  receiptVersion: 1 | 2;
+  reconciliationHeadRevision: string | null;
+  releaseSetId: string | null;
+  releaseTrain: string;
+  requestSchemaDigest: string;
+  requestVersion: 1;
+  requiredAction: ReleaseRequiredAction | null;
+  selectedVersion: string | null;
+  status: ChangelogReceiptV2["status"];
+  suggestedVersion: string | null;
+  transactionId: string;
 }
 
 export interface SnapshotComparison {
@@ -553,12 +741,15 @@ export interface LoopVerification {
 
 export type SchemaName =
   | "repo-policy"
+  | "changelog-capabilities"
+  | "changelog-request"
   | "changelog-receipt"
   | "initialization"
   | "inventory"
   | "change-plan"
   | "run-state"
   | "provider-receipt"
+  | "release-delivery-receipt"
   | "remote-branch-reconciliation"
   | "release-consistency"
   | "release-notes"

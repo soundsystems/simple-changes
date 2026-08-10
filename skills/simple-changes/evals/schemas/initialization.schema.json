@@ -7,6 +7,7 @@
   "required": [
     "mode",
     "changelogCoordination",
+    "guidanceUpdate",
     "handoffAction",
     "handoffTiming",
     "writeCapable",
@@ -20,18 +21,103 @@
     "reason"
   ],
   "properties": {
+    "guidanceUpdate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "actions",
+        "changelogHandoff",
+        "changes",
+        "currentVersion",
+        "releaseNotes",
+        "status",
+        "storedDisposition",
+        "storedVersion"
+      ],
+      "properties": {
+        "actions": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "review-settings",
+              "keep-current-settings",
+              "defer",
+              "view-release-notes",
+              "review-with-simple-changelogs"
+            ]
+          }
+        },
+        "changelogHandoff": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["available", "owner", "reason"],
+          "properties": {
+            "available": { "type": "boolean" },
+            "owner": {
+              "anyOf": [{ "const": "simple-changelogs" }, { "type": "null" }]
+            },
+            "reason": { "type": "string", "minLength": 1 }
+          }
+        },
+        "changes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["kind", "summary", "version"],
+            "properties": {
+              "kind": { "enum": ["behavior", "onboarding", "integration"] },
+              "summary": { "type": "string", "minLength": 1 },
+              "version": { "type": "integer", "minimum": 1 }
+            }
+          }
+        },
+        "currentVersion": { "type": "integer", "minimum": 1 },
+        "releaseNotes": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["available", "command", "label"],
+          "properties": {
+            "available": { "const": true },
+            "command": { "const": "simple-changes release-notes" },
+            "label": {
+              "const": "View detailed Simple Changes release notes"
+            }
+          }
+        },
+        "status": { "enum": ["current", "update-available"] },
+        "storedDisposition": {
+          "anyOf": [
+            { "enum": ["accepted", "reviewed", "deferred"] },
+            { "type": "null" }
+          ]
+        },
+        "storedVersion": {
+          "anyOf": [{ "type": "integer", "minimum": 1 }, { "type": "null" }]
+        }
+      }
+    },
     "changelogCoordination": {
       "type": "object",
       "additionalProperties": false,
       "required": [
         "relevant",
         "capabilityAvailable",
+        "capabilityHelpers",
+        "capabilityStatus",
         "releaseSurfaces",
         "providers"
       ],
       "properties": {
         "relevant": { "type": "boolean" },
         "capabilityAvailable": { "type": "boolean" },
+        "capabilityHelpers": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "capabilityStatus": { "enum": ["absent", "unverified"] },
         "releaseSurfaces": {
           "type": "array",
           "uniqueItems": true,

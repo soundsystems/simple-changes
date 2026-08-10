@@ -206,6 +206,64 @@ describe("active integration-loop lease", () => {
     );
   });
 
+  test("promotes an opening preserved worktree after its owner claims it", () => {
+    const fixture = repository();
+    const authorPath = join(fixture.base, "claimed-after-start");
+    git(fixture.root, [
+      "worktree",
+      "add",
+      "-b",
+      "claimed-after-start-work",
+      authorPath,
+    ]);
+    const lease = startLoop(fixture.root, "controller", "integrate");
+
+    expect(lease.worktrees).toContainEqual(
+      expect.objectContaining({
+        agentId: null,
+        path: authorPath,
+        role: "preserved",
+      })
+    );
+
+    writeFixture(authorPath, "feature.ts", "export const feature = 1;\n");
+    const claim = claimWorktree(
+      fixture.root,
+      "feature-agent",
+      authorPath,
+      "codex",
+      "task-feature"
+    );
+
+    expect(verifyLoop(fixture.root).ok).toBe(true);
+    expect(readLoopLease(fixture.root)?.worktrees).toContainEqual(
+      expect.objectContaining({
+        agentId: "feature-agent",
+        claimId: claim.claimId,
+        path: authorPath,
+        role: "concurrent-author",
+      })
+    );
+
+    writeFixture(authorPath, "feature.ts", "export const feature = 2;\n");
+    expect(verifyLoop(fixture.root).ok).toBe(true);
+    const current = captureInventory(fixture.root).worktrees.find(
+      (worktree) => worktree.path === authorPath
+    );
+    expect(() =>
+      grantLoopOverride(
+        fixture.root,
+        lease.runId,
+        "controller",
+        authorPath,
+        current?.changeDigest ?? "",
+        "user",
+        "Treat ordinary claimed work as an exception"
+      )
+    ).toThrow("no user-approved override is allowed or needed");
+    expect(readLoopLease(fixture.root)?.overrides).toEqual([]);
+  });
+
   test("rejects a claimed author worktree on the target branch", () => {
     const fixture = repository();
     const remotePath = join(fixture.base, "remote.git");

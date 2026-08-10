@@ -84,11 +84,12 @@ discovery and the production release map stay scoped to that repository.
   rewrite.
 - Detects first write-capable use and requires onboarding when neither
   repository nor personal preferences exist.
-- Detects changelog relevance separately from compatible skill availability and
-  coordinates delegation through a closed, digest-bound handoff receipt.
-- Treats every Web production deployment as a product release, requires the
-  delegated workflow to version and integrate target-contained pending work,
-  and deploys only after that reconciliation is merged into a refreshed target.
+- Detects changelog relevance separately from skill availability, negotiates
+  exact protocol/schema capabilities, and coordinates delegation through
+  closed `classify`, `prepare`, and final read-only `verify` transactions.
+- Treats every Web production deployment as a product release, requires a
+  digest-bound version decision and verified full revision lineage, and emits a
+  composite receipt binding that release to the observed deployment revision.
 - Inventories branches, stashes, local changes, worktrees, policy, and Git
   capabilities using argument-array subprocess calls.
 - Takes two read-only snapshots and preserves work that appeared or changed
@@ -160,6 +161,8 @@ simple-changes setup [--finish review|integrate|ship]
   [--production ask|allow|deny]
   [--questions blocking-only|always|never]
   [--scope user|repository|run] [--yes] [--json] [--repo PATH]
+simple-changes acknowledge-update --guidance-decision accepted|reviewed|deferred
+  [--agent-id ID] [--json] [--repo PATH]
 simple-changes inventory [--json] [--repo PATH]
 simple-changes preview [--json] [--repo PATH] [--settle-ms N]
 simple-changes loop start --mode MODE --agent-id ID [--json] [--repo PATH]
@@ -196,15 +199,18 @@ simple-changes worktree release --agent-id ID --claim-id ID [--json] [--repo PAT
 simple-changes prepare-agent --run-id ID --agent-id ID --purpose SLUG
   [--json] [--repo PATH]
 simple-changes release-notes [--check] [--json] [--repo PATH] [--version VERSION]
+simple-changes negotiate-changelog CAPABILITIES_FILE [--json]
+simple-changes validate-changelog-transaction REQUEST_FILE RECEIPT_FILE [--json]
 simple-changes validate KIND FILE [--json]
 simple-changes verify-markdown FILE [--json]
 simple-changes help
 ```
 
-`KIND` is one of `repo-policy`, `changelog-receipt`, `initialization`,
-`inventory`, `change-plan`, `run-state`, `provider-receipt`,
-`release-consistency`, `release-notes`, `loop-lease`, or
-`worktree-coordination`.
+`KIND` is one of `repo-policy`, `changelog-capabilities`, `changelog-request`,
+`changelog-receipt`, `initialization`, `inventory`, `change-plan`, `run-state`,
+`provider-receipt`, `release-delivery-receipt`,
+`remote-branch-reconciliation`, `release-consistency`, `release-notes`,
+`loop-lease`, or `worktree-coordination`.
 
 Worktree claims and pause receipts are local, mode-`0600` coordination evidence
 stored beneath the repository's common Git directory. A claim records only an
@@ -299,7 +305,8 @@ apply only when the repository has no policy. Teams may commit
 {
   "schemaVersion": 1,
   "guidance": {
-    "version": 1
+    "disposition": "accepted",
+    "version": 2
   },
   "changelogHandling": "delegate-if-available",
   "defaultFinish": "open-change-request",
@@ -312,9 +319,25 @@ apply only when the repository has no policy. Teams may commit
 }
 ```
 
+Meaningful installed-skill updates pause the next write-capable run once and
+explain the practical Simple Changes behavior or setting changes. Users can
+review the affected settings, keep their current choices, defer the update for
+that guidance version, or view detailed Simple Changes release notes. The
+decision is remembered so the same version does not prompt again.
+
+When Simple Changelogs is also present, Simple Changes may offer a separate
+handoff for that skill to review its own settings or existing release notes.
+Simple Changes never performs that historical review itself, and no changelog
+action appears when the companion skill is absent.
+
 `allow-claimed` is the default: independent agents may keep editing and
 committing on distinct, non-primary claimed worktrees while one integration
 controller handles push, proposal, merge, deployment, and cleanup operations.
+Create the claim immediately after `git worktree add` and before any project
+inspection, setup, generation, formatting, or editing in the new checkout. If a
+lease recorded the worktree as `preserved` before the claim appeared, its next
+guarded observation promotes the valid active claim to `concurrent-author`;
+ordinary claimed concurrency never requires `loop allow` or user approval.
 Set `concurrentWork` to `strict` to require repository-wide pauses. The legacy
 `preserve` value remains accepted and now follows the safe concurrent default.
 

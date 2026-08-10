@@ -10,12 +10,15 @@ const moduleDirectory = dirname(fileURLToPath(import.meta.url));
 const schemaDirectory = resolve(moduleDirectory, "../../evals/schemas");
 const schemaNames: SchemaName[] = [
   "repo-policy",
+  "changelog-capabilities",
+  "changelog-request",
   "changelog-receipt",
   "initialization",
   "inventory",
   "change-plan",
   "run-state",
   "provider-receipt",
+  "release-delivery-receipt",
   "remote-branch-reconciliation",
   "release-consistency",
   "release-notes",
@@ -134,6 +137,9 @@ const validateArray = (
 ): void => {
   if (typeof schema.minItems === "number" && value.length < schema.minItems) {
     errors.push(`${path} must contain at least ${schema.minItems} items`);
+  }
+  if (typeof schema.maxItems === "number" && value.length > schema.maxItems) {
+    errors.push(`${path} must contain at most ${schema.maxItems} items`);
   }
   if (
     schema.uniqueItems === true &&

@@ -27,6 +27,26 @@ If production or another separately consequential step still lacks authority,
 summarize the authorized portion, finish its safe independent work, and ask only
 at the actual authority boundary.
 
+## Compose version and production direction
+
+Version selection and production deployment are separate authorities even when
+one user-facing question can resolve both. When changelog classification returns
+`decision-required` and production is also `ask`, present the suggested version,
+bump evidence, exact release train and target revision, then offer:
+
+- **Release and deploy:** approve the exact decision digest and production for
+  the resulting finalized target;
+- **Approve the version and prepare only:** permit release-file preparation but
+  no release-bearing merge or production mutation; and
+- **Stop after integration:** preserve release work without crossing the public
+  boundary.
+
+Record the two decisions independently. When suggestions are disabled, ask for
+the exact version direction instead of inventing one. `questions: never` skips
+unauthorized work and reports it; silence never becomes approval. Target,
+policy, ownership, negotiated-schema, or decision-input movement invalidates
+the affected approval and returns to classification.
+
 ## Track review-driven changes
 
 Record the proposal's original reviewed head and maintain a small review delta
@@ -48,6 +68,9 @@ The final response compares the pre-ship brief with the observed result:
 
 - what actually shipped and its user-visible or operational outcomes;
 - proposal, merge, release, canonical-target, and deployment identities;
+- the selected version and source, policy/decision digests, complete
+  input/reconciliation/finalized/deployed revision lineage, and composite
+  release-delivery receipt;
 - every material review-driven change, including the resulting exact revision
   and re-verification;
 - checks and focused live verification;

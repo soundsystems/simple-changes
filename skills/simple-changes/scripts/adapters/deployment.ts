@@ -2,9 +2,11 @@ import { redactSecrets } from "../lib/redact.ts";
 import { validateSchema } from "../lib/schema.ts";
 import type {
   Authority,
+  ChangelogReceiptV2,
   DeliveryModel,
   ProviderReceipt,
   ProviderStatus,
+  ReleaseDeliveryReceipt,
 } from "../lib/types.ts";
 
 const TRAILING_SLASH_PATTERN = /\/+$/u;
@@ -33,6 +35,12 @@ export interface DeploymentReceiptInput {
 export interface DeploymentVerification {
   issues: string[];
   valid: boolean;
+}
+
+export interface ReleaseDeploymentBinding {
+  receipt: ChangelogReceiptV2;
+  releaseTrain: string;
+  version: string;
 }
 
 export type DeploymentReconciliationAction =
@@ -115,7 +123,8 @@ export const canonicalTargetIssues = (receipt: ProviderReceipt): string[] => {
 };
 
 export const verifyDeploymentReceipt = (
-  receipt: ProviderReceipt
+  receipt: ProviderReceipt,
+  releaseBinding?: ReleaseDeploymentBinding
 ): DeploymentVerification => {
   const issues: string[] = [];
   if (receipt.kind !== "deployment") {
@@ -142,10 +151,97 @@ export const verifyDeploymentReceipt = (
   if (receipt.status !== "succeeded") {
     issues.push(`Provider status is ${receipt.status}.`);
   }
+  if (releaseBinding) {
+    const releaseReceipt = validateSchema<ChangelogReceiptV2>(
+      "changelog-receipt",
+      releaseBinding.receipt
+    );
+    if (
+      releaseReceipt.schemaVersion !== 2 ||
+      releaseReceipt.status !== "verified" ||
+      releaseReceipt.phase !== "verify"
+    ) {
+      issues.push("Web production requires a verified changelog receipt.");
+    }
+    if (
+      releaseReceipt.revisionLineage.finalizedTargetRevision !==
+        receipt.intendedRevision ||
+      releaseReceipt.revisionLineage.finalizedTargetRevision !==
+        receipt.observedRevision
+    ) {
+      issues.push(
+        "Deployment revision does not match the verified finalized release target."
+      );
+    }
+    if (
+      releaseReceipt.versionDecision?.releaseTrain !==
+        releaseBinding.releaseTrain ||
+      releaseReceipt.release?.version !== releaseBinding.version ||
+      releaseReceipt.versionDecision?.selectedVersion !== releaseBinding.version
+    ) {
+      issues.push(
+        "Deployment release train or version does not match the verified changelog receipt."
+      );
+    }
+  }
   return {
     issues,
     valid: issues.length === 0,
   };
+};
+
+export const createReleaseDeliveryReceipt = (
+  releaseBinding: ReleaseDeploymentBinding,
+  deployment: ProviderReceipt
+): ReleaseDeliveryReceipt => {
+  const releaseReceipt = validateSchema<ChangelogReceiptV2>(
+    "changelog-receipt",
+    releaseBinding.receipt
+  );
+  const deploymentVerification = verifyDeploymentReceipt(
+    deployment,
+    releaseBinding
+  );
+  const lineage = releaseReceipt.revisionLineage;
+  if (
+    !(lineage.reconciliationHeadRevision && lineage.finalizedTargetRevision)
+  ) {
+    throw new Error(
+      "A composite delivery receipt requires complete verified revision lineage."
+    );
+  }
+  const revisionMismatch =
+    deployment.observedRevision !== lineage.finalizedTargetRevision;
+  let reasonCode: ReleaseDeliveryReceipt["reasonCode"] = null;
+  let requiredAction: ReleaseDeliveryReceipt["requiredAction"] = null;
+  if (!deploymentVerification.valid) {
+    reasonCode = revisionMismatch
+      ? "deployment-revision-mismatch"
+      : "provider-observation-incomplete";
+    requiredAction = revisionMismatch
+      ? "inspect-deployment"
+      : "retry-observation";
+  }
+  const receipt: ReleaseDeliveryReceipt = {
+    decisionDigest: releaseReceipt.decisionDigest,
+    deployedRevision: deployment.observedRevision,
+    deploymentReceiptId: deployment.objectId || null,
+    finalizedTargetRevision: lineage.finalizedTargetRevision,
+    inputTargetRevision: lineage.inputTargetRevision,
+    reasonCode,
+    reconciliationHeadRevision: lineage.reconciliationHeadRevision,
+    releaseSetId: releaseReceipt.releaseSetId,
+    releaseTrain: releaseBinding.releaseTrain,
+    requiredAction,
+    schemaVersion: 1,
+    status: deploymentVerification.valid ? "complete" : "partial",
+    transactionId: releaseReceipt.transactionId,
+    version: releaseBinding.version,
+  };
+  return validateSchema<ReleaseDeliveryReceipt>(
+    "release-delivery-receipt",
+    receipt
+  );
 };
 
 export const nextDeploymentReconciliation = (

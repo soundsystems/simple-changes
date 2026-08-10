@@ -1,3 +1,4 @@
+import { CURRENT_GUIDANCE_VERSION } from "./guidance-updates.ts";
 import {
   discoverInstructionTargets,
   type InstructionTarget,
@@ -73,6 +74,8 @@ export const ONBOARDING_QUESTIONS = {
 
 const DEFAULT_CHANGELOG_CONTEXT: ChangelogCoordination = {
   capabilityAvailable: false,
+  capabilityHelpers: [],
+  capabilityStatus: "absent",
   providers: [],
   releaseSurfaces: [],
   relevant: false,
@@ -779,7 +782,8 @@ export const collectOnboardingSelection = async (
     concurrentWork: inputs.concurrentWork ?? defaults.concurrentWork,
     defaultFinish,
     guidance: {
-      version: 1,
+      disposition: customize ? "reviewed" : "accepted",
+      version: CURRENT_GUIDANCE_VERSION,
     },
     handoffTiming,
     productionDeploy,

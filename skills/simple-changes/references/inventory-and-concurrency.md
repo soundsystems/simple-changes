@@ -76,12 +76,15 @@ earlier operation passed.
 The default `concurrentWork: "allow-claimed"` policy recognizes an active owner
 claim on a distinct non-primary branch as `concurrent-author`. The author may
 keep editing and committing without a pause receipt, both when present at loop
-start and when arriving later. Head and content-digest drift are expected for
-that role. The controller excludes it from the current integration and cleanup.
-Verification still fails closed if the claim is absent, released, reassigned,
-or branch-mismatched, or if the worktree is primary or on the primary target
-branch. Use `concurrentWork: "strict"` for the older repository-wide serialized
-behavior. Legacy `preserve` policy values follow `allow-claimed`.
+start, when claimed after the opening manifest recorded it as `preserved`, and
+when arriving later. The next guarded observation promotes a qualifying opening
+`preserved` entry and binds its exact claim ID and owner. Head and content-digest
+drift are expected for that role. The controller excludes it from the current
+integration and cleanup. Verification still fails closed if the claim is
+absent, released, reassigned, or branch-mismatched, or if the worktree is
+primary or on the primary target branch. Use `concurrentWork: "strict"` for the
+older repository-wide serialized behavior. Legacy `preserve` policy values
+follow `allow-claimed`.
 
 An external provider mutation that cannot execute inside `loop exec` uses the
 narrow fallback: `loop guard` immediately before the call and `loop verify`
@@ -114,10 +117,12 @@ recorded preparation instead of guessing or creating another branch. It refuses
 to adopt staged, unstaged, or untracked content, and a registered author loses
 mutation authority after switching away from the recorded branch.
 
-An independent feature agent instead creates its own isolated worktree and
-immediately runs `worktree claim` before editing. It does not acquire a second
-integration lease and does not need `prepare-agent` unless its work is being
-assigned into the active integration run.
+An independent feature agent instead creates its own isolated worktree and runs
+`worktree claim` as the immediate next command. Do not inspect project files
+from the new checkout, install dependencies, format, generate, edit, stage, or
+commit there before the claim succeeds. It does not acquire a second integration
+lease and does not need `prepare-agent` unless its work is being assigned into
+the active integration run.
 
 Read-only review can inspect commit objects or provider diffs without an
 authoring worktree. The moment a reviewer needs to make a change, it becomes an
@@ -133,8 +138,10 @@ Do not put titles, prompts, message bodies, credentials, or tokens in the owner
 reference.
 
 Under `allow-claimed`, a healthy distinct active claim does not block the loop;
-its owner keeps working and the controller excludes it. When strict policy or a
-real collision blocks a loop, contact only the exact claimed owner.
+its owner keeps working and the controller excludes it. A valid active claim
+also promotes an opening `preserved` registration automatically. Do not ask for
+user approval or call `loop allow` for ordinary claimed concurrency. When strict
+policy or a real collision blocks a loop, contact only the exact claimed owner.
 The owner runs `worktree pause` at a safe boundary. `preserve-in-place` accepts
 dirty work but rejects active Git operations and conflicts;
 `detach-clean-checkout` additionally requires no changes. The resulting receipt

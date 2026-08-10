@@ -13,12 +13,12 @@ Distinguish preview, staging, and production. Production requires explicit
 current authority or committed policy that clearly grants it.
 
 A production deployment of a Web product is a product release. Before invoking
-the provider, require the refreshed canonical target to contain the merged
-dated/versioned release reconciliation returned by changelog coordination,
-including every target-contained `Unreleased` item, established Web mirror, and
-proven product-version field. An unresolved version, unavailable or blocked
-delegation, preserve-and-report disposition, unmerged reconciliation, or
-target-contained pending item blocks production.
+the provider, require a v2 `verified` changelog receipt for the exact refreshed
+canonical target. It must bind the effective policy, selected version,
+decision digest, input target, reconciliation head, and finalized target. An
+unresolved version, `decision-required`, unavailable or blocked delegation,
+preserve-and-report disposition, unmerged reconciliation, failed final
+verification, or target-contained pending item blocks production.
 
 A successful deployment receipt includes provider, immutable deployment
 identity, project, environment, intended committed revision, observed revision,
@@ -39,17 +39,30 @@ Verification requires all of:
 
 1. the intended code is committed and, for production, the intended revision
    equals the freshly resolved canonical target head after all merges;
-2. for Web production, that intended revision contains the dated, versioned
-   release reconciliation and no target-contained work remains `Unreleased`;
+2. for Web production, a read-only final changelog verification names that same
+   intended revision and proves the prepared reconciliation is integrated;
 3. the provider built or deployed that exact immutable revision;
 4. the deployment reached its provider-specific ready state;
 5. every configured canonical endpoint is observed exactly once and resolves to
    that deployment;
 6. focused smoke checks exercise the changed user journey.
 
+After observation, emit a composite `release-delivery-receipt` containing the
+transaction and optional release-set IDs, train, version, decision digest,
+input/reconciliation/finalized/deployed revisions, and provider receipt ID.
+`complete` requires the observed deployment revision to equal the verified
+finalized target. Use structured failure codes for drift or incomplete
+observation; never parse provider prose to decide a retry. Release-set grouping
+is reporting only and does not make independent trains atomic.
+
 An exit code, a `Ready` label, the newest deployment's source revision, or a
 preview URL alone is insufficient. Record partial failure honestly and resume
 from fresh Git and provider state without creating a duplicate deployment.
+
+Retries reuse the selected version only when the transaction, decision digest,
+verified finalized target, and immutable artifact are unchanged. Code, policy,
+owner, schema, or target changes return to classification. A provider failure
+alone never selects another version.
 
 If production is behind the canonical target, a Ship loop may create, reuse, or
 promote a verified artifact for the refreshed target revision only when

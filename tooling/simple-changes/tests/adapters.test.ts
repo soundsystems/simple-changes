@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  createReleaseDeliveryReceipt,
   nextDeploymentReconciliation,
   normalizeDeploymentReceipt,
   verifyDeploymentReceipt,
@@ -10,6 +11,7 @@ import {
   normalizeForgeReceipt,
   unsupportedForgeReceipt,
 } from "../../../skills/simple-changes/scripts/adapters/forge.ts";
+import type { ChangelogReceiptV2 } from "../../../skills/simple-changes/scripts/lib/types.ts";
 
 const proposalInput = {
   action: "create",
@@ -88,6 +90,83 @@ describe("normalized deployment contract", () => {
     expect(verifyDeploymentReceipt(receipt)).toEqual({
       issues: [],
       valid: true,
+    });
+  });
+
+  test("binds a verified Web release to the observed deployment revision", () => {
+    const targetRevision = "4".repeat(40);
+    const deployment = normalizeDeploymentReceipt({
+      action: "deploy",
+      canonicalTargets: [
+        {
+          resolvedResultId: "deployment-42",
+          url: "https://app.invalid",
+        },
+      ],
+      deliveryModel: "atomic-artifact",
+      deploymentId: "deployment-42",
+      environment: "production",
+      evidence: ["Ready"],
+      expectedCanonicalTargets: ["https://app.invalid"],
+      observedRevision: targetRevision,
+      project: "simple-changes",
+      provider: "fixture",
+      providerReady: true,
+      smoke: { journey: "release", passed: true },
+      status: "succeeded",
+      targetRevision,
+      url: "https://deployment.invalid",
+    });
+    const releaseReceipt: ChangelogReceiptV2 = {
+      checks: ["Final release verified."],
+      decisionDigest: "d".repeat(64),
+      effectivePolicyDigest: "e".repeat(64),
+      evidence: ["Reconciliation is contained in the target."],
+      observedAt: new Date().toISOString(),
+      paths: [],
+      phase: "verify",
+      provider: "simple-changelogs",
+      reason: null,
+      reasonCode: null,
+      release: {
+        date: "2026-08-10",
+        targetContainedUnreleased: "integrated",
+        version: "0.10.0",
+      },
+      releaseImpact: "minor",
+      releaseSetId: null,
+      requiredAction: null,
+      revisionLineage: {
+        finalizedTargetRevision: targetRevision,
+        inputTargetRevision: "1".repeat(40),
+        reconciliationHeadRevision: "2".repeat(40),
+      },
+      schemaVersion: 2,
+      sourceRevision: targetRevision,
+      status: "verified",
+      transactionId: "release-01",
+      versionDecision: {
+        boundary: "web-production",
+        bumpLevel: "minor",
+        currentVersion: "0.9.0",
+        policyAction: "automatic",
+        releaseTrain: "web",
+        resolution: "automatic",
+        selectedVersion: "0.10.0",
+        source: "repository-policy",
+        suggestedVersion: "0.10.0",
+      },
+    };
+    const receipt = createReleaseDeliveryReceipt(
+      { receipt: releaseReceipt, releaseTrain: "web", version: "0.10.0" },
+      deployment
+    );
+    expect(receipt).toMatchObject({
+      deployedRevision: targetRevision,
+      finalizedTargetRevision: targetRevision,
+      status: "complete",
+      transactionId: "release-01",
+      version: "0.10.0",
     });
   });
 

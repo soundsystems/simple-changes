@@ -1,0 +1,127 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://simple-changes.dev/schemas/changelog-request.schema.json",
+  "title": "Simple Changes changelog delegation request",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "transactionId",
+    "releaseSetId",
+    "phase",
+    "attempt",
+    "releaseTrain",
+    "boundary",
+    "environment",
+    "mutationScope",
+    "inputTargetRevision",
+    "finalizedTargetRevision",
+    "approvedVersion",
+    "approvedDecisionDigest",
+    "priorReceiptDigest",
+    "supportedReceiptVersions"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "transactionId": { "type": "string", "minLength": 1 },
+    "releaseSetId": {
+      "anyOf": [{ "type": "string", "minLength": 1 }, { "type": "null" }]
+    },
+    "phase": { "enum": ["classify", "prepare", "verify"] },
+    "attempt": { "type": "integer", "minimum": 1 },
+    "releaseTrain": { "type": "string", "minLength": 1 },
+    "boundary": {
+      "enum": [
+        "release-bearing-merge",
+        "web-production",
+        "package-publication",
+        "store-release",
+        "other-public-release",
+        "none"
+      ]
+    },
+    "environment": { "type": "string", "minLength": 1 },
+    "mutationScope": { "enum": ["read-only", "prepare-release-files"] },
+    "inputTargetRevision": { "type": "string", "pattern": "^[0-9a-f]{40,64}$" },
+    "finalizedTargetRevision": {
+      "anyOf": [
+        { "type": "string", "pattern": "^[0-9a-f]{40,64}$" },
+        { "type": "null" }
+      ]
+    },
+    "approvedVersion": {
+      "anyOf": [{ "type": "string", "minLength": 1 }, { "type": "null" }]
+    },
+    "approvedDecisionDigest": {
+      "anyOf": [
+        { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        { "type": "null" }
+      ]
+    },
+    "priorReceiptDigest": {
+      "anyOf": [
+        { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        { "type": "null" }
+      ]
+    },
+    "supportedReceiptVersions": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "enum": [1, 2] }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "phase": { "const": "classify" } },
+        "required": ["phase"]
+      },
+      "then": {
+        "properties": {
+          "mutationScope": { "const": "read-only" },
+          "finalizedTargetRevision": { "type": "null" },
+          "approvedVersion": { "type": "null" },
+          "approvedDecisionDigest": { "type": "null" }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": { "phase": { "const": "prepare" } },
+        "required": ["phase"]
+      },
+      "then": {
+        "properties": {
+          "mutationScope": { "const": "prepare-release-files" },
+          "finalizedTargetRevision": { "type": "null" },
+          "approvedVersion": { "type": "string", "minLength": 1 },
+          "approvedDecisionDigest": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": { "phase": { "const": "verify" } },
+        "required": ["phase"]
+      },
+      "then": {
+        "properties": {
+          "mutationScope": { "const": "read-only" },
+          "finalizedTargetRevision": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{40,64}$"
+          },
+          "approvedVersion": { "type": "string", "minLength": 1 },
+          "approvedDecisionDigest": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          }
+        }
+      }
+    }
+  ]
+}

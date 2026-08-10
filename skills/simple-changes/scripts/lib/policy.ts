@@ -11,6 +11,7 @@ import {
 import { homedir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
+import { CURRENT_GUIDANCE_VERSION } from "./guidance-updates.ts";
 import { validateSchema } from "./schema.ts";
 import type { PolicySource, RepoPolicy } from "./types.ts";
 
@@ -19,7 +20,8 @@ export const DEFAULT_POLICY: RepoPolicy = {
   concurrentWork: "allow-claimed",
   defaultFinish: "open-change-request",
   guidance: {
-    version: 1,
+    disposition: "accepted",
+    version: CURRENT_GUIDANCE_VERSION,
   },
   handoffTiming: "confirm-ready",
   productionDeploy: "ask",
@@ -31,9 +33,13 @@ export const DEFAULT_POLICY: RepoPolicy = {
 
 type StoredRepoPolicy = Omit<
   RepoPolicy,
-  "changelogHandling" | "handoffTiming" | "uiArtifactVersioning"
+  "changelogHandling" | "guidance" | "handoffTiming" | "uiArtifactVersioning"
 > & {
   changelogHandling?: RepoPolicy["changelogHandling"];
+  guidance: {
+    disposition?: RepoPolicy["guidance"]["disposition"];
+    version: number;
+  };
   handoffTiming?: RepoPolicy["handoffTiming"];
   uiArtifactVersioning?: RepoPolicy["uiArtifactVersioning"];
 };
@@ -61,6 +67,10 @@ const parsePolicyFile = (path: string): RepoPolicy => {
     ...validated,
     changelogHandling:
       validated.changelogHandling ?? DEFAULT_POLICY.changelogHandling,
+    guidance: {
+      disposition: validated.guidance.disposition ?? "accepted",
+      version: validated.guidance.version,
+    },
     handoffTiming: validated.handoffTiming ?? DEFAULT_POLICY.handoffTiming,
     uiArtifactVersioning:
       validated.uiArtifactVersioning ?? DEFAULT_POLICY.uiArtifactVersioning,

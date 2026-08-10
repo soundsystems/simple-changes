@@ -206,6 +206,82 @@ describe("closed schemas", () => {
     ).toThrow("revision");
   });
 
+  test("accepts negotiated release protocol state without policy duplication", () => {
+    const now = new Date().toISOString();
+    const runState = {
+      approvals: [],
+      baselineDigest: "a".repeat(64),
+      blockers: [],
+      cleanupTargets: [],
+      concurrentArrivals: [],
+      coordinatedOnboarding: {
+        owners: [
+          {
+            destination: "/repo/.simple-changes.json",
+            owner: "simple-changes",
+            policyDigest: "b".repeat(64),
+            status: "completed",
+            writeReceiptDigest: "c".repeat(64),
+          },
+          {
+            destination: "/repo/.simple-changelogs.json",
+            owner: "simple-changelogs",
+            policyDigest: "d".repeat(64),
+            status: "pending",
+            writeReceiptDigest: null,
+          },
+        ],
+        status: "partial",
+        transactionId: "setup-01",
+      },
+      createdAt: now,
+      mode: "ship",
+      receipts: [],
+      releaseDecisions: [
+        {
+          approval: {
+            productionAuthorized: false,
+            versionAuthorized: false,
+          },
+          attempt: 1,
+          boundary: "web-production",
+          compositeReceipt: null,
+          currentVersion: "0.9.0",
+          decisionDigest: "e".repeat(64),
+          deployedRevision: null,
+          effectivePolicyDigest: "f".repeat(64),
+          finalizedTargetRevision: null,
+          inputTargetRevision: "1".repeat(40),
+          lastCompletedBoundary: "classify",
+          phase: "classify",
+          priorReceiptDigest: null,
+          reasonCode: "version-direction-required",
+          receiptSchemaDigest: "2".repeat(64),
+          receiptVersion: 2,
+          reconciliationHeadRevision: null,
+          releaseSetId: null,
+          releaseTrain: "web",
+          requestSchemaDigest: "3".repeat(64),
+          requestVersion: 1,
+          requiredAction: "choose-version",
+          selectedVersion: null,
+          status: "decision-required",
+          suggestedVersion: "0.10.0",
+          transactionId: "release-01",
+        },
+      ],
+      resumeBoundary: "release-classify",
+      runId: "run-1",
+      schemaVersion: 1,
+      unitStates: [],
+      updatedAt: now,
+    };
+    expect(validateSchema<typeof runState>("run-state", runState)).toEqual(
+      runState
+    );
+    expect(JSON.stringify(runState)).not.toContain("publicVersioning");
+  });
+
   test("accepts a closed active-loop lease manifest", () => {
     const lease: LoopLease = {
       baselineDigest: "a".repeat(64),

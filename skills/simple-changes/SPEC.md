@@ -28,18 +28,25 @@
   ahead/behind/ancestry evidence.
 - For completed-work handoff, the closed initialization status and attributable
   implementation scope.
+- For saved preferences, the stored Simple Changes guidance version and
+  disposition plus any discovered Simple Changelogs capability.
 - When multiple UI iterations will be saved, the repository convention or
   closed fallback artifact-naming preference.
 
 ## Outputs
 
 - A validated initialization status before mutation.
+- For meaningful installed updates, a one-time Simple Changes change/settings
+  notice with an optional separately owned Simple Changelogs review handoff.
 - A focused plan and explicit outstanding-work ledger.
 - Verified proposals, merges, deployments, or preserved work within the
   authorized finish boundary.
 - For Sync, the fetched target and resulting or preserved local branch state.
 - For Ship, a pre-mutation scope brief and a final shipped-state receipt with
   review-driven deltas.
+- For public releases, negotiated changelog protocol evidence, phased
+  classification/preparation/verification receipts, and a composite delivery
+  receipt binding version identity to the deployed revision.
 - Exact receipts for policy and managed instruction-pointer writes.
 
 ## Guarantees
@@ -52,9 +59,12 @@
   worktree blocks integration. By default, distinct actively claimed
   non-primary, non-target-branch worktrees remain concurrent-author worktrees
   and may keep changing without pausing. The first guarded observation binds a
-  late author's exact claim ID and owner into the lease so reassignment fails
-  closed. Concurrent authors may not use the guarded integration executor;
-  only the controller and its run-prepared authors may do so.
+  late author's exact claim ID and owner into the lease, promoting an opening
+  `preserved` registration when its owner claims it after loop start, so
+  reassignment fails closed. This ordinary transition requires neither user
+  approval nor an exact override. Concurrent authors may not use the guarded
+  integration executor; only the controller and its run-prepared authors may do
+  so.
 - Local mutations hold the lease lock across fresh preflight inventory, one
   bounded argument-array command or awaited asynchronous callback, and
   post-mutation verification. Guarded child/process-group identity remains
@@ -97,6 +107,10 @@
   the upstream runtime or durable coordination metadata.
 - Missing onboarding defaults to checked proposal creation and confirmation
   before completed-work handoff.
+- A meaningful guidance-version change blocks the next write-capable mutation
+  until the user reviews, accepts, or defers it. The recorded disposition
+  suppresses repeat prompting for that version without granting changelog
+  authority.
 - Instruction setup updates only an existing exact file after confirmation,
   rejects symlinks and malformed managed blocks, and never creates a missing
   instruction file.
@@ -108,6 +122,10 @@
 - Authorized Ship runs communicate scope before mutation without adding a
   redundant permission gate, then account for review-driven revisions.
 - Deployment and high-risk actions retain their independent authority checks.
+- Public-version preferences remain exclusively owned by Simple Changelogs.
+  Version direction is distinct from a blocker, approvals are digest- and
+  revision-bound, and final deployment requires the verified reconciliation
+  lineage rather than a prepared-file receipt.
 
 ## Forbidden behaviors
 
@@ -133,3 +151,6 @@
   changes and final provider evidence.
 - Directly authoring changelogs, release notes, version fields, or release
   policy.
+- Calling a Simple Changes update checkpoint a changelog backfill, presenting a
+  changelog-history action when Simple Changelogs is absent, or performing that
+  companion skill's settings/history review directly.

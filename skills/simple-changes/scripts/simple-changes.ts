@@ -13,6 +13,10 @@ import {
 } from "./lib/coordination-adapter.ts";
 import { EXIT_CODES, SimpleChangesError } from "./lib/errors.ts";
 import {
+  acknowledgeGuidanceUpdate,
+  CURRENT_GUIDANCE_VERSION,
+} from "./lib/guidance-updates.ts";
+import {
   type InitializationStatus,
   inspectInitialization,
 } from "./lib/initialization.ts";
@@ -57,6 +61,10 @@ import {
   type ReleaseConsistencyReport,
   renderReleaseConsistency,
 } from "./lib/release-consistency.ts";
+import {
+  negotiateChangelogProtocol,
+  validateChangelogTransaction,
+} from "./lib/release-gate.ts";
 import type { ReleaseNotes } from "./lib/release-notes.ts";
 import { extractReleaseNotes } from "./lib/release-notes.ts";
 import { renderInventory, renderPlan } from "./lib/report.ts";
@@ -80,7 +88,7 @@ import {
   releaseWorktreeClaim,
 } from "./lib/worktree-coordination.ts";
 
-const VERSION = "0.9.0";
+const VERSION = "0.10.0";
 const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const HELP = `Simple Changes ${VERSION}
 
@@ -106,6 +114,8 @@ Usage:
     [--production ask|allow|deny]
     [--questions blocking-only|always|never]
     [--scope user|repository|run] [--agent-id ID] [--yes] [--json] [--repo PATH]
+  simple-changes acknowledge-update --guidance-decision accepted|reviewed|deferred
+    [--agent-id ID] [--json] [--repo PATH]
   simple-changes inventory [--json] [--repo PATH]
   simple-changes preview [--json] [--repo PATH] [--settle-ms N]
   simple-changes loop start --mode MODE --agent-id ID [--json] [--repo PATH]
@@ -144,14 +154,17 @@ Usage:
   simple-changes prepare-agent --run-id ID --agent-id ID --purpose SLUG
     [--json] [--repo PATH]
   simple-changes release-notes [--check] [--json] [--repo PATH] [--version VERSION]
+  simple-changes negotiate-changelog CAPABILITIES_FILE [--json]
+  simple-changes validate-changelog-transaction REQUEST_FILE RECEIPT_FILE [--json]
   simple-changes validate KIND FILE [--json]
   simple-changes verify-markdown FILE [--json]
   simple-changes help
 
 Schema kinds:
-  repo-policy, changelog-receipt, initialization, inventory, change-plan,
-  run-state, provider-receipt, remote-branch-reconciliation,
-  release-consistency, release-notes, loop-lease, worktree-coordination
+  repo-policy, changelog-capabilities, changelog-request, changelog-receipt,
+  initialization, inventory, change-plan, run-state, provider-receipt,
+  release-delivery-receipt, remote-branch-reconciliation, release-consistency,
+  release-notes, loop-lease, worktree-coordination
 
 Exit codes:
   0 success, 2 usage, 3 invalid contract, 4 inventory failure, 5 unsafe state
@@ -167,6 +180,7 @@ interface CliOptions {
   concurrentWork?: RepoPolicy["concurrentWork"];
   defaultFinish?: "open-change-request" | "integrate" | "ship";
   disposition?: "preserve-in-place" | "detach-clean-checkout";
+  guidanceDecision?: RepoPolicy["guidance"]["disposition"];
   handoffTiming?: RepoPolicy["handoffTiming"];
   instructionFile?: string;
   instructionPointer?: "add" | "leave";
@@ -205,6 +219,7 @@ const VALUED_OPTIONS = new Set([
   "--disposition",
   "--finish",
   "--handoff",
+  "--guidance-decision",
   "--instruction-file",
   "--instruction-pointer",
   "--mode",
@@ -315,6 +330,20 @@ const applySetupValuedOption = (
       );
     }
     options.handoffTiming = timing;
+    return true;
+  }
+  if (option === "--guidance-decision") {
+    if (
+      !(["accepted", "reviewed", "deferred"] as const).includes(
+        value as RepoPolicy["guidance"]["disposition"]
+      )
+    ) {
+      throw new SimpleChangesError(
+        "--guidance-decision must be accepted, reviewed, or deferred",
+        EXIT_CODES.usage
+      );
+    }
+    options.guidanceDecision = value as RepoPolicy["guidance"]["disposition"];
     return true;
   }
   if (option === "--instruction-file") {
@@ -862,6 +891,7 @@ const renderInitialization = (
         ? "available"
         : "not available"
     }`,
+    `Guidance update: ${status.guidanceUpdate.status}`,
     `Onboarding required: ${status.onboardingRequired ? "yes" : "no"}`,
     `Handoff action: ${status.handoffAction}`,
     `Reason: ${status.reason}`,
@@ -871,6 +901,17 @@ const renderInitialization = (
   }
   if (status.resolvedMode) {
     lines.push(`Resolved mode: ${status.resolvedMode}`);
+  }
+  if (status.guidanceUpdate.status === "update-available") {
+    lines.push("What changed:");
+    for (const change of status.guidanceUpdate.changes) {
+      lines.push(`- ${change.summary}`);
+    }
+    lines.push(
+      `Available actions: ${status.guidanceUpdate.actions.join(", ")}`,
+      `Release notes: ${status.guidanceUpdate.releaseNotes.command}`,
+      `Changelog handoff: ${status.guidanceUpdate.changelogHandoff.reason}`
+    );
   }
   return `${lines.join("\n")}\n`;
 };
@@ -941,6 +982,57 @@ const runInitialize = async (options: CliOptions): Promise<void> => {
   writeOutput(status, options.json, renderInitialization(status));
 };
 
+const runAcknowledgeUpdate = async (options: CliOptions): Promise<void> => {
+  const disposition = requireCliOption(
+    options.guidanceDecision,
+    "--guidance-decision"
+  ) as RepoPolicy["guidance"]["disposition"];
+  const inventory = captureInventory(options.repo);
+  if (!(inventory.policy.path && inventory.policy.source !== "default")) {
+    throw new SimpleChangesError(
+      "No saved Simple Changes policy exists; finish first-use setup instead of acknowledging an update.",
+      EXIT_CODES.usage
+    );
+  }
+  const previousVersion = inventory.policy.value.guidance.version;
+  const policy = acknowledgeGuidanceUpdate(inventory.policy.value, disposition);
+  const applyWrite = (): void => {
+    writePolicyFile(
+      inventory.policy.path as string,
+      policy,
+      inventory.policy.source === "user"
+    );
+  };
+  const activeLoop = readLoopLease(options.repo);
+  if (activeLoop) {
+    await withLoopMutationLease(
+      options.repo,
+      activeLoop.runId,
+      requireCliOption(
+        options.agentId,
+        "--agent-id while an integration loop is active"
+      ),
+      "guidance update acknowledgement",
+      applyWrite
+    );
+  } else {
+    applyWrite();
+  }
+  const result = {
+    currentVersion: CURRENT_GUIDANCE_VERSION,
+    disposition,
+    path: inventory.policy.path,
+    previousVersion,
+    source: inventory.policy.source,
+    written: true,
+  };
+  writeOutput(
+    result,
+    options.json,
+    `Recorded Simple Changes guidance ${CURRENT_GUIDANCE_VERSION} as ${disposition} in ${inventory.policy.path}.\n`
+  );
+};
+
 const runValidation = (options: CliOptions): void => {
   const [schemaName, filename] = options.positional;
   if (!(schemaName && filename)) {
@@ -955,6 +1047,52 @@ const runValidation = (options: CliOptions): void => {
     { schema: schemaName, valid: true, value: validated },
     options.json,
     `${filename} is valid ${schemaName} data.\n`
+  );
+};
+
+const readJsonFile = (filename: string): unknown =>
+  JSON.parse(readFileSync(resolve(filename), "utf8")) as unknown;
+
+const runChangelogNegotiation = (options: CliOptions): void => {
+  const [filename] = options.positional;
+  if (!filename) {
+    throw new SimpleChangesError(
+      "negotiate-changelog requires CAPABILITIES_FILE",
+      EXIT_CODES.usage
+    );
+  }
+  const result = negotiateChangelogProtocol(readJsonFile(filename));
+  writeOutput(
+    result,
+    options.json,
+    result.compatible
+      ? `Negotiated changelog request v${result.requestVersion} and receipt v${result.receiptVersion}.\n`
+      : `Changelog negotiation failed: ${result.reasonCode} (${result.requiredAction}).\n`
+  );
+  if (!result.compatible) {
+    throw new SimpleChangesError(
+      "Changelog protocol negotiation failed",
+      EXIT_CODES.validation
+    );
+  }
+};
+
+const runChangelogTransactionValidation = (options: CliOptions): void => {
+  const [requestFilename, receiptFilename] = options.positional;
+  if (!(requestFilename && receiptFilename)) {
+    throw new SimpleChangesError(
+      "validate-changelog-transaction requires REQUEST_FILE and RECEIPT_FILE",
+      EXIT_CODES.usage
+    );
+  }
+  const receipt = validateChangelogTransaction(
+    readJsonFile(requestFilename),
+    readJsonFile(receiptFilename)
+  );
+  writeOutput(
+    { receipt, valid: true },
+    options.json,
+    `${receiptFilename} matches ${requestFilename}.\n`
   );
 };
 
@@ -1479,6 +1617,9 @@ const executeCommand = async (
     case "setup":
       await runSetup(options);
       return EXIT_CODES.success;
+    case "acknowledge-update":
+      await runAcknowledgeUpdate(options);
+      return EXIT_CODES.success;
     case "preview":
       await runPreview(options);
       return EXIT_CODES.success;
@@ -1493,6 +1634,12 @@ const executeCommand = async (
       return EXIT_CODES.success;
     case "release-notes":
       return runReleaseNotes(options);
+    case "negotiate-changelog":
+      runChangelogNegotiation(options);
+      return EXIT_CODES.success;
+    case "validate-changelog-transaction":
+      runChangelogTransactionValidation(options);
+      return EXIT_CODES.success;
     case "validate":
       runValidation(options);
       return EXIT_CODES.success;

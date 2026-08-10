@@ -102,6 +102,188 @@
           "proof": { "type": "string", "minLength": 1 }
         }
       }
+    },
+    "coordinatedOnboarding": {
+      "anyOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["transactionId", "status", "owners"],
+          "properties": {
+            "transactionId": { "type": "string", "minLength": 1 },
+            "status": { "enum": ["pending", "completed", "partial"] },
+            "owners": {
+              "type": "array",
+              "minItems": 2,
+              "uniqueItems": true,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "owner",
+                  "destination",
+                  "policyDigest",
+                  "writeReceiptDigest",
+                  "status"
+                ],
+                "properties": {
+                  "owner": { "enum": ["simple-changes", "simple-changelogs"] },
+                  "destination": { "type": "string", "minLength": 1 },
+                  "policyDigest": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{64}$"
+                  },
+                  "writeReceiptDigest": {
+                    "anyOf": [
+                      { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+                      { "type": "null" }
+                    ]
+                  },
+                  "status": { "enum": ["pending", "completed", "failed"] }
+                }
+              }
+            }
+          }
+        },
+        { "type": "null" }
+      ]
+    },
+    "releaseDecisions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "transactionId",
+          "releaseSetId",
+          "attempt",
+          "phase",
+          "releaseTrain",
+          "boundary",
+          "inputTargetRevision",
+          "reconciliationHeadRevision",
+          "finalizedTargetRevision",
+          "deployedRevision",
+          "currentVersion",
+          "suggestedVersion",
+          "selectedVersion",
+          "status",
+          "reasonCode",
+          "requiredAction",
+          "approval",
+          "requestVersion",
+          "receiptVersion",
+          "requestSchemaDigest",
+          "receiptSchemaDigest",
+          "effectivePolicyDigest",
+          "decisionDigest",
+          "priorReceiptDigest",
+          "lastCompletedBoundary",
+          "compositeReceipt"
+        ],
+        "properties": {
+          "transactionId": { "type": "string", "minLength": 1 },
+          "releaseSetId": {
+            "anyOf": [{ "type": "string", "minLength": 1 }, { "type": "null" }]
+          },
+          "attempt": { "type": "integer", "minimum": 1 },
+          "phase": { "enum": ["classify", "prepare", "verify"] },
+          "releaseTrain": { "type": "string", "minLength": 1 },
+          "boundary": {
+            "enum": [
+              "release-bearing-merge",
+              "web-production",
+              "package-publication",
+              "store-release",
+              "other-public-release",
+              "none"
+            ]
+          },
+          "inputTargetRevision": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{40,64}$"
+          },
+          "reconciliationHeadRevision": {
+            "anyOf": [
+              { "type": "string", "pattern": "^[0-9a-f]{40,64}$" },
+              { "type": "null" }
+            ]
+          },
+          "finalizedTargetRevision": {
+            "anyOf": [
+              { "type": "string", "pattern": "^[0-9a-f]{40,64}$" },
+              { "type": "null" }
+            ]
+          },
+          "deployedRevision": {
+            "anyOf": [
+              { "type": "string", "pattern": "^[0-9a-f]{40,64}$" },
+              { "type": "null" }
+            ]
+          },
+          "currentVersion": {
+            "anyOf": [{ "type": "string", "minLength": 1 }, { "type": "null" }]
+          },
+          "suggestedVersion": {
+            "anyOf": [{ "type": "string", "minLength": 1 }, { "type": "null" }]
+          },
+          "selectedVersion": {
+            "anyOf": [{ "type": "string", "minLength": 1 }, { "type": "null" }]
+          },
+          "status": {
+            "enum": [
+              "decision-required",
+              "prepared",
+              "verified",
+              "not-applicable",
+              "blocked"
+            ]
+          },
+          "reasonCode": {
+            "anyOf": [{ "type": "string", "minLength": 1 }, { "type": "null" }]
+          },
+          "requiredAction": {
+            "anyOf": [{ "type": "string", "minLength": 1 }, { "type": "null" }]
+          },
+          "approval": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["versionAuthorized", "productionAuthorized"],
+            "properties": {
+              "versionAuthorized": { "type": "boolean" },
+              "productionAuthorized": { "type": "boolean" }
+            }
+          },
+          "requestVersion": { "const": 1 },
+          "receiptVersion": { "enum": [1, 2] },
+          "requestSchemaDigest": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "receiptSchemaDigest": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "effectivePolicyDigest": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "decisionDigest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+          "priorReceiptDigest": {
+            "anyOf": [
+              { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+              { "type": "null" }
+            ]
+          },
+          "lastCompletedBoundary": { "type": "string", "minLength": 1 },
+          "compositeReceipt": {
+            "anyOf": [
+              { "$ref": "release-delivery-receipt.schema.json" },
+              { "type": "null" }
+            ]
+          }
+        }
+      }
     }
   }
 }

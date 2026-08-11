@@ -198,6 +198,48 @@ describe("contract CLI", () => {
       decision: { action: "request-production-approval" },
       state: { candidateRevision, status: "ready" },
     });
+
+    writeFixture(
+      fixture.root,
+      "break-glass.json",
+      `${JSON.stringify({
+        ...JSON.parse(
+          readFileSync(resolve(fixture.root, "emergency.json"), "utf8")
+        ),
+        authoritySource: "explicit-current-request",
+        breakGlassAuthorized: true,
+        evidence: ["urgency-language", "deploy-before-review"],
+        mode: "break-glass",
+        rollbackSupported: true,
+      })}\n`
+    );
+    const upgraded = spawnSync(
+      [
+        process.execPath,
+        cliPath,
+        "loop",
+        "emergency",
+        "record",
+        "--run-id",
+        lease.runId,
+        "--agent-id",
+        "controller",
+        "--state",
+        resolve(fixture.root, "break-glass.json"),
+        "--json",
+        "--repo",
+        fixture.root,
+      ],
+      { stderr: "pipe", stdout: "pipe" }
+    );
+    expect(upgraded.exitCode).toBe(0);
+    expect(JSON.parse(decoder.decode(upgraded.stdout))).toMatchObject({
+      state: {
+        breakGlassAuthorized: true,
+        mode: "break-glass",
+        rollbackSupported: true,
+      },
+    });
   });
 
   test("holds the loop lock for the full guarded command", async () => {

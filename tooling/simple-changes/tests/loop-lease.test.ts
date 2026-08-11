@@ -98,6 +98,75 @@ describe("active integration-loop lease", () => {
       decision: { action: "request-production-approval" },
       state: { candidateRevision, status: "ready" },
     });
+    await recordEmergencyShipping(fixture.root, lease.runId, "controller", {
+      ...initial,
+      authoritySource: "explicit-current-request",
+      breakGlassAuthorized: true,
+      evidence: ["urgency-language", "deploy-before-review"],
+      mode: "break-glass",
+      rollbackSupported: true,
+    });
+    expect(
+      emergencyShippingStatus(fixture.root, lease.runId).state
+    ).toMatchObject({
+      authoritySource: "explicit-current-request",
+      breakGlassAuthorized: true,
+      mode: "break-glass",
+      rollbackSupported: true,
+    });
+    await recordEmergencyShipping(fixture.root, lease.runId, "controller", {
+      ...initial,
+      authoritySource: "explicit-current-request",
+      breakGlassAuthorized: true,
+      candidateArtifactId: "candidate-artifact-a",
+      evidence: ["urgency-language", "deploy-before-review"],
+      mode: "break-glass",
+      rollbackSupported: true,
+    });
+    await expect(
+      recordEmergencyShipping(fixture.root, lease.runId, "controller", {
+        ...initial,
+        authoritySource: "explicit-current-request",
+        breakGlassAuthorized: true,
+        candidateArtifactId: "candidate-artifact-b",
+        evidence: ["urgency-language", "deploy-before-review"],
+        mode: "break-glass",
+        rollbackSupported: true,
+      })
+    ).rejects.toThrow("cannot replace recorded identity: candidateArtifactId");
+    await expect(
+      recordEmergencyShipping(fixture.root, lease.runId, "controller", {
+        ...initial,
+        authoritySource: "confirmed-run-only",
+        breakGlassAuthorized: true,
+        candidateArtifactId: "candidate-artifact-a",
+        evidence: ["urgency-language", "deploy-before-review"],
+        mode: "break-glass",
+        rollbackSupported: true,
+      })
+    ).rejects.toThrow("authority source cannot be replaced");
+    await expect(
+      recordEmergencyShipping(fixture.root, lease.runId, "controller", {
+        ...initial,
+        authoritySource: "explicit-current-request",
+        breakGlassAuthorized: true,
+        candidateArtifactId: "candidate-artifact-a",
+        evidence: ["deploy-before-review"],
+        mode: "break-glass",
+        rollbackSupported: true,
+      })
+    ).rejects.toThrow("evidence labels cannot be removed");
+    await expect(
+      recordEmergencyShipping(fixture.root, lease.runId, "controller", {
+        ...initial,
+        authoritySource: "explicit-current-request",
+        breakGlassAuthorized: true,
+        candidateArtifactId: "candidate-artifact-a",
+        evidence: ["urgency-language", "deploy-before-review"],
+        mode: "break-glass",
+        rollbackSupported: false,
+      })
+    ).rejects.toThrow("cannot clear completed evidence: rollbackSupported");
     expect(() => endLoop(fixture.root, lease.runId, "controller")).toThrow(
       "Emergency Shipping remains incomplete"
     );

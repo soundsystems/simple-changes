@@ -39,6 +39,13 @@
   schema hashing and coherent capability advertisement.
 <!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-11T17:11:06-05:00" -->
 
+- Hardened emergency-ledger transitions so an expedited run can promote to
+  break-glass before deployment only through explicit confirmation,
+  `candidateArtifactId` and `authoritySource` become immutable once recorded,
+  evidence labels are append-only, and `rollbackSupported` can move only
+  monotonically to `true`. Added CLI and lease regressions for each invariant.
+<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-11T17:21:49-05:00" -->
+
 ## 0.10.1 - 2026-08-10
 
 - Split concurrent-author admission into an in-memory projection and a guarded

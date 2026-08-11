@@ -1260,6 +1260,7 @@ const irreversibleEmergencyFlags: Array<keyof EmergencyShippingLedgerEntry> = [
   "mergeCompleted",
   "productionAuthorized",
   "rollbackAnchorRecorded",
+  "rollbackSupported",
 ];
 
 const assertEmergencyUpdate = (
@@ -1269,8 +1270,20 @@ const assertEmergencyUpdate = (
   if (!previous) {
     return;
   }
+  const explicitPredeploymentBreakGlassUpgrade =
+    previous.mode === "expedited" &&
+    next.mode === "break-glass" &&
+    !previous.deployedRevision &&
+    previous.independentReview === "pending" &&
+    !previous.mergeCompleted &&
+    !previous.changelogReconciled &&
+    !previous.finalVerificationPassed &&
+    !previous.cleanupCompleted &&
+    next.breakGlassAuthorized &&
+    next.authoritySource !== null &&
+    next.evidence.includes("deploy-before-review");
   if (
-    previous.mode !== next.mode ||
+    (previous.mode !== next.mode && !explicitPredeploymentBreakGlassUpgrade) ||
     previous.candidateRevision !== next.candidateRevision
   ) {
     throw new SimpleChangesError(
@@ -1287,6 +1300,7 @@ const assertEmergencyUpdate = (
     }
   }
   for (const field of [
+    "candidateArtifactId",
     "deployedRevision",
     "canonicalRevision",
     "deployedArtifactId",
@@ -1299,6 +1313,21 @@ const assertEmergencyUpdate = (
         EXIT_CODES.validation
       );
     }
+  }
+  if (
+    previous.authoritySource &&
+    previous.authoritySource !== next.authoritySource
+  ) {
+    throw new SimpleChangesError(
+      "Emergency Shipping authority source cannot be replaced after recording.",
+      EXIT_CODES.validation
+    );
+  }
+  if (previous.evidence.some((item) => !next.evidence.includes(item))) {
+    throw new SimpleChangesError(
+      "Emergency Shipping evidence labels cannot be removed after recording.",
+      EXIT_CODES.validation
+    );
   }
   if (
     previous.independentReview !== "pending" &&

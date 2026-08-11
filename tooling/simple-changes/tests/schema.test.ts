@@ -235,6 +235,32 @@ describe("closed schemas", () => {
         transactionId: "setup-01",
       },
       createdAt: now,
+      emergencyShipping: {
+        artifactEquivalenceProven: false,
+        authoritySource: "confirmed-run-only",
+        breakGlassAuthorized: true,
+        candidateArtifactId: null,
+        candidateRevision: "9".repeat(40),
+        candidateVerifiedHealthy: false,
+        canonicalArtifactId: null,
+        canonicalRevision: null,
+        changelogReconciled: false,
+        cleanupCompleted: false,
+        deployedArtifactId: null,
+        deployedRevision: null,
+        evidence: ["active-user-impact"],
+        finalVerificationPassed: false,
+        focusedChecksPassed: true,
+        independentReview: "pending",
+        mergeCompleted: false,
+        mode: "break-glass",
+        previousProductionRevision: "8".repeat(40),
+        productionAuthorized: true,
+        redeployDecision: "pending",
+        rollbackAnchorRecorded: true,
+        rollbackSupported: true,
+        status: "ready",
+      },
       mode: "ship",
       receipts: [],
       releaseDecisions: [
@@ -279,6 +305,24 @@ describe("closed schemas", () => {
     expect(validateSchema<typeof runState>("run-state", runState)).toEqual(
       runState
     );
+    expect(() =>
+      validateSchema("run-state", {
+        ...runState,
+        emergencyShipping: {
+          ...runState.emergencyShipping,
+          status: "complete",
+        },
+      })
+    ).toThrow();
+    expect(() =>
+      validateSchema("run-state", {
+        ...runState,
+        emergencyShipping: {
+          ...runState.emergencyShipping,
+          rawPrompt: "deploy first",
+        },
+      })
+    ).toThrow();
     expect(JSON.stringify(runState)).not.toContain("publicVersioning");
   });
 

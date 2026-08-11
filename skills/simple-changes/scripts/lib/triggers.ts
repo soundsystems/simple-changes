@@ -1,4 +1,8 @@
-import type { RequestMode } from "./types.ts";
+import type {
+  EmergencyShippingEvidence,
+  EmergencyShippingIntent,
+  RequestMode,
+} from "./types.ts";
 
 const INTEGRATION_PATTERN =
   /\b(package|queue|publish|integrate|merge|ship|reconcile)\b|\bput (?:this|it|these|them)(?:\s+\w+){0,6}\s+up\b|\bfocused (?:pr|prs|mr|mrs|change|changes)\b|\brun the (?:integration )?loop\b/iu;
@@ -33,6 +37,75 @@ const PULL_TARGET_PATTERN =
   /\bpull (?:the )?latest(?: changes)? from (?:origin|upstream|(?:remote )?(?:main|master)|the default branch)\b/iu;
 const SWEEP_MODE_PATTERN =
   /\beverything\b|\ball (?:ready|changes|work)\b|\bfocused changes\b/iu;
+const EXPLICIT_BREAK_GLASS_PATTERN =
+  /\bdeploy first\b|\b(?:deploy|ship|put (?:this|it) live)\b.{0,48}\bbefore (?:an? |independent )?review\b|\b(?:independent )?review\b.{0,48}\bafter (?:the )?(?:deploy|deployment|release)\b|\bwithout (?:waiting for |an? )?(?:independent )?review\b/iu;
+const SHIPPING_URGENCY_PATTERN =
+  /\b(?:ship|deploy|release|publish|get|put)\b.{0,56}\b(?:asap|immediately|right now|fast|faster|quick|quickly|urgent(?:ly)?)\b|\b(?:asap|immediately|right now|fast|quickly|urgent(?:ly)?)\b.{0,56}\b(?:ship|deploy|release|publish|get (?:this|it) out|put (?:this|it) live)\b/iu;
+const CONTEXTUAL_URGENCY_PATTERN =
+  /\bmake (?:this|it) (?:fast|quick)\b|\bget (?:this|it) out\b/iu;
+const ACTIVE_USER_IMPACT_PATTERN =
+  /\b(?:production|prod|site|app|service)\b.{0,64}\b(?:down|outage|broken|failing|unavailable)\b|\b(?:users?|customers?)\b.{0,64}\b(?:cannot|can't|unable|blocked|affected|impacted|failing)\b|\b(?:affecting|impacting)\b.{0,32}\b(?:users?|customers?)\b/iu;
+const TESTED_READY_PATTERN =
+  /\b(?:tested|checks? passed|verified)\b.{0,64}\b(?:go live|production|deploy(?:ment)?)\b|\b(?:go live|production|deploy(?:ment)?)\b.{0,64}\b(?:tested|checks? passed|verified)\b/iu;
+
+export const classifyEmergencyShipping = (
+  prompt: string,
+  integrationContextEstablished = false
+): EmergencyShippingIntent => {
+  const normalized = prompt.trim();
+  const explicitBreakGlass = EXPLICIT_BREAK_GLASS_PATTERN.test(normalized);
+  const urgent =
+    SHIPPING_URGENCY_PATTERN.test(normalized) ||
+    (integrationContextEstablished &&
+      CONTEXTUAL_URGENCY_PATTERN.test(normalized));
+  const activeUserImpact = ACTIVE_USER_IMPACT_PATTERN.test(normalized);
+  const testedReady = TESTED_READY_PATTERN.test(normalized);
+  const shippingInterest =
+    explicitBreakGlass ||
+    urgent ||
+    testedReady ||
+    SHIP_MODE_PATTERN.test(normalized);
+  const evidence: EmergencyShippingEvidence[] = [];
+  if (urgent) {
+    evidence.push("urgency-language");
+  }
+  if (activeUserImpact && shippingInterest) {
+    evidence.push("active-user-impact");
+  }
+  if (testedReady) {
+    evidence.push("tested-ready-for-production");
+  }
+  if (explicitBreakGlass) {
+    evidence.push("deploy-before-review");
+  }
+  if (explicitBreakGlass) {
+    return {
+      breakGlassAuthorized: true,
+      evidence,
+      mode: "break-glass",
+      recommendedMode: "break-glass",
+      requiresBreakGlassConfirmation: false,
+    };
+  }
+  const recommendBreakGlass =
+    shippingInterest && (activeUserImpact || testedReady);
+  if (urgent || recommendBreakGlass) {
+    return {
+      breakGlassAuthorized: false,
+      evidence,
+      mode: "expedited",
+      recommendedMode: recommendBreakGlass ? "break-glass" : "expedited",
+      requiresBreakGlassConfirmation: recommendBreakGlass,
+    };
+  }
+  return {
+    breakGlassAuthorized: false,
+    evidence,
+    mode: "standard",
+    recommendedMode: "standard",
+    requiresBreakGlassConfirmation: false,
+  };
+};
 
 const isSyncRequest = (prompt: string): boolean =>
   SYNC_MODE_PATTERN.test(prompt) ||
@@ -44,6 +117,13 @@ export const shouldTrigger = (
   integrationContextEstablished = false
 ): boolean => {
   const normalized = prompt.trim();
+  const emergency = classifyEmergencyShipping(
+    normalized,
+    integrationContextEstablished
+  );
+  if (emergency.mode !== "standard") {
+    return true;
+  }
   if (
     COMMIT_MESSAGE_PATTERN.test(normalized) ||
     DEPLOY_ONLY_PATTERN.test(normalized)
@@ -76,6 +156,10 @@ export const classifyRequestMode = (
   integrationContextEstablished = false
 ): RequestMode => {
   const normalized = prompt.trim();
+  const emergency = classifyEmergencyShipping(
+    normalized,
+    integrationContextEstablished
+  );
   if (
     PREVIEW_MODE_PATTERN.test(normalized) ||
     READ_ONLY_PROPOSAL_AUDIT_PATTERN.test(normalized)
@@ -91,7 +175,7 @@ export const classifyRequestMode = (
   ) {
     return "resume";
   }
-  if (SHIP_MODE_PATTERN.test(normalized)) {
+  if (emergency.mode !== "standard" || SHIP_MODE_PATTERN.test(normalized)) {
     return "ship";
   }
   if (INTEGRATE_MODE_PATTERN.test(normalized)) {

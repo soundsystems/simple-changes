@@ -25,6 +25,10 @@ const releaseDeliverySchemaPath = new URL(
   "../../../skills/simple-changes/evals/schemas/release-delivery-receipt.schema.json",
   import.meta.url
 );
+const runStateSchemaPath = new URL(
+  "../../../skills/simple-changes/evals/schemas/run-state.schema.json",
+  import.meta.url
+);
 const syncPath = new URL(
   "../../../skills/simple-changes/references/sync.md",
   import.meta.url
@@ -319,6 +323,36 @@ describe("Simple Changes skill contract", () => {
     expect(normalizedCommunication).toContain(
       "The final response compares the pre-ship brief with the observed result"
     );
+  });
+
+  test("Emergency Ship keeps urgency separate from break-glass authority", async () => {
+    const [skill, communication, deployment, runStateSchema] =
+      await Promise.all([
+        readFile(skillPath, "utf8"),
+        readFile(shipCommunicationPath, "utf8"),
+        readFile(deploymentPath, "utf8"),
+        readFile(runStateSchemaPath, "utf8"),
+      ]);
+    const normalizedSkill = skill.replace(/\s+/g, " ");
+    const normalizedCommunication = communication.replace(/\s+/g, " ");
+    const normalizedDeployment = deployment.replace(/\s+/g, " ");
+
+    expect(normalizedSkill).toContain(
+      "Urgency can infer `expedited`; it never grants production authority or waives independent review"
+    );
+    expect(normalizedSkill).toContain(
+      "Only unambiguous current-request language that orders deployment before review"
+    );
+    expect(normalizedDeployment).toContain(
+      "Emergency Ship is a narrow, run-only exception"
+    );
+    expect(normalizedDeployment).toContain(
+      "Do not create a second deployment merely because reconciliation produced a new Git revision"
+    );
+    expect(normalizedCommunication).toContain("`live-unreviewed`");
+    expect(normalizedCommunication).toContain("`live-unreconciled`");
+    expect(runStateSchema).toContain('"emergencyShipping"');
+    expect(runStateSchema).not.toContain('"rawPrompt"');
   });
 
   test("Active loops serialize integration while allowing claimed authors", async () => {

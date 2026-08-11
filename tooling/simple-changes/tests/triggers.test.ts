@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  classifyEmergencyShipping,
   classifyRequestMode,
   shouldTrigger,
 } from "../../../skills/simple-changes/scripts/lib/triggers.ts";
@@ -50,5 +51,55 @@ describe("trigger classification", () => {
     expect(shouldTrigger("again", false)).toBe(false);
     expect(shouldTrigger("again", true)).toBe(true);
     expect(classifyRequestMode("again", true)).toBe("resume");
+  });
+
+  test("infers expedited shipping from urgency without waiving review", () => {
+    expect(classifyEmergencyShipping("Ship this fast.")).toEqual({
+      breakGlassAuthorized: false,
+      evidence: ["urgency-language"],
+      mode: "expedited",
+      recommendedMode: "expedited",
+      requiresBreakGlassConfirmation: false,
+    });
+    expect(classifyRequestMode("Make this quick.", true)).toBe("ship");
+    expect(shouldTrigger("Make this quick.", false)).toBe(false);
+  });
+
+  test("recommends break-glass for active impact or tested live work", () => {
+    expect(
+      classifyEmergencyShipping(
+        "Users cannot log in and this needs to ship ASAP."
+      )
+    ).toMatchObject({
+      breakGlassAuthorized: false,
+      evidence: ["urgency-language", "active-user-impact"],
+      mode: "expedited",
+      recommendedMode: "break-glass",
+      requiresBreakGlassConfirmation: true,
+    });
+    expect(
+      classifyEmergencyShipping("This has been tested and needs to go live.")
+    ).toMatchObject({
+      breakGlassAuthorized: false,
+      mode: "expedited",
+      recommendedMode: "break-glass",
+      requiresBreakGlassConfirmation: true,
+    });
+  });
+
+  test("treats deploy-before-review wording as explicit break-glass", () => {
+    expect(
+      classifyEmergencyShipping("Deploy first and review afterward.")
+    ).toEqual({
+      breakGlassAuthorized: true,
+      evidence: ["deploy-before-review"],
+      mode: "break-glass",
+      recommendedMode: "break-glass",
+      requiresBreakGlassConfirmation: false,
+    });
+    expect(shouldTrigger("Deploy first and review afterward.")).toBe(true);
+    expect(classifyRequestMode("Deploy first and review afterward.")).toBe(
+      "ship"
+    );
   });
 });

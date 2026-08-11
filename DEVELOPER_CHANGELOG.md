@@ -1,5 +1,34 @@
 # Developer changelog
 
+## 0.11.0 - 2026-08-11
+
+- Added run-only Emergency Ship classification and a resumable delivery state
+  machine:
+  - Trigger classification distinguishes urgency, active user impact, tested
+    production readiness, and explicit deploy-before-review direction. It
+    selects expedited shipping conservatively, grants break-glass only from
+    explicit current authority, and persists closed evidence labels instead of
+    raw request text.
+  - A closed emergency-shipping ledger records exact candidate, deployed, and
+    canonical revisions and artifacts alongside production authority, rollback
+    evidence, focused checks, review, merge, changelog reconciliation,
+    conditional redeployment, final verification, and cleanup state.
+  - The decision engine preserves review-before-deploy ordering for expedited
+    runs, routes rejected live break-glass candidates to rollback or correction,
+    and avoids a second deployment only for an already-live canonical revision
+    or proven immutable artifact equivalence.
+  - Advanced installed guidance to version 3 and added schema, trigger,
+    state-machine, contract, CLI, initialization, and behavioral evaluation
+    coverage for the emergency workflow and its incomplete-state guarantees.
+<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-11T15:17:59-05:00" -->
+
+- Extended the closed changelog capability schema and TypeScript union with
+  `guidance-update-notices`, plus a regression proving negotiation accepts a
+  producer superset and returns only shared features. The paired Simple
+  Changelogs producer fix canonicalizes schema JSON before hashing instead of
+  deriving protocol digests from raw file text.
+<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-11T16:08:07-05:00" -->
+
 ## 0.10.1 - 2026-08-10
 
 - Split concurrent-author admission into an in-memory projection and a guarded

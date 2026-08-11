@@ -25,6 +25,23 @@ Classify the user's language without requiring commands:
 | Again or continue | Resume | Reconstruct scope from fresh evidence |
 | Leave this checkout alone | Pause | Preserve it; continue independent work |
 
+Within Ship, classify emergency delivery language separately from the normal
+finish boundary:
+
+| Request language | Emergency behavior |
+| --- | --- |
+| Ship fast, make this quick, get this out ASAP | Use `expedited`: focused checks, independent review, merge, deploy, then finish release reconciliation and cleanup. |
+| Active user impact plus urgent shipping intent | Continue as `expedited`, recommend `break-glass`, and require explicit deploy-before-review direction. |
+| Tested and needs to go live | Continue as `expedited`, recommend `break-glass`, and do not treat testing as independent-review authority. |
+| Deploy first, review after deployment, or deploy before review | Use explicitly authorized run-only `break-glass`. |
+
+Urgency can infer `expedited`; it never grants production authority or waives
+independent review. Only unambiguous current-request language that orders
+deployment before review, or a concise confirmation of that exact consequence,
+authorizes `break-glass`. Never store either emergency level as a default.
+Persist only closed evidence labels and exact revision/provider receipts, not
+the user's raw request.
+
 When wording is ambiguous, choose the least consequential mode that still
 answers the request. Queue is the default mutation boundary; preview is the
 default when the user explicitly asks to see a plan. Queue does not mean
@@ -186,6 +203,15 @@ original head. After the run, compare the brief with observed results and
 summarize what actually shipped, exact receipts, review-driven changes and
 re-verification, and anything preserved or blocked. Follow
 [ship communication](references/ship-communication.md).
+
+For emergency Ship, state the inferred level and evidence before the first
+consequential mutation. `expedited` preserves focused checks and independent
+review before merge and initial deployment. `break-glass` first records an
+exact rollback anchor and runs focused checks, may deploy one exact candidate
+before independent review only with explicit run-only authority, and then
+immediately resumes review and forward Git/release reconciliation. Persist
+`live-unreconciled` or `live-unreviewed` until that debt is closed; neither is a
+successful completion state.
 
 For a public release, negotiate the changelog provider's exact protocol and
 schema digests before delegation. Use one revision-bound transaction per
@@ -403,8 +429,11 @@ authority for those operations.
    disposition, evidence, and the next action.
 7. Finish safe independent units before asking about a genuinely blocking
    decision.
-8. Run repository-native, proportionate checks. Distinguish failures introduced
-   by the unit from failures already present. Follow
+8. Run repository-native, proportionate checks. Emergency Ship may select the
+   smallest meaningful focused set before its first deployment, but it never
+   records absent checks as passing and must finish the remaining applicable
+   verification afterward. Distinguish failures introduced by the unit from
+   failures already present. Follow
    [verification](references/verification.md).
 9. Report potential release impact without authoring changelogs, release notes,
    release-policy files, version fields, or release-note destinations. When
@@ -425,7 +454,11 @@ authority for those operations.
     [change proposals](references/change-requests.md).
 12. Resolve checks, discussions, review, dependencies, and mergeability from
     current provider evidence. Approval belongs to one exact head or revision;
-    any head change invalidates it. Follow
+    any head change invalidates it. `expedited` still completes independent
+    review before merge and deployment. Explicit `break-glass` may postpone
+    independent review until immediately after one verified candidate is live;
+    review rejection requires rollback or a separately checked corrective
+    revision, never silent reconciliation. Follow
     [review and merge](references/review-and-merge.md).
 13. Classify and audit database or data-system changes across every migration
     history, generated schema, ORM artifact, query/routine, backfill, index, or
@@ -442,7 +475,13 @@ authority for those operations.
     when no deployment was created during this run, together with readiness,
     complete canonical-target coverage, and the changed journey. Emit a
     composite delivery receipt binding the transaction, decision digest, full
-    revision lineage, and provider result.
+    revision lineage, and provider result. The only public-release exception is
+    an emergency candidate deployment recorded by the emergency ledger:
+    `expedited` may defer release reconciliation until after its reviewed merge,
+    while explicitly authorized `break-glass` may also defer merge and review.
+    Both immediately resume forward reconciliation, and redeploy only when the
+    final canonical runtime artifact differs; an identical immutable artifact
+    requires explicit equivalence proof and final binding verification.
     Reconcile stale provider-managed targets with the existing artifact through
     a bounded promote/recheck/managed-target sequence. Follow
     [deployments](references/deployments.md).
@@ -496,10 +535,14 @@ result.
 - Never treat skill-path discovery as compatibility. Negotiate supported
   versions/features and exact schema digests, and never pass raw prompt text as
   the inter-skill request.
-- Treat every production Web deployment as a product release. Do not deploy
-  until a read-only final changelog verification proves the refreshed canonical
-  target contains the merged dated/versioned reconciliation and no
-  target-contained work remains `Unreleased`.
+- Treat every production Web deployment as a product release. Normally, do not
+  deploy until a read-only final changelog verification proves the refreshed
+  canonical target contains the merged dated/versioned reconciliation and no
+  target-contained work remains `Unreleased`. The only exception is a
+  revision-bound Emergency Ship candidate with production authority, focused
+  checks, durable incomplete state, and immediate forward reconciliation;
+  `break-glass` additionally requires explicit deploy-before-review authority
+  and a rollback anchor.
 - Capture the opening baseline before mutation and attribute this run's objects.
 - Persist one integration-controller lease for write-capable integration modes.
   Agents assigned to that run use registered isolated worktrees, and every
@@ -522,7 +565,9 @@ result.
 - Bind approval to the exact proposal revision and invalidate it after change.
 - In Ship mode, give the pre-ship brief before consequential mutation and report
   the review delta against the original proposal head at completion.
-- Honor branch protection and independent-review requirements.
+- Honor branch protection and independent-review requirements. Break-glass
+  does not bypass protected merges; it postpones independent review of one
+  exact deployed candidate and cannot complete until that review is approved.
 - Never infer deploy or data-write authority from integration authority.
 - Resolve the canonical target branch after the final merge and require every
   in-scope live deployment to match that exact revision. Never substitute the

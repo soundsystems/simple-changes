@@ -8,6 +8,8 @@
   proportionate verification.
 - A user signal that completed implementation is ready to put up, merge, ship,
   finish, or reconcile.
+- Urgent shipping language in an established change-integration context,
+  including an explicit request to deploy before independent review.
 
 ## Non-triggers
 
@@ -47,6 +49,10 @@
 - For public releases, negotiated changelog protocol evidence, phased
   classification/preparation/verification receipts, and a composite delivery
   receipt binding version identity to the deployed revision.
+- For Emergency Ship, a run-only urgency classification, revision-bound
+  incomplete-state ledger, rollback evidence for break-glass, and a conditional
+  final deployment decision based on canonical revision or proven immutable
+  artifact equivalence.
 - Exact receipts for policy and managed instruction-pointer writes.
 
 ## Guarantees
@@ -121,6 +127,12 @@
   shared history, or leaves the checkout conflicted.
 - Authorized Ship runs communicate scope before mutation without adding a
   redundant permission gate, then account for review-driven revisions.
+- Urgency alone selects only expedited shipping. Active user impact or a tested
+  production-ready claim may recommend break-glass, but only explicit
+  deploy-before-review direction authorizes it. Expedited keeps independent
+  review before merge and deployment; break-glass remains incomplete until
+  independent review, canonical Git and release reconciliation, final live
+  verification, and cleanup all finish.
 - Deployment and high-risk actions retain their independent authority checks.
 - Public-version preferences remain exclusively owned by Simple Changelogs.
   Version direction is distinct from a blocker, approvals are digest- and
@@ -149,6 +161,9 @@
   or data-write authority.
 - Reporting the original Ship plan as delivered without reconciling review
   changes and final provider evidence.
+- Treating emotional urgency, active impact, or a tested claim as implicit
+  authority to deploy before review; saving Emergency Ship as a default; or
+  marking `live-unreviewed` or `live-unreconciled` work complete.
 - Directly authoring changelogs, release notes, version fields, or release
   policy.
 - Calling a Simple Changes update checkpoint a changelog backfill, presenting a

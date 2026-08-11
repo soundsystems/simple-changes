@@ -12,13 +12,57 @@ repository's documented workflow and classify the delivery model:
 Distinguish preview, staging, and production. Production requires explicit
 current authority or committed policy that clearly grants it.
 
-A production deployment of a Web product is a product release. Before invoking
-the provider, require a v2 `verified` changelog receipt for the exact refreshed
-canonical target. It must bind the effective policy, selected version,
+A production deployment of a Web product is a product release. Normally, before
+invoking the provider, require a v2 `verified` changelog receipt for the exact
+refreshed canonical target. It must bind the effective policy, selected version,
 decision digest, input target, reconciliation head, and finalized target. An
 unresolved version, `decision-required`, unavailable or blocked delegation,
 preserve-and-report disposition, unmerged reconciliation, failed final
-verification, or target-contained pending item blocks production.
+verification, or target-contained pending item blocks normal production.
+
+## Emergency Ship exception
+
+Emergency Ship is a narrow, run-only exception to the normal ordering, not a
+saved deployment preference:
+
+- `expedited` runs focused checks, independent review, and merge before the
+  first deployment, then records `live-unreconciled` while changelog/version
+  reconciliation, remaining verification, and cleanup continue.
+- `break-glass` requires explicit current-request deploy-before-review
+  authority, separate production authority, the exact previous production
+  identity, a proven rollback or corrective-release path, and focused checks.
+  It may deploy one exact candidate before independent review and records
+  `live-unreviewed` until that review completes.
+
+Active user impact, urgency, or a claim that testing passed may recommend
+break-glass but cannot authorize it. An unambiguous request such as “deploy
+first and review afterward” can. Break-glass never authorizes migrations,
+backfills, secrets, environment changes, DNS changes, store releases, history
+rewrites, or bypassing a protected merge.
+
+Immediately after the candidate is healthy, resume the deferred sequence. A
+review rejection requires rollback or a corrective revision. Approval proceeds
+through canonical Git integration and forward changelog/version reconciliation;
+never rewrite an already observed release record. Persist candidate, initial
+deployment, reconciliation, canonical, and final production evidence so Resume
+does not repeat any operation.
+
+After reconciliation, decide the final production action from immutable
+evidence:
+
+1. When the final canonical revision is already live, verify it without another
+   deployment.
+2. When revisions differ but both resolve to the same immutable artifact,
+   require explicit artifact-equivalence proof and bind the canonical revision
+   to that existing artifact before final verification.
+3. Otherwise deploy the final canonical runtime artifact and verify it replaces
+   the emergency candidate.
+
+Do not create a second deployment merely because reconciliation produced a new
+Git revision. Conversely, matching filenames, version text, build logs, or
+human claims are not artifact-equivalence proof. Completion still requires
+approved independent review, canonical Git and release state, final production
+verification, remaining checks, and cleanup.
 
 A successful deployment receipt includes provider, immutable deployment
 identity, project, environment, intended committed revision, observed revision,

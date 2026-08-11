@@ -385,6 +385,28 @@ classification. Production authority is separately rebound to C.
 
 ## Deployment behavior
 
+### Emergency ordering
+
+Emergency Ship extends rather than replaces the release gate. Urgency language
+selects run-only `expedited`; active user impact or tested production readiness
+may recommend `break-glass`, but only explicit deploy-before-review direction
+authorizes it.
+
+`expedited` preserves focused checks, independent review, and merge before its
+first deployment, then persists `live-unreconciled` while it completes forward
+release reconciliation, remaining verification, and cleanup. Explicit
+`break-glass` records the previous production identity and rollback path, runs
+focused checks, deploys one exact candidate, and persists `live-unreviewed`
+until independent review finishes. Review rejection enters
+`rollback-required`; it never proceeds through normal reconciliation.
+
+Both paths finish by establishing canonical reviewed Git and release state.
+Verify without another deployment when the canonical revision is already live.
+When revisions differ, reuse the existing result only with immutable artifact
+equivalence proof and canonical binding verification; otherwise deploy and
+verify the final canonical runtime artifact. Emergency urgency does not grant
+migration, data, secret, environment, DNS, store, or history-rewrite authority.
+
 ### Non-production environments
 
 Preview, branch, staging, and internal test deployments do not invoke the

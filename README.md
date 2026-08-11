@@ -90,6 +90,11 @@ discovery and the production release map stay scoped to that repository.
 - Treats every Web production deployment as a product release, requires a
   digest-bound version decision and verified full revision lineage, and emits a
   composite receipt binding that release to the observed deployment revision.
+- Recognizes run-only Emergency Ship intent: urgency selects an expedited path
+  that preserves pre-deploy review, while only explicit deploy-before-review
+  direction enables break-glass. Both retain durable reconciliation debt and
+  avoid a second deployment only when the final canonical result is already
+  live or immutable artifact equivalence is proven.
 - Inventories branches, stashes, local changes, worktrees, policy, and Git
   capabilities using argument-array subprocess calls.
 - Takes two read-only snapshots and preserves work that appeared or changed
@@ -306,7 +311,7 @@ apply only when the repository has no policy. Teams may commit
   "schemaVersion": 1,
   "guidance": {
     "disposition": "accepted",
-    "version": 2
+    "version": 3
   },
   "changelogHandling": "delegate-if-available",
   "defaultFinish": "open-change-request",

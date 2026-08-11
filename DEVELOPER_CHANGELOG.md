@@ -1,5 +1,15 @@
 # Developer changelog
 
+## 0.10.1 - 2026-08-10
+
+- Split concurrent-author admission into an in-memory projection and a guarded
+  persistence path. `loop status` now computes effective current admissions
+  without taking the state lock or rewriting the lease, while mutation-capable
+  observations continue to persist admissions under the existing lock. Added a
+  regression that verifies active status with `.git/simple-changes` restricted
+  to read and traversal permissions.
+<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-10T19:11:21-05:00" -->
+
 ## 0.10.0 - 2026-08-10
 
 - Added a provider-negotiated public-release transaction for Ship workflows:

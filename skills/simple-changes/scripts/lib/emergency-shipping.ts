@@ -49,7 +49,21 @@ export const deriveEmergencyShippingStatus = (
   if (state.independentReview === "changes-requested") {
     return "rollback-required";
   }
-  if (state.finalVerificationPassed && state.cleanupCompleted) {
+  const completionEvidence =
+    state.productionAuthorized &&
+    state.focusedChecksPassed &&
+    state.candidateVerifiedHealthy &&
+    state.independentReview === "approved" &&
+    state.mergeCompleted &&
+    state.changelogReconciled &&
+    Boolean(state.deployedRevision && state.canonicalRevision) &&
+    state.finalVerificationPassed &&
+    state.cleanupCompleted &&
+    (state.mode !== "break-glass" ||
+      (state.breakGlassAuthorized &&
+        state.rollbackSupported &&
+        state.rollbackAnchorRecorded));
+  if (completionEvidence) {
     return "complete";
   }
   if (state.canonicalRevision && state.changelogReconciled) {
@@ -83,6 +97,20 @@ export const decideEmergencyShipping = (
   state: EmergencyShippingLedgerEntry
 ): EmergencyShippingDecision => {
   const status = deriveEmergencyShippingStatus(state);
+
+  if (state.independentReview === "changes-requested") {
+    return state.deployedRevision
+      ? decision(
+          "rollback-or-correct",
+          "rollback-required",
+          "Review rejected the live candidate; roll back or ship a separately reviewed corrective revision."
+        )
+      : decision(
+          "block",
+          "blocked",
+          "Review rejected the candidate before deployment; correct it and obtain review for a new exact revision."
+        );
+  }
 
   return (
     decideEmergencyAuthority(state, status) ??

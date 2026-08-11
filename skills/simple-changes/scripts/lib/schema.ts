@@ -16,6 +16,7 @@ const schemaNames: SchemaName[] = [
   "initialization",
   "inventory",
   "change-plan",
+  "emergency-shipping",
   "run-state",
   "provider-receipt",
   "release-delivery-receipt",

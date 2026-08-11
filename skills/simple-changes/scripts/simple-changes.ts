@@ -25,6 +25,7 @@ import {
   acceptPausedWorktreeChange,
   adoptPausedWorktree,
   authorizeWorktreeRemoval,
+  emergencyShippingStatus,
   endLoop,
   executeLoopMutation,
   grantLoopOverride,
@@ -34,6 +35,7 @@ import {
   markWorktreeResumeReady,
   prepareAgentWorktree,
   readLoopLease,
+  recordEmergencyShipping,
   recordRemoteBranchReconciliation,
   recoverLoopLock,
   startLoop,
@@ -135,6 +137,9 @@ Usage:
     --pause-receipt ID [--json] [--repo PATH]
   simple-changes loop reconcile-remote-branches --run-id ID --agent-id ID
     --receipt FILE [--json] [--repo PATH]
+  simple-changes loop emergency status --run-id ID [--json] [--repo PATH]
+  simple-changes loop emergency record --run-id ID --agent-id ID --state FILE
+    [--json] [--repo PATH]
   simple-changes loop end --run-id ID --agent-id ID [--json] [--repo PATH]
   simple-changes worktree status [--json] [--repo PATH]
   simple-changes worktree request --claim-id ID --run-id ID
@@ -202,6 +207,7 @@ interface CliOptions {
   runId?: string;
   scope?: SetupScope;
   settleMs: number;
+  statePath?: string;
   statusDigest?: string;
   uiArtifacts: boolean;
   uiArtifactVersioning?: RepoPolicy["uiArtifactVersioning"];
@@ -236,6 +242,7 @@ const VALUED_OPTIONS = new Set([
   "--scope",
   "--settle-ms",
   "--status-digest",
+  "--state",
   "--ui-versioning",
   "--version",
   "--worktree",
@@ -399,6 +406,7 @@ const applyLoopValuedOption = (
     "--reason": "reason",
     "--receipt": "receiptPath",
     "--run-id": "runId",
+    "--state": "statePath",
     "--status-digest": "statusDigest",
   };
   const key = textOptions[option];
@@ -1237,6 +1245,45 @@ const runLoopFinalizationAction = (
   return false;
 };
 
+const runLoopEmergencyAction = async (
+  options: CliOptions,
+  runId: string
+): Promise<boolean> => {
+  if (options.positional[0] !== "emergency") {
+    return false;
+  }
+  if (options.positional[1] === "status") {
+    const status = emergencyShippingStatus(options.repo, runId);
+    writeOutput(
+      status,
+      options.json,
+      `${status.decision.action}: ${status.decision.reason}\n`
+    );
+    return true;
+  }
+  if (options.positional[1] === "record") {
+    const agentId = requireCliOption(options.agentId, "--agent-id");
+    const statePath = requireCliOption(options.statePath, "--state");
+    const result = await recordEmergencyShipping(
+      options.repo,
+      runId,
+      agentId,
+      readJsonFile(statePath)
+    );
+    const { decision } = emergencyShippingStatus(options.repo, runId);
+    writeOutput(
+      { decision, state: result.result, verification: result.verification },
+      options.json,
+      `${decision.action}: ${decision.reason}\n`
+    );
+    return true;
+  }
+  throw new SimpleChangesError(
+    "loop emergency requires status or record",
+    EXIT_CODES.usage
+  );
+};
+
 const runLoopCommand = async (options: CliOptions): Promise<void> => {
   const [action] = options.positional;
   if (!action) {
@@ -1298,6 +1345,9 @@ const runLoopCommand = async (options: CliOptions): Promise<void> => {
         EXIT_CODES.unsafe
       );
     }
+    return;
+  }
+  if (await runLoopEmergencyAction(options, runId)) {
     return;
   }
   const agentId = requireCliOption(options.agentId, "--agent-id");

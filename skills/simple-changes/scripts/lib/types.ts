@@ -761,6 +761,7 @@ export interface LoopLease {
   concurrentWork?: "allow-claimed" | "strict";
   createdAt: string;
   dispositions?: LoopWorktreeDisposition[];
+  emergencyShipping?: EmergencyShippingLedgerEntry;
   mode: Exclude<RequestMode, "pause" | "preview" | "sync">;
   overrides: LoopOverride[];
   ownerAgentId: string;
@@ -807,6 +808,7 @@ export type SchemaName =
   | "initialization"
   | "inventory"
   | "change-plan"
+  | "emergency-shipping"
   | "run-state"
   | "provider-receipt"
   | "release-delivery-receipt"

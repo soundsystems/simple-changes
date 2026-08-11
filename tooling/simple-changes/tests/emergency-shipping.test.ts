@@ -128,6 +128,34 @@ describe("emergency shipping state machine", () => {
     });
   });
 
+  test("prioritizes live rejection over stale authority and verification flags", () => {
+    expect(
+      decideEmergencyShipping(
+        state({
+          breakGlassAuthorized: false,
+          candidateVerifiedHealthy: false,
+          deployedRevision: revisionA,
+          independentReview: "changes-requested",
+          mode: "break-glass",
+          productionAuthorized: false,
+        })
+      )
+    ).toMatchObject({
+      action: "rollback-or-correct",
+      status: "rollback-required",
+    });
+  });
+
+  test("does not derive completion from cleanup flags without delivery evidence", () => {
+    const contradictory = state({
+      cleanupCompleted: true,
+      finalVerificationPassed: true,
+      status: "ready",
+    });
+    expect(deriveEmergencyShippingStatus(contradictory)).toBe("ready");
+    expect(decideEmergencyShipping(contradictory).status).not.toBe("complete");
+  });
+
   test("avoids redeploy only for the same canonical revision or proven artifact", () => {
     const reconciled = state({
       candidateVerifiedHealthy: true,

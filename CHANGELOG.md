@@ -21,6 +21,11 @@
   supersets while selecting only features shared with Simple Changes.
 <!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-11T16:08:07-05:00" -->
 
+- Emergency Ship now persists and resumes its exact delivery ledger under the
+  active loop, and refuses loop completion while emergency delivery remains
+  incomplete.
+<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-11T17:11:06-05:00" -->
+
 ## 0.10.1 - 2026-08-10
 
 - `loop status` is now genuinely read-only. It reports the effective active

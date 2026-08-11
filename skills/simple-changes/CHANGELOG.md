@@ -19,6 +19,10 @@
 - Changelog capability negotiation now accepts compatible producer capability
   supersets while selecting only features shared with Simple Changes.
 
+- Emergency Ship now persists and resumes its exact delivery ledger under the
+  active loop, and refuses loop completion while emergency delivery remains
+  incomplete.
+
 ## 0.10.1 - 2026-08-10
 
 - `loop status` is now genuinely read-only. It reports the effective active

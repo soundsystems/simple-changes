@@ -7,6 +7,7 @@ import { sleep } from "bun";
 import { captureInventory } from "../../../skills/simple-changes/scripts/lib/inventory.ts";
 import {
   authorizeWorktreeRemoval,
+  emergencyShippingStatus,
   endLoop,
   executeLoopMutation,
   grantLoopOverride,
@@ -16,6 +17,7 @@ import {
   loopStatus,
   prepareAgentWorktree,
   readLoopLease,
+  recordEmergencyShipping,
   recordRemoteBranchReconciliation,
   recoverLoopLock,
   startLoop,
@@ -51,6 +53,55 @@ afterEach(() => {
 });
 
 describe("active integration-loop lease", () => {
+  test("persists and resumes Emergency Shipping state under the loop lease", async () => {
+    const fixture = repository();
+    const lease = startLoop(fixture.root, "controller", "ship");
+    const candidateRevision = git(fixture.root, ["rev-parse", "HEAD"]);
+    const initial = {
+      artifactEquivalenceProven: false,
+      authoritySource: null,
+      breakGlassAuthorized: false,
+      candidateArtifactId: null,
+      candidateRevision,
+      candidateVerifiedHealthy: false,
+      canonicalArtifactId: null,
+      canonicalRevision: null,
+      changelogReconciled: false,
+      cleanupCompleted: false,
+      deployedArtifactId: null,
+      deployedRevision: null,
+      evidence: ["urgency-language"] as const,
+      finalVerificationPassed: false,
+      focusedChecksPassed: false,
+      independentReview: "pending" as const,
+      mergeCompleted: false,
+      mode: "expedited" as const,
+      previousProductionRevision: null,
+      productionAuthorized: false,
+      redeployDecision: "pending" as const,
+      rollbackAnchorRecorded: false,
+      rollbackSupported: false,
+      status: "ready" as const,
+    };
+
+    await recordEmergencyShipping(
+      fixture.root,
+      lease.runId,
+      "controller",
+      initial
+    );
+
+    expect(readLoopLease(fixture.root)?.emergencyShipping?.status).toBe(
+      "ready"
+    );
+    expect(emergencyShippingStatus(fixture.root, lease.runId)).toMatchObject({
+      decision: { action: "request-production-approval" },
+      state: { candidateRevision, status: "ready" },
+    });
+    expect(() => endLoop(fixture.root, lease.runId, "controller")).toThrow(
+      "Emergency Shipping remains incomplete"
+    );
+  });
   test("inspects loop status without writing Git metadata", () => {
     const fixture = repository();
     const lease = startLoop(fixture.root, "controller", "ship");

@@ -29,6 +29,16 @@
   deriving protocol digests from raw file text.
 <!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-11T16:08:07-05:00" -->
 
+- Integrated the Emergency Ship ledger with the active-loop lease through new
+  emergency record and status CLI operations, durable lease persistence,
+  monotonic evidence and identity checks, a loop-end incomplete-delivery gate,
+  and full completion-invariant derivation. Added rejection-first routing and
+  loop persistence, resume, identity, and completion regressions. The paired
+  canonical Simple Changelogs fix is merged at
+  `bb795dd642a49690eceb0f45d3cbde7b3b740057` in MR !37, with canonical JSON
+  schema hashing and coherent capability advertisement.
+<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-11T17:11:06-05:00" -->
+
 ## 0.10.1 - 2026-08-10
 
 - Split concurrent-author admission into an in-memory projection and a guarded

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { spawn } from "node:child_process";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { hostname } from "node:os";
 import { join } from "node:path";
 import { sleep } from "bun";
@@ -13,6 +13,7 @@ import {
   guardLoopMutation,
   loopLeasePath,
   loopLockPath,
+  loopStatus,
   prepareAgentWorktree,
   readLoopLease,
   recordRemoteBranchReconciliation,
@@ -50,6 +51,26 @@ afterEach(() => {
 });
 
 describe("active integration-loop lease", () => {
+  test("inspects loop status without writing Git metadata", () => {
+    const fixture = repository();
+    const lease = startLoop(fixture.root, "controller", "ship");
+    const statePath = join(fixture.root, ".git", "simple-changes");
+
+    chmodSync(statePath, 0o500);
+    try {
+      const status = loopStatus(fixture.root);
+
+      expect(status.lease?.runId).toBe(lease.runId);
+      expect(status.verification).toMatchObject({
+        active: true,
+        ok: true,
+        runId: lease.runId,
+      });
+    } finally {
+      chmodSync(statePath, 0o700);
+    }
+  });
+
   test("captures an exclusive opening manifest without dirtying the checkout", () => {
     const fixture = repository();
     const before = git(fixture.root, ["status", "--porcelain=v1"]);

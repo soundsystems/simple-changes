@@ -659,7 +659,7 @@ const concurrentClaimFor = (
   );
 };
 
-const admitConcurrentAuthors = (
+const withConcurrentAuthorAdmissions = (
   lease: LoopLease,
   inventory: RepositoryInventory
 ): LoopLease => {
@@ -709,7 +709,7 @@ const admitConcurrentAuthors = (
   if (admissions.size === 0) {
     return lease;
   }
-  return writeLease({
+  return {
     ...lease,
     updatedAt: new Date().toISOString(),
     worktrees: [
@@ -720,7 +720,15 @@ const admitConcurrentAuthors = (
         (worktree) => !registeredByPath.has(worktree.path)
       ),
     ],
-  });
+  };
+};
+
+const admitConcurrentAuthors = (
+  lease: LoopLease,
+  inventory: RepositoryInventory
+): LoopLease => {
+  const admitted = withConcurrentAuthorAdmissions(lease, inventory);
+  return admitted === lease ? lease : writeLease(admitted);
 };
 
 const concurrentClaimViolations = (
@@ -2142,33 +2150,26 @@ export const endLoop = (
 export const loopStatus = (
   repositoryPath: string
 ): { lease: LoopLease | null; verification: LoopVerification } => {
-  const opening = captureInventory(repositoryPath);
-  return withStateLock(
-    opening.repository.commonGitDirectory,
-    "loop status",
-    () => {
-      const inventory = captureInventory(repositoryPath);
-      const storedLease = readLeaseFromCommonDirectory(
-        inventory.repository.commonGitDirectory
-      );
-      const lease = storedLease
-        ? admitConcurrentAuthors(storedLease, inventory)
-        : null;
-      return {
-        lease,
-        verification: lease
-          ? verificationAgainst(lease, inventory)
-          : {
-              active: false,
-              checkedAt: new Date().toISOString(),
-              currentBaselineDigest: inventory.baselineDigest,
-              ok: true,
-              runId: null,
-              violations: [],
-            },
-      };
-    }
+  const inventory = captureInventory(repositoryPath);
+  const storedLease = readLeaseFromCommonDirectory(
+    inventory.repository.commonGitDirectory
   );
+  const lease = storedLease
+    ? withConcurrentAuthorAdmissions(storedLease, inventory)
+    : null;
+  return {
+    lease,
+    verification: lease
+      ? verificationAgainst(lease, inventory)
+      : {
+          active: false,
+          checkedAt: new Date().toISOString(),
+          currentBaselineDigest: inventory.baselineDigest,
+          ok: true,
+          runId: null,
+          violations: [],
+        },
+  };
 };
 
 export const loopManifestDigest = (lease: LoopLease): string =>

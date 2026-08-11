@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.10.1 - 2026-08-10
+
+- `loop status` is now genuinely read-only. It reports the effective active
+  lease and newly eligible concurrent authors without acquiring the
+  active-loop lock or writing Simple Changes Git metadata, so inspection still
+  works when that state is readable but not writable.
+
 ## 0.10.0 - 2026-08-10
 
 - Public releases now use a negotiated, revision-bound handoff with Simple

@@ -7,6 +7,7 @@ import { sleep } from "bun";
 import { captureInventory } from "../../../skills/simple-changes/scripts/lib/inventory.ts";
 import {
   authorizeWorktreeRemoval,
+  emergencyShippingStatus,
   endLoop,
   executeLoopMutation,
   grantLoopOverride,
@@ -16,6 +17,7 @@ import {
   loopStatus,
   prepareAgentWorktree,
   readLoopLease,
+  recordEmergencyShipping,
   recordRemoteBranchReconciliation,
   recoverLoopLock,
   startLoop,
@@ -51,6 +53,124 @@ afterEach(() => {
 });
 
 describe("active integration-loop lease", () => {
+  test("persists and resumes Emergency Shipping state under the loop lease", async () => {
+    const fixture = repository();
+    const lease = startLoop(fixture.root, "controller", "ship");
+    const candidateRevision = git(fixture.root, ["rev-parse", "HEAD"]);
+    const initial = {
+      artifactEquivalenceProven: false,
+      authoritySource: null,
+      breakGlassAuthorized: false,
+      candidateArtifactId: null,
+      candidateRevision,
+      candidateVerifiedHealthy: false,
+      canonicalArtifactId: null,
+      canonicalRevision: null,
+      changelogReconciled: false,
+      cleanupCompleted: false,
+      deployedArtifactId: null,
+      deployedRevision: null,
+      evidence: ["urgency-language"] as const,
+      finalVerificationPassed: false,
+      focusedChecksPassed: false,
+      independentReview: "pending" as const,
+      mergeCompleted: false,
+      mode: "expedited" as const,
+      previousProductionRevision: null,
+      productionAuthorized: false,
+      redeployDecision: "pending" as const,
+      rollbackAnchorRecorded: false,
+      rollbackSupported: false,
+      status: "ready" as const,
+    };
+
+    await recordEmergencyShipping(
+      fixture.root,
+      lease.runId,
+      "controller",
+      initial
+    );
+
+    expect(readLoopLease(fixture.root)?.emergencyShipping?.status).toBe(
+      "ready"
+    );
+    expect(emergencyShippingStatus(fixture.root, lease.runId)).toMatchObject({
+      decision: { action: "request-production-approval" },
+      state: { candidateRevision, status: "ready" },
+    });
+    await recordEmergencyShipping(fixture.root, lease.runId, "controller", {
+      ...initial,
+      authoritySource: "explicit-current-request",
+      breakGlassAuthorized: true,
+      evidence: ["urgency-language", "deploy-before-review"],
+      mode: "break-glass",
+      rollbackSupported: true,
+    });
+    expect(
+      emergencyShippingStatus(fixture.root, lease.runId).state
+    ).toMatchObject({
+      authoritySource: "explicit-current-request",
+      breakGlassAuthorized: true,
+      mode: "break-glass",
+      rollbackSupported: true,
+    });
+    await recordEmergencyShipping(fixture.root, lease.runId, "controller", {
+      ...initial,
+      authoritySource: "explicit-current-request",
+      breakGlassAuthorized: true,
+      candidateArtifactId: "candidate-artifact-a",
+      evidence: ["urgency-language", "deploy-before-review"],
+      mode: "break-glass",
+      rollbackSupported: true,
+    });
+    await expect(
+      recordEmergencyShipping(fixture.root, lease.runId, "controller", {
+        ...initial,
+        authoritySource: "explicit-current-request",
+        breakGlassAuthorized: true,
+        candidateArtifactId: "candidate-artifact-b",
+        evidence: ["urgency-language", "deploy-before-review"],
+        mode: "break-glass",
+        rollbackSupported: true,
+      })
+    ).rejects.toThrow("cannot replace recorded identity: candidateArtifactId");
+    await expect(
+      recordEmergencyShipping(fixture.root, lease.runId, "controller", {
+        ...initial,
+        authoritySource: "confirmed-run-only",
+        breakGlassAuthorized: true,
+        candidateArtifactId: "candidate-artifact-a",
+        evidence: ["urgency-language", "deploy-before-review"],
+        mode: "break-glass",
+        rollbackSupported: true,
+      })
+    ).rejects.toThrow("authority source cannot be replaced");
+    await expect(
+      recordEmergencyShipping(fixture.root, lease.runId, "controller", {
+        ...initial,
+        authoritySource: "explicit-current-request",
+        breakGlassAuthorized: true,
+        candidateArtifactId: "candidate-artifact-a",
+        evidence: ["deploy-before-review"],
+        mode: "break-glass",
+        rollbackSupported: true,
+      })
+    ).rejects.toThrow("evidence labels cannot be removed");
+    await expect(
+      recordEmergencyShipping(fixture.root, lease.runId, "controller", {
+        ...initial,
+        authoritySource: "explicit-current-request",
+        breakGlassAuthorized: true,
+        candidateArtifactId: "candidate-artifact-a",
+        evidence: ["urgency-language", "deploy-before-review"],
+        mode: "break-glass",
+        rollbackSupported: false,
+      })
+    ).rejects.toThrow("cannot clear completed evidence: rollbackSupported");
+    expect(() => endLoop(fixture.root, lease.runId, "controller")).toThrow(
+      "Emergency Shipping remains incomplete"
+    );
+  });
   test("inspects loop status without writing Git metadata", () => {
     const fixture = repository();
     const lease = startLoop(fixture.root, "controller", "ship");

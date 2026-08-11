@@ -9,6 +9,22 @@ export type RequestMode =
   | "resume"
   | "pause";
 
+export type EmergencyShippingMode = "standard" | "expedited" | "break-glass";
+
+export type EmergencyShippingEvidence =
+  | "urgency-language"
+  | "active-user-impact"
+  | "tested-ready-for-production"
+  | "deploy-before-review";
+
+export interface EmergencyShippingIntent {
+  breakGlassAuthorized: boolean;
+  evidence: EmergencyShippingEvidence[];
+  mode: EmergencyShippingMode;
+  recommendedMode: EmergencyShippingMode;
+  requiresBreakGlassConfirmation: boolean;
+}
+
 export type InitializationMode = RequestMode | "handoff";
 
 export type HandoffTiming = "confirm-ready" | "automatic" | "user-signaled";
@@ -300,7 +316,10 @@ export type ReleaseRequiredAction =
 export interface ChangelogCapabilities {
   distribution: string;
   features: Array<
-    "public-version-policy" | "classify-prepare-verify" | "multi-train-receipts"
+    | "public-version-policy"
+    | "classify-prepare-verify"
+    | "multi-train-receipts"
+    | "guidance-update-notices"
   >;
   guidanceVersion: number;
   provider: "simple-changelogs";
@@ -465,6 +484,47 @@ export interface ReleaseDecisionLedgerEntry {
   status: ChangelogReceiptV2["status"];
   suggestedVersion: string | null;
   transactionId: string;
+}
+
+export type EmergencyShippingStatus =
+  | "ready"
+  | "live-unreconciled"
+  | "live-unreviewed"
+  | "reviewed"
+  | "canonicalized"
+  | "rollback-required"
+  | "complete"
+  | "blocked";
+
+export interface EmergencyShippingLedgerEntry {
+  artifactEquivalenceProven: boolean;
+  authoritySource: "explicit-current-request" | "confirmed-run-only" | null;
+  breakGlassAuthorized: boolean;
+  candidateArtifactId: string | null;
+  candidateRevision: string;
+  candidateVerifiedHealthy: boolean;
+  canonicalArtifactId: string | null;
+  canonicalRevision: string | null;
+  changelogReconciled: boolean;
+  cleanupCompleted: boolean;
+  deployedArtifactId: string | null;
+  deployedRevision: string | null;
+  evidence: EmergencyShippingEvidence[];
+  finalVerificationPassed: boolean;
+  focusedChecksPassed: boolean;
+  independentReview: "pending" | "approved" | "changes-requested";
+  mergeCompleted: boolean;
+  mode: Exclude<EmergencyShippingMode, "standard">;
+  previousProductionRevision: string | null;
+  productionAuthorized: boolean;
+  redeployDecision:
+    | "pending"
+    | "not-required"
+    | "verify-equivalent-artifact"
+    | "deploy-canonical";
+  rollbackAnchorRecorded: boolean;
+  rollbackSupported: boolean;
+  status: EmergencyShippingStatus;
 }
 
 export interface SnapshotComparison {
@@ -701,6 +761,7 @@ export interface LoopLease {
   concurrentWork?: "allow-claimed" | "strict";
   createdAt: string;
   dispositions?: LoopWorktreeDisposition[];
+  emergencyShipping?: EmergencyShippingLedgerEntry;
   mode: Exclude<RequestMode, "pause" | "preview" | "sync">;
   overrides: LoopOverride[];
   ownerAgentId: string;
@@ -747,6 +808,7 @@ export type SchemaName =
   | "initialization"
   | "inventory"
   | "change-plan"
+  | "emergency-shipping"
   | "run-state"
   | "provider-receipt"
   | "release-delivery-receipt"

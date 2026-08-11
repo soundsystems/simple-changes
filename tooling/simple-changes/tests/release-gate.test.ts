@@ -127,6 +127,29 @@ describe("changelog protocol negotiation", () => {
     });
   });
 
+  test("accepts producer capability supersets and negotiates only shared features", () => {
+    const consumer = packagedChangelogProtocol();
+    expect(
+      negotiateChangelogProtocol({
+        distribution: "skill-repository",
+        features: [...consumer.features, "guidance-update-notices"],
+        guidanceVersion: 8,
+        provider: "simple-changelogs",
+        receiptVersions: [1, 2],
+        requestVersions: [1],
+        schemaDigests: consumer.schemaDigests,
+        schemaVersion: 1,
+      })
+    ).toEqual({
+      compatible: true,
+      features: consumer.features,
+      reasonCode: null,
+      receiptVersion: 2,
+      requestVersion: 1,
+      requiredAction: null,
+    });
+  });
+
   test("fails closed for version skew and schema skew", () => {
     const consumer = packagedChangelogProtocol();
     expect(

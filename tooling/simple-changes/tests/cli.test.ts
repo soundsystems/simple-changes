@@ -98,6 +98,150 @@ afterEach(() => {
 });
 
 describe("contract CLI", () => {
+  test("records and resumes Emergency Shipping state through the CLI", () => {
+    const fixture = createTestRepository();
+    repositories.push(fixture);
+    const started = spawnSync(
+      [
+        process.execPath,
+        cliPath,
+        "loop",
+        "start",
+        "--mode",
+        "ship",
+        "--agent-id",
+        "controller",
+        "--json",
+        "--repo",
+        fixture.root,
+      ],
+      { stderr: "pipe", stdout: "pipe" }
+    );
+    const { lease } = JSON.parse(decoder.decode(started.stdout)) as {
+      lease: { runId: string };
+    };
+    const candidateRevision = git(fixture.root, ["rev-parse", "HEAD"]);
+    writeFixture(
+      fixture.root,
+      "emergency.json",
+      `${JSON.stringify({
+        artifactEquivalenceProven: false,
+        authoritySource: null,
+        breakGlassAuthorized: false,
+        candidateArtifactId: null,
+        candidateRevision,
+        candidateVerifiedHealthy: false,
+        canonicalArtifactId: null,
+        canonicalRevision: null,
+        changelogReconciled: false,
+        cleanupCompleted: false,
+        deployedArtifactId: null,
+        deployedRevision: null,
+        evidence: ["urgency-language"],
+        finalVerificationPassed: false,
+        focusedChecksPassed: false,
+        independentReview: "pending",
+        mergeCompleted: false,
+        mode: "expedited",
+        previousProductionRevision: null,
+        productionAuthorized: false,
+        redeployDecision: "pending",
+        rollbackAnchorRecorded: false,
+        rollbackSupported: false,
+        status: "ready",
+      })}\n`
+    );
+
+    const recorded = spawnSync(
+      [
+        process.execPath,
+        cliPath,
+        "loop",
+        "emergency",
+        "record",
+        "--run-id",
+        lease.runId,
+        "--agent-id",
+        "controller",
+        "--state",
+        resolve(fixture.root, "emergency.json"),
+        "--json",
+        "--repo",
+        fixture.root,
+      ],
+      { stderr: "pipe", stdout: "pipe" }
+    );
+    expect(recorded.exitCode).toBe(0);
+    expect(JSON.parse(decoder.decode(recorded.stdout))).toMatchObject({
+      decision: { action: "request-production-approval" },
+      state: { candidateRevision, status: "ready" },
+      verification: { ok: true },
+    });
+
+    const resumed = spawnSync(
+      [
+        process.execPath,
+        cliPath,
+        "loop",
+        "emergency",
+        "status",
+        "--run-id",
+        lease.runId,
+        "--json",
+        "--repo",
+        fixture.root,
+      ],
+      { stderr: "pipe", stdout: "pipe" }
+    );
+    expect(resumed.exitCode).toBe(0);
+    expect(JSON.parse(decoder.decode(resumed.stdout))).toMatchObject({
+      decision: { action: "request-production-approval" },
+      state: { candidateRevision, status: "ready" },
+    });
+
+    writeFixture(
+      fixture.root,
+      "break-glass.json",
+      `${JSON.stringify({
+        ...JSON.parse(
+          readFileSync(resolve(fixture.root, "emergency.json"), "utf8")
+        ),
+        authoritySource: "explicit-current-request",
+        breakGlassAuthorized: true,
+        evidence: ["urgency-language", "deploy-before-review"],
+        mode: "break-glass",
+        rollbackSupported: true,
+      })}\n`
+    );
+    const upgraded = spawnSync(
+      [
+        process.execPath,
+        cliPath,
+        "loop",
+        "emergency",
+        "record",
+        "--run-id",
+        lease.runId,
+        "--agent-id",
+        "controller",
+        "--state",
+        resolve(fixture.root, "break-glass.json"),
+        "--json",
+        "--repo",
+        fixture.root,
+      ],
+      { stderr: "pipe", stdout: "pipe" }
+    );
+    expect(upgraded.exitCode).toBe(0);
+    expect(JSON.parse(decoder.decode(upgraded.stdout))).toMatchObject({
+      state: {
+        breakGlassAuthorized: true,
+        mode: "break-glass",
+        rollbackSupported: true,
+      },
+    });
+  });
+
   test("holds the loop lock for the full guarded command", async () => {
     const fixture = createTestRepository();
     repositories.push(fixture);
@@ -736,7 +880,7 @@ describe("contract CLI", () => {
     );
     expect(acknowledged.exitCode).toBe(0);
     expect(JSON.parse(decoder.decode(acknowledged.stdout))).toMatchObject({
-      currentVersion: 2,
+      currentVersion: 3,
       disposition: "deferred",
       previousVersion: 1,
       written: true,
@@ -746,7 +890,7 @@ describe("contract CLI", () => {
         readFileSync(resolve(fixture.root, ".simple-changes.json"), "utf8")
       )
     ).toMatchObject({
-      guidance: { disposition: "deferred", version: 2 },
+      guidance: { disposition: "deferred", version: 3 },
     });
 
     const resumed = spawnSync(

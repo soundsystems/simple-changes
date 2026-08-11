@@ -1,6 +1,6 @@
 import type { ChangelogCoordination, RepoPolicy } from "./types.ts";
 
-export const CURRENT_GUIDANCE_VERSION = 2;
+export const CURRENT_GUIDANCE_VERSION = 3;
 
 export type GuidanceUpdateAction =
   | "review-settings"
@@ -62,6 +62,24 @@ const GUIDANCE_UPDATES: GuidanceUpdateDefinition[] = [
       },
     ],
     version: 2,
+  },
+  {
+    changelogReviewRelevant: true,
+    changes: [
+      {
+        kind: "behavior",
+        summary:
+          "Urgent Ship requests now use a run-only expedited path, while deployment before independent review requires explicit break-glass direction and rollback evidence.",
+        version: 3,
+      },
+      {
+        kind: "integration",
+        summary:
+          "Emergency deployments remain durably incomplete until review, forward changelog/version reconciliation, canonical production verification, and cleanup finish.",
+        version: 3,
+      },
+    ],
+    version: 3,
   },
 ];
 

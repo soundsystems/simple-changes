@@ -27,6 +27,35 @@ If production or another separately consequential step still lacks authority,
 summarize the authorized portion, finish its safe independent work, and ask only
 at the actual authority boundary.
 
+## Emergency Ship communication
+
+Name `expedited` or `break-glass` in the pre-ship brief and list the closed
+evidence labels that produced the inference. Do not persist or replay the raw
+request. Urgency-only language authorizes neither production nor post-deploy
+review. When active user impact or tested production readiness recommends
+break-glass without authorizing it, continue safe expedited work and use one
+concise blocking question at the deploy-before-review boundary.
+
+When the current request explicitly says to deploy first or review after
+deployment, state rather than re-ask the exact consequence: one checked,
+revision-bound candidate may reach production before independent review, then
+review and forward reconciliation begin immediately. Report the previous live
+revision and rollback capability before deploying.
+
+After the first deployment, use the durable status names verbatim:
+
+- `live-unreconciled` for an expedited deployment awaiting release
+  reconciliation;
+- `live-unreviewed` for a break-glass deployment awaiting independent review;
+- `rollback-required` when post-deploy review rejects the live candidate; and
+- `canonicalized` only after reviewed Git and release state identify the final
+  canonical revision.
+
+None of these intermediate states is completion. The final summary must show
+the candidate, deployed, and canonical revisions; review result; deferred work;
+artifact-equivalence evidence when a duplicate deployment was avoided; and the
+final verification and cleanup receipts.
+
 ## Compose version and production direction
 
 Version selection and production deployment are separate authorities even when

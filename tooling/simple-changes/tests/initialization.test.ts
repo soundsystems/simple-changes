@@ -140,7 +140,7 @@ describe("first-run initialization", () => {
           available: true,
           owner: "simple-changelogs",
         },
-        currentVersion: 2,
+        currentVersion: 3,
         status: "update-available",
         storedVersion: 1,
       },

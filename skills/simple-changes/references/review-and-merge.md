@@ -13,6 +13,15 @@ Any new commit, rebase, conflict resolution, or dependency refresh invalidates
 approval for the previous revision. Re-fetch checks and discussions as well.
 Self-review is never represented as independent review.
 
+Emergency Ship does not weaken merge policy. `expedited` completes independent
+review before merge and initial deployment. Explicitly authorized `break-glass`
+may deploy one exact checked candidate before independent review, but it does
+not merge through protected branches early or represent the deployment as
+approval. Request review of the exact deployed revision immediately. If review
+requests changes, move to `rollback-required` and either restore the recorded
+production revision or produce a separately checked corrective revision.
+Never merge or release-reconcile a rejected live candidate as though it passed.
+
 Address actionable findings inside the intended unit, rerun relevant checks,
 push the new revision, and request/re-run review against that revision. Keep
 unrelated findings out of the unit unless they are required for correctness.

@@ -284,6 +284,197 @@
           }
         }
       }
+    },
+    "emergencyShipping": {
+      "anyOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "mode",
+            "status",
+            "evidence",
+            "breakGlassAuthorized",
+            "authoritySource",
+            "productionAuthorized",
+            "candidateRevision",
+            "previousProductionRevision",
+            "deployedRevision",
+            "canonicalRevision",
+            "candidateArtifactId",
+            "deployedArtifactId",
+            "canonicalArtifactId",
+            "rollbackSupported",
+            "rollbackAnchorRecorded",
+            "focusedChecksPassed",
+            "candidateVerifiedHealthy",
+            "independentReview",
+            "mergeCompleted",
+            "changelogReconciled",
+            "artifactEquivalenceProven",
+            "redeployDecision",
+            "finalVerificationPassed",
+            "cleanupCompleted"
+          ],
+          "properties": {
+            "mode": { "enum": ["expedited", "break-glass"] },
+            "status": {
+              "enum": [
+                "ready",
+                "live-unreconciled",
+                "live-unreviewed",
+                "reviewed",
+                "canonicalized",
+                "rollback-required",
+                "complete",
+                "blocked"
+              ]
+            },
+            "evidence": {
+              "type": "array",
+              "uniqueItems": true,
+              "items": {
+                "enum": [
+                  "urgency-language",
+                  "active-user-impact",
+                  "tested-ready-for-production",
+                  "deploy-before-review"
+                ]
+              }
+            },
+            "breakGlassAuthorized": { "type": "boolean" },
+            "authoritySource": {
+              "anyOf": [
+                {
+                  "enum": ["explicit-current-request", "confirmed-run-only"]
+                },
+                { "type": "null" }
+              ]
+            },
+            "productionAuthorized": { "type": "boolean" },
+            "candidateRevision": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{40,64}$"
+            },
+            "previousProductionRevision": {
+              "anyOf": [
+                { "type": "string", "pattern": "^[0-9a-f]{40,64}$" },
+                { "type": "null" }
+              ]
+            },
+            "deployedRevision": {
+              "anyOf": [
+                { "type": "string", "pattern": "^[0-9a-f]{40,64}$" },
+                { "type": "null" }
+              ]
+            },
+            "canonicalRevision": {
+              "anyOf": [
+                { "type": "string", "pattern": "^[0-9a-f]{40,64}$" },
+                { "type": "null" }
+              ]
+            },
+            "candidateArtifactId": {
+              "anyOf": [
+                { "type": "string", "minLength": 1 },
+                { "type": "null" }
+              ]
+            },
+            "deployedArtifactId": {
+              "anyOf": [
+                { "type": "string", "minLength": 1 },
+                { "type": "null" }
+              ]
+            },
+            "canonicalArtifactId": {
+              "anyOf": [
+                { "type": "string", "minLength": 1 },
+                { "type": "null" }
+              ]
+            },
+            "rollbackSupported": { "type": "boolean" },
+            "rollbackAnchorRecorded": { "type": "boolean" },
+            "focusedChecksPassed": { "type": "boolean" },
+            "candidateVerifiedHealthy": { "type": "boolean" },
+            "independentReview": {
+              "enum": ["pending", "approved", "changes-requested"]
+            },
+            "mergeCompleted": { "type": "boolean" },
+            "changelogReconciled": { "type": "boolean" },
+            "artifactEquivalenceProven": { "type": "boolean" },
+            "redeployDecision": {
+              "enum": [
+                "pending",
+                "not-required",
+                "verify-equivalent-artifact",
+                "deploy-canonical"
+              ]
+            },
+            "finalVerificationPassed": { "type": "boolean" },
+            "cleanupCompleted": { "type": "boolean" }
+          },
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "breakGlassAuthorized": { "const": true }
+                },
+                "required": ["breakGlassAuthorized"]
+              },
+              "then": {
+                "properties": {
+                  "authoritySource": {
+                    "enum": ["explicit-current-request", "confirmed-run-only"]
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": { "status": { "const": "complete" } },
+                "required": ["status"]
+              },
+              "then": {
+                "properties": {
+                  "candidateVerifiedHealthy": { "const": true },
+                  "canonicalRevision": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{40,64}$"
+                  },
+                  "changelogReconciled": { "const": true },
+                  "cleanupCompleted": { "const": true },
+                  "deployedRevision": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{40,64}$"
+                  },
+                  "finalVerificationPassed": { "const": true },
+                  "focusedChecksPassed": { "const": true },
+                  "independentReview": { "const": "approved" },
+                  "mergeCompleted": { "const": true },
+                  "productionAuthorized": { "const": true }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "mode": { "const": "break-glass" },
+                  "status": { "const": "complete" }
+                },
+                "required": ["mode", "status"]
+              },
+              "then": {
+                "properties": {
+                  "breakGlassAuthorized": { "const": true },
+                  "rollbackAnchorRecorded": { "const": true },
+                  "rollbackSupported": { "const": true }
+                }
+              }
+            }
+          ]
+        },
+        { "type": "null" }
+      ]
     }
   }
 }

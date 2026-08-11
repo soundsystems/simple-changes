@@ -10,6 +10,10 @@ import {
 } from "node:fs";
 import { hostname } from "node:os";
 import { basename, dirname, resolve } from "node:path";
+import {
+  decideEmergencyShipping,
+  deriveEmergencyShippingStatus,
+} from "./emergency-shipping.ts";
 import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
 import { sha256 } from "./hash.ts";
 import { captureInventory } from "./inventory.ts";
@@ -23,6 +27,7 @@ import {
 import { validateRemoteBranchReconciliation } from "./remote-branch-reconciliation.ts";
 import { validateSchema } from "./schema.ts";
 import type {
+  EmergencyShippingLedgerEntry,
   LoopLease,
   LoopOverride,
   LoopVerification,
@@ -1244,6 +1249,156 @@ export const withLoopMutationLease = <T>(
   );
 };
 
+const irreversibleEmergencyFlags: Array<keyof EmergencyShippingLedgerEntry> = [
+  "artifactEquivalenceProven",
+  "breakGlassAuthorized",
+  "candidateVerifiedHealthy",
+  "changelogReconciled",
+  "cleanupCompleted",
+  "finalVerificationPassed",
+  "focusedChecksPassed",
+  "mergeCompleted",
+  "productionAuthorized",
+  "rollbackAnchorRecorded",
+  "rollbackSupported",
+];
+
+const assertEmergencyUpdate = (
+  previous: EmergencyShippingLedgerEntry | undefined,
+  next: EmergencyShippingLedgerEntry
+): void => {
+  if (!previous) {
+    return;
+  }
+  const explicitPredeploymentBreakGlassUpgrade =
+    previous.mode === "expedited" &&
+    next.mode === "break-glass" &&
+    !previous.deployedRevision &&
+    previous.independentReview === "pending" &&
+    !previous.mergeCompleted &&
+    !previous.changelogReconciled &&
+    !previous.finalVerificationPassed &&
+    !previous.cleanupCompleted &&
+    next.breakGlassAuthorized &&
+    next.authoritySource !== null &&
+    next.evidence.includes("deploy-before-review");
+  if (
+    (previous.mode !== next.mode && !explicitPredeploymentBreakGlassUpgrade) ||
+    previous.candidateRevision !== next.candidateRevision
+  ) {
+    throw new SimpleChangesError(
+      "Emergency Shipping updates cannot replace the recorded mode or candidate revision.",
+      EXIT_CODES.validation
+    );
+  }
+  for (const field of irreversibleEmergencyFlags) {
+    if (previous[field] === true && next[field] !== true) {
+      throw new SimpleChangesError(
+        `Emergency Shipping updates cannot clear completed evidence: ${field}.`,
+        EXIT_CODES.validation
+      );
+    }
+  }
+  for (const field of [
+    "candidateArtifactId",
+    "deployedRevision",
+    "canonicalRevision",
+    "deployedArtifactId",
+    "canonicalArtifactId",
+    "previousProductionRevision",
+  ] as const) {
+    if (previous[field] && previous[field] !== next[field]) {
+      throw new SimpleChangesError(
+        `Emergency Shipping updates cannot replace recorded identity: ${field}.`,
+        EXIT_CODES.validation
+      );
+    }
+  }
+  if (
+    previous.authoritySource &&
+    previous.authoritySource !== next.authoritySource
+  ) {
+    throw new SimpleChangesError(
+      "Emergency Shipping authority source cannot be replaced after recording.",
+      EXIT_CODES.validation
+    );
+  }
+  if (previous.evidence.some((item) => !next.evidence.includes(item))) {
+    throw new SimpleChangesError(
+      "Emergency Shipping evidence labels cannot be removed after recording.",
+      EXIT_CODES.validation
+    );
+  }
+  if (
+    previous.independentReview !== "pending" &&
+    next.independentReview !== previous.independentReview
+  ) {
+    throw new SimpleChangesError(
+      "Emergency Shipping review evidence cannot be reset or replaced.",
+      EXIT_CODES.validation
+    );
+  }
+};
+
+export const recordEmergencyShipping = async (
+  repositoryPath: string,
+  runId: string,
+  agentId: string,
+  input: unknown
+): Promise<LoopOperationResult<EmergencyShippingLedgerEntry>> =>
+  withLoopMutationLease(
+    repositoryPath,
+    runId,
+    agentId,
+    "loop emergency record",
+    () => {
+      const inventory = captureInventory(repositoryPath);
+      const lease = requireLease(inventory);
+      assertMatchingRun(lease, runId);
+      const validated = validateSchema<EmergencyShippingLedgerEntry | null>(
+        "emergency-shipping",
+        input
+      );
+      if (!validated) {
+        throw new SimpleChangesError(
+          "Emergency Shipping state cannot be null.",
+          EXIT_CODES.validation
+        );
+      }
+      const next = {
+        ...validated,
+        status: deriveEmergencyShippingStatus(validated),
+      };
+      assertEmergencyUpdate(lease.emergencyShipping, next);
+      writeLease({
+        ...lease,
+        emergencyShipping: next,
+        updatedAt: new Date().toISOString(),
+      });
+      return next;
+    }
+  );
+
+export const emergencyShippingStatus = (
+  repositoryPath: string,
+  runId: string
+): {
+  decision: ReturnType<typeof decideEmergencyShipping>;
+  state: EmergencyShippingLedgerEntry;
+} => {
+  const lease = readLoopLease(repositoryPath);
+  if (!(lease && lease.runId === runId && lease.emergencyShipping)) {
+    throw new SimpleChangesError(
+      `No Emergency Shipping state is recorded for ${runId}.`,
+      EXIT_CODES.unsafe
+    );
+  }
+  return {
+    decision: decideEmergencyShipping(lease.emergencyShipping),
+    state: lease.emergencyShipping,
+  };
+};
+
 export const executeLoopMutation = async (
   repositoryPath: string,
   runId: string,
@@ -2137,6 +2292,15 @@ export const endLoop = (
           `Remove run-created worktrees before ending the loop: ${liveRunWorktrees
             .map((worktree) => worktree.path)
             .join(", ")}`,
+          EXIT_CODES.unsafe
+        );
+      }
+      if (
+        lease.emergencyShipping &&
+        deriveEmergencyShippingStatus(lease.emergencyShipping) !== "complete"
+      ) {
+        throw new SimpleChangesError(
+          `Emergency Shipping remains incomplete: ${decideEmergencyShipping(lease.emergencyShipping).action}.`,
           EXIT_CODES.unsafe
         );
       }

@@ -33,6 +33,21 @@
       "expected": true
     },
     {
+      "id": "ship-expedited",
+      "prompt": "Ship this fast and finish the remaining release work afterward.",
+      "expected": true
+    },
+    {
+      "id": "ship-break-glass",
+      "prompt": "Deploy first and have independent review happen after deployment.",
+      "expected": true
+    },
+    {
+      "id": "ship-tested-live-recommendation",
+      "prompt": "This has been tested and needs to go live.",
+      "expected": true
+    },
+    {
       "id": "sync-bare-command",
       "prompt": "sync",
       "expected": true
@@ -238,6 +253,54 @@
         "Track changes made during review against each original proposal head",
         "Verify immutable revision and canonical target",
         "Summarize what actually shipped, review-driven changes, re-verification, and preserved work"
+      ]
+    },
+    {
+      "id": "ship-expedited-emergency",
+      "prompt": "Ship this fast and finish the changelog and cleanup immediately afterward.",
+      "mode": "ship",
+      "authority": [
+        "local-write",
+        "proposal-write",
+        "merge",
+        "production-deploy"
+      ],
+      "expectedBehaviors": [
+        "Infer the run-only expedited level from urgency language",
+        "Run focused checks and independent review before merge and deployment",
+        "Record the first healthy deployment as live-unreconciled",
+        "Complete forward release reconciliation, remaining verification, and cleanup",
+        "Redeploy only when the final canonical runtime artifact differs"
+      ]
+    },
+    {
+      "id": "ship-break-glass-emergency",
+      "prompt": "Users cannot log in. Deploy first and have independent review happen after deployment.",
+      "mode": "ship",
+      "authority": [
+        "local-write",
+        "proposal-write",
+        "merge",
+        "production-deploy"
+      ],
+      "expectedBehaviors": [
+        "Treat explicit deploy-before-review language as run-only break-glass authority",
+        "Record the previous production revision and rollback path",
+        "Run focused checks and deploy one exact candidate before independent review",
+        "Persist live-unreviewed until review completes",
+        "Rollback or correct a rejected live candidate",
+        "Reconcile Git and release state forward and conditionally establish the final canonical deployment"
+      ]
+    },
+    {
+      "id": "ship-break-glass-recommendation",
+      "prompt": "This has been tested and needs to go live because customers are affected.",
+      "mode": "ship",
+      "authority": ["production-deploy"],
+      "expectedBehaviors": [
+        "Recommend break-glass but continue as expedited until deploy-before-review authority is explicit",
+        "Do not treat testing, customer impact, or urgency as independent-review authority",
+        "Ask one concise question only at the deploy-before-review boundary"
       ]
     },
     {

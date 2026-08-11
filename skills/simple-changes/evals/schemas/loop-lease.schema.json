@@ -32,6 +32,7 @@
     "baselineDigest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
     "commonGitDirectory": { "type": "string", "minLength": 1 },
     "concurrentWork": { "enum": ["allow-claimed", "strict"] },
+    "emergencyShipping": { "$ref": "emergency-shipping.schema.json" },
     "primaryCheckout": { "type": "string", "minLength": 1 },
     "remoteBranchReconciliation": {
       "$ref": "remote-branch-reconciliation.schema.json"

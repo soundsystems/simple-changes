@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.11.0 - 2026-08-11
+
+- Emergency Ship now provides two run-only paths for urgent production changes:
+  - Urgency can select expedited shipping, which keeps focused checks and
+    independent review before merge and deployment, then finishes release
+    reconciliation, remaining verification, and cleanup.
+  - Only explicit deploy-before-review direction authorizes break-glass.
+    Active user impact or a tested production-ready claim can recommend it but
+    cannot waive review. Break-glass records rollback evidence, deploys one
+    exact checked candidate, and remains incomplete until independent review,
+    canonical Git and release reconciliation, production verification, and
+    cleanup finish.
+  - A second deployment is required only when the final canonical runtime
+    result differs. An already-live canonical revision or proven immutable
+    artifact equivalence is verified without creating a duplicate deployment.
+<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-11T15:17:59-05:00" -->
+
+- Changelog capability negotiation now accepts compatible producer capability
+  supersets while selecting only features shared with Simple Changes.
+<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-11T16:08:07-05:00" -->
+
+- Emergency Ship now persists and resumes its exact delivery ledger under the
+  active loop, and refuses loop completion while emergency delivery remains
+  incomplete.
+<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-11T17:11:06-05:00" -->
+
 ## 0.10.1 - 2026-08-10
 
 - `loop status` is now genuinely read-only. It reports the effective active

@@ -38,7 +38,8 @@
         "enum": [
           "public-version-policy",
           "classify-prepare-verify",
-          "multi-train-receipts"
+          "multi-train-receipts",
+          "guidance-update-notices"
         ]
       }
     },

@@ -135,6 +135,25 @@ const validateLegacyTransaction = (
   return receipt;
 };
 
+const assertPublicReleaseDecision = (receipt: ChangelogReceiptV2): void => {
+  const { versionDecision } = receipt;
+  if (receipt.releaseImpact === "none" && receipt.status !== "not-applicable") {
+    protocolMismatch(
+      "Internal-only or non-public work must not request a public version."
+    );
+  }
+  if (
+    receipt.status === "decision-required" &&
+    (receipt.releaseImpact === "none" ||
+      versionDecision?.boundary === "none" ||
+      versionDecision?.bumpLevel === "none")
+  ) {
+    protocolMismatch(
+      "Version approval is valid only for a proven public release boundary."
+    );
+  }
+};
+
 const validateV2Transaction = (
   request: ChangelogRequest,
   receipt: ChangelogReceiptV2
@@ -158,6 +177,7 @@ const validateV2Transaction = (
       "Receipt transaction, phase, release set, or revision does not match the delegated request."
     );
   }
+  assertPublicReleaseDecision(receipt);
   const { versionDecision } = receipt;
   if (
     versionDecision &&

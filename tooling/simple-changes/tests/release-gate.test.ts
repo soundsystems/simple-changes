@@ -107,6 +107,24 @@ const receipt = (
 };
 
 describe("changelog protocol negotiation", () => {
+  test("rejects version approval for internal-only work", () => {
+    const internalOnly = receipt("decision-required");
+    const decision = internalOnly.versionDecision;
+    if (!decision) {
+      throw new Error("fixture requires a version decision");
+    }
+    internalOnly.releaseImpact = "none";
+    internalOnly.versionDecision = {
+      ...decision,
+      boundary: "none",
+      bumpLevel: "none",
+      suggestedVersion: null,
+    };
+    expect(() => validateChangelogTransaction(request(), internalOnly)).toThrow(
+      "Internal-only or non-public work must not request a public version"
+    );
+  });
+
   test("negotiates the highest mutually supported exact schemas", () => {
     const consumer = packagedChangelogProtocol();
     expect(

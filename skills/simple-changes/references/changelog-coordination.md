@@ -56,6 +56,10 @@ never raw user text.
 Treat `decision-required` as normal user direction, not an operational failure.
 Route only on closed `reasonCode` and `requiredAction`; human-readable reasons
 are display text.
+Reject `decision-required` when aggregate impact is `none`. Internal-only,
+developer-only, preview, staging, and DX patches must return `not-applicable`
+and continue without asking for a hypothetical public version, even when a
+repository package happens to have an obvious next patch number.
 
 ## Require a handoff receipt
 

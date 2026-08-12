@@ -214,11 +214,15 @@ re-verification, and anything preserved or blocked. Follow
 For emergency Ship, state the inferred level and evidence before the first
 consequential mutation. A saved `shippingMode: "expedited"` applies that order
 to routine Ship requests. `expedited` preserves focused checks and independent
-review before merge and initial deployment. `break-glass` first records an
-exact rollback anchor and runs focused checks, may deploy one exact candidate
-before independent review only with explicit current-request authority or the
-advanced manually configured `shippingMode: "break-glass"`, and then
-immediately resumes review and forward Git/release reconciliation. Persist
+review before merge and initial deployment. `break-glass` deploys one exact
+candidate before focused checks and independent review when explicit
+current-request authority and native provider rollback (or another already
+proven corrective path) are available. It does not perform a blocking
+pre-deploy lookup merely to name the currently live deployment. The
+advanced manually configured `shippingMode: "break-glass"` can supply the
+ordering choice, but not production authority. After deploying, immediately
+verify health and resume focused checks, review, and forward Git/release
+reconciliation. Persist
 `live-unreconciled` or `live-unreviewed` until that debt is closed; neither is a
 successful completion state.
 
@@ -575,7 +579,8 @@ result.
   revision-bound Emergency Ship candidate with production authority, focused
   checks, durable incomplete state, and immediate forward reconciliation;
   `break-glass` additionally requires explicit deploy-before-review authority
-  and a rollback anchor.
+  and an already available rollback capability; provider-detail capture does
+  not delay the first deployment.
 - Capture the opening baseline before mutation and attribute this run's objects.
 - Persist one integration-controller lease for write-capable integration modes.
   Agents assigned to that run use registered isolated worktrees, and every

@@ -63,7 +63,7 @@ describe("emergency shipping state machine", () => {
     ).toBe("deploy-candidate");
   });
 
-  test("requires explicit break-glass and rollback evidence", () => {
+  test("requires explicit break-glass authority and rollback capability", () => {
     const breakGlass = state({
       evidence: ["active-user-impact"],
       mode: "break-glass",
@@ -78,7 +78,7 @@ describe("emergency shipping state machine", () => {
         authoritySource: "confirmed-run-only",
         breakGlassAuthorized: true,
       }).action
-    ).toBe("record-rollback-anchor");
+    ).toBe("deploy-candidate");
   });
 
   test("deploys before review only in authorized break-glass mode", () => {
@@ -86,10 +86,10 @@ describe("emergency shipping state machine", () => {
       authoritySource: "explicit-current-request",
       breakGlassAuthorized: true,
       evidence: ["deploy-before-review"],
-      focusedChecksPassed: true,
+      focusedChecksPassed: false,
       mode: "break-glass",
       previousProductionRevision: "9".repeat(40),
-      rollbackAnchorRecorded: true,
+      rollbackAnchorRecorded: false,
       rollbackSupported: true,
     });
     expect(decideEmergencyShipping(breakGlass).action).toBe("deploy-candidate");
@@ -100,6 +100,8 @@ describe("emergency shipping state machine", () => {
       deployedRevision: revisionA,
     };
     expect(deriveEmergencyShippingStatus(live)).toBe("live-unreviewed");
+    expect(decideEmergencyShipping(live).action).toBe("run-focused-checks");
+    live.focusedChecksPassed = true;
     expect(decideEmergencyShipping(live).action).toBe(
       "request-independent-review"
     );

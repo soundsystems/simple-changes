@@ -60,9 +60,7 @@ export const deriveEmergencyShippingStatus = (
     state.finalVerificationPassed &&
     state.cleanupCompleted &&
     (state.mode !== "break-glass" ||
-      (state.breakGlassAuthorized &&
-        state.rollbackSupported &&
-        state.rollbackAnchorRecorded));
+      (state.breakGlassAuthorized && state.rollbackSupported));
   if (completionEvidence) {
     return "complete";
   }
@@ -116,6 +114,7 @@ export const decideEmergencyShipping = (
     decideEmergencyAuthority(state, status) ??
     decideExpeditedPreparation(state, status) ??
     decideCandidateDeployment(state, status) ??
+    decideBreakGlassPostDeploymentChecks(state, status) ??
     decideBreakGlassReview(state) ??
     decideCanonicalDelivery(state, status)
   );
@@ -139,19 +138,14 @@ const decideEmergencyAuthority = (
       "Emergency urgency does not independently authorize production."
     );
   }
-  if (
-    state.mode === "break-glass" &&
-    !(state.rollbackAnchorRecorded && state.rollbackSupported)
-  ) {
+  if (state.mode === "break-glass" && !state.rollbackSupported) {
     return decision(
-      state.rollbackSupported ? "record-rollback-anchor" : "block",
-      state.rollbackSupported ? status : "blocked",
-      state.rollbackSupported
-        ? "Record the exact previous production identity before the first emergency deployment."
-        : "Break-glass deployment requires a proven rollback or corrective-release path."
+      "block",
+      "blocked",
+      "Break-glass deployment requires native provider rollback or another proven corrective-release path."
     );
   }
-  if (!state.focusedChecksPassed) {
+  if (state.mode === "expedited" && !state.focusedChecksPassed) {
     return decision(
       "run-focused-checks",
       status,
@@ -209,6 +203,20 @@ const decideCandidateDeployment = (
       "verify-candidate",
       status,
       "Verify readiness, canonical targets, and the focused production journey before continuing."
+    );
+  }
+  return null;
+};
+
+const decideBreakGlassPostDeploymentChecks = (
+  state: EmergencyShippingLedgerEntry,
+  status: EmergencyShippingStatus
+): EmergencyShippingDecision | null => {
+  if (state.mode === "break-glass" && !state.focusedChecksPassed) {
+    return decision(
+      "run-focused-checks",
+      status,
+      "The candidate is live; now run the smallest meaningful checks before review and reconciliation."
     );
   }
   return null;

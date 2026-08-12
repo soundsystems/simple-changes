@@ -118,9 +118,10 @@ Then ask **How should routine Ship requests run? Choose one:**
 
 Do not offer break-glass as a normal onboarding choice. An expert may manually
 set `shippingMode: "break-glass"` in validated policy, but that advanced
-setting still requires separate production authority, rollback support, and an
-exact rollback anchor. Explicit current-request direction always overrides the
-stored mode.
+setting still requires separate production authority and an already available
+rollback capability. Native provider rollback is sufficient and does not
+require a blocking pre-deploy lookup. Explicit current-request direction always
+overrides the stored mode.
 
 When relevant, ask **How should changelog work be handled? Choose one:**
 

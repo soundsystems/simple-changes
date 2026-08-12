@@ -1,5 +1,24 @@
 # Developer changelog
 
+## 0.11.2 - 2026-08-12
+
+- Added fail-closed consumer validation for delegated changelog receipts:
+  `releaseImpact: "none"` must be `not-applicable`, and `decision-required`
+  remains valid only for a proven public boundary with a non-`none` bump.
+  Regression coverage rejects producer receipts that request version approval
+  for internal-only work.
+<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-12T10:57:28-05:00" -->
+
+- Corrected break-glass transition ordering: explicit production authority plus
+  known native provider rollback capability is sufficient to deploy the
+  candidate immediately. No blocking pre-deploy lookup or exact current-
+  production anchor capture is required. Candidate health verification follows
+  deployment, then focused checks, independent review, merge and release
+  reconciliation, and final canonical verification complete the guarded
+  sequence. Updated the decision-engine regression to lock this ordering.
+<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-12T10:59:18-05:00" -->
+<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-12T11:01:37-05:00" -->
+
 ## 0.11.1 - 2026-08-12
 
 - Added explicit terminal lifecycle and controller-transfer contracts to the

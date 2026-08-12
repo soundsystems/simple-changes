@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.11.2 - 2026-08-12
+
+- Internal-only, developer-only, preview, staging, and developer-experience
+  changes no longer prompt for an unused public version.
+
+- Explicitly authorized break-glass delivery now uses known native provider
+  rollback capability to deploy immediately without a blocking current-
+  production lookup, then verifies health, runs focused checks, and completes
+  review, reconciliation, and canonical verification.
+
 ## 0.11.1 - 2026-08-12
 
 - Integration controllers now finish every terminal turn with `loop finalize`:

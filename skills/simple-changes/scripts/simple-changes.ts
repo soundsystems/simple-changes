@@ -92,7 +92,7 @@ import {
   releaseWorktreeClaim,
 } from "./lib/worktree-coordination.ts";
 
-const VERSION = "0.11.2";
+const VERSION = "0.11.3";
 const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const HELP = `Simple Changes ${VERSION}
 

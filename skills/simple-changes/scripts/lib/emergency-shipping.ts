@@ -194,7 +194,7 @@ const decideCandidateDeployment = (
       "deploy-candidate",
       status,
       state.mode === "break-glass"
-        ? "Deploy the exact checked candidate under explicit break-glass authority."
+        ? "Deploy the exact candidate under explicit break-glass authority."
         : "Deploy the exact checked, reviewed, and merged candidate."
     );
   }

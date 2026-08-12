@@ -1,5 +1,21 @@
 # Developer changelog
 
+## 0.11.4 - 2026-08-12
+
+- Added fail-closed local reconciliation gates to `loop end` and
+  `loop finalize`:
+  - Completion now requires the local target branch to exist at the refreshed
+    target revision and the primary checkout to be restored to that branch with
+    no unfinished changes.
+  - Target-contained clean worktrees and merged local branches without a
+    checkout are reported as cleanup blockers, while dirty worktrees, branches
+    with unique commits, and actively claimed concurrent authors remain
+    preserved.
+  - Updated completion guidance and added regressions for stale targets, dirty
+    or unrestored primary checkouts, merged branches and worktrees, and
+    preserved work.
+<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-12T13:36:26-05:00" -->
+
 ## 0.11.3 - 2026-08-12
 
 - Corrected the Emergency Ship runtime reason from “exact checked candidate” to

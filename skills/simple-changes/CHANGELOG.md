@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.11.4 - 2026-08-12
+
+- Terminal completion now refuses to close until the primary checkout is clean
+  and restored to the refreshed local target and all clean merged branches and
+  worktrees are removed. Dirty non-primary worktrees, branches with unique
+  commits, and actively claimed concurrent work remain preserved.
+
 ## 0.11.3 - 2026-08-12
 
 - Break-glass runtime guidance now identifies the deploy-first revision as the

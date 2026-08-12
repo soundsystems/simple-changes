@@ -584,11 +584,12 @@ const targetBranchForRef = (
   repositoryPath: string,
   targetRef: string
 ): string | null => {
-  const symbolicRef = runGit(repositoryPath, [
-    "rev-parse",
-    "--symbolic-full-name",
-    targetRef,
-  ]).stdout.trim();
+  const resolved = runGit(
+    repositoryPath,
+    ["rev-parse", "--symbolic-full-name", targetRef],
+    true
+  );
+  const symbolicRef = resolved.exitCode === 0 ? resolved.stdout.trim() : "";
   if (symbolicRef.startsWith("refs/heads/")) {
     return symbolicRef.slice("refs/heads/".length);
   }
@@ -597,7 +598,17 @@ const targetBranchForRef = (
     const separator = remoteAndBranch.indexOf("/");
     return separator === -1 ? null : remoteAndBranch.slice(separator + 1);
   }
-  return null;
+  const separator = targetRef.indexOf("/");
+  if (separator !== -1) {
+    const remote = targetRef.slice(0, separator);
+    const remotes = runGit(repositoryPath, ["remote"], true)
+      .stdout.split("\n")
+      .filter(Boolean);
+    if (remotes.includes(remote)) {
+      return targetRef.slice(separator + 1) || null;
+    }
+  }
+  return targetRef || null;
 };
 
 const detectsGitLab = (inventory: RepositoryInventory): boolean =>
@@ -2448,6 +2459,95 @@ const loopCompletionBlockers = (
       `Remove run-created worktrees before ending the loop: ${liveRunWorktrees
         .map((worktree) => worktree.path)
         .join(", ")}`
+    );
+  }
+  let targetBranch: string | null = null;
+  let targetRevision: string | null = null;
+  try {
+    targetBranch = targetBranchForRef(
+      inventory.repository.primaryCheckout,
+      lease.targetRef
+    );
+    targetRevision = currentTargetRevision(lease);
+  } catch {
+    blockers.push(
+      `Refresh unresolved target ref ${lease.targetRef} before ending the loop.`
+    );
+  }
+  const localTarget = targetBranch
+    ? inventory.branches.find((branch) => branch.name === targetBranch)
+    : undefined;
+  if (targetBranch && targetRevision && !localTarget) {
+    blockers.push(
+      `Create local target branch ${targetBranch} at ${targetRevision} before ending the loop.`
+    );
+  } else if (
+    targetRevision &&
+    localTarget &&
+    localTarget.sha !== targetRevision
+  ) {
+    blockers.push(
+      `Update local target branch ${localTarget.name} from ${localTarget.sha} to ${targetRevision} before ending the loop.`
+    );
+  }
+  const primaryWorktree = inventory.worktrees.find(
+    (worktree) => worktree.path === lease.primaryCheckout
+  );
+  if (targetBranch && primaryWorktree?.branch !== targetBranch) {
+    blockers.push(
+      `Restore primary checkout ${lease.primaryCheckout} to local target branch ${targetBranch} before ending the loop.`
+    );
+  }
+  if (primaryWorktree && primaryWorktree.changes.length > 0) {
+    blockers.push(
+      `Clean primary checkout ${lease.primaryCheckout} before ending the loop; preserve uncertain changes instead of discarding them.`
+    );
+  }
+  const registeredByPath = new Map(
+    lease.worktrees.map((worktree) => [worktree.path, worktree])
+  );
+  const isTargetContained = (revision: string): boolean =>
+    Boolean(
+      targetRevision &&
+        runGit(
+          inventory.repository.primaryCheckout,
+          [
+            "merge-base",
+            "--is-ancestor",
+            `${revision}^{commit}`,
+            `${targetRevision}^{commit}`,
+          ],
+          true
+        ).exitCode === 0
+    );
+  const mergedCleanupWorktrees = inventory.worktrees
+    .filter((worktree) => {
+      const registered = registeredByPath.get(worktree.path);
+      return (
+        !worktree.isPrimary &&
+        worktree.changes.length === 0 &&
+        !registered?.createdByRun &&
+        registered?.role !== "concurrent-author" &&
+        Boolean(worktree.headSha && isTargetContained(worktree.headSha))
+      );
+    })
+    .map((worktree) => worktree.path);
+  if (mergedCleanupWorktrees.length > 0) {
+    blockers.push(
+      `Remove clean worktrees whose branches are contained in ${lease.targetRef}: ${mergedCleanupWorktrees.join(", ")}`
+    );
+  }
+  const mergedCleanupBranchNames = inventory.branches
+    .filter(
+      (branch) =>
+        branch.name !== targetBranch &&
+        branch.worktreePath === null &&
+        isTargetContained(branch.sha)
+    )
+    .map((branch) => branch.name);
+  if (mergedCleanupBranchNames.length > 0) {
+    blockers.push(
+      `Delete local branches contained in ${lease.targetRef}: ${mergedCleanupBranchNames.join(", ")}`
     );
   }
   if (

@@ -75,7 +75,6 @@ describe("active integration-loop lease", () => {
     );
 
     expect(finalized).toMatchObject({
-      blockers: [expect.stringContaining("run-created worktrees")],
       lease: {
         controller: {
           reason:
@@ -87,6 +86,9 @@ describe("active integration-loop lease", () => {
       },
       outcome: "relinquished",
     });
+    expect(finalized.blockers).toContainEqual(
+      expect.stringContaining("run-created worktrees")
+    );
     expect(() =>
       guardLoopMutation(fixture.root, lease.runId, "first-controller")
     ).toThrow("relinquished");
@@ -128,6 +130,195 @@ describe("active integration-loop lease", () => {
       )
     ).toMatchObject({ blockers: [], outcome: "completed" });
     expect(readLoopLease(fixture.root)).toBeNull();
+  });
+
+  test("refuses completion while a target-contained local branch remains", () => {
+    const fixture = repository();
+    git(fixture.root, ["branch", "merged-unit"]);
+    const lease = startLoop(fixture.root, "controller", "integrate");
+
+    const finalized = finalizeLoop(
+      fixture.root,
+      lease.runId,
+      "controller",
+      "A merged local branch still needs cleanup."
+    );
+
+    expect(finalized).toMatchObject({
+      blockers: [expect.stringContaining("merged-unit")],
+      outcome: "relinquished",
+    });
+  });
+
+  test("refuses completion while a clean merged worktree remains", () => {
+    const fixture = repository();
+    const mergedWorktree = join(fixture.base, "merged-unit");
+    git(fixture.root, ["worktree", "add", "-b", "merged-unit", mergedWorktree]);
+    const lease = startLoop(fixture.root, "controller", "integrate");
+
+    const finalized = finalizeLoop(
+      fixture.root,
+      lease.runId,
+      "controller",
+      "A clean merged worktree still needs cleanup."
+    );
+
+    expect(finalized).toMatchObject({
+      blockers: [expect.stringContaining(mergedWorktree)],
+      outcome: "relinquished",
+    });
+  });
+
+  test("refuses completion while the local target trails the refreshed target", () => {
+    const fixture = repository();
+    git(fixture.root, [
+      "remote",
+      "add",
+      "origin",
+      "https://example.invalid/canonical.git",
+    ]);
+    git(fixture.root, ["update-ref", "refs/remotes/origin/main", "HEAD"]);
+    git(fixture.root, [
+      "symbolic-ref",
+      "refs/remotes/origin/HEAD",
+      "refs/remotes/origin/main",
+    ]);
+    git(fixture.root, ["checkout", "--detach"]);
+    writeFixture(fixture.root, "remote.txt", "remote target\n");
+    git(fixture.root, ["add", "remote.txt"]);
+    git(fixture.root, ["commit", "-m", "Advance remote target"]);
+    git(fixture.root, ["update-ref", "refs/remotes/origin/main", "HEAD"]);
+    git(fixture.root, ["checkout", "main"]);
+    const lease = startLoop(fixture.root, "controller", "integrate");
+
+    const finalized = finalizeLoop(
+      fixture.root,
+      lease.runId,
+      "controller",
+      "The local target still needs its guarded update."
+    );
+
+    expect(finalized).toMatchObject({
+      blockers: [expect.stringContaining("Update local target branch main")],
+      outcome: "relinquished",
+    });
+  });
+
+  test("preserves dirty worktrees and branches with unique commits", () => {
+    const fixture = repository();
+    const dirtyWorktree = join(fixture.base, "dirty-work");
+    git(fixture.root, ["worktree", "add", "-b", "dirty-work", dirtyWorktree]);
+    writeFixture(dirtyWorktree, "dirty.txt", "preserve me\n");
+    git(fixture.root, ["branch", "unique-work"]);
+    git(fixture.root, ["checkout", "unique-work"]);
+    writeFixture(fixture.root, "unique.txt", "unique commit\n");
+    git(fixture.root, ["add", "unique.txt"]);
+    git(fixture.root, ["commit", "-m", "Unique work"]);
+    git(fixture.root, ["checkout", "main"]);
+    const lease = startLoop(fixture.root, "controller", "integrate");
+
+    expect(
+      finalizeLoop(
+        fixture.root,
+        lease.runId,
+        "controller",
+        "Only preserved work remains."
+      )
+    ).toMatchObject({ blockers: [], outcome: "completed" });
+  });
+
+  test("refuses completion until the primary checkout is restored", () => {
+    const fixture = repository();
+    git(fixture.root, ["checkout", "-b", "merged-controller"]);
+    const lease = startLoop(fixture.root, "controller", "integrate");
+
+    const finalized = finalizeLoop(
+      fixture.root,
+      lease.runId,
+      "controller",
+      "The primary checkout still needs restoration."
+    );
+
+    expect(finalized.blockers).toContainEqual(
+      expect.stringContaining("Restore primary checkout")
+    );
+    expect(finalized.outcome).toBe("relinquished");
+  });
+
+  test("refuses completion while the primary checkout is dirty", () => {
+    const fixture = repository();
+    const lease = startLoop(fixture.root, "controller", "integrate");
+    writeFixture(fixture.root, "unfinished.txt", "preserve me\n");
+
+    const finalized = finalizeLoop(
+      fixture.root,
+      lease.runId,
+      "controller",
+      "The primary checkout still has unfinished changes."
+    );
+
+    expect(finalized.blockers).toContainEqual(
+      expect.stringContaining("Clean primary checkout")
+    );
+    expect(finalized.outcome).toBe("relinquished");
+  });
+
+  test("relinquishes instead of stranding the controller when the target is unresolved", () => {
+    const fixture = repository();
+    git(fixture.root, [
+      "remote",
+      "add",
+      "origin",
+      "https://example.invalid/canonical.git",
+    ]);
+    git(fixture.root, ["update-ref", "refs/remotes/origin/main", "HEAD"]);
+    git(fixture.root, [
+      "symbolic-ref",
+      "refs/remotes/origin/HEAD",
+      "refs/remotes/origin/main",
+    ]);
+    const lease = startLoop(fixture.root, "controller", "integrate");
+    git(fixture.root, ["update-ref", "-d", "refs/remotes/origin/main"]);
+
+    const finalized = finalizeLoop(
+      fixture.root,
+      lease.runId,
+      "controller",
+      "The target ref disappeared before finalization."
+    );
+
+    expect(finalized.blockers).toContainEqual(
+      expect.stringContaining("Refresh unresolved target ref origin/main")
+    );
+    expect(finalized).toMatchObject({
+      lease: { controller: { status: "relinquished" } },
+      outcome: "relinquished",
+    });
+  });
+
+  test("refuses completion while a clean target-contained detached worktree remains", () => {
+    const fixture = repository();
+    const detachedWorktree = join(fixture.base, "detached-merged-unit");
+    git(fixture.root, [
+      "worktree",
+      "add",
+      "--detach",
+      detachedWorktree,
+      "HEAD",
+    ]);
+    const lease = startLoop(fixture.root, "controller", "integrate");
+
+    const finalized = finalizeLoop(
+      fixture.root,
+      lease.runId,
+      "controller",
+      "A clean detached worktree still needs cleanup."
+    );
+
+    expect(finalized.blockers).toContainEqual(
+      expect.stringContaining(detachedWorktree)
+    );
+    expect(finalized.outcome).toBe("relinquished");
   });
 
   test("requires exact user-authorized evidence to take over an active controller", () => {
@@ -823,6 +1014,7 @@ describe("active integration-loop lease", () => {
     expect(verifyLoop(fixture.root).ok).toBe(true);
 
     git(fixture.root, ["worktree", "remove", obsolete]);
+    git(fixture.root, ["branch", "-d", "obsolete-work"]);
     expect(verifyLoop(fixture.root).ok).toBe(true);
     expect(endLoop(fixture.root, lease.runId, "controller").ok).toBe(true);
   }, 20_000);

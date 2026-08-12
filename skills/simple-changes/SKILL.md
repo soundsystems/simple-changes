@@ -533,6 +533,13 @@ authority for those operations.
     incomplete lease is relinquished with durable evidence. Follow
     [cleanup and completion](references/cleanup-and-completion.md).
 
+    `loop end` and `loop finalize` independently enforce the local completion
+    boundary: the local target branch must exist at the refreshed target
+    revision, the primary checkout must be restored to it and clean, and no
+    clean local worktree or branch already contained in that target may remain.
+    Dirty non-primary worktrees, unique branches, and actively claimed
+    concurrent work remain preserved.
+
 ## Authority checkpoint
 
 Inventory, classification, and read-only migration audit need no extra

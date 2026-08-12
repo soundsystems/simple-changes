@@ -91,6 +91,16 @@ Before reporting completion:
 10. For Ship, reconcile the pre-ship brief with the final receipts and report
    material review-driven changes from the original proposal heads.
 
+The terminal lifecycle command verifies local reconciliation again instead of
+trusting the agent's report. It refuses completion while the local target is
+missing or stale, the primary checkout is not on that target, a clean
+non-primary worktree is already contained in the refreshed target, the primary
+checkout is dirty, or a local branch with no checked-out worktree is already
+contained in the target. Remove those proven cleanup candidates through
+guarded mutations, then rerun the terminal lifecycle command. Dirty
+non-primary worktrees and actively claimed concurrent authors remain
+preserved; branches with unique commits are not cleanup candidates.
+
 Temporary detach is not disposal. `worktree detach` is owner-controlled and
 requires an exact `detach-clean-checkout` receipt, a clean non-primary checkout,
 no active Git operation or conflict, an attached local branch resolving to the

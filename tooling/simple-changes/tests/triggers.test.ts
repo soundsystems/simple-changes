@@ -65,6 +65,28 @@ describe("trigger classification", () => {
     expect(shouldTrigger("Make this quick.", false)).toBe(false);
   });
 
+  test("applies saved shipping defaults only to Ship requests", () => {
+    expect(
+      classifyEmergencyShipping("Ship it.", false, "expedited")
+    ).toMatchObject({
+      breakGlassAuthorized: false,
+      mode: "expedited",
+      recommendedMode: "expedited",
+    });
+    expect(
+      classifyEmergencyShipping("Ship it.", false, "break-glass")
+    ).toMatchObject({
+      breakGlassAuthorized: true,
+      mode: "break-glass",
+      recommendedMode: "break-glass",
+    });
+    expect(
+      classifyEmergencyShipping("Review this code.", false, "expedited").mode
+    ).toBe("standard");
+    expect(classifyRequestMode("Ship it.", false, "expedited")).toBe("ship");
+    expect(shouldTrigger("Ship it.", false, "break-glass")).toBe(true);
+  });
+
   test("recommends break-glass for active impact or tested live work", () => {
     expect(
       classifyEmergencyShipping(

@@ -1,6 +1,7 @@
 import type {
   EmergencyShippingEvidence,
   EmergencyShippingIntent,
+  EmergencyShippingMode,
   RequestMode,
 } from "./types.ts";
 
@@ -50,7 +51,8 @@ const TESTED_READY_PATTERN =
 
 export const classifyEmergencyShipping = (
   prompt: string,
-  integrationContextEstablished = false
+  integrationContextEstablished = false,
+  defaultMode: EmergencyShippingMode = "standard"
 ): EmergencyShippingIntent => {
   const normalized = prompt.trim();
   const explicitBreakGlass = EXPLICIT_BREAK_GLASS_PATTERN.test(normalized);
@@ -65,6 +67,7 @@ export const classifyEmergencyShipping = (
     urgent ||
     testedReady ||
     SHIP_MODE_PATTERN.test(normalized);
+  const configuredMode = shippingInterest ? defaultMode : "standard";
   const evidence: EmergencyShippingEvidence[] = [];
   if (urgent) {
     evidence.push("urgency-language");
@@ -78,6 +81,15 @@ export const classifyEmergencyShipping = (
   if (explicitBreakGlass) {
     evidence.push("deploy-before-review");
   }
+  if (configuredMode === "break-glass") {
+    return {
+      breakGlassAuthorized: true,
+      evidence,
+      mode: "break-glass",
+      recommendedMode: "break-glass",
+      requiresBreakGlassConfirmation: false,
+    };
+  }
   if (explicitBreakGlass) {
     return {
       breakGlassAuthorized: true,
@@ -89,7 +101,7 @@ export const classifyEmergencyShipping = (
   }
   const recommendBreakGlass =
     shippingInterest && (activeUserImpact || testedReady);
-  if (urgent || recommendBreakGlass) {
+  if (urgent || recommendBreakGlass || configuredMode === "expedited") {
     return {
       breakGlassAuthorized: false,
       evidence,
@@ -114,12 +126,14 @@ const isSyncRequest = (prompt: string): boolean =>
 
 export const shouldTrigger = (
   prompt: string,
-  integrationContextEstablished = false
+  integrationContextEstablished = false,
+  defaultShippingMode: EmergencyShippingMode = "standard"
 ): boolean => {
   const normalized = prompt.trim();
   const emergency = classifyEmergencyShipping(
     normalized,
-    integrationContextEstablished
+    integrationContextEstablished,
+    defaultShippingMode
   );
   if (emergency.mode !== "standard") {
     return true;
@@ -153,12 +167,14 @@ export const shouldTrigger = (
 
 export const classifyRequestMode = (
   prompt: string,
-  integrationContextEstablished = false
+  integrationContextEstablished = false,
+  defaultShippingMode: EmergencyShippingMode = "standard"
 ): RequestMode => {
   const normalized = prompt.trim();
   const emergency = classifyEmergencyShipping(
     normalized,
-    integrationContextEstablished
+    integrationContextEstablished,
+    defaultShippingMode
   );
   if (
     PREVIEW_MODE_PATTERN.test(normalized) ||

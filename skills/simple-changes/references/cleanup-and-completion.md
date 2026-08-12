@@ -78,13 +78,15 @@ Before reporting completion:
    has zero unique commits. Remove that exact path through `loop exec`; audit
    its branch separately. Remove every run-created authoring worktree only after
    its branch is merged,
-   otherwise accounted for, or explicitly preserved. `loop end` must refuse to
+   otherwise accounted for, or explicitly preserved. Completed-run release must refuse to
    release the lease while one remains registered and live.
 7. Complete the remote-branch reconciliation gate when required and verify that
    only accounted-for provider branches remain.
 8. Return to and verify the exact original primary checkout; do not substitute a
-   clean auxiliary worktree. Run the final manifest verification and release
-   the active lease.
+   clean auxiliary worktree. Run the final manifest verification, then always
+   run `loop finalize --reason <plain-language terminal reason>` before the
+   assistant's terminal response. It releases a complete lease or relinquishes
+   an incomplete one with durable blockers so another controller can resume.
 9. Report queued, merged, deployed, preserved, and blocked outcomes separately.
 10. For Ship, reconcile the pre-ship brief with the final receipts and report
    material review-driven changes from the original proposal heads.

@@ -154,6 +154,7 @@ simple-changes initialize --mode MODE
   [--changelog delegate-if-available|preserve-and-report|ask]
   [--concurrent-work allow-claimed|strict]
   [--production ask|allow|deny]
+  [--shipping-mode standard|expedited]
   [--questions blocking-only|always|never]
   [--scope user|repository|run] [--yes] [--json] [--repo PATH]
 simple-changes setup [--finish review|integrate|ship]
@@ -164,6 +165,7 @@ simple-changes setup [--finish review|integrate|ship]
   [--changelog delegate-if-available|preserve-and-report|ask]
   [--concurrent-work allow-claimed|strict]
   [--production ask|allow|deny]
+  [--shipping-mode standard|expedited]
   [--questions blocking-only|always|never]
   [--scope user|repository|run] [--yes] [--json] [--repo PATH]
 simple-changes acknowledge-update --guidance-decision accepted|reviewed|deferred
@@ -177,6 +179,8 @@ simple-changes loop guard --run-id ID --agent-id ID [--json] [--repo PATH]
 simple-changes loop exec --run-id ID --agent-id ID [--json] [--repo PATH]
   -- COMMAND [ARG ...]
 simple-changes loop recover --agent-id ID [--json] [--repo PATH]
+simple-changes loop takeover --run-id ID --agent-id ID
+  --manifest-digest SHA256 --approved-by ID --reason TEXT [--json] [--repo PATH]
 simple-changes loop allow --run-id ID --agent-id ID --worktree PATH
   --status-digest SHA256 --approved-by ID --reason TEXT [--json] [--repo PATH]
 simple-changes loop dispose-worktree --run-id ID --agent-id ID --worktree PATH
@@ -186,6 +190,8 @@ simple-changes loop adopt-worktree --run-id ID --agent-id ID
 simple-changes loop accept-paused-change --run-id ID --agent-id ID
   --pause-receipt ID [--json] [--repo PATH]
 simple-changes loop end --run-id ID --agent-id ID [--json] [--repo PATH]
+simple-changes loop finalize --run-id ID --agent-id ID --reason TEXT
+  [--json] [--repo PATH]
 simple-changes worktree status [--json] [--repo PATH]
 simple-changes worktree request --claim-id ID --run-id ID
   --request-action request-pause|request-detach|notify-resume

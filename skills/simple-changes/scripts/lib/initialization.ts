@@ -30,6 +30,7 @@ export interface InitializationStatus {
   readinessConfirmed: boolean;
   reason: string;
   resolvedMode: RequestMode | null;
+  shippingMode: RepoPolicy["shippingMode"];
   writeCapable: boolean;
 }
 
@@ -197,6 +198,7 @@ export const inspectInitialization = (
       handoff
     ),
     resolvedMode: handoff.resolvedMode,
+    shippingMode: policy.value ? policy.value.shippingMode : "standard",
     writeCapable,
   };
 };

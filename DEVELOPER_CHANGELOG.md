@@ -1,5 +1,40 @@
 # Developer changelog
 
+## 0.11.1 - 2026-08-12
+
+- Added explicit terminal lifecycle and controller-transfer contracts to the
+  active-loop lease:
+  - `loop finalize` applies the completion gates, deletes a fully reconciled
+    lease, or persists an incomplete lease as `relinquished` with its reason
+    and blockers while revoking the prior controller's mutation authority.
+  - Resume adopts the same relinquished run, transfers controller ownership
+    from a registered worktree, preserves the original mode and run ID, and
+    appends a durable handoff record.
+  - `loop takeover` requires an explicit approver and reason plus the exact
+    current run ID and SHA-256 digest of the raw stored lease. Relinquished
+    manifests remain immutable; status projects late concurrent-author
+    admission only while the controller is active, so stale takeover evidence
+    fails without rewriting relinquished state.
+  - Controller lifecycle data remains optional in the closed lease schema for
+    compatibility with older leases. Added regressions for complete and
+    incomplete finalization, resume, post-relinquishment mutation blocking,
+    legacy projection, late claims, and stale-versus-current takeover digests.
+- Added end-to-end routine shipping preferences:
+  - Policy and onboarding now support `standard` and `expedited`; legacy policy
+    defaults to `standard`, while validated `break-glass` remains an advanced
+    manual value.
+  - Initialization returns the effective `shippingMode`, its closed schema
+    requires the field, and trigger classification threads it into Emergency
+    Ship selection only for Ship requests.
+  - Advanced break-glass policy records `authoritySource: "advanced-policy"`
+    while retaining separate production authority, rollback, focused-check,
+    review, reconciliation, verification, and cleanup gates.
+  - Onboarding now presents a workflow primer, includes shipping mode in its
+    confirmation receipt, and advances installed guidance to version 4. Added
+    policy-to-initialization-to-classifier, onboarding, schema, trigger, and
+    skill-contract coverage.
+<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-12T00:06:06-05:00" -->
+
 ## 0.11.0 - 2026-08-11
 
 - Added run-only Emergency Ship classification and a resumable delivery state

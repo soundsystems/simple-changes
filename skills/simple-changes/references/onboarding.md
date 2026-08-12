@@ -10,6 +10,13 @@ request without making the user repeat it.
 Do not open with internal terms such as initialization, mutation, policy source,
 or preference scope. Start by saying, in plain language:
 
+- Simple Changes first inventories the repository, separates stable work into
+  focused units, checks and reviews those units, then stops, merges, or ships
+  according to the selected finish;
+- Ship verifies the exact delivered revision and cleanup removes only proven
+  safe objects;
+- the best way to use it is natural direction such as **Put it up**, **Merge
+  it**, or **Ship it**, with urgency stated when speed truly matters;
 - Simple Changes has a first-use onboarding flow;
 - why it appeared now;
 - which parts of future work it controls;
@@ -101,6 +108,20 @@ Only for Ship, ask **What should happen with production? Choose one:**
    release checks allow it.
 3. **Never deploy production** — Stop after merge or an authorized preview.
 
+Then ask **How should routine Ship requests run? Choose one:**
+
+1. **Standard shipping — Recommended** — Complete changelog and release
+   reconciliation before the first production deployment.
+2. **Expedited by default** — Keep focused checks, independent review, and
+   merge before deployment, then complete release reconciliation, final
+   verification, and cleanup immediately afterward.
+
+Do not offer break-glass as a normal onboarding choice. An expert may manually
+set `shippingMode: "break-glass"` in validated policy, but that advanced
+setting still requires separate production authority, rollback support, and an
+exact rollback anchor. Explicit current-request direction always overrides the
+stored mode.
+
 When relevant, ask **How should changelog work be handled? Choose one:**
 
 1. **Delegate when available** — Use a compatible changelog skill when present;
@@ -163,6 +184,7 @@ Before writing, show a plain-language receipt containing:
 
 - the exact ready-work path and stopping point;
 - production behavior when relevant;
+- routine shipping mode when relevant;
 - changelog behavior when relevant;
 - UI artifact naming when relevant;
 - when the user will be interrupted;

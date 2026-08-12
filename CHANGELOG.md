@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.11.1 - 2026-08-12
+
+- Integration controllers now finish every terminal turn with `loop finalize`:
+  - Complete runs close and release their lease; incomplete runs preserve their
+    exact reconciliation evidence, record remaining blockers, relinquish
+    controller authority, and reject further mutations from that controller.
+  - A later controller can resume the same relinquished run. An active
+    controller that disappeared without finalizing can be replaced only through
+    explicit takeover bound to the exact run and current stored manifest.
+  - Existing leases without controller-lifecycle metadata remain compatible
+    and continue as active leases.
+- First-use onboarding now explains the inventory, focused-change, review,
+  delivery-verification, and safe-cleanup workflow before asking questions.
+  Routine Ship requests can use standard or expedited delivery by default;
+  break-glass remains an advanced manual setting with separate production
+  authority and rollback requirements.
+<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-12T00:06:06-05:00" -->
+
 ## 0.11.0 - 2026-08-11
 
 - Emergency Ship now provides two run-only paths for urgent production changes:

@@ -10,10 +10,12 @@ import {
   emergencyShippingStatus,
   endLoop,
   executeLoopMutation,
+  finalizeLoop,
   grantLoopOverride,
   guardLoopMutation,
   loopLeasePath,
   loopLockPath,
+  loopManifestDigest,
   loopStatus,
   prepareAgentWorktree,
   readLoopLease,
@@ -21,10 +23,12 @@ import {
   recordRemoteBranchReconciliation,
   recoverLoopLock,
   startLoop,
+  takeoverLoop,
   verifyLoop,
   withLoopMutationLease,
 } from "../../../skills/simple-changes/scripts/lib/loop-lease.ts";
 import { DEFAULT_POLICY } from "../../../skills/simple-changes/scripts/lib/policy.ts";
+import type { LoopLease } from "../../../skills/simple-changes/scripts/lib/types.ts";
 import {
   claimWorktree,
   releaseWorktreeClaim,
@@ -53,6 +57,189 @@ afterEach(() => {
 });
 
 describe("active integration-loop lease", () => {
+  test("relinquishes an incomplete loop and lets the next controller resume the same run", () => {
+    const fixture = repository();
+    const lease = startLoop(fixture.root, "first-controller", "ship");
+    const prepared = prepareAgentWorktree(
+      fixture.root,
+      lease.runId,
+      "author",
+      "unfinished unit"
+    );
+
+    const finalized = finalizeLoop(
+      fixture.root,
+      lease.runId,
+      "first-controller",
+      "Agent turn finished before shipping reconciliation completed."
+    );
+
+    expect(finalized).toMatchObject({
+      blockers: [expect.stringContaining("run-created worktrees")],
+      lease: {
+        controller: {
+          reason:
+            "Agent turn finished before shipping reconciliation completed.",
+          status: "relinquished",
+        },
+        ownerAgentId: "first-controller",
+        runId: lease.runId,
+      },
+      outcome: "relinquished",
+    });
+    expect(() =>
+      guardLoopMutation(fixture.root, lease.runId, "first-controller")
+    ).toThrow("relinquished");
+
+    const resumed = startLoop(fixture.root, "next-controller", "resume");
+    expect(resumed).toMatchObject({
+      controller: {
+        handoffs: [
+          expect.objectContaining({
+            fromAgentId: "first-controller",
+            kind: "resume",
+            toAgentId: "next-controller",
+          }),
+        ],
+        status: "active",
+      },
+      mode: "ship",
+      ownerAgentId: "next-controller",
+      runId: lease.runId,
+    });
+    expect(resumed.worktrees).toContainEqual(
+      expect.objectContaining({ path: prepared.path, role: "author" })
+    );
+    expect(
+      guardLoopMutation(fixture.root, lease.runId, "next-controller").ok
+    ).toBe(true);
+  }, 20_000);
+
+  test("closes a complete loop during terminal finalization", () => {
+    const fixture = repository();
+    const lease = startLoop(fixture.root, "controller", "integrate");
+
+    expect(
+      finalizeLoop(
+        fixture.root,
+        lease.runId,
+        "controller",
+        "All integration work completed."
+      )
+    ).toMatchObject({ blockers: [], outcome: "completed" });
+    expect(readLoopLease(fixture.root)).toBeNull();
+  });
+
+  test("requires exact user-authorized evidence to take over an active controller", () => {
+    const fixture = repository();
+    const lease = startLoop(fixture.root, "abandoned-controller", "ship");
+    const digest = loopManifestDigest(lease);
+
+    expect(() =>
+      takeoverLoop(
+        fixture.root,
+        lease.runId,
+        "replacement-controller",
+        "0".repeat(64),
+        "repository-owner",
+        "The prior controller ended without finalizing."
+      )
+    ).toThrow("manifest digest");
+
+    const resumed = takeoverLoop(
+      fixture.root,
+      lease.runId,
+      "replacement-controller",
+      digest,
+      "repository-owner",
+      "The prior controller ended without finalizing."
+    );
+    expect(resumed).toMatchObject({
+      controller: {
+        handoffs: [
+          expect.objectContaining({
+            approvedBy: "repository-owner",
+            fromAgentId: "abandoned-controller",
+            kind: "takeover",
+            toAgentId: "replacement-controller",
+          }),
+        ],
+        status: "active",
+      },
+      ownerAgentId: "replacement-controller",
+      runId: lease.runId,
+    });
+  });
+
+  test("keeps a relinquished manifest immutable while new concurrent claims appear", () => {
+    const fixture = repository();
+    const lease = startLoop(fixture.root, "first-controller", "ship");
+    prepareAgentWorktree(
+      fixture.root,
+      lease.runId,
+      "unfinished-author",
+      "unfinished unit"
+    );
+    const finalized = finalizeLoop(
+      fixture.root,
+      lease.runId,
+      "first-controller",
+      "The controller turn ended with unfinished work."
+    );
+    const manifestDigest = loopManifestDigest(
+      finalized.lease as NonNullable<typeof finalized.lease>
+    );
+    const statePath = loopLeasePath(
+      captureInventory(fixture.root).repository.commonGitDirectory
+    );
+    const originalState = readFileSync(statePath, "utf8");
+    const concurrentPath = join(fixture.base, "late-concurrent-author");
+    git(fixture.root, [
+      "worktree",
+      "add",
+      "-b",
+      "late-concurrent-author",
+      concurrentPath,
+    ]);
+    claimWorktree(
+      fixture.root,
+      "late-agent",
+      concurrentPath,
+      "codex",
+      "late-task"
+    );
+
+    expect(() =>
+      guardLoopMutation(fixture.root, lease.runId, "first-controller")
+    ).toThrow("relinquished");
+    expect(readFileSync(statePath, "utf8")).toBe(originalState);
+    expect(
+      loopManifestDigest(loopStatus(fixture.root).lease as LoopLease)
+    ).toBe(manifestDigest);
+    expect(() =>
+      takeoverLoop(
+        fixture.root,
+        lease.runId,
+        "replacement-controller",
+        "0".repeat(64),
+        "repository-owner",
+        "The prior controller disappeared."
+      )
+    ).toThrow("manifest digest");
+    expect(readFileSync(statePath, "utf8")).toBe(originalState);
+
+    expect(
+      takeoverLoop(
+        fixture.root,
+        lease.runId,
+        "replacement-controller",
+        manifestDigest,
+        "repository-owner",
+        "The prior controller disappeared."
+      ).ownerAgentId
+    ).toBe("replacement-controller");
+  }, 20_000);
+
   test("persists and resumes Emergency Shipping state under the loop lease", async () => {
     const fixture = repository();
     const lease = startLoop(fixture.root, "controller", "ship");

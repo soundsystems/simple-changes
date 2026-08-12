@@ -35,6 +35,7 @@ export interface OnboardingInputs {
   productionDeploy?: RepoPolicy["productionDeploy"];
   questions?: RepoPolicy["questions"];
   scope?: SetupScope;
+  shippingMode?: Exclude<RepoPolicy["shippingMode"], "break-glass">;
   uiArtifactVersioning?: RepoPolicy["uiArtifactVersioning"];
 }
 
@@ -66,6 +67,7 @@ export const ONBOARDING_QUESTIONS = {
   permission: "When should I ask for permission or help?",
   production: "What should happen with production?",
   scope: "Where should these preferences live?",
+  shippingMode: "How should routine Ship requests run?",
   start:
     "Simple Changes can set up the workflow before continuing. Choose one:",
   uiArtifactVersioning:
@@ -114,6 +116,21 @@ export const PRODUCTION_CHOICES = [
     description: "Stop after merge or preview deployment.",
     label: "Never deploy production",
     value: "deny",
+  },
+] as const satisfies readonly OnboardingChoice[];
+
+export const SHIPPING_MODE_CHOICES = [
+  {
+    description:
+      "Complete changelog and release reconciliation before the first production deployment.",
+    label: "Standard shipping",
+    value: "standard",
+  },
+  {
+    description:
+      "Keep checks, independent review, and merge before deployment, then finish release reconciliation, verification, and cleanup immediately afterward.",
+    label: "Expedited by default",
+    value: "expedited",
   },
 ] as const satisfies readonly OnboardingChoice[];
 
@@ -222,6 +239,8 @@ const renderFirstScreenIntroduction = (
       "Changelog surfaces were found, but no compatible changelog workflow is available; the safe default is to preserve and report that work.";
   }
   return [
+    "Simple Changes begins with a repository inventory, separates stable work into focused change units, runs the relevant checks, obtains required review, and then stops, merges, or ships according to your preference. A shipping run will verify the exact delivered revision and clean up only work that is proven safe to remove.",
+    "Use natural requests such as “Put it up,” “Merge it,” or “Ship it.” Mention urgency when speed matters; reserve deploy-before-review direction for a real user-impacting emergency. Keep unrelated work in separately claimed worktrees so it can continue safely.",
     "This is first-use onboarding inside your original Simple Changes task. It decides the normal stopping point, when I interrupt you, and where those answers are remembered. It does not itself create a branch, push, merge, or deploy anything.",
     "",
     location,
@@ -404,6 +423,7 @@ export const renderOnboardingSummary = (
       "I'll create focused MRs, run checks, wait for required approval, merge the exact approved revisions, deploy authorized targets, and verify the live application.";
   }
   let production: string | null = null;
+  let shippingMode: string | null = null;
   if (policy.defaultFinish === "ship") {
     production = "I'll ask before deploying production.";
     if (policy.productionDeploy === "allow") {
@@ -411,6 +431,15 @@ export const renderOnboardingSummary = (
         "Production deployment is pre-approved when repository rules allow it.";
     } else if (policy.productionDeploy === "deny") {
       production = "I won't deploy production.";
+    }
+    shippingMode =
+      "Standard shipping completes release reconciliation before the first production deployment.";
+    if (policy.shippingMode === "expedited") {
+      shippingMode =
+        "Expedited shipping keeps review and merge before the first deployment, then completes release reconciliation, final verification, and cleanup immediately afterward.";
+    } else if (policy.shippingMode === "break-glass") {
+      shippingMode =
+        "An advanced break-glass default is configured outside normal onboarding; production authority and rollback evidence remain separate requirements.";
     }
   }
   let pointerSummary =
@@ -424,6 +453,7 @@ export const renderOnboardingSummary = (
     `Your workflow is set to ${finishLabel(policy.defaultFinish)}.`,
     actions,
     production,
+    shippingMode,
     changelogSummary(policy, context),
     policy.concurrentWork === "strict"
       ? "Concurrent worktrees: strict repository-wide serialization; claimed owners must pause before integration continues."
@@ -632,6 +662,34 @@ const selectProductionDeploy = async (
   );
 };
 
+const selectShippingMode = async (
+  defaults: RepoPolicy,
+  inputs: OnboardingInputs,
+  prompter: OnboardingPrompter,
+  customize: boolean,
+  finish: RepoPolicy["defaultFinish"]
+): Promise<RepoPolicy["shippingMode"]> => {
+  if (inputs.shippingMode) {
+    return inputs.shippingMode;
+  }
+  if (finish !== "ship" || !customize) {
+    return defaults.shippingMode;
+  }
+  const defaultMode =
+    defaults.shippingMode === "break-glass"
+      ? "standard"
+      : defaults.shippingMode;
+  return choiceValue<Exclude<RepoPolicy["shippingMode"], "break-glass">>(
+    await prompter.choose(
+      ONBOARDING_QUESTIONS.shippingMode,
+      SHIPPING_MODE_CHOICES,
+      defaultMode
+    ),
+    SHIPPING_MODE_CHOICES,
+    ONBOARDING_QUESTIONS.shippingMode
+  );
+};
+
 const selectChangelogHandling = async (
   defaults: RepoPolicy,
   inputs: OnboardingInputs,
@@ -742,6 +800,13 @@ export const collectOnboardingSelection = async (
     customize,
     defaultFinish
   );
+  const shippingMode = await selectShippingMode(
+    defaults,
+    inputs,
+    prompter,
+    customize,
+    defaultFinish
+  );
   const changelogHandling = await selectChangelogHandling(
     defaults,
     inputs,
@@ -790,6 +855,7 @@ export const collectOnboardingSelection = async (
     questions,
     review: defaults.review,
     schemaVersion: 1,
+    shippingMode,
     uiArtifactVersioning,
   };
   const summary = renderOnboardingSummary(

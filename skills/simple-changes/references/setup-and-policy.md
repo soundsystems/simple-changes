@@ -86,7 +86,7 @@ Use these safe defaults when no committed policy exists:
 ```json
 {
   "schemaVersion": 1,
-  "guidance": { "disposition": "accepted", "version": 3 },
+  "guidance": { "disposition": "accepted", "version": 4 },
   "changelogHandling": "preserve-and-report",
   "defaultFinish": "open-change-request",
   "handoffTiming": "confirm-ready",
@@ -94,9 +94,19 @@ Use these safe defaults when no committed policy exists:
   "questions": "blocking-only",
   "review": "repository-policy",
   "productionDeploy": "ask",
+  "shippingMode": "standard",
   "concurrentWork": "allow-claimed"
 }
 ```
+
+`shippingMode` accepts `standard`, `expedited`, or `break-glass`. Normal
+onboarding and `--shipping-mode` expose only `standard` and `expedited`.
+`break-glass` is an advanced manual policy setting; it authorizes the
+deploy-before-review ordering for Ship requests but never supplies production
+authority or waives rollback evidence, focused checks, later review, forward
+reconciliation, verification, or cleanup.
+Initialization returns the effective `shippingMode`; the agent must pass that
+closed value into emergency classification instead of re-defaulting it.
 
 `allow-claimed` is the default. It permits independent authoring in distinct,
 actively claimed, non-primary worktrees while retaining one integration
@@ -149,7 +159,9 @@ simple-changes setup \
   --yes
 ```
 
-For `--finish ship`, also supply `--production ask|allow|deny`.
+For `--finish ship`, also supply `--production ask|allow|deny`; use
+`--shipping-mode standard|expedited` when automation must select the routine
+shipping order explicitly.
 For a task that will save multiple UI artifact iterations, also supply
 `--ui-artifacts` and
 `--ui-versioning repository|number-and-date|date-only|number-only`.

@@ -58,7 +58,7 @@ directory. `loop start` creates it atomically and records:
 The lock directory prevents two integration operations from updating shared
 manifest, target, proposal, merge, deployment, or cleanup state at once. It is
 not a repository-wide authoring mutex. A second controller cannot replace an
-active lease, but independent agents may continue normal edits and commits in
+active lease without an exact, user-authorized takeover, but independent agents may continue normal edits and commits in
 distinct actively claimed worktrees. Do not remove or rewrite the lock or state
 file by hand.
 
@@ -97,6 +97,20 @@ the current host, the controller PID is provably dead, child launch is fully
 recorded, every recorded child/process group is inactive, and the caller owns
 the active lease. A live, remote-host, young, ownerless, malformed, unresolved,
 or still-running process-group lock remains a blocker.
+
+The transient lock and persistent controller lease have different recovery
+paths. `loop recover` never transfers the persistent lease. A controller that
+reaches the end of its agent turn must run `loop finalize`: a fully reconciled
+run closes and deletes the lease, while an incomplete run records its blockers,
+marks the controller `relinquished`, disables its mutation authority, and keeps
+all ledger evidence. The next controller starts with mode `resume` (or the same
+original mode), adopts that exact run ID, and continues from fresh evidence.
+
+If a controller disappears before finalization, do not delete the state file or
+infer abandonment from elapsed time. Re-read `loop status`, obtain explicit user
+authority, and run `loop takeover` with the exact current run ID and manifest
+digest, approver, and reason. Any intervening manifest change invalidates the
+takeover evidence.
 
 Normal command completion is also process-group scoped. A direct command
 leader that exits while background descendants remain does not complete the
@@ -169,9 +183,10 @@ path, current content-sensitive change digest, current head, approver identity,
 and reason. It does not accept a wildcard, repository-wide permission, or stale
 digest. A later edit or commit changes the evidence and blocks the loop again.
 
-After all run-created worktrees are removed, `loop end` performs one last
-manifest verification and releases the lease. It refuses to end while any
-run-created worktree remains or any manifest violation is unresolved.
+`loop end` is the strict completed-run primitive. At the terminal boundary use
+`loop finalize` instead: it performs the same completion gates and releases the
+lease when they pass, or relinquishes the controller while preserving the
+incomplete run when they do not.
 
 ## Opening-worktree dispositions
 

@@ -28,12 +28,17 @@ export const DEFAULT_POLICY: RepoPolicy = {
   questions: "blocking-only",
   review: "repository-policy",
   schemaVersion: 1,
+  shippingMode: "standard",
   uiArtifactVersioning: "repository-convention",
 };
 
 type StoredRepoPolicy = Omit<
   RepoPolicy,
-  "changelogHandling" | "guidance" | "handoffTiming" | "uiArtifactVersioning"
+  | "changelogHandling"
+  | "guidance"
+  | "handoffTiming"
+  | "shippingMode"
+  | "uiArtifactVersioning"
 > & {
   changelogHandling?: RepoPolicy["changelogHandling"];
   guidance: {
@@ -41,6 +46,7 @@ type StoredRepoPolicy = Omit<
     version: number;
   };
   handoffTiming?: RepoPolicy["handoffTiming"];
+  shippingMode?: RepoPolicy["shippingMode"];
   uiArtifactVersioning?: RepoPolicy["uiArtifactVersioning"];
 };
 
@@ -72,6 +78,7 @@ const parsePolicyFile = (path: string): RepoPolicy => {
       version: validated.guidance.version,
     },
     handoffTiming: validated.handoffTiming ?? DEFAULT_POLICY.handoffTiming,
+    shippingMode: validated.shippingMode ?? DEFAULT_POLICY.shippingMode,
     uiArtifactVersioning:
       validated.uiArtifactVersioning ?? DEFAULT_POLICY.uiArtifactVersioning,
   };

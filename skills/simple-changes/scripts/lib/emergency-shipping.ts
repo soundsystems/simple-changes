@@ -129,7 +129,7 @@ const decideEmergencyAuthority = (
     return decision(
       "request-break-glass-approval",
       status,
-      "Deploying before independent review requires explicit run-only direction."
+      "Deploying before independent review requires explicit current-request direction or an advanced break-glass policy."
     );
   }
   if (!state.productionAuthorized) {

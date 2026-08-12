@@ -87,6 +87,37 @@ describe("Simple Changes skill contract", () => {
     expect(normalizedOnboarding).toContain(
       "Never expose the raw handshake as though it were the onboarding question"
     );
+    expect(normalizedOnboarding).toContain(
+      "How should routine Ship requests run?"
+    );
+    expect(normalizedOnboarding).toContain(
+      "Do not offer break-glass as a normal onboarding choice"
+    );
+  });
+
+  test("terminal loop lifecycle releases or relinquishes every controller", async () => {
+    const [skill, inventory, cleanup] = await Promise.all([
+      readFile(skillPath, "utf8"),
+      readFile(inventoryConcurrencyPath, "utf8"),
+      readFile(cleanupCompletionPath, "utf8"),
+    ]);
+    const normalizedSkill = skill.replace(/\s+/g, " ");
+    const normalizedInventory = inventory.replace(/\s+/g, " ");
+    const normalizedCleanup = cleanup.replace(/\s+/g, " ");
+
+    expect(normalizedSkill).toContain(
+      "Before every terminal assistant response after a loop has started"
+    );
+    expect(normalizedSkill).toContain("loop finalize");
+    expect(normalizedSkill).toContain(
+      "exact current run ID and manifest digest plus approver and reason"
+    );
+    expect(normalizedInventory).toContain(
+      "marks the controller `relinquished`"
+    );
+    expect(normalizedCleanup).toContain(
+      "It releases a complete lease or relinquishes an incomplete one"
+    );
   });
 
   test("runtime sources do not carry obsolete Biome suppressions", async () => {

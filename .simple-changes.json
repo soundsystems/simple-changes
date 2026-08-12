@@ -2,12 +2,13 @@
   "schemaVersion": 1,
   "guidance": {
     "disposition": "accepted",
-    "version": 3
+    "version": 4
   },
   "changelogHandling": "delegate-if-available",
   "defaultFinish": "integrate",
   "questions": "blocking-only",
   "review": "repository-policy",
+  "shippingMode": "standard",
   "productionDeploy": "ask",
   "concurrentWork": "preserve",
   "handoffTiming": "confirm-ready",

@@ -7,6 +7,7 @@ import {
   ONBOARDING_QUESTIONS,
   type OnboardingChoice,
   renderOnboardingSummary,
+  SHIPPING_MODE_CHOICES,
   UI_ARTIFACT_VERSIONING_CHOICES,
 } from "../../../skills/simple-changes/scripts/lib/onboarding.ts";
 import {
@@ -149,6 +150,7 @@ describe("preference storage", () => {
     expect(loadPolicy(fixture.root).value.uiArtifactVersioning).toBe(
       "repository-convention"
     );
+    expect(loadPolicy(fixture.root).value.shippingMode).toBe("standard");
     expect(loadPolicy(fixture.root).value.guidance).toEqual({
       disposition: "accepted",
       version: 1,
@@ -281,6 +283,7 @@ describe("onboarding conversation", () => {
     const answers = new Map<string, string>([
       [ONBOARDING_QUESTIONS.finish, "ship"],
       [ONBOARDING_QUESTIONS.production, "allow"],
+      [ONBOARDING_QUESTIONS.shippingMode, "expedited"],
       [ONBOARDING_QUESTIONS.permission, "never"],
       [ONBOARDING_QUESTIONS.scope, "repository"],
     ]);
@@ -302,6 +305,7 @@ describe("onboarding conversation", () => {
     expect(questions).toEqual([
       ONBOARDING_QUESTIONS.finish,
       ONBOARDING_QUESTIONS.production,
+      ONBOARDING_QUESTIONS.shippingMode,
       ONBOARDING_QUESTIONS.permission,
       ONBOARDING_QUESTIONS.scope,
     ]);
@@ -311,6 +315,7 @@ describe("onboarding conversation", () => {
         defaultFinish: "ship",
         productionDeploy: "allow",
         questions: "never",
+        shippingMode: "expedited",
       },
       scope: "repository",
     });
@@ -320,6 +325,48 @@ describe("onboarding conversation", () => {
     expect(selection.summary).toContain(
       "Remote migrations, backfills, secrets, DNS changes"
     );
+    expect(selection.summary).toContain(
+      "Expedited shipping keeps review and merge before the first deployment"
+    );
+    expect(SHIPPING_MODE_CHOICES.map((choice) => choice.value)).toEqual([
+      "standard",
+      "expedited",
+    ]);
+    expect(
+      SHIPPING_MODE_CHOICES.some(
+        (choice) => (choice.value as string) === "break-glass"
+      )
+    ).toBe(false);
+  });
+
+  test("explains how to use the skill before asking onboarding questions", async () => {
+    const events: string[] = [];
+    await collectOnboardingSelection(
+      DEFAULT_POLICY,
+      { defaultFinish: "integrate" },
+      {
+        choose: (question, choices) => {
+          events.push(`question:${question}`);
+          return Promise.resolve(
+            question === ONBOARDING_QUESTIONS.start
+              ? "run"
+              : (choices[0]?.value ?? "")
+          );
+        },
+        confirm: () => Promise.resolve(true),
+        present: (message) => events.push(`intro:${message}`),
+      },
+      undefined,
+      "/work/project",
+      false,
+      { showFirstScreen: true }
+    );
+
+    expect(events[0]).toContain("inventory");
+    expect(events[0]).toContain("Put it up");
+    expect(events[0]).toContain("Ship it");
+    expect(events[0]).toContain("verify the exact delivered revision");
+    expect(events[1]).toBe(`question:${ONBOARDING_QUESTIONS.start}`);
   });
 
   test("renders a review-only summary without production language", () => {

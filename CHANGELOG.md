@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.11.2 - 2026-08-12
+
+- Internal-only, developer-only, preview, staging, and developer-experience
+  changes no longer prompt for an unused public version.
+<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-12T10:57:28-05:00" -->
+
+- Explicitly authorized break-glass delivery now uses known native provider
+  rollback capability to deploy immediately without a blocking current-
+  production lookup, then verifies health, runs focused checks, and completes
+  review, reconciliation, and canonical verification.
+<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-12T10:59:18-05:00" -->
+<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-12T11:01:37-05:00" -->
+
 ## 0.11.1 - 2026-08-12
 
 - Integration controllers now finish every terminal turn with `loop finalize`:

@@ -474,7 +474,6 @@
               "then": {
                 "properties": {
                   "breakGlassAuthorized": { "const": true },
-                  "rollbackAnchorRecorded": { "const": true },
                   "rollbackSupported": { "const": true }
                 }
               }

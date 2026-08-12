@@ -50,9 +50,9 @@
   classification/preparation/verification receipts, and a composite delivery
   receipt binding version identity to the deployed revision.
 - For Emergency Ship, a run-only urgency classification, revision-bound
-  incomplete-state ledger, rollback evidence for break-glass, and a conditional
-  final deployment decision based on canonical revision or proven immutable
-  artifact equivalence.
+  incomplete-state ledger, known rollback capability for break-glass, and a
+  conditional final deployment decision based on canonical revision or proven
+  immutable artifact equivalence.
 - Exact receipts for policy and managed instruction-pointer writes.
 
 ## Guarantees
@@ -130,9 +130,11 @@
 - Urgency alone selects only expedited shipping. Active user impact or a tested
   production-ready claim may recommend break-glass, but only explicit
   deploy-before-review direction authorizes it. Expedited keeps independent
-  review before merge and deployment; break-glass remains incomplete until
-  independent review, canonical Git and release reconciliation, final live
-  verification, and cleanup all finish.
+  review before merge and deployment. Break-glass deploys immediately when
+  production authority and known native rollback capability exist, without a
+  blocking current-production lookup or focused checks; those checks, review,
+  canonical Git and release reconciliation, final live verification, and
+  cleanup then run immediately and remain required for completion.
 - Deployment and high-risk actions retain their independent authority checks.
 - Public-version preferences remain exclusively owned by Simple Changelogs.
   Version direction is distinct from a blocker, approvals are digest- and

@@ -29,10 +29,28 @@ saved deployment preference:
   first deployment, then records `live-unreconciled` while changelog/version
   reconciliation, remaining verification, and cleanup continue.
 - `break-glass` requires explicit current-request deploy-before-review
-  authority, separate production authority, the exact previous production
-  identity, a proven rollback or corrective-release path, and focused checks.
-  It may deploy one exact candidate before independent review and records
-  `live-unreviewed` until that review completes.
+  authority, separate production authority, and a known native rollback or
+  corrective-release capability. It deploys one exact candidate immediately,
+  before focused checks or independent review, and records `live-unreviewed`
+  until those deferred steps complete.
+
+Treat rollback as a capability, not a provider-name checklist or a required
+pre-deploy inventory call. Repository/provider configuration may establish the
+capability before the run. Atomic deployment history, retained immutable
+artifacts, revision traffic switching, provider-native previous-deployment
+rollback, or an enabled automatic rollback controller are sufficient. This
+includes common configurations on Vercel, Netlify, Cloudflare Workers,
+Railway, Render, Cloud Run, and ECS. Do not delay the first deployment merely
+to fetch the currently live deployment ID when the provider can already roll
+back to its previous successful production state.
+
+Fail closed only when rollback capability is unknown or genuinely unavailable,
+such as expired artifacts, mutable image tags without a pinned digest,
+unconfigured rollout controllers, deleted provider bindings/resources, or
+stateful changes that the deployment provider cannot reverse. Database/schema
+migrations, persistent disks, external APIs, secrets, environment, DNS, and
+other state remain separate authority and recovery boundaries; native code
+rollback does not make those reversible.
 
 Active user impact, urgency, or a claim that testing passed may recommend
 break-glass but cannot authorize it. An unambiguous request such as “deploy
@@ -40,7 +58,8 @@ first and review afterward” can. Break-glass never authorizes migrations,
 backfills, secrets, environment changes, DNS changes, store releases, history
 rewrites, or bypassing a protected merge.
 
-Immediately after the candidate is healthy, resume the deferred sequence. A
+Immediately after deployment, verify candidate health, run focused checks, and
+resume the deferred sequence. A
 review rejection requires rollback or a corrective revision. Approval proceeds
 through canonical Git integration and forward changelog/version reconciliation;
 never rewrite an already observed release record. Persist candidate, initial

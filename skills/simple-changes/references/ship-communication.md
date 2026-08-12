@@ -42,7 +42,9 @@ When the current request explicitly says to deploy first or review after
 deployment, state rather than re-ask the exact consequence: one checked,
 revision-bound candidate may reach production before independent review, then
 review and forward reconciliation begin immediately. Report the previous live
-revision and rollback capability before deploying.
+revision and rollback capability before deploying. Known provider-native
+rollback is sufficient; do not delay break-glass with a current-production
+lookup solely to manufacture an anchor identifier.
 
 After the first deployment, use the durable status names verbatim:
 

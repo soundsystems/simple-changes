@@ -69,6 +69,7 @@ export interface RepoPolicy {
   questions: "blocking-only" | "always" | "never";
   review: "repository-policy" | "independent" | "provider-policy";
   schemaVersion: 1;
+  shippingMode: EmergencyShippingMode;
   uiArtifactVersioning: UiArtifactVersioning;
 }
 
@@ -498,7 +499,11 @@ export type EmergencyShippingStatus =
 
 export interface EmergencyShippingLedgerEntry {
   artifactEquivalenceProven: boolean;
-  authoritySource: "explicit-current-request" | "confirmed-run-only" | null;
+  authoritySource:
+    | "advanced-policy"
+    | "explicit-current-request"
+    | "confirmed-run-only"
+    | null;
   breakGlassAuthorized: boolean;
   candidateArtifactId: string | null;
   candidateRevision: string;
@@ -551,6 +556,23 @@ export interface LoopWorktreeLease {
   path: string;
   pauseReceiptId?: string;
   role: LoopWorktreeRole;
+}
+
+export interface LoopControllerHandoff {
+  approvedBy: string | null;
+  at: string;
+  fromAgentId: string;
+  kind: "resume" | "takeover";
+  reason: string;
+  toAgentId: string;
+}
+
+export interface LoopControllerLifecycle {
+  acquiredAt: string;
+  handoffs: LoopControllerHandoff[];
+  reason: string | null;
+  relinquishedAt: string | null;
+  status: "active" | "relinquished";
 }
 
 export type WorktreeCoordinationState =
@@ -759,6 +781,7 @@ export interface LoopLease {
   baselineDigest: string;
   commonGitDirectory: string;
   concurrentWork?: "allow-claimed" | "strict";
+  controller?: LoopControllerLifecycle;
   createdAt: string;
   dispositions?: LoopWorktreeDisposition[];
   emergencyShipping?: EmergencyShippingLedgerEntry;

@@ -28,6 +28,7 @@ import { validateRemoteBranchReconciliation } from "./remote-branch-reconciliati
 import { validateSchema } from "./schema.ts";
 import type {
   EmergencyShippingLedgerEntry,
+  LoopControllerLifecycle,
   LoopLease,
   LoopOverride,
   LoopVerification,
@@ -298,6 +299,84 @@ const requiredText = (value: string, name: string): string => {
     throw new SimpleChangesError(`${name} is required.`, EXIT_CODES.usage);
   }
   return trimmed;
+};
+
+const controllerLifecycle = (lease: LoopLease): LoopControllerLifecycle =>
+  lease.controller ?? {
+    acquiredAt: lease.createdAt,
+    handoffs: [],
+    reason: null,
+    relinquishedAt: null,
+    status: "active",
+  };
+
+const assertControllerActive = (lease: LoopLease): void => {
+  if (controllerLifecycle(lease).status === "relinquished") {
+    throw new SimpleChangesError(
+      `Integration-controller loop ${lease.runId} was relinquished by ${lease.ownerAgentId}; resume it with a new controller before mutating it.`,
+      EXIT_CODES.unsafe
+    );
+  }
+};
+
+const transferController = (
+  lease: LoopLease,
+  inventory: RepositoryInventory,
+  nextAgentId: string,
+  kind: "resume" | "takeover",
+  reason: string,
+  approvedBy: string | null
+): LoopLease => {
+  const currentPath = inventory.repository.currentCheckout;
+  if (!lease.worktrees.some((worktree) => worktree.path === currentPath)) {
+    throw new SimpleChangesError(
+      `Controller transfer must run from a worktree registered in ${lease.runId}: ${currentPath}.`,
+      EXIT_CODES.unsafe
+    );
+  }
+  const now = new Date().toISOString();
+  const previous = controllerLifecycle(lease);
+  return writeLease({
+    ...lease,
+    controller: {
+      acquiredAt: now,
+      handoffs: [
+        ...previous.handoffs,
+        {
+          approvedBy,
+          at: now,
+          fromAgentId: lease.ownerAgentId,
+          kind,
+          reason,
+          toAgentId: nextAgentId,
+        },
+      ],
+      reason: null,
+      relinquishedAt: null,
+      status: "active",
+    },
+    ownerAgentId: nextAgentId,
+    updatedAt: now,
+    worktrees: lease.worktrees.map((worktree) => {
+      if (worktree.path === currentPath) {
+        return {
+          ...worktree,
+          agentId: nextAgentId,
+          mutationAllowed: true,
+          role: "controller",
+        };
+      }
+      if (worktree.role === "controller") {
+        return {
+          ...worktree,
+          agentId: null,
+          mutationAllowed: false,
+          role: "preserved",
+        };
+      }
+      return worktree;
+    }),
+  });
 };
 
 const requiredRunId = (value: string): string => {
@@ -728,14 +807,6 @@ const withConcurrentAuthorAdmissions = (
   };
 };
 
-const admitConcurrentAuthors = (
-  lease: LoopLease,
-  inventory: RepositoryInventory
-): LoopLease => {
-  const admitted = withConcurrentAuthorAdmissions(lease, inventory);
-  return admitted === lease ? lease : writeLease(admitted);
-};
-
 const concurrentClaimViolations = (
   registered: LoopWorktreeLease,
   concurrentClaim: WorktreeClaim | undefined,
@@ -952,7 +1023,7 @@ const requireLease = (inventory: RepositoryInventory): LoopLease => {
       EXIT_CODES.unsafe
     );
   }
-  return admitConcurrentAuthors(lease, inventory);
+  return withConcurrentAuthorAdmissions(lease, inventory);
 };
 
 const assertAgentMutationAllowed = (
@@ -960,6 +1031,7 @@ const assertAgentMutationAllowed = (
   inventory: RepositoryInventory,
   agentId: string
 ): void => {
+  assertControllerActive(lease);
   const currentPath = inventory.repository.currentCheckout;
   const registered = lease.worktrees.find(
     (worktree) => worktree.path === currentPath
@@ -1014,8 +1086,26 @@ export const startLoop = (
         inventory.repository.commonGitDirectory
       );
       if (existing) {
-        if (existing.ownerAgentId === agentId && existing.mode === mode) {
+        const lifecycle = controllerLifecycle(existing);
+        if (
+          lifecycle.status === "active" &&
+          existing.ownerAgentId === agentId &&
+          existing.mode === mode
+        ) {
           return existing;
+        }
+        if (
+          lifecycle.status === "relinquished" &&
+          (mode === "resume" || mode === existing.mode)
+        ) {
+          return transferController(
+            existing,
+            inventory,
+            agentId,
+            "resume",
+            lifecycle.reason ?? "Resumed relinquished integration loop.",
+            null
+          );
         }
         throw new SimpleChangesError(
           `Integration-controller loop ${existing.runId} is already active for ${existing.ownerAgentId}. Independent agents may continue in distinct actively claimed worktrees; start no second push/MR/merge/cleanup controller.`,
@@ -1075,6 +1165,13 @@ export const startLoop = (
         baselineDigest: inventory.baselineDigest,
         commonGitDirectory: inventory.repository.commonGitDirectory,
         concurrentWork,
+        controller: {
+          acquiredAt: now,
+          handoffs: [],
+          reason: null,
+          relinquishedAt: null,
+          status: "active",
+        },
         createdAt: now,
         dispositions: [],
         mode: mode as LoopLease["mode"],
@@ -1090,6 +1187,69 @@ export const startLoop = (
         worktrees,
       };
       return writeLease(lease);
+    }
+  );
+};
+
+export const takeoverLoop = (
+  repositoryPath: string,
+  runIdInput: string,
+  nextAgentIdInput: string,
+  expectedManifestDigestInput: string,
+  approvedByInput: string,
+  reasonInput: string
+): LoopLease => {
+  const runId = requiredRunId(runIdInput);
+  const nextAgentId = requiredText(nextAgentIdInput, "agent ID");
+  const expectedManifestDigest = requiredText(
+    expectedManifestDigestInput,
+    "manifest digest"
+  );
+  const approvedBy = requiredText(approvedByInput, "approver");
+  const reason = requiredText(reasonInput, "takeover reason");
+  if (!DIGEST_PATTERN.test(expectedManifestDigest)) {
+    throw new SimpleChangesError(
+      "manifest digest must be a lowercase SHA-256 value.",
+      EXIT_CODES.usage
+    );
+  }
+  const opening = captureInventory(repositoryPath);
+  return withStateLock(
+    opening.repository.commonGitDirectory,
+    "loop takeover",
+    () => {
+      const inventory = captureInventory(repositoryPath);
+      const lease = readLeaseFromCommonDirectory(
+        inventory.repository.commonGitDirectory
+      );
+      if (!lease) {
+        throw new SimpleChangesError(
+          "No active Simple Changes integration loop was found.",
+          EXIT_CODES.unsafe
+        );
+      }
+      assertMatchingRun(lease, runId);
+      const actualManifestDigest = sha256(JSON.stringify(lease));
+      if (actualManifestDigest !== expectedManifestDigest) {
+        throw new SimpleChangesError(
+          `Active-loop manifest digest changed: expected ${expectedManifestDigest}, observed ${actualManifestDigest}. Re-inspect before authorizing takeover.`,
+          EXIT_CODES.unsafe
+        );
+      }
+      if (lease.ownerAgentId === nextAgentId) {
+        throw new SimpleChangesError(
+          `${nextAgentId} already owns ${runId}; takeover requires a different controller.`,
+          EXIT_CODES.usage
+        );
+      }
+      return transferController(
+        lease,
+        inventory,
+        nextAgentId,
+        "takeover",
+        reason,
+        approvedBy
+      );
     }
   );
 };
@@ -1114,7 +1274,12 @@ export const verifyLoop = (repositoryPath: string): LoopVerification => {
           violations: [],
         };
       }
-      const lease = admitConcurrentAuthors(storedLease, inventory);
+      const projected = withConcurrentAuthorAdmissions(storedLease, inventory);
+      const lease =
+        controllerLifecycle(storedLease).status === "active" &&
+        projected !== storedLease
+          ? writeLease(projected)
+          : projected;
       return verificationAgainst(lease, inventory);
     }
   );
@@ -1459,6 +1624,7 @@ export const prepareAgentWorktree = (
       let inventory = captureInventory(repositoryPath);
       const lease = requireLease(inventory);
       assertMatchingRun(lease, runId);
+      assertControllerActive(lease);
       const existing = lease.worktrees.find(
         (worktree) => worktree.agentId === agentId
       );
@@ -1792,6 +1958,7 @@ export const authorizeWorktreeRemoval = (
           EXIT_CODES.unsafe
         );
       }
+      assertControllerActive(lease);
       const { current, path, targetRevision } = auditWorktreeRemoval(
         lease,
         inventory,
@@ -1866,6 +2033,7 @@ export const grantLoopOverride = (
           EXIT_CODES.unsafe
         );
       }
+      assertControllerActive(lease);
       const path = existsSync(pathInput)
         ? realpathSync(pathInput)
         : resolve(pathInput);
@@ -1994,6 +2162,7 @@ export const adoptPausedWorktree = (
           EXIT_CODES.unsafe
         );
       }
+      assertControllerActive(lease);
       const evidence = exactPausedEvidence(
         lease,
         inventory,
@@ -2061,6 +2230,7 @@ export const acceptPausedWorktreeChange = (
           EXIT_CODES.unsafe
         );
       }
+      assertControllerActive(lease);
       const evidence = exactPausedEvidence(
         lease,
         inventory,
@@ -2142,6 +2312,7 @@ export const markWorktreeResumeReady = (
           EXIT_CODES.unsafe
         );
       }
+      assertControllerActive(lease);
       const verification = verificationAgainst(lease, inventory);
       if (!verification.ok) {
         throw new SimpleChangesError(
@@ -2208,6 +2379,7 @@ export const recordRemoteBranchReconciliation = (
           EXIT_CODES.unsafe
         );
       }
+      assertControllerActive(lease);
       const verification = verificationAgainst(lease, inventory);
       if (!verification.ok) {
         throw new SimpleChangesError(
@@ -2253,6 +2425,111 @@ export const recordRemoteBranchReconciliation = (
   );
 };
 
+const loopCompletionBlockers = (
+  lease: LoopLease,
+  inventory: RepositoryInventory,
+  verification: LoopVerification
+): string[] => {
+  const blockers: string[] = [];
+  if (!verification.ok) {
+    blockers.push(
+      `manifest violations: ${verification.violations
+        .map((violation) => `${violation.code}:${violation.path}`)
+        .join(", ")}`
+    );
+  }
+  const liveRunWorktrees = lease.worktrees.filter(
+    (worktree) =>
+      worktree.createdByRun &&
+      inventory.worktrees.some((current) => current.path === worktree.path)
+  );
+  if (liveRunWorktrees.length > 0) {
+    blockers.push(
+      `Remove run-created worktrees before ending the loop: ${liveRunWorktrees
+        .map((worktree) => worktree.path)
+        .join(", ")}`
+    );
+  }
+  if (
+    lease.emergencyShipping &&
+    deriveEmergencyShippingStatus(lease.emergencyShipping) !== "complete"
+  ) {
+    blockers.push(
+      `Emergency Shipping remains incomplete: ${decideEmergencyShipping(lease.emergencyShipping).action}.`
+    );
+  }
+  try {
+    assertCurrentRemoteBranchReconciliation(lease, inventory);
+  } catch (error) {
+    blockers.push(
+      error instanceof Error ? error.message : "Remote reconciliation failed."
+    );
+  }
+  return blockers;
+};
+
+export interface LoopFinalizationResult {
+  blockers: string[];
+  lease: LoopLease | null;
+  outcome: "completed" | "relinquished";
+  verification: LoopVerification;
+}
+
+export const finalizeLoop = (
+  repositoryPath: string,
+  runId: string,
+  ownerAgentIdInput: string,
+  reasonInput: string
+): LoopFinalizationResult => {
+  const ownerAgentId = requiredText(ownerAgentIdInput, "agent ID");
+  const reason = requiredText(reasonInput, "finalization reason");
+  const opening = captureInventory(repositoryPath);
+  return withStateLock(
+    opening.repository.commonGitDirectory,
+    "loop finalize",
+    () => {
+      const inventory = captureInventory(repositoryPath);
+      const lease = requireLease(inventory);
+      assertMatchingRun(lease, runId);
+      if (lease.ownerAgentId !== ownerAgentId) {
+        throw new SimpleChangesError(
+          `Only loop owner ${lease.ownerAgentId} may finalize this loop.`,
+          EXIT_CODES.unsafe
+        );
+      }
+      assertControllerActive(lease);
+      const verification = verificationAgainst(lease, inventory);
+      const blockers = loopCompletionBlockers(lease, inventory, verification);
+      if (blockers.length === 0) {
+        rmSync(loopLeasePath(lease.commonGitDirectory), { force: true });
+        return { blockers, lease: null, outcome: "completed", verification };
+      }
+      const now = new Date().toISOString();
+      const updated = writeLease({
+        ...lease,
+        controller: {
+          ...controllerLifecycle(lease),
+          reason,
+          relinquishedAt: now,
+          status: "relinquished",
+        },
+        updatedAt: now,
+        worktrees: lease.worktrees.map((worktree) =>
+          worktree.role === "controller"
+            ? { ...worktree, mutationAllowed: false }
+            : worktree
+        ),
+      });
+      return {
+        blockers,
+        lease: updated,
+        outcome: "relinquished",
+        verification,
+      };
+    }
+  );
+};
+
 export const endLoop = (
   repositoryPath: string,
   runId: string,
@@ -2273,38 +2550,12 @@ export const endLoop = (
           EXIT_CODES.unsafe
         );
       }
+      assertControllerActive(lease);
       const verification = verificationAgainst(lease, inventory);
-      if (!verification.ok) {
-        throw new SimpleChangesError(
-          `Cannot end loop with manifest violations: ${verification.violations
-            .map((violation) => `${violation.code}:${violation.path}`)
-            .join(", ")}`,
-          EXIT_CODES.unsafe
-        );
+      const blockers = loopCompletionBlockers(lease, inventory, verification);
+      if (blockers.length > 0) {
+        throw new SimpleChangesError(blockers.join(" "), EXIT_CODES.unsafe);
       }
-      const liveRunWorktrees = lease.worktrees.filter(
-        (worktree) =>
-          worktree.createdByRun &&
-          inventory.worktrees.some((current) => current.path === worktree.path)
-      );
-      if (liveRunWorktrees.length > 0) {
-        throw new SimpleChangesError(
-          `Remove run-created worktrees before ending the loop: ${liveRunWorktrees
-            .map((worktree) => worktree.path)
-            .join(", ")}`,
-          EXIT_CODES.unsafe
-        );
-      }
-      if (
-        lease.emergencyShipping &&
-        deriveEmergencyShippingStatus(lease.emergencyShipping) !== "complete"
-      ) {
-        throw new SimpleChangesError(
-          `Emergency Shipping remains incomplete: ${decideEmergencyShipping(lease.emergencyShipping).action}.`,
-          EXIT_CODES.unsafe
-        );
-      }
-      assertCurrentRemoteBranchReconciliation(lease, inventory);
       rmSync(loopLeasePath(lease.commonGitDirectory), { force: true });
       return verification;
     }
@@ -2318,9 +2569,10 @@ export const loopStatus = (
   const storedLease = readLeaseFromCommonDirectory(
     inventory.repository.commonGitDirectory
   );
-  const lease = storedLease
-    ? withConcurrentAuthorAdmissions(storedLease, inventory)
-    : null;
+  let lease = storedLease;
+  if (storedLease && controllerLifecycle(storedLease).status === "active") {
+    lease = withConcurrentAuthorAdmissions(storedLease, inventory);
+  }
   return {
     lease,
     verification: lease

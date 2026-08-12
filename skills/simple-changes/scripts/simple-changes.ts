@@ -28,6 +28,7 @@ import {
   emergencyShippingStatus,
   endLoop,
   executeLoopMutation,
+  finalizeLoop,
   grantLoopOverride,
   guardLoopMutation,
   loopManifestDigest,
@@ -39,6 +40,7 @@ import {
   recordRemoteBranchReconciliation,
   recoverLoopLock,
   startLoop,
+  takeoverLoop,
   verifyLoop,
   withLoopMutationLease,
 } from "./lib/loop-lease.ts";
@@ -90,7 +92,7 @@ import {
   releaseWorktreeClaim,
 } from "./lib/worktree-coordination.ts";
 
-const VERSION = "0.11.0";
+const VERSION = "0.11.1";
 const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const HELP = `Simple Changes ${VERSION}
 
@@ -104,6 +106,7 @@ Usage:
     [--ui-artifacts]
     [--ui-versioning repository|number-and-date|date-only|number-only]
     [--production ask|allow|deny]
+    [--shipping-mode standard|expedited]
     [--questions blocking-only|always|never]
     [--scope user|repository|run] [--agent-id ID] [--yes] [--json] [--repo PATH]
   simple-changes setup [--finish review|integrate|ship]
@@ -114,6 +117,7 @@ Usage:
     [--ui-artifacts]
     [--ui-versioning repository|number-and-date|date-only|number-only]
     [--production ask|allow|deny]
+    [--shipping-mode standard|expedited]
     [--questions blocking-only|always|never]
     [--scope user|repository|run] [--agent-id ID] [--yes] [--json] [--repo PATH]
   simple-changes acknowledge-update --guidance-decision accepted|reviewed|deferred
@@ -127,6 +131,8 @@ Usage:
   simple-changes loop exec --run-id ID --agent-id ID [--json] [--repo PATH]
     -- COMMAND [ARG ...]
   simple-changes loop recover --agent-id ID [--json] [--repo PATH]
+  simple-changes loop takeover --run-id ID --agent-id ID
+    --manifest-digest SHA256 --approved-by ID --reason TEXT [--json] [--repo PATH]
   simple-changes loop allow --run-id ID --agent-id ID --worktree PATH
     --status-digest SHA256 --approved-by ID --reason TEXT [--json] [--repo PATH]
   simple-changes loop dispose-worktree --run-id ID --agent-id ID --worktree PATH
@@ -141,6 +147,8 @@ Usage:
   simple-changes loop emergency record --run-id ID --agent-id ID --state FILE
     [--json] [--repo PATH]
   simple-changes loop end --run-id ID --agent-id ID [--json] [--repo PATH]
+  simple-changes loop finalize --run-id ID --agent-id ID --reason TEXT
+    [--json] [--repo PATH]
   simple-changes worktree status [--json] [--repo PATH]
   simple-changes worktree request --claim-id ID --run-id ID
     --request-action request-pause|request-detach|notify-resume
@@ -190,6 +198,7 @@ interface CliOptions {
   instructionFile?: string;
   instructionPointer?: "add" | "leave";
   json: boolean;
+  manifestDigest?: string;
   mode?: InitializationMode;
   ownerRef?: string;
   pauseReceiptId?: string;
@@ -207,6 +216,7 @@ interface CliOptions {
   runId?: string;
   scope?: SetupScope;
   settleMs: number;
+  shippingMode?: Exclude<RepoPolicy["shippingMode"], "break-glass">;
   statePath?: string;
   statusDigest?: string;
   uiArtifacts: boolean;
@@ -228,6 +238,7 @@ const VALUED_OPTIONS = new Set([
   "--guidance-decision",
   "--instruction-file",
   "--instruction-pointer",
+  "--manifest-digest",
   "--mode",
   "--owner-ref",
   "--pause-receipt",
@@ -240,6 +251,7 @@ const VALUED_OPTIONS = new Set([
   "--repo",
   "--run-id",
   "--scope",
+  "--shipping-mode",
   "--settle-ms",
   "--status-digest",
   "--state",
@@ -283,6 +295,24 @@ const changelogHandlingValue = (
     );
   }
   return value as RepoPolicy["changelogHandling"];
+};
+
+const applyShippingModeOption = (
+  options: CliOptions,
+  option: string,
+  value: string
+): boolean => {
+  if (option !== "--shipping-mode") {
+    return false;
+  }
+  if (!(value === "standard" || value === "expedited")) {
+    throw new SimpleChangesError(
+      "--shipping-mode must be standard or expedited; break-glass is an advanced manual policy setting",
+      EXIT_CODES.usage
+    );
+  }
+  options.shippingMode = value;
+  return true;
 };
 
 const applySetupValuedOption = (
@@ -400,6 +430,7 @@ const applyLoopValuedOption = (
     "--agent-id": "agentId",
     "--approved-by": "approvedBy",
     "--claim-id": "claimId",
+    "--manifest-digest": "manifestDigest",
     "--owner-ref": "ownerRef",
     "--pause-receipt": "pauseReceiptId",
     "--purpose": "purpose",
@@ -449,6 +480,7 @@ const applyValuedOption = (
   value: string
 ): void => {
   if (
+    applyShippingModeOption(options, option, value) ||
     applySetupValuedOption(options, option, value) ||
     applyLoopValuedOption(options, option, value)
   ) {
@@ -692,7 +724,8 @@ const setupNeedsPrompt = (
     (!changelogRelevant || options.changelogHandling) &&
     options.questions &&
     options.scope &&
-    (options.defaultFinish !== "ship" || options.productionDeploy) &&
+    (options.defaultFinish !== "ship" ||
+      (options.productionDeploy && options.shippingMode)) &&
     (!options.uiArtifacts || options.uiArtifactVersioning) &&
     (instructionTargetCount === 0 ||
       options.instructionPointer === "leave" ||
@@ -778,7 +811,7 @@ const runSetup = async (options: CliOptions): Promise<void> => {
     !process.stdin.isTTY
   ) {
     throw new SimpleChangesError(
-      "Interactive setup requires a terminal. Supply --finish, --questions, --scope, --production when shipping, --changelog when relevant, --ui-versioning with --ui-artifacts, --instruction-pointer when an instruction file exists, --handoff when adding the pointer, --instruction-file when selecting among targets, and --yes.",
+      "Interactive setup requires a terminal. Supply --finish, --questions, --scope, --production and --shipping-mode when shipping, --changelog when relevant, --ui-versioning with --ui-artifacts, --instruction-pointer when an instruction file exists, --handoff when adding the pointer, --instruction-file when selecting among targets, and --yes.",
       EXIT_CODES.usage
     );
   }
@@ -802,6 +835,7 @@ const runSetup = async (options: CliOptions): Promise<void> => {
       : {}),
     ...(options.questions ? { questions: options.questions } : {}),
     ...(options.scope ? { scope: options.scope } : {}),
+    ...(options.shippingMode ? { shippingMode: options.shippingMode } : {}),
     ...(options.uiArtifactVersioning
       ? { uiArtifactVersioning: options.uiArtifactVersioning }
       : {}),
@@ -1242,6 +1276,27 @@ const runLoopFinalizationAction = (
     );
     return true;
   }
+  if (action === "finalize") {
+    const result = finalizeLoop(
+      options.repo,
+      runId,
+      agentId,
+      requireCliOption(options.reason, "--reason")
+    );
+    const message =
+      result.outcome === "completed"
+        ? `Completed and released ${runId}.\n`
+        : `Relinquished ${runId} with durable state. Remaining: ${result.blockers.join(" ")}\n`;
+    writeOutput(
+      {
+        ...result,
+        manifestDigest: result.lease ? loopManifestDigest(result.lease) : null,
+      },
+      options.json,
+      message
+    );
+    return true;
+  }
   return false;
 };
 
@@ -1284,14 +1339,32 @@ const runLoopEmergencyAction = async (
   );
 };
 
-const runLoopCommand = async (options: CliOptions): Promise<void> => {
-  const [action] = options.positional;
-  if (!action) {
-    throw new SimpleChangesError(
-      "loop requires start, status, verify, guard, exec, recover, allow, dispose-worktree, adopt-worktree, accept-paused-change, or end",
-      EXIT_CODES.usage
-    );
+const runLoopTakeover = (
+  action: string,
+  options: CliOptions,
+  runId: string,
+  agentId: string
+): boolean => {
+  if (action !== "takeover") {
+    return false;
   }
+  const updated = takeoverLoop(
+    options.repo,
+    runId,
+    agentId,
+    requireCliOption(options.manifestDigest, "--manifest-digest"),
+    requireCliOption(options.approvedBy, "--approved-by"),
+    requireCliOption(options.reason, "--reason")
+  );
+  writeOutput(
+    { lease: updated, manifestDigest: loopManifestDigest(updated) },
+    options.json,
+    `Transferred ${runId} to ${agentId} under explicit takeover authority.\n`
+  );
+  return true;
+};
+
+const runLoopOpeningAction = (action: string, options: CliOptions): boolean => {
   if (action === "start") {
     const agentId = requireCliOption(options.agentId, "--agent-id");
     if (!options.mode) {
@@ -1306,7 +1379,7 @@ const runLoopCommand = async (options: CliOptions): Promise<void> => {
       options.json,
       `Started ${lease.runId} for ${lease.ownerAgentId}.\nManifest: ${loopManifestDigest(lease)}\n`
     );
-    return;
+    return true;
   }
   if (action === "status") {
     const status = loopStatus(options.repo);
@@ -1318,10 +1391,24 @@ const runLoopCommand = async (options: CliOptions): Promise<void> => {
       options.json,
       renderLoopVerification(status.verification)
     );
-    return;
+    return true;
   }
   if (action === "recover") {
     runLoopRecovery(options);
+    return true;
+  }
+  return false;
+};
+
+const runLoopCommand = async (options: CliOptions): Promise<void> => {
+  const [action] = options.positional;
+  if (!action) {
+    throw new SimpleChangesError(
+      "loop requires start, status, verify, guard, exec, recover, takeover, allow, dispose-worktree, adopt-worktree, accept-paused-change, end, or finalize",
+      EXIT_CODES.usage
+    );
+  }
+  if (runLoopOpeningAction(action, options)) {
     return;
   }
   const runId = requireCliOption(options.runId, "--run-id");
@@ -1351,6 +1438,9 @@ const runLoopCommand = async (options: CliOptions): Promise<void> => {
     return;
   }
   const agentId = requireCliOption(options.agentId, "--agent-id");
+  if (runLoopTakeover(action, options, runId, agentId)) {
+    return;
+  }
   if (action === "guard") {
     const verification = guardLoopMutation(options.repo, runId, agentId);
     writeOutput(

@@ -32,6 +32,69 @@
     "baselineDigest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
     "commonGitDirectory": { "type": "string", "minLength": 1 },
     "concurrentWork": { "enum": ["allow-claimed", "strict"] },
+    "controller": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "acquiredAt",
+        "relinquishedAt",
+        "reason",
+        "handoffs"
+      ],
+      "properties": {
+        "status": { "enum": ["active", "relinquished"] },
+        "acquiredAt": { "type": "string", "format": "date-time" },
+        "relinquishedAt": {
+          "anyOf": [
+            { "type": "string", "format": "date-time" },
+            { "type": "null" }
+          ]
+        },
+        "reason": {
+          "anyOf": [
+            { "type": "string", "minLength": 1, "maxLength": 500 },
+            { "type": "null" }
+          ]
+        },
+        "handoffs": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "kind",
+              "fromAgentId",
+              "toAgentId",
+              "approvedBy",
+              "reason",
+              "at"
+            ],
+            "properties": {
+              "kind": { "enum": ["resume", "takeover"] },
+              "fromAgentId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128
+              },
+              "toAgentId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128
+              },
+              "approvedBy": {
+                "anyOf": [
+                  { "type": "string", "minLength": 1, "maxLength": 128 },
+                  { "type": "null" }
+                ]
+              },
+              "reason": { "type": "string", "minLength": 1, "maxLength": 500 },
+              "at": { "type": "string", "format": "date-time" }
+            }
+          }
+        }
+      }
+    },
     "emergencyShipping": { "$ref": "emergency-shipping.schema.json" },
     "primaryCheckout": { "type": "string", "minLength": 1 },
     "remoteBranchReconciliation": {

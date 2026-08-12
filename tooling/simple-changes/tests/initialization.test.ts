@@ -1,8 +1,27 @@
 import { describe, expect, test } from "bun:test";
 import { inspectInitialization } from "../../../skills/simple-changes/scripts/lib/initialization.ts";
 import { DEFAULT_POLICY } from "../../../skills/simple-changes/scripts/lib/policy.ts";
+import { classifyEmergencyShipping } from "../../../skills/simple-changes/scripts/lib/triggers.ts";
 
 describe("first-run initialization", () => {
+  test("propagates the saved shipping preference into emergency classification", () => {
+    for (const shippingMode of ["expedited", "break-glass"] as const) {
+      const status = inspectInitialization("ship", {
+        path: "/repo/.simple-changes.json",
+        source: "repository",
+        value: { ...DEFAULT_POLICY, shippingMode },
+      });
+
+      expect(status.shippingMode).toBe(shippingMode);
+      expect(
+        classifyEmergencyShipping("Ship it.", false, status.shippingMode)
+      ).toMatchObject({
+        breakGlassAuthorized: shippingMode === "break-glass",
+        mode: shippingMode,
+      });
+    }
+  });
+
   test("requires onboarding for write-capable modes without saved policy", () => {
     expect(
       inspectInitialization("queue", {
@@ -140,7 +159,7 @@ describe("first-run initialization", () => {
           available: true,
           owner: "simple-changelogs",
         },
-        currentVersion: 3,
+        currentVersion: 4,
         status: "update-available",
         storedVersion: 1,
       },

@@ -52,6 +52,9 @@
     "productionDeploy": {
       "enum": ["ask", "allow", "deny"]
     },
+    "shippingMode": {
+      "enum": ["standard", "expedited", "break-glass"]
+    },
     "concurrentWork": {
       "enum": ["allow-claimed", "strict", "preserve"]
     }

@@ -1,6 +1,6 @@
 import type { ChangelogCoordination, RepoPolicy } from "./types.ts";
 
-export const CURRENT_GUIDANCE_VERSION = 3;
+export const CURRENT_GUIDANCE_VERSION = 4;
 
 export type GuidanceUpdateAction =
   | "review-settings"
@@ -80,6 +80,30 @@ const GUIDANCE_UPDATES: GuidanceUpdateDefinition[] = [
       },
     ],
     version: 3,
+  },
+  {
+    changelogReviewRelevant: true,
+    changes: [
+      {
+        kind: "behavior",
+        summary:
+          "Every integration controller now finalizes its lease: completed runs close, while incomplete runs relinquish control without losing reconciliation evidence.",
+        version: 4,
+      },
+      {
+        kind: "onboarding",
+        summary:
+          "Ship preferences now offer standard or expedited-by-default behavior after a short workflow primer; break-glass defaults remain an advanced manual policy setting.",
+        version: 4,
+      },
+      {
+        kind: "integration",
+        summary:
+          "Relinquished runs can be resumed by a new controller, and abandoned active controllers require an exact manifest-bound, user-authorized takeover.",
+        version: 4,
+      },
+    ],
+    version: 4,
   },
 ];
 

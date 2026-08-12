@@ -20,6 +20,7 @@ const cliPath = resolve(
   "../../../skills/simple-changes/scripts/simple-changes.ts"
 );
 const ASYNC_CLI_WAIT_ATTEMPTS = 500;
+const SHA256_PATTERN = /^[0-9a-f]{64}$/u;
 
 interface CliSpawnOptions {
   cwd?: string;
@@ -98,6 +99,104 @@ afterEach(() => {
 });
 
 describe("contract CLI", () => {
+  test("finalizes an incomplete lease as relinquished and resumes it", () => {
+    const fixture = createTestRepository();
+    repositories.push(fixture);
+    const started = spawnSync(
+      [
+        process.execPath,
+        cliPath,
+        "loop",
+        "start",
+        "--mode",
+        "ship",
+        "--agent-id",
+        "first-controller",
+        "--json",
+        "--repo",
+        fixture.root,
+      ],
+      { stderr: "pipe", stdout: "pipe" }
+    );
+    const { lease } = JSON.parse(decoder.decode(started.stdout)) as {
+      lease: { runId: string };
+    };
+    const prepared = spawnSync(
+      [
+        process.execPath,
+        cliPath,
+        "prepare-agent",
+        "--run-id",
+        lease.runId,
+        "--agent-id",
+        "unfinished-author",
+        "--purpose",
+        "unfinished-unit",
+        "--json",
+        "--repo",
+        fixture.root,
+      ],
+      { stderr: "pipe", stdout: "pipe" }
+    );
+    expect(prepared.exitCode).toBe(0);
+    const finalized = spawnSync(
+      [
+        process.execPath,
+        cliPath,
+        "loop",
+        "finalize",
+        "--run-id",
+        lease.runId,
+        "--agent-id",
+        "first-controller",
+        "--reason",
+        "The agent turn ended with shipping work still open.",
+        "--json",
+        "--repo",
+        fixture.root,
+      ],
+      { stderr: "pipe", stdout: "pipe" }
+    );
+    const finalization = JSON.parse(decoder.decode(finalized.stdout)) as {
+      lease: { controller: { status: string }; runId: string };
+      manifestDigest: string;
+      outcome: string;
+    };
+
+    expect(finalized.exitCode).toBe(0);
+    expect(finalization).toMatchObject({
+      lease: { controller: { status: "relinquished" }, runId: lease.runId },
+      outcome: "relinquished",
+    });
+    expect(finalization.manifestDigest).toMatch(SHA256_PATTERN);
+
+    const resumed = spawnSync(
+      [
+        process.execPath,
+        cliPath,
+        "loop",
+        "start",
+        "--mode",
+        "resume",
+        "--agent-id",
+        "next-controller",
+        "--json",
+        "--repo",
+        fixture.root,
+      ],
+      { stderr: "pipe", stdout: "pipe" }
+    );
+    expect(resumed.exitCode).toBe(0);
+    expect(JSON.parse(decoder.decode(resumed.stdout))).toMatchObject({
+      lease: {
+        controller: { status: "active" },
+        mode: "ship",
+        ownerAgentId: "next-controller",
+        runId: lease.runId,
+      },
+    });
+  });
+
   test("records and resumes Emergency Shipping state through the CLI", () => {
     const fixture = createTestRepository();
     repositories.push(fixture);
@@ -880,7 +979,7 @@ describe("contract CLI", () => {
     );
     expect(acknowledged.exitCode).toBe(0);
     expect(JSON.parse(decoder.decode(acknowledged.stdout))).toMatchObject({
-      currentVersion: 3,
+      currentVersion: 4,
       disposition: "deferred",
       previousVersion: 1,
       written: true,
@@ -890,7 +989,7 @@ describe("contract CLI", () => {
         readFileSync(resolve(fixture.root, ".simple-changes.json"), "utf8")
       )
     ).toMatchObject({
-      guidance: { disposition: "deferred", version: 3 },
+      guidance: { disposition: "deferred", version: 4 },
     });
 
     const resumed = spawnSync(
@@ -1067,6 +1166,8 @@ describe("contract CLI", () => {
         "ship",
         "--production",
         "ask",
+        "--shipping-mode",
+        "standard",
         "--questions",
         "blocking-only",
         "--scope",
@@ -1251,6 +1352,8 @@ describe("contract CLI", () => {
         "ship",
         "--production",
         "allow",
+        "--shipping-mode",
+        "standard",
         "--questions",
         "never",
         "--scope",

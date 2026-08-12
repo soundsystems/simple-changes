@@ -33,14 +33,17 @@ finish boundary:
 | Ship fast, make this quick, get this out ASAP | Use `expedited`: focused checks, independent review, merge, deploy, then finish release reconciliation and cleanup. |
 | Active user impact plus urgent shipping intent | Continue as `expedited`, recommend `break-glass`, and require explicit deploy-before-review direction. |
 | Tested and needs to go live | Continue as `expedited`, recommend `break-glass`, and do not treat testing as independent-review authority. |
-| Deploy first, review after deployment, or deploy before review | Use explicitly authorized run-only `break-glass`. |
+| Deploy first, review after deployment, or deploy before review | Use explicitly authorized `break-glass`. |
 
 Urgency can infer `expedited`; it never grants production authority or waives
-independent review. Only unambiguous current-request language that orders
-deployment before review, or a concise confirmation of that exact consequence,
-authorizes `break-glass`. Never store either emergency level as a default.
-Persist only closed evidence labels and exact revision/provider receipts, not
-the user's raw request.
+independent review. A validated `shippingMode: "expedited"` preference applies
+that ordering to routine Ship requests. Only unambiguous current-request
+language that orders deployment before review, a concise confirmation of that
+exact consequence, or an advanced manually configured
+`shippingMode: "break-glass"` authorizes break-glass ordering. Normal
+onboarding never advertises break-glass, and no shipping mode grants production
+authority. Persist only closed evidence labels and exact revision/provider
+receipts, not the user's raw request.
 
 When wording is ambiguous, choose the least consequential mode that still
 answers the request. Queue is the default mutation boundary; preview is the
@@ -60,6 +63,10 @@ bun skills/simple-changes/scripts/simple-changes.ts initialize \
 ```
 
 When repository or personal preferences exist, continue without onboarding.
+For Ship, pass the initialization result's `shippingMode` into emergency
+classification. When advanced break-glass policy supplies the ordering, record
+`authoritySource: "advanced-policy"`; production authority and rollback
+evidence remain separate gates.
 Sync uses fixed local-only preservation guardrails and never starts preference
 onboarding. For every other write-capable mode, when initialization reports
 `onboardingRequired: true`, automatically start the onboarding conversation. Do
@@ -205,10 +212,12 @@ re-verification, and anything preserved or blocked. Follow
 [ship communication](references/ship-communication.md).
 
 For emergency Ship, state the inferred level and evidence before the first
-consequential mutation. `expedited` preserves focused checks and independent
+consequential mutation. A saved `shippingMode: "expedited"` applies that order
+to routine Ship requests. `expedited` preserves focused checks and independent
 review before merge and initial deployment. `break-glass` first records an
 exact rollback anchor and runs focused checks, may deploy one exact candidate
-before independent review only with explicit run-only authority, and then
+before independent review only with explicit current-request authority or the
+advanced manually configured `shippingMode: "break-glass"`, and then
 immediately resumes review and forward Git/release reconciliation. Persist
 `live-unreconciled` or `live-unreviewed` until that debt is closed; neither is a
 successful completion state.
@@ -235,7 +244,9 @@ bun skills/simple-changes/scripts/simple-changes.ts loop start \
 ```
 
 Reuse the returned `runId` for the full run. A second integration controller is
-rejected while the lease exists. The lease is not a repository-wide authoring
+rejected while its controller is active. If `loop status` reports
+`relinquished`, start with mode `resume` (or the recorded original mode) to
+adopt the same run and its durable evidence. The lease is not a repository-wide authoring
 mutex: with the default `concurrentWork: "allow-claimed"` policy, independent
 agents may keep editing and committing in distinct actively claimed non-primary
 worktrees that are also off the canonical target branch. The first guarded
@@ -333,6 +344,26 @@ release, or retain the lock when the group cannot be terminated. Only then use
 `loop recover --agent-id "$AGENT_ID"`. Never delete the lock directory or state
 file by hand.
 
+Before every terminal assistant response after a loop has started, run exactly
+one terminal lifecycle action:
+
+```sh
+bun skills/simple-changes/scripts/simple-changes.ts loop finalize \
+  --run-id "$RUN_ID" --agent-id "$AGENT_ID" --reason "$REASON" --json
+```
+
+When every completion gate passes, `finalize` closes and removes the lease. If
+anything remains, it preserves the run ledger, records the blockers, marks the
+controller relinquished, and removes that controller's mutation authority so a
+later controller can resume safely. Do this even when the agent is blocked or
+the user interrupts the shipping loop; never leave an apparently active
+controller merely because work is incomplete.
+
+If an agent disappears before finalization, inspect `loop status` and ask for
+explicit takeover authority. `loop takeover` requires the exact current run ID
+and manifest digest plus approver and reason; it rejects stale evidence. Never
+infer takeover from elapsed time.
+
 Never weaken the lease with a blanket exception. If the user explicitly takes
 over a preserved worktree that changed after the baseline, record only its
 exact absolute path, current status digest, current head, approver identity,
@@ -357,7 +388,8 @@ the disposition. Preflight and postflight also require the disposition's target
 ref and revision to match the lease exactly. It never authorizes
 primary-checkout removal, force deletion, or branch deletion. Run-created
 worktrees use their existing accounted-work cleanup gate and do not need this
-disposition. Verify the manifest again and run `loop end` only after cleanup. Follow
+disposition. Verify the manifest again, finish proven cleanup, and use
+`loop finalize` at the terminal boundary. Follow
 [inventory and concurrency](references/inventory-and-concurrency.md).
 
 ## Completed-work handoff
@@ -492,8 +524,9 @@ authority for those operations.
     source-branch setting. Record an audited,
     user-approved disposition before removing any opening worktree; remove
     run-created worktrees after their work is accounted for. Restore and verify
-    the original primary checkout, run the final verification, and release the
-    lease with `loop end`. Follow
+    the original primary checkout and run the final verification. At the
+    terminal boundary, use `loop finalize` so a complete lease closes and an
+    incomplete lease is relinquished with durable evidence. Follow
     [cleanup and completion](references/cleanup-and-completion.md).
 
 ## Authority checkpoint
@@ -550,6 +583,10 @@ result.
   while the lease lock is held from preflight through post-verification.
   Independent agents may continue ordinary edits and commits only in distinct
   actively claimed concurrent-author worktrees.
+- Finalize that lease before every terminal assistant response. Completed runs
+  release it; incomplete runs relinquish the controller without deleting state.
+  Transfer an unfinalized active controller only with exact manifest-bound,
+  user-authorized takeover evidence.
 - Stable baseline work is ready unless evidence says otherwise; changing or new
   concurrent work is preserved.
 - Queue mode may defer a stable unit, but may not silently omit it: the final

@@ -32,7 +32,9 @@ at the actual authority boundary.
 Name `expedited` or `break-glass` in the pre-ship brief and list the closed
 evidence labels that produced the inference. Do not persist or replay the raw
 request. Urgency-only language authorizes neither production nor post-deploy
-review. When active user impact or tested production readiness recommends
+review. A manually configured advanced `shippingMode: "break-glass"` may
+authorize deploy-before-review ordering, but it still supplies no production
+authority and does not waive rollback evidence. When active user impact or tested production readiness recommends
 break-glass without authorizing it, continue safe expedited work and use one
 concise blocking question at the deploy-before-review boundary.
 

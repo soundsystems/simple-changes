@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.11.3 - 2026-08-12
+
+- Break-glass runtime guidance now identifies the deploy-first revision as the
+  exact candidate, without implying that focused checks ran before deployment.
+  Delivery behavior is unchanged.
+<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-12T12:54:03-05:00" -->
+
 ## 0.11.2 - 2026-08-12
 
 - Internal-only, developer-only, preview, staging, and developer-experience

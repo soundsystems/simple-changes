@@ -92,7 +92,11 @@ describe("emergency shipping state machine", () => {
       rollbackAnchorRecorded: false,
       rollbackSupported: true,
     });
-    expect(decideEmergencyShipping(breakGlass).action).toBe("deploy-candidate");
+    expect(decideEmergencyShipping(breakGlass)).toMatchObject({
+      action: "deploy-candidate",
+      reason:
+        "Deploy the exact candidate under explicit break-glass authority.",
+    });
     const live = {
       ...breakGlass,
       candidateVerifiedHealthy: true,

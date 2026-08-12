@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.11.3 - 2026-08-12
+
+- Break-glass runtime guidance now identifies the deploy-first revision as the
+  exact candidate, without implying that focused checks ran before deployment.
+  Delivery behavior is unchanged.
+
 ## 0.11.2 - 2026-08-12
 
 - Internal-only, developer-only, preview, staging, and developer-experience

@@ -1,5 +1,13 @@
 # Developer changelog
 
+## 0.11.3 - 2026-08-12
+
+- Corrected the Emergency Ship runtime reason from “exact checked candidate” to
+  “exact candidate” for explicit break-glass deployment. The guidance now
+  matches the existing deploy-before-focused-checks transition order; runtime
+  behavior is unchanged.
+<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-12T12:54:03-05:00" -->
+
 ## 0.11.2 - 2026-08-12
 
 - Added fail-closed consumer validation for delegated changelog receipts:

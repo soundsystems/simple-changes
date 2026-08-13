@@ -121,7 +121,19 @@ describe("active integration-loop lease", () => {
         expect.objectContaining({ code: "remote-destination-rebind-required" }),
       ])
     );
-  });
+    const finalized = finalizeLoop(
+      fixture.root,
+      lease.runId,
+      "controller",
+      "Upgrade the legacy controller safely."
+    );
+    expect(finalized.outcome).toBe("relinquished");
+    const resumed = startLoop(fixture.root, "next-controller", "resume");
+    expect(resumed.remoteBindings).toEqual(
+      captureInventory(fixture.root).repository.remoteBindings
+    );
+    expect(verifyLoop(fixture.root)).toMatchObject({ active: true, ok: true });
+  }, 120_000);
 
   test("recovers a lease with a legacy reconciliation as refresh-required", () => {
     const fixture = repository();

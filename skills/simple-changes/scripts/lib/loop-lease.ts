@@ -352,6 +352,16 @@ const transferController = (
   }
   const now = new Date().toISOString();
   const previous = controllerLifecycle(lease);
+  const mayRebindLegacyDestinations =
+    !lease.remoteBindings &&
+    (previous.status === "relinquished" ||
+      (kind === "takeover" && approvedBy !== null));
+  if (!(lease.remoteBindings || mayRebindLegacyDestinations)) {
+    throw new SimpleChangesError(
+      "Legacy controller transfer requires an explicit relinquished resume or user-authorized takeover before binding current remote destinations.",
+      EXIT_CODES.unsafe
+    );
+  }
   return writeLease({
     ...lease,
     controller: {
@@ -372,6 +382,7 @@ const transferController = (
       status: "active",
     },
     ownerAgentId: nextAgentId,
+    remoteBindings: lease.remoteBindings ?? inventory.repository.remoteBindings,
     updatedAt: now,
     worktrees: lease.worktrees.map((worktree) => {
       if (worktree.path === currentPath) {

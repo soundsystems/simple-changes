@@ -53,6 +53,19 @@ describe("first-run initialization", () => {
     }
   });
 
+  test("propagates harness-aware Git push authorization intent", () => {
+    const status = inspectInitialization("ship", {
+      path: "/repo/.simple-changes.json",
+      source: "repository",
+      value: {
+        ...DEFAULT_POLICY,
+        gitPushAuthorization: "configure-harness",
+      },
+    });
+
+    expect(status.gitPushAuthorization).toBe("configure-harness");
+  });
+
   test("requires onboarding for write-capable modes without saved policy", () => {
     expect(
       inspectInitialization("queue", {
@@ -194,7 +207,7 @@ describe("first-run initialization", () => {
           available: true,
           owner: "simple-changelogs",
         },
-        currentVersion: 6,
+        currentVersion: 7,
         headline: "**Simple Changes has recently been updated.**",
         status: "update-available",
         storedVersion: 1,

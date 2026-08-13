@@ -67,7 +67,9 @@ bun skills/simple-changes/scripts/simple-changes.ts initialize \
 
 When repository or personal preferences exist, continue without onboarding.
 For Ship, pass the initialization result's `shippingMode` into emergency
-classification. When saved break-glass policy supplies the ordering, record
+classification, and apply its `gitPushAuthorization` through
+[harness-aware Git push authorization](references/harness-push-authorization.md)
+before the first push boundary. When saved break-glass policy supplies the ordering, record
 `authoritySource: "advanced-policy"`. Treat `productionDeploy: "allow"` as the
 saved production authority for Ship; rollback evidence remains a separate
 runtime gate.
@@ -420,6 +422,25 @@ over a preserved worktree that changed after the baseline, record only its
 exact absolute path, current status digest, current head, approver identity,
 and reason through `loop allow`. Any subsequent change invalidates that
 exception.
+
+When the user wants a clean unrelated worktree to stay exactly where it is and
+remain outside the shipment, record its exact unchanged exclusion instead of
+asking to delete it:
+
+```sh
+bun skills/simple-changes/scripts/simple-changes.ts loop retain-worktree \
+  --run-id "$RUN_ID" --agent-id "$AGENT_ID" --worktree "$WORKTREE" \
+  --status-digest "$DIGEST" --approved-by "$APPROVER" --reason "$REASON" --json
+```
+
+The command accepts only a clean non-primary worktree whose HEAD is already
+contained in the current target. It preserves the worktree and exempts it from
+completed-run cleanup only while its exact HEAD and content-sensitive digest
+remain unchanged. If files or commits appear, the exemption immediately blocks.
+First use the current harness's coordination capabilities to ask the owner to
+claim it as an active concurrent author. Ask the user to coordinate a pause only
+when owner discovery or delivery is unsupported; never reinterpret active work
+as a deletion candidate.
 
 An opening preserved worktree remains protected unless the user explicitly
 approves its removal after a fresh audit proves it is clean and has zero unique

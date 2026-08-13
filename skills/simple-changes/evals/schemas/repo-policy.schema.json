@@ -29,6 +29,9 @@
     "defaultFinish": {
       "enum": ["open-change-request", "integrate", "ship", "preview"]
     },
+    "gitPushAuthorization": {
+      "enum": ["configure-harness", "ask", "never"]
+    },
     "changelogHandling": {
       "enum": ["delegate-if-available", "preserve-and-report", "ask"]
     },

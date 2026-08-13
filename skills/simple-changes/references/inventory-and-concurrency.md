@@ -205,3 +205,17 @@ violations, survive an intervening worktree change, or match when its recorded
 target ref or revision differs from the active lease. Run the exact removal
 through `loop exec` so preflight sees the recorded disposition and postflight
 proves only the authorized path disappeared.
+
+## Exact retained exclusions
+
+When the user explicitly wants a clean, target-contained, non-primary worktree
+left in place and outside the shipment, use `loop retain-worktree` with its exact
+current path and status digest. This records role `retained`, keeps mutation
+disabled, and exempts the unchanged worktree from completed-run cleanup. It
+does not remove, modify, include, push, or merge that worktree.
+
+Any HEAD or digest change invalidates retention. If the worktree becomes active,
+its owner must create or refresh an active claim; the lease then promotes it to
+`concurrent-author`. Use harness owner discovery and delivery before asking the
+user to pause another task. Without an active claim or stable pause, the moving
+worktree remains a blocker.

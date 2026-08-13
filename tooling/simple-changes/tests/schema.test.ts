@@ -432,6 +432,34 @@ describe("closed schemas", () => {
       ],
     };
     expect(validateSchema<LoopLease>("loop-lease", lease)).toEqual(lease);
+    const retained = {
+      agentId: null,
+      baselineChangeDigest: "e".repeat(64),
+      baselineHeadSha: "f".repeat(40),
+      branch: "walkthrough",
+      createdByRun: false,
+      mutationAllowed: false,
+      path: "/repo-walkthrough",
+      retention: {
+        approvedBy: "user",
+        createdAt: new Date().toISOString(),
+        reason: "Keep this unrelated worktree outside the shipment",
+      },
+      role: "retained",
+    } as const;
+    expect(
+      validateSchema<LoopLease>("loop-lease", {
+        ...lease,
+        worktrees: [...lease.worktrees, retained],
+      }).worktrees
+    ).toContainEqual(retained);
+    const { retention: _retention, ...retainedWithoutEvidence } = retained;
+    expect(() =>
+      validateSchema("loop-lease", {
+        ...lease,
+        worktrees: [...lease.worktrees, retainedWithoutEvidence],
+      })
+    ).toThrow("retention");
     expect(() =>
       validateSchema("loop-lease", {
         ...lease,

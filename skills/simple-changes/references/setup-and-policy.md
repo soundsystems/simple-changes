@@ -92,6 +92,7 @@ Use these safe defaults when no committed policy exists:
   "guidance": { "disposition": "accepted", "version": 6 },
   "changelogHandling": "preserve-and-report",
   "defaultFinish": "open-change-request",
+  "gitPushAuthorization": "ask",
   "handoffTiming": "confirm-ready",
   "migrationHandling": "ask-after-review",
   "migrationTargets": [],
@@ -112,6 +113,13 @@ for a redundant break-glass phrase. Rollback evidence, focused checks, later
 review, forward reconciliation, verification, and cleanup remain mandatory.
 Initialization returns the effective `shippingMode`; the agent must pass that
 closed value into emergency classification instead of re-defaulting it.
+
+`gitPushAuthorization` accepts `configure-harness`, `ask`, or `never`.
+Initialization returns the effective value. `configure-harness` directs the
+agent to use the current harness's narrowest repository-scoped persistent rule
+for the verified remote after user confirmation; it does not itself grant
+permission or override host policy. Follow
+[harness-aware Git push authorization](harness-push-authorization.md).
 
 `migrationHandling` accepts `ask-after-review`,
 `auto-apply-reviewed-routine`, `auto-apply-reviewed`, or `never`. Every mode

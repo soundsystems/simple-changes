@@ -163,7 +163,13 @@
             "pattern": "^[0-9a-f]{64}$"
           },
           "role": {
-            "enum": ["controller", "author", "concurrent-author", "preserved"]
+            "enum": [
+              "controller",
+              "author",
+              "concurrent-author",
+              "preserved",
+              "retained"
+            ]
           },
           "agentId": {
             "anyOf": [
@@ -178,8 +184,33 @@
             "type": "string",
             "pattern": "^pause-[a-z0-9-]+$"
           },
-          "coordinationState": { "enum": ["adopted-preserved", "resume-ready"] }
-        }
+          "coordinationState": {
+            "enum": ["adopted-preserved", "resume-ready"]
+          },
+          "retention": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["approvedBy", "reason", "createdAt"],
+            "properties": {
+              "approvedBy": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128
+              },
+              "reason": { "type": "string", "minLength": 1, "maxLength": 500 },
+              "createdAt": { "type": "string", "format": "date-time" }
+            }
+          }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": { "role": { "const": "retained" } },
+              "required": ["role"]
+            },
+            "then": { "required": ["retention"] }
+          }
+        ]
       }
     },
     "dispositions": {

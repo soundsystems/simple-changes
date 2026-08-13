@@ -1157,6 +1157,79 @@ describe("contract CLI", () => {
     });
   }, 30_000);
 
+  test("retains an exact clean worktree through the CLI", () => {
+    const fixture = createTestRepository();
+    repositories.push(fixture);
+    const started = spawnSync(
+      [
+        process.execPath,
+        cliPath,
+        "loop",
+        "start",
+        "--mode",
+        "ship",
+        "--agent-id",
+        "controller",
+        "--json",
+        "--repo",
+        fixture.root,
+      ],
+      { stderr: "pipe", stdout: "pipe" }
+    );
+    const startedOutput = JSON.parse(decoder.decode(started.stdout)) as {
+      lease: { runId: string };
+    };
+    const walkthrough = resolve(fixture.base, "driver-walkthrough");
+    git(fixture.root, [
+      "worktree",
+      "add",
+      "-b",
+      "driver-walkthrough",
+      walkthrough,
+    ]);
+    const worktree = captureInventory(fixture.root).worktrees.find(
+      (item) => item.path === walkthrough
+    );
+
+    const retained = spawnSync(
+      [
+        process.execPath,
+        cliPath,
+        "loop",
+        "retain-worktree",
+        "--run-id",
+        startedOutput.lease.runId,
+        "--agent-id",
+        "controller",
+        "--worktree",
+        walkthrough,
+        "--status-digest",
+        worktree?.changeDigest ?? "",
+        "--approved-by",
+        "user",
+        "--reason",
+        "Keep unrelated walkthrough work out of this shipment",
+        "--json",
+        "--repo",
+        fixture.root,
+      ],
+      { stderr: "pipe", stdout: "pipe" }
+    );
+
+    expect(retained.exitCode).toBe(0);
+    expect(JSON.parse(decoder.decode(retained.stdout))).toMatchObject({
+      lease: {
+        worktrees: expect.arrayContaining([
+          expect.objectContaining({
+            mutationAllowed: false,
+            path: walkthrough,
+            role: "retained",
+          }),
+        ]),
+      },
+    });
+  }, 30_000);
+
   test("blocks a new authoring agent in the controller checkout", () => {
     const fixture = createTestRepository();
     repositories.push(fixture);
@@ -1389,7 +1462,7 @@ describe("contract CLI", () => {
     );
     expect(acknowledged.exitCode).toBe(0);
     expect(JSON.parse(decoder.decode(acknowledged.stdout))).toMatchObject({
-      currentVersion: 6,
+      currentVersion: 7,
       disposition: "deferred",
       previousVersion: 1,
       written: true,
@@ -1399,7 +1472,7 @@ describe("contract CLI", () => {
         readFileSync(resolve(fixture.root, ".simple-changes.json"), "utf8")
       )
     ).toMatchObject({
-      guidance: { disposition: "deferred", version: 6 },
+      guidance: { disposition: "deferred", version: 7 },
     });
 
     const resumed = spawnSync(
@@ -1595,6 +1668,8 @@ describe("contract CLI", () => {
         "ask",
         "--shipping-mode",
         "standard",
+        "--git-push-authorization",
+        "configure-harness",
         "--questions",
         "blocking-only",
         "--scope",
@@ -1781,6 +1856,8 @@ describe("contract CLI", () => {
         "allow",
         "--shipping-mode",
         "break-glass",
+        "--git-push-authorization",
+        "configure-harness",
         "--migration-handling",
         "auto-apply-reviewed-routine",
         "--migration-target",

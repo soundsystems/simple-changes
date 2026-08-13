@@ -142,6 +142,23 @@ Native provider rollback is sufficient and does not require a blocking
 pre-deploy lookup. Explicit current-request direction always overrides saved
 preferences.
 
+Then ask **Should Simple Changes configure this harness for routine repository
+pushes? Choose one:**
+
+1. **Configure this harness — Recommended for automatic Ship** — After this
+   confirmation, configure the narrowest repository-scoped push permission the
+   detected harness supports for the verified remote. Harness sandbox, network,
+   administrator, credential, and provider policy still apply.
+2. **Ask for each push** — Leave harness settings unchanged and request approval
+   at each Git push boundary.
+3. **Never push** — Do not request or configure push permission; stop with local
+   work ready.
+
+This preference must use the current harness's documented permission mechanism.
+It never grants blanket shell access and never claims that repository policy can
+override host security. Follow
+[harness-aware Git push authorization](harness-push-authorization.md).
+
 Then ask **How should reviewed database migrations be handled during Ship?
 Choose one:**
 
@@ -231,6 +248,7 @@ Before writing, show a plain-language receipt containing:
 - the exact ready-work path and stopping point;
 - production behavior when relevant;
 - routine shipping mode when relevant;
+- harness-aware Git push authorization when relevant;
 - migration handling and every automatic target when relevant;
 - changelog behavior when relevant;
 - UI artifact naming when relevant;

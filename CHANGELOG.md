@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.12.1 - 2026-08-13
+
+- Ship setup now supports harness-aware Git push authorization.
+  `gitPushAuthorization` defaults to `ask`; users can instead configure a narrow
+  repository-scoped harness rule or prevent pushes entirely.
+- Clean, target-contained worktrees can now remain in place as exact unchanged
+  shipment exclusions. Any later change pauses integration until the worktree
+  is claimed by its owner or paused at a stable boundary.
+<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-13T12:26:50-05:00" -->
+
 ## 0.12.0 - 2026-08-12
 
 - Update notices now use clear headlines and short practical summaries, while

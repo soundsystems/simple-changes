@@ -19,6 +19,7 @@ export const DEFAULT_POLICY: RepoPolicy = {
   changelogHandling: "preserve-and-report",
   concurrentWork: "allow-claimed",
   defaultFinish: "open-change-request",
+  gitPushAuthorization: "ask",
   guidance: {
     disposition: "accepted",
     version: CURRENT_GUIDANCE_VERSION,
@@ -38,6 +39,7 @@ type StoredRepoPolicy = Omit<
   RepoPolicy,
   | "changelogHandling"
   | "guidance"
+  | "gitPushAuthorization"
   | "handoffTiming"
   | "migrationHandling"
   | "migrationTargets"
@@ -49,6 +51,7 @@ type StoredRepoPolicy = Omit<
     disposition?: RepoPolicy["guidance"]["disposition"];
     version: number;
   };
+  gitPushAuthorization?: RepoPolicy["gitPushAuthorization"];
   handoffTiming?: RepoPolicy["handoffTiming"];
   migrationHandling?: RepoPolicy["migrationHandling"];
   migrationTargets?: RepoPolicy["migrationTargets"];
@@ -79,6 +82,8 @@ const parsePolicyFile = (path: string): RepoPolicy => {
     ...validated,
     changelogHandling:
       validated.changelogHandling ?? DEFAULT_POLICY.changelogHandling,
+    gitPushAuthorization:
+      validated.gitPushAuthorization ?? DEFAULT_POLICY.gitPushAuthorization,
     guidance: {
       disposition: validated.guidance.disposition ?? "accepted",
       version: validated.guidance.version,

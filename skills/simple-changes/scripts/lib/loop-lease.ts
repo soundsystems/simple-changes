@@ -528,7 +528,7 @@ const worktreeLease = (
   baselineHeadSha: worktree.headSha,
   branch: worktree.branch,
   createdByRun,
-  mutationAllowed: role !== "preserved",
+  mutationAllowed: role !== "preserved" && role !== "retained",
   path: worktree.path,
   role,
 });
@@ -788,7 +788,11 @@ const withConcurrentAuthorAdmissions = (
       continue;
     }
     const registered = registeredByPath.get(worktree.path);
-    if (registered && registered.role !== "preserved") {
+    if (
+      registered &&
+      registered.role !== "preserved" &&
+      registered.role !== "retained"
+    ) {
       continue;
     }
     admissions.set(worktree.path, {
@@ -843,6 +847,40 @@ const concurrentClaimViolations = (
   ];
 };
 
+const retainedWorktreeViolations = (
+  registered: LoopWorktreeLease,
+  worktree: WorktreeInventory
+): LoopViolation[] => {
+  if (registered.role !== "retained") {
+    return [];
+  }
+  const violations: LoopViolation[] = [];
+  if (!registered.retention) {
+    violations.push({
+      changeDigest: worktree.changeDigest,
+      code: "retained-worktree-authorization-missing",
+      headSha: worktree.headSha,
+      message:
+        "A retained excluded worktree has no approval receipt. Record exact retention evidence before cleanup can exempt it.",
+      path: worktree.path,
+    });
+  }
+  if (
+    registered.baselineHeadSha !== worktree.headSha ||
+    registered.baselineChangeDigest !== worktree.changeDigest
+  ) {
+    violations.push({
+      changeDigest: worktree.changeDigest,
+      code: "retained-worktree-changed",
+      headSha: worktree.headSha,
+      message:
+        "A retained excluded worktree changed. Its owner must claim it as an active concurrent author, or pause it at a stable boundary, before integration continues.",
+      path: worktree.path,
+    });
+  }
+  return violations;
+};
+
 const currentWorktreeViolations = (
   lease: LoopLease,
   worktree: WorktreeInventory,
@@ -874,6 +912,7 @@ const currentWorktreeViolations = (
     concurrentClaim,
     worktree
   );
+  violations.push(...retainedWorktreeViolations(registered, worktree));
   if (
     registered.role === "preserved" &&
     (registered.baselineHeadSha !== worktree.headSha ||
@@ -1010,6 +1049,16 @@ const verificationAgainst = (
         headSha: null,
         message:
           "A baseline worktree disappeared after loop start. The loop cannot assume that deletion was safe.",
+        path: registered.path,
+      });
+    }
+    if (registered.role === "retained" && !currentByPath.has(registered.path)) {
+      violations.push({
+        changeDigest: null,
+        code: "missing-retained-worktree",
+        headSha: null,
+        message:
+          "A retained excluded worktree disappeared. The loop cannot assume its removal was safe.",
         path: registered.path,
       });
     }
@@ -2011,6 +2060,148 @@ export const authorizeWorktreeRemoval = (
   );
 };
 
+const auditWorktreeRetention = (
+  lease: LoopLease,
+  inventory: RepositoryInventory,
+  pathInput: string,
+  changeDigest: string
+): { current: WorktreeInventory & { headSha: string }; path: string } => {
+  const path = existsSync(pathInput)
+    ? realpathSync(pathInput)
+    : resolve(pathInput);
+  if (path === lease.primaryCheckout) {
+    throw new SimpleChangesError(
+      "The canonical primary checkout cannot be retained as excluded concurrent state.",
+      EXIT_CODES.unsafe
+    );
+  }
+  const current = inventory.worktrees.find(
+    (worktree) => worktree.path === path
+  );
+  if (!current) {
+    throw new SimpleChangesError(
+      `Retention path must name a current worktree: ${path}`,
+      EXIT_CODES.unsafe
+    );
+  }
+  if (current.changeDigest !== changeDigest) {
+    throw new SimpleChangesError(
+      `Retention digest does not match ${path}; expected current digest ${current.changeDigest}.`,
+      EXIT_CODES.unsafe
+    );
+  }
+  if (current.changes.length > 0) {
+    throw new SimpleChangesError(
+      `Worktree ${path} is changing or dirty; its owner must claim it as an active concurrent author or pause it before it can be excluded from this shipment.`,
+      EXIT_CODES.unsafe
+    );
+  }
+  if (!current.headSha) {
+    throw new SimpleChangesError(
+      `Worktree ${path} has no auditable HEAD revision.`,
+      EXIT_CODES.unsafe
+    );
+  }
+  const registered = lease.worktrees.find((worktree) => worktree.path === path);
+  if (
+    registered &&
+    registered.role !== "preserved" &&
+    registered.role !== "retained"
+  ) {
+    throw new SimpleChangesError(
+      `Worktree ${path} is already registered as ${registered.role}; it cannot also be retained as excluded state.`,
+      EXIT_CODES.unsafe
+    );
+  }
+  const targetRevision = currentTargetRevision(lease);
+  const targetContainsHead =
+    runGit(
+      lease.primaryCheckout,
+      [
+        "merge-base",
+        "--is-ancestor",
+        `${current.headSha}^{commit}`,
+        `${targetRevision}^{commit}`,
+      ],
+      true
+    ).exitCode === 0;
+  if (!targetContainsHead) {
+    throw new SimpleChangesError(
+      `Worktree ${path} has commits outside ${lease.targetRef}; preserve and inspect that work instead of marking it as an unchanged cleanup exclusion.`,
+      EXIT_CODES.unsafe
+    );
+  }
+  return { current: current as WorktreeInventory & { headSha: string }, path };
+};
+
+export const retainExcludedWorktree = (
+  repositoryPath: string,
+  runId: string,
+  ownerAgentIdInput: string,
+  pathInput: string,
+  changeDigestInput: string,
+  approvedByInput: string,
+  reasonInput: string
+): LoopLease => {
+  const ownerAgentId = requiredText(ownerAgentIdInput, "agent ID");
+  const approvedBy = requiredText(approvedByInput, "approved-by identity");
+  const reason = requiredText(reasonInput, "retention reason");
+  const changeDigest = requiredText(changeDigestInput, "status digest");
+  if (!DIGEST_PATTERN.test(changeDigest)) {
+    throw new SimpleChangesError(
+      "status digest must be a 64-character lowercase SHA-256 value.",
+      EXIT_CODES.usage
+    );
+  }
+  const opening = captureInventory(repositoryPath);
+  return withStateLock(
+    opening.repository.commonGitDirectory,
+    "retain excluded worktree",
+    () => {
+      const inventory = captureInventory(repositoryPath);
+      const lease = requireLease(inventory);
+      assertMatchingRun(lease, runId);
+      if (lease.ownerAgentId !== ownerAgentId) {
+        throw new SimpleChangesError(
+          `Only loop owner ${lease.ownerAgentId} may retain an excluded worktree.`,
+          EXIT_CODES.unsafe
+        );
+      }
+      assertControllerActive(lease);
+      const { current, path } = auditWorktreeRetention(
+        lease,
+        inventory,
+        pathInput,
+        changeDigest
+      );
+      const createdAt = new Date().toISOString();
+      const retained: LoopWorktreeLease = {
+        ...worktreeLease(current, "retained", null, false),
+        retention: { approvedBy, createdAt, reason },
+      };
+      const candidate: LoopLease = {
+        ...lease,
+        updatedAt: createdAt,
+        worktrees: [
+          ...lease.worktrees.filter((worktree) => worktree.path !== path),
+          retained,
+        ],
+      };
+      const pathViolation = verificationAgainst(
+        candidate,
+        inventory
+      ).violations.find((violation) => violation.path === path);
+      if (pathViolation) {
+        throw new SimpleChangesError(
+          `Could not retain ${path}: ${pathViolation.message}`,
+          EXIT_CODES.unsafe
+        );
+      }
+      return writeLease(candidate);
+    }
+  );
+};
+
 export const grantLoopOverride = (
   repositoryPath: string,
   runId: string,
@@ -2528,6 +2719,7 @@ const loopCompletionBlockers = (
         worktree.changes.length === 0 &&
         !registered?.createdByRun &&
         registered?.role !== "concurrent-author" &&
+        registered?.role !== "retained" &&
         Boolean(worktree.headSha && isTargetContained(worktree.headSha))
       );
     })

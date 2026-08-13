@@ -40,6 +40,7 @@ import {
   recordEmergencyShipping,
   recordRemoteBranchReconciliation,
   recoverLoopLock,
+  retainExcludedWorktree,
   startLoop,
   takeoverLoop,
   verifyLoop,
@@ -101,7 +102,7 @@ import {
   releaseWorktreeClaim,
 } from "./lib/worktree-coordination.ts";
 
-const VERSION = "0.12.0";
+const VERSION = "0.12.1";
 const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const HELP = `Simple Changes ${VERSION}
 
@@ -117,6 +118,7 @@ Usage:
     [--ui-versioning repository|number-and-date|date-only|number-only]
     [--production ask|allow|deny]
     [--shipping-mode standard|expedited|break-glass]
+    [--git-push-authorization configure-harness|ask|never]
     [--migration-handling ask-after-review|auto-apply-reviewed-routine|auto-apply-reviewed|never]
     [--migration-target provider:project:environment]
     [--questions blocking-only|always|never]
@@ -130,6 +132,7 @@ Usage:
     [--ui-versioning repository|number-and-date|date-only|number-only]
     [--production ask|allow|deny]
     [--shipping-mode standard|expedited|break-glass]
+    [--git-push-authorization configure-harness|ask|never]
     [--migration-handling ask-after-review|auto-apply-reviewed-routine|auto-apply-reviewed|never]
     [--migration-target provider:project:environment]
     [--questions blocking-only|always|never]
@@ -152,6 +155,8 @@ Usage:
   simple-changes loop allow --run-id ID --agent-id ID --worktree PATH
     --status-digest SHA256 --approved-by ID --reason TEXT [--json] [--repo PATH]
   simple-changes loop dispose-worktree --run-id ID --agent-id ID --worktree PATH
+    --status-digest SHA256 --approved-by ID --reason TEXT [--json] [--repo PATH]
+  simple-changes loop retain-worktree --run-id ID --agent-id ID --worktree PATH
     --status-digest SHA256 --approved-by ID --reason TEXT [--json] [--repo PATH]
   simple-changes loop adopt-worktree --run-id ID --agent-id ID
     --pause-receipt ID [--json] [--repo PATH]
@@ -211,6 +216,7 @@ interface CliOptions {
   concurrentWork?: RepoPolicy["concurrentWork"];
   defaultFinish?: "open-change-request" | "integrate" | "ship";
   disposition?: "preserve-in-place" | "detach-clean-checkout";
+  gitPushAuthorization?: RepoPolicy["gitPushAuthorization"];
   guidanceDecision?: RepoPolicy["guidance"]["disposition"];
   handoffTiming?: RepoPolicy["handoffTiming"];
   instructionFile?: string;
@@ -258,6 +264,7 @@ const VALUED_OPTIONS = new Set([
   "--finish",
   "--handoff",
   "--guidance-decision",
+  "--git-push-authorization",
   "--instruction-file",
   "--instruction-pointer",
   "--manifest-digest",
@@ -438,6 +445,21 @@ const applySetupValuedOption = (
   option: string,
   value: string
 ): boolean => {
+  if (option === "--git-push-authorization") {
+    const values: RepoPolicy["gitPushAuthorization"][] = [
+      "configure-harness",
+      "ask",
+      "never",
+    ];
+    if (!values.includes(value as RepoPolicy["gitPushAuthorization"])) {
+      throw new SimpleChangesError(
+        `--git-push-authorization must be one of ${values.join(", ")}`,
+        EXIT_CODES.usage
+      );
+    }
+    options.gitPushAuthorization = value as RepoPolicy["gitPushAuthorization"];
+    return true;
+  }
   if (option === "--changelog") {
     options.changelogHandling = changelogHandlingValue(value);
     return true;
@@ -823,7 +845,9 @@ const setupNeedsPrompt = (
     options.questions &&
     options.scope &&
     (options.defaultFinish !== "ship" ||
-      (options.productionDeploy && options.shippingMode)) &&
+      (options.productionDeploy &&
+        options.shippingMode &&
+        options.gitPushAuthorization)) &&
     (!(
       options.migrationHandling &&
       ["auto-apply-reviewed-routine", "auto-apply-reviewed"].includes(
@@ -902,6 +926,7 @@ const SETUP_INPUT_KEYS = [
   "changelogHandling",
   "concurrentWork",
   "defaultFinish",
+  "gitPushAuthorization",
   "handoffTiming",
   "instructionFile",
   "instructionPointer",
@@ -952,7 +977,7 @@ const runSetup = async (options: CliOptions): Promise<void> => {
   );
   if (needsPrompt && !process.stdin.isTTY) {
     throw new SimpleChangesError(
-      "Interactive setup requires a terminal. Supply --finish, --questions, --scope, --production and --shipping-mode when shipping, --migration-handling and --migration-target for automatic migration apply, --changelog when relevant, --ui-versioning with --ui-artifacts, --instruction-pointer when an instruction file exists, --handoff when adding the pointer, --instruction-file when selecting among targets, and --yes.",
+      "Interactive setup requires a terminal. Supply --finish, --questions, --scope, --production, --shipping-mode, and --git-push-authorization when shipping, --migration-handling and --migration-target for automatic migration apply, --changelog when relevant, --ui-versioning with --ui-artifacts, --instruction-pointer when an instruction file exists, --handoff when adding the pointer, --instruction-file when selecting among targets, and --yes.",
       EXIT_CODES.usage
     );
   }
@@ -1699,7 +1724,7 @@ const runLoopCommand = async (options: CliOptions): Promise<void> => {
   const [action] = options.positional;
   if (!action) {
     throw new SimpleChangesError(
-      "loop requires start, status, verify, guard, exec, recover, takeover, allow, dispose-worktree, adopt-worktree, accept-paused-change, end, or finalize",
+      "loop requires start, status, verify, guard, exec, recover, takeover, allow, dispose-worktree, retain-worktree, adopt-worktree, accept-paused-change, end, or finalize",
       EXIT_CODES.usage
     );
   }
@@ -1780,6 +1805,23 @@ const runLoopCommand = async (options: CliOptions): Promise<void> => {
       { lease: updated, manifestDigest: loopManifestDigest(updated) },
       options.json,
       `Recorded an audited removal disposition for ${options.worktreePath}.\nManifest: ${loopManifestDigest(updated)}\n`
+    );
+    return;
+  }
+  if (action === "retain-worktree") {
+    const updated = retainExcludedWorktree(
+      options.repo,
+      runId,
+      agentId,
+      requireCliOption(options.worktreePath, "--worktree"),
+      requireCliOption(options.statusDigest, "--status-digest"),
+      requireCliOption(options.approvedBy, "--approved-by"),
+      requireCliOption(options.reason, "--reason")
+    );
+    writeOutput(
+      { lease: updated, manifestDigest: loopManifestDigest(updated) },
+      options.json,
+      `Retained ${options.worktreePath} as an exact unchanged exclusion from this shipment.\nManifest: ${loopManifestDigest(updated)}\n`
     );
     return;
   }

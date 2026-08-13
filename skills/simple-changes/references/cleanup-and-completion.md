@@ -70,10 +70,13 @@ Before reporting completion:
 4. Confirm each planned path is queued, merged, deployed, preserved, excluded,
    or blocked exactly once.
 5. Run the active-loop manifest verification. Treat every unregistered,
-   missing, incompletely prepared, or changed preserved worktree as a blocker
+   missing, incompletely prepared, changed preserved, or changed retained
+   worktree as a blocker
    unless an exact path-and-digest override or audited removal disposition is
    recorded where applicable.
-6. For an opening worktree proven obsolete, refresh the target and record a
+6. Honor exact unchanged `loop retain-worktree` exclusions without removing or
+   including them. If one changes, require an active owner claim or stable pause.
+   For an opening worktree proven obsolete, refresh the target and record a
    user-approved `loop dispose-worktree` disposition only when it is clean and
    has zero unique commits. Remove that exact path through `loop exec`; audit
    its branch separately. Remove every run-created authoring worktree only after

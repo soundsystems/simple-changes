@@ -1,6 +1,6 @@
 import type { ChangelogCoordination, RepoPolicy } from "./types.ts";
 
-export const CURRENT_GUIDANCE_VERSION = 4;
+export const CURRENT_GUIDANCE_VERSION = 6;
 
 export type GuidanceUpdateAction =
   | "review-settings"
@@ -22,6 +22,7 @@ export interface GuidanceUpdateNotice {
     version: number;
   }>;
   currentVersion: number;
+  headline: "**Simple Changes has recently been updated.**";
   releaseNotes: {
     available: true;
     command: "simple-changes release-notes";
@@ -30,6 +31,8 @@ export interface GuidanceUpdateNotice {
   status: "current" | "update-available";
   storedDisposition: RepoPolicy["guidance"]["disposition"] | null;
   storedVersion: number | null;
+  summaryBullets: string[];
+  walkthroughQuestion: "Would you like me to walk you through all recent updates to the skill?";
 }
 
 interface GuidanceUpdateDefinition {
@@ -105,6 +108,54 @@ const GUIDANCE_UPDATES: GuidanceUpdateDefinition[] = [
     ],
     version: 4,
   },
+  {
+    changelogReviewRelevant: true,
+    changes: [
+      {
+        kind: "behavior",
+        summary:
+          "Installed updates now open with a clear Simple Changes headline and short practical bullets instead of internal guidance-checkpoint language.",
+        version: 5,
+      },
+      {
+        kind: "onboarding",
+        summary:
+          "First use now includes a plain-language walkthrough of every main workflow, from safe sync and preview through review, merge, ship, resume, and cleanup.",
+        version: 5,
+      },
+      {
+        kind: "integration",
+        summary:
+          "Simple Changelogs updates are detected separately, and a required changelog update is resolved before any shipment loop begins.",
+        version: 5,
+      },
+    ],
+    version: 5,
+  },
+  {
+    changelogReviewRelevant: true,
+    changes: [
+      {
+        kind: "behavior",
+        summary:
+          "A saved break-glass default paired with automatic production authority now makes an ordinary Ship request sufficient; rollback and completion evidence remain mandatory.",
+        version: 6,
+      },
+      {
+        kind: "onboarding",
+        summary:
+          "Advanced onboarding now offers break-glass shipping and two target-bound automatic migration tiers; new migrationHandling defaults to ask-after-review and migrationTargets defaults to an empty list.",
+        version: 6,
+      },
+      {
+        kind: "integration",
+        summary:
+          "Every migration is reviewed before apply, and automatic tiers refuse destructive, irreversible, unbounded, lock-heavy, unprotected, or target-mismatched work.",
+        version: 6,
+      },
+    ],
+    version: 6,
+  },
 ];
 
 export const inspectGuidanceUpdate = (
@@ -118,6 +169,10 @@ export const inspectGuidanceUpdate = (
       ? []
       : GUIDANCE_UPDATES.filter((update) => update.version > storedVersion);
   const changes = pending.flatMap((update) => update.changes);
+  const newestPending = pending.at(-1);
+  const summaryBullets = newestPending
+    ? newestPending.changes.slice(0, 3).map((change) => change.summary)
+    : [];
   const updateAvailable = changes.length > 0;
   const changelogReviewRelevant = pending.some(
     (update) => update.changelogReviewRelevant
@@ -125,7 +180,7 @@ export const inspectGuidanceUpdate = (
   const changelogHandoffAvailable =
     updateAvailable &&
     changelogReviewRelevant &&
-    changelogCoordination.capabilityAvailable;
+    changelogCoordination.guidanceUpdate.status === "update-available";
   const actions: GuidanceUpdateAction[] = updateAvailable
     ? [
         "review-settings",
@@ -139,9 +194,16 @@ export const inspectGuidanceUpdate = (
   }
   let changelogHandoffReason =
     "No Simple Changes update requires a changelog-workflow handoff.";
-  if (updateAvailable && changelogReviewRelevant) {
+  if (
+    updateAvailable &&
+    changelogReviewRelevant &&
+    !changelogCoordination.capabilityAvailable
+  ) {
     changelogHandoffReason =
       "Simple Changelogs was not discovered, so no changelog-history review is offered.";
+  } else if (updateAvailable && changelogReviewRelevant) {
+    changelogHandoffReason =
+      "Simple Changelogs is installed and current, unconfigured, or its update status could not be proven; no companion update review is offered.";
   }
   if (changelogHandoffAvailable) {
     changelogHandoffReason =
@@ -156,6 +218,7 @@ export const inspectGuidanceUpdate = (
     },
     changes,
     currentVersion: CURRENT_GUIDANCE_VERSION,
+    headline: "**Simple Changes has recently been updated.**",
     releaseNotes: {
       available: true,
       command: "simple-changes release-notes",
@@ -164,6 +227,9 @@ export const inspectGuidanceUpdate = (
     status: updateAvailable ? "update-available" : "current",
     storedDisposition,
     storedVersion,
+    summaryBullets,
+    walkthroughQuestion:
+      "Would you like me to walk you through all recent updates to the skill?",
   };
 };
 

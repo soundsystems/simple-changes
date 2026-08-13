@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
 
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
@@ -46,12 +47,20 @@ import {
 } from "./lib/loop-lease.ts";
 import { auditMarkdown } from "./lib/markdown.ts";
 import {
+  decideMigrationAutomation,
+  type MigrationApplyPlan,
+  type MigrationOperationSet,
+  type MigrationReview,
+} from "./lib/migration-automation.ts";
+import {
   collectOnboardingSelection,
   type OnboardingChoice,
   type OnboardingInputs,
   type OnboardingPrompter,
+  parseMigrationTargets,
   type SetupScope,
 } from "./lib/onboarding.ts";
+import { assertSafeRelativePath } from "./lib/path-safety.ts";
 import { buildPreviewPlan } from "./lib/planner.ts";
 import {
   loadPersonalPolicy,
@@ -92,13 +101,14 @@ import {
   releaseWorktreeClaim,
 } from "./lib/worktree-coordination.ts";
 
-const VERSION = "0.11.4";
+const VERSION = "0.12.0";
 const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const HELP = `Simple Changes ${VERSION}
 
 Usage:
   simple-changes initialize --mode MODE
     [--ready]
+    [--changelog-required]
     [--changelog delegate-if-available|preserve-and-report|ask]
     [--concurrent-work allow-claimed|strict]
     [--handoff ask|automatic|user-signaled]
@@ -106,7 +116,9 @@ Usage:
     [--ui-artifacts]
     [--ui-versioning repository|number-and-date|date-only|number-only]
     [--production ask|allow|deny]
-    [--shipping-mode standard|expedited]
+    [--shipping-mode standard|expedited|break-glass]
+    [--migration-handling ask-after-review|auto-apply-reviewed-routine|auto-apply-reviewed|never]
+    [--migration-target provider:project:environment]
     [--questions blocking-only|always|never]
     [--scope user|repository|run] [--agent-id ID] [--yes] [--json] [--repo PATH]
   simple-changes setup [--finish review|integrate|ship]
@@ -117,14 +129,18 @@ Usage:
     [--ui-artifacts]
     [--ui-versioning repository|number-and-date|date-only|number-only]
     [--production ask|allow|deny]
-    [--shipping-mode standard|expedited]
+    [--shipping-mode standard|expedited|break-glass]
+    [--migration-handling ask-after-review|auto-apply-reviewed-routine|auto-apply-reviewed|never]
+    [--migration-target provider:project:environment]
     [--questions blocking-only|always|never]
     [--scope user|repository|run] [--agent-id ID] [--yes] [--json] [--repo PATH]
   simple-changes acknowledge-update --guidance-decision accepted|reviewed|deferred
     [--agent-id ID] [--json] [--repo PATH]
+  simple-changes migration decision --state REVIEW_FILE --pending PENDING_FILE --apply-plan APPLY_PLAN_FILE [--json] [--repo PATH]
   simple-changes inventory [--json] [--repo PATH]
   simple-changes preview [--json] [--repo PATH] [--settle-ms N]
-  simple-changes loop start --mode MODE --agent-id ID [--json] [--repo PATH]
+  simple-changes loop start --mode MODE --agent-id ID [--changelog-required]
+    [--json] [--repo PATH]
   simple-changes loop status [--json] [--repo PATH]
   simple-changes loop verify --run-id ID [--json] [--repo PATH]
   simple-changes loop guard --run-id ID --agent-id ID [--json] [--repo PATH]
@@ -175,7 +191,7 @@ Usage:
 
 Schema kinds:
   repo-policy, changelog-capabilities, changelog-request, changelog-receipt,
-  initialization, inventory, change-plan, run-state, provider-receipt,
+  initialization, inventory, change-plan, migration-review, migration-pending, migration-apply-plan, run-state, provider-receipt,
   release-delivery-receipt, remote-branch-reconciliation, release-consistency,
   release-notes, loop-lease, worktree-coordination
 
@@ -186,8 +202,10 @@ Exit codes:
 interface CliOptions {
   adapter?: string;
   agentId?: string;
+  applyPlanPath?: string;
   approvedBy?: string;
   changelogHandling?: RepoPolicy["changelogHandling"];
+  changelogRequired: boolean;
   check: boolean;
   claimId?: string;
   concurrentWork?: RepoPolicy["concurrentWork"];
@@ -199,9 +217,12 @@ interface CliOptions {
   instructionPointer?: "add" | "leave";
   json: boolean;
   manifestDigest?: string;
+  migrationHandling?: RepoPolicy["migrationHandling"];
+  migrationTargets: RepoPolicy["migrationTargets"];
   mode?: InitializationMode;
   ownerRef?: string;
   pauseReceiptId?: string;
+  pendingPath?: string;
   positional: string[];
   productionDeploy?: RepoPolicy["productionDeploy"];
   purpose?: string;
@@ -216,7 +237,7 @@ interface CliOptions {
   runId?: string;
   scope?: SetupScope;
   settleMs: number;
-  shippingMode?: Exclude<RepoPolicy["shippingMode"], "break-glass">;
+  shippingMode?: RepoPolicy["shippingMode"];
   statePath?: string;
   statusDigest?: string;
   uiArtifacts: boolean;
@@ -227,6 +248,7 @@ interface CliOptions {
 
 const VALUED_OPTIONS = new Set([
   "--adapter",
+  "--apply-plan",
   "--agent-id",
   "--approved-by",
   "--changelog",
@@ -239,8 +261,11 @@ const VALUED_OPTIONS = new Set([
   "--instruction-file",
   "--instruction-pointer",
   "--manifest-digest",
+  "--migration-handling",
+  "--migration-target",
   "--mode",
   "--owner-ref",
+  "--pending",
   "--pause-receipt",
   "--production",
   "--purpose",
@@ -261,6 +286,7 @@ const VALUED_OPTIONS = new Set([
 ]);
 
 const BOOLEAN_OPTIONS = new Set([
+  "--changelog-required",
   "--check",
   "--json",
   "--ready",
@@ -305,13 +331,105 @@ const applyShippingModeOption = (
   if (option !== "--shipping-mode") {
     return false;
   }
-  if (!(value === "standard" || value === "expedited")) {
+  if (
+    !(value === "standard" || value === "expedited" || value === "break-glass")
+  ) {
     throw new SimpleChangesError(
-      "--shipping-mode must be standard or expedited; break-glass is an advanced manual policy setting",
+      "--shipping-mode must be standard, expedited, or break-glass",
       EXIT_CODES.usage
     );
   }
   options.shippingMode = value;
+  return true;
+};
+
+const applyFinishOption = (
+  options: CliOptions,
+  option: string,
+  value: string
+): boolean => {
+  if (option !== "--finish") {
+    return false;
+  }
+  const finishAliases = {
+    integrate: "integrate",
+    merge: "integrate",
+    "open-change-request": "open-change-request",
+    review: "open-change-request",
+    ship: "ship",
+  } as const;
+  const finish = finishAliases[value as keyof typeof finishAliases];
+  if (!finish) {
+    throw new SimpleChangesError(
+      "--finish must be review, integrate, or ship",
+      EXIT_CODES.usage
+    );
+  }
+  options.defaultFinish = finish;
+  return true;
+};
+
+const applyHandoffOption = (
+  options: CliOptions,
+  option: string,
+  value: string
+): boolean => {
+  if (option !== "--handoff") {
+    return false;
+  }
+  const timingAliases = {
+    ask: "confirm-ready",
+    automatic: "automatic",
+    "confirm-ready": "confirm-ready",
+    "user-signaled": "user-signaled",
+  } as const;
+  const timing = timingAliases[value as keyof typeof timingAliases];
+  if (!timing) {
+    throw new SimpleChangesError(
+      "--handoff must be ask, automatic, or user-signaled",
+      EXIT_CODES.usage
+    );
+  }
+  options.handoffTiming = timing;
+  return true;
+};
+
+const applyMigrationOption = (
+  options: CliOptions,
+  option: string,
+  value: string
+): boolean => {
+  if (option === "--migration-handling") {
+    const values: RepoPolicy["migrationHandling"][] = [
+      "ask-after-review",
+      "auto-apply-reviewed-routine",
+      "auto-apply-reviewed",
+      "never",
+    ];
+    if (!values.includes(value as RepoPolicy["migrationHandling"])) {
+      throw new SimpleChangesError(
+        `--migration-handling must be one of ${values.join(", ")}`,
+        EXIT_CODES.usage
+      );
+    }
+    options.migrationHandling = value as RepoPolicy["migrationHandling"];
+    return true;
+  }
+  if (option !== "--migration-target") {
+    return false;
+  }
+  try {
+    options.migrationTargets = [
+      ...options.migrationTargets,
+      ...parseMigrationTargets(value),
+    ];
+  } catch (error) {
+    throw SimpleChangesError.withCause(
+      error instanceof Error ? error.message : "Invalid migration target.",
+      EXIT_CODES.usage,
+      error
+    );
+  }
   return true;
 };
 
@@ -334,39 +452,11 @@ const applySetupValuedOption = (
     options.concurrentWork = value as "allow-claimed" | "strict";
     return true;
   }
-  if (option === "--finish") {
-    const finishAliases = {
-      integrate: "integrate",
-      merge: "integrate",
-      "open-change-request": "open-change-request",
-      review: "open-change-request",
-      ship: "ship",
-    } as const;
-    const finish = finishAliases[value as keyof typeof finishAliases];
-    if (!finish) {
-      throw new SimpleChangesError(
-        "--finish must be review, integrate, or ship",
-        EXIT_CODES.usage
-      );
-    }
-    options.defaultFinish = finish;
-    return true;
-  }
-  if (option === "--handoff") {
-    const timingAliases = {
-      ask: "confirm-ready",
-      automatic: "automatic",
-      "confirm-ready": "confirm-ready",
-      "user-signaled": "user-signaled",
-    } as const;
-    const timing = timingAliases[value as keyof typeof timingAliases];
-    if (!timing) {
-      throw new SimpleChangesError(
-        "--handoff must be ask, automatic, or user-signaled",
-        EXIT_CODES.usage
-      );
-    }
-    options.handoffTiming = timing;
+  if (
+    applyFinishOption(options, option, value) ||
+    applyHandoffOption(options, option, value) ||
+    applyMigrationOption(options, option, value)
+  ) {
     return true;
   }
   if (option === "--guidance-decision") {
@@ -428,11 +518,13 @@ const applyLoopValuedOption = (
   const textOptions: Record<string, keyof CliOptions> = {
     "--adapter": "adapter",
     "--agent-id": "agentId",
+    "--apply-plan": "applyPlanPath",
     "--approved-by": "approvedBy",
     "--claim-id": "claimId",
     "--manifest-digest": "manifestDigest",
     "--owner-ref": "ownerRef",
     "--pause-receipt": "pauseReceiptId",
+    "--pending": "pendingPath",
     "--purpose": "purpose",
     "--reason": "reason",
     "--receipt": "receiptPath",
@@ -560,6 +652,8 @@ const applyValuedOption = (
 const applyBooleanOption = (options: CliOptions, option: string): void => {
   if (option === "--json") {
     options.json = true;
+  } else if (option === "--changelog-required") {
+    options.changelogRequired = true;
   } else if (option === "--check") {
     options.check = true;
   } else if (option === "--ready") {
@@ -573,8 +667,10 @@ const applyBooleanOption = (options: CliOptions, option: string): void => {
 
 const parseOptions = (args: string[]): CliOptions => {
   const options: CliOptions = {
+    changelogRequired: false,
     check: false,
     json: false,
+    migrationTargets: [],
     positional: [],
     ready: false,
     repo: process.cwd(),
@@ -707,6 +803,8 @@ const createCliPrompter = (
           .toLowerCase();
         return answer === "" || answer === "y" || answer === "yes";
       },
+      input: (question: string): Promise<string> =>
+        reader.question(`\n${question}\n> `).then((answer) => answer.trim()),
       present: (message: string): void => {
         output.write(`\n${message}\n`);
       },
@@ -726,6 +824,13 @@ const setupNeedsPrompt = (
     options.scope &&
     (options.defaultFinish !== "ship" ||
       (options.productionDeploy && options.shippingMode)) &&
+    (!(
+      options.migrationHandling &&
+      ["auto-apply-reviewed-routine", "auto-apply-reviewed"].includes(
+        options.migrationHandling
+      )
+    ) ||
+      options.migrationTargets.length > 0) &&
     (!options.uiArtifacts || options.uiArtifactVersioning) &&
     (instructionTargetCount === 0 ||
       options.instructionPointer === "leave" ||
@@ -793,6 +898,44 @@ const setupContext = (
   };
 };
 
+const SETUP_INPUT_KEYS = [
+  "changelogHandling",
+  "concurrentWork",
+  "defaultFinish",
+  "handoffTiming",
+  "instructionFile",
+  "instructionPointer",
+  "migrationHandling",
+  "productionDeploy",
+  "questions",
+  "scope",
+  "shippingMode",
+  "uiArtifactVersioning",
+] as const satisfies readonly (keyof OnboardingInputs & keyof CliOptions)[];
+
+const buildOnboardingInputs = (
+  options: CliOptions,
+  needsPrompt: boolean
+): OnboardingInputs => {
+  const inputs: OnboardingInputs = {};
+  for (const key of SETUP_INPUT_KEYS) {
+    const value = options[key];
+    if (value !== undefined) {
+      Object.assign(inputs, { [key]: value });
+    }
+  }
+  if (options.migrationTargets.length > 0) {
+    inputs.migrationTargets = options.migrationTargets;
+  }
+  if (
+    !(inputs.migrationHandling || needsPrompt) &&
+    options.defaultFinish === "ship"
+  ) {
+    inputs.migrationHandling = "ask-after-review";
+  }
+  return inputs;
+};
+
 const runSetup = async (options: CliOptions): Promise<void> => {
   const context = setupContext(options.repo);
   const instructionTargets = options.scope
@@ -802,44 +945,18 @@ const runSetup = async (options: CliOptions): Promise<void> => {
         options.instructionFile
       )
     : [];
-  if (
-    setupNeedsPrompt(
-      options,
-      context.changelog.relevant,
-      instructionTargets.length
-    ) &&
-    !process.stdin.isTTY
-  ) {
+  const needsPrompt = setupNeedsPrompt(
+    options,
+    context.changelog.relevant,
+    instructionTargets.length
+  );
+  if (needsPrompt && !process.stdin.isTTY) {
     throw new SimpleChangesError(
-      "Interactive setup requires a terminal. Supply --finish, --questions, --scope, --production and --shipping-mode when shipping, --changelog when relevant, --ui-versioning with --ui-artifacts, --instruction-pointer when an instruction file exists, --handoff when adding the pointer, --instruction-file when selecting among targets, and --yes.",
+      "Interactive setup requires a terminal. Supply --finish, --questions, --scope, --production and --shipping-mode when shipping, --migration-handling and --migration-target for automatic migration apply, --changelog when relevant, --ui-versioning with --ui-artifacts, --instruction-pointer when an instruction file exists, --handoff when adding the pointer, --instruction-file when selecting among targets, and --yes.",
       EXIT_CODES.usage
     );
   }
-  const inputs: OnboardingInputs = {
-    ...(options.changelogHandling
-      ? { changelogHandling: options.changelogHandling }
-      : {}),
-    ...(options.concurrentWork
-      ? { concurrentWork: options.concurrentWork }
-      : {}),
-    ...(options.defaultFinish ? { defaultFinish: options.defaultFinish } : {}),
-    ...(options.handoffTiming ? { handoffTiming: options.handoffTiming } : {}),
-    ...(options.instructionFile
-      ? { instructionFile: options.instructionFile }
-      : {}),
-    ...(options.instructionPointer
-      ? { instructionPointer: options.instructionPointer }
-      : {}),
-    ...(options.productionDeploy
-      ? { productionDeploy: options.productionDeploy }
-      : {}),
-    ...(options.questions ? { questions: options.questions } : {}),
-    ...(options.scope ? { scope: options.scope } : {}),
-    ...(options.shippingMode ? { shippingMode: options.shippingMode } : {}),
-    ...(options.uiArtifactVersioning
-      ? { uiArtifactVersioning: options.uiArtifactVersioning }
-      : {}),
-  };
+  const inputs = buildOnboardingInputs(options, needsPrompt);
   const interactive = createCliPrompter(options);
   try {
     const selection = await collectOnboardingSelection(
@@ -916,9 +1033,111 @@ const runSetup = async (options: CliOptions): Promise<void> => {
   }
 };
 
-const renderInitialization = (
-  status: ReturnType<typeof inspectInitialization>
-): string => {
+const appendSimpleChangesUpdate = (
+  lines: string[],
+  status: InitializationStatus,
+  combinedUpdate: boolean
+): void => {
+  if (status.guidanceUpdate.status !== "update-available") {
+    return;
+  }
+  lines.push("", status.guidanceUpdate.headline);
+  for (const summary of status.guidanceUpdate.summaryBullets) {
+    lines.push(`- ${summary}`);
+  }
+  lines.push(
+    "Your existing settings and repository files have not been changed."
+  );
+  if (!combinedUpdate) {
+    lines.push(
+      status.guidanceUpdate.walkthroughQuestion,
+      "Choose one:",
+      "- Walk me through it — Explain the recent updates and affected settings.",
+      "- Keep my current settings and continue — Preserve my choices and explain any new defaults.",
+      "- Not now — Keep the current behavior and stop asking for this version.",
+      "- View full release notes — Show the detailed Simple Changes release notes."
+    );
+  }
+  lines.push(`Release notes: ${status.guidanceUpdate.releaseNotes.command}`);
+};
+
+const appendSimpleChangelogsUpdate = (
+  lines: string[],
+  status: InitializationStatus,
+  combinedUpdate: boolean
+): void => {
+  const update = status.changelogCoordination.guidanceUpdate;
+  if (update.status !== "update-available") {
+    return;
+  }
+  lines.push("", update.headline);
+  for (const summary of update.summaryBullets) {
+    lines.push(`- ${summary}`);
+  }
+  lines.push(
+    "Simple Changelogs owns the practical update summary, settings review, and any history decision.",
+    "Its saved settings and released history have not been changed."
+  );
+  if (!combinedUpdate) {
+    lines.push(
+      update.walkthroughQuestion,
+      "Choose one:",
+      "- Walk me through it — Explain the recent Simple Changelogs updates.",
+      "- Continue for now — Leave its settings and released history unchanged.",
+      "- View full release notes — Show its owner-controlled update details."
+    );
+  }
+  if (update.detailsPath) {
+    lines.push(`Release notes: ${update.detailsPath}`);
+  }
+  if (status.changelogRequired) {
+    lines.push(
+      "Resolve this owner-controlled update before starting the Simple Changes shipment loop."
+    );
+  }
+};
+
+const appendCombinedUpdateChoice = (
+  lines: string[],
+  status: InitializationStatus
+): void => {
+  if (
+    status.guidanceUpdate.status !== "update-available" ||
+    status.changelogCoordination.guidanceUpdate.status !== "update-available"
+  ) {
+    return;
+  }
+  lines.push(
+    "",
+    "Would you like me to walk you through all recent updates to both skills?",
+    "Choose one:",
+    "- Walk me through both — Explain the Simple Changes and Simple Changelogs updates together.",
+    "- Simple Changes only — Review only the Simple Changes update.",
+    "- Keep my current settings and continue — Leave both skills' saved choices unchanged.",
+    "- View full release notes — Show the detailed update notes for both skills."
+  );
+};
+
+const appendFirstUseWalkthroughOffer = (
+  lines: string[],
+  status: InitializationStatus
+): void => {
+  const nonblockingFirstUseMode = ["preview", "pause", "sync"].includes(
+    status.mode
+  );
+  if (
+    status.firstUseWalkthroughAvailable &&
+    !status.onboardingRequired &&
+    nonblockingFirstUseMode
+  ) {
+    lines.push(
+      "",
+      "New to Simple Changes? I can give you a quick walkthrough of everything it can do."
+    );
+  }
+};
+
+const renderInitialization = (status: InitializationStatus): string => {
   const lines = [
     "Simple Changes initialization",
     `Mode: ${status.mode}`,
@@ -933,8 +1152,14 @@ const renderInitialization = (
         ? "available"
         : "not available"
     }`,
-    `Guidance update: ${status.guidanceUpdate.status}`,
+    `Simple Changes update: ${status.guidanceUpdate.status}`,
+    `Simple Changelogs update: ${status.changelogCoordination.guidanceUpdate.status}`,
+    `Changelog required for this request: ${status.changelogRequired ? "yes" : "no"}`,
+    `Action required before loop start: ${status.preLoopActionRequired ? "yes" : "no"}`,
     `Onboarding required: ${status.onboardingRequired ? "yes" : "no"}`,
+    `First-use walkthrough available: ${status.firstUseWalkthroughAvailable ? "yes" : "no"}`,
+    `Migration handling: ${status.migrationHandling}`,
+    `Automatic migration targets: ${status.migrationTargets.length > 0 ? status.migrationTargets.map((target) => `${target.provider}:${target.project}:${target.environment}`).join(", ") : "none"}`,
     `Handoff action: ${status.handoffAction}`,
     `Reason: ${status.reason}`,
   ];
@@ -944,17 +1169,13 @@ const renderInitialization = (
   if (status.resolvedMode) {
     lines.push(`Resolved mode: ${status.resolvedMode}`);
   }
-  if (status.guidanceUpdate.status === "update-available") {
-    lines.push("What changed:");
-    for (const change of status.guidanceUpdate.changes) {
-      lines.push(`- ${change.summary}`);
-    }
-    lines.push(
-      `Available actions: ${status.guidanceUpdate.actions.join(", ")}`,
-      `Release notes: ${status.guidanceUpdate.releaseNotes.command}`,
-      `Changelog handoff: ${status.guidanceUpdate.changelogHandoff.reason}`
-    );
-  }
+  const combinedUpdate =
+    status.guidanceUpdate.status === "update-available" &&
+    status.changelogCoordination.guidanceUpdate.status === "update-available";
+  appendSimpleChangesUpdate(lines, status, combinedUpdate);
+  appendSimpleChangelogsUpdate(lines, status, combinedUpdate);
+  appendCombinedUpdateChoice(lines, status);
+  appendFirstUseWalkthroughOffer(lines, status);
   return `${lines.join("\n")}\n`;
 };
 
@@ -990,6 +1211,7 @@ const runInitialize = async (options: CliOptions): Promise<void> => {
       inventory.policy,
       changelogCoordination,
       {
+        changelogRequired: options.changelogRequired,
         readinessConfirmed: options.ready,
       }
     )
@@ -1089,6 +1311,61 @@ const runValidation = (options: CliOptions): void => {
     { schema: schemaName, valid: true, value: validated },
     options.json,
     `${filename} is valid ${schemaName} data.\n`
+  );
+};
+
+const runMigrationCommand = (options: CliOptions): void => {
+  const [action] = options.positional;
+  if (action !== "decision") {
+    throw new SimpleChangesError(
+      `Unknown migration action: ${action ?? "(missing)"}`,
+      EXIT_CODES.usage
+    );
+  }
+  const reviewPath = requireCliOption(options.statePath, "--state");
+  const pendingPath = requireCliOption(options.pendingPath, "--pending");
+  const applyPlanPath = requireCliOption(options.applyPlanPath, "--apply-plan");
+  const review = validateSchema<MigrationReview>(
+    "migration-review",
+    readJsonFile(reviewPath)
+  );
+  const pending = validateSchema<MigrationOperationSet>(
+    "migration-pending",
+    readJsonFile(pendingPath)
+  );
+  const applyPlan = validateSchema<MigrationApplyPlan>(
+    "migration-apply-plan",
+    readJsonFile(applyPlanPath)
+  );
+  for (const operation of pending.operations) {
+    const safePath = assertSafeRelativePath(options.repo, operation.revision);
+    if (safePath.symlink) {
+      throw new SimpleChangesError(
+        `Pending migration revision contains a symlink: ${operation.revision}`,
+        EXIT_CODES.validation
+      );
+    }
+    const actualDigest = createHash("sha256")
+      .update(readFileSync(safePath.absolutePath))
+      .digest("hex");
+    if (actualDigest !== operation.contentDigest) {
+      throw new SimpleChangesError(
+        `Pending migration content changed after evidence capture: ${operation.revision}`,
+        EXIT_CODES.validation
+      );
+    }
+  }
+  const policy = captureInventory(options.repo).policy.value;
+  const decision = decideMigrationAutomation(
+    policy,
+    review,
+    pending,
+    applyPlan
+  );
+  writeOutput(
+    decision,
+    options.json,
+    `${decision.action}: ${decision.reason}\n`
   );
 };
 
@@ -1372,6 +1649,24 @@ const runLoopOpeningAction = (action: string, options: CliOptions): boolean => {
         "loop start requires --mode",
         EXIT_CODES.usage
       );
+    }
+    if (options.changelogRequired) {
+      const inventory = captureInventory(options.repo);
+      const changelogCoordination = inspectChangelogCoordination(
+        inventory.repository.primaryCheckout
+      );
+      const initialization = inspectInitialization(
+        options.mode,
+        inventory.policy,
+        changelogCoordination,
+        { changelogRequired: true }
+      );
+      if (initialization.preLoopActionRequired) {
+        throw new SimpleChangesError(
+          "Complete Simple Changes initialization and every required update choice before loop start.",
+          EXIT_CODES.unsafe
+        );
+      }
     }
     const lease = startLoop(options.repo, agentId, options.mode as RequestMode);
     writeOutput(
@@ -1759,6 +2054,9 @@ const executeCommand = async (
       return EXIT_CODES.success;
     case "acknowledge-update":
       await runAcknowledgeUpdate(options);
+      return EXIT_CODES.success;
+    case "migration":
+      runMigrationCommand(options);
       return EXIT_CODES.success;
     case "preview":
       await runPreview(options);

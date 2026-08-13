@@ -26,6 +26,13 @@ or digest mismatch blocks only the release boundary; safe non-release
 integration may continue. Never infer compatibility from a path, skill name, or
 guidance version.
 
+Installed-update detection is a narrower read-only pre-loop check, not
+capability negotiation. Compare the selected provider's declared current
+guidance version with `.simple-changelogs.json`. When a request requires
+changelog work and the installed version is newer, route the update notice and
+disposition to Simple Changelogs before starting the Simple Changes integration
+loop. Do not acquire a loop lease and later pause it for this conversation.
+
 ## Apply the preference
 
 - `delegate-if-available`: invoke the compatible workflow when present;

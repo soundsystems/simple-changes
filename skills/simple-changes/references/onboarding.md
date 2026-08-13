@@ -5,6 +5,10 @@ without valid repository or personal preferences. Onboarding is a checkpoint
 inside the original task, not a separate task. After confirmation, continue the
 request without making the user repeat it.
 
+Preview, Pause, and guarded Sync do not block for setup. On a first run, finish
+their normal safe behavior and offer: **New to Simple Changes? I can give you a
+quick walkthrough of everything it can do.**
+
 ## Explain before asking
 
 Do not open with internal terms such as initialization, mutation, policy source,
@@ -18,6 +22,8 @@ or preference scope. Start by saying, in plain language:
 - the best way to use it is natural direction such as **Put it up**, **Merge
   it**, or **Ship it**, with urgency stated when speed truly matters;
 - Simple Changes has a first-use onboarding flow;
+- the main ways it can be used: safe sync, queue, sweep, merge, ship, reconcile
+  cleanup, preview, resume, and preservation;
 - why it appeared now;
 - which parts of future work it controls;
 - what the current request already decided;
@@ -68,11 +74,20 @@ one:**
    current request, ask only when blocked, keep production behind confirmation,
    preserve changelog work for its owning workflow, and save visible repository
    policy when a repository exists. Show a full receipt before writing.
-2. **Customize** — Explain and ask only the unresolved preferences below, one at
+2. **Walk me through it** — Explain every main workflow and each preference in
+   plain language, one at a time, before saving anything.
+3. **Customize** — Explain and ask only the unresolved preferences below, one at
    a time.
-3. **Use recommended setup for this run only** — Apply the same defaults to the
+4. **Use recommended setup for this run only** — Apply the same defaults to the
    current task without writing repository or personal preferences. Onboarding
    appears again next time.
+
+Before these choices, show one short bullet for each main natural-language use:
+**Sync with main**, **Put this up**, **Open changes for everything ready**,
+**Merge what's ready**, **Ship what's ready**, **Clean up the repo**, **Show me
+what you would do**, **Continue**, and **Leave this work alone**. Also explain
+that Simple Changes coordinates with Simple Changelogs when available but does
+not author changelogs itself.
 
 Outside Git, the recommended durable scope is private personal preferences
 because repository policy is unavailable. An explicit current request always
@@ -115,13 +130,43 @@ Then ask **How should routine Ship requests run? Choose one:**
 2. **Expedited by default** — Keep focused checks, independent review, and
    merge before deployment, then complete release reconciliation, final
    verification, and cleanup immediately afterward.
+3. **Break-glass by default — Advanced** — When **Deploy automatically** is also
+   selected, treat an ordinary Ship request as authority to deploy one exact
+   candidate before independent review after rollback is verified. Immediately
+   finish focused checks, review, merge/reconciliation, final verification, and
+   cleanup afterward.
 
-Do not offer break-glass as a normal onboarding choice. An expert may manually
-set `shippingMode: "break-glass"` in validated policy, but that advanced
-setting still requires separate production authority and an already available
-rollback capability. Native provider rollback is sufficient and does not
-require a blocking pre-deploy lookup. Explicit current-request direction always
-overrides the stored mode.
+Do not require a second “authorized for break-glass” phrase when saved
+break-glass ordering and automatic production authority are both effective.
+Native provider rollback is sufficient and does not require a blocking
+pre-deploy lookup. Explicit current-request direction always overrides saved
+preferences.
+
+Then ask **How should reviewed database migrations be handled during Ship?
+Choose one:**
+
+1. **Ask after review — Recommended** — Audit every exact pending migration,
+   then confirm before applying it to the remote target.
+2. **Auto-apply routine after review — Advanced** — After review, automatically
+   apply only routine, reversible, bounded, lock-safe migrations to saved exact
+   provider/project/environment targets.
+3. **Auto-apply eligible after review — Advanced** — After review,
+   automatically apply routine and other eligible safe migrations to saved
+   exact targets.
+4. **Never apply automatically** — Audit and report migrations, but leave every
+   remote apply for a separate workflow.
+
+Both automatic tiers review the generated/native operations before apply and
+require verified backup or rollback evidence plus planned post-apply checks.
+They never auto-apply destructive or data-deleting, irreversible, unbounded,
+lock-heavy, target-mismatched, or unprotected changes. The routine tier also
+asks before every reviewed migration classified as non-routine. The broader
+eligible tier may proceed with a reviewed non-routine migration only when none
+of those exclusions apply.
+
+For either automatic tier, collect and display every exact
+`provider:project:environment` target. Do not accept an automatic tier without
+at least one bound target, and do not infer a target from a migration filename.
 
 When relevant, ask **How should changelog work be handled? Choose one:**
 
@@ -186,6 +231,7 @@ Before writing, show a plain-language receipt containing:
 - the exact ready-work path and stopping point;
 - production behavior when relevant;
 - routine shipping mode when relevant;
+- migration handling and every automatic target when relevant;
 - changelog behavior when relevant;
 - UI artifact naming when relevant;
 - when the user will be interrupted;

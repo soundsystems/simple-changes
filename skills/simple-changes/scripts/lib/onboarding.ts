@@ -4,10 +4,14 @@ import {
   type InstructionTarget,
   renderInstructionPointer,
 } from "./repository-instructions.ts";
-import type { ChangelogCoordination, RepoPolicy } from "./types.ts";
+import type {
+  ChangelogCoordination,
+  MigrationTarget,
+  RepoPolicy,
+} from "./types.ts";
 
 export type SetupScope = "user" | "repository" | "run";
-export type SetupStyle = "recommended" | "customize" | "run";
+export type SetupStyle = "recommended" | "walkthrough" | "customize" | "run";
 
 export interface OnboardingChoice {
   description: string;
@@ -22,6 +26,7 @@ export interface OnboardingPrompter {
     defaultValue: string
   ) => Promise<string>;
   confirm: (summary: string) => Promise<boolean>;
+  input?: (question: string) => Promise<string>;
   present?: (message: string) => void;
 }
 
@@ -32,10 +37,12 @@ export interface OnboardingInputs {
   handoffTiming?: RepoPolicy["handoffTiming"];
   instructionFile?: string;
   instructionPointer?: "add" | "leave";
+  migrationHandling?: RepoPolicy["migrationHandling"];
+  migrationTargets?: MigrationTarget[];
   productionDeploy?: RepoPolicy["productionDeploy"];
   questions?: RepoPolicy["questions"];
   scope?: SetupScope;
-  shippingMode?: Exclude<RepoPolicy["shippingMode"], "break-glass">;
+  shippingMode?: RepoPolicy["shippingMode"];
   uiArtifactVersioning?: RepoPolicy["uiArtifactVersioning"];
 }
 
@@ -64,6 +71,10 @@ export const ONBOARDING_QUESTIONS = {
   instructionFile: "Which instruction file should Simple Changes update?",
   instructionPointer: (path: string) =>
     `Should I add a short Simple Changes instruction to \`${path}\`?`,
+  migrationHandling:
+    "How should reviewed database migrations be handled during Ship?",
+  migrationTarget:
+    "Which exact database targets may use automatic migration apply?",
   permission: "When should I ask for permission or help?",
   production: "What should happen with production?",
   scope: "Where should these preferences live?",
@@ -78,6 +89,20 @@ const DEFAULT_CHANGELOG_CONTEXT: ChangelogCoordination = {
   capabilityAvailable: false,
   capabilityHelpers: [],
   capabilityStatus: "absent",
+  guidanceUpdate: {
+    actions: [],
+    detailsPath: null,
+    headline: "**Simple Changelogs has recently been updated.**",
+    installedVersion: null,
+    owner: null,
+    policyPath: null,
+    provider: null,
+    status: "absent",
+    storedVersion: null,
+    summaryBullets: [],
+    walkthroughQuestion:
+      "Would you like me to walk you through the recent Simple Changelogs updates before I continue?",
+  },
   providers: [],
   releaseSurfaces: [],
   relevant: false,
@@ -132,7 +157,76 @@ export const SHIPPING_MODE_CHOICES = [
     label: "Expedited by default",
     value: "expedited",
   },
+  {
+    description:
+      "Deploy one exact candidate before independent review when production is pre-approved and rollback is verified, then immediately finish checks, review, reconciliation, and verification.",
+    label: "Break-glass by default — Advanced",
+    value: "break-glass",
+  },
 ] as const satisfies readonly OnboardingChoice[];
+
+export const MIGRATION_HANDLING_CHOICES = [
+  {
+    description:
+      "Review every migration, then ask before applying it to the exact remote target.",
+    label: "Ask after review",
+    value: "ask-after-review",
+  },
+  {
+    description:
+      "After review, automatically apply only routine, reversible, bounded, lock-safe migrations to saved exact targets.",
+    label: "Auto-apply routine after review — Advanced",
+    value: "auto-apply-reviewed-routine",
+  },
+  {
+    description:
+      "After review, automatically apply routine and other eligible safe migrations to saved exact targets; hard exclusions still require approval.",
+    label: "Auto-apply eligible after review — Advanced",
+    value: "auto-apply-reviewed",
+  },
+  {
+    description:
+      "Review and report migrations, but never apply them automatically.",
+    label: "Never apply automatically",
+    value: "never",
+  },
+] as const satisfies readonly OnboardingChoice[];
+
+const MIGRATION_TARGET_NAME_PATTERN = /^[A-Za-z0-9._-]+$/u;
+const MIGRATION_TARGET_PROJECT_PATTERN = /^[A-Za-z0-9._/-]+$/u;
+
+export const parseMigrationTargets = (value: string): MigrationTarget[] => {
+  const targets = value
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .map((item) => {
+      const parts = item.split(":");
+      const [provider, project, environment] = parts;
+      if (
+        parts.length !== 3 ||
+        !provider ||
+        !MIGRATION_TARGET_NAME_PATTERN.test(provider) ||
+        !project ||
+        !MIGRATION_TARGET_PROJECT_PATTERN.test(project) ||
+        !environment ||
+        !MIGRATION_TARGET_NAME_PATTERN.test(environment)
+      ) {
+        throw new Error(
+          `Invalid migration target "${item}"; use provider:project:environment.`
+        );
+      }
+      return { environment, project, provider };
+    });
+  return [
+    ...new Map(
+      targets.map((target) => [
+        `${target.provider}:${target.project}:${target.environment}`,
+        target,
+      ])
+    ).values(),
+  ];
+};
 
 export const PERMISSION_CHOICES = [
   {
@@ -240,7 +334,17 @@ const renderFirstScreenIntroduction = (
   }
   return [
     "Simple Changes begins with a repository inventory, separates stable work into focused change units, runs the relevant checks, obtains required review, and then stops, merges, or ships according to your preference. A shipping run will verify the exact delivered revision and clean up only work that is proven safe to remove.",
-    "Use natural requests such as “Put it up,” “Merge it,” or “Ship it.” Mention urgency when speed matters; reserve deploy-before-review direction for a real user-impacting emergency. Keep unrelated work in separately claimed worktrees so it can continue safely.",
+    "Here are the main ways you can use it:",
+    "- “Sync with main” — Safely update your local checkout without pushing anything.",
+    "- “Put this up” — Turn ready work into focused change proposals and stop for review.",
+    "- “Open changes for everything ready” — Create separate proposals for each ready piece of work.",
+    "- “Merge what’s ready” — Run checks and merge work that has the required approval.",
+    "- “Ship what’s ready” — Merge, deploy when authorized, and verify exactly what went live.",
+    "- “Clean up the repo” — Reconcile branches and worktrees, removing only things proven safe.",
+    "- “Show me what you would do” — Preview the plan without changing anything.",
+    "- “Continue” — Safely resume an unfinished Simple Changes run.",
+    "- “Leave this work alone” — Preserve active work while handling independent changes.",
+    "Simple Changes can also coordinate release-note work with Simple Changelogs when it is installed, but it does not write changelogs itself. Mention urgency when speed matters; reserve deploy-before-review direction for a real user-impacting emergency.",
     "This is first-use onboarding inside your original Simple Changes task. It decides the normal stopping point, when I interrupt you, and where those answers are remembered. It does not itself create a branch, push, merge, or deploy anything.",
     "",
     location,
@@ -249,6 +353,7 @@ const renderFirstScreenIntroduction = (
     "Recommended workflow for this request:",
     finishPath(finish),
     "Ask only when blocked. Production remains a separate confirmation unless you explicitly change it. High-risk operations such as migrations, secrets, DNS, store releases, and history rewrites always remain separately gated.",
+    "Would you like a walkthrough before I continue? Choose “Walk me through it” below for every workflow and preference, one at a time.",
   ].join("\n");
 };
 
@@ -268,6 +373,12 @@ const onboardingStyleChoices = (
       description: `Use ${finishLabel(finish)}, ask only when blocked, keep production confirmation in place, preserve changelog work for its owning workflow, and ${scopeDescription}. You will see a full receipt before anything is written.`,
       label: "Use recommended setup",
       value: "recommended",
+    },
+    {
+      description:
+        "Explain every main workflow and each preference in plain language, one at a time, before saving anything.",
+      label: "Walk me through it",
+      value: "walkthrough",
     },
     {
       description:
@@ -384,6 +495,15 @@ const uiArtifactVersioningLabel = (
   UI_ARTIFACT_VERSIONING_CHOICES.find((choice) => choice.value === versioning)
     ?.label ?? versioning;
 
+const migrationHandlingLabel = (
+  handling: RepoPolicy["migrationHandling"]
+): string =>
+  MIGRATION_HANDLING_CHOICES.find((choice) => choice.value === handling)
+    ?.label ?? handling;
+
+const migrationTargetLabel = (target: MigrationTarget): string =>
+  `${target.provider}:${target.project}:${target.environment}`;
+
 const changelogSummary = (
   policy: RepoPolicy,
   context: ChangelogCoordination
@@ -402,6 +522,55 @@ const changelogSummary = (
   return "Changelog destinations will be preserved and reported for a separate workflow.";
 };
 
+const finishActionSummary = (policy: RepoPolicy): string => {
+  if (policy.defaultFinish === "integrate") {
+    return "I'll create focused MRs, run checks, wait for required approval, and merge the exact approved revisions.";
+  }
+  if (policy.defaultFinish === "ship") {
+    return "I'll create focused MRs, run checks, wait for required approval, merge the exact approved revisions, deploy authorized targets, and verify the live application.";
+  }
+  return "I'll create focused MRs, run checks, and stop with the work ready for review.";
+};
+
+const shippingSummary = (
+  policy: RepoPolicy
+): { production: string | null; shippingMode: string | null } => {
+  if (policy.defaultFinish !== "ship") {
+    return { production: null, shippingMode: null };
+  }
+  let production = "I'll ask before deploying production.";
+  if (policy.productionDeploy === "allow") {
+    production =
+      "Production deployment is pre-approved when repository rules allow it.";
+  } else if (policy.productionDeploy === "deny") {
+    production = "I won't deploy production.";
+  }
+  let shippingMode =
+    "Standard shipping completes release reconciliation before the first production deployment.";
+  if (policy.shippingMode === "expedited") {
+    shippingMode =
+      "Expedited shipping keeps review and merge before the first deployment, then completes release reconciliation, final verification, and cleanup immediately afterward.";
+  } else if (policy.shippingMode === "break-glass") {
+    shippingMode =
+      policy.productionDeploy === "allow"
+        ? "Break-glass ordering and production deployment are pre-approved: a Ship request may deploy one exact candidate before independent review after rollback is verified, then must immediately finish checks, review, reconciliation, and final verification."
+        : "Break-glass ordering is the default, but production still requires approval; rollback evidence is also required before an early deployment.";
+  }
+  return { production, shippingMode };
+};
+
+const instructionPointerSummary = (
+  instructionPointer: OnboardingSelection["instructionPointer"]
+): string => {
+  if (instructionPointer.action === "leave") {
+    return "Agent instructions will remain unchanged.";
+  }
+  if (instructionPointer.action === "add" && instructionPointer.target) {
+    return `Instruction pointer: update ${instructionPointer.target.scope} file ${instructionPointer.target.path}.\nProposed managed pointer:\n${instructionPointer.block}`;
+  }
+  return "No existing instruction file was selected, so no instruction pointer will be written.";
+};
+
 export const renderOnboardingSummary = (
   policy: RepoPolicy,
   scope: SetupScope,
@@ -413,47 +582,20 @@ export const renderOnboardingSummary = (
   },
   uiArtifactsRelevant = false
 ): string => {
-  let actions =
-    "I'll create focused MRs, run checks, and stop with the work ready for review.";
-  if (policy.defaultFinish === "integrate") {
-    actions =
-      "I'll create focused MRs, run checks, wait for required approval, and merge the exact approved revisions.";
-  } else if (policy.defaultFinish === "ship") {
-    actions =
-      "I'll create focused MRs, run checks, wait for required approval, merge the exact approved revisions, deploy authorized targets, and verify the live application.";
-  }
-  let production: string | null = null;
-  let shippingMode: string | null = null;
-  if (policy.defaultFinish === "ship") {
-    production = "I'll ask before deploying production.";
-    if (policy.productionDeploy === "allow") {
-      production =
-        "Production deployment is pre-approved when repository rules allow it.";
-    } else if (policy.productionDeploy === "deny") {
-      production = "I won't deploy production.";
-    }
-    shippingMode =
-      "Standard shipping completes release reconciliation before the first production deployment.";
-    if (policy.shippingMode === "expedited") {
-      shippingMode =
-        "Expedited shipping keeps review and merge before the first deployment, then completes release reconciliation, final verification, and cleanup immediately afterward.";
-    } else if (policy.shippingMode === "break-glass") {
-      shippingMode =
-        "An advanced break-glass default is configured outside normal onboarding; production authority and rollback evidence remain separate requirements.";
-    }
-  }
-  let pointerSummary =
-    "No existing instruction file was selected, so no instruction pointer will be written.";
-  if (instructionPointer.action === "leave") {
-    pointerSummary = "Agent instructions will remain unchanged.";
-  } else if (instructionPointer.action === "add" && instructionPointer.target) {
-    pointerSummary = `Instruction pointer: update ${instructionPointer.target.scope} file ${instructionPointer.target.path}.\nProposed managed pointer:\n${instructionPointer.block}`;
-  }
+  const actions = finishActionSummary(policy);
+  const { production, shippingMode } = shippingSummary(policy);
+  const pointerSummary = instructionPointerSummary(instructionPointer);
   return [
     `Your workflow is set to ${finishLabel(policy.defaultFinish)}.`,
     actions,
     production,
     shippingMode,
+    policy.defaultFinish === "ship"
+      ? `Migration handling: ${migrationHandlingLabel(policy.migrationHandling)}.`
+      : null,
+    policy.defaultFinish === "ship" && policy.migrationTargets.length > 0
+      ? `Automatic migration targets: ${policy.migrationTargets.map(migrationTargetLabel).join(", ")}.`
+      : null,
     changelogSummary(policy, context),
     policy.concurrentWork === "strict"
       ? "Concurrent worktrees: strict repository-wide serialization; claimed owners must pause before integration continues."
@@ -467,7 +609,7 @@ export const renderOnboardingSummary = (
     instructionPointer.action === "add"
       ? `Completed-work handoff: ${handoffLabel(policy.handoffTiming)}.`
       : null,
-    "Remote migrations, backfills, secrets, DNS changes, store releases, and history rewrites still require explicit, exact-target authorization.",
+    "Every migration is reviewed before apply. Destructive, irreversible, unbounded, lock-heavy, target-mismatched, or unprotected migrations still require explicit exact-target authorization; backfills, secrets, DNS changes, store releases, and history rewrites remain separately gated.",
   ]
     .filter((line): line is string => line !== null)
     .join("\n");
@@ -675,19 +817,83 @@ const selectShippingMode = async (
   if (finish !== "ship" || !customize) {
     return defaults.shippingMode;
   }
-  const defaultMode =
-    defaults.shippingMode === "break-glass"
-      ? "standard"
-      : defaults.shippingMode;
-  return choiceValue<Exclude<RepoPolicy["shippingMode"], "break-glass">>(
+  return choiceValue<RepoPolicy["shippingMode"]>(
     await prompter.choose(
       ONBOARDING_QUESTIONS.shippingMode,
       SHIPPING_MODE_CHOICES,
-      defaultMode
+      defaults.shippingMode
     ),
     SHIPPING_MODE_CHOICES,
     ONBOARDING_QUESTIONS.shippingMode
   );
+};
+
+const automaticMigrationHandling = (
+  handling: RepoPolicy["migrationHandling"]
+): boolean =>
+  handling === "auto-apply-reviewed-routine" ||
+  handling === "auto-apply-reviewed";
+
+const selectMigrationHandling = async (
+  defaults: RepoPolicy,
+  inputs: OnboardingInputs,
+  prompter: OnboardingPrompter,
+  customize: boolean,
+  finish: RepoPolicy["defaultFinish"]
+): Promise<RepoPolicy["migrationHandling"]> => {
+  if (inputs.migrationHandling) {
+    return inputs.migrationHandling;
+  }
+  if (finish !== "ship" || !customize) {
+    return defaults.migrationHandling;
+  }
+  prompter.present?.(
+    "Every tier reviews the exact pending migrations first. Automatic tiers apply only to saved exact targets and never cover destructive, irreversible, unbounded, lock-heavy, or unprotected changes."
+  );
+  return choiceValue<RepoPolicy["migrationHandling"]>(
+    await prompter.choose(
+      ONBOARDING_QUESTIONS.migrationHandling,
+      MIGRATION_HANDLING_CHOICES,
+      defaults.migrationHandling
+    ),
+    MIGRATION_HANDLING_CHOICES,
+    ONBOARDING_QUESTIONS.migrationHandling
+  );
+};
+
+const selectMigrationTargets = async (
+  defaults: RepoPolicy,
+  inputs: OnboardingInputs,
+  prompter: OnboardingPrompter,
+  handling: RepoPolicy["migrationHandling"]
+): Promise<MigrationTarget[]> => {
+  if (!automaticMigrationHandling(handling)) {
+    return [];
+  }
+  if (inputs.migrationTargets && inputs.migrationTargets.length > 0) {
+    return inputs.migrationTargets;
+  }
+  if (
+    defaults.migrationHandling === handling &&
+    defaults.migrationTargets.length > 0
+  ) {
+    return defaults.migrationTargets;
+  }
+  if (!prompter.input) {
+    throw new Error(
+      "Automatic migration apply requires --migration-target provider:project:environment."
+    );
+  }
+  prompter.present?.(
+    "Automatic migration authority must be bound to exact database targets. Enter one or more comma-separated targets as provider:project:environment."
+  );
+  const targets = parseMigrationTargets(
+    await prompter.input(ONBOARDING_QUESTIONS.migrationTarget)
+  );
+  if (targets.length === 0) {
+    throw new Error("Automatic migration apply requires at least one target.");
+  }
+  return targets;
 };
 
 const selectChangelogHandling = async (
@@ -786,7 +992,7 @@ export const collectOnboardingSelection = async (
     primaryCheckout,
     conversation.showFirstScreen ?? false
   );
-  const customize = setupStyle === "customize";
+  const customize = setupStyle === "customize" || setupStyle === "walkthrough";
   const defaultFinish = await selectDefaultFinish(
     defaults,
     inputs,
@@ -806,6 +1012,19 @@ export const collectOnboardingSelection = async (
     prompter,
     customize,
     defaultFinish
+  );
+  const migrationHandling = await selectMigrationHandling(
+    defaults,
+    inputs,
+    prompter,
+    customize,
+    defaultFinish
+  );
+  const migrationTargets = await selectMigrationTargets(
+    defaults,
+    inputs,
+    prompter,
+    migrationHandling
   );
   const changelogHandling = await selectChangelogHandling(
     defaults,
@@ -851,6 +1070,8 @@ export const collectOnboardingSelection = async (
       version: CURRENT_GUIDANCE_VERSION,
     },
     handoffTiming,
+    migrationHandling,
+    migrationTargets,
     productionDeploy,
     questions,
     review: defaults.review,

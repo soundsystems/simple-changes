@@ -1,5 +1,50 @@
 # Developer changelog
 
+## 0.12.0 - 2026-08-12
+
+- Added review-bound migration automation preferences and an executable
+  decision surface:
+  - Repository policy and onboarding now support `ask-after-review`,
+    `auto-apply-reviewed-routine`, `auto-apply-reviewed`, and `never`, with
+    automatic authority bound to exact provider, project, and environment
+    targets.
+  - The closed `migration-review` and `migration-pending` schemas bind saved
+    reviews and freshly observed pending operations to an immutable SHA-256
+    digest of their sorted canonical operation records, where every record
+    contains the revision path and SHA-256 content digest. The new closed
+    `migration-apply-plan` schema adds `scope: "exact-listed-operations"`, and
+    `simple-changes migration decision` requires the review, fresh pending set,
+    and exact apply plan.
+  - Before policy evaluation, the CLI re-hashes every referenced file from the
+    current repository through symlink-safe relative-path validation and
+    requires the review, pending, and apply-plan identities to match. Missing or
+    malformed identity, symlinked paths, replayed pending evidence, changed
+    operation membership, and same-path content edits all fail closed.
+  - An automatic decision returns authority only for the canonical operations
+    listed in the exact apply plan. Provider-native commands that apply every
+    pending migration, or any other broader or changed apply command, require
+    fresh review and explicit authority.
+  - The decision remains fail-closed for destructive, irreversible, unbounded,
+    lock-heavy, unprotected, or target-mismatched operations.
+  - Setup, initialization, policy schemas, CLI help, references, and regression
+    coverage carry the migration choices and exact targets end to end.
+- Expanded onboarding and installed-update guidance:
+  - First use can now walk through every main Simple Changes workflow and each
+    preference in plain language, including the advanced break-glass option.
+  - Update notices use practical headlines and summaries, detect Simple
+    Changelogs guidance independently, and offer a combined walkthrough only
+    when both skills have meaningful updates.
+  - Changelog-required initialization now resolves owner-controlled update
+    choices before loop start, keeping the shipment lease and pre-ship brief
+    behind that decision boundary.
+- Advanced guidance version 6 and added initialization, onboarding, migration,
+  changelog-coordination, schema, trigger, CLI, and skill-contract regressions
+  for the new behavior.
+<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-12T20:35:29-05:00" -->
+<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-12T20:51:48-05:00" -->
+<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-12T21:00:27-05:00" -->
+<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-12T21:10:13-05:00" -->
+
 ## 0.11.4 - 2026-08-12
 
 - Added fail-closed local reconciliation gates to `loop end` and

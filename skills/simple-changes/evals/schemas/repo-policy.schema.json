@@ -35,6 +35,43 @@
     "handoffTiming": {
       "enum": ["confirm-ready", "automatic", "user-signaled"]
     },
+    "migrationHandling": {
+      "enum": [
+        "ask-after-review",
+        "auto-apply-reviewed-routine",
+        "auto-apply-reviewed",
+        "never"
+      ]
+    },
+    "migrationTargets": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["provider", "project", "environment"],
+        "properties": {
+          "provider": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9._-]+$"
+          },
+          "project": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": "^[A-Za-z0-9._/-]+$"
+          },
+          "environment": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9._-]+$"
+          }
+        }
+      }
+    },
     "uiArtifactVersioning": {
       "enum": [
         "repository-convention",
@@ -58,5 +95,23 @@
     "concurrentWork": {
       "enum": ["allow-claimed", "strict", "preserve"]
     }
-  }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "migrationHandling": {
+            "enum": ["auto-apply-reviewed-routine", "auto-apply-reviewed"]
+          }
+        },
+        "required": ["migrationHandling"]
+      },
+      "then": {
+        "properties": {
+          "migrationTargets": { "minItems": 1 }
+        },
+        "required": ["migrationTargets"]
+      }
+    }
+  ]
 }

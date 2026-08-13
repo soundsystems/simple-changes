@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.12.0 - 2026-08-12
+
+- Update notices now use clear headlines and short practical summaries, while
+  first-use onboarding walks through every main Simple Changes workflow.
+- Simple Changes now separately detects when an installed Simple Changelogs
+  skill is newer than the repository's recorded guidance.
+- When a shipment requires changelog work, any Simple Changelogs update choice
+  is completed before the shipment loop, lease, or pre-ship brief begins.
+- Saved `shippingMode: "break-glass"` with `productionDeploy: "allow"` now
+  makes an ordinary Ship request sufficient, without a redundant authorization
+  phrase. Proven rollback and full post-deployment completion remain mandatory.
+- Migration setup now offers `ask-after-review`,
+  `auto-apply-reviewed-routine`, `auto-apply-reviewed`, and `never` modes,
+  bound to exact saved provider, project, and environment targets.
+- Every migration is technically reviewed before an apply decision. The new
+  migration decision command requires the saved review, a fresh pending set,
+  and an exact apply plan. It binds them to the SHA-256 identity of canonical
+  operation records containing each revision path and content digest, rejects
+  symlinked paths, and re-hashes the current repository files before policy
+  evaluation. Automatic authority covers only the exact listed operations;
+  replayed evidence, same-path content edits, and broad native apply-all
+  commands fail closed and require explicit authority, as do other safety-gate
+  failures.
+
 ## 0.11.4 - 2026-08-12
 
 - Terminal completion now refuses to close until the primary checkout is clean

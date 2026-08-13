@@ -121,6 +121,68 @@ describe("closed schemas", () => {
     ).toThrow("uiArtifactVersioning");
   });
 
+  test("requires exact targets for automatic migration handling", () => {
+    expect(() =>
+      validateSchema<RepoPolicy>("repo-policy", {
+        ...DEFAULT_POLICY,
+        migrationHandling: "auto-apply-reviewed",
+      })
+    ).toThrow("migrationTargets");
+    expect(
+      validateSchema<RepoPolicy>("repo-policy", {
+        ...DEFAULT_POLICY,
+        migrationHandling: "auto-apply-reviewed-routine",
+        migrationTargets: [
+          {
+            environment: "production",
+            project: "primary-db",
+            provider: "supabase",
+          },
+        ],
+      }).migrationHandling
+    ).toBe("auto-apply-reviewed-routine");
+  });
+
+  test("requires immutable identity for reviewed and pending migration sets", () => {
+    const operations = [
+      {
+        contentDigest: "b".repeat(64),
+        revision: "supabase/migrations/20260812090000_add_index.sql",
+      },
+    ];
+    const digest = "a".repeat(64);
+    expect(() =>
+      validateSchema("migration-review", {
+        backupOrRollbackVerified: true,
+        destructive: false,
+        irreversible: false,
+        lockHeavy: false,
+        postApplyVerificationPlanned: true,
+        reviewed: true,
+        routine: true,
+        target: {
+          environment: "production",
+          project: "db",
+          provider: "supabase",
+        },
+        unboundedDataChange: false,
+      })
+    ).toThrow();
+    expect(
+      validateSchema<{ digest: string; operations: typeof operations }>(
+        "migration-pending",
+        { digest, operations }
+      )
+    ).toEqual({ digest, operations });
+    expect(
+      validateSchema("migration-apply-plan", {
+        digest,
+        operations,
+        scope: "exact-listed-operations",
+      })
+    ).toBeDefined();
+  });
+
   test("accepts a digest-bound changelog delegation receipt", () => {
     const receipt: ChangelogReceipt = {
       checks: ["release policy"],

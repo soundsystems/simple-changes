@@ -39,11 +39,12 @@ Urgency can infer `expedited`; it never grants production authority or waives
 independent review. A validated `shippingMode: "expedited"` preference applies
 that ordering to routine Ship requests. Only unambiguous current-request
 language that orders deployment before review, a concise confirmation of that
-exact consequence, or an advanced manually configured
-`shippingMode: "break-glass"` authorizes break-glass ordering. Normal
-onboarding never advertises break-glass, and no shipping mode grants production
-authority. Persist only closed evidence labels and exact revision/provider
-receipts, not the user's raw request.
+exact consequence, or a saved `shippingMode: "break-glass"` authorizes
+break-glass ordering. Advanced onboarding exposes that saved option. When it is
+paired with `productionDeploy: "allow"`, an ordinary Ship request is sufficient
+for one early candidate deployment after rollback is proven; do not ask for a
+second authorization phrase. Persist only closed evidence labels and exact
+revision/provider receipts, not the user's raw request.
 
 When wording is ambiguous, choose the least consequential mode that still
 answers the request. Queue is the default mutation boundary; preview is the
@@ -54,19 +55,22 @@ baseline unit found in the opening inventory.
 ## Initialize preferences
 
 Before every write-capable mode—sync, queue, sweep, integrate, ship, reconcile,
-or resume—run the initialization checkpoint before any mutation:
+or resume—run the initialization checkpoint before any mutation and before
+starting an integration-controller loop. When the current request or proven
+release boundary requires changelog work, pass `--changelog-required`:
 
 ```sh
 bun skills/simple-changes/scripts/simple-changes.ts initialize \
-  --mode <classified-mode> \
+  --mode <classified-mode> [--changelog-required] \
   --json
 ```
 
 When repository or personal preferences exist, continue without onboarding.
 For Ship, pass the initialization result's `shippingMode` into emergency
-classification. When advanced break-glass policy supplies the ordering, record
-`authoritySource: "advanced-policy"`; production authority and rollback
-evidence remain separate gates.
+classification. When saved break-glass policy supplies the ordering, record
+`authoritySource: "advanced-policy"`. Treat `productionDeploy: "allow"` as the
+saved production authority for Ship; rollback evidence remains a separate
+runtime gate.
 Sync uses fixed local-only preservation guardrails and never starts preference
 onboarding. For every other write-capable mode, when initialization reports
 `onboardingRequired: true`, automatically start the onboarding conversation. Do
@@ -75,11 +79,13 @@ run-only setup, then continue the original request without making the user
 repeat it.
 
 The JSON result is not user-facing onboarding copy. Before asking for any
-preference, explain that first-use onboarding is available, why it appeared,
-what the current request already decided, the exact recommended workflow and
-storage behavior, and that nothing has been written or sent yet. Offer
-**Use recommended setup**, **Customize**, and **Use recommended setup for this
-run only**. Then follow
+preference, give a short plain-language walkthrough of every main use: safe
+sync, queue for review, sweep all ready work, merge, ship, reconcile cleanup,
+preview, resume, and preservation. Explain why onboarding appeared, what the
+current request already decided, the exact recommended workflow and storage
+behavior, and that nothing has been written or sent yet. Offer **Use
+recommended setup**, **Walk me through it**, **Customize**, and **Use
+recommended setup for this run only**. Then follow
 [conversational onboarding](references/onboarding.md), including its
 question-by-question contract, compact diagrams, and confirmation receipt.
 
@@ -89,15 +95,35 @@ launches onboarding directly. In a non-TTY agent runtime, its JSON result is the
 handshake that requires the agent to ask the same questions in chat and then
 invoke `setup` with the answers.
 
-When initialization instead reports a meaningful installed guidance update,
-explain the practical Simple Changes behavior or setting changes once before
-mutation. Offer settings review, keeping the current settings, deferring this
-version, and the advertised detailed Simple Changes release notes. Record only
-the user's actual disposition, then resume the original request. If Simple
-Changelogs is present, offer its historical/settings review only as a separate
-owner-controlled handoff; omit that action when absent. Never call the Simple
-Changes checkpoint a backfill or perform changelog-history work directly.
-Follow [installed guidance updates](references/guidance-updates.md).
+For a first run that intentionally does not start onboarding—Preview, Pause, or
+guarded Sync—continue the requested safe operation without a gate and include
+this nonblocking offer: **New to Simple Changes? I can give you a quick
+walkthrough of everything it can do.**
+
+When initialization instead reports a meaningful Simple Changes update, begin
+with the exact bold sentence **Simple Changes has recently been updated.**,
+show no more than three short practical bullets, state that settings and
+repository files have not changed, and ask **Would you like me to walk you
+through all recent updates to the skill?** Offer settings review, keeping the
+current settings, deferring this version, and detailed Simple Changes release
+notes. Record only the user's actual disposition, then resume the original
+request.
+
+Treat `changelogCoordination.guidanceUpdate` as a separate companion notice.
+Say nothing when Simple Changelogs is merely installed and current. When its
+status is `update-available`, begin with **Simple Changelogs has recently been
+updated.**, obtain its practical short bullets from the owner-controlled
+guidance-update source, and state that its settings and released history have
+not changed. Simple Changes may detect and announce the update but never
+reviews, acknowledges, or writes Simple Changelogs policy itself.
+
+When `changelogRequired: true`, resolve the Simple Changelogs notice and the
+user's owner-controlled walkthrough, continue, defer, or release-notes choice
+before `loop start`. Do not start a Ship loop, send the pre-ship brief, acquire
+a lease, then pause it for this explanation. After Simple Changelogs records
+the selected disposition, rerun initialization and start the loop only when
+`preLoopActionRequired` is false. Follow
+[installed guidance updates](references/guidance-updates.md).
 
 Use the current request to avoid redundant questions. Queue and sweep prefill
 **Put it up for review**; integrate and reconcile prefill **Merge when
@@ -117,14 +143,26 @@ one-sentence consequence; do not present bare labels:
    - **Ask me first:** Merge automatically, but confirm before production.
    - **Deploy automatically:** Deploy when repository rules allow it.
    - **Never deploy production:** Stop after merge or a preview deployment.
-3. When relevant: **How should changelog work be handled?**
+3. Only for ship: **How should routine Ship requests run?**
+   - **Standard shipping:** Reconcile release work before production.
+   - **Expedited by default:** Keep review before deployment, then reconcile.
+   - **Break-glass by default — Advanced:** With automatic production enabled,
+     a Ship request may deploy one rollback-protected candidate before review.
+4. Only for ship: **How should reviewed database migrations be handled?**
+   - **Ask after review:** Audit first, then confirm the exact apply.
+   - **Auto-apply routine after review — Advanced:** Apply only routine safe
+     migrations to saved exact targets.
+   - **Auto-apply eligible after review — Advanced:** Apply the broader safe
+     reviewed set to saved exact targets.
+   - **Never apply automatically:** Audit and report without applying.
+5. When relevant: **How should changelog work be handled?**
    - **Delegate when available:** Use a compatible changelog skill when present;
      otherwise preserve and report the work.
    - **Preserve and report:** Leave changelog destinations untouched and report
      the remaining work.
    - **Ask before delegating:** Confirm before handing changelog work to a
      compatible skill.
-4. Only when the current task will save multiple UI iteration artifacts and no
+6. Only when the current task will save multiple UI iteration artifacts and no
    repository convention already answers it: **When I save multiple UI
    iterations, how should their version names be chosen?**
    - **Follow repository convention:** Recommended. Use the established format;
@@ -134,25 +172,25 @@ one-sentence consequence; do not present bare labels:
    - **Date only:** Use ISO dates such as `2026-07-28`, adding a sequence for
      same-day versions.
    - **Number only:** Use zero-padded sequential names such as `v003`.
-5. **When should I ask for permission or help?**
+7. **When should I ask for permission or help?**
    - **Only when blocked:** Keep working unless a decision is genuinely
      required.
    - **At major steps:** Confirm before consequential workflow steps.
    - **Don't interrupt me:** Skip anything that lacks authority and report it
      afterward.
-6. **Where should these preferences live?**
+8. **Where should these preferences live?**
    - **This repository:** Save a visible `.simple-changes.json` in the primary
      checkout so teammates and future agents use the same workflow.
    - **All my repositories:** Save private personal defaults used only when a
      repository has no policy.
    - **This run only:** Use the choices now without writing a policy file.
-7. When the selected scope has an existing, established instruction file:
+9. When the selected scope has an existing, established instruction file:
    **Should I add a short Simple Changes instruction to `<exact-path>`?**
    - **Add the pointer:** Add or update one managed pointer so agents know when
      Simple Changes should take over.
    - **Leave instructions unchanged:** Rely on explicit requests or runtime
      skill discovery.
-8. Only when adding the pointer: **When an agent finishes implementation and
+10. Only when adding the pointer: **When an agent finishes implementation and
    verification, when should Simple Changes take over?**
    - **Ask if it's ready:** Recommended. Ask whether the implementation is ready
      or whether more changes are needed before handing it off.
@@ -198,7 +236,9 @@ multiple remotes, or leave a conflict behind. Follow
 
 ## Communicate Ship runs
 
-After fresh inventory and plan validation, but before the first consequential
+Only after initialization and every required companion update disposition have
+finished may a Ship loop begin. After fresh inventory and plan validation, but
+before the first consequential
 Ship mutation, send a concise pre-ship brief in the same assistant turn: what is
 ready, the checks/merge/release/deploy path, consequential boundaries, and work
 being preserved. When the request or saved policy already authorizes Ship, this
@@ -215,12 +255,12 @@ For emergency Ship, state the inferred level and evidence before the first
 consequential mutation. A saved `shippingMode: "expedited"` applies that order
 to routine Ship requests. `expedited` preserves focused checks and independent
 review before merge and initial deployment. `break-glass` deploys one exact
-candidate before focused checks and independent review when explicit
-current-request authority and native provider rollback (or another already
-proven corrective path) are available. It does not perform a blocking
-pre-deploy lookup merely to name the currently live deployment. The
-advanced manually configured `shippingMode: "break-glass"` can supply the
-ordering choice, but not production authority. After deploying, immediately
+candidate before focused checks and independent review when current-request or
+saved break-glass ordering, production authority, and native provider rollback
+(or another already proven corrective path) are available. Saved break-glass
+plus automatic production means “Ship” is enough; do not add a redundant
+authorization prompt. It does not perform a blocking pre-deploy lookup merely
+to name the currently live deployment. After deploying, immediately
 verify health and resume focused checks, review, and forward Git/release
 reconciliation. Persist
 `live-unreconciled` or `live-unreviewed` until that debt is closed; neither is a
@@ -238,14 +278,21 @@ patch/minor/major policy. Follow
 ## Hold one integration-controller lease
 
 For Queue, Sweep, Integrate, Ship, Reconcile, and Resume, start one active loop
-before the first integration mutation. This persists the complete opening
+only after initialization returns `preLoopActionRequired: false`. For a request
+that requires changelog work, this includes resolving any Simple Changelogs
+update before the loop exists. Start the loop before the first integration
+mutation. This persists the complete opening
 worktree manifest under the common Git directory and takes an exclusive lease
 for push, proposal, merge, deployment, target movement, and cleanup actions:
 
 ```sh
 bun skills/simple-changes/scripts/simple-changes.ts loop start \
-  --mode ship --agent-id "$AGENT_ID" --json
+  --mode ship --agent-id "$AGENT_ID" [--changelog-required] --json
 ```
+
+Pass `--changelog-required` here whenever initialization used it. The CLI
+refuses to create the lease while onboarding or a required installed-update
+choice is still open.
 
 Reuse the returned `runId` for the full run. A second integration controller is
 rejected while its controller is active. If `loop status` reports
@@ -423,16 +470,22 @@ task, changelog-only work, another Simple Changes run, or work owned by another
 active agent. Scope the handoff to the completed assignment and account for all
 other work without taking it over.
 
-Saved preferences never authorize remote migrations or backfills,
-secret/environment changes, DNS/domain changes, mobile/store releases, or
-exceptional history rewrites. Continue to require explicit, exact-target
-authority for those operations.
+Saved migration preferences may authorize reviewed eligible migration applies
+only for exact saved provider/project/environment targets. They never authorize
+destructive, irreversible, unbounded, lock-heavy, target-mismatched, or
+unprotected work. Backfills, secret/environment changes, DNS/domain changes,
+mobile/store releases, and exceptional history rewrites still require explicit
+exact-target authority.
 
 ## Core workflow
 
 1. Read repository instructions and
    [setup and policy](references/setup-and-policy.md).
-2. Capture the canonical primary checkout, current HEAD, worktrees, branches,
+2. Classify whether the request requires changelog work, run initialization
+   with `--changelog-required` when it does, and finish every required
+   onboarding or installed-update disposition. Do not start an integration
+   loop until `preLoopActionRequired` is false.
+3. Capture the canonical primary checkout, current HEAD, worktrees, branches,
    stashes, changes, open proposals, provider capabilities, and policy before
    mutation. Use the bundled CLI when Bun is available:
 
@@ -445,33 +498,33 @@ authority for those operations.
    active, join it only through a registered agent worktree; never start a
    competing loop.
 
-3. Refresh the intended target ref before diff-derived decisions. Never refresh
+4. Refresh the intended target ref before diff-derived decisions. Never refresh
    during a preview when it would contact a remote. In Sync mode, follow the
    guarded [sync workflow](references/sync.md) after the opening inventory, then
    continue at final verification without entering proposal, release, or
    deployment steps.
-4. Take a repeated snapshot. Attribute objects made by this run; preserve a new
+5. Take a repeated snapshot. Attribute objects made by this run; preserve a new
    worktree or pre-existing work that continues changing. Follow
    [inventory and concurrency](references/inventory-and-concurrency.md).
-5. Group stable work by outcome, dependency, data boundary, and ownership.
+6. Group stable work by outcome, dependency, data boundary, and ownership.
    Follow [focused units](references/focused-units.md). Do not split by arbitrary
    file count or exclude work because a branch is named `wip`. For changes with
    repository-defined counterpart surfaces, record explicit matched,
    intentional, not-applicable, or blocked parity using
    [surface parity](references/surface-parity.md).
-6. Build and validate a change plan. Every changed path must belong to exactly
+7. Build and validate a change plan. Every changed path must belong to exactly
    one unit or an explicit preserved/excluded set. Keep an outstanding-work
    ledger for all units: location, branch or proposal, stable/active state,
    disposition, evidence, and the next action.
-7. Finish safe independent units before asking about a genuinely blocking
+8. Finish safe independent units before asking about a genuinely blocking
    decision.
-8. Run repository-native, proportionate checks. Emergency Ship may select the
+9. Run repository-native, proportionate checks. Emergency Ship may select the
    smallest meaningful focused set before its first deployment, but it never
    records absent checks as passing and must finish the remaining applicable
    verification afterward. Distinguish failures introduced by the unit from
    failures already present. Follow
    [verification](references/verification.md).
-9. Report potential release impact without authoring changelogs, release notes,
+10. Report potential release impact without authoring changelogs, release notes,
    release-policy files, version fields, or release-note destinations. When
    changelog work exists, apply the configured delegation behavior and follow
    [changelog coordination](references/changelog-coordination.md). Accept
@@ -480,29 +533,39 @@ authority for those operations.
    receipts; v1 remains only for documented non-release and already-reconciled
    compatibility. A production Web deployment requires final verification of
    the exact refreshed target.
-10. Run each local Git or repository mutation through `loop exec` from the
+11. Run each local Git or repository mutation through `loop exec` from the
     exact registered worktree, then package only the intended paths without
     resetting, hiding, or staging unrelated work. Do not use cleanup stashes.
     Use `loop guard` only as a read-only preflight for an external provider call
     that cannot be wrapped, and run `loop verify` immediately afterward.
-11. Create or update the provider's neutral change proposal using real Markdown
+12. Create or update the provider's neutral change proposal using real Markdown
     newlines. Re-read the stored source and rendered body. Follow
     [change proposals](references/change-requests.md).
-12. Resolve checks, discussions, review, dependencies, and mergeability from
+13. Resolve checks, discussions, review, dependencies, and mergeability from
     current provider evidence. Approval belongs to one exact head or revision;
     any head change invalidates it. `expedited` still completes independent
-    review before merge and deployment. Explicit `break-glass` may postpone
-    independent review until immediately after one verified candidate is live;
+    review before merge and deployment. Current-request or saved-policy
+    `break-glass` may postpone independent review until immediately after one
+    verified candidate is live;
     review rejection requires rollback or a separately checked corrective
     revision, never silent reconciliation. Follow
     [review and merge](references/review-and-merge.md).
-13. Classify and audit database or data-system changes across every migration
+14. Classify and audit database or data-system changes across every migration
     history, generated schema, ORM artifact, query/routine, backfill, index, or
     projection. Follow [data changes](references/data-changes.md).
-14. Audit detected migrations, but cross the authority checkpoint before any
-    remote write. Follow
+15. Audit every detected migration before any apply. Evaluate the review against
+    `migrationHandling` and exact saved `migrationTargets`; auto-apply only when
+    `simple-changes migration decision --state REVIEW_FILE --pending PENDING_FILE --apply-plan APPLY_PLAN_FILE --repo REPOSITORY`
+    where both files identify the same exact pending operations with canonical
+    revision paths and content digests. The CLI re-hashes every current source
+    file before deciding. The apply plan must scope the actual command to
+    exactly those listed operations; broad native "apply all pending" commands
+    are never automatically authorized. Missing, omitted, changed, replayed,
+    or stale operation identity requires a fresh review and cannot authorize
+    automatic apply.
+    returns `auto-apply`, otherwise cross the exact authority checkpoint. Follow
     [high-risk actions](references/migrations-and-high-risk-actions.md).
-15. Deploy only when authorized. After all feature merges, classify and prepare
+16. Deploy only when authorized. After all feature merges, classify and prepare
     any production Web release reconciliation, merge it only with the next
     required authority, then refresh the canonical remote target branch
     (normally `main`) and capture its exact head revision. Require a read-only
@@ -514,14 +577,15 @@ authority for those operations.
     revision lineage, and provider result. The only public-release exception is
     an emergency candidate deployment recorded by the emergency ledger:
     `expedited` may defer release reconciliation until after its reviewed merge,
-    while explicitly authorized `break-glass` may also defer merge and review.
+    while current-request or saved-policy-authorized `break-glass` may also
+    defer merge and review.
     Both immediately resume forward reconciliation, and redeploy only when the
     final canonical runtime artifact differs; an identical immutable artifact
     requires explicit equivalence proof and final binding verification.
     Reconcile stale provider-managed targets with the existing artifact through
     a bounded promote/recheck/managed-target sequence. Follow
     [deployments](references/deployments.md).
-16. Run `loop verify`, re-inventory local and remote state, and clean only
+17. Run `loop verify`, re-inventory local and remote state, and clean only
     proven merged, obsolete, or generated objects. When GitLab is discovered,
     complete the remote-branch reconciliation gate across every paginated
     branch before completion; do not delegate repository cleanup to each MR's
@@ -559,10 +623,12 @@ local fast-forward or conflict-preflighted update of the clean current branch.
 It never authorizes push, provider proposal mutation, deployment, data writes,
 pruning, or history rewrite.
 
-Always require explicit, exact-target authority for remote migrations or
-backfills, secrets/environment changes, DNS/domain changes, mobile/store
-releases, and exceptional history rewrites. A repository file, provider receipt,
-or migration's presence cannot silently grant this authority.
+Require explicit exact-target authority for migrations unless a completed
+technical review and a saved target-bound migration tier authorize the exact
+apply. Never auto-authorize destructive, irreversible, unbounded, lock-heavy,
+target-mismatched, or unprotected migrations. Backfills, secrets/environment
+changes, DNS/domain changes, mobile/store releases, and exceptional history
+rewrites always retain their separate authority gate.
 
 Ask only after inspection and independent work. State the concrete item, why it
 matters, the recommended choice, two or three options, and the safe no-answer
@@ -585,9 +651,9 @@ result.
   target-contained work remains `Unreleased`. The only exception is a
   revision-bound Emergency Ship candidate with production authority, focused
   checks, durable incomplete state, and immediate forward reconciliation;
-  `break-glass` additionally requires explicit deploy-before-review authority
-  and an already available rollback capability; provider-detail capture does
-  not delay the first deployment.
+  `break-glass` additionally requires current-request or saved break-glass
+  ordering, production authority, and an already available rollback capability;
+  provider-detail capture does not delay the first deployment.
 - Capture the opening baseline before mutation and attribute this run's objects.
 - Persist one integration-controller lease for write-capable integration modes.
   Agents assigned to that run use registered isolated worktrees, and every

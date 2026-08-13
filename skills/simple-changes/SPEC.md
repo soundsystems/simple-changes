@@ -31,15 +31,16 @@
 - For completed-work handoff, the closed initialization status and attributable
   implementation scope.
 - For saved preferences, the stored Simple Changes guidance version and
-  disposition plus any discovered Simple Changelogs capability.
+  disposition plus the selected Simple Changelogs provider and its installed
+  and repository-recorded guidance versions.
 - When multiple UI iterations will be saved, the repository convention or
   closed fallback artifact-naming preference.
 
 ## Outputs
 
 - A validated initialization status before mutation.
-- For meaningful installed updates, a one-time Simple Changes change/settings
-  notice with an optional separately owned Simple Changelogs review handoff.
+- For meaningful installed updates, a clear one-time Simple Changes notice and,
+  when proven, a separately owned Simple Changelogs update notice.
 - A focused plan and explicit outstanding-work ledger.
 - Verified proposals, merges, deployments, or preserved work within the
   authorized finish boundary.
@@ -53,6 +54,8 @@
   incomplete-state ledger, known rollback capability for break-glass, and a
   conditional final deployment decision based on canonical revision or proven
   immutable artifact equivalence.
+- For migrations, a completed technical review, exact target identity, the
+  effective automation tier, and post-apply verification evidence.
 - Exact receipts for policy and managed instruction-pointer writes.
 
 ## Guarantees
@@ -117,6 +120,9 @@
   until the user reviews, accepts, or defers it. The recorded disposition
   suppresses repeat prompting for that version without granting changelog
   authority.
+- A required changelog update blocks loop creation until Simple Changelogs owns
+  and records the user's disposition. The shipment loop, lease, and pre-ship
+  brief begin only afterward.
 - Instruction setup updates only an existing exact file after confirmation,
   rejects symlinks and malformed managed blocks, and never creates a missing
   instruction file.
@@ -128,14 +134,18 @@
 - Authorized Ship runs communicate scope before mutation without adding a
   redundant permission gate, then account for review-driven revisions.
 - Urgency alone selects only expedited shipping. Active user impact or a tested
-  production-ready claim may recommend break-glass, but only explicit
-  deploy-before-review direction authorizes it. Expedited keeps independent
-  review before merge and deployment. Break-glass deploys immediately when
-  production authority and known native rollback capability exist, without a
-  blocking current-production lookup or focused checks; those checks, review,
-  canonical Git and release reconciliation, final live verification, and
-  cleanup then run immediately and remain required for completion.
-- Deployment and high-risk actions retain their independent authority checks.
+  production-ready claim may recommend break-glass. Explicit current-request
+  direction or saved break-glass policy authorizes the ordering. When saved
+  automatic production authority is also effective, “Ship” is sufficient and
+  no redundant authorization prompt is added. Break-glass still requires known
+  rollback capability; checks, review, canonical Git and release
+  reconciliation, final live verification, and cleanup run immediately and
+  remain required for completion.
+- Every migration is technically reviewed before apply. Target-bound automatic
+  tiers may authorize reviewed routine or broader eligible work, but never
+  destructive, irreversible, unbounded, lock-heavy, unprotected, or
+  target-mismatched operations. Other high-risk actions retain independent
+  authority checks.
 - Public-version preferences remain exclusively owned by Simple Changelogs.
   Version direction is distinct from a blocker, approvals are digest- and
   revision-bound, and final deployment requires the verified reconciliation
@@ -164,10 +174,15 @@
 - Reporting the original Ship plan as delivered without reconciling review
   changes and final provider evidence.
 - Treating emotional urgency, active impact, or a tested claim as implicit
-  authority to deploy before review; saving Emergency Ship as a default; or
-  marking `live-unreviewed` or `live-unreconciled` work complete.
+  authority to deploy before review; treating break-glass policy without
+  production authority as deploy permission; or marking `live-unreviewed` or
+  `live-unreconciled` work complete.
+- Applying any migration before review, applying to an unbound target, or
+  treating an automatic tier as authority for a hard-excluded migration.
 - Directly authoring changelogs, release notes, version fields, or release
   policy.
 - Calling a Simple Changes update checkpoint a changelog backfill, presenting a
   changelog-history action when Simple Changelogs is absent, or performing that
   companion skill's settings/history review directly.
+- Starting a shipment loop and then pausing it to explain or resolve a known,
+  required Simple Changelogs update.

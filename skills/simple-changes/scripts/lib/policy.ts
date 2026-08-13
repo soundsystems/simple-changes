@@ -24,6 +24,8 @@ export const DEFAULT_POLICY: RepoPolicy = {
     version: CURRENT_GUIDANCE_VERSION,
   },
   handoffTiming: "confirm-ready",
+  migrationHandling: "ask-after-review",
+  migrationTargets: [],
   productionDeploy: "ask",
   questions: "blocking-only",
   review: "repository-policy",
@@ -37,6 +39,8 @@ type StoredRepoPolicy = Omit<
   | "changelogHandling"
   | "guidance"
   | "handoffTiming"
+  | "migrationHandling"
+  | "migrationTargets"
   | "shippingMode"
   | "uiArtifactVersioning"
 > & {
@@ -46,6 +50,8 @@ type StoredRepoPolicy = Omit<
     version: number;
   };
   handoffTiming?: RepoPolicy["handoffTiming"];
+  migrationHandling?: RepoPolicy["migrationHandling"];
+  migrationTargets?: RepoPolicy["migrationTargets"];
   shippingMode?: RepoPolicy["shippingMode"];
   uiArtifactVersioning?: RepoPolicy["uiArtifactVersioning"];
 };
@@ -78,6 +84,10 @@ const parsePolicyFile = (path: string): RepoPolicy => {
       version: validated.guidance.version,
     },
     handoffTiming: validated.handoffTiming ?? DEFAULT_POLICY.handoffTiming,
+    migrationHandling:
+      validated.migrationHandling ?? DEFAULT_POLICY.migrationHandling,
+    migrationTargets:
+      validated.migrationTargets ?? DEFAULT_POLICY.migrationTargets,
     shippingMode: validated.shippingMode ?? DEFAULT_POLICY.shippingMode,
     uiArtifactVersioning:
       validated.uiArtifactVersioning ?? DEFAULT_POLICY.uiArtifactVersioning,

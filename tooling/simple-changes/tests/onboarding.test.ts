@@ -4,6 +4,7 @@ import { resolve } from "node:path";
 import {
   collectOnboardingSelection,
   HANDOFF_CHOICES,
+  MIGRATION_HANDLING_CHOICES,
   ONBOARDING_QUESTIONS,
   type OnboardingChoice,
   renderOnboardingSummary,
@@ -203,6 +204,7 @@ describe("onboarding conversation", () => {
         ?.map((choice) => choice.label)
     ).toEqual([
       "Use recommended setup",
+      "Walk me through it",
       "Customize",
       "Use recommended setup for this run only",
     ]);
@@ -260,6 +262,20 @@ describe("onboarding conversation", () => {
         capabilityAvailable: false,
         capabilityHelpers: [],
         capabilityStatus: "absent",
+        guidanceUpdate: {
+          actions: [],
+          detailsPath: null,
+          headline: "**Simple Changelogs has recently been updated.**",
+          installedVersion: null,
+          owner: null,
+          policyPath: null,
+          provider: null,
+          status: "absent",
+          storedVersion: null,
+          summaryBullets: [],
+          walkthroughQuestion:
+            "Would you like me to walk you through the recent Simple Changelogs updates before I continue?",
+        },
         providers: [],
         releaseSurfaces: ["CHANGELOG.md"],
         relevant: true,
@@ -284,6 +300,7 @@ describe("onboarding conversation", () => {
       [ONBOARDING_QUESTIONS.finish, "ship"],
       [ONBOARDING_QUESTIONS.production, "allow"],
       [ONBOARDING_QUESTIONS.shippingMode, "expedited"],
+      [ONBOARDING_QUESTIONS.migrationHandling, "ask-after-review"],
       [ONBOARDING_QUESTIONS.permission, "never"],
       [ONBOARDING_QUESTIONS.scope, "repository"],
     ]);
@@ -297,7 +314,7 @@ describe("onboarding conversation", () => {
         },
         confirm: (summary: string) =>
           Promise.resolve(
-            summary.includes("explicit, exact-target authorization")
+            summary.includes("explicit exact-target authorization")
           ),
       }
     );
@@ -306,6 +323,7 @@ describe("onboarding conversation", () => {
       ONBOARDING_QUESTIONS.finish,
       ONBOARDING_QUESTIONS.production,
       ONBOARDING_QUESTIONS.shippingMode,
+      ONBOARDING_QUESTIONS.migrationHandling,
       ONBOARDING_QUESTIONS.permission,
       ONBOARDING_QUESTIONS.scope,
     ]);
@@ -313,6 +331,7 @@ describe("onboarding conversation", () => {
       confirmed: true,
       policy: {
         defaultFinish: "ship",
+        migrationHandling: "ask-after-review",
         productionDeploy: "allow",
         questions: "never",
         shippingMode: "expedited",
@@ -323,7 +342,7 @@ describe("onboarding conversation", () => {
       "Your workflow is set to Ship when approved."
     );
     expect(selection.summary).toContain(
-      "Remote migrations, backfills, secrets, DNS changes"
+      "Every migration is reviewed before apply"
     );
     expect(selection.summary).toContain(
       "Expedited shipping keeps review and merge before the first deployment"
@@ -331,12 +350,73 @@ describe("onboarding conversation", () => {
     expect(SHIPPING_MODE_CHOICES.map((choice) => choice.value)).toEqual([
       "standard",
       "expedited",
+      "break-glass",
     ]);
-    expect(
-      SHIPPING_MODE_CHOICES.some(
-        (choice) => (choice.value as string) === "break-glass"
-      )
-    ).toBe(false);
+  });
+
+  test("offers target-bound reviewed migration automation tiers", async () => {
+    const questions: string[] = [];
+    const selection = await collectOnboardingSelection(
+      DEFAULT_POLICY,
+      {
+        defaultFinish: "ship",
+        migrationTargets: [
+          {
+            environment: "production",
+            project: "primary-db",
+            provider: "supabase",
+          },
+        ],
+      },
+      {
+        choose: (question) => {
+          questions.push(question);
+          if (question === ONBOARDING_QUESTIONS.production) {
+            return Promise.resolve("allow");
+          }
+          if (question === ONBOARDING_QUESTIONS.shippingMode) {
+            return Promise.resolve("break-glass");
+          }
+          if (question === ONBOARDING_QUESTIONS.migrationHandling) {
+            return Promise.resolve("auto-apply-reviewed-routine");
+          }
+          if (question === ONBOARDING_QUESTIONS.permission) {
+            return Promise.resolve("never");
+          }
+          if (question === ONBOARDING_QUESTIONS.scope) {
+            return Promise.resolve("run");
+          }
+          return Promise.resolve("");
+        },
+        confirm: () => Promise.resolve(true),
+      }
+    );
+
+    expect(questions).toContain(ONBOARDING_QUESTIONS.migrationHandling);
+    expect(MIGRATION_HANDLING_CHOICES.map((choice) => choice.value)).toEqual([
+      "ask-after-review",
+      "auto-apply-reviewed-routine",
+      "auto-apply-reviewed",
+      "never",
+    ]);
+    expect(selection.policy).toMatchObject({
+      migrationHandling: "auto-apply-reviewed-routine",
+      productionDeploy: "allow",
+      shippingMode: "break-glass",
+    });
+    expect(selection.policy.migrationTargets).toEqual([
+      {
+        environment: "production",
+        project: "primary-db",
+        provider: "supabase",
+      },
+    ]);
+    expect(selection.summary).toContain(
+      "Production deployment is pre-approved"
+    );
+    expect(selection.summary).toContain(
+      "Auto-apply routine after review — Advanced"
+    );
   });
 
   test("explains how to use the skill before asking onboarding questions", async () => {
@@ -363,8 +443,14 @@ describe("onboarding conversation", () => {
     );
 
     expect(events[0]).toContain("inventory");
-    expect(events[0]).toContain("Put it up");
-    expect(events[0]).toContain("Ship it");
+    expect(events[0]).toContain("Put this up");
+    expect(events[0]).toContain("Ship what’s ready");
+    expect(events[0]).toContain("Sync with main");
+    expect(events[0]).toContain("Open changes for everything ready");
+    expect(events[0]).toContain("Clean up the repo");
+    expect(events[0]).toContain("Show me what you would do");
+    expect(events[0]).toContain("Leave this work alone");
+    expect(events[0]).toContain("Would you like a walkthrough");
     expect(events[0]).toContain("verify the exact delivered revision");
     expect(events[1]).toBe(`question:${ONBOARDING_QUESTIONS.start}`);
   });

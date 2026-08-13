@@ -2,8 +2,38 @@ import type {
   EmergencyShippingEvidence,
   EmergencyShippingIntent,
   EmergencyShippingMode,
+  RepoPolicy,
   RequestMode,
 } from "./types.ts";
+
+export interface EmergencyShippingPolicyAuthority {
+  authoritySource: "advanced-policy" | "explicit-current-request" | null;
+  breakGlassAuthorized: boolean;
+  productionAuthorized: boolean;
+}
+
+export const resolveEmergencyShippingPolicyAuthority = (
+  intent: EmergencyShippingIntent,
+  policy: RepoPolicy
+): EmergencyShippingPolicyAuthority => {
+  const explicitBreakGlass = intent.evidence.includes("deploy-before-review");
+  const advancedBreakGlass =
+    intent.mode === "break-glass" && policy.shippingMode === "break-glass";
+  let authoritySource: EmergencyShippingPolicyAuthority["authoritySource"] =
+    null;
+  if (explicitBreakGlass) {
+    authoritySource = "explicit-current-request";
+  } else if (advancedBreakGlass) {
+    authoritySource = "advanced-policy";
+  }
+  return {
+    authoritySource,
+    breakGlassAuthorized:
+      intent.mode === "break-glass" &&
+      (explicitBreakGlass || advancedBreakGlass),
+    productionAuthorized: policy.productionDeploy === "allow",
+  };
+};
 
 const INTEGRATION_PATTERN =
   /\b(package|queue|publish|integrate|merge|ship|reconcile)\b|\bput (?:this|it|these|them)(?:\s+\w+){0,6}\s+up\b|\bfocused (?:pr|prs|mr|mrs|change|changes)\b|\brun the (?:integration )?loop\b/iu;

@@ -11,8 +11,10 @@
     "targetBranch",
     "targetRevision",
     "initialInventoryComplete",
+    "initialCoverage",
     "initialBranchCount",
     "finalInventoryComplete",
+    "finalCoverage",
     "finalBranchCount",
     "branches",
     "observedAt"
@@ -24,8 +26,10 @@
     "targetBranch": { "type": "string", "minLength": 1 },
     "targetRevision": { "type": "string", "pattern": "^[0-9a-f]{40,64}$" },
     "initialInventoryComplete": { "const": true },
+    "initialCoverage": { "$ref": "#/$defs/coverage" },
     "initialBranchCount": { "type": "integer", "minimum": 1 },
     "finalInventoryComplete": { "const": true },
+    "finalCoverage": { "$ref": "#/$defs/coverage" },
     "finalBranchCount": { "type": "integer", "minimum": 1 },
     "branches": {
       "type": "array",
@@ -35,6 +39,54 @@
     "observedAt": { "type": "string", "format": "date-time" }
   },
   "$defs": {
+    "page": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cursorIn", "cursorOut", "itemCount", "responseDigest"],
+      "properties": {
+        "cursorIn": {
+          "anyOf": [{ "type": "string", "minLength": 1 }, { "type": "null" }]
+        },
+        "cursorOut": {
+          "anyOf": [{ "type": "string", "minLength": 1 }, { "type": "null" }]
+        },
+        "itemCount": { "type": "integer", "minimum": 0 },
+        "responseDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+      }
+    },
+    "pagination": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ledgerDigest", "pages"],
+      "properties": {
+        "ledgerDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "pages": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/page" }
+        }
+      }
+    },
+    "coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["branches", "proposals", "proposalStates"],
+      "properties": {
+        "branches": { "$ref": "#/$defs/pagination" },
+        "proposals": { "$ref": "#/$defs/pagination" },
+        "proposalStates": {
+          "type": "array",
+          "prefixItems": [
+            { "const": "closed" },
+            { "const": "merged" },
+            { "const": "open" }
+          ],
+          "items": false,
+          "minItems": 3,
+          "maxItems": 3
+        }
+      }
+    },
     "proposal": {
       "type": "object",
       "additionalProperties": false,
@@ -47,7 +99,9 @@
             { "type": "string", "pattern": "^[0-9a-f]{40,64}$" },
             { "type": "null" }
           ]
-        }
+        },
+        "observedInitially": { "type": "boolean" },
+        "observedFinally": { "type": "boolean" }
       }
     },
     "branch": {

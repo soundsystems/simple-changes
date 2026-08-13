@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { mkdirSync, readFileSync, symlinkSync } from "node:fs";
 import { resolve } from "node:path";
 import {
   collectOnboardingSelection,
@@ -18,6 +18,7 @@ import {
   loadPolicy,
   resolvePersonalPolicyPath,
   writePolicyFile,
+  writeRepositoryPolicyTrustReceipt,
 } from "../../../skills/simple-changes/scripts/lib/policy.ts";
 import type { RepoPolicy } from "../../../skills/simple-changes/scripts/lib/types.ts";
 import {
@@ -80,6 +81,7 @@ describe("preference storage", () => {
     expect(loadPersonalPolicy(personalPath)).toEqual({
       path: personalPath,
       source: "user",
+      trust: "not-required",
       value: personalPolicy,
     });
     expect(
@@ -87,6 +89,7 @@ describe("preference storage", () => {
     ).toEqual({
       path: personalPath,
       source: "user",
+      trust: "not-required",
       value: personalPolicy,
     });
 
@@ -102,7 +105,12 @@ describe("preference storage", () => {
     ).toEqual({
       path: repositoryPath,
       source: "repository",
-      value: repositoryPolicy,
+      trust: "untrusted",
+      value: expect.objectContaining({
+        gitPushAuthorization: "ask",
+        productionDeploy: "ask",
+        shippingMode: "standard",
+      }),
     });
 
     expect(
@@ -120,8 +128,75 @@ describe("preference storage", () => {
     ).toEqual({
       path: null,
       source: "default",
+      trust: "not-required",
       value: DEFAULT_POLICY,
     });
+  });
+
+  test("requires a private digest-bound receipt for consequential repository policy", () => {
+    const fixture = createTestRepository();
+    repositories.push(fixture);
+    const repositoryPath = resolve(fixture.root, ".simple-changes.json");
+    const repositoryPolicy = configuredPolicy({
+      gitPushAuthorization: "configure-harness",
+      productionDeploy: "allow",
+      shippingMode: "break-glass",
+    });
+    writePolicyFile(repositoryPath, repositoryPolicy);
+    const commonGitDirectory = resolve(fixture.root, ".git");
+
+    expect(loadPolicy(fixture.root, { commonGitDirectory }).trust).toBe(
+      "untrusted"
+    );
+    writeRepositoryPolicyTrustReceipt(
+      fixture.root,
+      commonGitDirectory,
+      "user",
+      "Trust this exact repository policy"
+    );
+    expect(loadPolicy(fixture.root, { commonGitDirectory })).toMatchObject({
+      trust: "trusted",
+      value: repositoryPolicy,
+    });
+
+    writePolicyFile(repositoryPath, {
+      ...repositoryPolicy,
+      productionDeploy: "deny",
+    });
+    expect(loadPolicy(fixture.root, { commonGitDirectory }).trust).toBe(
+      "untrusted"
+    );
+  });
+
+  test("rejects repository policy symlinks", () => {
+    const fixture = createTestRepository();
+    repositories.push(fixture);
+    const outside = resolve(fixture.base, "outside-policy.json");
+    writePolicyFile(outside, DEFAULT_POLICY);
+    symlinkSync(outside, resolve(fixture.root, ".simple-changes.json"));
+
+    expect(() => loadPolicy(fixture.root)).toThrow("not a regular file");
+  });
+
+  test("rejects a symlinked common-Git state directory", () => {
+    const fixture = createTestRepository();
+    repositories.push(fixture);
+    const repositoryPath = resolve(fixture.root, ".simple-changes.json");
+    writePolicyFile(
+      repositoryPath,
+      configuredPolicy({ gitPushAuthorization: "configure-harness" })
+    );
+    const outside = resolve(fixture.base, "outside-state");
+    mkdirSync(outside);
+    symlinkSync(outside, resolve(fixture.root, ".git/simple-changes"));
+    expect(() =>
+      writeRepositoryPolicyTrustReceipt(
+        fixture.root,
+        resolve(fixture.root, ".git"),
+        "user",
+        "Trust exact policy"
+      )
+    ).toThrow("symlink ancestor");
   });
 
   test("normalizes legacy v1 policies to the safe changelog default", () => {
@@ -212,10 +287,11 @@ describe("onboarding conversation", () => {
     expect(selection).toMatchObject({ scope: "run", setupStyle: "run" });
   });
 
-  test("asks about production only when shipping is selected", async () => {
+  test("asks about push authorization for every finish that pushes", async () => {
     const questions: string[] = [];
     const answers = new Map<string, string>([
       [ONBOARDING_QUESTIONS.finish, "open-change-request"],
+      [ONBOARDING_QUESTIONS.gitPushAuthorization, "ask"],
       [ONBOARDING_QUESTIONS.permission, "blocking-only"],
       [ONBOARDING_QUESTIONS.scope, "user"],
     ]);
@@ -233,6 +309,7 @@ describe("onboarding conversation", () => {
 
     expect(questions).toEqual([
       ONBOARDING_QUESTIONS.finish,
+      ONBOARDING_QUESTIONS.gitPushAuthorization,
       ONBOARDING_QUESTIONS.permission,
       ONBOARDING_QUESTIONS.scope,
     ]);
@@ -245,6 +322,7 @@ describe("onboarding conversation", () => {
     const questions: string[] = [];
     const answers = new Map<string, string>([
       [ONBOARDING_QUESTIONS.finish, "open-change-request"],
+      [ONBOARDING_QUESTIONS.gitPushAuthorization, "ask"],
       [ONBOARDING_QUESTIONS.changelog, "delegate-if-available"],
       [ONBOARDING_QUESTIONS.permission, "blocking-only"],
       [ONBOARDING_QUESTIONS.scope, "repository"],
@@ -285,6 +363,7 @@ describe("onboarding conversation", () => {
 
     expect(questions).toEqual([
       ONBOARDING_QUESTIONS.finish,
+      ONBOARDING_QUESTIONS.gitPushAuthorization,
       ONBOARDING_QUESTIONS.changelog,
       ONBOARDING_QUESTIONS.permission,
       ONBOARDING_QUESTIONS.scope,
@@ -297,6 +376,7 @@ describe("onboarding conversation", () => {
 
   test("builds and confirms the full ship workflow", async () => {
     const questions: string[] = [];
+    const presented: string[] = [];
     const answers = new Map<string, string>([
       [ONBOARDING_QUESTIONS.finish, "ship"],
       [ONBOARDING_QUESTIONS.production, "allow"],
@@ -318,6 +398,7 @@ describe("onboarding conversation", () => {
           Promise.resolve(
             summary.includes("explicit exact-target authorization")
           ),
+        present: (message: string) => presented.push(message),
       }
     );
 
@@ -360,7 +441,10 @@ describe("onboarding conversation", () => {
       GIT_PUSH_AUTHORIZATION_CHOICES.map((choice) => choice.value)
     ).toEqual(["configure-harness", "ask", "never"]);
     expect(selection.summary).toContain(
-      "configure the narrowest repository-scoped push permission supported by this harness"
+      "grants no credentials, network access, force push, branch-protection bypass"
+    );
+    expect(presented.join("\n")).toContain(
+      "They grant no credentials, network access, force push, branch-protection bypass"
     );
   });
 
@@ -481,6 +565,7 @@ describe("onboarding conversation", () => {
     const defaults: string[] = [];
     const answers = new Map<string, string>([
       [ONBOARDING_QUESTIONS.finish, "open-change-request"],
+      [ONBOARDING_QUESTIONS.gitPushAuthorization, "ask"],
       [ONBOARDING_QUESTIONS.uiArtifactVersioning, "number-and-date"],
       [ONBOARDING_QUESTIONS.permission, "blocking-only"],
       [ONBOARDING_QUESTIONS.scope, "run"],
@@ -503,11 +588,12 @@ describe("onboarding conversation", () => {
 
     expect(questions).toEqual([
       ONBOARDING_QUESTIONS.finish,
+      ONBOARDING_QUESTIONS.gitPushAuthorization,
       ONBOARDING_QUESTIONS.uiArtifactVersioning,
       ONBOARDING_QUESTIONS.permission,
       ONBOARDING_QUESTIONS.scope,
     ]);
-    expect(defaults[1]).toBe("repository-convention");
+    expect(defaults[2]).toBe("repository-convention");
     expect(
       UI_ARTIFACT_VERSIONING_CHOICES.map((choice) => choice.value)
     ).toEqual([
@@ -536,6 +622,7 @@ describe("onboarding conversation", () => {
     );
     const answers = new Map<string, string>([
       [ONBOARDING_QUESTIONS.finish, "open-change-request"],
+      [ONBOARDING_QUESTIONS.gitPushAuthorization, "ask"],
       [ONBOARDING_QUESTIONS.permission, "blocking-only"],
       [ONBOARDING_QUESTIONS.scope, "repository"],
       [pointerQuestion, "add"],
@@ -558,6 +645,7 @@ describe("onboarding conversation", () => {
 
     expect(questions).toEqual([
       ONBOARDING_QUESTIONS.finish,
+      ONBOARDING_QUESTIONS.gitPushAuthorization,
       ONBOARDING_QUESTIONS.permission,
       ONBOARDING_QUESTIONS.scope,
       pointerQuestion,
@@ -592,6 +680,7 @@ describe("onboarding conversation", () => {
     );
     const answers = new Map<string, string>([
       [ONBOARDING_QUESTIONS.finish, "open-change-request"],
+      [ONBOARDING_QUESTIONS.gitPushAuthorization, "ask"],
       [ONBOARDING_QUESTIONS.permission, "blocking-only"],
       [ONBOARDING_QUESTIONS.scope, "repository"],
       [pointerQuestion, "leave"],

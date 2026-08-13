@@ -1,9 +1,118 @@
+import { createHash } from "node:crypto";
 import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
 import { validateSchema } from "./schema.ts";
 import type {
   RemoteBranchReconciliationEntry,
   RemoteBranchReconciliationReceipt,
+  RemoteInventoryCoverage,
 } from "./types.ts";
+
+const validatePagination = (
+  coverage: RemoteInventoryCoverage,
+  branchCount: number,
+  proposalCount: number,
+  label: string
+): void => {
+  for (const [kind, proof, expected] of [
+    ["branch", coverage.branches, branchCount],
+    ["proposal", coverage.proposals, proposalCount],
+  ] as const) {
+    const { pages } = proof;
+    if (pages[0]?.cursorIn !== null || pages.at(-1)?.cursorOut !== null) {
+      throw new SimpleChangesError(
+        `Invalid remote branch reconciliation: ${label} ${kind} pagination must start at the first page and terminate`,
+        EXIT_CODES.validation
+      );
+    }
+    for (let index = 1; index < pages.length; index += 1) {
+      if (pages[index]?.cursorIn !== pages[index - 1]?.cursorOut) {
+        throw new SimpleChangesError(
+          `Invalid remote branch reconciliation: ${label} ${kind} pagination cursor chain is incomplete`,
+          EXIT_CODES.validation
+        );
+      }
+    }
+    if (pages.reduce((total, page) => total + page.itemCount, 0) !== expected) {
+      throw new SimpleChangesError(
+        `Invalid remote branch reconciliation: ${label} ${kind} pagination count does not match the accounted ledger`,
+        EXIT_CODES.validation
+      );
+    }
+  }
+};
+
+const coverageDigest = (
+  receipt: RemoteBranchReconciliationReceipt,
+  phase: "initial" | "final",
+  kind: "branches" | "proposals",
+  pageDigests: string[]
+): string => {
+  const entries =
+    kind === "branches"
+      ? receipt.branches
+          .filter((branch) =>
+            phase === "initial"
+              ? branch.initialHeadRevision !== null
+              : branch.finalHeadRevision !== null
+          )
+          .map((branch) => ({
+            headRevision:
+              phase === "initial"
+                ? branch.initialHeadRevision
+                : branch.finalHeadRevision,
+            name: branch.name,
+          }))
+      : receipt.branches.flatMap((branch) =>
+          branch.proposals
+            .filter((proposal) =>
+              phase === "initial"
+                ? proposal.observedInitially !== false
+                : proposal.observedFinally !== false
+            )
+            .map((proposal) => ({
+              branch: branch.name,
+              headRevision: proposal.headRevision,
+              objectId: proposal.objectId,
+              state: proposal.state,
+            }))
+        );
+  return createHash("sha256")
+    .update(
+      JSON.stringify({
+        entryDigest: createHash("sha256")
+          .update(JSON.stringify(entries))
+          .digest("hex"),
+        pageDigests,
+      })
+    )
+    .digest("hex");
+};
+
+const validateCoverageDigests = (
+  receipt: RemoteBranchReconciliationReceipt
+): void => {
+  for (const phase of ["initial", "final"] as const) {
+    const coverage =
+      phase === "initial" ? receipt.initialCoverage : receipt.finalCoverage;
+    for (const kind of ["branches", "proposals"] as const) {
+      const proof = coverage[kind];
+      if (
+        proof.ledgerDigest !==
+        coverageDigest(
+          receipt,
+          phase,
+          kind,
+          proof.pages.map((page) => page.responseDigest)
+        )
+      ) {
+        throw new SimpleChangesError(
+          `Invalid remote branch reconciliation: ${phase} ${kind} coverage digest does not bind the accounted ledger`,
+          EXIT_CODES.validation
+        );
+      }
+    }
+  }
+};
 
 const fail = (branch: string, message: string): never => {
   throw new SimpleChangesError(
@@ -200,6 +309,34 @@ export const validateRemoteBranchReconciliation = (
       EXIT_CODES.validation
     );
   }
+  const initialProposalCount = receipt.branches.reduce(
+    (total, branch) =>
+      total +
+      branch.proposals.filter(
+        (proposal) => proposal.observedInitially !== false
+      ).length,
+    0
+  );
+  const finalProposalCount = receipt.branches.reduce(
+    (total, branch) =>
+      total +
+      branch.proposals.filter((proposal) => proposal.observedFinally !== false)
+        .length,
+    0
+  );
+  validatePagination(
+    receipt.initialCoverage,
+    receipt.initialBranchCount,
+    initialProposalCount,
+    "initial"
+  );
+  validateCoverageDigests(receipt);
+  validatePagination(
+    receipt.finalCoverage,
+    receipt.finalBranchCount,
+    finalProposalCount,
+    "final"
+  );
   for (const branch of receipt.branches) {
     validateBranch(branch, receipt);
   }

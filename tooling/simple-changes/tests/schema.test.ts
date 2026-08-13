@@ -1,4 +1,6 @@
 import { describe, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
+import { readFileSync, realpathSync } from "node:fs";
 import { inspectInitialization } from "../../../skills/simple-changes/scripts/lib/initialization.ts";
 import { DEFAULT_POLICY } from "../../../skills/simple-changes/scripts/lib/policy.ts";
 import { validateSchema } from "../../../skills/simple-changes/scripts/lib/schema.ts";
@@ -149,7 +151,10 @@ describe("closed schemas", () => {
         contentDigest: "b".repeat(64),
         revision: "supabase/migrations/20260812090000_add_index.sql",
       },
-    ];
+    ] as const;
+    const [operation] = operations;
+    const operationRevision = operation.revision;
+    const operationDigest = operation.contentDigest;
     const digest = "a".repeat(64);
     expect(() =>
       validateSchema("migration-review", {
@@ -176,9 +181,41 @@ describe("closed schemas", () => {
     ).toEqual({ digest, operations });
     expect(
       validateSchema("migration-apply-plan", {
+        adapter: "exact-operation-argv-v1",
+        command: [
+          realpathSync("/usr/bin/true"),
+          "apply-exact",
+          "--target",
+          "supabase/db/production",
+          "--revision",
+          operationRevision,
+          "--digest",
+          operationDigest,
+        ],
         digest,
+        executableDigest: createHash("sha256")
+          .update(readFileSync(realpathSync("/usr/bin/true")))
+          .digest("hex"),
+        expiresAt: new Date(Date.now() + 10 * 60 * 1000).toISOString(),
+        issuedAt: new Date().toISOString(),
+        nonce: "migration-plan-0001",
         operations,
+        remoteLedger: {
+          digest,
+          observedAt: new Date().toISOString(),
+          operations,
+          target: {
+            environment: "production",
+            project: "db",
+            provider: "supabase",
+          },
+        },
         scope: "exact-listed-operations",
+        target: {
+          environment: "production",
+          project: "db",
+          provider: "supabase",
+        },
       })
     ).toBeDefined();
   });
@@ -413,6 +450,14 @@ describe("closed schemas", () => {
       ownerAgentId: "controller",
       preparations: [],
       primaryCheckout: "/repo",
+      remoteBindings: [
+        {
+          fetchUrls: ["https://gitlab.example/repo.git"],
+          name: "origin",
+          provider: "gitlab",
+          pushUrls: ["https://gitlab.example/repo.git"],
+        },
+      ],
       runId: "run-test-1234",
       schemaVersion: 1,
       targetRef: "origin/main",

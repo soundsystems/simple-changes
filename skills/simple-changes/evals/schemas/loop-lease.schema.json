@@ -97,6 +97,26 @@
     },
     "emergencyShipping": { "$ref": "emergency-shipping.schema.json" },
     "primaryCheckout": { "type": "string", "minLength": 1 },
+    "remoteBindings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "provider", "fetchUrls", "pushUrls"],
+        "properties": {
+          "name": { "type": "string", "minLength": 1 },
+          "provider": { "type": "string", "minLength": 1 },
+          "fetchUrls": {
+            "type": "array",
+            "items": { "type": "string", "minLength": 1 }
+          },
+          "pushUrls": {
+            "type": "array",
+            "items": { "type": "string", "minLength": 1 }
+          }
+        }
+      }
+    },
     "remoteBranchReconciliation": {
       "$ref": "remote-branch-reconciliation.schema.json"
     },

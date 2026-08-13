@@ -1,9 +1,11 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, symlinkSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { existsSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   captureInventory,
   compareSnapshots,
+  credentialFreeRemoteUrl,
 } from "../../../skills/simple-changes/scripts/lib/inventory.ts";
 import { buildPreviewPlan } from "../../../skills/simple-changes/scripts/lib/planner.ts";
 import {
@@ -29,6 +31,21 @@ afterEach(() => {
 });
 
 describe("Git inventory and concurrency", () => {
+  test("removes embedded Git credentials while preserving destination identity", () => {
+    expect(
+      credentialFreeRemoteUrl(
+        "https://oauth2:TOPSECRET@gitlab.example/group/repo.git"
+      )
+    ).toBe("https://gitlab.example/group/repo.git");
+    expect(
+      credentialFreeRemoteUrl("https://gitlab.example/group/repo.git")
+    ).toBe("https://gitlab.example/group/repo.git");
+    expect(
+      credentialFreeRemoteUrl(
+        "https://oauth2:p%40ss@gitlab.example/group/repo.git?private_token=TOPSECRET#SECONDSECRET"
+      )
+    ).toBe("https://gitlab.example/group/repo.git");
+  });
   test("inventories dirty work without creating run state", () => {
     const fixture = repository();
     writeFixture(fixture.root, "src/change.ts", "export const ready = true;\n");
@@ -49,6 +66,30 @@ describe("Git inventory and concurrency", () => {
     expect(git(fixture.root, ["status", "--porcelain=v1"])).toBe(beforeStatus);
     expect(existsSync(join(fixture.root, ".git/simple-changes"))).toBe(false);
   });
+
+  test("streams large binary identities and never reads a FIFO", () => {
+    const fixture = repository();
+    const binaryPath = join(fixture.root, "large.bin");
+    const fifoPath = join(fixture.root, "agent.pipe");
+    writeFixture(fixture.root, "agent.pipe", "tracked placeholder\n");
+    git(fixture.root, ["add", "agent.pipe"]);
+    git(fixture.root, ["commit", "-m", "Track future pipe path"]);
+    unlinkSync(fifoPath);
+    writeFileSync(binaryPath, Buffer.alloc(8 * 1024 * 1024, 7));
+    const fifo = spawnSync("mkfifo", [fifoPath]);
+    if (fifo.status !== 0) {
+      throw new Error(`mkfifo failed: ${fifo.stderr.toString()}`);
+    }
+
+    const opening = captureInventory(fixture.root);
+    writeFileSync(binaryPath, Buffer.alloc(8 * 1024 * 1024, 8));
+    const current = captureInventory(fixture.root);
+
+    expect(opening.localChanges.map((change) => change.path)).toContain(
+      "agent.pipe"
+    );
+    expect(current.baselineDigest).not.toBe(opening.baselineDigest);
+  }, 15_000);
 
   test("prefers the branch remote over an alphabetically earlier auxiliary remote", () => {
     const fixture = repository();
@@ -80,6 +121,17 @@ describe("Git inventory and concurrency", () => {
     git(fixture.root, ["config", "branch.main.merge", "refs/heads/main"]);
 
     expect(captureInventory(fixture.root).targetRef).toBe("origin/main");
+    expect(captureInventory(fixture.root).repository.targetRemote).toBe(
+      "origin"
+    );
+    expect(
+      captureInventory(fixture.root).repository.remoteBindings
+    ).toContainEqual({
+      fetchUrls: ["https://example.invalid/canonical.git"],
+      name: "origin",
+      provider: "example.invalid",
+      pushUrls: ["https://example.invalid/canonical.git"],
+    });
   });
 
   test("reports changelog relevance separately from skill availability", () => {

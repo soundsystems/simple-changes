@@ -4,7 +4,9 @@ import {
   lstatSync,
   mkdirSync,
   readFileSync,
+  realpathSync,
   renameSync,
+  statSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -12,6 +14,8 @@ import { homedir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
 import { CURRENT_GUIDANCE_VERSION } from "./guidance-updates.ts";
+import { sha256 } from "./hash.ts";
+import { assertNoSymlinkAncestors } from "./path-safety.ts";
 import { validateSchema } from "./schema.ts";
 import type { PolicySource, RepoPolicy } from "./types.ts";
 
@@ -66,16 +70,70 @@ interface PersonalPolicyPathOptions {
 }
 
 interface LoadPolicyOptions {
+  commonGitDirectory?: string;
   personalPolicyPath?: string;
 }
 
 export interface LoadedPolicy {
   path: string | null;
   source: PolicySource;
+  trust: "not-required" | "trusted" | "untrusted";
   value: RepoPolicy;
 }
 
+interface RepositoryPolicyTrustReceipt {
+  approvedBy: string;
+  createdAt: string;
+  policyDigest: string;
+  policyPath: string;
+  reason: string;
+  repository: string;
+  schemaVersion: 1;
+}
+
+const repositoryPolicyTrustPath = (commonGitDirectory: string): string =>
+  assertNoSymlinkAncestors(
+    commonGitDirectory,
+    "simple-changes/policy-trust.json"
+  );
+
+const requiresRepositoryTrust = (policy: RepoPolicy): boolean =>
+  policy.gitPushAuthorization === "configure-harness" ||
+  policy.productionDeploy === "allow" ||
+  policy.shippingMode !== "standard" ||
+  policy.migrationHandling.startsWith("auto-apply-");
+
+const withoutUntrustedConsequentialAuthority = (
+  policy: RepoPolicy
+): RepoPolicy => ({
+  ...policy,
+  gitPushAuthorization:
+    policy.gitPushAuthorization === "configure-harness"
+      ? "ask"
+      : policy.gitPushAuthorization,
+  migrationHandling: policy.migrationHandling.startsWith("auto-apply-")
+    ? "ask-after-review"
+    : policy.migrationHandling,
+  migrationTargets: policy.migrationHandling.startsWith("auto-apply-")
+    ? []
+    : policy.migrationTargets,
+  productionDeploy:
+    policy.productionDeploy === "allow" ? "ask" : policy.productionDeploy,
+  shippingMode: "standard",
+});
+
+const assertReadablePolicyFile = (path: string): void => {
+  const status = lstatSync(path);
+  if (status.isSymbolicLink() || !status.isFile()) {
+    throw new SimpleChangesError(
+      `Refusing to load a policy that is not a regular file: ${path}`,
+      EXIT_CODES.unsafe
+    );
+  }
+};
+
 const parsePolicyFile = (path: string): RepoPolicy => {
+  assertReadablePolicyFile(path);
   const parsed = JSON.parse(readFileSync(path, "utf8")) as unknown;
   const validated = validateSchema<StoredRepoPolicy>("repo-policy", parsed);
   return {
@@ -178,14 +236,109 @@ export const loadPersonalPolicy = (
     return {
       path: personalPolicyPath,
       source: "user",
+      trust: "not-required",
       value: parsePolicyFile(personalPolicyPath),
     };
   }
   return {
     path: null,
     source: "default",
+    trust: "not-required",
     value: DEFAULT_POLICY,
   };
+};
+
+const trustedRepositoryPolicy = (
+  primaryCheckout: string,
+  policyPath: string,
+  commonGitDirectory: string | undefined
+): boolean => {
+  if (!commonGitDirectory) {
+    return false;
+  }
+  const receiptPath = repositoryPolicyTrustPath(commonGitDirectory);
+  if (!existsSync(receiptPath)) {
+    return false;
+  }
+  try {
+    assertReadablePolicyFile(receiptPath);
+    if (process.platform !== "win32" && statSync(receiptPath).mode % 64 !== 0) {
+      return false;
+    }
+    const receipt = JSON.parse(
+      readFileSync(receiptPath, "utf8")
+    ) as RepositoryPolicyTrustReceipt;
+    return (
+      receipt.schemaVersion === 1 &&
+      Boolean(receipt.approvedBy.trim()) &&
+      Boolean(receipt.reason.trim()) &&
+      receipt.repository === realpathSync(primaryCheckout) &&
+      receipt.policyPath === realpathSync(policyPath) &&
+      receipt.policyDigest === sha256(readFileSync(policyPath, "utf8"))
+    );
+  } catch {
+    return false;
+  }
+};
+
+export const writeRepositoryPolicyTrustReceipt = (
+  primaryCheckout: string,
+  commonGitDirectory: string,
+  approvedBy: string,
+  reason: string
+): string => {
+  const policyPath = resolve(primaryCheckout, ".simple-changes.json");
+  if (!(approvedBy.trim() && reason.trim())) {
+    throw new SimpleChangesError(
+      "Repository policy trust requires an approver and reason.",
+      EXIT_CODES.usage
+    );
+  }
+  if (!existsSync(policyPath)) {
+    throw new SimpleChangesError(
+      `Repository policy does not exist: ${policyPath}`,
+      EXIT_CODES.validation
+    );
+  }
+  assertReadablePolicyFile(policyPath);
+  const receipt: RepositoryPolicyTrustReceipt = {
+    approvedBy: approvedBy.trim(),
+    createdAt: new Date().toISOString(),
+    policyDigest: sha256(readFileSync(policyPath, "utf8")),
+    policyPath: realpathSync(policyPath),
+    reason: reason.trim(),
+    repository: realpathSync(primaryCheckout),
+    schemaVersion: 1,
+  };
+  const receiptPath = repositoryPolicyTrustPath(commonGitDirectory);
+  mkdirSync(dirname(receiptPath), { mode: 0o700, recursive: true });
+  if (existsSync(receiptPath)) {
+    const status = lstatSync(receiptPath);
+    if (status.isSymbolicLink() || !status.isFile()) {
+      throw new SimpleChangesError(
+        `Refusing to replace a policy trust receipt that is not a regular file: ${receiptPath}`,
+        EXIT_CODES.unsafe
+      );
+    }
+  }
+  const temporaryPath = resolve(
+    dirname(receiptPath),
+    `.${randomUUID()}.policy-trust.tmp`
+  );
+  writeFileSync(temporaryPath, `${JSON.stringify(receipt, null, 2)}\n`, {
+    encoding: "utf8",
+    flag: "wx",
+    mode: 0o600,
+  });
+  try {
+    renameSync(temporaryPath, receiptPath);
+  } catch (error) {
+    if (existsSync(temporaryPath)) {
+      unlinkSync(temporaryPath);
+    }
+    throw error;
+  }
+  return receiptPath;
 };
 
 export const loadPolicy = (
@@ -194,10 +347,24 @@ export const loadPolicy = (
 ): LoadedPolicy => {
   const policyPath = resolve(primaryCheckout, ".simple-changes.json");
   if (existsSync(policyPath)) {
+    const value = parsePolicyFile(policyPath);
+    const consequential = requiresRepositoryTrust(value);
+    const trusted =
+      !consequential ||
+      trustedRepositoryPolicy(
+        primaryCheckout,
+        policyPath,
+        options.commonGitDirectory
+      );
+    let trust: LoadedPolicy["trust"] = "not-required";
+    if (consequential) {
+      trust = trusted ? "trusted" : "untrusted";
+    }
     return {
       path: policyPath,
       source: "repository",
-      value: parsePolicyFile(policyPath),
+      trust,
+      value: trusted ? value : withoutUntrustedConsequentialAuthority(value),
     };
   }
   const personalPolicyPath =

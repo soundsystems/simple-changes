@@ -23,9 +23,24 @@ brief into a redundant confirmation gate. It creates an interruption window:
 if the user steers new information before a pending action, reevaluate the plan
 and authority before continuing.
 
-If production or another separately consequential step still lacks authority,
-summarize the authorized portion, finish its safe independent work, and ask only
-at the actual authority boundary.
+If any consequential step still lacks authority, inventory all unresolved
+boundaries already knowable from the validated Ship plan before the first one
+blocks progress. Present one permission checklist rather than serial prompts.
+Each item must name an ID, the action, exact repository/provider/project/
+environment target, consequence, and reason. Include, when known, Git export,
+release-version selection, merge, production deployment, migration apply,
+secret or environment writes, DNS changes, store releases, remote cleanup, and
+history rewrites. Let the user approve all listed items, decline all, or approve
+named IDs in one reply, then record each decision independently.
+
+The bundle is not blanket authority. It cannot authorize an unlisted action,
+different target, changed revision, force push, protection bypass, credentials,
+or provider-administrator operation. Do not repeat a still-valid approval. Ask
+again only when later evidence reveals a genuinely new boundary or invalidates
+an approved target, revision, command, or decision digest. Host sandbox and
+network approval dialogs may still be enforced separately by the harness; the
+workflow should nevertheless front-load every product/user decision it can
+already prove.
 
 ## Emergency Ship communication
 

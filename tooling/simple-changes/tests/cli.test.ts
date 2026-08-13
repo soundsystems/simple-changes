@@ -1,11 +1,14 @@
 import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync, symlinkSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn as bunSpawn, spawnSync as bunSpawnSync } from "bun";
 import { captureInventory } from "../../../skills/simple-changes/scripts/lib/inventory.ts";
-import { DEFAULT_POLICY } from "../../../skills/simple-changes/scripts/lib/policy.ts";
+import {
+  DEFAULT_POLICY,
+  writeRepositoryPolicyTrustReceipt,
+} from "../../../skills/simple-changes/scripts/lib/policy.ts";
 import {
   createTestRepository,
   git,
@@ -91,6 +94,88 @@ const waitForGuardedProcess = (
   });
 
 let repositories: TestRepository[] = [];
+const paginationCoverage = (
+  branches: number,
+  branchDigest: string,
+  proposals = 0,
+  proposalDigest = createHash("sha256").update("[]").digest("hex")
+) => ({
+  branches: {
+    ledgerDigest: createHash("sha256")
+      .update(
+        JSON.stringify({
+          entryDigest: branchDigest,
+          pageDigests: [branchDigest],
+        })
+      )
+      .digest("hex"),
+    pages: [
+      {
+        cursorIn: null,
+        cursorOut: null,
+        itemCount: branches,
+        responseDigest: branchDigest,
+      },
+    ],
+  },
+  proposalStates: ["closed", "merged", "open"] as const,
+  proposals: {
+    ledgerDigest: createHash("sha256")
+      .update(
+        JSON.stringify({
+          entryDigest: proposalDigest,
+          pageDigests: [proposalDigest],
+        })
+      )
+      .digest("hex"),
+    pages: [
+      {
+        cursorIn: null,
+        cursorOut: null,
+        itemCount: proposals,
+        responseDigest: proposalDigest,
+      },
+    ],
+  },
+});
+const migrationApplyPlan = (
+  operationSet: {
+    digest: string;
+    operations: Array<{ contentDigest: string; revision: string }>;
+  },
+  target: { environment: string; project: string; provider: string }
+) => {
+  const issuedAt = new Date();
+  return {
+    ...operationSet,
+    adapter: "exact-operation-argv-v1",
+    command: [
+      realpathSync("/usr/bin/true"),
+      "apply-exact",
+      "--target",
+      `${target.provider}/${target.project}/${target.environment}`,
+      ...operationSet.operations.flatMap((operation) => [
+        "--revision",
+        operation.revision,
+        "--digest",
+        operation.contentDigest,
+      ]),
+    ],
+    executableDigest: createHash("sha256")
+      .update(readFileSync(realpathSync("/usr/bin/true")))
+      .digest("hex"),
+    expiresAt: new Date(issuedAt.getTime() + 10 * 60 * 1000).toISOString(),
+    issuedAt: issuedAt.toISOString(),
+    nonce: "migration-plan-0001",
+    remoteLedger: {
+      ...operationSet,
+      observedAt: issuedAt.toISOString(),
+      target,
+    },
+    scope: "exact-listed-operations",
+    target,
+  };
+};
 
 afterEach(() => {
   for (const fixture of repositories) {
@@ -100,6 +185,47 @@ afterEach(() => {
 });
 
 describe("contract CLI", () => {
+  test("renders one closed permission bundle through the CLI", () => {
+    const fixture = createTestRepository();
+    repositories.push(fixture);
+    writeFixture(
+      fixture.root,
+      "permissions.json",
+      `${JSON.stringify([
+        {
+          authority: "proposal-write",
+          consequence: "Exports the reviewed head.",
+          operation: "push",
+          reason: "The proposal branch must exist remotely.",
+          target: "origin gitlab.com/group/repo",
+        },
+        {
+          authority: "production-deploy",
+          consequence: "Makes the exact reviewed revision live.",
+          operation: "deploy-production",
+          reason: "Ship includes production verification.",
+          target: "Vercel project simple-changes production",
+        },
+      ])}\n`
+    );
+
+    const result = spawnSync([
+      process.execPath,
+      cliPath,
+      "permissions",
+      "bundle",
+      resolve(fixture.root, "permissions.json"),
+      "--json",
+    ]);
+    const output = JSON.parse(decoder.decode(result.stdout)) as {
+      mode: string;
+      requests: unknown[];
+    };
+    expect(result.exitCode).toBe(0);
+    expect(output).toMatchObject({ mode: "ship" });
+    expect(output.requests).toHaveLength(2);
+  });
+
   test("decides reviewed migration automation from saved exact-target policy", () => {
     const fixture = createTestRepository();
     repositories.push(fixture);
@@ -139,6 +265,12 @@ describe("contract CLI", () => {
         2
       )}\n`
     );
+    writeRepositoryPolicyTrustReceipt(
+      fixture.root,
+      resolve(fixture.root, ".git"),
+      "test-user",
+      "Authorize this exact test policy"
+    );
     writeFixture(
       fixture.root,
       "migration-review.json",
@@ -167,7 +299,16 @@ describe("contract CLI", () => {
     writeFixture(
       fixture.root,
       "migration-apply-plan.json",
-      `${JSON.stringify({ digest, operations, scope: "exact-listed-operations" })}\n`
+      `${JSON.stringify(
+        migrationApplyPlan(
+          { digest, operations },
+          {
+            environment: "production",
+            project: "primary-db",
+            provider: "supabase",
+          }
+        )
+      )}\n`
     );
 
     const result = spawnSync(
@@ -190,10 +331,38 @@ describe("contract CLI", () => {
     );
 
     expect(result.exitCode).toBe(0);
-    expect(JSON.parse(decoder.decode(result.stdout))).toMatchObject({
+    const decision = JSON.parse(decoder.decode(result.stdout)) as {
+      action: string;
+      authorizationDigest: string;
+      authorizedByPolicy: boolean;
+    };
+    expect(decision).toMatchObject({
       action: "auto-apply",
       authorizedByPolicy: true,
     });
+    const consume = () =>
+      spawnSync(
+        [
+          process.execPath,
+          cliPath,
+          "migration",
+          "apply",
+          "--state",
+          resolve(fixture.root, "migration-review.json"),
+          "--pending",
+          resolve(fixture.root, "migration-pending.json"),
+          "--apply-plan",
+          resolve(fixture.root, "migration-apply-plan.json"),
+          "--json",
+          "--repo",
+          fixture.root,
+        ],
+        { stderr: "pipe", stdout: "pipe" }
+      );
+    expect(consume().exitCode).toBe(0);
+    const replay = consume();
+    expect(replay.exitCode).not.toBe(0);
+    expect(decoder.decode(replay.stderr)).toContain("already been consumed");
   });
 
   test("rejects a saved migration review when the fresh pending set changes", () => {
@@ -241,7 +410,16 @@ describe("contract CLI", () => {
     writeFixture(
       fixture.root,
       "migration-apply-plan.json",
-      `${JSON.stringify({ digest: digest(pending), operations: pending, scope: "exact-listed-operations" })}\n`
+      `${JSON.stringify(
+        migrationApplyPlan(
+          { digest: digest(pending), operations: pending },
+          {
+            environment: "production",
+            project: "primary-db",
+            provider: "supabase",
+          }
+        )
+      )}\n`
     );
     const result = spawnSync(
       [
@@ -309,7 +487,16 @@ describe("contract CLI", () => {
     writeFixture(
       fixture.root,
       "apply-plan.json",
-      `${JSON.stringify({ digest, operations, scope: "exact-listed-operations" })}\n`
+      `${JSON.stringify(
+        migrationApplyPlan(
+          { digest, operations },
+          {
+            environment: "production",
+            project: "db",
+            provider: "supabase",
+          }
+        )
+      )}\n`
     );
     writeFixture(fixture.root, revision, "select 2;\n");
     const result = spawnSync(
@@ -384,7 +571,16 @@ describe("contract CLI", () => {
     writeFixture(
       fixture.root,
       "apply.json",
-      `${JSON.stringify({ digest: digest(applyOperations), operations: applyOperations, scope: "exact-listed-operations" })}\n`
+      `${JSON.stringify(
+        migrationApplyPlan(
+          { digest: digest(applyOperations), operations: applyOperations },
+          {
+            environment: "production",
+            project: "db",
+            provider: "supabase",
+          }
+        )
+      )}\n`
     );
     const result = spawnSync(
       [
@@ -1072,6 +1268,9 @@ describe("contract CLI", () => {
       "git@gitlab.com:group/project.git",
     ]);
     const targetRevision = git(fixture.root, ["rev-parse", "HEAD"]);
+    const branchDigest = createHash("sha256")
+      .update(JSON.stringify([{ headRevision: targetRevision, name: "main" }]))
+      .digest("hex");
     const started = spawnSync(
       [
         process.execPath,
@@ -1112,8 +1311,10 @@ describe("contract CLI", () => {
             },
           ],
           finalBranchCount: 1,
+          finalCoverage: paginationCoverage(1, branchDigest),
           finalInventoryComplete: true,
           initialBranchCount: 1,
+          initialCoverage: paginationCoverage(1, branchDigest),
           initialInventoryComplete: true,
           observedAt: new Date().toISOString(),
           project: "group/project",
@@ -1462,7 +1663,7 @@ describe("contract CLI", () => {
     );
     expect(acknowledged.exitCode).toBe(0);
     expect(JSON.parse(decoder.decode(acknowledged.stdout))).toMatchObject({
-      currentVersion: 7,
+      currentVersion: 8,
       disposition: "deferred",
       previousVersion: 1,
       written: true,
@@ -1472,7 +1673,7 @@ describe("contract CLI", () => {
         readFileSync(resolve(fixture.root, ".simple-changes.json"), "utf8")
       )
     ).toMatchObject({
-      guidance: { disposition: "deferred", version: 7 },
+      guidance: { disposition: "deferred", version: 8 },
     });
 
     const resumed = spawnSync(
@@ -1583,6 +1784,8 @@ describe("contract CLI", () => {
         "initialize",
         "--mode",
         "integrate",
+        "--git-push-authorization",
+        "ask",
         "--questions",
         "blocking-only",
         "--scope",
@@ -1670,6 +1873,7 @@ describe("contract CLI", () => {
         "standard",
         "--git-push-authorization",
         "configure-harness",
+        "--acknowledge-push-scope",
         "--questions",
         "blocking-only",
         "--scope",
@@ -1752,6 +1956,8 @@ describe("contract CLI", () => {
         "setup",
         "--finish",
         "review",
+        "--git-push-authorization",
+        "ask",
         "--questions",
         "blocking-only",
         "--scope",
@@ -1782,6 +1988,8 @@ describe("contract CLI", () => {
         "setup",
         "--finish",
         "review",
+        "--git-push-authorization",
+        "ask",
         "--questions",
         "blocking-only",
         "--scope",
@@ -1812,6 +2020,8 @@ describe("contract CLI", () => {
         "setup",
         "--finish",
         "review",
+        "--git-push-authorization",
+        "ask",
         "--changelog",
         "delegate-if-available",
         "--questions",
@@ -1858,6 +2068,7 @@ describe("contract CLI", () => {
         "break-glass",
         "--git-push-authorization",
         "configure-harness",
+        "--acknowledge-push-scope",
         "--migration-handling",
         "auto-apply-reviewed-routine",
         "--migration-target",
@@ -1923,6 +2134,8 @@ describe("contract CLI", () => {
         "setup",
         "--finish",
         "integrate",
+        "--git-push-authorization",
+        "ask",
         "--questions",
         "blocking-only",
         "--scope",
@@ -1955,6 +2168,77 @@ describe("contract CLI", () => {
     });
   });
 
+  test("persists confirmed repository auto-push trust end to end", () => {
+    const fixture = createTestRepository();
+    repositories.push(fixture);
+    const command = [
+      process.execPath,
+      cliPath,
+      "setup",
+      "--finish",
+      "integrate",
+      "--git-push-authorization",
+      "configure-harness",
+      "--acknowledge-push-scope",
+      "--questions",
+      "blocking-only",
+      "--scope",
+      "repository",
+      "--yes",
+      "--json",
+      "--repo",
+      fixture.root,
+    ];
+    expect(spawnSync(command).exitCode).toBe(0);
+    const inventory = captureInventory(fixture.root);
+    expect(inventory.policy).toMatchObject({
+      source: "repository",
+      trust: "trusted",
+      value: { gitPushAuthorization: "configure-harness" },
+    });
+  });
+
+  test("requires closed-scope acknowledgement and rejects trust symlinks", () => {
+    const fixture = createTestRepository();
+    repositories.push(fixture);
+    const commonState = resolve(fixture.root, ".git/simple-changes");
+    writeFixture(fixture.root, ".git/simple-changes/outside", "{}\n");
+    symlinkSync(
+      resolve(commonState, "outside"),
+      resolve(commonState, "policy-trust.json")
+    );
+    const args = [
+      process.execPath,
+      cliPath,
+      "setup",
+      "--finish",
+      "integrate",
+      "--git-push-authorization",
+      "configure-harness",
+      "--questions",
+      "blocking-only",
+      "--scope",
+      "repository",
+      "--yes",
+      "--json",
+      "--repo",
+      fixture.root,
+    ];
+    const unacknowledged = spawnSync(args, { stderr: "pipe" });
+    expect(unacknowledged.exitCode).not.toBe(0);
+    expect(decoder.decode(unacknowledged.stderr)).toContain(
+      "--acknowledge-push-scope"
+    );
+    const rejectedSymlink = spawnSync(
+      [...args.slice(0, -4), "--acknowledge-push-scope", ...args.slice(-4)],
+      { stderr: "pipe" }
+    );
+    expect(rejectedSymlink.exitCode).not.toBe(0);
+    expect(decoder.decode(rejectedSymlink.stderr)).toContain(
+      "symlink ancestor"
+    );
+  });
+
   test("adds a confirmed instruction pointer and gates completed-work handoff", () => {
     const fixture = createTestRepository();
     repositories.push(fixture);
@@ -1966,6 +2250,8 @@ describe("contract CLI", () => {
         "setup",
         "--finish",
         "review",
+        "--git-push-authorization",
+        "ask",
         "--questions",
         "blocking-only",
         "--scope",
@@ -2056,6 +2342,8 @@ describe("contract CLI", () => {
         "setup",
         "--finish",
         "review",
+        "--git-push-authorization",
+        "ask",
         "--questions",
         "blocking-only",
         "--scope",
@@ -2083,6 +2371,8 @@ describe("contract CLI", () => {
         "setup",
         "--finish",
         "review",
+        "--git-push-authorization",
+        "ask",
         "--questions",
         "blocking-only",
         "--scope",
@@ -2107,6 +2397,8 @@ describe("contract CLI", () => {
         "setup",
         "--finish",
         "review",
+        "--git-push-authorization",
+        "ask",
         "--questions",
         "blocking-only",
         "--scope",
@@ -2152,6 +2444,8 @@ describe("contract CLI", () => {
         "setup",
         "--finish",
         "review",
+        "--git-push-authorization",
+        "ask",
         "--questions",
         "always",
         "--scope",
@@ -2232,6 +2526,8 @@ describe("contract CLI", () => {
         "setup",
         "--finish",
         "review",
+        "--git-push-authorization",
+        "ask",
         "--questions",
         "blocking-only",
         "--scope",

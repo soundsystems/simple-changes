@@ -1,5 +1,145 @@
 # Developer changelog
 
+## 0.12.2 - 2026-08-13
+
+- Closed retained/concurrent pause handoff deadlocks:
+  - `loop accept-paused-change` now accepts opening `preserved`, `retained`, and
+    `concurrent-author` worktrees that provide exact claim and pause evidence.
+  - Acceptance reconstructs immutable preserved state from the paused snapshot,
+    clears stale retention metadata, and keeps mutation authority disabled.
+  - Added regressions for pauses recorded both before and after retained
+    worktree promotion.
+- Made opening-worktree disposal follow the refreshed target safely:
+  - Removal audits and stored dispositions now compare against the current
+    resolved target revision instead of the loop's pinned opening revision.
+  - The refreshed target must descend from the pinned revision; rewritten or
+    divergent targets fail closed.
+  - Added coverage for target advancement that absorbs an opening worktree and
+    for non-descendant target rejection.
+- Bound active loops to exact Git remote destinations:
+  - Inventory records every remote's effective sorted fetch and push URLs,
+    provider, and selected target remote after removing URL userinfo, query,
+    and fragment data from persisted bindings.
+  - Loop leases persist those bindings and emit `remote-destination-changed`
+    when any destination changes after start.
+  - `remoteBindings` remains schema-optional for pre-0.12.2 active leases, but
+    verification emits `remote-destination-rebind-required`; the legacy
+    controller cannot pass a guarded mutation and must finalize as relinquished
+    before a current controller starts with a real opening destination snapshot.
+  - Legacy reconciliation receipts without current coverage fields are removed
+    on read so the active lease remains recoverable but must collect fresh
+    reconciliation evidence before completion.
+  - Added regression coverage for credentials, changed push URLs, old bindings,
+    and old reconciliation receipts.
+- Restricted repository policy authority to locally trusted bytes:
+  - Repository policy symlinks and other non-regular files are rejected.
+  - Persistent push authorization, automatic migration modes, break-glass
+    ordering, and automatic production deployment are downgraded to safe
+    ask/standard behavior unless a private `0600` receipt beneath the common
+    Git directory binds the real repository path, real policy path, exact
+    policy digest, approver, and reason.
+  - Policy byte or repository-path changes invalidate the receipt. Inventory
+    now exposes whether trust is `trusted`, `untrusted`, or `not-required`.
+  - Policy-trust and migration-authorization paths reject symlinks in any
+    existing ancestor beneath the common Git directory before reading or
+    writing private state.
+- Strengthened exact migration execution authority:
+  - The apply-plan schema now requires an adapter, absolute executable argv,
+    executable SHA-256 digest, exact target, nonce, issue and expiry times, and
+    a fresh target-bound remote ledger containing the same canonical operation
+    set.
+  - Decisions reject stale ledgers, expired or overlong windows, future
+    evidence, changed targets, changed commands, and mismatched operations.
+  - Successful automatic decisions return the exact argv, absolute executable
+    identity and digest, canonical operations, and deterministic authorization
+    digest.
+  - `migration apply` recomputes the current decision, snapshots the exact
+    digest-matching executable into private state, atomically consumes the
+    authorization before execution, and launches that exact-byte snapshot with
+    `shell: false`. Later decisions and apply attempts reject the consumed
+    authorization even if the process fails after consumption.
+- Scoped forge cleanup to the selected target provider:
+  - GitLab remote-branch reconciliation is required only when the resolved
+    target remote is GitLab, rather than whenever any auxiliary GitLab remote
+    exists.
+  - Added coverage for a GitHub canonical target with a separate GitLab mirror.
+- Replaced unbounded dirty-worktree capture:
+  - Inventory no longer loads complete binary diffs or untracked files into
+    memory.
+  - Changed paths now bind their index object ID and filesystem identity;
+    regular files are opened with read-only, nonblocking, no-follow flags,
+    verified again through `fstat`, and SHA-256 hashed in fixed-size chunks;
+    symlink targets are hashed without following them, while directories,
+    FIFOs, sockets, and devices use nonblocking type metadata.
+  - Added a large-binary/FIFO regression proving bounded, nonblocking capture.
+- Added pagination-completeness evidence to remote reconciliation:
+  - Initial and final receipts now include separate branch and proposal page
+    chains with input/output cursors, item counts, and response digests.
+  - Validation requires first-page and terminal cursors, continuous cursor
+    chains, ledger-matching counts, and explicit coverage of closed, merged,
+    and open proposal states.
+  - Proposal evidence can record whether it appeared initially, finally, or in
+    both phases, so a proposal arriving between inventories is counted only in
+    the matching phase.
+  - Every branch and proposal coverage object now includes a consolidated
+    ledger digest over both the canonical matching-phase entry digest and the
+    ordered response-digest list for every page, binding single- and multi-page
+    provider identities into the phase ledger without reconstructing page
+    contents.
+  - Incomplete pagination, missing states, phase-count mismatch, and changed
+    consolidated ledger evidence now fail closed.
+- Reconciled skill and onboarding guidance:
+  - Push-authorization setup is now offered for every non-preview finish that
+    may push, including review and integration boundaries instead of Ship only.
+  - Changelog discovery reads the repository's selected distribution and
+    refuses an incompatible full-distribution provider for a
+    `skill-repository` policy.
+  - Corrected the setup default from guidance version 6 to 8 and clarified that
+    an exact unchanged retained worktree is a valid terminal state.
+  - Reduced the primary skill router from 796 to 227 lines by moving detailed
+    contracts to existing references while retaining the behavioral gates.
+  - Expanded closed schemas and focused CLI, policy, onboarding, inventory,
+    lease, migration, reconciliation, changelog-coordination, and contract
+    regression coverage for all changes above.
+- Advanced installed guidance to version 8 with informed update dispositions:
+  - Update notices expose practical behavior summaries before their choices,
+    recommend `review-settings`, and provide consequence-bearing descriptions
+    for review, release-note, keep-current, and defer actions.
+  - Neither the standalone nor combined walkthrough marks skipping or keeping
+    settings as recommended before the new abilities are understood.
+  - Guidance inspection now aggregates every pending version rather than
+    summarizing only the latest definition, preserving all missed behavior,
+    onboarding, and integration changes in category-grouped bullets.
+  - Selecting `configure-harness` or colloquial “auto push” requires a precise
+    confirmation explaining that persistent permission is limited to ordinary
+    `git push` for one verified repository and remote across Codex, Claude Code,
+    and other harnesses. It does not grant credentials, network access,
+    force-push, protection bypass, proposal, merge, deploy, or other-destination
+    authority, and unsupported harnesses continue to ask.
+  - Repository setup now writes the policy first and then creates the private,
+    digest-bound trust receipt in the common Git directory, making a confirmed
+    consequential repository policy effective on the next inventory. The
+    noninteractive CLI requires `--acknowledge-push-scope`; a bare option value
+    cannot silently persist auto-push authority.
+- Added bundled Ship permission preflight:
+  - The closed `permission-bundle` contract normalizes and deduplicates every
+    currently knowable unresolved permission from the validated plan, assigns
+    each exact operation/authority/target/consequence/reason tuple a stable
+    digest-derived ID, and renders the complete checklist in deterministic
+    order.
+  - The reachable `permissions bundle REQUESTS_FILE` CLI validates the closed
+    request array, exhaustively maps every `PlannedOperation` plus release
+    version selection to one authority, rejects any unmapped or mismatched
+    operation, and renders one message instructing the user to approve all,
+    decline all, or name exact request IDs. It deliberately does not parse or
+    persist the reply itself.
+  - The rendered checklist states that unlisted future actions are unauthorized;
+    sandbox, network, credential, provider, and harness enforcement remain
+    separate and intact.
+  - Updated initialization output, schemas, runtime routing, Ship communication,
+    onboarding, guidance-update references, CLI coverage, and contract tests.
+<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-13T17:03:01-05:00" -->
+
 ## 0.12.1 - 2026-08-13
 
 - Added harness-aware Git push authorization:

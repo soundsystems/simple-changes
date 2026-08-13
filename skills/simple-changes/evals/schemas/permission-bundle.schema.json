@@ -1,0 +1,85 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://simple-changes.dev/schemas/permission-bundle.schema.json",
+  "title": "Simple Changes shipping permission bundle",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "generatedAt",
+    "mode",
+    "requests",
+    "responseInstruction"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "generatedAt": { "type": "string", "format": "date-time" },
+    "mode": { "const": "ship" },
+    "requests": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/request" }
+    },
+    "responseInstruction": {
+      "const": "Reply once to approve all listed permissions, decline all, or name the request IDs you approve. Unlisted future actions are not authorized."
+    }
+  },
+  "$defs": {
+    "request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "authority",
+        "operation",
+        "target",
+        "consequence",
+        "reason"
+      ],
+      "properties": {
+        "id": { "type": "string", "pattern": "^permission-[0-9a-f]{12}$" },
+        "authority": {
+          "enum": [
+            "local-write",
+            "local-sync",
+            "proposal-write",
+            "merge",
+            "remote-branch-delete",
+            "preview-deploy",
+            "production-deploy",
+            "remote-data-write",
+            "secret-env-write",
+            "dns-write",
+            "store-release",
+            "history-rewrite"
+          ]
+        },
+        "operation": {
+          "enum": [
+            "fetch-target",
+            "fast-forward-target",
+            "merge-target",
+            "branch",
+            "commit",
+            "push",
+            "open-proposal",
+            "update-proposal",
+            "merge",
+            "deploy-preview",
+            "deploy-production",
+            "promote-deployment",
+            "reconcile-managed-targets",
+            "reconcile-remote-branches",
+            "audit-migration",
+            "apply-migration",
+            "cleanup",
+            "select-release-version"
+          ]
+        },
+        "target": { "type": "string", "minLength": 1 },
+        "consequence": { "type": "string", "minLength": 1 },
+        "reason": { "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}

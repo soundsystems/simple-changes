@@ -74,6 +74,11 @@ const runtimeSourcePaths = [
 );
 
 describe("Simple Changes skill contract", () => {
+  test("keeps the primary skill as a compact router", async () => {
+    const skill = await readFile(skillPath, "utf8");
+    expect(skill.split("\n").length).toBeLessThanOrEqual(500);
+  });
+
   test("first-use onboarding explains the workflow before preference questions", async () => {
     const [skill, onboarding] = await Promise.all([
       readFile(skillPath, "utf8"),
@@ -135,6 +140,34 @@ describe("Simple Changes skill contract", () => {
     );
     expect(normalizedGuidance).toContain(
       "Start the loop only after initialization returns `preLoopActionRequired: false`"
+    );
+    expect(normalizedGuidance).toContain(
+      "Recommend reviewing the new abilities; never mark keeping settings, skipping, continuing, or deferring as Recommended"
+    );
+    expect(normalizedGuidance).toContain(
+      "It does not grant credentials, > network access, force-push, branch-protection bypass"
+    );
+  });
+
+  test("Ship requests bundle every knowable permission without broadening authority", async () => {
+    const [skill, communication] = await Promise.all([
+      readFile(skillPath, "utf8"),
+      readFile(shipCommunicationPath, "utf8"),
+    ]);
+    const normalizedSkill = skill.replace(/\s+/g, " ");
+    const normalizedCommunication = communication.replace(/\s+/g, " ");
+
+    expect(normalizedSkill).toContain(
+      "present them together in one exact-target checklist"
+    );
+    expect(normalizedCommunication).toContain(
+      "Present one permission checklist rather than serial prompts"
+    );
+    expect(normalizedCommunication).toContain(
+      "Let the user approve all listed items, decline all, or approve named IDs in one reply"
+    );
+    expect(normalizedCommunication).toContain(
+      "Host sandbox and network approval dialogs may still be enforced separately"
     );
   });
 
@@ -502,7 +535,7 @@ describe("Simple Changes skill contract", () => {
     );
     expect(normalizedSkill).toContain("loop dispose-worktree");
     expect(normalizedSkill).toContain(
-      "clean and has zero unique commits outside the lease's pinned canonical target revision"
+      "clean and has zero unique commits outside the refreshed canonical target revision"
     );
     expect(normalizedConcurrency).toContain(
       "The disposition permits only that opening worktree's absence"

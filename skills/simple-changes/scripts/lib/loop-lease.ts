@@ -272,7 +272,23 @@ const readLeaseFromCommonDirectory = (
   if (!existsSync(path)) {
     return null;
   }
-  const parsed = JSON.parse(readFileSync(path, "utf8")) as unknown;
+  const parsed = JSON.parse(readFileSync(path, "utf8")) as Record<
+    string,
+    unknown
+  >;
+  const legacyReconciliation = parsed.remoteBranchReconciliation;
+  if (
+    legacyReconciliation &&
+    typeof legacyReconciliation === "object" &&
+    !(
+      "initialCoverage" in legacyReconciliation &&
+      "finalCoverage" in legacyReconciliation
+    )
+  ) {
+    // A pre-0.12.2 receipt cannot prove complete paginated coverage. Keep the
+    // controller recoverable, but force fresh reconciliation before finalize.
+    Reflect.deleteProperty(parsed, "remoteBranchReconciliation");
+  }
   return validateSchema<LoopLease>("loop-lease", parsed);
 };
 
@@ -336,6 +352,16 @@ const transferController = (
   }
   const now = new Date().toISOString();
   const previous = controllerLifecycle(lease);
+  const mayRebindLegacyDestinations =
+    !lease.remoteBindings &&
+    (previous.status === "relinquished" ||
+      (kind === "takeover" && approvedBy !== null));
+  if (!(lease.remoteBindings || mayRebindLegacyDestinations)) {
+    throw new SimpleChangesError(
+      "Legacy controller transfer requires an explicit relinquished resume or user-authorized takeover before binding current remote destinations.",
+      EXIT_CODES.unsafe
+    );
+  }
   return writeLease({
     ...lease,
     controller: {
@@ -356,6 +382,7 @@ const transferController = (
       status: "active",
     },
     ownerAgentId: nextAgentId,
+    remoteBindings: lease.remoteBindings ?? inventory.repository.remoteBindings,
     updatedAt: now,
     worktrees: lease.worktrees.map((worktree) => {
       if (worktree.path === currentPath) {
@@ -553,6 +580,16 @@ const matchingOverride = (
       override.changeDigest === worktree.changeDigest
   );
 
+const resolvedCurrentTargetRevision = (lease: LoopLease): string | null => {
+  const result = runGit(
+    lease.primaryCheckout,
+    ["rev-parse", "--verify", `${lease.targetRef}^{commit}`],
+    true
+  );
+  const revision = result.stdout.trim();
+  return result.exitCode === 0 && revision ? revision : null;
+};
+
 const matchingRemovalDisposition = (
   lease: LoopLease,
   worktree: WorktreeInventory
@@ -565,7 +602,7 @@ const matchingRemovalDisposition = (
       disposition.headSha === worktree.headSha &&
       disposition.changeDigest === worktree.changeDigest &&
       disposition.targetRef === lease.targetRef &&
-      disposition.targetRevision === lease.targetRevision
+      disposition.targetRevision === resolvedCurrentTargetRevision(lease)
   );
 
 const removalDispositionForPath = (
@@ -577,7 +614,7 @@ const removalDispositionForPath = (
       disposition.outcome === "remove-after-audit" &&
       disposition.path === path &&
       disposition.targetRef === lease.targetRef &&
-      disposition.targetRevision === lease.targetRevision
+      disposition.targetRevision === resolvedCurrentTargetRevision(lease)
   );
 
 const targetBranchForRef = (
@@ -611,11 +648,16 @@ const targetBranchForRef = (
   return targetRef || null;
 };
 
-const detectsGitLab = (inventory: RepositoryInventory): boolean =>
-  inventory.capabilities.some(
-    (capability) =>
-      capability.category === "forge" && capability.provider === "gitlab"
+const targetUsesGitLab = (inventory: RepositoryInventory): boolean => {
+  const { targetRemote } = inventory.repository;
+  return Boolean(
+    targetRemote &&
+      inventory.repository.remoteBindings.some(
+        (binding) =>
+          binding.name === targetRemote && binding.provider === "gitlab"
+      )
   );
+};
 
 const targetRemoteForRef = (
   repositoryPath: string,
@@ -679,19 +721,25 @@ const gitLabProjectForTargetRef = (
   return gitLabProjects.length === 1 ? (gitLabProjects[0] ?? null) : null;
 };
 
-const currentTargetRevision = (lease: LoopLease): string =>
-  runGit(lease.primaryCheckout, [
-    "rev-parse",
-    "--verify",
-    `${lease.targetRef}^{commit}`,
-  ]).stdout.trim();
+const currentTargetRevision = (lease: LoopLease): string => {
+  const revision = resolvedCurrentTargetRevision(lease);
+  if (!revision) {
+    throw new SimpleChangesError(
+      `Cannot resolve current target ${lease.targetRef}.`,
+      EXIT_CODES.unsafe
+    );
+  }
+  return revision;
+};
 
 const assertCurrentRemoteBranchReconciliation = (
   lease: LoopLease,
   inventory: RepositoryInventory
 ): void => {
   if (
-    !(REMOTE_RECONCILIATION_MODES.has(lease.mode) && detectsGitLab(inventory))
+    !(
+      REMOTE_RECONCILIATION_MODES.has(lease.mode) && targetUsesGitLab(inventory)
+    )
   ) {
     return;
   }
@@ -989,6 +1037,28 @@ const verificationAgainst = (
       path: inventory.repository.currentCheckout,
     });
   }
+  if (!lease.remoteBindings) {
+    violations.push({
+      changeDigest: null,
+      code: "remote-destination-rebind-required",
+      headSha: inventory.repository.headSha,
+      message:
+        "This legacy controller predates remote destination binding. Relinquish it and start a current controller before any guarded remote mutation.",
+      path: inventory.repository.currentCheckout,
+    });
+  } else if (
+    JSON.stringify(inventory.repository.remoteBindings) !==
+    JSON.stringify(lease.remoteBindings)
+  ) {
+    violations.push({
+      changeDigest: null,
+      code: "remote-destination-changed",
+      headSha: inventory.repository.headSha,
+      message:
+        "A Git remote fetch or push destination changed after loop start. Re-verify the exact repository destination before starting a new controller lease.",
+      path: inventory.repository.currentCheckout,
+    });
+  }
   const registeredByPath = new Map(
     lease.worktrees.map((worktree) => [worktree.path, worktree])
   );
@@ -1239,6 +1309,7 @@ export const startLoop = (
         ownerAgentId: agentId,
         preparations: [],
         primaryCheckout: inventory.repository.primaryCheckout,
+        remoteBindings: inventory.repository.remoteBindings,
         runId: `run-${Date.now().toString(36)}-${randomUUID().slice(0, 8)}`,
         schemaVersion: 1,
         targetRef: inventory.targetRef,
@@ -1953,14 +2024,21 @@ const auditWorktreeRemoval = (
       EXIT_CODES.unsafe
     );
   }
-  const targetRevision = runGit(lease.primaryCheckout, [
-    "rev-parse",
-    "--verify",
-    `${lease.targetRevision}^{commit}`,
-  ]).stdout.trim();
-  if (targetRevision !== lease.targetRevision) {
+  const targetRevision = currentTargetRevision(lease);
+  const targetDescendsFromPinned =
+    runGit(
+      lease.primaryCheckout,
+      [
+        "merge-base",
+        "--is-ancestor",
+        `${lease.targetRevision}^{commit}`,
+        `${targetRevision}^{commit}`,
+      ],
+      true
+    ).exitCode === 0;
+  if (!targetDescendsFromPinned) {
     throw new SimpleChangesError(
-      `Pinned target revision ${lease.targetRevision} no longer resolves exactly.`,
+      `Refreshed target ${targetRevision} does not descend from pinned target ${lease.targetRevision}.`,
       EXIT_CODES.unsafe
     );
   }
@@ -2441,30 +2519,26 @@ export const acceptPausedWorktreeChange = (
       const registered = lease.worktrees.find(
         (worktree) =>
           worktree.path === evidence.current.path &&
-          worktree.role === "preserved"
+          !worktree.createdByRun &&
+          ["preserved", "retained", "concurrent-author"].includes(worktree.role)
       );
       if (!registered) {
         throw new SimpleChangesError(
-          "loop accept-paused-change requires an opening preserved worktree.",
+          "loop accept-paused-change requires an opening preserved, retained, or concurrent-author worktree.",
           EXIT_CODES.unsafe
         );
       }
+      const accepted: LoopWorktreeLease = {
+        ...worktreeLease(evidence.current, "preserved", null, false),
+        claimId: evidence.claimId,
+        coordinationState: "adopted-preserved",
+        pauseReceiptId: evidence.pauseReceiptId,
+      };
       const candidate: LoopLease = {
         ...lease,
         updatedAt: new Date().toISOString(),
         worktrees: lease.worktrees.map((worktree) =>
-          worktree.path === evidence.current.path
-            ? {
-                ...worktree,
-                baselineChangeDigest: evidence.current.changeDigest,
-                baselineHeadSha: evidence.current.headSha,
-                branch: evidence.current.branch,
-                claimId: evidence.claimId,
-                coordinationState: "adopted-preserved" as const,
-                mutationAllowed: false,
-                pauseReceiptId: evidence.pauseReceiptId,
-              }
-            : worktree
+          worktree.path === evidence.current.path ? accepted : worktree
         ),
       };
       const verification = verificationAgainst(candidate, inventory);
@@ -2591,9 +2665,9 @@ export const recordRemoteBranchReconciliation = (
           EXIT_CODES.unsafe
         );
       }
-      if (!(detectsGitLab(inventory) && receipt.provider === "gitlab")) {
+      if (!(targetUsesGitLab(inventory) && receipt.provider === "gitlab")) {
         throw new SimpleChangesError(
-          "Remote branch reconciliation provider must match a discovered GitLab remote.",
+          "Remote branch reconciliation provider must match the target GitLab remote.",
           EXIT_CODES.validation
         );
       }

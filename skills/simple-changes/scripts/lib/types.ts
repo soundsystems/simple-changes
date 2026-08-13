@@ -167,6 +167,13 @@ export interface Capability {
   status: CapabilityStatus;
 }
 
+export interface RemoteBinding {
+  fetchUrls: string[];
+  name: string;
+  provider: string;
+  pushUrls: string[];
+}
+
 export interface RepositoryInventory {
   baselineDigest: string;
   branches: BranchInventory[];
@@ -176,6 +183,7 @@ export interface RepositoryInventory {
   policy: {
     source: PolicySource;
     path: string | null;
+    trust: "not-required" | "trusted" | "untrusted";
     value: RepoPolicy;
   };
   proposals: ProposalInventory[];
@@ -188,6 +196,8 @@ export interface RepositoryInventory {
     headSha: string | null;
     branch: string | null;
     bare: boolean;
+    remoteBindings: RemoteBinding[];
+    targetRemote: string | null;
   };
   schemaVersion: 1;
   stashes: StashInventory[];
@@ -267,6 +277,26 @@ export interface ChangePlan {
   schemaVersion: 1;
   units: ChangeUnit[];
   warnings: string[];
+}
+
+export interface PermissionRequestInput {
+  authority: Authority;
+  consequence: string;
+  operation: PlannedOperation | "select-release-version";
+  reason: string;
+  target: string;
+}
+
+export interface PermissionRequest extends PermissionRequestInput {
+  id: string;
+}
+
+export interface PermissionBundle {
+  generatedAt: string;
+  mode: "ship";
+  requests: PermissionRequest[];
+  responseInstruction: string;
+  schemaVersion: 1;
 }
 
 export type ProviderStatus =
@@ -773,6 +803,8 @@ export interface LoopWorktreePreparation {
 export interface RemoteBranchProposalEvidence {
   headRevision: string | null;
   objectId: string;
+  observedFinally?: boolean;
+  observedInitially?: boolean;
   state: "open" | "merged" | "closed";
 }
 
@@ -809,8 +841,10 @@ export interface RemoteBranchReconciliationEntry {
 export interface RemoteBranchReconciliationReceipt {
   branches: RemoteBranchReconciliationEntry[];
   finalBranchCount: number;
+  finalCoverage: RemoteInventoryCoverage;
   finalInventoryComplete: true;
   initialBranchCount: number;
+  initialCoverage: RemoteInventoryCoverage;
   initialInventoryComplete: true;
   observedAt: string;
   project: string;
@@ -818,6 +852,22 @@ export interface RemoteBranchReconciliationReceipt {
   schemaVersion: 1;
   targetBranch: string;
   targetRevision: string;
+}
+
+export interface RemoteInventoryCoverage {
+  branches: RemotePaginationProof;
+  proposalStates: readonly ["closed", "merged", "open"];
+  proposals: RemotePaginationProof;
+}
+
+export interface RemotePaginationProof {
+  ledgerDigest: string;
+  pages: Array<{
+    cursorIn: string | null;
+    cursorOut: string | null;
+    itemCount: number;
+    responseDigest: string;
+  }>;
 }
 
 export interface LoopLease {
@@ -833,6 +883,7 @@ export interface LoopLease {
   ownerAgentId: string;
   preparations: LoopWorktreePreparation[];
   primaryCheckout: string;
+  remoteBindings?: RemoteBinding[];
   remoteBranchReconciliation?: RemoteBranchReconciliationReceipt;
   runId: string;
   schemaVersion: 1;
@@ -854,6 +905,8 @@ export interface LoopViolation {
     | "retained-worktree-changed"
     | "coordination-claim-stale"
     | "registered-worktree-branch-changed"
+    | "remote-destination-changed"
+    | "remote-destination-rebind-required"
     | "unregistered-worktree";
   headSha: string | null;
   message: string;
@@ -877,6 +930,7 @@ export type SchemaName =
   | "initialization"
   | "inventory"
   | "change-plan"
+  | "permission-bundle"
   | "emergency-shipping"
   | "migration-review"
   | "migration-pending"

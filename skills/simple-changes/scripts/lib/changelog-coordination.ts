@@ -25,6 +25,9 @@ const GLOBAL_SKILL_ROOTS = [
 ] as const;
 const CURRENT_GUIDANCE_VERSION_PATTERN =
   /^Current guidance version:\s*(\d+)\s*$/imu;
+const FULL_DISTRIBUTION_PATTERN =
+  /full (?:cross-surface )?simple changelogs distribution/iu;
+const NARROWER_DISTRIBUTION_PATTERN = /narrower .* distribution/iu;
 
 interface ChangelogDiscoveryOptions {
   environment?: Record<string, string | undefined>;
@@ -92,21 +95,53 @@ const guidanceSummaryBullets = (
 
 const storedGuidanceVersion = (
   repositoryRoot: string | null
-): { path: string | null; version: number | null } => {
+): {
+  distribution: string | null;
+  path: string | null;
+  version: number | null;
+} => {
   if (!repositoryRoot) {
-    return { path: null, version: null };
+    return { distribution: null, path: null, version: null };
   }
   const path = resolve(repositoryRoot, ".simple-changelogs.json");
   if (!existsSync(path)) {
-    return { path: null, version: null };
+    return { distribution: null, path: null, version: null };
   }
   try {
     const value = JSON.parse(readFileSync(path, "utf8")) as {
+      distribution?: unknown;
       guidance?: { version?: unknown };
     };
-    return { path, version: positiveInteger(value.guidance?.version) };
+    return {
+      distribution:
+        typeof value.distribution === "string" ? value.distribution : null,
+      path,
+      version: positiveInteger(value.guidance?.version),
+    };
   } catch {
-    return { path, version: null };
+    return { distribution: null, path, version: null };
+  }
+};
+
+const supportsDistribution = (
+  provider: string,
+  distribution: string | null
+): boolean => {
+  if (!distribution) {
+    return true;
+  }
+  try {
+    const source = readFileSync(provider, "utf8");
+    if (distribution === "full") {
+      return !NARROWER_DISTRIBUTION_PATTERN.test(source);
+    }
+    return (
+      source.includes(`"distribution": "${distribution}"`) ||
+      source.toLowerCase().includes(`${distribution} distribution`) ||
+      !FULL_DISTRIBUTION_PATTERN.test(source)
+    );
+  } catch {
+    return false;
   }
 };
 
@@ -139,13 +174,15 @@ export const inspectChangelogCoordination = (
   const globalProviders = configuredSkillRoots(options)
     .map((root) => resolve(root, "simple-changelogs", "SKILL.md"))
     .filter(existsSync);
-  const providers = [...new Set([...repositoryProviders, ...globalProviders])];
+  const stored = storedGuidanceVersion(repositoryRoot);
+  const providers = [
+    ...new Set([...repositoryProviders, ...globalProviders]),
+  ].filter((candidate) => supportsDistribution(candidate, stored.distribution));
   const provider = providers[0] ?? null;
   const capabilityHelpers = providers
     .map((candidate) => resolve(candidate, "..", "scripts", "setup.ts"))
     .filter(existsSync);
   const installedVersion = installedGuidanceVersion(provider);
-  const stored = storedGuidanceVersion(repositoryRoot);
   const detailsCandidate = provider
     ? resolve(provider, "..", "references", "guidance-updates.md")
     : null;

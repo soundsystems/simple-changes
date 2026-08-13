@@ -355,6 +355,7 @@ describe("onboarding conversation", () => {
 
   test("builds and confirms the full ship workflow", async () => {
     const questions: string[] = [];
+    const presented: string[] = [];
     const answers = new Map<string, string>([
       [ONBOARDING_QUESTIONS.finish, "ship"],
       [ONBOARDING_QUESTIONS.production, "allow"],
@@ -376,6 +377,7 @@ describe("onboarding conversation", () => {
           Promise.resolve(
             summary.includes("explicit exact-target authorization")
           ),
+        present: (message: string) => presented.push(message),
       }
     );
 
@@ -418,7 +420,10 @@ describe("onboarding conversation", () => {
       GIT_PUSH_AUTHORIZATION_CHOICES.map((choice) => choice.value)
     ).toEqual(["configure-harness", "ask", "never"]);
     expect(selection.summary).toContain(
-      "configure the narrowest repository-scoped push permission supported by this harness"
+      "grants no credentials, network access, force push, branch-protection bypass"
+    );
+    expect(presented.join("\n")).toContain(
+      "They grant no credentials, network access, force push, branch-protection bypass"
     );
   });
 

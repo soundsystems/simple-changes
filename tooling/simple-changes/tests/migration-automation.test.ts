@@ -25,6 +25,8 @@ const operationsList = [
     revision: "supabase/migrations/20260812090000_add_index.sql",
   },
 ];
+const operationRevision = "supabase/migrations/20260812090000_add_index.sql";
+const operationDigest = "1".repeat(64);
 const operations: MigrationOperationSet = {
   digest: migrationOperationDigest(operationsList),
   operations: operationsList,
@@ -32,8 +34,17 @@ const operations: MigrationOperationSet = {
 const now = new Date();
 const applyPlan = {
   ...operations,
-  adapter: "supabase-cli",
-  command: ["supabase", "db", "push", "--linked"],
+  adapter: "exact-operation-argv-v1",
+  command: [
+    "simple-changes-migration-adapter",
+    "apply-exact",
+    "--target",
+    "supabase/primary-db/production",
+    "--revision",
+    operationRevision,
+    "--digest",
+    operationDigest,
+  ],
   expiresAt: new Date(now.getTime() + 10 * 60 * 1000).toISOString(),
   issuedAt: now.toISOString(),
   nonce: "migration-plan-0001",
@@ -107,7 +118,7 @@ describe("reviewed migration automation", () => {
       )
     ).toMatchObject({
       authorizationDigest: expect.stringMatching(SHA256_PATTERN),
-      authorizedCommand: ["supabase", "db", "push", "--linked"],
+      authorizedCommand: applyPlan.command,
     });
     expect(
       decideMigrationAutomation(
@@ -219,6 +230,18 @@ describe("reviewed migration automation", () => {
           ...applyPlan,
           digest: migrationOperationDigest(plannedOperations),
           operations: plannedOperations,
+        }
+      )
+    ).toMatchObject({ action: "review-required", authorizedByPolicy: false });
+    expect(
+      decideMigrationAutomation(
+        policy("auto-apply-reviewed"),
+        review(),
+        operations,
+        {
+          ...applyPlan,
+          adapter: "supabase-cli",
+          command: ["supabase", "db", "push", "--linked"],
         }
       )
     ).toMatchObject({ action: "review-required", authorizedByPolicy: false });

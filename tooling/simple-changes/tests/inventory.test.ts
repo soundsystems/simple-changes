@@ -5,6 +5,7 @@ import { join } from "node:path";
 import {
   captureInventory,
   compareSnapshots,
+  credentialFreeRemoteUrl,
 } from "../../../skills/simple-changes/scripts/lib/inventory.ts";
 import { buildPreviewPlan } from "../../../skills/simple-changes/scripts/lib/planner.ts";
 import {
@@ -30,6 +31,16 @@ afterEach(() => {
 });
 
 describe("Git inventory and concurrency", () => {
+  test("removes embedded Git credentials while preserving destination identity", () => {
+    expect(
+      credentialFreeRemoteUrl(
+        "https://oauth2:TOPSECRET@gitlab.example/group/repo.git"
+      )
+    ).toBe("https://gitlab.example/group/repo.git");
+    expect(
+      credentialFreeRemoteUrl("https://gitlab.example/group/repo.git")
+    ).toBe("https://gitlab.example/group/repo.git");
+  });
   test("inventories dirty work without creating run state", () => {
     const fixture = repository();
     writeFixture(fixture.root, "src/change.ts", "export const ready = true;\n");

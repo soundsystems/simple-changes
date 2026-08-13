@@ -1,7 +1,9 @@
 import { createHash } from "node:crypto";
 import {
   closeSync,
+  constants,
   existsSync,
+  fstatSync,
   lstatSync,
   openSync,
   readlinkSync,
@@ -40,6 +42,7 @@ const ZERO_SHA_PATTERN = /^0+$/u;
 const WORKTREE_BLOCK_PATTERN = /\n\n+/u;
 const AHEAD_PATTERN = /ahead ([0-9]+)/u;
 const BEHIND_PATTERN = /behind ([0-9]+)/u;
+const HTTP_REMOTE_CREDENTIAL_PATTERN = /^(https?:\/\/)[^/@]+@/iu;
 const SCP_REMOTE_PATTERN = /^[^@]+@([^:]+):/u;
 const CONFLICT_CODES = new Set(["DD", "AU", "UD", "UA", "DU", "AA", "UU"]);
 
@@ -117,11 +120,19 @@ const parseStatus = (worktreePath: string, output: string): GitChange[] => {
   return changes.sort((left, right) => left.path.localeCompare(right.path));
 };
 
+/* biome-ignore-start lint/suspicious/noBitwiseOperators: fs.open requires an OS flag bit mask */
+const SAFE_REGULAR_FILE_OPEN_FLAGS =
+  constants.O_RDONLY | constants.O_NONBLOCK | constants.O_NOFOLLOW;
+/* biome-ignore-end lint/suspicious/noBitwiseOperators: flag mask ends here */
+
 const digestRegularFile = (path: string): string => {
   const digest = createHash("sha256");
-  const descriptor = openSync(path, "r");
+  const descriptor = openSync(path, SAFE_REGULAR_FILE_OPEN_FLAGS);
   const buffer = Buffer.allocUnsafe(64 * 1024);
   try {
+    if (!fstatSync(descriptor).isFile()) {
+      return "not-regular-after-open";
+    }
     let count = readSync(descriptor, buffer, 0, buffer.length, null);
     while (count > 0) {
       digest.update(buffer.subarray(0, count));
@@ -296,14 +307,29 @@ const remoteUrls = (root: string, remote: string, push: boolean): string[] => {
     : [];
 };
 
+export const credentialFreeRemoteUrl = (remoteUrl: string): string => {
+  try {
+    const parsed = new URL(remoteUrl);
+    parsed.username = "";
+    parsed.password = "";
+    return parsed.toString();
+  } catch {
+    return remoteUrl.replace(HTTP_REMOTE_CREDENTIAL_PATTERN, "$1");
+  }
+};
+
 const inventoryRemoteBindings = (root: string): RemoteBinding[] =>
   runGit(root, ["remote"], true)
     .stdout.split("\n")
     .filter(Boolean)
     .sort()
     .map((name) => {
-      const fetchUrls = remoteUrls(root, name, false);
-      const pushUrls = remoteUrls(root, name, true);
+      const fetchUrls = remoteUrls(root, name, false).map(
+        credentialFreeRemoteUrl
+      );
+      const pushUrls = remoteUrls(root, name, true).map(
+        credentialFreeRemoteUrl
+      );
       return {
         fetchUrls,
         name,

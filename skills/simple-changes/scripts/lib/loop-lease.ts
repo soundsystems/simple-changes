@@ -272,7 +272,23 @@ const readLeaseFromCommonDirectory = (
   if (!existsSync(path)) {
     return null;
   }
-  const parsed = JSON.parse(readFileSync(path, "utf8")) as unknown;
+  const parsed = JSON.parse(readFileSync(path, "utf8")) as Record<
+    string,
+    unknown
+  >;
+  const legacyReconciliation = parsed.remoteBranchReconciliation;
+  if (
+    legacyReconciliation &&
+    typeof legacyReconciliation === "object" &&
+    !(
+      "initialCoverage" in legacyReconciliation &&
+      "finalCoverage" in legacyReconciliation
+    )
+  ) {
+    // A pre-0.12.2 receipt cannot prove complete paginated coverage. Keep the
+    // controller recoverable, but force fresh reconciliation before finalize.
+    Reflect.deleteProperty(parsed, "remoteBranchReconciliation");
+  }
   return validateSchema<LoopLease>("loop-lease", parsed);
 };
 
@@ -1011,8 +1027,9 @@ const verificationAgainst = (
     });
   }
   if (
+    lease.remoteBindings &&
     JSON.stringify(inventory.repository.remoteBindings) !==
-    JSON.stringify(lease.remoteBindings)
+      JSON.stringify(lease.remoteBindings)
   ) {
     violations.push({
       changeDigest: null,

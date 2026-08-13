@@ -6,33 +6,40 @@
   deadlocking a shipment, including worktrees previously retained or promoted
   to active authors. Obsolete opening worktrees are audited against the
   refreshed canonical target while rewritten targets still fail closed.
-- Active loops now bind exact Git fetch and push destinations and apply
-  provider-specific cleanup only to the selected target remote. GitLab branch
-  reconciliation also proves complete initial and final pagination for branches
-  and proposals before cleanup can finish.
+- Active loops bind Git fetch and push destinations without persisting embedded
+  HTTP URL usernames or passwords and apply provider-specific cleanup only to
+  the selected target remote. Loops created before 0.12.2 remain recoverable;
+  older reconciliation evidence is discarded so current pagination proof must
+  be collected before completion.
 - Repository policy can no longer silently grant persistent push, automatic
   migration, break-glass, or production authority. Consequential settings
   require a private digest-bound local trust receipt, and symlinked policy files
   are rejected.
 - Automatic migration decisions now bind the exact target, fresh remote ledger,
   adapter, argument-vector command, nonce, and expiration window. Changed,
-  replayed, stale, or broader execution plans require fresh review and
-  authority.
-- Worktree inventory now hashes large files incrementally and identifies FIFOs
-  and other special files without opening them, avoiding unbounded binary-diff
-  memory use and blocking reads.
+  replayed, stale, broader, or already consumed authorizations require fresh
+  evidence and authority.
+- Worktree inventory hashes large files incrementally through a no-follow file
+  descriptor check and identifies FIFOs and other special files without opening
+  them, avoiding unbounded binary-diff memory use and blocking reads.
+- GitLab reconciliation separately accounts for branches and proposals in the
+  opening and final inventories, requires complete cursor chains and proposal
+  states, and binds single-page response digests to the matching phase ledger.
 - Setup now asks about push authorization for every workflow that can push,
   honors the repository's changelog distribution when selecting a provider,
-  and uses synchronized guidance for retained cleanup and current defaults.
+  summarizes every missed guidance version, and uses synchronized guidance for
+  retained cleanup and current defaults.
 - Installed update prompts now explain practical new abilities first and
-  recommend reviewing what changed. Saving automatic Git pushes requires a
-  precise cross-harness explanation and confirmation of its single verified
-  repository-and-remote scope and the authority it does not grant.
-- Ship now presents every currently knowable unresolved permission together as
-  an exact-target checklist with stable IDs. Users can approve all listed
-  items, approve selected IDs, or decline them without granting authority for
-  unlisted future actions or bypassing host security enforcement.
-<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-13T15:29:13-05:00" -->
+  recommend reviewing what changed. Repository auto-push setup now writes its
+  digest-bound trust receipt after confirmation and requires noninteractive
+  callers to acknowledge the exact one-repository push scope and its complete
+  non-authorities.
+- Ship can render every currently knowable unresolved permission together as a
+  deterministic exact-target checklist with stable IDs and one-reply
+  instructions for approving all, approving named IDs, or declining. The
+  checklist grants nothing by itself, does not cover future actions, and cannot
+  bypass harness enforcement.
+<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-13T16:26:14-05:00" -->
 
 ## 0.12.1 - 2026-08-13
 

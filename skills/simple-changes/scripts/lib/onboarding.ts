@@ -171,7 +171,7 @@ export const SHIPPING_MODE_CHOICES = [
 export const GIT_PUSH_AUTHORIZATION_CHOICES = [
   {
     description:
-      "After confirmation, configure the narrowest repository-scoped push permission supported by the detected harness; host and administrator policy still win.",
+      "After an exact scope acknowledgement, allow ordinary git push only to one verified repository and remote. This grants no credentials, network access, force push, branch-protection bypass, proposal/merge/deploy authority, or other destination; host policy still wins.",
     label: "Configure this harness",
     value: "configure-harness",
   },
@@ -584,11 +584,11 @@ const shippingSummary = (
 };
 
 const gitPushAuthorizationSummary = (policy: RepoPolicy): string | null => {
-  if (policy.defaultFinish !== "ship") {
+  if (policy.defaultFinish === "preview") {
     return null;
   }
   if (policy.gitPushAuthorization === "configure-harness") {
-    return "Git pushes: configure the narrowest repository-scoped push permission supported by this harness for the verified remote; sandbox, network, and administrator policy still apply.";
+    return "Git pushes: allow ordinary git push only to one verified repository and remote. This grants no credentials, network access, force push, branch-protection bypass, proposal, merge, deployment, or other-destination authority; unsupported harnesses keep asking.";
   }
   if (policy.gitPushAuthorization === "never") {
     return "Git pushes: never request or configure push access; stop with local work ready.";
@@ -874,12 +874,17 @@ const selectGitPushAuthorization = async (
   finish: RepoPolicy["defaultFinish"]
 ): Promise<RepoPolicy["gitPushAuthorization"]> => {
   if (inputs.gitPushAuthorization) {
+    if (inputs.gitPushAuthorization === "configure-harness") {
+      prompter.present?.(
+        "Automatic Git pushes cover only ordinary git push to one verified repository and remote. They grant no credentials, network access, force push, branch-protection bypass, proposal, merge, deployment, or other-destination authority. If the harness cannot enforce that exact scope, it must keep asking."
+      );
+    }
     return inputs.gitPushAuthorization;
   }
   if (finish === "preview" || !customize) {
     return defaults.gitPushAuthorization;
   }
-  return choiceValue<RepoPolicy["gitPushAuthorization"]>(
+  const selected = choiceValue<RepoPolicy["gitPushAuthorization"]>(
     await prompter.choose(
       ONBOARDING_QUESTIONS.gitPushAuthorization,
       GIT_PUSH_AUTHORIZATION_CHOICES,
@@ -888,6 +893,12 @@ const selectGitPushAuthorization = async (
     GIT_PUSH_AUTHORIZATION_CHOICES,
     ONBOARDING_QUESTIONS.gitPushAuthorization
   );
+  if (selected === "configure-harness") {
+    prompter.present?.(
+      "Automatic Git pushes cover only ordinary git push to one verified repository and remote. They grant no credentials, network access, force push, branch-protection bypass, proposal, merge, deployment, or other-destination authority. If the harness cannot enforce that exact scope, it must keep asking."
+    );
+  }
+  return selected;
 };
 
 const automaticMigrationHandling = (

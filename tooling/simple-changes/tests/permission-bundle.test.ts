@@ -48,5 +48,8 @@ describe("shipping permission bundles", () => {
     expect(() => buildPermissionBundle([{ ...request, target: " " }])).toThrow(
       "target must be explicit"
     );
+    expect(() =>
+      buildPermissionBundle([{ ...request, authority: "proposal-write" }])
+    ).toThrow("requires authority merge");
   });
 });

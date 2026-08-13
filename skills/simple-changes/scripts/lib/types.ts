@@ -803,6 +803,8 @@ export interface LoopWorktreePreparation {
 export interface RemoteBranchProposalEvidence {
   headRevision: string | null;
   objectId: string;
+  observedFinally?: boolean;
+  observedInitially?: boolean;
   state: "open" | "merged" | "closed";
 }
 
@@ -880,7 +882,7 @@ export interface LoopLease {
   ownerAgentId: string;
   preparations: LoopWorktreePreparation[];
   primaryCheckout: string;
-  remoteBindings: RemoteBinding[];
+  remoteBindings?: RemoteBinding[];
   remoteBranchReconciliation?: RemoteBranchReconciliationReceipt;
   runId: string;
   schemaVersion: 1;

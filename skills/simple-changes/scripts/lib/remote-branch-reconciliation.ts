@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
 import { validateSchema } from "./schema.ts";
 import type {
@@ -36,6 +37,64 @@ const validatePagination = (
         `Invalid remote branch reconciliation: ${label} ${kind} pagination count does not match the accounted ledger`,
         EXIT_CODES.validation
       );
+    }
+  }
+};
+
+const coverageDigest = (
+  receipt: RemoteBranchReconciliationReceipt,
+  phase: "initial" | "final",
+  kind: "branches" | "proposals"
+): string => {
+  const entries =
+    kind === "branches"
+      ? receipt.branches
+          .filter((branch) =>
+            phase === "initial"
+              ? branch.initialHeadRevision !== null
+              : branch.finalHeadRevision !== null
+          )
+          .map((branch) => ({
+            headRevision:
+              phase === "initial"
+                ? branch.initialHeadRevision
+                : branch.finalHeadRevision,
+            name: branch.name,
+          }))
+      : receipt.branches.flatMap((branch) =>
+          branch.proposals
+            .filter((proposal) =>
+              phase === "initial"
+                ? proposal.observedInitially !== false
+                : proposal.observedFinally !== false
+            )
+            .map((proposal) => ({
+              branch: branch.name,
+              headRevision: proposal.headRevision,
+              objectId: proposal.objectId,
+              state: proposal.state,
+            }))
+        );
+  return createHash("sha256").update(JSON.stringify(entries)).digest("hex");
+};
+
+const validateSinglePageDigests = (
+  receipt: RemoteBranchReconciliationReceipt
+): void => {
+  for (const phase of ["initial", "final"] as const) {
+    const coverage =
+      phase === "initial" ? receipt.initialCoverage : receipt.finalCoverage;
+    for (const kind of ["branches", "proposals"] as const) {
+      const { pages } = coverage[kind];
+      if (
+        pages.length === 1 &&
+        pages[0]?.responseDigest !== coverageDigest(receipt, phase, kind)
+      ) {
+        throw new SimpleChangesError(
+          `Invalid remote branch reconciliation: ${phase} ${kind} response digest does not bind the accounted ledger`,
+          EXIT_CODES.validation
+        );
+      }
     }
   }
 };
@@ -235,20 +294,32 @@ export const validateRemoteBranchReconciliation = (
       EXIT_CODES.validation
     );
   }
-  const proposalCount = receipt.branches.reduce(
-    (total, branch) => total + branch.proposals.length,
+  const initialProposalCount = receipt.branches.reduce(
+    (total, branch) =>
+      total +
+      branch.proposals.filter(
+        (proposal) => proposal.observedInitially !== false
+      ).length,
+    0
+  );
+  const finalProposalCount = receipt.branches.reduce(
+    (total, branch) =>
+      total +
+      branch.proposals.filter((proposal) => proposal.observedFinally !== false)
+        .length,
     0
   );
   validatePagination(
     receipt.initialCoverage,
     receipt.initialBranchCount,
-    proposalCount,
+    initialProposalCount,
     "initial"
   );
+  validateSinglePageDigests(receipt);
   validatePagination(
     receipt.finalCoverage,
     receipt.finalBranchCount,
-    proposalCount,
+    finalProposalCount,
     "final"
   );
   for (const branch of receipt.branches) {

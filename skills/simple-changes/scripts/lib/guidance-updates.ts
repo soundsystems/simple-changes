@@ -213,10 +213,15 @@ export const inspectGuidanceUpdate = (
       ? []
       : GUIDANCE_UPDATES.filter((update) => update.version > storedVersion);
   const changes = pending.flatMap((update) => update.changes);
-  const newestPending = pending.at(-1);
-  const summaryBullets = newestPending
-    ? newestPending.changes.slice(0, 3).map((change) => change.summary)
-    : [];
+  const summaryBullets = (["behavior", "onboarding", "integration"] as const)
+    .map((kind) =>
+      pending
+        .flatMap((update) => update.changes)
+        .filter((change) => change.kind === kind)
+        .map((change) => change.summary)
+        .join(" ")
+    )
+    .filter(Boolean);
   const updateAvailable = changes.length > 0;
   const changelogReviewRelevant = pending.some(
     (update) => update.changelogReviewRelevant

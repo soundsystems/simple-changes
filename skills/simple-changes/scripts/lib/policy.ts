@@ -308,9 +308,32 @@ export const writeRepositoryPolicyTrustReceipt = (
   };
   const receiptPath = repositoryPolicyTrustPath(commonGitDirectory);
   mkdirSync(dirname(receiptPath), { mode: 0o700, recursive: true });
-  writeFileSync(receiptPath, `${JSON.stringify(receipt, null, 2)}\n`, {
+  if (existsSync(receiptPath)) {
+    const status = lstatSync(receiptPath);
+    if (status.isSymbolicLink() || !status.isFile()) {
+      throw new SimpleChangesError(
+        `Refusing to replace a policy trust receipt that is not a regular file: ${receiptPath}`,
+        EXIT_CODES.unsafe
+      );
+    }
+  }
+  const temporaryPath = resolve(
+    dirname(receiptPath),
+    `.${randomUUID()}.policy-trust.tmp`
+  );
+  writeFileSync(temporaryPath, `${JSON.stringify(receipt, null, 2)}\n`, {
+    encoding: "utf8",
+    flag: "wx",
     mode: 0o600,
   });
+  try {
+    renameSync(temporaryPath, receiptPath);
+  } catch (error) {
+    if (existsSync(temporaryPath)) {
+      unlinkSync(temporaryPath);
+    }
+    throw error;
+  }
   return receiptPath;
 };
 

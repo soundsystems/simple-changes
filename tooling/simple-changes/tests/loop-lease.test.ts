@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { hostname } from "node:os";
 import { join } from "node:path";
@@ -52,14 +53,19 @@ const repository = (): TestRepository => {
   return fixture;
 };
 
-const paginationCoverage = (branches: number, proposals = 0) => ({
+const paginationCoverage = (
+  branches: number,
+  branchDigest: string,
+  proposals = 0,
+  proposalDigest = createHash("sha256").update("[]").digest("hex")
+) => ({
   branches: {
     pages: [
       {
         cursorIn: null,
         cursorOut: null,
         itemCount: branches,
-        responseDigest: "a".repeat(64),
+        responseDigest: branchDigest,
       },
     ],
   },
@@ -70,7 +76,7 @@ const paginationCoverage = (branches: number, proposals = 0) => ({
         cursorIn: null,
         cursorOut: null,
         itemCount: proposals,
-        responseDigest: "b".repeat(64),
+        responseDigest: proposalDigest,
       },
     ],
   },
@@ -84,6 +90,48 @@ afterEach(() => {
 });
 
 describe("active integration-loop lease", () => {
+  test("reads and safely verifies a pre-remote-binding lease", () => {
+    const fixture = repository();
+    const lease = startLoop(fixture.root, "controller", "integrate");
+    const inventory = captureInventory(fixture.root);
+    const leasePath = loopLeasePath(inventory.repository.commonGitDirectory);
+    const { remoteBindings: _remoteBindings, ...legacy } = lease;
+    writeFileSync(leasePath, `${JSON.stringify(legacy, null, 2)}\n`, "utf8");
+
+    expect(readLoopLease(fixture.root)?.remoteBindings).toBeUndefined();
+    expect(verifyLoop(fixture.root)).toMatchObject({ active: true, ok: true });
+  });
+
+  test("recovers a lease with a legacy reconciliation as refresh-required", () => {
+    const fixture = repository();
+    const lease = startLoop(fixture.root, "controller", "integrate");
+    const inventory = captureInventory(fixture.root);
+    const leasePath = loopLeasePath(inventory.repository.commonGitDirectory);
+    writeFileSync(
+      leasePath,
+      `${JSON.stringify({
+        ...lease,
+        remoteBranchReconciliation: {
+          branches: [],
+          finalInventoryComplete: true,
+          initialInventoryComplete: true,
+          observedAt: new Date().toISOString(),
+          project: "group/project",
+          provider: "gitlab",
+          schemaVersion: 1,
+          targetBranch: "main",
+          targetRevision: lease.targetRevision,
+        },
+      })}\n`,
+      "utf8"
+    );
+
+    expect(
+      readLoopLease(fixture.root)?.remoteBranchReconciliation
+    ).toBeUndefined();
+    expect(verifyLoop(fixture.root)).toMatchObject({ active: true, ok: true });
+  });
+
   test("rejects a remote destination change after loop start", () => {
     const fixture = repository();
     git(fixture.root, [
@@ -93,7 +141,7 @@ describe("active integration-loop lease", () => {
       "https://gitlab.example.invalid/group/first.git",
     ]);
     const lease = startLoop(fixture.root, "controller", "integrate");
-    expect(lease.remoteBindings[0]?.pushUrls).toEqual([
+    expect(lease.remoteBindings?.[0]?.pushUrls).toEqual([
       "https://gitlab.example.invalid/group/first.git",
     ]);
 
@@ -1926,6 +1974,9 @@ describe("active integration-loop lease", () => {
       "git@gitlab.com:group/project.git",
     ]);
     const targetRevision = git(fixture.root, ["rev-parse", "HEAD"]);
+    const branchDigest = createHash("sha256")
+      .update(JSON.stringify([{ headRevision: targetRevision, name: "main" }]))
+      .digest("hex");
     const lease = startLoop(fixture.root, "controller", "integrate");
 
     expect(() => endLoop(fixture.root, lease.runId, "controller")).toThrow(
@@ -1952,10 +2003,10 @@ describe("active integration-loop lease", () => {
             },
           ],
           finalBranchCount: 1,
-          finalCoverage: paginationCoverage(1),
+          finalCoverage: paginationCoverage(1, branchDigest),
           finalInventoryComplete: true,
           initialBranchCount: 1,
-          initialCoverage: paginationCoverage(1),
+          initialCoverage: paginationCoverage(1, branchDigest),
           initialInventoryComplete: true,
           observedAt: new Date().toISOString(),
           project: "group/other-project",
@@ -1986,10 +2037,10 @@ describe("active integration-loop lease", () => {
           },
         ],
         finalBranchCount: 1,
-        finalCoverage: paginationCoverage(1),
+        finalCoverage: paginationCoverage(1, branchDigest),
         finalInventoryComplete: true,
         initialBranchCount: 1,
-        initialCoverage: paginationCoverage(1),
+        initialCoverage: paginationCoverage(1, branchDigest),
         initialInventoryComplete: true,
         observedAt: new Date().toISOString(),
         project: "group/project",

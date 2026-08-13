@@ -1,4 +1,7 @@
 import { createHash } from "node:crypto";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { resolve } from "node:path";
+import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
 import type { MigrationTarget, RepoPolicy } from "./types.ts";
 
 export interface MigrationOperation {
@@ -61,6 +64,35 @@ const sameTarget = (left: MigrationTarget, right: MigrationTarget): boolean =>
 
 const targetLabel = (target: MigrationTarget): string =>
   `${target.provider}/${target.project}/${target.environment}`;
+
+const exactCommandArguments = (
+  operations: MigrationOperation[],
+  target: MigrationTarget
+): string[] => [
+  "apply-exact",
+  "--target",
+  targetLabel(target),
+  ...canonicalOperations(operations).flatMap((operation) => [
+    "--revision",
+    operation.revision,
+    "--digest",
+    operation.contentDigest,
+  ]),
+];
+
+const commandIsExact = (applyPlan: MigrationApplyPlan): boolean => {
+  if (applyPlan.adapter !== "exact-operation-argv-v1") {
+    return false;
+  }
+  const [executable, ...arguments_] = applyPlan.command;
+  return (
+    executable === "simple-changes-migration-adapter" &&
+    JSON.stringify(arguments_) ===
+      JSON.stringify(
+        exactCommandArguments(applyPlan.operations, applyPlan.target)
+      )
+  );
+};
 
 const canonicalOperations = (
   operations: MigrationOperation[]
@@ -180,7 +212,8 @@ export const decideMigrationAutomation = (
     !applyPlan.nonce.trim() ||
     !applyPlan.adapter.trim() ||
     applyPlan.command.length === 0 ||
-    applyPlan.command.some((argument) => !argument.trim())
+    applyPlan.command.some((argument) => !argument.trim()) ||
+    !commandIsExact(applyPlan)
   ) {
     return {
       action: "review-required",
@@ -263,3 +296,65 @@ export const decideMigrationAutomation = (
       : "The exact target is bound and the migration passed the broader reviewed-eligible automatic-apply requirements.",
   };
 };
+
+export const consumeMigrationAuthorization = (
+  commonGitDirectory: string,
+  decision: MigrationAutomationDecision
+): string => {
+  if (
+    decision.action !== "auto-apply" ||
+    !decision.authorizationDigest ||
+    !decision.authorizedCommand
+  ) {
+    throw new SimpleChangesError(
+      "Only an exact automatic migration authorization can be consumed.",
+      EXIT_CODES.validation
+    );
+  }
+  const directory = resolve(
+    commonGitDirectory,
+    "simple-changes",
+    "migration-authorizations"
+  );
+  mkdirSync(directory, { mode: 0o700, recursive: true });
+  const receiptPath = resolve(
+    directory,
+    `${decision.authorizationDigest}.json`
+  );
+  try {
+    writeFileSync(
+      receiptPath,
+      `${JSON.stringify(
+        {
+          authorizationDigest: decision.authorizationDigest,
+          command: decision.authorizedCommand,
+          consumedAt: new Date().toISOString(),
+          schemaVersion: 1,
+        },
+        null,
+        2
+      )}\n`,
+      { encoding: "utf8", flag: "wx", mode: 0o600 }
+    );
+  } catch (error) {
+    throw SimpleChangesError.withCause(
+      "This migration authorization was already consumed or could not be recorded; regenerate fresh pending, review, ledger, nonce, and command evidence.",
+      EXIT_CODES.unsafe,
+      error
+    );
+  }
+  return receiptPath;
+};
+
+export const migrationAuthorizationConsumed = (
+  commonGitDirectory: string,
+  authorizationDigest: string
+): boolean =>
+  existsSync(
+    resolve(
+      commonGitDirectory,
+      "simple-changes",
+      "migration-authorizations",
+      `${authorizationDigest}.json`
+    )
+  );

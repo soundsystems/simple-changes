@@ -48,10 +48,13 @@ import {
 } from "./lib/loop-lease.ts";
 import { auditMarkdown } from "./lib/markdown.ts";
 import {
+  consumeMigrationAuthorization,
   decideMigrationAutomation,
   type MigrationApplyPlan,
+  type MigrationAutomationDecision,
   type MigrationOperationSet,
   type MigrationReview,
+  migrationAuthorizationConsumed,
 } from "./lib/migration-automation.ts";
 import {
   collectOnboardingSelection,
@@ -62,11 +65,16 @@ import {
   type SetupScope,
 } from "./lib/onboarding.ts";
 import { assertSafeRelativePath } from "./lib/path-safety.ts";
+import {
+  buildPermissionBundle,
+  renderPermissionBundle,
+} from "./lib/permission-bundle.ts";
 import { buildPreviewPlan } from "./lib/planner.ts";
 import {
   loadPersonalPolicy,
   resolvePersonalPolicyPath,
   writePolicyFile,
+  writeRepositoryPolicyTrustReceipt,
 } from "./lib/policy.ts";
 import { runGit } from "./lib/process.ts";
 import { redactSecrets } from "./lib/redact.ts";
@@ -122,7 +130,8 @@ Usage:
     [--migration-handling ask-after-review|auto-apply-reviewed-routine|auto-apply-reviewed|never]
     [--migration-target provider:project:environment]
     [--questions blocking-only|always|never]
-    [--scope user|repository|run] [--agent-id ID] [--yes] [--json] [--repo PATH]
+    [--scope user|repository|run] [--acknowledge-push-scope]
+    [--agent-id ID] [--yes] [--json] [--repo PATH]
   simple-changes setup [--finish review|integrate|ship]
     [--changelog delegate-if-available|preserve-and-report|ask]
     [--concurrent-work allow-claimed|strict]
@@ -136,10 +145,13 @@ Usage:
     [--migration-handling ask-after-review|auto-apply-reviewed-routine|auto-apply-reviewed|never]
     [--migration-target provider:project:environment]
     [--questions blocking-only|always|never]
-    [--scope user|repository|run] [--agent-id ID] [--yes] [--json] [--repo PATH]
+    [--scope user|repository|run] [--acknowledge-push-scope]
+    [--agent-id ID] [--yes] [--json] [--repo PATH]
   simple-changes acknowledge-update --guidance-decision accepted|reviewed|deferred
     [--agent-id ID] [--json] [--repo PATH]
   simple-changes migration decision --state REVIEW_FILE --pending PENDING_FILE --apply-plan APPLY_PLAN_FILE [--json] [--repo PATH]
+  simple-changes migration consume --state REVIEW_FILE --pending PENDING_FILE --apply-plan APPLY_PLAN_FILE [--json] [--repo PATH]
+  simple-changes permissions bundle REQUESTS_FILE [--json]
   simple-changes inventory [--json] [--repo PATH]
   simple-changes preview [--json] [--repo PATH] [--settle-ms N]
   simple-changes loop start --mode MODE --agent-id ID [--changelog-required]
@@ -205,6 +217,7 @@ Exit codes:
 `;
 
 interface CliOptions {
+  acknowledgePushScope: boolean;
   adapter?: string;
   agentId?: string;
   applyPlanPath?: string;
@@ -293,6 +306,7 @@ const VALUED_OPTIONS = new Set([
 ]);
 
 const BOOLEAN_OPTIONS = new Set([
+  "--acknowledge-push-scope",
   "--changelog-required",
   "--check",
   "--json",
@@ -672,7 +686,9 @@ const applyValuedOption = (
 };
 
 const applyBooleanOption = (options: CliOptions, option: string): void => {
-  if (option === "--json") {
+  if (option === "--acknowledge-push-scope") {
+    options.acknowledgePushScope = true;
+  } else if (option === "--json") {
     options.json = true;
   } else if (option === "--changelog-required") {
     options.changelogRequired = true;
@@ -689,6 +705,7 @@ const applyBooleanOption = (options: CliOptions, option: string): void => {
 
 const parseOptions = (args: string[]): CliOptions => {
   const options: CliOptions = {
+    acknowledgePushScope: false,
     changelogRequired: false,
     check: false,
     json: false,
@@ -980,6 +997,16 @@ const runSetup = async (options: CliOptions): Promise<void> => {
       EXIT_CODES.usage
     );
   }
+  if (
+    !process.stdin.isTTY &&
+    options.gitPushAuthorization === "configure-harness" &&
+    !options.acknowledgePushScope
+  ) {
+    throw new SimpleChangesError(
+      "Non-interactive automatic Git push setup requires --acknowledge-push-scope after reviewing that it covers only ordinary git push to one verified repository and remote and grants no credentials, network, force-push, protection-bypass, proposal, merge, deploy, or other-destination authority.",
+      EXIT_CODES.usage
+    );
+  }
   const inputs = buildOnboardingInputs(options, needsPrompt);
   const interactive = createCliPrompter(options);
   try {
@@ -1014,6 +1041,15 @@ const runSetup = async (options: CliOptions): Promise<void> => {
       }
       if (written && path) {
         writePolicyFile(path, selection.policy, selection.scope === "user");
+        if (selection.scope === "repository" && context.primaryCheckout) {
+          const trustedInventory = captureInventory(context.primaryCheckout);
+          writeRepositoryPolicyTrustReceipt(
+            context.primaryCheckout,
+            trustedInventory.repository.commonGitDirectory,
+            "confirmed-setup-user",
+            "User confirmed these exact consequential repository settings in Simple Changes setup."
+          );
+        }
       }
       return { instructionPointerChanged, instructionPointerWritten };
     };
@@ -1340,14 +1376,12 @@ const runValidation = (options: CliOptions): void => {
   );
 };
 
-const runMigrationCommand = (options: CliOptions): void => {
-  const [action] = options.positional;
-  if (action !== "decision") {
-    throw new SimpleChangesError(
-      `Unknown migration action: ${action ?? "(missing)"}`,
-      EXIT_CODES.usage
-    );
-  }
+const migrationDecisionForOptions = (
+  options: CliOptions
+): {
+  commonGitDirectory: string;
+  decision: MigrationAutomationDecision;
+} => {
   const reviewPath = requireCliOption(options.statePath, "--state");
   const pendingPath = requireCliOption(options.pendingPath, "--pending");
   const applyPlanPath = requireCliOption(options.applyPlanPath, "--apply-plan");
@@ -1381,18 +1415,91 @@ const runMigrationCommand = (options: CliOptions): void => {
       );
     }
   }
-  const policy = captureInventory(options.repo).policy.value;
+  const inventory = captureInventory(options.repo);
+  const policy = inventory.policy.value;
   const decision = decideMigrationAutomation(
     policy,
     review,
     pending,
     applyPlan
   );
+  if (
+    decision.action === "auto-apply" &&
+    decision.authorizationDigest &&
+    migrationAuthorizationConsumed(
+      inventory.repository.commonGitDirectory,
+      decision.authorizationDigest
+    )
+  ) {
+    throw new SimpleChangesError(
+      "This migration authorization has already been consumed; regenerate fresh pending, review, ledger, nonce, and command evidence.",
+      EXIT_CODES.unsafe
+    );
+  }
+  return {
+    commonGitDirectory: inventory.repository.commonGitDirectory,
+    decision,
+  };
+};
+
+const runMigrationCommand = (options: CliOptions): void => {
+  const [action] = options.positional;
+  if (action !== "decision") {
+    throw new SimpleChangesError(
+      `Unknown migration action: ${action ?? "(missing)"}`,
+      EXIT_CODES.usage
+    );
+  }
+  const { decision } = migrationDecisionForOptions(options);
   writeOutput(
     decision,
     options.json,
     `${decision.action}: ${decision.reason}\n`
   );
+};
+
+const runMigrationConsumeCommand = (options: CliOptions): void => {
+  const { commonGitDirectory, decision } = migrationDecisionForOptions(options);
+  if (
+    decision.authorizationDigest &&
+    migrationAuthorizationConsumed(
+      commonGitDirectory,
+      decision.authorizationDigest
+    )
+  ) {
+    throw new SimpleChangesError(
+      "This migration authorization has already been consumed.",
+      EXIT_CODES.unsafe
+    );
+  }
+  const receiptPath = consumeMigrationAuthorization(
+    commonGitDirectory,
+    decision
+  );
+  writeOutput(
+    { authorizationDigest: decision.authorizationDigest, receiptPath },
+    options.json,
+    `Consumed migration authorization ${decision.authorizationDigest}.\n`
+  );
+};
+
+const runPermissionCommand = (options: CliOptions): void => {
+  const [action, filename] = options.positional;
+  if (action !== "bundle" || !filename) {
+    throw new SimpleChangesError(
+      "permissions requires bundle REQUESTS_FILE",
+      EXIT_CODES.usage
+    );
+  }
+  const input = readJsonFile(filename);
+  if (!Array.isArray(input)) {
+    throw new SimpleChangesError(
+      "Permission bundle input must be an array of exact request objects.",
+      EXIT_CODES.validation
+    );
+  }
+  const bundle = buildPermissionBundle(input);
+  writeOutput(bundle, options.json, `${renderPermissionBundle(bundle)}\n`);
 };
 
 const readJsonFile = (filename: string): unknown =>
@@ -2099,7 +2206,14 @@ const executeCommand = async (
       await runAcknowledgeUpdate(options);
       return EXIT_CODES.success;
     case "migration":
-      runMigrationCommand(options);
+      if (options.positional[0] === "consume") {
+        runMigrationConsumeCommand(options);
+      } else {
+        runMigrationCommand(options);
+      }
+      return EXIT_CODES.success;
+    case "permissions":
+      runPermissionCommand(options);
       return EXIT_CODES.success;
     case "preview":
       await runPreview(options);

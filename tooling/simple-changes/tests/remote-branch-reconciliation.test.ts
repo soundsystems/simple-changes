@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import { validateRemoteBranchReconciliation } from "../../../skills/simple-changes/scripts/lib/remote-branch-reconciliation.ts";
 import type { RemoteBranchReconciliationReceipt } from "../../../skills/simple-changes/scripts/lib/types.ts";
 
@@ -7,14 +8,17 @@ const SHA = {
   target: "a".repeat(40),
 };
 
-const coverage = (branches: number, proposals: number) => ({
+const digest = (value: unknown) =>
+  createHash("sha256").update(JSON.stringify(value)).digest("hex");
+
+const coverage = (branchEntries: unknown[], proposalEntries: unknown[]) => ({
   branches: {
     pages: [
       {
         cursorIn: null,
         cursorOut: null,
-        itemCount: branches,
-        responseDigest: "d".repeat(64),
+        itemCount: branchEntries.length,
+        responseDigest: digest(branchEntries),
       },
     ],
   },
@@ -24,15 +28,15 @@ const coverage = (branches: number, proposals: number) => ({
       {
         cursorIn: null,
         cursorOut: null,
-        itemCount: proposals,
-        responseDigest: "e".repeat(64),
+        itemCount: proposalEntries.length,
+        responseDigest: digest(proposalEntries),
       },
     ],
   },
 });
 
-const receipt = (): RemoteBranchReconciliationReceipt => ({
-  branches: [
+const receipt = (): RemoteBranchReconciliationReceipt => {
+  const branches: RemoteBranchReconciliationReceipt["branches"] = [
     {
       classification: "canonical-target",
       disposition: "preserved-target",
@@ -76,20 +80,45 @@ const receipt = (): RemoteBranchReconciliationReceipt => ({
       proposals: [],
       protected: false,
     },
-  ],
-  finalBranchCount: 2,
-  finalCoverage: coverage(2, 1),
-  finalInventoryComplete: true,
-  initialBranchCount: 3,
-  initialCoverage: coverage(3, 1),
-  initialInventoryComplete: true,
-  observedAt: new Date().toISOString(),
-  project: "group/project",
-  provider: "gitlab",
-  schemaVersion: 1,
-  targetBranch: "main",
-  targetRevision: SHA.target,
-});
+  ];
+  const branchEntries = (phase: "initial" | "final") =>
+    branches
+      .filter((branch) =>
+        phase === "initial"
+          ? branch.initialHeadRevision !== null
+          : branch.finalHeadRevision !== null
+      )
+      .map((branch) => ({
+        headRevision:
+          phase === "initial"
+            ? branch.initialHeadRevision
+            : branch.finalHeadRevision,
+        name: branch.name,
+      }));
+  const proposalEntries = branches.flatMap((branch) =>
+    branch.proposals.map((proposal) => ({
+      branch: branch.name,
+      headRevision: proposal.headRevision,
+      objectId: proposal.objectId,
+      state: proposal.state,
+    }))
+  );
+  return {
+    branches,
+    finalBranchCount: 2,
+    finalCoverage: coverage(branchEntries("final"), proposalEntries),
+    finalInventoryComplete: true,
+    initialBranchCount: 3,
+    initialCoverage: coverage(branchEntries("initial"), proposalEntries),
+    initialInventoryComplete: true,
+    observedAt: new Date().toISOString(),
+    project: "group/project",
+    provider: "gitlab",
+    schemaVersion: 1,
+    targetBranch: "main",
+    targetRevision: SHA.target,
+  };
+};
 
 describe("remote branch reconciliation", () => {
   test("accepts a complete conservative branch ledger", () => {
@@ -116,7 +145,7 @@ describe("remote branch reconciliation", () => {
     initialProposalPage.itemCount = 2;
     finalProposalPage.itemCount = 2;
     expect(() => validateRemoteBranchReconciliation(value)).toThrow(
-      "open proposal branch must be classified as open"
+      "response digest does not bind"
     );
   });
 
@@ -128,7 +157,7 @@ describe("remote branch reconciliation", () => {
     }
     branch.finalHeadRevision = "d".repeat(40);
     expect(() => validateRemoteBranchReconciliation(value)).toThrow(
-      "moved branch must be classified as ambiguous"
+      "response digest does not bind"
     );
   });
 
@@ -145,7 +174,7 @@ describe("remote branch reconciliation", () => {
     initialBranchPage.itemCount = value.initialBranchCount;
     finalBranchPage.itemCount = value.finalBranchCount;
     expect(() => validateRemoteBranchReconciliation(value)).toThrow(
-      "canonical target is missing"
+      "response digest does not bind"
     );
   });
 
@@ -155,6 +184,54 @@ describe("remote branch reconciliation", () => {
     expect(() => validateRemoteBranchReconciliation(value)).toThrow(
       "inventory counts must match"
     );
+  });
+
+  test("accounts for a proposal that appears between inventories", () => {
+    const value = receipt();
+    const [, branch] = value.branches;
+    if (!branch) {
+      throw new Error("missing fixture branch");
+    }
+    branch.proposals.push({
+      headRevision: branch.initialHeadRevision,
+      objectId: "13",
+      observedFinally: true,
+      observedInitially: false,
+      state: "closed",
+    });
+    const initialEntries = value.branches.flatMap((entry) =>
+      entry.proposals
+        .filter((proposal) => proposal.observedInitially !== false)
+        .map((proposal) => ({
+          branch: entry.name,
+          headRevision: proposal.headRevision,
+          objectId: proposal.objectId,
+          state: proposal.state,
+        }))
+    );
+    const finalEntries = value.branches.flatMap((entry) =>
+      entry.proposals
+        .filter((proposal) => proposal.observedFinally !== false)
+        .map((proposal) => ({
+          branch: entry.name,
+          headRevision: proposal.headRevision,
+          objectId: proposal.objectId,
+          state: proposal.state,
+        }))
+    );
+    value.initialCoverage.proposals.pages[0] = {
+      cursorIn: null,
+      cursorOut: null,
+      itemCount: initialEntries.length,
+      responseDigest: digest(initialEntries),
+    };
+    value.finalCoverage.proposals.pages[0] = {
+      cursorIn: null,
+      cursorOut: null,
+      itemCount: finalEntries.length,
+      responseDigest: digest(finalEntries),
+    };
+    expect(validateRemoteBranchReconciliation(value)).toEqual(value);
   });
 
   test("rejects incomplete pagination and missing proposal states", () => {

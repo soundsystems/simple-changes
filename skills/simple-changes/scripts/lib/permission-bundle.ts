@@ -9,6 +9,16 @@ import type {
 
 const RESPONSE_INSTRUCTION =
   "Reply once to approve all listed permissions, decline all, or name the request IDs you approve. Unlisted future actions are not authorized.";
+const OPERATION_AUTHORITY = {
+  "apply-migration": "remote-data-write",
+  "deploy-production": "production-deploy",
+  merge: "merge",
+  "open-proposal": "proposal-write",
+  push: "proposal-write",
+  "reconcile-remote-branches": "remote-branch-delete",
+  "select-release-version": "store-release",
+  "update-proposal": "proposal-write",
+} as const;
 
 const normalizedField = (value: string, label: string): string => {
   const normalized = value.trim().replace(/\s+/gu, " ");
@@ -37,6 +47,16 @@ export const buildPermissionBundle = (
       reason: normalizedField(input.reason, "reason"),
       target: normalizedField(input.target, "target"),
     };
+    const expected =
+      OPERATION_AUTHORITY[
+        normalized.operation as keyof typeof OPERATION_AUTHORITY
+      ];
+    if (expected && normalized.authority !== expected) {
+      throw new SimpleChangesError(
+        `Permission operation ${normalized.operation} requires authority ${expected}, not ${normalized.authority}`,
+        EXIT_CODES.validation
+      );
+    }
     const id = requestId(normalized);
     requests.set(id, { id, ...normalized });
   }

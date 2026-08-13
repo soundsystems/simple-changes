@@ -18,10 +18,18 @@
     for non-descendant target rejection.
 - Bound active loops to exact Git remote destinations:
   - Inventory records every remote's effective sorted fetch and push URLs,
-    provider, and the selected target remote.
+    provider, and selected target remote after removing embedded HTTP URL
+    username/password credentials from persisted bindings.
   - Loop leases persist those bindings and emit `remote-destination-changed`
     when any destination changes after start.
-  - Added regression coverage for a changed push URL.
+  - `remoteBindings` remains optional for pre-0.12.2 active leases, allowing
+    legacy controllers to verify and finish without inventing an opening
+    destination snapshot.
+  - Legacy reconciliation receipts without current coverage fields are removed
+    on read so the active lease remains recoverable but must collect fresh
+    reconciliation evidence before completion.
+  - Added regression coverage for credentials, changed push URLs, old bindings,
+    and old reconciliation receipts.
 - Restricted repository policy authority to locally trusted bytes:
   - Repository policy symlinks and other non-regular files are rejected.
   - Persistent push authorization, automatic migration modes, break-glass
@@ -40,6 +48,10 @@
   - Successful automatic decisions return only the exact `authorizedCommand`,
     canonical operations, and a deterministic authorization digest for
     immediate shell-free execution.
+  - `migration consume` recomputes the current decision and atomically writes a
+    private common-Git-dir receipt for that digest. Later decisions and consume
+    attempts reject the same authorization, requiring a new remote ledger,
+    review, nonce, plan, and command before another apply.
 - Scoped forge cleanup to the selected target provider:
   - GitLab remote-branch reconciliation is required only when the resolved
     target remote is GitLab, rather than whenever any auxiliary GitLab remote
@@ -49,9 +61,10 @@
   - Inventory no longer loads complete binary diffs or untracked files into
     memory.
   - Changed paths now bind their index object ID and filesystem identity;
-    regular files are SHA-256 hashed in fixed-size chunks, symlink targets are
-    hashed without following them, and directories, FIFOs, sockets, and devices
-    use nonblocking type metadata.
+    regular files are opened with read-only, nonblocking, no-follow flags,
+    verified again through `fstat`, and SHA-256 hashed in fixed-size chunks;
+    symlink targets are hashed without following them, while directories,
+    FIFOs, sockets, and devices use nonblocking type metadata.
   - Added a large-binary/FIFO regression proving bounded, nonblocking capture.
 - Added pagination-completeness evidence to remote reconciliation:
   - Initial and final receipts now include separate branch and proposal page
@@ -59,7 +72,15 @@
   - Validation requires first-page and terminal cursors, continuous cursor
     chains, ledger-matching counts, and explicit coverage of closed, merged,
     and open proposal states.
-  - Incomplete pagination and missing proposal-state coverage now fail closed.
+  - Proposal evidence can record whether it appeared initially, finally, or in
+    both phases, so a proposal arriving between inventories is counted only in
+    the matching phase.
+  - For single-page branch and proposal inventories, the response digest must
+    equal the canonical matching-phase ledger digest. Multi-page inventories
+    retain cursor, count, state, and per-page digest proof without claiming the
+    validator can reconstruct each provider page from the consolidated ledger.
+  - Incomplete pagination, missing states, phase-count mismatch, and changed
+    single-page ledger evidence now fail closed.
 - Reconciled skill and onboarding guidance:
   - Push-authorization setup is now offered for every non-preview finish that
     may push, including review and integration boundaries instead of Ship only.
@@ -79,28 +100,36 @@
     for review, release-note, keep-current, and defer actions.
   - Neither the standalone nor combined walkthrough marks skipping or keeping
     settings as recommended before the new abilities are understood.
+  - Guidance inspection now aggregates every pending version rather than
+    summarizing only the latest definition, preserving all missed behavior,
+    onboarding, and integration changes in category-grouped bullets.
   - Selecting `configure-harness` or colloquial “auto push” requires a precise
     confirmation explaining that persistent permission is limited to ordinary
     `git push` for one verified repository and remote across Codex, Claude Code,
     and other harnesses. It does not grant credentials, network access,
     force-push, protection bypass, proposal, merge, deploy, or other-destination
     authority, and unsupported harnesses continue to ask.
+  - Repository setup now writes the policy first and then creates the private,
+    digest-bound trust receipt in the common Git directory, making a confirmed
+    consequential repository policy effective on the next inventory. The
+    noninteractive CLI requires `--acknowledge-push-scope`; a bare option value
+    cannot silently persist auto-push authority.
 - Added bundled Ship permission preflight:
   - The closed `permission-bundle` contract normalizes and deduplicates every
     currently knowable unresolved permission from the validated plan, assigns
     each exact operation/authority/target/consequence/reason tuple a stable
     digest-derived ID, and renders the complete checklist in deterministic
     order.
-  - The response contract supports approve-all, decline-all, or named-ID
-    approval so each decision can be recorded independently instead of causing
-    serial permission prompts.
-  - Bundled approval remains strictly limited to listed actions and targets.
-    New actions or invalidated targets, revisions, commands, or decision
-    digests require fresh authority, while sandbox, network, credential,
-    provider, and harness enforcement remain separate and intact.
+  - The reachable `permissions bundle REQUESTS_FILE` CLI validates the closed
+    request array, enforces known operation-to-authority mappings, and renders
+    one message instructing the user to approve all, decline all, or name exact
+    request IDs. It deliberately does not parse or persist the reply itself.
+  - The rendered checklist states that unlisted future actions are unauthorized;
+    sandbox, network, credential, provider, and harness enforcement remain
+    separate and intact.
   - Updated initialization output, schemas, runtime routing, Ship communication,
     onboarding, guidance-update references, CLI coverage, and contract tests.
-<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-13T15:29:13-05:00" -->
+<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-13T16:26:14-05:00" -->
 
 ## 0.12.1 - 2026-08-13
 

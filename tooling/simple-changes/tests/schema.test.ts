@@ -149,7 +149,10 @@ describe("closed schemas", () => {
         contentDigest: "b".repeat(64),
         revision: "supabase/migrations/20260812090000_add_index.sql",
       },
-    ];
+    ] as const;
+    const [operation] = operations;
+    const operationRevision = operation.revision;
+    const operationDigest = operation.contentDigest;
     const digest = "a".repeat(64);
     expect(() =>
       validateSchema("migration-review", {
@@ -176,8 +179,17 @@ describe("closed schemas", () => {
     ).toEqual({ digest, operations });
     expect(
       validateSchema("migration-apply-plan", {
-        adapter: "supabase-cli",
-        command: ["supabase", "db", "push", "--linked"],
+        adapter: "exact-operation-argv-v1",
+        command: [
+          "simple-changes-migration-adapter",
+          "apply-exact",
+          "--target",
+          "supabase/db/production",
+          "--revision",
+          operationRevision,
+          "--digest",
+          operationDigest,
+        ],
         digest,
         expiresAt: new Date(Date.now() + 10 * 60 * 1000).toISOString(),
         issuedAt: new Date().toISOString(),

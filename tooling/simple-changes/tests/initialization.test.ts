@@ -219,6 +219,9 @@ describe("first-run initialization", () => {
       onboardingRequired: false,
       preLoopActionRequired: true,
     });
+    expect(status.guidanceUpdate.summaryBullets.join(" ")).toContain(
+      "Ship setup now offers configure-harness, ask, or never for Git pushes"
+    );
   });
 
   test("resolves a required Simple Changelogs update before shipment loop creation", () => {

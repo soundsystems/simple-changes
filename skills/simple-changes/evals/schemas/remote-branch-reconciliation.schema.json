@@ -98,7 +98,9 @@
             { "type": "string", "pattern": "^[0-9a-f]{40,64}$" },
             { "type": "null" }
           ]
-        }
+        },
+        "observedInitially": { "type": "boolean" },
+        "observedFinally": { "type": "boolean" }
       }
     },
     "branch": {

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { readFileSync, symlinkSync } from "node:fs";
+import { mkdirSync, readFileSync, symlinkSync } from "node:fs";
 import { resolve } from "node:path";
 import {
   collectOnboardingSelection,
@@ -176,6 +176,27 @@ describe("preference storage", () => {
     symlinkSync(outside, resolve(fixture.root, ".simple-changes.json"));
 
     expect(() => loadPolicy(fixture.root)).toThrow("not a regular file");
+  });
+
+  test("rejects a symlinked common-Git state directory", () => {
+    const fixture = createTestRepository();
+    repositories.push(fixture);
+    const repositoryPath = resolve(fixture.root, ".simple-changes.json");
+    writePolicyFile(
+      repositoryPath,
+      configuredPolicy({ gitPushAuthorization: "configure-harness" })
+    );
+    const outside = resolve(fixture.base, "outside-state");
+    mkdirSync(outside);
+    symlinkSync(outside, resolve(fixture.root, ".git/simple-changes"));
+    expect(() =>
+      writeRepositoryPolicyTrustReceipt(
+        fixture.root,
+        resolve(fixture.root, ".git"),
+        "user",
+        "Trust exact policy"
+      )
+    ).toThrow("symlink ancestor");
   });
 
   test("normalizes legacy v1 policies to the safe changelog default", () => {

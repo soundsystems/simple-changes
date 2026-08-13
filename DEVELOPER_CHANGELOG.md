@@ -18,13 +18,14 @@
     for non-descendant target rejection.
 - Bound active loops to exact Git remote destinations:
   - Inventory records every remote's effective sorted fetch and push URLs,
-    provider, and selected target remote after removing embedded HTTP URL
-    username/password credentials from persisted bindings.
+    provider, and selected target remote after removing URL userinfo, query,
+    and fragment data from persisted bindings.
   - Loop leases persist those bindings and emit `remote-destination-changed`
     when any destination changes after start.
-  - `remoteBindings` remains optional for pre-0.12.2 active leases, allowing
-    legacy controllers to verify and finish without inventing an opening
-    destination snapshot.
+  - `remoteBindings` remains schema-optional for pre-0.12.2 active leases, but
+    verification emits `remote-destination-rebind-required`; the legacy
+    controller cannot pass a guarded mutation and must finalize as relinquished
+    before a current controller starts with a real opening destination snapshot.
   - Legacy reconciliation receipts without current coverage fields are removed
     on read so the active lease remains recoverable but must collect fresh
     reconciliation evidence before completion.
@@ -39,19 +40,24 @@
     policy digest, approver, and reason.
   - Policy byte or repository-path changes invalidate the receipt. Inventory
     now exposes whether trust is `trusted`, `untrusted`, or `not-required`.
+  - Policy-trust and migration-authorization paths reject symlinks in any
+    existing ancestor beneath the common Git directory before reading or
+    writing private state.
 - Strengthened exact migration execution authority:
-  - The apply-plan schema now requires an adapter, nonempty argv command, exact
-    target, nonce, issue and expiry times, and a fresh target-bound remote
-    ledger containing the same canonical operation set.
+  - The apply-plan schema now requires an adapter, absolute executable argv,
+    executable SHA-256 digest, exact target, nonce, issue and expiry times, and
+    a fresh target-bound remote ledger containing the same canonical operation
+    set.
   - Decisions reject stale ledgers, expired or overlong windows, future
     evidence, changed targets, changed commands, and mismatched operations.
-  - Successful automatic decisions return only the exact `authorizedCommand`,
-    canonical operations, and a deterministic authorization digest for
-    immediate shell-free execution.
-  - `migration consume` recomputes the current decision and atomically writes a
-    private common-Git-dir receipt for that digest. Later decisions and consume
-    attempts reject the same authorization, requiring a new remote ledger,
-    review, nonce, plan, and command before another apply.
+  - Successful automatic decisions return the exact argv, absolute executable
+    identity and digest, canonical operations, and deterministic authorization
+    digest.
+  - `migration apply` recomputes the current decision, snapshots the exact
+    digest-matching executable into private state, atomically consumes the
+    authorization before execution, and launches that exact-byte snapshot with
+    `shell: false`. Later decisions and apply attempts reject the consumed
+    authorization even if the process fails after consumption.
 - Scoped forge cleanup to the selected target provider:
   - GitLab remote-branch reconciliation is required only when the resolved
     target remote is GitLab, rather than whenever any auxiliary GitLab remote
@@ -75,12 +81,13 @@
   - Proposal evidence can record whether it appeared initially, finally, or in
     both phases, so a proposal arriving between inventories is counted only in
     the matching phase.
-  - For single-page branch and proposal inventories, the response digest must
-    equal the canonical matching-phase ledger digest. Multi-page inventories
-    retain cursor, count, state, and per-page digest proof without claiming the
-    validator can reconstruct each provider page from the consolidated ledger.
+  - Every branch and proposal coverage object now includes a consolidated
+    ledger digest over both the canonical matching-phase entry digest and the
+    ordered response-digest list for every page, binding single- and multi-page
+    provider identities into the phase ledger without reconstructing page
+    contents.
   - Incomplete pagination, missing states, phase-count mismatch, and changed
-    single-page ledger evidence now fail closed.
+    consolidated ledger evidence now fail closed.
 - Reconciled skill and onboarding guidance:
   - Push-authorization setup is now offered for every non-preview finish that
     may push, including review and integration boundaries instead of Ship only.
@@ -121,15 +128,17 @@
     digest-derived ID, and renders the complete checklist in deterministic
     order.
   - The reachable `permissions bundle REQUESTS_FILE` CLI validates the closed
-    request array, enforces known operation-to-authority mappings, and renders
-    one message instructing the user to approve all, decline all, or name exact
-    request IDs. It deliberately does not parse or persist the reply itself.
+    request array, exhaustively maps every `PlannedOperation` plus release
+    version selection to one authority, rejects any unmapped or mismatched
+    operation, and renders one message instructing the user to approve all,
+    decline all, or name exact request IDs. It deliberately does not parse or
+    persist the reply itself.
   - The rendered checklist states that unlisted future actions are unauthorized;
     sandbox, network, credential, provider, and harness enforcement remain
     separate and intact.
   - Updated initialization output, schemas, runtime routing, Ship communication,
     onboarding, guidance-update references, CLI coverage, and contract tests.
-<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-13T16:26:14-05:00" -->
+<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-13T17:03:01-05:00" -->
 
 ## 0.12.1 - 2026-08-13
 

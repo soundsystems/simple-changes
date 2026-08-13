@@ -40,6 +40,11 @@ describe("Git inventory and concurrency", () => {
     expect(
       credentialFreeRemoteUrl("https://gitlab.example/group/repo.git")
     ).toBe("https://gitlab.example/group/repo.git");
+    expect(
+      credentialFreeRemoteUrl(
+        "https://oauth2:p%40ss@gitlab.example/group/repo.git?private_token=TOPSECRET#SECONDSECRET"
+      )
+    ).toBe("https://gitlab.example/group/repo.git");
   });
   test("inventories dirty work without creating run state", () => {
     const fixture = repository();

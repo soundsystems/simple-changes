@@ -1026,10 +1026,18 @@ const verificationAgainst = (
       path: inventory.repository.currentCheckout,
     });
   }
-  if (
-    lease.remoteBindings &&
+  if (!lease.remoteBindings) {
+    violations.push({
+      changeDigest: null,
+      code: "remote-destination-rebind-required",
+      headSha: inventory.repository.headSha,
+      message:
+        "This legacy controller predates remote destination binding. Relinquish it and start a current controller before any guarded remote mutation.",
+      path: inventory.repository.currentCheckout,
+    });
+  } else if (
     JSON.stringify(inventory.repository.remoteBindings) !==
-      JSON.stringify(lease.remoteBindings)
+    JSON.stringify(lease.remoteBindings)
   ) {
     violations.push({
       changeDigest: null,

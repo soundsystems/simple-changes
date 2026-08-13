@@ -1,4 +1,6 @@
 import { describe, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
+import { readFileSync, realpathSync } from "node:fs";
 import { inspectInitialization } from "../../../skills/simple-changes/scripts/lib/initialization.ts";
 import { DEFAULT_POLICY } from "../../../skills/simple-changes/scripts/lib/policy.ts";
 import { validateSchema } from "../../../skills/simple-changes/scripts/lib/schema.ts";
@@ -181,7 +183,7 @@ describe("closed schemas", () => {
       validateSchema("migration-apply-plan", {
         adapter: "exact-operation-argv-v1",
         command: [
-          "simple-changes-migration-adapter",
+          realpathSync("/usr/bin/true"),
           "apply-exact",
           "--target",
           "supabase/db/production",
@@ -191,6 +193,9 @@ describe("closed schemas", () => {
           operationDigest,
         ],
         digest,
+        executableDigest: createHash("sha256")
+          .update(readFileSync(realpathSync("/usr/bin/true")))
+          .digest("hex"),
         expiresAt: new Date(Date.now() + 10 * 60 * 1000).toISOString(),
         issuedAt: new Date().toISOString(),
         nonce: "migration-plan-0001",

@@ -48,7 +48,7 @@ import {
 } from "./lib/loop-lease.ts";
 import { auditMarkdown } from "./lib/markdown.ts";
 import {
-  consumeMigrationAuthorization,
+  applyMigrationAuthorization,
   decideMigrationAutomation,
   type MigrationApplyPlan,
   type MigrationAutomationDecision,
@@ -150,7 +150,7 @@ Usage:
   simple-changes acknowledge-update --guidance-decision accepted|reviewed|deferred
     [--agent-id ID] [--json] [--repo PATH]
   simple-changes migration decision --state REVIEW_FILE --pending PENDING_FILE --apply-plan APPLY_PLAN_FILE [--json] [--repo PATH]
-  simple-changes migration consume --state REVIEW_FILE --pending PENDING_FILE --apply-plan APPLY_PLAN_FILE [--json] [--repo PATH]
+  simple-changes migration apply --state REVIEW_FILE --pending PENDING_FILE --apply-plan APPLY_PLAN_FILE [--json] [--repo PATH]
   simple-changes permissions bundle REQUESTS_FILE [--json]
   simple-changes inventory [--json] [--repo PATH]
   simple-changes preview [--json] [--repo PATH] [--settle-ms N]
@@ -1458,7 +1458,7 @@ const runMigrationCommand = (options: CliOptions): void => {
   );
 };
 
-const runMigrationConsumeCommand = (options: CliOptions): void => {
+const runMigrationApplyCommand = (options: CliOptions): void => {
   const { commonGitDirectory, decision } = migrationDecisionForOptions(options);
   if (
     decision.authorizationDigest &&
@@ -1472,14 +1472,15 @@ const runMigrationConsumeCommand = (options: CliOptions): void => {
       EXIT_CODES.unsafe
     );
   }
-  const receiptPath = consumeMigrationAuthorization(
+  const result = applyMigrationAuthorization(
     commonGitDirectory,
+    options.repo,
     decision
   );
   writeOutput(
-    { authorizationDigest: decision.authorizationDigest, receiptPath },
+    result,
     options.json,
-    `Consumed migration authorization ${decision.authorizationDigest}.\n`
+    `Applied migration authorization ${decision.authorizationDigest}.\n`
   );
 };
 
@@ -2206,8 +2207,8 @@ const executeCommand = async (
       await runAcknowledgeUpdate(options);
       return EXIT_CODES.success;
     case "migration":
-      if (options.positional[0] === "consume") {
-        runMigrationConsumeCommand(options);
+      if (options.positional[0] === "apply") {
+        runMigrationApplyCommand(options);
       } else {
         runMigrationCommand(options);
       }

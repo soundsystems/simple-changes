@@ -13,6 +13,10 @@ const digest = (value: unknown) =>
 
 const coverage = (branchEntries: unknown[], proposalEntries: unknown[]) => ({
   branches: {
+    ledgerDigest: digest({
+      entryDigest: digest(branchEntries),
+      pageDigests: [digest(branchEntries)],
+    }),
     pages: [
       {
         cursorIn: null,
@@ -24,6 +28,10 @@ const coverage = (branchEntries: unknown[], proposalEntries: unknown[]) => ({
   },
   proposalStates: ["closed", "merged", "open"] as const,
   proposals: {
+    ledgerDigest: digest({
+      entryDigest: digest(proposalEntries),
+      pageDigests: [digest(proposalEntries)],
+    }),
     pages: [
       {
         cursorIn: null,
@@ -145,7 +153,7 @@ describe("remote branch reconciliation", () => {
     initialProposalPage.itemCount = 2;
     finalProposalPage.itemCount = 2;
     expect(() => validateRemoteBranchReconciliation(value)).toThrow(
-      "response digest does not bind"
+      "coverage digest does not bind"
     );
   });
 
@@ -157,7 +165,7 @@ describe("remote branch reconciliation", () => {
     }
     branch.finalHeadRevision = "d".repeat(40);
     expect(() => validateRemoteBranchReconciliation(value)).toThrow(
-      "response digest does not bind"
+      "coverage digest does not bind"
     );
   });
 
@@ -174,7 +182,7 @@ describe("remote branch reconciliation", () => {
     initialBranchPage.itemCount = value.initialBranchCount;
     finalBranchPage.itemCount = value.finalBranchCount;
     expect(() => validateRemoteBranchReconciliation(value)).toThrow(
-      "response digest does not bind"
+      "coverage digest does not bind"
     );
   });
 
@@ -225,12 +233,20 @@ describe("remote branch reconciliation", () => {
       itemCount: initialEntries.length,
       responseDigest: digest(initialEntries),
     };
+    value.initialCoverage.proposals.ledgerDigest = digest({
+      entryDigest: digest(initialEntries),
+      pageDigests: [digest(initialEntries)],
+    });
     value.finalCoverage.proposals.pages[0] = {
       cursorIn: null,
       cursorOut: null,
       itemCount: finalEntries.length,
       responseDigest: digest(finalEntries),
     };
+    value.finalCoverage.proposals.ledgerDigest = digest({
+      entryDigest: digest(finalEntries),
+      pageDigests: [digest(finalEntries)],
+    });
     expect(validateRemoteBranchReconciliation(value)).toEqual(value);
   });
 
@@ -245,5 +261,36 @@ describe("remote branch reconciliation", () => {
     expect(() => validateRemoteBranchReconciliation(value)).toThrow(
       "pagination must start at the first page and terminate"
     );
+  });
+
+  test("binds multi-page response identities into the ledger proof", () => {
+    const value = receipt();
+    const proof = value.initialCoverage.branches;
+    const originalDigest = proof.pages[0]?.responseDigest;
+    if (!originalDigest) {
+      throw new Error("missing pagination fixture");
+    }
+    proof.pages = [
+      {
+        cursorIn: null,
+        cursorOut: "next",
+        itemCount: 1,
+        responseDigest: "0".repeat(64),
+      },
+      {
+        cursorIn: "next",
+        cursorOut: null,
+        itemCount: 2,
+        responseDigest: "1".repeat(64),
+      },
+    ];
+    expect(() => validateRemoteBranchReconciliation(value)).toThrow(
+      "coverage digest does not bind"
+    );
+    proof.ledgerDigest = digest({
+      entryDigest: originalDigest,
+      pageDigests: proof.pages.map((page) => page.responseDigest),
+    });
+    expect(validateRemoteBranchReconciliation(value)).toEqual(value);
   });
 });

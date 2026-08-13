@@ -160,9 +160,10 @@ invoke it after planning, diagnosis, read-only work, or incomplete verification.
    approved head.
 8. Audit every detected migration before any apply. Run `simple-changes
    migration decision` with an exact reviewed target, current operation digests,
-   fresh remote ledger, nonce/expiry, adapter, and argv command. Execute only
-   the returned `authorizedCommand` while its authorization digest remains
-   current; then refresh the remote ledger. Broad apply-all, stale, replayed,
+   fresh remote ledger, nonce/expiry, adapter, absolute executable path and
+   executable digest. Run `simple-changes migration apply` with the same closed
+   evidence so authorization consumption and shell-free execution are one
+   operation; then refresh the remote ledger. Broad apply-all, stale, replayed,
    target-mismatched, or command-changed plans require new review/authority.
 9. Treat every production Web deployment as a product release. Prepare release
    reconciliation, refresh the canonical remote target branch (normally
@@ -173,9 +174,10 @@ invoke it after planning, diagnosis, read-only work, or incomplete verification.
    target revision.
 10. Run final local/provider inventory and clean only proven objects. For a
     target GitLab remote, complete the remote-branch reconciliation gate across
-    every paginated branch before completion. Pagination evidence must bind the
-    full branch result and open/merged/closed proposal pages from initial and
-    final inventories. Delete proven-obsolete remote branches only after exact
+   every paginated branch before completion. Pagination evidence must include a
+   consolidated ledger digest plus complete branch and open/merged/closed
+   proposal page chains from initial and final inventories. Delete
+   proven-obsolete remote branches only after exact
     evidence; preserve uncertainty.
 11. Restore the exact original primary checkout clean at the refreshed target,
     remove accounted run-created worktrees and merged local branches, retain

@@ -861,6 +861,7 @@ export interface RemoteInventoryCoverage {
 }
 
 export interface RemotePaginationProof {
+  ledgerDigest: string;
   pages: Array<{
     cursorIn: string | null;
     cursorOut: string | null;
@@ -905,6 +906,7 @@ export interface LoopViolation {
     | "coordination-claim-stale"
     | "registered-worktree-branch-changed"
     | "remote-destination-changed"
+    | "remote-destination-rebind-required"
     | "unregistered-worktree";
   headSha: string | null;
   message: string;

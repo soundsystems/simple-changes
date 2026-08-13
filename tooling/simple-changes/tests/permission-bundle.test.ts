@@ -51,5 +51,14 @@ describe("shipping permission bundles", () => {
     expect(() =>
       buildPermissionBundle([{ ...request, authority: "proposal-write" }])
     ).toThrow("requires authority merge");
+    expect(() =>
+      buildPermissionBundle([
+        {
+          ...request,
+          authority: "local-write",
+          operation: "deploy-preview",
+        },
+      ])
+    ).toThrow("requires authority preview-deploy");
   });
 });

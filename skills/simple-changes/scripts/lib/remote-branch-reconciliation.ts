@@ -44,7 +44,8 @@ const validatePagination = (
 const coverageDigest = (
   receipt: RemoteBranchReconciliationReceipt,
   phase: "initial" | "final",
-  kind: "branches" | "proposals"
+  kind: "branches" | "proposals",
+  pageDigests: string[]
 ): string => {
   const entries =
     kind === "branches"
@@ -75,23 +76,37 @@ const coverageDigest = (
               state: proposal.state,
             }))
         );
-  return createHash("sha256").update(JSON.stringify(entries)).digest("hex");
+  return createHash("sha256")
+    .update(
+      JSON.stringify({
+        entryDigest: createHash("sha256")
+          .update(JSON.stringify(entries))
+          .digest("hex"),
+        pageDigests,
+      })
+    )
+    .digest("hex");
 };
 
-const validateSinglePageDigests = (
+const validateCoverageDigests = (
   receipt: RemoteBranchReconciliationReceipt
 ): void => {
   for (const phase of ["initial", "final"] as const) {
     const coverage =
       phase === "initial" ? receipt.initialCoverage : receipt.finalCoverage;
     for (const kind of ["branches", "proposals"] as const) {
-      const { pages } = coverage[kind];
+      const proof = coverage[kind];
       if (
-        pages.length === 1 &&
-        pages[0]?.responseDigest !== coverageDigest(receipt, phase, kind)
+        proof.ledgerDigest !==
+        coverageDigest(
+          receipt,
+          phase,
+          kind,
+          proof.pages.map((page) => page.responseDigest)
+        )
       ) {
         throw new SimpleChangesError(
-          `Invalid remote branch reconciliation: ${phase} ${kind} response digest does not bind the accounted ledger`,
+          `Invalid remote branch reconciliation: ${phase} ${kind} coverage digest does not bind the accounted ledger`,
           EXIT_CODES.validation
         );
       }
@@ -315,7 +330,7 @@ export const validateRemoteBranchReconciliation = (
     initialProposalCount,
     "initial"
   );
-  validateSinglePageDigests(receipt);
+  validateCoverageDigests(receipt);
   validatePagination(
     receipt.finalCoverage,
     receipt.finalBranchCount,

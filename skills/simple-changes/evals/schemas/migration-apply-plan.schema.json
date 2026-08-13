@@ -7,6 +7,7 @@
   "required": [
     "adapter",
     "command",
+    "executableDigest",
     "digest",
     "expiresAt",
     "issuedAt",
@@ -23,6 +24,7 @@
       "minItems": 1,
       "items": { "type": "string", "minLength": 1, "maxLength": 4096 }
     },
+    "executableDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
     "digest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
     "expiresAt": { "type": "string", "format": "date-time" },
     "issuedAt": { "type": "string", "format": "date-time" },

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, symlinkSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync, symlinkSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn as bunSpawn, spawnSync as bunSpawnSync } from "bun";
@@ -101,6 +101,14 @@ const paginationCoverage = (
   proposalDigest = createHash("sha256").update("[]").digest("hex")
 ) => ({
   branches: {
+    ledgerDigest: createHash("sha256")
+      .update(
+        JSON.stringify({
+          entryDigest: branchDigest,
+          pageDigests: [branchDigest],
+        })
+      )
+      .digest("hex"),
     pages: [
       {
         cursorIn: null,
@@ -112,6 +120,14 @@ const paginationCoverage = (
   },
   proposalStates: ["closed", "merged", "open"] as const,
   proposals: {
+    ledgerDigest: createHash("sha256")
+      .update(
+        JSON.stringify({
+          entryDigest: proposalDigest,
+          pageDigests: [proposalDigest],
+        })
+      )
+      .digest("hex"),
     pages: [
       {
         cursorIn: null,
@@ -134,7 +150,7 @@ const migrationApplyPlan = (
     ...operationSet,
     adapter: "exact-operation-argv-v1",
     command: [
-      "simple-changes-migration-adapter",
+      realpathSync("/usr/bin/true"),
       "apply-exact",
       "--target",
       `${target.provider}/${target.project}/${target.environment}`,
@@ -145,6 +161,9 @@ const migrationApplyPlan = (
         operation.contentDigest,
       ]),
     ],
+    executableDigest: createHash("sha256")
+      .update(readFileSync(realpathSync("/usr/bin/true")))
+      .digest("hex"),
     expiresAt: new Date(issuedAt.getTime() + 10 * 60 * 1000).toISOString(),
     issuedAt: issuedAt.toISOString(),
     nonce: "migration-plan-0001",
@@ -327,7 +346,7 @@ describe("contract CLI", () => {
           process.execPath,
           cliPath,
           "migration",
-          "consume",
+          "apply",
           "--state",
           resolve(fixture.root, "migration-review.json"),
           "--pending",
@@ -2216,7 +2235,7 @@ describe("contract CLI", () => {
     );
     expect(rejectedSymlink.exitCode).not.toBe(0);
     expect(decoder.decode(rejectedSymlink.stderr)).toContain(
-      "not a regular file"
+      "symlink ancestor"
     );
   });
 

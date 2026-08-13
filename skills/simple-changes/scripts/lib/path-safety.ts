@@ -47,3 +47,17 @@ export const assertSafeRelativePath = (
   }
   return { absolutePath, symlink: false };
 };
+
+export const assertNoSymlinkAncestors = (
+  root: string,
+  relativePath: string
+): string => {
+  const safe = assertSafeRelativePath(root, relativePath);
+  if (safe.symlink) {
+    throw new SimpleChangesError(
+      `Refusing state path with a symlink ancestor: ${safe.absolutePath}`,
+      EXIT_CODES.unsafe
+    );
+  }
+  return safe.absolutePath;
+};

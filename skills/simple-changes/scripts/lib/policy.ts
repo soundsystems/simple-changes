@@ -15,6 +15,7 @@ import { dirname, resolve } from "node:path";
 import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
 import { CURRENT_GUIDANCE_VERSION } from "./guidance-updates.ts";
 import { sha256 } from "./hash.ts";
+import { assertNoSymlinkAncestors } from "./path-safety.ts";
 import { validateSchema } from "./schema.ts";
 import type { PolicySource, RepoPolicy } from "./types.ts";
 
@@ -91,7 +92,10 @@ interface RepositoryPolicyTrustReceipt {
 }
 
 const repositoryPolicyTrustPath = (commonGitDirectory: string): string =>
-  resolve(commonGitDirectory, "simple-changes", "policy-trust.json");
+  assertNoSymlinkAncestors(
+    commonGitDirectory,
+    "simple-changes/policy-trust.json"
+  );
 
 const requiresRepositoryTrust = (policy: RepoPolicy): boolean =>
   policy.gitPushAuthorization === "configure-harness" ||

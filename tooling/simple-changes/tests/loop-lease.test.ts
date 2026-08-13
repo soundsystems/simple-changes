@@ -60,6 +60,14 @@ const paginationCoverage = (
   proposalDigest = createHash("sha256").update("[]").digest("hex")
 ) => ({
   branches: {
+    ledgerDigest: createHash("sha256")
+      .update(
+        JSON.stringify({
+          entryDigest: branchDigest,
+          pageDigests: [branchDigest],
+        })
+      )
+      .digest("hex"),
     pages: [
       {
         cursorIn: null,
@@ -71,6 +79,14 @@ const paginationCoverage = (
   },
   proposalStates: ["closed", "merged", "open"] as const,
   proposals: {
+    ledgerDigest: createHash("sha256")
+      .update(
+        JSON.stringify({
+          entryDigest: proposalDigest,
+          pageDigests: [proposalDigest],
+        })
+      )
+      .digest("hex"),
     pages: [
       {
         cursorIn: null,
@@ -99,7 +115,12 @@ describe("active integration-loop lease", () => {
     writeFileSync(leasePath, `${JSON.stringify(legacy, null, 2)}\n`, "utf8");
 
     expect(readLoopLease(fixture.root)?.remoteBindings).toBeUndefined();
-    expect(verifyLoop(fixture.root)).toMatchObject({ active: true, ok: true });
+    expect(verifyLoop(fixture.root)).toMatchObject({ active: true, ok: false });
+    expect(verifyLoop(fixture.root).violations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: "remote-destination-rebind-required" }),
+      ])
+    );
   });
 
   test("recovers a lease with a legacy reconciliation as refresh-required", () => {

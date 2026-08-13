@@ -11,14 +11,27 @@ const RESPONSE_INSTRUCTION =
   "Reply once to approve all listed permissions, decline all, or name the request IDs you approve. Unlisted future actions are not authorized.";
 const OPERATION_AUTHORITY = {
   "apply-migration": "remote-data-write",
+  "audit-migration": "local-write",
+  branch: "local-write",
+  cleanup: "local-write",
+  commit: "local-write",
+  "deploy-preview": "preview-deploy",
   "deploy-production": "production-deploy",
+  "fast-forward-target": "local-sync",
+  "fetch-target": "local-sync",
   merge: "merge",
+  "merge-target": "local-write",
   "open-proposal": "proposal-write",
+  "promote-deployment": "production-deploy",
   push: "proposal-write",
+  "reconcile-managed-targets": "production-deploy",
   "reconcile-remote-branches": "remote-branch-delete",
   "select-release-version": "store-release",
   "update-proposal": "proposal-write",
-} as const;
+} as const satisfies Record<
+  PermissionRequestInput["operation"],
+  PermissionRequestInput["authority"]
+>;
 
 const normalizedField = (value: string, label: string): string => {
   const normalized = value.trim().replace(/\s+/gu, " ");
@@ -51,7 +64,13 @@ export const buildPermissionBundle = (
       OPERATION_AUTHORITY[
         normalized.operation as keyof typeof OPERATION_AUTHORITY
       ];
-    if (expected && normalized.authority !== expected) {
+    if (!expected) {
+      throw new SimpleChangesError(
+        `Permission operation ${normalized.operation} has no closed authority mapping`,
+        EXIT_CODES.validation
+      );
+    }
+    if (normalized.authority !== expected) {
       throw new SimpleChangesError(
         `Permission operation ${normalized.operation} requires authority ${expected}, not ${normalized.authority}`,
         EXIT_CODES.validation

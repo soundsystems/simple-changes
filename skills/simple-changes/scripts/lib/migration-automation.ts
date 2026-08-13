@@ -1,7 +1,21 @@
+import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
-import { resolve } from "node:path";
+import {
+  chmodSync,
+  closeSync,
+  constants,
+  existsSync,
+  fstatSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  realpathSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { isAbsolute, resolve } from "node:path";
 import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
+import { assertNoSymlinkAncestors } from "./path-safety.ts";
 import type { MigrationTarget, RepoPolicy } from "./types.ts";
 
 export interface MigrationOperation {
@@ -17,6 +31,7 @@ export interface MigrationOperationSet {
 export interface MigrationApplyPlan extends MigrationOperationSet {
   adapter: string;
   command: string[];
+  executableDigest: string;
   expiresAt: string;
   issuedAt: string;
   nonce: string;
@@ -53,6 +68,7 @@ export interface MigrationAutomationDecision {
   authorizationDigest?: string;
   authorizedByPolicy: boolean;
   authorizedCommand?: string[];
+  authorizedExecutableDigest?: string;
   authorizedOperations: MigrationOperation[];
   reason: string;
 }
@@ -86,12 +102,40 @@ const commandIsExact = (applyPlan: MigrationApplyPlan): boolean => {
   }
   const [executable, ...arguments_] = applyPlan.command;
   return (
-    executable === "simple-changes-migration-adapter" &&
+    Boolean(executable && isAbsolute(executable)) &&
     JSON.stringify(arguments_) ===
       JSON.stringify(
         exactCommandArguments(applyPlan.operations, applyPlan.target)
       )
   );
+};
+
+const executableDigestMatches = (applyPlan: MigrationApplyPlan): boolean => {
+  const [executable] = applyPlan.command;
+  if (!(executable && isAbsolute(executable))) {
+    return false;
+  }
+  let descriptor: number | null = null;
+  try {
+    // biome-ignore-start lint/suspicious/noBitwiseOperators: POSIX open flags are a bitmask.
+    const openFlags =
+      constants.O_RDONLY | constants.O_NONBLOCK | (constants.O_NOFOLLOW ?? 0);
+    // biome-ignore-end lint/suspicious/noBitwiseOperators: POSIX open flags are a bitmask.
+    descriptor = openSync(executable, openFlags);
+    const status = fstatSync(descriptor);
+    return (
+      status.isFile() &&
+      realpathSync(executable) === executable &&
+      createHash("sha256").update(readFileSync(descriptor)).digest("hex") ===
+        applyPlan.executableDigest
+    );
+  } catch {
+    return false;
+  } finally {
+    if (descriptor !== null) {
+      closeSync(descriptor);
+    }
+  }
 };
 
 const canonicalOperations = (
@@ -213,7 +257,8 @@ export const decideMigrationAutomation = (
     !applyPlan.adapter.trim() ||
     applyPlan.command.length === 0 ||
     applyPlan.command.some((argument) => !argument.trim()) ||
-    !commandIsExact(applyPlan)
+    !commandIsExact(applyPlan) ||
+    !executableDigestMatches(applyPlan)
   ) {
     return {
       action: "review-required",
@@ -280,6 +325,7 @@ export const decideMigrationAutomation = (
         JSON.stringify({
           adapter: applyPlan.adapter,
           command: applyPlan.command,
+          executableDigest: applyPlan.executableDigest,
           expiresAt: applyPlan.expiresAt,
           nonce: applyPlan.nonce,
           operations: canonicalOperations(applyPlan.operations),
@@ -290,6 +336,7 @@ export const decideMigrationAutomation = (
       .digest("hex"),
     authorizedByPolicy: true,
     authorizedCommand: [...applyPlan.command],
+    authorizedExecutableDigest: applyPlan.executableDigest,
     authorizedOperations: canonicalOperations(applyPlan.operations),
     reason: review.routine
       ? "The exact target is bound and the reviewed migration meets every routine automatic-apply requirement."
@@ -315,6 +362,10 @@ export const consumeMigrationAuthorization = (
     commonGitDirectory,
     "simple-changes",
     "migration-authorizations"
+  );
+  assertNoSymlinkAncestors(
+    commonGitDirectory,
+    "simple-changes/migration-authorizations"
   );
   mkdirSync(directory, { mode: 0o700, recursive: true });
   const receiptPath = resolve(
@@ -346,15 +397,102 @@ export const consumeMigrationAuthorization = (
   return receiptPath;
 };
 
+export const applyMigrationAuthorization = (
+  commonGitDirectory: string,
+  repository: string,
+  decision: MigrationAutomationDecision
+): {
+  authorizationDigest: string;
+  exitCode: number;
+  stderr: string;
+  stdout: string;
+} => {
+  if (
+    decision.action !== "auto-apply" ||
+    !decision.authorizationDigest ||
+    !decision.authorizedCommand ||
+    !decision.authorizedExecutableDigest
+  ) {
+    throw new SimpleChangesError(
+      "Only an exact automatic migration authorization can be applied.",
+      EXIT_CODES.validation
+    );
+  }
+  const [executable, ...arguments_] = decision.authorizedCommand;
+  if (!executable) {
+    throw new SimpleChangesError(
+      "The exact migration executable is missing.",
+      EXIT_CODES.validation
+    );
+  }
+  const directory = resolve(
+    commonGitDirectory,
+    "simple-changes",
+    "migration-authorizations"
+  );
+  assertNoSymlinkAncestors(
+    commonGitDirectory,
+    "simple-changes/migration-authorizations"
+  );
+  mkdirSync(directory, { mode: 0o700, recursive: true });
+  const executableBytes = readFileSync(executable);
+  if (
+    createHash("sha256").update(executableBytes).digest("hex") !==
+    decision.authorizedExecutableDigest
+  ) {
+    throw new SimpleChangesError(
+      "The migration adapter changed before execution; regenerate exact evidence.",
+      EXIT_CODES.unsafe
+    );
+  }
+  const snapshotPath = resolve(
+    directory,
+    `${decision.authorizationDigest}.adapter`
+  );
+  writeFileSync(snapshotPath, executableBytes, { flag: "wx", mode: 0o700 });
+  chmodSync(snapshotPath, 0o700);
+  try {
+    consumeMigrationAuthorization(commonGitDirectory, decision);
+    const result = spawnSync(snapshotPath, arguments_, {
+      cwd: repository,
+      encoding: "utf8",
+      env: process.env,
+      shell: false,
+    });
+    if (result.error) {
+      throw SimpleChangesError.withCause(
+        "The consumed exact migration adapter could not start.",
+        EXIT_CODES.unsafe,
+        result.error
+      );
+    }
+    const exitCode = result.status ?? EXIT_CODES.unsafe;
+    if (exitCode !== 0) {
+      throw new SimpleChangesError(
+        `The consumed exact migration adapter failed with exit code ${exitCode}: ${result.stderr.trim()}`,
+        EXIT_CODES.unsafe
+      );
+    }
+    return {
+      authorizationDigest: decision.authorizationDigest,
+      exitCode,
+      stderr: result.stderr,
+      stdout: result.stdout,
+    };
+  } finally {
+    if (existsSync(snapshotPath)) {
+      unlinkSync(snapshotPath);
+    }
+  }
+};
+
 export const migrationAuthorizationConsumed = (
   commonGitDirectory: string,
   authorizationDigest: string
 ): boolean =>
   existsSync(
-    resolve(
+    assertNoSymlinkAncestors(
       commonGitDirectory,
-      "simple-changes",
-      "migration-authorizations",
-      `${authorizationDigest}.json`
+      `simple-changes/migration-authorizations/${authorizationDigest}.json`
     )
   );

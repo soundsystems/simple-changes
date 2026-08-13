@@ -6,25 +6,27 @@
   deadlocking a shipment, including worktrees previously retained or promoted
   to active authors. Obsolete opening worktrees are audited against the
   refreshed canonical target while rewritten targets still fail closed.
-- Active loops bind Git fetch and push destinations without persisting embedded
-  HTTP URL usernames or passwords and apply provider-specific cleanup only to
-  the selected target remote. Loops created before 0.12.2 remain recoverable;
-  older reconciliation evidence is discarded so current pagination proof must
-  be collected before completion.
+- Active loops bind Git fetch and push destinations without persisting URL
+  usernames, passwords, query strings, or fragments and apply provider-specific
+  cleanup only to the selected target remote. Legacy controllers remain
+  inspectable but fail closed for guarded mutation until relinquished and
+  restarted; older reconciliation evidence also requires a fresh receipt.
 - Repository policy can no longer silently grant persistent push, automatic
   migration, break-glass, or production authority. Consequential settings
   require a private digest-bound local trust receipt, and symlinked policy files
   are rejected.
 - Automatic migration decisions now bind the exact target, fresh remote ledger,
-  adapter, argument-vector command, nonce, and expiration window. Changed,
-  replayed, stale, broader, or already consumed authorizations require fresh
-  evidence and authority.
+  absolute adapter executable and digest, argument-vector command, nonce, and
+  expiration window. Apply snapshots the verified executable, consumes the
+  one-time authorization, then launches the snapshot without a shell; changed,
+  stale, broader, or replayed plans require fresh evidence and authority.
 - Worktree inventory hashes large files incrementally through a no-follow file
   descriptor check and identifies FIFOs and other special files without opening
   them, avoiding unbounded binary-diff memory use and blocking reads.
 - GitLab reconciliation separately accounts for branches and proposals in the
   opening and final inventories, requires complete cursor chains and proposal
-  states, and binds single-page response digests to the matching phase ledger.
+  states, and binds every ordered page-digest list into the consolidated
+  matching-phase ledger digest.
 - Setup now asks about push authorization for every workflow that can push,
   honors the repository's changelog distribution when selecting a provider,
   summarizes every missed guidance version, and uses synchronized guidance for
@@ -36,9 +38,10 @@
   non-authorities.
 - Ship can render every currently knowable unresolved permission together as a
   deterministic exact-target checklist with stable IDs and one-reply
-  instructions for approving all, approving named IDs, or declining. The
-  checklist grants nothing by itself, does not cover future actions, and cannot
-  bypass harness enforcement.
+  instructions for approving all, approving named IDs, or declining. Every
+  supported operation has a closed authority mapping; the checklist grants
+  nothing by itself, covers no future actions, and cannot bypass harness
+  enforcement.
 
 ## 0.12.1 - 2026-08-13
 

@@ -32,9 +32,12 @@ pending operations as closed `migration-pending` data with the same identity,
 then run
 `simple-changes migration decision --state REVIEW_FILE --pending PENDING_FILE --apply-plan APPLY_PLAN_FILE --repo REPOSITORY`.
 The apply plan must bind a fresh remote ledger, exact target, bounded nonce and
-expiry, adapter, and argv command. Execute only the returned
-`authorizedCommand` for the matching authorization digest, without a shell,
-then refresh the remote ledger and run the planned post-apply verification.
+expiry, adapter, absolute executable path and executable SHA-256 digest. After
+an `auto-apply` decision, run `simple-changes migration apply` with the same
+review, pending set, and apply plan. That command recomputes current evidence,
+atomically consumes the authorization, and launches the exact argv without a
+shell as one operation. Then refresh the remote ledger and run the planned
+post-apply verification.
 The CLI re-hashes every current operation source before policy evaluation.
 Missing, stale, replayed, or changed identity fails closed and requires a new
 review; a prior review for the same target never authorizes later operations or

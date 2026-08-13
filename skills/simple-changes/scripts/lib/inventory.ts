@@ -312,6 +312,8 @@ export const credentialFreeRemoteUrl = (remoteUrl: string): string => {
     const parsed = new URL(remoteUrl);
     parsed.username = "";
     parsed.password = "";
+    parsed.search = "";
+    parsed.hash = "";
     return parsed.toString();
   } catch {
     return remoteUrl.replace(HTTP_REMOTE_CREDENTIAL_PATTERN, "$1");

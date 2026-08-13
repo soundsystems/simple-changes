@@ -22,6 +22,7 @@ import {
   recordEmergencyShipping,
   recordRemoteBranchReconciliation,
   recoverLoopLock,
+  retainExcludedWorktree,
   startLoop,
   takeoverLoop,
   verifyLoop,
@@ -676,6 +677,147 @@ describe("active integration-loop lease", () => {
         path: unexpected,
       })
     );
+  });
+
+  test("retains an exact clean late worktree without deleting or shipping it", () => {
+    const fixture = repository();
+    const lease = startLoop(fixture.root, "controller", "integrate");
+    const walkthrough = join(fixture.base, "driver-walkthrough");
+    git(fixture.root, [
+      "worktree",
+      "add",
+      "-b",
+      "driver-walkthrough",
+      walkthrough,
+    ]);
+    const current = captureInventory(fixture.root).worktrees.find(
+      (worktree) => worktree.path === walkthrough
+    );
+    if (!current) {
+      throw new Error("Expected the walkthrough worktree");
+    }
+
+    const retained = retainExcludedWorktree(
+      fixture.root,
+      lease.runId,
+      "controller",
+      walkthrough,
+      current.changeDigest,
+      "user",
+      "Keep the unrelated walkthrough worktree out of this shipment."
+    );
+
+    expect(retained.worktrees).toContainEqual(
+      expect.objectContaining({
+        baselineChangeDigest: current.changeDigest,
+        baselineHeadSha: current.headSha,
+        mutationAllowed: false,
+        path: walkthrough,
+        role: "retained",
+      })
+    );
+    expect(verifyLoop(fixture.root).ok).toBe(true);
+    expect(
+      finalizeLoop(
+        fixture.root,
+        lease.runId,
+        "controller",
+        "The unrelated worktree is retained by exact evidence."
+      )
+    ).toMatchObject({ blockers: [], outcome: "completed" });
+    expect(captureInventory(fixture.root).worktrees).toContainEqual(
+      expect.objectContaining({ path: walkthrough })
+    );
+  });
+
+  test("invalidates retention when work starts, then admits the owner's claim", () => {
+    const fixture = repository();
+    const lease = startLoop(fixture.root, "controller", "ship");
+    const walkthrough = join(fixture.base, "driver-walkthrough");
+    git(fixture.root, [
+      "worktree",
+      "add",
+      "-b",
+      "driver-walkthrough",
+      walkthrough,
+    ]);
+    const current = captureInventory(fixture.root).worktrees.find(
+      (worktree) => worktree.path === walkthrough
+    );
+    if (!current) {
+      throw new Error("Expected the walkthrough worktree");
+    }
+    retainExcludedWorktree(
+      fixture.root,
+      lease.runId,
+      "controller",
+      walkthrough,
+      current.changeDigest,
+      "user",
+      "Keep unrelated walkthrough work out of this shipment."
+    );
+
+    writeFixture(walkthrough, "0339_walkthrough.sql", "select 1;\n");
+    expect(verifyLoop(fixture.root).violations).toContainEqual(
+      expect.objectContaining({
+        code: "retained-worktree-changed",
+        path: walkthrough,
+      })
+    );
+
+    const claim = claimWorktree(
+      walkthrough,
+      "walkthrough-author",
+      walkthrough,
+      "codex-desktop",
+      "task-driver-walkthrough"
+    );
+    expect(verifyLoop(fixture.root).ok).toBe(true);
+    expect(readLoopLease(fixture.root)?.worktrees).toContainEqual(
+      expect.objectContaining({
+        agentId: "walkthrough-author",
+        claimId: claim.claimId,
+        mutationAllowed: true,
+        path: walkthrough,
+        role: "concurrent-author",
+      })
+    );
+  });
+
+  test("requires an active claim or pause before retaining a dirty worktree", () => {
+    const fixture = repository();
+    const lease = startLoop(fixture.root, "controller", "ship");
+    const walkthrough = join(fixture.base, "driver-walkthrough");
+    git(fixture.root, [
+      "worktree",
+      "add",
+      "-b",
+      "driver-walkthrough",
+      walkthrough,
+    ]);
+    writeFixture(
+      walkthrough,
+      "walkthrough.ts",
+      "export const active = true;\n"
+    );
+    const current = captureInventory(fixture.root).worktrees.find(
+      (worktree) => worktree.path === walkthrough
+    );
+    if (!current) {
+      throw new Error("Expected the walkthrough worktree");
+    }
+
+    expect(() =>
+      retainExcludedWorktree(
+        fixture.root,
+        lease.runId,
+        "controller",
+        walkthrough,
+        current.changeDigest,
+        "user",
+        "Keep it out of this shipment."
+      )
+    ).toThrow("claim it as an active concurrent author or pause it");
   });
 
   test("allows an opening claimed author to keep changing during integration", () => {

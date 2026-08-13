@@ -53,6 +53,8 @@ export type MigrationHandling =
   | "auto-apply-reviewed"
   | "never";
 
+export type GitPushAuthorization = "configure-harness" | "ask" | "never";
+
 export interface MigrationTarget {
   environment: string;
   project: string;
@@ -90,6 +92,7 @@ export interface RepoPolicy {
   changelogHandling: ChangelogHandling;
   concurrentWork: "allow-claimed" | "strict" | "preserve";
   defaultFinish: "open-change-request" | "integrate" | "ship" | "preview";
+  gitPushAuthorization: GitPushAuthorization;
   guidance: {
     disposition: "accepted" | "reviewed" | "deferred";
     version: number;
@@ -574,7 +577,14 @@ export type LoopWorktreeRole =
   | "controller"
   | "author"
   | "concurrent-author"
-  | "preserved";
+  | "preserved"
+  | "retained";
+
+export interface LoopWorktreeRetention {
+  approvedBy: string;
+  createdAt: string;
+  reason: string;
+}
 
 export interface LoopWorktreeLease {
   agentId: string | null;
@@ -587,6 +597,7 @@ export interface LoopWorktreeLease {
   mutationAllowed: boolean;
   path: string;
   pauseReceiptId?: string;
+  retention?: LoopWorktreeRetention;
   role: LoopWorktreeRole;
 }
 
@@ -836,8 +847,11 @@ export interface LoopViolation {
   code:
     | "common-git-directory-mismatch"
     | "missing-preserved-worktree"
+    | "missing-retained-worktree"
     | "incomplete-worktree-preparation"
     | "preserved-worktree-changed"
+    | "retained-worktree-authorization-missing"
+    | "retained-worktree-changed"
     | "coordination-claim-stale"
     | "registered-worktree-branch-changed"
     | "unregistered-worktree";

@@ -1,6 +1,6 @@
 import type { ChangelogCoordination, RepoPolicy } from "./types.ts";
 
-export const CURRENT_GUIDANCE_VERSION = 6;
+export const CURRENT_GUIDANCE_VERSION = 7;
 
 export type GuidanceUpdateAction =
   | "review-settings"
@@ -155,6 +155,30 @@ const GUIDANCE_UPDATES: GuidanceUpdateDefinition[] = [
       },
     ],
     version: 6,
+  },
+  {
+    changelogReviewRelevant: true,
+    changes: [
+      {
+        kind: "onboarding",
+        summary:
+          "Ship setup now offers configure-harness, ask, or never for Git pushes; the new gitPushAuthorization setting defaults to ask.",
+        version: 7,
+      },
+      {
+        kind: "integration",
+        summary:
+          "Harness configuration is limited to the narrowest verified repository- and remote-scoped push rule and cannot override host security, credentials, branch protections, or provider policy.",
+        version: 7,
+      },
+      {
+        kind: "behavior",
+        summary:
+          "A clean target-contained worktree can now stay in place as an exact unchanged shipment exclusion; any later change requires an owner claim or stable pause before integration continues.",
+        version: 7,
+      },
+    ],
+    version: 7,
   },
 ];
 

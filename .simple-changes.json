@@ -2,10 +2,11 @@
   "schemaVersion": 1,
   "guidance": {
     "disposition": "accepted",
-    "version": 6
+    "version": 7
   },
   "changelogHandling": "delegate-if-available",
   "defaultFinish": "integrate",
+  "gitPushAuthorization": "ask",
   "questions": "blocking-only",
   "review": "repository-policy",
   "shippingMode": "standard",

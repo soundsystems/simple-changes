@@ -20,6 +20,7 @@ export interface InitializationStatus {
   changelogCoordination: ChangelogCoordination;
   changelogRequired: boolean;
   firstUseWalkthroughAvailable: boolean;
+  gitPushAuthorization: RepoPolicy["gitPushAuthorization"];
   guidanceUpdate: GuidanceUpdateNotice;
   handoffAction: HandoffAction;
   handoffTiming: RepoPolicy["handoffTiming"] | null;
@@ -215,6 +216,9 @@ export const inspectInitialization = (
     changelogCoordination,
     changelogRequired,
     firstUseWalkthroughAvailable: policy.source === "default",
+    gitPushAuthorization: policy.value
+      ? policy.value.gitPushAuthorization
+      : "ask",
     guidanceUpdate,
     handoffAction: handoff.action,
     handoffTiming: handoff.timing,

@@ -34,6 +34,7 @@ export interface OnboardingInputs {
   changelogHandling?: RepoPolicy["changelogHandling"];
   concurrentWork?: RepoPolicy["concurrentWork"];
   defaultFinish?: RepoPolicy["defaultFinish"];
+  gitPushAuthorization?: RepoPolicy["gitPushAuthorization"];
   handoffTiming?: RepoPolicy["handoffTiming"];
   instructionFile?: string;
   instructionPointer?: "add" | "leave";
@@ -66,6 +67,8 @@ export interface OnboardingConversationOptions {
 export const ONBOARDING_QUESTIONS = {
   changelog: "How should changelog work be handled?",
   finish: "How far should I usually take ready work?",
+  gitPushAuthorization:
+    "Should Simple Changes configure this harness for routine repository pushes?",
   handoff:
     "When an agent finishes implementation and verification, when should Simple Changes take over?",
   instructionFile: "Which instruction file should Simple Changes update?",
@@ -162,6 +165,27 @@ export const SHIPPING_MODE_CHOICES = [
       "Deploy one exact candidate before independent review when production is pre-approved and rollback is verified, then immediately finish checks, review, reconciliation, and verification.",
     label: "Break-glass by default — Advanced",
     value: "break-glass",
+  },
+] as const satisfies readonly OnboardingChoice[];
+
+export const GIT_PUSH_AUTHORIZATION_CHOICES = [
+  {
+    description:
+      "After confirmation, configure the narrowest repository-scoped push permission supported by the detected harness; host and administrator policy still win.",
+    label: "Configure this harness",
+    value: "configure-harness",
+  },
+  {
+    description:
+      "Leave harness settings unchanged and request authorization at each Git push boundary.",
+    label: "Ask for each push",
+    value: "ask",
+  },
+  {
+    description:
+      "Never request or configure push access; stop with the local branch ready.",
+    label: "Never push",
+    value: "never",
   },
 ] as const satisfies readonly OnboardingChoice[];
 
@@ -559,6 +583,19 @@ const shippingSummary = (
   return { production, shippingMode };
 };
 
+const gitPushAuthorizationSummary = (policy: RepoPolicy): string | null => {
+  if (policy.defaultFinish !== "ship") {
+    return null;
+  }
+  if (policy.gitPushAuthorization === "configure-harness") {
+    return "Git pushes: configure the narrowest repository-scoped push permission supported by this harness for the verified remote; sandbox, network, and administrator policy still apply.";
+  }
+  if (policy.gitPushAuthorization === "never") {
+    return "Git pushes: never request or configure push access; stop with local work ready.";
+  }
+  return "Git pushes: leave harness settings unchanged and ask at each push boundary.";
+};
+
 const instructionPointerSummary = (
   instructionPointer: OnboardingSelection["instructionPointer"]
 ): string => {
@@ -590,6 +627,7 @@ export const renderOnboardingSummary = (
     actions,
     production,
     shippingMode,
+    gitPushAuthorizationSummary(policy),
     policy.defaultFinish === "ship"
       ? `Migration handling: ${migrationHandlingLabel(policy.migrationHandling)}.`
       : null,
@@ -828,6 +866,30 @@ const selectShippingMode = async (
   );
 };
 
+const selectGitPushAuthorization = async (
+  defaults: RepoPolicy,
+  inputs: OnboardingInputs,
+  prompter: OnboardingPrompter,
+  customize: boolean,
+  finish: RepoPolicy["defaultFinish"]
+): Promise<RepoPolicy["gitPushAuthorization"]> => {
+  if (inputs.gitPushAuthorization) {
+    return inputs.gitPushAuthorization;
+  }
+  if (finish !== "ship" || !customize) {
+    return defaults.gitPushAuthorization;
+  }
+  return choiceValue<RepoPolicy["gitPushAuthorization"]>(
+    await prompter.choose(
+      ONBOARDING_QUESTIONS.gitPushAuthorization,
+      GIT_PUSH_AUTHORIZATION_CHOICES,
+      defaults.gitPushAuthorization
+    ),
+    GIT_PUSH_AUTHORIZATION_CHOICES,
+    ONBOARDING_QUESTIONS.gitPushAuthorization
+  );
+};
+
 const automaticMigrationHandling = (
   handling: RepoPolicy["migrationHandling"]
 ): boolean =>
@@ -1013,6 +1075,13 @@ export const collectOnboardingSelection = async (
     customize,
     defaultFinish
   );
+  const gitPushAuthorization = await selectGitPushAuthorization(
+    defaults,
+    inputs,
+    prompter,
+    customize,
+    defaultFinish
+  );
   const migrationHandling = await selectMigrationHandling(
     defaults,
     inputs,
@@ -1065,6 +1134,7 @@ export const collectOnboardingSelection = async (
     changelogHandling,
     concurrentWork: inputs.concurrentWork ?? defaults.concurrentWork,
     defaultFinish,
+    gitPushAuthorization,
     guidance: {
       disposition: customize ? "reviewed" : "accepted",
       version: CURRENT_GUIDANCE_VERSION,

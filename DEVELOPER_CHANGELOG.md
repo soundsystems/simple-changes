@@ -1,5 +1,33 @@
 # Developer changelog
 
+## 0.12.1 - 2026-08-13
+
+- Added harness-aware Git push authorization:
+  - Repository policy, initialization, onboarding, schemas, CLI setup, and
+    documentation now carry `gitPushAuthorization` end to end.
+  - The closed values are `configure-harness`, `ask`, and `never`. New and
+    legacy policies default to `ask`.
+  - Ship onboarding explains each choice. Persistent authorization is limited
+    to the narrowest verified repository- and remote-scoped mechanism supported
+    by the current harness and cannot override sandbox, network, credential,
+    administrator, branch-protection, or provider policy.
+- Added exact retained-worktree exclusions:
+  - `loop retain-worktree` records a clean non-primary worktree as `retained`
+    only when its supplied status digest matches, its HEAD is auditable, and
+    that HEAD is contained in the active loop target.
+  - Retained worktrees remain mutation-disabled, stay outside shipment and
+    completed-run cleanup, and preserve the approver, reason, and creation time
+    in the closed lease schema.
+  - A changed or missing retained worktree fails verification. A later valid
+    owner claim promotes changed retained work to `concurrent-author`; dirty
+    work otherwise requires an active claim or stable pause.
+  - Updated completion and concurrency guidance and added policy,
+    initialization, onboarding, CLI, lease-schema, retention, invalidation, and
+    concurrent-claim regression coverage.
+- Advanced installed guidance to version 7 for the new push-authorization
+  preference and retained-worktree behavior.
+<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-13T12:26:50-05:00" -->
+
 ## 0.12.0 - 2026-08-12
 
 - Added review-bound migration automation preferences and an executable

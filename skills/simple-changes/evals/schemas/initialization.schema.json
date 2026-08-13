@@ -9,6 +9,7 @@
     "changelogRequired",
     "changelogCoordination",
     "firstUseWalkthroughAvailable",
+    "gitPushAuthorization",
     "guidanceUpdate",
     "handoffAction",
     "handoffTiming",
@@ -27,6 +28,9 @@
     "reason"
   ],
   "properties": {
+    "gitPushAuthorization": {
+      "enum": ["configure-harness", "ask", "never"]
+    },
     "guidanceUpdate": {
       "type": "object",
       "additionalProperties": false,

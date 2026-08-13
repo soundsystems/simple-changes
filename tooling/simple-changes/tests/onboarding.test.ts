@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import {
   collectOnboardingSelection,
+  GIT_PUSH_AUTHORIZATION_CHOICES,
   HANDOFF_CHOICES,
   MIGRATION_HANDLING_CHOICES,
   ONBOARDING_QUESTIONS,
@@ -300,6 +301,7 @@ describe("onboarding conversation", () => {
       [ONBOARDING_QUESTIONS.finish, "ship"],
       [ONBOARDING_QUESTIONS.production, "allow"],
       [ONBOARDING_QUESTIONS.shippingMode, "expedited"],
+      [ONBOARDING_QUESTIONS.gitPushAuthorization, "configure-harness"],
       [ONBOARDING_QUESTIONS.migrationHandling, "ask-after-review"],
       [ONBOARDING_QUESTIONS.permission, "never"],
       [ONBOARDING_QUESTIONS.scope, "repository"],
@@ -323,6 +325,7 @@ describe("onboarding conversation", () => {
       ONBOARDING_QUESTIONS.finish,
       ONBOARDING_QUESTIONS.production,
       ONBOARDING_QUESTIONS.shippingMode,
+      ONBOARDING_QUESTIONS.gitPushAuthorization,
       ONBOARDING_QUESTIONS.migrationHandling,
       ONBOARDING_QUESTIONS.permission,
       ONBOARDING_QUESTIONS.scope,
@@ -331,6 +334,7 @@ describe("onboarding conversation", () => {
       confirmed: true,
       policy: {
         defaultFinish: "ship",
+        gitPushAuthorization: "configure-harness",
         migrationHandling: "ask-after-review",
         productionDeploy: "allow",
         questions: "never",
@@ -352,6 +356,12 @@ describe("onboarding conversation", () => {
       "expedited",
       "break-glass",
     ]);
+    expect(
+      GIT_PUSH_AUTHORIZATION_CHOICES.map((choice) => choice.value)
+    ).toEqual(["configure-harness", "ask", "never"]);
+    expect(selection.summary).toContain(
+      "configure the narrowest repository-scoped push permission supported by this harness"
+    );
   });
 
   test("offers target-bound reviewed migration automation tiers", async () => {
@@ -376,6 +386,9 @@ describe("onboarding conversation", () => {
           }
           if (question === ONBOARDING_QUESTIONS.shippingMode) {
             return Promise.resolve("break-glass");
+          }
+          if (question === ONBOARDING_QUESTIONS.gitPushAuthorization) {
+            return Promise.resolve("configure-harness");
           }
           if (question === ONBOARDING_QUESTIONS.migrationHandling) {
             return Promise.resolve("auto-apply-reviewed-routine");

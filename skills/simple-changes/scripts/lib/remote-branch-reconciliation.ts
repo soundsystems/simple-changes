@@ -3,7 +3,42 @@ import { validateSchema } from "./schema.ts";
 import type {
   RemoteBranchReconciliationEntry,
   RemoteBranchReconciliationReceipt,
+  RemoteInventoryCoverage,
 } from "./types.ts";
+
+const validatePagination = (
+  coverage: RemoteInventoryCoverage,
+  branchCount: number,
+  proposalCount: number,
+  label: string
+): void => {
+  for (const [kind, proof, expected] of [
+    ["branch", coverage.branches, branchCount],
+    ["proposal", coverage.proposals, proposalCount],
+  ] as const) {
+    const { pages } = proof;
+    if (pages[0]?.cursorIn !== null || pages.at(-1)?.cursorOut !== null) {
+      throw new SimpleChangesError(
+        `Invalid remote branch reconciliation: ${label} ${kind} pagination must start at the first page and terminate`,
+        EXIT_CODES.validation
+      );
+    }
+    for (let index = 1; index < pages.length; index += 1) {
+      if (pages[index]?.cursorIn !== pages[index - 1]?.cursorOut) {
+        throw new SimpleChangesError(
+          `Invalid remote branch reconciliation: ${label} ${kind} pagination cursor chain is incomplete`,
+          EXIT_CODES.validation
+        );
+      }
+    }
+    if (pages.reduce((total, page) => total + page.itemCount, 0) !== expected) {
+      throw new SimpleChangesError(
+        `Invalid remote branch reconciliation: ${label} ${kind} pagination count does not match the accounted ledger`,
+        EXIT_CODES.validation
+      );
+    }
+  }
+};
 
 const fail = (branch: string, message: string): never => {
   throw new SimpleChangesError(
@@ -200,6 +235,22 @@ export const validateRemoteBranchReconciliation = (
       EXIT_CODES.validation
     );
   }
+  const proposalCount = receipt.branches.reduce(
+    (total, branch) => total + branch.proposals.length,
+    0
+  );
+  validatePagination(
+    receipt.initialCoverage,
+    receipt.initialBranchCount,
+    proposalCount,
+    "initial"
+  );
+  validatePagination(
+    receipt.finalCoverage,
+    receipt.finalBranchCount,
+    proposalCount,
+    "final"
+  );
   for (const branch of receipt.branches) {
     validateBranch(branch, receipt);
   }

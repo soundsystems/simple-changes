@@ -71,9 +71,10 @@ Before reporting completion:
    or blocked exactly once.
 5. Run the active-loop manifest verification. Treat every unregistered,
    missing, incompletely prepared, changed preserved, or changed retained
-   worktree as a blocker
-   unless an exact path-and-digest override or audited removal disposition is
-   recorded where applicable.
+   worktree as a blocker unless an exact path-and-digest override, audited
+   removal disposition, or exact unchanged retained-worktree receipt is
+   recorded where applicable. An unchanged retained exclusion is a valid final
+   state and must not be removed merely to make the inventory smaller.
 6. Honor exact unchanged `loop retain-worktree` exclusions without removing or
    including them. If one changes, require an active owner claim or stable pause.
    For an opening worktree proven obsolete, refresh the target and record a

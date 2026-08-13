@@ -31,6 +31,10 @@ binds every reviewed revision path and its content digest. Capture the fresh
 pending operations as closed `migration-pending` data with the same identity,
 then run
 `simple-changes migration decision --state REVIEW_FILE --pending PENDING_FILE --apply-plan APPLY_PLAN_FILE --repo REPOSITORY`.
+The apply plan must bind a fresh remote ledger, exact target, bounded nonce and
+expiry, adapter, and argv command. Execute only the returned
+`authorizedCommand` for the matching authorization digest, without a shell,
+then refresh the remote ledger and run the planned post-apply verification.
 The CLI re-hashes every current operation source before policy evaluation.
 Missing, stale, replayed, or changed identity fails closed and requires a new
 review; a prior review for the same target never authorizes later operations or

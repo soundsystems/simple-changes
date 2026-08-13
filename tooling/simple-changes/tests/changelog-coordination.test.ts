@@ -120,6 +120,32 @@ describe("changelog coordination discovery", () => {
     ]);
   });
 
+  test("rejects a full distribution for a skill-repository policy", () => {
+    const fixture = createTestRepository();
+    repositories.push(fixture);
+    const skillRoot = join(fixture.base, "global-skills");
+    writeFixture(
+      skillRoot,
+      "simple-changelogs/SKILL.md",
+      "---\nname: simple-changelogs\ndescription: Full cross-surface Simple Changelogs distribution.\n---\n"
+    );
+    writeFixture(
+      fixture.root,
+      ".simple-changelogs.json",
+      '{"schemaVersion":1,"distribution":"skill-repository","guidance":{"version":8}}\n'
+    );
+
+    const result = inspectChangelogCoordination(fixture.root, {
+      environment: { SIMPLE_CHANGES_SKILL_ROOTS: skillRoot },
+    });
+
+    expect(result).toMatchObject({
+      capabilityAvailable: false,
+      providers: [],
+      relevant: true,
+    });
+  });
+
   test("detects a newer installed Simple Changelogs guidance version", () => {
     const fixture = createTestRepository();
     repositories.push(fixture);

@@ -1,5 +1,80 @@
 # Developer changelog
 
+## 0.12.2 - 2026-08-13
+
+- Closed retained/concurrent pause handoff deadlocks:
+  - `loop accept-paused-change` now accepts opening `preserved`, `retained`, and
+    `concurrent-author` worktrees that provide exact claim and pause evidence.
+  - Acceptance reconstructs immutable preserved state from the paused snapshot,
+    clears stale retention metadata, and keeps mutation authority disabled.
+  - Added regressions for pauses recorded both before and after retained
+    worktree promotion.
+- Made opening-worktree disposal follow the refreshed target safely:
+  - Removal audits and stored dispositions now compare against the current
+    resolved target revision instead of the loop's pinned opening revision.
+  - The refreshed target must descend from the pinned revision; rewritten or
+    divergent targets fail closed.
+  - Added coverage for target advancement that absorbs an opening worktree and
+    for non-descendant target rejection.
+- Bound active loops to exact Git remote destinations:
+  - Inventory records every remote's effective sorted fetch and push URLs,
+    provider, and the selected target remote.
+  - Loop leases persist those bindings and emit `remote-destination-changed`
+    when any destination changes after start.
+  - Added regression coverage for a changed push URL.
+- Restricted repository policy authority to locally trusted bytes:
+  - Repository policy symlinks and other non-regular files are rejected.
+  - Persistent push authorization, automatic migration modes, break-glass
+    ordering, and automatic production deployment are downgraded to safe
+    ask/standard behavior unless a private `0600` receipt beneath the common
+    Git directory binds the real repository path, real policy path, exact
+    policy digest, approver, and reason.
+  - Policy byte or repository-path changes invalidate the receipt. Inventory
+    now exposes whether trust is `trusted`, `untrusted`, or `not-required`.
+- Strengthened exact migration execution authority:
+  - The apply-plan schema now requires an adapter, nonempty argv command, exact
+    target, nonce, issue and expiry times, and a fresh target-bound remote
+    ledger containing the same canonical operation set.
+  - Decisions reject stale ledgers, expired or overlong windows, future
+    evidence, changed targets, changed commands, and mismatched operations.
+  - Successful automatic decisions return only the exact `authorizedCommand`,
+    canonical operations, and a deterministic authorization digest for
+    immediate shell-free execution.
+- Scoped forge cleanup to the selected target provider:
+  - GitLab remote-branch reconciliation is required only when the resolved
+    target remote is GitLab, rather than whenever any auxiliary GitLab remote
+    exists.
+  - Added coverage for a GitHub canonical target with a separate GitLab mirror.
+- Replaced unbounded dirty-worktree capture:
+  - Inventory no longer loads complete binary diffs or untracked files into
+    memory.
+  - Changed paths now bind their index object ID and filesystem identity;
+    regular files are SHA-256 hashed in fixed-size chunks, symlink targets are
+    hashed without following them, and directories, FIFOs, sockets, and devices
+    use nonblocking type metadata.
+  - Added a large-binary/FIFO regression proving bounded, nonblocking capture.
+- Added pagination-completeness evidence to remote reconciliation:
+  - Initial and final receipts now include separate branch and proposal page
+    chains with input/output cursors, item counts, and response digests.
+  - Validation requires first-page and terminal cursors, continuous cursor
+    chains, ledger-matching counts, and explicit coverage of closed, merged,
+    and open proposal states.
+  - Incomplete pagination and missing proposal-state coverage now fail closed.
+- Reconciled skill and onboarding guidance:
+  - Push-authorization setup is now offered for every non-preview finish that
+    may push, including review and integration boundaries instead of Ship only.
+  - Changelog discovery reads the repository's selected distribution and
+    refuses an incompatible full-distribution provider for a
+    `skill-repository` policy.
+  - Corrected the setup default from guidance version 6 to 7 and clarified that
+    an exact unchanged retained worktree is a valid terminal state.
+  - Reduced the primary skill router from 796 to 227 lines by moving detailed
+    contracts to existing references while retaining the behavioral gates.
+  - Expanded closed schemas and focused CLI, policy, onboarding, inventory,
+    lease, migration, reconciliation, changelog-coordination, and contract
+    regression coverage for all changes above.
+<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-13T14:45:29-05:00" -->
+
 ## 0.12.1 - 2026-08-13
 
 - Added harness-aware Git push authorization:

@@ -876,7 +876,7 @@ const selectGitPushAuthorization = async (
   if (inputs.gitPushAuthorization) {
     return inputs.gitPushAuthorization;
   }
-  if (finish !== "ship" || !customize) {
+  if (finish === "preview" || !customize) {
     return defaults.gitPushAuthorization;
   }
   return choiceValue<RepoPolicy["gitPushAuthorization"]>(

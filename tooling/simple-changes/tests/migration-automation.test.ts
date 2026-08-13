@@ -11,6 +11,8 @@ import type {
   RepoPolicy,
 } from "../../../skills/simple-changes/scripts/lib/types.ts";
 
+const SHA256_PATTERN = /^[a-f0-9]{64}$/u;
+
 const target: MigrationTarget = {
   environment: "production",
   project: "primary-db",
@@ -27,7 +29,22 @@ const operations: MigrationOperationSet = {
   digest: migrationOperationDigest(operationsList),
   operations: operationsList,
 };
-const applyPlan = { ...operations, scope: "exact-listed-operations" as const };
+const now = new Date();
+const applyPlan = {
+  ...operations,
+  adapter: "supabase-cli",
+  command: ["supabase", "db", "push", "--linked"],
+  expiresAt: new Date(now.getTime() + 10 * 60 * 1000).toISOString(),
+  issuedAt: now.toISOString(),
+  nonce: "migration-plan-0001",
+  remoteLedger: {
+    ...operations,
+    observedAt: now.toISOString(),
+    target,
+  },
+  scope: "exact-listed-operations" as const,
+  target,
+};
 
 const policy = (
   migrationHandling: RepoPolicy["migrationHandling"]
@@ -84,6 +101,17 @@ describe("reviewed migration automation", () => {
     expect(
       decideMigrationAutomation(
         policy("auto-apply-reviewed-routine"),
+        review(),
+        operations,
+        applyPlan
+      )
+    ).toMatchObject({
+      authorizationDigest: expect.stringMatching(SHA256_PATTERN),
+      authorizedCommand: ["supabase", "db", "push", "--linked"],
+    });
+    expect(
+      decideMigrationAutomation(
+        policy("auto-apply-reviewed-routine"),
         review({ routine: false }),
         operations,
         applyPlan
@@ -123,7 +151,7 @@ describe("reviewed migration automation", () => {
         operations,
         applyPlan
       )
-    ).toMatchObject({ action: "request-target-authorization" });
+    ).toMatchObject({ action: "review-required" });
   });
 
   test("fails closed when the reviewed operation identity is stale or changed", () => {
@@ -142,7 +170,11 @@ describe("reviewed migration automation", () => {
         policy("auto-apply-reviewed"),
         review(),
         changed,
-        { ...changed, scope: "exact-listed-operations" }
+        {
+          ...applyPlan,
+          ...changed,
+          remoteLedger: { ...applyPlan.remoteLedger, ...changed },
+        }
       )
     ).toMatchObject({ action: "review-required", authorizedByPolicy: false });
     const changedContent = [
@@ -184,11 +216,39 @@ describe("reviewed migration automation", () => {
         review(),
         operations,
         {
+          ...applyPlan,
           digest: migrationOperationDigest(plannedOperations),
           operations: plannedOperations,
-          scope: "exact-listed-operations",
         }
       )
     ).toMatchObject({ action: "review-required", authorizedByPolicy: false });
+  });
+
+  test("rejects changed commands, targets, and stale remote ledgers", () => {
+    const stale = new Date(now.getTime() - 6 * 60 * 1000).toISOString();
+    expect(
+      decideMigrationAutomation(
+        policy("auto-apply-reviewed"),
+        review(),
+        operations,
+        {
+          ...applyPlan,
+          remoteLedger: { ...applyPlan.remoteLedger, observedAt: stale },
+        },
+        now
+      )
+    ).toMatchObject({ action: "review-required" });
+    expect(
+      decideMigrationAutomation(
+        policy("auto-apply-reviewed"),
+        review(),
+        operations,
+        {
+          ...applyPlan,
+          target: { ...target, project: "other-db" },
+        },
+        now
+      )
+    ).toMatchObject({ action: "review-required" });
   });
 });

@@ -89,7 +89,7 @@ Use these safe defaults when no committed policy exists:
 ```json
 {
   "schemaVersion": 1,
-  "guidance": { "disposition": "accepted", "version": 6 },
+  "guidance": { "disposition": "accepted", "version": 7 },
   "changelogHandling": "preserve-and-report",
   "defaultFinish": "open-change-request",
   "gitPushAuthorization": "ask",
@@ -120,6 +120,13 @@ agent to use the current harness's narrowest repository-scoped persistent rule
 for the verified remote after user confirmation; it does not itself grant
 permission or override host policy. Follow
 [harness-aware Git push authorization](harness-push-authorization.md).
+Repository policy cannot silently grant consequential authority. A repository
+policy that requests persistent push permission, automatic migration apply,
+break-glass ordering, or automatic production deploy is downgraded to safe
+ask/standard behavior until the user creates a private, regular-file,
+digest-bound trust receipt beneath the repository's common Git directory.
+Changing the repository path or policy bytes invalidates that receipt. Reject
+policy symlinks.
 
 `migrationHandling` accepts `ask-after-review`,
 `auto-apply-reviewed-routine`, `auto-apply-reviewed`, or `never`. Every mode

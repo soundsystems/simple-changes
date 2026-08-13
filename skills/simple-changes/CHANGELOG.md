@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.12.2 - 2026-08-13
+
+- Preserved concurrent worktrees can now hand off an exact stable pause without
+  deadlocking a shipment, including worktrees previously retained or promoted
+  to active authors. Obsolete opening worktrees are audited against the
+  refreshed canonical target while rewritten targets still fail closed.
+- Active loops now bind exact Git fetch and push destinations and apply
+  provider-specific cleanup only to the selected target remote. GitLab branch
+  reconciliation also proves complete initial and final pagination for branches
+  and proposals before cleanup can finish.
+- Repository policy can no longer silently grant persistent push, automatic
+  migration, break-glass, or production authority. Consequential settings
+  require a private digest-bound local trust receipt, and symlinked policy files
+  are rejected.
+- Automatic migration decisions now bind the exact target, fresh remote ledger,
+  adapter, argument-vector command, nonce, and expiration window. Changed,
+  replayed, stale, or broader execution plans require fresh review and
+  authority.
+- Worktree inventory now hashes large files incrementally and identifies FIFOs
+  and other special files without opening them, avoiding unbounded binary-diff
+  memory use and blocking reads.
+- Setup now asks about push authorization for every workflow that can push,
+  honors the repository's changelog distribution when selecting a provider,
+  and uses synchronized guidance for retained cleanup and current defaults.
+
 ## 0.12.1 - 2026-08-13
 
 - Ship setup now supports harness-aware Git push authorization.

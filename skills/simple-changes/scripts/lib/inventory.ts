@@ -1,8 +1,11 @@
+import { createHash } from "node:crypto";
 import {
+  closeSync,
   existsSync,
   lstatSync,
-  readFileSync,
+  openSync,
   readlinkSync,
+  readSync,
   realpathSync,
 } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
@@ -16,6 +19,7 @@ import type {
   BranchInventory,
   Capability,
   GitChange,
+  RemoteBinding,
   RepositoryInventory,
   SnapshotComparison,
   StashInventory,
@@ -113,6 +117,48 @@ const parseStatus = (worktreePath: string, output: string): GitChange[] => {
   return changes.sort((left, right) => left.path.localeCompare(right.path));
 };
 
+const digestRegularFile = (path: string): string => {
+  const digest = createHash("sha256");
+  const descriptor = openSync(path, "r");
+  const buffer = Buffer.allocUnsafe(64 * 1024);
+  try {
+    let count = readSync(descriptor, buffer, 0, buffer.length, null);
+    while (count > 0) {
+      digest.update(buffer.subarray(0, count));
+      count = readSync(descriptor, buffer, 0, buffer.length, null);
+    }
+  } finally {
+    closeSync(descriptor);
+  }
+  return digest.digest("hex");
+};
+
+const filesystemIdentity = (path: string): string => {
+  if (!existsSync(path)) {
+    return "missing";
+  }
+  const status = lstatSync(path);
+  if (status.isSymbolicLink()) {
+    return `symlink:${sha256(readlinkSync(path))}`;
+  }
+  if (status.isFile()) {
+    return `file:${digestRegularFile(path)}`;
+  }
+  let kind = "special";
+  if (status.isDirectory()) {
+    kind = "directory";
+  } else if (status.isFIFO()) {
+    kind = "fifo";
+  } else if (status.isSocket()) {
+    kind = "socket";
+  } else if (status.isCharacterDevice()) {
+    kind = "character-device";
+  } else if (status.isBlockDevice()) {
+    kind = "block-device";
+  }
+  return `${kind}:${status.mode}:${status.size}`;
+};
+
 const inventoryWorktree = (
   worktree: RawWorktree,
   primaryPath: string,
@@ -128,35 +174,23 @@ const inventoryWorktree = (
       "--untracked-files=all",
     ]).stdout;
     changes = parseStatus(worktree.path, status);
-    const stagedDiff = runGit(worktree.path, [
-      "diff",
-      "--cached",
-      "--binary",
-      "--no-ext-diff",
-      "--",
-    ]).stdout;
-    const unstagedDiff = runGit(worktree.path, [
-      "diff",
-      "--binary",
-      "--no-ext-diff",
-      "--",
-    ]).stdout;
-    const untrackedContent = changes
-      .filter((change) => change.untracked)
-      .map((change) => {
-        const safePath = assertSafeRelativePath(worktree.path, change.path);
-        const stat = lstatSync(safePath.absolutePath);
-        const contents = stat.isSymbolicLink()
-          ? `symlink:${readlinkSync(safePath.absolutePath)}`
-          : `file:${readFileSync(safePath.absolutePath).toString("base64")}`;
-        return {
-          contentDigest: sha256(contents),
-          path: change.path,
-        };
-      });
-    changeDigest = sha256(
-      JSON.stringify({ changes, stagedDiff, unstagedDiff, untrackedContent })
-    );
+    const contentIdentities = changes.map((change) => {
+      const safePath = assertSafeRelativePath(worktree.path, change.path);
+      const index = runGit(
+        worktree.path,
+        ["rev-parse", "--verify", `:${change.path}`],
+        true
+      );
+      return {
+        indexObjectId:
+          index.exitCode === 0 && index.stdout.trim()
+            ? index.stdout.trim()
+            : null,
+        path: change.path,
+        worktreeIdentity: filesystemIdentity(safePath.absolutePath),
+      };
+    });
+    changeDigest = sha256(JSON.stringify({ changes, contentIdentities }));
   }
   return {
     ...worktree,
@@ -250,6 +284,33 @@ const providerFromRemote = (remoteUrl: string): string => {
     return scpHost ?? "generic-forge";
   }
 };
+
+const remoteUrls = (root: string, remote: string, push: boolean): string[] => {
+  const result = runGit(
+    root,
+    ["remote", "get-url", ...(push ? ["--push"] : []), "--all", remote],
+    true
+  );
+  return result.exitCode === 0
+    ? [...new Set(result.stdout.split("\n").filter(Boolean))].sort()
+    : [];
+};
+
+const inventoryRemoteBindings = (root: string): RemoteBinding[] =>
+  runGit(root, ["remote"], true)
+    .stdout.split("\n")
+    .filter(Boolean)
+    .sort()
+    .map((name) => {
+      const fetchUrls = remoteUrls(root, name, false);
+      const pushUrls = remoteUrls(root, name, true);
+      return {
+        fetchUrls,
+        name,
+        provider: providerFromRemote(pushUrls[0] ?? fetchUrls[0] ?? ""),
+        pushUrls,
+      };
+    });
 
 export interface CaptureInventoryOptions {
   changelogEnvironment?: Record<string, string | undefined>;
@@ -402,6 +463,33 @@ const resolveTargetRef = (root: string, branch: string | null): string => {
   return branch ?? "main";
 };
 
+const targetRemoteFor = (
+  root: string,
+  branch: string | null,
+  targetRef: string,
+  bindings: RemoteBinding[]
+): string | null => {
+  const [prefix] = targetRef.split("/", 1);
+  if (prefix && bindings.some((binding) => binding.name === prefix)) {
+    return prefix;
+  }
+  const configured = branch
+    ? runGit(
+        root,
+        ["config", "--get", `branch.${branch}.remote`],
+        true
+      ).stdout.trim()
+    : "";
+  if (configured && bindings.some((binding) => binding.name === configured)) {
+    return configured;
+  }
+  const onlyBinding = bindings.at(0);
+  if (bindings.length === 1 && onlyBinding) {
+    return onlyBinding.name;
+  }
+  return null;
+};
+
 export const captureInventory = (
   directory: string,
   options: CaptureInventoryOptions = {}
@@ -444,8 +532,15 @@ export const captureInventory = (
   const stashes = inventoryStashes(root);
   const localChanges = worktrees.flatMap((worktree) => worktree.changes);
   const targetRef = resolveTargetRef(root, branch);
+  const remoteBindings = inventoryRemoteBindings(primaryCheckout);
+  const targetRemote = targetRemoteFor(
+    primaryCheckout,
+    branch,
+    targetRef,
+    remoteBindings
+  );
   const capabilities = discoverCapabilities(primaryCheckout, options);
-  const policy = loadPolicy(primaryCheckout);
+  const policy = loadPolicy(primaryCheckout, { commonGitDirectory });
   const digestInput = JSON.stringify({
     branches,
     capabilities,
@@ -459,7 +554,9 @@ export const captureInventory = (
       gitDirectory,
       headSha,
       primaryCheckout,
+      remoteBindings,
       root,
+      targetRemote,
     },
     stashes,
     targetRef,
@@ -481,7 +578,9 @@ export const captureInventory = (
       gitDirectory,
       headSha,
       primaryCheckout,
+      remoteBindings,
       root,
+      targetRemote,
     },
     schemaVersion: 1,
     stashes,

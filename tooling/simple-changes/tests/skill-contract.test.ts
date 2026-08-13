@@ -74,6 +74,11 @@ const runtimeSourcePaths = [
 );
 
 describe("Simple Changes skill contract", () => {
+  test("keeps the primary skill as a compact router", async () => {
+    const skill = await readFile(skillPath, "utf8");
+    expect(skill.split("\n").length).toBeLessThanOrEqual(500);
+  });
+
   test("first-use onboarding explains the workflow before preference questions", async () => {
     const [skill, onboarding] = await Promise.all([
       readFile(skillPath, "utf8"),
@@ -502,7 +507,7 @@ describe("Simple Changes skill contract", () => {
     );
     expect(normalizedSkill).toContain("loop dispose-worktree");
     expect(normalizedSkill).toContain(
-      "clean and has zero unique commits outside the lease's pinned canonical target revision"
+      "clean and has zero unique commits outside the refreshed canonical target revision"
     );
     expect(normalizedConcurrency).toContain(
       "The disposition permits only that opening worktree's absence"

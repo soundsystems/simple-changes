@@ -7,6 +7,30 @@ const SHA = {
   target: "a".repeat(40),
 };
 
+const coverage = (branches: number, proposals: number) => ({
+  branches: {
+    pages: [
+      {
+        cursorIn: null,
+        cursorOut: null,
+        itemCount: branches,
+        responseDigest: "d".repeat(64),
+      },
+    ],
+  },
+  proposalStates: ["closed", "merged", "open"] as const,
+  proposals: {
+    pages: [
+      {
+        cursorIn: null,
+        cursorOut: null,
+        itemCount: proposals,
+        responseDigest: "e".repeat(64),
+      },
+    ],
+  },
+});
+
 const receipt = (): RemoteBranchReconciliationReceipt => ({
   branches: [
     {
@@ -54,8 +78,10 @@ const receipt = (): RemoteBranchReconciliationReceipt => ({
     },
   ],
   finalBranchCount: 2,
+  finalCoverage: coverage(2, 1),
   finalInventoryComplete: true,
   initialBranchCount: 3,
+  initialCoverage: coverage(3, 1),
   initialInventoryComplete: true,
   observedAt: new Date().toISOString(),
   project: "group/project",
@@ -82,6 +108,13 @@ describe("remote branch reconciliation", () => {
       objectId: "13",
       state: "open",
     });
+    const [initialProposalPage] = value.initialCoverage.proposals.pages;
+    const [finalProposalPage] = value.finalCoverage.proposals.pages;
+    if (!(initialProposalPage && finalProposalPage)) {
+      throw new Error("missing pagination fixture");
+    }
+    initialProposalPage.itemCount = 2;
+    finalProposalPage.itemCount = 2;
     expect(() => validateRemoteBranchReconciliation(value)).toThrow(
       "open proposal branch must be classified as open"
     );
@@ -104,6 +137,13 @@ describe("remote branch reconciliation", () => {
     value.branches = value.branches.filter((branch) => branch.name !== "main");
     value.initialBranchCount -= 1;
     value.finalBranchCount -= 1;
+    const [initialBranchPage] = value.initialCoverage.branches.pages;
+    const [finalBranchPage] = value.finalCoverage.branches.pages;
+    if (!(initialBranchPage && finalBranchPage)) {
+      throw new Error("missing pagination fixture");
+    }
+    initialBranchPage.itemCount = value.initialBranchCount;
+    finalBranchPage.itemCount = value.finalBranchCount;
     expect(() => validateRemoteBranchReconciliation(value)).toThrow(
       "canonical target is missing"
     );
@@ -114,6 +154,19 @@ describe("remote branch reconciliation", () => {
     value.finalBranchCount += 1;
     expect(() => validateRemoteBranchReconciliation(value)).toThrow(
       "inventory counts must match"
+    );
+  });
+
+  test("rejects incomplete pagination and missing proposal states", () => {
+    const value = receipt();
+    value.initialCoverage.branches.pages[0] = {
+      cursorIn: null,
+      cursorOut: "next-page",
+      itemCount: 3,
+      responseDigest: "f".repeat(64),
+    };
+    expect(() => validateRemoteBranchReconciliation(value)).toThrow(
+      "pagination must start at the first page and terminate"
     );
   });
 });

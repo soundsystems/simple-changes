@@ -176,9 +176,29 @@ describe("closed schemas", () => {
     ).toEqual({ digest, operations });
     expect(
       validateSchema("migration-apply-plan", {
+        adapter: "supabase-cli",
+        command: ["supabase", "db", "push", "--linked"],
         digest,
+        expiresAt: new Date(Date.now() + 10 * 60 * 1000).toISOString(),
+        issuedAt: new Date().toISOString(),
+        nonce: "migration-plan-0001",
         operations,
+        remoteLedger: {
+          digest,
+          observedAt: new Date().toISOString(),
+          operations,
+          target: {
+            environment: "production",
+            project: "db",
+            provider: "supabase",
+          },
+        },
         scope: "exact-listed-operations",
+        target: {
+          environment: "production",
+          project: "db",
+          provider: "supabase",
+        },
       })
     ).toBeDefined();
   });
@@ -413,6 +433,14 @@ describe("closed schemas", () => {
       ownerAgentId: "controller",
       preparations: [],
       primaryCheckout: "/repo",
+      remoteBindings: [
+        {
+          fetchUrls: ["https://gitlab.example/repo.git"],
+          name: "origin",
+          provider: "gitlab",
+          pushUrls: ["https://gitlab.example/repo.git"],
+        },
+      ],
       runId: "run-test-1234",
       schemaVersion: 1,
       targetRef: "origin/main",

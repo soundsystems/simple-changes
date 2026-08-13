@@ -5,7 +5,10 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn as bunSpawn, spawnSync as bunSpawnSync } from "bun";
 import { captureInventory } from "../../../skills/simple-changes/scripts/lib/inventory.ts";
-import { DEFAULT_POLICY } from "../../../skills/simple-changes/scripts/lib/policy.ts";
+import {
+  DEFAULT_POLICY,
+  writeRepositoryPolicyTrustReceipt,
+} from "../../../skills/simple-changes/scripts/lib/policy.ts";
 import {
   createTestRepository,
   git,
@@ -91,6 +94,53 @@ const waitForGuardedProcess = (
   });
 
 let repositories: TestRepository[] = [];
+const paginationCoverage = (branches: number, proposals = 0) => ({
+  branches: {
+    pages: [
+      {
+        cursorIn: null,
+        cursorOut: null,
+        itemCount: branches,
+        responseDigest: "a".repeat(64),
+      },
+    ],
+  },
+  proposalStates: ["closed", "merged", "open"] as const,
+  proposals: {
+    pages: [
+      {
+        cursorIn: null,
+        cursorOut: null,
+        itemCount: proposals,
+        responseDigest: "b".repeat(64),
+      },
+    ],
+  },
+});
+const migrationApplyPlan = (
+  operationSet: {
+    digest: string;
+    operations: Array<{ contentDigest: string; revision: string }>;
+  },
+  target: { environment: string; project: string; provider: string }
+) => {
+  const issuedAt = new Date();
+  return {
+    ...operationSet,
+    adapter: "supabase-cli",
+    command: ["supabase", "db", "push", "--linked"],
+    expiresAt: new Date(issuedAt.getTime() + 10 * 60 * 1000).toISOString(),
+    issuedAt: issuedAt.toISOString(),
+    nonce: "migration-plan-0001",
+    remoteLedger: {
+      ...operationSet,
+      observedAt: issuedAt.toISOString(),
+      target,
+    },
+    scope: "exact-listed-operations",
+    target,
+  };
+};
 
 afterEach(() => {
   for (const fixture of repositories) {
@@ -139,6 +189,12 @@ describe("contract CLI", () => {
         2
       )}\n`
     );
+    writeRepositoryPolicyTrustReceipt(
+      fixture.root,
+      resolve(fixture.root, ".git"),
+      "test-user",
+      "Authorize this exact test policy"
+    );
     writeFixture(
       fixture.root,
       "migration-review.json",
@@ -167,7 +223,16 @@ describe("contract CLI", () => {
     writeFixture(
       fixture.root,
       "migration-apply-plan.json",
-      `${JSON.stringify({ digest, operations, scope: "exact-listed-operations" })}\n`
+      `${JSON.stringify(
+        migrationApplyPlan(
+          { digest, operations },
+          {
+            environment: "production",
+            project: "primary-db",
+            provider: "supabase",
+          }
+        )
+      )}\n`
     );
 
     const result = spawnSync(
@@ -241,7 +306,16 @@ describe("contract CLI", () => {
     writeFixture(
       fixture.root,
       "migration-apply-plan.json",
-      `${JSON.stringify({ digest: digest(pending), operations: pending, scope: "exact-listed-operations" })}\n`
+      `${JSON.stringify(
+        migrationApplyPlan(
+          { digest: digest(pending), operations: pending },
+          {
+            environment: "production",
+            project: "primary-db",
+            provider: "supabase",
+          }
+        )
+      )}\n`
     );
     const result = spawnSync(
       [
@@ -309,7 +383,16 @@ describe("contract CLI", () => {
     writeFixture(
       fixture.root,
       "apply-plan.json",
-      `${JSON.stringify({ digest, operations, scope: "exact-listed-operations" })}\n`
+      `${JSON.stringify(
+        migrationApplyPlan(
+          { digest, operations },
+          {
+            environment: "production",
+            project: "db",
+            provider: "supabase",
+          }
+        )
+      )}\n`
     );
     writeFixture(fixture.root, revision, "select 2;\n");
     const result = spawnSync(
@@ -384,7 +467,16 @@ describe("contract CLI", () => {
     writeFixture(
       fixture.root,
       "apply.json",
-      `${JSON.stringify({ digest: digest(applyOperations), operations: applyOperations, scope: "exact-listed-operations" })}\n`
+      `${JSON.stringify(
+        migrationApplyPlan(
+          { digest: digest(applyOperations), operations: applyOperations },
+          {
+            environment: "production",
+            project: "db",
+            provider: "supabase",
+          }
+        )
+      )}\n`
     );
     const result = spawnSync(
       [
@@ -1112,8 +1204,10 @@ describe("contract CLI", () => {
             },
           ],
           finalBranchCount: 1,
+          finalCoverage: paginationCoverage(1),
           finalInventoryComplete: true,
           initialBranchCount: 1,
+          initialCoverage: paginationCoverage(1),
           initialInventoryComplete: true,
           observedAt: new Date().toISOString(),
           project: "group/project",
@@ -1583,6 +1677,8 @@ describe("contract CLI", () => {
         "initialize",
         "--mode",
         "integrate",
+        "--git-push-authorization",
+        "ask",
         "--questions",
         "blocking-only",
         "--scope",
@@ -1752,6 +1848,8 @@ describe("contract CLI", () => {
         "setup",
         "--finish",
         "review",
+        "--git-push-authorization",
+        "ask",
         "--questions",
         "blocking-only",
         "--scope",
@@ -1782,6 +1880,8 @@ describe("contract CLI", () => {
         "setup",
         "--finish",
         "review",
+        "--git-push-authorization",
+        "ask",
         "--questions",
         "blocking-only",
         "--scope",
@@ -1812,6 +1912,8 @@ describe("contract CLI", () => {
         "setup",
         "--finish",
         "review",
+        "--git-push-authorization",
+        "ask",
         "--changelog",
         "delegate-if-available",
         "--questions",
@@ -1923,6 +2025,8 @@ describe("contract CLI", () => {
         "setup",
         "--finish",
         "integrate",
+        "--git-push-authorization",
+        "ask",
         "--questions",
         "blocking-only",
         "--scope",
@@ -1966,6 +2070,8 @@ describe("contract CLI", () => {
         "setup",
         "--finish",
         "review",
+        "--git-push-authorization",
+        "ask",
         "--questions",
         "blocking-only",
         "--scope",
@@ -2056,6 +2162,8 @@ describe("contract CLI", () => {
         "setup",
         "--finish",
         "review",
+        "--git-push-authorization",
+        "ask",
         "--questions",
         "blocking-only",
         "--scope",
@@ -2083,6 +2191,8 @@ describe("contract CLI", () => {
         "setup",
         "--finish",
         "review",
+        "--git-push-authorization",
+        "ask",
         "--questions",
         "blocking-only",
         "--scope",
@@ -2107,6 +2217,8 @@ describe("contract CLI", () => {
         "setup",
         "--finish",
         "review",
+        "--git-push-authorization",
+        "ask",
         "--questions",
         "blocking-only",
         "--scope",
@@ -2152,6 +2264,8 @@ describe("contract CLI", () => {
         "setup",
         "--finish",
         "review",
+        "--git-push-authorization",
+        "ask",
         "--questions",
         "always",
         "--scope",
@@ -2232,6 +2346,8 @@ describe("contract CLI", () => {
         "setup",
         "--finish",
         "review",
+        "--git-push-authorization",
+        "ask",
         "--questions",
         "blocking-only",
         "--scope",

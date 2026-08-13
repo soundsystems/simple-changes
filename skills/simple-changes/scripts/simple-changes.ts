@@ -102,7 +102,7 @@ import {
   releaseWorktreeClaim,
 } from "./lib/worktree-coordination.ts";
 
-const VERSION = "0.12.1";
+const VERSION = "0.12.2";
 const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const HELP = `Simple Changes ${VERSION}
 
@@ -844,10 +844,9 @@ const setupNeedsPrompt = (
     (!changelogRelevant || options.changelogHandling) &&
     options.questions &&
     options.scope &&
+    options.gitPushAuthorization &&
     (options.defaultFinish !== "ship" ||
-      (options.productionDeploy &&
-        options.shippingMode &&
-        options.gitPushAuthorization)) &&
+      (options.productionDeploy && options.shippingMode)) &&
     (!(
       options.migrationHandling &&
       ["auto-apply-reviewed-routine", "auto-apply-reviewed"].includes(
@@ -977,7 +976,7 @@ const runSetup = async (options: CliOptions): Promise<void> => {
   );
   if (needsPrompt && !process.stdin.isTTY) {
     throw new SimpleChangesError(
-      "Interactive setup requires a terminal. Supply --finish, --questions, --scope, --production, --shipping-mode, and --git-push-authorization when shipping, --migration-handling and --migration-target for automatic migration apply, --changelog when relevant, --ui-versioning with --ui-artifacts, --instruction-pointer when an instruction file exists, --handoff when adding the pointer, --instruction-file when selecting among targets, and --yes.",
+      "Interactive setup requires a terminal. Supply --finish, --questions, --scope, --git-push-authorization for every pushing finish, --production and --shipping-mode when shipping, --migration-handling and --migration-target for automatic migration apply, --changelog when relevant, --ui-versioning with --ui-artifacts, --instruction-pointer when an instruction file exists, --handoff when adding the pointer, --instruction-file when selecting among targets, and --yes.",
       EXIT_CODES.usage
     );
   }

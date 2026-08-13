@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { sleep } from "bun";
 import { captureInventory } from "../../../skills/simple-changes/scripts/lib/inventory.ts";
 import {
+  acceptPausedWorktreeChange,
   authorizeWorktreeRemoval,
   emergencyShippingStatus,
   endLoop,
@@ -32,6 +33,7 @@ import { DEFAULT_POLICY } from "../../../skills/simple-changes/scripts/lib/polic
 import type { LoopLease } from "../../../skills/simple-changes/scripts/lib/types.ts";
 import {
   claimWorktree,
+  pauseClaimedWorktree,
   releaseWorktreeClaim,
 } from "../../../skills/simple-changes/scripts/lib/worktree-coordination.ts";
 import {
@@ -50,6 +52,30 @@ const repository = (): TestRepository => {
   return fixture;
 };
 
+const paginationCoverage = (branches: number, proposals = 0) => ({
+  branches: {
+    pages: [
+      {
+        cursorIn: null,
+        cursorOut: null,
+        itemCount: branches,
+        responseDigest: "a".repeat(64),
+      },
+    ],
+  },
+  proposalStates: ["closed", "merged", "open"] as const,
+  proposals: {
+    pages: [
+      {
+        cursorIn: null,
+        cursorOut: null,
+        itemCount: proposals,
+        responseDigest: "b".repeat(64),
+      },
+    ],
+  },
+});
+
 afterEach(() => {
   for (const fixture of repositories) {
     fixture.cleanup();
@@ -58,6 +84,53 @@ afterEach(() => {
 });
 
 describe("active integration-loop lease", () => {
+  test("rejects a remote destination change after loop start", () => {
+    const fixture = repository();
+    git(fixture.root, [
+      "remote",
+      "add",
+      "origin",
+      "https://gitlab.example.invalid/group/first.git",
+    ]);
+    const lease = startLoop(fixture.root, "controller", "integrate");
+    expect(lease.remoteBindings[0]?.pushUrls).toEqual([
+      "https://gitlab.example.invalid/group/first.git",
+    ]);
+
+    git(fixture.root, [
+      "remote",
+      "set-url",
+      "--push",
+      "origin",
+      "https://gitlab.example.invalid/group/second.git",
+    ]);
+    expect(verifyLoop(fixture.root).violations).toContainEqual(
+      expect.objectContaining({ code: "remote-destination-changed" })
+    );
+  });
+  test("does not require GitLab cleanup for an auxiliary GitLab remote", () => {
+    const fixture = repository();
+    git(fixture.root, [
+      "remote",
+      "add",
+      "origin",
+      "https://github.com/example/canonical.git",
+    ]);
+    git(fixture.root, [
+      "remote",
+      "add",
+      "gitlab-mirror",
+      "https://gitlab.example.invalid/example/mirror.git",
+    ]);
+    git(fixture.root, ["config", "branch.main.remote", "origin"]);
+    git(fixture.root, ["config", "branch.main.merge", "refs/heads/main"]);
+    const lease = startLoop(fixture.root, "controller", "integrate");
+
+    expect(captureInventory(fixture.root).repository.targetRemote).toBe(
+      "origin"
+    );
+    expect(endLoop(fixture.root, lease.runId, "controller").ok).toBe(true);
+  });
   test("relinquishes an incomplete loop and lets the next controller resume the same run", () => {
     const fixture = repository();
     const lease = startLoop(fixture.root, "first-controller", "ship");
@@ -784,6 +857,150 @@ describe("active integration-loop lease", () => {
     );
   });
 
+  test("accepts an exact pause after a retained worktree was promoted", () => {
+    const fixture = repository();
+    const lease = startLoop(fixture.root, "controller", "ship");
+    const walkthrough = join(fixture.base, "retained-promoted-paused");
+    git(fixture.root, [
+      "worktree",
+      "add",
+      "-b",
+      "retained-promoted-paused",
+      walkthrough,
+    ]);
+    const opening = captureInventory(fixture.root).worktrees.find(
+      (worktree) => worktree.path === walkthrough
+    );
+    if (!opening) {
+      throw new Error("Expected the retained worktree");
+    }
+    retainExcludedWorktree(
+      fixture.root,
+      lease.runId,
+      "controller",
+      walkthrough,
+      opening.changeDigest,
+      "user",
+      "Keep unrelated walkthrough work out of this shipment."
+    );
+
+    writeFixture(
+      walkthrough,
+      "walkthrough.ts",
+      "export const active = true;\n"
+    );
+    claimWorktree(
+      walkthrough,
+      "walkthrough-author",
+      walkthrough,
+      "codex-desktop",
+      "task-walkthrough"
+    );
+    expect(verifyLoop(fixture.root).ok).toBe(true);
+    expect(readLoopLease(fixture.root)?.worktrees).toContainEqual(
+      expect.objectContaining({
+        path: walkthrough,
+        role: "concurrent-author",
+      })
+    );
+
+    const receipt = pauseClaimedWorktree(
+      walkthrough,
+      "walkthrough-author",
+      walkthrough,
+      lease.runId,
+      "preserve-in-place",
+      "Pause at a stable boundary for integration."
+    );
+    expect(verifyLoop(fixture.root).ok).toBe(false);
+
+    const accepted = acceptPausedWorktreeChange(
+      fixture.root,
+      lease.runId,
+      "controller",
+      receipt.receiptId
+    );
+    expect(accepted.worktrees).toContainEqual(
+      expect.objectContaining({
+        agentId: null,
+        claimId: receipt.claimId,
+        coordinationState: "adopted-preserved",
+        mutationAllowed: false,
+        path: walkthrough,
+        pauseReceiptId: receipt.receiptId,
+        role: "preserved",
+      })
+    );
+    expect(
+      accepted.worktrees.find((worktree) => worktree.path === walkthrough)
+        ?.retention
+    ).toBeUndefined();
+    expect(verifyLoop(fixture.root).ok).toBe(true);
+  }, 20_000);
+
+  test("accepts an exact pause before retained worktree promotion", () => {
+    const fixture = repository();
+    const lease = startLoop(fixture.root, "controller", "ship");
+    const walkthrough = join(fixture.base, "retained-paused-first");
+    git(fixture.root, [
+      "worktree",
+      "add",
+      "-b",
+      "retained-paused-first",
+      walkthrough,
+    ]);
+    const opening = captureInventory(fixture.root).worktrees.find(
+      (worktree) => worktree.path === walkthrough
+    );
+    if (!opening) {
+      throw new Error("Expected the retained worktree");
+    }
+    retainExcludedWorktree(
+      fixture.root,
+      lease.runId,
+      "controller",
+      walkthrough,
+      opening.changeDigest,
+      "user",
+      "Keep unrelated walkthrough work out of this shipment."
+    );
+
+    writeFixture(
+      walkthrough,
+      "walkthrough.ts",
+      "export const active = true;\n"
+    );
+    claimWorktree(
+      walkthrough,
+      "walkthrough-author",
+      walkthrough,
+      "codex-desktop",
+      "task-walkthrough"
+    );
+    const receipt = pauseClaimedWorktree(
+      walkthrough,
+      "walkthrough-author",
+      walkthrough,
+      lease.runId,
+      "preserve-in-place",
+      "Pause before the controller observes the active claim."
+    );
+
+    const accepted = acceptPausedWorktreeChange(
+      fixture.root,
+      lease.runId,
+      "controller",
+      receipt.receiptId
+    );
+    expect(accepted.worktrees).toContainEqual(
+      expect.objectContaining({
+        path: walkthrough,
+        role: "preserved",
+      })
+    );
+    expect(verifyLoop(fixture.root).ok).toBe(true);
+  }, 20_000);
+
   test("requires an active claim or pause before retaining a dirty worktree", () => {
     const fixture = repository();
     const lease = startLoop(fixture.root, "controller", "ship");
@@ -1246,7 +1463,7 @@ describe("active integration-loop lease", () => {
     ).toThrow("unique commit");
   }, 20_000);
 
-  test("audits removal against the pinned target after the target ref moves", () => {
+  test("audits removal against the refreshed target after the target ref moves", () => {
     const fixture = repository();
     const unique = join(fixture.base, "unique-after-start");
     git(fixture.root, ["worktree", "add", "-b", "unique-after-start", unique]);
@@ -1265,17 +1482,60 @@ describe("active integration-loop lease", () => {
     expect(git(fixture.root, ["rev-parse", lease.targetRef])).toBe(
       current.headSha
     );
+    const updated = authorizeWorktreeRemoval(
+      fixture.root,
+      lease.runId,
+      "controller",
+      unique,
+      current.changeDigest,
+      "user",
+      "The refreshed target now contains this exact opening worktree head."
+    );
+    expect(updated.dispositions).toContainEqual(
+      expect.objectContaining({
+        headSha: current.headSha,
+        path: unique,
+        targetRevision: current.headSha,
+        uniqueCommitCount: 0,
+      })
+    );
+    git(fixture.root, ["worktree", "remove", unique]);
+    expect(verifyLoop(fixture.root).ok).toBe(true);
+  }, 20_000);
+
+  test("rejects disposal when the refreshed target does not descend from the pinned target", () => {
+    const fixture = repository();
+    const opening = join(fixture.base, "opening-divergent-target");
+    git(fixture.root, [
+      "worktree",
+      "add",
+      "-b",
+      "opening-divergent-target",
+      opening,
+    ]);
+    const lease = startLoop(fixture.root, "controller", "reconcile");
+    const current = captureInventory(fixture.root).worktrees.find(
+      (worktree) => worktree.path === opening
+    );
+    const divergent = git(fixture.root, [
+      "commit-tree",
+      "HEAD^{tree}",
+      "-m",
+      "divergent",
+    ]);
+    git(fixture.root, ["update-ref", "refs/heads/main", divergent]);
+
     expect(() =>
       authorizeWorktreeRemoval(
         fixture.root,
         lease.runId,
         "controller",
-        unique,
-        current.changeDigest,
+        opening,
+        current?.changeDigest ?? "",
         "user",
-        "Target moved after loop start"
+        "Do not trust a rewritten target."
       )
-    ).toThrow("unique commit");
+    ).toThrow("does not descend from pinned target");
   }, 20_000);
 
   test("does not trust disposition target evidence that differs from the lease", () => {
@@ -1692,8 +1952,10 @@ describe("active integration-loop lease", () => {
             },
           ],
           finalBranchCount: 1,
+          finalCoverage: paginationCoverage(1),
           finalInventoryComplete: true,
           initialBranchCount: 1,
+          initialCoverage: paginationCoverage(1),
           initialInventoryComplete: true,
           observedAt: new Date().toISOString(),
           project: "group/other-project",
@@ -1724,8 +1986,10 @@ describe("active integration-loop lease", () => {
           },
         ],
         finalBranchCount: 1,
+        finalCoverage: paginationCoverage(1),
         finalInventoryComplete: true,
         initialBranchCount: 1,
+        initialCoverage: paginationCoverage(1),
         initialInventoryComplete: true,
         observedAt: new Date().toISOString(),
         project: "group/project",

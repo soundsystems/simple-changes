@@ -32,7 +32,9 @@
         "currentCheckout",
         "headSha",
         "branch",
-        "bare"
+        "bare",
+        "remoteBindings",
+        "targetRemote"
       ],
       "properties": {
         "root": { "type": "string", "minLength": 1 },
@@ -49,7 +51,14 @@
         "branch": {
           "anyOf": [{ "type": "string", "minLength": 1 }, { "type": "null" }]
         },
-        "bare": { "type": "boolean" }
+        "bare": { "type": "boolean" },
+        "remoteBindings": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/remoteBinding" }
+        },
+        "targetRemote": {
+          "anyOf": [{ "type": "string", "minLength": 1 }, { "type": "null" }]
+        }
       }
     },
     "targetRef": { "type": "string", "minLength": 1 },
@@ -80,12 +89,13 @@
     "policy": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["source", "path", "value"],
+      "required": ["source", "path", "trust", "value"],
       "properties": {
         "source": { "enum": ["default", "user", "repository"] },
         "path": {
           "anyOf": [{ "type": "string", "minLength": 1 }, { "type": "null" }]
         },
+        "trust": { "enum": ["not-required", "trusted", "untrusted"] },
         "value": {
           "$ref": "repo-policy.schema.json"
         }
@@ -94,6 +104,23 @@
     "baselineDigest": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
   },
   "$defs": {
+    "remoteBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "provider", "fetchUrls", "pushUrls"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "provider": { "type": "string", "minLength": 1 },
+        "fetchUrls": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "pushUrls": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
     "change": {
       "type": "object",
       "additionalProperties": false,

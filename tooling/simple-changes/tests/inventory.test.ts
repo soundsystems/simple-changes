@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, symlinkSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { existsSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   captureInventory,
@@ -50,6 +51,30 @@ describe("Git inventory and concurrency", () => {
     expect(existsSync(join(fixture.root, ".git/simple-changes"))).toBe(false);
   });
 
+  test("streams large binary identities and never reads a FIFO", () => {
+    const fixture = repository();
+    const binaryPath = join(fixture.root, "large.bin");
+    const fifoPath = join(fixture.root, "agent.pipe");
+    writeFixture(fixture.root, "agent.pipe", "tracked placeholder\n");
+    git(fixture.root, ["add", "agent.pipe"]);
+    git(fixture.root, ["commit", "-m", "Track future pipe path"]);
+    unlinkSync(fifoPath);
+    writeFileSync(binaryPath, Buffer.alloc(8 * 1024 * 1024, 7));
+    const fifo = spawnSync("mkfifo", [fifoPath]);
+    if (fifo.status !== 0) {
+      throw new Error(`mkfifo failed: ${fifo.stderr.toString()}`);
+    }
+
+    const opening = captureInventory(fixture.root);
+    writeFileSync(binaryPath, Buffer.alloc(8 * 1024 * 1024, 8));
+    const current = captureInventory(fixture.root);
+
+    expect(opening.localChanges.map((change) => change.path)).toContain(
+      "agent.pipe"
+    );
+    expect(current.baselineDigest).not.toBe(opening.baselineDigest);
+  }, 15_000);
+
   test("prefers the branch remote over an alphabetically earlier auxiliary remote", () => {
     const fixture = repository();
     git(fixture.root, [
@@ -80,6 +105,17 @@ describe("Git inventory and concurrency", () => {
     git(fixture.root, ["config", "branch.main.merge", "refs/heads/main"]);
 
     expect(captureInventory(fixture.root).targetRef).toBe("origin/main");
+    expect(captureInventory(fixture.root).repository.targetRemote).toBe(
+      "origin"
+    );
+    expect(
+      captureInventory(fixture.root).repository.remoteBindings
+    ).toContainEqual({
+      fetchUrls: ["https://example.invalid/canonical.git"],
+      name: "origin",
+      provider: "example.invalid",
+      pushUrls: ["https://example.invalid/canonical.git"],
+    });
   });
 
   test("reports changelog relevance separately from skill availability", () => {

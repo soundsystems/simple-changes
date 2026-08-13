@@ -12,7 +12,17 @@ export interface MigrationOperationSet {
 }
 
 export interface MigrationApplyPlan extends MigrationOperationSet {
+  adapter: string;
+  command: string[];
+  expiresAt: string;
+  issuedAt: string;
+  nonce: string;
+  remoteLedger: MigrationOperationSet & {
+    observedAt: string;
+    target: MigrationTarget;
+  };
   scope: "exact-listed-operations";
+  target: MigrationTarget;
 }
 
 export interface MigrationReview {
@@ -37,7 +47,9 @@ export type MigrationAutomationAction =
 
 export interface MigrationAutomationDecision {
   action: MigrationAutomationAction;
+  authorizationDigest?: string;
   authorizedByPolicy: boolean;
+  authorizedCommand?: string[];
   authorizedOperations: MigrationOperation[];
   reason: string;
 }
@@ -105,7 +117,8 @@ export const decideMigrationAutomation = (
   policy: RepoPolicy,
   review: MigrationReview,
   pending: MigrationOperationSet,
-  applyPlan: MigrationApplyPlan
+  applyPlan: MigrationApplyPlan,
+  now = new Date()
 ): MigrationAutomationDecision => {
   if (!review.reviewed) {
     return {
@@ -132,6 +145,49 @@ export const decideMigrationAutomation = (
       authorizedOperations: [],
       reason:
         "The current apply plan is not scoped to exactly the reviewed pending operations; broad or changed apply commands require review and explicit authority.",
+    };
+  }
+  if (
+    !(
+      sameTarget(review.target, applyPlan.target) &&
+      sameTarget(review.target, applyPlan.remoteLedger.target) &&
+      exactOperationSet(pending, applyPlan.remoteLedger)
+    )
+  ) {
+    return {
+      action: "review-required",
+      authorizedByPolicy: false,
+      authorizedOperations: [],
+      reason:
+        "The apply plan is not bound to a fresh remote ledger for the exact reviewed target.",
+    };
+  }
+  const nowMs = now.getTime();
+  const issuedAt = Date.parse(applyPlan.issuedAt);
+  const expiresAt = Date.parse(applyPlan.expiresAt);
+  const observedAt = Date.parse(applyPlan.remoteLedger.observedAt);
+  if (
+    !(
+      Number.isFinite(issuedAt) &&
+      Number.isFinite(expiresAt) &&
+      Number.isFinite(observedAt)
+    ) ||
+    issuedAt > nowMs ||
+    observedAt > nowMs ||
+    nowMs - observedAt > 5 * 60 * 1000 ||
+    expiresAt <= nowMs ||
+    expiresAt - issuedAt > 15 * 60 * 1000 ||
+    !applyPlan.nonce.trim() ||
+    !applyPlan.adapter.trim() ||
+    applyPlan.command.length === 0 ||
+    applyPlan.command.some((argument) => !argument.trim())
+  ) {
+    return {
+      action: "review-required",
+      authorizedByPolicy: false,
+      authorizedOperations: [],
+      reason:
+        "The apply plan command binding or remote-ledger freshness window is invalid; regenerate exact execution evidence.",
     };
   }
   if (policy.migrationHandling === "never") {
@@ -186,7 +242,21 @@ export const decideMigrationAutomation = (
   }
   return {
     action: "auto-apply",
+    authorizationDigest: createHash("sha256")
+      .update(
+        JSON.stringify({
+          adapter: applyPlan.adapter,
+          command: applyPlan.command,
+          expiresAt: applyPlan.expiresAt,
+          nonce: applyPlan.nonce,
+          operations: canonicalOperations(applyPlan.operations),
+          remoteLedger: applyPlan.remoteLedger,
+          target: applyPlan.target,
+        })
+      )
+      .digest("hex"),
     authorizedByPolicy: true,
+    authorizedCommand: [...applyPlan.command],
     authorizedOperations: canonicalOperations(applyPlan.operations),
     reason: review.routine
       ? "The exact target is bound and the reviewed migration meets every routine automatic-apply requirement."

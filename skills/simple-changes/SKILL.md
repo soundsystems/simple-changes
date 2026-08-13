@@ -67,6 +67,11 @@ automatic migration, break-glass, or production authority is effective only
 with the private digest-bound local trust receipt described in
 [setup and policy](references/setup-and-policy.md); a repository policy symlink
 is unsafe.
+Update notices must explain the new abilities before offering dispositions and
+recommend reviewing what changed; never recommend keeping, skipping, or
+deferring before the user understands the practical changes. A colloquial
+“auto push” choice requires the exact scoped-push explanation and confirmation
+from [installed guidance updates](references/guidance-updates.md) before saving.
 
 ## Communicate Ship scope
 
@@ -76,6 +81,11 @@ checks, proposal/merge/release/deploy path, consequential boundaries, and
 preserved work. Explain that this is an interruption window rather than a
 permission gate when existing authority already covers the run. Follow
 [ship communication](references/ship-communication.md).
+When permission is still required, inventory every unresolved boundary already
+knowable from the validated plan and present them together in one exact-target
+checklist. Let the user approve all, decline all, or approve named items in one
+reply. Never stretch that bundle to unknown future actions; ask again only for
+a newly discovered boundary or invalidated target.
 
 ## Hold one controller lease
 

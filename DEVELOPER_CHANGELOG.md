@@ -66,14 +66,41 @@
   - Changelog discovery reads the repository's selected distribution and
     refuses an incompatible full-distribution provider for a
     `skill-repository` policy.
-  - Corrected the setup default from guidance version 6 to 7 and clarified that
+  - Corrected the setup default from guidance version 6 to 8 and clarified that
     an exact unchanged retained worktree is a valid terminal state.
   - Reduced the primary skill router from 796 to 227 lines by moving detailed
     contracts to existing references while retaining the behavioral gates.
   - Expanded closed schemas and focused CLI, policy, onboarding, inventory,
     lease, migration, reconciliation, changelog-coordination, and contract
     regression coverage for all changes above.
-<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-13T14:45:29-05:00" -->
+- Advanced installed guidance to version 8 with informed update dispositions:
+  - Update notices expose practical behavior summaries before their choices,
+    recommend `review-settings`, and provide consequence-bearing descriptions
+    for review, release-note, keep-current, and defer actions.
+  - Neither the standalone nor combined walkthrough marks skipping or keeping
+    settings as recommended before the new abilities are understood.
+  - Selecting `configure-harness` or colloquial “auto push” requires a precise
+    confirmation explaining that persistent permission is limited to ordinary
+    `git push` for one verified repository and remote across Codex, Claude Code,
+    and other harnesses. It does not grant credentials, network access,
+    force-push, protection bypass, proposal, merge, deploy, or other-destination
+    authority, and unsupported harnesses continue to ask.
+- Added bundled Ship permission preflight:
+  - The closed `permission-bundle` contract normalizes and deduplicates every
+    currently knowable unresolved permission from the validated plan, assigns
+    each exact operation/authority/target/consequence/reason tuple a stable
+    digest-derived ID, and renders the complete checklist in deterministic
+    order.
+  - The response contract supports approve-all, decline-all, or named-ID
+    approval so each decision can be recorded independently instead of causing
+    serial permission prompts.
+  - Bundled approval remains strictly limited to listed actions and targets.
+    New actions or invalidated targets, revisions, commands, or decision
+    digests require fresh authority, while sandbox, network, credential,
+    provider, and harness enforcement remain separate and intact.
+  - Updated initialization output, schemas, runtime routing, Ship communication,
+    onboarding, guidance-update references, CLI coverage, and contract tests.
+<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-13T15:29:13-05:00" -->
 
 ## 0.12.1 - 2026-08-13
 

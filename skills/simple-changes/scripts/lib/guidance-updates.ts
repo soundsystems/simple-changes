@@ -1,6 +1,6 @@
 import type { ChangelogCoordination, RepoPolicy } from "./types.ts";
 
-export const CURRENT_GUIDANCE_VERSION = 7;
+export const CURRENT_GUIDANCE_VERSION = 8;
 
 export type GuidanceUpdateAction =
   | "review-settings"
@@ -10,6 +10,7 @@ export type GuidanceUpdateAction =
   | "review-with-simple-changelogs";
 
 export interface GuidanceUpdateNotice {
+  actionDescriptions: Record<GuidanceUpdateAction, string>;
   actions: GuidanceUpdateAction[];
   changelogHandoff: {
     available: boolean;
@@ -23,6 +24,7 @@ export interface GuidanceUpdateNotice {
   }>;
   currentVersion: number;
   headline: "**Simple Changes has recently been updated.**";
+  recommendedAction: "review-settings";
   releaseNotes: {
     available: true;
     command: "simple-changes release-notes";
@@ -180,6 +182,24 @@ const GUIDANCE_UPDATES: GuidanceUpdateDefinition[] = [
     ],
     version: 7,
   },
+  {
+    changelogReviewRelevant: false,
+    changes: [
+      {
+        kind: "onboarding",
+        summary:
+          "Update prompts now explain the new abilities before asking for a disposition and recommend reviewing what changed instead of skipping the walkthrough.",
+        version: 8,
+      },
+      {
+        kind: "behavior",
+        summary:
+          "Choosing automatic Git pushes now requires a plain-language confirmation of the exact repository-and-remote scope and every authority it does not grant before the setting is saved.",
+        version: 8,
+      },
+    ],
+    version: 8,
+  },
 ];
 
 export const inspectGuidanceUpdate = (
@@ -234,6 +254,18 @@ export const inspectGuidanceUpdate = (
       "Simple Changelogs is present and owns any review of its settings or existing release notes.";
   }
   return {
+    actionDescriptions: {
+      defer:
+        "Pause this update decision without changing settings; the same guidance version remains unresolved until explicitly acknowledged.",
+      "keep-current-settings":
+        "Keep existing choices after reviewing the practical changes and named defaults for every new setting.",
+      "review-settings":
+        "Recommended: explain every new ability and affected setting, including consequences and safety boundaries, before choosing values.",
+      "review-with-simple-changelogs":
+        "Review both skills through their owner-controlled walkthroughs when both have updates.",
+      "view-release-notes":
+        "Show the detailed released changes read-only before making a settings decision.",
+    },
     actions,
     changelogHandoff: {
       available: changelogHandoffAvailable,
@@ -243,6 +275,7 @@ export const inspectGuidanceUpdate = (
     changes,
     currentVersion: CURRENT_GUIDANCE_VERSION,
     headline: "**Simple Changes has recently been updated.**",
+    recommendedAction: "review-settings",
     releaseNotes: {
       available: true,
       command: "simple-changes release-notes",

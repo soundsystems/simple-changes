@@ -19,10 +19,16 @@ phrases such as “guidance update requires review.” Use this structure:
 >
 > Would you like me to walk you through all recent updates to the skill?
 
+Always show the practical bullets before the choices. Recommend reviewing the
+new abilities; never mark keeping settings, skipping, continuing, or deferring
+as Recommended. A user cannot make an informed disposition from setting names
+alone.
+
 Explain only practical effects on Simple Changes and offer:
 
-- **Review Simple Changes settings:** Show the affected settings and proposed
-  values before changing them.
+- **Review what changed — Recommended:** Explain every new ability first, then
+  show affected settings, proposed defaults, concrete examples, consequences,
+  and safety boundaries before changing anything.
 - **Keep current Simple Changes settings:** Preserve the current choices and
   accept defaults only for newly introduced fields after naming them.
 - **Skip for this version:** Preserve current behavior and record the update as
@@ -41,6 +47,20 @@ simple-changes acknowledge-update \
 Do not record a disposition because the notice was merely prepared or shown.
 Resume the original request after the acknowledgement succeeds. A later
 guidance version may cause one new prompt.
+
+If the user selects `configure-harness` or says “auto push,” explain and confirm
+this exact consequence before saving:
+
+> Automatic Git pushes let Simple Changes request the harness's narrowest
+> persistent permission for ordinary `git push` to this one verified repository
+> and remote, avoiding repeat host prompts. It does not grant credentials,
+> network access, force-push, branch-protection bypass, proposal/merge/deploy
+> authority, or permission for another destination. If the harness cannot
+> express that exact scope, Simple Changes must keep asking. Save this setting?
+
+Do not translate “auto push” directly into a policy write before that
+confirmation. The explanation and confirmation apply across Codex, Claude Code,
+and every other harness; only the harness-specific mechanism differs.
 
 ## Detect the companion update separately
 

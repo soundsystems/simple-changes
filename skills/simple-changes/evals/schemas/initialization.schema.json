@@ -35,12 +35,14 @@
       "type": "object",
       "additionalProperties": false,
       "required": [
+        "actionDescriptions",
         "actions",
         "changelogHandoff",
         "changes",
         "currentVersion",
         "headline",
         "releaseNotes",
+        "recommendedAction",
         "status",
         "storedDisposition",
         "storedVersion",
@@ -48,6 +50,27 @@
         "walkthroughQuestion"
       ],
       "properties": {
+        "actionDescriptions": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "review-settings",
+            "keep-current-settings",
+            "defer",
+            "view-release-notes",
+            "review-with-simple-changelogs"
+          ],
+          "properties": {
+            "review-settings": { "type": "string", "minLength": 1 },
+            "keep-current-settings": { "type": "string", "minLength": 1 },
+            "defer": { "type": "string", "minLength": 1 },
+            "view-release-notes": { "type": "string", "minLength": 1 },
+            "review-with-simple-changelogs": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
         "actions": {
           "type": "array",
           "uniqueItems": true,
@@ -102,6 +125,7 @@
             }
           }
         },
+        "recommendedAction": { "const": "review-settings" },
         "status": { "enum": ["current", "update-available"] },
         "storedDisposition": {
           "anyOf": [

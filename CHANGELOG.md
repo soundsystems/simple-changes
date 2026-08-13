@@ -24,7 +24,15 @@
 - Setup now asks about push authorization for every workflow that can push,
   honors the repository's changelog distribution when selecting a provider,
   and uses synchronized guidance for retained cleanup and current defaults.
-<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-13T14:45:29-05:00" -->
+- Installed update prompts now explain practical new abilities first and
+  recommend reviewing what changed. Saving automatic Git pushes requires a
+  precise cross-harness explanation and confirmation of its single verified
+  repository-and-remote scope and the authority it does not grant.
+- Ship now presents every currently knowable unresolved permission together as
+  an exact-target checklist with stable IDs. Users can approve all listed
+  items, approve selected IDs, or decline them without granting authority for
+  unlisted future actions or bypassing host security enforcement.
+<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-13T15:29:13-05:00" -->
 
 ## 0.12.1 - 2026-08-13
 

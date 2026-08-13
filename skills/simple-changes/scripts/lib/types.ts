@@ -279,6 +279,26 @@ export interface ChangePlan {
   warnings: string[];
 }
 
+export interface PermissionRequestInput {
+  authority: Authority;
+  consequence: string;
+  operation: PlannedOperation | "select-release-version";
+  reason: string;
+  target: string;
+}
+
+export interface PermissionRequest extends PermissionRequestInput {
+  id: string;
+}
+
+export interface PermissionBundle {
+  generatedAt: string;
+  mode: "ship";
+  requests: PermissionRequest[];
+  responseInstruction: string;
+  schemaVersion: 1;
+}
+
 export type ProviderStatus =
   | "succeeded"
   | "failed"
@@ -906,6 +926,7 @@ export type SchemaName =
   | "initialization"
   | "inventory"
   | "change-plan"
+  | "permission-bundle"
   | "emergency-shipping"
   | "migration-review"
   | "migration-pending"

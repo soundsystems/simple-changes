@@ -1074,12 +1074,13 @@ const appendSimpleChangesUpdate = (
   );
   if (!combinedUpdate) {
     lines.push(
+      "I recommend reviewing the new abilities before deciding whether to keep or change settings.",
       status.guidanceUpdate.walkthroughQuestion,
       "Choose one:",
-      "- Walk me through it — Explain the recent updates and affected settings.",
-      "- Keep my current settings and continue — Preserve my choices and explain any new defaults.",
-      "- Not now — Keep the current behavior and stop asking for this version.",
-      "- View full release notes — Show the detailed Simple Changes release notes."
+      `- Review what changed (Recommended) — ${status.guidanceUpdate.actionDescriptions["review-settings"]}`,
+      `- View full release notes — ${status.guidanceUpdate.actionDescriptions["view-release-notes"]}`,
+      `- Keep my current settings — ${status.guidanceUpdate.actionDescriptions["keep-current-settings"]}`,
+      `- Decide later — ${status.guidanceUpdate.actionDescriptions.defer}`
     );
   }
   lines.push(`Release notes: ${status.guidanceUpdate.releaseNotes.command}`);
@@ -1134,10 +1135,11 @@ const appendCombinedUpdateChoice = (
   lines.push(
     "",
     "Would you like me to walk you through all recent updates to both skills?",
+    "I recommend reviewing both updates before deciding whether to keep or change settings.",
     "Choose one:",
-    "- Walk me through both — Explain the Simple Changes and Simple Changelogs updates together.",
+    "- Walk me through both (Recommended) — Explain the Simple Changes and Simple Changelogs updates together, including affected settings and safety boundaries.",
     "- Simple Changes only — Review only the Simple Changes update.",
-    "- Keep my current settings and continue — Leave both skills' saved choices unchanged.",
+    "- Keep my current settings — Leave both skills' saved choices unchanged only after the practical changes and new defaults are understood.",
     "- View full release notes — Show the detailed update notes for both skills."
   );
 };

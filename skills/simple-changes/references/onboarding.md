@@ -158,6 +158,11 @@ This preference must use the current harness's documented permission mechanism.
 It never grants blanket shell access and never claims that repository policy can
 override host security. Follow
 [harness-aware Git push authorization](harness-push-authorization.md).
+Before saving this choice, explicitly explain that it covers only ordinary
+`git push` to the one verified repository/remote and does not grant credentials,
+network access, force-push, branch-protection bypass, proposal/merge/deploy
+authority, or another destination. Ask for confirmation after that explanation;
+do not treat a bare “auto push” answer as sufficient to write policy.
 
 Then ask **How should reviewed database migrations be handled during Ship?
 Choose one:**

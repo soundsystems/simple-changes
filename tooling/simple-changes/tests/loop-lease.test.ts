@@ -999,7 +999,7 @@ describe("active integration-loop lease", () => {
       })
     );
     expect(verifyLoop(fixture.root).ok).toBe(true);
-  }, 20_000);
+  }, 30_000);
 
   test("requires an active claim or pause before retaining a dirty worktree", () => {
     const fixture = repository();

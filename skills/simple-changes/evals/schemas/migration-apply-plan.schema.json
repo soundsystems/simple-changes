@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://simple-changes.local/schemas/migration-apply-plan.schema.json",
+  "title": "Exact Migration Apply Plan",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["digest", "operations", "scope"],
+  "properties": {
+    "digest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "scope": { "const": "exact-listed-operations" },
+    "operations": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["contentDigest", "revision"],
+        "properties": {
+          "contentDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+          "revision": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512,
+            "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+$"
+          }
+        }
+      }
+    }
+  }
+}

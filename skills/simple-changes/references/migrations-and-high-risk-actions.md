@@ -22,10 +22,44 @@ integrating, or shipping code does not by itself authorize:
 - mobile/store releases;
 - force pushes or history rewrites.
 
-Require current explicit authority naming the exact operation and target. State
-the item, impact, recommended option, alternatives, and safe no-answer result.
+Every migration must finish the read-only technical audit before apply. After
+review, evaluate `migrationHandling` against the exact observed
+provider/project/environment target:
+
+Materialize that audit as closed `migration-review` data whose canonical digest
+binds every reviewed revision path and its content digest. Capture the fresh
+pending operations as closed `migration-pending` data with the same identity,
+then run
+`simple-changes migration decision --state REVIEW_FILE --pending PENDING_FILE --apply-plan APPLY_PLAN_FILE --repo REPOSITORY`.
+The CLI re-hashes every current operation source before policy evaluation.
+Missing, stale, replayed, or changed identity fails closed and requires a new
+review; a prior review for the same target never authorizes later operations or
+same-path content edits.
+The apply plan must prove that the command applies exactly the listed operation
+set. A provider-native command that applies every pending migration is not
+eligible for automatic policy authorization unless its adapter constrains and
+proves that exact set; otherwise request explicit authority.
+Only an `auto-apply` result grants saved-policy authority to continue without
+another permission prompt; follow every other result exactly.
+
+- `ask-after-review`: request exact apply authority after the audit.
+- `auto-apply-reviewed-routine`: proceed without another prompt only when the
+  reviewed migration is routine and the target exactly matches a saved
+  `migrationTargets` entry.
+- `auto-apply-reviewed`: proceed without another prompt for routine or other
+  reviewed eligible migrations on an exact saved target.
+- `never`: preserve and report every remote apply.
+
+Both automatic tiers require verified backup or rollback evidence and a planned
+post-apply verification. Neither tier covers destructive or data-deleting,
+irreversible, unbounded, lock-heavy, target-mismatched, or unprotected changes.
+Those findings require current explicit authority naming the exact revisions,
+operation, and target. Backfills and repairs remain separately authorized even
+when stored near schema migrations.
+
 Delegate execution to repository-native or specialized guidance and record a
-redacted receipt.
+redacted receipt. After any apply, re-read remote migration history and verify
+the planned postconditions; command exit alone is not success evidence.
 
 Provider-native promotion of an already verified production artifact and
 bounded reconciliation of exact provider-managed targets already owned by the

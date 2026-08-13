@@ -18,15 +18,20 @@ export type HandoffAction =
 
 export interface InitializationStatus {
   changelogCoordination: ChangelogCoordination;
+  changelogRequired: boolean;
+  firstUseWalkthroughAvailable: boolean;
   guidanceUpdate: GuidanceUpdateNotice;
   handoffAction: HandoffAction;
   handoffTiming: RepoPolicy["handoffTiming"] | null;
   inferredDefaultFinish: Exclude<RepoPolicy["defaultFinish"], "preview"> | null;
+  migrationHandling: RepoPolicy["migrationHandling"];
+  migrationTargets: RepoPolicy["migrationTargets"];
   mode: InitializationMode;
   mutationAllowed: boolean;
   onboardingRequired: boolean;
   policyPath: string | null;
   policySource: PolicySource;
+  preLoopActionRequired: boolean;
   readinessConfirmed: boolean;
   reason: string;
   resolvedMode: RequestMode | null;
@@ -116,6 +121,7 @@ const initializationReason = (
   writeCapable: boolean,
   onboardingRequired: boolean,
   updateActionRequired: boolean,
+  changelogUpdateActionRequired: boolean,
   handoff: HandoffState
 ): string => {
   if (!writeCapable) {
@@ -124,8 +130,14 @@ const initializationReason = (
   if (onboardingRequired) {
     return "No repository or personal preferences exist; onboarding must finish before mutation.";
   }
+  if (updateActionRequired && changelogUpdateActionRequired) {
+    return "Simple Changes and Simple Changelogs both have recent updates; resolve both notices before the required changelog shipment loop begins.";
+  }
   if (updateActionRequired) {
     return "A meaningful Simple Changes update changed behavior, onboarding, or integration guidance; review or defer it once before mutation.";
+  }
+  if (changelogUpdateActionRequired) {
+    return "This request requires changelog work and Simple Changelogs has a recent update; resolve its owner-controlled notice before any shipment loop begins.";
   }
   if (mode === "sync") {
     return "Sync uses fixed local-only preservation guardrails and does not require workflow preference onboarding.";
@@ -153,11 +165,26 @@ export const inspectInitialization = (
     capabilityAvailable: false,
     capabilityHelpers: [],
     capabilityStatus: "absent",
+    guidanceUpdate: {
+      actions: [],
+      detailsPath: null,
+      headline: "**Simple Changelogs has recently been updated.**",
+      installedVersion: null,
+      owner: null,
+      policyPath: null,
+      provider: null,
+      status: "absent",
+      storedVersion: null,
+      summaryBullets: [],
+      walkthroughQuestion:
+        "Would you like me to walk you through the recent Simple Changelogs updates before I continue?",
+    },
     providers: [],
     releaseSurfaces: [],
     relevant: false,
   },
   options: {
+    changelogRequired?: boolean;
     readinessConfirmed?: boolean;
   } = {}
 ): InitializationStatus => {
@@ -170,31 +197,48 @@ export const inspectInitialization = (
   );
   const updateActionRequired =
     writeCapable && guidanceUpdate.status === "update-available";
+  const changelogRequired = options.changelogRequired ?? false;
+  const changelogUpdateActionRequired =
+    writeCapable &&
+    changelogRequired &&
+    changelogCoordination.guidanceUpdate.status === "update-available";
   const readinessConfirmed = options.readinessConfirmed ?? false;
   const handoff = inspectHandoff(mode, policy.value, readinessConfirmed);
   const mutationAllowed =
     writeCapable &&
     !onboardingRequired &&
     !updateActionRequired &&
+    !changelogUpdateActionRequired &&
     (mode !== "handoff" ||
       (handoff.action === "proceed" && handoff.resolvedMode !== "preview"));
   return {
     changelogCoordination,
+    changelogRequired,
+    firstUseWalkthroughAvailable: policy.source === "default",
     guidanceUpdate,
     handoffAction: handoff.action,
     handoffTiming: handoff.timing,
     inferredDefaultFinish: handoff.finish,
+    migrationHandling: policy.value
+      ? policy.value.migrationHandling
+      : "ask-after-review",
+    migrationTargets: policy.value ? policy.value.migrationTargets : [],
     mode,
     mutationAllowed,
     onboardingRequired,
     policyPath: policy.path,
     policySource: policy.source,
+    preLoopActionRequired:
+      onboardingRequired ||
+      updateActionRequired ||
+      changelogUpdateActionRequired,
     readinessConfirmed,
     reason: initializationReason(
       mode,
       writeCapable,
       onboardingRequired,
       updateActionRequired,
+      changelogUpdateActionRequired,
       handoff
     ),
     resolvedMode: handoff.resolvedMode,

@@ -1,0 +1,89 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://simple-changes.local/schemas/migration-review.schema.json",
+  "title": "Migration Review",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "backupOrRollbackVerified",
+    "destructive",
+    "irreversible",
+    "lockHeavy",
+    "operations",
+    "postApplyVerificationPlanned",
+    "reviewed",
+    "routine",
+    "target",
+    "unboundedDataChange"
+  ],
+  "properties": {
+    "backupOrRollbackVerified": { "type": "boolean" },
+    "destructive": { "type": "boolean" },
+    "irreversible": { "type": "boolean" },
+    "lockHeavy": { "type": "boolean" },
+    "operations": { "$ref": "#/$defs/operationSet" },
+    "postApplyVerificationPlanned": { "type": "boolean" },
+    "reviewed": { "type": "boolean" },
+    "routine": { "type": "boolean" },
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["provider", "project", "environment"],
+      "properties": {
+        "provider": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9._-]+$"
+        },
+        "project": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "^[A-Za-z0-9._/-]+$"
+        },
+        "environment": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9._-]+$"
+        }
+      }
+    },
+    "unboundedDataChange": { "type": "boolean" }
+  },
+  "$defs": {
+    "operationSet": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["digest", "operations"],
+      "properties": {
+        "digest": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "operations": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["contentDigest", "revision"],
+            "properties": {
+              "contentDigest": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              "revision": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 512,
+                "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+$"
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

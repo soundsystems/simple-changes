@@ -23,10 +23,10 @@ For the first screen, question-by-question presentation, diagrams, preference
 storage explanation, and confirmation receipt, follow
 [conversational onboarding](onboarding.md).
 
-Classify the request mode, then run:
+Classify the request mode and whether it requires changelog work, then run:
 
 ```sh
-simple-changes initialize --mode <mode> --json
+simple-changes initialize --mode <mode> [--changelog-required] --json
 ```
 
 Sync, queue, sweep, integrate, ship, reconcile, resume, and handoff are
@@ -75,10 +75,13 @@ then call `setup` with explicit flags. A valid repository or personal policy
 suppresses repeat onboarding.
 
 A saved policy with an older meaningful guidance version triggers the separate
-installed-update checkpoint before write-capable mutation. It does not restart
-first-use onboarding. Present Simple Changes changes and settings only, persist
-the user's reviewed, accepted, or deferred disposition for that version, and
-keep any Simple Changelogs review behind an optional owner-controlled handoff.
+installed-update checkpoint before write-capable mutation or loop creation. It
+does not restart first-use onboarding. Present Simple Changes changes and
+settings only and persist the user's reviewed, accepted, or deferred
+disposition for that version. Detect Simple Changelogs updates separately. When
+the current request requires changelog work, resolve its owner-controlled
+disposition before starting an integration loop; never pause an already-created
+shipment loop for that conversation.
 Follow [installed guidance updates](guidance-updates.md).
 
 Use these safe defaults when no committed policy exists:
@@ -86,10 +89,12 @@ Use these safe defaults when no committed policy exists:
 ```json
 {
   "schemaVersion": 1,
-  "guidance": { "disposition": "accepted", "version": 4 },
+  "guidance": { "disposition": "accepted", "version": 6 },
   "changelogHandling": "preserve-and-report",
   "defaultFinish": "open-change-request",
   "handoffTiming": "confirm-ready",
+  "migrationHandling": "ask-after-review",
+  "migrationTargets": [],
   "uiArtifactVersioning": "repository-convention",
   "questions": "blocking-only",
   "review": "repository-policy",
@@ -99,14 +104,21 @@ Use these safe defaults when no committed policy exists:
 }
 ```
 
-`shippingMode` accepts `standard`, `expedited`, or `break-glass`. Normal
-onboarding and `--shipping-mode` expose only `standard` and `expedited`.
-`break-glass` is an advanced manual policy setting; it authorizes the
-deploy-before-review ordering for Ship requests but never supplies production
-authority or waives rollback evidence, focused checks, later review, forward
-reconciliation, verification, or cleanup.
+`shippingMode` accepts `standard`, `expedited`, or `break-glass`. Onboarding and
+`--shipping-mode` expose all three, with break-glass clearly labeled Advanced.
+When `break-glass` is paired with `productionDeploy: "allow"`, a normal Ship
+request supplies both saved ordering and production authority, so do not ask
+for a redundant break-glass phrase. Rollback evidence, focused checks, later
+review, forward reconciliation, verification, and cleanup remain mandatory.
 Initialization returns the effective `shippingMode`; the agent must pass that
 closed value into emergency classification instead of re-defaulting it.
+
+`migrationHandling` accepts `ask-after-review`,
+`auto-apply-reviewed-routine`, `auto-apply-reviewed`, or `never`. Every mode
+reviews migrations first. Automatic modes require at least one exact
+`migrationTargets` entry containing provider, project, and environment. Their
+saved authority applies only to matching targets and never to destructive,
+irreversible, unbounded, lock-heavy, unprotected, or target-mismatched work.
 
 `allow-claimed` is the default. It permits independent authoring in distinct,
 actively claimed, non-primary worktrees while retaining one integration

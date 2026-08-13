@@ -11,7 +11,7 @@ customer and developer history while working in this source repository. Never
 package or install this module with the public `simple-changes` skill, and never
 apply it to an end user's repository.
 
-Current maintainer guidance version: 5
+Current maintainer guidance version: 6
 
 ## Contents
 

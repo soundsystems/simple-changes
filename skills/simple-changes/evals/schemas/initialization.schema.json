@@ -6,7 +6,9 @@
   "additionalProperties": false,
   "required": [
     "mode",
+    "changelogRequired",
     "changelogCoordination",
+    "firstUseWalkthroughAvailable",
     "guidanceUpdate",
     "handoffAction",
     "handoffTiming",
@@ -16,7 +18,10 @@
     "policySource",
     "policyPath",
     "inferredDefaultFinish",
+    "migrationHandling",
+    "migrationTargets",
     "readinessConfirmed",
+    "preLoopActionRequired",
     "resolvedMode",
     "shippingMode",
     "reason"
@@ -30,10 +35,13 @@
         "changelogHandoff",
         "changes",
         "currentVersion",
+        "headline",
         "releaseNotes",
         "status",
         "storedDisposition",
-        "storedVersion"
+        "storedVersion",
+        "summaryBullets",
+        "walkthroughQuestion"
       ],
       "properties": {
         "actions": {
@@ -75,6 +83,9 @@
           }
         },
         "currentVersion": { "type": "integer", "minimum": 1 },
+        "headline": {
+          "const": "**Simple Changes has recently been updated.**"
+        },
         "releaseNotes": {
           "type": "object",
           "additionalProperties": false,
@@ -96,6 +107,14 @@
         },
         "storedVersion": {
           "anyOf": [{ "type": "integer", "minimum": 1 }, { "type": "null" }]
+        },
+        "summaryBullets": {
+          "type": "array",
+          "maxItems": 3,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "walkthroughQuestion": {
+          "const": "Would you like me to walk you through all recent updates to the skill?"
         }
       }
     },
@@ -107,6 +126,7 @@
         "capabilityAvailable",
         "capabilityHelpers",
         "capabilityStatus",
+        "guidanceUpdate",
         "releaseSurfaces",
         "providers"
       ],
@@ -119,6 +139,79 @@
           "items": { "type": "string", "minLength": 1 }
         },
         "capabilityStatus": { "enum": ["absent", "unverified"] },
+        "guidanceUpdate": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "actions",
+            "detailsPath",
+            "headline",
+            "installedVersion",
+            "owner",
+            "policyPath",
+            "provider",
+            "status",
+            "storedVersion",
+            "summaryBullets",
+            "walkthroughQuestion"
+          ],
+          "properties": {
+            "actions": {
+              "type": "array",
+              "uniqueItems": true,
+              "items": {
+                "enum": ["walkthrough", "continue", "view-release-notes"]
+              }
+            },
+            "detailsPath": {
+              "anyOf": [
+                { "type": "string", "minLength": 1 },
+                { "type": "null" }
+              ]
+            },
+            "headline": {
+              "const": "**Simple Changelogs has recently been updated.**"
+            },
+            "installedVersion": {
+              "anyOf": [{ "type": "integer", "minimum": 1 }, { "type": "null" }]
+            },
+            "owner": {
+              "anyOf": [{ "const": "simple-changelogs" }, { "type": "null" }]
+            },
+            "policyPath": {
+              "anyOf": [
+                { "type": "string", "minLength": 1 },
+                { "type": "null" }
+              ]
+            },
+            "provider": {
+              "anyOf": [
+                { "type": "string", "minLength": 1 },
+                { "type": "null" }
+              ]
+            },
+            "status": {
+              "enum": [
+                "absent",
+                "unconfigured",
+                "current",
+                "update-available",
+                "unknown"
+              ]
+            },
+            "storedVersion": {
+              "anyOf": [{ "type": "integer", "minimum": 1 }, { "type": "null" }]
+            },
+            "summaryBullets": {
+              "type": "array",
+              "maxItems": 3,
+              "items": { "type": "string", "minLength": 1 }
+            },
+            "walkthroughQuestion": {
+              "const": "Would you like me to walk you through the recent Simple Changelogs updates before I continue?"
+            }
+          }
+        },
         "releaseSurfaces": {
           "type": "array",
           "uniqueItems": true,
@@ -160,6 +253,8 @@
       ]
     },
     "writeCapable": { "type": "boolean" },
+    "firstUseWalkthroughAvailable": { "type": "boolean" },
+    "changelogRequired": { "type": "boolean" },
     "mutationAllowed": { "type": "boolean" },
     "onboardingRequired": { "type": "boolean" },
     "policySource": { "enum": ["default", "user", "repository"] },
@@ -172,7 +267,30 @@
         { "type": "null" }
       ]
     },
+    "migrationHandling": {
+      "enum": [
+        "ask-after-review",
+        "auto-apply-reviewed-routine",
+        "auto-apply-reviewed",
+        "never"
+      ]
+    },
+    "migrationTargets": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["provider", "project", "environment"],
+        "properties": {
+          "provider": { "type": "string", "minLength": 1 },
+          "project": { "type": "string", "minLength": 1 },
+          "environment": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
     "readinessConfirmed": { "type": "boolean" },
+    "preLoopActionRequired": { "type": "boolean" },
     "resolvedMode": {
       "anyOf": [
         {

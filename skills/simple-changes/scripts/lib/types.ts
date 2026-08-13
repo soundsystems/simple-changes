@@ -47,10 +47,40 @@ export type ChangelogHandling =
   | "preserve-and-report"
   | "ask";
 
+export type MigrationHandling =
+  | "ask-after-review"
+  | "auto-apply-reviewed-routine"
+  | "auto-apply-reviewed"
+  | "never";
+
+export interface MigrationTarget {
+  environment: string;
+  project: string;
+  provider: string;
+}
+
 export interface ChangelogCoordination {
   capabilityAvailable: boolean;
   capabilityHelpers: string[];
   capabilityStatus: "absent" | "unverified";
+  guidanceUpdate: {
+    actions: Array<"walkthrough" | "continue" | "view-release-notes">;
+    detailsPath: string | null;
+    headline: "**Simple Changelogs has recently been updated.**";
+    installedVersion: number | null;
+    owner: "simple-changelogs" | null;
+    policyPath: string | null;
+    provider: string | null;
+    status:
+      | "absent"
+      | "unconfigured"
+      | "current"
+      | "update-available"
+      | "unknown";
+    storedVersion: number | null;
+    summaryBullets: string[];
+    walkthroughQuestion: "Would you like me to walk you through the recent Simple Changelogs updates before I continue?";
+  };
   providers: string[];
   releaseSurfaces: string[];
   relevant: boolean;
@@ -65,6 +95,8 @@ export interface RepoPolicy {
     version: number;
   };
   handoffTiming: HandoffTiming;
+  migrationHandling: MigrationHandling;
+  migrationTargets: MigrationTarget[];
   productionDeploy: "ask" | "allow" | "deny";
   questions: "blocking-only" | "always" | "never";
   review: "repository-policy" | "independent" | "provider-policy";
@@ -832,6 +864,9 @@ export type SchemaName =
   | "inventory"
   | "change-plan"
   | "emergency-shipping"
+  | "migration-review"
+  | "migration-pending"
+  | "migration-apply-plan"
   | "run-state"
   | "provider-receipt"
   | "release-delivery-receipt"

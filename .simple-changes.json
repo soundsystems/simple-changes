@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "guidance": {
     "disposition": "accepted",
-    "version": 4
+    "version": 6
   },
   "changelogHandling": "delegate-if-available",
   "defaultFinish": "integrate",
@@ -12,5 +12,7 @@
   "productionDeploy": "ask",
   "concurrentWork": "preserve",
   "handoffTiming": "confirm-ready",
+  "migrationHandling": "ask-after-review",
+  "migrationTargets": [],
   "uiArtifactVersioning": "repository-convention"
 }

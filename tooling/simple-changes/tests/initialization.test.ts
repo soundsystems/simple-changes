@@ -2,6 +2,37 @@ import { describe, expect, test } from "bun:test";
 import { inspectInitialization } from "../../../skills/simple-changes/scripts/lib/initialization.ts";
 import { DEFAULT_POLICY } from "../../../skills/simple-changes/scripts/lib/policy.ts";
 import { classifyEmergencyShipping } from "../../../skills/simple-changes/scripts/lib/triggers.ts";
+import type { ChangelogCoordination } from "../../../skills/simple-changes/scripts/lib/types.ts";
+
+const absentChangelogUpdate: ChangelogCoordination["guidanceUpdate"] = {
+  actions: [],
+  detailsPath: null,
+  headline: "**Simple Changelogs has recently been updated.**" as const,
+  installedVersion: null,
+  owner: null,
+  policyPath: null,
+  provider: null,
+  status: "absent" as const,
+  storedVersion: null,
+  summaryBullets: [],
+  walkthroughQuestion:
+    "Would you like me to walk you through the recent Simple Changelogs updates before I continue?" as const,
+};
+
+const availableChangelogUpdate: ChangelogCoordination["guidanceUpdate"] = {
+  actions: ["walkthrough", "continue", "view-release-notes"],
+  detailsPath: "/skills/simple-changelogs/references/guidance-updates.md",
+  headline: "**Simple Changelogs has recently been updated.**" as const,
+  installedVersion: 9,
+  owner: "simple-changelogs" as const,
+  policyPath: "/repo/.simple-changelogs.json",
+  provider: "/skills/simple-changelogs/SKILL.md",
+  status: "update-available" as const,
+  storedVersion: 8,
+  summaryBullets: ["Production Web deployment is now a release boundary."],
+  walkthroughQuestion:
+    "Would you like me to walk you through the recent Simple Changelogs updates before I continue?" as const,
+};
 
 describe("first-run initialization", () => {
   test("propagates the saved shipping preference into emergency classification", () => {
@@ -29,6 +60,7 @@ describe("first-run initialization", () => {
         source: "default",
       })
     ).toMatchObject({
+      firstUseWalkthroughAvailable: true,
       inferredDefaultFinish: "open-change-request",
       onboardingRequired: true,
       writeCapable: true,
@@ -57,6 +89,7 @@ describe("first-run initialization", () => {
           capabilityAvailable: false,
           capabilityHelpers: [],
           capabilityStatus: "absent",
+          guidanceUpdate: absentChangelogUpdate,
           providers: [],
           releaseSurfaces: ["CHANGELOG.md"],
           relevant: true,
@@ -82,6 +115,7 @@ describe("first-run initialization", () => {
           source: "default",
         })
       ).toMatchObject({
+        firstUseWalkthroughAvailable: true,
         onboardingRequired: false,
         writeCapable: false,
       });
@@ -140,6 +174,7 @@ describe("first-run initialization", () => {
         capabilityAvailable: true,
         capabilityHelpers: ["/skills/simple-changelogs/scripts/setup.ts"],
         capabilityStatus: "unverified",
+        guidanceUpdate: availableChangelogUpdate,
         providers: ["/skills/simple-changelogs/SKILL.md"],
         releaseSurfaces: ["CHANGELOG.md"],
         relevant: true,
@@ -159,12 +194,46 @@ describe("first-run initialization", () => {
           available: true,
           owner: "simple-changelogs",
         },
-        currentVersion: 4,
+        currentVersion: 6,
+        headline: "**Simple Changes has recently been updated.**",
         status: "update-available",
         storedVersion: 1,
+        walkthroughQuestion:
+          "Would you like me to walk you through all recent updates to the skill?",
       },
       mutationAllowed: false,
       onboardingRequired: false,
+      preLoopActionRequired: true,
+    });
+  });
+
+  test("resolves a required Simple Changelogs update before shipment loop creation", () => {
+    const status = inspectInitialization(
+      "ship",
+      {
+        path: "/repo/.simple-changes.json",
+        source: "repository",
+        value: DEFAULT_POLICY,
+      },
+      {
+        capabilityAvailable: true,
+        capabilityHelpers: ["/skills/simple-changelogs/scripts/setup.ts"],
+        capabilityStatus: "unverified",
+        guidanceUpdate: availableChangelogUpdate,
+        providers: ["/skills/simple-changelogs/SKILL.md"],
+        releaseSurfaces: ["CHANGELOG.md"],
+        relevant: true,
+      },
+      { changelogRequired: true }
+    );
+
+    expect(status).toMatchObject({
+      changelogRequired: true,
+      guidanceUpdate: { status: "current" },
+      mutationAllowed: false,
+      preLoopActionRequired: true,
+      reason:
+        "This request requires changelog work and Simple Changelogs has a recent update; resolve its owner-controlled notice before any shipment loop begins.",
     });
   });
 

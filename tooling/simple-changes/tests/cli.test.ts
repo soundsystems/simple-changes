@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
+import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -99,6 +100,317 @@ afterEach(() => {
 });
 
 describe("contract CLI", () => {
+  test("decides reviewed migration automation from saved exact-target policy", () => {
+    const fixture = createTestRepository();
+    repositories.push(fixture);
+    const revision = "supabase/migrations/20260812090000_add_index.sql";
+    writeFixture(
+      fixture.root,
+      revision,
+      "create index example_idx on example(id);\n"
+    );
+    const operations = [
+      {
+        contentDigest: createHash("sha256")
+          .update(readFileSync(resolve(fixture.root, revision)))
+          .digest("hex"),
+        revision,
+      },
+    ];
+    const digest = createHash("sha256")
+      .update(JSON.stringify(operations))
+      .digest("hex");
+    writeFixture(
+      fixture.root,
+      ".simple-changes.json",
+      `${JSON.stringify(
+        {
+          ...DEFAULT_POLICY,
+          migrationHandling: "auto-apply-reviewed-routine",
+          migrationTargets: [
+            {
+              environment: "production",
+              project: "primary-db",
+              provider: "supabase",
+            },
+          ],
+        },
+        null,
+        2
+      )}\n`
+    );
+    writeFixture(
+      fixture.root,
+      "migration-review.json",
+      `${JSON.stringify({
+        backupOrRollbackVerified: true,
+        destructive: false,
+        irreversible: false,
+        lockHeavy: false,
+        operations: { digest, operations },
+        postApplyVerificationPlanned: true,
+        reviewed: true,
+        routine: true,
+        target: {
+          environment: "production",
+          project: "primary-db",
+          provider: "supabase",
+        },
+        unboundedDataChange: false,
+      })}\n`
+    );
+    writeFixture(
+      fixture.root,
+      "migration-pending.json",
+      `${JSON.stringify({ digest, operations })}\n`
+    );
+    writeFixture(
+      fixture.root,
+      "migration-apply-plan.json",
+      `${JSON.stringify({ digest, operations, scope: "exact-listed-operations" })}\n`
+    );
+
+    const result = spawnSync(
+      [
+        process.execPath,
+        cliPath,
+        "migration",
+        "decision",
+        "--state",
+        resolve(fixture.root, "migration-review.json"),
+        "--pending",
+        resolve(fixture.root, "migration-pending.json"),
+        "--apply-plan",
+        resolve(fixture.root, "migration-apply-plan.json"),
+        "--json",
+        "--repo",
+        fixture.root,
+      ],
+      { stderr: "pipe", stdout: "pipe" }
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(JSON.parse(decoder.decode(result.stdout))).toMatchObject({
+      action: "auto-apply",
+      authorizedByPolicy: true,
+    });
+  });
+
+  test("rejects a saved migration review when the fresh pending set changes", () => {
+    const fixture = createTestRepository();
+    repositories.push(fixture);
+    const reviewed = [
+      { contentDigest: "1".repeat(64), revision: "migrations/a.sql" },
+    ];
+    writeFixture(fixture.root, "migrations/b.sql", "select 2;\n");
+    const pending = [
+      {
+        contentDigest: createHash("sha256")
+          .update(readFileSync(resolve(fixture.root, "migrations/b.sql")))
+          .digest("hex"),
+        revision: "migrations/b.sql",
+      },
+    ];
+    const digest = (operations: typeof reviewed) =>
+      createHash("sha256").update(JSON.stringify(operations)).digest("hex");
+    writeFixture(
+      fixture.root,
+      "migration-review.json",
+      `${JSON.stringify({
+        backupOrRollbackVerified: true,
+        destructive: false,
+        irreversible: false,
+        lockHeavy: false,
+        operations: { digest: digest(reviewed), operations: reviewed },
+        postApplyVerificationPlanned: true,
+        reviewed: true,
+        routine: true,
+        target: {
+          environment: "production",
+          project: "primary-db",
+          provider: "supabase",
+        },
+        unboundedDataChange: false,
+      })}\n`
+    );
+    writeFixture(
+      fixture.root,
+      "migration-pending.json",
+      `${JSON.stringify({ digest: digest(pending), operations: pending })}\n`
+    );
+    writeFixture(
+      fixture.root,
+      "migration-apply-plan.json",
+      `${JSON.stringify({ digest: digest(pending), operations: pending, scope: "exact-listed-operations" })}\n`
+    );
+    const result = spawnSync(
+      [
+        process.execPath,
+        cliPath,
+        "migration",
+        "decision",
+        "--state",
+        resolve(fixture.root, "migration-review.json"),
+        "--pending",
+        resolve(fixture.root, "migration-pending.json"),
+        "--apply-plan",
+        resolve(fixture.root, "migration-apply-plan.json"),
+        "--json",
+        "--repo",
+        fixture.root,
+      ],
+      { stderr: "pipe", stdout: "pipe" }
+    );
+    expect(result.exitCode).toBe(0);
+    expect(JSON.parse(decoder.decode(result.stdout))).toMatchObject({
+      action: "review-required",
+      authorizedByPolicy: false,
+    });
+  });
+
+  test("rejects replayed pending evidence after migration content changes", () => {
+    const fixture = createTestRepository();
+    repositories.push(fixture);
+    const revision = "migrations/change.sql";
+    writeFixture(fixture.root, revision, "select 1;\n");
+    const operations = [
+      {
+        contentDigest: createHash("sha256")
+          .update(readFileSync(resolve(fixture.root, revision)))
+          .digest("hex"),
+        revision,
+      },
+    ];
+    const digest = createHash("sha256")
+      .update(JSON.stringify(operations))
+      .digest("hex");
+    const review = {
+      backupOrRollbackVerified: true,
+      destructive: false,
+      irreversible: false,
+      lockHeavy: false,
+      operations: { digest, operations },
+      postApplyVerificationPlanned: true,
+      reviewed: true,
+      routine: true,
+      target: {
+        environment: "production",
+        project: "db",
+        provider: "supabase",
+      },
+      unboundedDataChange: false,
+    };
+    writeFixture(fixture.root, "review.json", `${JSON.stringify(review)}\n`);
+    writeFixture(
+      fixture.root,
+      "pending.json",
+      `${JSON.stringify({ digest, operations })}\n`
+    );
+    writeFixture(
+      fixture.root,
+      "apply-plan.json",
+      `${JSON.stringify({ digest, operations, scope: "exact-listed-operations" })}\n`
+    );
+    writeFixture(fixture.root, revision, "select 2;\n");
+    const result = spawnSync(
+      [
+        process.execPath,
+        cliPath,
+        "migration",
+        "decision",
+        "--state",
+        resolve(fixture.root, "review.json"),
+        "--pending",
+        resolve(fixture.root, "pending.json"),
+        "--apply-plan",
+        resolve(fixture.root, "apply-plan.json"),
+        "--json",
+        "--repo",
+        fixture.root,
+      ],
+      { stderr: "pipe", stdout: "pipe" }
+    );
+    expect(result.exitCode).toBe(3);
+    expect(decoder.decode(result.stderr)).toContain(
+      "content changed after evidence capture"
+    );
+  });
+
+  test("rejects replayed review and pending evidence when the apply plan adds an operation", () => {
+    const fixture = createTestRepository();
+    repositories.push(fixture);
+    const operation = {
+      contentDigest: "1".repeat(64),
+      revision: "migrations/a.sql",
+    };
+    const added = {
+      contentDigest: "2".repeat(64),
+      revision: "migrations/b.sql",
+    };
+    writeFixture(fixture.root, operation.revision, "select 1;\n");
+    operation.contentDigest = createHash("sha256")
+      .update(readFileSync(resolve(fixture.root, operation.revision)))
+      .digest("hex");
+    writeFixture(fixture.root, added.revision, "select 2;\n");
+    added.contentDigest = createHash("sha256")
+      .update(readFileSync(resolve(fixture.root, added.revision)))
+      .digest("hex");
+    const digest = (operations: (typeof operation)[]) =>
+      createHash("sha256").update(JSON.stringify(operations)).digest("hex");
+    const oldOperations = [operation];
+    const applyOperations = [operation, added];
+    const review = {
+      backupOrRollbackVerified: true,
+      destructive: false,
+      irreversible: false,
+      lockHeavy: false,
+      operations: { digest: digest(oldOperations), operations: oldOperations },
+      postApplyVerificationPlanned: true,
+      reviewed: true,
+      routine: true,
+      target: {
+        environment: "production",
+        project: "db",
+        provider: "supabase",
+      },
+      unboundedDataChange: false,
+    };
+    writeFixture(fixture.root, "review.json", `${JSON.stringify(review)}\n`);
+    writeFixture(
+      fixture.root,
+      "pending.json",
+      `${JSON.stringify(review.operations)}\n`
+    );
+    writeFixture(
+      fixture.root,
+      "apply.json",
+      `${JSON.stringify({ digest: digest(applyOperations), operations: applyOperations, scope: "exact-listed-operations" })}\n`
+    );
+    const result = spawnSync(
+      [
+        process.execPath,
+        cliPath,
+        "migration",
+        "decision",
+        "--state",
+        resolve(fixture.root, "review.json"),
+        "--pending",
+        resolve(fixture.root, "pending.json"),
+        "--apply-plan",
+        resolve(fixture.root, "apply.json"),
+        "--json",
+        "--repo",
+        fixture.root,
+      ],
+      { stderr: "pipe", stdout: "pipe" }
+    );
+    expect(result.exitCode).toBe(0);
+    expect(JSON.parse(decoder.decode(result.stdout))).toMatchObject({
+      action: "review-required",
+      authorizedByPolicy: false,
+    });
+  });
+
   test("finalizes an incomplete lease as relinquished and resumes it", () => {
     const fixture = createTestRepository();
     repositories.push(fixture);
@@ -925,6 +1237,104 @@ describe("contract CLI", () => {
     });
   });
 
+  test("reports a required Simple Changelogs update before creating a shipment loop", () => {
+    const fixture = createTestRepository();
+    repositories.push(fixture);
+    const skillRoot = resolve(fixture.base, "global-skills");
+    writeFixture(
+      fixture.root,
+      ".simple-changes.json",
+      `${JSON.stringify(
+        {
+          ...DEFAULT_POLICY,
+          guidance: { disposition: "accepted", version: 4 },
+        },
+        null,
+        2
+      )}\n`
+    );
+    writeFixture(
+      fixture.root,
+      ".simple-changelogs.json",
+      '{"schemaVersion":1,"guidance":{"version":8,"backfillStatus":"deferred"}}\n'
+    );
+    writeFixture(
+      skillRoot,
+      "simple-changelogs/SKILL.md",
+      "---\nname: simple-changelogs\ndescription: Test fixture.\n---\n\nCurrent guidance version: 9\n"
+    );
+    writeFixture(
+      skillRoot,
+      "simple-changelogs/references/guidance-updates.md",
+      "# Guidance Updates\n\n## Guidance 9\n\nProduction Web deployment is now a release boundary. Deployed work must leave Unreleased first. Exact retries reuse the same release version.\n"
+    );
+
+    const result = spawnSync(
+      [
+        process.execPath,
+        cliPath,
+        "initialize",
+        "--mode",
+        "ship",
+        "--changelog-required",
+        "--repo",
+        fixture.root,
+      ],
+      {
+        env: { SIMPLE_CHANGES_SKILL_ROOTS: skillRoot },
+        stderr: "pipe",
+        stdout: "pipe",
+      }
+    );
+    const output = decoder.decode(result.stdout);
+
+    expect(result.exitCode).toBe(0);
+    expect(output).toContain("**Simple Changes has recently been updated.**");
+    expect(output).toContain(
+      "**Simple Changelogs has recently been updated.**"
+    );
+    expect(output).toContain(
+      "Would you like me to walk you through all recent updates to both skills?"
+    );
+    expect(output).toContain("- Walk me through both");
+    expect(output).not.toContain("Available actions:");
+    expect(output).toContain("Action required before loop start: yes");
+    expect(output).toContain(
+      "Resolve this owner-controlled update before starting the Simple Changes shipment loop."
+    );
+    expect(
+      existsSync(resolve(fixture.root, ".git/simple-changes/active-loop.json"))
+    ).toBe(false);
+
+    const directStart = spawnSync(
+      [
+        process.execPath,
+        cliPath,
+        "loop",
+        "start",
+        "--mode",
+        "ship",
+        "--agent-id",
+        "controller",
+        "--changelog-required",
+        "--repo",
+        fixture.root,
+      ],
+      {
+        env: { SIMPLE_CHANGES_SKILL_ROOTS: skillRoot },
+        stderr: "pipe",
+        stdout: "pipe",
+      }
+    );
+    expect(directStart.exitCode).toBe(5);
+    expect(decoder.decode(directStart.stderr)).toContain(
+      "every required update choice before loop start"
+    );
+    expect(
+      existsSync(resolve(fixture.root, ".git/simple-changes/active-loop.json"))
+    ).toBe(false);
+  });
+
   test("records one installed-update decision and unblocks initialization", () => {
     const fixture = createTestRepository();
     repositories.push(fixture);
@@ -979,7 +1389,7 @@ describe("contract CLI", () => {
     );
     expect(acknowledged.exitCode).toBe(0);
     expect(JSON.parse(decoder.decode(acknowledged.stdout))).toMatchObject({
-      currentVersion: 4,
+      currentVersion: 6,
       disposition: "deferred",
       previousVersion: 1,
       written: true,
@@ -989,7 +1399,7 @@ describe("contract CLI", () => {
         readFileSync(resolve(fixture.root, ".simple-changes.json"), "utf8")
       )
     ).toMatchObject({
-      guidance: { disposition: "deferred", version: 4 },
+      guidance: { disposition: "deferred", version: 6 },
     });
 
     const resumed = spawnSync(
@@ -1035,9 +1445,26 @@ describe("contract CLI", () => {
 
     expect(result.exitCode).toBe(0);
     expect(output).toMatchObject({
+      firstUseWalkthroughAvailable: true,
       onboardingRequired: false,
       writeCapable: false,
     });
+
+    const conversational = spawnSync(
+      [
+        process.execPath,
+        cliPath,
+        "initialize",
+        "--mode",
+        "preview",
+        "--repo",
+        fixture.root,
+      ],
+      { stderr: "pipe", stdout: "pipe" }
+    );
+    expect(decoder.decode(conversational.stdout)).toContain(
+      "New to Simple Changes? I can give you a quick walkthrough of everything it can do."
+    );
   });
 
   test("accepts first-run Sync with fixed preservation guardrails", () => {
@@ -1353,7 +1780,11 @@ describe("contract CLI", () => {
         "--production",
         "allow",
         "--shipping-mode",
-        "standard",
+        "break-glass",
+        "--migration-handling",
+        "auto-apply-reviewed-routine",
+        "--migration-target",
+        "supabase:primary-db:production",
         "--questions",
         "never",
         "--scope",
@@ -1370,8 +1801,15 @@ describe("contract CLI", () => {
       path: string | null;
       policy: {
         defaultFinish: string;
+        migrationHandling: string;
+        migrationTargets: Array<{
+          environment: string;
+          project: string;
+          provider: string;
+        }>;
         productionDeploy: string;
         questions: string;
+        shippingMode: string;
       };
       written: boolean;
     };
@@ -1382,8 +1820,17 @@ describe("contract CLI", () => {
       path: null,
       policy: {
         defaultFinish: "ship",
+        migrationHandling: "auto-apply-reviewed-routine",
+        migrationTargets: [
+          {
+            environment: "production",
+            project: "primary-db",
+            provider: "supabase",
+          },
+        ],
         productionDeploy: "allow",
         questions: "never",
+        shippingMode: "break-glass",
       },
       written: false,
     });

@@ -45,6 +45,14 @@ const onboardingPath = new URL(
   "../../../skills/simple-changes/references/onboarding.md",
   import.meta.url
 );
+const guidanceUpdatesPath = new URL(
+  "../../../skills/simple-changes/references/guidance-updates.md",
+  import.meta.url
+);
+const migrationActionsPath = new URL(
+  "../../../skills/simple-changes/references/migrations-and-high-risk-actions.md",
+  import.meta.url
+);
 const cleanupCompletionPath = new URL(
   "../../../skills/simple-changes/references/cleanup-and-completion.md",
   import.meta.url
@@ -80,6 +88,9 @@ describe("Simple Changes skill contract", () => {
     expect(normalizedOnboarding).toContain(
       "Use recommended setup — Recommended"
     );
+    expect(normalizedOnboarding).toContain("Walk me through it");
+    expect(normalizedOnboarding).toContain("Sync with main");
+    expect(normalizedOnboarding).toContain("Open changes for everything ready");
     expect(normalizedOnboarding).toContain("Ask one question at a time");
     expect(normalizedOnboarding).toContain(
       "This choice controls only where the workflow is remembered"
@@ -90,8 +101,40 @@ describe("Simple Changes skill contract", () => {
     expect(normalizedOnboarding).toContain(
       "How should routine Ship requests run?"
     );
+    expect(normalizedOnboarding).toContain("Break-glass by default — Advanced");
     expect(normalizedOnboarding).toContain(
-      "Do not offer break-glass as a normal onboarding choice"
+      "How should reviewed database migrations be handled during Ship?"
+    );
+  });
+
+  test("installed update notices use clear copy before any shipment loop", async () => {
+    const [skill, guidance] = await Promise.all([
+      readFile(skillPath, "utf8"),
+      readFile(guidanceUpdatesPath, "utf8"),
+    ]);
+    const normalizedSkill = skill.replace(/\s+/g, " ");
+    const normalizedGuidance = guidance.replace(/\s+/g, " ");
+
+    expect(normalizedGuidance).toContain(
+      "**Simple Changes has recently been updated.**"
+    );
+    expect(normalizedGuidance).toContain(
+      "Would you like me to walk you through all recent updates to the skill?"
+    );
+    expect(normalizedGuidance).toContain(
+      "**Simple Changelogs has recently been updated.**"
+    );
+    expect(normalizedGuidance).toContain(
+      "Would you like me to walk you through all recent updates to both skills?"
+    );
+    expect(normalizedSkill).toContain(
+      "resolve the Simple Changelogs notice and the user's owner-controlled walkthrough, continue, defer, or release-notes choice before `loop start`"
+    );
+    expect(normalizedSkill).toContain(
+      "Do not start a Ship loop, send the pre-ship brief, acquire a lease, then pause it for this explanation"
+    );
+    expect(normalizedGuidance).toContain(
+      "Start the loop only after initialization returns `preLoopActionRequired: false`"
     );
   });
 
@@ -372,10 +415,10 @@ describe("Simple Changes skill contract", () => {
       "Urgency can infer `expedited`; it never grants production authority or waives independent review"
     );
     expect(normalizedSkill).toContain(
-      "Only unambiguous current-request language that orders deployment before review"
+      "Saved break-glass plus automatic production means “Ship” is enough"
     );
     expect(normalizedDeployment).toContain(
-      "Emergency Ship is a narrow, run-only exception"
+      "Emergency Ship is a narrow exception to the normal ordering"
     );
     expect(normalizedDeployment).toContain(
       "Do not create a second deployment merely because reconciliation produced a new Git revision"
@@ -384,6 +427,26 @@ describe("Simple Changes skill contract", () => {
     expect(normalizedCommunication).toContain("`live-unreconciled`");
     expect(runStateSchema).toContain('"emergencyShipping"');
     expect(runStateSchema).not.toContain('"rawPrompt"');
+  });
+
+  test("migration automation always follows review and exact target binding", async () => {
+    const [skill, migrationActions] = await Promise.all([
+      readFile(skillPath, "utf8"),
+      readFile(migrationActionsPath, "utf8"),
+    ]);
+    const normalizedSkill = skill.replace(/\s+/g, " ");
+    const normalizedActions = migrationActions.replace(/\s+/g, " ");
+
+    expect(normalizedSkill).toContain(
+      "Audit every detected migration before any apply"
+    );
+    expect(normalizedActions).toContain("auto-apply-reviewed-routine");
+    expect(normalizedActions).toContain("auto-apply-reviewed");
+    expect(normalizedActions).toContain("simple-changes migration decision");
+    expect(normalizedActions).toContain("provider/project/environment target");
+    expect(normalizedActions).toContain(
+      "destructive or data-deleting, irreversible, unbounded, lock-heavy, target-mismatched, or unprotected changes"
+    );
   });
 
   test("Active loops serialize integration while allowing claimed authors", async () => {
@@ -395,7 +458,10 @@ describe("Simple Changes skill contract", () => {
     const normalizedConcurrency = concurrency.replace(/\s+/g, " ");
 
     expect(normalizedSkill).toContain(
-      "start one active loop before the first integration mutation"
+      "start one active loop only after initialization returns `preLoopActionRequired: false`"
+    );
+    expect(normalizedSkill).toContain(
+      "Start the loop before the first integration mutation"
     );
     expect(normalizedSkill).toContain("simple-changes.ts prepare-agent");
     expect(normalizedSkill).toContain(

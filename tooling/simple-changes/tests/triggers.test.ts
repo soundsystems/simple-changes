@@ -1,7 +1,9 @@
 import { describe, expect, test } from "bun:test";
+import { DEFAULT_POLICY } from "../../../skills/simple-changes/scripts/lib/policy.ts";
 import {
   classifyEmergencyShipping,
   classifyRequestMode,
+  resolveEmergencyShippingPolicyAuthority,
   shouldTrigger,
 } from "../../../skills/simple-changes/scripts/lib/triggers.ts";
 
@@ -85,6 +87,24 @@ describe("trigger classification", () => {
     ).toBe("standard");
     expect(classifyRequestMode("Ship it.", false, "expedited")).toBe("ship");
     expect(shouldTrigger("Ship it.", false, "break-glass")).toBe(true);
+  });
+
+  test("pairs advanced break-glass ordering with saved production authority", () => {
+    const policy = {
+      ...DEFAULT_POLICY,
+      productionDeploy: "allow" as const,
+      shippingMode: "break-glass" as const,
+    };
+    const intent = classifyEmergencyShipping(
+      "Ship it.",
+      false,
+      policy.shippingMode
+    );
+    expect(resolveEmergencyShippingPolicyAuthority(intent, policy)).toEqual({
+      authoritySource: "advanced-policy",
+      breakGlassAuthorized: true,
+      productionAuthorized: true,
+    });
   });
 
   test("recommends break-glass for active impact or tested live work", () => {

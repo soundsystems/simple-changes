@@ -14,7 +14,8 @@ approval for the previous revision. Re-fetch checks and discussions as well.
 Self-review is never represented as independent review.
 
 Emergency Ship does not weaken merge policy. `expedited` completes independent
-review before merge and initial deployment. Explicitly authorized `break-glass`
+review before merge and initial deployment. Current-request or saved-policy
+authorized `break-glass`
 may deploy one exact candidate before focused checks and independent review,
 but it does not merge through protected branches early or represent the
 deployment as approval. Request review of the exact deployed revision

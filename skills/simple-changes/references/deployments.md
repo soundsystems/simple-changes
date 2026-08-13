@@ -22,15 +22,17 @@ verification, or target-contained pending item blocks normal production.
 
 ## Emergency Ship exception
 
-Emergency Ship is a narrow, run-only exception to the normal ordering, not a
-saved deployment preference:
+Emergency Ship is a narrow exception to the normal ordering. Its urgency
+evidence remains run-bound, while advanced policy may save break-glass ordering:
 
 - `expedited` runs focused checks, independent review, and merge before the
   first deployment, then records `live-unreconciled` while changelog/version
   reconciliation, remaining verification, and cleanup continue.
-- `break-glass` requires explicit current-request deploy-before-review
-  authority, separate production authority, and a known native rollback or
-  corrective-release capability. It deploys one exact candidate immediately,
+- `break-glass` requires current-request or saved break-glass ordering,
+  production authority, and a known native rollback or corrective-release
+  capability. Saved `shippingMode: "break-glass"` plus
+  `productionDeploy: "allow"` makes an ordinary Ship request sufficient without
+  another authorization prompt. It deploys one exact candidate immediately,
   before focused checks or independent review, and records `live-unreviewed`
   until those deferred steps complete.
 

@@ -8,9 +8,18 @@ behavior, onboarding, settings, or integrations remain silent.
 ## Present the update
 
 When `initialize` reports `guidanceUpdate.status: "update-available"`, pause the
-write-capable run before mutation and translate the structured changes into a
-short user-facing notice. Explain only practical effects on Simple Changes and
-offer:
+write-capable run before mutation or loop creation. Do not expose internal
+phrases such as “guidance update requires review.” Use this structure:
+
+> **Simple Changes has recently been updated.**
+>
+> - Up to three short, practical changes from `summaryBullets`.
+>
+> Your existing settings and repository files have not been changed.
+>
+> Would you like me to walk you through all recent updates to the skill?
+
+Explain only practical effects on Simple Changes and offer:
 
 - **Review Simple Changes settings:** Show the affected settings and proposed
   values before changing them.
@@ -33,19 +42,67 @@ Do not record a disposition because the notice was merely prepared or shown.
 Resume the original request after the acknowledgement succeeds. A later
 guidance version may cause one new prompt.
 
-## Keep changelog ownership separate
+## Detect the companion update separately
 
 Simple Changes owns only its workflow behavior and settings. Never describe its
 update checkpoint as a changelog backfill, never inspect historical release
 notes as part of accepting the Simple Changes update, and never write a
 Simple Changelogs policy or release-note destination.
 
-When the notice reports `changelogHandoff.available: true`, offer a separate
-**Review with Simple Changelogs** action. Explain that Simple Changelogs owns the
-assessment of its settings and existing release notes. Delegate only if the
-user selects that action and the provider passes normal capability negotiation.
-If Simple Changelogs is absent, omit the action entirely. Its absence never
-blocks acknowledgement of the Simple Changes update.
+`changelogCoordination.guidanceUpdate` compares the selected installed
+provider's declared guidance version with the repository's recorded
+`.simple-changelogs.json` guidance version. Repository-local providers take
+precedence over global providers. Treat malformed, missing, or unprovable
+version evidence as `unknown`, never as an update.
+
+When its status is `update-available`, use this structure:
+
+> **Simple Changelogs has recently been updated.**
+>
+> - Up to three short, practical effects summarized from the exact intervening
+>   sections of its owner-controlled `detailsPath`.
+>
+> Its saved settings and released history have not been changed.
+>
+> Would you like me to walk you through the recent Simple Changelogs updates
+> before I continue?
+
+Simple Changes may detect and announce the companion update. Simple Changelogs
+owns its walkthrough, detailed notes, settings/history assessment, and recorded
+disposition. If Simple Changelogs is absent, unconfigured, current, or unknown,
+omit the update notice. Presence alone is not an update.
+
+If both skills have an available update, present both headlines and their short
+bullets, then ask one combined question before continuing:
+
+> Would you like me to walk you through all recent updates to both skills?
+
+Offer **Walk me through both**, **Simple Changes only**, **Keep my current
+settings and continue**, and **View full release notes**. Do not make the user
+answer two overlapping update prompts.
+
+## Resolve required changelog updates before a loop
+
+When the request requires changelog work, call initialization with
+`--changelog-required`. If the companion update is available, initialization
+returns `preLoopActionRequired: true` and `mutationAllowed: false`.
+
+Present the notice and obtain the user's **Walk me through it**, **Continue for
+now**, or **View full release notes** choice before `loop start`. Route the
+choice to Simple Changelogs so that skill—not Simple Changes—records any
+reviewed, declined, or deferred disposition. Then rerun initialization.
+
+Pass `--changelog-required` to the later `loop start` command too. It is a
+command-level backstop that refuses to create the loop while initialization or
+a required update choice remains open.
+
+Do not acquire a shipment lease, send the pre-ship brief, or begin the shipment
+loop and later pause it for the update conversation. The update checkpoint is a
+pre-loop phase. Start the loop only after initialization returns
+`preLoopActionRequired: false`.
+
+When changelog work is not required, the companion notice may be given as a
+nonblocking opening update and the unrelated Simple Changes work may continue.
 
 ## Maintain guidance versions
 

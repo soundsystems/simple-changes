@@ -97,6 +97,18 @@
     },
     "emergencyShipping": { "$ref": "emergency-shipping.schema.json" },
     "primaryCheckout": { "type": "string", "minLength": 1 },
+    "openingBranches": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "sha"],
+        "properties": {
+          "name": { "type": "string", "minLength": 1 },
+          "sha": { "type": "string", "pattern": "^[0-9a-f]{40,64}$" }
+        }
+      }
+    },
     "remoteBindings": {
       "type": "array",
       "items": {

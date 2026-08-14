@@ -49,6 +49,8 @@ import {
   markCoordinationAdopted,
   markCoordinationResumeReady,
   readCoordinationDocumentFromCommonDirectory,
+  recoverStaleWorktreeCoordinationLock,
+  withWorktreeCoordinationLock,
 } from "./worktree-coordination.ts";
 
 const STATE_DIRECTORY = "simple-changes";
@@ -74,6 +76,7 @@ const REMOTE_RECONCILIATION_MODES = new Set<LoopLease["mode"]>([
   "reconcile",
   "resume",
 ]);
+const AUTOMATIC_CLEANUP_MODES = REMOTE_RECONCILIATION_MODES;
 
 const stateDirectory = (commonGitDirectory: string): string =>
   resolve(commonGitDirectory, STATE_DIRECTORY);
@@ -381,6 +384,9 @@ const transferController = (
       relinquishedAt: null,
       status: "active",
     },
+    openingBranches:
+      lease.openingBranches ??
+      inventory.branches.map(({ name, sha }) => ({ name, sha })),
     ownerAgentId: nextAgentId,
     remoteBindings: lease.remoteBindings ?? inventory.repository.remoteBindings,
     updatedAt: now,
@@ -447,6 +453,7 @@ const processGroupIsAlive = (processGroupId: number): boolean => {
 };
 
 export interface LoopLockRecovery {
+  coordinationRecovered: boolean;
   recovered: boolean;
   recoveredAt: string;
   staleOwner: LoopLockOwner;
@@ -524,10 +531,15 @@ export const recoverLoopLock = (
       EXIT_CODES.unsafe
     );
   }
+  const coordinationRecovered = recoverStaleWorktreeCoordinationLock(
+    commonGitDirectory,
+    owner.pid
+  );
   const recoveryPath = `${lockPath}.recovery-${randomUUID()}`;
   renameSync(lockPath, recoveryPath);
   rmSync(recoveryPath, { force: true, recursive: true });
   return {
+    coordinationRecovered,
     recovered: true,
     recoveredAt: new Date().toISOString(),
     staleOwner: owner,
@@ -1305,6 +1317,10 @@ export const startLoop = (
         createdAt: now,
         dispositions: [],
         mode: mode as LoopLease["mode"],
+        openingBranches: inventory.branches.map(({ name, sha }) => ({
+          name,
+          sha,
+        })),
         overrides: [],
         ownerAgentId: agentId,
         preparations: [],
@@ -2361,12 +2377,13 @@ export const grantLoopOverride = (
         ],
         updatedAt: override.createdAt,
       };
-      const verification = verificationAgainst(candidate, inventory);
-      if (!verification.ok) {
+      const pathViolation = verificationAgainst(
+        candidate,
+        inventory
+      ).violations.find((violation) => violation.path === path);
+      if (pathViolation) {
         throw new SimpleChangesError(
-          `Override is exact but other loop violations remain: ${verification.violations
-            .map((violation) => `${violation.code}:${violation.path}`)
-            .join(", ")}`,
+          `Override does not resolve ${path}: ${pathViolation.message}`,
           EXIT_CODES.unsafe
         );
       }
@@ -2701,12 +2718,634 @@ export const recordRemoteBranchReconciliation = (
   );
 };
 
+export interface FinalizationCleanupResult {
+  cleanedPrimaryPaths: string[];
+  errors: string[];
+  primaryUpdated: boolean;
+  prunedWorktreeMetadata: number;
+  removedBranches: string[];
+  removedWorktrees: string[];
+}
+
+const emptyFinalizationCleanup = (): FinalizationCleanupResult => ({
+  cleanedPrimaryPaths: [],
+  errors: [],
+  primaryUpdated: false,
+  prunedWorktreeMetadata: 0,
+  removedBranches: [],
+  removedWorktrees: [],
+});
+
+const targetContainsRevision = (
+  repositoryPath: string,
+  targetRevision: string,
+  revision: string | null
+): boolean =>
+  Boolean(
+    revision &&
+      runGit(
+        repositoryPath,
+        [
+          "merge-base",
+          "--is-ancestor",
+          `${revision}^{commit}`,
+          `${targetRevision}^{commit}`,
+        ],
+        true
+      ).exitCode === 0
+  );
+
+const automaticRemovalDisposition = (
+  lease: LoopLease,
+  worktree: WorktreeInventory & { headSha: string },
+  targetRevision: string
+): LoopWorktreeDisposition => ({
+  approvedBy: `mode:${lease.mode}`,
+  branch: worktree.branch,
+  changeDigest: worktree.changeDigest,
+  createdAt: new Date().toISOString(),
+  headSha: worktree.headSha,
+  outcome: "remove-after-audit",
+  path: worktree.path,
+  reason:
+    "The current integration request authorizes automatic cleanup after repeated inventory proved this unchanged clean checkout has zero commits outside the refreshed target.",
+  targetRef: lease.targetRef,
+  targetRevision,
+  uniqueCommitCount: 0,
+});
+
+type AutomaticCleanupCandidate = WorktreeInventory & { headSha: string };
+
+const automaticCleanupCandidates = (
+  lease: LoopLease,
+  inventory: RepositoryInventory,
+  targetBranch: string,
+  targetRevision: string
+): AutomaticCleanupCandidate[] => {
+  const registeredByPath = new Map(
+    lease.worktrees.map((worktree) => [worktree.path, worktree])
+  );
+  const coordination = readCoordinationDocumentFromCommonDirectory(
+    lease.commonGitDirectory
+  );
+  const primaryBranch =
+    inventory.worktrees.find(
+      (worktree) => worktree.path === lease.primaryCheckout
+    )?.branch ?? null;
+  return inventory.worktrees.filter((worktree) => {
+    const registered = registeredByPath.get(worktree.path);
+    const basicCandidate = Boolean(
+      !worktree.isPrimary &&
+        registered &&
+        registered.role !== "concurrent-author" &&
+        registered.role !== "retained" &&
+        worktree.changes.length === 0 &&
+        worktree.headSha &&
+        targetContainsRevision(
+          inventory.repository.primaryCheckout,
+          targetRevision,
+          worktree.headSha
+        )
+    );
+    if (!(basicCandidate && registered)) {
+      return false;
+    }
+    const activelyClaimed = concurrentClaimFor(
+      lease,
+      worktree,
+      coordination,
+      primaryBranch,
+      targetBranch
+    );
+    return Boolean(
+      !activelyClaimed &&
+        (registered.createdByRun ||
+          (registered.role === "preserved" &&
+            registered.baselineHeadSha === worktree.headSha &&
+            registered.baselineChangeDigest === worktree.changeDigest))
+    );
+  }) as AutomaticCleanupCandidate[];
+};
+
+const recordAutomaticDispositions = (
+  lease: LoopLease,
+  candidates: AutomaticCleanupCandidate[],
+  targetRevision: string
+): LoopLease => {
+  const registeredByPath = new Map(
+    lease.worktrees.map((worktree) => [worktree.path, worktree])
+  );
+  const dispositions = candidates
+    .filter((worktree) => !registeredByPath.get(worktree.path)?.createdByRun)
+    .map((worktree) =>
+      automaticRemovalDisposition(lease, worktree, targetRevision)
+    );
+  if (dispositions.length === 0) {
+    return lease;
+  }
+  const paths = new Set(dispositions.map((disposition) => disposition.path));
+  return writeLease({
+    ...lease,
+    dispositions: [
+      ...(lease.dispositions ?? []).filter(
+        (disposition) => !paths.has(disposition.path)
+      ),
+      ...dispositions,
+    ],
+    updatedAt: new Date().toISOString(),
+  });
+};
+
+interface AutomaticRemovalResult {
+  lease: LoopLease;
+  removed: AutomaticCleanupCandidate[];
+}
+
+const crashAfterAutomaticWorktreeRemovalForTest = (path: string): void => {
+  if (
+    process.env.NODE_ENV === "test" &&
+    process.env.SIMPLE_CHANGES_TEST_CRASH_AFTER_WORKTREE_REMOVE === path
+  ) {
+    process.kill(process.pid, "SIGKILL");
+  }
+};
+
+const removeAutomaticWorktrees = (
+  lease: LoopLease,
+  repositoryPath: string,
+  targetBranch: string,
+  targetRevision: string,
+  candidates: AutomaticCleanupCandidate[],
+  cleanup: FinalizationCleanupResult
+): AutomaticRemovalResult => {
+  let currentLease = lease;
+  const removed: AutomaticCleanupCandidate[] = [];
+  for (const worktree of candidates.filter(
+    (candidate) => !candidate.prunable
+  )) {
+    const freshInventory = captureInventory(repositoryPath);
+    const fresh = automaticCleanupCandidates(
+      lease,
+      freshInventory,
+      targetBranch,
+      targetRevision
+    ).find(
+      (candidate) =>
+        candidate.path === worktree.path &&
+        candidate.branch === worktree.branch &&
+        candidate.headSha === worktree.headSha &&
+        candidate.changeDigest === worktree.changeDigest
+    );
+    if (!fresh) {
+      cleanup.errors.push(
+        `Cleanup candidate changed or became claimed during final audit and was preserved: ${worktree.path}`
+      );
+      continue;
+    }
+    currentLease = recordAutomaticDispositions(
+      currentLease,
+      [fresh],
+      targetRevision
+    );
+    const removal = runGit(
+      repositoryPath,
+      ["worktree", "remove", worktree.path],
+      true
+    );
+    if (removal.exitCode === 0) {
+      crashAfterAutomaticWorktreeRemovalForTest(worktree.path);
+      cleanup.removedWorktrees.push(worktree.path);
+      removed.push(worktree);
+      continue;
+    }
+    cleanup.errors.push(
+      `Could not remove proven cleanup worktree ${worktree.path}: ${removal.stderr.trim() || removal.stdout.trim()}`
+    );
+  }
+  return { lease: currentLease, removed };
+};
+
+const pruneAutomaticWorktreeMetadata = (
+  lease: LoopLease,
+  repositoryPath: string,
+  candidates: AutomaticCleanupCandidate[],
+  targetRevision: string,
+  cleanup: FinalizationCleanupResult
+): AutomaticRemovalResult => {
+  let currentLease = lease;
+  const removed: AutomaticCleanupCandidate[] = [];
+  const prunable = candidates.filter((candidate) => candidate.prunable);
+  if (prunable.length === 0) {
+    return { lease: currentLease, removed };
+  }
+  currentLease = recordAutomaticDispositions(
+    currentLease,
+    prunable,
+    targetRevision
+  );
+  const result = runGit(
+    repositoryPath,
+    ["worktree", "prune", "--expire", "now"],
+    true
+  );
+  if (result.exitCode !== 0) {
+    cleanup.errors.push(
+      `Could not prune stale worktree metadata: ${result.stderr.trim() || result.stdout.trim()}`
+    );
+    return { lease: currentLease, removed };
+  }
+  const remainingPaths = new Set(
+    captureInventory(repositoryPath).worktrees.map((worktree) => worktree.path)
+  );
+  for (const candidate of prunable) {
+    if (remainingPaths.has(candidate.path)) {
+      cleanup.errors.push(
+        `Stale worktree metadata remained after pruning: ${candidate.path}`
+      );
+      continue;
+    }
+    cleanup.prunedWorktreeMetadata += 1;
+    cleanup.removedWorktrees.push(candidate.path);
+    removed.push(candidate);
+  }
+  return { lease: currentLease, removed };
+};
+
+const removeTargetContainedBranches = (
+  lease: LoopLease,
+  repositoryPath: string,
+  targetBranch: string,
+  targetRevision: string,
+  cleanup: FinalizationCleanupResult
+): void => {
+  const inventory = captureInventory(repositoryPath);
+  const openingBranches = new Map(
+    (lease.openingBranches ?? []).map((branch) => [branch.name, branch.sha])
+  );
+  const runOwnedBranches = new Set([
+    ...lease.worktrees
+      .filter((worktree) => worktree.createdByRun)
+      .flatMap((worktree) => (worktree.branch ? [worktree.branch] : [])),
+    ...lease.preparations.map((preparation) => preparation.branch),
+  ]);
+  for (const branch of inventory.branches) {
+    const unchangedOpeningBranch =
+      openingBranches.get(branch.name) === branch.sha;
+    const removable =
+      branch.name !== targetBranch &&
+      branch.worktreePath === null &&
+      (unchangedOpeningBranch || runOwnedBranches.has(branch.name)) &&
+      targetContainsRevision(repositoryPath, targetRevision, branch.sha);
+    if (!removable) {
+      continue;
+    }
+    const deleted = runGit(
+      repositoryPath,
+      ["update-ref", "-d", `refs/heads/${branch.name}`, branch.sha],
+      true
+    );
+    if (deleted.exitCode !== 0) {
+      cleanup.errors.push(
+        `Could not delete proven target-contained branch ${branch.name}: ${deleted.stderr.trim() || deleted.stdout.trim()}`
+      );
+      continue;
+    }
+    cleanup.removedBranches.push(branch.name);
+    runGit(
+      repositoryPath,
+      ["config", "--remove-section", `branch.${branch.name}`],
+      true
+    );
+  }
+};
+
+const switchCleanPrimaryToTarget = (
+  lease: LoopLease,
+  inventory: RepositoryInventory,
+  targetBranch: string,
+  targetRevision: string,
+  cleanup: FinalizationCleanupResult
+): void => {
+  const primary = inventory.worktrees.find(
+    (worktree) => worktree.path === lease.primaryCheckout
+  );
+  if (
+    !primary ||
+    primary.changes.length > 0 ||
+    primary.branch === targetBranch
+  ) {
+    return;
+  }
+  const targetExists = inventory.branches.some(
+    (branch) => branch.name === targetBranch
+  );
+  const result = runGit(
+    lease.primaryCheckout,
+    targetExists
+      ? ["switch", targetBranch]
+      : ["switch", "-c", targetBranch, targetRevision],
+    true
+  );
+  if (result.exitCode === 0) {
+    cleanup.primaryUpdated = true;
+    return;
+  }
+  cleanup.errors.push(
+    `Could not restore clean primary checkout to ${targetBranch}: ${result.stderr.trim() || result.stdout.trim()}`
+  );
+};
+
+const diffMatchesRevision = (
+  repositoryPath: string,
+  revision: string,
+  paths: string[],
+  cached = false
+): boolean =>
+  runGit(
+    repositoryPath,
+    [
+      "diff",
+      ...(cached ? ["--cached"] : []),
+      ...(cached ? ["--ita-visible-in-index"] : []),
+      "--quiet",
+      revision,
+      "--",
+      ...paths,
+    ],
+    true
+  ).exitCode === 0;
+
+const indexHasOnlyOrdinaryEntries = (
+  repositoryPath: string,
+  paths: string[]
+): boolean =>
+  paths.every((path) => {
+    const result = runGit(
+      repositoryPath,
+      ["ls-files", "--debug", "--", path],
+      true
+    );
+    if (result.exitCode !== 0) {
+      return false;
+    }
+    const flags = [...result.stdout.matchAll(/^\s+flags:\s+(\d+)\s*$/gmu)];
+    return flags.every((match) => match[1] === "0");
+  });
+
+const reconcileTargetEquivalentPrimaryChanges = (
+  lease: LoopLease,
+  inventory: RepositoryInventory,
+  targetRevision: string,
+  cleanup: FinalizationCleanupResult
+): void => {
+  const primary = inventory.worktrees.find(
+    (worktree) => worktree.path === lease.primaryCheckout
+  );
+  if (!(primary?.headSha && primary.changes.length > 0)) {
+    return;
+  }
+  const eligiblePaths = new Set<string>();
+  for (const change of primary.changes) {
+    if (change.conflicted || change.untracked) {
+      continue;
+    }
+    const paths = [change.originalPath, change.path].filter(
+      (path): path is string => Boolean(path)
+    );
+    const worktreeMatchesTarget = diffMatchesRevision(
+      lease.primaryCheckout,
+      targetRevision,
+      paths
+    );
+    const indexIsRecoverable =
+      indexHasOnlyOrdinaryEntries(lease.primaryCheckout, paths) &&
+      (diffMatchesRevision(
+        lease.primaryCheckout,
+        primary.headSha,
+        paths,
+        true
+      ) ||
+        diffMatchesRevision(
+          lease.primaryCheckout,
+          targetRevision,
+          paths,
+          true
+        ));
+    if (worktreeMatchesTarget && indexIsRecoverable) {
+      for (const path of paths) {
+        eligiblePaths.add(path);
+      }
+    }
+  }
+  if (eligiblePaths.size === 0) {
+    return;
+  }
+  const freshPrimary = captureInventory(lease.primaryCheckout).worktrees.find(
+    (worktree) => worktree.path === lease.primaryCheckout
+  );
+  if (freshPrimary?.changeDigest !== primary.changeDigest) {
+    cleanup.errors.push(
+      "The primary checkout changed while target-equivalent paths were being audited; no primary path was cleaned."
+    );
+    return;
+  }
+  const paths = [...eligiblePaths].sort();
+  const restored = runGit(
+    lease.primaryCheckout,
+    [
+      "restore",
+      `--source=${primary.headSha}`,
+      "--staged",
+      "--worktree",
+      "--",
+      ...paths,
+    ],
+    true
+  );
+  if (restored.exitCode !== 0) {
+    cleanup.errors.push(
+      `Could not normalize target-equivalent primary paths: ${restored.stderr.trim() || restored.stdout.trim()}`
+    );
+    return;
+  }
+  cleanup.cleanedPrimaryPaths.push(...paths);
+  cleanup.primaryUpdated = true;
+};
+
+const fastForwardCleanPrimary = (
+  lease: LoopLease,
+  inventory: RepositoryInventory,
+  targetBranch: string,
+  targetRevision: string,
+  cleanup: FinalizationCleanupResult
+): void => {
+  const primary = inventory.worktrees.find(
+    (worktree) => worktree.path === lease.primaryCheckout
+  );
+  const localTarget = inventory.branches.find(
+    (branch) => branch.name === targetBranch
+  );
+  const canFastForward = Boolean(
+    primary?.branch === targetBranch &&
+      primary.changes.length === 0 &&
+      localTarget &&
+      localTarget.sha !== targetRevision &&
+      targetContainsRevision(
+        inventory.repository.primaryCheckout,
+        targetRevision,
+        localTarget.sha
+      )
+  );
+  if (!(canFastForward && localTarget)) {
+    return;
+  }
+  const result = runGit(
+    lease.primaryCheckout,
+    ["merge", "--ff-only", targetRevision],
+    true
+  );
+  if (result.exitCode === 0) {
+    cleanup.primaryUpdated = true;
+    return;
+  }
+  cleanup.errors.push(
+    `Could not fast-forward clean primary checkout to ${targetRevision}: ${result.stderr.trim() || result.stdout.trim()}`
+  );
+};
+
+const bindAutomaticPrimaryBranchChange = (
+  lease: LoopLease,
+  inventory: RepositoryInventory
+): LoopLease => {
+  const primary = inventory.worktrees.find(
+    (worktree) => worktree.path === lease.primaryCheckout
+  );
+  const registered = lease.worktrees.find(
+    (worktree) => worktree.path === lease.primaryCheckout
+  );
+  if (
+    !(primary && registered?.mutationAllowed) ||
+    registered.branch === primary.branch
+  ) {
+    return lease;
+  }
+  return writeLease({
+    ...lease,
+    updatedAt: new Date().toISOString(),
+    worktrees: lease.worktrees.map((worktree) =>
+      worktree.path === lease.primaryCheckout
+        ? { ...worktree, branch: primary.branch }
+        : worktree
+    ),
+  });
+};
+
+const automaticFinalizationCleanup = (
+  leaseInput: LoopLease,
+  inventoryInput: RepositoryInventory,
+  verification: LoopVerification
+): { cleanup: FinalizationCleanupResult; lease: LoopLease } => {
+  const cleanup = emptyFinalizationCleanup();
+  if (!(AUTOMATIC_CLEANUP_MODES.has(leaseInput.mode) && verification.ok)) {
+    return { cleanup, lease: leaseInput };
+  }
+  let lease = leaseInput;
+  let targetRevision: string;
+  const targetBranch = targetBranchForRef(
+    inventoryInput.repository.primaryCheckout,
+    lease.targetRef
+  );
+  try {
+    targetRevision = currentTargetRevision(lease);
+  } catch (error) {
+    cleanup.errors.push(
+      error instanceof Error
+        ? error.message
+        : "The cleanup target is unresolved."
+    );
+    return { cleanup, lease };
+  }
+  if (!targetBranch) {
+    cleanup.errors.push(
+      `Cannot resolve the local branch for ${lease.targetRef}.`
+    );
+    return { cleanup, lease };
+  }
+  const repositoryPath = inventoryInput.repository.primaryCheckout;
+  const candidates = automaticCleanupCandidates(
+    lease,
+    inventoryInput,
+    targetBranch,
+    targetRevision
+  );
+  const liveRemoval = removeAutomaticWorktrees(
+    lease,
+    repositoryPath,
+    targetBranch,
+    targetRevision,
+    candidates,
+    cleanup
+  );
+  ({ lease } = liveRemoval);
+  const staleRemoval = pruneAutomaticWorktreeMetadata(
+    lease,
+    repositoryPath,
+    candidates,
+    targetRevision,
+    cleanup
+  );
+  ({ lease } = staleRemoval);
+  removeTargetContainedBranches(
+    lease,
+    repositoryPath,
+    targetBranch,
+    targetRevision,
+    cleanup
+  );
+  let inventory = captureInventory(repositoryPath);
+  reconcileTargetEquivalentPrimaryChanges(
+    lease,
+    inventory,
+    targetRevision,
+    cleanup
+  );
+  inventory = captureInventory(repositoryPath);
+  switchCleanPrimaryToTarget(
+    lease,
+    inventory,
+    targetBranch,
+    targetRevision,
+    cleanup
+  );
+  inventory = captureInventory(repositoryPath);
+  fastForwardCleanPrimary(
+    lease,
+    inventory,
+    targetBranch,
+    targetRevision,
+    cleanup
+  );
+  inventory = captureInventory(repositoryPath);
+  lease = bindAutomaticPrimaryBranchChange(lease, inventory);
+  removeTargetContainedBranches(
+    lease,
+    repositoryPath,
+    targetBranch,
+    targetRevision,
+    cleanup
+  );
+  cleanup.removedBranches = [...new Set(cleanup.removedBranches)].sort();
+  cleanup.removedWorktrees = [...new Set(cleanup.removedWorktrees)].sort();
+  return { cleanup, lease };
+};
+
 const loopCompletionBlockers = (
   lease: LoopLease,
   inventory: RepositoryInventory,
-  verification: LoopVerification
+  verification: LoopVerification,
+  cleanupErrors: string[] = []
 ): string[] => {
-  const blockers: string[] = [];
+  const blockers: string[] = [...cleanupErrors];
   if (!verification.ok) {
     blockers.push(
       `manifest violations: ${verification.violations
@@ -2836,6 +3475,7 @@ const loopCompletionBlockers = (
 
 export interface LoopFinalizationResult {
   blockers: string[];
+  cleanup: FinalizationCleanupResult;
   lease: LoopLease | null;
   outcome: "completed" | "relinquished";
   verification: LoopVerification;
@@ -2853,46 +3493,71 @@ export const finalizeLoop = (
   return withStateLock(
     opening.repository.commonGitDirectory,
     "loop finalize",
-    () => {
-      const inventory = captureInventory(repositoryPath);
-      const lease = requireLease(inventory);
-      assertMatchingRun(lease, runId);
-      if (lease.ownerAgentId !== ownerAgentId) {
-        throw new SimpleChangesError(
-          `Only loop owner ${lease.ownerAgentId} may finalize this loop.`,
-          EXIT_CODES.unsafe
-        );
-      }
-      assertControllerActive(lease);
-      const verification = verificationAgainst(lease, inventory);
-      const blockers = loopCompletionBlockers(lease, inventory, verification);
-      if (blockers.length === 0) {
-        rmSync(loopLeasePath(lease.commonGitDirectory), { force: true });
-        return { blockers, lease: null, outcome: "completed", verification };
-      }
-      const now = new Date().toISOString();
-      const updated = writeLease({
-        ...lease,
-        controller: {
-          ...controllerLifecycle(lease),
-          reason,
-          relinquishedAt: now,
-          status: "relinquished",
-        },
-        updatedAt: now,
-        worktrees: lease.worktrees.map((worktree) =>
-          worktree.role === "controller"
-            ? { ...worktree, mutationAllowed: false }
-            : worktree
-        ),
-      });
-      return {
-        blockers,
-        lease: updated,
-        outcome: "relinquished",
-        verification,
-      };
-    }
+    () =>
+      withWorktreeCoordinationLock(
+        opening.repository.commonGitDirectory,
+        "loop finalize cleanup",
+        () => {
+          const inventory = captureInventory(repositoryPath);
+          let lease = requireLease(inventory);
+          assertMatchingRun(lease, runId);
+          if (lease.ownerAgentId !== ownerAgentId) {
+            throw new SimpleChangesError(
+              `Only loop owner ${lease.ownerAgentId} may finalize this loop.`,
+              EXIT_CODES.unsafe
+            );
+          }
+          assertControllerActive(lease);
+          const openingVerification = verificationAgainst(lease, inventory);
+          const automaticCleanup = automaticFinalizationCleanup(
+            lease,
+            inventory,
+            openingVerification
+          );
+          ({ lease } = automaticCleanup);
+          const finalInventory = captureInventory(repositoryPath);
+          const verification = verificationAgainst(lease, finalInventory);
+          const blockers = loopCompletionBlockers(
+            lease,
+            finalInventory,
+            verification,
+            automaticCleanup.cleanup.errors
+          );
+          if (blockers.length === 0) {
+            rmSync(loopLeasePath(lease.commonGitDirectory), { force: true });
+            return {
+              blockers,
+              cleanup: automaticCleanup.cleanup,
+              lease: null,
+              outcome: "completed",
+              verification,
+            };
+          }
+          const now = new Date().toISOString();
+          const updated = writeLease({
+            ...lease,
+            controller: {
+              ...controllerLifecycle(lease),
+              reason,
+              relinquishedAt: now,
+              status: "relinquished",
+            },
+            updatedAt: now,
+            worktrees: lease.worktrees.map((worktree) =>
+              worktree.role === "controller"
+                ? { ...worktree, mutationAllowed: false }
+                : worktree
+            ),
+          });
+          return {
+            blockers,
+            cleanup: automaticCleanup.cleanup,
+            lease: updated,
+            outcome: "relinquished",
+            verification,
+          };
+        }
+      )
   );
 };
 

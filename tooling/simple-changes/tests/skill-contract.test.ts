@@ -186,6 +186,12 @@ describe("Simple Changes skill contract", () => {
     );
     expect(normalizedSkill).toContain("loop finalize");
     expect(normalizedSkill).toContain(
+      "automatically removes proven safe worktrees, stale metadata, and merged local branches"
+    );
+    expect(normalizedSkill).toContain(
+      "any unresolved dirty-primary path keeps the run incomplete"
+    );
+    expect(normalizedSkill).toContain(
       "exact current run ID and manifest digest plus approver and reason"
     );
     expect(normalizedInventory).toContain(
@@ -193,6 +199,9 @@ describe("Simple Changes skill contract", () => {
     );
     expect(normalizedCleanup).toContain(
       "It releases a complete lease or relinquishes an incomplete one"
+    );
+    expect(normalizedCleanup).toContain(
+      "Incomplete finalization relinquishes durable state and exits nonzero"
     );
   });
 
@@ -535,7 +544,7 @@ describe("Simple Changes skill contract", () => {
     );
     expect(normalizedSkill).toContain("loop dispose-worktree");
     expect(normalizedSkill).toContain(
-      "clean and has zero unique commits outside the refreshed canonical target revision"
+      "proving it clean with zero unique commits"
     );
     expect(normalizedConcurrency).toContain(
       "The disposition permits only that opening worktree's absence"

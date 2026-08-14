@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { delimiter, resolve } from "node:path";
+import { basename, delimiter, resolve } from "node:path";
 import type { ChangelogCoordination } from "./types.ts";
 
 const RELEASE_SURFACES = [
@@ -9,12 +9,20 @@ const RELEASE_SURFACES = [
   "DEVELOPER_CHANGELOG.md",
 ] as const;
 
-const REPOSITORY_SKILL_PATHS = [
-  "skills/simple-changelogs/SKILL.md",
-  ".agents/skills/simple-changelogs/SKILL.md",
-  ".codex/skills/simple-changelogs/SKILL.md",
-  ".claude/skills/simple-changelogs/SKILL.md",
-  ".cursor/skills/simple-changelogs/SKILL.md",
+const DISTRIBUTION_BY_INSTALLATION: Record<string, string> = {
+  "simple-changelogs": "full",
+  "simple-changelogs-mobile": "mobile",
+  "simple-changelogs-skill-maintainer": "skill-repository",
+  "simple-changelogs-web": "web",
+  "simple-changelogs-web-cms": "web-cms",
+};
+const INSTALLATION_NAMES = Object.keys(DISTRIBUTION_BY_INSTALLATION);
+const REPOSITORY_SKILL_ROOTS = [
+  "skills",
+  ".agents/skills",
+  ".codex/skills",
+  ".claude/skills",
+  ".cursor/skills",
 ] as const;
 
 const GLOBAL_SKILL_ROOTS = [
@@ -28,7 +36,6 @@ const CURRENT_GUIDANCE_VERSION_PATTERN =
 const FULL_DISTRIBUTION_PATTERN =
   /full (?:cross-surface )?simple changelogs distribution/iu;
 const NARROWER_DISTRIBUTION_PATTERN = /narrower .* distribution/iu;
-
 interface ChangelogDiscoveryOptions {
   environment?: Record<string, string | undefined>;
   homeDirectory?: string;
@@ -130,6 +137,11 @@ const supportsDistribution = (
   if (!distribution) {
     return true;
   }
+  const installedDistribution =
+    DISTRIBUTION_BY_INSTALLATION[basename(resolve(provider, ".."))];
+  if (installedDistribution) {
+    return installedDistribution === distribution;
+  }
   try {
     const source = readFileSync(provider, "utf8");
     if (distribution === "full") {
@@ -137,7 +149,7 @@ const supportsDistribution = (
     }
     return (
       source.includes(`"distribution": "${distribution}"`) ||
-      source.toLowerCase().includes(`${distribution} distribution`) ||
+      source.includes(`Current distribution: ${distribution}`) ||
       !FULL_DISTRIBUTION_PATTERN.test(source)
     );
   } catch {
@@ -167,12 +179,16 @@ export const inspectChangelogCoordination = (
       )
     : [];
   const repositoryProviders = repositoryRoot
-    ? REPOSITORY_SKILL_PATHS.map((path) =>
-        resolve(repositoryRoot, path)
+    ? REPOSITORY_SKILL_ROOTS.flatMap((root) =>
+        INSTALLATION_NAMES.map((name) =>
+          resolve(repositoryRoot, root, name, "SKILL.md")
+        )
       ).filter(existsSync)
     : [];
   const globalProviders = configuredSkillRoots(options)
-    .map((root) => resolve(root, "simple-changelogs", "SKILL.md"))
+    .flatMap((root) =>
+      INSTALLATION_NAMES.map((name) => resolve(root, name, "SKILL.md"))
+    )
     .filter(existsSync);
   const stored = storedGuidanceVersion(repositoryRoot);
   const providers = [

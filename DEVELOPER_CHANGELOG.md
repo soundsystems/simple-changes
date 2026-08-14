@@ -1,5 +1,82 @@
 # Developer changelog
 
+## 0.12.3 - 2026-08-14
+
+- Restored proof-bound automatic cleanup during finalization:
+  - Integrate, Ship, Reconcile, and Resume identify registered non-primary
+    worktrees that are clean, unclaimed, unretained, unchanged from their
+    opening baseline or created by the run, and exactly contained in the
+    refreshed target.
+  - Finalization records automatic dispositions for eligible opening
+    worktrees, removes live candidates, prunes eligible stale worktree
+    metadata, and restores or fast-forwards a clean primary checkout.
+  - The lease captures every opening branch's exact name and SHA. Automatic
+    branch deletion is limited to a target-contained branch still matching that
+    opening tuple or a branch owned by a run-created worktree or preparation;
+    checked-out, late-arriving, or moved opening branches are preserved.
+  - Finalization holds both the loop-state and worktree-coordination locks.
+    Immediately before each live worktree removal it recomputes eligibility and
+    requires the same path, branch, head SHA, content-sensitive change digest,
+    and unclaimed status. It then persists the candidate's exact automatic
+    opening-worktree removal disposition before invoking destructive
+    `git worktree remove` or `git worktree prune`, providing a durable intent
+    across process death.
+  - Before fast-forwarding, tracked dirty-primary paths are normalized only
+    when their worktree bytes exactly match the refreshed target and their
+    index has only zero-flag ordinary entries whose intent-to-add-visible cached
+    diff matches either current HEAD or that target. Finalization rechecks the
+    complete primary change digest before restoring eligible paths from current
+    HEAD into both index and worktree.
+  - Intent-to-add and other nonordinary index flags, unique staged content,
+    conflicts, untracked or target-divergent primary paths, active claims,
+    retained and concurrent-author roles, changed or dirty non-primary
+    worktrees, unregistered late arrivals, checked-out branches, rewritten
+    targets, and branches with unique commits continue to fail closed or remain
+    preserved.
+  - Cleanup results report normalized primary paths, removed worktrees and
+    branches, pruned metadata, a primary update, and any cleanup errors before
+    final inventory is verified.
+- Made terminal finalization outcomes unambiguous:
+  - A completed cleanup releases the lease only after the final inventory and
+    manifest pass every completion gate.
+  - Remaining blockers atomically relinquish durable controller state and the
+    CLI exits with the unsafe nonzero status instead of returning a successful
+    `relinquished` result that could be mistaken for completion.
+  - Loop-lock recovery also inspects the coordination lock and removes it only
+    when its host and PID match the stale loop owner, its minimum stale age has
+    elapsed, and that local PID is dead. Active, mismatched, remote-host, young,
+    or malformed ownership evidence still fails closed.
+  - After recovery, the persisted exact removal intent lets finalization accept
+    the already absent preserved worktree and resume cleanup instead of
+    deadlocking on a missing-preserved violation.
+- Removed the atomic deadlock from historical preserved-worktree overrides:
+  - `loop allow` now validates whether the proposed exact path-and-digest
+    override resolves violations for that path, then persists it even when
+    unrelated preserved paths still have their own blockers.
+  - Multiple historical overrides can therefore be recorded sequentially;
+    stale or insufficient evidence for the named path still fails closed.
+- Tightened Simple Changelogs distribution discovery:
+  - Known installation directory names map to one exact distribution, and the
+    fallback accepts only an explicit current-distribution marker rather than
+    loose prose that may describe an incompatible distribution.
+  - Repository-local and configured global skill roots enumerate
+    `simple-changelogs`, `simple-changelogs-mobile`,
+    `simple-changelogs-skill-maintainer`, `simple-changelogs-web`, and
+    `simple-changelogs-web-cms`, making each mapped distribution discoverable.
+  - Added regression coverage for automatic branch/worktree cleanup, stale
+    metadata pruning, opening-ledger and late-branch protection, lock-held
+    worktree candidate revalidation, pre-mutation durable removal intents,
+    target-equivalent primary normalization and fast-forward, intent-to-add and
+    unique staged/index protection, clean primary restoration, detached
+    worktrees, late-arrival preservation, dirty/unique-work preservation,
+    sequential historical overrides, nonzero relinquishment, a real child
+    process receiving `SIGKILL` immediately after Git worktree removal followed
+    by stale-lock recovery and successful resumed finalization, and mapped
+    distribution discovery.
+- Advanced the package and CLI to 0.12.3 and installed Simple Changes guidance
+  to version 9.
+<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-14T01:53:58-05:00" -->
+
 ## 0.12.2 - 2026-08-13
 
 - Closed retained/concurrent pause handoff deadlocks:

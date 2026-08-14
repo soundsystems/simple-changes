@@ -89,7 +89,7 @@ Use these safe defaults when no committed policy exists:
 ```json
 {
   "schemaVersion": 1,
-  "guidance": { "disposition": "accepted", "version": 8 },
+  "guidance": { "disposition": "accepted", "version": 9 },
   "changelogHandling": "preserve-and-report",
   "defaultFinish": "open-change-request",
   "gitPushAuthorization": "ask",

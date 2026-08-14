@@ -1,9 +1,17 @@
 import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { hostname } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { sleep } from "bun";
 import { captureInventory } from "../../../skills/simple-changes/scripts/lib/inventory.ts";
 import {
@@ -36,6 +44,7 @@ import {
   claimWorktree,
   pauseClaimedWorktree,
   releaseWorktreeClaim,
+  withWorktreeCoordinationLock,
 } from "../../../skills/simple-changes/scripts/lib/worktree-coordination.ts";
 import {
   createTestRepository,
@@ -221,6 +230,7 @@ describe("active integration-loop lease", () => {
       "author",
       "unfinished unit"
     );
+    writeFixture(prepared.path, "unfinished.txt", "still being authored\n");
 
     const finalized = finalizeLoop(
       fixture.root,
@@ -287,7 +297,7 @@ describe("active integration-loop lease", () => {
     expect(readLoopLease(fixture.root)).toBeNull();
   });
 
-  test("refuses completion while a target-contained local branch remains", () => {
+  test("automatically prunes a target-contained local branch at completion", () => {
     const fixture = repository();
     git(fixture.root, ["branch", "merged-unit"]);
     const lease = startLoop(fixture.root, "controller", "integrate");
@@ -299,13 +309,11 @@ describe("active integration-loop lease", () => {
       "A merged local branch still needs cleanup."
     );
 
-    expect(finalized).toMatchObject({
-      blockers: [expect.stringContaining("merged-unit")],
-      outcome: "relinquished",
-    });
+    expect(finalized).toMatchObject({ blockers: [], outcome: "completed" });
+    expect(git(fixture.root, ["branch", "--list", "merged-unit"])).toBe("");
   });
 
-  test("refuses completion while a clean merged worktree remains", () => {
+  test("automatically removes a stable clean merged worktree at completion", () => {
     const fixture = repository();
     const mergedWorktree = join(fixture.base, "merged-unit");
     git(fixture.root, ["worktree", "add", "-b", "merged-unit", mergedWorktree]);
@@ -318,13 +326,145 @@ describe("active integration-loop lease", () => {
       "A clean merged worktree still needs cleanup."
     );
 
-    expect(finalized).toMatchObject({
-      blockers: [expect.stringContaining(mergedWorktree)],
-      outcome: "relinquished",
-    });
+    expect(finalized).toMatchObject({ blockers: [], outcome: "completed" });
+    expect(existsSync(mergedWorktree)).toBe(false);
+    expect(git(fixture.root, ["branch", "--list", "merged-unit"])).toBe("");
   });
 
-  test("refuses completion while the local target trails the refreshed target", () => {
+  test("recovers after process death immediately following automatic worktree removal", async () => {
+    const fixture = repository();
+    const mergedWorktree = join(fixture.base, "crash-recovery-unit");
+    git(fixture.root, [
+      "worktree",
+      "add",
+      "-b",
+      "crash-recovery-unit",
+      mergedWorktree,
+    ]);
+    const lease = startLoop(fixture.root, "controller", "integrate");
+    const moduleUrl = pathToFileURL(
+      join(
+        import.meta.dir,
+        "../../../skills/simple-changes/scripts/lib/loop-lease.ts"
+      )
+    ).href;
+    const child = spawn(
+      process.execPath,
+      [
+        "-e",
+        `import { finalizeLoop } from ${JSON.stringify(moduleUrl)}; finalizeLoop(${JSON.stringify(fixture.root)}, ${JSON.stringify(lease.runId)}, "controller", "Crash recovery test.");`,
+      ],
+      {
+        env: {
+          ...process.env,
+          NODE_ENV: "test",
+          SIMPLE_CHANGES_TEST_CRASH_AFTER_WORKTREE_REMOVE: mergedWorktree,
+        },
+        stdio: "ignore",
+      }
+    );
+    const termination = await new Promise<{
+      code: number | null;
+      signal: NodeJS.Signals | null;
+    }>((resolveTermination) => {
+      child.once("exit", (code, signal) =>
+        resolveTermination({ code, signal })
+      );
+    });
+
+    expect(termination).toEqual({ code: null, signal: "SIGKILL" });
+    expect(existsSync(mergedWorktree)).toBe(false);
+    expect(readLoopLease(fixture.root)?.dispositions).toContainEqual(
+      expect.objectContaining({
+        outcome: "remove-after-audit",
+        path: mergedWorktree,
+      })
+    );
+
+    await sleep(5100);
+    expect(recoverLoopLock(fixture.root, "controller")).toMatchObject({
+      coordinationRecovered: true,
+      recovered: true,
+    });
+    expect(
+      finalizeLoop(
+        fixture.root,
+        lease.runId,
+        "controller",
+        "Resume after exact automatic cleanup recovery."
+      )
+    ).toMatchObject({ blockers: [], outcome: "completed" });
+    expect(git(fixture.root, ["branch", "--list", "crash-recovery-unit"])).toBe(
+      ""
+    );
+  }, 20_000);
+
+  test("automatically prunes stale target-contained worktree metadata", () => {
+    const fixture = repository();
+    const staleWorktree = join(fixture.base, "stale-unit");
+    git(fixture.root, ["worktree", "add", "-b", "stale-unit", staleWorktree]);
+    rmSync(staleWorktree, { recursive: true });
+    const lease = startLoop(fixture.root, "controller", "integrate");
+
+    const finalized = finalizeLoop(
+      fixture.root,
+      lease.runId,
+      "controller",
+      "Prune stale worktree bookkeeping."
+    );
+
+    expect(finalized).toMatchObject({
+      blockers: [],
+      cleanup: { prunedWorktreeMetadata: 1 },
+      outcome: "completed",
+    });
+    expect(git(fixture.root, ["branch", "--list", "stale-unit"])).toBe("");
+  });
+
+  test("does not auto-remove a clean worktree that arrives after the opening inventory", () => {
+    const fixture = repository();
+    const lease = startLoop(fixture.root, "controller", "integrate");
+    const lateWorktree = join(fixture.base, "late-unit");
+    git(fixture.root, ["worktree", "add", "-b", "late-unit", lateWorktree]);
+
+    const finalized = finalizeLoop(
+      fixture.root,
+      lease.runId,
+      "controller",
+      "A new unrelated checkout appeared during cleanup."
+    );
+
+    expect(finalized.outcome).toBe("relinquished");
+    expect(finalized.cleanup.removedWorktrees).not.toContain(lateWorktree);
+    expect(existsSync(lateWorktree)).toBe(true);
+    expect(finalized.verification.violations).toContainEqual(
+      expect.objectContaining({
+        code: "unregistered-worktree",
+        path: lateWorktree,
+      })
+    );
+  });
+
+  test("does not auto-remove a target-contained branch that arrives after the opening inventory", () => {
+    const fixture = repository();
+    const lease = startLoop(fixture.root, "controller", "integrate");
+    git(fixture.root, ["branch", "late-arrival"]);
+
+    const finalized = finalizeLoop(
+      fixture.root,
+      lease.runId,
+      "controller",
+      "A new local branch appeared during cleanup."
+    );
+
+    expect(finalized.outcome).toBe("relinquished");
+    expect(finalized.cleanup.removedBranches).not.toContain("late-arrival");
+    expect(git(fixture.root, ["branch", "--list", "late-arrival"])).not.toBe(
+      ""
+    );
+  });
+
+  test("automatically fast-forwards a clean primary to the refreshed target", () => {
     const fixture = repository();
     git(fixture.root, [
       "remote",
@@ -353,10 +493,185 @@ describe("active integration-loop lease", () => {
       "The local target still needs its guarded update."
     );
 
+    expect(finalized).toMatchObject({ blockers: [], outcome: "completed" });
+    expect(git(fixture.root, ["rev-parse", "main"])).toBe(
+      git(fixture.root, ["rev-parse", "origin/main"])
+    );
+  });
+
+  test("automatically normalizes target-equivalent dirty primary paths before fast-forwarding", () => {
+    const fixture = repository();
+    git(fixture.root, [
+      "remote",
+      "add",
+      "origin",
+      "https://example.invalid/canonical.git",
+    ]);
+    git(fixture.root, ["update-ref", "refs/remotes/origin/main", "HEAD"]);
+    git(fixture.root, [
+      "symbolic-ref",
+      "refs/remotes/origin/HEAD",
+      "refs/remotes/origin/main",
+    ]);
+    git(fixture.root, ["checkout", "--detach"]);
+    writeFixture(fixture.root, "README.md", "# Current target\n");
+    git(fixture.root, ["add", "README.md"]);
+    git(fixture.root, ["commit", "-m", "Advance tracked target content"]);
+    git(fixture.root, ["update-ref", "refs/remotes/origin/main", "HEAD"]);
+    git(fixture.root, ["checkout", "main"]);
+    writeFixture(fixture.root, "README.md", "# Current target\n");
+    const lease = startLoop(fixture.root, "controller", "integrate");
+
+    const finalized = finalizeLoop(
+      fixture.root,
+      lease.runId,
+      "controller",
+      "Normalize bytes that are already exact in the target."
+    );
+
     expect(finalized).toMatchObject({
-      blockers: [expect.stringContaining("Update local target branch main")],
-      outcome: "relinquished",
+      blockers: [],
+      cleanup: { cleanedPrimaryPaths: ["README.md"] },
+      outcome: "completed",
     });
+    expect(git(fixture.root, ["status", "--short"])).toBe("");
+    expect(readFileSync(join(fixture.root, "README.md"), "utf8")).toBe(
+      "# Current target\n"
+    );
+  });
+
+  test("preserves target-equivalent worktree bytes when the index contains unique staged work", () => {
+    const fixture = repository();
+    git(fixture.root, [
+      "remote",
+      "add",
+      "origin",
+      "https://example.invalid/canonical.git",
+    ]);
+    git(fixture.root, ["update-ref", "refs/remotes/origin/main", "HEAD"]);
+    git(fixture.root, [
+      "symbolic-ref",
+      "refs/remotes/origin/HEAD",
+      "refs/remotes/origin/main",
+    ]);
+    git(fixture.root, ["checkout", "--detach"]);
+    writeFixture(fixture.root, "README.md", "# Current target\n");
+    git(fixture.root, ["add", "README.md"]);
+    git(fixture.root, ["commit", "-m", "Advance tracked target content"]);
+    git(fixture.root, ["update-ref", "refs/remotes/origin/main", "HEAD"]);
+    git(fixture.root, ["checkout", "main"]);
+    writeFixture(fixture.root, "README.md", "# Unique staged work\n");
+    git(fixture.root, ["add", "README.md"]);
+    writeFixture(fixture.root, "README.md", "# Current target\n");
+    const lease = startLoop(fixture.root, "controller", "integrate");
+
+    const finalized = finalizeLoop(
+      fixture.root,
+      lease.runId,
+      "controller",
+      "Do not erase staged work merely because worktree bytes match target."
+    );
+
+    expect(finalized.outcome).toBe("relinquished");
+    expect(finalized.cleanup.cleanedPrimaryPaths).toEqual([]);
+    expect(git(fixture.root, ["show", ":README.md"])).toBe(
+      "# Unique staged work"
+    );
+    expect(readFileSync(join(fixture.root, "README.md"), "utf8")).toBe(
+      "# Current target\n"
+    );
+  });
+
+  test("preserves intent-to-add index state even when worktree bytes match target", () => {
+    const fixture = repository();
+    git(fixture.root, [
+      "remote",
+      "add",
+      "origin",
+      "https://example.invalid/canonical.git",
+    ]);
+    git(fixture.root, ["update-ref", "refs/remotes/origin/main", "HEAD"]);
+    git(fixture.root, [
+      "symbolic-ref",
+      "refs/remotes/origin/HEAD",
+      "refs/remotes/origin/main",
+    ]);
+    git(fixture.root, ["checkout", "--detach"]);
+    writeFixture(fixture.root, "target.txt", "already in target\n");
+    git(fixture.root, ["add", "target.txt"]);
+    git(fixture.root, ["commit", "-m", "Add target file"]);
+    git(fixture.root, ["update-ref", "refs/remotes/origin/main", "HEAD"]);
+    git(fixture.root, ["checkout", "main"]);
+    writeFixture(fixture.root, "target.txt", "already in target\n");
+    git(fixture.root, ["add", "-N", "target.txt"]);
+    const before = git(fixture.root, ["ls-files", "--debug", "target.txt"]);
+    const lease = startLoop(fixture.root, "controller", "integrate");
+
+    const finalized = finalizeLoop(
+      fixture.root,
+      lease.runId,
+      "controller",
+      "Intent-to-add is distinct index state and must survive."
+    );
+
+    expect(finalized.outcome).toBe("relinquished");
+    expect(finalized.cleanup.cleanedPrimaryPaths).toEqual([]);
+    expect(git(fixture.root, ["ls-files", "--debug", "target.txt"])).toBe(
+      before
+    );
+  });
+
+  test("preserves a clean target-contained worktree claimed before finalization", () => {
+    const fixture = repository();
+    const claimed = join(fixture.base, "claimed-clean");
+    git(fixture.root, ["worktree", "add", "-b", "claimed-clean", claimed]);
+    const lease = startLoop(fixture.root, "controller", "integrate");
+    claimWorktree(fixture.root, "other-agent", claimed, "codex", "active-task");
+
+    const finalized = finalizeLoop(
+      fixture.root,
+      lease.runId,
+      "controller",
+      "A claimed checkout must not be removed."
+    );
+
+    expect(finalized.outcome).toBe("completed");
+    expect(finalized.cleanup.removedWorktrees).not.toContain(claimed);
+    expect(existsSync(claimed)).toBe(true);
+  });
+
+  test("serializes final cleanup against coordination-state mutations", () => {
+    const fixture = repository();
+    const cleanupCandidate = join(fixture.base, "cleanup-candidate");
+    git(fixture.root, [
+      "worktree",
+      "add",
+      "-b",
+      "cleanup-candidate",
+      cleanupCandidate,
+    ]);
+    const lease = startLoop(fixture.root, "controller", "integrate");
+    const {
+      repository: { commonGitDirectory },
+    } = captureInventory(fixture.root);
+
+    withWorktreeCoordinationLock(
+      commonGitDirectory,
+      "simulated concurrent claim",
+      () => {
+        expect(() =>
+          finalizeLoop(
+            fixture.root,
+            lease.runId,
+            "controller",
+            "Do not race a coordination mutation."
+          )
+        ).toThrow("is busy");
+      }
+    );
+
+    expect(existsSync(cleanupCandidate)).toBe(true);
+    expect(readLoopLease(fixture.root)?.controller?.status).toBe("active");
   });
 
   test("preserves dirty worktrees and branches with unique commits", () => {
@@ -382,7 +697,7 @@ describe("active integration-loop lease", () => {
     ).toMatchObject({ blockers: [], outcome: "completed" });
   });
 
-  test("refuses completion until the primary checkout is restored", () => {
+  test("automatically restores a clean target-contained primary checkout", () => {
     const fixture = repository();
     git(fixture.root, ["checkout", "-b", "merged-controller"]);
     const lease = startLoop(fixture.root, "controller", "integrate");
@@ -394,10 +709,11 @@ describe("active integration-loop lease", () => {
       "The primary checkout still needs restoration."
     );
 
-    expect(finalized.blockers).toContainEqual(
-      expect.stringContaining("Restore primary checkout")
+    expect(finalized).toMatchObject({ blockers: [], outcome: "completed" });
+    expect(git(fixture.root, ["branch", "--show-current"])).toBe("main");
+    expect(git(fixture.root, ["branch", "--list", "merged-controller"])).toBe(
+      ""
     );
-    expect(finalized.outcome).toBe("relinquished");
   });
 
   test("refuses completion while the primary checkout is dirty", () => {
@@ -451,7 +767,7 @@ describe("active integration-loop lease", () => {
     });
   });
 
-  test("refuses completion while a clean target-contained detached worktree remains", () => {
+  test("automatically removes a clean target-contained detached worktree", () => {
     const fixture = repository();
     const detachedWorktree = join(fixture.base, "detached-merged-unit");
     git(fixture.root, [
@@ -470,10 +786,8 @@ describe("active integration-loop lease", () => {
       "A clean detached worktree still needs cleanup."
     );
 
-    expect(finalized.blockers).toContainEqual(
-      expect.stringContaining(detachedWorktree)
-    );
-    expect(finalized.outcome).toBe("relinquished");
+    expect(finalized).toMatchObject({ blockers: [], outcome: "completed" });
+    expect(existsSync(detachedWorktree)).toBe(false);
   });
 
   test("requires exact user-authorized evidence to take over an active controller", () => {
@@ -520,12 +834,13 @@ describe("active integration-loop lease", () => {
   test("keeps a relinquished manifest immutable while new concurrent claims appear", () => {
     const fixture = repository();
     const lease = startLoop(fixture.root, "first-controller", "ship");
-    prepareAgentWorktree(
+    const unfinished = prepareAgentWorktree(
       fixture.root,
       lease.runId,
       "unfinished-author",
       "unfinished unit"
     );
+    writeFixture(unfinished.path, "unfinished.txt", "still being authored\n");
     const finalized = finalizeLoop(
       fixture.root,
       lease.runId,
@@ -1419,6 +1734,61 @@ describe("active integration-loop lease", () => {
       })
     );
   }, 20_000);
+
+  test("records multiple exact historical overrides without an atomic deadlock", () => {
+    const fixture = repository();
+    const first = join(fixture.base, "first-preserved");
+    const second = join(fixture.base, "second-preserved");
+    git(fixture.root, ["worktree", "add", "-b", "first-work", first]);
+    git(fixture.root, ["worktree", "add", "-b", "second-work", second]);
+    const lease = startLoop(fixture.root, "controller", "ship");
+    writeFixture(first, "first.ts", "export const first = true;\n");
+    writeFixture(second, "second.ts", "export const second = true;\n");
+    const inventory = captureInventory(fixture.root);
+    const firstCurrent = inventory.worktrees.find(
+      (worktree) => worktree.path === first
+    );
+    const secondCurrent = inventory.worktrees.find(
+      (worktree) => worktree.path === second
+    );
+
+    const afterFirst = grantLoopOverride(
+      fixture.root,
+      lease.runId,
+      "controller",
+      first,
+      firstCurrent?.changeDigest ?? "",
+      "user",
+      "Approve the first exact historical checkout"
+    );
+
+    expect(afterFirst.overrides).toContainEqual(
+      expect.objectContaining({ path: first })
+    );
+    expect(verifyLoop(fixture.root).violations).toContainEqual(
+      expect.objectContaining({
+        code: "preserved-worktree-changed",
+        path: second,
+      })
+    );
+
+    const afterSecond = grantLoopOverride(
+      fixture.root,
+      lease.runId,
+      "controller",
+      second,
+      secondCurrent?.changeDigest ?? "",
+      "user",
+      "Approve the second exact historical checkout"
+    );
+
+    expect(
+      afterSecond.overrides
+        .map((override) => override.path)
+        .sort((left, right) => left.localeCompare(right))
+    ).toEqual([first, second].sort((left, right) => left.localeCompare(right)));
+    expect(verifyLoop(fixture.root).ok).toBe(true);
+  });
 
   test("authorizes removal of an audited obsolete opening worktree", () => {
     const fixture = repository();

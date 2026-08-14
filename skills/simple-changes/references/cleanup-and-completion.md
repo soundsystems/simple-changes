@@ -1,6 +1,7 @@
 # Cleanup and completion
 
-Cleanup is evidence-driven. Remove only objects proven:
+Cleanup is evidence-driven and automatic for proven local candidates in
+Integrate, Ship, Reconcile, and Resume. Remove only objects proven:
 
 - merged into the intended canonical target;
 - obsolete by exact provider/Git evidence; or
@@ -77,10 +78,12 @@ Before reporting completion:
    state and must not be removed merely to make the inventory smaller.
 6. Honor exact unchanged `loop retain-worktree` exclusions without removing or
    including them. If one changes, require an active owner claim or stable pause.
-   For an opening worktree proven obsolete, refresh the target and record a
-   user-approved `loop dispose-worktree` disposition only when it is clean and
-   has zero unique commits. Remove that exact path through `loop exec`; audit
-   its branch separately. Remove every run-created authoring worktree only after
+   An unchanged clean unclaimed opening worktree whose exact head is contained
+   in the refreshed target is an automatic finalization cleanup candidate; use
+   `loop retain-worktree` when that checkout should remain. For changed opening
+   work later proven obsolete, record a user-approved `loop dispose-worktree`
+   disposition only when it is clean and has zero unique commits. Remove that
+   exact path through `loop exec`; audit its branch separately. Remove every run-created authoring worktree only after
    its branch is merged,
    otherwise accounted for, or explicitly preserved. Completed-run release must refuse to
    release the lease while one remains registered and live.
@@ -96,14 +99,28 @@ Before reporting completion:
    material review-driven changes from the original proposal heads.
 
 The terminal lifecycle command verifies local reconciliation again instead of
-trusting the agent's report. It refuses completion while the local target is
-missing or stale, the primary checkout is not on that target, a clean
-non-primary worktree is already contained in the refreshed target, the primary
-checkout is dirty, or a local branch with no checked-out worktree is already
-contained in the target. Remove those proven cleanup candidates through
-guarded mutations, then rerun the terminal lifecycle command. Dirty
-non-primary worktrees and actively claimed concurrent authors remain
-preserved; branches with unique commits are not cleanup candidates.
+trusting the agent's report. `loop finalize` automatically removes unchanged
+clean target-contained worktrees, prunes stale worktree metadata, deletes exact
+target-contained local branches, and normalizes tracked dirty-primary paths
+only when their worktree state exactly matches the refreshed target and their
+index state is recoverable from the current head or target with ordinary index
+flags. It then restores or fast-forwards the primary under the controller and
+coordination locks and refuses completion while the target remains
+missing or stale, the primary remains dirty or off-target, or another safe
+cleanup candidate remains. Incomplete finalization relinquishes durable state
+and exits nonzero. Dirty primary work is never a valid preserved final state:
+classify every remaining path, ship genuine newer deltas, remove proven
+target-contained/stale/generated entries, and resume. Dirty non-primary
+worktrees, untracked or divergent primary paths, unique staged state, conflicts,
+late arrivals, retained exclusions, active claims, and branches with unique
+commits remain preserved.
+
+For every automatic opening-worktree removal or stale-metadata prune,
+finalization persists the exact freshly revalidated removal intent before the
+destructive Git operation. If the process dies afterward, `loop recover` may
+clear only stale loop and coordination locks owned by that same dead local PID;
+the persisted intent then permits the next finalization attempt to account for
+that exact absence and continue.
 
 Temporary detach is not disposal. `worktree detach` is owner-controlled and
 requires an exact `detach-clean-checkout` receipt, a clean non-primary checkout,

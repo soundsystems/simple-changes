@@ -105,11 +105,12 @@ Claims allow healthy concurrent-author edits without pausing. A strict collision
 requires an exact owner claim/pause exchange. Preserved or retained worktrees
 can accept an exact current pause receipt and become immutable preserved state;
 later mutation invalidates the digest. Retain a clean unrelated checkout rather
-than removing it. For an opening worktree proven obsolete, refresh the current
-target, prove it descends from the lease's pinned target, then use `loop
-dispose-worktree` only when it is clean and has zero unique commits outside the
-refreshed canonical target revision. The disposition binds that exact target,
-path, branch, head, and digest.
+than removing it. An unchanged clean opening checkout is automatically removed
+at finalization when it is unclaimed, unretained, and its exact head is already
+contained in the refreshed target. For changed opening work that later becomes
+obsolete, use `loop dispose-worktree` only after proving it clean with zero
+unique commits. Every disposition binds the exact target, path, branch, head,
+and digest.
 
 Remote fetch and push URLs are lease-bound. A destination change invalidates
 the loop; re-verify repository ownership and start a new lease. `configure-harness`
@@ -119,9 +120,15 @@ rule and never grants network, credentials, force push, or protection bypass.
 The lock records process-group evidence. If recovery is proven safe, use `loop
 recover --agent-id "$AGENT_ID"`; never delete state by hand. Before every
 terminal assistant response after a loop has started, run `loop finalize`.
-It releases completed state or relinquishes incomplete state with durable
-blockers. Takeover requires the exact current run ID and manifest digest plus
-approver and reason.
+For Integrate, Ship, Reconcile, and Resume it first removes unchanged clean
+target-contained worktrees, prunes stale worktree metadata, deletes exact
+target-contained local branches, normalizes tracked primary paths whose current
+bytes exactly match the refreshed target and whose index contains no unique
+state, and restores or fast-forwards the primary under the controller lock. It
+releases completed state. If blockers remain, it
+relinquishes durable state and exits nonzero so preservation cannot be mistaken
+for shipment completion. Takeover requires the exact current run ID and
+manifest digest plus approver and reason.
 
 Follow [inventory and concurrency](references/inventory-and-concurrency.md).
 
@@ -172,7 +179,11 @@ invoke it after planning, diagnosis, read-only work, or incomplete verification.
    even when no deployment was created during this run. A Ship or resumed Ship
    loop is incomplete when the live revision differs from the latest canonical
    target revision.
-10. Run final local/provider inventory and clean only proven objects. For a
+10. Run final local/provider inventory and clean only proven objects. A dirty
+    primary is an intermediate reconciliation blocker, never a valid completed
+    Ship result. Finalization safely normalizes tracked target-identical paths;
+    classify every remaining path against the refreshed target, ship genuine
+    newer work, and prune proven obsolete or generated entries. For a
     target GitLab remote, complete the remote-branch reconciliation gate across
    every paginated branch before completion. Pagination evidence must include a
    consolidated ledger digest plus complete branch and open/merged/closed
@@ -180,8 +191,10 @@ invoke it after planning, diagnosis, read-only work, or incomplete verification.
    proven-obsolete remote branches only after exact
     evidence; preserve uncertainty.
 11. Restore the exact original primary checkout clean at the refreshed target,
-    remove accounted run-created worktrees and merged local branches, retain
-    exact authorized exclusions, verify again, and finalize the lease.
+    retain exact authorized exclusions, verify again, and finalize the lease.
+    Finalization automatically removes proven safe worktrees, stale metadata,
+    and merged local branches; any unresolved dirty-primary path keeps the run
+    incomplete.
 
 ## Authority and invariants
 

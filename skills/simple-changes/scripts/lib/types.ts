@@ -879,6 +879,7 @@ export interface LoopLease {
   dispositions?: LoopWorktreeDisposition[];
   emergencyShipping?: EmergencyShippingLedgerEntry;
   mode: Exclude<RequestMode, "pause" | "preview" | "sync">;
+  openingBranches?: Array<{ name: string; sha: string }>;
   overrides: LoopOverride[];
   ownerAgentId: string;
   preparations: LoopWorktreePreparation[];

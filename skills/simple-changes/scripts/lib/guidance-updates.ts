@@ -1,6 +1,6 @@
 import type { ChangelogCoordination, RepoPolicy } from "./types.ts";
 
-export const CURRENT_GUIDANCE_VERSION = 8;
+export const CURRENT_GUIDANCE_VERSION = 9;
 
 export type GuidanceUpdateAction =
   | "review-settings"
@@ -199,6 +199,30 @@ const GUIDANCE_UPDATES: GuidanceUpdateDefinition[] = [
       },
     ],
     version: 8,
+  },
+  {
+    changelogReviewRelevant: true,
+    changes: [
+      {
+        kind: "behavior",
+        summary:
+          "Integrate, Ship, Reconcile, and Resume now automatically remove unchanged clean target-contained worktrees, stale worktree metadata, and merged local branches; normalize tracked dirty-primary paths already exact in the target when the index has no unique state; then restore or fast-forward the primary checkout.",
+        version: 9,
+      },
+      {
+        kind: "integration",
+        summary:
+          "Incomplete finalization now exits nonzero; a dirty or stale primary remains a resumable blocker and can no longer be reported as a completed shipment merely because its files were preserved.",
+        version: 9,
+      },
+      {
+        kind: "behavior",
+        summary:
+          "Active claims, retained exclusions, late arrivals, untracked or divergent primary paths, unique staged state, dirty non-primary worktrees, and unique commits remain protected; multiple exact historical overrides can be approved sequentially without an all-at-once deadlock.",
+        version: 9,
+      },
+    ],
+    version: 9,
   },
 ];
 

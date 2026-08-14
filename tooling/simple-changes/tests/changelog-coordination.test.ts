@@ -127,7 +127,7 @@ describe("changelog coordination discovery", () => {
     writeFixture(
       skillRoot,
       "simple-changelogs/SKILL.md",
-      "---\nname: simple-changelogs\ndescription: Full cross-surface Simple Changelogs distribution.\n---\n"
+      "---\nname: simple-changelogs\ndescription: Full cross-surface Simple Changelogs distribution.\n---\n\nDo not use when a repository selects the skill-repository distribution.\n"
     );
     writeFixture(
       fixture.root,
@@ -144,6 +144,34 @@ describe("changelog coordination discovery", () => {
       providers: [],
       relevant: true,
     });
+  });
+
+  test("discovers every exact narrower distribution installation", () => {
+    const fixture = createTestRepository();
+    repositories.push(fixture);
+    const distributions = [
+      ["mobile", "simple-changelogs-mobile"],
+      ["skill-repository", "simple-changelogs-skill-maintainer"],
+      ["web", "simple-changelogs-web"],
+      ["web-cms", "simple-changelogs-web-cms"],
+    ] as const;
+    for (const [distribution, installation] of distributions) {
+      writeFixture(
+        fixture.root,
+        `skills/${installation}/SKILL.md`,
+        `---\nname: ${installation}\ndescription: ${distribution} distribution.\n---\n`
+      );
+      writeFixture(
+        fixture.root,
+        ".simple-changelogs.json",
+        `${JSON.stringify({ distribution, guidance: { version: 9 }, schemaVersion: 1 })}\n`
+      );
+
+      expect(inspect(fixture)).toMatchObject({
+        capabilityAvailable: true,
+        providers: [join(fixture.root, `skills/${installation}/SKILL.md`)],
+      });
+    }
   });
 
   test("detects a newer installed Simple Changelogs guidance version", () => {

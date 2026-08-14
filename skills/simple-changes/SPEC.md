@@ -87,10 +87,12 @@
   lock is recoverable only after proof that every recorded local process died.
   Exact user overrides bind to one path, head, and content digest and become
   invalid after another change.
-- Opening worktrees remain protected until an exact user-approved removal
-  disposition proves the path is not primary, the worktree is clean, and its
-  head has zero commits outside the refreshed canonical target. The disposition
-  authorizes only that exact path's absence and becomes invalid after a change.
+- Unchanged clean opening worktrees are automatic cleanup candidates only when
+  unclaimed, unretained, and target-contained. Finalization serializes against
+  coordination mutations, rechecks exact head and content evidence immediately
+  before removal, and records the disposition only after successful removal.
+  Changed opening work still requires an exact user-approved disposition; late
+  worktrees and branches remain protected.
 - A worktree owner can persist an opaque local claim. Under the default
   `allow-claimed` policy, its distinct non-primary branch may continue changing
   while integration proceeds; the controller must exclude it from packaging,

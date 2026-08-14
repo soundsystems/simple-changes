@@ -33,6 +33,7 @@ const LOCK_DIRECTORY = "worktree-coordination.lock";
 const LOCK_OWNER_FILENAME = "owner.json";
 const ACTIVE_LOOP_FILENAME = "active-loop.json";
 const ACTIVE_LOOP_LOCK_DIRECTORY = "active-loop.lock";
+const STALE_LOCK_MINIMUM_AGE_MS = 5000;
 const ADAPTER_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/u;
 const RUN_ID_PATTERN = /^run-[a-z0-9-]+$/u;
 const SHA_PATTERN = /^[0-9a-f]{40,64}$/u;
@@ -96,6 +97,61 @@ interface CoordinationLockOwner {
   pid: number;
   token: string;
 }
+
+const processIsAlive = (pid: number): boolean => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code !== "ESRCH";
+  }
+};
+
+export const recoverStaleWorktreeCoordinationLock = (
+  commonGitDirectory: string,
+  expectedPid: number
+): boolean => {
+  const lockPath = coordinationLockPath(commonGitDirectory);
+  if (!existsSync(lockPath)) {
+    return false;
+  }
+  const ownerPath = resolve(lockPath, LOCK_OWNER_FILENAME);
+  let owner: CoordinationLockOwner;
+  try {
+    owner = JSON.parse(
+      readFileSync(ownerPath, "utf8")
+    ) as CoordinationLockOwner;
+  } catch (error) {
+    throw SimpleChangesError.withCause(
+      `Cannot recover ${lockPath}: ownership metadata is missing or invalid.`,
+      EXIT_CODES.unsafe,
+      error
+    );
+  }
+  if (owner.hostname !== hostname() || owner.pid !== expectedPid) {
+    throw new SimpleChangesError(
+      `Cannot recover worktree coordination owned by ${owner.hostname} PID ${owner.pid}; expected ${hostname()} PID ${expectedPid}.`,
+      EXIT_CODES.unsafe
+    );
+  }
+  const age = Date.now() - Date.parse(owner.createdAt);
+  if (!(Number.isFinite(age) && age >= STALE_LOCK_MINIMUM_AGE_MS)) {
+    throw new SimpleChangesError(
+      `Cannot recover worktree coordination younger than ${STALE_LOCK_MINIMUM_AGE_MS}ms.`,
+      EXIT_CODES.unsafe
+    );
+  }
+  if (processIsAlive(owner.pid)) {
+    throw new SimpleChangesError(
+      `Cannot recover active worktree coordination owner PID ${owner.pid}.`,
+      EXIT_CODES.unsafe
+    );
+  }
+  const recoveryPath = `${lockPath}.recovery-${randomUUID()}`;
+  renameSync(lockPath, recoveryPath);
+  rmSync(recoveryPath, { force: true, recursive: true });
+  return true;
+};
 
 const acquireNamedLock = (
   commonGitDirectory: string,
@@ -176,6 +232,12 @@ const withCoordinationLock = <T>(
     release();
   }
 };
+
+export const withWorktreeCoordinationLock = <T>(
+  commonGitDirectory: string,
+  operation: string,
+  callback: () => T
+): T => withCoordinationLock(commonGitDirectory, operation, callback);
 
 const withGitCoordinationLocks = <T>(
   commonGitDirectory: string,

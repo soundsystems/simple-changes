@@ -110,7 +110,7 @@ import {
   releaseWorktreeClaim,
 } from "./lib/worktree-coordination.ts";
 
-const VERSION = "0.12.2";
+const VERSION = "0.12.3";
 const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const HELP = `Simple Changes ${VERSION}
 
@@ -1694,17 +1694,19 @@ const runLoopFinalizationAction = (
       agentId,
       requireCliOption(options.reason, "--reason")
     );
-    const message =
-      result.outcome === "completed"
-        ? `Completed and released ${runId}.\n`
-        : `Relinquished ${runId} with durable state. Remaining: ${result.blockers.join(" ")}\n`;
+    if (result.outcome === "relinquished") {
+      throw new SimpleChangesError(
+        `Relinquished ${runId} with durable state; the shipment is incomplete. Automatic cleanup normalized ${result.cleanup.cleanedPrimaryPaths.length} target-equivalent primary path(s), removed ${result.cleanup.removedWorktrees.length} worktree(s) and ${result.cleanup.removedBranches.length} branch(es), and pruned ${result.cleanup.prunedWorktreeMetadata} stale worktree record(s). Remaining: ${result.blockers.join(" ")}`,
+        EXIT_CODES.unsafe
+      );
+    }
     writeOutput(
       {
         ...result,
         manifestDigest: result.lease ? loopManifestDigest(result.lease) : null,
       },
       options.json,
-      message
+      `Completed and released ${runId}. Normalized ${result.cleanup.cleanedPrimaryPaths.length} target-equivalent primary path(s), removed ${result.cleanup.removedWorktrees.length} worktree(s) and ${result.cleanup.removedBranches.length} branch(es); pruned ${result.cleanup.prunedWorktreeMetadata} stale worktree record(s).\n`
     );
     return true;
   }

@@ -1,5 +1,41 @@
 # Changelog
 
+## 0.12.3 - 2026-08-14
+
+- Integrate, Ship, Reconcile, and Resume now finish their own proven local
+  cleanup: unchanged clean target-contained opening and run-created worktrees
+  are removed, stale worktree metadata is pruned, and only target-contained
+  branches proven unchanged by their opening name-and-SHA ledger or owned by
+  the run are deleted. Finalization holds its controller and worktree
+  coordination locks, rechecks each worktree's branch, head, digest, and claim
+  immediately before removal, and durably records that exact automatic removal
+  intent before destructive Git worktree removal or metadata pruning. Late or
+  moved branches remain protected.
+- A clean primary checkout is restored and fast-forwarded to the refreshed
+  target. A tracked dirty-primary path is normalized first only when its current
+  bytes exactly match that target, every index entry has ordinary flags, and
+  the index is recoverable from current HEAD or the target using
+  intent-to-add-visible comparison. Intent-to-add or other nonordinary index
+  state, unique staged content, conflicts, untracked or divergent paths,
+  retained exclusions, active claims, late arrivals, dirty non-primary
+  worktrees, and branches with unique commits remain protected; cleanup reports
+  every normalized path.
+- Incomplete finalization now exits nonzero after preserving resumable state,
+  so a dirty or stale primary checkout cannot be reported as a completed run.
+- If finalization is killed after an automatic removal, recovery can clear only
+  the matching stale loop and coordination locks owned by the same dead local
+  PID. The persisted exact removal intent then lets cleanup resume without
+  treating the already removed preserved worktree as an unresolvable blocker.
+- Multiple historical preserved-worktree overrides can now be approved and
+  persisted one path at a time. Each exact valid path-and-digest override is
+  saved even while another preserved path remains blocked, avoiding an
+  impossible all-at-once authorization deadlock.
+- Simple Changelogs discovery now matches an installed provider's exact
+  distribution instead of mistaking a full installation's compatibility
+  warning for `skill-repository` support. Repository and global skill roots now
+  enumerate the mapped full, mobile, skill-repository, Web, and Web CMS
+  installation names rather than looking only for the full distribution.
+
 ## 0.12.2 - 2026-08-13
 
 - Preserved concurrent worktrees can now hand off an exact stable pause without

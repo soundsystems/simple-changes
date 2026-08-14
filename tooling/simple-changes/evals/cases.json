@@ -509,11 +509,37 @@
       "mode": "resume",
       "authority": ["local-write"],
       "expectedBehaviors": [
-        "Keep every opening worktree protected until an explicit removal disposition is recorded",
-        "Require explicit user approval, a clean exact content digest, the original preserved role, a non-primary path, and zero commits beyond the pinned target revision",
+        "Automatically remove an unchanged clean unclaimed and unretained opening worktree whose exact head is already contained in the refreshed target",
+        "Require explicit user approval only when changed opening work needs an exceptional removal disposition after becoming clean and target-contained",
         "Bind the disposition to the exact path, branch, head, content digest, and target revision so later changes invalidate it",
         "Allow the disposed opening worktree to be removed without a missing-preserved-worktree violation",
-        "Continue to reject removal of dirty, uniquely committed, unapproved, changed, or canonical primary worktrees"
+        "Continue to reject automatic removal of dirty, uniquely committed, retained, late-arriving, actively claimed, changed, or canonical primary worktrees"
+      ]
+    },
+    {
+      "id": "ship-reconcile-stale-dirty-primary",
+      "prompt": "Everything important is shipped. Finish the run, make the old primary current, and clean up all stale worktrees, branches, generated artifacts, and already-shipped file variants.",
+      "mode": "reconcile",
+      "authority": ["local-write", "proposal-write", "merge"],
+      "expectedBehaviors": [
+        "Automatically normalize tracked dirty-primary paths whose worktree bytes exactly match the refreshed target only when their index state is recoverable from current HEAD or target",
+        "Classify every remaining dirty primary path against the refreshed target and ship any genuine newer effective delta before cleanup",
+        "Automatically remove unchanged clean target-contained opening and run-created worktrees, prune stale worktree metadata, and delete exact target-contained local branches",
+        "Restore or fast-forward a clean primary checkout to the refreshed target under the controller lock",
+        "Preserve active claims, retained exclusions, late arrivals, untracked or divergent primary paths, unique staged state, conflicts, dirty non-primary worktrees, and unique commits",
+        "Relinquish with a nonzero incomplete result when any dirty or stale primary entry remains instead of calling the shipment complete"
+      ]
+    },
+    {
+      "id": "resume-sequential-historical-overrides",
+      "prompt": "Continue cleanup. I approve the two exact historical preserved worktrees we audited, one path and digest at a time.",
+      "mode": "resume",
+      "authority": ["local-write"],
+      "expectedBehaviors": [
+        "Validate each historical override against only its named preserved path, exact current digest, head, approver, and reason",
+        "Persist the first valid per-path override even while the second preserved path remains blocked",
+        "Accept the second exact override in a later transaction without requiring an impossible atomic all-path update",
+        "Continue to reject stale, insufficient, wildcard, concurrent-author, or unrelated evidence for the named path"
       ]
     },
     {

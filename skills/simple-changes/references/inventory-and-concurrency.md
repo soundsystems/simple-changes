@@ -91,12 +91,15 @@ narrow fallback: `loop guard` immediately before the call and `loop verify`
 immediately after it. Never describe that fallback as an atomic local mutation
 lock.
 
-If a process crashes, `loop recover` removes a lock only when its ownership
+If a process crashes, `loop recover` removes the loop lock only when its ownership
 metadata is valid, it is older than the recovery boundary, the recorded host is
 the current host, the controller PID is provably dead, child launch is fully
 recorded, every recorded child/process group is inactive, and the caller owns
-the active lease. A live, remote-host, young, ownerless, malformed, unresolved,
-or still-running process-group lock remains a blocker.
+the active lease. When the same dead PID also owns a stale worktree-coordination
+lock, recovery removes that exact matching lock in the same transaction; a
+mismatched coordination owner fails closed. A live, remote-host, young,
+ownerless, malformed, unresolved, or still-running process-group lock remains a
+blocker.
 
 The transient lock and persistent controller lease have different recovery
 paths. `loop recover` never transfers the persistent lease. A controller that
@@ -177,21 +180,42 @@ it never selects an owner from a title or weak hint.
 ## Exact overrides
 
 An override is an exceptional user handoff, not a way to suppress the guard.
+When several preserved worktrees each need an override, record each exact
+path-and-digest approval independently. The controller persists a valid
+per-path override even while other paths remain blocked, so the sequence cannot
+deadlock on an impossible all-at-once lease update.
 Record it through `loop allow` only after the user explicitly names the work to
 include. The command verifies and stores the preserved worktree's absolute
 path, current content-sensitive change digest, current head, approver identity,
 and reason. It does not accept a wildcard, repository-wide permission, or stale
 digest. A later edit or commit changes the evidence and blocks the loop again.
 
-`loop end` is the strict completed-run primitive. At the terminal boundary use
-`loop finalize` instead: it performs the same completion gates and releases the
-lease when they pass, or relinquishes the controller while preserving the
-incomplete run when they do not.
+`loop end` is the strict non-mutating completed-run primitive. At the terminal
+boundary use `loop finalize` instead: in integration/reconciliation modes it
+first removes unchanged clean target-contained worktrees and branches, prunes
+stale worktree metadata, normalizes recoverable tracked primary paths already
+identical to the target, and restores the primary. It then performs the
+same completion gates and releases the lease when they pass, or relinquishes
+the controller with a nonzero exit while preserving the incomplete run.
+
+The opening lease records exact local branch names and revisions. Automatic
+branch deletion accepts only an unchanged opening branch or a branch created by
+the current run; an unattached branch that appears or moves later is preserved.
+Final cleanup holds both loop and worktree-coordination locks, re-reads each
+candidate's branch, head, digest, and claim state immediately before removal,
+and durably records the exact opening-worktree removal intent before invoking
+Git. If the controller dies after removal, that intent authorizes only the
+matching absence so stale-lock recovery can resume without weakening any other
+preserved-worktree check.
 
 ## Opening-worktree dispositions
 
-Do not reinterpret an opening preserved worktree as run-created cleanup. It
-remains protected until `loop dispose-worktree` records a removal disposition
+Do not reinterpret changed, dirty, claimed, retained, late-arriving, or unique
+opening work as cleanup. An opening worktree that remains unchanged across the
+run, is clean and unclaimed, and has an exact head already contained in the
+refreshed target is a normal automatic cleanup candidate. Use
+`loop retain-worktree` when that checkout should stay. For exceptional changed
+opening work, `loop dispose-worktree` records a manual removal disposition
 under the active lease. The command accepts only the exact current path and
 content-sensitive status digest, requires the loop owner and named approver,
 rejects the canonical primary checkout, and audits that the worktree is clean

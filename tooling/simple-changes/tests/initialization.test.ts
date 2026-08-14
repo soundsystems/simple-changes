@@ -207,7 +207,7 @@ describe("first-run initialization", () => {
           available: true,
           owner: "simple-changelogs",
         },
-        currentVersion: 8,
+        currentVersion: 9,
         headline: "**Simple Changes has recently been updated.**",
         recommendedAction: "review-settings",
         status: "update-available",
@@ -220,7 +220,7 @@ describe("first-run initialization", () => {
       preLoopActionRequired: true,
     });
     expect(status.guidanceUpdate.summaryBullets.join(" ")).toContain(
-      "Ship setup now offers configure-harness, ask, or never for Git pushes"
+      "automatically remove unchanged clean target-contained worktrees"
     );
   });
 

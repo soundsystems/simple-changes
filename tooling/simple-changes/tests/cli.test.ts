@@ -24,7 +24,6 @@ const cliPath = resolve(
   "../../../skills/simple-changes/scripts/simple-changes.ts"
 );
 const ASYNC_CLI_WAIT_ATTEMPTS = 500;
-const SHA256_PATTERN = /^[0-9a-f]{64}$/u;
 
 interface CliSpawnOptions {
   cwd?: string;
@@ -647,6 +646,10 @@ describe("contract CLI", () => {
       { stderr: "pipe", stdout: "pipe" }
     );
     expect(prepared.exitCode).toBe(0);
+    const { path: preparedPath } = JSON.parse(
+      decoder.decode(prepared.stdout)
+    ) as { path: string };
+    writeFixture(preparedPath, "unfinished.txt", "still being authored\n");
     const finalized = spawnSync(
       [
         process.execPath,
@@ -665,18 +668,12 @@ describe("contract CLI", () => {
       ],
       { stderr: "pipe", stdout: "pipe" }
     );
-    const finalization = JSON.parse(decoder.decode(finalized.stdout)) as {
-      lease: { controller: { status: string }; runId: string };
-      manifestDigest: string;
-      outcome: string;
-    };
-
-    expect(finalized.exitCode).toBe(0);
-    expect(finalization).toMatchObject({
-      lease: { controller: { status: "relinquished" }, runId: lease.runId },
-      outcome: "relinquished",
+    expect(finalized.exitCode).toBe(5);
+    expect(JSON.parse(decoder.decode(finalized.stderr))).toMatchObject({
+      exitCode: 5,
+      ok: false,
     });
-    expect(finalization.manifestDigest).toMatch(SHA256_PATTERN);
+    expect(decoder.decode(finalized.stderr)).toContain("Relinquished");
 
     const resumed = spawnSync(
       [
@@ -1663,7 +1660,7 @@ describe("contract CLI", () => {
     );
     expect(acknowledged.exitCode).toBe(0);
     expect(JSON.parse(decoder.decode(acknowledged.stdout))).toMatchObject({
-      currentVersion: 8,
+      currentVersion: 9,
       disposition: "deferred",
       previousVersion: 1,
       written: true,
@@ -1673,7 +1670,7 @@ describe("contract CLI", () => {
         readFileSync(resolve(fixture.root, ".simple-changes.json"), "utf8")
       )
     ).toMatchObject({
-      guidance: { disposition: "deferred", version: 8 },
+      guidance: { disposition: "deferred", version: 9 },
     });
 
     const resumed = spawnSync(

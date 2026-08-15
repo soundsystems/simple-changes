@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.12.4 - 2026-08-14
+
+- Simple Changes now explains user-facing status in plain language first: what
+  happened, what it means, and what happens next. Most routine progress updates
+  stay within one to three short sentences, while exact revisions, paths,
+  commands, providers, and workflow states remain available when they affect
+  safety, authority, verification, or a user decision, and whenever the user
+  asks for technical detail.
+<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-14T21:04:28-05:00" -->
+
 ## 0.12.3 - 2026-08-14
 
 - Integrate, Ship, Reconcile, and Resume now finish their own proven local

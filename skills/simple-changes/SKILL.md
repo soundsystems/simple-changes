@@ -73,6 +73,22 @@ deferring before the user understands the practical changes. A colloquial
 “auto push” choice requires the exact scoped-push explanation and confirmation
 from [installed guidance updates](references/guidance-updates.md) before saving.
 
+## Communicate in plain language
+
+Default every user-facing message to plain language, even when the underlying
+workflow is technical. Lead with what happened, what it means for the user, and
+what happens next. Keep most progress updates to one to three short sentences.
+Do not lead with internal terms such as controller, lease, ledger, digest,
+relinquished, target-contained, or mutation path. Translate them into ordinary
+language first.
+
+Include exact revisions, paths, commands, provider identities, or durable state
+names when they affect safety, authority, verification, or the user's next
+decision, but place them after the simple explanation. Expand into full
+technical detail when the user asks. Never expose raw machine output or internal
+bookkeeping as the explanation itself. Follow
+[plain-language communication](references/user-communication.md).
+
 ## Communicate Ship scope
 
 After initialization and planning, but before the first consequential Ship
@@ -220,6 +236,7 @@ Read the references needed for the active mode:
 - [setup and policy](references/setup-and-policy.md)
 - [onboarding](references/onboarding.md)
 - [installed guidance updates](references/guidance-updates.md)
+- [plain-language communication](references/user-communication.md)
 - [sync](references/sync.md)
 - [inventory and concurrency](references/inventory-and-concurrency.md)
 - [focused units](references/focused-units.md)

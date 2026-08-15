@@ -1,5 +1,27 @@
 # Developer changelog
 
+## 0.12.4 - 2026-08-14
+
+- Established a plain-language-first contract for all user communication:
+  - Messages lead with the outcome, practical meaning, and next action instead
+    of making users decode controller, lease, ledger, digest, or mutation-path
+    terminology.
+  - Routine updates default to one to three short sentences. Exact revisions,
+    paths, commands, provider identities, durable workflow states, and other
+    evidence follow the simple explanation when safety, authority,
+    verification, or the user's next decision depends on them; full technical
+    detail remains available on request.
+  - Ship briefs and final receipts inherit the same ordering while retaining
+    every required scope, permission, review, deployment, and audit fact.
+  - Added a dedicated communication reference, specification rules, contract
+    coverage, and an evaluation fixture that records the expected
+    plain-language behavior for resuming a safely ended run without expanding
+    its approved scope. The fixture defines evaluation criteria; it does not
+    execute or certify model responses.
+- Advanced the package and CLI to 0.12.4 and installed Simple Changes guidance
+  to version 10 so existing installations receive one practical update notice.
+<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-14T21:04:28-05:00" -->
+
 ## 0.12.3 - 2026-08-14
 
 - Restored proof-bound automatic cleanup during finalization:

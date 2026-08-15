@@ -2,12 +2,15 @@
 
 Ship combines consequential operations that may take time and may change during
 review. Keep the user oriented with a pre-ship brief and a final delivery
-receipt in the same agent run.
+receipt in the same agent run. Apply
+[plain-language communication](user-communication.md): explain scope, meaning,
+and next action before internal workflow terms or exact audit evidence.
 
 ## Before the first consequential mutation
 
 After fresh inventory, scope attribution, and plan validation, send a concise
-progress update headed by the outcome rather than a permission question. Cover:
+progress update headed by the outcome rather than a permission question. Keep
+it to the shortest message that covers:
 
 - **Ready scope:** the units, branches, proposals, and user-visible outcomes
   intended for this Ship run;
@@ -126,4 +129,5 @@ The final response compares the pre-ship brief with the observed result:
 
 Do not report planned work as shipped. If the run stops before production, name
 the highest completed boundary and the exact reason the remaining work did not
-ship.
+ship. Lead with the practical outcome; place required revisions, digests, and
+receipt identities afterward instead of making the user decode them first.

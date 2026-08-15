@@ -328,6 +328,18 @@
       ]
     },
     {
+      "id": "resume-relinquished-run-plain-language",
+      "prompt": "Continue the earlier MR run and apply only the setting I approved. Stop after that.",
+      "mode": "resume",
+      "authority": ["local-write"],
+      "expectedBehaviors": [
+        "Explain in plain language that the earlier run ended safely and is being reopened",
+        "State that only the approved setting will change and nothing will ship",
+        "Put controller, lease, ledger, digest, and guarded-mutation details after the practical explanation or omit them unless requested",
+        "Keep the routine progress update to one to three short sentences"
+      ]
+    },
+    {
       "id": "pause-named-checkout",
       "prompt": "Leave this checkout alone.",
       "mode": "pause",

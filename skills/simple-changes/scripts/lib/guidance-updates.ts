@@ -1,6 +1,6 @@
 import type { ChangelogCoordination, RepoPolicy } from "./types.ts";
 
-export const CURRENT_GUIDANCE_VERSION = 9;
+export const CURRENT_GUIDANCE_VERSION = 10;
 
 export type GuidanceUpdateAction =
   | "review-settings"
@@ -223,6 +223,24 @@ const GUIDANCE_UPDATES: GuidanceUpdateDefinition[] = [
       },
     ],
     version: 9,
+  },
+  {
+    changelogReviewRelevant: true,
+    changes: [
+      {
+        kind: "behavior",
+        summary:
+          "User-facing messages now lead with what happened, what it means, and what happens next, and most routine updates stay within one to three short sentences.",
+        version: 10,
+      },
+      {
+        kind: "integration",
+        summary:
+          "Exact revisions, paths, commands, providers, and workflow states remain available after the plain-language explanation whenever safety, authority, verification, or a user decision depends on them, and full technical detail remains available on request.",
+        version: 10,
+      },
+    ],
+    version: 10,
   },
 ];
 

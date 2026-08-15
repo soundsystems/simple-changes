@@ -37,6 +37,10 @@ const shipCommunicationPath = new URL(
   "../../../skills/simple-changes/references/ship-communication.md",
   import.meta.url
 );
+const userCommunicationPath = new URL(
+  "../../../skills/simple-changes/references/user-communication.md",
+  import.meta.url
+);
 const inventoryConcurrencyPath = new URL(
   "../../../skills/simple-changes/references/inventory-and-concurrency.md",
   import.meta.url
@@ -438,6 +442,35 @@ describe("Simple Changes skill contract", () => {
     );
     expect(normalizedCommunication).toContain(
       "The final response compares the pre-ship brief with the observed result"
+    );
+  });
+
+  test("user-facing messages default to simple language before technical evidence", async () => {
+    const [skill, communication] = await Promise.all([
+      readFile(skillPath, "utf8"),
+      readFile(userCommunicationPath, "utf8"),
+    ]);
+    const normalizedSkill = skill.replace(/\s+/g, " ");
+    const normalizedCommunication = communication.replace(/\s+/g, " ");
+
+    expect(normalizedSkill).toContain(
+      "Lead with what happened, what it means for the user, and what happens next"
+    );
+    expect(normalizedSkill).toContain(
+      "Keep most progress updates to one to three short sentences"
+    );
+    expect(normalizedCommunication).toContain(
+      "The user usually needs the outcome and consequence, not the names of the internal mechanisms"
+    );
+    expect(normalizedCommunication).toContain(
+      "Do not lead with controller, lease, ledger, manifest, digest"
+    );
+    expect(normalizedCommunication).toContain(
+      "I’m reopening that run, applying only the setting you approved"
+    );
+    expect(normalizedCommunication).toContain("there—nothing will be shipped");
+    expect(normalizedCommunication).toContain(
+      "Put dense audit details last, under a clearly optional technical section"
     );
   });
 

@@ -135,6 +135,10 @@
   shared history, or leaves the checkout conflicted.
 - Authorized Ship runs communicate scope before mutation without adding a
   redundant permission gate, then account for review-driven revisions.
+- User-facing messages default to plain language: state what happened, what it
+  means, and what happens next before internal workflow terminology. Exact
+  technical evidence remains available when it affects safety, authority,
+  verification, or a requested detailed explanation.
 - Urgency alone selects only expedited shipping. Active user impact or a tested
   production-ready claim may recommend break-glass. Explicit current-request
   direction or saved break-glass policy authorizes the ordering. When saved
@@ -175,6 +179,9 @@
   or data-write authority.
 - Reporting the original Ship plan as delivered without reconciling review
   changes and final provider evidence.
+- Leading routine user updates with controller, lease, ledger, digest, or other
+  internal bookkeeping when a short plain-language explanation would preserve
+  the same accuracy.
 - Treating emotional urgency, active impact, or a tested claim as implicit
   authority to deploy before review; treating break-glass policy without
   production authority as deploy permission; or marking `live-unreviewed` or

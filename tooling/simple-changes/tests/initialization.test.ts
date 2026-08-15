@@ -207,7 +207,7 @@ describe("first-run initialization", () => {
           available: true,
           owner: "simple-changelogs",
         },
-        currentVersion: 10,
+        currentVersion: 11,
         headline: "**Simple Changes has recently been updated.**",
         recommendedAction: "review-settings",
         status: "update-available",

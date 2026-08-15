@@ -11,7 +11,7 @@ import {
 import { hostname } from "node:os";
 import { dirname, resolve } from "node:path";
 import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
-import { sha256 } from "./hash.ts";
+import { sha256, sha256Json } from "./hash.ts";
 import { captureInventory } from "./inventory.ts";
 import { runGit } from "./process.ts";
 import { redactSecrets } from "./redact.ts";
@@ -19,6 +19,7 @@ import { validateSchema } from "./schema.ts";
 import type {
   LoopLease,
   WorktreeClaim,
+  WorktreeClaimObservation,
   WorktreeCoordinationDocument,
   WorktreeCoordinationEvent,
   WorktreeCoordinationState,
@@ -441,6 +442,32 @@ export const readWorktreeCoordination = (
   const inventory = captureInventory(repositoryPath);
   return readCoordinationDocumentFromCommonDirectory(
     inventory.repository.commonGitDirectory
+  );
+};
+
+export const worktreeClaimDocumentDigest = (
+  document: WorktreeCoordinationDocument
+): string => sha256Json(document);
+
+export const observeWorktreeClaims = (
+  repositoryPath: string
+): WorktreeClaimObservation => {
+  const inventory = captureInventory(repositoryPath);
+  const { commonGitDirectory } = inventory.repository;
+  return withCoordinationLock(
+    commonGitDirectory,
+    "observe worktree claims",
+    () => {
+      const document =
+        readCoordinationDocumentFromCommonDirectory(commonGitDirectory);
+      return {
+        activeClaimCount: document.claims.filter(
+          (claim) => claim.state === "active"
+        ).length,
+        digest: worktreeClaimDocumentDigest(document),
+        observedAt: new Date().toISOString(),
+      };
+    }
   );
 };
 
@@ -1103,6 +1130,54 @@ export const releaseWorktreeClaim = (
       "blocked",
     ]
   );
+};
+
+export const retireAbsentWorktreeClaimsUnderLock = (
+  commonGitDirectory: string,
+  paths: string[],
+  actorAgentIdInput: string
+): string[] => {
+  const actorAgentId = requiredText(actorAgentIdInput, "agent ID", 128);
+  const retiredPaths = new Set(paths);
+  if (retiredPaths.size === 0) {
+    return [];
+  }
+  let document =
+    readCoordinationDocumentFromCommonDirectory(commonGitDirectory);
+  const retired: string[] = [];
+  const now = new Date().toISOString();
+  for (const claim of document.claims) {
+    if (!retiredPaths.has(claim.path)) {
+      continue;
+    }
+    if (claim.state === "active") {
+      throw new SimpleChangesError(
+        `Active claim ${claim.claimId} still owns ${claim.path}; post-cleanup recovery cannot retire it.`,
+        EXIT_CODES.unsafe
+      );
+    }
+    if (claim.state === "released") {
+      retired.push(claim.claimId);
+      continue;
+    }
+    const updated: WorktreeClaim = {
+      ...claim,
+      state: "released",
+      updatedAt: now,
+    };
+    document = appendEvent(
+      replaceClaim(document, updated),
+      claim.claimId,
+      actorAgentId,
+      "released",
+      now
+    );
+    retired.push(claim.claimId);
+  }
+  if (retired.length > 0) {
+    writeCoordinationDocument(commonGitDirectory, document);
+  }
+  return retired.sort((left, right) => left.localeCompare(right));
 };
 
 export const coordinationLinkIsCurrent = (

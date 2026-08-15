@@ -90,7 +90,9 @@
 - Unchanged clean opening worktrees are automatic cleanup candidates only when
   unclaimed, unretained, and target-contained. Finalization serializes against
   coordination mutations, rechecks exact head and content evidence immediately
-  before removal, and records the disposition only after successful removal.
+  before removal, records exact intent first, and marks it completed only after
+  successful removal. Run-created removals receive the same terminal audit
+  state.
   Changed opening work still requires an exact user-approved disposition; late
   worktrees and branches remain protected.
 - A worktree owner can persist an opaque local claim. Under the default
@@ -112,6 +114,12 @@
   ambiguous work are preserved. Merged source branches are deleted only at the
   exact recorded merged head; closed/unmerged and no-MR branches require a
   separate audit and exact obsolescence proof.
+- GitLab loops persist a complete unchanged opening provider inventory at lease
+  creation and reject integration mutations when legacy state lacks it. A
+  distinct explicitly approved post-cleanup recovery may close only a clean,
+  current, mutation-free legacy ledger from two matching final inventories and
+  matching zero-active-claim digests. It holds coordination through closure,
+  archives the evidence, and never claims those snapshots were opening history.
 - Harness automation is capability-gated. An unsupported discovery, delivery,
   wait, scope, or owner-reference requirement produces a structured manual
   blocker and no repository mutation. Vendor APIs and credentials never enter

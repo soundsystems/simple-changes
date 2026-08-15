@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.12.5 - 2026-08-15
+
+- Every GitLab Queue, Sweep, Integrate, Ship, Reconcile, and Resume run now
+  saves its complete opening branch and proposal inventory before any provider
+  mutation. A legacy record without that evidence can close only through the
+  explicit post-cleanup recovery path; ordinary reconciliation, ending, or
+  finalization cannot bypass it.
+- With explicit user approval, Simple Changes can repair and close an old
+  bookkeeping record when cleanup already finished, but only after two matching
+  complete post-cleanup inventories, two ordered worktree-claim observations
+  with matching digests and zero active claims, and clean current state prove
+  that no open proposal or cleanup action remains. Blank approval or audit
+  reasons are rejected.
+- Post-cleanup recovery can only close bookkeeping: it cannot move refs, remove
+  worktrees or branches, change provider state, push, merge, or deploy.
+  Worktree claims remain locked from final verification through the auditable
+  close, removed-worktree history no longer blocks future runs, and an
+  interrupted recovery can be retried safely.
+
 ## 0.12.4 - 2026-08-14
 
 - Simple Changes now explains user-facing status in plain language first: what

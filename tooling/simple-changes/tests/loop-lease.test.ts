@@ -32,6 +32,7 @@ import {
   recordEmergencyShipping,
   recordRemoteBranchReconciliation,
   recoverLoopLock,
+  recoverPostCleanupLoop,
   retainExcludedWorktree,
   startLoop,
   takeoverLoop,
@@ -42,6 +43,7 @@ import { DEFAULT_POLICY } from "../../../skills/simple-changes/scripts/lib/polic
 import type { LoopLease } from "../../../skills/simple-changes/scripts/lib/types.ts";
 import {
   claimWorktree,
+  observeWorktreeClaims,
   pauseClaimedWorktree,
   releaseWorktreeClaim,
   withWorktreeCoordinationLock,
@@ -107,6 +109,57 @@ const paginationCoverage = (
   },
 });
 
+const remoteSnapshot = (
+  targetRevision: string,
+  observedAt = new Date().toISOString(),
+  project = "group/project"
+) => {
+  const branches = [{ headRevision: targetRevision, name: "main" }];
+  const branchDigest = createHash("sha256")
+    .update(JSON.stringify(branches))
+    .digest("hex");
+  return {
+    branches: [
+      {
+        classification: "canonical-target" as const,
+        disposition: "preserved-target" as const,
+        evidence: ["Complete GitLab inventory includes protected main."],
+        finalHeadRevision: targetRevision,
+        initialHeadRevision: targetRevision,
+        name: "main",
+        obsoleteProof: null,
+        proposals: [],
+        protected: true,
+      },
+    ],
+    finalBranchCount: 1,
+    finalCoverage: paginationCoverage(1, branchDigest),
+    finalInventoryComplete: true as const,
+    initialBranchCount: 1,
+    initialCoverage: paginationCoverage(1, branchDigest),
+    initialInventoryComplete: true as const,
+    observedAt,
+    project,
+    provider: "gitlab",
+    schemaVersion: 1 as const,
+    targetBranch: "main",
+    targetRevision,
+  };
+};
+
+const claimEvidence = (repositoryPath: string) => {
+  const firstClaimObservation = observeWorktreeClaims(repositoryPath);
+  return {
+    firstClaimObservation,
+    secondClaimObservation: {
+      ...firstClaimObservation,
+      observedAt: new Date(
+        Date.parse(firstClaimObservation.observedAt) + 1
+      ).toISOString(),
+    },
+  };
+};
+
 afterEach(() => {
   for (const fixture of repositories) {
     fixture.cleanup();
@@ -115,6 +168,556 @@ afterEach(() => {
 });
 
 describe("active integration-loop lease", () => {
+  test("requires opening remote evidence before a GitLab integration loop starts", () => {
+    for (const mode of [
+      "queue",
+      "sweep",
+      "integrate",
+      "ship",
+      "reconcile",
+      "resume",
+    ] as const) {
+      const fixture = repository();
+      git(fixture.root, [
+        "remote",
+        "add",
+        "origin",
+        "git@gitlab.com:group/project.git",
+      ]);
+      expect(() => startLoop(fixture.root, "controller", mode)).toThrow(
+        "complete opening remote inventory"
+      );
+      expect(readLoopLease(fixture.root)).toBeNull();
+    }
+  });
+
+  test("durably completes run-created worktree removal before relinquishing", () => {
+    const fixture = repository();
+    git(fixture.root, [
+      "remote",
+      "add",
+      "origin",
+      "git@gitlab.com:group/project.git",
+    ]);
+    const targetRevision = git(fixture.root, ["rev-parse", "HEAD"]);
+    const lease = startLoop(
+      fixture.root,
+      "controller",
+      "ship",
+      remoteSnapshot(targetRevision)
+    );
+    expect(lease.openingRemoteInventory).toEqual(
+      remoteSnapshot(targetRevision, lease.openingRemoteInventory?.observedAt)
+    );
+    const prepared = prepareAgentWorktree(
+      fixture.root,
+      lease.runId,
+      "author",
+      "terminal removal audit"
+    );
+
+    const finalized = finalizeLoop(
+      fixture.root,
+      lease.runId,
+      "controller",
+      "Remote reconciliation remains pending."
+    );
+
+    expect(finalized.outcome).toBe("relinquished");
+    expect(existsSync(prepared.path)).toBe(false);
+    expect(finalized.lease?.dispositions).toContainEqual(
+      expect.objectContaining({
+        completedAt: expect.any(String),
+        path: prepared.path,
+        status: "completed",
+      })
+    );
+  }, 30_000);
+
+  test("does not mutate cleanup state when a legacy GitLab loop lacks opening evidence", () => {
+    const fixture = repository();
+    git(fixture.root, [
+      "remote",
+      "add",
+      "origin",
+      "git@gitlab.com:group/project.git",
+    ]);
+    const targetRevision = git(fixture.root, ["rev-parse", "HEAD"]);
+    const lease = startLoop(
+      fixture.root,
+      "controller",
+      "ship",
+      remoteSnapshot(targetRevision)
+    );
+    const prepared = prepareAgentWorktree(
+      fixture.root,
+      lease.runId,
+      "legacy-author",
+      "must remain untouched"
+    );
+    const leasePath = loopLeasePath(
+      captureInventory(fixture.root).repository.commonGitDirectory
+    );
+    const stored = JSON.parse(readFileSync(leasePath, "utf8")) as LoopLease;
+    Reflect.deleteProperty(stored, "openingRemoteInventory");
+    writeFileSync(leasePath, `${JSON.stringify(stored, null, 2)}\n`, "utf8");
+
+    expect(() =>
+      recordRemoteBranchReconciliation(
+        fixture.root,
+        lease.runId,
+        "controller",
+        remoteSnapshot(targetRevision)
+      )
+    ).toThrow("cannot record an ordinary reconciliation receipt");
+    expect(() => endLoop(fixture.root, lease.runId, "controller")).toThrow(
+      "only approved post-cleanup recovery may close it"
+    );
+
+    const finalized = finalizeLoop(
+      fixture.root,
+      lease.runId,
+      "controller",
+      "Legacy evidence is missing."
+    );
+
+    expect(finalized.outcome).toBe("relinquished");
+    expect(existsSync(prepared.path)).toBe(true);
+    expect(git(prepared.path, ["rev-parse", "HEAD"])).toBe(targetRevision);
+    expect(finalized.cleanup).toEqual({
+      cleanedPrimaryPaths: [],
+      errors: [],
+      primaryUpdated: false,
+      prunedWorktreeMetadata: 0,
+      removedBranches: [],
+      removedWorktrees: [],
+    });
+  });
+
+  test("closes a legacy missing-opening ledger only with approved matching post-cleanup evidence", async () => {
+    const fixture = repository();
+    git(fixture.root, [
+      "remote",
+      "add",
+      "origin",
+      "git@gitlab.com:group/project.git",
+    ]);
+    const targetRevision = git(fixture.root, ["rev-parse", "HEAD"]);
+    const snapshot = remoteSnapshot(targetRevision);
+    const secondSnapshot = {
+      ...snapshot,
+      observedAt: new Date(
+        Date.parse(snapshot.observedAt) + 1000
+      ).toISOString(),
+    };
+    const lease = startLoop(fixture.root, "controller", "ship", snapshot);
+    const prepared = prepareAgentWorktree(
+      fixture.root,
+      lease.runId,
+      "legacy-author",
+      "legacy recovered cleanup"
+    );
+    const leasePath = loopLeasePath(
+      captureInventory(fixture.root).repository.commonGitDirectory
+    );
+    finalizeLoop(
+      fixture.root,
+      lease.runId,
+      "controller",
+      "Remote reconciliation remains pending."
+    );
+    expect(existsSync(prepared.path)).toBe(false);
+    const stored = JSON.parse(readFileSync(leasePath, "utf8")) as LoopLease;
+    Reflect.deleteProperty(stored, "openingRemoteInventory");
+    writeFileSync(leasePath, `${JSON.stringify(stored, null, 2)}\n`, "utf8");
+    startLoop(fixture.root, "recovery-controller", "resume");
+    const refsBeforeRecovery = git(fixture.root, ["show-ref"]);
+    const receipt = {
+      approvedBy: "user",
+      authority: "close-only" as const,
+      ...claimEvidence(fixture.root),
+      firstFinalInventory: snapshot,
+      openingEvidenceUnavailableReason:
+        "The legacy runtime did not persist the opening provider inventory.",
+      project: "group/project",
+      provider: "gitlab" as const,
+      reason: "Cleanup was already complete; close old bookkeeping only.",
+      schemaVersion: 1 as const,
+      secondFinalInventory: secondSnapshot,
+      targetBranch: "main",
+      targetRevision,
+    };
+    const moduleUrl = pathToFileURL(
+      join(
+        import.meta.dir,
+        "../../../skills/simple-changes/scripts/lib/loop-lease.ts"
+      )
+    ).href;
+    const child = spawn(
+      process.execPath,
+      [
+        "-e",
+        `import { recoverPostCleanupLoop } from ${JSON.stringify(moduleUrl)}; recoverPostCleanupLoop(${JSON.stringify(fixture.root)}, ${JSON.stringify(lease.runId)}, "recovery-controller", ${JSON.stringify(receipt)});`,
+      ],
+      {
+        env: {
+          ...process.env,
+          NODE_ENV: "test",
+          SIMPLE_CHANGES_TEST_CRASH_AFTER_POST_CLEANUP_INTENT: lease.runId,
+        },
+        stdio: "ignore",
+      }
+    );
+    const termination = await new Promise<{
+      code: number | null;
+      signal: NodeJS.Signals | null;
+    }>((resolveTermination) => {
+      child.once("exit", (code, signal) =>
+        resolveTermination({ code, signal })
+      );
+    });
+    expect(termination).toEqual({ code: null, signal: "SIGKILL" });
+    await sleep(5100);
+    expect(recoverLoopLock(fixture.root, "recovery-controller")).toMatchObject({
+      coordinationRecovered: true,
+      recovered: true,
+    });
+
+    const recovered = recoverPostCleanupLoop(
+      fixture.root,
+      lease.runId,
+      "recovery-controller",
+      receipt
+    );
+
+    expect(recovered).toMatchObject({
+      active: false,
+      ok: true,
+      runId: lease.runId,
+    });
+    expect(git(fixture.root, ["show-ref"])).toBe(refsBeforeRecovery);
+    expect(existsSync(prepared.path)).toBe(false);
+    expect(readLoopLease(fixture.root)).toBeNull();
+    expect(loopStatus(fixture.root)).toMatchObject({
+      lease: null,
+      verification: { active: false, ok: true, violations: [] },
+    });
+    const repeated = recoverPostCleanupLoop(
+      fixture.root,
+      lease.runId,
+      "recovery-controller",
+      receipt
+    );
+    expect(repeated).toEqual(recovered);
+    const history = JSON.parse(
+      readFileSync(
+        join(
+          captureInventory(fixture.root).repository.commonGitDirectory,
+          "simple-changes",
+          "history",
+          lease.runId,
+          "intent.json"
+        ),
+        "utf8"
+      )
+    ) as { removedWorktreePaths: string[] };
+    expect(history.removedWorktreePaths).toContain(prepared.path);
+  }, 30_000);
+
+  test("rejects post-cleanup recovery without explicit approval", () => {
+    const fixture = repository();
+    const lease = startLoop(fixture.root, "controller", "ship");
+    finalizeLoop(
+      fixture.root,
+      lease.runId,
+      "controller",
+      "Recovery approval is intentionally absent."
+    );
+    startLoop(fixture.root, "recovery-controller", "resume");
+    const targetRevision = git(fixture.root, ["rev-parse", "HEAD"]);
+
+    expect(() =>
+      recoverPostCleanupLoop(fixture.root, lease.runId, "recovery-controller", {
+        approvedBy: "",
+        authority: "close-only",
+        ...claimEvidence(fixture.root),
+        firstFinalInventory: remoteSnapshot(targetRevision),
+        openingEvidenceUnavailableReason: "Legacy evidence is absent.",
+        project: "group/project",
+        provider: "gitlab",
+        reason: "No approval.",
+        schemaVersion: 1,
+        secondFinalInventory: remoteSnapshot(targetRevision),
+        targetBranch: "main",
+        targetRevision,
+      })
+    ).toThrow();
+  });
+
+  test("rejects close-only recovery while local cleanup or work remains", () => {
+    const fixture = repository();
+    git(fixture.root, [
+      "remote",
+      "add",
+      "origin",
+      "git@gitlab.com:group/project.git",
+    ]);
+    const targetRevision = git(fixture.root, ["rev-parse", "HEAD"]);
+    const snapshot = remoteSnapshot(targetRevision);
+    const lease = startLoop(fixture.root, "controller", "ship", snapshot);
+    const leasePath = loopLeasePath(
+      captureInventory(fixture.root).repository.commonGitDirectory
+    );
+    const stored = JSON.parse(readFileSync(leasePath, "utf8")) as LoopLease;
+    Reflect.deleteProperty(stored, "openingRemoteInventory");
+    writeFileSync(leasePath, `${JSON.stringify(stored, null, 2)}\n`, "utf8");
+    finalizeLoop(
+      fixture.root,
+      lease.runId,
+      "controller",
+      "Legacy evidence is missing."
+    );
+    startLoop(fixture.root, "recovery-controller", "resume");
+    writeFixture(fixture.root, "still-dirty.txt", "not reconciled\n");
+    const receipt = {
+      approvedBy: "user",
+      authority: "close-only" as const,
+      ...claimEvidence(fixture.root),
+      firstFinalInventory: snapshot,
+      openingEvidenceUnavailableReason: "Legacy evidence is absent.",
+      project: "group/project",
+      provider: "gitlab" as const,
+      reason: "Attempt close-only recovery.",
+      schemaVersion: 1 as const,
+      secondFinalInventory: {
+        ...snapshot,
+        observedAt: new Date(
+          Date.parse(snapshot.observedAt) + 1000
+        ).toISOString(),
+      },
+      targetBranch: "main",
+      targetRevision,
+    };
+
+    expect(() =>
+      recoverPostCleanupLoop(
+        fixture.root,
+        lease.runId,
+        "recovery-controller",
+        receipt
+      )
+    ).toThrow("cleanup remains");
+    expect(readLoopLease(fixture.root)).not.toBeNull();
+  }, 30_000);
+
+  test("rejects close-only recovery while an active claim remains", () => {
+    const fixture = repository();
+    git(fixture.root, [
+      "remote",
+      "add",
+      "origin",
+      "git@gitlab.com:group/project.git",
+    ]);
+    const targetRevision = git(fixture.root, ["rev-parse", "HEAD"]);
+    const snapshot = remoteSnapshot(targetRevision);
+    const lease = startLoop(fixture.root, "controller", "ship", snapshot);
+    const stableClaimEvidence = claimEvidence(fixture.root);
+    const claimed = join(fixture.base, "active-recovery-author");
+    git(fixture.root, [
+      "worktree",
+      "add",
+      "-b",
+      "active-recovery-author",
+      claimed,
+    ]);
+    claimWorktree(
+      fixture.root,
+      "active-author",
+      claimed,
+      "codex",
+      "active-recovery-task"
+    );
+    verifyLoop(fixture.root);
+    const leasePath = loopLeasePath(
+      captureInventory(fixture.root).repository.commonGitDirectory
+    );
+    const stored = JSON.parse(readFileSync(leasePath, "utf8")) as LoopLease;
+    Reflect.deleteProperty(stored, "openingRemoteInventory");
+    writeFileSync(leasePath, `${JSON.stringify(stored, null, 2)}\n`, "utf8");
+    finalizeLoop(
+      fixture.root,
+      lease.runId,
+      "controller",
+      "Active author remains preserved."
+    );
+    startLoop(fixture.root, "recovery-controller", "resume");
+
+    expect(() =>
+      recoverPostCleanupLoop(fixture.root, lease.runId, "recovery-controller", {
+        approvedBy: "user",
+        authority: "close-only",
+        ...stableClaimEvidence,
+        firstFinalInventory: snapshot,
+        openingEvidenceUnavailableReason: "Legacy evidence is absent.",
+        project: "group/project",
+        provider: "gitlab",
+        reason: "Attempt close-only recovery.",
+        schemaVersion: 1,
+        secondFinalInventory: {
+          ...snapshot,
+          observedAt: new Date(
+            Date.parse(snapshot.observedAt) + 1000
+          ).toISOString(),
+        },
+        targetBranch: "main",
+        targetRevision,
+      })
+    ).toThrow("active worktree claim");
+    expect(existsSync(claimed)).toBe(true);
+  }, 30_000);
+
+  test("rejects close-only recovery when a claim changed after the first observation", () => {
+    const fixture = repository();
+    git(fixture.root, [
+      "remote",
+      "add",
+      "origin",
+      "git@gitlab.com:group/project.git",
+    ]);
+    const targetRevision = git(fixture.root, ["rev-parse", "HEAD"]);
+    const snapshot = remoteSnapshot(
+      targetRevision,
+      new Date(Date.now() - 10_000).toISOString()
+    );
+    const lease = startLoop(fixture.root, "controller", "ship", snapshot);
+    const stableClaimEvidence = claimEvidence(fixture.root);
+    const changed = join(fixture.base, "changed-recovery-claim");
+    git(fixture.root, [
+      "worktree",
+      "add",
+      "-b",
+      "changed-recovery-claim",
+      changed,
+    ]);
+    const claim = claimWorktree(
+      fixture.root,
+      "changed-author",
+      changed,
+      "codex",
+      "changed-recovery-task"
+    );
+    releaseWorktreeClaim(fixture.root, "changed-author", claim.claimId);
+    git(fixture.root, ["worktree", "remove", changed]);
+    git(fixture.root, ["branch", "-D", "changed-recovery-claim"]);
+    const leasePath = loopLeasePath(
+      captureInventory(fixture.root).repository.commonGitDirectory
+    );
+    const stored = JSON.parse(readFileSync(leasePath, "utf8")) as LoopLease;
+    Reflect.deleteProperty(stored, "openingRemoteInventory");
+    writeFileSync(leasePath, `${JSON.stringify(stored, null, 2)}\n`, "utf8");
+    finalizeLoop(
+      fixture.root,
+      lease.runId,
+      "controller",
+      "Changed claim must remain auditable."
+    );
+    startLoop(fixture.root, "recovery-controller", "resume");
+
+    expect(() =>
+      recoverPostCleanupLoop(fixture.root, lease.runId, "recovery-controller", {
+        approvedBy: "user",
+        authority: "close-only",
+        ...stableClaimEvidence,
+        firstFinalInventory: snapshot,
+        openingEvidenceUnavailableReason: "Legacy evidence is absent.",
+        project: "group/project",
+        provider: "gitlab",
+        reason: "Attempt close-only recovery.",
+        schemaVersion: 1,
+        secondFinalInventory: {
+          ...snapshot,
+          observedAt: new Date(
+            Date.parse(snapshot.observedAt) + 1000
+          ).toISOString(),
+        },
+        targetBranch: "main",
+        targetRevision,
+      })
+    ).toThrow("claims changed after the approved observations");
+  }, 30_000);
+
+  test("rejects close-only recovery when the primary is behind a moved target", () => {
+    const fixture = repository();
+    git(fixture.root, [
+      "remote",
+      "add",
+      "origin",
+      "git@gitlab.com:group/project.git",
+    ]);
+    git(fixture.root, ["config", "branch.main.remote", "origin"]);
+    git(fixture.root, ["config", "branch.main.merge", "refs/heads/main"]);
+    const openingTarget = git(fixture.root, ["rev-parse", "HEAD"]);
+    git(fixture.root, [
+      "update-ref",
+      "refs/remotes/origin/main",
+      openingTarget,
+    ]);
+    const openingSnapshot = remoteSnapshot(openingTarget);
+    const lease = startLoop(
+      fixture.root,
+      "controller",
+      "ship",
+      openingSnapshot
+    );
+    const leasePath = loopLeasePath(
+      captureInventory(fixture.root).repository.commonGitDirectory
+    );
+    const stored = JSON.parse(readFileSync(leasePath, "utf8")) as LoopLease;
+    Reflect.deleteProperty(stored, "openingRemoteInventory");
+    writeFileSync(leasePath, `${JSON.stringify(stored, null, 2)}\n`, "utf8");
+    finalizeLoop(
+      fixture.root,
+      lease.runId,
+      "controller",
+      "Legacy evidence is missing."
+    );
+    const movedTarget = git(fixture.root, [
+      "commit-tree",
+      "HEAD^{tree}",
+      "-p",
+      "HEAD",
+      "-m",
+      "Remote target moved",
+    ]);
+    git(fixture.root, ["update-ref", "refs/remotes/origin/main", movedTarget]);
+    startLoop(fixture.root, "recovery-controller", "resume");
+    const finalSnapshot = remoteSnapshot(movedTarget);
+
+    expect(() =>
+      recoverPostCleanupLoop(fixture.root, lease.runId, "recovery-controller", {
+        approvedBy: "user",
+        authority: "close-only",
+        ...claimEvidence(fixture.root),
+        firstFinalInventory: finalSnapshot,
+        openingEvidenceUnavailableReason: "Legacy evidence is absent.",
+        project: "group/project",
+        provider: "gitlab",
+        reason: "Attempt close-only recovery.",
+        schemaVersion: 1,
+        secondFinalInventory: {
+          ...finalSnapshot,
+          observedAt: new Date(
+            Date.parse(finalSnapshot.observedAt) + 1000
+          ).toISOString(),
+        },
+        targetBranch: "main",
+        targetRevision: movedTarget,
+      })
+    ).toThrow(
+      "exact current GitLab project, target branch, and target revision"
+    );
+    expect(git(fixture.root, ["rev-parse", "main"])).toBe(openingTarget);
+  }, 30_000);
   test("reads and safely verifies a pre-remote-binding lease", () => {
     const fixture = repository();
     const lease = startLoop(fixture.root, "controller", "integrate");
@@ -182,7 +785,13 @@ describe("active integration-loop lease", () => {
       "origin",
       "https://gitlab.example.invalid/group/first.git",
     ]);
-    const lease = startLoop(fixture.root, "controller", "integrate");
+    const targetRevision = git(fixture.root, ["rev-parse", "HEAD"]);
+    const lease = startLoop(
+      fixture.root,
+      "controller",
+      "integrate",
+      remoteSnapshot(targetRevision, new Date().toISOString(), "group/first")
+    );
     expect(lease.remoteBindings?.[0]?.pushUrls).toEqual([
       "https://gitlab.example.invalid/group/first.git",
     ]);
@@ -2380,7 +2989,12 @@ describe("active integration-loop lease", () => {
     const branchDigest = createHash("sha256")
       .update(JSON.stringify([{ headRevision: targetRevision, name: "main" }]))
       .digest("hex");
-    const lease = startLoop(fixture.root, "controller", "integrate");
+    const lease = startLoop(
+      fixture.root,
+      "controller",
+      "integrate",
+      remoteSnapshot(targetRevision)
+    );
 
     expect(() => endLoop(fixture.root, lease.runId, "controller")).toThrow(
       "complete remote-branch reconciliation receipt"

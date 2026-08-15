@@ -1,6 +1,6 @@
 import type { ChangelogCoordination, RepoPolicy } from "./types.ts";
 
-export const CURRENT_GUIDANCE_VERSION = 10;
+export const CURRENT_GUIDANCE_VERSION = 11;
 
 export type GuidanceUpdateAction =
   | "review-settings"
@@ -241,6 +241,30 @@ const GUIDANCE_UPDATES: GuidanceUpdateDefinition[] = [
       },
     ],
     version: 10,
+  },
+  {
+    changelogReviewRelevant: true,
+    changes: [
+      {
+        kind: "integration",
+        summary:
+          "Every GitLab Queue, Sweep, Integrate, Ship, Reconcile, and Resume run now saves the complete opening branch and proposal inventory before any provider mutation; ordinary reconciliation, ending, and finalization cannot bypass close-only recovery for a legacy record without that evidence.",
+        version: 11,
+      },
+      {
+        kind: "behavior",
+        summary:
+          "With explicit approval and nonblank audit reasons, legacy cleanup that already finished can close its old bookkeeping only after two matching complete post-cleanup inventories and two ordered zero-active worktree-claim observations with matching digests prove that no proposal or cleanup blocker remains.",
+        version: 11,
+      },
+      {
+        kind: "behavior",
+        summary:
+          "Post-cleanup recovery holds worktree coordination from final verification through audit, stale-claim retirement, and lease removal; it cannot move refs, remove worktrees or branches, change provider state, push, merge, or deploy; it preserves removed-worktree history and safely retries after a crash.",
+        version: 11,
+      },
+    ],
+    version: 11,
   },
 ];
 

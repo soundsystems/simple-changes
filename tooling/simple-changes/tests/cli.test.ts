@@ -1,9 +1,15 @@
 import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, realpathSync, symlinkSync } from "node:fs";
+import {
+  existsSync,
+  readFileSync,
+  realpathSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { spawn as bunSpawn, spawnSync as bunSpawnSync } from "bun";
+import { spawn as bunSpawn, spawnSync as bunSpawnSync, sleep } from "bun";
 import { captureInventory } from "../../../skills/simple-changes/scripts/lib/inventory.ts";
 import {
   DEFAULT_POLICY,
@@ -137,6 +143,40 @@ const paginationCoverage = (
     ],
   },
 });
+
+const remoteSnapshot = (targetRevision: string, observedAt: string) => {
+  const entries = [{ headRevision: targetRevision, name: "main" }];
+  const branchDigest = createHash("sha256")
+    .update(JSON.stringify(entries))
+    .digest("hex");
+  return {
+    branches: [
+      {
+        classification: "canonical-target",
+        disposition: "preserved-target",
+        evidence: ["Complete GitLab inventory includes main."],
+        finalHeadRevision: targetRevision,
+        initialHeadRevision: targetRevision,
+        name: "main",
+        obsoleteProof: null,
+        proposals: [],
+        protected: true,
+      },
+    ],
+    finalBranchCount: 1,
+    finalCoverage: paginationCoverage(1, branchDigest),
+    finalInventoryComplete: true,
+    initialBranchCount: 1,
+    initialCoverage: paginationCoverage(1, branchDigest),
+    initialInventoryComplete: true,
+    observedAt,
+    project: "group/project",
+    provider: "gitlab",
+    schemaVersion: 1,
+    targetBranch: "main",
+    targetRevision,
+  };
+};
 const migrationApplyPlan = (
   operationSet: {
     digest: string;
@@ -1268,6 +1308,38 @@ describe("contract CLI", () => {
     const branchDigest = createHash("sha256")
       .update(JSON.stringify([{ headRevision: targetRevision, name: "main" }]))
       .digest("hex");
+    const openingRemoteInventory = {
+      branches: [
+        {
+          classification: "canonical-target",
+          disposition: "preserved-target",
+          evidence: ["Opening GitLab inventory includes main."],
+          finalHeadRevision: targetRevision,
+          initialHeadRevision: targetRevision,
+          name: "main",
+          obsoleteProof: null,
+          proposals: [],
+          protected: true,
+        },
+      ],
+      finalBranchCount: 1,
+      finalCoverage: paginationCoverage(1, branchDigest),
+      finalInventoryComplete: true,
+      initialBranchCount: 1,
+      initialCoverage: paginationCoverage(1, branchDigest),
+      initialInventoryComplete: true,
+      observedAt: new Date().toISOString(),
+      project: "group/project",
+      provider: "gitlab",
+      schemaVersion: 1,
+      targetBranch: "main",
+      targetRevision,
+    };
+    writeFixture(
+      fixture.root,
+      "opening-remote-branches.json",
+      `${JSON.stringify(openingRemoteInventory, null, 2)}\n`
+    );
     const started = spawnSync(
       [
         process.execPath,
@@ -1278,6 +1350,8 @@ describe("contract CLI", () => {
         "reconcile",
         "--agent-id",
         "controller",
+        "--opening-remote-inventory",
+        resolve(fixture.root, "opening-remote-branches.json"),
         "--json",
         "--repo",
         fixture.root,
@@ -1352,6 +1426,224 @@ describe("contract CLI", () => {
           targetRevision,
         },
       },
+    });
+  }, 30_000);
+
+  test("closes completed legacy bookkeeping through the explicit CLI recovery", async () => {
+    const fixture = createTestRepository();
+    repositories.push(fixture);
+    git(fixture.root, [
+      "remote",
+      "add",
+      "origin",
+      "git@gitlab.com:group/project.git",
+    ]);
+    const targetRevision = git(fixture.root, ["rev-parse", "HEAD"]);
+    const firstObservedAt = new Date(Date.now() - 2000).toISOString();
+    const first = remoteSnapshot(targetRevision, firstObservedAt);
+    const openingPath = resolve(fixture.base, "legacy-opening.json");
+    writeFileSync(openingPath, `${JSON.stringify(first, null, 2)}\n`, "utf8");
+    const started = spawnSync(
+      [
+        process.execPath,
+        cliPath,
+        "loop",
+        "start",
+        "--mode",
+        "ship",
+        "--agent-id",
+        "controller",
+        "--opening-remote-inventory",
+        openingPath,
+        "--json",
+        "--repo",
+        fixture.root,
+      ],
+      { stderr: "pipe", stdout: "pipe" }
+    );
+    const { lease } = JSON.parse(decoder.decode(started.stdout)) as {
+      lease: { runId: string };
+    };
+    const { commonGitDirectory } = captureInventory(fixture.root).repository;
+    const leasePath = resolve(
+      commonGitDirectory,
+      "simple-changes",
+      "active-loop.json"
+    );
+    const stored = JSON.parse(readFileSync(leasePath, "utf8")) as Record<
+      string,
+      unknown
+    >;
+    Reflect.deleteProperty(stored, "openingRemoteInventory");
+    writeFileSync(leasePath, `${JSON.stringify(stored, null, 2)}\n`, "utf8");
+
+    const ordinaryEnd = spawnSync(
+      [
+        process.execPath,
+        cliPath,
+        "loop",
+        "end",
+        "--run-id",
+        lease.runId,
+        "--agent-id",
+        "controller",
+        "--repo",
+        fixture.root,
+      ],
+      { stderr: "pipe", stdout: "pipe" }
+    );
+    expect(ordinaryEnd.exitCode).not.toBe(0);
+    expect(decoder.decode(ordinaryEnd.stderr)).toContain(
+      "only approved post-cleanup recovery may close it"
+    );
+
+    const finalized = spawnSync(
+      [
+        process.execPath,
+        cliPath,
+        "loop",
+        "finalize",
+        "--run-id",
+        lease.runId,
+        "--agent-id",
+        "controller",
+        "--reason",
+        "Cleanup is complete but opening evidence is unavailable.",
+        "--json",
+        "--repo",
+        fixture.root,
+      ],
+      { stderr: "pipe", stdout: "pipe" }
+    );
+    expect(finalized.exitCode).toBe(5);
+    const resumed = spawnSync(
+      [
+        process.execPath,
+        cliPath,
+        "loop",
+        "start",
+        "--mode",
+        "resume",
+        "--agent-id",
+        "recovery-controller",
+        "--json",
+        "--repo",
+        fixture.root,
+      ],
+      { stderr: "pipe", stdout: "pipe" }
+    );
+    expect(resumed.exitCode).toBe(0);
+    const observeClaims = () => {
+      const observed = spawnSync(
+        [
+          process.execPath,
+          cliPath,
+          "worktree",
+          "observe",
+          "--json",
+          "--repo",
+          fixture.root,
+        ],
+        { stderr: "pipe", stdout: "pipe" }
+      );
+      expect(observed.exitCode).toBe(0);
+      return JSON.parse(decoder.decode(observed.stdout)) as {
+        activeClaimCount: 0;
+        digest: string;
+        observedAt: string;
+      };
+    };
+    const firstClaimObservation = observeClaims();
+    await sleep(2);
+    const secondClaimObservation = observeClaims();
+    const receipt = {
+      approvedBy: "user",
+      authority: "close-only",
+      firstClaimObservation,
+      firstFinalInventory: first,
+      openingEvidenceUnavailableReason:
+        "The legacy runtime did not save opening provider evidence.",
+      project: "group/project",
+      provider: "gitlab",
+      reason: "Cleanup is already complete; close bookkeeping only.",
+      schemaVersion: 1,
+      secondClaimObservation,
+      secondFinalInventory: remoteSnapshot(
+        targetRevision,
+        new Date(Date.parse(firstObservedAt) + 1000).toISOString()
+      ),
+      targetBranch: "main",
+      targetRevision,
+    };
+    const receiptPath = resolve(fixture.base, "post-cleanup-recovery.json");
+    writeFileSync(receiptPath, `${JSON.stringify(receipt, null, 2)}\n`, "utf8");
+    const recoveryCommand = [
+      process.execPath,
+      cliPath,
+      "loop",
+      "recover-post-cleanup",
+      "--run-id",
+      lease.runId,
+      "--agent-id",
+      "recovery-controller",
+      "--receipt",
+      receiptPath,
+      "--repo",
+      fixture.root,
+    ];
+    const crashed = spawnSync(recoveryCommand, {
+      env: {
+        NODE_ENV: "test",
+        SIMPLE_CHANGES_TEST_CRASH_AFTER_POST_CLEANUP_INTENT: lease.runId,
+      },
+      stderr: "pipe",
+      stdout: "pipe",
+    });
+    expect(crashed.exitCode).not.toBe(0);
+    await sleep(5100);
+    const lockRecovery = spawnSync(
+      [
+        process.execPath,
+        cliPath,
+        "loop",
+        "recover",
+        "--agent-id",
+        "recovery-controller",
+        "--json",
+        "--repo",
+        fixture.root,
+      ],
+      { stderr: "pipe", stdout: "pipe" }
+    );
+    expect(lockRecovery.exitCode).toBe(0);
+    expect(JSON.parse(decoder.decode(lockRecovery.stdout))).toMatchObject({
+      coordinationRecovered: true,
+      recovered: true,
+    });
+    const recovered = spawnSync(recoveryCommand, {
+      stderr: "pipe",
+      stdout: "pipe",
+    });
+    expect(decoder.decode(recovered.stderr)).toBe("");
+    expect(recovered.exitCode).toBe(0);
+    expect(decoder.decode(recovered.stdout)).toBe(
+      "Cleanup was already complete; Simple Changes repaired and closed its old bookkeeping record.\n"
+    );
+    const status = spawnSync(
+      [
+        process.execPath,
+        cliPath,
+        "loop",
+        "status",
+        "--json",
+        "--repo",
+        fixture.root,
+      ],
+      { stderr: "pipe", stdout: "pipe" }
+    );
+    expect(JSON.parse(decoder.decode(status.stdout))).toMatchObject({
+      lease: null,
+      verification: { active: false, ok: true, violations: [] },
     });
   }, 30_000);
 
@@ -1660,7 +1952,7 @@ describe("contract CLI", () => {
     );
     expect(acknowledged.exitCode).toBe(0);
     expect(JSON.parse(decoder.decode(acknowledged.stdout))).toMatchObject({
-      currentVersion: 10,
+      currentVersion: 11,
       disposition: "deferred",
       previousVersion: 1,
       written: true,
@@ -1670,7 +1962,7 @@ describe("contract CLI", () => {
         readFileSync(resolve(fixture.root, ".simple-changes.json"), "utf8")
       )
     ).toMatchObject({
-      guidance: { disposition: "deferred", version: 10 },
+      guidance: { disposition: "deferred", version: 11 },
     });
 
     const resumed = spawnSync(

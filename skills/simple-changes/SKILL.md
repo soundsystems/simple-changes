@@ -109,6 +109,11 @@ For Queue, Sweep, Integrate, Ship, Reconcile, and Resume, start one active loop
 only after initialization returns `preLoopActionRequired: false`. Start the
 loop before the first integration mutation and retain its run ID. A second
 controller is rejected; independent authors use distinct claimed worktrees.
+When the target is GitLab, first paginate every branch and every open, merged,
+and closed proposal, then pass that unchanged receipt through
+`loop start --opening-remote-inventory <file>`. The lease persists it before
+any provider mutation. A legacy GitLab run without this evidence is close-only:
+it cannot prepare authors or cross a mutation guard.
 
 When an active loop assigns a new author into that same integration unit, run
 `simple-changes.ts prepare-agent` before edits. Independent agents create an
@@ -146,6 +151,18 @@ relinquishes durable state and exits nonzero so preservation cannot be mistaken
 for shipment completion. Takeover requires the exact current run ID and
 manifest digest plus approver and reason.
 
+If an older relinquished run already finished cleanup but lacks opening remote
+evidence, never relabel later observations as its opening inventory. With
+explicit user approval, two matching complete post-cleanup inventories, clean
+current primary state, exact target binding, no open proposals, no active
+claims, and no remaining cleanup action, capture `worktree observe --json`
+beside each provider snapshot and use `loop recover-post-cleanup` only when both
+claim digests match.
+That command archives the old record and retires only already-absent inactive
+claims. It cannot push, merge, deploy, move refs, or remove anything. Say:
+**Cleanup was already complete; Simple Changes repaired and closed its old
+bookkeeping record.**
+
 Follow [inventory and concurrency](references/inventory-and-concurrency.md).
 
 ## Completed-work handoff
@@ -166,7 +183,8 @@ invoke it after planning, diagnosis, read-only work, or incomplete verification.
 
 1. Read repository instructions and [setup and policy](references/setup-and-policy.md).
 2. Initialize, resolve companion notices, capture the canonical primary
-   checkout, then start the required controller lease.
+   checkout, capture the complete GitLab opening remote inventory when
+   applicable, then start the required controller lease with that evidence.
 3. Refresh the intended target before diff-derived decisions. Preserve dirty,
    conflicted, detached, mid-operation, active, and unclaimed state. Inventory
    hashes changed regular files in bounded chunks and records special files
@@ -203,7 +221,7 @@ invoke it after planning, diagnosis, read-only work, or incomplete verification.
     target GitLab remote, complete the remote-branch reconciliation gate across
    every paginated branch before completion. Pagination evidence must include a
    consolidated ledger digest plus complete branch and open/merged/closed
-   proposal page chains from initial and final inventories. Delete
+   proposal page chains from the persisted opening and final inventories. Delete
    proven-obsolete remote branches only after exact
     evidence; preserve uncertainty.
 11. Restore the exact original primary checkout clean at the refreshed target,

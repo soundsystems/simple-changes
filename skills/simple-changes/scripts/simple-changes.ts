@@ -40,6 +40,7 @@ import {
   recordEmergencyShipping,
   recordRemoteBranchReconciliation,
   recoverLoopLock,
+  recoverPostCleanupLoop,
   retainExcludedWorktree,
   startLoop,
   takeoverLoop,
@@ -105,12 +106,13 @@ import {
   attachClaimedWorktree,
   claimWorktree,
   detachClaimedWorktree,
+  observeWorktreeClaims,
   pauseClaimedWorktree,
   readWorktreeCoordination,
   releaseWorktreeClaim,
 } from "./lib/worktree-coordination.ts";
 
-const VERSION = "0.12.4";
+const VERSION = "0.12.5";
 const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const HELP = `Simple Changes ${VERSION}
 
@@ -155,6 +157,7 @@ Usage:
   simple-changes inventory [--json] [--repo PATH]
   simple-changes preview [--json] [--repo PATH] [--settle-ms N]
   simple-changes loop start --mode MODE --agent-id ID [--changelog-required]
+    [--opening-remote-inventory FILE]
     [--json] [--repo PATH]
   simple-changes loop status [--json] [--repo PATH]
   simple-changes loop verify --run-id ID [--json] [--repo PATH]
@@ -176,6 +179,8 @@ Usage:
     --pause-receipt ID [--json] [--repo PATH]
   simple-changes loop reconcile-remote-branches --run-id ID --agent-id ID
     --receipt FILE [--json] [--repo PATH]
+  simple-changes loop recover-post-cleanup --run-id ID --agent-id ID
+    --receipt FILE [--json] [--repo PATH]
   simple-changes loop emergency status --run-id ID [--json] [--repo PATH]
   simple-changes loop emergency record --run-id ID --agent-id ID --state FILE
     [--json] [--repo PATH]
@@ -183,6 +188,7 @@ Usage:
   simple-changes loop finalize --run-id ID --agent-id ID --reason TEXT
     [--json] [--repo PATH]
   simple-changes worktree status [--json] [--repo PATH]
+  simple-changes worktree observe [--json] [--repo PATH]
   simple-changes worktree request --claim-id ID --run-id ID
     --request-action request-pause|request-detach|notify-resume
     [--json] [--repo PATH]
@@ -209,7 +215,7 @@ Usage:
 Schema kinds:
   repo-policy, changelog-capabilities, changelog-request, changelog-receipt,
   initialization, inventory, change-plan, migration-review, migration-pending, migration-apply-plan, run-state, provider-receipt,
-  release-delivery-receipt, remote-branch-reconciliation, release-consistency,
+  release-delivery-receipt, post-cleanup-recovery, remote-branch-reconciliation, release-consistency,
   release-notes, loop-lease, worktree-coordination
 
 Exit codes:
@@ -239,6 +245,7 @@ interface CliOptions {
   migrationHandling?: RepoPolicy["migrationHandling"];
   migrationTargets: RepoPolicy["migrationTargets"];
   mode?: InitializationMode;
+  openingRemoteInventoryPath?: string;
   ownerRef?: string;
   pauseReceiptId?: string;
   pendingPath?: string;
@@ -285,6 +292,7 @@ const VALUED_OPTIONS = new Set([
   "--migration-target",
   "--mode",
   "--owner-ref",
+  "--opening-remote-inventory",
   "--pending",
   "--pause-receipt",
   "--production",
@@ -558,6 +566,7 @@ const applyLoopValuedOption = (
     "--approved-by": "approvedBy",
     "--claim-id": "claimId",
     "--manifest-digest": "manifestDigest",
+    "--opening-remote-inventory": "openingRemoteInventoryPath",
     "--owner-ref": "ownerRef",
     "--pause-receipt": "pauseReceiptId",
     "--pending": "pendingPath",
@@ -1804,7 +1813,17 @@ const runLoopOpeningAction = (action: string, options: CliOptions): boolean => {
         );
       }
     }
-    const lease = startLoop(options.repo, agentId, options.mode as RequestMode);
+    const openingRemoteInventory = options.openingRemoteInventoryPath
+      ? (JSON.parse(
+          readFileSync(resolve(options.openingRemoteInventoryPath), "utf8")
+        ) as unknown)
+      : undefined;
+    const lease = startLoop(
+      options.repo,
+      agentId,
+      options.mode as RequestMode,
+      openingRemoteInventory
+    );
     writeOutput(
       { lease, manifestDigest: loopManifestDigest(lease) },
       options.json,
@@ -1835,11 +1854,30 @@ const runLoopCommand = async (options: CliOptions): Promise<void> => {
   const [action] = options.positional;
   if (!action) {
     throw new SimpleChangesError(
-      "loop requires start, status, verify, guard, exec, recover, takeover, allow, dispose-worktree, retain-worktree, adopt-worktree, accept-paused-change, end, or finalize",
+      "loop requires start, status, verify, guard, exec, recover, recover-post-cleanup, takeover, allow, dispose-worktree, retain-worktree, adopt-worktree, accept-paused-change, end, or finalize",
       EXIT_CODES.usage
     );
   }
   if (runLoopOpeningAction(action, options)) {
+    return;
+  }
+  if (action === "recover-post-cleanup") {
+    const result = recoverPostCleanupLoop(
+      options.repo,
+      requireCliOption(options.runId, "--run-id"),
+      requireCliOption(options.agentId, "--agent-id"),
+      JSON.parse(
+        readFileSync(
+          resolve(requireCliOption(options.receiptPath, "--receipt")),
+          "utf8"
+        )
+      ) as unknown
+    );
+    writeOutput(
+      result,
+      options.json,
+      "Cleanup was already complete; Simple Changes repaired and closed its old bookkeeping record.\n"
+    );
     return;
   }
   const runId = requireCliOption(options.runId, "--run-id");
@@ -2028,7 +2066,7 @@ const runWorktreeCommand = (options: CliOptions): void => {
   const [action] = options.positional;
   if (!action) {
     throw new SimpleChangesError(
-      "worktree requires status, request, claim, pause, detach, attach, resume-ready, or release",
+      "worktree requires status, observe, request, claim, pause, detach, attach, resume-ready, or release",
       EXIT_CODES.usage
     );
   }
@@ -2038,6 +2076,15 @@ const runWorktreeCommand = (options: CliOptions): void => {
       state,
       options.json,
       `Worktree claims: ${state.claims.length}\nPause receipts: ${state.receipts.length}\n`
+    );
+    return;
+  }
+  if (action === "observe") {
+    const observation = observeWorktreeClaims(options.repo);
+    writeOutput(
+      observation,
+      options.json,
+      `Worktree claim observation: ${observation.digest}\nActive claims: ${observation.activeClaimCount}\n`
     );
     return;
   }

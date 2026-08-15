@@ -2,10 +2,150 @@ import { createHash } from "node:crypto";
 import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
 import { validateSchema } from "./schema.ts";
 import type {
+  PostCleanupRecoveryReceipt,
   RemoteBranchReconciliationEntry,
   RemoteBranchReconciliationReceipt,
   RemoteInventoryCoverage,
 } from "./types.ts";
+
+const inventoryEntries = (
+  receipt: RemoteBranchReconciliationReceipt,
+  phase: "initial" | "final"
+) => ({
+  branches: receipt.branches
+    .filter((branch) =>
+      phase === "initial"
+        ? branch.initialHeadRevision !== null
+        : branch.finalHeadRevision !== null
+    )
+    .map((branch) => ({
+      headRevision:
+        phase === "initial"
+          ? branch.initialHeadRevision
+          : branch.finalHeadRevision,
+      name: branch.name,
+      proposals: branch.proposals
+        .filter((proposal) =>
+          phase === "initial"
+            ? proposal.observedInitially !== false
+            : proposal.observedFinally !== false
+        )
+        .map((proposal) => ({
+          headRevision: proposal.headRevision,
+          objectId: proposal.objectId,
+          state: proposal.state,
+        })),
+      protected: branch.protected,
+    })),
+  coverage:
+    phase === "initial" ? receipt.initialCoverage : receipt.finalCoverage,
+});
+
+export const remoteInventoryDigest = (
+  receipt: RemoteBranchReconciliationReceipt,
+  phase: "initial" | "final" = "final"
+): string =>
+  createHash("sha256")
+    .update(JSON.stringify(inventoryEntries(receipt, phase)))
+    .digest("hex");
+
+export const validateOpeningRemoteInventory = (
+  value: unknown
+): RemoteBranchReconciliationReceipt => {
+  const receipt = validateRemoteBranchReconciliation(value);
+  if (
+    remoteInventoryDigest(receipt, "initial") !==
+    remoteInventoryDigest(receipt, "final")
+  ) {
+    throw new SimpleChangesError(
+      "Opening remote inventory must describe one unchanged complete provider snapshot.",
+      EXIT_CODES.validation
+    );
+  }
+  if (
+    receipt.branches.some(
+      (branch) =>
+        branch.initialHeadRevision !== branch.finalHeadRevision ||
+        !branch.disposition.startsWith("preserved-")
+    )
+  ) {
+    throw new SimpleChangesError(
+      "Opening remote inventory cannot claim a deletion or branch movement.",
+      EXIT_CODES.validation
+    );
+  }
+  return receipt;
+};
+
+export const validatePostCleanupRecovery = (
+  value: unknown
+): PostCleanupRecoveryReceipt => {
+  const receipt = validateSchema<PostCleanupRecoveryReceipt>(
+    "post-cleanup-recovery",
+    value
+  );
+  const approvedBy = receipt.approvedBy.trim();
+  const reason = receipt.reason.trim();
+  const openingEvidenceUnavailableReason =
+    receipt.openingEvidenceUnavailableReason.trim();
+  if (!(approvedBy && reason && openingEvidenceUnavailableReason)) {
+    throw new SimpleChangesError(
+      "Post-cleanup recovery requires a nonblank approver and audit reasons.",
+      EXIT_CODES.validation
+    );
+  }
+  const first = validateOpeningRemoteInventory(receipt.firstFinalInventory);
+  const second = validateOpeningRemoteInventory(receipt.secondFinalInventory);
+  if (
+    Date.parse(second.observedAt) <= Date.parse(first.observedAt) ||
+    remoteInventoryDigest(first) !== remoteInventoryDigest(second)
+  ) {
+    throw new SimpleChangesError(
+      "Post-cleanup recovery requires two matching complete inventories observed at distinct increasing times.",
+      EXIT_CODES.validation
+    );
+  }
+  if (
+    receipt.firstClaimObservation.digest !==
+      receipt.secondClaimObservation.digest ||
+    Date.parse(receipt.secondClaimObservation.observedAt) <=
+      Date.parse(receipt.firstClaimObservation.observedAt)
+  ) {
+    throw new SimpleChangesError(
+      "Post-cleanup recovery requires two matching ordered worktree-claim observations.",
+      EXIT_CODES.validation
+    );
+  }
+  for (const snapshot of [first, second]) {
+    if (
+      snapshot.provider !== receipt.provider ||
+      snapshot.project !== receipt.project ||
+      snapshot.targetBranch !== receipt.targetBranch ||
+      snapshot.targetRevision !== receipt.targetRevision
+    ) {
+      throw new SimpleChangesError(
+        "Post-cleanup recovery inventories must bind the exact provider project and target.",
+        EXIT_CODES.validation
+      );
+    }
+    if (
+      snapshot.branches.some((branch) =>
+        branch.proposals.some((proposal) => proposal.state === "open")
+      )
+    ) {
+      throw new SimpleChangesError(
+        "Post-cleanup recovery cannot close while an open proposal remains.",
+        EXIT_CODES.unsafe
+      );
+    }
+  }
+  return {
+    ...receipt,
+    approvedBy,
+    openingEvidenceUnavailableReason,
+    reason,
+  };
+};
 
 const validatePagination = (
   coverage: RemoteInventoryCoverage,

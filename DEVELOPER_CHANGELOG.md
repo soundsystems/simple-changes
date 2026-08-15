@@ -1,5 +1,47 @@
 # Developer changelog
 
+## 0.12.5 - 2026-08-15
+
+- Bound GitLab integration loops to truthful opening provider evidence:
+  - Queue, Sweep, Integrate, Ship, Reconcile, and Resume persist a complete,
+    unchanged branch plus open/merged/closed proposal inventory atomically with
+    lease creation, before the first provider mutation.
+  - Opening evidence binds the exact GitLab project, target branch, and target
+    revision. Legacy Integrate, Ship, Reconcile, and Resume leases without it
+    remain inspectable but cannot prepare authors, cross mutation guards, or
+    perform cleanup mutations.
+  - Ordinary reconciliation receipt recording, `loop end`, and finalization all
+    preserve the missing-opening blocker, so none can relabel later evidence or
+    bypass the dedicated post-cleanup recovery path.
+- Added explicit close-only recovery for legacy cleanup that already finished:
+  - `loop recover-post-cleanup` requires a nonblank approver and audit reasons,
+    the exact old run, project, branch, and current target revision, two complete
+    matching post-cleanup inventories observed in order, and two ordered
+    worktree-claim observations with the same document digest and zero active
+    claims.
+  - Recovery revalidates the current claim-document digest, rejects claims
+    changed during or after the observation window, and requires a clean current
+    primary, no open proposals, and no remaining cleanup blockers.
+  - Recovery archives immutable intent and completion events and retires only
+    inactive claims whose worktrees are already absent. It cannot move refs,
+    remove worktrees or branches, change provider state, push, merge, or deploy.
+  - The worktree-coordination lock is held continuously from final inventory and
+    claim verification through immutable audit writes, already-absent stale
+    claim retirement, completion recording, and active-lease removal.
+  - Completed worktree-removal dispositions now retain explicit intended and
+    completed states. Already removed worktrees remain auditable but stop
+    blocking later finalization, and a crash after recovery intent can clear
+    only matching stale locks before safely retrying the same receipt.
+  - Added closed-schema and unit coverage for matching inventories and claim
+    observations, blank approval fields, open proposals, local cleanup blockers,
+    changed or active claims, moved targets, mutation-free closure, and
+    preserved removal history. CLI end-to-end coverage exercises the explicit
+    recovery command plus process death, stale loop and coordination lock
+    recovery, and idempotent retry.
+- Advanced the package and CLI to 0.12.5 and installed Simple Changes guidance
+  to version 11 so existing installations receive one practical update notice.
+<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-15T08:15:36-05:00" -->
+
 ## 0.12.4 - 2026-08-14
 
 - Established a plain-language-first contract for all user communication:

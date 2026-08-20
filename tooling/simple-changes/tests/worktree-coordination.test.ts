@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
-import { statSync } from "node:fs";
+import { chmodSync, mkdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import {
   buildCoordinationRequest,
@@ -47,6 +47,40 @@ afterEach(() => {
 });
 
 describe("worktree coordination", () => {
+  test("distinguishes permission denial from lock contention", () => {
+    if (process.platform === "win32") {
+      return;
+    }
+    const fixture = repository();
+    const worktree = join(fixture.base, "permission-denied-claim");
+    git(fixture.root, [
+      "worktree",
+      "add",
+      "-b",
+      "permission-denied-claim",
+      worktree,
+    ]);
+    const { commonGitDirectory } = captureInventory(worktree).repository;
+    const stateDirectory = join(commonGitDirectory, "simple-changes");
+    mkdirSync(stateDirectory, { mode: 0o700, recursive: true });
+    chmodSync(stateDirectory, 0o500);
+
+    try {
+      expect(() =>
+        claimWorktree(
+          worktree,
+          "permission-owner",
+          worktree,
+          "codex",
+          "permission-test"
+        )
+      ).toThrow("This is not lock contention");
+    } finally {
+      chmodSync(stateDirectory, 0o700);
+    }
+    expect(readWorktreeCoordination(worktree).claims).toEqual([]);
+  });
+
   test("claims exact dirty evidence idempotently and rejects another owner", () => {
     const fixture = repository();
     const worktree = join(fixture.base, "claimed");

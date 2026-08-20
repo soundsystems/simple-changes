@@ -11,7 +11,7 @@ import {
 import { hostname } from "node:os";
 import { dirname, resolve } from "node:path";
 import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
-import { sha256 } from "./hash.ts";
+import { sha256, sha256Json } from "./hash.ts";
 import { captureInventory } from "./inventory.ts";
 import { runGit } from "./process.ts";
 import { redactSecrets } from "./redact.ts";
@@ -19,6 +19,7 @@ import { validateSchema } from "./schema.ts";
 import type {
   LoopLease,
   WorktreeClaim,
+  WorktreeClaimObservation,
   WorktreeCoordinationDocument,
   WorktreeCoordinationEvent,
   WorktreeCoordinationState,
@@ -37,6 +38,7 @@ const STALE_LOCK_MINIMUM_AGE_MS = 5000;
 const ADAPTER_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/u;
 const RUN_ID_PATTERN = /^run-[a-z0-9-]+$/u;
 const SHA_PATTERN = /^[0-9a-f]{40,64}$/u;
+const PERMISSION_DENIED_CODES = new Set(["EACCES", "EPERM", "EROFS"]);
 const LIVE_STATES = new Set<WorktreeCoordinationState>([
   "active",
   "pause-requested",
@@ -97,6 +99,22 @@ interface CoordinationLockOwner {
   pid: number;
   token: string;
 }
+
+const permissionDeniedLockError = (
+  label: string,
+  lockPath: string,
+  error: unknown
+): SimpleChangesError | null => {
+  const { code } = error as NodeJS.ErrnoException;
+  if (!(code && PERMISSION_DENIED_CODES.has(code))) {
+    return null;
+  }
+  return SimpleChangesError.withCause(
+    `${label} could not write its local coordination state at ${lockPath} because the harness or filesystem denied permission (${code}). This is not lock contention: do not pause other authors or recover/delete controller state. Fix the exact local permission and retry.`,
+    EXIT_CODES.unsafe,
+    error
+  );
+};
 
 const processIsAlive = (pid: number): boolean => {
   try {
@@ -171,6 +189,10 @@ const acquireNamedLock = (
         error
       );
     }
+    const permissionError = permissionDeniedLockError(label, lockPath, error);
+    if (permissionError) {
+      throw permissionError;
+    }
     throw error;
   }
   const owner: CoordinationLockOwner = {
@@ -188,6 +210,10 @@ const acquireNamedLock = (
     );
   } catch (error) {
     rmSync(lockPath, { force: true, recursive: true });
+    const permissionError = permissionDeniedLockError(label, lockPath, error);
+    if (permissionError) {
+      throw permissionError;
+    }
     throw error;
   }
   return () => {
@@ -315,13 +341,14 @@ const appendEvent = (
   claimId: string,
   actorAgentId: string,
   state: WorktreeCoordinationState,
-  createdAt: string
+  createdAt: string,
+  eventId = `event-${randomUUID()}`
 ): WorktreeCoordinationDocument => {
   const event: WorktreeCoordinationEvent = {
     actorAgentId,
     claimId,
     createdAt,
-    eventId: `event-${randomUUID()}`,
+    eventId,
     state,
   };
   return { ...document, events: [...document.events, event] };
@@ -441,6 +468,32 @@ export const readWorktreeCoordination = (
   const inventory = captureInventory(repositoryPath);
   return readCoordinationDocumentFromCommonDirectory(
     inventory.repository.commonGitDirectory
+  );
+};
+
+export const worktreeClaimDocumentDigest = (
+  document: WorktreeCoordinationDocument
+): string => sha256Json(document);
+
+export const observeWorktreeClaims = (
+  repositoryPath: string
+): WorktreeClaimObservation => {
+  const inventory = captureInventory(repositoryPath);
+  const { commonGitDirectory } = inventory.repository;
+  return withCoordinationLock(
+    commonGitDirectory,
+    "observe worktree claims",
+    () => {
+      const document =
+        readCoordinationDocumentFromCommonDirectory(commonGitDirectory);
+      return {
+        activeClaimCount: document.claims.filter(
+          (claim) => claim.state === "active"
+        ).length,
+        digest: worktreeClaimDocumentDigest(document),
+        observedAt: new Date().toISOString(),
+      };
+    }
   );
 };
 
@@ -1103,6 +1156,130 @@ export const releaseWorktreeClaim = (
       "blocked",
     ]
   );
+};
+
+export const retireAbsentWorktreeClaimsUnderLock = (
+  commonGitDirectory: string,
+  paths: string[],
+  actorAgentIdInput: string,
+  plan: AbsentWorktreeClaimRetirementPlan
+): string[] => {
+  const actorAgentId = requiredText(actorAgentIdInput, "agent ID", 128);
+  const retiredPaths = new Set(paths);
+  if (retiredPaths.size === 0) {
+    return [];
+  }
+  const document =
+    readCoordinationDocumentFromCommonDirectory(commonGitDirectory);
+  const currentDigest = worktreeClaimDocumentDigest(document);
+  if (currentDigest === plan.afterDigest) {
+    return plan.retiredClaimIds;
+  }
+  if (currentDigest !== plan.beforeDigest) {
+    throw new SimpleChangesError(
+      "Worktree claims no longer match the approved post-cleanup retirement plan.",
+      EXIT_CODES.unsafe
+    );
+  }
+  const retirement = projectAbsentWorktreeClaimRetirement(
+    document,
+    retiredPaths,
+    actorAgentId,
+    plan.retiredAt
+  );
+  if (
+    retirement.afterDigest !== plan.afterDigest ||
+    JSON.stringify(retirement.retiredClaimIds) !==
+      JSON.stringify(plan.retiredClaimIds)
+  ) {
+    throw new SimpleChangesError(
+      "Worktree claim retirement no longer matches its immutable recovery intent.",
+      EXIT_CODES.unsafe
+    );
+  }
+  if (retirement.afterDigest !== currentDigest) {
+    writeCoordinationDocument(commonGitDirectory, retirement.document);
+  }
+  return retirement.retiredClaimIds;
+};
+
+export interface AbsentWorktreeClaimRetirementPlan {
+  afterDigest: string;
+  beforeDigest: string;
+  retiredAt: string;
+  retiredClaimIds: string[];
+}
+
+const projectAbsentWorktreeClaimRetirement = (
+  openingDocument: WorktreeCoordinationDocument,
+  retiredPaths: Set<string>,
+  actorAgentId: string,
+  retiredAt: string
+): AbsentWorktreeClaimRetirementPlan & {
+  document: WorktreeCoordinationDocument;
+} => {
+  let document = openingDocument;
+  const retired: string[] = [];
+  const openingDigest = worktreeClaimDocumentDigest(openingDocument);
+  for (const claim of document.claims) {
+    if (!retiredPaths.has(claim.path)) {
+      continue;
+    }
+    if (claim.state === "active") {
+      throw new SimpleChangesError(
+        `Active claim ${claim.claimId} still owns ${claim.path}; post-cleanup recovery cannot retire it.`,
+        EXIT_CODES.unsafe
+      );
+    }
+    if (claim.state === "released") {
+      retired.push(claim.claimId);
+      continue;
+    }
+    const updated: WorktreeClaim = {
+      ...claim,
+      state: "released",
+      updatedAt: retiredAt,
+    };
+    document = appendEvent(
+      replaceClaim(document, updated),
+      claim.claimId,
+      actorAgentId,
+      "released",
+      retiredAt,
+      `event-recovery-${sha256Json({
+        actorAgentId,
+        claimId: claim.claimId,
+        openingDigest,
+        retiredAt,
+      })}`
+    );
+    retired.push(claim.claimId);
+  }
+  return {
+    afterDigest: worktreeClaimDocumentDigest(document),
+    beforeDigest: openingDigest,
+    document,
+    retiredAt,
+    retiredClaimIds: retired.sort((left, right) => left.localeCompare(right)),
+  };
+};
+
+export const planAbsentWorktreeClaimRetirementUnderLock = (
+  commonGitDirectory: string,
+  paths: string[],
+  actorAgentIdInput: string,
+  retiredAt: string
+): AbsentWorktreeClaimRetirementPlan => {
+  const actorAgentId = requiredText(actorAgentIdInput, "agent ID", 128);
+  const document =
+    readCoordinationDocumentFromCommonDirectory(commonGitDirectory);
+  const { document: _document, ...plan } = projectAbsentWorktreeClaimRetirement(
+    document,
+    new Set(paths),
+    actorAgentId,
+    retiredAt
+  );
+  return plan;
 };
 
 export const coordinationLinkIsCurrent = (

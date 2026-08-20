@@ -245,6 +245,67 @@ describe("onboarding conversation", () => {
     );
   });
 
+  test("offers existing global personal defaults before the main questions", async () => {
+    const existing = configuredPolicy({ defaultFinish: "integrate" });
+    const questions: string[] = [];
+    const selection = await collectOnboardingSelection(
+      DEFAULT_POLICY,
+      {},
+      {
+        choose: (question: string) => {
+          questions.push(question);
+          return Promise.resolve("use");
+        },
+        confirm: () => Promise.resolve(true),
+      },
+      undefined,
+      null,
+      false,
+      { existingPersonalDefaults: existing, showFirstScreen: true }
+    );
+
+    expect(questions).toEqual([ONBOARDING_QUESTIONS.existingPersonalDefaults]);
+    expect(selection.policy).toEqual(existing);
+    expect(selection.scope).toBe("run");
+    expect(selection.summary).toContain(
+      "No repository policy or personal preference file will be changed."
+    );
+  });
+
+  test("warns before overwriting existing global personal defaults", async () => {
+    let personalChoice: OnboardingChoice | undefined;
+    await collectOnboardingSelection(
+      DEFAULT_POLICY,
+      {},
+      {
+        choose: (question: string, choices, defaultValue: string) => {
+          if (question === ONBOARDING_QUESTIONS.existingPersonalDefaults) {
+            return Promise.resolve("review");
+          }
+          if (question === ONBOARDING_QUESTIONS.start) {
+            return Promise.resolve("customize");
+          }
+          if (question === ONBOARDING_QUESTIONS.scope) {
+            personalChoice = choices.find((choice) => choice.value === "user");
+            return Promise.resolve("user");
+          }
+          return Promise.resolve(defaultValue);
+        },
+        confirm: () => Promise.resolve(true),
+      },
+      undefined,
+      "/repo",
+      false,
+      {
+        existingPersonalDefaults: configuredPolicy(),
+        showFirstScreen: true,
+      }
+    );
+
+    expect(personalChoice?.label).toBe("Update global personal defaults");
+    expect(personalChoice?.description).toContain("Update and overwrite");
+  });
+
   test("starts with explained recommended, customized, and run-only setup", async () => {
     const messages: string[] = [];
     const choicesByQuestion = new Map<string, readonly OnboardingChoice[]>();
@@ -372,6 +433,53 @@ describe("onboarding conversation", () => {
     expect(selection.summary).toContain(
       "otherwise it will be preserved and reported"
     );
+  });
+
+  test("defaults to delegation when a compatible changelog skill is installed", async () => {
+    let changelogDefault = "";
+    const selection = await collectOnboardingSelection(
+      DEFAULT_POLICY,
+      {
+        defaultFinish: "open-change-request",
+        gitPushAuthorization: "ask",
+        questions: "blocking-only",
+        scope: "run",
+      },
+      {
+        choose: (question: string, _choices, defaultValue: string) => {
+          if (question === ONBOARDING_QUESTIONS.changelog) {
+            changelogDefault = defaultValue;
+          }
+          return Promise.resolve(defaultValue);
+        },
+        confirm: () => Promise.resolve(true),
+      },
+      {
+        capabilityAvailable: true,
+        capabilityHelpers: ["/skills/simple-changelogs/scripts/protocol.ts"],
+        capabilityStatus: "unverified",
+        guidanceUpdate: {
+          actions: [],
+          detailsPath: null,
+          headline: "**Simple Changelogs has recently been updated.**",
+          installedVersion: null,
+          owner: null,
+          policyPath: null,
+          provider: "simple-changelogs",
+          status: "current",
+          storedVersion: null,
+          summaryBullets: [],
+          walkthroughQuestion:
+            "Would you like me to walk you through the recent Simple Changelogs updates before I continue?",
+        },
+        providers: ["/skills/simple-changelogs/SKILL.md"],
+        releaseSurfaces: ["CHANGELOG.md"],
+        relevant: true,
+      }
+    );
+
+    expect(changelogDefault).toBe("delegate-if-available");
+    expect(selection.policy.changelogHandling).toBe("delegate-if-available");
   });
 
   test("builds and confirms the full ship workflow", async () => {

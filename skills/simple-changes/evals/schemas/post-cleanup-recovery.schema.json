@@ -1,0 +1,69 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://simple-changes.dev/schemas/post-cleanup-recovery.schema.json",
+  "title": "Simple Changes post-cleanup recovery receipt",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "provider",
+    "project",
+    "targetBranch",
+    "targetRevision",
+    "authority",
+    "approvedBy",
+    "reason",
+    "openingEvidenceUnavailableReason",
+    "firstClaimObservation",
+    "firstFinalInventory",
+    "secondClaimObservation",
+    "secondFinalInventory"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "provider": { "const": "gitlab" },
+    "project": { "type": "string", "minLength": 1 },
+    "targetBranch": { "type": "string", "minLength": 1 },
+    "targetRevision": { "type": "string", "pattern": "^[0-9a-f]{40,64}$" },
+    "authority": { "const": "close-only" },
+    "approvedBy": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "reason": { "type": "string", "minLength": 1, "maxLength": 500 },
+    "openingEvidenceUnavailableReason": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "firstClaimObservation": {
+      "$ref": "#/$defs/claimObservation"
+    },
+    "firstFinalInventory": {
+      "$ref": "remote-branch-reconciliation.schema.json"
+    },
+    "secondClaimObservation": {
+      "$ref": "#/$defs/claimObservation"
+    },
+    "secondFinalInventory": {
+      "$ref": "remote-branch-reconciliation.schema.json"
+    }
+  },
+  "$defs": {
+    "claimObservation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["activeClaimCount", "digest", "observedAt"],
+      "properties": {
+        "activeClaimCount": {
+          "const": 0
+        },
+        "digest": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "observedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    }
+  }
+}

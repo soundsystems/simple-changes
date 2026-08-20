@@ -109,6 +109,9 @@
         }
       }
     },
+    "openingRemoteInventory": {
+      "$ref": "remote-branch-reconciliation.schema.json"
+    },
     "remoteBindings": {
       "type": "array",
       "items": {
@@ -270,6 +273,11 @@
           },
           "headSha": { "type": "string", "pattern": "^[0-9a-f]{40,64}$" },
           "changeDigest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+          "status": { "enum": ["intended", "completed"] },
+          "completedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
           "targetRef": { "type": "string", "minLength": 1 },
           "targetRevision": {
             "type": "string",

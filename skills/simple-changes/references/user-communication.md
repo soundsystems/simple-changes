@@ -62,6 +62,18 @@ Avoid:
 > resuming that exact controller, applying only the confirmed policy through its
 > guarded mutation path, then relinquishing it again without shipping anything.
 
+For concurrent worktrees, describe only the operation that is actually waiting:
+
+> Another integration step is using the short shared lock. Your other agents
+> can keep editing, testing, and committing in their own worktrees; only this
+> merge/push/cleanup step is waiting.
+
+For a permission-denied state write, do not call it lock contention:
+
+> The harness blocked Simple Changes from writing its local controller record.
+> No other agent owns the lock; I’ll fix that permission boundary without
+> pausing or cleaning their worktrees.
+
 Prefer:
 
 > I paused before changing settings because the earlier run had ended safely.

@@ -26,6 +26,8 @@ discovered:
    revision, protected/default status, and every matching MR across open,
    merged, and closed states. Remote-tracking refs alone are not a complete
    provider inventory.
+   Persist that unchanged snapshot atomically with `loop start
+   --opening-remote-inventory <file>`; do not begin provider mutations first.
 2. Build one ledger over the union of the initial and final inventories. A
    branch appearing in either inventory must occur exactly once.
 3. Always preserve the canonical target, protected branches, branches used by
@@ -57,6 +59,17 @@ receipt is missing, semantically unsafe, or stale against the final target
 revision. Closed/unmerged and no-MR branches that remain uncertain are valid
 preserved outcomes, but they must be named and reported; they cannot disappear
 from the ledger.
+
+A legacy ledger may lack persisted opening evidence even though cleanup already
+finished. Do not fabricate an initial inventory from later observations.
+`loop recover-post-cleanup` is the only recovery: it needs explicit approval,
+two complete matching final inventories observed at increasing times, exact
+current target/project binding, no open proposals, clean current primary state,
+two matching zero-active-claim observations from `worktree observe --json`, and
+no remaining cleanup action. It holds the coordination lock from its final
+claim digest check through closure, archives the old lease plus both snapshots,
+retires only already-absent non-active claims, and removes the active ledger
+without authorizing any Git or provider mutation.
 
 Before reporting completion:
 
@@ -120,7 +133,8 @@ finalization persists the exact freshly revalidated removal intent before the
 destructive Git operation. If the process dies afterward, `loop recover` may
 clear only stale loop and coordination locks owned by that same dead local PID;
 the persisted intent then permits the next finalization attempt to account for
-that exact absence and continue.
+that exact absence, mark the disposition completed, and continue. Both
+run-created and opening worktree removals remain in the historical audit.
 
 Temporary detach is not disposal. `worktree detach` is owner-controlled and
 requires an exact `detach-clean-checkout` receipt, a clean non-primary checkout,

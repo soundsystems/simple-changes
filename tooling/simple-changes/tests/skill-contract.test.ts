@@ -284,6 +284,10 @@ describe("Simple Changes skill contract", () => {
   test("Onboarding explains the consequence of every option", async () => {
     const source = await readFile(skillPath, "utf8");
     const normalizedSource = source.replace(/\s+/g, " ");
+    const onboarding = (await readFile(onboardingPath, "utf8")).replace(
+      /\s+/g,
+      " "
+    );
 
     expect(normalizedSource).toContain(
       "show every option with its one-sentence consequence"
@@ -295,7 +299,7 @@ describe("Simple Changes skill contract", () => {
       "**Ask me first:** Merge automatically, but confirm before production."
     );
     expect(normalizedSource).toContain(
-      "**Delegate when available:** Use a compatible changelog skill when present;"
+      "**Delegate when available — Recommended when installed:** Use a compatible changelog skill when present;"
     );
     expect(normalizedSource).toContain(
       "**Only when blocked:** Keep working unless a decision is genuinely required."
@@ -321,6 +325,24 @@ describe("Simple Changes skill contract", () => {
     expect(normalizedSource).toContain(
       "Ordinary UI source files, Git revisions, deployment identities, package versions, and release versions do not use this preference"
     );
+    expect(onboarding).toContain(
+      "Would you like me to install Simple Changelogs now?"
+    );
+    expect(onboarding).toContain(
+      "When should I set up Simple Changelogs: now, after this shipment, or later?"
+    );
+    expect(onboarding).toContain("Never install it silently");
+    expect(onboarding).toContain(
+      "grant no version, release, publication, deployment, or data-write authority"
+    );
+    expect(normalizedSource).toContain(
+      "When private global personal defaults already exist, disclose them before the main questions"
+    );
+    expect(onboarding).toContain(
+      "I found existing global personal defaults. Would you like to use them for this run?"
+    );
+    expect(onboarding).toContain("Update global personal defaults");
+    expect(onboarding).toContain("updated and overwritten");
   });
 
   test("Completed-work handoff requires the configured readiness gate", async () => {
@@ -543,7 +565,13 @@ describe("Simple Changes skill contract", () => {
       "When an active loop assigns a new author into that same integration unit"
     );
     expect(normalizedSkill).toContain(
-      "Run each controller or run-author integration mutation through `loop exec`"
+      "both run-prepared and independently claimed authors edit, generate, format, test, stage, and commit normally and concurrently"
+    );
+    expect(normalizedSkill).toContain(
+      "Run only shared integration mutations through `loop exec`"
+    );
+    expect(normalizedSkill).toContain(
+      "A busy lock blocks only the named short integration operation"
     );
     expect(normalizedSkill).toContain(
       'use `loop recover --agent-id "$AGENT_ID"`'
@@ -559,6 +587,18 @@ describe("Simple Changes skill contract", () => {
     );
     expect(normalizedConcurrency).toContain(
       "The author may keep editing and committing without a pause receipt"
+    );
+    expect(normalizedConcurrency).toContain(
+      "Git already uses separate per-worktree indexes and atomic locks"
+    );
+    expect(normalizedConcurrency).toContain(
+      "When a genuine integration lock is busy, wait or retry only that short shared operation"
+    );
+    expect(normalizedConcurrency).toContain(
+      "treat it as a local harness/filesystem authorization failure"
+    );
+    expect(normalizedConcurrency).not.toContain(
+      "Run local Git and repository commands through `loop exec`"
     );
     expect(normalizedConcurrency).toContain(
       "the same command validates and resumes the recorded preparation"

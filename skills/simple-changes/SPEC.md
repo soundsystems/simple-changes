@@ -74,13 +74,21 @@
   approval nor an exact override. Concurrent authors may not use the guarded
   integration executor; only the controller and its run-prepared authors may do
   so.
-- Local mutations hold the lease lock across fresh preflight inventory, one
-  bounded argument-array command or awaited asynchronous callback, and
+- Run-prepared and independently claimed authors perform ordinary worktree-local
+  edits, generation, formatting, checks, staging, and commits concurrently on
+  their distinct registered branches. Shared integration mutations—not normal
+  authoring—hold the lease lock across fresh preflight inventory, one bounded
+  argument-array command or awaited asynchronous callback, and
   post-mutation verification. Guarded child/process-group identity remains
   recorded while commands run. Background descendants are terminated and the
   command rejected before lease release, or the lock is retained when the
   process group cannot be stopped. Change digests include actual staged,
   unstaged, and untracked contents.
+- Lock-busy evidence and local permission failure are distinct. Only an
+  existing lock with valid ownership evidence justifies waiting or recovery;
+  `EPERM`, `EACCES`, `EROFS`, or another denied state write is a harness or
+  filesystem authorization problem and never justifies pausing authors,
+  exporting patches, cleaning worktrees, or demanding a lease-null handback.
 - New authoring agents receive an isolated, run-registered worktree before
   editing. Worktree creation is resumable only from a clean pinned branch and
   target revision; switching branches invalidates mutation authority. A stale
@@ -90,7 +98,9 @@
 - Unchanged clean opening worktrees are automatic cleanup candidates only when
   unclaimed, unretained, and target-contained. Finalization serializes against
   coordination mutations, rechecks exact head and content evidence immediately
-  before removal, and records the disposition only after successful removal.
+  before removal, records exact intent first, and marks it completed only after
+  successful removal. Run-created removals receive the same terminal audit
+  state.
   Changed opening work still requires an exact user-approved disposition; late
   worktrees and branches remain protected.
 - A worktree owner can persist an opaque local claim. Under the default
@@ -112,6 +122,12 @@
   ambiguous work are preserved. Merged source branches are deleted only at the
   exact recorded merged head; closed/unmerged and no-MR branches require a
   separate audit and exact obsolescence proof.
+- GitLab loops persist a complete unchanged opening provider inventory at lease
+  creation and reject integration mutations when legacy state lacks it. A
+  distinct explicitly approved post-cleanup recovery may close only a clean,
+  current, mutation-free legacy ledger from two matching final inventories and
+  matching zero-active-claim digests. It holds coordination through closure,
+  archives the evidence, and never claims those snapshots were opening history.
 - Harness automation is capability-gated. An unsupported discovery, delivery,
   wait, scope, or owner-reference requirement produces a structured manual
   blocker and no repository mutation. Vendor APIs and credentials never enter

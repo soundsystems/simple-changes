@@ -1,7 +1,11 @@
 import { randomUUID } from "node:crypto";
 import {
+  closeSync,
+  constants,
   existsSync,
+  fstatSync,
   mkdirSync,
+  openSync,
   readFileSync,
   realpathSync,
   renameSync,
@@ -9,7 +13,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { hostname } from "node:os";
-import { basename, dirname, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import {
   decideEmergencyShipping,
   deriveEmergencyShippingStatus,
@@ -17,6 +21,7 @@ import {
 import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
 import { sha256 } from "./hash.ts";
 import { captureInventory } from "./inventory.ts";
+import { assertNoSymlinkAncestors } from "./path-safety.ts";
 import {
   type CommandProcess,
   type CommandResult,
@@ -24,7 +29,12 @@ import {
   runCommandInProcessGroup,
   runGit,
 } from "./process.ts";
-import { validateRemoteBranchReconciliation } from "./remote-branch-reconciliation.ts";
+import {
+  remoteInventoryDigest,
+  validateOpeningRemoteInventory,
+  validatePostCleanupRecovery,
+  validateRemoteBranchReconciliation,
+} from "./remote-branch-reconciliation.ts";
 import { validateSchema } from "./schema.ts";
 import type {
   EmergencyShippingLedgerEntry,
@@ -36,6 +46,7 @@ import type {
   LoopWorktreeDisposition,
   LoopWorktreeLease,
   LoopWorktreePreparation,
+  PostCleanupRecoveryReceipt,
   RemoteBranchReconciliationReceipt,
   RepositoryInventory,
   RequestMode,
@@ -44,22 +55,28 @@ import type {
   WorktreeInventory,
 } from "./types.ts";
 import {
+  type AbsentWorktreeClaimRetirementPlan,
   coordinationEvidence,
   coordinationLinkIsCurrent,
   markCoordinationAdopted,
   markCoordinationResumeReady,
+  planAbsentWorktreeClaimRetirementUnderLock,
   readCoordinationDocumentFromCommonDirectory,
   recoverStaleWorktreeCoordinationLock,
+  retireAbsentWorktreeClaimsUnderLock,
   withWorktreeCoordinationLock,
+  worktreeClaimDocumentDigest,
 } from "./worktree-coordination.ts";
 
 const STATE_DIRECTORY = "simple-changes";
 const STATE_FILENAME = "active-loop.json";
 const LOCK_DIRECTORY = "active-loop.lock";
 const LOCK_OWNER_FILENAME = "owner.json";
+const RECOVERY_HISTORY_DIRECTORY = "history";
 const STALE_LOCK_MINIMUM_AGE_MS = 5000;
 const RUN_ID_PATTERN = /^run-[a-z0-9-]+$/u;
 const DIGEST_PATTERN = /^[0-9a-f]{64}$/u;
+const PERMISSION_DENIED_CODES = new Set(["EACCES", "EPERM", "EROFS"]);
 const SCP_REMOTE_URL_PATTERN = /^[^@/\s]+@([^:/\s]+):(.+)$/u;
 const REMOTE_PROJECT_PATH_PATTERN = /^\/+|\.git\/?$/gu;
 const LOOP_MODES = new Set<RequestMode>([
@@ -77,9 +94,101 @@ const REMOTE_RECONCILIATION_MODES = new Set<LoopLease["mode"]>([
   "resume",
 ]);
 const AUTOMATIC_CLEANUP_MODES = REMOTE_RECONCILIATION_MODES;
+const MISSING_OPENING_REMOTE_INVENTORY_BLOCKER =
+  "Cannot end a legacy GitLab loop without its opening remote inventory; only approved post-cleanup recovery may close it.";
+const MISSING_REMOTE_RECONCILIATION_BLOCKER =
+  "Cannot end a GitLab integration loop before recording a complete remote-branch reconciliation receipt.";
+
+interface PostCleanupRecoveryIntent {
+  archivedAt: string;
+  authority: "close-only";
+  claimRetirement: AbsentWorktreeClaimRetirementPlan;
+  kind: "post-cleanup-recovery";
+  lease: LoopLease;
+  leaseDigest: string;
+  receipt: PostCleanupRecoveryReceipt;
+  receiptDigest: string;
+  removedWorktreePaths: string[];
+  runId: string;
+  schemaVersion: 1;
+}
+
+const permissionDeniedLoopStateError = (
+  lockPath: string,
+  error: unknown
+): SimpleChangesError | null => {
+  const { code } = error as NodeJS.ErrnoException;
+  if (!(code && PERMISSION_DENIED_CODES.has(code))) {
+    return null;
+  }
+  return SimpleChangesError.withCause(
+    `Simple Changes could not write local controller state at ${lockPath} because the harness or filesystem denied permission (${code}). This is not lock contention: do not pause other authors or recover/delete controller state. Fix the exact local permission and retry.`,
+    EXIT_CODES.unsafe,
+    error
+  );
+};
 
 const stateDirectory = (commonGitDirectory: string): string =>
   resolve(commonGitDirectory, STATE_DIRECTORY);
+
+const recoveryHistoryDirectory = (
+  commonGitDirectory: string,
+  runId: string
+): string =>
+  assertNoSymlinkAncestors(
+    commonGitDirectory,
+    join(STATE_DIRECTORY, RECOVERY_HISTORY_DIRECTORY, requiredRunId(runId))
+  );
+
+const recoveryHistoryPath = (
+  commonGitDirectory: string,
+  runId: string,
+  event: "intent" | "completed"
+): string =>
+  resolve(recoveryHistoryDirectory(commonGitDirectory, runId), `${event}.json`);
+
+const readImmutableRecoveryEvent = <T extends object>(path: string): T => {
+  let descriptor: number;
+  try {
+    // biome-ignore lint/suspicious/noBitwiseOperators: POSIX open flags are a bitmask.
+    descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  } catch (error) {
+    throw SimpleChangesError.withCause(
+      `Recovery audit event must be an existing regular file, not a link or special file: ${path}`,
+      EXIT_CODES.unsafe,
+      error
+    );
+  }
+  try {
+    if (!fstatSync(descriptor).isFile()) {
+      throw new SimpleChangesError(
+        `Recovery audit event must be a regular file: ${path}`,
+        EXIT_CODES.unsafe
+      );
+    }
+    return JSON.parse(readFileSync(descriptor, "utf8")) as T;
+  } finally {
+    closeSync(descriptor);
+  }
+};
+
+const writeImmutableRecoveryEvent = <T extends object>(
+  path: string,
+  value: T
+): T => {
+  if (existsSync(path)) {
+    return readImmutableRecoveryEvent<T>(path);
+  }
+  mkdirSync(dirname(path), { mode: 0o700, recursive: true });
+  const temporaryPath = `${path}.${process.pid}.${randomUUID()}.tmp`;
+  writeFileSync(temporaryPath, `${JSON.stringify(value, null, 2)}\n`, {
+    encoding: "utf8",
+    flag: "wx",
+    mode: 0o600,
+  });
+  renameSync(temporaryPath, path);
+  return value;
+};
 
 export const loopLeasePath = (commonGitDirectory: string): string =>
   resolve(stateDirectory(commonGitDirectory), STATE_FILENAME);
@@ -191,6 +300,10 @@ const acquireStateLock = (
         error
       );
     }
+    const permissionError = permissionDeniedLoopStateError(lockPath, error);
+    if (permissionError) {
+      throw permissionError;
+    }
     throw error;
   }
   let owner: LoopLockOwner = {
@@ -205,6 +318,10 @@ const acquireStateLock = (
     writeLockOwner(commonGitDirectory, owner, true);
   } catch (error) {
     rmSync(lockPath, { force: true, recursive: true });
+    const permissionError = permissionDeniedLoopStateError(lockPath, error);
+    if (permissionError) {
+      throw permissionError;
+    }
     throw error;
   }
   return {
@@ -748,6 +865,12 @@ const assertCurrentRemoteBranchReconciliation = (
   lease: LoopLease,
   inventory: RepositoryInventory
 ): void => {
+  if (targetUsesGitLab(inventory) && !lease.openingRemoteInventory) {
+    throw new SimpleChangesError(
+      MISSING_OPENING_REMOTE_INVENTORY_BLOCKER,
+      EXIT_CODES.unsafe
+    );
+  }
   if (
     !(
       REMOTE_RECONCILIATION_MODES.has(lease.mode) && targetUsesGitLab(inventory)
@@ -758,7 +881,7 @@ const assertCurrentRemoteBranchReconciliation = (
   const receipt = lease.remoteBranchReconciliation;
   if (!receipt) {
     throw new SimpleChangesError(
-      "Cannot end a GitLab integration loop before recording a complete remote-branch reconciliation receipt.",
+      MISSING_REMOTE_RECONCILIATION_BLOCKER,
       EXIT_CODES.unsafe
     );
   }
@@ -1174,6 +1297,12 @@ const assertAgentMutationAllowed = (
   agentId: string
 ): void => {
   assertControllerActive(lease);
+  if (targetUsesGitLab(inventory) && !lease.openingRemoteInventory) {
+    throw new SimpleChangesError(
+      "This legacy run has no opening remote inventory. It is close-only: use approved post-cleanup recovery after proving cleanup is already complete.",
+      EXIT_CODES.unsafe
+    );
+  }
   const currentPath = inventory.repository.currentCheckout;
   const registered = lease.worktrees.find(
     (worktree) => worktree.path === currentPath
@@ -1206,10 +1335,55 @@ export const readLoopLease = (repositoryPath: string): LoopLease | null => {
   return readLeaseFromCommonDirectory(inventory.repository.commonGitDirectory);
 };
 
+const openingRemoteInventoryForStart = (
+  inventory: RepositoryInventory,
+  input: unknown,
+  targetBranch: string | null,
+  targetRevision: string
+): RemoteBranchReconciliationReceipt | undefined => {
+  const required = targetUsesGitLab(inventory);
+  const receipt = input ? validateOpeningRemoteInventory(input) : undefined;
+  if (required && !receipt) {
+    throw new SimpleChangesError(
+      "Start this GitLab integration loop with a complete opening remote inventory; capture it before any provider mutation.",
+      EXIT_CODES.unsafe
+    );
+  }
+  if (!receipt) {
+    return;
+  }
+  const project = gitLabProjectForTargetRef(
+    inventory.repository.primaryCheckout,
+    inventory.targetRef
+  );
+  if (
+    receipt.project !== project ||
+    receipt.targetBranch !== targetBranch ||
+    receipt.targetRevision !== targetRevision
+  ) {
+    throw new SimpleChangesError(
+      "Opening remote inventory must bind the exact GitLab project, target branch, and opening target revision.",
+      EXIT_CODES.validation
+    );
+  }
+  return receipt;
+};
+
+const assertLegacyRunAllowsMutation = (
+  lease: LoopLease,
+  inventory: RepositoryInventory,
+  message: string
+): void => {
+  if (targetUsesGitLab(inventory) && !lease.openingRemoteInventory) {
+    throw new SimpleChangesError(message, EXIT_CODES.unsafe);
+  }
+};
+
 export const startLoop = (
   repositoryPath: string,
   agentIdInput: string,
-  mode: RequestMode
+  mode: RequestMode,
+  openingRemoteInventoryInput?: unknown
 ): LoopLease => {
   const agentId = requiredText(agentIdInput, "agent ID");
   if (!LOOP_MODES.has(mode)) {
@@ -1275,6 +1449,12 @@ export const startLoop = (
         "--verify",
         `${inventory.targetRef}^{commit}`,
       ]).stdout.trim();
+      const openingRemoteInventory = openingRemoteInventoryForStart(
+        inventory,
+        openingRemoteInventoryInput,
+        targetBranch,
+        targetRevision
+      );
       const worktrees = inventory.worktrees.map((worktree) => {
         if (worktree.path === currentPath) {
           return worktreeLease(worktree, "controller", agentId, false);
@@ -1321,6 +1501,7 @@ export const startLoop = (
           name,
           sha,
         })),
+        ...(openingRemoteInventory ? { openingRemoteInventory } : {}),
         overrides: [],
         ownerAgentId: agentId,
         preparations: [],
@@ -1772,6 +1953,11 @@ export const prepareAgentWorktree = (
       const lease = requireLease(inventory);
       assertMatchingRun(lease, runId);
       assertControllerActive(lease);
+      assertLegacyRunAllowsMutation(
+        lease,
+        inventory,
+        "This legacy run has no opening remote inventory and cannot prepare new authoring work; use close-only post-cleanup recovery."
+      );
       const existing = lease.worktrees.find(
         (worktree) => worktree.agentId === agentId
       );
@@ -2673,6 +2859,12 @@ export const recordRemoteBranchReconciliation = (
         );
       }
       assertControllerActive(lease);
+      if (!lease.openingRemoteInventory) {
+        throw new SimpleChangesError(
+          "A legacy GitLab run without opening evidence cannot record an ordinary reconciliation receipt; use approved close-only post-cleanup recovery.",
+          EXIT_CODES.unsafe
+        );
+      }
       const verification = verificationAgainst(lease, inventory);
       if (!verification.ok) {
         throw new SimpleChangesError(
@@ -2704,6 +2896,16 @@ export const recordRemoteBranchReconciliation = (
       ) {
         throw new SimpleChangesError(
           `Remote branch reconciliation must bind GitLab project ${project ?? "(unresolved)"} and refreshed target ${targetBranch ?? "(unresolved)"} at ${targetRevision}.`,
+          EXIT_CODES.validation
+        );
+      }
+      if (
+        lease.openingRemoteInventory &&
+        remoteInventoryDigest(lease.openingRemoteInventory, "final") !==
+          remoteInventoryDigest(receipt, "initial")
+      ) {
+        throw new SimpleChangesError(
+          "Final remote reconciliation does not begin from the exact opening inventory persisted at loop start.",
           EXIT_CODES.validation
         );
       }
@@ -2769,6 +2971,7 @@ const automaticRemovalDisposition = (
   path: worktree.path,
   reason:
     "The current integration request authorizes automatic cleanup after repeated inventory proved this unchanged clean checkout has zero commits outside the refreshed target.",
+  status: "intended",
   targetRef: lease.targetRef,
   targetRevision,
   uniqueCommitCount: 0,
@@ -2832,14 +3035,9 @@ const recordAutomaticDispositions = (
   candidates: AutomaticCleanupCandidate[],
   targetRevision: string
 ): LoopLease => {
-  const registeredByPath = new Map(
-    lease.worktrees.map((worktree) => [worktree.path, worktree])
+  const dispositions = candidates.map((worktree) =>
+    automaticRemovalDisposition(lease, worktree, targetRevision)
   );
-  const dispositions = candidates
-    .filter((worktree) => !registeredByPath.get(worktree.path)?.createdByRun)
-    .map((worktree) =>
-      automaticRemovalDisposition(lease, worktree, targetRevision)
-    );
   if (dispositions.length === 0) {
     return lease;
   }
@@ -2854,6 +3052,51 @@ const recordAutomaticDispositions = (
     ],
     updatedAt: new Date().toISOString(),
   });
+};
+
+const completeAutomaticDispositions = (
+  lease: LoopLease,
+  paths: string[]
+): LoopLease => {
+  const completedPaths = new Set(paths);
+  if (completedPaths.size === 0) {
+    return lease;
+  }
+  const completedAt = new Date().toISOString();
+  return writeLease({
+    ...lease,
+    dispositions: (lease.dispositions ?? []).map((disposition) =>
+      completedPaths.has(disposition.path)
+        ? { ...disposition, completedAt, status: "completed" }
+        : disposition
+    ),
+    updatedAt: completedAt,
+  });
+};
+
+const completeAbsentRemovalIntents = (
+  lease: LoopLease,
+  inventory: RepositoryInventory,
+  targetRevision: string
+): LoopLease => {
+  const currentPaths = new Set(
+    inventory.worktrees.map((worktree) => worktree.path)
+  );
+  const completedPaths = (lease.dispositions ?? [])
+    .filter(
+      (disposition) =>
+        disposition.status !== "completed" &&
+        !currentPaths.has(disposition.path) &&
+        disposition.targetRef === lease.targetRef &&
+        disposition.targetRevision === targetRevision &&
+        targetContainsRevision(
+          inventory.repository.primaryCheckout,
+          targetRevision,
+          disposition.headSha
+        )
+    )
+    .map((disposition) => disposition.path);
+  return completeAutomaticDispositions(lease, completedPaths);
 };
 
 interface AutomaticRemovalResult {
@@ -2914,6 +3157,9 @@ const removeAutomaticWorktrees = (
     );
     if (removal.exitCode === 0) {
       crashAfterAutomaticWorktreeRemovalForTest(worktree.path);
+      currentLease = completeAutomaticDispositions(currentLease, [
+        worktree.path,
+      ]);
       cleanup.removedWorktrees.push(worktree.path);
       removed.push(worktree);
       continue;
@@ -2968,6 +3214,10 @@ const pruneAutomaticWorktreeMetadata = (
     cleanup.removedWorktrees.push(candidate.path);
     removed.push(candidate);
   }
+  currentLease = completeAutomaticDispositions(
+    currentLease,
+    removed.map((candidate) => candidate.path)
+  );
   return { lease: currentLease, removed };
 };
 
@@ -3249,6 +3499,11 @@ const automaticFinalizationCleanup = (
   if (!(AUTOMATIC_CLEANUP_MODES.has(leaseInput.mode) && verification.ok)) {
     return { cleanup, lease: leaseInput };
   }
+  if (targetUsesGitLab(inventoryInput) && !leaseInput.openingRemoteInventory) {
+    // Legacy GitLab runs without an opening provider inventory are recovery-only.
+    // Finalization must not turn missing historical evidence into mutation authority.
+    return { cleanup, lease: leaseInput };
+  }
   let lease = leaseInput;
   let targetRevision: string;
   const targetBranch = targetBranchForRef(
@@ -3272,6 +3527,7 @@ const automaticFinalizationCleanup = (
     return { cleanup, lease };
   }
   const repositoryPath = inventoryInput.repository.primaryCheckout;
+  lease = completeAbsentRemovalIntents(lease, inventoryInput, targetRevision);
   const candidates = automaticCleanupCandidates(
     lease,
     inventoryInput,
@@ -3480,6 +3736,314 @@ export interface LoopFinalizationResult {
   outcome: "completed" | "relinquished";
   verification: LoopVerification;
 }
+
+export interface PostCleanupRecoveryResult {
+  active: false;
+  archivedAt: string;
+  ok: true;
+  retiredClaimIds: string[];
+  runId: string;
+  violations: [];
+}
+
+const completedPostCleanupRecovery = (
+  commonGitDirectory: string,
+  runId: string,
+  receiptDigest: string
+): PostCleanupRecoveryResult | null => {
+  const completedPath = recoveryHistoryPath(
+    commonGitDirectory,
+    runId,
+    "completed"
+  );
+  if (
+    !existsSync(completedPath) ||
+    existsSync(loopLeasePath(commonGitDirectory))
+  ) {
+    return null;
+  }
+  const completed = readImmutableRecoveryEvent<{
+    archivedAt: string;
+    receiptDigest: string;
+    retiredClaimIds: string[];
+  }>(completedPath);
+  if (completed.receiptDigest !== receiptDigest) {
+    throw new SimpleChangesError(
+      "Post-cleanup recovery was already completed with different evidence.",
+      EXIT_CODES.unsafe
+    );
+  }
+  return {
+    active: false,
+    archivedAt: completed.archivedAt,
+    ok: true,
+    retiredClaimIds: completed.retiredClaimIds,
+    runId,
+    violations: [],
+  };
+};
+
+const postCleanupAbsentPaths = (
+  inventory: RepositoryInventory,
+  lease: LoopLease,
+  ownerAgentId: string,
+  receipt: PostCleanupRecoveryReceipt,
+  postRetirementClaimDigest?: string
+): string[] => {
+  if (lease.ownerAgentId !== ownerAgentId) {
+    throw new SimpleChangesError(
+      `Only loop owner ${lease.ownerAgentId} may recover this bookkeeping record.`,
+      EXIT_CODES.unsafe
+    );
+  }
+  assertControllerActive(lease);
+  if (lease.openingRemoteInventory) {
+    throw new SimpleChangesError(
+      "Post-cleanup recovery is only for a legacy run whose opening remote inventory is unavailable.",
+      EXIT_CODES.usage
+    );
+  }
+  const targetBranch = targetBranchForRef(
+    inventory.repository.primaryCheckout,
+    lease.targetRef
+  );
+  const targetRevision = currentTargetRevision(lease);
+  const project = gitLabProjectForTargetRef(
+    inventory.repository.primaryCheckout,
+    lease.targetRef
+  );
+  if (
+    receipt.project !== project ||
+    receipt.targetBranch !== targetBranch ||
+    receipt.targetRevision !== targetRevision
+  ) {
+    throw new SimpleChangesError(
+      "Post-cleanup recovery must bind the exact current GitLab project, target branch, and target revision.",
+      EXIT_CODES.validation
+    );
+  }
+  const verification = verificationAgainst(lease, inventory);
+  if (!verification.ok) {
+    throw new SimpleChangesError(
+      "Post-cleanup recovery cannot close while controller manifest violations remain.",
+      EXIT_CODES.unsafe
+    );
+  }
+  const coordination = readCoordinationDocumentFromCommonDirectory(
+    inventory.repository.commonGitDirectory
+  );
+  if (coordination.claims.some((claim) => claim.state === "active")) {
+    throw new SimpleChangesError(
+      "Post-cleanup recovery cannot close while an active worktree claim remains.",
+      EXIT_CODES.unsafe
+    );
+  }
+  const currentClaimDigest = worktreeClaimDocumentDigest(coordination);
+  const retirementAlreadyApplied =
+    postRetirementClaimDigest !== undefined &&
+    currentClaimDigest === postRetirementClaimDigest;
+  if (
+    currentClaimDigest !== receipt.secondClaimObservation.digest &&
+    !retirementAlreadyApplied
+  ) {
+    throw new SimpleChangesError(
+      "Post-cleanup recovery cannot close because worktree claims changed after the approved observations.",
+      EXIT_CODES.unsafe
+    );
+  }
+  const firstObservation = Date.parse(receipt.firstFinalInventory.observedAt);
+  if (
+    !retirementAlreadyApplied &&
+    coordination.claims.some(
+      (claim) => Date.parse(claim.updatedAt) > firstObservation
+    )
+  ) {
+    throw new SimpleChangesError(
+      "Post-cleanup recovery cannot close because a worktree claim changed during or after the approved observation window.",
+      EXIT_CODES.unsafe
+    );
+  }
+  const blockers = loopCompletionBlockers(
+    lease,
+    inventory,
+    verification
+  ).filter(
+    (blocker) =>
+      blocker !== MISSING_OPENING_REMOTE_INVENTORY_BLOCKER &&
+      blocker !== MISSING_REMOTE_RECONCILIATION_BLOCKER
+  );
+  if (blockers.length > 0) {
+    throw new SimpleChangesError(
+      `Post-cleanup recovery is close-only and cannot proceed while cleanup remains: ${blockers.join(" ")}`,
+      EXIT_CODES.unsafe
+    );
+  }
+  const currentPaths = new Set(
+    inventory.worktrees.map((worktree) => worktree.path)
+  );
+  return lease.worktrees
+    .map((worktree) => worktree.path)
+    .filter((path) => !currentPaths.has(path))
+    .sort((left, right) => left.localeCompare(right));
+};
+
+const preparePostCleanupRecoveryIntent = (
+  commonGitDirectory: string,
+  inventory: RepositoryInventory,
+  lease: LoopLease,
+  ownerAgentId: string,
+  receipt: PostCleanupRecoveryReceipt,
+  receiptDigest: string
+): { absentPaths: string[]; intent: PostCleanupRecoveryIntent } => {
+  const intentPath = recoveryHistoryPath(
+    commonGitDirectory,
+    lease.runId,
+    "intent"
+  );
+  const existingIntent = existsSync(intentPath)
+    ? readImmutableRecoveryEvent<PostCleanupRecoveryIntent>(intentPath)
+    : null;
+  const absentPaths = postCleanupAbsentPaths(
+    inventory,
+    lease,
+    ownerAgentId,
+    receipt,
+    existingIntent?.claimRetirement.afterDigest
+  );
+  const archivedAt = existingIntent?.archivedAt ?? new Date().toISOString();
+  const leaseDigest = loopManifestDigest(lease);
+  const claimRetirement =
+    existingIntent?.claimRetirement ??
+    planAbsentWorktreeClaimRetirementUnderLock(
+      commonGitDirectory,
+      absentPaths,
+      ownerAgentId,
+      archivedAt
+    );
+  const intent = writeImmutableRecoveryEvent<PostCleanupRecoveryIntent>(
+    intentPath,
+    {
+      archivedAt,
+      authority: "close-only",
+      claimRetirement,
+      kind: "post-cleanup-recovery",
+      lease,
+      leaseDigest,
+      receipt,
+      receiptDigest,
+      removedWorktreePaths: absentPaths,
+      runId: lease.runId,
+      schemaVersion: 1,
+    }
+  );
+  if (
+    intent.receiptDigest !== receiptDigest ||
+    intent.leaseDigest !== leaseDigest ||
+    intent.runId !== lease.runId ||
+    intent.authority !== "close-only" ||
+    intent.kind !== "post-cleanup-recovery" ||
+    typeof intent.claimRetirement !== "object" ||
+    intent.claimRetirement === null ||
+    intent.claimRetirement.beforeDigest !==
+      receipt.secondClaimObservation.digest ||
+    JSON.stringify(intent.removedWorktreePaths) !== JSON.stringify(absentPaths)
+  ) {
+    throw new SimpleChangesError(
+      "Post-cleanup recovery intent already exists with different evidence.",
+      EXIT_CODES.unsafe
+    );
+  }
+  return { absentPaths, intent };
+};
+
+export const recoverPostCleanupLoop = (
+  repositoryPath: string,
+  runIdInput: string,
+  ownerAgentIdInput: string,
+  receiptInput: unknown
+): PostCleanupRecoveryResult => {
+  const runId = requiredRunId(runIdInput);
+  const ownerAgentId = requiredText(ownerAgentIdInput, "agent ID");
+  const receipt: PostCleanupRecoveryReceipt =
+    validatePostCleanupRecovery(receiptInput);
+  const opening = captureInventory(repositoryPath);
+  const { commonGitDirectory } = opening.repository;
+  return withStateLock(commonGitDirectory, "post-cleanup recovery", () => {
+    const receiptDigest = sha256(JSON.stringify(receipt));
+    const prior = completedPostCleanupRecovery(
+      commonGitDirectory,
+      runId,
+      receiptDigest
+    );
+    if (prior) {
+      return prior;
+    }
+    return withWorktreeCoordinationLock(
+      commonGitDirectory,
+      "post-cleanup recovery close",
+      () => {
+        const inventory = captureInventory(repositoryPath);
+        const lease = requireLease(inventory);
+        assertMatchingRun(lease, runId);
+        const { absentPaths, intent } = preparePostCleanupRecoveryIntent(
+          commonGitDirectory,
+          inventory,
+          lease,
+          ownerAgentId,
+          receipt,
+          receiptDigest
+        );
+        if (
+          process.env.NODE_ENV === "test" &&
+          process.env.SIMPLE_CHANGES_TEST_CRASH_AFTER_POST_CLEANUP_INTENT ===
+            runId
+        ) {
+          process.kill(process.pid, "SIGKILL");
+        }
+        const retiredClaimIds = retireAbsentWorktreeClaimsUnderLock(
+          commonGitDirectory,
+          absentPaths,
+          ownerAgentId,
+          intent.claimRetirement
+        );
+        if (
+          process.env.NODE_ENV === "test" &&
+          process.env
+            .SIMPLE_CHANGES_TEST_CRASH_AFTER_POST_CLEANUP_RETIREMENT === runId
+        ) {
+          process.kill(process.pid, "SIGKILL");
+        }
+        const completed = writeImmutableRecoveryEvent(
+          recoveryHistoryPath(commonGitDirectory, runId, "completed"),
+          {
+            archivedAt: intent.archivedAt,
+            authority: "close-only",
+            kind: "post-cleanup-recovery-completed",
+            receiptDigest,
+            retiredClaimIds,
+            runId,
+            schemaVersion: 1,
+          }
+        );
+        if (completed.receiptDigest !== receiptDigest) {
+          throw new SimpleChangesError(
+            "Post-cleanup recovery completion evidence does not match the approved receipt.",
+            EXIT_CODES.unsafe
+          );
+        }
+        rmSync(loopLeasePath(commonGitDirectory), { force: true });
+        return {
+          active: false,
+          archivedAt: completed.archivedAt,
+          ok: true,
+          retiredClaimIds: completed.retiredClaimIds,
+          runId,
+          violations: [],
+        };
+      }
+    );
+  });
+};
 
 export const finalizeLoop = (
   repositoryPath: string,

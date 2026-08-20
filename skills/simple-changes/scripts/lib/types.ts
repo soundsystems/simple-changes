@@ -781,14 +781,38 @@ export interface LoopWorktreeDisposition {
   approvedBy: string;
   branch: string | null;
   changeDigest: string;
+  completedAt?: string;
   createdAt: string;
   headSha: string;
   outcome: "remove-after-audit";
   path: string;
   reason: string;
+  status?: "intended" | "completed";
   targetRef: string;
   targetRevision: string;
   uniqueCommitCount: 0;
+}
+
+export interface PostCleanupRecoveryReceipt {
+  approvedBy: string;
+  authority: "close-only";
+  firstClaimObservation: WorktreeClaimObservation;
+  firstFinalInventory: RemoteBranchReconciliationReceipt;
+  openingEvidenceUnavailableReason: string;
+  project: string;
+  provider: "gitlab";
+  reason: string;
+  schemaVersion: 1;
+  secondClaimObservation: WorktreeClaimObservation;
+  secondFinalInventory: RemoteBranchReconciliationReceipt;
+  targetBranch: string;
+  targetRevision: string;
+}
+
+export interface WorktreeClaimObservation {
+  activeClaimCount: number;
+  digest: string;
+  observedAt: string;
 }
 
 export interface LoopWorktreePreparation {
@@ -880,6 +904,7 @@ export interface LoopLease {
   emergencyShipping?: EmergencyShippingLedgerEntry;
   mode: Exclude<RequestMode, "pause" | "preview" | "sync">;
   openingBranches?: Array<{ name: string; sha: string }>;
+  openingRemoteInventory?: RemoteBranchReconciliationReceipt;
   overrides: LoopOverride[];
   ownerAgentId: string;
   preparations: LoopWorktreePreparation[];
@@ -939,6 +964,7 @@ export type SchemaName =
   | "run-state"
   | "provider-receipt"
   | "release-delivery-receipt"
+  | "post-cleanup-recovery"
   | "remote-branch-reconciliation"
   | "release-consistency"
   | "release-notes"

@@ -1857,9 +1857,11 @@ describe("contract CLI", () => {
       "**Simple Changelogs has recently been updated.**"
     );
     expect(output).toContain(
-      "Would you like me to walk you through all recent updates to both skills?"
+      "Resolve the required update choice before continuing."
     );
-    expect(output).toContain("- Walk me through both");
+    expect(output).toContain("- Resolve required choices (Recommended)");
+    expect(output).toContain("- Short walkthrough");
+    expect(output).toContain("- Expanded walkthrough");
     expect(output).not.toContain("Available actions:");
     expect(output).toContain("Action required before loop start: yes");
     expect(output).toContain(
@@ -1914,6 +1916,32 @@ describe("contract CLI", () => {
       )}\n`
     );
 
+    const notice = spawnSync(
+      [
+        process.execPath,
+        cliPath,
+        "initialize",
+        "--mode",
+        "queue",
+        "--repo",
+        fixture.root,
+      ],
+      { stderr: "pipe", stdout: "pipe" }
+    );
+    const noticeOutput = decoder.decode(notice.stdout);
+    expect(notice.exitCode).toBe(0);
+    expect(noticeOutput).toContain("No new settings answers are required.");
+    expect(noticeOutput).toContain("What matters:");
+    expect(noticeOutput).toContain(
+      "- Continue with current settings (Recommended)"
+    );
+    expect(noticeOutput).toContain("- Short walkthrough");
+    expect(noticeOutput).toContain("- Expanded walkthrough");
+    expect(noticeOutput.indexOf("What matters:")).toBeLessThan(
+      noticeOutput.indexOf("How would you like to continue?")
+    );
+    expect(noticeOutput).not.toContain("Explain every new ability");
+
     const pending = spawnSync(
       [
         process.execPath,
@@ -1952,7 +1980,7 @@ describe("contract CLI", () => {
     );
     expect(acknowledged.exitCode).toBe(0);
     expect(JSON.parse(decoder.decode(acknowledged.stdout))).toMatchObject({
-      currentVersion: 11,
+      currentVersion: 12,
       disposition: "deferred",
       previousVersion: 1,
       written: true,
@@ -1962,7 +1990,7 @@ describe("contract CLI", () => {
         readFileSync(resolve(fixture.root, ".simple-changes.json"), "utf8")
       )
     ).toMatchObject({
-      guidance: { disposition: "deferred", version: 11 },
+      guidance: { disposition: "deferred", version: 12 },
     });
 
     const resumed = spawnSync(
@@ -2886,6 +2914,61 @@ describe("contract CLI", () => {
     expect(output.mode).toBe("preview");
     expect(output.mutationCount).toBe(0);
     expect(output.units).toHaveLength(1);
+  });
+
+  test("records and reports a comprehensive Ship scope before mutation", () => {
+    const fixture = createTestRepository();
+    repositories.push(fixture);
+    writeFixture(fixture.root, "src/ready.ts", "export const ready = true;\n");
+    const preview = spawnSync(
+      [process.execPath, cliPath, "preview", "--json", "--repo", fixture.root],
+      { stderr: "pipe", stdout: "pipe" }
+    );
+    const planPath = resolve(fixture.base, "shipment-plan.json");
+    writeFileSync(planPath, decoder.decode(preview.stdout), "utf8");
+    const started = spawnSync(
+      [
+        process.execPath,
+        cliPath,
+        "loop",
+        "start",
+        "--mode",
+        "ship",
+        "--agent-id",
+        "controller",
+        "--json",
+        "--repo",
+        fixture.root,
+      ],
+      { stderr: "pipe", stdout: "pipe" }
+    );
+    const {
+      lease: { runId },
+    } = JSON.parse(decoder.decode(started.stdout)) as {
+      lease: { runId: string };
+    };
+    const recorded = spawnSync(
+      [
+        process.execPath,
+        cliPath,
+        "loop",
+        "record-scope",
+        "--run-id",
+        runId,
+        "--agent-id",
+        "controller",
+        "--receipt",
+        planPath,
+        "--repo",
+        fixture.root,
+      ],
+      { stderr: "pipe", stdout: "pipe" }
+    );
+
+    expect(recorded.exitCode).toBe(0);
+    expect(decoder.decode(recorded.stdout)).toContain(
+      "No changed path is unaccounted for"
+    );
   });
 
   test("uses stable usage exit code for an unknown command", () => {

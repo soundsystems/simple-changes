@@ -18,6 +18,14 @@ import type {
 } from "./types.ts";
 
 const DOC_EXTENSIONS = new Set([".md", ".mdx", ".txt"]);
+const DEPENDENCY_STATE_PATHS = new Set([
+  "bun.lock",
+  "bun.lockb",
+  "package.json",
+  "package-lock.json",
+  "pnpm-lock.yaml",
+  "yarn.lock",
+]);
 const slugify = (value: string): string => {
   const slug = value
     .toLowerCase()
@@ -36,6 +44,11 @@ const availableChecks = (
   paths: string[]
 ): string[] => {
   const checks = ["git diff --check"];
+  if (paths.some((path) => DEPENDENCY_STATE_PATHS.has(basename(path)))) {
+    checks.push(
+      "Verify a frozen install and production build from an isolated clean checkout"
+    );
+  }
   const packagePath = `${worktree.path}/package.json`;
   if (!existsSync(packagePath)) {
     return checks;
@@ -253,7 +266,9 @@ export const validatePlanConservation = (
   }
   for (const exclusion of plan.exclusions) {
     const matches = [...expected].filter((key) =>
-      key.endsWith(`\0${exclusion.path}`)
+      exclusion.worktreePath
+        ? key === `${exclusion.worktreePath}\0${exclusion.path}`
+        : key.endsWith(`\0${exclusion.path}`)
     );
     if (matches.length !== 1) {
       throw new SimpleChangesError(

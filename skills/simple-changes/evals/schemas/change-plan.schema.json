@@ -176,7 +176,8 @@
       "required": ["path", "reason"],
       "properties": {
         "path": { "type": "string", "minLength": 1 },
-        "reason": { "type": "string", "minLength": 1 }
+        "reason": { "type": "string", "minLength": 1 },
+        "worktreePath": { "type": "string", "minLength": 1 }
       }
     }
   }

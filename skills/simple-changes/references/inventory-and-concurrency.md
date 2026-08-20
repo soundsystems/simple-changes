@@ -73,6 +73,16 @@ incomplete preparation, missing baseline worktree, or head/content change in a
 preserved worktree. Run `loop verify` before merge, deployment, cleanup, and
 completion even when every earlier operation passed.
 
+For a Ship lease whose opening inventory contains local changes, first record
+the conserved preview plan with `loop record-scope --receipt <file>`. The
+command rechecks the exact unchanged opening digest and every changed path in
+every worktree, persists the plan digest, and returns the pre-ship scope summary.
+Until then, `loop guard`, `loop exec`, and completion fail closed. Do not infer
+shipment exclusion from a `preserved` lease role: it means only that the
+checkout cannot be changed or removed by the controller. `loop exec` also
+rejects `git switch` and `git checkout` before Git can move a registered
+checkout; prepare the correct branch-bound worktree before the loop instead.
+
 Use these boundaries after an author is registered:
 
 | Author-local and concurrent | Shared integration and serialized |

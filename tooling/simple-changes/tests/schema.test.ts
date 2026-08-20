@@ -8,10 +8,82 @@ import type {
   ChangelogReceipt,
   LoopLease,
   RepoPolicy,
+  ShipmentOutcomeReceipt,
   WorktreeCoordinationDocument,
 } from "../../../skills/simple-changes/scripts/lib/types.ts";
 
 describe("closed schemas", () => {
+  test("accepts exact shipment outcomes and rejects unverifiable review claims", () => {
+    const receipt: ShipmentOutcomeReceipt = {
+      additionalPaths: [
+        {
+          classification: "release-generated",
+          entry: "100644:blob:a1b2c3",
+          path: "CHANGELOG.md",
+          reason: "Release reconciliation generated the final note.",
+        },
+      ],
+      runId: "run-example-1234",
+      schemaVersion: 1,
+      targetRevision: "a".repeat(40),
+      units: [
+        {
+          disposition: "delivered",
+          evidence: ["The final target matches the opening source result."],
+          finalPaths: [
+            {
+              entry: "160000:commit:b2c3d4",
+              path: "vendor/dependency",
+            },
+          ],
+          originalPaths: [],
+          summary: "Combined the reviewed dependency update.",
+          unitId: "dependency-update",
+        },
+      ],
+    };
+    expect(
+      validateSchema<ShipmentOutcomeReceipt>("shipment-outcome", receipt)
+    ).toEqual(receipt);
+    expect(() =>
+      validateSchema("shipment-outcome", {
+        ...receipt,
+        approvalToken: "never",
+      })
+    ).toThrow("additional properties");
+    expect(() =>
+      validateSchema("shipment-outcome", {
+        ...receipt,
+        review: {
+          evidence: ["Controller-authored review text is not proof."],
+          reviewedRevision: "a".repeat(40),
+          reviewerAgentId: "invented-reviewer",
+          summary: "This must fail closed.",
+          verdict: "approved",
+        },
+      })
+    ).toThrow("additional properties");
+    expect(() =>
+      validateSchema("shipment-outcome", {
+        ...receipt,
+        units: [{ ...receipt.units[0], disposition: "reconciled" }],
+      })
+    ).toThrow("must be one of delivered, target-equivalent");
+    expect(() =>
+      validateSchema("shipment-outcome", {
+        ...receipt,
+        additionalPaths: [
+          {
+            classification: "review-delta",
+            entry: "100644:blob:a1b2c3",
+            path: "review-fix.ts",
+            reason: "Controller-authored review deltas are not trusted.",
+          },
+        ],
+      })
+    ).toThrow("must be one of release-generated, external-target-change");
+  });
+
   test("accepts the default repository policy", () => {
     expect(validateSchema<RepoPolicy>("repo-policy", DEFAULT_POLICY)).toEqual(
       DEFAULT_POLICY

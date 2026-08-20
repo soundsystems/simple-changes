@@ -1,9 +1,10 @@
 import type { ChangelogCoordination, RepoPolicy } from "./types.ts";
 
-export const CURRENT_GUIDANCE_VERSION = 11;
+export const CURRENT_GUIDANCE_VERSION = 12;
 
 export type GuidanceUpdateAction =
   | "review-settings"
+  | "expanded-walkthrough"
   | "keep-current-settings"
   | "defer"
   | "view-release-notes"
@@ -24,22 +25,45 @@ export interface GuidanceUpdateNotice {
   }>;
   currentVersion: number;
   headline: "**Simple Changes has recently been updated.**";
-  recommendedAction: "review-settings";
+  presentationOrder: readonly [
+    "required-answers",
+    "recommended-changes",
+    "summary",
+    "actions",
+  ];
+  recommendedAction: GuidanceUpdateAction | null;
+  recommendedChanges: GuidanceUpdateQuestion[];
   releaseNotes: {
     available: true;
     command: "simple-changes release-notes";
     label: "View detailed Simple Changes release notes";
   };
+  requiredAnswers: GuidanceUpdateQuestion[];
   status: "current" | "update-available";
   storedDisposition: RepoPolicy["guidance"]["disposition"] | null;
   storedVersion: number | null;
   summaryBullets: string[];
-  walkthroughQuestion: "Would you like me to walk you through all recent updates to the skill?";
+  walkthroughQuestion: string;
+}
+
+export interface GuidanceUpdateQuestion {
+  choices: Array<{
+    description: string;
+    label: string;
+    recommended: boolean;
+    value: string;
+  }>;
+  id: string;
+  question: string;
+  reason: string;
+  setting: string;
 }
 
 interface GuidanceUpdateDefinition {
   changelogReviewRelevant: boolean;
   changes: GuidanceUpdateNotice["changes"];
+  noticeBullets?: Array<{ priority: number; summary: string }>;
+  requiredAnswers?: GuidanceUpdateQuestion[];
   version: number;
 }
 
@@ -222,6 +246,13 @@ const GUIDANCE_UPDATES: GuidanceUpdateDefinition[] = [
         version: 9,
       },
     ],
+    noticeBullets: [
+      {
+        priority: 100,
+        summary:
+          "Cleanup removes only work proven safe and reports unfinished cleanup instead of calling the shipment complete.",
+      },
+    ],
     version: 9,
   },
   {
@@ -238,6 +269,13 @@ const GUIDANCE_UPDATES: GuidanceUpdateDefinition[] = [
         summary:
           "Exact revisions, paths, commands, providers, and workflow states remain available after the plain-language explanation whenever safety, authority, verification, or a user decision depends on them, and full technical detail remains available on request.",
         version: 10,
+      },
+    ],
+    noticeBullets: [
+      {
+        priority: 70,
+        summary:
+          "Routine updates are shorter, while technical details remain available when they affect safety or a decision.",
       },
     ],
     version: 10,
@@ -294,9 +332,83 @@ const GUIDANCE_UPDATES: GuidanceUpdateDefinition[] = [
         version: 11,
       },
     ],
+    noticeBullets: [
+      {
+        priority: 95,
+        summary:
+          "GitLab shipping records its starting branches and MRs so later changes and final cleanup can be verified honestly.",
+      },
+      {
+        priority: 90,
+        summary:
+          "Agents can keep working in separate claimed worktrees while shared shipping steps stay coordinated.",
+      },
+    ],
     version: 11,
   },
+  {
+    changelogReviewRelevant: false,
+    changes: [
+      {
+        kind: "onboarding",
+        summary:
+          "Installed-update prompts now ask any genuinely required multiple-choice questions first, with the recommended answer and consequence shown before any walkthrough choice.",
+        version: 12,
+      },
+      {
+        kind: "behavior",
+        summary:
+          "When no answer is required, Simple Changes says so plainly, recommends continuing with current settings, and keeps the default update summary short; expanded explanations and full release notes remain optional.",
+        version: 12,
+      },
+    ],
+    noticeBullets: [
+      {
+        priority: 110,
+        summary:
+          "Any new required answers now appear first as short multiple-choice questions with a recommended answer.",
+      },
+      {
+        priority: 105,
+        summary:
+          "If nothing needs your decision, the update says so and keeps the walkthrough brief; expanded details stay optional.",
+      },
+    ],
+    version: 12,
+  },
 ];
+
+const recommendedActionFor = (
+  requiredAnswers: GuidanceUpdateQuestion[],
+  recommendedChanges: GuidanceUpdateQuestion[]
+): GuidanceUpdateAction | null => {
+  if (requiredAnswers.length > 0) {
+    return null;
+  }
+  if (recommendedChanges.length > 0) {
+    return "review-settings";
+  }
+  return "keep-current-settings";
+};
+
+const actionsForGuidanceUpdate = (
+  updateAvailable: boolean,
+  recommendedChanges: GuidanceUpdateQuestion[]
+): GuidanceUpdateAction[] => {
+  if (!updateAvailable) {
+    return [];
+  }
+  const firstActions: GuidanceUpdateAction[] =
+    recommendedChanges.length > 0
+      ? ["review-settings", "keep-current-settings"]
+      : ["keep-current-settings", "review-settings"];
+  return [
+    ...firstActions,
+    "expanded-walkthrough",
+    "view-release-notes",
+    "defer",
+  ];
+};
 
 export const inspectGuidanceUpdate = (
   policy: RepoPolicy | null,
@@ -309,15 +421,54 @@ export const inspectGuidanceUpdate = (
       ? []
       : GUIDANCE_UPDATES.filter((update) => update.version > storedVersion);
   const changes = pending.flatMap((update) => update.changes);
-  const summaryBullets = (["behavior", "onboarding", "integration"] as const)
-    .map((kind) =>
-      pending
-        .flatMap((update) => update.changes)
-        .filter((change) => change.kind === kind)
-        .map((change) => change.summary)
-        .join(" ")
-    )
-    .filter(Boolean);
+  const noticeBullets = pending
+    .flatMap((update) => update.noticeBullets ?? [])
+    .sort((left, right) => right.priority - left.priority);
+  const summaryBullets = (
+    noticeBullets.length > 0
+      ? noticeBullets.map((bullet) => bullet.summary)
+      : changes.map((change) => change.summary)
+  ).slice(0, 3);
+  const requiredAnswers = pending.flatMap(
+    (update) => update.requiredAnswers ?? []
+  );
+  const recommendedChanges: GuidanceUpdateQuestion[] = [];
+  if (
+    storedVersion !== null &&
+    storedVersion < 11 &&
+    policy?.changelogHandling !== "delegate-if-available" &&
+    changelogCoordination.capabilityAvailable
+  ) {
+    recommendedChanges.push({
+      choices: [
+        {
+          description:
+            "Use the compatible Simple Changelogs workflow when available; otherwise preserve and report changelog work.",
+          label: "Delegate when available (Recommended)",
+          recommended: true,
+          value: "delegate-if-available",
+        },
+        {
+          description:
+            "Never change changelog destinations; preserve the work and report it.",
+          label: "Preserve and report",
+          recommended: false,
+          value: "preserve-and-report",
+        },
+        {
+          description: "Ask before handing changelog work to another skill.",
+          label: "Ask before delegating",
+          recommended: false,
+          value: "ask",
+        },
+      ],
+      id: "recommended-changelog-handling",
+      question: "How should changelog work be handled?",
+      reason:
+        "A compatible Simple Changelogs installation is available, so delegation is now the recommended answer.",
+      setting: "changelogHandling",
+    });
+  }
   const updateAvailable = changes.length > 0;
   const changelogReviewRelevant = pending.some(
     (update) => update.changelogReviewRelevant
@@ -326,14 +477,11 @@ export const inspectGuidanceUpdate = (
     updateAvailable &&
     changelogReviewRelevant &&
     changelogCoordination.guidanceUpdate.status === "update-available";
-  const actions: GuidanceUpdateAction[] = updateAvailable
-    ? [
-        "review-settings",
-        "keep-current-settings",
-        "defer",
-        "view-release-notes",
-      ]
-    : [];
+  const recommendedAction = recommendedActionFor(
+    requiredAnswers,
+    recommendedChanges
+  );
+  const actions = actionsForGuidanceUpdate(updateAvailable, recommendedChanges);
   if (changelogHandoffAvailable) {
     actions.splice(actions.length - 1, 0, "review-with-simple-changelogs");
   }
@@ -358,10 +506,12 @@ export const inspectGuidanceUpdate = (
     actionDescriptions: {
       defer:
         "Pause this update decision without changing settings; the same guidance version remains unresolved until explicitly acknowledged.",
+      "expanded-walkthrough":
+        "Explain every intervening behavior, example, consequence, setting, and safety boundary.",
       "keep-current-settings":
-        "Keep existing choices after reviewing the practical changes and named defaults for every new setting.",
+        "Acknowledge the update and continue with the existing confirmed choices.",
       "review-settings":
-        "Recommended: explain every new ability and affected setting, including consequences and safety boundaries, before choosing values.",
+        "Show the short practical walkthrough: required answers, recommended changes, and the main behind-the-scenes improvements.",
       "review-with-simple-changelogs":
         "Review both skills through their owner-controlled walkthroughs when both have updates.",
       "view-release-notes":
@@ -376,18 +526,25 @@ export const inspectGuidanceUpdate = (
     changes,
     currentVersion: CURRENT_GUIDANCE_VERSION,
     headline: "**Simple Changes has recently been updated.**",
-    recommendedAction: "review-settings",
+    presentationOrder: [
+      "required-answers",
+      "recommended-changes",
+      "summary",
+      "actions",
+    ],
+    recommendedAction,
+    recommendedChanges,
     releaseNotes: {
       available: true,
       command: "simple-changes release-notes",
       label: "View detailed Simple Changes release notes",
     },
+    requiredAnswers,
     status: updateAvailable ? "update-available" : "current",
     storedDisposition,
     storedVersion,
     summaryBullets,
-    walkthroughQuestion:
-      "Would you like me to walk you through all recent updates to the skill?",
+    walkthroughQuestion: "How would you like to continue?",
   };
 };
 

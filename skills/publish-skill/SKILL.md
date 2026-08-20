@@ -88,9 +88,11 @@ Read [references/production-loop.md](references/production-loop.md), then:
    remotes, prior production changes, and duplicate worktrees. Do not reduce the
    inventory to one convenient validation repository.
 8. From the canonical merged ref, reinstall every confirmed local consumer with
-   the Skills CLI in independent isolated worktrees. Run consumers concurrently
-   with bounded parallelism and collect every result; one failure must not cancel
-   or hide the others.
+   the Skills CLI in independent isolated worktrees. For every discovered
+   symlink, resolve it, update its real target, and leave the symlink in place.
+   Ordinary directories update directly. Run consumers concurrently with
+   bounded parallelism and collect every result; one failure must not cancel or
+   hide the others.
 9. Validate each complete installed package, execute its installed self-check
    when available, and apply its declared retention mode. Preserve maintained
    installs, remove temporary validation-only installs, and leave intentional

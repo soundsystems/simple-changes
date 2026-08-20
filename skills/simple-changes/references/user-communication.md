@@ -38,6 +38,14 @@ audit evidence in a short follow-up sentence or compact list. Never paste raw
 JSON, a full internal state record, or a machine error when a short translation
 answers the question.
 
+When review, audit, or verification finds two or more issues, list every
+finding as its own concise bullet. Do not replace the list with an abstract
+count or phrases such as “several edge cases.” Lead with severity only when it
+helps prioritization, and keep the concrete affected behavior in each bullet.
+When a finding points to local code, make its primary file and line a clickable
+Markdown link. Keep the bullet readable: link the main failure site and mention
+supporting locations only when they help the user act.
+
 Durable workflow status names such as `live-unreviewed` may still be required
 for accurate recovery. Introduce them after the plain explanation: “The fix is
 live but still needs independent review. I recorded that as

@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 
 import { type Dirent, existsSync } from "node:fs";
-import { readdir, readFile, realpath } from "node:fs/promises";
+import { lstat, readdir, readFile, realpath } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 
 const ignoredDirectories = new Set([
@@ -39,12 +39,14 @@ interface Candidate {
   installIdentities: Set<string>;
   installPaths: Set<string>;
   lockPath?: string;
+  physicalInstallPaths: Set<string>;
   ref?: string;
   repositoryRoot: string;
   skill: string;
   skillPath?: string;
   source: string;
   sourceType?: string;
+  symlinkPaths: Set<string>;
 }
 
 interface Consumer {
@@ -52,13 +54,16 @@ interface Consumer {
   installationCount: number;
   installPaths: string[];
   lockPath?: string;
+  physicalInstallPaths: string[];
   ref?: string;
   repositoryRoot: string;
+  resolvedInstallPaths: string[];
   skill: string;
   skillPath?: string;
   source: string;
   sourceType?: string;
   state: "installed" | "lock-only" | "multiple-installs" | "unlocked-install";
+  symlinkPaths: string[];
 }
 
 interface Options {
@@ -207,6 +212,11 @@ const recordInstallPath = async (
   installPath: string
 ): Promise<void> => {
   candidate.installPaths.add(installPath);
+  if ((await lstat(installPath)).isSymbolicLink()) {
+    candidate.symlinkPaths.add(installPath);
+  } else {
+    candidate.physicalInstallPaths.add(installPath);
+  }
   candidate.installIdentities.add(await realpath(installPath));
 };
 
@@ -241,9 +251,11 @@ const collectLockCandidates = async (path: string): Promise<void> => {
         ({
           installIdentities: new Set<string>(),
           installPaths: new Set<string>(),
+          physicalInstallPaths: new Set<string>(),
           repositoryRoot,
           skill,
           source: stringValue(entry.source) ?? options.source,
+          symlinkPaths: new Set<string>(),
         } satisfies Candidate);
       candidate.lockPath = path;
       candidate.computedHash = stringValue(entry.computedHash);
@@ -313,9 +325,11 @@ if (options.skills.size > 0) {
             ({
               installIdentities: new Set<string>(),
               installPaths: new Set<string>(),
+              physicalInstallPaths: new Set<string>(),
               repositoryRoot,
               skill,
               source: options.source,
+              symlinkPaths: new Set<string>(),
             } satisfies Candidate);
           await recordInstallPath(candidate, path);
           candidates.set(key, candidate);
@@ -331,7 +345,14 @@ if (options.skills.size > 0) {
 const consumers: Consumer[] = [...candidates.values()]
   .map((candidate) => {
     const installPaths = [...candidate.installPaths].sort(compareText);
+    const physicalInstallPaths = [...candidate.physicalInstallPaths].sort(
+      compareText
+    );
+    const symlinkPaths = [...candidate.symlinkPaths].sort(compareText);
     const installationCount = candidate.installIdentities.size;
+    const resolvedInstallPaths = [...candidate.installIdentities].sort(
+      compareText
+    );
     let state: Consumer["state"] = "lock-only";
     if (!candidate.lockPath) {
       state = "unlocked-install";
@@ -347,13 +368,16 @@ const consumers: Consumer[] = [...candidates.values()]
       installationCount,
       installPaths,
       ...(candidate.lockPath ? { lockPath: candidate.lockPath } : {}),
+      physicalInstallPaths,
       ...(candidate.ref ? { ref: candidate.ref } : {}),
       repositoryRoot: candidate.repositoryRoot,
+      resolvedInstallPaths,
       skill: candidate.skill,
       ...(candidate.skillPath ? { skillPath: candidate.skillPath } : {}),
       source: candidate.source,
       ...(candidate.sourceType ? { sourceType: candidate.sourceType } : {}),
       state,
+      symlinkPaths,
     };
   })
   .sort((left, right) => {

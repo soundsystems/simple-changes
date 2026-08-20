@@ -22,14 +22,27 @@ bun run simple-changes release-notes
 bun run simple-changes release-notes --check --repo .
 ```
 
-Install it for Codex:
+Install it once in the portable global Skills directory:
 
 ```sh
-cp -R skills/simple-changes ~/.codex/skills/simple-changes
+mkdir -p ~/.agents/skills
+cp -R skills/simple-changes ~/.agents/skills/simple-changes
 ```
 
-Other agents that use the portable Skills directory convention can install the
-same directory under `~/.agents/skills/simple-changes`.
+Agents with their own global skill directory can point to that one installation
+instead of keeping another copy. For example:
+
+```sh
+mkdir -p ~/.codex/skills ~/.claude/skills
+ln -s ~/.agents/skills/simple-changes ~/.codex/skills/simple-changes
+ln -s ~/.agents/skills/simple-changes ~/.claude/skills/simple-changes
+```
+
+Keep repository-local installations only for repository-specific forks. A
+repository can still commit `.simple-changes.json`; repository policy is
+independent of where the skill is installed and overrides global personal
+preferences. Before creating a symlink, move or remove any existing copy at its
+destination so an older installation is not left nested beneath it.
 
 The installed directory is self-contained. Its release-note surface is
 read-only: `release-notes` displays Simple Changes' packaged public history. It

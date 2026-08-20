@@ -1,5 +1,99 @@
 # Developer changelog
 
+## 0.12.6 - 2026-08-20
+
+- Reworked installed-guidance notices around explicit decision priority:
+  - `GuidanceUpdateNotice` now exposes `presentationOrder`, `requiredAnswers`,
+    and `recommendedChanges`. Required questions are rendered first as short
+    multiple-choice prompts, with the recommended choice and its consequence
+    first, before any walkthrough action is offered.
+  - Optional setting recommendations are shown immediately after required
+    answers. When neither is pending, initialization says that no new settings
+    answer is required and makes continuing with confirmed settings the
+    recommended action.
+  - Default summaries select at most three prioritized practical bullets across
+    skipped guidance versions. Short and expanded walkthroughs are distinct,
+    and detailed release notes remain a separate read-only option.
+  - Standalone and combined Simple Changes/Simple Changelogs notices preserve
+    existing settings, repository files, and current work, and retain required
+    owner-controlled decisions ahead of optional update detail.
+  - The presentation changes add no push, merge, release, publication,
+    deployment, migration, data-write, credential, or other authority.
+- Advanced the package and CLI to 0.12.6 and installed Simple Changes guidance
+  to version 12 so existing installations receive the shorter decision-first
+  update notice.
+- Added a conserved Ship-scope gate for runs whose opening inventory contains
+  local changes:
+  - `loop start` sets `shipmentScopeRequired`; `loop record-scope` accepts only
+    a non-mutating preview for the exact unchanged opening `baselineDigest`,
+    requires all plan questions to be resolved, validates path conservation
+    across every worktree, and persists the plan digest, opening changes, and
+    immutable opening source-tree identity for every worktree-plus-path unit.
+    Regular-file identities use `git hash-object --path <path> -- <path>` so
+    Git applies path-aware clean/text conversion while the delimiter protects
+    leading-dash filenames from option parsing. Symlink identities hash the raw
+    literal target bytes, including for broken links. This prevents
+    `.gitattributes`, LFS-style filters, and unusual leading-dash filenames from
+    falsely invalidating an otherwise matching outcome.
+  - `loop guard`, `loop exec`, and completion fail closed until that receipt
+    exists. `prepare-agent` is also blocked until the required shipment scope
+    exists. A `preserved` lease role continues to protect a worktree from
+    controller mutation or deletion, but does not imply shipment exclusion.
+  - Exclusions can bind both `worktreePath` and `path`, so the same relative
+    filename in multiple worktrees can be scoped independently.
+  - The generated receipt renders every included unit with its title, outcome,
+    branch or detached revision, and source worktree, followed by distinct
+    preserved and excluded sections.
+  - Controller-only `loop refresh-scope` requires an existing shipment scope and
+    no recorded outcome. It accepts only a non-mutating preview that matches the
+    exact current inventory, resolves every question, and conserves every current
+    dirty change. The refresh preserves the original full shipment path scope
+    while recomputing each exact source entry. It rejects genuinely new paths,
+    but permits an integration checkout to materialize a path only when the same
+    relative path and content are already scoped from another worktree. The
+    superseded plan digest and its recorded and superseded timestamps remain in
+    `shipmentScopeHistory`.
+- After review and integration, the controller records one
+  `loop record-outcome` receipt bound to the exact final revision:
+  - Shipment outcomes accept only the exact immutable opening source result
+    recorded for that worktree and path or a target-equivalent result.
+    Review-driven source changes require a fresh scope; controller-authored
+    fields such as `reviewerAgentId`, `reconciled`, or review-delta metadata do
+    not prove or impersonate independent review.
+  - Each unit's final path set must exactly equal its scoped path set. Every
+    rename original is mandatory, owned by its scoped unit, and rejected if it
+    is instead routed through `additionalPaths`.
+  - Only `release-generated` or `external-target-change` additional paths are
+    accepted. Each must be an exact, real remaining opening-to-final target
+    delta with its classification and reason; unchanged paths and other
+    non-delta extras are rejected.
+  - Completion re-resolves the final target, rechecks every recorded result,
+    and rejects a moved target or stale receipt until a new controller-recorded
+    receipt binds the exact final revision. Recording adds no user approval
+    boundary. Cleanup authority remains unchanged: existing lease and
+    disposition safety still governs removal, and dirty source worktrees do not
+    become automatically removable.
+- User-facing review communication now emits every independent-review finding
+  as an explicit bullet rather than abstracting the result to a numeric count;
+  when a finding has a primary local source location, its summary deep-links
+  that file and line.
+- `loop exec` rejects `git switch` and branch-changing `git checkout` for
+  registered controller or author checkouts before starting the guarded child
+  process. Known global options—`-C`, `-c`, `--git-dir`, `--work-tree`, and
+  `--no-pager`, including separate-value forms—are parsed before command
+  classification. Unrecognized global options fail closed, so flags such as
+  `--literal-pathspecs` cannot shift parsing to hide checkout branch switching,
+  while path-only `git checkout ... -- <paths>` restoration remains allowed.
+- Planner checks for root or nested-monorepo `package.json` files and supported
+  dependency lockfiles now add isolated-clean-checkout verification with a
+  frozen install and production build; the manifest, lease schema, CLI,
+  contract, and loop tests cover the new scope, outcome-receipt, and
+  verification contracts.
+<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-20T17:35:51-05:00" -->
+<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-20T18:10:46-05:00" -->
+<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-20T18:19:51-05:00" -->
+<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-20T18:31:54-05:00" -->
+
 ## 0.12.5 - 2026-08-15
 
 - Bound GitLab integration loops to truthful opening provider evidence:

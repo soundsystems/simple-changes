@@ -20,6 +20,25 @@ it to the shortest message that covers:
   store releases, or other separately authorized operations;
 - **Preserved or blocked work:** anything discovered but not being taken over.
 
+If opening local changes exist, the brief must be the summary returned after
+`loop record-scope --receipt <change-plan.json>`. Do not push an early subset
+and audit the other worktrees afterward. The recorded plan must first account
+for every changed path across the primary checkout and all linked worktrees.
+Safety-lease `preserved` status protects a checkout from mutation or deletion;
+it does not prove that finished work is unrelated or excluded.
+For each included unit, show a short feature/outcome description, its branch or
+detached revision, and its source worktree. List preserved and excluded work in
+separate short sections. Refine generic directory-based planner labels before
+recording scope so the user sees “Resend contact delivery” rather than
+“repository-level changes.”
+Overlapping paths are normal integration work. Reconcile them once, run the
+scoped checks, and report the combined outcome; do not ask the user to choose
+between finished implementations unless their intended behavior truly
+conflicts.
+Before the final delivery receipt, record the exact shipment
+outcome. Keep its user-facing summary short: name reviewed additions or external
+target changes, but do not dump path-entry hashes unless the user asks.
+
 When the current request or stored policy already authorizes Ship, state that
 the run is proceeding and continue in the same assistant turn. Do not turn this
 brief into a redundant confirmation gate. It creates an interruption window:

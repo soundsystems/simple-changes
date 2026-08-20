@@ -86,10 +86,14 @@ automatic migration, break-glass, or production authority is effective only
 with the private digest-bound local trust receipt described in
 [setup and policy](references/setup-and-policy.md); a repository policy symlink
 is unsafe.
-Update notices must explain the new abilities before offering dispositions and
-recommend reviewing what changed; never recommend keeping, skipping, or
-deferring before the user understands the practical changes. A colloquial
-“auto push” choice requires the exact scoped-push explanation and confirmation
+Update notices put any genuinely required answers first as short
+multiple-choice questions, with the recommended answer and consequence shown
+first. Do not ask whether the user wants a walkthrough until those required
+answers are resolved. When no answer is required, say so plainly and recommend
+continuing with current settings. Keep the default walkthrough to required
+answers, recommended changes, and at most three practical improvements; offer
+an expanded walkthrough and full release notes separately. A colloquial “auto
+push” choice still requires the exact scoped-push explanation and confirmation
 from [installed guidance updates](references/guidance-updates.md) before saving.
 
 ## Communicate in plain language
@@ -116,6 +120,22 @@ checks, proposal/merge/release/deploy path, consequential boundaries, and
 preserved work. Explain that this is an interruption window rather than a
 permission gate when existing authority already covers the run. Follow
 [ship communication](references/ship-communication.md).
+When a Ship run opens with any local changes, generate one non-mutating preview
+plan from that unchanged opening inventory, record it with
+`loop record-scope --receipt <change-plan.json>`, and present the returned
+pre-ship scope before any `loop guard` or `loop exec`. The controller rejects a
+plan that omits a changed path from any worktree. A worktree marked `preserved`
+in the safety lease is protected from deletion; that label never excludes its
+finished changes from shipment scope by itself.
+If independent review requires source changes, generate a new non-mutating
+preview from the exact current inventory and record it with
+`loop refresh-scope --receipt <change-plan.json>` before another mutation. This
+controller-only action is rejected after an outcome exists and preserves the
+superseded scope digest and timestamps in the lease history.
+The generated brief lists each included work item with its short outcome,
+branch or detached revision, and source worktree; it then lists preserved and
+excluded work separately. Keep this inventory concise and refine generic plan
+titles into feature-level descriptions before recording the scope.
 When permission is still required, inventory every unresolved boundary already
 knowable from the validated plan and present them together in one exact-target
 checklist. Let the user approve all, decline all, or approve named items in one
@@ -145,6 +165,16 @@ including target movement, integration merges or cherry-picks, pushes,
 worktree/branch lifecycle changes, and cleanup. Use `loop guard` only for
 external provider calls and verify immediately afterward. Before merge,
 deployment, cleanup, and completion, run `loop verify`.
+Never switch the registered controller or author checkout to another branch
+inside `loop exec`; prepare the intended branch/worktree before starting or
+resuming its controller.
+After review and integration settle, record one exact
+`loop record-outcome --receipt <shipment-outcome.json>` receipt before
+completion. Direct outcomes must match the immutable opening source result;
+review-driven source changes require a fresh scope instead of a controller-
+asserted reviewer identity. It accounts for every scoped unit plus generated or
+external final-target delta paths. This controller audit step is not another
+user decision.
 
 A busy lock blocks only the named short integration operation; it is never a
 reason to pause unrelated authors, demand a lease-null handback, export patches,

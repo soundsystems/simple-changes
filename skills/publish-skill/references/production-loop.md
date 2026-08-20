@@ -80,7 +80,7 @@ verify its output against repository policy before committing it.
 Inventory every exact-source consumer with
 `scripts/discover-local-consumers.ts`. Reconcile duplicate worktrees, aliases,
 unlocked installs, and lock-only records before writing. Treat paths resolving
-to the same physical package as compatibility aliases, not duplicate installs.
+to the same physical package as symlinked paths, not duplicate installs.
 Do not select only one consumer for convenience.
 
 For every confirmed consumer:
@@ -103,18 +103,27 @@ For every confirmed consumer:
    Capture each exit status independently and wait for all consumers to finish;
    one failure must not cancel the remaining validations.
 4. Install from the canonical merged default branch with the Skills CLI.
-5. Compare the source and installed trees with
+5. For every path in `symlinkPaths`, use its matching
+   `resolvedInstallPaths` entry as the update destination. Update that real
+   package once, then leave every symlink in place. A symlink is an installed
+   path, not a separate package to reinstall. Reject dangling links and stop on
+   targets outside the authorized consumer or fork scope.
+6. Re-run consumer discovery and require every original symlink in
+   `symlinkPaths`, the expected real targets in `resolvedInstallPaths`, and the
+   expected `installationCount`. Ordinary directories in
+   `physicalInstallPaths` continue to update directly.
+7. Compare the source and installed trees with
    `<publish-skill-directory>/scripts/verify-installed-package.sh`,
    resolving the directory from this skill's loaded `SKILL.md` path.
-6. Confirm references, scripts, schemas, and agents metadata are present, not
+8. Confirm references, scripts, schemas, and agents metadata are present, not
    merely the root instruction file.
-7. Run the installed skill's validation or contract command from the installed
+9. Run the installed skill's validation or contract command from the installed
    directory when available.
-8. Apply the declared retention mode. Delete only validation-only or proven
+10. Apply the declared retention mode. Delete only validation-only or proven
    stale package directories; preserve maintained installs.
-9. Confirm no unintended copy remains and inspect the consumer diff. Investigate
+11. Confirm no unintended copy remains and inspect the consumer diff. Investigate
    changes outside the declared install directory, lock, or manifest.
-10. Commit, push, re-read the MR or PR description, merge, and verify the remote
+12. Commit, push, re-read the MR or PR description, merge, and verify the remote
     default branch records the new canonical package identity.
 
 Do not validate against a local unmerged source tree when the purpose is to

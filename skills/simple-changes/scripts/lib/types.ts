@@ -265,7 +265,7 @@ export interface PreservedWork {
 
 export interface ChangePlan {
   baselineDigest: string;
-  exclusions: Array<{ path: string; reason: string }>;
+  exclusions: Array<{ path: string; reason: string; worktreePath?: string }>;
   generatedAt: string;
   mode: RequestMode;
   mutationCount: number;
@@ -277,6 +277,31 @@ export interface ChangePlan {
   schemaVersion: 1;
   units: ChangeUnit[];
   warnings: string[];
+}
+
+export interface ShipmentOutcomePath {
+  entry: string | null;
+  path: string;
+}
+
+export interface ShipmentOutcomeReceipt {
+  additionalPaths: Array<
+    ShipmentOutcomePath & {
+      classification: "external-target-change" | "release-generated";
+      reason: string;
+    }
+  >;
+  runId: string;
+  schemaVersion: 1;
+  targetRevision: string;
+  units: Array<{
+    disposition: "delivered" | "target-equivalent";
+    evidence: string[];
+    finalPaths: ShipmentOutcomePath[];
+    originalPaths: ShipmentOutcomePath[];
+    summary: string;
+    unitId: string;
+  }>;
 }
 
 export interface PermissionRequestInput {
@@ -913,6 +938,28 @@ export interface LoopLease {
   remoteBranchReconciliation?: RemoteBranchReconciliationReceipt;
   runId: string;
   schemaVersion: 1;
+  shipmentOutcome?: {
+    receipt: ShipmentOutcomeReceipt;
+    receiptDigest: string;
+    recordedAt: string;
+  };
+  shipmentScope?: {
+    openingChanges: Array<{
+      originalPath: string | null;
+      path: string;
+      sourceEntry: string | null;
+      worktreePath: string;
+    }>;
+    plan: ChangePlan;
+    planDigest: string;
+    recordedAt: string;
+  };
+  shipmentScopeHistory?: Array<{
+    planDigest: string;
+    recordedAt: string;
+    supersededAt: string;
+  }>;
+  shipmentScopeRequired?: boolean;
   targetRef: string;
   targetRevision: string;
   updatedAt: string;
@@ -965,6 +1012,7 @@ export type SchemaName =
   | "provider-receipt"
   | "release-delivery-receipt"
   | "post-cleanup-recovery"
+  | "shipment-outcome"
   | "remote-branch-reconciliation"
   | "release-consistency"
   | "release-notes"

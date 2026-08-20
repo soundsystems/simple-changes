@@ -14,7 +14,10 @@ import { hostname } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { sleep } from "bun";
-import { captureInventory } from "../../../skills/simple-changes/scripts/lib/inventory.ts";
+import {
+  captureInventory,
+  compareSnapshots,
+} from "../../../skills/simple-changes/scripts/lib/inventory.ts";
 import {
   acceptPausedWorktreeChange,
   authorizeWorktreeRemoval,
@@ -32,6 +35,8 @@ import {
   readLoopLease,
   recordEmergencyShipping,
   recordRemoteBranchReconciliation,
+  recordShipmentOutcome,
+  recordShipmentScope,
   recoverLoopLock,
   recoverPostCleanupLoop,
   retainExcludedWorktree,
@@ -40,8 +45,13 @@ import {
   verifyLoop,
   withLoopMutationLease,
 } from "../../../skills/simple-changes/scripts/lib/loop-lease.ts";
+import { buildPreviewPlan } from "../../../skills/simple-changes/scripts/lib/planner.ts";
 import { DEFAULT_POLICY } from "../../../skills/simple-changes/scripts/lib/policy.ts";
-import type { LoopLease } from "../../../skills/simple-changes/scripts/lib/types.ts";
+import type {
+  ChangePlan,
+  LoopLease,
+  ShipmentOutcomeReceipt,
+} from "../../../skills/simple-changes/scripts/lib/types.ts";
 import {
   claimWorktree,
   observeWorktreeClaims,
@@ -58,6 +68,7 @@ import {
 } from "./helpers.ts";
 
 let repositories: TestRepository[] = [];
+const TREE_ENTRY_PATTERN = /^(\d+)\s+(blob|commit)\s+([0-9a-f]+)\t/u;
 setDefaultTimeout(30_000);
 
 const repository = (): TestRepository => {
@@ -65,6 +76,39 @@ const repository = (): TestRepository => {
   repositories.push(fixture);
   return fixture;
 };
+
+const treeEntry = (
+  root: string,
+  revision: string,
+  path: string
+): string | null => {
+  const output = git(root, ["ls-tree", revision, "--", path]);
+  const match = TREE_ENTRY_PATTERN.exec(output);
+  return match ? `${match[1]}:${match[2]}:${match[3]}` : null;
+};
+
+const shipmentOutcome = (
+  root: string,
+  lease: LoopLease,
+  plan: ChangePlan,
+  targetRevision: string
+): ShipmentOutcomeReceipt => ({
+  additionalPaths: [],
+  runId: lease.runId,
+  schemaVersion: 1,
+  targetRevision,
+  units: plan.units.map((unit) => ({
+    disposition: "delivered",
+    evidence: ["The final target matches the exact opening source result."],
+    finalPaths: unit.paths.map((path) => ({
+      entry: treeEntry(root, targetRevision, path),
+      path,
+    })),
+    originalPaths: [],
+    summary: `Delivered ${unit.title}`,
+    unitId: unit.id,
+  })),
+});
 
 const paginationCoverage = (
   branches: number,
@@ -2966,6 +3010,426 @@ describe("active integration-loop lease", () => {
       "guarded mutation\n"
     );
     expect(result.verification.ok).toBe(true);
+  });
+
+  test("blocks Ship mutations until every opening worktree change is accounted for", () => {
+    const fixture = repository();
+    const analyticsWorktree = join(fixture.base, "analytics");
+    git(fixture.root, ["worktree", "add", "--detach", analyticsWorktree]);
+    writeFixture(
+      fixture.root,
+      "contact.ts",
+      "export const email = 'resend';\n"
+    );
+    writeFixture(
+      analyticsWorktree,
+      "analytics.ts",
+      "export const analytics = true;\n"
+    );
+    const opening = captureInventory(fixture.root);
+    const lease = startLoop(fixture.root, "controller", "ship");
+
+    expect(() =>
+      guardLoopMutation(fixture.root, lease.runId, "controller")
+    ).toThrow("comprehensive shipment scope");
+    expect(() =>
+      prepareAgentWorktree(
+        fixture.root,
+        lease.runId,
+        "late-author",
+        "must-wait-for-scope"
+      )
+    ).toThrow("Record the comprehensive shipment scope");
+
+    const current = captureInventory(fixture.root);
+    const plan = buildPreviewPlan(
+      opening,
+      current,
+      compareSnapshots(opening, current),
+      "Ship every finished local change"
+    );
+    expect(new Set(plan.units.map((unit) => unit.sourceWorktree))).toEqual(
+      new Set([fixture.root, analyticsWorktree])
+    );
+    const incomplete = {
+      ...plan,
+      units: plan.units.filter(
+        (unit) => unit.sourceWorktree !== analyticsWorktree
+      ),
+    };
+    expect(() =>
+      recordShipmentScope(fixture.root, lease.runId, "controller", incomplete)
+    ).toThrow("does not conserve");
+
+    const receipt = recordShipmentScope(
+      fixture.root,
+      lease.runId,
+      "controller",
+      plan
+    );
+    expect(receipt.includedPaths).toBe(2);
+    expect(receipt.summary).toContain("Included:");
+    expect(receipt.summary).toContain(fixture.root);
+    expect(receipt.summary).toContain(analyticsWorktree);
+    expect(receipt.summary).toContain("detached@");
+    expect(receipt.summary).toContain("No changed path is unaccounted for");
+    expect(() =>
+      recordShipmentScope(fixture.root, lease.runId, "controller", plan)
+    ).toThrow("Use loop refresh-scope");
+    expect(guardLoopMutation(fixture.root, lease.runId, "controller").ok).toBe(
+      true
+    );
+
+    expect(() => endLoop(fixture.root, lease.runId, "controller")).toThrow(
+      "Record the exact reviewed shipment outcome"
+    );
+    const unchangedTarget = git(fixture.root, ["rev-parse", "main"]);
+    const fabricatedEquivalent = shipmentOutcome(
+      fixture.root,
+      lease,
+      plan,
+      unchangedTarget
+    );
+    for (const unit of fabricatedEquivalent.units) {
+      unit.disposition = "target-equivalent";
+    }
+    expect(() =>
+      recordShipmentOutcome(
+        fixture.root,
+        lease.runId,
+        "controller",
+        fabricatedEquivalent
+      )
+    ).toThrow("does not match its exact opening source result");
+    writeFixture(
+      fixture.root,
+      "contact.ts",
+      "export const email = 'resend';\nexport const tracking = 'analytics';\n"
+    );
+    writeFixture(
+      fixture.root,
+      "analytics.ts",
+      "export const analytics = true;\n"
+    );
+    const reviewedInventory = captureInventory(fixture.root);
+    const reviewedPlan = buildPreviewPlan(
+      reviewedInventory,
+      reviewedInventory,
+      compareSnapshots(reviewedInventory, reviewedInventory),
+      "Ship reviewed local changes"
+    );
+    const refreshed = recordShipmentScope(
+      fixture.root,
+      lease.runId,
+      "controller",
+      reviewedPlan,
+      true
+    );
+    expect(refreshed.planDigest).not.toBe(receipt.planDigest);
+    const refreshedLease = readLoopLease(fixture.root);
+    expect(refreshedLease?.shipmentScopeHistory).toHaveLength(1);
+    expect(refreshedLease?.shipmentScopeHistory?.[0]?.planDigest).toBe(
+      receipt.planDigest
+    );
+    const activePlan = refreshedLease?.shipmentScope?.plan;
+    if (!activePlan) {
+      throw new Error("Expected refreshed shipment scope.");
+    }
+    git(fixture.root, ["add", "contact.ts", "analytics.ts"]);
+    git(fixture.root, ["commit", "-m", "Ship complete scoped work"]);
+    const targetRevision = git(fixture.root, ["rev-parse", "main"]);
+    const outcome = shipmentOutcome(
+      fixture.root,
+      lease,
+      activePlan,
+      targetRevision
+    );
+    const wrongOutcome = structuredClone(outcome);
+    const wrongPath = wrongOutcome.units[0]?.finalPaths[0];
+    if (wrongPath) {
+      wrongPath.entry = `100644:blob:${"a".repeat(40)}`;
+    }
+    expect(() =>
+      recordShipmentOutcome(
+        fixture.root,
+        lease.runId,
+        "controller",
+        wrongOutcome
+      )
+    ).toThrow("does not match final target");
+    recordShipmentOutcome(fixture.root, lease.runId, "controller", outcome);
+    expect(endLoop(fixture.root, lease.runId, "controller").ok).toBe(true);
+  });
+
+  test("rejects a branch switch before loop exec can move the checkout", async () => {
+    const fixture = repository();
+    const lease = startLoop(fixture.root, "controller", "ship");
+
+    await expect(
+      executeLoopMutation(fixture.root, lease.runId, "controller", [
+        "git",
+        "switch",
+        "-c",
+        "wrong-branch",
+      ])
+    ).rejects.toThrow("Do not switch");
+    await expect(
+      executeLoopMutation(fixture.root, lease.runId, "controller", [
+        "git",
+        "--literal-pathspecs",
+        "checkout",
+        "another-wrong-branch",
+      ])
+    ).rejects.toThrow("cannot safely classify Git global option");
+    await expect(
+      executeLoopMutation(fixture.root, lease.runId, "controller", [
+        "git",
+        "--git-dir",
+        ".git",
+        "--work-tree",
+        ".",
+        "checkout",
+        "-b",
+        "also-wrong",
+      ])
+    ).rejects.toThrow("Do not switch");
+    expect(git(fixture.root, ["branch", "--show-current"])).toBe("main");
+    writeFixture(fixture.root, "README.md", "changed locally\n");
+    const restored = await executeLoopMutation(
+      fixture.root,
+      lease.runId,
+      "controller",
+      ["git", "checkout", "--", "README.md"]
+    );
+    expect(restored.result.exitCode).toBe(0);
+    expect(readFileSync(join(fixture.root, "README.md"), "utf8")).toBe(
+      "# Fixture\n"
+    );
+    expect(guardLoopMutation(fixture.root, lease.runId, "controller").ok).toBe(
+      true
+    );
+  });
+
+  test("accepts only exact opening source results plus classified generated paths", () => {
+    const fixture = repository();
+    const sourceWorktree = join(fixture.base, "finished-feature");
+    git(fixture.root, ["worktree", "add", "--detach", sourceWorktree]);
+    writeFixture(
+      sourceWorktree,
+      "feature.ts",
+      "export const feature = 'original';\n"
+    );
+    const opening = captureInventory(fixture.root);
+    const lease = startLoop(fixture.root, "controller", "ship");
+    const current = captureInventory(fixture.root);
+    const plan = buildPreviewPlan(
+      opening,
+      current,
+      compareSnapshots(opening, current),
+      "Ship the reviewed feature"
+    );
+    recordShipmentScope(fixture.root, lease.runId, "controller", plan);
+
+    expect(() => endLoop(fixture.root, lease.runId, "controller")).toThrow(
+      "Record the exact reviewed shipment outcome"
+    );
+    writeFixture(
+      fixture.root,
+      "feature.ts",
+      "export const feature = 'original';\n"
+    );
+    writeFixture(
+      fixture.root,
+      "review-helper.ts",
+      "export const reviewed = true;\n"
+    );
+    git(fixture.root, ["add", "feature.ts", "review-helper.ts"]);
+    git(fixture.root, ["commit", "-m", "Ship reviewed feature"]);
+
+    const targetRevision = git(fixture.root, ["rev-parse", "main"]);
+    const outcome = shipmentOutcome(fixture.root, lease, plan, targetRevision);
+    const hiddenReviewDelta = structuredClone(outcome);
+    hiddenReviewDelta.units[0]?.finalPaths.push({
+      entry: treeEntry(fixture.root, targetRevision, "review-helper.ts"),
+      path: "review-helper.ts",
+    });
+    expect(() =>
+      recordShipmentOutcome(
+        fixture.root,
+        lease.runId,
+        "controller",
+        hiddenReviewDelta
+      )
+    ).toThrow("includes unscoped final path review-helper.ts");
+    const unchangedAdditional = structuredClone(outcome);
+    unchangedAdditional.additionalPaths.push({
+      classification: "release-generated",
+      entry: treeEntry(fixture.root, targetRevision, "README.md"),
+      path: "README.md",
+      reason: "This unchanged path must not be accepted as a delta.",
+    });
+    expect(() =>
+      recordShipmentOutcome(
+        fixture.root,
+        lease.runId,
+        "controller",
+        unchangedAdditional
+      )
+    ).toThrow("is not part of the final target delta");
+    expect(() =>
+      recordShipmentOutcome(fixture.root, lease.runId, "controller", outcome)
+    ).toThrow("omits final target delta paths: review-helper.ts");
+    outcome.additionalPaths.push({
+      classification: "release-generated",
+      entry: treeEntry(fixture.root, targetRevision, "review-helper.ts"),
+      path: "review-helper.ts",
+      reason: "Release reconciliation generated a focused helper.",
+    });
+    recordShipmentOutcome(fixture.root, lease.runId, "controller", outcome);
+
+    expect(endLoop(fixture.root, lease.runId, "controller").ok).toBe(true);
+  });
+
+  test("binds rename deletion and destination in the final outcome", () => {
+    const fixture = repository();
+    git(fixture.root, ["mv", "README.md", "GUIDE.md"]);
+    const opening = captureInventory(fixture.root);
+    const lease = startLoop(fixture.root, "controller", "ship");
+    const current = captureInventory(fixture.root);
+    const plan = buildPreviewPlan(
+      opening,
+      current,
+      compareSnapshots(opening, current),
+      "Ship the documentation rename"
+    );
+    recordShipmentScope(fixture.root, lease.runId, "controller", plan);
+    git(fixture.root, ["commit", "-am", "Rename guide"]);
+    const targetRevision = git(fixture.root, ["rev-parse", "main"]);
+    const outcome = shipmentOutcome(fixture.root, lease, plan, targetRevision);
+    expect(() =>
+      recordShipmentOutcome(fixture.root, lease.runId, "controller", outcome)
+    ).toThrow("omits rename original path README.md");
+    const [renameUnit] = outcome.units;
+    if (!renameUnit) {
+      throw new Error("Expected the rename shipment unit.");
+    }
+    renameUnit.originalPaths.push({
+      entry: null,
+      path: "README.md",
+    });
+    recordShipmentOutcome(fixture.root, lease.runId, "controller", outcome);
+    expect(endLoop(fixture.root, lease.runId, "controller").ok).toBe(true);
+  });
+
+  test("binds gitlink entries in the exact final outcome", () => {
+    const fixture = repository();
+    const dependency = repository();
+    git(fixture.root, [
+      "-c",
+      "protocol.file.allow=always",
+      "submodule",
+      "add",
+      dependency.root,
+      "vendor/dependency",
+    ]);
+    const opening = captureInventory(fixture.root);
+    const lease = startLoop(fixture.root, "controller", "ship");
+    const current = captureInventory(fixture.root);
+    const plan = buildPreviewPlan(
+      opening,
+      current,
+      compareSnapshots(opening, current),
+      "Ship the reviewed dependency pin"
+    );
+    recordShipmentScope(fixture.root, lease.runId, "controller", plan);
+    git(fixture.root, ["commit", "-am", "Add dependency pin"]);
+    const targetRevision = git(fixture.root, ["rev-parse", "main"]);
+    const outcome = shipmentOutcome(fixture.root, lease, plan, targetRevision);
+    expect(
+      outcome.units
+        .flatMap((unit) => unit.finalPaths)
+        .find((item) => item.path === "vendor/dependency")?.entry
+    ).toContain(":commit:");
+    recordShipmentOutcome(fixture.root, lease.runId, "controller", outcome);
+    expect(endLoop(fixture.root, lease.runId, "controller").ok).toBe(true);
+  });
+
+  test("records a broken symlink by its opening link target", () => {
+    const fixture = repository();
+    symlinkSync("missing-guide", join(fixture.root, "guide-link"));
+    const opening = captureInventory(fixture.root);
+    const lease = startLoop(fixture.root, "controller", "ship");
+    const current = captureInventory(fixture.root);
+    const plan = buildPreviewPlan(
+      opening,
+      current,
+      compareSnapshots(opening, current),
+      "Ship the documentation link"
+    );
+    recordShipmentScope(fixture.root, lease.runId, "controller", plan);
+    const expectedObject = createHash("sha1")
+      .update("blob 13\0missing-guide")
+      .digest("hex");
+    const recordedLease = readLoopLease(fixture.root);
+    if (!recordedLease?.shipmentScope) {
+      throw new Error("Expected the recorded shipment scope.");
+    }
+    expect(
+      recordedLease.shipmentScope.openingChanges.find(
+        (change) => change.path === "guide-link"
+      )?.sourceEntry
+    ).toBe(`120000:blob:${expectedObject}`);
+  });
+
+  test("binds regular source identity through Git clean filters", () => {
+    const fixture = repository();
+    writeFixture(fixture.root, ".gitattributes", "*.txt text\n");
+    git(fixture.root, ["add", ".gitattributes"]);
+    git(fixture.root, ["commit", "-m", "Configure text normalization"]);
+    writeFixture(fixture.root, "value.txt", "first\r\nsecond\r\n");
+    const opening = captureInventory(fixture.root);
+    const lease = startLoop(fixture.root, "controller", "ship");
+    const current = captureInventory(fixture.root);
+    const plan = buildPreviewPlan(
+      opening,
+      current,
+      compareSnapshots(opening, current),
+      "Ship normalized text"
+    );
+    recordShipmentScope(fixture.root, lease.runId, "controller", plan);
+    git(fixture.root, ["add", "value.txt"]);
+    git(fixture.root, ["commit", "-m", "Add normalized text"]);
+    const targetRevision = git(fixture.root, ["rev-parse", "main"]);
+    const outcome = shipmentOutcome(fixture.root, lease, plan, targetRevision);
+    for (const unit of outcome.units) {
+      unit.disposition = "target-equivalent";
+    }
+    recordShipmentOutcome(fixture.root, lease.runId, "controller", outcome);
+    expect(endLoop(fixture.root, lease.runId, "controller").ok).toBe(true);
+  });
+
+  test("binds a leading-dash filename as source content, not a Git option", () => {
+    const fixture = repository();
+    writeFixture(fixture.root, "--value.txt", "literal filename\n");
+    const opening = captureInventory(fixture.root);
+    const lease = startLoop(fixture.root, "controller", "ship");
+    const current = captureInventory(fixture.root);
+    const plan = buildPreviewPlan(
+      opening,
+      current,
+      compareSnapshots(opening, current),
+      "Ship the literal leading-dash filename"
+    );
+    recordShipmentScope(fixture.root, lease.runId, "controller", plan);
+    git(fixture.root, ["add", "--", "--value.txt"]);
+    git(fixture.root, ["commit", "-m", "Add literal filename"]);
+    const targetRevision = git(fixture.root, ["rev-parse", "main"]);
+    const outcome = shipmentOutcome(fixture.root, lease, plan, targetRevision);
+    for (const unit of outcome.units) {
+      unit.disposition = "delivered";
+    }
+    recordShipmentOutcome(fixture.root, lease.runId, "controller", outcome);
+    expect(endLoop(fixture.root, lease.runId, "controller").ok).toBe(true);
   });
 
   test("keeps author-local commits concurrent while an integration mutation holds the lease lock", async () => {

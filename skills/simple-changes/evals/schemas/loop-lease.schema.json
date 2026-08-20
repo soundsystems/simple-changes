@@ -135,6 +135,67 @@
     "remoteBranchReconciliation": {
       "$ref": "remote-branch-reconciliation.schema.json"
     },
+    "shipmentScopeRequired": { "type": "boolean" },
+    "shipmentScopeHistory": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["planDigest", "recordedAt", "supersededAt"],
+        "properties": {
+          "planDigest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+          "recordedAt": { "type": "string", "format": "date-time" },
+          "supersededAt": { "type": "string", "format": "date-time" }
+        }
+      }
+    },
+    "shipmentScope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["openingChanges", "plan", "planDigest", "recordedAt"],
+      "properties": {
+        "openingChanges": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["originalPath", "path", "sourceEntry", "worktreePath"],
+            "properties": {
+              "originalPath": {
+                "anyOf": [
+                  { "type": "string", "minLength": 1 },
+                  { "type": "null" }
+                ]
+              },
+              "path": { "type": "string", "minLength": 1 },
+              "sourceEntry": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "pattern": "^\\d+:(blob|commit):[0-9a-f]+$"
+                  },
+                  { "type": "null" }
+                ]
+              },
+              "worktreePath": { "type": "string", "minLength": 1 }
+            }
+          }
+        },
+        "plan": { "$ref": "change-plan.schema.json" },
+        "planDigest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "recordedAt": { "type": "string", "format": "date-time" }
+      }
+    },
+    "shipmentOutcome": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["receipt", "receiptDigest", "recordedAt"],
+      "properties": {
+        "receipt": { "$ref": "shipment-outcome.schema.json" },
+        "receiptDigest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "recordedAt": { "type": "string", "format": "date-time" }
+      }
+    },
     "targetRef": { "type": "string", "minLength": 1 },
     "targetRevision": {
       "type": "string",

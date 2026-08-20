@@ -1,12 +1,14 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   closeSync,
   constants,
   existsSync,
   fstatSync,
+  lstatSync,
   mkdirSync,
   openSync,
   readFileSync,
+  readlinkSync,
   realpathSync,
   renameSync,
   rmSync,
@@ -19,9 +21,13 @@ import {
   deriveEmergencyShippingStatus,
 } from "./emergency-shipping.ts";
 import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
-import { sha256 } from "./hash.ts";
+import { sha256, sha256Json } from "./hash.ts";
 import { captureInventory } from "./inventory.ts";
-import { assertNoSymlinkAncestors } from "./path-safety.ts";
+import {
+  assertNoSymlinkAncestors,
+  assertSafeRelativePath,
+} from "./path-safety.ts";
+import { validatePlanConservation } from "./planner.ts";
 import {
   type CommandProcess,
   type CommandResult,
@@ -37,6 +43,7 @@ import {
 } from "./remote-branch-reconciliation.ts";
 import { validateSchema } from "./schema.ts";
 import type {
+  ChangePlan,
   EmergencyShippingLedgerEntry,
   LoopControllerLifecycle,
   LoopLease,
@@ -50,6 +57,7 @@ import type {
   RemoteBranchReconciliationReceipt,
   RepositoryInventory,
   RequestMode,
+  ShipmentOutcomeReceipt,
   WorktreeClaim,
   WorktreeCoordinationDocument,
   WorktreeInventory,
@@ -79,6 +87,7 @@ const DIGEST_PATTERN = /^[0-9a-f]{64}$/u;
 const PERMISSION_DENIED_CODES = new Set(["EACCES", "EPERM", "EROFS"]);
 const SCP_REMOTE_URL_PATTERN = /^[^@/\s]+@([^:/\s]+):(.+)$/u;
 const REMOTE_PROJECT_PATH_PATTERN = /^\/+|\.git\/?$/gu;
+const LS_TREE_ENTRY_PATTERN = /^(\d+)\s+(blob|commit)\s+([0-9a-f]+)\t/u;
 const LOOP_MODES = new Set<RequestMode>([
   "queue",
   "sweep",
@@ -1291,6 +1300,15 @@ const requireLease = (inventory: RepositoryInventory): LoopLease => {
   return withConcurrentAuthorAdmissions(lease, inventory);
 };
 
+const assertShipmentScopeRecorded = (lease: LoopLease): void => {
+  if (lease.shipmentScopeRequired && !lease.shipmentScope) {
+    throw new SimpleChangesError(
+      "Record the comprehensive shipment scope before changing shared integration or worktree state.",
+      EXIT_CODES.unsafe
+    );
+  }
+};
+
 const assertAgentMutationAllowed = (
   lease: LoopLease,
   inventory: RepositoryInventory,
@@ -1303,6 +1321,7 @@ const assertAgentMutationAllowed = (
       EXIT_CODES.unsafe
     );
   }
+  assertShipmentScopeRecorded(lease);
   const currentPath = inventory.repository.currentCheckout;
   const registered = lease.worktrees.find(
     (worktree) => worktree.path === currentPath
@@ -1509,12 +1528,696 @@ export const startLoop = (
         remoteBindings: inventory.repository.remoteBindings,
         runId: `run-${Date.now().toString(36)}-${randomUUID().slice(0, 8)}`,
         schemaVersion: 1,
+        shipmentScopeRequired:
+          mode === "ship" && inventory.localChanges.length > 0,
         targetRef: inventory.targetRef,
         targetRevision,
         updatedAt: now,
         worktrees,
       };
       return writeLease(lease);
+    }
+  );
+};
+
+export interface ShipmentScopeReceipt {
+  includedPaths: number;
+  planDigest: string;
+  preservedPaths: number;
+  recordedAt: string;
+  runId: string;
+  summary: string;
+}
+
+const shipmentScopeSummary = (
+  plan: ChangePlan,
+  inventory: RepositoryInventory
+): string => {
+  const includedPaths = plan.units.reduce(
+    (count, unit) => count + unit.paths.length,
+    0
+  );
+  const preservedPaths = plan.preserved.reduce(
+    (count, item) => count + item.paths.length,
+    0
+  );
+  const branchFor = (worktreePath: string): string => {
+    const worktree = inventory.worktrees.find(
+      (candidate) => candidate.path === worktreePath
+    );
+    return (
+      worktree?.branch ??
+      (worktree?.headSha
+        ? `detached@${worktree.headSha.slice(0, 8)}`
+        : "detached")
+    );
+  };
+  const lines = [
+    `Pre-ship scope: ${plan.units.length} work item(s), ${includedPaths} changed path(s).`,
+    "Included:",
+    ...plan.units.map(
+      (unit) =>
+        `- ${unit.title}: ${unit.outcome} Branch ${branchFor(unit.sourceWorktree)}; worktree ${unit.sourceWorktree}.`
+    ),
+  ];
+  if (plan.preserved.length > 0) {
+    lines.push(
+      "Preserved:",
+      ...plan.preserved.map(
+        (item) =>
+          `- ${item.reason} Branch ${branchFor(item.worktreePath)}; worktree ${item.worktreePath}.`
+      )
+    );
+  }
+  if (plan.exclusions.length > 0) {
+    lines.push(
+      "Excluded:",
+      ...plan.exclusions.map(
+        (item) =>
+          `- ${item.path}: ${item.reason}${item.worktreePath ? ` Worktree ${item.worktreePath}.` : ""}`
+      )
+    );
+  }
+  lines.push(
+    `${preservedPaths} path(s) preserved; ${plan.exclusions.length} path(s) explicitly excluded. No changed path is unaccounted for.`
+  );
+  return lines.join("\n");
+};
+
+const worktreeSourceEntry = (
+  worktreePath: string,
+  path: string
+): string | null => {
+  assertSafeRelativePath(worktreePath, path);
+  const absolutePath = resolve(worktreePath, path);
+  let stat: ReturnType<typeof lstatSync>;
+  try {
+    stat = lstatSync(absolutePath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return null;
+    }
+    throw error;
+  }
+  if (stat.isDirectory()) {
+    const revision = runGit(absolutePath, ["rev-parse", "HEAD"], true);
+    return revision.exitCode === 0
+      ? `160000:commit:${revision.stdout.trim()}`
+      : null;
+  }
+  let objectId: string;
+  if (stat.isSymbolicLink()) {
+    const target = readlinkSync(absolutePath, { encoding: "buffer" });
+    const objectFormat = runGit(worktreePath, [
+      "rev-parse",
+      "--show-object-format",
+    ]).stdout.trim();
+    objectId = createHash(objectFormat)
+      .update(`blob ${target.byteLength}\0`)
+      .update(target)
+      .digest("hex");
+  } else {
+    objectId = runGit(worktreePath, [
+      "hash-object",
+      `--path=${path}`,
+      "--",
+      path,
+    ]).stdout.trim();
+  }
+  const executable = stat.mode
+    .toString(8)
+    .slice(-3)
+    .split("")
+    .some((digit) => Number(digit) % 2 === 1);
+  let mode = "100644";
+  if (stat.isSymbolicLink()) {
+    mode = "120000";
+  } else if (executable) {
+    mode = "100755";
+  }
+  return `${mode}:blob:${objectId}`;
+};
+
+const assertShipmentScopeRecordable = (
+  lease: LoopLease,
+  plan: ChangePlan,
+  inventory: RepositoryInventory,
+  refresh: boolean
+): void => {
+  if (plan.mode !== "preview" || plan.mutationsAllowed) {
+    throw new SimpleChangesError(
+      "Shipment scope must come from a non-mutating Simple Changes preview plan.",
+      EXIT_CODES.validation
+    );
+  }
+  if (refresh && !lease.shipmentScope) {
+    throw new SimpleChangesError(
+      "Shipment scope refresh requires an existing recorded scope.",
+      EXIT_CODES.validation
+    );
+  }
+  if (!refresh && lease.shipmentScope) {
+    throw new SimpleChangesError(
+      "Shipment scope is already recorded. Use loop refresh-scope after review-driven source changes.",
+      EXIT_CODES.unsafe
+    );
+  }
+  if (refresh && lease.shipmentOutcome) {
+    throw new SimpleChangesError(
+      "Shipment scope cannot be refreshed after an outcome is recorded.",
+      EXIT_CODES.unsafe
+    );
+  }
+  const inventoryMatches =
+    plan.repositoryRoot === inventory.repository.root &&
+    plan.baselineDigest === inventory.baselineDigest;
+  const openingMatches =
+    refresh || inventory.baselineDigest === lease.baselineDigest;
+  if (!(inventoryMatches && openingMatches)) {
+    throw new SimpleChangesError(
+      refresh
+        ? "Refreshed shipment scope must match the exact current repository inventory."
+        : "Shipment scope must match the exact unchanged opening repository inventory. Re-run preview before mutation.",
+      EXIT_CODES.unsafe
+    );
+  }
+  if (plan.questions.length > 0) {
+    throw new SimpleChangesError(
+      "Resolve every shipment-scope question before guarded mutation.",
+      EXIT_CODES.unsafe
+    );
+  }
+  validatePlanConservation(plan, inventory);
+  const existingScope = lease.shipmentScope;
+  if (refresh && existingScope) {
+    const scoped = new Set(
+      existingScope.openingChanges.map(
+        (change) => `${change.worktreePath}\0${change.path}`
+      )
+    );
+    const added = inventory.localChanges.find((change) => {
+      if (scoped.has(`${change.worktreePath}\0${change.path}`)) {
+        return false;
+      }
+      const entry = worktreeSourceEntry(change.worktreePath, change.path);
+      return !existingScope.openingChanges.some(
+        (scopedChange) =>
+          scopedChange.path === change.path &&
+          worktreeSourceEntry(scopedChange.worktreePath, scopedChange.path) ===
+            entry
+      );
+    });
+    if (added) {
+      throw new SimpleChangesError(
+        `Shipment scope refresh cannot add a new path: ${added.path}. Start a new shipment run for expanded scope.`,
+        EXIT_CODES.unsafe
+      );
+    }
+  }
+};
+
+export const recordShipmentScope = (
+  repositoryPath: string,
+  runIdInput: string,
+  agentIdInput: string,
+  planInput: unknown,
+  refresh = false
+): ShipmentScopeReceipt => {
+  const runId = requiredRunId(runIdInput);
+  const agentId = requiredText(agentIdInput, "agent ID");
+  const plan = validateSchema<ChangePlan>("change-plan", planInput);
+  const opening = captureInventory(repositoryPath);
+  return withStateLock(
+    opening.repository.commonGitDirectory,
+    "record shipment scope",
+    () => {
+      const inventory = captureInventory(repositoryPath);
+      const lease = requireLease(inventory);
+      assertControllerActive(lease);
+      if (lease.runId !== runId || lease.ownerAgentId !== agentId) {
+        throw new SimpleChangesError(
+          `Only ${lease.ownerAgentId} may record shipment scope for ${lease.runId}.`,
+          EXIT_CODES.unsafe
+        );
+      }
+      assertShipmentScopeRecordable(lease, plan, inventory, refresh);
+      const recordedAt = new Date().toISOString();
+      const priorScope = lease.shipmentScope;
+      const activePlan =
+        refresh && priorScope
+          ? {
+              ...priorScope.plan,
+              baselineDigest: plan.baselineDigest,
+              generatedAt: plan.generatedAt,
+            }
+          : plan;
+      const openingChanges =
+        refresh && priorScope
+          ? priorScope.openingChanges.map(
+              ({ originalPath, path, worktreePath }) => ({
+                originalPath,
+                path,
+                sourceEntry: worktreeSourceEntry(worktreePath, path),
+                worktreePath,
+              })
+            )
+          : inventory.localChanges.map(
+              ({ originalPath, path, worktreePath }) => ({
+                originalPath,
+                path,
+                sourceEntry: worktreeSourceEntry(worktreePath, path),
+                worktreePath,
+              })
+            );
+      const planDigest = refresh
+        ? sha256Json({ openingChanges, plan: activePlan })
+        : sha256Json(activePlan);
+      const shipmentScopeHistory = lease.shipmentScope
+        ? [
+            ...(lease.shipmentScopeHistory ?? []),
+            {
+              planDigest: lease.shipmentScope.planDigest,
+              recordedAt: lease.shipmentScope.recordedAt,
+              supersededAt: recordedAt,
+            },
+          ]
+        : lease.shipmentScopeHistory;
+      writeLease({
+        ...lease,
+        ...(shipmentScopeHistory ? { shipmentScopeHistory } : {}),
+        shipmentScope: {
+          openingChanges,
+          plan: activePlan,
+          planDigest,
+          recordedAt,
+        },
+        updatedAt: recordedAt,
+      });
+      const includedPaths = activePlan.units.reduce(
+        (count, unit) => count + unit.paths.length,
+        0
+      );
+      const preservedPaths = activePlan.preserved.reduce(
+        (count, item) => count + item.paths.length,
+        0
+      );
+      return {
+        includedPaths,
+        planDigest,
+        preservedPaths,
+        recordedAt,
+        runId,
+        summary: shipmentScopeSummary(activePlan, inventory),
+      };
+    }
+  );
+};
+
+export interface ShipmentOutcomeRecord {
+  receiptDigest: string;
+  recordedAt: string;
+  summary: string;
+}
+
+const targetDiffPaths = (
+  repositoryPath: string,
+  openingRevision: string,
+  finalRevision: string
+): string[] =>
+  runGit(repositoryPath, [
+    "diff",
+    "--no-renames",
+    "--name-only",
+    "-z",
+    openingRevision,
+    finalRevision,
+    "--",
+  ])
+    .stdout.split("\0")
+    .filter(Boolean)
+    .sort((left, right) => left.localeCompare(right));
+
+const targetRenameOriginals = (
+  repositoryPath: string,
+  openingRevision: string,
+  finalRevision: string
+): Map<string, string> => {
+  const fields = runGit(repositoryPath, [
+    "diff",
+    "--name-status",
+    "-z",
+    "-M",
+    openingRevision,
+    finalRevision,
+    "--",
+  ]).stdout.split("\0");
+  const originals = new Map<string, string>();
+  for (let index = 0; index < fields.length; ) {
+    const status = fields[index] ?? "";
+    index += 1;
+    if (!status) {
+      continue;
+    }
+    const firstPath = fields[index] ?? "";
+    index += 1;
+    if (status.startsWith("R") || status.startsWith("C")) {
+      const destinationPath = fields[index] ?? "";
+      index += 1;
+      if (firstPath && destinationPath) {
+        originals.set(destinationPath, firstPath);
+      }
+    }
+  }
+  return originals;
+};
+
+const assertShipmentOutcomeEntry = (
+  lease: LoopLease,
+  receipt: ShipmentOutcomeReceipt,
+  path: string,
+  entry: string | null,
+  label: string
+): void => {
+  assertSafeRelativePath(lease.primaryCheckout, path);
+  if (
+    targetTreeEntry(lease.primaryCheckout, receipt.targetRevision, path) !==
+    entry
+  ) {
+    throw new SimpleChangesError(
+      `${label} does not match final target: ${path}`,
+      EXIT_CODES.validation
+    );
+  }
+};
+
+type OutcomeUnit = ShipmentOutcomeReceipt["units"][number];
+type PlannedUnit = ChangePlan["units"][number];
+type OpeningShipmentChange = NonNullable<
+  LoopLease["shipmentScope"]
+>["openingChanges"][number];
+
+const validateOutcomeUnitFinalPaths = (
+  lease: LoopLease,
+  receipt: ShipmentOutcomeReceipt,
+  unit: OutcomeUnit,
+  expected: PlannedUnit
+): Set<string> => {
+  const names = unit.finalPaths.map((item) => item.path);
+  if (new Set(names).size !== names.length) {
+    throw new SimpleChangesError(
+      `Shipment outcome unit ${unit.unitId} repeats a final path.`,
+      EXIT_CODES.validation
+    );
+  }
+  const missing = expected.paths.filter((path) => !names.includes(path));
+  const unexpected = names.filter((path) => !expected.paths.includes(path));
+  if (missing.length > 0 || unexpected.length > 0) {
+    const detail =
+      missing.length > 0
+        ? `omits scoped path ${missing[0]}`
+        : `includes unscoped final path ${unexpected[0]}`;
+    throw new SimpleChangesError(
+      `Shipment outcome unit ${unit.unitId} ${detail}.`,
+      EXIT_CODES.validation
+    );
+  }
+  for (const item of unit.finalPaths) {
+    assertShipmentOutcomeEntry(
+      lease,
+      receipt,
+      item.path,
+      item.entry,
+      "Shipment outcome entry"
+    );
+  }
+  return new Set(names);
+};
+
+const validateOutcomeUnitOriginalPaths = (
+  lease: LoopLease,
+  receipt: ShipmentOutcomeReceipt,
+  unit: OutcomeUnit,
+  expected: PlannedUnit,
+  targetDeltaPaths: Set<string>,
+  renameOriginals: Map<string, string>
+): Set<string> => {
+  const names = unit.originalPaths.map((item) => item.path);
+  const allowed = new Set(
+    expected.paths
+      .map((path) => renameOriginals.get(path))
+      .filter((path): path is string => Boolean(path))
+  );
+  if (new Set(names).size !== names.length) {
+    throw new SimpleChangesError(
+      `Shipment outcome unit ${unit.unitId} repeats an original path.`,
+      EXIT_CODES.validation
+    );
+  }
+  const missing = [...allowed].filter(
+    (path) => targetDeltaPaths.has(path) && !names.includes(path)
+  );
+  if (missing.length > 0) {
+    throw new SimpleChangesError(
+      `Shipment outcome unit ${unit.unitId} omits rename original path ${missing[0]}.`,
+      EXIT_CODES.validation
+    );
+  }
+  for (const item of unit.originalPaths) {
+    if (!(allowed.has(item.path) && targetDeltaPaths.has(item.path))) {
+      throw new SimpleChangesError(
+        `Shipment outcome unit ${unit.unitId} includes an unrelated original path ${item.path}.`,
+        EXIT_CODES.validation
+      );
+    }
+    assertShipmentOutcomeEntry(
+      lease,
+      receipt,
+      item.path,
+      item.entry,
+      "Shipment rename original entry"
+    );
+  }
+  return new Set(names);
+};
+
+const assertDirectOutcomeMatchesSource = (
+  unit: OutcomeUnit,
+  expected: PlannedUnit,
+  openingChanges: OpeningShipmentChange[]
+): void => {
+  for (const item of unit.finalPaths) {
+    const sources = openingChanges.filter(
+      (change) =>
+        change.worktreePath === expected.sourceWorktree &&
+        change.path === item.path
+    );
+    if (sources.length !== 1 || sources[0]?.sourceEntry !== item.entry) {
+      throw new SimpleChangesError(
+        `Shipment outcome unit ${unit.unitId} does not match its exact opening source result for ${item.path}.`,
+        EXIT_CODES.validation
+      );
+    }
+  }
+};
+
+const validateShipmentOutcomeUnits = (
+  lease: LoopLease,
+  receipt: ShipmentOutcomeReceipt,
+  targetDeltaPaths: Set<string>,
+  renameOriginals: Map<string, string>
+): { accountedPaths: Set<string>; scopedPaths: Set<string> } => {
+  const scope = lease.shipmentScope;
+  if (!scope) {
+    throw new SimpleChangesError(
+      "Record shipment scope before reconciling its exact outcome.",
+      EXIT_CODES.unsafe
+    );
+  }
+  const expectedUnits = new Map(
+    scope.plan.units.map((unit) => [unit.id, unit])
+  );
+  const seenUnits = new Set<string>();
+  const accountedPaths = new Set<string>();
+  for (const unit of receipt.units) {
+    const expected = expectedUnits.get(unit.unitId);
+    if (!expected || seenUnits.has(unit.unitId)) {
+      throw new SimpleChangesError(
+        `Shipment outcome has an unknown or duplicate unit: ${unit.unitId}`,
+        EXIT_CODES.validation
+      );
+    }
+    seenUnits.add(unit.unitId);
+    requiredText(unit.summary, `summary for ${unit.unitId}`);
+    for (const item of unit.evidence) {
+      requiredText(item, `evidence for ${unit.unitId}`);
+    }
+    for (const path of validateOutcomeUnitFinalPaths(
+      lease,
+      receipt,
+      unit,
+      expected
+    )) {
+      accountedPaths.add(path);
+    }
+    const originalPaths = validateOutcomeUnitOriginalPaths(
+      lease,
+      receipt,
+      unit,
+      expected,
+      targetDeltaPaths,
+      renameOriginals
+    );
+    for (const path of originalPaths) {
+      accountedPaths.add(path);
+    }
+    assertDirectOutcomeMatchesSource(unit, expected, scope.openingChanges);
+  }
+  const missing = [...expectedUnits.keys()].filter(
+    (unitId) => !seenUnits.has(unitId)
+  );
+  if (missing.length > 0) {
+    throw new SimpleChangesError(
+      `Shipment outcome omits scoped units: ${missing.join(", ")}`,
+      EXIT_CODES.validation
+    );
+  }
+  return {
+    accountedPaths,
+    scopedPaths: new Set(scope.plan.units.flatMap((unit) => unit.paths)),
+  };
+};
+
+const validateAdditionalShipmentPaths = (
+  lease: LoopLease,
+  receipt: ShipmentOutcomeReceipt,
+  accountedPaths: Set<string>,
+  scopedPaths: Set<string>,
+  targetDeltaPaths: Set<string>
+): void => {
+  for (const item of receipt.additionalPaths) {
+    requiredText(item.reason, `reason for ${item.path}`);
+    if (scopedPaths.has(item.path)) {
+      throw new SimpleChangesError(
+        `Scoped path must be reconciled through its unit, not additionalPaths: ${item.path}`,
+        EXIT_CODES.validation
+      );
+    }
+    if (accountedPaths.has(item.path)) {
+      throw new SimpleChangesError(
+        `Additional shipment path is already accounted for: ${item.path}`,
+        EXIT_CODES.validation
+      );
+    }
+    if (!targetDeltaPaths.has(item.path)) {
+      throw new SimpleChangesError(
+        `Additional shipment path is not part of the final target delta: ${item.path}`,
+        EXIT_CODES.validation
+      );
+    }
+    assertShipmentOutcomeEntry(
+      lease,
+      receipt,
+      item.path,
+      item.entry,
+      "Additional shipment path entry"
+    );
+    accountedPaths.add(item.path);
+  }
+};
+
+const assertCompleteTargetDelta = (
+  lease: LoopLease,
+  receipt: ShipmentOutcomeReceipt,
+  accountedPaths: Set<string>
+): void => {
+  const missing = targetDiffPaths(
+    lease.primaryCheckout,
+    lease.targetRevision,
+    receipt.targetRevision
+  ).filter((path) => !accountedPaths.has(path));
+  if (missing.length > 0) {
+    throw new SimpleChangesError(
+      `Shipment outcome omits final target delta paths: ${missing.join(", ")}`,
+      EXIT_CODES.validation
+    );
+  }
+};
+
+export const recordShipmentOutcome = (
+  repositoryPath: string,
+  runIdInput: string,
+  agentIdInput: string,
+  receiptInput: unknown
+): ShipmentOutcomeRecord => {
+  const runId = requiredRunId(runIdInput);
+  const agentId = requiredText(agentIdInput, "agent ID");
+  const receipt = validateSchema<ShipmentOutcomeReceipt>(
+    "shipment-outcome",
+    receiptInput
+  );
+  const opening = captureInventory(repositoryPath);
+  return withStateLock(
+    opening.repository.commonGitDirectory,
+    "record shipment outcome",
+    () => {
+      const inventory = captureInventory(repositoryPath);
+      const lease = requireLease(inventory);
+      assertControllerActive(lease);
+      if (
+        lease.runId !== runId ||
+        receipt.runId !== runId ||
+        lease.ownerAgentId !== agentId
+      ) {
+        throw new SimpleChangesError(
+          `Only ${lease.ownerAgentId} may reconcile the exact outcome for ${lease.runId}.`,
+          EXIT_CODES.unsafe
+        );
+      }
+      const finalTargetRevision = currentTargetRevision(lease);
+      if (receipt.targetRevision !== finalTargetRevision) {
+        throw new SimpleChangesError(
+          `Shipment outcome must bind current target ${finalTargetRevision}.`,
+          EXIT_CODES.unsafe
+        );
+      }
+      const targetDeltaPaths = new Set(
+        targetDiffPaths(
+          lease.primaryCheckout,
+          lease.targetRevision,
+          receipt.targetRevision
+        )
+      );
+      const renameOriginals = targetRenameOriginals(
+        lease.primaryCheckout,
+        lease.targetRevision,
+        receipt.targetRevision
+      );
+      const { accountedPaths, scopedPaths } = validateShipmentOutcomeUnits(
+        lease,
+        receipt,
+        targetDeltaPaths,
+        renameOriginals
+      );
+      validateAdditionalShipmentPaths(
+        lease,
+        receipt,
+        accountedPaths,
+        scopedPaths,
+        targetDeltaPaths
+      );
+      assertCompleteTargetDelta(lease, receipt, accountedPaths);
+      const recordedAt = new Date().toISOString();
+      const receiptDigest = sha256Json(receipt);
+      writeLease({
+        ...lease,
+        shipmentOutcome: { receipt, receiptDigest, recordedAt },
+        updatedAt: recordedAt,
+      });
+      return {
+        receiptDigest,
+        recordedAt,
+        summary: `Reviewed shipment outcome: ${receipt.units.length} scoped work item(s) and ${receipt.additionalPaths.length} additional final-target path(s) accounted at ${receipt.targetRevision}.`,
+      };
     }
   );
 };
@@ -1905,6 +2608,48 @@ export const executeLoopMutation = async (
       EXIT_CODES.usage
     );
   }
+  const executable = basename(command);
+  if (executable === "git" || executable === "git.exe") {
+    let commandIndex = 0;
+    while (commandIndex < args.length) {
+      const argument = args[commandIndex];
+      if (
+        argument === "-C" ||
+        argument === "-c" ||
+        argument === "--git-dir" ||
+        argument === "--work-tree"
+      ) {
+        commandIndex += 2;
+        continue;
+      }
+      if (
+        argument?.startsWith("--git-dir=") ||
+        argument?.startsWith("--work-tree=") ||
+        argument === "--no-pager"
+      ) {
+        commandIndex += 1;
+        continue;
+      }
+      if (argument?.startsWith("-")) {
+        throw new SimpleChangesError(
+          `loop exec cannot safely classify Git global option ${argument}. Run the intended Git subcommand without unrecognized global options.`,
+          EXIT_CODES.unsafe
+        );
+      }
+      break;
+    }
+    const gitCommand = args[commandIndex];
+    const checkoutArguments = args.slice(commandIndex + 1);
+    const changesRegisteredBranch =
+      gitCommand === "switch" ||
+      (gitCommand === "checkout" && !checkoutArguments.includes("--"));
+    if (changesRegisteredBranch) {
+      throw new SimpleChangesError(
+        "Do not switch the registered controller or author worktree to another branch during loop exec. Prepare the intended branch/worktree first, then start or resume its controller. Path-only git checkout with an explicit -- separator remains available.",
+        EXIT_CODES.unsafe
+      );
+    }
+  }
   const guarded = await withLoopMutationLease(
     repositoryPath,
     runId,
@@ -1953,6 +2698,7 @@ export const prepareAgentWorktree = (
       const lease = requireLease(inventory);
       assertMatchingRun(lease, runId);
       assertControllerActive(lease);
+      assertShipmentScopeRecorded(lease);
       assertLegacyRunAllowsMutation(
         lease,
         inventory,
@@ -3595,6 +4341,68 @@ const automaticFinalizationCleanup = (
   return { cleanup, lease };
 };
 
+const targetTreeEntry = (
+  repositoryPath: string,
+  targetRevision: string,
+  path: string
+): string | null => {
+  try {
+    const output = runGit(repositoryPath, [
+      "ls-tree",
+      targetRevision,
+      "--",
+      path,
+    ]).stdout.trim();
+    const match = LS_TREE_ENTRY_PATTERN.exec(output);
+    return match ? `${match[1]}:${match[2]}:${match[3]}` : null;
+  } catch {
+    return null;
+  }
+};
+
+const missingShipmentScopeBlockers = (lease: LoopLease): string[] =>
+  lease.shipmentScopeRequired && !lease.shipmentScope
+    ? [
+        "Record the comprehensive shipment scope and pre-ship brief before ending this Ship run.",
+      ]
+    : [];
+
+const shipmentOutcomeCompletionBlockers = (
+  lease: LoopLease,
+  targetRevision: string | null
+): string[] => {
+  if (!lease.shipmentScope) {
+    return [];
+  }
+  if (!lease.shipmentOutcome) {
+    return [
+      "Record the exact reviewed shipment outcome before completion; every scoped unit and final target delta must be accounted for.",
+    ];
+  }
+  const { receipt } = lease.shipmentOutcome;
+  if (receipt.targetRevision !== targetRevision) {
+    return [
+      `Shipment outcome targets ${receipt.targetRevision}, but the current target is ${targetRevision ?? "unresolved"}. Reconcile the exact final target again.`,
+    ];
+  }
+  const paths = [
+    ...receipt.units.flatMap((unit) => [
+      ...unit.finalPaths,
+      ...unit.originalPaths,
+    ]),
+    ...receipt.additionalPaths,
+  ];
+  return paths.flatMap((item) =>
+    targetTreeEntry(
+      lease.primaryCheckout,
+      receipt.targetRevision,
+      item.path
+    ) === item.entry
+      ? []
+      : [`Shipment outcome entry changed after review: ${item.path}`]
+  );
+};
+
 const loopCompletionBlockers = (
   lease: LoopLease,
   inventory: RepositoryInventory,
@@ -3602,6 +4410,7 @@ const loopCompletionBlockers = (
   cleanupErrors: string[] = []
 ): string[] => {
   const blockers: string[] = [...cleanupErrors];
+  blockers.push(...missingShipmentScopeBlockers(lease));
   if (!verification.ok) {
     blockers.push(
       `manifest violations: ${verification.violations
@@ -3634,6 +4443,7 @@ const loopCompletionBlockers = (
       `Refresh unresolved target ref ${lease.targetRef} before ending the loop.`
     );
   }
+  blockers.push(...shipmentOutcomeCompletionBlockers(lease, targetRevision));
   const localTarget = targetBranch
     ? inventory.branches.find((branch) => branch.name === targetBranch)
     : undefined;
@@ -4073,11 +4883,14 @@ export const finalizeLoop = (
           }
           assertControllerActive(lease);
           const openingVerification = verificationAgainst(lease, inventory);
-          const automaticCleanup = automaticFinalizationCleanup(
-            lease,
-            inventory,
-            openingVerification
-          );
+          const automaticCleanup =
+            lease.shipmentScopeRequired && !lease.shipmentScope
+              ? { cleanup: emptyFinalizationCleanup(), lease }
+              : automaticFinalizationCleanup(
+                  lease,
+                  inventory,
+                  openingVerification
+                );
           ({ lease } = automaticCleanup);
           const finalInventory = captureInventory(repositoryPath);
           const verification = verificationAgainst(lease, finalInventory);

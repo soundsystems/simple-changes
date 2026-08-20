@@ -1,0 +1,99 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://simple-changes.dev/schemas/shipment-outcome.schema.json",
+  "title": "Simple Changes reviewed shipment outcome",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "runId",
+    "targetRevision",
+    "units",
+    "additionalPaths"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "runId": { "type": "string", "pattern": "^run-[a-z0-9-]+$" },
+    "targetRevision": { "type": "string", "pattern": "^[0-9a-f]{40,64}$" },
+    "units": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "unitId",
+          "disposition",
+          "summary",
+          "evidence",
+          "finalPaths",
+          "originalPaths"
+        ],
+        "properties": {
+          "unitId": { "type": "string", "minLength": 1 },
+          "disposition": {
+            "enum": ["delivered", "target-equivalent"]
+          },
+          "summary": { "type": "string", "minLength": 1, "maxLength": 500 },
+          "evidence": {
+            "type": "array",
+            "minItems": 1,
+            "items": { "type": "string", "minLength": 1, "maxLength": 500 }
+          },
+          "finalPaths": {
+            "type": "array",
+            "minItems": 1,
+            "items": { "$ref": "#/$defs/path" }
+          },
+          "originalPaths": {
+            "type": "array",
+            "items": { "$ref": "#/$defs/path" }
+          }
+        }
+      }
+    },
+    "additionalPaths": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/additionalPath" }
+    }
+  },
+  "$defs": {
+    "additionalPath": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "entry", "classification", "reason"],
+      "properties": {
+        "path": { "type": "string", "minLength": 1 },
+        "entry": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^\\d+:(blob|commit):[0-9a-f]+$"
+            },
+            { "type": "null" }
+          ]
+        },
+        "classification": {
+          "enum": ["release-generated", "external-target-change"]
+        },
+        "reason": { "type": "string", "minLength": 1, "maxLength": 500 }
+      }
+    },
+    "path": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "entry"],
+      "properties": {
+        "path": { "type": "string", "minLength": 1 },
+        "entry": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^\\d+:(blob|commit):[0-9a-f]+$"
+            },
+            { "type": "null" }
+          ]
+        }
+      }
+    }
+  }
+}

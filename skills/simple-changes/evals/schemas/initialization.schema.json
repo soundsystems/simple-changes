@@ -4,6 +4,34 @@
   "title": "Simple Changes initialization status",
   "type": "object",
   "additionalProperties": false,
+  "$defs": {
+    "guidanceQuestion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["choices", "id", "question", "reason", "setting"],
+      "properties": {
+        "choices": {
+          "type": "array",
+          "minItems": 2,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["description", "label", "recommended", "value"],
+            "properties": {
+              "description": { "type": "string", "minLength": 1 },
+              "label": { "type": "string", "minLength": 1 },
+              "recommended": { "type": "boolean" },
+              "value": { "type": "string", "minLength": 1 }
+            }
+          }
+        },
+        "id": { "type": "string", "minLength": 1 },
+        "question": { "type": "string", "minLength": 1 },
+        "reason": { "type": "string", "minLength": 1 },
+        "setting": { "type": "string", "minLength": 1 }
+      }
+    }
+  },
   "required": [
     "mode",
     "changelogRequired",
@@ -41,8 +69,11 @@
         "changes",
         "currentVersion",
         "headline",
+        "presentationOrder",
+        "recommendedChanges",
         "releaseNotes",
         "recommendedAction",
+        "requiredAnswers",
         "status",
         "storedDisposition",
         "storedVersion",
@@ -55,6 +86,7 @@
           "additionalProperties": false,
           "required": [
             "review-settings",
+            "expanded-walkthrough",
             "keep-current-settings",
             "defer",
             "view-release-notes",
@@ -62,6 +94,7 @@
           ],
           "properties": {
             "review-settings": { "type": "string", "minLength": 1 },
+            "expanded-walkthrough": { "type": "string", "minLength": 1 },
             "keep-current-settings": { "type": "string", "minLength": 1 },
             "defer": { "type": "string", "minLength": 1 },
             "view-release-notes": { "type": "string", "minLength": 1 },
@@ -77,6 +110,7 @@
           "items": {
             "enum": [
               "review-settings",
+              "expanded-walkthrough",
               "keep-current-settings",
               "defer",
               "view-release-notes",
@@ -113,6 +147,22 @@
         "headline": {
           "const": "**Simple Changes has recently been updated.**"
         },
+        "presentationOrder": {
+          "prefixItems": [
+            { "const": "required-answers" },
+            { "const": "recommended-changes" },
+            { "const": "summary" },
+            { "const": "actions" }
+          ],
+          "items": false,
+          "minItems": 4,
+          "maxItems": 4,
+          "type": "array"
+        },
+        "recommendedChanges": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/guidanceQuestion" }
+        },
         "releaseNotes": {
           "type": "object",
           "additionalProperties": false,
@@ -125,7 +175,25 @@
             }
           }
         },
-        "recommendedAction": { "const": "review-settings" },
+        "recommendedAction": {
+          "anyOf": [
+            {
+              "enum": [
+                "review-settings",
+                "expanded-walkthrough",
+                "keep-current-settings",
+                "defer",
+                "view-release-notes",
+                "review-with-simple-changelogs"
+              ]
+            },
+            { "type": "null" }
+          ]
+        },
+        "requiredAnswers": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/guidanceQuestion" }
+        },
         "status": { "enum": ["current", "update-available"] },
         "storedDisposition": {
           "anyOf": [
@@ -142,7 +210,7 @@
           "items": { "type": "string", "minLength": 1 }
         },
         "walkthroughQuestion": {
-          "const": "Would you like me to walk you through all recent updates to the skill?"
+          "const": "How would you like to continue?"
         }
       }
     },

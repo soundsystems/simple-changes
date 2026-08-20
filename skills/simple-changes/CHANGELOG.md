@@ -1,5 +1,59 @@
 # Changelog
 
+## 0.12.6 - 2026-08-20
+
+- Installed-update prompts now put any required multiple-choice answers first,
+  before offering a walkthrough. The recommended answer and its practical
+  consequence appear first, and optional recommended setting changes are shown
+  near the top instead of being buried in a feature tour.
+- When nothing needs a decision, Simple Changes says plainly that no new
+  settings answers are required and recommends continuing with the current
+  settings. The default walkthrough highlights at most three practical points;
+  an expanded walkthrough and the full release notes remain available on
+  request.
+- Update notices now explicitly preserve existing settings, repository files,
+  and current work. Reviewing or acknowledging an update does not broaden push,
+  merge, release, deployment, migration, data, or other authority.
+- Ship runs that open with local changes now record one complete, non-mutating
+  shipment scope before guarded work or completion. It accounts for every
+  changed path across every worktree; a preserved worktree is protected from
+  deletion, but its finished work is not silently excluded from shipment.
+  `record-scope` preserves the immutable opening source-tree identity for each
+  worktree and path using Git path-aware clean/text-filter hashing with a `--`
+  delimiter for regular files and raw literal target bytes for symlinks,
+  avoiding false outcome rejection with `.gitattributes`, LFS-style filters,
+  broken links, or leading-dash filenames. Agent preparation is blocked until
+  the required scope exists, and exclusions can identify the worktree and path
+  together when several worktrees contain the same filename.
+- The generated pre-ship brief names every included work item, its outcome,
+  branch or detached revision, and source worktree, with preserved and excluded
+  work listed separately. User-facing review communication now lists every
+  finding as its own bullet instead of replacing the findings with a count and,
+  when applicable, deep-links each finding's primary local file and line.
+- After review and integration, `loop record-outcome` binds every scoped unit to
+  the exact final revision and accepts only its exact opening source result or a
+  target-equivalent result. Review-driven source changes require a fresh scope;
+  they are re-previewed to refresh their exact source identities within the
+  original shipment path scope before further mutation, while the superseded
+  scope receipt remains in lease history. Controller-authored receipt data cannot
+  impersonate independent review.
+- Each unit's final paths must exactly equal its scoped paths. Rename originals
+  are mandatory, owned by their scoped unit, and can never be classified
+  through `additionalPaths`. Only release-generated or external-target-change
+  paths can be added, and each must be a real remaining opening-to-final target
+  delta with its classification and reason; unchanged or non-delta extras are
+  rejected. Completion rechecks the receipt and any moved target without
+  another user approval step, while existing lease and disposition safety still
+  governs cleanup.
+- Guarded execution now rejects branch-changing `git switch` and `git checkout`
+  for registered controller and author checkouts. Known global options such as
+  `-C`, `-c`, `--git-dir`, `--work-tree`, and `--no-pager` remain parsed, while
+  unrecognized global options fail closed so flags such as
+  `--literal-pathspecs` cannot hide a branch switch. Path-only checkout
+  restoration remains allowed. Plans that change a package manifest or
+  lockfile—including nested monorepo manifests and locks—also require a frozen
+  install and production build in an isolated clean checkout.
+
 ## 0.12.5 - 2026-08-15
 
 - Every GitLab Queue, Sweep, Integrate, Ship, Reconcile, and Resume run now

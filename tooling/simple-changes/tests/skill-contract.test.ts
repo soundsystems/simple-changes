@@ -128,14 +128,12 @@ describe("Simple Changes skill contract", () => {
       "**Simple Changes has recently been updated.**"
     );
     expect(normalizedGuidance).toContain(
-      "Would you like me to walk you through all recent updates to the skill?"
+      "ask those questions immediately, one at a time, before asking whether the user wants any walkthrough"
     );
     expect(normalizedGuidance).toContain(
       "**Simple Changelogs has recently been updated.**"
     );
-    expect(normalizedGuidance).toContain(
-      "Would you like me to walk you through all recent updates to both skills?"
-    );
+    expect(normalizedGuidance).toContain("Continue with current settings");
     expect(normalizedSkill).toContain(
       "resolve the Simple Changelogs notice and the user's owner-controlled walkthrough, continue, defer, or release-notes choice before `loop start`"
     );
@@ -146,7 +144,10 @@ describe("Simple Changes skill contract", () => {
       "Start the loop only after initialization returns `preLoopActionRequired: false`"
     );
     expect(normalizedGuidance).toContain(
-      "Recommend reviewing the new abilities; never mark keeping settings, skipping, continuing, or deferring as Recommended"
+      "do not recommend the expanded walkthrough by default"
+    );
+    expect(normalizedSkill).toContain(
+      "When no answer is required, say so plainly and recommend continuing with current settings"
     );
     expect(normalizedGuidance).toContain(
       "It does not grant credentials, > network access, force-push, branch-protection bypass"
@@ -453,6 +454,18 @@ describe("Simple Changes skill contract", () => {
     expect(normalizedSkill).toContain(
       "this is an interruption window rather than a permission gate"
     );
+    expect(normalizedSkill).toContain(
+      "record it with `loop record-scope --receipt <change-plan.json>`"
+    );
+    expect(normalizedSkill).toContain(
+      "`loop record-outcome --receipt <shipment-outcome.json>`"
+    );
+    expect(normalizedCommunication).toContain(
+      "Do not push an early subset and audit the other worktrees afterward"
+    );
+    expect(normalizedCommunication).toContain(
+      "show a short feature/outcome description, its branch or detached revision, and its source worktree"
+    );
     expect(normalizedCommunication).toContain(
       "state that the run is proceeding and continue in the same assistant turn"
     );
@@ -493,6 +506,15 @@ describe("Simple Changes skill contract", () => {
     expect(normalizedCommunication).toContain("there—nothing will be shipped");
     expect(normalizedCommunication).toContain(
       "Put dense audit details last, under a clearly optional technical section"
+    );
+    expect(normalizedCommunication).toContain(
+      "list every finding as its own concise bullet"
+    );
+    expect(normalizedCommunication).toContain(
+      "Do not replace the list with an abstract count"
+    );
+    expect(normalizedCommunication).toContain(
+      "make its primary file and line a clickable Markdown link"
     );
   });
 
@@ -584,6 +606,9 @@ describe("Simple Changes skill contract", () => {
     );
     expect(normalizedConcurrency).toContain(
       "It rejects any new unclaimed worktree, branch switch, incomplete preparation"
+    );
+    expect(normalizedConcurrency).toContain(
+      "Until then, `loop guard`, `loop exec`, and completion fail closed"
     );
     expect(normalizedConcurrency).toContain(
       "The author may keep editing and committing without a pause receipt"

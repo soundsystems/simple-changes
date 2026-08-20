@@ -9,32 +9,55 @@ behavior, onboarding, settings, or integrations remain silent.
 
 When `initialize` reports `guidanceUpdate.status: "update-available"`, pause the
 write-capable run before mutation or loop creation. Do not expose internal
-phrases such as “guidance update requires review.” Use this structure:
+phrases such as “guidance update requires review.”
+
+First inspect `requiredAnswers` and `recommendedChanges`. If
+`requiredAnswers` is nonempty, ask those questions immediately, one at a time,
+before asking whether the user wants any walkthrough. Every question is
+multiple choice; put the recommended answer first and explain its practical
+consequence in one sentence. Do not bury a required answer in release notes or
+an exhaustive feature tour.
+
+If `recommendedChanges` is nonempty, show those next under **Recommended
+change** with the current and recommended answer. A recommendation is not a
+mandatory answer unless it also appears in `requiredAnswers`.
+
+Then use this short structure:
 
 > **Simple Changes has recently been updated.**
 >
+> No new settings answers are required.
+>
+> **What matters:**
 > - Up to three short, practical changes from `summaryBullets`.
 >
-> Your existing settings and repository files have not been changed.
+> Your existing settings, repository files, and current work have not changed.
 >
-> Would you like me to walk you through all recent updates to the skill?
+> How would you like to continue?
 
-Always show the practical bullets before the choices. Recommend reviewing the
-new abilities; never mark keeping settings, skipping, continuing, or deferring
-as Recommended. A user cannot make an informed disposition from setting names
-alone.
+When no answer or recommended change is pending, recommend continuing with the
+current settings. The short practical bullets already provide the information
+needed for that disposition. Do not recommend an exhaustive walkthrough merely
+because several versions were skipped.
 
-Explain only practical effects on Simple Changes and offer:
+Offer these multiple-choice actions:
 
-- **Review what changed — Recommended:** Explain every new ability first, then
-  show affected settings, proposed defaults, concrete examples, consequences,
-  and safety boundaries before changing anything.
-- **Keep current Simple Changes settings:** Preserve the current choices and
-  accept defaults only for newly introduced fields after naming them.
-- **Skip for this version:** Preserve current behavior and record the update as
-  deferred so the same version does not prompt again.
+- **Continue with current settings — Recommended when nothing is unresolved:**
+  Acknowledge the update and resume the original request with existing
+  confirmed choices.
+- **Short walkthrough — Recommended when a setting change is proposed:** Show
+  required answers first, then recommended changes, then at most three practical
+  improvements. Do not enumerate every intervening version.
+- **Expanded walkthrough:** Explain every intervening behavior, setting,
+  example, consequence, and safety boundary only when the user asks for it.
 - **View detailed Simple Changes release notes:** Run the advertised read-only
   release-notes command and show the requested released section.
+- **Decide later:** Leave the update unresolved so it appears again next time.
+
+If no choice is required and there is no recommended setting change, it is also
+acceptable to say only that Simple Changes improved behind the scenes and ask
+whether the user wants the short summary, expanded walkthrough, or full release
+notes. Do not manufacture a settings decision.
 
 After the user reviews, accepts, or defers the update, record that exact choice:
 
@@ -92,14 +115,13 @@ owns its walkthrough, detailed notes, settings/history assessment, and recorded
 disposition. If Simple Changelogs is absent, unconfigured, current, or unknown,
 omit the update notice. Presence alone is not an update.
 
-If both skills have an available update, present both headlines and their short
-bullets, then ask one combined question before continuing:
-
-> Would you like me to walk you through all recent updates to both skills?
-
-Offer **Walk me through both**, **Simple Changes only**, **Keep my current
-settings and continue**, and **View full release notes**. Do not make the user
-answer two overlapping update prompts.
+If both skills have an available update, ask any owner-controlled required
+answers first. Then present both headlines and short bullets and offer one
+combined multiple-choice continuation: **Continue with current settings** when
+nothing remains unresolved, **Short walkthrough**, **Expanded walkthrough**,
+**View full release notes**, or **Decide later**. Do not make the user answer two
+overlapping update prompts, and do not recommend the expanded walkthrough by
+default.
 
 ## Resolve required changelog updates before a loop
 
@@ -107,10 +129,12 @@ When the request requires changelog work, call initialization with
 `--changelog-required`. If the companion update is available, initialization
 returns `preLoopActionRequired: true` and `mutationAllowed: false`.
 
-Present the notice and obtain the user's **Walk me through it**, **Continue for
-now**, or **View full release notes** choice before `loop start`. Route the
-choice to Simple Changelogs so that skill—not Simple Changes—records any
-reviewed, declined, or deferred disposition. Then rerun initialization.
+Present the notice and obtain any required owner-controlled answer before
+`loop start`. Ask that multiple-choice answer before offering **Short
+walkthrough**, **Expanded walkthrough**, **Continue for now**, or **View full
+release notes**. Route the answer to Simple Changelogs so that skill—not Simple
+Changes—records any reviewed, declined, or deferred disposition. Then rerun
+initialization.
 
 Pass `--changelog-required` to the later `loop start` command too. It is a
 command-level backstop that refuses to create the loop while initialization or

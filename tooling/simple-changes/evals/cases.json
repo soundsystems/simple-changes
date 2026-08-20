@@ -375,6 +375,9 @@
       "mode": "ship",
       "authority": ["local-write", "proposal-write", "merge", "preview-deploy"],
       "expectedBehaviors": [
+        "Record one conserved shipment scope that accounts for every opening changed path in every worktree before any guarded mutation",
+        "Treat preserved worktree status as deletion protection rather than automatic shipment exclusion",
+        "Record one exact reviewed shipment outcome covering every scoped unit and every additional final-target delta before completion",
         "Send the pre-ship brief and proceed in the same run when authority already exists",
         "Resolve the latest canonical remote target revision after all merges",
         "Compare the observed live deployment revision with that exact target revision even when this run created no deployment",
@@ -566,6 +569,19 @@
         "Treat index rollout and backfill as separate data operations",
         "Require exact remote-write authority before mutation",
         "Verify counts, restart behavior, live target, and postconditions"
+      ]
+    },
+    {
+      "id": "resume-after-guidance-update",
+      "prompt": "Continue. Simple Changes was updated, so ask me only any genuinely required new answers first. If nothing is required, give me the shortest useful summary and let me choose whether to see more.",
+      "mode": "resume",
+      "authority": ["local-write", "proposal-write", "merge"],
+      "expectedBehaviors": [
+        "Ask unresolved required multiple-choice questions before offering any walkthrough",
+        "Put the recommended answer first and explain its practical consequence briefly",
+        "When no answer is required, say so and recommend continuing with current settings",
+        "Limit the default summary to at most three practical changes",
+        "Offer short walkthrough, expanded walkthrough, and full release notes as separate optional choices"
       ]
     }
   ],

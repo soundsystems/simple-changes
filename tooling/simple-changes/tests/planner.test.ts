@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { join } from "node:path";
 import { validatePlanAuthority } from "../../../skills/simple-changes/scripts/lib/authority.ts";
 import {
   captureInventory,
@@ -13,6 +14,7 @@ import { DEFAULT_POLICY } from "../../../skills/simple-changes/scripts/lib/polic
 import type { ChangePlan } from "../../../skills/simple-changes/scripts/lib/types.ts";
 import {
   createTestRepository,
+  git,
   type TestRepository,
   writeFixture,
 } from "./helpers.ts";
@@ -107,5 +109,62 @@ describe("preview planning", () => {
     expect(() => validatePlanConservation(invalidPlan, current)).toThrow(
       "does not conserve"
     );
+  });
+
+  test("requires clean-checkout dependency verification for manifest changes", () => {
+    const fixture = createTestRepository();
+    repositories.push(fixture);
+    writeFixture(
+      fixture.root,
+      "apps/web/package.json",
+      '{"scripts":{"build":"echo build"}}\n'
+    );
+    writeFixture(
+      fixture.root,
+      "apps/web/pnpm-lock.yaml",
+      "lockfileVersion: '9.0'\n"
+    );
+    const opening = captureInventory(fixture.root);
+    const current = captureInventory(fixture.root);
+    const plan = buildPreviewPlan(
+      opening,
+      current,
+      compareSnapshots(opening, current)
+    );
+
+    expect(plan.units.flatMap((unit) => unit.checks)).toContain(
+      "Verify a frozen install and production build from an isolated clean checkout"
+    );
+  });
+
+  test("can exclude one same-relative-path change by worktree", () => {
+    const fixture = createTestRepository();
+    repositories.push(fixture);
+    const secondWorktree = join(fixture.base, "second");
+    git(fixture.root, ["worktree", "add", "--detach", secondWorktree]);
+    writeFixture(fixture.root, "contact.ts", "export const first = true;\n");
+    writeFixture(secondWorktree, "contact.ts", "export const second = true;\n");
+    const opening = captureInventory(fixture.root);
+    const current = captureInventory(fixture.root);
+    const plan = buildPreviewPlan(
+      opening,
+      current,
+      compareSnapshots(opening, current)
+    );
+    const scopedPlan: ChangePlan = {
+      ...plan,
+      exclusions: [
+        {
+          path: "contact.ts",
+          reason: "The second implementation is intentionally superseded.",
+          worktreePath: secondWorktree,
+        },
+      ],
+      units: plan.units.filter(
+        (unit) => unit.sourceWorktree !== secondWorktree
+      ),
+    };
+
+    expect(() => validatePlanConservation(scopedPlan, current)).not.toThrow();
   });
 });

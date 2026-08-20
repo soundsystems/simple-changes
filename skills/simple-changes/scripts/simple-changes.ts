@@ -16,6 +16,7 @@ import { EXIT_CODES, SimpleChangesError } from "./lib/errors.ts";
 import {
   acknowledgeGuidanceUpdate,
   CURRENT_GUIDANCE_VERSION,
+  type GuidanceUpdateAction,
 } from "./lib/guidance-updates.ts";
 import {
   type InitializationStatus,
@@ -39,6 +40,8 @@ import {
   readLoopLease,
   recordEmergencyShipping,
   recordRemoteBranchReconciliation,
+  recordShipmentOutcome,
+  recordShipmentScope,
   recoverLoopLock,
   recoverPostCleanupLoop,
   retainExcludedWorktree,
@@ -112,7 +115,7 @@ import {
   releaseWorktreeClaim,
 } from "./lib/worktree-coordination.ts";
 
-const VERSION = "0.12.5";
+const VERSION = "0.12.6";
 const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const HELP = `Simple Changes ${VERSION}
 
@@ -162,6 +165,12 @@ Usage:
   simple-changes loop status [--json] [--repo PATH]
   simple-changes loop verify --run-id ID [--json] [--repo PATH]
   simple-changes loop guard --run-id ID --agent-id ID [--json] [--repo PATH]
+  simple-changes loop record-scope --run-id ID --agent-id ID
+    --receipt CHANGE_PLAN_FILE [--json] [--repo PATH]
+  simple-changes loop refresh-scope --run-id ID --agent-id ID
+    --receipt CHANGE_PLAN_FILE [--json] [--repo PATH]
+  simple-changes loop record-outcome --run-id ID --agent-id ID
+    --receipt SHIPMENT_OUTCOME_FILE [--json] [--repo PATH]
   simple-changes loop exec --run-id ID --agent-id ID [--json] [--repo PATH]
     -- COMMAND [ARG ...]
   simple-changes loop recover --agent-id ID [--json] [--repo PATH]
@@ -1119,25 +1128,61 @@ const appendSimpleChangesUpdate = (
   if (status.guidanceUpdate.status !== "update-available") {
     return;
   }
-  lines.push("", status.guidanceUpdate.headline);
-  for (const summary of status.guidanceUpdate.summaryBullets) {
-    lines.push(`- ${summary}`);
-  }
+  const update = status.guidanceUpdate;
+  const appendQuestion = (
+    heading: string,
+    question: (typeof update.requiredAnswers)[number]
+  ): void => {
+    lines.push("", heading, question.question, question.reason, "Choose one:");
+    for (const choice of question.choices) {
+      lines.push(`- ${choice.label} — ${choice.description}`);
+    }
+  };
   lines.push(
-    "Your existing settings and repository files have not been changed."
+    "",
+    update.headline,
+    "Your existing settings, repository files, and current work have not been changed."
   );
-  if (!combinedUpdate) {
+  for (const question of update.requiredAnswers) {
+    appendQuestion("Answer required before continuing:", question);
+  }
+  for (const question of update.recommendedChanges) {
+    appendQuestion("Recommended change:", question);
+  }
+  if (update.requiredAnswers.length === 0) {
     lines.push(
-      "I recommend reviewing the new abilities before deciding whether to keep or change settings.",
-      status.guidanceUpdate.walkthroughQuestion,
-      "Choose one:",
-      `- Review what changed (Recommended) — ${status.guidanceUpdate.actionDescriptions["review-settings"]}`,
-      `- View full release notes — ${status.guidanceUpdate.actionDescriptions["view-release-notes"]}`,
-      `- Keep my current settings — ${status.guidanceUpdate.actionDescriptions["keep-current-settings"]}`,
-      `- Decide later — ${status.guidanceUpdate.actionDescriptions.defer}`
+      "",
+      update.recommendedChanges.length === 0
+        ? "No new settings answers are required."
+        : "No answer is mandatory; the recommendation above is optional."
     );
   }
-  lines.push(`Release notes: ${status.guidanceUpdate.releaseNotes.command}`);
+  lines.push("", "What matters:");
+  for (const summary of update.summaryBullets) {
+    lines.push(`- ${summary}`);
+  }
+  if (!combinedUpdate) {
+    if (update.requiredAnswers.length > 0) {
+      lines.push(
+        "",
+        "Resolve the required answers above first. Afterward, Simple Changes will offer the short summary, expanded walkthrough, or full release notes."
+      );
+    } else {
+      const recommended = (action: GuidanceUpdateAction): string =>
+        update.recommendedAction === action ? " (Recommended)" : "";
+      lines.push(
+        "",
+        update.walkthroughQuestion,
+        "Choose one:",
+        `- Continue with current settings${recommended("keep-current-settings")} — ${update.actionDescriptions["keep-current-settings"]}`,
+        `- Short walkthrough${recommended("review-settings")} — ${update.actionDescriptions["review-settings"]}`,
+        `- Expanded walkthrough — ${update.actionDescriptions["expanded-walkthrough"]}`,
+        `- View full release notes — ${update.actionDescriptions["view-release-notes"]}`,
+        `- Decide later — ${update.actionDescriptions.defer}`
+      );
+    }
+  }
+  lines.push(`Release notes: ${update.releaseNotes.command}`);
 };
 
 const appendSimpleChangelogsUpdate = (
@@ -1186,15 +1231,23 @@ const appendCombinedUpdateChoice = (
   ) {
     return;
   }
+  const actionRequired =
+    status.guidanceUpdate.requiredAnswers.length > 0 ||
+    status.changelogRequired;
   lines.push(
     "",
-    "Would you like me to walk you through all recent updates to both skills?",
-    "I recommend reviewing both updates before deciding whether to keep or change settings.",
+    actionRequired
+      ? "Resolve the required update choice before continuing."
+      : "No new Simple Changes setting answer is required.",
+    "How would you like to continue?",
     "Choose one:",
-    "- Walk me through both (Recommended) — Explain the Simple Changes and Simple Changelogs updates together, including affected settings and safety boundaries.",
-    "- Simple Changes only — Review only the Simple Changes update.",
-    "- Keep my current settings — Leave both skills' saved choices unchanged only after the practical changes and new defaults are understood.",
-    "- View full release notes — Show the detailed update notes for both skills."
+    actionRequired
+      ? "- Resolve required choices (Recommended) — Ask only the unanswered multiple-choice questions, starting with the recommended answer."
+      : "- Continue with current settings (Recommended) — Acknowledge both updates without changing confirmed choices.",
+    "- Short walkthrough — Show only required answers, recommended changes, and the main practical improvements.",
+    "- Expanded walkthrough — Explain every intervening behavior, example, consequence, setting, and safety boundary.",
+    "- View full release notes — Show the detailed owner-controlled notes for both skills.",
+    "- Decide later — Leave the update unresolved and ask again next time."
   );
 };
 
@@ -1863,7 +1916,7 @@ const runLoopCommand = async (options: CliOptions): Promise<void> => {
   const [action] = options.positional;
   if (!action) {
     throw new SimpleChangesError(
-      "loop requires start, status, verify, guard, exec, recover, recover-post-cleanup, takeover, allow, dispose-worktree, retain-worktree, adopt-worktree, accept-paused-change, end, or finalize",
+      "loop requires start, status, verify, record-scope, refresh-scope, record-outcome, guard, exec, recover, recover-post-cleanup, takeover, allow, dispose-worktree, retain-worktree, adopt-worktree, accept-paused-change, end, or finalize",
       EXIT_CODES.usage
     );
   }
@@ -1916,6 +1969,27 @@ const runLoopCommand = async (options: CliOptions): Promise<void> => {
     return;
   }
   const agentId = requireCliOption(options.agentId, "--agent-id");
+  if (action === "record-scope" || action === "refresh-scope") {
+    const receipt = recordShipmentScope(
+      options.repo,
+      runId,
+      agentId,
+      readJsonFile(requireCliOption(options.receiptPath, "--receipt")),
+      action === "refresh-scope"
+    );
+    writeOutput(receipt, options.json, `${receipt.summary}\n`);
+    return;
+  }
+  if (action === "record-outcome") {
+    const outcome = recordShipmentOutcome(
+      options.repo,
+      runId,
+      agentId,
+      readJsonFile(requireCliOption(options.receiptPath, "--receipt"))
+    );
+    writeOutput(outcome, options.json, `${outcome.summary}\n`);
+    return;
+  }
   if (runLoopTakeover(action, options, runId, agentId)) {
     return;
   }

@@ -199,29 +199,86 @@ describe("first-run initialization", () => {
         actions: [
           "review-settings",
           "keep-current-settings",
-          "defer",
-          "review-with-simple-changelogs",
+          "expanded-walkthrough",
           "view-release-notes",
+          "review-with-simple-changelogs",
+          "defer",
         ],
         changelogHandoff: {
           available: true,
           owner: "simple-changelogs",
         },
-        currentVersion: 11,
+        currentVersion: 12,
         headline: "**Simple Changes has recently been updated.**",
+        presentationOrder: [
+          "required-answers",
+          "recommended-changes",
+          "summary",
+          "actions",
+        ],
         recommendedAction: "review-settings",
+        requiredAnswers: [],
         status: "update-available",
         storedVersion: 1,
-        walkthroughQuestion:
-          "Would you like me to walk you through all recent updates to the skill?",
+        walkthroughQuestion: "How would you like to continue?",
       },
       mutationAllowed: false,
       onboardingRequired: false,
       preLoopActionRequired: true,
     });
+    expect(status.guidanceUpdate.summaryBullets).toHaveLength(3);
     expect(status.guidanceUpdate.summaryBullets.join(" ")).toContain(
-      "automatically remove unchanged clean target-contained worktrees"
+      "multiple-choice questions"
     );
+    expect(status.guidanceUpdate.summaryBullets.join(" ")).toContain(
+      "Cleanup removes only work proven safe"
+    );
+    expect(status.guidanceUpdate.recommendedChanges[0]).toMatchObject({
+      question: "How should changelog work be handled?",
+      setting: "changelogHandling",
+    });
+  });
+
+  test("puts a new recommendation before the optional walkthrough", () => {
+    const status = inspectInitialization(
+      "queue",
+      {
+        path: "/repo/.simple-changes.json",
+        source: "repository",
+        value: {
+          ...DEFAULT_POLICY,
+          changelogHandling: "preserve-and-report",
+          guidance: { disposition: "accepted", version: 10 },
+        },
+      },
+      {
+        capabilityAvailable: true,
+        capabilityHelpers: ["/skills/simple-changelogs/scripts/protocol.ts"],
+        capabilityStatus: "unverified",
+        guidanceUpdate: {
+          ...availableChangelogUpdate,
+          status: "current",
+        },
+        providers: ["/skills/simple-changelogs/SKILL.md"],
+        releaseSurfaces: ["CHANGELOG.md"],
+        relevant: true,
+      }
+    );
+
+    expect(status.guidanceUpdate.recommendedAction).toBe("review-settings");
+    expect(status.guidanceUpdate.requiredAnswers).toEqual([]);
+    expect(status.guidanceUpdate.recommendedChanges).toHaveLength(1);
+    expect(status.guidanceUpdate.recommendedChanges[0]).toMatchObject({
+      question: "How should changelog work be handled?",
+      setting: "changelogHandling",
+    });
+    expect(
+      status.guidanceUpdate.recommendedChanges[0]?.choices[0]
+    ).toMatchObject({
+      label: "Delegate when available (Recommended)",
+      recommended: true,
+      value: "delegate-if-available",
+    });
   });
 
   test("resolves a required Simple Changelogs update before shipment loop creation", () => {

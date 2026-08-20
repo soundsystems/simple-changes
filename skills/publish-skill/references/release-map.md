@@ -75,7 +75,7 @@ lock entries and matching installed directories under `.agents/skills`,
 
 - `installed`: lock and one installed package both exist;
 - `multiple-installs`: one lock resolves to more than one distinct physical
-  package; compatibility symlinks to the same package remain one installation;
+  package; symlinked paths to the same package remain one installation;
 - `lock-only`: no installed directory exists; determine whether this is a
   validation-only consumer, an intentional lock, or stale state;
 - `unlocked-install`: an installed package exists without a matching lock;

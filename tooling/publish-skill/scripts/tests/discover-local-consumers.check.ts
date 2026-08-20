@@ -2,7 +2,14 @@
 
 import { afterAll, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  realpath,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -163,7 +170,7 @@ describe("discover-local-consumers", () => {
     ]);
   });
 
-  test("counts compatibility symlinks as one physical installation", async () => {
+  test("counts symlinked paths as one physical installation", async () => {
     const repository = join(fixtureRoot, "aliased-install");
     await Promise.all([
       writeJson(
@@ -194,10 +201,21 @@ describe("discover-local-consumers", () => {
     );
 
     expect(result.status).toBe(0);
+    const physicalInstall = join(
+      repository,
+      ".agents",
+      "skills",
+      "example-skill"
+    );
     expect(JSON.parse(result.stdout).consumers).toMatchObject([
       {
         installationCount: 1,
+        physicalInstallPaths: [
+          join(repository, ".agents", "skills", "example-skill"),
+        ],
+        resolvedInstallPaths: [await realpath(physicalInstall)],
         state: "installed",
+        symlinkPaths: [join(repository, ".claude", "skills", "example-skill")],
       },
     ]);
     expect(JSON.parse(result.stdout).consumers[0].installPaths).toHaveLength(2);
@@ -230,10 +248,22 @@ describe("discover-local-consumers", () => {
     );
 
     expect(result.status).toBe(0);
+    const physicalInstallPaths = [
+      join(repository, ".agents", "skills", "example-skill"),
+      join(repository, ".claude", "skills", "example-skill"),
+    ];
     expect(JSON.parse(result.stdout).consumers).toMatchObject([
       {
         installationCount: 2,
+        physicalInstallPaths: [
+          join(repository, ".agents", "skills", "example-skill"),
+          join(repository, ".claude", "skills", "example-skill"),
+        ],
+        resolvedInstallPaths: (
+          await Promise.all(physicalInstallPaths.map((path) => realpath(path)))
+        ).sort(),
         state: "multiple-installs",
+        symlinkPaths: [],
       },
     ]);
   });

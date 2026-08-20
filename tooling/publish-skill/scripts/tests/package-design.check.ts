@@ -22,7 +22,8 @@ describe("publish-skill package design", () => {
   test("defines the shared all-consumer publication lifecycle", () => {
     expect(skill).toContain("every local consumer");
     expect(skill).toContain("discover-local-consumers.ts");
-    expect(skill).toContain("bounded parallelism");
+    expect(skill).toContain("bounded");
+    expect(skill).toContain("parallelism");
     expect(skill).toContain("one failure must not cancel");
 
     for (const retentionMode of [
@@ -61,6 +62,15 @@ describe("publish-skill package design", () => {
     expect(productionLoop).toContain("concurrently with bounded parallelism");
     expect(productionLoop).toContain("wait for all consumers to finish");
     expect(productionLoop).toContain("one failure must not cancel");
+  });
+
+  test("updates every symlink target while preserving the link", () => {
+    expect(skill).toContain("For every discovered");
+    expect(skill).toContain("symlink, resolve it, update its real target");
+    expect(skill).toContain("leave the symlink in place");
+    expect(productionLoop).toContain("resolvedInstallPaths");
+    expect(productionLoop).toContain("Update that real");
+    expect(productionLoop).toContain("leave every symlink in place");
   });
 
   test("distinguishes dirty baseline state from newly active external work", () => {

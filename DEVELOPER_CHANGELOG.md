@@ -7,9 +7,10 @@
     unchanged branch plus open/merged/closed proposal inventory atomically with
     lease creation, before the first provider mutation.
   - Opening evidence binds the exact GitLab project, target branch, and target
-    revision. Legacy Integrate, Ship, Reconcile, and Resume leases without it
-    remain inspectable but cannot prepare authors, cross mutation guards, or
-    perform cleanup mutations.
+    revision. Legacy leases in all six modes remain inspectable but cannot
+    prepare author worktrees, cross mutation guards, or perform cleanup
+    mutations; Queue and Sweep receive the same fail-closed treatment as
+    Integrate, Ship, Reconcile, and Resume.
   - Ordinary reconciliation receipt recording, `loop end`, and finalization all
     preserve the missing-opening blocker, so none can relabel later evidence or
     bypass the dedicated post-cleanup recovery path.
@@ -28,19 +29,65 @@
   - The worktree-coordination lock is held continuously from final inventory and
     claim verification through immutable audit writes, already-absent stale
     claim retirement, completion recording, and active-lease removal.
+  - Before retiring an already absent paused or adopted claim, recovery persists
+    an immutable deterministic plan containing the coordination document's
+    before digest, expected after digest, retirement time, and sorted retired
+    claim IDs. Before writing, a retry recomputes and validates the exact
+    projection; it accepts only the exact before state or the already-applied
+    after digest, so a crash after claim retirement resumes idempotently without
+    replaying a different mutation.
+  - Existing `intent.json` and `completed.json` recovery events are opened
+    without following links and must pass file-descriptor regular-file checks;
+    symlinks, directories, devices, and other non-regular audit objects fail
+    closed instead of being parsed as immutable evidence.
   - Completed worktree-removal dispositions now retain explicit intended and
     completed states. Already removed worktrees remain auditable but stop
     blocking later finalization, and a crash after recovery intent can clear
     only matching stale locks before safely retrying the same receipt.
   - Added closed-schema and unit coverage for matching inventories and claim
     observations, blank approval fields, open proposals, local cleanup blockers,
-    changed or active claims, moved targets, mutation-free closure, and
-    preserved removal history. CLI end-to-end coverage exercises the explicit
-    recovery command plus process death, stale loop and coordination lock
-    recovery, and idempotent retry.
+    changed or active claims, moved targets, mutation-free closure, preserved
+    removal history, Queue/Sweep author-preparation rejection, linked audit
+    events, and a process death immediately after paused-claim retirement. CLI
+    end-to-end coverage exercises the explicit recovery command plus process
+    death, stale loop and coordination lock recovery, and idempotent retry.
+- Narrowed the global controller lock to shared integration mutations:
+  - Run-prepared and independently claimed authors may edit, generate, format,
+    test, stage, and commit concurrently in distinct worktrees and branches.
+  - Target movement, integration merge or cherry-pick, push, proposal creation
+    or merge, deployment, worktree or branch lifecycle changes, and cleanup
+    remain serialized through the short controller lock.
+  - Lock contention pauses only the named shared operation. It must not trigger
+    a repository-wide author pause, patch export, destructive cleanup, or a
+    lease-null handback.
+  - `EPERM`, `EACCES`, and `EROFS` failures while creating controller state are
+    reported as harness or file-system permission failures rather than being
+    misdiagnosed as another agent holding the lock.
+- Refined Simple Changelogs onboarding and consent boundaries:
+  - A compatible discovered installation makes Delegate when available the
+    recommended and default onboarding choice.
+  - When Simple Changelogs is relevant but unavailable, onboarding first
+    explains the skill and requests explicit installation consent. Only after
+    acceptance does it ask whether setup should happen now, after the current
+    shipment, or later; installation and configuration never happen silently.
+  - Delayed setup preserves current changelog work. When the current shipment
+    requires a release boundary, the prompt explains that setup now or stopping
+    before release is required instead of discarding or bypassing that work.
+  - Delegation, installation consent, and setup timing grant no version,
+    release, publication, deployment, or data authority.
+- Clarified how onboarding reuses and stores settings:
+  - Before the main walkthrough, setup detects an existing private global
+    personal policy and asks whether to use it unchanged for the current run;
+    declining continues through normal onboarding without changing it.
+  - Storage choices now explicitly label repository policy as team-shared,
+    global personal policy as a private fallback, and run-only settings as
+    writing no policy file.
+  - When private global defaults already exist, selecting global personal
+    storage explicitly states that setup will update or overwrite those
+    defaults before asking for confirmation.
 - Advanced the package and CLI to 0.12.5 and installed Simple Changes guidance
   to version 11 so existing installations receive one practical update notice.
-<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-15T08:15:36-05:00" -->
+<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-20T13:57:40-05:00" -->
 
 ## 0.12.4 - 2026-08-14
 

@@ -248,7 +248,7 @@ const GUIDANCE_UPDATES: GuidanceUpdateDefinition[] = [
       {
         kind: "integration",
         summary:
-          "Every GitLab Queue, Sweep, Integrate, Ship, Reconcile, and Resume run now saves the complete opening branch and proposal inventory before any provider mutation; ordinary reconciliation, ending, and finalization cannot bypass close-only recovery for a legacy record without that evidence.",
+          "Every GitLab Queue, Sweep, Integrate, Ship, Reconcile, and Resume run now saves the complete opening branch and proposal inventory before any provider mutation; a legacy record without that evidence cannot prepare author worktrees, and ordinary reconciliation, ending, or finalization cannot bypass its close-only recovery path.",
         version: 11,
       },
       {
@@ -260,7 +260,37 @@ const GUIDANCE_UPDATES: GuidanceUpdateDefinition[] = [
       {
         kind: "behavior",
         summary:
-          "Post-cleanup recovery holds worktree coordination from final verification through audit, stale-claim retirement, and lease removal; it cannot move refs, remove worktrees or branches, change provider state, push, merge, or deploy; it preserves removed-worktree history and safely retries after a crash.",
+          "Post-cleanup recovery holds worktree coordination from final verification through audit, deterministic stale-claim retirement, and lease removal; its immutable before/after plan makes crash retry safe, but it still cannot move refs, remove worktrees or branches, change provider state, push, merge, or deploy, and linked or non-regular audit event files are rejected.",
+        version: 11,
+      },
+      {
+        kind: "behavior",
+        summary:
+          "Authors in separate prepared or claimed worktrees can keep editing, generating files, formatting, testing, staging, and committing at the same time; the short global lock is only for shared integration work such as target movement, commit integration, push, proposal or merge, deploy, worktree or branch lifecycle, and cleanup.",
+        version: 11,
+      },
+      {
+        kind: "integration",
+        summary:
+          "A busy controller lock pauses only the named shared operation and never requires a repository-wide author pause, patch export, destructive cleanup, or lease-null handback; EPERM, EACCES, and EROFS identify a harness or file-system permission failure instead of another agent holding the lock.",
+        version: 11,
+      },
+      {
+        kind: "onboarding",
+        summary:
+          "When a compatible Simple Changelogs installation is available, Delegate when available is the recommended and default onboarding choice; when it is relevant but unavailable, Simple Changes explains the skill and asks explicit installation consent before offering setup now, after this shipment, or later, and it never installs or configures silently.",
+        version: 11,
+      },
+      {
+        kind: "integration",
+        summary:
+          "Delayed Simple Changelogs setup preserves current changelog work; if this shipment needs a release boundary now, the user must choose setup now or stop before release, and delegation, installation, or setup timing grants no version, release, publication, deployment, or data authority.",
+        version: 11,
+      },
+      {
+        kind: "onboarding",
+        summary:
+          "Before the main setup questions, Simple Changes detects existing private global personal defaults and asks whether to use them unchanged for this run; declining continues onboarding, while storage choices distinguish repository team policy, a private global personal fallback that explicitly updates or overwrites existing defaults, and run-only settings that write no policy file.",
         version: 11,
       },
     ],

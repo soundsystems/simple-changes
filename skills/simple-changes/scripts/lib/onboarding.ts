@@ -61,11 +61,14 @@ export interface OnboardingSelection {
 }
 
 export interface OnboardingConversationOptions {
+  existingPersonalDefaults?: RepoPolicy | null;
   showFirstScreen?: boolean;
 }
 
 export const ONBOARDING_QUESTIONS = {
   changelog: "How should changelog work be handled?",
+  existingPersonalDefaults:
+    "I found existing global personal defaults. Would you like to use them for this run?",
   finish: "How far should I usually take ready work?",
   gitPushAuthorization:
     "Should Simple Changes configure this harness for routine repository pushes?",
@@ -299,8 +302,8 @@ export const SCOPE_CHOICES = [
   },
   {
     description:
-      "Save private personal defaults that apply only when a repository has no Simple Changes policy.",
-    label: "All my repositories",
+      "Save private global personal defaults that apply only when a repository has no team policy.",
+    label: "Global personal defaults",
     value: "user",
   },
   {
@@ -310,6 +313,35 @@ export const SCOPE_CHOICES = [
     value: "run",
   },
 ] as const satisfies readonly OnboardingChoice[];
+
+const existingPersonalDefaultChoices = [
+  {
+    description:
+      "Apply the existing private fallback to this run without changing any preference file.",
+    label: "Use global personal defaults",
+    value: "use",
+  },
+  {
+    description:
+      "Continue through onboarding; choosing global personal storage later will overwrite the existing private fallback.",
+    label: "Review or replace them",
+    value: "review",
+  },
+] as const satisfies readonly OnboardingChoice[];
+
+const scopeChoices = (
+  existingPersonalDefaults: boolean
+): readonly OnboardingChoice[] =>
+  SCOPE_CHOICES.map((choice) =>
+    choice.value === "user" && existingPersonalDefaults
+      ? {
+          ...choice,
+          description:
+            "Update and overwrite the existing private global personal defaults used when a repository has no team policy.",
+          label: "Update global personal defaults",
+        }
+      : choice
+  );
 
 const finishPath = (finish: RepoPolicy["defaultFinish"]): string => {
   const proposal = "ready work -> focused proposal -> checks";
@@ -325,16 +357,19 @@ const finishPath = (finish: RepoPolicy["defaultFinish"]): string => {
 const recommendedScope = (primaryCheckout: string | null): SetupScope =>
   primaryCheckout ? "repository" : "user";
 
-const renderScopeDiagram = (primaryCheckout: string | null): string => {
+const renderScopeDiagram = (
+  primaryCheckout: string | null,
+  existingPersonalDefaults: boolean
+): string => {
   const repositoryPath = primaryCheckout
     ? `${primaryCheckout}/.simple-changes.json`
     : ".simple-changes.json (requires a Git repository)";
   return [
     "This choice controls where the answers are remembered; it does not change how far the current task is allowed to go.",
     "",
-    `This repository  -> ${repositoryPath} -> shared project policy`,
-    "All repositories -> private preferences.json         -> personal fallback",
-    "This run only    -> no file                          -> ask again next time",
+    `Repository               -> ${repositoryPath} -> team policy`,
+    `Global personal defaults -> private preferences.json -> ${existingPersonalDefaults ? "update/overwrite private fallback" : "private fallback"}`,
+    "This run                -> no file                  -> ask next time",
   ].join("\n");
 };
 
@@ -351,7 +386,7 @@ const renderFirstScreenIntroduction = (
   let changelog = "No changelog decision is needed for this setup.";
   if (context.relevant && context.capabilityAvailable) {
     changelog =
-      "A compatible changelog workflow is available; the safe default is to preserve changelog work for that workflow.";
+      "A compatible Simple Changelogs workflow is available; delegation is the recommended default, while version and release authority remain separate.";
   } else if (context.relevant) {
     changelog =
       "Changelog surfaces were found, but no compatible changelog workflow is available; the safe default is to preserve and report that work.";
@@ -384,17 +419,22 @@ const renderFirstScreenIntroduction = (
 const onboardingStyleChoices = (
   defaults: RepoPolicy,
   inputs: OnboardingInputs,
-  primaryCheckout: string | null
+  primaryCheckout: string | null,
+  context: ChangelogCoordination
 ): readonly OnboardingChoice[] => {
   const finish = inputs.defaultFinish ?? preferredFinish(defaults);
   const scope = recommendedScope(primaryCheckout);
   const scopeDescription =
     scope === "repository"
       ? "save the result as visible repository policy"
-      : "save the result as private personal defaults";
+      : "save the result as private global personal defaults";
+  const changelogDescription =
+    context.relevant && context.capabilityAvailable
+      ? "delegate changelog work to the compatible installed workflow"
+      : "preserve changelog work for its owning workflow";
   return [
     {
-      description: `Use ${finishLabel(finish)}, ask only when blocked, keep production confirmation in place, preserve changelog work for its owning workflow, and ${scopeDescription}. You will see a full receipt before anything is written.`,
+      description: `Use ${finishLabel(finish)}, ask only when blocked, keep production confirmation in place, ${changelogDescription}, and ${scopeDescription}. You will see a full receipt before anything is written.`,
       label: "Use recommended setup",
       value: "recommended",
     },
@@ -771,7 +811,12 @@ const selectSetupStyle = async (
   prompter.present?.(
     renderFirstScreenIntroduction(defaults, inputs, context, primaryCheckout)
   );
-  const choices = onboardingStyleChoices(defaults, inputs, primaryCheckout);
+  const choices = onboardingStyleChoices(
+    defaults,
+    inputs,
+    primaryCheckout,
+    context
+  );
   return choiceValue<SetupStyle>(
     await prompter.choose(ONBOARDING_QUESTIONS.start, choices, "recommended"),
     choices,
@@ -979,14 +1024,17 @@ const selectChangelogHandling = async (
   if (inputs.changelogHandling) {
     return inputs.changelogHandling;
   }
+  const recommendedHandling = context.capabilityAvailable
+    ? "delegate-if-available"
+    : defaults.changelogHandling;
   if (!(context.relevant && customize)) {
-    return defaults.changelogHandling;
+    return context.relevant ? recommendedHandling : defaults.changelogHandling;
   }
   return choiceValue<RepoPolicy["changelogHandling"]>(
     await prompter.choose(
       ONBOARDING_QUESTIONS.changelog,
       CHANGELOG_CHOICES,
-      defaults.changelogHandling
+      recommendedHandling
     ),
     CHANGELOG_CHOICES,
     ONBOARDING_QUESTIONS.changelog
@@ -1021,7 +1069,8 @@ const selectScope = async (
   inputs: OnboardingInputs,
   prompter: OnboardingPrompter,
   primaryCheckout: string | null,
-  showFirstScreen: boolean
+  showFirstScreen: boolean,
+  existingPersonalDefaults: boolean
 ): Promise<SetupScope> => {
   if (setupStyle === "run") {
     return "run";
@@ -1032,11 +1081,14 @@ const selectScope = async (
   if (setupStyle === "recommended") {
     return recommendedScope(primaryCheckout);
   }
-  prompter.present?.(renderScopeDiagram(primaryCheckout));
+  prompter.present?.(
+    renderScopeDiagram(primaryCheckout, existingPersonalDefaults)
+  );
+  const availableChoices = scopeChoices(existingPersonalDefaults);
   const choices =
     primaryCheckout || !showFirstScreen
-      ? SCOPE_CHOICES
-      : SCOPE_CHOICES.filter((choice) => choice.value !== "repository");
+      ? availableChoices
+      : availableChoices.filter((choice) => choice.value !== "repository");
   return choiceValue<SetupScope>(
     await prompter.choose(
       ONBOARDING_QUESTIONS.scope,
@@ -1057,6 +1109,48 @@ export const collectOnboardingSelection = async (
   uiArtifactsRelevant = false,
   conversation: OnboardingConversationOptions = {}
 ): Promise<OnboardingSelection> => {
+  const existingPersonalDefaults =
+    conversation.existingPersonalDefaults ?? null;
+  if (conversation.showFirstScreen && existingPersonalDefaults) {
+    prompter.present?.(
+      "Global personal defaults are a private fallback used only when a repository has no visible team policy. I found an existing saved set; no file has been changed."
+    );
+    const disposition = choiceValue<"use" | "review">(
+      await prompter.choose(
+        ONBOARDING_QUESTIONS.existingPersonalDefaults,
+        existingPersonalDefaultChoices,
+        "use"
+      ),
+      existingPersonalDefaultChoices,
+      ONBOARDING_QUESTIONS.existingPersonalDefaults
+    );
+    if (disposition === "use") {
+      const instructionPointer: OnboardingSelection["instructionPointer"] = {
+        action: "unavailable",
+        block: null,
+        target: null,
+      };
+      const summary = [
+        "Use the existing global personal defaults for this run.",
+        "No repository policy or personal preference file will be changed.",
+        renderOnboardingSummary(
+          existingPersonalDefaults,
+          "run",
+          context,
+          instructionPointer,
+          uiArtifactsRelevant
+        ),
+      ].join("\n\n");
+      return {
+        confirmed: await prompter.confirm(summary),
+        instructionPointer,
+        policy: existingPersonalDefaults,
+        scope: "run",
+        setupStyle: "run",
+        summary,
+      };
+    }
+  }
   const setupStyle = await selectSetupStyle(
     defaults,
     inputs,
@@ -1133,7 +1227,8 @@ export const collectOnboardingSelection = async (
     inputs,
     prompter,
     primaryCheckout,
-    conversation.showFirstScreen ?? false
+    conversation.showFirstScreen ?? false,
+    Boolean(existingPersonalDefaults)
   );
   const { handoffTiming, instructionPointer } = await selectInstructionPointer(
     inputs,

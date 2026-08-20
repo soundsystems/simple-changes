@@ -192,15 +192,33 @@ at least one bound target, and do not infer a target from a migration filename.
 
 When relevant, ask **How should changelog work be handled? Choose one:**
 
-1. **Delegate when available** — Use a compatible changelog skill when present;
-   otherwise preserve and report the work.
-2. **Preserve and report — Safe default** — Leave changelog destinations
+1. **Delegate when available — Recommended when installed** — Use a compatible
+   changelog skill when present; otherwise preserve and report the work.
+2. **Preserve and report — Safe fallback** — Leave changelog destinations
    untouched and identify the remaining work.
 3. **Ask before delegating** — Confirm before handing the changelog portion to a
    compatible skill.
 
 Explain that Simple Changes never writes release notes itself and that this
 preference grants no version, release, deployment, or publication authority.
+When compatible Simple Changelogs is installed, preselect **Delegate when
+available**. When changelog work is relevant but the skill is not installed or
+compatible, first explain that it owns release classification and release-note
+writing, then ask **Would you like me to install Simple Changelogs now?** Never
+install it silently. If the user agrees, ask **When should I set up Simple
+Changelogs: now, after this shipment, or later?**
+
+- **Now:** Run its separate owner-controlled onboarding, rediscover
+  compatibility, then return with delegation recommended.
+- **After this shipment:** Record a follow-up and preserve current changelog
+  work. If this shipment requires changelog reconciliation before it can
+  complete, explain that setup must happen now or the shipment must stop at the
+  safe pre-release boundary.
+- **Later:** Leave the skill installed but unconfigured and preserve/report
+  changelog work until the user asks to set it up.
+
+Installation consent and setup timing grant no version, release, publication,
+deployment, or data-write authority.
 
 Ask UI artifact naming only when several screenshots, design exports, static
 previews, or similar iterations will be saved and no repository convention
@@ -218,22 +236,35 @@ Ask **When should I ask for permission or help? Choose one:**
 
 ## Preference storage
 
+Before the main preference questions, inspect the normal private policy path.
+When a saved policy exists, explain that **Global personal defaults** are a
+private fallback used only when a repository has no visible team policy, then
+ask **I found existing global personal defaults. Would you like to use them for
+this run?** Offer:
+
+1. **Use global personal defaults — Recommended** — Apply them to this run and
+   change no preference file.
+2. **Review or replace them** — Continue onboarding. If global personal storage
+   is selected later, clearly state that the existing private fallback will be
+   updated and overwritten.
+
 Before asking where to save the answers, explain the storage boundary. **This
 choice controls only where the workflow is remembered.** It does not expand the
 current task's authority.
 
 ```text
-This repository  -> <primary-checkout>/.simple-changes.json -> team policy
-All repositories -> private preferences.json               -> personal fallback
-This run only    -> no file                                -> ask again next time
+Repository               -> <primary-checkout>/.simple-changes.json -> team policy
+Global personal defaults -> private preferences.json               -> private fallback
+This run                 -> no file                                -> ask next time
 ```
 
 Ask **Where should these preferences live? Choose one:**
 
 1. **This repository — Recommended for teams** — Save visible project policy
    beside the code so teammates and future agents use the same workflow.
-2. **All my repositories** — Save private personal defaults used only when a
-   repository has no policy of its own.
+2. **Global personal defaults** — Save a private fallback used only when a
+   repository has no team policy. If one already exists, label this choice
+   **Update global personal defaults** and say it overwrites that saved file.
 3. **This run only** — Write no preference file and ask again next time.
 
 Repository policy overrides personal preferences; the current request overrides

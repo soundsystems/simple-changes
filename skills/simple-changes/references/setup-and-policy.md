@@ -45,8 +45,13 @@ confirm the receipt, persist the selected scope, and continue the original task.
 Ask **How should changelog work be handled?** only when established changelog
 surfaces or a compatible changelog skill are discovered. Offer delegation when
 available, preservation and reporting, or asking before delegation. The safe
-fallback is preservation; setup never grants release, version, or publication
-authority.
+fallback is preservation. When compatible Simple Changelogs is discovered,
+delegation is the recommended default. When changelog surfaces exist without a
+compatible installation, explain the skill and ask whether to install it. If
+the user agrees, separately ask whether its owner-controlled setup should run
+now, after the current shipment, or later; never silently combine installation
+with setup. Setup never grants release, version, publication, deployment, or
+data-write authority.
 
 Public patch/minor/major behavior remains owned by Simple Changelogs and is
 never stored in `.simple-changes.json`. When first Ship use needs both products'

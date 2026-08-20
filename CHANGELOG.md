@@ -4,9 +4,9 @@
 
 - Every GitLab Queue, Sweep, Integrate, Ship, Reconcile, and Resume run now
   saves its complete opening branch and proposal inventory before any provider
-  mutation. A legacy record without that evidence can close only through the
-  explicit post-cleanup recovery path; ordinary reconciliation, ending, or
-  finalization cannot bypass it.
+  mutation. A legacy record without that evidence cannot prepare author
+  worktrees and can close only through the explicit post-cleanup recovery path;
+  ordinary reconciliation, ending, or finalization cannot bypass it.
 - With explicit user approval, Simple Changes can repair and close an old
   bookkeeping record when cleanup already finished, but only after two matching
   complete post-cleanup inventories, two ordered worktree-claim observations
@@ -18,7 +18,36 @@
   Worktree claims remain locked from final verification through the auditable
   close, removed-worktree history no longer blocks future runs, and an
   interrupted recovery can be retried safely.
-<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-15T08:15:36-05:00" -->
+- Before retiring an already absent paused or adopted worktree claim, recovery
+  saves an immutable deterministic retirement plan. A crash after retirement
+  safely reuses that exact plan, while linked or non-regular `intent.json` and
+  `completed.json` audit files are rejected.
+- Authors in separate prepared or claimed worktrees can keep editing,
+  generating files, formatting, testing, staging, and committing at the same
+  time. The short shared controller lock is only for integration work such as
+  moving the target, integrating commits, pushing, opening or merging a
+  proposal, deploying, managing worktrees or branches, and cleanup.
+- A busy controller lock pauses only that shared integration step; it does not
+  require other authors to stop, export patches, clean their worktrees, or hand
+  back the whole run. `EPERM`, `EACCES`, and `EROFS` mean the harness or file
+  system denied access, not that another agent owns the lock.
+- When a compatible Simple Changelogs installation is available, onboarding
+  recommends delegating changelog work to it. If the skill is relevant but not
+  installed, Simple Changes explains what it does, asks before installing it,
+  and—only after consent—asks whether to set it up now, after this shipment, or
+  later. It never installs or configures the skill silently.
+- Delaying setup preserves the changelog work already in progress. If the
+  current shipment needs a release boundary now, Simple Changes explains that
+  the user must either set up Simple Changelogs now or stop before release.
+  Delegation, installation, and setup timing never grant version, release,
+  publication, deployment, or data authority.
+- Before the main setup questions, Simple Changes now detects existing private
+  personal defaults and asks whether to use them unchanged for this run. Saying
+  no simply continues onboarding. Save choices clearly distinguish repository
+  team policy, a private global personal fallback, and run-only settings that
+  write no policy file; choosing the global option warns when it will update or
+  overwrite existing personal defaults.
+<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-20T13:57:40-05:00" -->
 
 ## 0.12.4 - 2026-08-14
 

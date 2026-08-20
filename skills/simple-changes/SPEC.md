@@ -74,13 +74,21 @@
   approval nor an exact override. Concurrent authors may not use the guarded
   integration executor; only the controller and its run-prepared authors may do
   so.
-- Local mutations hold the lease lock across fresh preflight inventory, one
-  bounded argument-array command or awaited asynchronous callback, and
+- Run-prepared and independently claimed authors perform ordinary worktree-local
+  edits, generation, formatting, checks, staging, and commits concurrently on
+  their distinct registered branches. Shared integration mutations—not normal
+  authoring—hold the lease lock across fresh preflight inventory, one bounded
+  argument-array command or awaited asynchronous callback, and
   post-mutation verification. Guarded child/process-group identity remains
   recorded while commands run. Background descendants are terminated and the
   command rejected before lease release, or the lock is retained when the
   process group cannot be stopped. Change digests include actual staged,
   unstaged, and untracked contents.
+- Lock-busy evidence and local permission failure are distinct. Only an
+  existing lock with valid ownership evidence justifies waiting or recovery;
+  `EPERM`, `EACCES`, `EROFS`, or another denied state write is a harness or
+  filesystem authorization problem and never justifies pausing authors,
+  exporting patches, cleaning worktrees, or demanding a lease-null handback.
 - New authoring agents receive an isolated, run-registered worktree before
   editing. Worktree creation is resumable only from a clean pinned branch and
   target revision; switching branches invalidates mutation authority. A stale

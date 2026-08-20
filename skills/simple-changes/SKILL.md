@@ -38,10 +38,17 @@ then follow [onboarding](references/onboarding.md), ask one question at a time,
 and show every option with its one-sentence consequence. Required consequence
 copy includes:
 
+When private global personal defaults already exist, disclose them before the
+main questions and ask whether to use them unchanged for this run. If the user
+declines, continue onboarding. At preference storage, describe the personal
+scope as **Global personal defaults**; when one already exists, state that
+choosing it updates and overwrites that private fallback. Repository policy
+remains the visible team policy and overrides global personal defaults.
+
 - **Put it up for review:** Create focused proposals, run checks, and stop.
 - **Ask me first:** Merge automatically, but confirm before production.
-- **Delegate when available:** Use a compatible changelog skill when present;
-  otherwise preserve and report the work.
+- **Delegate when available — Recommended when installed:** Use a compatible
+  changelog skill when present; otherwise preserve and report the work.
 - **Only when blocked:** Keep working unless a decision is genuinely required.
 - **This run only:** Use the choices now without writing a policy file.
 - **Ask if it's ready:** Recommended. Ask whether the implementation is ready
@@ -56,6 +63,18 @@ copy includes:
 
 Ordinary UI source files, Git revisions, deployment identities, package
 versions, and release versions do not use this preference.
+
+When compatible Simple Changelogs is installed, default changelog handling to
+**Delegate when available**. When changelog work is relevant but the skill is
+not installed or compatible, explain what it adds and ask whether the user
+wants it installed. Never install it silently. If they choose installation,
+ask whether to set it up **now**, **after this shipment**, or **later**. Setup
+now completes its owner-controlled onboarding before proceeding. After this
+shipment records a follow-up and preserves current changelog work unless the
+current release boundary requires Simple Changelogs first; explain that
+conflict instead of bypassing it. Later leaves it installed but unconfigured
+and preserves changelog work. Installation and setup grant no version, release,
+publication, deployment, or data-write authority.
 
 Resolve installed update choices before acquiring a loop. When changelog work
 is required, resolve the Simple Changelogs notice and the user's
@@ -117,10 +136,22 @@ it cannot prepare authors or cross a mutation guard.
 
 When an active loop assigns a new author into that same integration unit, run
 `simple-changes.ts prepare-agent` before edits. Independent agents create an
-isolated worktree and immediately run `worktree claim`. Run each controller or
-run-author integration mutation through `loop exec`; use `loop guard` only for
-external calls and verify immediately afterward. Before merge, deployment,
-cleanup, and completion, run `loop verify`.
+isolated worktree and immediately run `worktree claim`. After registration,
+both run-prepared and independently claimed authors edit, generate, format,
+test, stage, and commit normally and concurrently in their own distinct
+worktrees and branches; those author-local operations do not use the global
+controller lock. Run only shared integration mutations through `loop exec`,
+including target movement, integration merges or cherry-picks, pushes,
+worktree/branch lifecycle changes, and cleanup. Use `loop guard` only for
+external provider calls and verify immediately afterward. Before merge,
+deployment, cleanup, and completion, run `loop verify`.
+
+A busy lock blocks only the named short integration operation; it is never a
+reason to pause unrelated authors, demand a lease-null handback, export patches,
+or clean their worktrees. `EPERM`, `EACCES`, or another permission-denied error
+while creating controller state is a harness/filesystem permission problem, not
+lock contention. Preserve work in place, fix that exact permission boundary,
+and keep unrelated authoring active.
 
 Claims allow healthy concurrent-author edits without pausing. A strict collision
 requires an exact owner claim/pause exchange. Preserved or retained worktrees

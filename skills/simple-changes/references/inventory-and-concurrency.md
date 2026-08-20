@@ -58,20 +58,44 @@ directory. `loop start` creates it atomically and records:
 The lock directory prevents two integration operations from updating shared
 manifest, target, proposal, merge, deployment, or cleanup state at once. It is
 not a repository-wide authoring mutex. A second controller cannot replace an
-active lease without an exact, user-authorized takeover, but independent agents may continue normal edits and commits in
-distinct actively claimed worktrees. Do not remove or rewrite the lock or state
-file by hand.
+active lease without an exact, user-authorized takeover, but run-prepared and
+independently claimed authors may continue normal edits and commits in distinct
+registered worktrees. Do not remove or rewrite the lock or state file by hand.
 
 `loop guard` is a moment-in-time read-only preflight. It does not reserve a
-future mutation. Run local Git and repository commands through `loop exec` so
-the same atomic lock covers a fresh manifest check, one argument-array command,
-and a fresh post-command check. The reusable callback awaits asynchronous work
-under that same boundary. The operation requires that the caller's agent ID owns
-the exact registered controller or run-author worktree on its recorded branch.
-It rejects any new unclaimed worktree, branch switch, incomplete preparation,
-missing baseline worktree, or head/content change in a preserved worktree. Run
-`loop verify` before merge, deployment, cleanup, and completion even when every
-earlier operation passed.
+future mutation. Use `loop exec` only for operations that change shared
+integration state, so the same atomic lock covers a fresh manifest check, one
+argument-array command, and a fresh post-command check. The reusable callback
+awaits asynchronous work under that same boundary. It requires that the
+caller's agent ID owns the exact registered controller or run-author worktree on
+its recorded branch. It rejects any new unclaimed worktree, branch switch,
+incomplete preparation, missing baseline worktree, or head/content change in a
+preserved worktree. Run `loop verify` before merge, deployment, cleanup, and
+completion even when every earlier operation passed.
+
+Use these boundaries after an author is registered:
+
+| Author-local and concurrent | Shared integration and serialized |
+| --- | --- |
+| Edit, generate, format, and run repository-local checks inside the author's worktree | Create, remove, detach, attach, or prune worktrees |
+| `git add` and `git commit` on the author's distinct registered branch | Switch branches or move/update the canonical target or integration branch |
+| Read Git/provider state | Merge, cherry-pick, or rebase work into the integration branch |
+| Write normal worktree-local caches or build output | Push, mutate proposals, merge remotely, deploy, or clean repository objects |
+
+Git already uses separate per-worktree indexes and atomic locks for distinct
+branch refs and object writes. Simple Changes should not add a repository-wide
+mutex around that ordinary authoring. Authors must still avoid shared Git
+maintenance/configuration, stashes, tags, branch deletion, history rewrites,
+provider writes, and any command that targets another worktree or branch unless
+the matching integration boundary and authority apply.
+
+When a genuine integration lock is busy, wait or retry only that short shared
+operation; unrelated authors continue. Never pause them, demand a lease-null
+handoff, export patches, or clean worktrees merely to free the lock. When lock
+creation instead fails with `EPERM`, `EACCES`, `EROFS`, or another
+permission-denied result, treat it as a local harness/filesystem authorization
+failure. It is not evidence of a live lock owner, so do not run recovery or
+coordinate an owner pause until actual lock metadata proves contention.
 
 The default `concurrentWork: "allow-claimed"` policy recognizes an active owner
 claim on a distinct non-primary branch as `concurrent-author`. The author may
@@ -108,6 +132,9 @@ run closes and deletes the lease, while an incomplete run records its blockers,
 marks the controller `relinquished`, disables its mutation authority, and keeps
 all ledger evidence. The next controller starts with mode `resume` (or the same
 original mode), adopts that exact run ID, and continues from fresh evidence.
+Relinquishment is not a repository-wide authoring pause: registered authors may
+continue ordinary author-local work, and no controller should destructively
+park or clean their work merely to manufacture a lease-null interval.
 
 If a controller disappears before finalization, do not delete the state file or
 infer abandonment from elapsed time. Re-read `loop status`, obtain explicit user

@@ -7,6 +7,7 @@ import {
   mkdirSync,
   readFileSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { hostname } from "node:os";
@@ -45,6 +46,7 @@ import {
   claimWorktree,
   observeWorktreeClaims,
   pauseClaimedWorktree,
+  readCoordinationDocumentFromCommonDirectory,
   releaseWorktreeClaim,
   withWorktreeCoordinationLock,
 } from "../../../skills/simple-changes/scripts/lib/worktree-coordination.ts";
@@ -168,6 +170,26 @@ afterEach(() => {
 });
 
 describe("active integration-loop lease", () => {
+  test("reports controller-state permission denial as distinct from a busy lock", () => {
+    if (process.platform === "win32") {
+      return;
+    }
+    const fixture = repository();
+    const { commonGitDirectory } = captureInventory(fixture.root).repository;
+    const stateDirectory = join(commonGitDirectory, "simple-changes");
+    mkdirSync(stateDirectory, { mode: 0o700, recursive: true });
+    chmodSync(stateDirectory, 0o500);
+
+    try {
+      expect(() => startLoop(fixture.root, "controller", "ship")).toThrow(
+        "This is not lock contention"
+      );
+    } finally {
+      chmodSync(stateDirectory, 0o700);
+    }
+    expect(readLoopLease(fixture.root)).toBeNull();
+  });
+
   test("requires opening remote evidence before a GitLab integration loop starts", () => {
     for (const mode of [
       "queue",
@@ -292,6 +314,50 @@ describe("active integration-loop lease", () => {
       removedBranches: [],
       removedWorktrees: [],
     });
+  });
+
+  test("keeps legacy GitLab Queue and Sweep runs close-only", () => {
+    for (const mode of ["queue", "sweep"] as const) {
+      const fixture = repository();
+      git(fixture.root, [
+        "remote",
+        "add",
+        "origin",
+        "git@gitlab.com:group/project.git",
+      ]);
+      const targetRevision = git(fixture.root, ["rev-parse", "HEAD"]);
+      const lease = startLoop(
+        fixture.root,
+        "controller",
+        mode,
+        remoteSnapshot(targetRevision)
+      );
+      const leasePath = loopLeasePath(
+        captureInventory(fixture.root).repository.commonGitDirectory
+      );
+      const stored = JSON.parse(readFileSync(leasePath, "utf8")) as LoopLease;
+      Reflect.deleteProperty(stored, "openingRemoteInventory");
+      writeFileSync(leasePath, `${JSON.stringify(stored, null, 2)}\n`, "utf8");
+      const refsBefore = git(fixture.root, ["show-ref"]);
+      const worktreesBefore = captureInventory(fixture.root).worktrees.map(
+        (worktree) => worktree.path
+      );
+
+      expect(() =>
+        prepareAgentWorktree(
+          fixture.root,
+          lease.runId,
+          `${mode}-author`,
+          "must remain close-only"
+        )
+      ).toThrow("cannot prepare new authoring work");
+      expect(git(fixture.root, ["show-ref"])).toBe(refsBefore);
+      expect(
+        captureInventory(fixture.root).worktrees.map(
+          (worktree) => worktree.path
+        )
+      ).toEqual(worktreesBefore);
+    }
   });
 
   test("closes a legacy missing-opening ledger only with approved matching post-cleanup evidence", async () => {
@@ -423,6 +489,202 @@ describe("active integration-loop lease", () => {
     ) as { removedWorktreePaths: string[] };
     expect(history.removedWorktreePaths).toContain(prepared.path);
   }, 30_000);
+
+  test("retries safely after retiring an absent paused claim", async () => {
+    const fixture = repository();
+    git(fixture.root, [
+      "remote",
+      "add",
+      "origin",
+      "git@gitlab.com:group/project.git",
+    ]);
+    const targetRevision = git(fixture.root, ["rev-parse", "HEAD"]);
+    const openingSnapshot = remoteSnapshot(targetRevision);
+    const lease = startLoop(
+      fixture.root,
+      "controller",
+      "ship",
+      openingSnapshot
+    );
+    const prepared = prepareAgentWorktree(
+      fixture.root,
+      lease.runId,
+      "legacy-author",
+      "claim retirement crash recovery"
+    );
+    const leasePath = loopLeasePath(
+      captureInventory(fixture.root).repository.commonGitDirectory
+    );
+    finalizeLoop(
+      fixture.root,
+      lease.runId,
+      "controller",
+      "Remote reconciliation remains pending."
+    );
+    expect(existsSync(prepared.path)).toBe(false);
+    git(fixture.root, [
+      "worktree",
+      "add",
+      "-b",
+      "historical-paused-claim",
+      prepared.path,
+      targetRevision,
+    ]);
+    const claim = claimWorktree(
+      fixture.root,
+      "historical-author",
+      prepared.path,
+      "codex",
+      "historical-task"
+    );
+    pauseClaimedWorktree(
+      fixture.root,
+      "historical-author",
+      prepared.path,
+      lease.runId,
+      "detach-clean-checkout",
+      "The completed cleanup already removed this temporary checkout."
+    );
+    git(fixture.root, ["worktree", "remove", prepared.path]);
+    git(fixture.root, ["branch", "-D", "historical-paused-claim"]);
+    const stored = JSON.parse(readFileSync(leasePath, "utf8")) as LoopLease;
+    Reflect.deleteProperty(stored, "openingRemoteInventory");
+    writeFileSync(leasePath, `${JSON.stringify(stored, null, 2)}\n`, "utf8");
+    startLoop(fixture.root, "recovery-controller", "resume");
+    const firstFinalInventory = remoteSnapshot(targetRevision);
+    const receipt = {
+      approvedBy: "user",
+      authority: "close-only" as const,
+      ...claimEvidence(fixture.root),
+      firstFinalInventory,
+      openingEvidenceUnavailableReason:
+        "The legacy runtime did not persist the opening provider inventory.",
+      project: "group/project",
+      provider: "gitlab" as const,
+      reason: "Cleanup was already complete; close old bookkeeping only.",
+      schemaVersion: 1 as const,
+      secondFinalInventory: {
+        ...firstFinalInventory,
+        observedAt: new Date(
+          Date.parse(firstFinalInventory.observedAt) + 1000
+        ).toISOString(),
+      },
+      targetBranch: "main",
+      targetRevision,
+    };
+    const moduleUrl = pathToFileURL(
+      join(
+        import.meta.dir,
+        "../../../skills/simple-changes/scripts/lib/loop-lease.ts"
+      )
+    ).href;
+    const child = spawn(
+      process.execPath,
+      [
+        "-e",
+        `import { recoverPostCleanupLoop } from ${JSON.stringify(moduleUrl)}; recoverPostCleanupLoop(${JSON.stringify(fixture.root)}, ${JSON.stringify(lease.runId)}, "recovery-controller", ${JSON.stringify(receipt)});`,
+      ],
+      {
+        env: {
+          ...process.env,
+          NODE_ENV: "test",
+          SIMPLE_CHANGES_TEST_CRASH_AFTER_POST_CLEANUP_RETIREMENT: lease.runId,
+        },
+        stdio: "ignore",
+      }
+    );
+    const termination = await new Promise<{
+      code: number | null;
+      signal: NodeJS.Signals | null;
+    }>((resolveTermination) => {
+      child.once("exit", (code, signal) =>
+        resolveTermination({ code, signal })
+      );
+    });
+    expect(termination).toEqual({ code: null, signal: "SIGKILL" });
+    const { commonGitDirectory } = captureInventory(fixture.root).repository;
+    expect(
+      readCoordinationDocumentFromCommonDirectory(
+        commonGitDirectory
+      ).claims.find((item) => item.claimId === claim.claimId)?.state
+    ).toBe("released");
+    await sleep(5100);
+    expect(recoverLoopLock(fixture.root, "recovery-controller")).toMatchObject({
+      coordinationRecovered: true,
+      recovered: true,
+    });
+
+    expect(
+      recoverPostCleanupLoop(
+        fixture.root,
+        lease.runId,
+        "recovery-controller",
+        receipt
+      )
+    ).toMatchObject({
+      active: false,
+      ok: true,
+      retiredClaimIds: [claim.claimId],
+    });
+    expect(readLoopLease(fixture.root)).toBeNull();
+  }, 60_000);
+
+  test("rejects linked immutable recovery audit events", () => {
+    for (const event of ["intent", "completed"] as const) {
+      const fixture = repository();
+      git(fixture.root, [
+        "remote",
+        "add",
+        "origin",
+        "git@gitlab.com:group/project.git",
+      ]);
+      const targetRevision = git(fixture.root, ["rev-parse", "HEAD"]);
+      const snapshot = remoteSnapshot(targetRevision);
+      const lease = startLoop(fixture.root, "controller", "ship", snapshot);
+      const leasePath = loopLeasePath(
+        captureInventory(fixture.root).repository.commonGitDirectory
+      );
+      const stored = JSON.parse(readFileSync(leasePath, "utf8")) as LoopLease;
+      Reflect.deleteProperty(stored, "openingRemoteInventory");
+      writeFileSync(leasePath, `${JSON.stringify(stored, null, 2)}\n`, "utf8");
+      const { commonGitDirectory } = captureInventory(fixture.root).repository;
+      const historyDirectory = join(
+        commonGitDirectory,
+        "simple-changes",
+        "history",
+        lease.runId
+      );
+      mkdirSync(historyDirectory, { recursive: true });
+      const external = join(fixture.base, `external-${event}.json`);
+      writeFileSync(external, '{"external":true}\n', "utf8");
+      symlinkSync(external, join(historyDirectory, `${event}.json`));
+      const receipt = {
+        approvedBy: "user",
+        authority: "close-only" as const,
+        ...claimEvidence(fixture.root),
+        firstFinalInventory: snapshot,
+        openingEvidenceUnavailableReason: "Legacy evidence is absent.",
+        project: "group/project",
+        provider: "gitlab" as const,
+        reason: "Cleanup was already complete; close bookkeeping only.",
+        schemaVersion: 1 as const,
+        secondFinalInventory: {
+          ...snapshot,
+          observedAt: new Date(
+            Date.parse(snapshot.observedAt) + 1000
+          ).toISOString(),
+        },
+        targetBranch: "main",
+        targetRevision,
+      };
+
+      expect(() =>
+        recoverPostCleanupLoop(fixture.root, lease.runId, "controller", receipt)
+      ).toThrow("regular file");
+      expect(readFileSync(external, "utf8")).toBe('{"external":true}\n');
+      expect(readLoopLease(fixture.root)).not.toBeNull();
+    }
+  });
 
   test("rejects post-cleanup recovery without explicit approval", () => {
     const fixture = repository();
@@ -2704,6 +2966,60 @@ describe("active integration-loop lease", () => {
       "guarded mutation\n"
     );
     expect(result.verification.ok).toBe(true);
+  });
+
+  test("keeps author-local commits concurrent while an integration mutation holds the lease lock", async () => {
+    const fixture = repository();
+    const lease = startLoop(fixture.root, "controller", "ship");
+    const firstAuthor = prepareAgentWorktree(
+      fixture.root,
+      lease.runId,
+      "author-one",
+      "concurrent-one"
+    );
+    const secondAuthor = prepareAgentWorktree(
+      fixture.root,
+      lease.runId,
+      "author-two",
+      "concurrent-two"
+    );
+    let announceLockHeld: (() => void) | undefined;
+    const lockHeld = new Promise<void>((resolve) => {
+      announceLockHeld = resolve;
+    });
+    let releaseIntegrationMutation: (() => void) | undefined;
+    const integrationMutationReleased = new Promise<void>((resolve) => {
+      releaseIntegrationMutation = resolve;
+    });
+    const integrationMutation = withLoopMutationLease(
+      fixture.root,
+      lease.runId,
+      "controller",
+      "hold shared integration step",
+      async () => {
+        announceLockHeld?.();
+        await integrationMutationReleased;
+        return "released";
+      }
+    );
+
+    await lockHeld;
+    writeFixture(firstAuthor.path, "author-one.txt", "one\n");
+    git(firstAuthor.path, ["add", "author-one.txt"]);
+    git(firstAuthor.path, ["commit", "-m", "author one"]);
+    writeFixture(secondAuthor.path, "author-two.txt", "two\n");
+    git(secondAuthor.path, ["add", "author-two.txt"]);
+    git(secondAuthor.path, ["commit", "-m", "author two"]);
+    releaseIntegrationMutation?.();
+
+    expect((await integrationMutation).result).toBe("released");
+    expect(git(firstAuthor.path, ["show", "--format=%s", "--no-patch"])).toBe(
+      "author one"
+    );
+    expect(git(secondAuthor.path, ["show", "--format=%s", "--no-patch"])).toBe(
+      "author two"
+    );
+    expect(verifyLoop(fixture.root).ok).toBe(true);
   });
 
   test.skipIf(process.platform === "win32")(

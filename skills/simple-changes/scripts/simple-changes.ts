@@ -926,14 +926,18 @@ const setupContext = (
   repositoryPath: string
 ): {
   changelog: ReturnType<typeof inspectChangelogCoordination>;
+  existingPersonalDefaults: RepoPolicy | null;
   policy: RepoPolicy;
   primaryCheckout: string | null;
 } => {
+  const personalPolicy = loadPersonalPolicy();
   const probe = runGit(repositoryPath, ["rev-parse", "--show-toplevel"], true);
   if (probe.exitCode !== 0) {
     return {
       changelog: inspectChangelogCoordination(null),
-      policy: loadPersonalPolicy().value,
+      existingPersonalDefaults:
+        personalPolicy.source === "user" ? personalPolicy.value : null,
+      policy: personalPolicy.value,
       primaryCheckout: null,
     };
   }
@@ -942,6 +946,8 @@ const setupContext = (
     changelog: inspectChangelogCoordination(
       inventory.repository.primaryCheckout
     ),
+    existingPersonalDefaults:
+      personalPolicy.source === "user" ? personalPolicy.value : null,
     policy: inventory.policy.value,
     primaryCheckout: inventory.repository.primaryCheckout,
   };
@@ -1026,7 +1032,10 @@ const runSetup = async (options: CliOptions): Promise<void> => {
       context.changelog,
       context.primaryCheckout,
       options.uiArtifacts,
-      { showFirstScreen: process.stdin.isTTY }
+      {
+        existingPersonalDefaults: context.existingPersonalDefaults,
+        showFirstScreen: process.stdin.isTTY,
+      }
     );
     const path = setupPolicyPath(selection.scope, context.primaryCheckout);
     const written = selection.confirmed && path !== null;

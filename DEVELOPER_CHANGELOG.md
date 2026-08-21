@@ -1,5 +1,26 @@
 # Developer changelog
 
+## 0.12.7 - 2026-08-21
+
+- Tightened the temporary-checkout cleanup ledger and finalization path:
+  - Shipment and deployment guidance now routes temporary checkouts through
+    `prepare-agent`, which records them as run-created cleanup artifacts rather
+    than retained worktrees.
+  - Automatic-cleanup modes reconcile an already-missing retained worktree only
+    when its recorded branch and audited clean head are present, both revisions
+    are contained in the finalized target, and no active claim remains. The
+    completed removal disposition is bound to the exact target revision and can
+    retire the now-unreferenced contained branch; ordinary verification accepts
+    the absent path only after that disposition exists.
+  - Lease tests cover safe reconciliation of a contained clean branch and the
+    blocking case where the absent branch still has unique work. Skill-contract
+    tests preserve the `prepare-agent` requirement and the no-confirmation
+    safety boundary.
+- Advanced the package and CLI to 0.12.7 and installed Simple Changes guidance
+  to version 13 so existing installations receive the response-recap and
+  temporary-checkout cleanup behavior.
+<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-21T15:10:50-05:00" -->
+
 ## 0.12.6 - 2026-08-20
 
 - Reworked installed-guidance notices around explicit decision priority:

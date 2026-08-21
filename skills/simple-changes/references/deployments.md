@@ -157,6 +157,12 @@ A production receipt is partial when:
 - any observed target resolves to another immutable deployment; or
 - only one of several canonical endpoints was checked.
 
+Create shipment-specific deployment checkouts through `prepare-agent` so the
+active run records them as run-created cleanup artifacts. Do not classify a
+temporary deployment checkout as `retained`; retention means that checkout is
+expected to remain after shipment, so its later disappearance correctly looks
+like lost work.
+
 ## Reconcile stale provider-managed targets
 
 Use a bounded recovery sequence against the existing verified artifact:

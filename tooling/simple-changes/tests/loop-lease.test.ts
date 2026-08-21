@@ -2114,6 +2114,91 @@ describe("active integration-loop lease", () => {
     );
   });
 
+  test("reconciles an already-missing retained checkout when its branch is target-contained", () => {
+    const fixture = repository();
+    const lease = startLoop(fixture.root, "controller", "integrate");
+    const temporary = join(fixture.base, "temporary-deployment");
+    git(fixture.root, [
+      "worktree",
+      "add",
+      "-b",
+      "temporary-deployment",
+      temporary,
+    ]);
+    const current = captureInventory(fixture.root).worktrees.find(
+      (worktree) => worktree.path === temporary
+    );
+    if (!current) {
+      throw new Error("Expected the temporary deployment worktree");
+    }
+    retainExcludedWorktree(
+      fixture.root,
+      lease.runId,
+      "controller",
+      temporary,
+      current.changeDigest,
+      "user",
+      "Keep this clean temporary checkout outside the shipment."
+    );
+
+    git(fixture.root, ["worktree", "remove", temporary]);
+    expect(verifyLoop(fixture.root).violations).toContainEqual(
+      expect.objectContaining({
+        code: "missing-retained-worktree",
+        path: temporary,
+      })
+    );
+
+    expect(
+      finalizeLoop(
+        fixture.root,
+        lease.runId,
+        "controller",
+        "Reconcile the already-absent target-contained checkout."
+      )
+    ).toMatchObject({ blockers: [], outcome: "completed" });
+  }, 20_000);
+
+  test("keeps a missing retained checkout blocked when its branch has unique work", () => {
+    const fixture = repository();
+    const lease = startLoop(fixture.root, "controller", "integrate");
+    const temporary = join(fixture.base, "temporary-unique");
+    git(fixture.root, ["worktree", "add", "-b", "temporary-unique", temporary]);
+    const current = captureInventory(fixture.root).worktrees.find(
+      (worktree) => worktree.path === temporary
+    );
+    if (!current) {
+      throw new Error("Expected the temporary unique worktree");
+    }
+    retainExcludedWorktree(
+      fixture.root,
+      lease.runId,
+      "controller",
+      temporary,
+      current.changeDigest,
+      "user",
+      "Keep this clean temporary checkout outside the shipment."
+    );
+    writeFixture(temporary, "unique.ts", "export const unique = true;\n");
+    git(temporary, ["add", "unique.ts"]);
+    git(temporary, ["commit", "-m", "unique temporary work"]);
+    git(fixture.root, ["worktree", "remove", temporary]);
+
+    const finalized = finalizeLoop(
+      fixture.root,
+      lease.runId,
+      "controller",
+      "Do not reconcile a checkout whose branch has unique work."
+    );
+    expect(finalized.outcome).toBe("relinquished");
+    expect(finalized.verification.violations).toContainEqual(
+      expect.objectContaining({
+        code: "missing-retained-worktree",
+        path: temporary,
+      })
+    );
+  }, 20_000);
+
   test("invalidates retention when work starts, then admits the owner's claim", () => {
     const fixture = repository();
     const lease = startLoop(fixture.root, "controller", "ship");

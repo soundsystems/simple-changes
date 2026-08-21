@@ -91,6 +91,12 @@ Before reporting completion:
    state and must not be removed merely to make the inventory smaller.
 6. Honor exact unchanged `loop retain-worktree` exclusions without removing or
    including them. If one changes, require an active owner claim or stable pause.
+   If an excluded checkout is already absent, finalization may reconcile the
+   stale retention receipt without another user confirmation only when its last
+   audited state was clean, its current local branch still exists, both the
+   audited and current branch revisions are contained in the refreshed target,
+   and no active claim remains. Missing branch evidence or unique work remains a
+   blocker.
    An unchanged clean unclaimed opening worktree whose exact head is contained
    in the refreshed target is an automatic finalization cleanup candidate; use
    `loop retain-worktree` when that checkout should remain. For changed opening

@@ -2397,6 +2397,102 @@ describe("active integration-loop lease", () => {
     expect(verifyLoop(fixture.root).ok).toBe(true);
   }, 30_000);
 
+  test("rebinds multiple exact stale paused claims sequentially", () => {
+    const fixture = repository();
+    const lease = startLoop(fixture.root, "controller", "ship");
+    const paths = [
+      join(fixture.base, "stale-paused-first"),
+      join(fixture.base, "stale-paused-second"),
+    ];
+    const receipts = paths.map((path, index) => {
+      git(fixture.root, ["worktree", "add", "-b", `stale-${index}`, path]);
+      const opening = captureInventory(fixture.root).worktrees.find(
+        (worktree) => worktree.path === path
+      );
+      if (!opening) {
+        throw new Error("Expected stale claim fixture worktree");
+      }
+      retainExcludedWorktree(
+        fixture.root,
+        lease.runId,
+        "controller",
+        path,
+        opening.changeDigest,
+        "user",
+        "Preserve the claimed worktree."
+      );
+      claimWorktree(
+        path,
+        `old-owner-${index}`,
+        path,
+        "codex-desktop",
+        `task-${index}`
+      );
+      const oldReceipt = pauseClaimedWorktree(
+        path,
+        `old-owner-${index}`,
+        path,
+        lease.runId,
+        "preserve-in-place",
+        "Pause before owner handoff."
+      );
+      acceptPausedWorktreeChange(
+        fixture.root,
+        lease.runId,
+        "controller",
+        oldReceipt.receiptId
+      );
+      releaseWorktreeClaim(path, `old-owner-${index}`, oldReceipt.claimId);
+      claimWorktree(
+        path,
+        `new-owner-${index}`,
+        path,
+        "codex-desktop",
+        `replacement-${index}`
+      );
+      return pauseClaimedWorktree(
+        path,
+        `new-owner-${index}`,
+        path,
+        lease.runId,
+        "preserve-in-place",
+        "Rebind the exact unchanged checkout."
+      );
+    });
+
+    expect(verifyLoop(fixture.root).violations).toEqual(
+      expect.arrayContaining(
+        paths.map((path) =>
+          expect.objectContaining({ code: "coordination-claim-stale", path })
+        )
+      )
+    );
+    const [firstReceipt, secondReceipt] = receipts;
+    if (!(firstReceipt && secondReceipt)) {
+      throw new Error("Expected two replacement pause receipts");
+    }
+
+    acceptPausedWorktreeChange(
+      fixture.root,
+      lease.runId,
+      "controller",
+      firstReceipt.receiptId
+    );
+    expect(verifyLoop(fixture.root).violations).toEqual([
+      expect.objectContaining({
+        code: "coordination-claim-stale",
+        path: paths[1],
+      }),
+    ]);
+    acceptPausedWorktreeChange(
+      fixture.root,
+      lease.runId,
+      "controller",
+      secondReceipt.receiptId
+    );
+    expect(verifyLoop(fixture.root).ok).toBe(true);
+  }, 30_000);
+
   test("requires an active claim or pause before retaining a dirty worktree", () => {
     const fixture = repository();
     const lease = startLoop(fixture.root, "controller", "ship");

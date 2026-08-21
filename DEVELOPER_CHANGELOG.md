@@ -1,5 +1,21 @@
 # Developer changelog
 
+## 0.12.8 - 2026-08-21
+
+- Narrowed `acceptPausedWorktreeChange` verification so one exact replacement
+  pause and claim may be persisted when every remaining violation is an
+  unrelated `coordination-claim-stale` on another path. Any violation for the
+  accepted path, or any non-stale coordination, inventory, content, or safety
+  violation, still rejects the operation.
+- Added a lease fixture with two unchanged preserved worktrees whose ownership
+  changed after their original pauses. It proves the controller can bind each
+  replacement receipt in sequence, leaving only the other stale claim after the
+  first acceptance and a clean verification result after the second.
+- Advanced the package and CLI to 0.12.8 and installed Simple Changes guidance
+  to version 14 so existing installations receive the sequential stale-handoff
+  repair behavior.
+<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-21T15:37:07-05:00" -->
+
 ## 0.12.7 - 2026-08-21
 
 - Tightened the temporary-checkout cleanup ledger and finalization path:

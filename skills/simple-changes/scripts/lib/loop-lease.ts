@@ -3495,7 +3495,15 @@ export const acceptPausedWorktreeChange = (
         ),
       };
       const verification = verificationAgainst(candidate, inventory);
-      if (!verification.ok) {
+      const unrelatedStaleClaims = verification.violations.filter(
+        (violation) =>
+          violation.code === "coordination-claim-stale" &&
+          violation.path !== evidence.current.path
+      );
+      if (
+        !verification.ok &&
+        unrelatedStaleClaims.length !== verification.violations.length
+      ) {
         throw new SimpleChangesError(
           `Paused change is exact but other loop violations remain: ${verification.violations
             .map((violation) => `${violation.code}:${violation.path}`)

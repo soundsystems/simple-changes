@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.12.8 - 2026-08-21
+
+- Multiple stale preserved-checkout handoffs can now be repaired sequentially
+  without deadlocking each other. Each replacement still requires exact paused
+  evidence for an unchanged checkout, and unique, unverified, or otherwise
+  unsafe work remains blocking.
+
 ## 0.12.7 - 2026-08-21
 
 - Ship responses for a finalized public release now end with a concise

@@ -1,6 +1,6 @@
 import type { ChangelogCoordination, RepoPolicy } from "./types.ts";
 
-export const CURRENT_GUIDANCE_VERSION = 13;
+export const CURRENT_GUIDANCE_VERSION = 14;
 
 export type GuidanceUpdateAction =
   | "review-settings"
@@ -405,6 +405,25 @@ const GUIDANCE_UPDATES: GuidanceUpdateDefinition[] = [
       },
     ],
     version: 13,
+  },
+  {
+    changelogReviewRelevant: false,
+    changes: [
+      {
+        kind: "behavior",
+        summary:
+          "Multiple unchanged preserved-checkout handoffs with stale coordination claims can now be rebound one at a time without deadlocking each other; exact paused evidence remains mandatory and every non-stale violation still blocks.",
+        version: 14,
+      },
+    ],
+    noticeBullets: [
+      {
+        priority: 115,
+        summary:
+          "Multiple unchanged stale checkout handoffs can now be repaired sequentially while unique or unverified work remains blocked.",
+      },
+    ],
+    version: 14,
   },
 ];
 

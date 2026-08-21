@@ -380,6 +380,40 @@ describe("Simple Changes skill contract", () => {
     expect(normalizedSource).toContain("the next action");
   });
 
+  test("public release receipts end with exact-version customer notes", async () => {
+    const [skill, communication, shipCommunication] = await Promise.all([
+      readFile(skillPath, "utf8"),
+      readFile(userCommunicationPath, "utf8"),
+      readFile(shipCommunicationPath, "utf8"),
+    ]);
+    const normalizedSkill = skill.replace(/\s+/g, " ");
+    const normalizedCommunication = communication.replace(/\s+/g, " ");
+    const normalizedShipCommunication = shipCommunication.replace(/\s+/g, " ");
+
+    expect(normalizedSkill).toContain("concise **Latest customer notes**");
+    expect(normalizedCommunication).toContain(
+      "public release notes for the exact version handled by this run"
+    );
+    expect(normalizedCommunication).toContain(
+      "Do not paste the full changelog, developer-only notes, signatures"
+    );
+    expect(normalizedCommunication).toContain(
+      "A reconciled public release may have customer notes even when its production deployment is blocked"
+    );
+    expect(normalizedCommunication).toContain(
+      "Render each customer note as a Markdown blockquote (`>`)"
+    );
+    expect(normalizedShipCommunication).toContain(
+      "two to five practical notes summarized from the public notes"
+    );
+    expect(normalizedShipCommunication).toContain(
+      "rather than another operational bullet"
+    );
+    expect(normalizedShipCommunication).toContain(
+      "Omit it for internal-only or `release:none` work"
+    );
+  });
+
   test("GitLab integration cleanup accounts for every remote branch", async () => {
     const [skill, cleanup, gitlab] = await Promise.all([
       readFile(skillPath, "utf8"),

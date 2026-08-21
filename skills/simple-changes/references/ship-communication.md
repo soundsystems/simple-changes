@@ -150,3 +150,14 @@ Do not report planned work as shipped. If the run stops before production, name
 the highest completed boundary and the exact reason the remaining work did not
 ship. Lead with the practical outcome; place required revisions, digests, and
 receipt identities afterward instead of making the user decode them first.
+
+When the run finalizes or reconciles a public release, end with **Latest customer
+notes**: two to five practical notes summarized from the public notes for the
+exact selected version in the delivery receipt. Group them under a few useful
+customer-facing areas when appropriate, and render each note as a Markdown
+blockquote (`>`) rather than another operational bullet. This is a concise
+customer recap, not a second audit log. Exclude developer notes, signatures,
+unreleased sections, and changes from newer releases. Omit it for internal-only
+or `release:none` work.
+If production is still blocked, report that first and make clear that the notes
+describe the reconciled release rather than a completed deployment.

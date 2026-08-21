@@ -208,7 +208,7 @@ describe("first-run initialization", () => {
           available: true,
           owner: "simple-changelogs",
         },
-        currentVersion: 12,
+        currentVersion: 13,
         headline: "**Simple Changes has recently been updated.**",
         presentationOrder: [
           "required-answers",
@@ -231,7 +231,7 @@ describe("first-run initialization", () => {
       "multiple-choice questions"
     );
     expect(status.guidanceUpdate.summaryBullets.join(" ")).toContain(
-      "Cleanup removes only work proven safe"
+      "target-contained temporary checkout cleanup"
     );
     expect(status.guidanceUpdate.recommendedChanges[0]).toMatchObject({
       question: "How should changelog work be handled?",

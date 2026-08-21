@@ -1,6 +1,6 @@
 import type { ChangelogCoordination, RepoPolicy } from "./types.ts";
 
-export const CURRENT_GUIDANCE_VERSION = 12;
+export const CURRENT_GUIDANCE_VERSION = 13;
 
 export type GuidanceUpdateAction =
   | "review-settings"
@@ -375,6 +375,36 @@ const GUIDANCE_UPDATES: GuidanceUpdateDefinition[] = [
       },
     ],
     version: 12,
+  },
+  {
+    changelogReviewRelevant: false,
+    changes: [
+      {
+        kind: "behavior",
+        summary:
+          "Public shipment receipts now finish with exact-version customer notes as Markdown blockquotes under customer-facing surface headings, after operational results and blockers.",
+        version: 13,
+      },
+      {
+        kind: "behavior",
+        summary:
+          "Temporary deployment checkouts are run-created cleanup artifacts, and stale missing-retention bookkeeping is reconciled without another confirmation only when current Git evidence proves the checkout fully target-contained and unclaimed.",
+        version: 13,
+      },
+    ],
+    noticeBullets: [
+      {
+        priority: 115,
+        summary:
+          "Shipment summaries now separate operational receipts from concise customer notes rendered as quoted release-note blocks.",
+      },
+      {
+        priority: 110,
+        summary:
+          "Proven target-contained temporary checkout cleanup no longer asks for a redundant confirmation.",
+      },
+    ],
+    version: 13,
   },
 ];
 

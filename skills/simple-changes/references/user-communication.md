@@ -116,3 +116,22 @@ deployment identities, decision digests, or receipt IDs only when the workflow
 contract requires them or they help the user verify the result. Put dense audit
 details last, under a clearly optional technical section, or omit them until the
 user asks.
+
+When a shipment finalizes or reconciles a public release, finish the delivery
+summary with short **Latest customer notes** derived from the public release
+notes for the exact version handled by this run. Use the finalized release
+receipt or version-bound changelog section, not whichever release happens to be
+newest when the response is written. Consolidate duplicates and summarize the
+practical changes in two to five short notes, grouped under useful
+customer-facing areas when that improves scanning. Render each customer note as
+a Markdown blockquote (`>`) so it is visually distinct from the operational
+shipment bullets. Do not paste the full changelog,
+developer-only notes, signatures, or internal implementation detail.
+
+Status and blockers still come first. A reconciled public release may have
+customer notes even when its production deployment is blocked; state the exact
+completed boundary and deployment blocker before the notes. Do not add the
+section when no public release was finalized or reconciled, or when the work was
+internal-only or `release:none`. Never use release-note prose to imply that a
+preserved, blocked, preview-only, or unmerged unit shipped. If useful, offer the
+full version-bound notes after the concise summary.

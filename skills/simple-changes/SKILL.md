@@ -343,6 +343,11 @@ it may not silently omit it. For GitLab reconciliation, report every disposition
 and every preserved uncertain branch. For Ship, compare the pre-ship brief with
 the result and report review-driven changes or explicitly state none. Never
 claim completion until final inventory proves requested scope and primary state.
+When Ship finalizes or reconciles a public release, end with concise **Latest
+customer notes** sourced from that exact version's public release notes; omit
+them for preview-only, internal-only, or `release:none` work. Follow
+[plain-language communication](references/user-communication.md) for the
+version-binding, blockquote presentation, and content rules.
 
 Preview may run `simple-changes preview` and must create no branch, commit,
 stash, ledger, proposal, or deployment.

@@ -1266,7 +1266,11 @@ const verificationAgainst = (
         path: registered.path,
       });
     }
-    if (registered.role === "retained" && !currentByPath.has(registered.path)) {
+    if (
+      registered.role === "retained" &&
+      !currentByPath.has(registered.path) &&
+      !removalDispositionForPath(lease, registered.path)
+    ) {
       violations.push({
         changeDigest: null,
         code: "missing-retained-worktree",
@@ -3845,6 +3849,99 @@ const completeAbsentRemovalIntents = (
   return completeAutomaticDispositions(lease, completedPaths);
 };
 
+const reconcileAbsentRetainedWorktrees = (
+  lease: LoopLease,
+  inventory: RepositoryInventory
+): LoopLease => {
+  if (!AUTOMATIC_CLEANUP_MODES.has(lease.mode)) {
+    return lease;
+  }
+  let targetRevision: string;
+  try {
+    targetRevision = currentTargetRevision(lease);
+  } catch {
+    return lease;
+  }
+  const currentPaths = new Set(
+    inventory.worktrees.map((worktree) => worktree.path)
+  );
+  const coordination = readCoordinationDocumentFromCommonDirectory(
+    lease.commonGitDirectory
+  );
+  const activelyClaimedPaths = new Set(
+    coordination.claims
+      .filter((claim) => claim.state === "active")
+      .map((claim) => claim.path)
+  );
+  const completedAt = new Date().toISOString();
+  const dispositions = lease.worktrees.flatMap((worktree) => {
+    if (
+      worktree.role !== "retained" ||
+      !worktree.retention ||
+      currentPaths.has(worktree.path) ||
+      activelyClaimedPaths.has(worktree.path) ||
+      !worktree.branch ||
+      !worktree.baselineHeadSha ||
+      !targetContainsRevision(
+        inventory.repository.primaryCheckout,
+        targetRevision,
+        worktree.baselineHeadSha
+      )
+    ) {
+      return [];
+    }
+    const branchRevisionResult = runGit(
+      inventory.repository.primaryCheckout,
+      ["rev-parse", "--verify", `refs/heads/${worktree.branch}^{commit}`],
+      true
+    );
+    const branchRevision = branchRevisionResult.stdout.trim();
+    if (
+      branchRevisionResult.exitCode !== 0 ||
+      !branchRevision ||
+      !targetContainsRevision(
+        inventory.repository.primaryCheckout,
+        targetRevision,
+        branchRevision
+      )
+    ) {
+      return [];
+    }
+    return [
+      {
+        approvedBy: `mode:${lease.mode}`,
+        branch: worktree.branch,
+        changeDigest: worktree.baselineChangeDigest,
+        completedAt,
+        createdAt: completedAt,
+        headSha: branchRevision,
+        outcome: "remove-after-audit" as const,
+        path: worktree.path,
+        reason:
+          "The retained checkout is already absent, and its last audited clean revision plus current local branch are both contained in the finalized target. Reconcile stale cleanup bookkeeping without another user confirmation.",
+        status: "completed" as const,
+        targetRef: lease.targetRef,
+        targetRevision,
+        uniqueCommitCount: 0 as const,
+      },
+    ];
+  });
+  if (dispositions.length === 0) {
+    return lease;
+  }
+  const paths = new Set(dispositions.map((disposition) => disposition.path));
+  return writeLease({
+    ...lease,
+    dispositions: [
+      ...(lease.dispositions ?? []).filter(
+        (disposition) => !paths.has(disposition.path)
+      ),
+      ...dispositions,
+    ],
+    updatedAt: completedAt,
+  });
+};
+
 interface AutomaticRemovalResult {
   lease: LoopLease;
   removed: AutomaticCleanupCandidate[];
@@ -3984,13 +4081,26 @@ const removeTargetContainedBranches = (
       .flatMap((worktree) => (worktree.branch ? [worktree.branch] : [])),
     ...lease.preparations.map((preparation) => preparation.branch),
   ]);
+  const reconciledAbsentBranches = new Set(
+    (lease.dispositions ?? [])
+      .filter(
+        (disposition) =>
+          disposition.status === "completed" &&
+          disposition.targetRef === lease.targetRef &&
+          disposition.targetRevision === targetRevision &&
+          disposition.branch
+      )
+      .map((disposition) => disposition.branch as string)
+  );
   for (const branch of inventory.branches) {
     const unchangedOpeningBranch =
       openingBranches.get(branch.name) === branch.sha;
     const removable =
       branch.name !== targetBranch &&
       branch.worktreePath === null &&
-      (unchangedOpeningBranch || runOwnedBranches.has(branch.name)) &&
+      (unchangedOpeningBranch ||
+        runOwnedBranches.has(branch.name) ||
+        reconciledAbsentBranches.has(branch.name)) &&
       targetContainsRevision(repositoryPath, targetRevision, branch.sha);
     if (!removable) {
       continue;
@@ -4882,6 +4992,7 @@ export const finalizeLoop = (
             );
           }
           assertControllerActive(lease);
+          lease = reconcileAbsentRetainedWorktrees(lease, inventory);
           const openingVerification = verificationAgainst(lease, inventory);
           const automaticCleanup =
             lease.shipmentScopeRequired && !lease.shipmentScope

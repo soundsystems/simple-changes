@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.12.7 - 2026-08-21
+
+- Ship responses for a finalized public release now end with a concise
+  **Latest customer notes** recap: two to five deduplicated bullets drawn from
+  that exact version's public release notes and grouped under customer-facing
+  surface headings when useful. Each customer-note item renders as a Markdown
+  blockquote beneath its surface heading, visually distinct from ordinary
+  operational shipment bullets. The operational receipt and any blocker stay
+  first, so a reconciled release may show its notes while deployment is blocked
+  without implying that it is live. Preview-only, unfinished, internal-only,
+  and `release:none` work omits the recap, and developer notes, signatures, and
+  notes from newer versions never appear.
+- Temporary shipment and deployment checkouts now enter the run as cleanup
+  artifacts instead of retained work. If a previously retained clean checkout
+  is already gone, finalization can clear its stale bookkeeping without another
+  confirmation only when its last audited clean revision and current local
+  branch both still exist, are fully included in the finalized target, and have
+  no active claim. Missing branch evidence or unique work remains blocking.
+<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-21T15:10:50-05:00" -->
+
 ## 0.12.6 - 2026-08-20
 
 - Installed-update prompts now put any required multiple-choice answers first,

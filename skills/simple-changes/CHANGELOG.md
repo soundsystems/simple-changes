@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.12.9 - 2026-08-21
+
+- Legacy cleanup can now close while unrelated active claimed work remains
+  preserved, provided two ordered claim inventories match exactly. Any changed
+  claim count or inventory still blocks the close-only recovery.
+
 ## 0.12.8 - 2026-08-21
 
 - Multiple stale preserved-checkout handoffs can now be repaired sequentially

@@ -534,6 +534,76 @@ describe("active integration-loop lease", () => {
     expect(history.removedWorktreePaths).toContain(prepared.path);
   }, 30_000);
 
+  test("closes legacy bookkeeping while stable unrelated claims remain active", () => {
+    const fixture = repository();
+    git(fixture.root, [
+      "remote",
+      "add",
+      "origin",
+      "git@gitlab.com:group/project.git",
+    ]);
+    const targetRevision = git(fixture.root, ["rev-parse", "HEAD"]);
+    const snapshot = remoteSnapshot(targetRevision);
+    const lease = startLoop(fixture.root, "controller", "ship", snapshot);
+    const leasePath = loopLeasePath(
+      captureInventory(fixture.root).repository.commonGitDirectory
+    );
+    const unrelated = join(fixture.base, "unrelated-active-claim");
+    git(fixture.root, ["worktree", "add", "-b", "unrelated-active", unrelated]);
+    claimWorktree(
+      unrelated,
+      "unrelated-owner",
+      unrelated,
+      "codex-desktop",
+      "unrelated-task"
+    );
+    finalizeLoop(
+      fixture.root,
+      lease.runId,
+      "controller",
+      "Remote reconciliation remains pending."
+    );
+    const stored = JSON.parse(readFileSync(leasePath, "utf8")) as LoopLease;
+    Reflect.deleteProperty(stored, "openingRemoteInventory");
+    writeFileSync(leasePath, `${JSON.stringify(stored, null, 2)}\n`, "utf8");
+    startLoop(fixture.root, "recovery-controller", "resume");
+    const claims = claimEvidence(fixture.root);
+    const finalSnapshot = remoteSnapshot(
+      targetRevision,
+      new Date(Date.now() + 1000).toISOString()
+    );
+    const secondSnapshot = {
+      ...finalSnapshot,
+      observedAt: new Date(
+        Date.parse(finalSnapshot.observedAt) + 1000
+      ).toISOString(),
+    };
+    const recovered = recoverPostCleanupLoop(
+      fixture.root,
+      lease.runId,
+      "recovery-controller",
+      {
+        approvedBy: "user",
+        authority: "close-only",
+        ...claims,
+        firstFinalInventory: finalSnapshot,
+        openingEvidenceUnavailableReason:
+          "The legacy runtime did not persist opening provider evidence.",
+        project: "group/project",
+        provider: "gitlab",
+        reason:
+          "Close old bookkeeping while preserving unrelated claimed work.",
+        schemaVersion: 1,
+        secondFinalInventory: secondSnapshot,
+        targetBranch: "main",
+        targetRevision,
+      }
+    );
+    expect(recovered).toMatchObject({ active: false, ok: true });
+    expect(existsSync(unrelated)).toBe(true);
+    expect(readLoopLease(fixture.root)).toBeNull();
+  }, 30_000);
+
   test("retries safely after retiring an absent paused claim", async () => {
     const fixture = repository();
     git(fixture.root, [

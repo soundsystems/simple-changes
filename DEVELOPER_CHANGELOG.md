@@ -1,5 +1,23 @@
 # Developer changelog
 
+## 0.12.10 - 2026-08-21
+
+- Added a narrow post-cleanup recovery exception for
+  `missing-preserved-worktree`: the absent lease entry must be run-created,
+  currently preserved, and bound to a recorded baseline revision contained in
+  the finalized target. Only those exact violations are filtered; every other
+  manifest violation remains blocking.
+- Completion now supplies the filtered recovery verification to the ordinary
+  cleanup-blocker calculation, so a qualifying legacy artifact cannot reappear
+  as a generic blocker after passing the stricter evidence check.
+- Added an end-to-end recovery fixture for an absent, target-contained prepared
+  checkout reclassified as preserved. Existing gates continue to reject
+  nonmatching, unverifiable, or unique checkout state.
+- Advanced the package and CLI to 0.12.10 and installed Simple Changes guidance
+  to version 16 so existing installations receive the narrowly bounded legacy
+  cleanup behavior.
+<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-21T16:19:23-05:00" -->
+
 ## 0.12.9 - 2026-08-21
 
 - Generalized close-only post-cleanup recovery evidence without weakening its

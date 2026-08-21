@@ -4751,12 +4751,39 @@ const postCleanupAbsentPaths = (
     );
   }
   const verification = verificationAgainst(lease, inventory);
-  if (!verification.ok) {
+  const recoverableMissingCreatedWorktrees = new Set(
+    lease.worktrees
+      .filter(
+        (worktree) =>
+          worktree.createdByRun &&
+          worktree.role === "preserved" &&
+          !inventory.worktrees.some(
+            (current) => current.path === worktree.path
+          ) &&
+          targetContainsRevision(
+            inventory.repository.primaryCheckout,
+            targetRevision,
+            worktree.baselineHeadSha
+          )
+      )
+      .map((worktree) => worktree.path)
+  );
+  const remainingViolations = verification.violations.filter(
+    (violation) =>
+      violation.code !== "missing-preserved-worktree" ||
+      !recoverableMissingCreatedWorktrees.has(violation.path)
+  );
+  if (remainingViolations.length > 0) {
     throw new SimpleChangesError(
       "Post-cleanup recovery cannot close while controller manifest violations remain.",
       EXIT_CODES.unsafe
     );
   }
+  const recoveryVerification: LoopVerification = {
+    ...verification,
+    ok: true,
+    violations: [],
+  };
   const coordination = readCoordinationDocumentFromCommonDirectory(
     inventory.repository.commonGitDirectory
   );
@@ -4806,7 +4833,7 @@ const postCleanupAbsentPaths = (
   const blockers = loopCompletionBlockers(
     lease,
     inventory,
-    verification
+    recoveryVerification
   ).filter(
     (blocker) =>
       blocker !== MISSING_OPENING_REMOTE_INVENTORY_BLOCKER &&

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.12.10 - 2026-08-21
+
+- Close-only recovery can now clear legacy bookkeeping for an already-absent
+  temporary checkout that the run created and later reclassified as preserved,
+  but only when its audited baseline is fully contained in the finalized
+  target. Nonmatching, unverifiable, or unique work remains blocking.
+
 ## 0.12.9 - 2026-08-21
 
 - Legacy cleanup can now close while unrelated active claimed work remains

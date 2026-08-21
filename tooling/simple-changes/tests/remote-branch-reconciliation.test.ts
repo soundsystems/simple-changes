@@ -202,6 +202,29 @@ describe("remote branch reconciliation", () => {
     ).toMatchObject({ approvedBy: "user", authority: "close-only" });
   });
 
+  test("accepts stable unrelated active claims during close-only recovery", () => {
+    const first = snapshot("2026-08-15T12:00:00.000Z");
+    const second = snapshot("2026-08-15T12:01:00.000Z");
+    const recoveryReceipt = postCleanupReceipt(first, second);
+    recoveryReceipt.firstClaimObservation.activeClaimCount = 18;
+    recoveryReceipt.secondClaimObservation.activeClaimCount = 18;
+    expect(validatePostCleanupRecovery(recoveryReceipt)).toMatchObject({
+      firstClaimObservation: { activeClaimCount: 18 },
+      secondClaimObservation: { activeClaimCount: 18 },
+    });
+  });
+
+  test("rejects changed active-claim counts during close-only recovery", () => {
+    const first = snapshot("2026-08-15T12:00:00.000Z");
+    const second = snapshot("2026-08-15T12:01:00.000Z");
+    const recoveryReceipt = postCleanupReceipt(first, second);
+    recoveryReceipt.firstClaimObservation.activeClaimCount = 17;
+    recoveryReceipt.secondClaimObservation.activeClaimCount = 18;
+    expect(() => validatePostCleanupRecovery(recoveryReceipt)).toThrow(
+      "matching ordered worktree-claim observations"
+    );
+  });
+
   test("rejects differing post-cleanup inventories", () => {
     const first = snapshot("2026-08-15T12:00:00.000Z");
     const second = snapshot("2026-08-15T12:01:00.000Z");

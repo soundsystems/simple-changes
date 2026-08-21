@@ -1,5 +1,22 @@
 # Developer changelog
 
+## 0.12.9 - 2026-08-21
+
+- Generalized close-only post-cleanup recovery evidence without weakening its
+  stability gate:
+  - `activeClaimCount` in the recovery schema is now a nonnegative integer
+    instead of the constant zero, allowing unrelated active claims to remain
+    preserved during legacy bookkeeping closure.
+  - Validation now requires the active-claim count and claim-inventory digest
+    to match across both ordered observations. A changed count, changed digest,
+    or non-increasing observation time still rejects recovery.
+  - Focused tests accept two stable observations containing 18 unrelated active
+    claims and reject a count change between observations.
+- Advanced the package and CLI to 0.12.9 and installed Simple Changes guidance
+  to version 15 so existing installations receive the stable-claim recovery
+  behavior.
+<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-21T16:00:15-05:00" -->
+
 ## 0.12.8 - 2026-08-21
 
 - Narrowed `acceptPausedWorktreeChange` verification so one exact replacement

@@ -1,6 +1,6 @@
 import type { ChangelogCoordination, RepoPolicy } from "./types.ts";
 
-export const CURRENT_GUIDANCE_VERSION = 14;
+export const CURRENT_GUIDANCE_VERSION = 15;
 
 export type GuidanceUpdateAction =
   | "review-settings"
@@ -424,6 +424,25 @@ const GUIDANCE_UPDATES: GuidanceUpdateDefinition[] = [
       },
     ],
     version: 14,
+  },
+  {
+    changelogReviewRelevant: false,
+    changes: [
+      {
+        kind: "behavior",
+        summary:
+          "Close-only legacy cleanup can now finish while unrelated active worktree claims remain preserved when two ordered claim inventories match exactly; any claim drift still blocks recovery.",
+        version: 15,
+      },
+    ],
+    noticeBullets: [
+      {
+        priority: 115,
+        summary:
+          "Stable unrelated worktree claims no longer prevent legacy cleanup closure, while any changed claim inventory still blocks.",
+      },
+    ],
+    version: 15,
   },
 ];
 

@@ -4760,9 +4760,21 @@ const postCleanupAbsentPaths = (
   const coordination = readCoordinationDocumentFromCommonDirectory(
     inventory.repository.commonGitDirectory
   );
-  if (coordination.claims.some((claim) => claim.state === "active")) {
+  const activeClaims = coordination.claims.filter(
+    (claim) => claim.state === "active"
+  );
+  if (activeClaims.length !== receipt.secondClaimObservation.activeClaimCount) {
     throw new SimpleChangesError(
-      "Post-cleanup recovery cannot close while an active worktree claim remains.",
+      "Post-cleanup recovery cannot close because the active worktree claim count changed after the approved observations.",
+      EXIT_CODES.unsafe
+    );
+  }
+  const currentPaths = new Set(
+    inventory.worktrees.map((worktree) => worktree.path)
+  );
+  if (activeClaims.some((claim) => !currentPaths.has(claim.path))) {
+    throw new SimpleChangesError(
+      "Post-cleanup recovery cannot close while an active claim names an absent worktree.",
       EXIT_CODES.unsafe
     );
   }
@@ -4806,9 +4818,6 @@ const postCleanupAbsentPaths = (
       EXIT_CODES.unsafe
     );
   }
-  const currentPaths = new Set(
-    inventory.worktrees.map((worktree) => worktree.path)
-  );
   return lease.worktrees
     .map((worktree) => worktree.path)
     .filter((path) => !currentPaths.has(path))

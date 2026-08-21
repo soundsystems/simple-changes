@@ -53,7 +53,8 @@
       "required": ["activeClaimCount", "digest", "observedAt"],
       "properties": {
         "activeClaimCount": {
-          "const": 0
+          "type": "integer",
+          "minimum": 0
         },
         "digest": {
           "type": "string",

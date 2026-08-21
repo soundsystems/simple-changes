@@ -106,6 +106,8 @@ export const validatePostCleanupRecovery = (
     );
   }
   if (
+    receipt.firstClaimObservation.activeClaimCount !==
+      receipt.secondClaimObservation.activeClaimCount ||
     receipt.firstClaimObservation.digest !==
       receipt.secondClaimObservation.digest ||
     Date.parse(receipt.secondClaimObservation.observedAt) <=

@@ -4768,11 +4768,31 @@ const postCleanupAbsentPaths = (
       )
       .map((worktree) => worktree.path)
   );
-  const remainingViolations = verification.violations.filter(
-    (violation) =>
-      violation.code !== "missing-preserved-worktree" ||
-      !recoverableMissingCreatedWorktrees.has(violation.path)
+  const currentPrimary = inventory.worktrees.find(
+    (worktree) => worktree.path === inventory.repository.primaryCheckout
   );
+  const recoverableCurrentPrimaryBranch = Boolean(
+    currentPrimary &&
+      currentPrimary.branch === targetBranch &&
+      currentPrimary.headSha === targetRevision &&
+      currentPrimary.changes.length === 0
+  );
+  const remainingViolations = verification.violations.filter((violation) => {
+    if (
+      violation.code === "missing-preserved-worktree" &&
+      recoverableMissingCreatedWorktrees.has(violation.path)
+    ) {
+      return false;
+    }
+    if (
+      violation.code === "registered-worktree-branch-changed" &&
+      violation.path === inventory.repository.primaryCheckout &&
+      recoverableCurrentPrimaryBranch
+    ) {
+      return false;
+    }
+    return true;
+  });
   if (remainingViolations.length > 0) {
     throw new SimpleChangesError(
       "Post-cleanup recovery cannot close while controller manifest violations remain.",

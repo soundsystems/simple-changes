@@ -626,16 +626,20 @@ describe("active integration-loop lease", () => {
     );
     const stored = JSON.parse(readFileSync(leasePath, "utf8")) as LoopLease;
     Reflect.deleteProperty(stored, "openingRemoteInventory");
-    stored.worktrees = stored.worktrees.map((worktree) =>
-      worktree.path === prepared.path
-        ? {
-            ...worktree,
-            agentId: null,
-            mutationAllowed: false,
-            role: "preserved",
-          }
-        : worktree
-    );
+    stored.worktrees = stored.worktrees.map((worktree) => {
+      if (worktree.path === prepared.path) {
+        return {
+          ...worktree,
+          agentId: null,
+          mutationAllowed: false,
+          role: "preserved",
+        };
+      }
+      if (worktree.path === fixture.root) {
+        return { ...worktree, branch: "legacy-controller-branch" };
+      }
+      return worktree;
+    });
     writeFileSync(leasePath, `${JSON.stringify(stored, null, 2)}\n`, "utf8");
     git(fixture.root, ["worktree", "remove", prepared.path]);
     git(fixture.root, ["branch", "-D", prepared.branch]);

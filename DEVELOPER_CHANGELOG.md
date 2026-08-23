@@ -13,6 +13,14 @@
 - Added an end-to-end recovery fixture for an absent, target-contained prepared
   checkout reclassified as preserved. Existing gates continue to reject
   nonmatching, unverifiable, or unique checkout state.
+- Added a second narrow post-cleanup exception for
+  `registered-worktree-branch-changed`: it applies only to the primary checkout
+  when that checkout is clean and its current branch and revision exactly match
+  the finalized target. Any mismatch remains blocking.
+- Extended local-consumer discovery with the four standard per-user global
+  skill roots. Discovered paths are canonicalized by physical target before
+  deduplication, preventing symlink aliases from producing duplicate consumers
+  while ensuring globally installed copies participate in every normal publish.
 - Advanced the package and CLI to 0.12.10 and installed Simple Changes guidance
   to version 16 so existing installations receive the narrowly bounded legacy
   cleanup behavior.

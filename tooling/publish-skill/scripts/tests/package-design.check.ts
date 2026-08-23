@@ -48,6 +48,7 @@ describe("publish-skill package design", () => {
 
     for (const installRoot of [
       ".agents/skills",
+      ".codex/skills",
       ".claude/skills",
       ".cursor/skills",
     ]) {

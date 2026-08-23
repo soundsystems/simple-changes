@@ -137,10 +137,7 @@
     },
     "shipmentScopeRequired": { "type": "boolean" },
     "shipmentScopeFrozenAt": {
-      "anyOf": [
-        { "type": "string", "format": "date-time" },
-        { "type": "null" }
-      ]
+      "anyOf": [{ "type": "string", "format": "date-time" }, { "type": "null" }]
     },
     "shipmentScopeHistory": {
       "type": "array",

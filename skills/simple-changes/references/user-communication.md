@@ -61,6 +61,17 @@ the workflow before they can answer.
 For a blocker, say what is safe, what cannot happen yet, and what resolves it.
 Avoid narrating every failed internal attempt. If nothing is lost, say so.
 
+When completed, verified work is blocked only because another task owns the
+active shipment, do not end with merely “not deployed.” Say that the work is
+preserved and ready, then ask:
+
+> Do you want me to ask that agent to fold this work into the active shipment,
+> or should I wait until that shipment finishes and ship this separately
+> afterward?
+
+The first choice requires explicit approval before contacting the other task.
+The second keeps the work untouched until a fresh shipment can begin.
+
 ## Examples
 
 Avoid:

@@ -183,6 +183,17 @@ while creating controller state is a harness/filesystem permission problem, not
 lock contention. Preserve work in place, fix that exact permission boundary,
 and keep unrelated authoring active.
 
+When completed, verified work is ready but another task already owns the active
+shipping controller, preserve its exact worktree, branch, commit, checks,
+release impact, and constraints instead of starting a second shipment. Ask:
+**Do you want me to ask that agent to fold this work into the active shipment,
+or should I wait until that shipment finishes and ship this separately
+afterward?** Do not contact the other task until the user chooses the first
+option. If approved, send an exact ready-work receipt; that receipt requests
+integration but grants no ownership, merge, deploy, migration, or cleanup
+authority. If the user chooses the second option, leave the work untouched and
+wait for the active shipment to close.
+
 Claims allow healthy concurrent-author edits without pausing. A strict collision
 requires an exact owner claim/pause exchange. Preserved or retained worktrees
 can accept an exact current pause receipt and become immutable preserved state;

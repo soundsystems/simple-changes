@@ -20,6 +20,13 @@ it to the shortest message that covers:
   store releases, or other separately authorized operations;
 - **Preserved or blocked work:** anything discovered but not being taken over.
 
+If completed, verified work is blocked only because a different task owns the
+active shipping controller, include this choice instead of stopping at a
+deployment disclaimer: **Do you want me to ask that agent to fold this work
+into the active shipment, or should I wait until that shipment finishes and
+ship this separately afterward?** Do not contact the other task or assume a
+selection before the user answers.
+
 If opening local changes exist, the brief must be the summary returned after
 `loop record-scope --receipt <change-plan.json>`. Do not push an early subset
 and audit the other worktrees afterward. The recorded plan must first account

@@ -208,7 +208,7 @@ describe("first-run initialization", () => {
           available: true,
           owner: "simple-changelogs",
         },
-        currentVersion: 16,
+        currentVersion: 17,
         headline: "**Simple Changes has recently been updated.**",
         presentationOrder: [
           "required-answers",
@@ -228,7 +228,7 @@ describe("first-run initialization", () => {
     });
     expect(status.guidanceUpdate.summaryBullets).toHaveLength(3);
     expect(status.guidanceUpdate.summaryBullets.join(" ")).toContain(
-      "stale checkout handoffs"
+      "Relinquished controllers"
     );
     expect(status.guidanceUpdate.summaryBullets.join(" ")).toContain(
       "run-created checkout artifacts"

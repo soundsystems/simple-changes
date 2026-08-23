@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.12.11 - 2026-08-23
+
+- Shipment-loop boundaries are now explicit:
+  - Starting `ship`, `integrate`, or another shipment mode no longer silently
+    resumes a matching relinquished loop. Continuing that loop requires an
+    explicit **Resume** action.
+  - The first incomplete finalization freezes the shipment's author and
+    worktree acquisition boundary. A resumed or taken-over controller can
+    finish registered or preparing work and complete reconciliation, review,
+    merge, deployment, cleanup, and closure, but later shipment work must begin
+    in a fresh loop. Existing preservation guarantees remain unchanged.
+<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-23T11:28:39-05:00" -->
+
 ## 0.12.10 - 2026-08-21
 
 - Close-only recovery can now clear legacy bookkeeping for an already-absent

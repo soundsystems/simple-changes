@@ -1305,6 +1305,7 @@ describe("active integration-loop lease", () => {
         },
         ownerAgentId: "first-controller",
         runId: lease.runId,
+        shipmentScopeFrozenAt: expect.any(String),
       },
       outcome: "relinquished",
     });
@@ -1314,6 +1315,10 @@ describe("active integration-loop lease", () => {
     expect(() =>
       guardLoopMutation(fixture.root, lease.runId, "first-controller")
     ).toThrow("relinquished");
+
+    expect(() => startLoop(fixture.root, "next-controller", "ship")).toThrow(
+      "Resume it explicitly"
+    );
 
     const resumed = startLoop(fixture.root, "next-controller", "resume");
     expect(resumed).toMatchObject({
@@ -1337,7 +1342,23 @@ describe("active integration-loop lease", () => {
     expect(
       guardLoopMutation(fixture.root, lease.runId, "next-controller").ok
     ).toBe(true);
-  }, 20_000);
+    expect(
+      prepareAgentWorktree(
+        fixture.root,
+        lease.runId,
+        "author",
+        "unfinished unit"
+      )
+    ).toMatchObject({ created: false, path: prepared.path });
+    expect(() =>
+      prepareAgentWorktree(
+        fixture.root,
+        lease.runId,
+        "later-shipment-author",
+        "unrelated later shipment"
+      )
+    ).toThrow("cannot prepare a new author for a later shipment");
+  }, 40_000);
 
   test("closes a complete loop during terminal finalization", () => {
     const fixture = repository();
@@ -1352,6 +1373,45 @@ describe("active integration-loop lease", () => {
       )
     ).toMatchObject({ blockers: [], outcome: "completed" });
     expect(readLoopLease(fixture.root)).toBeNull();
+  });
+
+  test("does not let a resumed loop record its first scope from later repository state", () => {
+    const fixture = repository();
+    writeFixture(fixture.root, "opening.txt", "opening shipment work\n");
+    const opening = captureInventory(fixture.root);
+    const lease = startLoop(fixture.root, "first-controller", "ship");
+    expect(
+      finalizeLoop(
+        fixture.root,
+        lease.runId,
+        "first-controller",
+        "Controller ended before recording shipment scope."
+      )
+    ).toMatchObject({
+      lease: { shipmentScopeFrozenAt: expect.any(String) },
+      outcome: "relinquished",
+    });
+
+    const statePath = loopLeasePath(
+      captureInventory(fixture.root).repository.commonGitDirectory
+    );
+    const legacyLease = JSON.parse(readFileSync(statePath, "utf8"));
+    Reflect.deleteProperty(legacyLease, "shipmentScopeFrozenAt");
+    writeFileSync(statePath, `${JSON.stringify(legacyLease, null, 2)}\n`);
+
+    expect(startLoop(fixture.root, "next-controller", "resume")).toMatchObject({
+      shipmentScopeFrozenAt: expect.any(String),
+    });
+    const current = captureInventory(fixture.root);
+    const plan = buildPreviewPlan(
+      opening,
+      current,
+      compareSnapshots(opening, current),
+      "Ship the opening work"
+    );
+    expect(() =>
+      recordShipmentScope(fixture.root, lease.runId, "next-controller", plan)
+    ).toThrow("cannot record a first scope from later repository state");
   });
 
   test("automatically prunes a target-contained local branch at completion", () => {
@@ -1956,7 +2016,15 @@ describe("active integration-loop lease", () => {
         "The prior controller disappeared."
       ).ownerAgentId
     ).toBe("replacement-controller");
-  }, 20_000);
+    const resumedStatus = loopStatus(fixture.root);
+    expect(resumedStatus.verification.ok).toBe(true);
+    expect(resumedStatus.lease?.worktrees).not.toContainEqual(
+      expect.objectContaining({ path: concurrentPath })
+    );
+    expect(
+      guardLoopMutation(fixture.root, lease.runId, "replacement-controller").ok
+    ).toBe(true);
+  }, 40_000);
 
   test("persists and resumes Emergency Shipping state under the loop lease", async () => {
     const fixture = repository();

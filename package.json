@@ -1,6 +1,6 @@
 {
   "name": "simple-changes",
-  "version": "0.12.10",
+  "version": "0.12.11",
   "description": "Forge-agnostic skill for focused, verified change proposals.",
   "type": "module",
   "private": false,

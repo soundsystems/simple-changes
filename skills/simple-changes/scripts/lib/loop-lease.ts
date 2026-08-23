@@ -464,6 +464,15 @@ const assertControllerActive = (lease: LoopLease): void => {
   }
 };
 
+const assertNewAuthorPreparationAllowed = (lease: LoopLease): void => {
+  if (lease.shipmentScopeFrozenAt) {
+    throw new SimpleChangesError(
+      `Shipment scope for ${lease.runId} froze when its controller relinquished at ${lease.shipmentScopeFrozenAt}. A resumed controller may finish registered work, reconcile, deploy, clean up, and close this shipment, but cannot prepare a new author for a later shipment. Close this loop and start a fresh one.`,
+      EXIT_CODES.unsafe
+    );
+  }
+};
+
 const transferController = (
   lease: LoopLease,
   inventory: RepositoryInventory,
@@ -1433,10 +1442,7 @@ export const startLoop = (
         ) {
           return existing;
         }
-        if (
-          lifecycle.status === "relinquished" &&
-          (mode === "resume" || mode === existing.mode)
-        ) {
+        if (lifecycle.status === "relinquished" && mode === "resume") {
           return transferController(
             existing,
             inventory,
@@ -1444,6 +1450,12 @@ export const startLoop = (
             "resume",
             lifecycle.reason ?? "Resumed relinquished integration loop.",
             null
+          );
+        }
+        if (lifecycle.status === "relinquished") {
+          throw new SimpleChangesError(
+            `Integration-controller loop ${existing.runId} was relinquished by ${existing.ownerAgentId}. Resume it explicitly to finish or close its frozen shipment; do not reuse it for a later ${mode} shipment.`,
+            EXIT_CODES.unsafe
           );
         }
         throw new SimpleChangesError(
@@ -1761,6 +1773,12 @@ export const recordShipmentScope = (
       if (lease.runId !== runId || lease.ownerAgentId !== agentId) {
         throw new SimpleChangesError(
           `Only ${lease.ownerAgentId} may record shipment scope for ${lease.runId}.`,
+          EXIT_CODES.unsafe
+        );
+      }
+      if (lease.shipmentScopeFrozenAt && !lease.shipmentScope) {
+        throw new SimpleChangesError(
+          `Shipment scope for ${lease.runId} froze when its controller relinquished at ${lease.shipmentScopeFrozenAt}. A resumed controller cannot record a first scope from later repository state; close this loop and start a fresh shipment.`,
           EXIT_CODES.unsafe
         );
       }
@@ -2863,6 +2881,7 @@ export const prepareAgentWorktree = (
       if (pending) {
         return resumePreparation(lease, pending);
       }
+      assertNewAuthorPreparationAllowed(lease);
       const verification = verificationAgainst(lease, inventory);
       if (!verification.ok) {
         throw new SimpleChangesError(
@@ -5094,6 +5113,7 @@ export const finalizeLoop = (
               relinquishedAt: now,
               status: "relinquished",
             },
+            shipmentScopeFrozenAt: lease.shipmentScopeFrozenAt ?? now,
             updatedAt: now,
             worktrees: lease.worktrees.map((worktree) =>
               worktree.role === "controller"

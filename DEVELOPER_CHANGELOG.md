@@ -1,5 +1,22 @@
 # Developer changelog
 
+## 0.12.11 - 2026-08-23
+
+- Tightened shipment-loop lifecycle boundaries:
+  - Mode-matching startup no longer treats a relinquished loop as implicitly
+    resumable; continuation requires the explicit resume path.
+  - The first incomplete finalization permanently freezes author/worktree
+    acquisition for that loop. Resumed and replacement controllers retain full
+    authority to finish already registered or preparing work and complete the
+    existing shipment, but cannot prepare an author for unrelated later work or
+    record a first scope from later repository state.
+  - Added focused regression coverage for explicit resume, registered-author
+    continuation, later-author refusal, and first-scope refusal after freeze.
+  - Advanced the package and CLI to 0.12.11 and installed Simple Changes
+    guidance to version 17 so existing installations receive the explicit
+    resume and frozen-acquisition behavior without weakening work preservation.
+<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-23T11:28:39-05:00" -->
+
 ## 0.12.10 - 2026-08-21
 
 - Added a narrow post-cleanup recovery exception for

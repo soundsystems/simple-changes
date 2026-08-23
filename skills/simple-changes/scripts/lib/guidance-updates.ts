@@ -1,6 +1,6 @@
 import type { ChangelogCoordination, RepoPolicy } from "./types.ts";
 
-export const CURRENT_GUIDANCE_VERSION = 16;
+export const CURRENT_GUIDANCE_VERSION = 17;
 
 export type GuidanceUpdateAction =
   | "review-settings"
@@ -462,6 +462,31 @@ const GUIDANCE_UPDATES: GuidanceUpdateDefinition[] = [
       },
     ],
     version: 16,
+  },
+  {
+    changelogReviewRelevant: false,
+    changes: [
+      {
+        kind: "behavior",
+        summary:
+          "Relinquished integration loops now require an explicit Resume, and their existing author/worktree scope stays frozen so a later shipment cannot silently reuse the old controller.",
+        version: 17,
+      },
+      {
+        kind: "integration",
+        summary:
+          "A resumed controller can finish registered work, reconciliation, deployment, cleanup, and closure, but must close the old loop before preparing authors for another shipment.",
+        version: 17,
+      },
+    ],
+    noticeBullets: [
+      {
+        priority: 125,
+        summary:
+          "Relinquished controllers can finish their existing shipment without accumulating authors and worktrees from later shipments.",
+      },
+    ],
+    version: 17,
   },
 ];
 

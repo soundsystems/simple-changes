@@ -455,6 +455,17 @@ const controllerLifecycle = (lease: LoopLease): LoopControllerLifecycle =>
     status: "active",
   };
 
+const effectiveShipmentScopeFrozenAt = (lease: LoopLease): string | null => {
+  if (lease.shipmentScopeFrozenAt !== undefined) {
+    return lease.shipmentScopeFrozenAt;
+  }
+  const lifecycle = controllerLifecycle(lease);
+  if (lifecycle.status === "relinquished") {
+    return lifecycle.relinquishedAt ?? lifecycle.acquiredAt;
+  }
+  return lifecycle.handoffs.at(0)?.at ?? null;
+};
+
 const assertControllerActive = (lease: LoopLease): void => {
   if (controllerLifecycle(lease).status === "relinquished") {
     throw new SimpleChangesError(
@@ -465,9 +476,10 @@ const assertControllerActive = (lease: LoopLease): void => {
 };
 
 const assertNewAuthorPreparationAllowed = (lease: LoopLease): void => {
-  if (lease.shipmentScopeFrozenAt) {
+  const frozenAt = effectiveShipmentScopeFrozenAt(lease);
+  if (frozenAt) {
     throw new SimpleChangesError(
-      `Shipment scope for ${lease.runId} froze when its controller relinquished at ${lease.shipmentScopeFrozenAt}. A resumed controller may finish registered work, reconcile, deploy, clean up, and close this shipment, but cannot prepare a new author for a later shipment. Close this loop and start a fresh one.`,
+      `Shipment scope for ${lease.runId} froze when its controller relinquished at ${frozenAt}. A resumed controller may finish registered work, reconcile, deploy, clean up, and close this shipment, but cannot prepare a new author for a later shipment. Close this loop and start a fresh one.`,
       EXIT_CODES.unsafe
     );
   }
@@ -490,6 +502,7 @@ const transferController = (
   }
   const now = new Date().toISOString();
   const previous = controllerLifecycle(lease);
+  const frozenAt = effectiveShipmentScopeFrozenAt(lease);
   const mayRebindLegacyDestinations =
     !lease.remoteBindings &&
     (previous.status === "relinquished" ||
@@ -524,6 +537,11 @@ const transferController = (
       inventory.branches.map(({ name, sha }) => ({ name, sha })),
     ownerAgentId: nextAgentId,
     remoteBindings: lease.remoteBindings ?? inventory.repository.remoteBindings,
+    shipmentScopeFrozenAt:
+      frozenAt ??
+      (previous.status === "relinquished"
+        ? (previous.relinquishedAt ?? now)
+        : null),
     updatedAt: now,
     worktrees: lease.worktrees.map((worktree) => {
       if (worktree.path === currentPath) {
@@ -959,7 +977,10 @@ const withConcurrentAuthorAdmissions = (
   lease: LoopLease,
   inventory: RepositoryInventory
 ): LoopLease => {
-  if (lease.concurrentWork !== "allow-claimed") {
+  if (
+    lease.concurrentWork !== "allow-claimed" ||
+    effectiveShipmentScopeFrozenAt(lease)
+  ) {
     return lease;
   }
   const registeredByPath = new Map(
@@ -1082,6 +1103,34 @@ const retainedWorktreeViolations = (
   return violations;
 };
 
+const unregisteredWorktreeViolations = (
+  lease: LoopLease,
+  worktree: WorktreeInventory,
+  preparation: LoopWorktreePreparation | undefined,
+  concurrentClaim: WorktreeClaim | undefined
+): LoopViolation[] => {
+  if (
+    preparation &&
+    worktree.branch === preparation.branch &&
+    worktree.headSha === preparation.baseRevision
+  ) {
+    return [];
+  }
+  if (effectiveShipmentScopeFrozenAt(lease) && concurrentClaim) {
+    return [];
+  }
+  return [
+    {
+      changeDigest: worktree.changeDigest,
+      code: "unregistered-worktree",
+      headSha: worktree.headSha,
+      message:
+        "A worktree appeared after loop start without run registration. Preserve it and prepare an isolated agent worktree instead.",
+      path: worktree.path,
+    },
+  ];
+};
+
 const currentWorktreeViolations = (
   lease: LoopLease,
   worktree: WorktreeInventory,
@@ -1090,23 +1139,12 @@ const currentWorktreeViolations = (
   concurrentClaim: WorktreeClaim | undefined
 ): LoopViolation[] => {
   if (!registered) {
-    if (
-      preparation &&
-      worktree.branch === preparation.branch &&
-      worktree.headSha === preparation.baseRevision
-    ) {
-      return [];
-    }
-    return [
-      {
-        changeDigest: worktree.changeDigest,
-        code: "unregistered-worktree",
-        headSha: worktree.headSha,
-        message:
-          "A worktree appeared after loop start without run registration. Preserve it and prepare an isolated agent worktree instead.",
-        path: worktree.path,
-      },
-    ];
+    return unregisteredWorktreeViolations(
+      lease,
+      worktree,
+      preparation,
+      concurrentClaim
+    );
   }
   const violations = concurrentClaimViolations(
     registered,
@@ -1544,6 +1582,7 @@ export const startLoop = (
         remoteBindings: inventory.repository.remoteBindings,
         runId: `run-${Date.now().toString(36)}-${randomUUID().slice(0, 8)}`,
         schemaVersion: 1,
+        shipmentScopeFrozenAt: null,
         shipmentScopeRequired:
           mode === "ship" && inventory.localChanges.length > 0,
         targetRef: inventory.targetRef,
@@ -1776,9 +1815,10 @@ export const recordShipmentScope = (
           EXIT_CODES.unsafe
         );
       }
-      if (lease.shipmentScopeFrozenAt && !lease.shipmentScope) {
+      const frozenAt = effectiveShipmentScopeFrozenAt(lease);
+      if (frozenAt && !lease.shipmentScope) {
         throw new SimpleChangesError(
-          `Shipment scope for ${lease.runId} froze when its controller relinquished at ${lease.shipmentScopeFrozenAt}. A resumed controller cannot record a first scope from later repository state; close this loop and start a fresh shipment.`,
+          `Shipment scope for ${lease.runId} froze when its controller relinquished at ${frozenAt}. A resumed controller cannot record a first scope from later repository state; close this loop and start a fresh shipment.`,
           EXIT_CODES.unsafe
         );
       }
@@ -5113,7 +5153,7 @@ export const finalizeLoop = (
               relinquishedAt: now,
               status: "relinquished",
             },
-            shipmentScopeFrozenAt: lease.shipmentScopeFrozenAt ?? now,
+            shipmentScopeFrozenAt: effectiveShipmentScopeFrozenAt(lease) ?? now,
             updatedAt: now,
             worktrees: lease.worktrees.map((worktree) =>
               worktree.role === "controller"

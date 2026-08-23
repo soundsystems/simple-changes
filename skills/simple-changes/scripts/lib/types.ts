@@ -954,7 +954,7 @@ export interface LoopLease {
     planDigest: string;
     recordedAt: string;
   };
-  shipmentScopeFrozenAt?: string;
+  shipmentScopeFrozenAt?: string | null;
   shipmentScopeHistory?: Array<{
     planDigest: string;
     recordedAt: string;

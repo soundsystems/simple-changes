@@ -1392,7 +1392,16 @@ describe("active integration-loop lease", () => {
       outcome: "relinquished",
     });
 
-    startLoop(fixture.root, "next-controller", "resume");
+    const statePath = loopLeasePath(
+      captureInventory(fixture.root).repository.commonGitDirectory
+    );
+    const legacyLease = JSON.parse(readFileSync(statePath, "utf8"));
+    Reflect.deleteProperty(legacyLease, "shipmentScopeFrozenAt");
+    writeFileSync(statePath, `${JSON.stringify(legacyLease, null, 2)}\n`);
+
+    expect(startLoop(fixture.root, "next-controller", "resume")).toMatchObject({
+      shipmentScopeFrozenAt: expect.any(String),
+    });
     const current = captureInventory(fixture.root);
     const plan = buildPreviewPlan(
       opening,
@@ -2007,7 +2016,15 @@ describe("active integration-loop lease", () => {
         "The prior controller disappeared."
       ).ownerAgentId
     ).toBe("replacement-controller");
-  }, 20_000);
+    const resumedStatus = loopStatus(fixture.root);
+    expect(resumedStatus.verification.ok).toBe(true);
+    expect(resumedStatus.lease?.worktrees).not.toContainEqual(
+      expect.objectContaining({ path: concurrentPath })
+    );
+    expect(
+      guardLoopMutation(fixture.root, lease.runId, "replacement-controller").ok
+    ).toBe(true);
+  }, 40_000);
 
   test("persists and resumes Emergency Shipping state under the loop lease", async () => {
     const fixture = repository();

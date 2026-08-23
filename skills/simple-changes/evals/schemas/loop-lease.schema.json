@@ -136,7 +136,12 @@
       "$ref": "remote-branch-reconciliation.schema.json"
     },
     "shipmentScopeRequired": { "type": "boolean" },
-    "shipmentScopeFrozenAt": { "type": "string", "format": "date-time" },
+    "shipmentScopeFrozenAt": {
+      "anyOf": [
+        { "type": "string", "format": "date-time" },
+        { "type": "null" }
+      ]
+    },
     "shipmentScopeHistory": {
       "type": "array",
       "items": {

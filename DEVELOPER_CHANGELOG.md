@@ -10,8 +10,14 @@
     authority to finish already registered or preparing work and complete the
     existing shipment, but cannot prepare an author for unrelated later work or
     record a first scope from later repository state.
+  - Explicit Resume and Takeover backfill the freeze timestamp for legacy
+    pre-0.12.11 relinquished leases before continuation.
+  - Frozen loops neither admit nor report late actively claimed concurrent
+    worktrees as manifest violations. Those worktrees remain external and
+    preserved while the older shipment finishes and closes.
   - Added focused regression coverage for explicit resume, registered-author
-    continuation, later-author refusal, and first-scope refusal after freeze.
+    continuation, later-author refusal, first-scope refusal after freeze, and
+    late-claim exclusion.
   - Advanced the package and CLI to 0.12.11 and installed Simple Changes
     guidance to version 17 so existing installations receive the explicit
     resume and frozen-acquisition behavior without weakening work preservation.

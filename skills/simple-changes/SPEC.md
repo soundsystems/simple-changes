@@ -145,6 +145,10 @@
   rejects symlinks and malformed managed blocks, and never creates a missing
   instruction file.
 - Completed-work handoff cannot mutate while readiness confirmation is pending.
+- When another task owns the active shipment, completed verified work remains
+  preserved until the user chooses either an approved ready-work handoff to
+  that exact task or a separate shipment after the active one closes. The
+  handoff request grants no additional shipping authority.
 - UI artifact naming never overrides an established repository convention and
   never controls source, Git, deployment, package, or release versions.
 - Sync never pushes, guesses an ambiguous remote, stashes dirty work, rewrites

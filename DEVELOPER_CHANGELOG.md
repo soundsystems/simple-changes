@@ -1,5 +1,25 @@
 # Developer changelog
 
+## 0.12.12 - 2026-08-23
+
+- Added an explicit ready-work handoff boundary for completed, verified work
+  blocked only by another task’s active shipment:
+  - The agent preserves the exact work and asks whether to request inclusion in
+    the active shipment or wait and ship separately afterward. It cannot contact
+    the active owner before the user chooses.
+  - An approved handoff receipt identifies the exact repository, worktree,
+    branch, commit, completed checks, release impact, migrations, and deployment
+    constraints. The receipt grants no ownership, merge, deployment, migration,
+    cleanup, or other shipment authority.
+  - When the active shipment owner cannot be resolved, the agent emits the same
+    bounded receipt for manual delivery rather than guessing a recipient.
+- Added an evaluation journey covering the ready-work choice, the no-contact
+  boundary, approved receipt contents, and unknown-owner fallback.
+- Advanced the package and CLI to 0.12.12 and installed Simple Changes guidance
+  to version 18 so existing installations receive the explicit handoff
+  boundary.
+<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-23T12:33:09-05:00" -->
+
 ## 0.12.11 - 2026-08-23
 
 - Tightened shipment-loop lifecycle boundaries:

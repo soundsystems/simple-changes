@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.12.12 - 2026-08-23
+
+- Completed, verified work blocked only by another task’s active shipment now
+  stays preserved while Simple Changes asks:
+  > Do you want me to ask that agent to fold this work into the active shipment,
+  > or should I wait until that shipment finishes and ship this separately
+  > afterward?
+- No agent is contacted before that explicit choice. An approved handoff carries
+  an exact ready-work receipt without granting ownership, merge, deployment,
+  migration, or cleanup authority; when the active owner is unknown, Simple
+  Changes provides the receipt for manual delivery instead.
+<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-23T12:33:09-05:00" -->
+
 ## 0.12.11 - 2026-08-23
 
 - Shipment-loop boundaries are now explicit:

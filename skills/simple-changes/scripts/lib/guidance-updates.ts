@@ -1,6 +1,6 @@
 import type { ChangelogCoordination, RepoPolicy } from "./types.ts";
 
-export const CURRENT_GUIDANCE_VERSION = 17;
+export const CURRENT_GUIDANCE_VERSION = 18;
 
 export type GuidanceUpdateAction =
   | "review-settings"
@@ -487,6 +487,31 @@ const GUIDANCE_UPDATES: GuidanceUpdateDefinition[] = [
       },
     ],
     version: 17,
+  },
+  {
+    changelogReviewRelevant: false,
+    changes: [
+      {
+        kind: "behavior",
+        summary:
+          "Ready work blocked by another active shipping task now offers an explicit choice between an approved handoff into that shipment and a separate shipment afterward.",
+        version: 18,
+      },
+      {
+        kind: "integration",
+        summary:
+          "Cross-task ready-work receipts preserve exact work and request integration without silently contacting another task or granting additional shipping authority.",
+        version: 18,
+      },
+    ],
+    noticeBullets: [
+      {
+        priority: 130,
+        summary:
+          "Finished work can be offered to the active shipping task with your approval or kept for a separate shipment afterward.",
+      },
+    ],
+    version: 18,
   },
 ];
 

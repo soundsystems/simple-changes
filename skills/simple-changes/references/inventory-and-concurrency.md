@@ -182,6 +182,25 @@ Read-only review can inspect commit objects or provider diffs without an
 authoring worktree. The moment a reviewer needs to make a change, it becomes an
 author and must prepare an isolated worktree first.
 
+## Ready work blocked by another shipping controller
+
+When a separate task already owns the active shipping controller, finished and
+verified work must remain on its exact worktree, branch, and commit. Do not
+start a competing shipment. Offer the user two choices in plain language:
+
+- **Fold into the active shipment:** with explicit approval, contact the exact
+  owning task and send a ready-work receipt containing the repository,
+  worktree, branch, commit, scope, completed checks, release impact, migrations,
+  deployment constraints, and any unresolved authority.
+- **Ship separately afterward:** preserve the claim and work unchanged, wait
+  for the active shipment to close, then begin a fresh shipment.
+
+Do not message another task or imply that it accepted, integrated, shipped, or
+deployed the work before confirmation. A ready-work receipt is coordination,
+not authority to take ownership, merge, deploy, apply migrations, or clean up.
+If the host cannot identify and contact the exact owning task, give the user a
+manual receipt to forward; never guess the recipient.
+
 ## Owner claims and safe pauses
 
 Every owner-created worktree should be claimed immediately with `worktree

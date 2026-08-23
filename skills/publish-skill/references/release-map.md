@@ -71,7 +71,10 @@ bun <publish-skill-directory>/scripts/discover-local-consumers.ts \
 
 Repeat `--skill` and `--root` as needed. The inventory includes exact-source
 lock entries and matching installed directories under `.agents/skills`,
-`.claude/skills`, and `.cursor/skills`. Classify each result:
+`.codex/skills`, `.claude/skills`, and `.cursor/skills`. It automatically
+includes those four paths beneath the current user's home directory, so global
+installations are not missed when no workspace root contains them. Classify
+each result:
 
 - `installed`: lock and one installed package both exist;
 - `multiple-installs`: one lock resolves to more than one distinct physical
@@ -82,8 +85,9 @@ lock entries and matching installed directories under `.agents/skills`,
   verify its identity before changing it.
 
 Do not infer source identity from a similar name. Compare the complete package
-when an unlocked install or alias lacks provenance. Search global skill roots
-explicitly when they are in scope.
+when an unlocked install or alias lacks provenance. The standard global skill roots
+are already part of the inventory; pass additional roots explicitly only for
+nonstandard locations.
 
 Group duplicate checkouts and worktrees by repository identity before creating
 changes. Record divergent copies as a conflict to reconcile, not as independent

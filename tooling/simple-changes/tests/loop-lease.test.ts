@@ -604,6 +604,78 @@ describe("active integration-loop lease", () => {
     expect(readLoopLease(fixture.root)).toBeNull();
   }, 30_000);
 
+  test("recovers an absent target-contained run-created checkout reclassified as preserved", () => {
+    const fixture = repository();
+    git(fixture.root, [
+      "remote",
+      "add",
+      "origin",
+      "git@gitlab.com:group/project.git",
+    ]);
+    const targetRevision = git(fixture.root, ["rev-parse", "HEAD"]);
+    const snapshot = remoteSnapshot(targetRevision);
+    const lease = startLoop(fixture.root, "controller", "ship", snapshot);
+    const prepared = prepareAgentWorktree(
+      fixture.root,
+      lease.runId,
+      "legacy-preserved-author",
+      "legacy preserved cleanup"
+    );
+    const leasePath = loopLeasePath(
+      captureInventory(fixture.root).repository.commonGitDirectory
+    );
+    const stored = JSON.parse(readFileSync(leasePath, "utf8")) as LoopLease;
+    Reflect.deleteProperty(stored, "openingRemoteInventory");
+    stored.worktrees = stored.worktrees.map((worktree) => {
+      if (worktree.path === prepared.path) {
+        return {
+          ...worktree,
+          agentId: null,
+          mutationAllowed: false,
+          role: "preserved",
+        };
+      }
+      if (worktree.path === fixture.root) {
+        return { ...worktree, branch: "legacy-controller-branch" };
+      }
+      return worktree;
+    });
+    writeFileSync(leasePath, `${JSON.stringify(stored, null, 2)}\n`, "utf8");
+    git(fixture.root, ["worktree", "remove", prepared.path]);
+    git(fixture.root, ["branch", "-D", prepared.branch]);
+    const finalSnapshot = remoteSnapshot(
+      targetRevision,
+      new Date(Date.now() + 1000).toISOString()
+    );
+    const recovered = recoverPostCleanupLoop(
+      fixture.root,
+      lease.runId,
+      "controller",
+      {
+        approvedBy: "user",
+        authority: "close-only",
+        ...claimEvidence(fixture.root),
+        firstFinalInventory: finalSnapshot,
+        openingEvidenceUnavailableReason:
+          "The legacy runtime did not persist opening provider evidence.",
+        project: "group/project",
+        provider: "gitlab",
+        reason: "The absent run-created checkout is target-contained.",
+        schemaVersion: 1,
+        secondFinalInventory: {
+          ...finalSnapshot,
+          observedAt: new Date(
+            Date.parse(finalSnapshot.observedAt) + 1000
+          ).toISOString(),
+        },
+        targetBranch: "main",
+        targetRevision,
+      }
+    );
+    expect(recovered).toMatchObject({ active: false, ok: true });
+    expect(readLoopLease(fixture.root)).toBeNull();
+  }, 30_000);
+
   test("retries safely after retiring an absent paused claim", async () => {
     const fixture = repository();
     git(fixture.root, [

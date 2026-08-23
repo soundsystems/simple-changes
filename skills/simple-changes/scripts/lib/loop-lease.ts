@@ -4751,12 +4751,59 @@ const postCleanupAbsentPaths = (
     );
   }
   const verification = verificationAgainst(lease, inventory);
-  if (!verification.ok) {
+  const recoverableMissingCreatedWorktrees = new Set(
+    lease.worktrees
+      .filter(
+        (worktree) =>
+          worktree.createdByRun &&
+          worktree.role === "preserved" &&
+          !inventory.worktrees.some(
+            (current) => current.path === worktree.path
+          ) &&
+          targetContainsRevision(
+            inventory.repository.primaryCheckout,
+            targetRevision,
+            worktree.baselineHeadSha
+          )
+      )
+      .map((worktree) => worktree.path)
+  );
+  const currentPrimary = inventory.worktrees.find(
+    (worktree) => worktree.path === inventory.repository.primaryCheckout
+  );
+  const recoverableCurrentPrimaryBranch = Boolean(
+    currentPrimary &&
+      currentPrimary.branch === targetBranch &&
+      currentPrimary.headSha === targetRevision &&
+      currentPrimary.changes.length === 0
+  );
+  const remainingViolations = verification.violations.filter((violation) => {
+    if (
+      violation.code === "missing-preserved-worktree" &&
+      recoverableMissingCreatedWorktrees.has(violation.path)
+    ) {
+      return false;
+    }
+    if (
+      violation.code === "registered-worktree-branch-changed" &&
+      violation.path === inventory.repository.primaryCheckout &&
+      recoverableCurrentPrimaryBranch
+    ) {
+      return false;
+    }
+    return true;
+  });
+  if (remainingViolations.length > 0) {
     throw new SimpleChangesError(
       "Post-cleanup recovery cannot close while controller manifest violations remain.",
       EXIT_CODES.unsafe
     );
   }
+  const recoveryVerification: LoopVerification = {
+    ...verification,
+    ok: true,
+    violations: [],
+  };
   const coordination = readCoordinationDocumentFromCommonDirectory(
     inventory.repository.commonGitDirectory
   );
@@ -4806,7 +4853,7 @@ const postCleanupAbsentPaths = (
   const blockers = loopCompletionBlockers(
     lease,
     inventory,
-    verification
+    recoveryVerification
   ).filter(
     (blocker) =>
       blocker !== MISSING_OPENING_REMOTE_INVENTORY_BLOCKER &&

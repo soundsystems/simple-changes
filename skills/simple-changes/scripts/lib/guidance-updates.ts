@@ -1,6 +1,6 @@
 import type { ChangelogCoordination, RepoPolicy } from "./types.ts";
 
-export const CURRENT_GUIDANCE_VERSION = 15;
+export const CURRENT_GUIDANCE_VERSION = 16;
 
 export type GuidanceUpdateAction =
   | "review-settings"
@@ -443,6 +443,25 @@ const GUIDANCE_UPDATES: GuidanceUpdateDefinition[] = [
       },
     ],
     version: 15,
+  },
+  {
+    changelogReviewRelevant: false,
+    changes: [
+      {
+        kind: "behavior",
+        summary:
+          "Close-only recovery can now reconcile an absent run-created checkout reclassified as preserved only when its audited baseline is contained in the finalized target; every nonmatching or unverifiable case still blocks.",
+        version: 16,
+      },
+    ],
+    noticeBullets: [
+      {
+        priority: 120,
+        summary:
+          "Proven target-contained run-created checkout artifacts no longer strand legacy cleanup, while unverifiable or unique work remains blocked.",
+      },
+    ],
+    version: 16,
   },
 ];
 

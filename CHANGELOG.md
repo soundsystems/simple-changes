@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.12.10 - 2026-08-21
+
+- Close-only recovery can now clear legacy bookkeeping for an already-absent
+  temporary checkout that the run created and later reclassified as preserved,
+  but only when its audited baseline is fully contained in the finalized
+  target. Nonmatching, unverifiable, or unique work remains blocking.
+  Recovery can also accept a clean primary checkout already at the exact
+  finalized target branch and revision.
+- Skill publishing now automatically finds per-user global installations under
+  `~/.agents/skills`, `~/.codex/skills`, `~/.claude/skills`, and
+  `~/.cursor/skills`, so normal publishes update them without a manual root.
+  Symlinked aliases resolve to one physical installation.
+<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-21T16:19:23-05:00" -->
+
 ## 0.12.9 - 2026-08-21
 
 - Legacy cleanup can now close while unrelated active claimed work remains

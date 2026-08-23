@@ -18,6 +18,7 @@ const script = resolve(
   import.meta.dir,
   "../../../../skills/publish-skill/scripts/discover-local-consumers.ts"
 );
+const bun = process.execPath;
 
 const writeJson = async (path: string, value: unknown): Promise<void> => {
   await mkdir(resolve(path, ".."), { recursive: true });
@@ -30,7 +31,7 @@ const install = async (repository: string, skill: string): Promise<void> => {
 
 const installAt = async (
   repository: string,
-  agentRoot: ".agents" | ".claude",
+  agentRoot: ".agents" | ".claude" | ".codex",
   skill: string
 ): Promise<void> => {
   const directory = join(repository, agentRoot, "skills", skill);
@@ -83,7 +84,7 @@ describe("discover-local-consumers", () => {
     ]);
 
     const result = spawnSync(
-      "bun",
+      bun,
       [
         script,
         "--source",
@@ -118,7 +119,7 @@ describe("discover-local-consumers", () => {
 
   test("ignores other sources and unrequested installed skill names", () => {
     const result = spawnSync(
-      "bun",
+      bun,
       [
         script,
         "--source",
@@ -147,7 +148,7 @@ describe("discover-local-consumers", () => {
     ]);
 
     const result = spawnSync(
-      "bun",
+      bun,
       [
         script,
         "--source",
@@ -186,7 +187,7 @@ describe("discover-local-consumers", () => {
     );
 
     const result = spawnSync(
-      "bun",
+      bun,
       [
         script,
         "--source",
@@ -233,7 +234,7 @@ describe("discover-local-consumers", () => {
     ]);
 
     const result = spawnSync(
-      "bun",
+      bun,
       [
         script,
         "--source",
@@ -266,5 +267,55 @@ describe("discover-local-consumers", () => {
         symlinkPaths: [],
       },
     ]);
+  });
+
+  test("automatically discovers global installs and deduplicates aliases", async () => {
+    const home = join(fixtureRoot, "global-home");
+    await installAt(home, ".agents", "example-skill");
+    await mkdir(join(home, ".codex", "skills"), { recursive: true });
+    await symlink(
+      "../../.agents/skills/example-skill",
+      join(home, ".codex", "skills", "example-skill")
+    );
+
+    const result = spawnSync(
+      bun,
+      [
+        script,
+        "--source",
+        "soundsystems/example",
+        "--skill",
+        "example-skill",
+        "--root",
+        home,
+        "--json",
+      ],
+      { encoding: "utf8", env: { ...process.env, HOME: home } }
+    );
+
+    expect(result.status).toBe(0);
+    const output = JSON.parse(result.stdout) as {
+      consumers: Array<{
+        installationCount: number;
+        installPaths: string[];
+        repositoryRoot: string;
+        state: string;
+        symlinkPaths: string[];
+      }>;
+      globalSearchRoots: string[];
+    };
+    expect(output.globalSearchRoots).toContain(join(home, ".agents", "skills"));
+    expect(
+      output.consumers.find((consumer) => consumer.repositoryRoot === home)
+    ).toMatchObject({
+      installationCount: 1,
+      installPaths: [
+        join(home, ".agents", "skills", "example-skill"),
+        join(home, ".codex", "skills", "example-skill"),
+      ],
+      repositoryRoot: home,
+      state: "unlocked-install",
+      symlinkPaths: [join(home, ".codex", "skills", "example-skill")],
+    });
   });
 });

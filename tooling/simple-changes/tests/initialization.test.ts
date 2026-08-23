@@ -208,7 +208,7 @@ describe("first-run initialization", () => {
           available: true,
           owner: "simple-changelogs",
         },
-        currentVersion: 15,
+        currentVersion: 16,
         headline: "**Simple Changes has recently been updated.**",
         presentationOrder: [
           "required-answers",
@@ -231,7 +231,7 @@ describe("first-run initialization", () => {
       "stale checkout handoffs"
     );
     expect(status.guidanceUpdate.summaryBullets.join(" ")).toContain(
-      "legacy cleanup closure"
+      "run-created checkout artifacts"
     );
     expect(status.guidanceUpdate.recommendedChanges[0]).toMatchObject({
       question: "How should changelog work be handled?",

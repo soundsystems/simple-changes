@@ -19,7 +19,9 @@ repositories:
 - the canonical repository, skill directory, remote, and default branch;
 - each downstream fork repository, fork path, local adaptations, and checks;
 - every local consumer with an exact-source lock entry or matching installed
-  package, including validation-only and lock-only consumers;
+  package, including validation-only and lock-only consumers. Per-user global
+  roots under `~/.agents/skills`, `~/.codex/skills`, `~/.claude/skills`, and
+  `~/.cursor/skills` are discovered automatically;
 - the provider CLI, merge policy, and repository-native validation commands.
 
 Do not ask for values that repository evidence resolves. Ask one concise

@@ -1,6 +1,7 @@
 node_modules/
 coverage/
 dist/
+.claude/worktrees/
 *.log
 .DS_Store
 /BUILD_PLAN.md

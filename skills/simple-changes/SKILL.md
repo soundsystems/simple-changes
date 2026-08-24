@@ -60,6 +60,12 @@ remains the visible team policy and overrides global personal defaults.
 - **Follow repository convention:** Recommended. Use the established format;
   ask if none exists.
 - **Number and date:** Use zero-padded sequence and ISO date names.
+- **Balanced:** Work consecutively by default; use parallel claimed worktrees
+  when they save meaningful time or isolation is necessary, and ask only when
+  the tradeoff is substantial.
+- **Save space:** Prefer consecutive PRs or MRs and minimize extra worktrees.
+- **Save time:** Prefer parallel claimed worktrees for independent PRs or MRs,
+  while confirming unusually expensive fan-out.
 
 Ordinary UI source files, Git revisions, deployment identities, package
 versions, and release versions do not use this preference.
@@ -101,6 +107,11 @@ from [installed guidance updates](references/guidance-updates.md) before saving.
 Default every user-facing message to plain language, even when the underlying
 workflow is technical. Lead with what happened, what it means for the user, and
 what happens next. Keep most progress updates to one to three short sentences.
+When the target remote is detected as GitHub, call change requests **PRs** in
+all user-facing copy. When it is detected as GitLab, call them **MRs**. Use the
+provider-neutral **change requests** only when the target forge is unknown or
+uses different terminology. Internal schemas may retain provider-neutral
+proposal names.
 Do not lead with internal terms such as controller, lease, ledger, digest,
 relinquished, target-contained, or mutation path. Translate them into ordinary
 language first.
@@ -193,6 +204,14 @@ option. If approved, send an exact ready-work receipt; that receipt requests
 integration but grants no ownership, merge, deploy, migration, or cleanup
 authority. If the user chooses the second option, leave the work untouched and
 wait for the active shipment to close.
+
+Never create a standalone clone of the same repository to bypass its active
+controller, worktree claims, or cleanup state. A separate clone has a different
+common Git directory and can move the same remote target without updating the
+active lease, stranding otherwise completed bookkeeping. Use a claimed worktree
+under the existing common Git directory. Before a later shipment moves the
+same remote target, resume and close or explicitly preserve the earlier
+controller through its supported workflow.
 
 Claims allow healthy concurrent-author edits without pausing. A strict collision
 requires an exact owner claim/pause exchange. Preserved or retained worktrees

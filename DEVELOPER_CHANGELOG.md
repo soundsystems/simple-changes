@@ -1,5 +1,25 @@
 # Developer changelog
 
+## Unreleased
+
+- Added the backward-compatible `proposalScheduling` repository policy and
+  setup flag with `balanced`, `consecutive`, and `parallel` values. Existing
+  policies default to `balanced`; the schema, stored-policy parser, onboarding
+  types, CLI validation, setup documentation, and focused tests cover the new
+  preference.
+- Setup now derives the target forge from the selected remote binding and
+  threads it through the first-use introduction, finish paths and choices,
+  scheduling prompt, and confirmation summary. Rendering consistently maps
+  GitHub to PR/PRs, GitLab to MR/MRs, and unknown providers to change
+  request/change requests while internal proposal schemas remain
+  provider-neutral.
+- Documented that parallel authors require distinct claimed worktrees under the
+  existing common Git directory, that cleanup removes dependencies and build
+  artifacts only with a proven-safe completed worktree, and that a standalone
+  clone must not bypass an active controller or advance the same remote target
+  outside its lease.
+<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-23T13:39:21-05:00" -->
+
 ## 0.12.12 - 2026-08-23
 
 - Added an explicit ready-work handoff boundary for completed, verified work

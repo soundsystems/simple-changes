@@ -350,6 +350,37 @@ describe("onboarding conversation", () => {
     expect(selection).toMatchObject({ scope: "run", setupStyle: "run" });
   });
 
+  test("honors an explicit scheduling input without prompting in non-interactive flows", async () => {
+    const questions: string[] = [];
+    const selection = await collectOnboardingSelection(
+      DEFAULT_POLICY,
+      {
+        defaultFinish: "open-change-request",
+        gitPushAuthorization: "ask",
+        proposalScheduling: "parallel",
+        questions: "blocking-only",
+        scope: "run",
+      },
+      {
+        choose: (question, _choices, defaultValue) => {
+          questions.push(question);
+          return Promise.resolve(defaultValue);
+        },
+        confirm: () => Promise.resolve(true),
+      },
+      undefined,
+      "/work/project",
+      false,
+      { forgeProvider: "github", showFirstScreen: false }
+    );
+
+    expect(questions).not.toContain(
+      "When there are multiple independent PRs, what should I optimize for?"
+    );
+    expect(selection.policy.proposalScheduling).toBe("parallel");
+    expect(selection.summary).toContain("Multiple PRs");
+  });
+
   test("asks for scheduling once and uses provider-specific PR or MR terms", async () => {
     const run = async (forgeProvider: "github" | "gitlab") => {
       const questions: string[] = [];

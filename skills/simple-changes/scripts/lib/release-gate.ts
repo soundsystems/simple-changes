@@ -33,6 +33,7 @@ export const packagedChangelogProtocol = (): ChangelogConsumerCapabilities => ({
     "public-version-policy",
     "classify-prepare-verify",
     "multi-train-receipts",
+    "guidance-update-notices",
   ],
   receiptVersions: [1, 2],
   requestVersions: [1],

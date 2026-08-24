@@ -207,8 +207,9 @@ read-only work, or incomplete verification.
 5. Run proportionate repository-native checks and distinguish introduced from
    pre-existing failures.
 6. Coordinate changelog ownership without authoring release text. Negotiate
-   supported versions and features from the provider's declared marker, and
-   accept only current locally validated receipts.
+   supported versions and features from the provider's declared marker when
+   present (inferred discovery is reported as inferred), and accept only
+   current locally validated receipts.
 7. Create/update neutral proposals with real Markdown newlines, re-read stored
    source/rendering, resolve checks/discussions/review, and merge only the exact
    approved head.

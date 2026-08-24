@@ -35,6 +35,8 @@
   and repository-recorded guidance versions.
 - When multiple UI iterations will be saved, the repository convention or
   closed fallback artifact-naming preference.
+- When multiple independent proposals will be authored, the saved
+  `proposalScheduling` preference (`balanced`, `consecutive`, or `parallel`).
 
 ## Outputs
 
@@ -47,7 +49,8 @@
 - For Sync, the fetched target and resulting or preserved local branch state.
 - For Ship, a pre-mutation scope brief and a final shipped-state receipt with
   review-driven deltas.
-- For public releases, negotiated changelog protocol evidence, phased
+- For public releases, negotiated changelog protocol evidence — shared
+  request/receipt versions plus advisory `schemaDigestStatus` — phased
   classification/preparation/verification receipts, and a composite delivery
   receipt binding version identity to the deployed revision.
 - For Emergency Ship, a run-only urgency classification, revision-bound
@@ -172,6 +175,16 @@
   destructive, irreversible, unbounded, lock-heavy, unprotected, or
   target-mismatched operations. Other high-risk actions retain independent
   authority checks.
+- `proposalScheduling` controls only whether independent proposals are
+  authored consecutively or in parallel claimed worktrees. It never shares a
+  checkout, weakens controller guards or worktree isolation, changes cleanup
+  safety, or grants provider mutation authority.
+- Changelog compatibility is decided by request/receipt version overlap plus
+  local schema validation at use time; advertised schema digests are recorded
+  as advisory `schemaDigestStatus` and never block a version-compatible peer.
+  Provider identity prefers the machine-readable `changelog-provider.json`
+  marker; marker-less discovery is reported as `providerEvidence: "inferred"`,
+  never presented as a declaration.
 - Public-version preferences remain exclusively owned by Simple Changelogs.
   Version direction is distinct from a blocker, approvals are digest- and
   revision-bound, and final deployment requires the verified reconciliation

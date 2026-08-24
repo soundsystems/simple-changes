@@ -106,7 +106,9 @@ operative for the current request and repository evidence: skip the production
 and shipping-mode questions unless the finish reaches Ship, skip the migration
 question unless migration tooling or pending migrations were discovered, skip
 the changelog question unless changelog surfaces or a compatible skill were
-found, and skip UI artifact naming unless several UI artifacts will be saved.
+found, skip the scheduling question unless the run will produce multiple
+independent PRs or MRs, and skip UI artifact naming unless several UI
+artifacts will be saved.
 A skipped question is asked lazily at the first moment it becomes operative
 (for example, the production question on the first Ship request); record the
 answer then. Two questions are always asked: the finish and preference storage.
@@ -157,6 +159,12 @@ Offer option 3 only when **Deploy automatically** was selected in the
 production question; otherwise mention in one sentence that an advanced
 break-glass mode exists and requires automatic production deployment.
 
+Do not require a second “authorized for break-glass” phrase when saved
+break-glass ordering and automatic production authority are both effective.
+Native provider rollback is sufficient and does not require a blocking
+pre-deploy lookup. Explicit current-request direction always overrides saved
+preferences.
+
 Then, only when this run will actually produce more than one independent
 change request, ask **When there are multiple independent change requests,
 what should I optimize for? Choose one:** Use **PRs** for a detected GitHub
@@ -173,16 +181,10 @@ question and choices.
 
 Explain that Git history is shared, while dependencies and generated output may
 be duplicated. This is a scheduling preference, not a relaxation of worktree
-isolation after parallel work is selected. Remove a completed worktree and its
-local dependencies automatically only after its work is proven integrated.
-Preserve active, retained, or uncertain worktrees and their dependencies. Do
-not add a recurring dependency-cleanup question.
-
-Do not require a second “authorized for break-glass” phrase when saved
-break-glass ordering and automatic production authority are both effective.
-Native provider rollback is sufficient and does not require a blocking
-pre-deploy lookup. Explicit current-request direction always overrides saved
-preferences.
+isolation after parallel work is selected; completed-worktree cleanup follows
+the normal proven-integration rules in
+[inventory and concurrency](inventory-and-concurrency.md). Do not add a
+recurring dependency-cleanup question.
 
 Then ask **Should Simple Changes configure this harness for routine repository
 pushes? Choose one:**

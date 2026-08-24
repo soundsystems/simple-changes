@@ -1271,6 +1271,9 @@ export const collectOnboardingSelection = async (
     customize,
     conversation.forgeProvider
   );
+  // Prompted only in the full interactive walkthrough; agent-driven flows
+  // resolve this in chat and pass --proposal-scheduling explicitly, which
+  // selectProposalScheduling honors before the gate.
   const proposalScheduling = await selectProposalScheduling(
     defaults,
     inputs,

@@ -1646,7 +1646,7 @@ const runChangelogNegotiation = (options: CliOptions): void => {
     result,
     options.json,
     result.compatible
-      ? `Negotiated changelog request v${result.requestVersion} and receipt v${result.receiptVersion}.\n`
+      ? `Negotiated changelog request v${result.requestVersion} and receipt v${result.receiptVersion} (schema digests: ${result.schemaDigestStatus}).\n`
       : `Changelog negotiation failed: ${result.reasonCode} (${result.requiredAction}).\n`
   );
   if (!result.compatible) {

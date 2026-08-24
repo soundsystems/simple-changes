@@ -145,12 +145,13 @@ describe("changelog protocol negotiation", () => {
     });
   });
 
-  test("accepts producer capability supersets and negotiates only shared features", () => {
+  test("negotiates only the features both sides support", () => {
     const consumer = packagedChangelogProtocol();
+    expect(consumer.features).toContain("guidance-update-notices");
     expect(
       negotiateChangelogProtocol({
         distribution: "skill-repository",
-        features: [...consumer.features, "guidance-update-notices"],
+        features: ["public-version-policy", "classify-prepare-verify"],
         guidanceVersion: 8,
         provider: "simple-changelogs",
         receiptVersions: [1, 2],
@@ -160,7 +161,7 @@ describe("changelog protocol negotiation", () => {
       })
     ).toEqual({
       compatible: true,
-      features: consumer.features,
+      features: ["public-version-policy", "classify-prepare-verify"],
       reasonCode: null,
       receiptVersion: 2,
       requestVersion: 1,

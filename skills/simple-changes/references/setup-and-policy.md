@@ -218,6 +218,9 @@ shipping order explicitly.
 For a task that will save multiple UI artifact iterations, also supply
 `--ui-artifacts` and
 `--ui-versioning repository|number-and-date|date-only|number-only`.
+When a run will author multiple independent proposals, supply
+`--proposal-scheduling balanced|consecutive|parallel` to select the saved
+scheduling preference.
 `SIMPLE_CHANGES_CONFIG_DIR` may override the personal configuration root for
 isolated automation and tests.
 

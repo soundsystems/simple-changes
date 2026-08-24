@@ -10,9 +10,14 @@ units, and validate the result without mutating Git or contacting a provider.
 
 ## Quick start
 
-Requires [Bun](https://bun.sh/) 1.2 or later and Git.
+Requires [Bun](https://bun.sh/) 1.2 or later and Git. The CLI is a Bun
+TypeScript entry point; Node alone cannot run it.
+
+Clone this repository, then from its root:
 
 ```sh
+git clone https://gitlab.com/soundsystems/simple-changes.git
+cd simple-changes
 bun install
 bun run simple-changes initialize --mode sync
 bun run simple-changes initialize --mode queue
@@ -78,7 +83,9 @@ propagation workflow.
 Repository names and paths are discovered at runtime and are not embedded in
 the public package.
 
-Install that workflow project-locally from a source checkout:
+Install that workflow project-locally from a source checkout, using the
+third-party [`skills` CLI](https://www.npmjs.com/package/skills) (or copy the
+skill directory manually as shown in Quick start):
 
 ```sh
 bunx skills add . --skill publish-skill --agent codex -y
@@ -231,10 +238,13 @@ simple-changes help
 ```
 
 `KIND` is one of `repo-policy`, `changelog-capabilities`, `changelog-request`,
-`changelog-receipt`, `initialization`, `inventory`, `change-plan`, `run-state`,
-`provider-receipt`, `release-delivery-receipt`,
-`remote-branch-reconciliation`, `release-consistency`, `release-notes`,
-`loop-lease`, or `worktree-coordination`.
+`changelog-receipt`, `emergency-shipping`, `initialization`, `inventory`,
+`change-plan`, `run-state`, `permission-bundle`, `provider-receipt`,
+`release-delivery-receipt`, `remote-branch-reconciliation`,
+`release-consistency`, `release-notes`, `loop-lease`, `migration-review`,
+`migration-pending`, `migration-apply-plan`, `post-cleanup-recovery`,
+`shipment-outcome`, or `worktree-coordination` — the schema filenames under
+`skills/simple-changes/evals/schemas/`.
 
 Worktree claims and pause receipts are local, mode-`0600` coordination evidence
 stored beneath the repository's common Git directory. A claim records only an

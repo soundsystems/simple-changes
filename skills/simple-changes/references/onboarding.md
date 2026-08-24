@@ -36,6 +36,11 @@ found, whether multiple UI artifacts are relevant, and the exact instruction
 file that could receive a pointer. Do not ask for a decision already supplied by
 the request or proven repository policy.
 
+Before the first screen, inspect the normal private policy path. When saved
+global personal defaults exist, disclose them and ask whether to use them
+unchanged for this run (see Preference storage below). If the user declines,
+continue onboarding.
+
 ## Question presentation contract
 
 Onboarding is for the repository owner, not an implementation quiz. Ask one
@@ -82,18 +87,29 @@ one:**
    current task without writing repository or personal preferences. Onboarding
    appears again next time.
 
-Before these choices, show one short bullet for each main natural-language use:
-**Sync with main**, **Put this up**, **Open changes for everything ready**,
-**Merge what's ready**, **Ship what's ready**, **Clean up the repo**, **Show me
-what you would do**, **Continue**, and **Leave this work alone**. Also explain
+Before these choices, say in one sentence that the user can direct the workflow
+naturally — **Sync with main**, **Put this up**, **Open changes for everything
+ready**, **Merge what's ready**, **Ship what's ready**, **Clean up the repo**,
+**Show me what you would do**, **Continue**, or **Leave this work alone** — and
 that Simple Changes coordinates with Simple Changelogs when available but does
-not author changelogs itself.
+not author changelogs itself. Save the full per-use catalog for **Walk me
+through it**; do not turn the first screen into a wall of text.
 
 Outside Git, the recommended durable scope is private personal preferences
 because repository policy is unavailable. An explicit current request always
 overrides a recommendation.
 
 ## Customized questions
+
+Customize is not a fixed questionnaire. Ask only the questions that are
+operative for the current request and repository evidence: skip the production
+and shipping-mode questions unless the finish reaches Ship, skip the migration
+question unless migration tooling or pending migrations were discovered, skip
+the changelog question unless changelog surfaces or a compatible skill were
+found, and skip UI artifact naming unless several UI artifacts will be saved.
+A skipped question is asked lazily at the first moment it becomes operative
+(for example, the production question on the first Ship request); record the
+answer then. Two questions are always asked: the finish and preference storage.
 
 Before the finish choice, show all three paths:
 
@@ -123,7 +139,8 @@ Only for Ship, ask **What should happen with production? Choose one:**
    release checks allow it.
 3. **Never deploy production** — Stop after merge or an authorized preview.
 
-Then ask **How should routine Ship requests run? Choose one:**
+Then, only when Ship is the finish, ask **How should routine Ship requests
+run? Choose one:**
 
 1. **Standard shipping — Recommended** — Complete changelog and release
    reconciliation before the first production deployment.
@@ -135,6 +152,10 @@ Then ask **How should routine Ship requests run? Choose one:**
    candidate before independent review after rollback is verified. Immediately
    finish focused checks, review, merge/reconciliation, final verification, and
    cleanup afterward.
+
+Offer option 3 only when **Deploy automatically** was selected in the
+production question; otherwise mention in one sentence that an advanced
+break-glass mode exists and requires automatic production deployment.
 
 Do not require a second “authorized for break-glass” phrase when saved
 break-glass ordering and automatic production authority are both effective.
@@ -156,13 +177,10 @@ pushes? Choose one:**
 
 This preference must use the current harness's documented permission mechanism.
 It never grants blanket shell access and never claims that repository policy can
-override host security. Follow
-[harness-aware Git push authorization](harness-push-authorization.md).
-Before saving this choice, explicitly explain that it covers only ordinary
-`git push` to the one verified repository/remote and does not grant credentials,
-network access, force-push, branch-protection bypass, proposal/merge/deploy
-authority, or another destination. Ask for confirmation after that explanation;
-do not treat a bare “auto push” answer as sufficient to write policy.
+override host security. Before saving this choice, give the exact scoped-push
+explanation and confirmation from
+[harness-aware Git push authorization](harness-push-authorization.md); do not
+treat a bare “auto push” answer as sufficient to write policy.
 
 Then ask **How should reviewed database migrations be handled during Ship?
 Choose one:**
@@ -222,8 +240,16 @@ deployment, or data-write authority.
 
 Ask UI artifact naming only when several screenshots, design exports, static
 previews, or similar iterations will be saved and no repository convention
-already decides it. Explain that this does not name source files, Git revisions,
-deployments, packages, or releases.
+already decides it. Offer:
+
+1. **Follow repository convention — Recommended** — Use the established format;
+   ask if none exists.
+2. **Number and date** — Use zero-padded sequence and ISO date names.
+3. **Date only** — Use ISO date names.
+4. **Number only** — Use zero-padded sequence names.
+
+Ordinary UI source files, Git revisions, deployment identities, package
+versions, and release versions do not use this preference.
 
 Ask **When should I ask for permission or help? Choose one:**
 

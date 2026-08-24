@@ -54,6 +54,11 @@ discovered:
      --run-id "$RUN_ID" --agent-id "$AGENT_ID" --receipt "$RECEIPT" --json
    ```
 
+Pagination evidence must include a consolidated ledger digest plus complete
+branch and open/merged/closed proposal page chains — a terminal cursor chain
+and response digest for every page and every proposal state — from the
+persisted opening and final inventories.
+
 `loop end` refuses a detected GitLab integration/reconciliation run when this
 receipt is missing, semantically unsafe, or stale against the final target
 revision. Closed/unmerged and no-MR branches that remain uncertain are valid
@@ -69,7 +74,9 @@ two matching zero-active-claim observations from `worktree observe --json`, and
 no remaining cleanup action. It holds the coordination lock from its final
 claim digest check through closure, archives the old lease plus both snapshots,
 retires only already-absent non-active claims, and removes the active ledger
-without authorizing any Git or provider mutation.
+without authorizing any Git or provider mutation. It cannot push, merge,
+deploy, move refs, or remove anything. Afterward say: **Cleanup was already
+complete; Simple Changes repaired and closed its old bookkeeping record.**
 
 Before reporting completion:
 

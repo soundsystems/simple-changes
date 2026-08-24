@@ -94,7 +94,7 @@ Use these safe defaults when no committed policy exists:
 ```json
 {
   "schemaVersion": 1,
-  "guidance": { "disposition": "accepted", "version": 11 },
+  "guidance": { "disposition": "accepted", "version": "<CURRENT_GUIDANCE_VERSION>" },
   "changelogHandling": "preserve-and-report",
   "defaultFinish": "open-change-request",
   "gitPushAuthorization": "ask",
@@ -109,6 +109,10 @@ Use these safe defaults when no committed policy exists:
   "concurrentWork": "allow-claimed"
 }
 ```
+
+Replace the guidance-version placeholder with the currently installed value
+(`CURRENT_GUIDANCE_VERSION` in `scripts/lib/guidance-updates.ts`); do not copy
+a stale literal from documentation.
 
 `shippingMode` accepts `standard`, `expedited`, or `break-glass`. Onboarding and
 `--shipping-mode` expose all three, with break-glass clearly labeled Advanced.
@@ -171,8 +175,16 @@ user chooses **Add the pointer**, ask:
 > When an agent finishes implementation and verification, when should Simple
 > Changes take over?
 
-Offer **Ask if it's ready** as the recommended default, **Automatically after
-implementation**, and **When I say it's ready**. The confirmation summary must
+Offer:
+
+- **Ask if it's ready — Recommended:** Ask whether the implementation is ready
+  or whether more changes are needed before handing it off.
+- **Automatically after implementation:** Hand off completed, verified
+  implementation work immediately, subject to current authority.
+- **When I say it's ready:** Wait for the user to ask to put up, merge, ship,
+  finish, or reconcile the completed work.
+
+The confirmation summary must
 show the exact target path and proposed managed block. Apply an authorized edit
 atomically, preserve existing content and newline style, and re-read it after
 writing.

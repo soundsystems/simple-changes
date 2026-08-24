@@ -79,7 +79,12 @@ command rechecks the exact unchanged opening digest and every changed path in
 every worktree, persists the plan digest, and returns the pre-ship scope summary.
 Until then, `loop guard`, `loop exec`, and completion fail closed. Do not infer
 shipment exclusion from a `preserved` lease role: it means only that the
-checkout cannot be changed or removed by the controller. `loop exec` also
+checkout cannot be changed or removed by the controller.
+If independent review requires source changes, generate a new non-mutating
+preview from the exact current inventory and record it with
+`loop refresh-scope --receipt <change-plan.json>` before another mutation. This
+controller-only action is rejected after an outcome exists and preserves the
+superseded scope digest and timestamps in the lease history. `loop exec` also
 rejects `git switch` and `git checkout` before Git can move a registered
 checkout; prepare the correct branch-bound worktree before the loop instead.
 

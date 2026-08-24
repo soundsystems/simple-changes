@@ -43,7 +43,8 @@ finding as its own concise bullet. Do not replace the list with an abstract
 count or phrases such as “several edge cases.” Lead with severity only when it
 helps prioritization, and keep the concrete affected behavior in each bullet.
 When a finding points to local code, make its primary file and line a clickable
-Markdown link. Keep the bullet readable: link the main failure site and mention
+Markdown link when the surface renders links; otherwise give the plain
+`path:line`. Keep the bullet readable: link the main failure site and mention
 supporting locations only when they help the user act.
 
 Durable workflow status names such as `live-unreviewed` may still be required

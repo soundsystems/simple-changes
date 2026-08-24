@@ -22,6 +22,22 @@ remote name and URL from current Git configuration first. Repository ownership,
 the user request, branch protections, and provider permissions remain separate
 gates.
 
+## Required confirmation copy
+
+Whenever the user selects `configure-harness` or asks colloquially for “auto
+push” — during onboarding, an update notice, or any later run — explain and
+confirm this exact consequence before saving:
+
+> Automatic Git pushes let Simple Changes request the harness's narrowest
+> persistent permission for ordinary `git push` to this one verified repository
+> and remote, avoiding repeat host prompts. It does not grant credentials,
+> network access, force-push, branch-protection bypass, proposal/merge/deploy
+> authority, or permission for another destination. If the harness cannot
+> express that exact scope, Simple Changes must keep asking. Save this setting?
+
+The explanation and confirmation apply across Codex, Claude Code, and every
+other harness; only the harness-specific mechanism differs.
+
 ## Codex
 
 Prefer a reusable approval for the exact `git push <remote>` command prefix when
@@ -32,9 +48,8 @@ effective rule before relying on it.
 
 Codex rules can remove repeat command approval prompts, but they do not override
 network restrictions, sandbox policy, credentials, managed requirements, or an
-administrator denial. Follow the official [Codex rules](https://learn.chatgpt.com/docs/agent-configuration/rules)
-and [approval/security](https://learn.chatgpt.com/docs/agent-approvals-security)
-contracts.
+administrator denial. Follow the official Codex rules and approval/security
+documentation for the installed Codex version.
 
 ## Claude Code
 

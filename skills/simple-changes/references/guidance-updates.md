@@ -35,7 +35,7 @@ Then use this short structure:
 >
 > How would you like to continue?
 
-When no answer or recommended change is pending, recommend continuing with the
+When no answer is required, say so plainly and recommend continuing with
 current settings. The short practical bullets already provide the information
 needed for that disposition. Do not recommend an exhaustive walkthrough merely
 because several versions were skipped.
@@ -53,6 +53,9 @@ Offer these multiple-choice actions:
 - **View detailed Simple Changes release notes:** Run the advertised read-only
   release-notes command and show the requested released section.
 - **Decide later:** Leave the update unresolved so it appears again next time.
+  When `requiredAnswers` is empty and the user chooses this a second time for
+  the same version, record `deferred` instead so the notice stops repeating;
+  the release notes remain available on request.
 
 If no choice is required and there is no recommended setting change, it is also
 acceptable to say only that Simple Changes improved behind the scenes and ask
@@ -71,19 +74,11 @@ Do not record a disposition because the notice was merely prepared or shown.
 Resume the original request after the acknowledgement succeeds. A later
 guidance version may cause one new prompt.
 
-If the user selects `configure-harness` or says “auto push,” explain and confirm
-this exact consequence before saving:
-
-> Automatic Git pushes let Simple Changes request the harness's narrowest
-> persistent permission for ordinary `git push` to this one verified repository
-> and remote, avoiding repeat host prompts. It does not grant credentials,
-> network access, force-push, branch-protection bypass, proposal/merge/deploy
-> authority, or permission for another destination. If the harness cannot
-> express that exact scope, Simple Changes must keep asking. Save this setting?
-
-Do not translate “auto push” directly into a policy write before that
-confirmation. The explanation and confirmation apply across Codex, Claude Code,
-and every other harness; only the harness-specific mechanism differs.
+If the user selects `configure-harness` or says “auto push,” give the exact
+scoped-push explanation and confirmation from
+[harness-aware Git push authorization](harness-push-authorization.md) before
+saving. Do not translate “auto push” directly into a policy write before that
+confirmation.
 
 ## Detect the companion update separately
 

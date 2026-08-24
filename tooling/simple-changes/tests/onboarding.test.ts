@@ -335,7 +335,7 @@ describe("onboarding conversation", () => {
       "This is first-use onboarding inside your original Simple Changes task."
     );
     expect(messages.join("\n")).toContain(
-      "ready work -> focused change request -> checks -> required approval -> merge -> STOP"
+      "ready work -> focused change proposal -> checks -> required approval -> merge -> STOP"
     );
     expect(
       choicesByQuestion
@@ -381,8 +381,8 @@ describe("onboarding conversation", () => {
     expect(selection.summary).toContain("Multiple PRs");
   });
 
-  test("asks for scheduling once and uses provider-specific PR or MR terms", async () => {
-    const run = async (forgeProvider: "github" | "gitlab") => {
+  test("uses provider-specific terms and neutral change proposals for scheduling", async () => {
+    const run = async (forgeProvider: string | null) => {
       const questions: string[] = [];
       const choiceDescriptions: string[] = [];
       const selection = await collectOnboardingSelection(
@@ -425,8 +425,24 @@ describe("onboarding conversation", () => {
     expect(github.choiceDescriptions.join(" ")).toContain("independent PRs");
 
     const gitlab = await run("gitlab");
+    expect(gitlab.questions).toContain(
+      "When there are multiple independent MRs, what should I optimize for?"
+    );
     expect(gitlab.selection.summary).toContain("focused MRs");
     expect(gitlab.selection.summary).toContain("Multiple MRs: Balanced.");
+    expect(gitlab.choiceDescriptions.join(" ")).toContain("independent MRs");
+
+    const unknown = await run("gitea");
+    expect(unknown.questions).toContain(
+      "When there are multiple independent change proposals, what should I optimize for?"
+    );
+    expect(unknown.selection.summary).toContain("focused change proposals");
+    expect(unknown.selection.summary).toContain(
+      "Multiple change proposals: Balanced."
+    );
+    expect(unknown.choiceDescriptions.join(" ")).toContain(
+      "independent change proposals"
+    );
     expect(PROPOSAL_SCHEDULING_CHOICES.map((choice) => choice.value)).toEqual([
       "balanced",
       "consecutive",

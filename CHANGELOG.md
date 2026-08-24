@@ -10,7 +10,7 @@
   proven integration, and standalone clones cannot bypass active coordination
   or cleanup state.
 - User-facing terminology now follows the detected forge: GitHub workflows say
-  **PR**, GitLab workflows say **MR**, and provider-neutral **change request**
+  **PR**, GitLab workflows say **MR**, and provider-neutral **change proposal**
   wording is reserved for unknown or differently named forges.
 <!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-23T13:39:21-05:00" -->
 

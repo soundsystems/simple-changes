@@ -86,7 +86,7 @@ export const ONBOARDING_QUESTIONS = {
   permission: "When should I ask for permission or help?",
   production: "What should happen with production?",
   proposalScheduling:
-    "When there are multiple independent change requests, what should I optimize for?",
+    "When there are multiple independent change proposals, what should I optimize for?",
   scope: "Where should these preferences live?",
   shippingMode: "How should routine Ship requests run?",
   start:
@@ -121,7 +121,7 @@ const DEFAULT_CHANGELOG_CONTEXT: ChangelogCoordination = {
 
 export const FINISH_CHOICES = [
   {
-    description: "Create focused MRs, run checks, and stop.",
+    description: "Create focused change proposals, run checks, and stop.",
     label: "Put it up for review",
     value: "open-change-request",
   },
@@ -146,13 +146,13 @@ export const PROPOSAL_SCHEDULING_CHOICES = [
   },
   {
     description:
-      "Prefer one change request at a time to minimize duplicate dependencies, build outputs, caches, and worktrees.",
+      "Prefer one change proposal at a time to minimize duplicate dependencies, build outputs, caches, and worktrees.",
     label: "Save space",
     value: "consecutive",
   },
   {
     description:
-      "Prefer separate claimed worktrees for independent change requests to finish sooner, while confirming unusually expensive fan-out.",
+      "Prefer separate claimed worktrees for independent change proposals to finish sooner, while confirming unusually expensive fan-out.",
     label: "Save time",
     value: "parallel",
   },
@@ -610,7 +610,7 @@ const proposalTerms = (
   if (provider === "gitlab") {
     return { plural: "MRs", singular: "MR" };
   }
-  return { plural: "change requests", singular: "change request" };
+  return { plural: "change proposals", singular: "change proposal" };
 };
 
 const migrationTargetLabel = (target: MigrationTarget): string =>
@@ -952,8 +952,8 @@ const selectProposalScheduling = async (
   const choices = PROPOSAL_SCHEDULING_CHOICES.map((choice) => ({
     ...choice,
     description: choice.description
-      .replaceAll("change requests", terms.plural)
-      .replaceAll("change request", terms.singular),
+      .replaceAll("change proposals", terms.plural)
+      .replaceAll("change proposal", terms.singular),
   }));
   return choiceValue<RepoPolicy["proposalScheduling"]>(
     await prompter.choose(question, choices, defaults.proposalScheduling),

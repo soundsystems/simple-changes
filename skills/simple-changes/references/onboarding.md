@@ -107,7 +107,7 @@ and shipping-mode questions unless the finish reaches Ship, skip the migration
 question unless migration tooling or pending migrations were discovered, skip
 the changelog question unless changelog surfaces or a compatible skill were
 found, skip the scheduling question unless the run will produce multiple
-independent PRs or MRs, and skip UI artifact naming unless several UI
+independent change proposals, and skip UI artifact naming unless several UI
 artifacts will be saved.
 A skipped question is asked lazily at the first moment it becomes operative
 (for example, the production question on the first Ship request); record the
@@ -166,18 +166,18 @@ pre-deploy lookup. Explicit current-request direction always overrides saved
 preferences.
 
 Then, only when this run will actually produce more than one independent
-change request, ask **When there are multiple independent change requests,
+change proposal, ask **When there are multiple independent change proposals,
 what should I optimize for? Choose one:** Use **PRs** for a detected GitHub
 target and **MRs** for a detected GitLab target throughout the displayed
-question and choices.
+question and choices; otherwise keep the neutral **change proposal** wording.
 
 1. **Balanced — Recommended** — Work consecutively by default; use parallel
    claimed worktrees when they save meaningful time or isolation is necessary,
    and ask again only when the tradeoff is substantial.
-2. **Save space** — Prefer consecutive PRs or MRs to minimize duplicated
+2. **Save space** — Prefer consecutive change proposals to minimize duplicated
    dependencies, build outputs, caches, and worktrees.
-3. **Save time** — Prefer separate claimed worktrees for independent PRs or MRs
-   so they finish sooner, while confirming unusually expensive fan-out.
+3. **Save time** — Prefer separate claimed worktrees for independent change
+   proposals so they finish sooner, while confirming unusually expensive fan-out.
 
 Explain that Git history is shared, while dependencies and generated output may
 be duplicated. This is a scheduling preference, not a relaxation of worktree

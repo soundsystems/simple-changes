@@ -11,7 +11,7 @@
   threads it through the first-use introduction, finish paths and choices,
   scheduling prompt, and confirmation summary. Rendering consistently maps
   GitHub to PR/PRs, GitLab to MR/MRs, and unknown providers to change
-  request/change requests while internal proposal schemas remain
+  proposal/change proposals while internal proposal schemas remain
   provider-neutral.
 - Documented that parallel authors require distinct claimed worktrees under the
   existing common Git directory, that cleanup removes dependencies and build

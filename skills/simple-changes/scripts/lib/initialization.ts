@@ -16,6 +16,8 @@ export type HandoffAction =
   | "wait-for-user"
   | "proceed";
 
+export type PolicyTrust = "not-required" | "trusted" | "untrusted";
+
 export interface InitializationStatus {
   changelogCoordination: ChangelogCoordination;
   changelogRequired: boolean;
@@ -32,6 +34,7 @@ export interface InitializationStatus {
   onboardingRequired: boolean;
   policyPath: string | null;
   policySource: PolicySource;
+  policyTrust: PolicyTrust;
   preLoopActionRequired: boolean;
   readinessConfirmed: boolean;
   reason: string;
@@ -160,6 +163,7 @@ export const inspectInitialization = (
   policy: {
     path: string | null;
     source: PolicySource;
+    trust?: PolicyTrust;
     value?: RepoPolicy;
   },
   changelogCoordination: ChangelogCoordination = {
@@ -232,6 +236,7 @@ export const inspectInitialization = (
     onboardingRequired,
     policyPath: policy.path,
     policySource: policy.source,
+    policyTrust: policy.trust ?? "not-required",
     preLoopActionRequired:
       onboardingRequired ||
       updateActionRequired ||

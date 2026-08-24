@@ -46,6 +46,7 @@
     "onboardingRequired",
     "policySource",
     "policyPath",
+    "policyTrust",
     "inferredDefaultFinish",
     "migrationHandling",
     "migrationTargets",
@@ -148,16 +149,13 @@
           "const": "**Simple Changes has recently been updated.**"
         },
         "presentationOrder": {
-          "prefixItems": [
-            { "const": "required-answers" },
-            { "const": "recommended-changes" },
-            { "const": "summary" },
-            { "const": "actions" }
-          ],
-          "items": false,
-          "minItems": 4,
-          "maxItems": 4,
-          "type": "array"
+          "type": "array",
+          "const": [
+            "required-answers",
+            "recommended-changes",
+            "summary",
+            "actions"
+          ]
         },
         "recommendedChanges": {
           "type": "array",
@@ -357,6 +355,7 @@
     "policyPath": {
       "anyOf": [{ "type": "string", "minLength": 1 }, { "type": "null" }]
     },
+    "policyTrust": { "enum": ["not-required", "trusted", "untrusted"] },
     "inferredDefaultFinish": {
       "anyOf": [
         { "enum": ["open-change-request", "integrate", "ship"] },

@@ -98,7 +98,7 @@ import {
   discoverInstructionTargets,
   writeInstructionPointer,
 } from "./lib/repository-instructions.ts";
-import { validateSchema } from "./lib/schema.ts";
+import { SCHEMA_NAMES, validateSchema } from "./lib/schema.ts";
 import type {
   InitializationMode,
   RepoPolicy,
@@ -117,6 +117,16 @@ import {
 
 const VERSION = "0.12.12";
 const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const SCHEMA_KIND_LINE_LIMIT = 78;
+const schemaKindLines = SCHEMA_NAMES.reduce<string[]>((lines, name) => {
+  const current = lines.at(-1);
+  if (current && `${current}, ${name}`.length <= SCHEMA_KIND_LINE_LIMIT) {
+    lines[lines.length - 1] = `${current}, ${name}`;
+    return lines;
+  }
+  lines.push(`  ${name}`);
+  return lines;
+}, []).join(",\n");
 const HELP = `Simple Changes ${VERSION}
 
 Usage:
@@ -222,10 +232,7 @@ Usage:
   simple-changes help
 
 Schema kinds:
-  repo-policy, changelog-capabilities, changelog-request, changelog-receipt,
-  initialization, inventory, change-plan, migration-review, migration-pending, migration-apply-plan, run-state, provider-receipt,
-  release-delivery-receipt, post-cleanup-recovery, remote-branch-reconciliation, release-consistency,
-  release-notes, loop-lease, worktree-coordination
+${schemaKindLines}
 
 Exit codes:
   0 success, 2 usage, 3 invalid contract, 4 inventory failure, 5 unsafe state
@@ -247,6 +254,7 @@ interface CliOptions {
   gitPushAuthorization?: RepoPolicy["gitPushAuthorization"];
   guidanceDecision?: RepoPolicy["guidance"]["disposition"];
   handoffTiming?: RepoPolicy["handoffTiming"];
+  help: boolean;
   instructionFile?: string;
   instructionPointer?: "add" | "leave";
   json: boolean;
@@ -726,6 +734,7 @@ const parseOptions = (args: string[]): CliOptions => {
     acknowledgePushScope: false,
     changelogRequired: false,
     check: false,
+    help: false,
     json: false,
     migrationTargets: [],
     positional: [],
@@ -743,6 +752,11 @@ const parseOptions = (args: string[]): CliOptions => {
       options.positional.push(...args.slice(index + 1));
       break;
     }
+    if (argument === "--help" || argument === "-h") {
+      options.help = true;
+      index += 1;
+      continue;
+    }
     if (argument && BOOLEAN_OPTIONS.has(argument)) {
       applyBooleanOption(options, argument);
       index += 1;
@@ -759,7 +773,7 @@ const parseOptions = (args: string[]): CliOptions => {
     }
     if (argument?.startsWith("--")) {
       throw new SimpleChangesError(
-        `Unknown option: ${argument}`,
+        `Unknown option: ${argument}. Run 'simple-changes help' for usage.`,
         EXIT_CODES.usage
       );
     }
@@ -1277,6 +1291,7 @@ const renderInitialization = (status: InitializationStatus): string => {
     `Write-capable: ${status.writeCapable ? "yes" : "no"}`,
     `Mutation allowed: ${status.mutationAllowed ? "yes" : "no"}`,
     `Policy: ${status.policySource}`,
+    `Policy trust: ${status.policyTrust}`,
     `Changelog coordination: ${
       status.changelogCoordination.relevant ? "relevant" : "not detected"
     }`,
@@ -1296,6 +1311,11 @@ const renderInitialization = (status: InitializationStatus): string => {
     `Handoff action: ${status.handoffAction}`,
     `Reason: ${status.reason}`,
   ];
+  if (status.policyTrust === "untrusted") {
+    lines.push(
+      "Repository policy requests consequential authority but has not been confirmed on this clone; running with reduced authority until setup confirms it."
+    );
+  }
   if (status.inferredDefaultFinish) {
     lines.push(`Inferred finish: ${status.inferredDefaultFinish}`);
   }
@@ -2315,6 +2335,10 @@ const executeCommand = async (
   command: string,
   options: CliOptions
 ): Promise<number> => {
+  if (options.help) {
+    process.stdout.write(HELP);
+    return EXIT_CODES.success;
+  }
   switch (command) {
     case "help":
     case "--help":
@@ -2376,7 +2400,7 @@ const executeCommand = async (
       return EXIT_CODES.success;
     default:
       throw new SimpleChangesError(
-        `Unknown command: ${command}`,
+        `Unknown command: ${command}. Run 'simple-changes help' for usage.`,
         EXIT_CODES.usage
       );
   }

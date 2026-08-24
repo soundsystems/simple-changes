@@ -151,6 +151,31 @@ describe("first-run initialization", () => {
     });
   });
 
+  test("reports the repository policy trust state", () => {
+    expect(
+      inspectInitialization("ship", {
+        path: "/repo/.simple-changes.json",
+        source: "repository",
+        trust: "untrusted",
+        value: DEFAULT_POLICY,
+      })
+    ).toMatchObject({ policyTrust: "untrusted" });
+    expect(
+      inspectInitialization("ship", {
+        path: "/repo/.simple-changes.json",
+        source: "repository",
+        trust: "trusted",
+        value: { ...DEFAULT_POLICY, shippingMode: "expedited" },
+      })
+    ).toMatchObject({ policyTrust: "trusted" });
+    expect(
+      inspectInitialization("ship", {
+        path: null,
+        source: "default",
+      })
+    ).toMatchObject({ policyTrust: "not-required" });
+  });
+
   test("does not repeat onboarding when personal or repository policy exists", () => {
     expect(
       inspectInitialization("integrate", {

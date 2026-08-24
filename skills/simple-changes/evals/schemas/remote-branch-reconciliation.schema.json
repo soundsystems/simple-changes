@@ -76,14 +76,7 @@
         "proposals": { "$ref": "#/$defs/pagination" },
         "proposalStates": {
           "type": "array",
-          "prefixItems": [
-            { "const": "closed" },
-            { "const": "merged" },
-            { "const": "open" }
-          ],
-          "items": false,
-          "minItems": 3,
-          "maxItems": 3
+          "const": ["closed", "merged", "open"]
         }
       }
     },

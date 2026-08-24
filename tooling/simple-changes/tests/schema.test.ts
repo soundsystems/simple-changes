@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { readFileSync, realpathSync } from "node:fs";
+import { readdirSync, readFileSync, realpathSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { inspectInitialization } from "../../../skills/simple-changes/scripts/lib/initialization.ts";
 import { DEFAULT_POLICY } from "../../../skills/simple-changes/scripts/lib/policy.ts";
 import { validateSchema } from "../../../skills/simple-changes/scripts/lib/schema.ts";
@@ -633,5 +635,112 @@ describe("closed schemas", () => {
         providerToken: "never-store-this",
       })
     ).toThrow("additional properties");
+  });
+});
+
+describe("schema keyword support", () => {
+  const supportedKeywords = new Set([
+    "$defs",
+    "$id",
+    "$ref",
+    "$schema",
+    "additionalProperties",
+    "allOf",
+    "anyOf",
+    "const",
+    "description",
+    "else",
+    "enum",
+    "format",
+    "if",
+    "items",
+    "maxItems",
+    "maxLength",
+    "minItems",
+    "minLength",
+    "minimum",
+    "pattern",
+    "properties",
+    "required",
+    "then",
+    "title",
+    "type",
+    "uniqueItems",
+  ]);
+
+  const isRecord = (value: unknown): value is Record<string, unknown> =>
+    typeof value === "object" && value !== null && !Array.isArray(value);
+
+  const collectViolations = (
+    schema: Record<string, unknown>,
+    path: string,
+    violations: string[]
+  ): void => {
+    for (const [keyword, value] of Object.entries(schema)) {
+      if (!supportedKeywords.has(keyword)) {
+        violations.push(`${path}/${keyword}`);
+        continue;
+      }
+      if (keyword === "additionalProperties" && typeof value !== "boolean") {
+        violations.push(`${path}/${keyword}`);
+        continue;
+      }
+      if (keyword === "properties" || keyword === "$defs") {
+        if (isRecord(value)) {
+          for (const [name, subschema] of Object.entries(value)) {
+            if (isRecord(subschema)) {
+              collectViolations(
+                subschema,
+                `${path}/${keyword}/${name}`,
+                violations
+              );
+            }
+          }
+        }
+        continue;
+      }
+      if (keyword === "allOf" || keyword === "anyOf") {
+        if (Array.isArray(value)) {
+          for (const [index, subschema] of value.entries()) {
+            if (isRecord(subschema)) {
+              collectViolations(
+                subschema,
+                `${path}/${keyword}/${index}`,
+                violations
+              );
+            }
+          }
+        }
+        continue;
+      }
+      if (
+        (keyword === "items" ||
+          keyword === "if" ||
+          keyword === "then" ||
+          keyword === "else") &&
+        isRecord(value)
+      ) {
+        collectViolations(value, `${path}/${keyword}`, violations);
+      }
+    }
+  };
+
+  test("every packaged schema uses only keywords the validator enforces", () => {
+    const schemaDirectory = resolve(
+      dirname(fileURLToPath(import.meta.url)),
+      "../../../skills/simple-changes/evals/schemas"
+    );
+    const filenames = readdirSync(schemaDirectory).filter((filename) =>
+      filename.endsWith(".schema.json")
+    );
+    expect(filenames.length).toBeGreaterThan(0);
+    for (const filename of filenames) {
+      const schema = JSON.parse(
+        readFileSync(resolve(schemaDirectory, filename), "utf8")
+      ) as Record<string, unknown>;
+      const violations: string[] = [];
+      collectViolations(schema, "", violations);
+      expect({ filename, violations }).toEqual({ filename, violations: [] });
+    }
   });
 });

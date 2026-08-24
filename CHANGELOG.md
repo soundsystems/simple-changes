@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.12.13 - 2026-08-24
+
+- Setup now lets you choose how multiple independent PRs or MRs are scheduled:
+  **Balanced** works consecutively by default and parallelizes when it
+  meaningfully saves time or isolation is necessary, **Save space** prefers
+  consecutive work, and **Save time** prefers parallel claimed worktrees.
+  Parallel work remains isolated, completed worktrees are cleaned up only after
+  proven integration, and standalone clones cannot bypass active coordination
+  or cleanup state.
+- User-facing terminology now follows the detected forge: GitHub workflows say
+  **PR**, GitLab workflows say **MR**, and provider-neutral **change proposal**
+  wording is reserved for unknown or differently named forges.
+<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-24T13:23:14-05:00" -->
+
 ## 0.12.12 - 2026-08-23
 
 - Completed, verified work blocked only by another task’s active shipment now

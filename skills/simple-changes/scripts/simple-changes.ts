@@ -98,7 +98,7 @@ import {
   discoverInstructionTargets,
   writeInstructionPointer,
 } from "./lib/repository-instructions.ts";
-import { validateSchema } from "./lib/schema.ts";
+import { SCHEMA_NAMES, validateSchema } from "./lib/schema.ts";
 import type {
   InitializationMode,
   RepoPolicy,
@@ -115,8 +115,18 @@ import {
   releaseWorktreeClaim,
 } from "./lib/worktree-coordination.ts";
 
-const VERSION = "0.12.12";
+const VERSION = "0.12.13";
 const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const SCHEMA_KIND_LINE_LIMIT = 78;
+const schemaKindLines = SCHEMA_NAMES.reduce<string[]>((lines, name) => {
+  const current = lines.at(-1);
+  if (current && `${current}, ${name}`.length <= SCHEMA_KIND_LINE_LIMIT) {
+    lines[lines.length - 1] = `${current}, ${name}`;
+    return lines;
+  }
+  lines.push(`  ${name}`);
+  return lines;
+}, []).join(",\n");
 const HELP = `Simple Changes ${VERSION}
 
 Usage:
@@ -125,6 +135,7 @@ Usage:
     [--changelog-required]
     [--changelog delegate-if-available|preserve-and-report|ask]
     [--concurrent-work allow-claimed|strict]
+    [--proposal-scheduling balanced|consecutive|parallel]
     [--handoff ask|automatic|user-signaled]
     [--instruction-pointer add|leave] [--instruction-file PATH]
     [--ui-artifacts]
@@ -140,6 +151,7 @@ Usage:
   simple-changes setup [--finish review|integrate|ship]
     [--changelog delegate-if-available|preserve-and-report|ask]
     [--concurrent-work allow-claimed|strict]
+    [--proposal-scheduling balanced|consecutive|parallel]
     [--handoff ask|automatic|user-signaled]
     [--instruction-pointer add|leave] [--instruction-file PATH]
     [--ui-artifacts]
@@ -222,10 +234,7 @@ Usage:
   simple-changes help
 
 Schema kinds:
-  repo-policy, changelog-capabilities, changelog-request, changelog-receipt,
-  initialization, inventory, change-plan, migration-review, migration-pending, migration-apply-plan, run-state, provider-receipt,
-  release-delivery-receipt, post-cleanup-recovery, remote-branch-reconciliation, release-consistency,
-  release-notes, loop-lease, worktree-coordination
+${schemaKindLines}
 
 Exit codes:
   0 success, 2 usage, 3 invalid contract, 4 inventory failure, 5 unsafe state
@@ -247,6 +256,7 @@ interface CliOptions {
   gitPushAuthorization?: RepoPolicy["gitPushAuthorization"];
   guidanceDecision?: RepoPolicy["guidance"]["disposition"];
   handoffTiming?: RepoPolicy["handoffTiming"];
+  help: boolean;
   instructionFile?: string;
   instructionPointer?: "add" | "leave";
   json: boolean;
@@ -260,6 +270,7 @@ interface CliOptions {
   pendingPath?: string;
   positional: string[];
   productionDeploy?: RepoPolicy["productionDeploy"];
+  proposalScheduling?: RepoPolicy["proposalScheduling"];
   purpose?: string;
   questions?: RepoPolicy["questions"];
   ready: boolean;
@@ -305,6 +316,7 @@ const VALUED_OPTIONS = new Set([
   "--pending",
   "--pause-receipt",
   "--production",
+  "--proposal-scheduling",
   "--purpose",
   "--questions",
   "--reason",
@@ -471,6 +483,29 @@ const applyMigrationOption = (
   return true;
 };
 
+const applyProposalSchedulingOption = (
+  options: CliOptions,
+  option: string,
+  value: string
+): boolean => {
+  if (option !== "--proposal-scheduling") {
+    return false;
+  }
+  const values: RepoPolicy["proposalScheduling"][] = [
+    "balanced",
+    "consecutive",
+    "parallel",
+  ];
+  if (!values.includes(value as RepoPolicy["proposalScheduling"])) {
+    throw new SimpleChangesError(
+      `--proposal-scheduling must be one of ${values.join(", ")}`,
+      EXIT_CODES.usage
+    );
+  }
+  options.proposalScheduling = value as RepoPolicy["proposalScheduling"];
+  return true;
+};
+
 const applySetupValuedOption = (
   options: CliOptions,
   option: string,
@@ -506,6 +541,7 @@ const applySetupValuedOption = (
     return true;
   }
   if (
+    applyProposalSchedulingOption(options, option, value) ||
     applyFinishOption(options, option, value) ||
     applyHandoffOption(options, option, value) ||
     applyMigrationOption(options, option, value)
@@ -726,6 +762,7 @@ const parseOptions = (args: string[]): CliOptions => {
     acknowledgePushScope: false,
     changelogRequired: false,
     check: false,
+    help: false,
     json: false,
     migrationTargets: [],
     positional: [],
@@ -743,6 +780,11 @@ const parseOptions = (args: string[]): CliOptions => {
       options.positional.push(...args.slice(index + 1));
       break;
     }
+    if (argument === "--help" || argument === "-h") {
+      options.help = true;
+      index += 1;
+      continue;
+    }
     if (argument && BOOLEAN_OPTIONS.has(argument)) {
       applyBooleanOption(options, argument);
       index += 1;
@@ -759,7 +801,7 @@ const parseOptions = (args: string[]): CliOptions => {
     }
     if (argument?.startsWith("--")) {
       throw new SimpleChangesError(
-        `Unknown option: ${argument}`,
+        `Unknown option: ${argument}. Run 'simple-changes help' for usage.`,
         EXIT_CODES.usage
       );
     }
@@ -936,6 +978,7 @@ const setupContext = (
 ): {
   changelog: ReturnType<typeof inspectChangelogCoordination>;
   existingPersonalDefaults: RepoPolicy | null;
+  forgeProvider: string | null;
   policy: RepoPolicy;
   primaryCheckout: string | null;
 } => {
@@ -946,17 +989,22 @@ const setupContext = (
       changelog: inspectChangelogCoordination(null),
       existingPersonalDefaults:
         personalPolicy.source === "user" ? personalPolicy.value : null,
+      forgeProvider: null,
       policy: personalPolicy.value,
       primaryCheckout: null,
     };
   }
   const inventory = captureInventory(repositoryPath);
+  const targetBinding = inventory.repository.remoteBindings.find(
+    (binding) => binding.name === inventory.repository.targetRemote
+  );
   return {
     changelog: inspectChangelogCoordination(
       inventory.repository.primaryCheckout
     ),
     existingPersonalDefaults:
       personalPolicy.source === "user" ? personalPolicy.value : null,
+    forgeProvider: targetBinding?.provider ?? null,
     policy: inventory.policy.value,
     primaryCheckout: inventory.repository.primaryCheckout,
   };
@@ -971,6 +1019,7 @@ const SETUP_INPUT_KEYS = [
   "instructionFile",
   "instructionPointer",
   "migrationHandling",
+  "proposalScheduling",
   "productionDeploy",
   "questions",
   "scope",
@@ -1043,6 +1092,7 @@ const runSetup = async (options: CliOptions): Promise<void> => {
       options.uiArtifacts,
       {
         existingPersonalDefaults: context.existingPersonalDefaults,
+        forgeProvider: context.forgeProvider,
         showFirstScreen: process.stdin.isTTY,
       }
     );
@@ -1277,6 +1327,7 @@ const renderInitialization = (status: InitializationStatus): string => {
     `Write-capable: ${status.writeCapable ? "yes" : "no"}`,
     `Mutation allowed: ${status.mutationAllowed ? "yes" : "no"}`,
     `Policy: ${status.policySource}`,
+    `Policy trust: ${status.policyTrust}`,
     `Changelog coordination: ${
       status.changelogCoordination.relevant ? "relevant" : "not detected"
     }`,
@@ -1296,6 +1347,11 @@ const renderInitialization = (status: InitializationStatus): string => {
     `Handoff action: ${status.handoffAction}`,
     `Reason: ${status.reason}`,
   ];
+  if (status.policyTrust === "untrusted") {
+    lines.push(
+      "Repository policy requests consequential authority but has not been confirmed on this clone; running with reduced authority until setup confirms it."
+    );
+  }
   if (status.inferredDefaultFinish) {
     lines.push(`Inferred finish: ${status.inferredDefaultFinish}`);
   }
@@ -1590,7 +1646,7 @@ const runChangelogNegotiation = (options: CliOptions): void => {
     result,
     options.json,
     result.compatible
-      ? `Negotiated changelog request v${result.requestVersion} and receipt v${result.receiptVersion}.\n`
+      ? `Negotiated changelog request v${result.requestVersion} and receipt v${result.receiptVersion} (schema digests: ${result.schemaDigestStatus}).\n`
       : `Changelog negotiation failed: ${result.reasonCode} (${result.requiredAction}).\n`
   );
   if (!result.compatible) {
@@ -2315,6 +2371,10 @@ const executeCommand = async (
   command: string,
   options: CliOptions
 ): Promise<number> => {
+  if (options.help) {
+    process.stdout.write(HELP);
+    return EXIT_CODES.success;
+  }
   switch (command) {
     case "help":
     case "--help":
@@ -2376,7 +2436,7 @@ const executeCommand = async (
       return EXIT_CODES.success;
     default:
       throw new SimpleChangesError(
-        `Unknown command: ${command}`,
+        `Unknown command: ${command}. Run 'simple-changes help' for usage.`,
         EXIT_CODES.usage
       );
   }

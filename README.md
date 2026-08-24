@@ -10,9 +10,14 @@ units, and validate the result without mutating Git or contacting a provider.
 
 ## Quick start
 
-Requires [Bun](https://bun.sh/) 1.2 or later and Git.
+Requires [Bun](https://bun.sh/) 1.2 or later and Git. The CLI is a Bun
+TypeScript entry point; Node alone cannot run it.
+
+Clone this repository, then from its root:
 
 ```sh
+git clone https://gitlab.com/soundsystems/simple-changes.git
+cd simple-changes
 bun install
 bun run simple-changes initialize --mode sync
 bun run simple-changes initialize --mode queue
@@ -43,6 +48,11 @@ repository can still commit `.simple-changes.json`; repository policy is
 independent of where the skill is installed and overrides global personal
 preferences. Before creating a symlink, move or remove any existing copy at its
 destination so an older installation is not left nested beneath it.
+
+A compatible changelog provider declares itself with a machine-readable
+`changelog-provider.json` beside its `SKILL.md` (distribution, guidance
+version, and protocol capabilities); discovery falls back to installation-name
+inference only when no marker is present.
 
 The installed directory is self-contained. Its release-note surface is
 read-only: `release-notes` displays Simple Changes' packaged public history. It
@@ -78,7 +88,9 @@ propagation workflow.
 Repository names and paths are discovered at runtime and are not embedded in
 the public package.
 
-Install that workflow project-locally from a source checkout:
+Install that workflow project-locally from a source checkout, using the
+third-party [`skills` CLI](https://www.npmjs.com/package/skills) (or copy the
+skill directory manually as shown in Quick start):
 
 ```sh
 bunx skills add . --skill publish-skill --agent codex -y
@@ -168,6 +180,7 @@ simple-changes initialize --mode MODE
   [--concurrent-work allow-claimed|strict]
   [--production ask|allow|deny]
   [--shipping-mode standard|expedited]
+  [--proposal-scheduling balanced|consecutive|parallel]
   [--questions blocking-only|always|never]
   [--scope user|repository|run] [--yes] [--json] [--repo PATH]
 simple-changes setup [--finish review|integrate|ship]
@@ -179,16 +192,24 @@ simple-changes setup [--finish review|integrate|ship]
   [--concurrent-work allow-claimed|strict]
   [--production ask|allow|deny]
   [--shipping-mode standard|expedited]
+  [--proposal-scheduling balanced|consecutive|parallel]
   [--questions blocking-only|always|never]
   [--scope user|repository|run] [--yes] [--json] [--repo PATH]
 simple-changes acknowledge-update --guidance-decision accepted|reviewed|deferred
   [--agent-id ID] [--json] [--repo PATH]
 simple-changes inventory [--json] [--repo PATH]
 simple-changes preview [--json] [--repo PATH] [--settle-ms N]
-simple-changes loop start --mode MODE --agent-id ID [--json] [--repo PATH]
+simple-changes loop start --mode MODE --agent-id ID [--changelog-required]
+  [--opening-remote-inventory FILE] [--json] [--repo PATH]
 simple-changes loop status [--json] [--repo PATH]
 simple-changes loop verify --run-id ID [--json] [--repo PATH]
 simple-changes loop guard --run-id ID --agent-id ID [--json] [--repo PATH]
+simple-changes loop record-scope --run-id ID --agent-id ID
+  --receipt FILE [--json] [--repo PATH]
+simple-changes loop refresh-scope --run-id ID --agent-id ID
+  --receipt FILE [--json] [--repo PATH]
+simple-changes loop record-outcome --run-id ID --agent-id ID
+  --receipt FILE [--json] [--repo PATH]
 simple-changes loop exec --run-id ID --agent-id ID [--json] [--repo PATH]
   -- COMMAND [ARG ...]
 simple-changes loop recover --agent-id ID [--json] [--repo PATH]
@@ -198,14 +219,21 @@ simple-changes loop allow --run-id ID --agent-id ID --worktree PATH
   --status-digest SHA256 --approved-by ID --reason TEXT [--json] [--repo PATH]
 simple-changes loop dispose-worktree --run-id ID --agent-id ID --worktree PATH
   --status-digest SHA256 --approved-by ID --reason TEXT [--json] [--repo PATH]
+simple-changes loop retain-worktree --run-id ID --agent-id ID --worktree PATH
+  --status-digest SHA256 --approved-by ID --reason TEXT [--json] [--repo PATH]
 simple-changes loop adopt-worktree --run-id ID --agent-id ID
   --pause-receipt ID [--json] [--repo PATH]
 simple-changes loop accept-paused-change --run-id ID --agent-id ID
   --pause-receipt ID [--json] [--repo PATH]
+simple-changes loop reconcile-remote-branches --run-id ID --agent-id ID
+  --receipt FILE [--json] [--repo PATH]
+simple-changes loop recover-post-cleanup --run-id ID --agent-id ID
+  --receipt FILE [--json] [--repo PATH]
 simple-changes loop end --run-id ID --agent-id ID [--json] [--repo PATH]
 simple-changes loop finalize --run-id ID --agent-id ID --reason TEXT
   [--json] [--repo PATH]
 simple-changes worktree status [--json] [--repo PATH]
+simple-changes worktree observe [--json] [--repo PATH]
 simple-changes worktree request --claim-id ID --run-id ID
   --request-action request-pause|request-detach|notify-resume
   [--json] [--repo PATH]
@@ -231,10 +259,13 @@ simple-changes help
 ```
 
 `KIND` is one of `repo-policy`, `changelog-capabilities`, `changelog-request`,
-`changelog-receipt`, `initialization`, `inventory`, `change-plan`, `run-state`,
-`provider-receipt`, `release-delivery-receipt`,
-`remote-branch-reconciliation`, `release-consistency`, `release-notes`,
-`loop-lease`, or `worktree-coordination`.
+`changelog-receipt`, `emergency-shipping`, `initialization`, `inventory`,
+`change-plan`, `run-state`, `permission-bundle`, `provider-receipt`,
+`release-delivery-receipt`, `remote-branch-reconciliation`,
+`release-consistency`, `release-notes`, `loop-lease`, `migration-review`,
+`migration-pending`, `migration-apply-plan`, `post-cleanup-recovery`,
+`shipment-outcome`, or `worktree-coordination` — the schema filenames under
+`skills/simple-changes/evals/schemas/`.
 
 Worktree claims and pause receipts are local, mode-`0600` coordination evidence
 stored beneath the repository's common Git directory. A claim records only an

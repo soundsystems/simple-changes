@@ -8,6 +8,7 @@ import {
   MIGRATION_HANDLING_CHOICES,
   ONBOARDING_QUESTIONS,
   type OnboardingChoice,
+  PROPOSAL_SCHEDULING_CHOICES,
   renderOnboardingSummary,
   SHIPPING_MODE_CHOICES,
   UI_ARTIFACT_VERSIONING_CHOICES,
@@ -228,6 +229,7 @@ describe("preference storage", () => {
       "repository-convention"
     );
     expect(loadPolicy(fixture.root).value.shippingMode).toBe("standard");
+    expect(loadPolicy(fixture.root).value.proposalScheduling).toBe("balanced");
     expect(loadPolicy(fixture.root).value.guidance).toEqual({
       disposition: "accepted",
       version: 1,
@@ -333,7 +335,7 @@ describe("onboarding conversation", () => {
       "This is first-use onboarding inside your original Simple Changes task."
     );
     expect(messages.join("\n")).toContain(
-      "ready work -> focused proposal -> checks -> required approval -> merge -> STOP"
+      "ready work -> focused change proposal -> checks -> required approval -> merge -> STOP"
     );
     expect(
       choicesByQuestion
@@ -346,6 +348,106 @@ describe("onboarding conversation", () => {
       "Use recommended setup for this run only",
     ]);
     expect(selection).toMatchObject({ scope: "run", setupStyle: "run" });
+  });
+
+  test("honors an explicit scheduling input without prompting in non-interactive flows", async () => {
+    const questions: string[] = [];
+    const selection = await collectOnboardingSelection(
+      DEFAULT_POLICY,
+      {
+        defaultFinish: "open-change-request",
+        gitPushAuthorization: "ask",
+        proposalScheduling: "parallel",
+        questions: "blocking-only",
+        scope: "run",
+      },
+      {
+        choose: (question, _choices, defaultValue) => {
+          questions.push(question);
+          return Promise.resolve(defaultValue);
+        },
+        confirm: () => Promise.resolve(true),
+      },
+      undefined,
+      "/work/project",
+      false,
+      { forgeProvider: "github", showFirstScreen: false }
+    );
+
+    expect(questions).not.toContain(
+      "When there are multiple independent PRs, what should I optimize for?"
+    );
+    expect(selection.policy.proposalScheduling).toBe("parallel");
+    expect(selection.summary).toContain("Multiple PRs");
+  });
+
+  test("uses provider-specific terms and neutral change proposals for scheduling", async () => {
+    const run = async (forgeProvider: string | null) => {
+      const questions: string[] = [];
+      const choiceDescriptions: string[] = [];
+      const selection = await collectOnboardingSelection(
+        DEFAULT_POLICY,
+        {
+          defaultFinish: "open-change-request",
+          gitPushAuthorization: "ask",
+          questions: "blocking-only",
+          scope: "run",
+        },
+        {
+          choose: (question, choices, defaultValue) => {
+            questions.push(question);
+            choiceDescriptions.push(
+              ...choices.map((choice) => choice.description)
+            );
+            return Promise.resolve(
+              question === ONBOARDING_QUESTIONS.start
+                ? "customize"
+                : defaultValue
+            );
+          },
+          confirm: () => Promise.resolve(true),
+        },
+        undefined,
+        "/work/project",
+        false,
+        { forgeProvider, showFirstScreen: true }
+      );
+      return { choiceDescriptions, questions, selection };
+    };
+
+    const github = await run("github");
+    expect(github.questions).toContain(
+      "When there are multiple independent PRs, what should I optimize for?"
+    );
+    expect(github.selection.policy.proposalScheduling).toBe("balanced");
+    expect(github.selection.summary).toContain("focused PRs");
+    expect(github.selection.summary).toContain("Multiple PRs: Balanced.");
+    expect(github.choiceDescriptions.join(" ")).toContain("independent PRs");
+
+    const gitlab = await run("gitlab");
+    expect(gitlab.questions).toContain(
+      "When there are multiple independent MRs, what should I optimize for?"
+    );
+    expect(gitlab.selection.summary).toContain("focused MRs");
+    expect(gitlab.selection.summary).toContain("Multiple MRs: Balanced.");
+    expect(gitlab.choiceDescriptions.join(" ")).toContain("independent MRs");
+
+    const unknown = await run("gitea");
+    expect(unknown.questions).toContain(
+      "When there are multiple independent change proposals, what should I optimize for?"
+    );
+    expect(unknown.selection.summary).toContain("focused change proposals");
+    expect(unknown.selection.summary).toContain(
+      "Multiple change proposals: Balanced."
+    );
+    expect(unknown.choiceDescriptions.join(" ")).toContain(
+      "independent change proposals"
+    );
+    expect(PROPOSAL_SCHEDULING_CHOICES.map((choice) => choice.value)).toEqual([
+      "balanced",
+      "consecutive",
+      "parallel",
+    ]);
   });
 
   test("asks about push authorization for every finish that pushes", async () => {
@@ -416,6 +518,7 @@ describe("onboarding conversation", () => {
           walkthroughQuestion:
             "Would you like me to walk you through the recent Simple Changelogs updates before I continue?",
         },
+        providerEvidence: "none",
         providers: [],
         releaseSurfaces: ["CHANGELOG.md"],
         relevant: true,
@@ -472,6 +575,7 @@ describe("onboarding conversation", () => {
           walkthroughQuestion:
             "Would you like me to walk you through the recent Simple Changelogs updates before I continue?",
         },
+        providerEvidence: "inferred",
         providers: ["/skills/simple-changelogs/SKILL.md"],
         releaseSurfaces: ["CHANGELOG.md"],
         relevant: true,

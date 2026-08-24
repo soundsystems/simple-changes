@@ -53,6 +53,14 @@ const guidanceUpdatesPath = new URL(
   "../../../skills/simple-changes/references/guidance-updates.md",
   import.meta.url
 );
+const setupAndPolicyPath = new URL(
+  "../../../skills/simple-changes/references/setup-and-policy.md",
+  import.meta.url
+);
+const harnessPushPath = new URL(
+  "../../../skills/simple-changes/references/harness-push-authorization.md",
+  import.meta.url
+);
 const migrationActionsPath = new URL(
   "../../../skills/simple-changes/references/migrations-and-high-risk-actions.md",
   import.meta.url
@@ -146,11 +154,17 @@ describe("Simple Changes skill contract", () => {
     expect(normalizedGuidance).toContain(
       "do not recommend the expanded walkthrough by default"
     );
-    expect(normalizedSkill).toContain(
+    expect(normalizedGuidance).toContain(
       "When no answer is required, say so plainly and recommend continuing with current settings"
     );
-    expect(normalizedGuidance).toContain(
+    const normalizedHarnessPush = (
+      await readFile(harnessPushPath, "utf8")
+    ).replace(/\s+/g, " ");
+    expect(normalizedHarnessPush).toContain(
       "It does not grant credentials, > network access, force-push, branch-protection bypass"
+    );
+    expect(normalizedGuidance).toContain(
+      "scoped-push explanation and confirmation from [harness-aware Git push authorization](harness-push-authorization.md)"
     );
   });
 
@@ -261,7 +275,13 @@ describe("Simple Changes skill contract", () => {
       "Treat every production Web deployment as a product release"
     );
     expect(normalizedSkill).toContain(
-      "Negotiate supported versions/features and exact schema digests"
+      "Negotiate supported versions and features from the provider's declared marker"
+    );
+    expect(normalizedCoordination).toContain(
+      "Advertised schema digests are advisory"
+    );
+    expect(normalizedCoordination).toContain(
+      "machine-readable `changelog-provider.json` beside its `SKILL.md`"
     );
     expect(normalizedCoordination).toContain(
       'targetContainedUnreleased: "integrated"'
@@ -289,41 +309,45 @@ describe("Simple Changes skill contract", () => {
       /\s+/g,
       " "
     );
+    const setupAndPolicy = (await readFile(setupAndPolicyPath, "utf8")).replace(
+      /\s+/g,
+      " "
+    );
 
     expect(normalizedSource).toContain(
       "show every option with its one-sentence consequence"
     );
-    expect(normalizedSource).toContain(
-      "**Put it up for review:** Create focused proposals, run checks, and stop."
+    expect(onboarding).toContain(
+      "**Put it up for review** — Create focused proposals, run checks, and stop."
     );
-    expect(normalizedSource).toContain(
-      "**Ask me first:** Merge automatically, but confirm before production."
+    expect(onboarding).toContain(
+      "**Ask me first — Recommended** — Merge automatically, then confirm before a production deployment."
     );
-    expect(normalizedSource).toContain(
-      "**Delegate when available — Recommended when installed:** Use a compatible changelog skill when present;"
+    expect(onboarding).toContain(
+      "**Delegate when available — Recommended when installed** — Use a compatible changelog skill when present;"
     );
-    expect(normalizedSource).toContain(
-      "**Only when blocked:** Keep working unless a decision is genuinely required."
+    expect(onboarding).toContain(
+      "**Only when blocked — Recommended** — Continue through already-authorized work"
     );
-    expect(normalizedSource).toContain(
-      "**This run only:** Use the choices now without writing a policy file."
+    expect(onboarding).toContain(
+      "**This run only** — Write no preference file and ask again next time."
     );
-    expect(normalizedSource).toContain(
-      "**Ask if it's ready:** Recommended. Ask whether the implementation is ready"
+    expect(setupAndPolicy).toContain(
+      "**Ask if it's ready — Recommended:** Ask whether the implementation is ready"
     );
-    expect(normalizedSource).toContain(
+    expect(setupAndPolicy).toContain(
       "**Automatically after implementation:** Hand off completed, verified implementation work immediately"
     );
-    expect(normalizedSource).toContain(
+    expect(setupAndPolicy).toContain(
       "**When I say it's ready:** Wait for the user to ask to put up, merge, ship"
     );
-    expect(normalizedSource).toContain(
-      "**Follow repository convention:** Recommended. Use the established format"
+    expect(onboarding).toContain(
+      "**Follow repository convention — Recommended** — Use the established format"
     );
-    expect(normalizedSource).toContain(
-      "**Number and date:** Use zero-padded sequence and ISO date names"
+    expect(onboarding).toContain(
+      "**Number and date** — Use zero-padded sequence and ISO date names"
     );
-    expect(normalizedSource).toContain(
+    expect(onboarding).toContain(
       "Ordinary UI source files, Git revisions, deployment identities, package versions, and release versions do not use this preference"
     );
     expect(onboarding).toContain(
@@ -616,7 +640,7 @@ describe("Simple Changes skill contract", () => {
     expect(normalizedSkill).toContain(
       "Start the loop before the first integration mutation"
     );
-    expect(normalizedSkill).toContain("simple-changes.ts prepare-agent");
+    expect(normalizedSkill).toContain("simple-changes prepare-agent");
     expect(normalizedSkill).toContain(
       "When an active loop assigns a new author into that same integration unit"
     );

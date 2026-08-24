@@ -642,7 +642,7 @@ export const recoverLoopLock = (
   const age = Date.now() - Date.parse(owner.createdAt);
   if (!(Number.isFinite(age) && age >= STALE_LOCK_MINIMUM_AGE_MS)) {
     throw new SimpleChangesError(
-      `Cannot recover a lock younger than ${STALE_LOCK_MINIMUM_AGE_MS}ms.`,
+      `Cannot recover a lock younger than ${STALE_LOCK_MINIMUM_AGE_MS / 1000} seconds.`,
       EXIT_CODES.unsafe
     );
   }

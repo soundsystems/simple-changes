@@ -1,10 +1,25 @@
 {
   "name": "simple-changes",
-  "version": "0.12.12",
+  "version": "0.12.13",
   "description": "Forge-agnostic skill for focused, verified change proposals.",
   "type": "module",
   "private": false,
   "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://gitlab.com/soundsystems/simple-changes.git"
+  },
+  "homepage": "https://gitlab.com/soundsystems/simple-changes",
+  "bugs": {
+    "url": "https://gitlab.com/soundsystems/simple-changes/-/issues"
+  },
+  "keywords": [
+    "git",
+    "workflow",
+    "agent-skill",
+    "merge-request",
+    "release-automation"
+  ],
   "bin": {
     "simple-changes": "./skills/simple-changes/scripts/simple-changes.ts"
   },

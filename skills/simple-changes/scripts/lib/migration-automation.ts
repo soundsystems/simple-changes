@@ -117,15 +117,15 @@ const executableDigestMatches = (applyPlan: MigrationApplyPlan): boolean => {
   }
   let descriptor: number | null = null;
   try {
+    const resolvedExecutable = realpathSync(executable);
     // biome-ignore-start lint/suspicious/noBitwiseOperators: POSIX open flags are a bitmask.
     const openFlags =
       constants.O_RDONLY | constants.O_NONBLOCK | (constants.O_NOFOLLOW ?? 0);
     // biome-ignore-end lint/suspicious/noBitwiseOperators: POSIX open flags are a bitmask.
-    descriptor = openSync(executable, openFlags);
+    descriptor = openSync(resolvedExecutable, openFlags);
     const status = fstatSync(descriptor);
     return (
       status.isFile() &&
-      realpathSync(executable) === executable &&
       createHash("sha256").update(readFileSync(descriptor)).digest("hex") ===
         applyPlan.executableDigest
     );
@@ -164,6 +164,61 @@ const exactOperationSet = (
     reviewed.digest === pending.digest &&
     JSON.stringify(reviewedOperations) === JSON.stringify(pendingOperations)
   );
+};
+
+const REMOTE_LEDGER_MAX_AGE_MS = 5 * 60 * 1000;
+const APPLY_PLAN_MAX_VALIDITY_MS = 15 * 60 * 1000;
+
+const applyPlanBindingFailure = (
+  applyPlan: MigrationApplyPlan,
+  nowMs: number
+): string | null => {
+  const issuedAt = Date.parse(applyPlan.issuedAt);
+  const expiresAt = Date.parse(applyPlan.expiresAt);
+  const observedAt = Date.parse(applyPlan.remoteLedger.observedAt);
+  if (
+    !(
+      Number.isFinite(issuedAt) &&
+      Number.isFinite(expiresAt) &&
+      Number.isFinite(observedAt)
+    )
+  ) {
+    return "The apply plan carries an unreadable issuedAt, expiresAt, or remote-ledger observedAt timestamp; regenerate the plan with valid ISO date-times.";
+  }
+  if (issuedAt > nowMs) {
+    return "The apply plan is timestamped in the future; fix the clock skew and regenerate the plan.";
+  }
+  if (observedAt > nowMs) {
+    return "The remote-ledger observation is timestamped in the future; fix the clock skew and capture a fresh ledger.";
+  }
+  if (nowMs - observedAt > REMOTE_LEDGER_MAX_AGE_MS) {
+    return "The remote-ledger observation is older than 5 minutes; capture a fresh ledger and regenerate the plan.";
+  }
+  if (expiresAt <= nowMs) {
+    return "The apply plan has expired; regenerate a fresh plan from current evidence.";
+  }
+  if (expiresAt - issuedAt > APPLY_PLAN_MAX_VALIDITY_MS) {
+    return "The apply plan validity window is longer than 15 minutes; issue a shorter-lived plan.";
+  }
+  if (!applyPlan.nonce.trim()) {
+    return "The apply plan nonce is empty; regenerate the plan with a unique nonce.";
+  }
+  if (!applyPlan.adapter.trim()) {
+    return "The apply plan adapter is empty; regenerate the plan with its exact adapter identity.";
+  }
+  if (
+    applyPlan.command.length === 0 ||
+    applyPlan.command.some((argument) => !argument.trim())
+  ) {
+    return "The apply plan command is empty or contains a blank argument; regenerate the exact command.";
+  }
+  if (!commandIsExact(applyPlan)) {
+    return "The apply plan command is not the exact per-operation argv for the reviewed operations; regenerate exact execution evidence.";
+  }
+  if (!executableDigestMatches(applyPlan)) {
+    return "The apply plan executable is missing or no longer matches the recorded digest; regenerate exact execution evidence.";
+  }
+  return null;
 };
 
 const hardExclusions = (review: MigrationReview): string[] => {
@@ -238,34 +293,13 @@ export const decideMigrationAutomation = (
         "The apply plan is not bound to a fresh remote ledger for the exact reviewed target.",
     };
   }
-  const nowMs = now.getTime();
-  const issuedAt = Date.parse(applyPlan.issuedAt);
-  const expiresAt = Date.parse(applyPlan.expiresAt);
-  const observedAt = Date.parse(applyPlan.remoteLedger.observedAt);
-  if (
-    !(
-      Number.isFinite(issuedAt) &&
-      Number.isFinite(expiresAt) &&
-      Number.isFinite(observedAt)
-    ) ||
-    issuedAt > nowMs ||
-    observedAt > nowMs ||
-    nowMs - observedAt > 5 * 60 * 1000 ||
-    expiresAt <= nowMs ||
-    expiresAt - issuedAt > 15 * 60 * 1000 ||
-    !applyPlan.nonce.trim() ||
-    !applyPlan.adapter.trim() ||
-    applyPlan.command.length === 0 ||
-    applyPlan.command.some((argument) => !argument.trim()) ||
-    !commandIsExact(applyPlan) ||
-    !executableDigestMatches(applyPlan)
-  ) {
+  const bindingFailure = applyPlanBindingFailure(applyPlan, now.getTime());
+  if (bindingFailure) {
     return {
       action: "review-required",
       authorizedByPolicy: false,
       authorizedOperations: [],
-      reason:
-        "The apply plan command binding or remote-ledger freshness window is invalid; regenerate exact execution evidence.",
+      reason: bindingFailure,
     };
   }
   if (policy.migrationHandling === "never") {

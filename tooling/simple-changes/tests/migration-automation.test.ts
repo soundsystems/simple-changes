@@ -137,6 +137,91 @@ describe("reviewed migration automation", () => {
     ).toThrow("already consumed");
   });
 
+  test("accepts a symlinked adapter path whose resolved target matches the digest", () => {
+    const fixture = createTestRepository();
+    repositories.push(fixture);
+    const adapter = resolve(fixture.root, "adapter.sh");
+    writeFileSync(adapter, "#!/bin/sh\nprintf applied\n", { mode: 0o700 });
+    chmodSync(adapter, 0o700);
+    const linked = resolve(fixture.root, "linked-adapter.sh");
+    symlinkSync(adapter, linked);
+    const plan = {
+      ...applyPlan,
+      command: [linked, ...applyPlan.command.slice(1)],
+      executableDigest: createHash("sha256")
+        .update(readFileSync(adapter))
+        .digest("hex"),
+    };
+    const decision = decideMigrationAutomation(
+      policy("auto-apply-reviewed"),
+      review(),
+      operations,
+      plan
+    );
+    expect(decision).toMatchObject({
+      action: "auto-apply",
+      authorizedByPolicy: true,
+    });
+    expect(
+      applyMigrationAuthorization(
+        resolve(fixture.root, ".git"),
+        fixture.root,
+        decision
+      )
+    ).toMatchObject({ exitCode: 0, stdout: "applied" });
+  });
+
+  test("names the first failing apply-plan binding condition", () => {
+    const decide = (planOverrides: Partial<typeof applyPlan>) =>
+      decideMigrationAutomation(
+        policy("auto-apply-reviewed"),
+        review(),
+        operations,
+        { ...applyPlan, ...planOverrides },
+        now
+      );
+    expect(
+      decide({
+        remoteLedger: {
+          ...applyPlan.remoteLedger,
+          observedAt: new Date(now.getTime() - 6 * 60 * 1000).toISOString(),
+        },
+      }).reason
+    ).toBe(
+      "The remote-ledger observation is older than 5 minutes; capture a fresh ledger and regenerate the plan."
+    );
+    expect(
+      decide({
+        expiresAt: new Date(now.getTime() - 1000).toISOString(),
+      }).reason
+    ).toBe(
+      "The apply plan has expired; regenerate a fresh plan from current evidence."
+    );
+    expect(
+      decide({
+        expiresAt: new Date(now.getTime() + 20 * 60 * 1000).toISOString(),
+      }).reason
+    ).toBe(
+      "The apply plan validity window is longer than 15 minutes; issue a shorter-lived plan."
+    );
+    expect(
+      decide({
+        issuedAt: new Date(now.getTime() + 60 * 1000).toISOString(),
+      }).reason
+    ).toBe(
+      "The apply plan is timestamped in the future; fix the clock skew and regenerate the plan."
+    );
+    expect(decide({ nonce: "  " }).reason).toBe(
+      "The apply plan nonce is empty; regenerate the plan with a unique nonce."
+    );
+    expect(decide({ executableDigest: "0".repeat(64) }).reason).toBe(
+      "The apply plan executable is missing or no longer matches the recorded digest; regenerate exact execution evidence."
+    );
+    expect(decide({ issuedAt: "not-a-date" }).reason).toBe(
+      "The apply plan carries an unreadable issuedAt, expiresAt, or remote-ledger observedAt timestamp; regenerate the plan with valid ISO date-times."
+    );
+  });
+
   test("rejects a symlinked migration authorization state directory", () => {
     const fixture = createTestRepository();
     repositories.push(fixture);

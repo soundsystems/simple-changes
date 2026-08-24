@@ -8,7 +8,7 @@ type JsonSchema = Record<string, unknown>;
 
 const moduleDirectory = dirname(fileURLToPath(import.meta.url));
 const schemaDirectory = resolve(moduleDirectory, "../../evals/schemas");
-const schemaNames: SchemaName[] = [
+export const SCHEMA_NAMES: readonly SchemaName[] = [
   "repo-policy",
   "changelog-capabilities",
   "changelog-request",
@@ -34,7 +34,7 @@ const schemaNames: SchemaName[] = [
 ];
 const schemas = new Map<string, JsonSchema>();
 
-for (const schemaName of schemaNames) {
+for (const schemaName of SCHEMA_NAMES) {
   const filename = `${schemaName}.schema.json`;
   const schema = JSON.parse(
     readFileSync(resolve(schemaDirectory, filename), "utf8")

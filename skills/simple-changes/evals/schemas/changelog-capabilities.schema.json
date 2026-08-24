@@ -11,8 +11,7 @@
     "guidanceVersion",
     "requestVersions",
     "receiptVersions",
-    "features",
-    "schemaDigests"
+    "features"
   ],
   "properties": {
     "schemaVersion": { "const": 1 },

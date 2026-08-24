@@ -145,12 +145,13 @@ describe("changelog protocol negotiation", () => {
     });
   });
 
-  test("accepts producer capability supersets and negotiates only shared features", () => {
+  test("negotiates only the features both sides support", () => {
     const consumer = packagedChangelogProtocol();
+    expect(consumer.features).toContain("guidance-update-notices");
     expect(
       negotiateChangelogProtocol({
         distribution: "skill-repository",
-        features: [...consumer.features, "guidance-update-notices"],
+        features: ["public-version-policy", "classify-prepare-verify"],
         guidanceVersion: 8,
         provider: "simple-changelogs",
         receiptVersions: [1, 2],
@@ -160,15 +161,16 @@ describe("changelog protocol negotiation", () => {
       })
     ).toEqual({
       compatible: true,
-      features: consumer.features,
+      features: ["public-version-policy", "classify-prepare-verify"],
       reasonCode: null,
       receiptVersion: 2,
       requestVersion: 1,
       requiredAction: null,
+      schemaDigestStatus: "match",
     });
   });
 
-  test("fails closed for version skew and schema skew", () => {
+  test("fails closed for version skew", () => {
     const consumer = packagedChangelogProtocol();
     expect(
       negotiateChangelogProtocol(
@@ -185,6 +187,10 @@ describe("changelog protocol negotiation", () => {
         { ...consumer, requestVersions: [] }
       ).reasonCode
     ).toBe("unsupported-protocol");
+  });
+
+  test("reports schema drift without blocking a version-compatible peer", () => {
+    const consumer = packagedChangelogProtocol();
     expect(
       negotiateChangelogProtocol({
         distribution: "web",
@@ -198,8 +204,30 @@ describe("changelog protocol negotiation", () => {
           changelogReceipt: "0".repeat(64),
         },
         schemaVersion: 1,
-      }).reasonCode
-    ).toBe("schema-digest-mismatch");
+      })
+    ).toMatchObject({
+      compatible: true,
+      reasonCode: null,
+      schemaDigestStatus: "differs",
+    });
+  });
+
+  test("negotiates a provider that advertises no schema digests", () => {
+    expect(
+      negotiateChangelogProtocol({
+        distribution: "web",
+        features: [],
+        guidanceVersion: 1,
+        provider: "simple-changelogs",
+        receiptVersions: [1, 2],
+        requestVersions: [1],
+        schemaVersion: 1,
+      })
+    ).toMatchObject({
+      compatible: true,
+      receiptVersion: 2,
+      schemaDigestStatus: "unadvertised",
+    });
   });
 });
 

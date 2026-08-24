@@ -15,6 +15,7 @@ import {
   DEFAULT_POLICY,
   writeRepositoryPolicyTrustReceipt,
 } from "../../../skills/simple-changes/scripts/lib/policy.ts";
+import { SCHEMA_NAMES } from "../../../skills/simple-changes/scripts/lib/schema.ts";
 import {
   createTestRepository,
   git,
@@ -3167,6 +3168,113 @@ describe("contract CLI", () => {
     expect(result.exitCode).toBe(2);
     expect(decoder.decode(result.stderr)).toContain(
       "--check requires an explicit --repo PATH"
+    );
+  });
+
+  test("matches the packaged version", () => {
+    const { version } = JSON.parse(
+      readFileSync(resolve(testDirectory, "../../../package.json"), "utf8")
+    ) as { version: string };
+    const result = spawnSync([process.execPath, cliPath, "--version"], {
+      stderr: "pipe",
+      stdout: "pipe",
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(decoder.decode(result.stdout)).toBe(`${version}\n`);
+  });
+
+  test("treats --help after a subcommand as a help request", () => {
+    for (const flag of ["--help", "-h"]) {
+      const result = spawnSync([process.execPath, cliPath, "worktree", flag], {
+        stderr: "pipe",
+        stdout: "pipe",
+      });
+
+      expect(result.exitCode).toBe(0);
+      expect(decoder.decode(result.stdout)).toContain("Usage:");
+    }
+  });
+
+  test("lists every supported schema kind in help", () => {
+    const result = spawnSync([process.execPath, cliPath, "help"], {
+      stderr: "pipe",
+      stdout: "pipe",
+    });
+    const output = decoder.decode(result.stdout);
+
+    expect(result.exitCode).toBe(0);
+    for (const schemaName of SCHEMA_NAMES) {
+      expect(output).toContain(schemaName);
+    }
+  });
+
+  test("points unknown commands and options at help", () => {
+    const unknownCommand = spawnSync([process.execPath, cliPath, "shipit"], {
+      stderr: "pipe",
+      stdout: "pipe",
+    });
+    expect(unknownCommand.exitCode).toBe(2);
+    expect(decoder.decode(unknownCommand.stderr)).toContain(
+      "Unknown command: shipit. Run 'simple-changes help' for usage."
+    );
+
+    const unknownOption = spawnSync(
+      [process.execPath, cliPath, "inventory", "--frobnicate"],
+      { stderr: "pipe", stdout: "pipe" }
+    );
+    expect(unknownOption.exitCode).toBe(2);
+    expect(decoder.decode(unknownOption.stderr)).toContain(
+      "Unknown option: --frobnicate. Run 'simple-changes help' for usage."
+    );
+  });
+
+  test("reports an unconfirmed consequential repository policy", () => {
+    const fixture = createTestRepository();
+    repositories.push(fixture);
+    writeFixture(
+      fixture.root,
+      ".simple-changes.json",
+      `${JSON.stringify(
+        { ...DEFAULT_POLICY, productionDeploy: "allow" },
+        null,
+        2
+      )}\n`
+    );
+
+    const result = spawnSync(
+      [
+        process.execPath,
+        cliPath,
+        "initialize",
+        "--mode",
+        "preview",
+        "--json",
+        "--repo",
+        fixture.root,
+      ],
+      { stderr: "pipe", stdout: "pipe" }
+    );
+    expect(result.exitCode).toBe(0);
+    expect(JSON.parse(decoder.decode(result.stdout))).toMatchObject({
+      policyTrust: "untrusted",
+    });
+
+    const rendered = spawnSync(
+      [
+        process.execPath,
+        cliPath,
+        "initialize",
+        "--mode",
+        "preview",
+        "--repo",
+        fixture.root,
+      ],
+      { stderr: "pipe", stdout: "pipe" }
+    );
+    expect(rendered.exitCode).toBe(0);
+    expect(decoder.decode(rendered.stdout)).toContain(
+      "Repository policy requests consequential authority but has not been confirmed on this clone; running with reduced authority until setup confirms it."
     );
   });
 });

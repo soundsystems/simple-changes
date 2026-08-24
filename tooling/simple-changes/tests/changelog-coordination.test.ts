@@ -46,6 +46,7 @@ describe("changelog coordination discovery", () => {
         walkthroughQuestion:
           "Would you like me to walk you through the recent Simple Changelogs updates before I continue?",
       },
+      providerEvidence: "none",
       providers: [],
       releaseSurfaces: [],
       relevant: false,
@@ -172,6 +173,57 @@ describe("changelog coordination discovery", () => {
         providers: [join(fixture.root, `skills/${installation}/SKILL.md`)],
       });
     }
+  });
+
+  test("prefers the declared provider marker over installation-name and prose evidence", () => {
+    const fixture = createTestRepository();
+    repositories.push(fixture);
+    writeFixture(
+      fixture.root,
+      "skills/simple-changelogs/SKILL.md",
+      "---\nname: simple-changelogs\ndescription: full cross-surface Simple Changelogs distribution.\n---\n\nCurrent guidance version: 3\n"
+    );
+    writeFixture(
+      fixture.root,
+      "skills/simple-changelogs/changelog-provider.json",
+      `${JSON.stringify({
+        distribution: "web",
+        guidanceVersion: 12,
+        provider: "simple-changelogs",
+        schemaVersion: 1,
+      })}\n`
+    );
+    writeFixture(
+      fixture.root,
+      ".simple-changelogs.json",
+      `${JSON.stringify({ distribution: "web", guidance: { version: 9 }, schemaVersion: 1 })}\n`
+    );
+
+    expect(inspect(fixture)).toMatchObject({
+      capabilityAvailable: true,
+      guidanceUpdate: { installedVersion: 12, status: "update-available" },
+      providerEvidence: "marker",
+    });
+  });
+
+  test("falls back to inferred evidence when no marker is installed", () => {
+    const fixture = createTestRepository();
+    repositories.push(fixture);
+    writeFixture(
+      fixture.root,
+      "skills/simple-changelogs/SKILL.md",
+      "---\nname: simple-changelogs\ndescription: full cross-surface Simple Changelogs distribution.\n---\n\nCurrent guidance version: 7\n"
+    );
+    writeFixture(
+      fixture.root,
+      ".simple-changelogs.json",
+      `${JSON.stringify({ distribution: "full", guidance: { version: 7 }, schemaVersion: 1 })}\n`
+    );
+
+    expect(inspect(fixture)).toMatchObject({
+      guidanceUpdate: { installedVersion: 7 },
+      providerEvidence: "inferred",
+    });
   });
 
   test("detects a newer installed Simple Changelogs guidance version", () => {

@@ -103,6 +103,7 @@ describe("first-run initialization", () => {
           capabilityHelpers: [],
           capabilityStatus: "absent",
           guidanceUpdate: absentChangelogUpdate,
+          providerEvidence: "none",
           providers: [],
           releaseSurfaces: ["CHANGELOG.md"],
           relevant: true,
@@ -151,6 +152,31 @@ describe("first-run initialization", () => {
     });
   });
 
+  test("reports the repository policy trust state", () => {
+    expect(
+      inspectInitialization("ship", {
+        path: "/repo/.simple-changes.json",
+        source: "repository",
+        trust: "untrusted",
+        value: DEFAULT_POLICY,
+      })
+    ).toMatchObject({ policyTrust: "untrusted" });
+    expect(
+      inspectInitialization("ship", {
+        path: "/repo/.simple-changes.json",
+        source: "repository",
+        trust: "trusted",
+        value: { ...DEFAULT_POLICY, shippingMode: "expedited" },
+      })
+    ).toMatchObject({ policyTrust: "trusted" });
+    expect(
+      inspectInitialization("ship", {
+        path: null,
+        source: "default",
+      })
+    ).toMatchObject({ policyTrust: "not-required" });
+  });
+
   test("does not repeat onboarding when personal or repository policy exists", () => {
     expect(
       inspectInitialization("integrate", {
@@ -188,6 +214,7 @@ describe("first-run initialization", () => {
         capabilityHelpers: ["/skills/simple-changelogs/scripts/setup.ts"],
         capabilityStatus: "unverified",
         guidanceUpdate: availableChangelogUpdate,
+        providerEvidence: "inferred",
         providers: ["/skills/simple-changelogs/SKILL.md"],
         releaseSurfaces: ["CHANGELOG.md"],
         relevant: true,
@@ -259,6 +286,7 @@ describe("first-run initialization", () => {
           ...availableChangelogUpdate,
           status: "current",
         },
+        providerEvidence: "inferred",
         providers: ["/skills/simple-changelogs/SKILL.md"],
         releaseSurfaces: ["CHANGELOG.md"],
         relevant: true,
@@ -294,6 +322,7 @@ describe("first-run initialization", () => {
         capabilityHelpers: ["/skills/simple-changelogs/scripts/setup.ts"],
         capabilityStatus: "unverified",
         guidanceUpdate: availableChangelogUpdate,
+        providerEvidence: "inferred",
         providers: ["/skills/simple-changelogs/SKILL.md"],
         releaseSurfaces: ["CHANGELOG.md"],
         relevant: true,

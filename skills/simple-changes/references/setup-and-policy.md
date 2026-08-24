@@ -94,13 +94,14 @@ Use these safe defaults when no committed policy exists:
 ```json
 {
   "schemaVersion": 1,
-  "guidance": { "disposition": "accepted", "version": 11 },
+  "guidance": { "disposition": "accepted", "version": "<CURRENT_GUIDANCE_VERSION>" },
   "changelogHandling": "preserve-and-report",
   "defaultFinish": "open-change-request",
   "gitPushAuthorization": "ask",
   "handoffTiming": "confirm-ready",
   "migrationHandling": "ask-after-review",
   "migrationTargets": [],
+  "proposalScheduling": "balanced",
   "uiArtifactVersioning": "repository-convention",
   "questions": "blocking-only",
   "review": "repository-policy",
@@ -110,6 +111,10 @@ Use these safe defaults when no committed policy exists:
 }
 ```
 
+Replace the guidance-version placeholder with the currently installed value
+(`CURRENT_GUIDANCE_VERSION` in `scripts/lib/guidance-updates.ts`); do not copy
+a stale literal from documentation.
+
 `shippingMode` accepts `standard`, `expedited`, or `break-glass`. Onboarding and
 `--shipping-mode` expose all three, with break-glass clearly labeled Advanced.
 When `break-glass` is paired with `productionDeploy: "allow"`, a normal Ship
@@ -118,6 +123,14 @@ for a redundant break-glass phrase. Rollback evidence, focused checks, later
 review, forward reconciliation, verification, and cleanup remain mandatory.
 Initialization returns the effective `shippingMode`; the agent must pass that
 closed value into emergency classification instead of re-defaulting it.
+
+`proposalScheduling` accepts `balanced`, `consecutive`, or `parallel` and
+defaults to `balanced`. It decides whether independent PRs or MRs are normally
+authored one at a time or in separate claimed worktrees. It never permits two
+authors to share a checkout, weakens controller guards, or authorizes provider
+mutations. A necessary isolation worktree may still be used under `consecutive`;
+briefly explain why. Ask again only for a material deviation or unusually
+expensive fan-out.
 
 `gitPushAuthorization` accepts `configure-harness`, `ask`, or `never`.
 Initialization returns the effective value. `configure-harness` directs the
@@ -171,8 +184,16 @@ user chooses **Add the pointer**, ask:
 > When an agent finishes implementation and verification, when should Simple
 > Changes take over?
 
-Offer **Ask if it's ready** as the recommended default, **Automatically after
-implementation**, and **When I say it's ready**. The confirmation summary must
+Offer:
+
+- **Ask if it's ready — Recommended:** Ask whether the implementation is ready
+  or whether more changes are needed before handing it off.
+- **Automatically after implementation:** Hand off completed, verified
+  implementation work immediately, subject to current authority.
+- **When I say it's ready:** Wait for the user to ask to put up, merge, ship,
+  finish, or reconcile the completed work.
+
+The confirmation summary must
 show the exact target path and proposed managed block. Apply an authorized edit
 atomically, preserve existing content and newline style, and re-read it after
 writing.
@@ -197,6 +218,9 @@ shipping order explicitly.
 For a task that will save multiple UI artifact iterations, also supply
 `--ui-artifacts` and
 `--ui-versioning repository|number-and-date|date-only|number-only`.
+When a run will author multiple independent proposals, supply
+`--proposal-scheduling balanced|consecutive|parallel` to select the saved
+scheduling preference.
 `SIMPLE_CHANGES_CONFIG_DIR` may override the personal configuration root for
 isolated automation and tests.
 

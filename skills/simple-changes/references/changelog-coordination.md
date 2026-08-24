@@ -20,11 +20,26 @@ Keep these states distinct:
 
 Availability is not compatibility. Before delegation, obtain the provider's
 read-only `changelog-capabilities` record and negotiate the highest shared
-request and receipt versions. Require the advertised request/receipt schema
-digests to equal the packaged schemas. A missing helper, unsupported version,
-or digest mismatch blocks only the release boundary; safe non-release
-integration may continue. Never infer compatibility from a path, skill name, or
-guidance version.
+request and receipt versions. Compatibility is decided by that version overlap;
+every request and receipt is then validated against the packaged schema at the
+moment it is used, which is what actually enforces the contract. A missing
+helper or unsupported version blocks only the release boundary; safe non-release
+integration may continue.
+
+Advertised schema digests are advisory. When both sides publish them, record
+`schemaDigestStatus` as `match`, `differs`, or `unadvertised` so drift stays
+observable, and mention a `differs` result alongside any later validation
+failure. Do not block a version-compatible peer on digest inequality: a
+cosmetic schema edit would otherwise stop an otherwise working integration.
+
+Never infer compatibility from a path, skill name, or prose. A provider
+declares itself in a machine-readable `changelog-provider.json` beside its
+`SKILL.md`, carrying at least `schemaVersion`, `provider`, `distribution`, and
+`guidanceVersion` in the `changelog-capabilities` shape. Prefer that marker for
+distribution matching and installed-guidance comparison. Only when no marker is
+installed may discovery fall back to the installation directory name and
+SKILL.md prose, and it must then report `providerEvidence: "inferred"` rather
+than presenting a guess as a declaration.
 
 Installed-update detection is a narrower read-only pre-loop check, not
 capability negotiation. Compare the selected provider's declared current

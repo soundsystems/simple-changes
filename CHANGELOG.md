@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.12.13 - 2026-08-24
 
 - Setup now lets you choose how multiple independent PRs or MRs are scheduled:
   **Balanced** works consecutively by default and parallelizes when it
@@ -12,7 +12,7 @@
 - User-facing terminology now follows the detected forge: GitHub workflows say
   **PR**, GitLab workflows say **MR**, and provider-neutral **change proposal**
   wording is reserved for unknown or differently named forges.
-<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-23T13:39:21-05:00" -->
+<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-24T13:23:14-05:00" -->
 
 ## 0.12.12 - 2026-08-23
 

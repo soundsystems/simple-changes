@@ -115,7 +115,7 @@ import {
   releaseWorktreeClaim,
 } from "./lib/worktree-coordination.ts";
 
-const VERSION = "0.12.12";
+const VERSION = "0.12.13";
 const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const SCHEMA_KIND_LINE_LIMIT = 78;
 const schemaKindLines = SCHEMA_NAMES.reduce<string[]>((lines, name) => {

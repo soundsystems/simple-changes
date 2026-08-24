@@ -1,6 +1,6 @@
 # Developer changelog
 
-## Unreleased
+## 0.12.13 - 2026-08-24
 
 - Added the backward-compatible `proposalScheduling` repository policy and
   setup flag with `balanced`, `consecutive`, and `parallel` values. Existing
@@ -18,7 +18,9 @@
   artifacts only with a proven-safe completed worktree, and that a standalone
   clone must not bypass an active controller or advance the same remote target
   outside its lease.
-<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-23T13:39:21-05:00" -->
+- Advanced Simple Changes guidance to version 19 so existing installations
+  receive the proposal-scheduling and forge-aware terminology behavior.
+<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-24T13:23:14-05:00" -->
 
 ## 0.12.12 - 2026-08-23
 

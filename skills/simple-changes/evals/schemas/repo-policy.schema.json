@@ -75,6 +75,9 @@
         }
       }
     },
+    "proposalScheduling": {
+      "enum": ["balanced", "consecutive", "parallel"]
+    },
     "uiArtifactVersioning": {
       "enum": [
         "repository-convention",

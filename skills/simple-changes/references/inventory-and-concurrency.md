@@ -11,6 +11,26 @@ Capture the opening inventory before mutation:
 - open proposals and provider capabilities when available;
 - policy sources and a stable baseline digest.
 
+Before assigning several independent authors, apply `proposalScheduling`:
+
+- `balanced`: prefer consecutive work, but parallelize when it saves meaningful
+  time or isolation is necessary; ask only when the tradeoff is substantial;
+- `consecutive`: schedule one PR or MR at a time unless isolation is necessary;
+- `parallel`: use distinct claimed worktrees for independent PRs or MRs, but
+  confirm unusually expensive fan-out.
+
+Once parallel authoring is selected, every author still requires a distinct
+claimed worktree. After verified integration, ordinary finalization removes
+proven-safe completed worktrees, including their local dependencies and build
+artifacts. Never delete dependencies from an active, retained, or uncertain
+worktree merely to reclaim space.
+
+Do not substitute a standalone clone for a claimed worktree. Its separate
+common Git directory cannot see this repository's controller and claims, so it
+can advance the same remote target while leaving stale local bookkeeping. Close
+or safely resume the existing controller before another shipment moves that
+target.
+
 Resolve the canonical primary checkout from `git worktree list --porcelain`, not
 from the current directory. Record the primary path and return to that exact
 checkout after mutations.

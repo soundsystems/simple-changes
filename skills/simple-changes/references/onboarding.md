@@ -136,6 +136,25 @@ Then ask **How should routine Ship requests run? Choose one:**
    finish focused checks, review, merge/reconciliation, final verification, and
    cleanup afterward.
 
+Then ask **When there are multiple independent change requests, what should I
+optimize for? Choose one:** Use **PRs** for a detected GitHub target and **MRs**
+for a detected GitLab target throughout the displayed question and choices.
+
+1. **Balanced — Recommended** — Work consecutively by default; use parallel
+   claimed worktrees when they save meaningful time or isolation is necessary,
+   and ask again only when the tradeoff is substantial.
+2. **Save space** — Prefer consecutive PRs or MRs to minimize duplicated
+   dependencies, build outputs, caches, and worktrees.
+3. **Save time** — Prefer separate claimed worktrees for independent PRs or MRs
+   so they finish sooner, while confirming unusually expensive fan-out.
+
+Explain that Git history is shared, while dependencies and generated output may
+be duplicated. This is a scheduling preference, not a relaxation of worktree
+isolation after parallel work is selected. Remove a completed worktree and its
+local dependencies automatically only after its work is proven integrated.
+Preserve active, retained, or uncertain worktrees and their dependencies. Do
+not add a recurring dependency-cleanup question.
+
 Do not require a second “authorized for break-glass” phrase when saved
 break-glass ordering and automatic production authority are both effective.
 Native provider rollback is sufficient and does not require a blocking

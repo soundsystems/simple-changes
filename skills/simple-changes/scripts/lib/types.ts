@@ -102,6 +102,7 @@ export interface RepoPolicy {
   migrationHandling: MigrationHandling;
   migrationTargets: MigrationTarget[];
   productionDeploy: "ask" | "allow" | "deny";
+  proposalScheduling: "balanced" | "consecutive" | "parallel";
   questions: "blocking-only" | "always" | "never";
   review: "repository-policy" | "independent" | "provider-policy";
   schemaVersion: 1;

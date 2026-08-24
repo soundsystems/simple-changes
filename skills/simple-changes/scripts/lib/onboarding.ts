@@ -41,6 +41,7 @@ export interface OnboardingInputs {
   migrationHandling?: RepoPolicy["migrationHandling"];
   migrationTargets?: MigrationTarget[];
   productionDeploy?: RepoPolicy["productionDeploy"];
+  proposalScheduling?: RepoPolicy["proposalScheduling"];
   questions?: RepoPolicy["questions"];
   scope?: SetupScope;
   shippingMode?: RepoPolicy["shippingMode"];
@@ -62,6 +63,7 @@ export interface OnboardingSelection {
 
 export interface OnboardingConversationOptions {
   existingPersonalDefaults?: RepoPolicy | null;
+  forgeProvider?: string | null;
   showFirstScreen?: boolean;
 }
 
@@ -83,6 +85,8 @@ export const ONBOARDING_QUESTIONS = {
     "Which exact database targets may use automatic migration apply?",
   permission: "When should I ask for permission or help?",
   production: "What should happen with production?",
+  proposalScheduling:
+    "When there are multiple independent change requests, what should I optimize for?",
   scope: "Where should these preferences live?",
   shippingMode: "How should routine Ship requests run?",
   start:
@@ -130,6 +134,27 @@ export const FINISH_CHOICES = [
     description: "Also deploy and verify the merged work.",
     label: "Ship when approved",
     value: "ship",
+  },
+] as const satisfies readonly OnboardingChoice[];
+
+export const PROPOSAL_SCHEDULING_CHOICES = [
+  {
+    description:
+      "Usually work consecutively, but use parallel worktrees when they save meaningful time or isolation is necessary; ask again only when the tradeoff is substantial.",
+    label: "Balanced",
+    value: "balanced",
+  },
+  {
+    description:
+      "Prefer one change request at a time to minimize duplicate dependencies, build outputs, caches, and worktrees.",
+    label: "Save space",
+    value: "consecutive",
+  },
+  {
+    description:
+      "Prefer separate claimed worktrees for independent change requests to finish sooner, while confirming unusually expensive fan-out.",
+    label: "Save time",
+    value: "parallel",
   },
 ] as const satisfies readonly OnboardingChoice[];
 
@@ -344,8 +369,11 @@ const scopeChoices = (
       : choice
   );
 
-const finishPath = (finish: RepoPolicy["defaultFinish"]): string => {
-  const proposal = "ready work -> focused proposal -> checks";
+const finishPath = (
+  finish: RepoPolicy["defaultFinish"],
+  forgeProvider?: string | null
+): string => {
+  const proposal = `ready work -> focused ${proposalTerms(forgeProvider).singular} -> checks`;
   if (finish === "ship") {
     return `${proposal} -> required approval -> merge -> authorized deploy -> live verification`;
   }
@@ -378,7 +406,8 @@ const renderFirstScreenIntroduction = (
   defaults: RepoPolicy,
   inputs: OnboardingInputs,
   context: ChangelogCoordination,
-  primaryCheckout: string | null
+  primaryCheckout: string | null,
+  forgeProvider?: string | null
 ): string => {
   const finish = inputs.defaultFinish ?? preferredFinish(defaults);
   const location = primaryCheckout
@@ -396,8 +425,8 @@ const renderFirstScreenIntroduction = (
     "Simple Changes begins with a repository inventory, separates stable work into focused change units, runs the relevant checks, obtains required review, and then stops, merges, or ships according to your preference. A shipping run will verify the exact delivered revision and clean up only work that is proven safe to remove.",
     "Here are the main ways you can use it:",
     "- “Sync with main” — Safely update your local checkout without pushing anything.",
-    "- “Put this up” — Turn ready work into focused change proposals and stop for review.",
-    "- “Open changes for everything ready” — Create separate proposals for each ready piece of work.",
+    `- “Put this up” — Turn ready work into a focused ${proposalTerms(forgeProvider).singular} and stop for review.`,
+    `- “Open changes for everything ready” — Create separate ${proposalTerms(forgeProvider).plural} for each ready piece of work.`,
     "- “Merge what’s ready” — Run checks and merge work that has the required approval.",
     "- “Ship what’s ready” — Merge, deploy when authorized, and verify exactly what went live.",
     "- “Clean up the repo” — Reconcile branches and worktrees, removing only things proven safe.",
@@ -411,7 +440,7 @@ const renderFirstScreenIntroduction = (
     changelog,
     "",
     "Recommended workflow for this request:",
-    finishPath(finish),
+    finishPath(finish, forgeProvider),
     "Ask only when blocked. Production remains a separate confirmation unless you explicitly change it. High-risk operations such as migrations, secrets, DNS, store releases, and history rewrites always remain separately gated.",
     "Would you like a walkthrough before I continue? Choose “Walk me through it” below for every workflow and preference, one at a time.",
   ].join("\n");
@@ -566,6 +595,24 @@ const migrationHandlingLabel = (
   MIGRATION_HANDLING_CHOICES.find((choice) => choice.value === handling)
     ?.label ?? handling;
 
+const proposalSchedulingLabel = (
+  scheduling: RepoPolicy["proposalScheduling"]
+): string =>
+  PROPOSAL_SCHEDULING_CHOICES.find((choice) => choice.value === scheduling)
+    ?.label ?? scheduling;
+
+const proposalTerms = (
+  provider: string | null | undefined
+): { plural: string; singular: string } => {
+  if (provider === "github") {
+    return { plural: "PRs", singular: "PR" };
+  }
+  if (provider === "gitlab") {
+    return { plural: "MRs", singular: "MR" };
+  }
+  return { plural: "change requests", singular: "change request" };
+};
+
 const migrationTargetLabel = (target: MigrationTarget): string =>
   `${target.provider}:${target.project}:${target.environment}`;
 
@@ -587,14 +634,18 @@ const changelogSummary = (
   return "Changelog destinations will be preserved and reported for a separate workflow.";
 };
 
-const finishActionSummary = (policy: RepoPolicy): string => {
+const finishActionSummary = (
+  policy: RepoPolicy,
+  forgeProvider?: string | null
+): string => {
+  const { plural } = proposalTerms(forgeProvider);
   if (policy.defaultFinish === "integrate") {
-    return "I'll create focused MRs, run checks, wait for required approval, and merge the exact approved revisions.";
+    return `I'll create focused ${plural}, run checks, wait for required approval, and merge the exact approved revisions.`;
   }
   if (policy.defaultFinish === "ship") {
-    return "I'll create focused MRs, run checks, wait for required approval, merge the exact approved revisions, deploy authorized targets, and verify the live application.";
+    return `I'll create focused ${plural}, run checks, wait for required approval, merge the exact approved revisions, deploy authorized targets, and verify the live application.`;
   }
-  return "I'll create focused MRs, run checks, and stop with the work ready for review.";
+  return `I'll create focused ${plural}, run checks, and stop with the work ready for review.`;
 };
 
 const shippingSummary = (
@@ -658,9 +709,10 @@ export const renderOnboardingSummary = (
     block: null,
     target: null,
   },
-  uiArtifactsRelevant = false
+  uiArtifactsRelevant = false,
+  forgeProvider?: string | null
 ): string => {
-  const actions = finishActionSummary(policy);
+  const actions = finishActionSummary(policy, forgeProvider);
   const { production, shippingMode } = shippingSummary(policy);
   const pointerSummary = instructionPointerSummary(instructionPointer);
   return [
@@ -679,6 +731,7 @@ export const renderOnboardingSummary = (
     policy.concurrentWork === "strict"
       ? "Concurrent worktrees: strict repository-wide serialization; claimed owners must pause before integration continues."
       : "Concurrent worktrees: independent agents may keep working in distinct actively claimed worktrees while integration stays single-controller.",
+    `Multiple ${proposalTerms(forgeProvider).plural}: ${proposalSchedulingLabel(policy.proposalScheduling)}.`,
     uiArtifactsRelevant
       ? `Saved UI iteration naming: ${uiArtifactVersioningLabel(policy.uiArtifactVersioning)}. Repository conventions still take precedence.`
       : null,
@@ -804,13 +857,20 @@ const selectSetupStyle = async (
   prompter: OnboardingPrompter,
   context: ChangelogCoordination,
   primaryCheckout: string | null,
-  showFirstScreen: boolean
+  showFirstScreen: boolean,
+  forgeProvider?: string | null
 ): Promise<SetupStyle> => {
   if (!showFirstScreen) {
     return "customize";
   }
   prompter.present?.(
-    renderFirstScreenIntroduction(defaults, inputs, context, primaryCheckout)
+    renderFirstScreenIntroduction(
+      defaults,
+      inputs,
+      context,
+      primaryCheckout,
+      forgeProvider
+    )
   );
   const choices = onboardingStyleChoices(
     defaults,
@@ -829,12 +889,22 @@ const selectDefaultFinish = async (
   defaults: RepoPolicy,
   inputs: OnboardingInputs,
   prompter: OnboardingPrompter,
-  customize: boolean
+  customize: boolean,
+  forgeProvider?: string | null
 ): Promise<"open-change-request" | "integrate" | "ship"> => {
+  const terms = proposalTerms(forgeProvider);
+  const finishChoices = FINISH_CHOICES.map((choice) =>
+    choice.value === "open-change-request"
+      ? {
+          ...choice,
+          description: `Create focused ${terms.plural}, run checks, and stop.`,
+        }
+      : choice
+  );
   if (inputs.defaultFinish) {
     return choiceValue<"open-change-request" | "integrate" | "ship">(
       inputs.defaultFinish,
-      FINISH_CHOICES,
+      finishChoices,
       ONBOARDING_QUESTIONS.finish
     );
   }
@@ -845,19 +915,50 @@ const selectDefaultFinish = async (
     [
       "This sets the normal finish line for ready work. Checks and required review still apply at every level.",
       "",
-      `Review: ${finishPath("open-change-request")}`,
-      `Merge:  ${finishPath("integrate")}`,
-      `Ship:   ${finishPath("ship")}`,
+      `Review: ${finishPath("open-change-request", forgeProvider)}`,
+      `Merge:  ${finishPath("integrate", forgeProvider)}`,
+      `Ship:   ${finishPath("ship", forgeProvider)}`,
     ].join("\n")
   );
   return choiceValue<"open-change-request" | "integrate" | "ship">(
     await prompter.choose(
       ONBOARDING_QUESTIONS.finish,
-      FINISH_CHOICES,
+      finishChoices,
       preferredFinish(defaults)
     ),
-    FINISH_CHOICES,
+    finishChoices,
     ONBOARDING_QUESTIONS.finish
+  );
+};
+
+const selectProposalScheduling = async (
+  defaults: RepoPolicy,
+  inputs: OnboardingInputs,
+  prompter: OnboardingPrompter,
+  customize: boolean,
+  forgeProvider?: string | null
+): Promise<RepoPolicy["proposalScheduling"]> => {
+  if (inputs.proposalScheduling) {
+    return inputs.proposalScheduling;
+  }
+  if (!customize) {
+    return defaults.proposalScheduling;
+  }
+  prompter.present?.(
+    "Git history is shared across worktrees, but dependencies, build outputs, and caches may be duplicated. Completed worktrees are removed automatically only after their work is proven integrated; active or uncertain work stays untouched."
+  );
+  const terms = proposalTerms(forgeProvider);
+  const question = `When there are multiple independent ${terms.plural}, what should I optimize for?`;
+  const choices = PROPOSAL_SCHEDULING_CHOICES.map((choice) => ({
+    ...choice,
+    description: choice.description
+      .replaceAll("change requests", terms.plural)
+      .replaceAll("change request", terms.singular),
+  }));
+  return choiceValue<RepoPolicy["proposalScheduling"]>(
+    await prompter.choose(question, choices, defaults.proposalScheduling),
+    choices,
+    question
   );
 };
 
@@ -1139,7 +1240,8 @@ export const collectOnboardingSelection = async (
           "run",
           context,
           instructionPointer,
-          uiArtifactsRelevant
+          uiArtifactsRelevant,
+          conversation.forgeProvider
         ),
       ].join("\n\n");
       return {
@@ -1158,14 +1260,23 @@ export const collectOnboardingSelection = async (
     prompter,
     context,
     primaryCheckout,
-    conversation.showFirstScreen ?? false
+    conversation.showFirstScreen ?? false,
+    conversation.forgeProvider
   );
   const customize = setupStyle === "customize" || setupStyle === "walkthrough";
   const defaultFinish = await selectDefaultFinish(
     defaults,
     inputs,
     prompter,
-    customize
+    customize,
+    conversation.forgeProvider
+  );
+  const proposalScheduling = await selectProposalScheduling(
+    defaults,
+    inputs,
+    prompter,
+    customize && (conversation.showFirstScreen ?? false),
+    conversation.forgeProvider
   );
   const productionDeploy = await selectProductionDeploy(
     defaults,
@@ -1250,6 +1361,7 @@ export const collectOnboardingSelection = async (
     migrationHandling,
     migrationTargets,
     productionDeploy,
+    proposalScheduling,
     questions,
     review: defaults.review,
     schemaVersion: 1,
@@ -1261,7 +1373,8 @@ export const collectOnboardingSelection = async (
     scope,
     context,
     instructionPointer,
-    uiArtifactsRelevant
+    uiArtifactsRelevant,
+    conversation.forgeProvider
   );
   return {
     confirmed: await prompter.confirm(summary),

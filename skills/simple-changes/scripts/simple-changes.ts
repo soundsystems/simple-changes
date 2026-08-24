@@ -135,6 +135,7 @@ Usage:
     [--changelog-required]
     [--changelog delegate-if-available|preserve-and-report|ask]
     [--concurrent-work allow-claimed|strict]
+    [--proposal-scheduling balanced|consecutive|parallel]
     [--handoff ask|automatic|user-signaled]
     [--instruction-pointer add|leave] [--instruction-file PATH]
     [--ui-artifacts]
@@ -150,6 +151,7 @@ Usage:
   simple-changes setup [--finish review|integrate|ship]
     [--changelog delegate-if-available|preserve-and-report|ask]
     [--concurrent-work allow-claimed|strict]
+    [--proposal-scheduling balanced|consecutive|parallel]
     [--handoff ask|automatic|user-signaled]
     [--instruction-pointer add|leave] [--instruction-file PATH]
     [--ui-artifacts]
@@ -268,6 +270,7 @@ interface CliOptions {
   pendingPath?: string;
   positional: string[];
   productionDeploy?: RepoPolicy["productionDeploy"];
+  proposalScheduling?: RepoPolicy["proposalScheduling"];
   purpose?: string;
   questions?: RepoPolicy["questions"];
   ready: boolean;
@@ -313,6 +316,7 @@ const VALUED_OPTIONS = new Set([
   "--pending",
   "--pause-receipt",
   "--production",
+  "--proposal-scheduling",
   "--purpose",
   "--questions",
   "--reason",
@@ -479,6 +483,29 @@ const applyMigrationOption = (
   return true;
 };
 
+const applyProposalSchedulingOption = (
+  options: CliOptions,
+  option: string,
+  value: string
+): boolean => {
+  if (option !== "--proposal-scheduling") {
+    return false;
+  }
+  const values: RepoPolicy["proposalScheduling"][] = [
+    "balanced",
+    "consecutive",
+    "parallel",
+  ];
+  if (!values.includes(value as RepoPolicy["proposalScheduling"])) {
+    throw new SimpleChangesError(
+      `--proposal-scheduling must be one of ${values.join(", ")}`,
+      EXIT_CODES.usage
+    );
+  }
+  options.proposalScheduling = value as RepoPolicy["proposalScheduling"];
+  return true;
+};
+
 const applySetupValuedOption = (
   options: CliOptions,
   option: string,
@@ -514,6 +541,7 @@ const applySetupValuedOption = (
     return true;
   }
   if (
+    applyProposalSchedulingOption(options, option, value) ||
     applyFinishOption(options, option, value) ||
     applyHandoffOption(options, option, value) ||
     applyMigrationOption(options, option, value)
@@ -950,6 +978,7 @@ const setupContext = (
 ): {
   changelog: ReturnType<typeof inspectChangelogCoordination>;
   existingPersonalDefaults: RepoPolicy | null;
+  forgeProvider: string | null;
   policy: RepoPolicy;
   primaryCheckout: string | null;
 } => {
@@ -960,17 +989,22 @@ const setupContext = (
       changelog: inspectChangelogCoordination(null),
       existingPersonalDefaults:
         personalPolicy.source === "user" ? personalPolicy.value : null,
+      forgeProvider: null,
       policy: personalPolicy.value,
       primaryCheckout: null,
     };
   }
   const inventory = captureInventory(repositoryPath);
+  const targetBinding = inventory.repository.remoteBindings.find(
+    (binding) => binding.name === inventory.repository.targetRemote
+  );
   return {
     changelog: inspectChangelogCoordination(
       inventory.repository.primaryCheckout
     ),
     existingPersonalDefaults:
       personalPolicy.source === "user" ? personalPolicy.value : null,
+    forgeProvider: targetBinding?.provider ?? null,
     policy: inventory.policy.value,
     primaryCheckout: inventory.repository.primaryCheckout,
   };
@@ -985,6 +1019,7 @@ const SETUP_INPUT_KEYS = [
   "instructionFile",
   "instructionPointer",
   "migrationHandling",
+  "proposalScheduling",
   "productionDeploy",
   "questions",
   "scope",
@@ -1057,6 +1092,7 @@ const runSetup = async (options: CliOptions): Promise<void> => {
       options.uiArtifacts,
       {
         existingPersonalDefaults: context.existingPersonalDefaults,
+        forgeProvider: context.forgeProvider,
         showFirstScreen: process.stdin.isTTY,
       }
     );

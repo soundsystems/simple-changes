@@ -101,6 +101,7 @@ Use these safe defaults when no committed policy exists:
   "handoffTiming": "confirm-ready",
   "migrationHandling": "ask-after-review",
   "migrationTargets": [],
+  "proposalScheduling": "balanced",
   "uiArtifactVersioning": "repository-convention",
   "questions": "blocking-only",
   "review": "repository-policy",
@@ -122,6 +123,14 @@ for a redundant break-glass phrase. Rollback evidence, focused checks, later
 review, forward reconciliation, verification, and cleanup remain mandatory.
 Initialization returns the effective `shippingMode`; the agent must pass that
 closed value into emergency classification instead of re-defaulting it.
+
+`proposalScheduling` accepts `balanced`, `consecutive`, or `parallel` and
+defaults to `balanced`. It decides whether independent PRs or MRs are normally
+authored one at a time or in separate claimed worktrees. It never permits two
+authors to share a checkout, weakens controller guards, or authorizes provider
+mutations. A necessary isolation worktree may still be used under `consecutive`;
+briefly explain why. Ask again only for a material deviation or unusually
+expensive fan-out.
 
 `gitPushAuthorization` accepts `configure-harness`, `ask`, or `never`.
 Initialization returns the effective value. `configure-harness` directs the

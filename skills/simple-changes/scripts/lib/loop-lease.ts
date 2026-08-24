@@ -16,6 +16,7 @@ import {
 } from "node:fs";
 import { hostname } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   decideEmergencyShipping,
   deriveEmergencyShippingStatus,
@@ -41,10 +42,12 @@ import {
   validatePostCleanupRecovery,
   validateRemoteBranchReconciliation,
 } from "./remote-branch-reconciliation.ts";
-import { validateSchema } from "./schema.ts";
+import { validateSchema, validateSchemaDocument } from "./schema.ts";
 import type {
   ChangePlan,
   EmergencyShippingLedgerEntry,
+  LoopCloseEquivalentOutcome,
+  LoopCloseEquivalentWorktreeProof,
   LoopControllerLifecycle,
   LoopLease,
   LoopOverride,
@@ -104,7 +107,7 @@ const REMOTE_RECONCILIATION_MODES = new Set<LoopLease["mode"]>([
 ]);
 const AUTOMATIC_CLEANUP_MODES = REMOTE_RECONCILIATION_MODES;
 const MISSING_OPENING_REMOTE_INVENTORY_BLOCKER =
-  "Cannot end a legacy GitLab loop without its opening remote inventory; only approved post-cleanup recovery may close it.";
+  "Cannot end a legacy GitLab loop without its opening remote inventory; only approved post-cleanup recovery may close it. Next: run `simple-changes loop recover-post-cleanup` when cleanup is already complete, or `simple-changes loop close-equivalent` when the work is already contained in the target.";
 const MISSING_REMOTE_RECONCILIATION_BLOCKER =
   "Cannot end a GitLab integration loop before recording a complete remote-branch reconciliation receipt.";
 
@@ -469,7 +472,7 @@ const effectiveShipmentScopeFrozenAt = (lease: LoopLease): string | null => {
 const assertControllerActive = (lease: LoopLease): void => {
   if (controllerLifecycle(lease).status === "relinquished") {
     throw new SimpleChangesError(
-      `Integration-controller loop ${lease.runId} was relinquished by ${lease.ownerAgentId}; resume it with a new controller before mutating it.`,
+      `Integration-controller loop ${lease.runId} was relinquished by ${lease.ownerAgentId}; resume it with a new controller before mutating it. Next: start the loop again in resume mode to continue its frozen shipment, or run \`simple-changes loop close-equivalent --run-id ${lease.runId} --approved-by <you> --reason <why>\` if the work is already contained in the target.`,
       EXIT_CODES.unsafe
     );
   }
@@ -479,7 +482,7 @@ const assertNewAuthorPreparationAllowed = (lease: LoopLease): void => {
   const frozenAt = effectiveShipmentScopeFrozenAt(lease);
   if (frozenAt) {
     throw new SimpleChangesError(
-      `Shipment scope for ${lease.runId} froze when its controller relinquished at ${frozenAt}. A resumed controller may finish registered work, reconcile, deploy, clean up, and close this shipment, but cannot prepare a new author for a later shipment. Close this loop and start a fresh one.`,
+      `Shipment scope for ${lease.runId} froze when its controller relinquished at ${frozenAt}. A resumed controller may finish registered work, reconcile, deploy, clean up, and close this shipment, but cannot prepare a new author for a later shipment. Close this loop and start a fresh one. Next: if this work is already contained in the target, run \`simple-changes loop close-equivalent --run-id ${lease.runId} --approved-by <you> --reason <why>\`.`,
       EXIT_CODES.unsafe
     );
   }
@@ -1368,7 +1371,7 @@ const assertAgentMutationAllowed = (
   assertControllerActive(lease);
   if (targetUsesGitLab(inventory) && !lease.openingRemoteInventory) {
     throw new SimpleChangesError(
-      "This legacy run has no opening remote inventory. It is close-only: use approved post-cleanup recovery after proving cleanup is already complete.",
+      "This legacy run has no opening remote inventory. It is close-only: use approved post-cleanup recovery after proving cleanup is already complete. Next: run `simple-changes loop recover-post-cleanup` when cleanup is already complete, or `simple-changes loop close-equivalent` when the work is already contained in the target.",
       EXIT_CODES.unsafe
     );
   }
@@ -1492,7 +1495,7 @@ export const startLoop = (
         }
         if (lifecycle.status === "relinquished") {
           throw new SimpleChangesError(
-            `Integration-controller loop ${existing.runId} was relinquished by ${existing.ownerAgentId}. Resume it explicitly to finish or close its frozen shipment; do not reuse it for a later ${mode} shipment.`,
+            `Integration-controller loop ${existing.runId} was relinquished by ${existing.ownerAgentId}. Resume it explicitly to finish or close its frozen shipment; do not reuse it for a later ${mode} shipment. Next: start the loop again in resume mode to finish it, or run \`simple-changes loop close-equivalent --run-id ${existing.runId} --approved-by <you> --reason <why>\` if there is nothing left to ship.`,
             EXIT_CODES.unsafe
           );
         }
@@ -1818,7 +1821,7 @@ export const recordShipmentScope = (
       const frozenAt = effectiveShipmentScopeFrozenAt(lease);
       if (frozenAt && !lease.shipmentScope) {
         throw new SimpleChangesError(
-          `Shipment scope for ${lease.runId} froze when its controller relinquished at ${frozenAt}. A resumed controller cannot record a first scope from later repository state; close this loop and start a fresh shipment.`,
+          `Shipment scope for ${lease.runId} froze when its controller relinquished at ${frozenAt}. A resumed controller cannot record a first scope from later repository state. Next: if this work is already contained in the target, run \`simple-changes loop close-equivalent --run-id ${lease.runId} --approved-by <you> --reason <why>\`; otherwise close this loop and start a fresh shipment.`,
           EXIT_CODES.unsafe
         );
       }
@@ -2331,7 +2334,7 @@ export const takeoverLoop = (
       }
       if (lease.ownerAgentId === nextAgentId) {
         throw new SimpleChangesError(
-          `${nextAgentId} already owns ${runId}; takeover requires a different controller.`,
+          `${nextAgentId} already owns ${runId}; takeover requires a different controller. Next: continue directly as the current controller, or run \`simple-changes loop close-equivalent --run-id ${runId} --approved-by <you> --reason <why>\` if the work is already contained in the target.`,
           EXIT_CODES.usage
         );
       }
@@ -2764,7 +2767,7 @@ export const prepareAgentWorktree = (
       assertLegacyRunAllowsMutation(
         lease,
         inventory,
-        "This legacy run has no opening remote inventory and cannot prepare new authoring work; use close-only post-cleanup recovery."
+        "This legacy run has no opening remote inventory and cannot prepare new authoring work; use close-only post-cleanup recovery. Next: run `simple-changes loop recover-post-cleanup` when cleanup is already complete, or `simple-changes loop close-equivalent` when the work is already contained in the target."
       );
       const existing = lease.worktrees.find(
         (worktree) => worktree.agentId === agentId
@@ -5170,6 +5173,413 @@ export const finalizeLoop = (
           };
         }
       )
+  );
+};
+
+const closeEquivalentSchemaDirectory = resolve(
+  dirname(fileURLToPath(import.meta.url)),
+  "../../evals/schemas"
+);
+
+const closeEquivalentRecordSchema = JSON.parse(
+  readFileSync(
+    resolve(
+      closeEquivalentSchemaDirectory,
+      "loop-close-equivalent.schema.json"
+    ),
+    "utf8"
+  )
+) as Record<string, unknown>;
+
+/**
+ * Local shape of the read-only `worktree-equivalence` audit receipt produced
+ * by a separate command. Defined here on purpose instead of importing it, so
+ * this module keeps working when that command and its module are absent.
+ */
+interface WorktreeEquivalenceReceipt {
+  commits: Array<{
+    matched: boolean;
+    matchedTargetSha?: string;
+    patchId: string;
+    sha: string;
+  }>;
+  disclaimer: string;
+  equivalence: "contained" | "divergent" | "partial";
+  head: string;
+  mergeBase: string;
+  paths: Array<{
+    path: string;
+    state: "absent-in-target" | "differs" | "identical";
+  }>;
+  targetRef: string;
+  targetRevision: string;
+}
+
+export interface LoopEquivalenceEvidence {
+  receipt: unknown;
+  worktreePath: string;
+}
+
+export interface LoopCloseEquivalentRecord {
+  approvedBy: string;
+  archivedAt: string;
+  authority: "close-equivalent";
+  kind: "loop-close-equivalent";
+  leaseDigest: string;
+  outcome: "target-equivalent";
+  reason: string;
+  remoteReconciliationSkipped: string;
+  runId: string;
+  schemaVersion: 1;
+  targetRef: string;
+  targetRevision: string;
+  worktrees: LoopCloseEquivalentWorktreeProof[];
+}
+
+export interface LoopTargetEquivalentCloseResult {
+  archivedAt: string;
+  cleanup: FinalizationCleanupResult;
+  outcome: "target-equivalent";
+  runId: string;
+  worktrees: LoopCloseEquivalentWorktreeProof[];
+}
+
+const worktreeEquivalenceSchema = (): Record<string, unknown> | null => {
+  const overridePath =
+    process.env.NODE_ENV === "test"
+      ? process.env.SIMPLE_CHANGES_TEST_WORKTREE_EQUIVALENCE_SCHEMA
+      : undefined;
+  const path =
+    overridePath ??
+    resolve(closeEquivalentSchemaDirectory, "worktree-equivalence.schema.json");
+  if (!existsSync(path)) {
+    return null;
+  }
+  try {
+    return JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+};
+
+const isEquivalenceReceiptShape = (
+  value: unknown
+): value is WorktreeEquivalenceReceipt => {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return false;
+  }
+  const record = value as Record<string, unknown>;
+  return (
+    typeof record.targetRef === "string" &&
+    typeof record.targetRevision === "string" &&
+    typeof record.mergeBase === "string" &&
+    typeof record.head === "string" &&
+    Array.isArray(record.commits) &&
+    Array.isArray(record.paths) &&
+    typeof record.disclaimer === "string" &&
+    (record.equivalence === "contained" ||
+      record.equivalence === "partial" ||
+      record.equivalence === "divergent")
+  );
+};
+
+const equivalenceReceiptProof = (
+  schema: Record<string, unknown> | null,
+  rawReceipt: unknown,
+  current: WorktreeInventory,
+  primaryCheckout: string,
+  targetRevision: string
+): { failure: string } | { proof: LoopCloseEquivalentWorktreeProof } => {
+  if (!schema) {
+    return {
+      failure:
+        "an equivalence receipt was provided, but the worktree-equivalence schema is not installed, so the receipt cannot be used as evidence; only strict target containment applies",
+    };
+  }
+  let validated: unknown;
+  try {
+    validated = validateSchemaDocument<unknown>(
+      "worktree-equivalence",
+      schema,
+      rawReceipt
+    );
+  } catch (error) {
+    return {
+      failure: `the provided equivalence receipt is not a valid worktree-equivalence result (${error instanceof Error ? error.message : "unreadable receipt"})`,
+    };
+  }
+  if (!isEquivalenceReceiptShape(validated)) {
+    return {
+      failure:
+        "the provided equivalence receipt does not have the expected worktree-equivalence shape",
+    };
+  }
+  if (validated.equivalence !== "contained") {
+    return {
+      failure: `the equivalence receipt reports "${validated.equivalence}", not "contained"`,
+    };
+  }
+  if (!current.headSha || validated.head !== current.headSha) {
+    return {
+      failure: `the equivalence receipt is stale: it recorded head ${validated.head}, but the worktree is now at ${current.headSha ?? "(unknown)"}`,
+    };
+  }
+  if (
+    !targetContainsRevision(
+      primaryCheckout,
+      targetRevision,
+      validated.targetRevision
+    )
+  ) {
+    return {
+      failure: `the equivalence receipt is stale: its recorded target revision ${validated.targetRevision} is not contained in the refreshed target`,
+    };
+  }
+  return {
+    proof: {
+      headSha: current.headSha,
+      method: "equivalence-receipt",
+      path: current.path,
+      receiptDigest: sha256Json(rawReceipt),
+    },
+  };
+};
+
+const closeEquivalentObligatedPaths = (
+  lease: LoopLease,
+  currentByPath: Map<string, WorktreeInventory>
+): string[] => {
+  const obligated = new Set<string>();
+  for (const registered of lease.worktrees) {
+    const eligible =
+      registered.role === "controller" ||
+      registered.role === "author" ||
+      registered.createdByRun;
+    if (eligible && currentByPath.has(registered.path)) {
+      obligated.add(registered.path);
+    }
+  }
+  for (const preparation of lease.preparations) {
+    const path = existsSync(preparation.path)
+      ? realpathSync(preparation.path)
+      : preparation.path;
+    if (currentByPath.has(path)) {
+      obligated.add(path);
+    }
+  }
+  return [...obligated].sort((left, right) => left.localeCompare(right));
+};
+
+const proveNothingLeftToShip = (
+  lease: LoopLease,
+  inventory: RepositoryInventory,
+  targetRevision: string,
+  equivalenceEvidence: readonly LoopEquivalenceEvidence[]
+): LoopCloseEquivalentWorktreeProof[] => {
+  const schema = worktreeEquivalenceSchema();
+  const receiptsByPath = new Map<string, unknown>();
+  for (const item of equivalenceEvidence) {
+    const path = existsSync(item.worktreePath)
+      ? realpathSync(item.worktreePath)
+      : resolve(item.worktreePath);
+    receiptsByPath.set(path, item.receipt);
+  }
+  const currentByPath = new Map(
+    inventory.worktrees.map((worktree) => [worktree.path, worktree])
+  );
+  const proofs: LoopCloseEquivalentWorktreeProof[] = [];
+  const unproven: string[] = [];
+  for (const path of closeEquivalentObligatedPaths(lease, currentByPath)) {
+    const current = currentByPath.get(path);
+    if (!current) {
+      continue;
+    }
+    if (
+      current.changes.length === 0 &&
+      current.headSha &&
+      targetContainsRevision(
+        lease.primaryCheckout,
+        targetRevision,
+        current.headSha
+      )
+    ) {
+      proofs.push({
+        headSha: current.headSha,
+        method: "target-ancestry",
+        path,
+      });
+      continue;
+    }
+    const rawReceipt = receiptsByPath.get(path);
+    if (rawReceipt !== undefined) {
+      const assessed = equivalenceReceiptProof(
+        schema,
+        rawReceipt,
+        current,
+        lease.primaryCheckout,
+        targetRevision
+      );
+      if ("proof" in assessed) {
+        proofs.push(assessed.proof);
+        continue;
+      }
+      unproven.push(`${path}: ${assessed.failure}`);
+      continue;
+    }
+    unproven.push(
+      current.changes.length > 0
+        ? `${path}: the worktree has uncommitted changes and no equivalence receipt was provided`
+        : `${path}: HEAD ${current.headSha ?? "(unknown)"} has commits that are not contained in the refreshed target and no equivalence receipt was provided`
+    );
+  }
+  if (unproven.length > 0) {
+    throw new SimpleChangesError(
+      `Cannot close ${lease.runId} as target-equivalent; nothing-to-ship is unproven for: ${unproven.join("; ")}. Nothing was changed. Next: resume the loop to ship or preserve the remaining work, or provide a current worktree-equivalence receipt whose equivalence is "contained" for each listed path and run \`simple-changes loop close-equivalent\` again.`,
+      EXIT_CODES.unsafe
+    );
+  }
+  return proofs.sort((left, right) => left.path.localeCompare(right.path));
+};
+
+const priorTargetEquivalentClose = (
+  commonGitDirectory: string,
+  runId: string,
+  archivePath: string
+): LoopTargetEquivalentCloseResult | null => {
+  if (
+    existsSync(loopLeasePath(commonGitDirectory)) ||
+    !existsSync(archivePath)
+  ) {
+    return null;
+  }
+  const prior =
+    readImmutableRecoveryEvent<LoopCloseEquivalentRecord>(archivePath);
+  if (prior.runId !== runId || prior.kind !== "loop-close-equivalent") {
+    throw new SimpleChangesError(
+      "A different terminal closure record already exists for this run.",
+      EXIT_CODES.unsafe
+    );
+  }
+  return {
+    archivedAt: prior.archivedAt,
+    cleanup: emptyFinalizationCleanup(),
+    outcome: "target-equivalent",
+    runId,
+    worktrees: prior.worktrees,
+  };
+};
+
+/**
+ * Close a loop whose work is already contained in the target, so there is
+ * nothing left to ship. This is the recovery path out of the frozen-scope
+ * dead end: it works on a relinquished lease without a takeover ceremony,
+ * requires explicit user approval and a reason, performs only the local
+ * proven-safe cleanup ordinary finalization performs, and records a terminal
+ * `target-equivalent` outcome that is never reportable as a shipped delivery.
+ */
+export const closeLoopTargetEquivalent = (
+  repositoryPath: string,
+  runIdInput: string,
+  agentIdInput: string,
+  approvedByInput: string,
+  reasonInput: string,
+  equivalenceEvidence: readonly LoopEquivalenceEvidence[] = []
+): LoopTargetEquivalentCloseResult => {
+  const runId = requiredRunId(runIdInput);
+  const agentId = requiredText(agentIdInput, "agent ID");
+  const approvedBy = requiredText(approvedByInput, "approver");
+  const reason = requiredText(reasonInput, "close-equivalent reason");
+  const opening = captureInventory(repositoryPath);
+  const { commonGitDirectory } = opening.repository;
+  return withStateLock(commonGitDirectory, "loop close-equivalent", () =>
+    withWorktreeCoordinationLock(
+      commonGitDirectory,
+      "loop close-equivalent cleanup",
+      () => {
+        const archivePath = resolve(
+          recoveryHistoryDirectory(commonGitDirectory, runId),
+          "close-equivalent.json"
+        );
+        const prior = priorTargetEquivalentClose(
+          commonGitDirectory,
+          runId,
+          archivePath
+        );
+        if (prior) {
+          return prior;
+        }
+        const inventory = captureInventory(repositoryPath);
+        let lease = requireLease(inventory);
+        assertMatchingRun(lease, runId);
+        const lifecycle = controllerLifecycle(lease);
+        if (lifecycle.status === "active" && lease.ownerAgentId !== agentId) {
+          throw new SimpleChangesError(
+            `Only current controller ${lease.ownerAgentId} may close active loop ${lease.runId} as target-equivalent. A relinquished loop may be closed by another agent with explicit user approval.`,
+            EXIT_CODES.unsafe
+          );
+        }
+        const targetRevision = currentTargetRevision(lease);
+        const proofs = proveNothingLeftToShip(
+          lease,
+          inventory,
+          targetRevision,
+          equivalenceEvidence
+        );
+        const recordedAt = new Date().toISOString();
+        const remoteReconciliationSkipped =
+          "Remote reconciliation was not required for this closure: no provider mutation, push, or remote branch change occurred.";
+        const outcomeRecord: LoopCloseEquivalentOutcome = {
+          approvedBy,
+          outcome: "target-equivalent",
+          reason,
+          recordedAt,
+          remoteReconciliationSkipped,
+          targetRevision,
+          worktrees: proofs,
+        };
+        lease = writeLease({
+          ...lease,
+          closeEquivalentOutcome: outcomeRecord,
+          updatedAt: recordedAt,
+        });
+        const verification = verificationAgainst(lease, inventory);
+        const automaticCleanup = automaticFinalizationCleanup(
+          lease,
+          inventory,
+          verification
+        );
+        ({ lease } = automaticCleanup);
+        const record: LoopCloseEquivalentRecord = {
+          approvedBy,
+          archivedAt: recordedAt,
+          authority: "close-equivalent",
+          kind: "loop-close-equivalent",
+          leaseDigest: loopManifestDigest(lease),
+          outcome: "target-equivalent",
+          reason,
+          remoteReconciliationSkipped,
+          runId,
+          schemaVersion: 1,
+          targetRef: lease.targetRef,
+          targetRevision,
+          worktrees: proofs,
+        };
+        validateSchemaDocument<LoopCloseEquivalentRecord>(
+          "loop-close-equivalent",
+          closeEquivalentRecordSchema,
+          record
+        );
+        writeImmutableRecoveryEvent(archivePath, record);
+        rmSync(loopLeasePath(lease.commonGitDirectory), { force: true });
+        return {
+          archivedAt: recordedAt,
+          cleanup: automaticCleanup.cleanup,
+          outcome: "target-equivalent",
+          runId,
+          worktrees: proofs,
+        };
+      }
+    )
   );
 };
 

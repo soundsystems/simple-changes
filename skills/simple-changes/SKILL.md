@@ -173,7 +173,13 @@ requires the exact current run ID and manifest digest plus approver and reason.
 If an older relinquished run already finished cleanup but lacks opening remote
 evidence, never relabel later observations as its opening inventory; use the
 explicitly approved `loop recover-post-cleanup` path in
-[cleanup and completion](references/cleanup-and-completion.md).
+[cleanup and completion](references/cleanup-and-completion.md). For other
+inherited broken state, the same reference defines the authorized recovery
+paths: `worktree takeover` for a claim whose owner no longer exists,
+read-only `worktree equivalence` for patch/byte containment evidence, and
+`loop close-equivalent` to close a relinquished or frozen-scope loop whose
+work is already contained in the target. A target-equivalent close is never
+reported as shipped.
 
 Follow [inventory and concurrency](references/inventory-and-concurrency.md).
 

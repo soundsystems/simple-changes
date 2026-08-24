@@ -20,6 +20,7 @@ import type {
   LoopLease,
   WorktreeClaim,
   WorktreeClaimObservation,
+  WorktreeClaimOwner,
   WorktreeCoordinationDocument,
   WorktreeCoordinationEvent,
   WorktreeCoordinationState,
@@ -30,6 +31,7 @@ import type {
 const STATE_DIRECTORY = "simple-changes";
 const COORDINATION_DIRECTORY = "worktree-coordination";
 const STATE_FILENAME = "state.json";
+const TAKEOVERS_FILENAME = "takeovers.json";
 const LOCK_DIRECTORY = "worktree-coordination.lock";
 const LOCK_OWNER_FILENAME = "owner.json";
 const ACTIVE_LOOP_FILENAME = "active-loop.json";
@@ -57,6 +59,8 @@ const coordinationRoot = (commonGitDirectory: string): string =>
   resolve(stateRoot(commonGitDirectory), COORDINATION_DIRECTORY);
 export const worktreeCoordinationPath = (commonGitDirectory: string): string =>
   resolve(coordinationRoot(commonGitDirectory), STATE_FILENAME);
+export const worktreeTakeoversPath = (commonGitDirectory: string): string =>
+  resolve(coordinationRoot(commonGitDirectory), TAKEOVERS_FILENAME);
 const coordinationLockPath = (commonGitDirectory: string): string =>
   resolve(stateRoot(commonGitDirectory), LOCK_DIRECTORY);
 const activeLoopLockPath = (commonGitDirectory: string): string =>
@@ -1305,4 +1309,173 @@ export const coordinationLinkIsCurrent = (
   } catch {
     return false;
   }
+};
+
+export interface WorktreeTakeoverReceipt {
+  action: "reassign" | "release";
+  approvedBy: string;
+  branch: string | null;
+  changeDigest: string;
+  claimId: string;
+  headSha: string | null;
+  newAgentId: string;
+  path: string;
+  previousOwner: WorktreeClaimOwner;
+  reason: string;
+  schemaVersion: 1;
+  takenOverAt: string;
+  takeoverId: string;
+}
+
+export interface WorktreeTakeoverOptions {
+  action: "reassign" | "release";
+  approvedBy: string;
+  claimId: string;
+  expectedStatusDigest: string;
+  newAgentId: string;
+  reason: string;
+  repositoryPath: string;
+}
+
+export interface WorktreeTakeoverResult {
+  claim: WorktreeClaim;
+  receipt: WorktreeTakeoverReceipt;
+}
+
+export const readWorktreeTakeovers = (
+  commonGitDirectory: string
+): WorktreeTakeoverReceipt[] => {
+  const path = worktreeTakeoversPath(commonGitDirectory);
+  if (!existsSync(path)) {
+    return [];
+  }
+  const records = JSON.parse(readFileSync(path, "utf8")) as unknown;
+  if (!Array.isArray(records)) {
+    throw new SimpleChangesError(
+      "Worktree takeover history is not an append-only record list.",
+      EXIT_CODES.unsafe
+    );
+  }
+  return records.map((record) =>
+    validateSchema<WorktreeTakeoverReceipt>("worktree-takeover", record)
+  );
+};
+
+const writeWorktreeTakeovers = (
+  commonGitDirectory: string,
+  receipts: WorktreeTakeoverReceipt[]
+): void => {
+  const root = coordinationRoot(commonGitDirectory);
+  mkdirSync(root, { mode: 0o700, recursive: true });
+  const temporaryPath = resolve(
+    root,
+    `${TAKEOVERS_FILENAME}.${process.pid}.${randomUUID()}.tmp`
+  );
+  writeFileSync(temporaryPath, `${JSON.stringify(receipts, null, 2)}\n`, {
+    encoding: "utf8",
+    flag: "wx",
+    mode: 0o600,
+  });
+  renameSync(temporaryPath, worktreeTakeoversPath(commonGitDirectory));
+};
+
+export const takeoverWorktreeClaim = (
+  options: WorktreeTakeoverOptions
+): WorktreeTakeoverResult => {
+  const claimId = requiredText(options.claimId, "claim ID", 128);
+  const newAgentId = requiredText(options.newAgentId, "new agent ID", 128);
+  const approvedBy = requiredText(options.approvedBy, "approver", 128);
+  const reason = requiredText(options.reason, "takeover reason");
+  const expectedStatusDigest = requiredText(
+    options.expectedStatusDigest,
+    "expected status digest",
+    64
+  );
+  if (options.action !== "reassign" && options.action !== "release") {
+    throw new SimpleChangesError(
+      'takeover action must be "reassign" or "release".',
+      EXIT_CODES.usage
+    );
+  }
+  const opening = captureInventory(options.repositoryPath);
+  return withCoordinationLock(
+    opening.repository.commonGitDirectory,
+    "worktree takeover",
+    () => {
+      const inventory = captureInventory(options.repositoryPath);
+      const { commonGitDirectory } = inventory.repository;
+      let document =
+        readCoordinationDocumentFromCommonDirectory(commonGitDirectory);
+      const claim = document.claims.find((item) => item.claimId === claimId);
+      if (!claim) {
+        throw new SimpleChangesError(
+          `Unknown worktree claim: ${claimId}`,
+          EXIT_CODES.unsafe
+        );
+      }
+      if (!LIVE_STATES.has(claim.state)) {
+        throw new SimpleChangesError(
+          `Claim ${claimId} is ${claim.state}; only a live claim can be taken over.`,
+          EXIT_CODES.unsafe
+        );
+      }
+      const current = worktreeAt(inventory, claim.path);
+      if (current.changeDigest !== expectedStatusDigest) {
+        throw new SimpleChangesError(
+          "The worktree status digest changed since it was observed; re-observe the worktree and retry the takeover with fresh evidence.",
+          EXIT_CODES.unsafe
+        );
+      }
+      if (activeLoopNeedsPath(commonGitDirectory, claim.path)) {
+        throw new SimpleChangesError(
+          "An active loop lease still requires this claimed worktree; takeover is refused until the lease releases it.",
+          EXIT_CODES.unsafe
+        );
+      }
+      const takenOverAt = new Date().toISOString();
+      const receipt = validateSchema<WorktreeTakeoverReceipt>(
+        "worktree-takeover",
+        {
+          action: options.action,
+          approvedBy,
+          branch: current.branch,
+          changeDigest: current.changeDigest,
+          claimId,
+          headSha: current.headSha,
+          newAgentId,
+          path: claim.path,
+          previousOwner: { ...claim.owner },
+          reason,
+          schemaVersion: 1,
+          takenOverAt,
+          takeoverId: `takeover-${randomUUID()}`,
+        } satisfies WorktreeTakeoverReceipt
+      );
+      const updated: WorktreeClaim =
+        options.action === "reassign"
+          ? {
+              ...claim,
+              owner: {
+                adapter: claim.owner.adapter,
+                agentId: newAgentId,
+                ownerRef: `takeover:${approvedBy}`,
+              },
+              updatedAt: takenOverAt,
+            }
+          : { ...claim, state: "released", updatedAt: takenOverAt };
+      document = appendEvent(
+        replaceClaim(document, updated),
+        claimId,
+        newAgentId,
+        updated.state,
+        takenOverAt
+      );
+      writeCoordinationDocument(commonGitDirectory, document);
+      writeWorktreeTakeovers(commonGitDirectory, [
+        ...readWorktreeTakeovers(commonGitDirectory),
+        receipt,
+      ]);
+      return { claim: updated, receipt };
+    }
+  );
 };

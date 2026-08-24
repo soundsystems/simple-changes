@@ -235,6 +235,10 @@ adapter slug, and opaque `ownerRef`, and is written atomically with mode `0600`.
 Do not put titles, prompts, message bodies, credentials, or tokens in the owner
 reference.
 
+A claim whose recorded owner no longer exists is not released by guessing the
+owner identity; use the audited `worktree takeover` recovery in
+[cleanup and completion](cleanup-and-completion.md).
+
 Under `allow-claimed`, a healthy distinct active claim does not block the loop;
 its owner keeps working and the controller excludes it. A valid active claim
 also promotes an opening `preserved` registration automatically. Do not ask for

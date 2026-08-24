@@ -416,6 +416,7 @@ describe("onboarding conversation", () => {
           walkthroughQuestion:
             "Would you like me to walk you through the recent Simple Changelogs updates before I continue?",
         },
+        providerEvidence: "none",
         providers: [],
         releaseSurfaces: ["CHANGELOG.md"],
         relevant: true,
@@ -472,6 +473,7 @@ describe("onboarding conversation", () => {
           walkthroughQuestion:
             "Would you like me to walk you through the recent Simple Changelogs updates before I continue?",
         },
+        providerEvidence: "inferred",
         providers: ["/skills/simple-changelogs/SKILL.md"],
         releaseSurfaces: ["CHANGELOG.md"],
         relevant: true,

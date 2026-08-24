@@ -31,6 +31,7 @@ const GLOBAL_SKILL_ROOTS = [
   ".claude/skills",
   ".cursor/skills",
 ] as const;
+const PROVIDER_MARKER_FILENAME = "changelog-provider.json";
 const CURRENT_GUIDANCE_VERSION_PATTERN =
   /^Current guidance version:\s*(\d+)\s*$/imu;
 const FULL_DISTRIBUTION_PATTERN =
@@ -49,9 +50,54 @@ const SIMPLE_CHANGELOGS_QUESTION =
 const positiveInteger = (value: unknown): number | null =>
   Number.isInteger(value) && Number(value) >= 1 ? Number(value) : null;
 
+interface ProviderMarker {
+  distribution: string | null;
+  guidanceVersion: number | null;
+}
+
+const readProviderMarker = (provider: string): ProviderMarker | null => {
+  const markerPath = resolve(provider, "..", PROVIDER_MARKER_FILENAME);
+  if (!existsSync(markerPath)) {
+    return null;
+  }
+  try {
+    const value = JSON.parse(readFileSync(markerPath, "utf8")) as {
+      distribution?: unknown;
+      guidanceVersion?: unknown;
+      provider?: unknown;
+      schemaVersion?: unknown;
+    };
+    if (value.provider !== "simple-changelogs" || value.schemaVersion !== 1) {
+      return null;
+    }
+    return {
+      distribution:
+        typeof value.distribution === "string" && value.distribution.length > 0
+          ? value.distribution
+          : null,
+      guidanceVersion: positiveInteger(value.guidanceVersion),
+    };
+  } catch {
+    return null;
+  }
+};
+
+const providerEvidenceFor = (
+  provider: string | null
+): ChangelogCoordination["providerEvidence"] => {
+  if (!provider) {
+    return "none";
+  }
+  return readProviderMarker(provider) ? "marker" : "inferred";
+};
+
 const installedGuidanceVersion = (provider: string | null): number | null => {
   if (!provider) {
     return null;
+  }
+  const marker = readProviderMarker(provider);
+  if (marker?.guidanceVersion) {
+    return marker.guidanceVersion;
   }
   try {
     const source = readFileSync(provider, "utf8");
@@ -136,6 +182,10 @@ const supportsDistribution = (
 ): boolean => {
   if (!distribution) {
     return true;
+  }
+  const declaredDistribution = readProviderMarker(provider)?.distribution;
+  if (declaredDistribution) {
+    return declaredDistribution === distribution;
   }
   const installedDistribution =
     DISTRIBUTION_BY_INSTALLATION[basename(resolve(provider, ".."))];
@@ -246,6 +296,7 @@ export const inspectChangelogCoordination = (
       summaryBullets,
       walkthroughQuestion: SIMPLE_CHANGELOGS_QUESTION,
     },
+    providerEvidence: providerEvidenceFor(provider),
     providers,
     releaseSurfaces: [...releaseSurfaces],
     relevant: releaseSurfaces.length > 0 || providers.length > 0,

@@ -275,7 +275,13 @@ describe("Simple Changes skill contract", () => {
       "Treat every production Web deployment as a product release"
     );
     expect(normalizedSkill).toContain(
-      "Negotiate supported versions/features and exact schema digests"
+      "Negotiate supported versions and features from the provider's declared marker"
+    );
+    expect(normalizedCoordination).toContain(
+      "Advertised schema digests are advisory"
+    );
+    expect(normalizedCoordination).toContain(
+      "machine-readable `changelog-provider.json` beside its `SKILL.md`"
     );
     expect(normalizedCoordination).toContain(
       'targetContainedUnreleased: "integrated"'

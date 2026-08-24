@@ -222,11 +222,13 @@
         "capabilityStatus",
         "guidanceUpdate",
         "releaseSurfaces",
-        "providers"
+        "providers",
+        "providerEvidence"
       ],
       "properties": {
         "relevant": { "type": "boolean" },
         "capabilityAvailable": { "type": "boolean" },
+        "providerEvidence": { "enum": ["marker", "inferred", "none"] },
         "capabilityHelpers": {
           "type": "array",
           "uniqueItems": true,

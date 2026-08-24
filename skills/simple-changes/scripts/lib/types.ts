@@ -83,6 +83,7 @@ export interface ChangelogCoordination {
     summaryBullets: string[];
     walkthroughQuestion: "Would you like me to walk you through the recent Simple Changelogs updates before I continue?";
   };
+  providerEvidence: "marker" | "inferred" | "none";
   providers: string[];
   releaseSurfaces: string[];
   relevant: boolean;
@@ -416,7 +417,7 @@ export interface ChangelogCapabilities {
   provider: "simple-changelogs";
   receiptVersions: Array<1 | 2>;
   requestVersions: 1[];
-  schemaDigests: {
+  schemaDigests?: {
     changelogReceipt: string;
     changelogRequest: string;
   };

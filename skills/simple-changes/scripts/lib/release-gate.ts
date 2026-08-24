@@ -15,16 +15,17 @@ export interface ChangelogConsumerCapabilities {
   features: ChangelogCapabilities["features"];
   receiptVersions: Array<1 | 2>;
   requestVersions: 1[];
-  schemaDigests: ChangelogCapabilities["schemaDigests"];
+  schemaDigests: NonNullable<ChangelogCapabilities["schemaDigests"]>;
 }
 
 export interface NegotiatedChangelogProtocol {
   compatible: boolean;
   features: ChangelogCapabilities["features"];
-  reasonCode: "unsupported-protocol" | "schema-digest-mismatch" | null;
+  reasonCode: "unsupported-protocol" | null;
   receiptVersion: 1 | 2 | null;
   requestVersion: 1 | null;
-  requiredAction: "upgrade-producer" | "repair-integration" | null;
+  requiredAction: "upgrade-producer" | null;
+  schemaDigestStatus: "match" | "differs" | "unadvertised";
 }
 
 export const packagedChangelogProtocol = (): ChangelogConsumerCapabilities => ({
@@ -52,6 +53,24 @@ const highestOverlap = <Version extends number>(
   left.filter((version) => right.includes(version)).sort((a, b) => b - a)[0] ??
   null;
 
+// Advisory only: wire compatibility is decided by version overlap, and every
+// inbound request/receipt is validated against the packaged schema at use time.
+// Digest equality would additionally reject peers over cosmetic schema edits.
+const compareSchemaDigests = (
+  producer: ChangelogCapabilities,
+  consumer: ChangelogConsumerCapabilities
+): NegotiatedChangelogProtocol["schemaDigestStatus"] => {
+  if (!producer.schemaDigests) {
+    return "unadvertised";
+  }
+  return producer.schemaDigests.changelogRequest ===
+    consumer.schemaDigests.changelogRequest &&
+    producer.schemaDigests.changelogReceipt ===
+      consumer.schemaDigests.changelogReceipt
+    ? "match"
+    : "differs";
+};
+
 export const negotiateChangelogProtocol = (
   input: unknown,
   consumer: ChangelogConsumerCapabilities = packagedChangelogProtocol()
@@ -68,6 +87,7 @@ export const negotiateChangelogProtocol = (
     producer.receiptVersions,
     consumer.receiptVersions
   );
+  const schemaDigestStatus = compareSchemaDigests(producer, consumer);
   if (!(requestVersion && receiptVersion)) {
     return {
       compatible: false,
@@ -76,21 +96,7 @@ export const negotiateChangelogProtocol = (
       receiptVersion,
       requestVersion,
       requiredAction: "upgrade-producer",
-    };
-  }
-  if (
-    producer.schemaDigests.changelogRequest !==
-      consumer.schemaDigests.changelogRequest ||
-    producer.schemaDigests.changelogReceipt !==
-      consumer.schemaDigests.changelogReceipt
-  ) {
-    return {
-      compatible: false,
-      features: [],
-      reasonCode: "schema-digest-mismatch",
-      receiptVersion,
-      requestVersion,
-      requiredAction: "repair-integration",
+      schemaDigestStatus,
     };
   }
   return {
@@ -102,6 +108,7 @@ export const negotiateChangelogProtocol = (
     receiptVersion,
     requestVersion,
     requiredAction: null,
+    schemaDigestStatus,
   };
 };
 

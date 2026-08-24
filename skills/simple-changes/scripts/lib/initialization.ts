@@ -184,6 +184,7 @@ export const inspectInitialization = (
       walkthroughQuestion:
         "Would you like me to walk you through the recent Simple Changelogs updates before I continue?",
     },
+    providerEvidence: "none",
     providers: [],
     releaseSurfaces: [],
     relevant: false,

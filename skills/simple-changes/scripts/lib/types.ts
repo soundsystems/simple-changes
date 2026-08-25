@@ -921,8 +921,26 @@ export interface RemotePaginationProof {
   }>;
 }
 
+export interface LoopCloseEquivalentWorktreeProof {
+  headSha: string;
+  method: "equivalence-receipt" | "target-ancestry";
+  path: string;
+  receiptDigest?: string;
+}
+
+export interface LoopCloseEquivalentOutcome {
+  approvedBy: string;
+  outcome: "target-equivalent";
+  reason: string;
+  recordedAt: string;
+  remoteReconciliationSkipped: string;
+  targetRevision: string;
+  worktrees: LoopCloseEquivalentWorktreeProof[];
+}
+
 export interface LoopLease {
   baselineDigest: string;
+  closeEquivalentOutcome?: LoopCloseEquivalentOutcome;
   commonGitDirectory: string;
   concurrentWork?: "allow-claimed" | "strict";
   controller?: LoopControllerLifecycle;
@@ -1020,4 +1038,7 @@ export type SchemaName =
   | "release-consistency"
   | "release-notes"
   | "loop-lease"
-  | "worktree-coordination";
+  | "loop-close-equivalent"
+  | "worktree-coordination"
+  | "worktree-takeover"
+  | "worktree-equivalence";

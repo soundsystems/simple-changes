@@ -175,6 +175,19 @@
   destructive, irreversible, unbounded, lock-heavy, unprotected, or
   target-mismatched operations. Other high-risk actions retain independent
   authority checks.
+- Inherited broken state has explicit audited recovery paths instead of
+  dead ends: `worktree takeover` reassigns or releases a stale claim only with
+  a named approver, reason, and exact current status digest, and never mutates
+  the worktree; `worktree equivalence` produces read-only patch-id and byte
+  containment evidence and never asserts semantic equivalence; and
+  `loop close-equivalent` closes a relinquished, frozen-scope, or legacy
+  close-only loop only when every obligated worktree is proven contained in
+  the refreshed target, records a terminal `target-equivalent` outcome that is
+  never reported as shipped, performs only proven-safe local cleanup, and
+  requires final verification plus any GitLab branch/proposal reconciliation
+  bound to the current target. For providers without that GitLab gate, it
+  records that the reconciliation was not applicable. Frozen shipment scope
+  blocks new authoring, not the target-equivalent close.
 - `proposalScheduling` controls only whether independent proposals are
   authored consecutively or in parallel claimed worktrees. It never shares a
   checkout, weakens controller guards or worktree isolation, changes cleanup
@@ -202,6 +215,10 @@
 - Removing an opening worktree without its exact audited disposition, or using
   that disposition to force deletion, delete a branch, or remove the primary
   checkout.
+- Reporting a `target-equivalent` close as a shipment, taking over a claim or
+  closing a loop as equivalent without a named approver and fresh evidence,
+  treating patch/byte equivalence output as semantic proof, or deleting
+  external session/task history to make a worktree list look clean.
 - Manufacturing a pause receipt, adopting a stale receipt, guessing an owner
   from a session title, treating eval-adapter support as live-session API
   support, detaching dirty work, or concurrently resuming a live harness

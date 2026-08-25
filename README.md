@@ -229,6 +229,8 @@ simple-changes loop reconcile-remote-branches --run-id ID --agent-id ID
   --receipt FILE [--json] [--repo PATH]
 simple-changes loop recover-post-cleanup --run-id ID --agent-id ID
   --receipt FILE [--json] [--repo PATH]
+simple-changes loop close-equivalent --run-id ID --agent-id ID
+  --approved-by ID --reason TEXT [--evidence FILE ...] [--json] [--repo PATH]
 simple-changes loop end --run-id ID --agent-id ID [--json] [--repo PATH]
 simple-changes loop finalize --run-id ID --agent-id ID --reason TEXT
   [--json] [--repo PATH]
@@ -248,6 +250,11 @@ simple-changes worktree attach --agent-id ID --claim-id ID [--json] [--repo PATH
 simple-changes worktree resume-ready --run-id ID --agent-id ID --claim-id ID
   [--json] [--repo PATH]
 simple-changes worktree release --agent-id ID --claim-id ID [--json] [--repo PATH]
+simple-changes worktree takeover --claim-id ID --agent-id NEW_OWNER
+  --status-digest SHA256 --approved-by ID --reason TEXT [--release]
+  [--json] [--repo PATH]
+simple-changes worktree equivalence --worktree PATH [--target REF]
+  [--json] [--repo PATH]
 simple-changes prepare-agent --run-id ID --agent-id ID --purpose SLUG
   [--json] [--repo PATH]
 simple-changes release-notes [--check] [--json] [--repo PATH] [--version VERSION]
@@ -262,9 +269,10 @@ simple-changes help
 `changelog-receipt`, `emergency-shipping`, `initialization`, `inventory`,
 `change-plan`, `run-state`, `permission-bundle`, `provider-receipt`,
 `release-delivery-receipt`, `remote-branch-reconciliation`,
-`release-consistency`, `release-notes`, `loop-lease`, `migration-review`,
-`migration-pending`, `migration-apply-plan`, `post-cleanup-recovery`,
-`shipment-outcome`, or `worktree-coordination` — the schema filenames under
+`release-consistency`, `release-notes`, `loop-lease`, `loop-close-equivalent`,
+`migration-review`, `migration-pending`, `migration-apply-plan`,
+`post-cleanup-recovery`, `shipment-outcome`, `worktree-coordination`,
+`worktree-takeover`, or `worktree-equivalence` — the schema filenames under
 `skills/simple-changes/evals/schemas/`.
 
 Worktree claims and pause receipts are local, mode-`0600` coordination evidence

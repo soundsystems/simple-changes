@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
-import { chmodSync, mkdirSync, statSync } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import {
   buildCoordinationRequest,
@@ -14,14 +14,18 @@ import {
   startLoop,
   verifyLoop,
 } from "../../../skills/simple-changes/scripts/lib/loop-lease.ts";
+import { validateSchema } from "../../../skills/simple-changes/scripts/lib/schema.ts";
 import {
   attachClaimedWorktree,
   claimWorktree,
   detachClaimedWorktree,
   pauseClaimedWorktree,
   readWorktreeCoordination,
+  readWorktreeTakeovers,
   releaseWorktreeClaim,
+  takeoverWorktreeClaim,
   worktreeCoordinationPath,
+  worktreeTakeoversPath,
 } from "../../../skills/simple-changes/scripts/lib/worktree-coordination.ts";
 import {
   createTestRepository,
@@ -441,5 +445,276 @@ describe("worktree coordination", () => {
     expect(serialized).not.toContain("prompt");
     expect(serialized).not.toContain("token");
     expect(serialized).not.toContain("message");
+  });
+});
+
+describe("worktree claim takeover", () => {
+  test("reassigns a stale owner's claim only with exact digest evidence", () => {
+    const fixture = repository();
+    const worktree = join(fixture.base, "abandoned");
+    git(fixture.root, ["worktree", "add", "-b", "abandoned-work", worktree]);
+    writeFixture(worktree, "dirty.ts", "export const dirty = true;\n");
+    const claim = claimWorktree(
+      worktree,
+      "vanished-owner",
+      worktree,
+      "codex-desktop",
+      "gone-session"
+    );
+    const current = captureInventory(worktree).worktrees.find(
+      (item) => item.path === worktree
+    );
+    if (!current) {
+      throw new Error("Expected the abandoned worktree inventory");
+    }
+
+    expect(() =>
+      takeoverWorktreeClaim({
+        action: "reassign",
+        approvedBy: "jaay",
+        claimId: "claim-does-not-exist",
+        expectedStatusDigest: current.changeDigest,
+        newAgentId: "admin-agent",
+        reason: "Owner agent no longer exists",
+        repositoryPath: worktree,
+      })
+    ).toThrow("Unknown worktree claim");
+    expect(() =>
+      takeoverWorktreeClaim({
+        action: "reassign",
+        approvedBy: "jaay",
+        claimId: claim.claimId,
+        expectedStatusDigest: "0".repeat(64),
+        newAgentId: "admin-agent",
+        reason: "Owner agent no longer exists",
+        repositoryPath: worktree,
+      })
+    ).toThrow("re-observe");
+    expect(() =>
+      takeoverWorktreeClaim({
+        action: "reassign",
+        approvedBy: "  ",
+        claimId: claim.claimId,
+        expectedStatusDigest: current.changeDigest,
+        newAgentId: "admin-agent",
+        reason: "Owner agent no longer exists",
+        repositoryPath: worktree,
+      })
+    ).toThrow("approver is required");
+    expect(() =>
+      takeoverWorktreeClaim({
+        action: "reassign",
+        approvedBy: "jaay",
+        claimId: claim.claimId,
+        expectedStatusDigest: current.changeDigest,
+        newAgentId: "admin-agent",
+        reason: "",
+        repositoryPath: worktree,
+      })
+    ).toThrow("takeover reason is required");
+
+    const result = takeoverWorktreeClaim({
+      action: "reassign",
+      approvedBy: "jaay",
+      claimId: claim.claimId,
+      expectedStatusDigest: current.changeDigest,
+      newAgentId: "admin-agent",
+      reason: "Owner agent no longer exists",
+      repositoryPath: worktree,
+    });
+    expect(result.claim).toMatchObject({
+      branch: claim.branch,
+      claimId: claim.claimId,
+      headSha: claim.headSha,
+      owner: {
+        adapter: "codex-desktop",
+        agentId: "admin-agent",
+        ownerRef: "takeover:jaay",
+      },
+      path: claim.path,
+      state: "active",
+    });
+    expect(() =>
+      validateSchema("worktree-takeover", result.receipt)
+    ).not.toThrow();
+    expect(result.receipt).toMatchObject({
+      action: "reassign",
+      approvedBy: "jaay",
+      changeDigest: current.changeDigest,
+      claimId: claim.claimId,
+      newAgentId: "admin-agent",
+      previousOwner: {
+        adapter: "codex-desktop",
+        agentId: "vanished-owner",
+        ownerRef: "gone-session",
+      },
+    });
+    expect(Number.isNaN(Date.parse(result.receipt.takenOverAt))).toBe(false);
+
+    const { commonGitDirectory } = captureInventory(worktree).repository;
+    const audited = readWorktreeTakeovers(commonGitDirectory);
+    expect(audited).toEqual([result.receipt]);
+    const takeoversMode = statSync(
+      worktreeTakeoversPath(commonGitDirectory)
+    ).mode;
+    // biome-ignore lint/suspicious/noBitwiseOperators: POSIX permission bits require a bit mask.
+    expect(takeoversMode & 0o777).toBe(0o600);
+
+    const untouched = captureInventory(worktree).worktrees.find(
+      (item) => item.path === worktree
+    );
+    expect(untouched).toMatchObject({
+      branch: claim.branch,
+      changeDigest: current.changeDigest,
+      headSha: claim.headSha,
+    });
+    expect(readFileSync(join(worktree, "dirty.ts"), "utf8")).toBe(
+      "export const dirty = true;\n"
+    );
+  });
+
+  test("release action releases through the claim safety path", () => {
+    const fixture = repository();
+    const worktree = join(fixture.base, "releasable");
+    git(fixture.root, ["worktree", "add", "-b", "releasable-work", worktree]);
+    const claim = claimWorktree(
+      worktree,
+      "vanished-owner",
+      worktree,
+      "cursor-cloud",
+      "gone-run"
+    );
+    const current = captureInventory(worktree).worktrees.find(
+      (item) => item.path === worktree
+    );
+    const result = takeoverWorktreeClaim({
+      action: "release",
+      approvedBy: "jaay",
+      claimId: claim.claimId,
+      expectedStatusDigest: current?.changeDigest ?? "",
+      newAgentId: "admin-agent",
+      reason: "Abandoned claim blocks cleanup",
+      repositoryPath: worktree,
+    });
+    expect(result.claim.state).toBe("released");
+    expect(result.receipt.action).toBe("release");
+    expect(
+      readWorktreeCoordination(worktree).claims.find(
+        (item) => item.claimId === claim.claimId
+      )?.state
+    ).toBe("released");
+    expect(
+      readWorktreeCoordination(worktree).events.filter(
+        (event) => event.claimId === claim.claimId && event.state === "released"
+      )
+    ).toHaveLength(1);
+    expect(() =>
+      takeoverWorktreeClaim({
+        action: "release",
+        approvedBy: "jaay",
+        claimId: claim.claimId,
+        expectedStatusDigest: current?.changeDigest ?? "",
+        newAgentId: "admin-agent",
+        reason: "Repeated takeover of a released claim",
+        repositoryPath: worktree,
+      })
+    ).toThrow("only a live claim can be taken over");
+  });
+
+  test("recovers a durable takeover intent after coordination write interruption", () => {
+    const fixture = repository();
+    const worktree = join(fixture.base, "intent-recovery");
+    git(fixture.root, ["worktree", "add", "-b", "intent-recovery", worktree]);
+    const claim = claimWorktree(
+      worktree,
+      "vanished-owner",
+      worktree,
+      "codex-desktop",
+      "gone-session"
+    );
+    const current = captureInventory(worktree).worktrees.find(
+      (item) => item.path === worktree
+    );
+    if (!current) {
+      throw new Error("Expected takeover recovery worktree inventory");
+    }
+    const options = {
+      action: "reassign" as const,
+      approvedBy: "jaay",
+      claimId: claim.claimId,
+      expectedStatusDigest: current.changeDigest,
+      newAgentId: "admin-agent",
+      reason: "Owner agent no longer exists",
+      repositoryPath: worktree,
+    };
+    process.env.SIMPLE_CHANGES_TEST_FAIL_AFTER_TAKEOVER_INTENT = claim.claimId;
+    try {
+      expect(() => takeoverWorktreeClaim(options)).toThrow(
+        "durable takeover intent"
+      );
+    } finally {
+      Reflect.deleteProperty(
+        process.env,
+        "SIMPLE_CHANGES_TEST_FAIL_AFTER_TAKEOVER_INTENT"
+      );
+    }
+    const { commonGitDirectory } = captureInventory(worktree).repository;
+    expect(readWorktreeTakeovers(commonGitDirectory)).toEqual([
+      expect.objectContaining({ claimId: claim.claimId, phase: "intent" }),
+    ]);
+    expect(
+      readWorktreeCoordination(worktree).claims.find(
+        (item) => item.claimId === claim.claimId
+      )?.owner.agentId
+    ).toBe("vanished-owner");
+
+    const recovered = takeoverWorktreeClaim(options);
+    expect(recovered.receipt.phase).toBe("completed");
+    expect(readWorktreeTakeovers(commonGitDirectory)).toEqual([
+      recovered.receipt,
+    ]);
+  });
+
+  test("refuses takeover while a live lease still requires the worktree", () => {
+    const fixture = repository();
+    const lease = startLoop(fixture.root, "controller", "integrate");
+    const worktree = join(fixture.base, "leased");
+    git(fixture.root, ["worktree", "add", "-b", "leased-work", worktree]);
+    writeFixture(worktree, "leased.ts", "export const leased = true;\n");
+    const claim = claimWorktree(
+      worktree,
+      "vanished-owner",
+      worktree,
+      "claude-code",
+      "gone-session"
+    );
+    const receipt = pauseClaimedWorktree(
+      worktree,
+      "vanished-owner",
+      worktree,
+      lease.runId,
+      "preserve-in-place",
+      "Paused before the owner disappeared"
+    );
+    adoptPausedWorktree(
+      fixture.root,
+      lease.runId,
+      "controller",
+      receipt.receiptId
+    );
+    const current = captureInventory(worktree).worktrees.find(
+      (item) => item.path === worktree
+    );
+    expect(() =>
+      takeoverWorktreeClaim({
+        action: "reassign",
+        approvedBy: "jaay",
+        claimId: claim.claimId,
+        expectedStatusDigest: current?.changeDigest ?? "",
+        newAgentId: "admin-agent",
+        reason: "Owner disappeared mid-loop",
+        repositoryPath: worktree,
+      })
+    ).toThrow("active loop lease still requires");
   });
 });

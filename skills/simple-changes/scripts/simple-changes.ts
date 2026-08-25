@@ -27,12 +27,14 @@ import {
   acceptPausedWorktreeChange,
   adoptPausedWorktree,
   authorizeWorktreeRemoval,
+  closeLoopTargetEquivalent,
   emergencyShippingStatus,
   endLoop,
   executeLoopMutation,
   finalizeLoop,
   grantLoopOverride,
   guardLoopMutation,
+  type LoopEquivalenceEvidence,
   loopManifestDigest,
   loopStatus,
   markWorktreeResumeReady,
@@ -113,9 +115,11 @@ import {
   pauseClaimedWorktree,
   readWorktreeCoordination,
   releaseWorktreeClaim,
+  takeoverWorktreeClaim,
 } from "./lib/worktree-coordination.ts";
+import { auditWorktreeEquivalence } from "./lib/worktree-equivalence.ts";
 
-const VERSION = "0.12.13";
+const VERSION = "0.12.14";
 const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const SCHEMA_KIND_LINE_LIMIT = 78;
 const schemaKindLines = SCHEMA_NAMES.reduce<string[]>((lines, name) => {
@@ -202,6 +206,8 @@ Usage:
     --receipt FILE [--json] [--repo PATH]
   simple-changes loop recover-post-cleanup --run-id ID --agent-id ID
     --receipt FILE [--json] [--repo PATH]
+  simple-changes loop close-equivalent --run-id ID --agent-id ID
+    --approved-by ID --reason TEXT [--evidence FILE ...] [--json] [--repo PATH]
   simple-changes loop emergency status --run-id ID [--json] [--repo PATH]
   simple-changes loop emergency record --run-id ID --agent-id ID --state FILE
     [--json] [--repo PATH]
@@ -224,6 +230,11 @@ Usage:
   simple-changes worktree resume-ready --run-id ID --agent-id ID --claim-id ID
     [--json] [--repo PATH]
   simple-changes worktree release --agent-id ID --claim-id ID [--json] [--repo PATH]
+  simple-changes worktree takeover --claim-id ID --agent-id NEW_OWNER
+    --status-digest SHA256 --approved-by ID --reason TEXT [--release]
+    [--json] [--repo PATH]
+  simple-changes worktree equivalence --worktree PATH [--target REF]
+    [--json] [--repo PATH]
   simple-changes prepare-agent --run-id ID --agent-id ID --purpose SLUG
     [--json] [--repo PATH]
   simple-changes release-notes [--check] [--json] [--repo PATH] [--version VERSION]
@@ -253,6 +264,7 @@ interface CliOptions {
   concurrentWork?: RepoPolicy["concurrentWork"];
   defaultFinish?: "open-change-request" | "integrate" | "ship";
   disposition?: "preserve-in-place" | "detach-clean-checkout";
+  evidencePaths: string[];
   gitPushAuthorization?: RepoPolicy["gitPushAuthorization"];
   guidanceDecision?: RepoPolicy["guidance"]["disposition"];
   handoffTiming?: RepoPolicy["handoffTiming"];
@@ -276,6 +288,7 @@ interface CliOptions {
   ready: boolean;
   reason?: string;
   receiptPath?: string;
+  releaseClaim: boolean;
   releaseVersion?: string;
   repo: string;
   repoProvided: boolean;
@@ -286,6 +299,7 @@ interface CliOptions {
   shippingMode?: RepoPolicy["shippingMode"];
   statePath?: string;
   statusDigest?: string;
+  targetRef?: string;
   uiArtifacts: boolean;
   uiArtifactVersioning?: RepoPolicy["uiArtifactVersioning"];
   worktreePath?: string;
@@ -301,6 +315,7 @@ const VALUED_OPTIONS = new Set([
   "--concurrent-work",
   "--claim-id",
   "--disposition",
+  "--evidence",
   "--finish",
   "--handoff",
   "--guidance-decision",
@@ -329,6 +344,7 @@ const VALUED_OPTIONS = new Set([
   "--settle-ms",
   "--status-digest",
   "--state",
+  "--target",
   "--ui-versioning",
   "--version",
   "--worktree",
@@ -340,6 +356,7 @@ const BOOLEAN_OPTIONS = new Set([
   "--check",
   "--json",
   "--ready",
+  "--release",
   "--ui-artifacts",
   "--yes",
 ]);
@@ -631,6 +648,14 @@ const applyLoopValuedOption = (
     options.worktreePath = resolve(value);
     return true;
   }
+  if (option === "--target") {
+    options.targetRef = value;
+    return true;
+  }
+  if (option === "--evidence") {
+    options.evidencePaths.push(resolve(value));
+    return true;
+  }
   if (option === "--disposition") {
     if (!["preserve-in-place", "detach-clean-checkout"].includes(value)) {
       throw new SimpleChangesError(
@@ -750,6 +775,8 @@ const applyBooleanOption = (options: CliOptions, option: string): void => {
     options.check = true;
   } else if (option === "--ready") {
     options.ready = true;
+  } else if (option === "--release") {
+    options.releaseClaim = true;
   } else if (option === "--ui-artifacts") {
     options.uiArtifacts = true;
   } else {
@@ -762,11 +789,13 @@ const parseOptions = (args: string[]): CliOptions => {
     acknowledgePushScope: false,
     changelogRequired: false,
     check: false,
+    evidencePaths: [],
     help: false,
     json: false,
     migrationTargets: [],
     positional: [],
     ready: false,
+    releaseClaim: false,
     repo: process.cwd(),
     repoProvided: false,
     settleMs: 0,
@@ -1968,16 +1997,44 @@ const runLoopOpeningAction = (action: string, options: CliOptions): boolean => {
   return false;
 };
 
-const runLoopCommand = async (options: CliOptions): Promise<void> => {
-  const [action] = options.positional;
-  if (!action) {
-    throw new SimpleChangesError(
-      "loop requires start, status, verify, record-scope, refresh-scope, record-outcome, guard, exec, recover, recover-post-cleanup, takeover, allow, dispose-worktree, retain-worktree, adopt-worktree, accept-paused-change, end, or finalize",
-      EXIT_CODES.usage
-    );
-  }
-  if (runLoopOpeningAction(action, options)) {
-    return;
+const runLoopCloseEquivalent = (options: CliOptions): void => {
+  const evidence: LoopEquivalenceEvidence[] = options.evidencePaths.map(
+    (path) => {
+      const parsed = JSON.parse(readFileSync(path, "utf8")) as {
+        receipt?: unknown;
+        worktreePath?: unknown;
+      };
+      if (typeof parsed.worktreePath !== "string" || !parsed.receipt) {
+        throw new SimpleChangesError(
+          `--evidence file ${path} must contain { "worktreePath": "...", "receipt": <worktree-equivalence result> }`,
+          EXIT_CODES.usage
+        );
+      }
+      return { receipt: parsed.receipt, worktreePath: parsed.worktreePath };
+    }
+  );
+  const result = closeLoopTargetEquivalent(
+    options.repo,
+    requireCliOption(options.runId, "--run-id"),
+    requireCliOption(options.agentId, "--agent-id"),
+    requireCliOption(options.approvedBy, "--approved-by"),
+    requireCliOption(options.reason, "--reason"),
+    evidence
+  );
+  writeOutput(
+    result,
+    options.json,
+    `Closed ${result.runId} as target-equivalent: the registered work is already contained in the target, so nothing shipped and only proven-safe local cleanup ran.\n`
+  );
+};
+
+const runLoopRecoveryAction = (
+  action: string,
+  options: CliOptions
+): boolean => {
+  if (action === "close-equivalent") {
+    runLoopCloseEquivalent(options);
+    return true;
   }
   if (action === "recover-post-cleanup") {
     const result = recoverPostCleanupLoop(
@@ -1996,6 +2053,23 @@ const runLoopCommand = async (options: CliOptions): Promise<void> => {
       options.json,
       "Cleanup was already complete; Simple Changes repaired and closed its old bookkeeping record.\n"
     );
+    return true;
+  }
+  return false;
+};
+
+const runLoopCommand = async (options: CliOptions): Promise<void> => {
+  const [action] = options.positional;
+  if (!action) {
+    throw new SimpleChangesError(
+      "loop requires start, status, verify, record-scope, refresh-scope, record-outcome, guard, exec, recover, recover-post-cleanup, close-equivalent, takeover, allow, dispose-worktree, retain-worktree, adopt-worktree, accept-paused-change, end, or finalize",
+      EXIT_CODES.usage
+    );
+  }
+  if (runLoopOpeningAction(action, options)) {
+    return;
+  }
+  if (runLoopRecoveryAction(action, options)) {
     return;
   }
   const runId = requireCliOption(options.runId, "--run-id");
@@ -2205,7 +2279,7 @@ const runWorktreeCommand = (options: CliOptions): void => {
   const [action] = options.positional;
   if (!action) {
     throw new SimpleChangesError(
-      "worktree requires status, observe, request, claim, pause, detach, attach, resume-ready, or release",
+      "worktree requires status, observe, equivalence, request, claim, pause, detach, attach, resume-ready, release, or takeover",
       EXIT_CODES.usage
     );
   }
@@ -2229,6 +2303,18 @@ const runWorktreeCommand = (options: CliOptions): void => {
   }
   if (action === "request") {
     runWorktreeRequest(options);
+    return;
+  }
+  if (action === "equivalence") {
+    const report = auditWorktreeEquivalence({
+      targetRef: options.targetRef ?? captureInventory(options.repo).targetRef,
+      worktreePath: requireCliOption(options.worktreePath, "--worktree"),
+    });
+    writeOutput(
+      report,
+      options.json,
+      `Equivalence vs ${report.targetRef}: ${report.equivalence} (${report.commits.length} commits, ${report.paths.length} dirty paths audited).\n${report.disclaimer}\n`
+    );
     return;
   }
   const agentId = requireCliOption(options.agentId, "--agent-id");
@@ -2309,6 +2395,28 @@ const runWorktreeCommand = (options: CliOptions): void => {
       claim,
       options.json,
       `Released ${claim.claimId} without deleting work.\n`
+    );
+    return;
+  }
+  if (action === "takeover") {
+    const result = takeoverWorktreeClaim({
+      action: options.releaseClaim ? "release" : "reassign",
+      approvedBy: requireCliOption(options.approvedBy, "--approved-by"),
+      claimId: requireCliOption(options.claimId, "--claim-id"),
+      expectedStatusDigest: requireCliOption(
+        options.statusDigest,
+        "--status-digest"
+      ),
+      newAgentId: agentId,
+      reason: requireCliOption(options.reason, "--reason"),
+      repositoryPath: options.repo,
+    });
+    writeOutput(
+      result,
+      options.json,
+      options.releaseClaim
+        ? `Released stale claim ${result.receipt.claimId} with audit receipt ${result.receipt.takeoverId}; the worktree itself is untouched.\n`
+        : `Reassigned claim ${result.receipt.claimId} to ${agentId} with audit receipt ${result.receipt.takeoverId}; the worktree itself is untouched.\n`
     );
     return;
   }

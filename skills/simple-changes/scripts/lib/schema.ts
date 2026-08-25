@@ -30,7 +30,10 @@ export const SCHEMA_NAMES: readonly SchemaName[] = [
   "release-consistency",
   "release-notes",
   "loop-lease",
+  "loop-close-equivalent",
   "worktree-coordination",
+  "worktree-takeover",
+  "worktree-equivalence",
 ];
 const schemas = new Map<string, JsonSchema>();
 

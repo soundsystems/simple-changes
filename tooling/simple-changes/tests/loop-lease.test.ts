@@ -21,6 +21,7 @@ import {
 import {
   acceptPausedWorktreeChange,
   authorizeWorktreeRemoval,
+  closeLoopTargetEquivalent,
   emergencyShippingStatus,
   endLoop,
   executeLoopMutation,
@@ -60,6 +61,7 @@ import {
   releaseWorktreeClaim,
   withWorktreeCoordinationLock,
 } from "../../../skills/simple-changes/scripts/lib/worktree-coordination.ts";
+import { auditWorktreeEquivalence } from "../../../skills/simple-changes/scripts/lib/worktree-equivalence.ts";
 import {
   createTestRepository,
   git,
@@ -4241,5 +4243,280 @@ describe("active integration-loop lease", () => {
 
     expect(updated.remoteBranchReconciliation?.project).toBe("group/project");
     expect(endLoop(fixture.root, lease.runId, "controller").ok).toBe(true);
+  });
+});
+
+describe("target-equivalent loop closure", () => {
+  test("escapes the frozen-scope dead end when the work is already contained in the target", () => {
+    const fixture = repository();
+    const keepPath = join(fixture.base, "keep");
+    git(fixture.root, ["worktree", "add", "-b", "keep-branch", keepPath]);
+    writeFixture(keepPath, "keep.txt", "independent concurrent work\n");
+    git(keepPath, ["add", "keep.txt"]);
+    git(keepPath, ["commit", "-m", "Independent work outside the target"]);
+
+    const opening = captureInventory(fixture.root);
+    const lease = startLoop(fixture.root, "first-controller", "ship");
+    const prepared = prepareAgentWorktree(
+      fixture.root,
+      lease.runId,
+      "author",
+      "opening unit"
+    );
+    writeFixture(prepared.path, "unfinished.txt", "still being authored\n");
+
+    expect(
+      finalizeLoop(
+        fixture.root,
+        lease.runId,
+        "first-controller",
+        "Agent turn finished before shipping reconciliation completed."
+      )
+    ).toMatchObject({
+      lease: { shipmentScopeFrozenAt: expect.any(String) },
+      outcome: "relinquished",
+    });
+
+    startLoop(fixture.root, "next-controller", "resume");
+    const current = captureInventory(fixture.root);
+    const plan = buildPreviewPlan(
+      opening,
+      current,
+      compareSnapshots(opening, current),
+      "Ship the unfinished unit"
+    );
+    expect(() =>
+      recordShipmentScope(fixture.root, lease.runId, "next-controller", plan)
+    ).toThrow("close-equivalent");
+
+    // The work turns out to already belong in the target.
+    git(prepared.path, ["add", "unfinished.txt"]);
+    git(prepared.path, ["commit", "-m", "Finish the unit"]);
+    git(fixture.root, ["merge", "--ff-only", prepared.branch]);
+
+    const closed = closeLoopTargetEquivalent(
+      fixture.root,
+      lease.runId,
+      "next-controller",
+      "user",
+      "The unit already landed on main; nothing is left to ship."
+    );
+    expect(closed.outcome).toBe("target-equivalent");
+    expect(closed.worktrees).toContainEqual(
+      expect.objectContaining({
+        method: "target-ancestry",
+        path: prepared.path,
+      })
+    );
+    expect(closed.cleanup.removedWorktrees).toContain(prepared.path);
+    expect(readLoopLease(fixture.root)).toBeNull();
+    expect(existsSync(prepared.path)).toBe(false);
+    expect(existsSync(keepPath)).toBe(true);
+    expect(
+      git(fixture.root, ["rev-parse", "--verify", "keep-branch"])
+    ).toBeTruthy();
+
+    const { commonGitDirectory } = captureInventory(fixture.root).repository;
+    const archived = JSON.parse(
+      readFileSync(
+        join(
+          commonGitDirectory,
+          "simple-changes",
+          "history",
+          lease.runId,
+          "close-equivalent.json"
+        ),
+        "utf8"
+      )
+    ) as Record<string, unknown>;
+    expect(archived).toMatchObject({
+      approvedBy: "user",
+      authority: "close-equivalent",
+      kind: "loop-close-equivalent",
+      outcome: "target-equivalent",
+      runId: lease.runId,
+    });
+    expect(JSON.stringify(archived)).not.toContain("shipped");
+  }, 40_000);
+
+  test("closes a relinquished loop directly with explicit approval, without takeover or resume", () => {
+    const fixture = repository();
+    writeFixture(fixture.root, "opening.txt", "opening shipment work\n");
+    const lease = startLoop(fixture.root, "first-controller", "ship");
+    expect(
+      finalizeLoop(
+        fixture.root,
+        lease.runId,
+        "first-controller",
+        "Controller ended before recording shipment scope."
+      )
+    ).toMatchObject({ outcome: "relinquished" });
+
+    git(fixture.root, ["add", "opening.txt"]);
+    git(fixture.root, ["commit", "-m", "Opening work landed on main directly"]);
+
+    const closed = closeLoopTargetEquivalent(
+      fixture.root,
+      lease.runId,
+      "recovery-agent",
+      "user",
+      "The opening work is already contained in main."
+    );
+    expect(closed.outcome).toBe("target-equivalent");
+    expect(readLoopLease(fixture.root)).toBeNull();
+  });
+
+  test("blocks closure and names each unproven worktree when work remains", () => {
+    const fixture = repository();
+    const lease = startLoop(fixture.root, "controller", "ship");
+    const prepared = prepareAgentWorktree(
+      fixture.root,
+      lease.runId,
+      "author",
+      "dirty unit"
+    );
+    writeFixture(prepared.path, "unshipped.txt", "not shipped anywhere\n");
+
+    expect(() =>
+      closeLoopTargetEquivalent(
+        fixture.root,
+        lease.runId,
+        "controller",
+        "user",
+        "Attempting to close with unshipped work."
+      )
+    ).toThrow(`${prepared.path}: the worktree has uncommitted changes`);
+    expect(readLoopLease(fixture.root)).toMatchObject({ runId: lease.runId });
+    expect(existsSync(prepared.path)).toBe(true);
+  });
+
+  test("rejects a stale equivalence receipt whose recorded head moved", () => {
+    const fixture = repository();
+    const schemaPath = join(fixture.base, "worktree-equivalence.schema.json");
+    writeFileSync(schemaPath, `${JSON.stringify({ type: "object" })}\n`);
+    process.env.SIMPLE_CHANGES_TEST_WORKTREE_EQUIVALENCE_SCHEMA = schemaPath;
+    try {
+      const lease = startLoop(fixture.root, "controller", "ship");
+      const prepared = prepareAgentWorktree(
+        fixture.root,
+        lease.runId,
+        "author",
+        "diverged unit"
+      );
+      writeFixture(prepared.path, "diverged.txt", "committed but unmerged\n");
+      git(prepared.path, ["add", "diverged.txt"]);
+      git(prepared.path, ["commit", "-m", "Diverge from the target"]);
+      const targetRevision = git(fixture.root, ["rev-parse", "main"]);
+
+      const staleReceipt = {
+        changeDigest:
+          "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        commits: [],
+        disclaimer: "Read-only audit evidence; not a shipment record.",
+        equivalence: "contained",
+        head: prepared.baseRevision,
+        mergeBase: prepared.baseRevision,
+        paths: [],
+        targetRef: "main",
+        targetRevision,
+      };
+      expect(() =>
+        closeLoopTargetEquivalent(
+          fixture.root,
+          lease.runId,
+          "controller",
+          "user",
+          "Attempting closure with stale evidence.",
+          [{ receipt: staleReceipt, worktreePath: prepared.path }]
+        )
+      ).toThrow("stale");
+      expect(readLoopLease(fixture.root)).toMatchObject({ runId: lease.runId });
+      expect(existsSync(prepared.path)).toBe(true);
+    } finally {
+      Reflect.deleteProperty(
+        process.env,
+        "SIMPLE_CHANGES_TEST_WORKTREE_EQUIVALENCE_SCHEMA"
+      );
+    }
+  });
+
+  test("rejects an equivalence receipt after dirty bytes change", () => {
+    const fixture = repository();
+    const lease = startLoop(fixture.root, "controller", "ship");
+    const prepared = prepareAgentWorktree(
+      fixture.root,
+      lease.runId,
+      "author",
+      "dirty equivalent unit"
+    );
+    writeFixture(fixture.root, "shared.txt", "contained bytes\n");
+    git(fixture.root, ["add", "shared.txt"]);
+    git(fixture.root, ["commit", "-m", "Add contained target bytes"]);
+    writeFixture(prepared.path, "shared.txt", "contained bytes\n");
+    const receipt = auditWorktreeEquivalence({
+      targetRef: "main",
+      worktreePath: prepared.path,
+    });
+    expect(receipt.equivalence).toBe("contained");
+
+    writeFixture(prepared.path, "shared.txt", "unique later bytes\n");
+    expect(() =>
+      closeLoopTargetEquivalent(
+        fixture.root,
+        lease.runId,
+        "controller",
+        "user",
+        "Attempting closure with stale dirty evidence.",
+        [{ receipt, worktreePath: prepared.path }]
+      )
+    ).toThrow("worktree digest");
+    expect(readLoopLease(fixture.root)).toMatchObject({ runId: lease.runId });
+  });
+
+  test("keeps a missing registered author as an unproven obligation", () => {
+    const fixture = repository();
+    const lease = startLoop(fixture.root, "controller", "ship");
+    const prepared = prepareAgentWorktree(
+      fixture.root,
+      lease.runId,
+      "author",
+      "missing obligated unit"
+    );
+    git(fixture.root, ["worktree", "remove", prepared.path]);
+
+    expect(() =>
+      closeLoopTargetEquivalent(
+        fixture.root,
+        lease.runId,
+        "controller",
+        "user",
+        "Attempting closure with a missing author worktree."
+      )
+    ).toThrow("obligated worktree is missing");
+    expect(readLoopLease(fixture.root)).toMatchObject({ runId: lease.runId });
+  });
+
+  test("requires an explicit approver and reason", () => {
+    const fixture = repository();
+    const lease = startLoop(fixture.root, "controller", "ship");
+    expect(() =>
+      closeLoopTargetEquivalent(
+        fixture.root,
+        lease.runId,
+        "controller",
+        "  ",
+        "A reason without an approver."
+      )
+    ).toThrow("approver is required");
+    expect(() =>
+      closeLoopTargetEquivalent(
+        fixture.root,
+        lease.runId,
+        "controller",
+        "user",
+        "  "
+      )
+    ).toThrow("reason is required");
+    expect(readLoopLease(fixture.root)).toMatchObject({ runId: lease.runId });
   });
 });

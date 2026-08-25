@@ -1,0 +1,87 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://simple-changes.dev/schemas/loop-close-equivalent.schema.json",
+  "title": "Simple Changes target-equivalent loop closure record",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "kind",
+    "authority",
+    "outcome",
+    "runId",
+    "archivedAt",
+    "approvedBy",
+    "reason",
+    "targetRef",
+    "targetRevision",
+    "leaseDigest",
+    "remoteReconciliationSkipped",
+    "worktrees"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "kind": { "const": "loop-close-equivalent" },
+    "authority": { "const": "close-equivalent" },
+    "outcome": { "const": "target-equivalent" },
+    "runId": {
+      "type": "string",
+      "pattern": "^run-[a-z0-9-]+$"
+    },
+    "archivedAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "approvedBy": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "reason": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "targetRef": {
+      "type": "string",
+      "minLength": 1
+    },
+    "targetRevision": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40,64}$"
+    },
+    "leaseDigest": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "remoteReconciliationSkipped": {
+      "type": "string",
+      "minLength": 1
+    },
+    "worktrees": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "method", "headSha"],
+        "properties": {
+          "path": {
+            "type": "string",
+            "minLength": 1
+          },
+          "method": {
+            "enum": ["equivalence-receipt", "target-ancestry"]
+          },
+          "headSha": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{40,64}$"
+          },
+          "receiptDigest": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          }
+        }
+      }
+    }
+  }
+}

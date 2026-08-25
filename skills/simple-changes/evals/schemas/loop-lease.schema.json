@@ -30,6 +30,44 @@
     "createdAt": { "type": "string", "format": "date-time" },
     "updatedAt": { "type": "string", "format": "date-time" },
     "baselineDigest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "closeEquivalentOutcome": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "outcome",
+        "approvedBy",
+        "reason",
+        "recordedAt",
+        "targetRevision",
+        "remoteReconciliationSkipped",
+        "worktrees"
+      ],
+      "properties": {
+        "outcome": { "const": "target-equivalent" },
+        "approvedBy": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "reason": { "type": "string", "minLength": 1, "maxLength": 500 },
+        "recordedAt": { "type": "string", "format": "date-time" },
+        "targetRevision": { "type": "string", "pattern": "^[0-9a-f]{40,64}$" },
+        "remoteReconciliationSkipped": { "type": "string", "minLength": 1 },
+        "worktrees": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["path", "method", "headSha"],
+            "properties": {
+              "path": { "type": "string", "minLength": 1 },
+              "method": { "enum": ["equivalence-receipt", "target-ancestry"] },
+              "headSha": { "type": "string", "pattern": "^[0-9a-f]{40,64}$" },
+              "receiptDigest": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              }
+            }
+          }
+        }
+      }
+    },
     "commonGitDirectory": { "type": "string", "minLength": 1 },
     "concurrentWork": { "enum": ["allow-claimed", "strict"] },
     "controller": {

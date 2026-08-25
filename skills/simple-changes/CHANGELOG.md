@@ -1,5 +1,38 @@
 # Changelog
 
+## 0.12.14 - 2026-08-25
+
+- Inherited shipment state now has audited recovery paths:
+  - `worktree takeover` can reassign or release a stale claim when its owner no
+    longer exists, with explicit approval bound to the checkout's current
+    status and without changing the worktree itself.
+  - Read-only `worktree equivalence` reports whether committed and uncommitted
+    work is contained in the target using patch and byte evidence, while
+    leaving semantic equivalence to review.
+  - `loop close-equivalent` can safely close relinquished, frozen-scope, and
+    legacy close-only loops after proving their obligated work is already in
+    the refreshed target. It never reports that work as shipped, runs only
+    proven-safe local cleanup, and leaves claimed, preserved, and retained
+    worktrees untouched.
+  - Recovery failures now identify the exact next command, and the recovery
+    guide explains how to refresh external worktree lists without deleting
+    session or task history.
+<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-25T12:24:11-05:00" -->
+
+## 0.12.13 - 2026-08-24
+
+- Setup now lets you choose how multiple independent PRs or MRs are scheduled:
+  **Balanced** works consecutively by default and parallelizes when it
+  meaningfully saves time or isolation is necessary, **Save space** prefers
+  consecutive work, and **Save time** prefers parallel claimed worktrees.
+  Parallel work remains isolated, completed worktrees are cleaned up only after
+  proven integration, and standalone clones cannot bypass active coordination
+  or cleanup state.
+- User-facing terminology now follows the detected forge: GitHub workflows say
+  **PR**, GitLab workflows say **MR**, and provider-neutral **change proposal**
+  wording is reserved for unknown or differently named forges.
+<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-24T13:23:14-05:00" -->
+
 ## 0.12.12 - 2026-08-23
 
 - Completed, verified work blocked only by another task’s active shipment now
@@ -11,6 +44,7 @@
   an exact ready-work receipt without granting ownership, merge, deployment,
   migration, or cleanup authority; when the active owner is unknown, Simple
   Changes provides the receipt for manual delivery instead.
+<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-23T12:33:09-05:00" -->
 
 ## 0.12.11 - 2026-08-23
 
@@ -23,6 +57,7 @@
     finish registered or preparing work and complete reconciliation, review,
     merge, deployment, cleanup, and closure, but later shipment work must begin
     in a fresh loop. Existing preservation guarantees remain unchanged.
+<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-23T11:28:39-05:00" -->
 
 ## 0.12.10 - 2026-08-21
 
@@ -30,12 +65,20 @@
   temporary checkout that the run created and later reclassified as preserved,
   but only when its audited baseline is fully contained in the finalized
   target. Nonmatching, unverifiable, or unique work remains blocking.
+  Recovery can also accept a clean primary checkout already at the exact
+  finalized target branch and revision.
+- Skill publishing now automatically finds per-user global installations under
+  `~/.agents/skills`, `~/.codex/skills`, `~/.claude/skills`, and
+  `~/.cursor/skills`, so normal publishes update them without a manual root.
+  Symlinked aliases resolve to one physical installation.
+<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-21T16:19:23-05:00" -->
 
 ## 0.12.9 - 2026-08-21
 
 - Legacy cleanup can now close while unrelated active claimed work remains
   preserved, provided two ordered claim inventories match exactly. Any changed
   claim count or inventory still blocks the close-only recovery.
+<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-21T16:00:15-05:00" -->
 
 ## 0.12.8 - 2026-08-21
 
@@ -43,6 +86,7 @@
   without deadlocking each other. Each replacement still requires exact paused
   evidence for an unchanged checkout, and unique, unverified, or otherwise
   unsafe work remains blocking.
+<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-21T15:37:07-05:00" -->
 
 ## 0.12.7 - 2026-08-21
 
@@ -62,6 +106,7 @@
   confirmation only when its last audited clean revision and current local
   branch both still exist, are fully included in the finalized target, and have
   no active claim. Missing branch evidence or unique work remains blocking.
+<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-21T15:10:50-05:00" -->
 
 ## 0.12.6 - 2026-08-20
 
@@ -116,6 +161,10 @@
   restoration remains allowed. Plans that change a package manifest or
   lockfile—including nested monorepo manifests and locks—also require a frozen
   install and production build in an isolated clean checkout.
+<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-20T17:35:51-05:00" -->
+<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-20T18:10:46-05:00" -->
+<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-20T18:19:51-05:00" -->
+<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-20T18:31:54-05:00" -->
 
 ## 0.12.5 - 2026-08-15
 
@@ -164,6 +213,7 @@
   team policy, a private global personal fallback, and run-only settings that
   write no policy file; choosing the global option warns when it will update or
   overwrite existing personal defaults.
+<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-20T13:57:40-05:00" -->
 
 ## 0.12.4 - 2026-08-14
 
@@ -173,6 +223,7 @@
   commands, providers, and workflow states remain available when they affect
   safety, authority, verification, or a user decision, and whenever the user
   asks for technical detail.
+<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-14T21:04:28-05:00" -->
 
 ## 0.12.3 - 2026-08-14
 
@@ -209,6 +260,7 @@
   warning for `skill-repository` support. Repository and global skill roots now
   enumerate the mapped full, mobile, skill-repository, Web, and Web CMS
   installation names rather than looking only for the full distribution.
+<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-14T01:53:58-05:00" -->
 
 ## 0.12.2 - 2026-08-13
 
@@ -252,6 +304,7 @@
   supported operation has a closed authority mapping; the checklist grants
   nothing by itself, covers no future actions, and cannot bypass harness
   enforcement.
+<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-13T17:03:01-05:00" -->
 
 ## 0.12.1 - 2026-08-13
 
@@ -261,6 +314,7 @@
 - Clean, target-contained worktrees can now remain in place as exact unchanged
   shipment exclusions. Any later change pauses integration until the worktree
   is claimed by its owner or paused at a stable boundary.
+<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-13T12:26:50-05:00" -->
 
 ## 0.12.0 - 2026-08-12
 
@@ -285,6 +339,12 @@
   replayed evidence, same-path content edits, and broad native apply-all
   commands fail closed and require explicit authority, as do other safety-gate
   failures.
+<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-12T14:53:08-05:00" -->
+<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-12T19:46:10-05:00" -->
+<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-12T20:35:29-05:00" -->
+<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-12T20:51:48-05:00" -->
+<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-12T21:00:27-05:00" -->
+<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-12T21:10:13-05:00" -->
 
 ## 0.11.4 - 2026-08-12
 
@@ -292,22 +352,27 @@
   and restored to the refreshed local target and all clean merged branches and
   worktrees are removed. Dirty non-primary worktrees, branches with unique
   commits, and actively claimed concurrent work remain preserved.
+<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-12T13:36:26-05:00" -->
 
 ## 0.11.3 - 2026-08-12
 
 - Break-glass runtime guidance now identifies the deploy-first revision as the
   exact candidate, without implying that focused checks ran before deployment.
   Delivery behavior is unchanged.
+<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-12T12:54:03-05:00" -->
 
 ## 0.11.2 - 2026-08-12
 
 - Internal-only, developer-only, preview, staging, and developer-experience
   changes no longer prompt for an unused public version.
+<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-12T10:57:28-05:00" -->
 
 - Explicitly authorized break-glass delivery now uses known native provider
   rollback capability to deploy immediately without a blocking current-
   production lookup, then verifies health, runs focused checks, and completes
   review, reconciliation, and canonical verification.
+<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-12T10:59:18-05:00" -->
+<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-12T11:01:37-05:00" -->
 
 ## 0.11.1 - 2026-08-12
 
@@ -325,6 +390,7 @@
   Routine Ship requests can use standard or expedited delivery by default;
   break-glass remains an advanced manual setting with separate production
   authority and rollback requirements.
+<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-12T00:06:06-05:00" -->
 
 ## 0.11.0 - 2026-08-11
 
@@ -341,13 +407,16 @@
   - A second deployment is required only when the final canonical runtime
     result differs. An already-live canonical revision or proven immutable
     artifact equivalence is verified without creating a duplicate deployment.
+<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-11T15:17:59-05:00" -->
 
 - Changelog capability negotiation now accepts compatible producer capability
   supersets while selecting only features shared with Simple Changes.
+<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-11T16:08:07-05:00" -->
 
 - Emergency Ship now persists and resumes its exact delivery ledger under the
   active loop, and refuses loop completion while emergency delivery remains
   incomplete.
+<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-11T17:11:06-05:00" -->
 
 ## 0.10.1 - 2026-08-10
 
@@ -355,6 +424,7 @@
   lease and newly eligible concurrent authors without acquiring the
   active-loop lock or writing Simple Changes Git metadata, so inspection still
   works when that state is readable but not writable.
+<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-10T19:11:21-05:00" -->
 
 ## 0.10.0 - 2026-08-10
 
@@ -376,6 +446,7 @@
   even when an active loop first recorded that checkout as preserved. The next
   guarded observation recognizes the claimed concurrent author automatically,
   without a pause, adoption, override, or extra approval.
+<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-10T18:28:40-05:00" -->
 
 ## 0.9.0 - 2026-08-09
 
@@ -388,11 +459,13 @@
   The final ledger preserves canonical, protected, open-proposal, concurrent,
   and ambiguous work, and removes only branches whose exact provider evidence
   proves them obsolete.
+<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-09T00:42:26-05:00" -->
 
 ## 0.8.2 - 2026-08-07
 
 - Runtime sources now pass current Biome and Ultracite checks across consuming
   repositories without stale or version-sensitive suppression diagnostics.
+<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-07T21:05:24-05:00" -->
 
 ## 0.8.1 - 2026-08-07
 
@@ -403,6 +476,8 @@
   replacement claim. Concurrent authors may keep making ordinary local edits
   and commits, but cannot use the guarded integration executor even when they
   know the active run ID.
+<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-07T19:42:35-05:00" -->
+<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-07T19:53:09-05:00" -->
 
 ## 0.8.0 - 2026-08-07
 
@@ -415,6 +490,7 @@
 - Concurrent claimed worktrees are enabled by default. Repositories that need
   the previous repository-wide pause behavior can select `strict` through
   `--concurrent-work strict` or repository policy.
+<!-- simple-changelogs-signature agent="gpt-5.6-sol" at="2026-08-07T18:58:51-05:00" -->
 
 ## 0.7.0 - 2026-08-07
 
@@ -429,6 +505,7 @@
   another task. Unsupported host modes fail closed with a structured manual
   next action, and durable coordination records exclude prompts, message
   bodies, credentials, and provider tokens.
+<!-- simple-changelogs-signature agent="gpt-5.6-sol" at="2026-08-07T17:44:36-05:00" -->
 
 ## 0.6.1 - 2026-08-06
 
@@ -439,6 +516,7 @@
   content; dirty, changed, uniquely committed, unapproved, or canonical primary
   worktrees remain protected. The CLI now reports the matching 0.6.1 package
   version.
+<!-- simple-changelogs-signature agent="gpt-5.6-sol" at="2026-08-06T14:59:06-05:00" -->
 
 ## 0.6.0 - 2026-08-03
 
@@ -450,6 +528,7 @@
   staged, unstaged, and untracked content. Guarded commands stop and reject
   lingering same-group background work before lock release; if cleanup cannot
   be proven, the lock remains for explicit recovery.
+<!-- simple-changelogs-signature agent="gpt-5.6-sol" at="2026-08-03T13:54:04-05:00" -->
 
 - Added a guarded Sync mode for requests to update from the canonical remote
   target. It refreshes only the resolved target, safely updates clean local
@@ -459,6 +538,7 @@
 - Authorized Ship runs now begin with a concise scope and delivery-path brief
   while work proceeds, then finish with exact delivery receipts, review-driven
   changes, re-verification, and preserved or blocked work.
+<!-- simple-changelogs-signature agent="gpt-5.6-sol" at="2026-07-29T13:30:44-05:00" -->
 
 ## 0.5.0 - 2026-07-28
 
@@ -472,6 +552,7 @@
   naming preference with `--ui-artifacts` and `--ui-versioning`. Repository
   conventions remain authoritative, and the preference never controls source,
   Git, deployment, package, or release versions.
+<!-- simple-changelogs-signature agent="gpt-5.6-sol" at="2026-07-28T09:15:09-05:00" -->
 
 ## 0.4.0 - 2026-07-27
 
@@ -479,6 +560,7 @@
   Changes reconciles target-contained pending work into a dated, versioned
   release, deploys only the refreshed reconciled target, and reports the product
   version.
+<!-- simple-changelogs-signature agent="gpt-5.6-sol" at="2026-07-27T22:12:07-05:00" -->
 
 - Skill publishing now distinguishes preserved baseline state from active
   external work. Dirty or unrelated original checkouts and pre-existing
@@ -487,6 +569,7 @@
   the baseline or a live claim on the exact target is treated as externally
   owned active work, and finished reports separately list published results,
   preserved baseline information, and genuinely outstanding targets.
+<!-- simple-changelogs-signature agent="gpt-5.6-sol" at="2026-07-27T09:17:52-05:00" -->
 
 - Skill publishing now preserves branches, worktrees, and merge or pull
   requests owned by another active agent, task, or person. Broad requests to
@@ -496,6 +579,7 @@
 - Consumer discovery now treats compatibility paths that resolve to one
   physical skill package as a single installation while continuing to flag
   distinct copies for reconciliation.
+<!-- simple-changelogs-signature agent="gpt-5.6-sol" at="2026-07-27T02:48:43-05:00" -->
 
 ## 0.3.0 - 2026-07-27
 
@@ -505,6 +589,7 @@
 - Ship and resumed Ship runs now refresh the canonical remote target after all
   merges and refuse to report completion when the live deployment revision
   differs from that target.
+<!-- simple-changelogs-signature agent="gpt-5.6-sol" at="2026-07-27T01:40:57-05:00" -->
 
 ## 0.2.0 - 2026-07-25
 
@@ -521,9 +606,15 @@
 - Queue mode now accounts for every stable unit discovered at the start of a
   run and reports each deferred branch or worktree with its current state,
   reason, and next action.
+<!-- simple-changelogs-signature agent="gpt-5.6-sol" at="2026-07-24T15:47:44-05:00" -->
+<!-- simple-changelogs-signature agent="gpt-5.6-sol" at="2026-07-25T03:51:17-05:00" -->
+<!-- simple-changelogs-signature agent="gpt-5.6-sol" at="2026-07-25T11:15:46-05:00" -->
 
 ## 0.1.0 - 2026-07-23
 
+<!-- simple-changelogs-signature agent="gpt-5.6-sol" at="2026-07-23T18:15:57-0500" -->
+<!-- simple-changelogs-signature agent="gpt-5.6-sol" at="2026-07-23T18:24:58-0500" -->
+<!-- simple-changelogs-signature agent="Codex" at="2026-07-23T18:21:26-05:00" -->
 
 - Production deployment verification now checks the complete configured set of
   canonical endpoints against the immutable deployment, rather than accepting a

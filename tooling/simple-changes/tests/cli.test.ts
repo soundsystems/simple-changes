@@ -1981,7 +1981,7 @@ describe("contract CLI", () => {
     );
     expect(acknowledged.exitCode).toBe(0);
     expect(JSON.parse(decoder.decode(acknowledged.stdout))).toMatchObject({
-      currentVersion: 18,
+      currentVersion: 20,
       disposition: "deferred",
       previousVersion: 1,
       written: true,
@@ -1991,7 +1991,7 @@ describe("contract CLI", () => {
         readFileSync(resolve(fixture.root, ".simple-changes.json"), "utf8")
       )
     ).toMatchObject({
-      guidance: { disposition: "deferred", version: 18 },
+      guidance: { disposition: "deferred", version: 20 },
     });
 
     const resumed = spawnSync(

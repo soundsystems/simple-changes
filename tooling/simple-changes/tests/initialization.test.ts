@@ -235,7 +235,7 @@ describe("first-run initialization", () => {
           available: true,
           owner: "simple-changelogs",
         },
-        currentVersion: 18,
+        currentVersion: 20,
         headline: "**Simple Changes has recently been updated.**",
         presentationOrder: [
           "required-answers",
@@ -255,10 +255,10 @@ describe("first-run initialization", () => {
     });
     expect(status.guidanceUpdate.summaryBullets).toHaveLength(3);
     expect(status.guidanceUpdate.summaryBullets.join(" ")).toContain(
-      "Relinquished controllers"
+      "Inherited stale shipment state"
     );
     expect(status.guidanceUpdate.summaryBullets.join(" ")).toContain(
-      "run-created checkout artifacts"
+      "Independent proposal scheduling"
     );
     expect(status.guidanceUpdate.recommendedChanges[0]).toMatchObject({
       question: "How should changelog work be handled?",

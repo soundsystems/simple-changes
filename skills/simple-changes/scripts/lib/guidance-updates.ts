@@ -1,6 +1,6 @@
 import type { ChangelogCoordination, RepoPolicy } from "./types.ts";
 
-export const CURRENT_GUIDANCE_VERSION = 18;
+export const CURRENT_GUIDANCE_VERSION = 20;
 
 export type GuidanceUpdateAction =
   | "review-settings"
@@ -512,6 +512,56 @@ const GUIDANCE_UPDATES: GuidanceUpdateDefinition[] = [
       },
     ],
     version: 18,
+  },
+  {
+    changelogReviewRelevant: false,
+    changes: [
+      {
+        kind: "onboarding",
+        summary:
+          "Setup now records whether independent proposals should be scheduled with a balanced, consecutive, or parallel preference and uses forge-specific PR or MR terminology.",
+        version: 19,
+      },
+      {
+        kind: "integration",
+        summary:
+          "Parallel authors remain isolated in claimed worktrees, while cleanup and remote coordination stay bound to the active shipment controller.",
+        version: 19,
+      },
+    ],
+    noticeBullets: [
+      {
+        priority: 135,
+        summary:
+          "Independent proposal scheduling now follows your saved space/time preference and the detected forge's terminology.",
+      },
+    ],
+    version: 19,
+  },
+  {
+    changelogReviewRelevant: false,
+    changes: [
+      {
+        kind: "behavior",
+        summary:
+          "Stale worktree claims can now be taken over with exact approval evidence, and read-only equivalence checks show whether inherited work is contained in the target.",
+        version: 20,
+      },
+      {
+        kind: "integration",
+        summary:
+          "Relinquished or frozen shipment loops whose obligated work is already target-contained can close through an audited target-equivalent recovery path without deleting preserved work.",
+        version: 20,
+      },
+    ],
+    noticeBullets: [
+      {
+        priority: 140,
+        summary:
+          "Inherited stale shipment state now has audited recovery paths that preserve unique or unverifiable work.",
+      },
+    ],
+    version: 20,
   },
 ];
 

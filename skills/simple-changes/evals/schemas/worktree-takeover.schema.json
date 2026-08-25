@@ -58,6 +58,7 @@
       ]
     },
     "changeDigest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
-    "takenOverAt": { "type": "string", "format": "date-time" }
+    "takenOverAt": { "type": "string", "format": "date-time" },
+    "phase": { "enum": ["intent", "completed"] }
   }
 }

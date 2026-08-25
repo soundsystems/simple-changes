@@ -61,6 +61,7 @@ import {
   releaseWorktreeClaim,
   withWorktreeCoordinationLock,
 } from "../../../skills/simple-changes/scripts/lib/worktree-coordination.ts";
+import { auditWorktreeEquivalence } from "../../../skills/simple-changes/scripts/lib/worktree-equivalence.ts";
 import {
   createTestRepository,
   git,
@@ -4408,6 +4409,8 @@ describe("target-equivalent loop closure", () => {
       const targetRevision = git(fixture.root, ["rev-parse", "main"]);
 
       const staleReceipt = {
+        changeDigest:
+          "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
         commits: [],
         disclaimer: "Read-only audit evidence; not a shipment record.",
         equivalence: "contained",
@@ -4435,6 +4438,62 @@ describe("target-equivalent loop closure", () => {
         "SIMPLE_CHANGES_TEST_WORKTREE_EQUIVALENCE_SCHEMA"
       );
     }
+  });
+
+  test("rejects an equivalence receipt after dirty bytes change", () => {
+    const fixture = repository();
+    const lease = startLoop(fixture.root, "controller", "ship");
+    const prepared = prepareAgentWorktree(
+      fixture.root,
+      lease.runId,
+      "author",
+      "dirty equivalent unit"
+    );
+    writeFixture(fixture.root, "shared.txt", "contained bytes\n");
+    git(fixture.root, ["add", "shared.txt"]);
+    git(fixture.root, ["commit", "-m", "Add contained target bytes"]);
+    writeFixture(prepared.path, "shared.txt", "contained bytes\n");
+    const receipt = auditWorktreeEquivalence({
+      targetRef: "main",
+      worktreePath: prepared.path,
+    });
+    expect(receipt.equivalence).toBe("contained");
+
+    writeFixture(prepared.path, "shared.txt", "unique later bytes\n");
+    expect(() =>
+      closeLoopTargetEquivalent(
+        fixture.root,
+        lease.runId,
+        "controller",
+        "user",
+        "Attempting closure with stale dirty evidence.",
+        [{ receipt, worktreePath: prepared.path }]
+      )
+    ).toThrow("worktree digest");
+    expect(readLoopLease(fixture.root)).toMatchObject({ runId: lease.runId });
+  });
+
+  test("keeps a missing registered author as an unproven obligation", () => {
+    const fixture = repository();
+    const lease = startLoop(fixture.root, "controller", "ship");
+    const prepared = prepareAgentWorktree(
+      fixture.root,
+      lease.runId,
+      "author",
+      "missing obligated unit"
+    );
+    git(fixture.root, ["worktree", "remove", prepared.path]);
+
+    expect(() =>
+      closeLoopTargetEquivalent(
+        fixture.root,
+        lease.runId,
+        "controller",
+        "user",
+        "Attempting closure with a missing author worktree."
+      )
+    ).toThrow("obligated worktree is missing");
+    expect(readLoopLease(fixture.root)).toMatchObject({ runId: lease.runId });
   });
 
   test("requires an explicit approver and reason", () => {

@@ -1038,6 +1038,7 @@ export type SchemaName =
   | "release-consistency"
   | "release-notes"
   | "loop-lease"
+  | "loop-close-equivalent"
   | "worktree-coordination"
   | "worktree-takeover"
   | "worktree-equivalence";

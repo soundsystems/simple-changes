@@ -519,7 +519,7 @@ const GUIDANCE_UPDATES: GuidanceUpdateDefinition[] = [
       {
         kind: "onboarding",
         summary:
-          "Setup now records whether independent proposals should be scheduled with a balanced, consecutive, or parallel preference and uses forge-specific PR or MR terminology.",
+          "Setup now records `proposalScheduling` as balanced, consecutive, or parallel; existing policies without the setting use the balanced default, and prompts use forge-specific PR or MR terminology.",
         version: 19,
       },
       {
@@ -533,7 +533,7 @@ const GUIDANCE_UPDATES: GuidanceUpdateDefinition[] = [
       {
         priority: 135,
         summary:
-          "Independent proposal scheduling now follows your saved space/time preference and the detected forge's terminology.",
+          "The new `proposalScheduling` setting defaults existing policies to balanced scheduling and uses the detected forge's terminology.",
       },
     ],
     version: 19,

@@ -82,11 +82,11 @@ complete; Simple Changes repaired and closed its old bookkeeping record.**
 
 ## Authorized recovery for inherited or broken state
 
-Fail-closed preservation protects uncertain work; these paths let an
-explicitly authorized user resolve it without abandoning the safety model.
-Every one requires a named approver and reason, records an audit receipt, and
-never mutates worktree files, provider state, or branches beyond its stated
-scope.
+Fail-closed preservation protects uncertain work; these paths resolve it
+without abandoning the safety model. Write-capable takeover and closure require
+a named approver and reason and record audit receipts. Read-only equivalence
+needs no approval. None mutates worktree files, provider state, or branches
+beyond its stated scope.
 
 **Stale claim takeover.** When a claim's recorded owner no longer exists, use
 `worktree takeover --claim-id <id> --agent-id <new-owner> --approved-by <who>
@@ -97,24 +97,30 @@ or repairs the worktree itself.
 
 **Equivalence evidence.** `worktree equivalence --worktree <path>
 [--target <ref>] --json` is read-only: it compares each commit ahead of the
-merge base by stable patch-id and each dirty or untracked file byte-for-byte
-against the target, and classifies the whole checkout `contained`, `partial`,
-or `divergent`. This is patch and byte evidence only; a textually different
-but semantically equivalent change still reports unmatched, and deciding that
-residue is review work, not tooling output.
+merge base by stable patch-id and dirty or untracked state against the target.
+It binds staged object IDs, index and filesystem modes, Git links, and file
+bytes, and requires matching opening/final HEAD and status digests so a
+concurrent edit invalidates the audit. It classifies the whole checkout
+`contained`, `partial`, or `divergent`. This is patch, object, mode, and byte
+evidence only; a textually different but semantically equivalent change still
+reports unmatched, and deciding that residue is review work, not tooling
+output.
 
 **Nothing-to-ship close.** When a relinquished, frozen-scope, or legacy
 close-only loop's registered work is already contained in the refreshed
 target, `loop close-equivalent --run-id <id> --approved-by <who> --reason
-<why>` closes it without the full scope, pre-ship brief, outcome, and
-remote-reconciliation lifecycle. Every obligated worktree must be proven: a
+<why>` closes it without the full scope, pre-ship brief, and shipped-outcome
+lifecycle. Every obligated worktree must be present and proven: a
 clean checkout whose head the target contains, or a current `contained`
 equivalence receipt for that exact path and head. Actively claimed and
 preserved/retained worktrees are excluded and untouched. On success it records
 a terminal `target-equivalent` outcome — never reportable as shipped — runs
-only the normal proven-safe local cleanup, and releases the lease; the GitLab
-remote-reconciliation gate is skipped and that skip is recorded, because no
-provider mutation occurred. One unproven path blocks the close and is named
+only the normal proven-safe local cleanup, and releases the lease only after
+final verification and cleanup succeed. For a GitLab target, a complete final
+branch/proposal reconciliation bound to the current target revision is required
+before closure; the command never infers that provider mutation did not occur.
+For providers without that gate, the closure records that GitLab reconciliation
+was not applicable. One missing or unproven path blocks the close and is named
 exactly.
 
 **External UI caches.** Editor and desktop surfaces (for example Codex

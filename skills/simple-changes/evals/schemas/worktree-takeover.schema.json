@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://simple-changes.dev/schemas/worktree-takeover.schema.json",
+  "title": "Simple Changes worktree claim takeover receipt",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "takeoverId",
+    "claimId",
+    "action",
+    "previousOwner",
+    "newAgentId",
+    "approvedBy",
+    "reason",
+    "path",
+    "branch",
+    "headSha",
+    "changeDigest",
+    "takenOverAt"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "takeoverId": { "type": "string", "pattern": "^takeover-[a-z0-9-]+$" },
+    "claimId": { "type": "string", "pattern": "^claim-[a-z0-9-]+$" },
+    "action": { "enum": ["reassign", "release"] },
+    "previousOwner": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["agentId", "adapter", "ownerRef"],
+      "properties": {
+        "agentId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "adapter": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+        },
+        "ownerRef": {
+          "anyOf": [
+            { "type": "string", "minLength": 1, "maxLength": 512 },
+            { "type": "null" }
+          ]
+        }
+      }
+    },
+    "newAgentId": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "approvedBy": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "reason": { "type": "string", "minLength": 1, "maxLength": 500 },
+    "path": { "type": "string", "minLength": 1 },
+    "branch": {
+      "anyOf": [{ "type": "string", "minLength": 1 }, { "type": "null" }]
+    },
+    "headSha": {
+      "anyOf": [
+        { "type": "string", "pattern": "^[0-9a-f]{40,64}$" },
+        { "type": "null" }
+      ]
+    },
+    "changeDigest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "takenOverAt": { "type": "string", "format": "date-time" }
+  }
+}

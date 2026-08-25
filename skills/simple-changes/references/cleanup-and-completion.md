@@ -67,7 +67,9 @@ from the ledger.
 
 A legacy ledger may lack persisted opening evidence even though cleanup already
 finished. Do not fabricate an initial inventory from later observations.
-`loop recover-post-cleanup` is the only recovery: it needs explicit approval,
+`loop recover-post-cleanup` is the recovery for already-complete cleanup (and
+`loop close-equivalent` below for work already contained in the target): it
+needs explicit approval,
 two complete matching final inventories observed at increasing times, exact
 current target/project binding, no open proposals, clean current primary state,
 two matching zero-active-claim observations from `worktree observe --json`, and
@@ -77,6 +79,49 @@ retires only already-absent non-active claims, and removes the active ledger
 without authorizing any Git or provider mutation. It cannot push, merge,
 deploy, move refs, or remove anything. Afterward say: **Cleanup was already
 complete; Simple Changes repaired and closed its old bookkeeping record.**
+
+## Authorized recovery for inherited or broken state
+
+Fail-closed preservation protects uncertain work; these paths let an
+explicitly authorized user resolve it without abandoning the safety model.
+Every one requires a named approver and reason, records an audit receipt, and
+never mutates worktree files, provider state, or branches beyond its stated
+scope.
+
+**Stale claim takeover.** When a claim's recorded owner no longer exists, use
+`worktree takeover --claim-id <id> --agent-id <new-owner> --approved-by <who>
+--reason <why> [--release]`. It binds to the worktree's exact current status
+digest (re-observe on mismatch), refuses claims a live lease still requires,
+and either reassigns ownership or releases the claim. It never edits, removes,
+or repairs the worktree itself.
+
+**Equivalence evidence.** `worktree equivalence --worktree <path>
+[--target <ref>] --json` is read-only: it compares each commit ahead of the
+merge base by stable patch-id and each dirty or untracked file byte-for-byte
+against the target, and classifies the whole checkout `contained`, `partial`,
+or `divergent`. This is patch and byte evidence only; a textually different
+but semantically equivalent change still reports unmatched, and deciding that
+residue is review work, not tooling output.
+
+**Nothing-to-ship close.** When a relinquished, frozen-scope, or legacy
+close-only loop's registered work is already contained in the refreshed
+target, `loop close-equivalent --run-id <id> --approved-by <who> --reason
+<why>` closes it without the full scope, pre-ship brief, outcome, and
+remote-reconciliation lifecycle. Every obligated worktree must be proven: a
+clean checkout whose head the target contains, or a current `contained`
+equivalence receipt for that exact path and head. Actively claimed and
+preserved/retained worktrees are excluded and untouched. On success it records
+a terminal `target-equivalent` outcome — never reportable as shipped — runs
+only the normal proven-safe local cleanup, and releases the lease; the GitLab
+remote-reconciliation gate is skipped and that skip is recorded, because no
+provider mutation occurred. One unproven path blocks the close and is named
+exactly.
+
+**External UI caches.** Editor and desktop surfaces (for example Codex
+Desktop) cache their own view of worktrees outside this workflow's ownership.
+After cleanup, `git worktree prune` refreshes the authoritative Git inventory
+those surfaces read. Their session and task history are audit records, not
+live registrations; never delete them to make a list look clean.
 
 Before reporting completion:
 

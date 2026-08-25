@@ -14,6 +14,23 @@
   wording is reserved for unknown or differently named forges.
 <!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-24T13:23:14-05:00" -->
 
+- Inherited shipment state now has audited recovery paths:
+  - `worktree takeover` can reassign or release a stale claim when its owner no
+    longer exists, with explicit approval bound to the checkout's current
+    status and without changing the worktree itself.
+  - Read-only `worktree equivalence` reports whether committed and uncommitted
+    work is contained in the target using patch and byte evidence, while
+    leaving semantic equivalence to review.
+  - `loop close-equivalent` can safely close relinquished, frozen-scope, and
+    legacy close-only loops after proving their obligated work is already in
+    the refreshed target. It never reports that work as shipped, runs only
+    proven-safe local cleanup, and leaves claimed, preserved, and retained
+    worktrees untouched.
+  - Recovery failures now identify the exact next command, and the recovery
+    guide explains how to refresh external worktree lists without deleting
+    session or task history.
+<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-25T12:15:04-05:00" -->
+
 ## 0.12.12 - 2026-08-23
 
 - Completed, verified work blocked only by another task’s active shipment now

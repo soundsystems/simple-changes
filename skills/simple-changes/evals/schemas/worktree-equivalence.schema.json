@@ -1,0 +1,69 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://simple-changes.dev/schemas/worktree-equivalence.schema.json",
+  "title": "Simple Changes worktree equivalence evidence report",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "targetRef",
+    "targetRevision",
+    "mergeBase",
+    "head",
+    "commits",
+    "paths",
+    "equivalence",
+    "disclaimer"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "targetRef": { "type": "string", "minLength": 1 },
+    "targetRevision": { "type": "string", "pattern": "^[0-9a-f]{40,64}$" },
+    "mergeBase": { "type": "string", "pattern": "^[0-9a-f]{40,64}$" },
+    "head": { "type": "string", "pattern": "^[0-9a-f]{40,64}$" },
+    "commits": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/commit" }
+    },
+    "paths": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/path" }
+    },
+    "equivalence": { "enum": ["contained", "partial", "divergent"] },
+    "disclaimer": {
+      "const": "Patch and byte evidence only; semantic equivalence requires review."
+    }
+  },
+  "$defs": {
+    "commit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sha", "patchId", "status", "matchedTargetSha"],
+      "properties": {
+        "sha": { "type": "string", "pattern": "^[0-9a-f]{40,64}$" },
+        "patchId": {
+          "anyOf": [
+            { "type": "string", "pattern": "^[0-9a-f]{40,64}$" },
+            { "type": "null" }
+          ]
+        },
+        "status": { "enum": ["matched", "unmatched"] },
+        "matchedTargetSha": {
+          "anyOf": [
+            { "type": "string", "pattern": "^[0-9a-f]{40,64}$" },
+            { "type": "null" }
+          ]
+        }
+      }
+    },
+    "path": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "status"],
+      "properties": {
+        "path": { "type": "string", "minLength": 1 },
+        "status": { "enum": ["identical", "differs", "absent-in-target"] }
+      }
+    }
+  }
+}

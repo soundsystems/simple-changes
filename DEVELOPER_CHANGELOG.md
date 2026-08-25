@@ -22,6 +22,27 @@
   receive the proposal-scheduling and forge-aware terminology behavior.
 <!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-24T13:23:14-05:00" -->
 
+- Added audited recovery contracts for inherited broken shipment state:
+  - Worktree claim takeover requires an exact current status digest, named
+    approver, and reason; emits a durable takeover receipt; refuses claims still
+    required by a live lease; and can reassign ownership or release the claim
+    without mutating the checkout.
+  - Worktree equivalence records stable patch-id matches for commits and
+    byte-for-byte comparisons for dirty and untracked paths, classifies the
+    checkout as `contained`, `partial`, or `divergent`, and explicitly reserves
+    semantic equivalence for human review.
+  - Target-equivalent loop closure accepts only ancestry or current
+    `contained` evidence for every obligated worktree, records an immutable
+    `target-equivalent` outcome and the remote-reconciliation skip, performs
+    only proven-safe local cleanup, and releases the lease without touching
+    claimed, preserved, or retained worktrees.
+- Added closed schemas and CLI validation for takeover, equivalence, and
+  close-equivalent receipts; synchronized the skill contract, help, README,
+  and recovery guidance; and added regression coverage for successful paths,
+  stale evidence, unsafe ownership, partial or divergent work, exact recovery
+  diagnostics, and the full inherited-state dead end through clean closure.
+<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-25T12:15:04-05:00" -->
+
 ## 0.12.12 - 2026-08-23
 
 - Added an explicit ready-work handoff boundary for completed, verified work

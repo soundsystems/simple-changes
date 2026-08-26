@@ -34,6 +34,22 @@
     "equivalence": { "enum": ["contained", "partial", "divergent"] },
     "disclaimer": {
       "const": "Patch and byte evidence only; semantic equivalence requires review."
+    },
+    "residue": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["commits", "note", "paths"],
+      "properties": {
+        "note": { "type": "string", "minLength": 1 },
+        "commits": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/residueCommit" }
+        },
+        "paths": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/residuePath" }
+        }
+      }
     }
   },
   "$defs": {
@@ -65,6 +81,28 @@
       "properties": {
         "path": { "type": "string", "minLength": 1 },
         "status": { "enum": ["identical", "differs", "absent-in-target"] }
+      }
+    },
+    "residueCommit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["endStateMatchesTarget", "sha", "touchedPaths"],
+      "properties": {
+        "endStateMatchesTarget": { "type": "boolean" },
+        "sha": { "type": "string", "pattern": "^[0-9a-f]{40,64}$" },
+        "touchedPaths": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "residuePath": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "whitespaceOnly"],
+      "properties": {
+        "path": { "type": "string", "minLength": 1 },
+        "whitespaceOnly": { "type": "boolean" }
       }
     }
   }

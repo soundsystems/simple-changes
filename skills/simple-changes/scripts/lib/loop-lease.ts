@@ -51,6 +51,8 @@ import type {
   LoopControllerLifecycle,
   LoopLease,
   LoopOverride,
+  LoopRebaselineRecord,
+  LoopRebaselineRegistration,
   LoopVerification,
   LoopViolation,
   LoopWorktreeDisposition,
@@ -3587,6 +3589,97 @@ export const adoptPausedWorktree = (
   );
 };
 
+export interface LoopRebaselineResult {
+  lease: LoopLease;
+  rebaseline: LoopRebaselineRecord;
+  verification: LoopVerification;
+}
+
+/**
+ * Re-baseline the active loop's worktree manifest to current reality. Every
+ * worktree that appeared after loop start without run registration is
+ * registered as preserved at its exact current state, so the run can proceed
+ * or close instead of deadlocking on a stale opening manifest. Registered
+ * late arrivals stay owner-controlled and untouched: any later change to one
+ * still fails verification until its owner coordinates or the user approves
+ * an exact override.
+ */
+export const rebaselineLoopWorktrees = (
+  repositoryPath: string,
+  runId: string,
+  ownerAgentIdInput: string,
+  approvedByInput: string,
+  reasonInput: string
+): LoopRebaselineResult => {
+  const ownerAgentId = requiredText(ownerAgentIdInput, "agent ID");
+  const approvedBy = requiredText(approvedByInput, "approved-by identity");
+  const reason = requiredText(reasonInput, "rebaseline reason");
+  const opening = captureInventory(repositoryPath);
+  return withStateLock(
+    opening.repository.commonGitDirectory,
+    "loop rebaseline",
+    () => {
+      const inventory = captureInventory(repositoryPath);
+      const lease = requireLease(inventory);
+      assertMatchingRun(lease, runId);
+      if (lease.ownerAgentId !== ownerAgentId) {
+        throw new SimpleChangesError(
+          `Only loop owner ${lease.ownerAgentId} may re-baseline the worktree manifest. Next: run \`simple-changes loop takeover\` first if this controller is being resumed by a different agent.`,
+          EXIT_CODES.unsafe
+        );
+      }
+      assertControllerActive(lease);
+      const lateArrivalPaths = new Set(
+        verificationAgainst(lease, inventory)
+          .violations.filter(
+            (violation) => violation.code === "unregistered-worktree"
+          )
+          .map((violation) => violation.path)
+      );
+      const additions = inventory.worktrees.filter((worktree) =>
+        lateArrivalPaths.has(worktree.path)
+      );
+      if (additions.length === 0) {
+        throw new SimpleChangesError(
+          `Loop ${lease.runId} has no unregistered late-arrival worktrees; there is nothing to re-baseline. Nothing was changed.`,
+          EXIT_CODES.unsafe
+        );
+      }
+      const recordedAt = new Date().toISOString();
+      const registered: LoopRebaselineRegistration[] = additions.map(
+        (worktree) => ({
+          changeDigest: worktree.changeDigest,
+          headSha: worktree.headSha,
+          path: worktree.path,
+        })
+      );
+      const rebaseline: LoopRebaselineRecord = {
+        approvedBy,
+        reason,
+        recordedAt,
+        registered,
+      };
+      const candidate: LoopLease = {
+        ...lease,
+        rebaselines: [...(lease.rebaselines ?? []), rebaseline],
+        updatedAt: recordedAt,
+        worktrees: [
+          ...lease.worktrees,
+          ...additions.map((worktree) =>
+            worktreeLease(worktree, "preserved", null, false)
+          ),
+        ],
+      };
+      const updated = writeLease(candidate);
+      return {
+        lease: updated,
+        rebaseline,
+        verification: verificationAgainst(updated, inventory),
+      };
+    }
+  );
+};
+
 export const acceptPausedWorktreeChange = (
   repositoryPath: string,
   runId: string,
@@ -5823,9 +5916,133 @@ export const endLoop = (
   );
 };
 
+export interface LoopGuidance {
+  headline: string;
+  nextCommands: string[];
+}
+
+const violationGuidanceCommands = (
+  lease: LoopLease,
+  violations: readonly LoopViolation[]
+): string[] => {
+  const commands: string[] = [];
+  const add = (command: string): void => {
+    if (!commands.includes(command)) {
+      commands.push(command);
+    }
+  };
+  const codes = new Set(violations.map((violation) => violation.code));
+  if (codes.has("unregistered-worktree")) {
+    add(
+      `simple-changes loop rebaseline --run-id ${lease.runId} --agent-id ${lease.ownerAgentId} --approved-by <user> --reason <why>`
+    );
+  }
+  for (const violation of violations) {
+    if (violation.code === "preserved-worktree-changed") {
+      add(
+        `simple-changes loop allow --run-id ${lease.runId} --agent-id ${lease.ownerAgentId} --worktree ${violation.path} --status-digest ${violation.changeDigest ?? "<digest>"} --approved-by <user> --reason <why>`
+      );
+    }
+  }
+  if (
+    codes.has("missing-preserved-worktree") ||
+    codes.has("missing-retained-worktree")
+  ) {
+    add(
+      `simple-changes loop dispose-worktree --run-id ${lease.runId} --agent-id ${lease.ownerAgentId} --worktree <path> --status-digest <digest> --approved-by <user> --reason <why>`
+    );
+  }
+  if (codes.has("incomplete-worktree-preparation")) {
+    add(
+      `simple-changes prepare-agent --run-id ${lease.runId} --agent-id <agent> --purpose <purpose>`
+    );
+  }
+  if (
+    codes.has("retained-worktree-changed") ||
+    codes.has("coordination-claim-stale")
+  ) {
+    add(
+      "Ask the exact worktree owner to refresh its claim or pause receipt, then re-run `simple-changes loop verify`."
+    );
+  }
+  if (
+    codes.has("remote-destination-changed") ||
+    codes.has("remote-destination-rebind-required")
+  ) {
+    add(
+      "Restore the exact recorded Git remote destinations, or relinquish this controller and start a current one."
+    );
+  }
+  if (codes.has("common-git-directory-mismatch")) {
+    add(
+      "Re-run this command from a checkout of the repository that owns the active loop."
+    );
+  }
+  return commands;
+};
+
+const loopGuidanceFor = (
+  lease: LoopLease | null,
+  verification: LoopVerification
+): LoopGuidance => {
+  if (!lease) {
+    return {
+      headline: "No active integration loop.",
+      nextCommands: ["simple-changes loop start --mode MODE --agent-id <you>"],
+    };
+  }
+  const takeoverCommand = `simple-changes loop takeover --run-id ${lease.runId} --agent-id <you> --manifest-digest ${loopManifestDigest(lease)} --approved-by <user> --reason <why>`;
+  const closeEquivalentCommand = `simple-changes loop close-equivalent --run-id ${lease.runId} --agent-id <you> --approved-by <user> --reason <why>`;
+  if (controllerLifecycle(lease).status === "relinquished") {
+    if (effectiveShipmentScopeFrozenAt(lease) && !lease.shipmentScope) {
+      return {
+        headline: `Loop ${lease.runId} was relinquished before recording a first shipment scope, so it cannot author new work. Close it as target-equivalent if its registered work is already contained in the target, or take it over to finish registered work only.`,
+        nextCommands: [closeEquivalentCommand, takeoverCommand],
+      };
+    }
+    return {
+      headline: `Loop ${lease.runId} was relinquished; a new controller must take it over to finish its shipment, or close it as target-equivalent if nothing is left to ship.`,
+      nextCommands: [takeoverCommand, closeEquivalentCommand],
+    };
+  }
+  if (!verification.ok) {
+    return {
+      headline: `Verification for ${lease.runId} is failing with ${verification.violations.length} violation(s); resolve each violation before guarded mutations.`,
+      nextCommands: violationGuidanceCommands(lease, verification.violations),
+    };
+  }
+  if (lease.shipmentScopeRequired && !lease.shipmentScope) {
+    return {
+      headline: `Loop ${lease.runId} is healthy but has no recorded shipment scope; record it before shared integration or worktree mutations.`,
+      nextCommands: [
+        `simple-changes loop record-scope --run-id ${lease.runId} --agent-id ${lease.ownerAgentId} --receipt <file>`,
+      ],
+    };
+  }
+  if (!lease.shipmentOutcome) {
+    return {
+      headline: `Loop ${lease.runId} is healthy; continue the shipment, then record its outcome before finalizing.`,
+      nextCommands: [
+        `simple-changes loop record-outcome --run-id ${lease.runId} --agent-id ${lease.ownerAgentId} --receipt <file>`,
+        `simple-changes loop finalize --run-id ${lease.runId} --agent-id ${lease.ownerAgentId} --reason <why>`,
+      ],
+    };
+  }
+  return {
+    headline: `Loop ${lease.runId} has a recorded shipment outcome; finalize to run automatic cleanup and close.`,
+    nextCommands: [
+      `simple-changes loop finalize --run-id ${lease.runId} --agent-id ${lease.ownerAgentId} --reason <why>`,
+    ],
+  };
+};
+
 export const loopStatus = (
   repositoryPath: string
-): { lease: LoopLease | null; verification: LoopVerification } => {
+): {
+  guidance: LoopGuidance;
+  lease: LoopLease | null;
+  verification: LoopVerification;
+} => {
   const inventory = captureInventory(repositoryPath);
   const storedLease = readLeaseFromCommonDirectory(
     inventory.repository.commonGitDirectory
@@ -5834,18 +6051,20 @@ export const loopStatus = (
   if (storedLease && controllerLifecycle(storedLease).status === "active") {
     lease = withConcurrentAuthorAdmissions(storedLease, inventory);
   }
+  const verification = lease
+    ? verificationAgainst(lease, inventory)
+    : {
+        active: false,
+        checkedAt: new Date().toISOString(),
+        currentBaselineDigest: inventory.baselineDigest,
+        ok: true,
+        runId: null,
+        violations: [],
+      };
   return {
+    guidance: loopGuidanceFor(lease, verification),
     lease,
-    verification: lease
-      ? verificationAgainst(lease, inventory)
-      : {
-          active: false,
-          checkedAt: new Date().toISOString(),
-          currentBaselineDigest: inventory.baselineDigest,
-          ok: true,
-          runId: null,
-          violations: [],
-        },
+    verification,
   };
 };
 

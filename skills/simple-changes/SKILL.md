@@ -176,10 +176,16 @@ explicitly approved `loop recover-post-cleanup` path in
 [cleanup and completion](references/cleanup-and-completion.md). For other
 inherited broken state, the same reference defines the authorized recovery
 paths: `worktree takeover` for a claim whose owner no longer exists,
-read-only `worktree equivalence` for patch/byte containment evidence, and
-`loop close-equivalent` to close a relinquished or frozen-scope loop whose
-work is already contained in the target. A target-equivalent close is never
-reported as shipped.
+read-only `worktree equivalence` for patch/byte containment evidence with
+advisory residue hints, `loop close-equivalent` to close a relinquished or
+frozen-scope loop whose work is already contained in the target, `loop
+rebaseline` to register worktrees that appeared after loop start as preserved
+and untouched when a stale opening manifest deadlocks a run, and `worktree
+cleanup` for one audited standalone pass when no loop record exists. A
+target-equivalent close is never reported as shipped. `loop status` names the
+exact next recoverable command for whatever state it finds, and `worktree
+refresh-index` re-syncs cached editor and desktop worktree views from the
+authoritative Git inventory.
 
 Follow [inventory and concurrency](references/inventory-and-concurrency.md).
 

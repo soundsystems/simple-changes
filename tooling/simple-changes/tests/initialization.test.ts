@@ -70,7 +70,9 @@ describe("first-run initialization", () => {
       },
       changelogCoordination
     );
-    expect(from19.changes.map((item) => item.version)).toEqual([20, 20]);
+    expect(from19.changes.map((item) => item.version)).toEqual([
+      20, 20, 21, 21, 21,
+    ]);
   });
   test("propagates the saved shipping preference into emergency classification", () => {
     for (const shippingMode of ["expedited", "break-glass"] as const) {
@@ -272,7 +274,7 @@ describe("first-run initialization", () => {
           available: true,
           owner: "simple-changelogs",
         },
-        currentVersion: 20,
+        currentVersion: 21,
         headline: "**Simple Changes has recently been updated.**",
         presentationOrder: [
           "required-answers",

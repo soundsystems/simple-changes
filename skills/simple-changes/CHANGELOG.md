@@ -1,5 +1,45 @@
 # Changelog
 
+## 0.12.16 - 2026-08-26
+
+- A busy repository no longer deadlocks a shipment run. When other agents
+  create worktrees after a loop starts, the controller can now re-baseline the
+  manifest with one exact user approval: `loop rebaseline` registers every
+  late arrival as preserved at its exact current state, untouched and still
+  owner-controlled, so the run can proceed or close instead of wedging between
+  a stale manifest, owner pause receipts it cannot produce, and a
+  reconciliation gate it cannot reach. Re-baselined worktrees never become
+  shipment obligations.
+- `loop status` now tells you what to do next. Alongside the verification
+  report it names the exact next recoverable command for the state it found:
+  re-baseline for late worktrees, an exact override for a changed preserved
+  checkout, takeover or target-equivalent close for a relinquished run, and
+  the normal scope, outcome, and finalize steps for a healthy one.
+- Orphaned worktrees in a repository with no loop record can now be cleaned
+  without reopening a shipment. `worktree cleanup` runs one audited,
+  user-approved pass that removes only proven-safe checkouts (unclaimed,
+  clean, and fully contained in the refreshed target by ancestry or complete
+  patch equivalence) plus stale metadata for missing directories, preserves
+  everything else with the exact next command, and records an append-only
+  receipt.
+- `worktree refresh-index` re-syncs cached editor and desktop worktree views
+  from the authoritative Git inventory, pruning only metadata for directories
+  that no longer exist and explaining, per coordination adapter, what
+  refreshes and what is audit history that stays.
+- A relinquished run no longer freezes stale-claim recovery on its own
+  registered paths. `worktree takeover` now judges "a lease still requires
+  this worktree" by controller lifecycle instead of bare path membership: an
+  active loop still protects every registered path, but once a run
+  relinquishes, only an adopted claim-and-pause linkage stays protected. This
+  removes the self-inflicted deadlock where a run's own opening registrations
+  blocked releasing claims whose owners no longer exist.
+- `worktree equivalence` reports now include advisory residue hints for
+  unmatched work: which paths an unmatched commit touched and whether their
+  end state already matches the target, and whether a differing dirty file
+  differs only in whitespace. Hints guide independent review; they never
+  change the classification and are never proof.
+<!-- simple-changelogs-signature agent="claude-fable-5" at="2026-08-26T16:10:00-05:00" -->
+
 ## 0.12.15 - 2026-08-26
 
 - Finished work no longer piles up locally after a shipment:

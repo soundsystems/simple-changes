@@ -196,6 +196,26 @@
   bound to the current target. For providers without that GitLab gate, it
   records that the reconciliation was not applicable. Frozen shipment scope
   blocks new authoring, not the target-equivalent close.
+- A stale opening manifest is recoverable without abandoning the run:
+  `loop rebaseline` lets the active or resumed controller register every
+  worktree that appeared after loop start as preserved at its exact current
+  state, with a named approver and reason recorded on the lease. Registered
+  late arrivals stay owner-controlled and untouched, still fail verification
+  if they change afterward, and never become shipment obligations of a later
+  target-equivalent close. `loop status` names the exact next recoverable
+  command for the state it observes. When no loop record exists at all,
+  `worktree cleanup` performs one audited, user-approved standalone pass that
+  removes only unclaimed clean worktrees proven contained in the refreshed
+  target (by exact ancestry or full per-commit patch equivalence) plus stale
+  metadata, preserves everything else with the exact next command, and
+  records an append-only receipt; it is refused while any loop record exists.
+  `worktree refresh-index` prunes only missing-directory metadata so cached
+  editor and desktop surfaces re-sync from the authoritative Git inventory,
+  and equivalence reports may carry advisory residue hints that never change
+  the classification. Claim protection under `worktree takeover` follows the
+  controller lifecycle: an active loop protects every registered path, while
+  a relinquished loop protects only adopted claim-and-pause linkages, so a
+  dead run's own registrations cannot freeze stale-claim recovery.
 - `proposalScheduling` controls only whether independent proposals are
   authored consecutively or in parallel claimed worktrees. It never shares a
   checkout, weakens controller guards or worktree isolation, changes cleanup

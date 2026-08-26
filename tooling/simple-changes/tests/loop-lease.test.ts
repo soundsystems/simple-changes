@@ -20,6 +20,7 @@ import {
 } from "../../../skills/simple-changes/scripts/lib/inventory.ts";
 import {
   acceptPausedWorktreeChange,
+  adoptPausedWorktree,
   authorizeWorktreeRemoval,
   closeLoopTargetEquivalent,
   emergencyShippingStatus,
@@ -1577,11 +1578,266 @@ describe("active integration-loop lease", () => {
     );
 
     expect(finalized.outcome).toBe("relinquished");
-    expect(finalized.cleanup.removedBranches).not.toContain("late-arrival");
+    expect(
+      finalized.cleanup.removedBranches.map((entry) => entry.branch)
+    ).not.toContain("late-arrival");
     expect(git(fixture.root, ["branch", "--list", "late-arrival"])).not.toBe(
       ""
     );
   });
+
+  test("removes an opening branch whose commits were squash-merged into the target", () => {
+    const fixture = repository();
+    writeFixture(fixture.root, "feature.ts", "export const feature = 1;\n");
+    git(fixture.root, ["add", "feature.ts"]);
+    git(fixture.root, ["commit", "-m", "Feature work"]);
+    const featureSha = git(fixture.root, ["rev-parse", "HEAD"]);
+    git(fixture.root, ["branch", "squash-merged", featureSha]);
+    git(fixture.root, ["reset", "--hard", "HEAD^"]);
+    const squashed = git(fixture.root, [
+      "commit-tree",
+      `${featureSha}^{tree}`,
+      "-p",
+      "HEAD",
+      "-m",
+      "Squash-merged: feature work",
+    ]);
+    git(fixture.root, ["reset", "--hard", squashed]);
+    git(fixture.root, ["branch", "ancestry-contained", squashed]);
+    expect(squashed).not.toBe(featureSha);
+    const lease = startLoop(fixture.root, "controller", "integrate");
+
+    const finalized = finalizeLoop(
+      fixture.root,
+      lease.runId,
+      "controller",
+      "Clean up branches already merged upstream by squash."
+    );
+
+    expect(finalized).toMatchObject({ blockers: [], outcome: "completed" });
+    expect(finalized.cleanup.removedBranches).toContainEqual({
+      branch: "squash-merged",
+      method: "patch-equivalent",
+    });
+    expect(finalized.cleanup.removedBranches).toContainEqual({
+      branch: "ancestry-contained",
+      method: "target-contained",
+    });
+    expect(git(fixture.root, ["branch", "--list", "squash-merged"])).toBe("");
+    expect(git(fixture.root, ["branch", "--list", "ancestry-contained"])).toBe(
+      ""
+    );
+  }, 20_000);
+
+  test("adopts multiple pause-receipted stragglers while others still await adoption", () => {
+    const fixture = repository();
+    const lease = startLoop(fixture.root, "controller", "ship");
+    const pausedStraggler = (name: string) => {
+      const path = join(fixture.base, name);
+      git(fixture.root, ["worktree", "add", "-b", name, path]);
+      claimWorktree(
+        path,
+        `${name}-author`,
+        path,
+        "codex-desktop",
+        `task-${name}`
+      );
+      return pauseClaimedWorktree(
+        path,
+        `${name}-author`,
+        path,
+        lease.runId,
+        "preserve-in-place",
+        "Pause at a stable boundary for adoption."
+      );
+    };
+    const first = pausedStraggler("straggler-a");
+    const second = pausedStraggler("straggler-b");
+    expect(verifyLoop(fixture.root).ok).toBe(false);
+
+    adoptPausedWorktree(
+      fixture.root,
+      lease.runId,
+      "controller",
+      first.receiptId
+    );
+    adoptPausedWorktree(
+      fixture.root,
+      lease.runId,
+      "controller",
+      second.receiptId
+    );
+    expect(verifyLoop(fixture.root).ok).toBe(true);
+
+    const bystander = join(fixture.base, "no-receipt");
+    git(fixture.root, ["worktree", "add", "-b", "no-receipt", bystander]);
+    const third = pausedStraggler("straggler-c");
+    expect(() =>
+      adoptPausedWorktree(
+        fixture.root,
+        lease.runId,
+        "controller",
+        third.receiptId
+      )
+    ).toThrow("other loop violations remain");
+  }, 30_000);
+
+  test("disposes an adopted straggler whose commit was squash-merged into the target", () => {
+    const fixture = repository();
+    const lease = startLoop(fixture.root, "controller", "integrate");
+    const straggler = join(fixture.base, "squashed-straggler");
+    git(fixture.root, [
+      "worktree",
+      "add",
+      "-b",
+      "squashed-straggler",
+      straggler,
+    ]);
+    writeFixture(straggler, "straggler.ts", "export const straggler = 1;\n");
+    git(straggler, ["add", "straggler.ts"]);
+    git(straggler, ["commit", "-m", "Straggler work"]);
+    const stragglerSha = git(straggler, ["rev-parse", "HEAD"]);
+    const squashed = git(fixture.root, [
+      "commit-tree",
+      `${stragglerSha}^{tree}`,
+      "-p",
+      "HEAD",
+      "-m",
+      "Squash-merged: straggler work",
+    ]);
+    git(fixture.root, ["reset", "--hard", squashed]);
+    claimWorktree(
+      straggler,
+      "straggler-author",
+      straggler,
+      "codex-desktop",
+      "task-straggler"
+    );
+    const receipt = pauseClaimedWorktree(
+      straggler,
+      "straggler-author",
+      straggler,
+      lease.runId,
+      "preserve-in-place",
+      "Pause the already-merged straggler."
+    );
+    adoptPausedWorktree(
+      fixture.root,
+      lease.runId,
+      "controller",
+      receipt.receiptId
+    );
+
+    const current = captureInventory(fixture.root).worktrees.find(
+      (worktree) => worktree.path === straggler
+    );
+    const updated = authorizeWorktreeRemoval(
+      fixture.root,
+      lease.runId,
+      "controller",
+      straggler,
+      current?.changeDigest ?? "",
+      "user",
+      "The straggler's only commit was squash-merged into the target."
+    );
+    expect(updated.dispositions).toContainEqual(
+      expect.objectContaining({
+        containmentMethod: "patch-equivalent",
+        headSha: stragglerSha,
+        outcome: "remove-after-audit",
+        path: straggler,
+        uniqueCommitCount: 0,
+      })
+    );
+
+    git(fixture.root, ["worktree", "remove", straggler]);
+    expect(verifyLoop(fixture.root).ok).toBe(true);
+    const finalized = finalizeLoop(
+      fixture.root,
+      lease.runId,
+      "controller",
+      "Close after the audited straggler disposal."
+    );
+    expect(finalized).toMatchObject({ blockers: [], outcome: "completed" });
+    expect(existsSync(straggler)).toBe(false);
+    expect(finalized.cleanup.removedBranches).toContainEqual({
+      branch: "squashed-straggler",
+      method: "patch-equivalent",
+    });
+    expect(git(fixture.root, ["branch", "--list", "squashed-straggler"])).toBe(
+      ""
+    );
+  }, 30_000);
+
+  test("still refuses disposal of a dirty or truly-unique adopted worktree", () => {
+    const fixture = repository();
+    const lease = startLoop(fixture.root, "controller", "integrate");
+    const adoptStraggler = (name: string, mutate: (path: string) => void) => {
+      const path = join(fixture.base, name);
+      git(fixture.root, ["worktree", "add", "-b", name, path]);
+      mutate(path);
+      claimWorktree(
+        path,
+        `${name}-author`,
+        path,
+        "codex-desktop",
+        `task-${name}`
+      );
+      const receipt = pauseClaimedWorktree(
+        path,
+        `${name}-author`,
+        path,
+        lease.runId,
+        "preserve-in-place",
+        "Pause for adoption."
+      );
+      adoptPausedWorktree(
+        fixture.root,
+        lease.runId,
+        "controller",
+        receipt.receiptId
+      );
+      return path;
+    };
+    const unique = adoptStraggler("unique-straggler", (path) => {
+      writeFixture(path, "unique.ts", "export const unique = 1;\n");
+      git(path, ["add", "unique.ts"]);
+      git(path, ["commit", "-m", "Unique straggler work"]);
+    });
+    const dirty = adoptStraggler("dirty-straggler", (path) => {
+      writeFixture(path, "dirty.ts", "export const dirty = 1;\n");
+    });
+
+    const inventory = captureInventory(fixture.root);
+    const uniqueCurrent = inventory.worktrees.find(
+      (worktree) => worktree.path === unique
+    );
+    const dirtyCurrent = inventory.worktrees.find(
+      (worktree) => worktree.path === dirty
+    );
+    expect(() =>
+      authorizeWorktreeRemoval(
+        fixture.root,
+        lease.runId,
+        "controller",
+        unique,
+        uniqueCurrent?.changeDigest ?? "",
+        "user",
+        "Remove the unique straggler."
+      )
+    ).toThrow("not patch-equivalent");
+    expect(() =>
+      authorizeWorktreeRemoval(
+        fixture.root,
+        lease.runId,
+        "controller",
+        dirty,
+        dirtyCurrent?.changeDigest ?? "",
+        "user",
+        "Remove the dirty straggler."
+      )
+    ).toThrow("must be clean");
+  }, 30_000);
 
   test("automatically fast-forwards a clean primary to the refreshed target", () => {
     const fixture = repository();

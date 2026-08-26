@@ -55,8 +55,8 @@ discovered:
    ```
 
 Pagination evidence must include a consolidated ledger digest plus complete
-branch and open/merged/closed proposal page chains — a terminal cursor chain
-and response digest for every page and every proposal state — from the
+branch and open/merged/closed proposal page chains (a terminal cursor chain
+and response digest for every page and every proposal state) from the
 persisted opening and final inventories.
 
 `loop end` refuses a detected GitLab integration/reconciliation run when this
@@ -114,7 +114,7 @@ lifecycle. Every obligated worktree must be present and proven: a
 clean checkout whose head the target contains, or a current `contained`
 equivalence receipt for that exact path and head. Actively claimed and
 preserved/retained worktrees are excluded and untouched. On success it records
-a terminal `target-equivalent` outcome — never reportable as shipped — runs
+a terminal `target-equivalent` outcome (never reportable as shipped), runs
 only the normal proven-safe local cleanup, and releases the lease only after
 final verification and cleanup succeed. For a GitLab target, a complete final
 branch/proposal reconciliation bound to the current target revision is required
@@ -177,11 +177,19 @@ Before reporting completion:
 
 The terminal lifecycle command verifies local reconciliation again instead of
 trusting the agent's report. `loop finalize` automatically removes unchanged
-clean target-contained worktrees, prunes stale worktree metadata, deletes exact
-target-contained local branches, and normalizes tracked dirty-primary paths
+clean target-contained worktrees, prunes stale worktree metadata, deletes
+eligible local branches whose work the target already contains, and normalizes
+tracked dirty-primary paths
 only when their worktree state exactly matches the refreshed target and their
 index state is recoverable from the current head or target with ordinary index
-flags. It then restores or fast-forwards the primary under the controller and
+flags. Branch eligibility is unchanged (not the target, not attached to a
+worktree, and an unchanged opening branch, run-owned, or reconciled-absent),
+but containment accepts either exact ancestry or full patch equivalence: a
+branch whose every unique commit patch-id-matches a target commit (the normal
+result of a squash or rebase merge) is deleted with method `patch-equivalent`
+recorded, so merged provider branches stop accumulating locally. A branch with
+any unmatched commit, or one too far ahead to audit cheaply, is preserved and
+named. It then restores or fast-forwards the primary under the controller and
 coordination locks and refuses completion while the target remains
 missing or stale, the primary remains dirty or off-target, or another safe
 cleanup candidate remains. Incomplete finalization relinquishes durable state

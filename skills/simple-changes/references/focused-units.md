@@ -1,7 +1,7 @@
 # Focused units
 
 A focused unit describes one user-visible outcome. Group by behavior,
-dependency, data boundary, ownership, and independently verifiable value—not by
+dependency, data boundary, ownership, and independently verifiable value, not by
 file count, directory convenience, or commit count.
 
 For each unit record:

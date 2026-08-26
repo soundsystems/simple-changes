@@ -36,7 +36,7 @@ review changed nothing, record that explicitly instead of inventing a delta.
 Merge in dependency order only when the current revision satisfies policy.
 Return the canonical merged commit/revision and refresh downstream units after
 their base changes. Missing authentication, unavailable reviewers, and
-unsupported provider capabilities are blockers with distinct statuses—not
+unsupported provider capabilities are blockers with distinct statuses, not
 guessed success.
 
 When repository or provider policy requires the merger to be independent from

@@ -78,6 +78,7 @@ import {
   withWorktreeCoordinationLock,
   worktreeClaimDocumentDigest,
 } from "./worktree-coordination.ts";
+import { commitEquivalenceAgainstTarget } from "./worktree-equivalence.ts";
 
 const STATE_DIRECTORY = "simple-changes";
 const STATE_FILENAME = "active-loop.json";
@@ -3008,6 +3009,7 @@ export const prepareAgentWorktree = (
 };
 
 interface WorktreeRemovalAudit {
+  containmentMethod: TargetContainmentMethod;
   current: WorktreeInventory & { headSha: string };
   path: string;
   targetRevision: string;
@@ -3039,7 +3041,7 @@ const auditWorktreeRemoval = (
   );
   if (!(registered && current)) {
     throw new SimpleChangesError(
-      `Disposition path must name a current preserved opening worktree: ${path}`,
+      `Disposition path must name a current preserved worktree (one registered at loop start, or adopted through adopt-worktree or accept-paused-change): ${path}`,
       EXIT_CODES.unsafe
     );
   }
@@ -3087,13 +3089,29 @@ const auditWorktreeRemoval = (
     ]).stdout.trim(),
     10
   );
+  let containmentMethod: TargetContainmentMethod = "target-contained";
   if (!(Number.isInteger(uniqueCommitCount) && uniqueCommitCount === 0)) {
-    throw new SimpleChangesError(
-      `Opening worktree ${path} has ${uniqueCommitCount} unique commit(s) outside ${lease.targetRef} at ${targetRevision}.`,
-      EXIT_CODES.unsafe
+    const containment = targetContainmentAudit(
+      lease.primaryCheckout,
+      targetRevision,
+      current.headSha
     );
+    if (containment.exceededMaxCommits) {
+      throw new SimpleChangesError(
+        `Worktree ${path} is more than ${PATCH_EQUIVALENCE_MAX_COMMITS} commits ahead of ${lease.targetRef}; the patch-equivalence audit was skipped. Next: ship or preserve that work instead of disposing the worktree.`,
+        EXIT_CODES.unsafe
+      );
+    }
+    if (containment.method !== "patch-equivalent") {
+      throw new SimpleChangesError(
+        `Worktree ${path} has ${uniqueCommitCount} unique commit(s) outside ${lease.targetRef} at ${targetRevision}, and they are not patch-equivalent to commits already in the target. Next: ship or preserve that work instead of disposing the worktree.`,
+        EXIT_CODES.unsafe
+      );
+    }
+    containmentMethod = "patch-equivalent";
   }
   return {
+    containmentMethod,
     current: current as WorktreeInventory & { headSha: string },
     path,
     targetRevision,
@@ -3134,16 +3152,13 @@ export const authorizeWorktreeRemoval = (
         );
       }
       assertControllerActive(lease);
-      const { current, path, targetRevision } = auditWorktreeRemoval(
-        lease,
-        inventory,
-        pathInput,
-        changeDigest
-      );
+      const { containmentMethod, current, path, targetRevision } =
+        auditWorktreeRemoval(lease, inventory, pathInput, changeDigest);
       const disposition: LoopWorktreeDisposition = {
         approvedBy,
         branch: current.branch,
         changeDigest,
+        containmentMethod,
         createdAt: new Date().toISOString(),
         headSha: current.headSha,
         outcome: "remove-after-audit",
@@ -3459,6 +3474,47 @@ const exactPausedEvidence = (
   return { claimId: claim.claimId, current, pauseReceiptId };
 };
 
+const isAdoptablePausedWorktreeViolation = (
+  lease: LoopLease,
+  inventory: RepositoryInventory,
+  violation: LoopViolation
+): boolean => {
+  if (violation.code !== "unregistered-worktree") {
+    return false;
+  }
+  const current = inventory.worktrees.find(
+    (worktree) => worktree.path === violation.path
+  );
+  if (!current) {
+    return false;
+  }
+  const document = readCoordinationDocumentFromCommonDirectory(
+    lease.commonGitDirectory
+  );
+  return document.receipts.some((receipt) => {
+    if (
+      receipt.path !== violation.path ||
+      receipt.requestingRunId !== lease.runId
+    ) {
+      return false;
+    }
+    const claim = document.claims.find(
+      (item) => item.claimId === receipt.claimId
+    );
+    return Boolean(
+      claim &&
+        claim.commonGitDirectory === lease.commonGitDirectory &&
+        ["paused", "adopted-preserved"].includes(claim.state) &&
+        coordinationLinkIsCurrent(
+          lease.commonGitDirectory,
+          claim.claimId,
+          receipt.receiptId,
+          current
+        )
+    );
+  });
+};
+
 export const adoptPausedWorktree = (
   repositoryPath: string,
   runId: string,
@@ -3508,9 +3564,13 @@ export const adoptPausedWorktree = (
         worktrees: [...lease.worktrees, adopted],
       };
       const verification = verificationAgainst(candidate, inventory);
-      if (!verification.ok) {
+      const blocking = verification.violations.filter(
+        (violation) =>
+          !isAdoptablePausedWorktreeViolation(lease, inventory, violation)
+      );
+      if (blocking.length > 0) {
         throw new SimpleChangesError(
-          `Paused worktree is exact but other loop violations remain: ${verification.violations
+          `Paused worktree is exact but other loop violations remain: ${blocking
             .map((violation) => `${violation.code}:${violation.path}`)
             .join(", ")}`,
           EXIT_CODES.unsafe
@@ -3580,17 +3640,17 @@ export const acceptPausedWorktreeChange = (
         ),
       };
       const verification = verificationAgainst(candidate, inventory);
-      const unrelatedStaleClaims = verification.violations.filter(
+      const blocking = verification.violations.filter(
         (violation) =>
-          violation.code === "coordination-claim-stale" &&
-          violation.path !== evidence.current.path
+          !(
+            (violation.code === "coordination-claim-stale" &&
+              violation.path !== evidence.current.path) ||
+            isAdoptablePausedWorktreeViolation(lease, inventory, violation)
+          )
       );
-      if (
-        !verification.ok &&
-        unrelatedStaleClaims.length !== verification.violations.length
-      ) {
+      if (blocking.length > 0) {
         throw new SimpleChangesError(
-          `Paused change is exact but other loop violations remain: ${verification.violations
+          `Paused change is exact but other loop violations remain: ${blocking
             .map((violation) => `${violation.code}:${violation.path}`)
             .join(", ")}`,
           EXIT_CODES.unsafe
@@ -3763,12 +3823,19 @@ export const recordRemoteBranchReconciliation = (
   );
 };
 
+export type TargetContainmentMethod = "target-contained" | "patch-equivalent";
+
+export interface FinalizationRemovedBranch {
+  branch: string;
+  method: TargetContainmentMethod;
+}
+
 export interface FinalizationCleanupResult {
   cleanedPrimaryPaths: string[];
   errors: string[];
   primaryUpdated: boolean;
   prunedWorktreeMetadata: number;
-  removedBranches: string[];
+  removedBranches: FinalizationRemovedBranch[];
   removedWorktrees: string[];
 }
 
@@ -3800,6 +3867,44 @@ const targetContainsRevision = (
       ).exitCode === 0
   );
 
+const PATCH_EQUIVALENCE_MAX_COMMITS = 200;
+
+interface TargetContainmentAudit {
+  exceededMaxCommits: boolean;
+  method: TargetContainmentMethod | null;
+}
+
+const targetContainmentAudit = (
+  repositoryPath: string,
+  targetRevision: string,
+  revision: string | null,
+  targetPatchIdCache?: Map<string, Map<string, string>>
+): TargetContainmentAudit => {
+  if (!revision) {
+    return { exceededMaxCommits: false, method: null };
+  }
+  if (targetContainsRevision(repositoryPath, targetRevision, revision)) {
+    return { exceededMaxCommits: false, method: "target-contained" };
+  }
+  const equivalence = commitEquivalenceAgainstTarget(
+    repositoryPath,
+    revision,
+    targetRevision,
+    { maxCommits: PATCH_EQUIVALENCE_MAX_COMMITS, targetPatchIdCache }
+  );
+  if (equivalence.exceededMaxCommits) {
+    return { exceededMaxCommits: true, method: null };
+  }
+  if (
+    equivalence.mergeBase !== null &&
+    equivalence.commitCount > 0 &&
+    equivalence.fullyMatched
+  ) {
+    return { exceededMaxCommits: false, method: "patch-equivalent" };
+  }
+  return { exceededMaxCommits: false, method: null };
+};
+
 const automaticRemovalDisposition = (
   lease: LoopLease,
   worktree: WorktreeInventory & { headSha: string },
@@ -3808,6 +3913,7 @@ const automaticRemovalDisposition = (
   approvedBy: `mode:${lease.mode}`,
   branch: worktree.branch,
   changeDigest: worktree.changeDigest,
+  containmentMethod: "target-contained",
   createdAt: new Date().toISOString(),
   headSha: worktree.headSha,
   outcome: "remove-after-audit",
@@ -3925,6 +4031,7 @@ const completeAbsentRemovalIntents = (
   const currentPaths = new Set(
     inventory.worktrees.map((worktree) => worktree.path)
   );
+  const dispositionPatchIdCache = new Map<string, Map<string, string>>();
   const completedPaths = (lease.dispositions ?? [])
     .filter(
       (disposition) =>
@@ -3932,11 +4039,12 @@ const completeAbsentRemovalIntents = (
         !currentPaths.has(disposition.path) &&
         disposition.targetRef === lease.targetRef &&
         disposition.targetRevision === targetRevision &&
-        targetContainsRevision(
+        targetContainmentAudit(
           inventory.repository.primaryCheckout,
           targetRevision,
-          disposition.headSha
-        )
+          disposition.headSha,
+          dispositionPatchIdCache
+        ).method !== null
     )
     .map((disposition) => disposition.path);
   return completeAutomaticDispositions(lease, completedPaths);
@@ -4006,6 +4114,7 @@ const reconcileAbsentRetainedWorktrees = (
         branch: worktree.branch,
         changeDigest: worktree.baselineChangeDigest,
         completedAt,
+        containmentMethod: "target-contained" as const,
         createdAt: completedAt,
         headSha: branchRevision,
         outcome: "remove-after-audit" as const,
@@ -4185,17 +4294,32 @@ const removeTargetContainedBranches = (
       )
       .map((disposition) => disposition.branch as string)
   );
+  const targetPatchIdCache = new Map<string, Map<string, string>>();
   for (const branch of inventory.branches) {
     const unchangedOpeningBranch =
       openingBranches.get(branch.name) === branch.sha;
-    const removable =
+    const eligible =
       branch.name !== targetBranch &&
       branch.worktreePath === null &&
       (unchangedOpeningBranch ||
         runOwnedBranches.has(branch.name) ||
-        reconciledAbsentBranches.has(branch.name)) &&
-      targetContainsRevision(repositoryPath, targetRevision, branch.sha);
-    if (!removable) {
+        reconciledAbsentBranches.has(branch.name));
+    if (!eligible) {
+      continue;
+    }
+    const containment = targetContainmentAudit(
+      repositoryPath,
+      targetRevision,
+      branch.sha,
+      targetPatchIdCache
+    );
+    if (containment.exceededMaxCommits) {
+      cleanup.errors.push(
+        `Skipped the patch-equivalence audit for branch ${branch.name}: it is more than ${PATCH_EQUIVALENCE_MAX_COMMITS} commits ahead of the target. The branch was preserved.`
+      );
+      continue;
+    }
+    if (!containment.method) {
       continue;
     }
     const deleted = runGit(
@@ -4209,7 +4333,10 @@ const removeTargetContainedBranches = (
       );
       continue;
     }
-    cleanup.removedBranches.push(branch.name);
+    cleanup.removedBranches.push({
+      branch: branch.name,
+      method: containment.method,
+    });
     runGit(
       repositoryPath,
       ["config", "--remove-section", `branch.${branch.name}`],
@@ -4539,7 +4666,11 @@ const automaticFinalizationCleanup = (
     targetRevision,
     cleanup
   );
-  cleanup.removedBranches = [...new Set(cleanup.removedBranches)].sort();
+  cleanup.removedBranches = [
+    ...new Map(
+      cleanup.removedBranches.map((entry) => [entry.branch, entry])
+    ).values(),
+  ].sort((left, right) => left.branch.localeCompare(right.branch));
   cleanup.removedWorktrees = [...new Set(cleanup.removedWorktrees)].sort();
   return { cleanup, lease };
 };

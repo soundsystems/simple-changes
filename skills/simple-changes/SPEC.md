@@ -49,8 +49,8 @@
 - For Sync, the fetched target and resulting or preserved local branch state.
 - For Ship, a pre-mutation scope brief and a final shipped-state receipt with
   review-driven deltas.
-- For public releases, negotiated changelog protocol evidence — shared
-  request/receipt versions plus advisory `schemaDigestStatus` — phased
+- For public releases, negotiated changelog protocol evidence (shared
+  request/receipt versions plus advisory `schemaDigestStatus`), phased
   classification/preparation/verification receipts, and a composite delivery
   receipt binding version identity to the deployed revision.
 - For Emergency Ship, a run-only urgency classification, revision-bound
@@ -79,8 +79,8 @@
   so.
 - Run-prepared and independently claimed authors perform ordinary worktree-local
   edits, generation, formatting, checks, staging, and commits concurrently on
-  their distinct registered branches. Shared integration mutations—not normal
-  authoring—hold the lease lock across fresh preflight inventory, one bounded
+  their distinct registered branches. Shared integration mutations (not normal
+  authoring) hold the lease lock across fresh preflight inventory, one bounded
   argument-array command or awaited asynchronous callback, and
   post-mutation verification. Guarded child/process-group identity remains
   recorded while commands run. Background descendants are terminated and the
@@ -175,6 +175,14 @@
   destructive, irreversible, unbounded, lock-heavy, unprotected, or
   target-mismatched operations. Other high-risk actions retain independent
   authority checks.
+- Automatic local-branch cleanup keeps its eligibility gates but proves
+  containment by exact ancestry or by full per-commit patch equivalence, so
+  squash- and rebase-merged branches stop accumulating; any unmatched commit
+  preserves the branch. Adopting one pause-receipted straggler is never
+  blocked by a sibling worktree that also holds a valid current pause receipt,
+  and an adopted clean worktree with no unique work can be disposed through
+  the same audited disposition as opening work; raw worktree removal is never
+  the sanctioned path for lease-registered state.
 - Inherited broken state has explicit audited recovery paths instead of
   dead ends: `worktree takeover` reassigns or releases a stale claim only with
   a named approver, reason, and exact current status digest, and never mutates

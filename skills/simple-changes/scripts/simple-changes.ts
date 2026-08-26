@@ -119,7 +119,7 @@ import {
 } from "./lib/worktree-coordination.ts";
 import { auditWorktreeEquivalence } from "./lib/worktree-equivalence.ts";
 
-const VERSION = "0.12.14";
+const VERSION = "0.12.15";
 const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const SCHEMA_KIND_LINE_LIMIT = 78;
 const schemaKindLines = SCHEMA_NAMES.reduce<string[]>((lines, name) => {
@@ -1214,7 +1214,7 @@ const appendSimpleChangesUpdate = (
   ): void => {
     lines.push("", heading, question.question, question.reason, "Choose one:");
     for (const choice of question.choices) {
-      lines.push(`- ${choice.label} — ${choice.description}`);
+      lines.push(`- ${choice.label}: ${choice.description}`);
     }
   };
   lines.push(
@@ -1253,11 +1253,11 @@ const appendSimpleChangesUpdate = (
         "",
         update.walkthroughQuestion,
         "Choose one:",
-        `- Continue with current settings${recommended("keep-current-settings")} — ${update.actionDescriptions["keep-current-settings"]}`,
-        `- Short walkthrough${recommended("review-settings")} — ${update.actionDescriptions["review-settings"]}`,
-        `- Expanded walkthrough — ${update.actionDescriptions["expanded-walkthrough"]}`,
-        `- View full release notes — ${update.actionDescriptions["view-release-notes"]}`,
-        `- Decide later — ${update.actionDescriptions.defer}`
+        `- Continue with current settings${recommended("keep-current-settings")}: ${update.actionDescriptions["keep-current-settings"]}`,
+        `- Short walkthrough${recommended("review-settings")}: ${update.actionDescriptions["review-settings"]}`,
+        `- Expanded walkthrough: ${update.actionDescriptions["expanded-walkthrough"]}`,
+        `- View full release notes: ${update.actionDescriptions["view-release-notes"]}`,
+        `- Decide later: ${update.actionDescriptions.defer}`
       );
     }
   }
@@ -1285,9 +1285,9 @@ const appendSimpleChangelogsUpdate = (
     lines.push(
       update.walkthroughQuestion,
       "Choose one:",
-      "- Walk me through it — Explain the recent Simple Changelogs updates.",
-      "- Continue for now — Leave its settings and released history unchanged.",
-      "- View full release notes — Show its owner-controlled update details."
+      "- Walk me through it: Explain the recent Simple Changelogs updates.",
+      "- Continue for now: Leave its settings and released history unchanged.",
+      "- View full release notes: Show its owner-controlled update details."
     );
   }
   if (update.detailsPath) {
@@ -1321,12 +1321,12 @@ const appendCombinedUpdateChoice = (
     "How would you like to continue?",
     "Choose one:",
     actionRequired
-      ? "- Resolve required choices (Recommended) — Ask only the unanswered multiple-choice questions, starting with the recommended answer."
-      : "- Continue with current settings (Recommended) — Acknowledge both updates without changing confirmed choices.",
-    "- Short walkthrough — Show only required answers, recommended changes, and the main practical improvements.",
-    "- Expanded walkthrough — Explain every intervening behavior, example, consequence, setting, and safety boundary.",
-    "- View full release notes — Show the detailed owner-controlled notes for both skills.",
-    "- Decide later — Leave the update unresolved and ask again next time."
+      ? "- Resolve required choices (Recommended): Ask only the unanswered multiple-choice questions, starting with the recommended answer."
+      : "- Continue with current settings (Recommended): Acknowledge both updates without changing confirmed choices.",
+    "- Short walkthrough: Show only required answers, recommended changes, and the main practical improvements.",
+    "- Expanded walkthrough: Explain every intervening behavior, example, consequence, setting, and safety boundary.",
+    "- View full release notes: Show the detailed owner-controlled notes for both skills.",
+    "- Decide later: Leave the update unresolved and ask again next time."
   );
 };
 

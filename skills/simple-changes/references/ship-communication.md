@@ -141,7 +141,17 @@ change, say so explicitly.
 
 ## Final shipped summary
 
-The final response compares the pre-ship brief with the observed result:
+Open with what shipped, not with how it shipped. The first line after the
+status names the actual change in plain language: the behavior, fix, or
+capability that is now live and who it affects, using each shipped unit's
+recorded outcome from the plan, refined into a real product statement. This
+lead is required even when no changelog entry was written and no customer
+notes apply: a merge identity, a green check list, and a resolving domain
+prove the shipment happened, but none of them say what it was. A receipt whose
+reader cannot answer “what is different now?” is incomplete regardless of how
+much evidence it carries.
+
+The final response then compares the pre-ship brief with the observed result:
 
 - what actually shipped and its user-visible or operational outcomes;
 - proposal, merge, release, canonical-target, and deployment identities;
@@ -157,6 +167,32 @@ Do not report planned work as shipped. If the run stops before production, name
 the highest completed boundary and the exact reason the remaining work did not
 ship. Lead with the practical outcome; place required revisions, digests, and
 receipt identities afterward instead of making the user decode them first.
+Never leave internal cross-references such as “Annotation 1” or footnote
+markers that resolve nowhere in the message, and state what evidence supports
+the shipment rather than listing evidence that was deliberately not relied on;
+if a disclaimer matters, say its practical consequence in one sentence.
+
+Avoid a receipt that proves the shipment but never names the product:
+
+> Shipped and live.
+>
+> - Merged MR !802 to `main` (`fe464b46`).
+> - Production is READY: the canonical domain resolves to the new deployment.
+> - Guarded rollout, build, lint, typecheck, tests, and two exact-head
+>   independent reviews passed.
+
+Prefer the same receipt led by the actual change:
+
+> Shipped and live: duplicate link submissions are now repaired automatically
+> instead of returning an error, and the resolver no longer drops the query
+> string on short links.
+>
+> - Merged MR !802 to `main` (`fe464b46`); production verified at the
+>   canonical domain.
+> - Guarded rollout, build, lint, typecheck, tests, and two independent
+>   reviews of the exact merged head passed.
+> - No customer notes this run: the release train consolidates into the next
+>   public version.
 
 When the run finalizes or reconciles a public release, end with **Latest customer
 notes**: two to five practical notes summarized from the public notes for the

@@ -724,7 +724,7 @@ describe("onboarding conversation", () => {
       "Production deployment is pre-approved"
     );
     expect(selection.summary).toContain(
-      "Auto-apply routine after review — Advanced"
+      "Auto-apply routine after review (Advanced)"
     );
   });
 

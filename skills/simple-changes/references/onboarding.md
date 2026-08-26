@@ -75,22 +75,22 @@ ready work -> focused proposal -> checks -> STOP for review
 Then ask **Simple Changes can set up the workflow before continuing. Choose
 one:**
 
-1. **Use recommended setup — Recommended** — Use the finish implied by the
+1. **Use recommended setup (Recommended)**: Use the finish implied by the
    current request, ask only when blocked, keep production behind confirmation,
    preserve changelog work for its owning workflow, and save visible repository
    policy when a repository exists. Show a full receipt before writing.
-2. **Walk me through it** — Explain every main workflow and each preference in
+2. **Walk me through it**: Explain every main workflow and each preference in
    plain language, one at a time, before saving anything.
-3. **Customize** — Explain and ask only the unresolved preferences below, one at
+3. **Customize**: Explain and ask only the unresolved preferences below, one at
    a time.
-4. **Use recommended setup for this run only** — Apply the same defaults to the
+4. **Use recommended setup for this run only**: Apply the same defaults to the
    current task without writing repository or personal preferences. Onboarding
    appears again next time.
 
 Before these choices, say in one sentence that the user can direct the workflow
-naturally — **Sync with main**, **Put this up**, **Open changes for everything
+naturally (**Sync with main**, **Put this up**, **Open changes for everything
 ready**, **Merge what's ready**, **Ship what's ready**, **Clean up the repo**,
-**Show me what you would do**, **Continue**, or **Leave this work alone** — and
+**Show me what you would do**, **Continue**, or **Leave this work alone**) and
 that Simple Changes coordinates with Simple Changelogs when available but does
 not author changelogs itself. Save the full per-use catalog for **Walk me
 through it**; do not turn the first screen into a wall of text.
@@ -124,10 +124,10 @@ Ship:   ready work -> proposal -> checks -> approval -> merge
 
 Ask **How far should I usually take ready work? Choose one:**
 
-1. **Put it up for review** — Create focused proposals, run checks, and stop.
-2. **Merge when approved** — Also merge the exact revision after checks and
+1. **Put it up for review**: Create focused proposals, run checks, and stop.
+2. **Merge when approved**: Also merge the exact revision after checks and
    required reviews pass.
-3. **Ship when approved** — Also deploy authorized targets and verify the live
+3. **Ship when approved**: Also deploy authorized targets and verify the live
    result.
 
 Mark the current request's finish **Recommended**. Explain that this is a normal
@@ -135,21 +135,21 @@ finish line, not blanket permission for high-risk operations.
 
 Only for Ship, ask **What should happen with production? Choose one:**
 
-1. **Ask me first — Recommended** — Merge automatically, then confirm before a
+1. **Ask me first (Recommended)**: Merge automatically, then confirm before a
    production deployment.
-2. **Deploy automatically** — Deploy when repository rules and all normal
+2. **Deploy automatically**: Deploy when repository rules and all normal
    release checks allow it.
-3. **Never deploy production** — Stop after merge or an authorized preview.
+3. **Never deploy production**: Stop after merge or an authorized preview.
 
 Then, only when Ship is the finish, ask **How should routine Ship requests
 run? Choose one:**
 
-1. **Standard shipping — Recommended** — Complete changelog and release
+1. **Standard shipping (Recommended)**: Complete changelog and release
    reconciliation before the first production deployment.
-2. **Expedited by default** — Keep focused checks, independent review, and
+2. **Expedited by default**: Keep focused checks, independent review, and
    merge before deployment, then complete release reconciliation, final
    verification, and cleanup immediately afterward.
-3. **Break-glass by default — Advanced** — When **Deploy automatically** is also
+3. **Break-glass by default (Advanced)**: When **Deploy automatically** is also
    selected, treat an ordinary Ship request as authority to deploy one exact
    candidate before independent review after rollback is verified. Immediately
    finish focused checks, review, merge/reconciliation, final verification, and
@@ -171,12 +171,12 @@ what should I optimize for? Choose one:** Use **PRs** for a detected GitHub
 target and **MRs** for a detected GitLab target throughout the displayed
 question and choices; otherwise keep the neutral **change proposal** wording.
 
-1. **Balanced — Recommended** — Work consecutively by default; use parallel
+1. **Balanced (Recommended)**: Work consecutively by default; use parallel
    claimed worktrees when they save meaningful time or isolation is necessary,
    and ask again only when the tradeoff is substantial.
-2. **Save space** — Prefer consecutive change proposals to minimize duplicated
+2. **Save space**: Prefer consecutive change proposals to minimize duplicated
    dependencies, build outputs, caches, and worktrees.
-3. **Save time** — Prefer separate claimed worktrees for independent change
+3. **Save time**: Prefer separate claimed worktrees for independent change
    proposals so they finish sooner, while confirming unusually expensive fan-out.
 
 Explain that Git history is shared, while dependencies and generated output may
@@ -189,13 +189,13 @@ recurring dependency-cleanup question.
 Then ask **Should Simple Changes configure this harness for routine repository
 pushes? Choose one:**
 
-1. **Configure this harness — Recommended for automatic Ship** — After this
+1. **Configure this harness (Recommended for automatic Ship)**: After this
    confirmation, configure the narrowest repository-scoped push permission the
    detected harness supports for the verified remote. Harness sandbox, network,
    administrator, credential, and provider policy still apply.
-2. **Ask for each push** — Leave harness settings unchanged and request approval
+2. **Ask for each push**: Leave harness settings unchanged and request approval
    at each Git push boundary.
-3. **Never push** — Do not request or configure push permission; stop with local
+3. **Never push**: Do not request or configure push permission; stop with local
    work ready.
 
 This preference must use the current harness's documented permission mechanism.
@@ -208,15 +208,15 @@ treat a bare “auto push” answer as sufficient to write policy.
 Then ask **How should reviewed database migrations be handled during Ship?
 Choose one:**
 
-1. **Ask after review — Recommended** — Audit every exact pending migration,
+1. **Ask after review (Recommended)**: Audit every exact pending migration,
    then confirm before applying it to the remote target.
-2. **Auto-apply routine after review — Advanced** — After review, automatically
+2. **Auto-apply routine after review (Advanced)**: After review, automatically
    apply only routine, reversible, bounded, lock-safe migrations to saved exact
    provider/project/environment targets.
-3. **Auto-apply eligible after review — Advanced** — After review,
+3. **Auto-apply eligible after review (Advanced)**: After review,
    automatically apply routine and other eligible safe migrations to saved
    exact targets.
-4. **Never apply automatically** — Audit and report migrations, but leave every
+4. **Never apply automatically**: Audit and report migrations, but leave every
    remote apply for a separate workflow.
 
 Both automatic tiers review the generated/native operations before apply and
@@ -233,11 +233,11 @@ at least one bound target, and do not infer a target from a migration filename.
 
 When relevant, ask **How should changelog work be handled? Choose one:**
 
-1. **Delegate when available — Recommended when installed** — Use a compatible
+1. **Delegate when available (Recommended when installed)**: Use a compatible
    changelog skill when present; otherwise preserve and report the work.
-2. **Preserve and report — Safe fallback** — Leave changelog destinations
+2. **Preserve and report (Safe fallback)**: Leave changelog destinations
    untouched and identify the remaining work.
-3. **Ask before delegating** — Confirm before handing the changelog portion to a
+3. **Ask before delegating**: Confirm before handing the changelog portion to a
    compatible skill.
 
 Explain that Simple Changes never writes release notes itself and that this
@@ -265,22 +265,22 @@ Ask UI artifact naming only when several screenshots, design exports, static
 previews, or similar iterations will be saved and no repository convention
 already decides it. Offer:
 
-1. **Follow repository convention — Recommended** — Use the established format;
+1. **Follow repository convention (Recommended)**: Use the established format;
    ask if none exists.
-2. **Number and date** — Use zero-padded sequence and ISO date names.
-3. **Date only** — Use ISO date names.
-4. **Number only** — Use zero-padded sequence names.
+2. **Number and date**: Use zero-padded sequence and ISO date names.
+3. **Date only**: Use ISO date names.
+4. **Number only**: Use zero-padded sequence names.
 
 Ordinary UI source files, Git revisions, deployment identities, package
 versions, and release versions do not use this preference.
 
 Ask **When should I ask for permission or help? Choose one:**
 
-1. **Only when blocked — Recommended** — Continue through already-authorized
+1. **Only when blocked (Recommended)**: Continue through already-authorized
    work and interrupt only for a decision that is genuinely required.
-2. **At major steps** — Confirm before consequential workflow steps even when
+2. **At major steps**: Confirm before consequential workflow steps even when
    they are otherwise authorized.
-3. **Don't interrupt me** — Skip anything that lacks authority and report it at
+3. **Don't interrupt me**: Skip anything that lacks authority and report it at
    the end.
 
 ## Preference storage
@@ -291,9 +291,9 @@ private fallback used only when a repository has no visible team policy, then
 ask **I found existing global personal defaults. Would you like to use them for
 this run?** Offer:
 
-1. **Use global personal defaults — Recommended** — Apply them to this run and
+1. **Use global personal defaults (Recommended)**: Apply them to this run and
    change no preference file.
-2. **Review or replace them** — Continue onboarding. If global personal storage
+2. **Review or replace them**: Continue onboarding. If global personal storage
    is selected later, clearly state that the existing private fallback will be
    updated and overwritten.
 
@@ -309,12 +309,12 @@ This run                 -> no file                                -> ask next t
 
 Ask **Where should these preferences live? Choose one:**
 
-1. **This repository — Recommended for teams** — Save visible project policy
+1. **This repository (Recommended for teams)**: Save visible project policy
    beside the code so teammates and future agents use the same workflow.
-2. **Global personal defaults** — Save a private fallback used only when a
+2. **Global personal defaults**: Save a private fallback used only when a
    repository has no team policy. If one already exists, label this choice
    **Update global personal defaults** and say it overwrites that saved file.
-3. **This run only** — Write no preference file and ask again next time.
+3. **This run only**: Write no preference file and ask again next time.
 
 Repository policy overrides personal preferences; the current request overrides
 both. Name the exact path in the question or adjacent explanation. Use

@@ -42,10 +42,10 @@ because several versions were skipped.
 
 Offer these multiple-choice actions:
 
-- **Continue with current settings — Recommended when nothing is unresolved:**
+- **Continue with current settings (Recommended when nothing is unresolved):**
   Acknowledge the update and resume the original request with existing
   confirmed choices.
-- **Short walkthrough — Recommended when a setting change is proposed:** Show
+- **Short walkthrough (Recommended when a setting change is proposed):** Show
   required answers first, then recommended changes, then at most three practical
   improvements. Do not enumerate every intervening version.
 - **Expanded walkthrough:** Explain every intervening behavior, setting,
@@ -127,8 +127,8 @@ returns `preLoopActionRequired: true` and `mutationAllowed: false`.
 Present the notice and obtain any required owner-controlled answer before
 `loop start`. Ask that multiple-choice answer before offering **Short
 walkthrough**, **Expanded walkthrough**, **Continue for now**, or **View full
-release notes**. Route the answer to Simple Changelogs so that skill—not Simple
-Changes—records any reviewed, declined, or deferred disposition. Then rerun
+release notes**. Route the answer to Simple Changelogs so that skill, not Simple
+Changes, records any reviewed, declined, or deferred disposition. Then rerun
 initialization.
 
 Pass `--changelog-required` to the later `loop start` command too. It is a

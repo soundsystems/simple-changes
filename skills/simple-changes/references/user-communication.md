@@ -98,7 +98,7 @@ Prefer:
 
 > I paused before changing settings because the earlier run had ended safely.
 > I’m reopening that run, applying only the setting you approved, and stopping
-> there—nothing will be shipped.
+> there; nothing will be shipped.
 
 Avoid:
 

@@ -272,8 +272,8 @@ simple-changes help
 `release-consistency`, `release-notes`, `loop-lease`, `loop-close-equivalent`,
 `migration-review`, `migration-pending`, `migration-apply-plan`,
 `post-cleanup-recovery`, `shipment-outcome`, `worktree-coordination`,
-`worktree-takeover`, or `worktree-equivalence` — the schema filenames under
-`skills/simple-changes/evals/schemas/`.
+`worktree-takeover`, or `worktree-equivalence` (the schema filenames under
+`skills/simple-changes/evals/schemas/`).
 
 Worktree claims and pause receipts are local, mode-`0600` coordination evidence
 stored beneath the repository's common Git directory. A claim records only an
@@ -332,10 +332,10 @@ On first use, it explains why onboarding appeared, shows the exact recommended
 workflow, and makes clear that nothing has been pushed, merged, deployed, or
 saved yet. The first choice is:
 
-1. **Use recommended setup** — Apply the safe, request-aware defaults and show a
+1. **Use recommended setup**: Apply the safe, request-aware defaults and show a
    receipt before saving them.
-2. **Customize** — Explain and ask only unresolved preferences, one at a time.
-3. **Use recommended setup for this run only** — Continue without a preference
+2. **Customize**: Explain and ask only unresolved preferences, one at a time.
+3. **Use recommended setup for this run only**: Continue without a preference
    file and ask again next time.
 
 Customized setup uses small workflow and storage diagrams where they make a

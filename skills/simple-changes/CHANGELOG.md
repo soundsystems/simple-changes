@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.12.19 - 2026-08-26
+
+- Release checks now use the repository's pinned formatting tools, keeping
+  verification reproducible across installations.
+<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-26T18:27:18-05:00" -->
+
 ## 0.12.18 - 2026-08-26
 
 - Standalone cleanup now preserves local worktrees for target branches

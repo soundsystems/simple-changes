@@ -534,7 +534,19 @@ describe("Simple Changes skill contract", () => {
       "If review caused no code or behavior change, say so explicitly"
     );
     expect(normalizedCommunication).toContain(
-      "The final response compares the pre-ship brief with the observed result"
+      "The final response then compares the pre-ship brief with the observed result"
+    );
+    expect(normalizedCommunication).toContain(
+      "Open with what shipped, not with how it shipped"
+    );
+    expect(normalizedCommunication).toContain(
+      "required even when no changelog entry was written"
+    );
+    expect(normalizedCommunication).toContain(
+      "cannot answer “what is different now?” is incomplete"
+    );
+    expect(normalizedSkill).toContain(
+      "A Ship receipt opens by naming the actual shipped change in plain language"
     );
   });
 

@@ -40,6 +40,7 @@ import {
   markWorktreeResumeReady,
   prepareAgentWorktree,
   readLoopLease,
+  rebaselineLoopWorktrees,
   recordEmergencyShipping,
   recordRemoteBranchReconciliation,
   recordShipmentOutcome,
@@ -118,8 +119,12 @@ import {
   takeoverWorktreeClaim,
 } from "./lib/worktree-coordination.ts";
 import { auditWorktreeEquivalence } from "./lib/worktree-equivalence.ts";
+import {
+  refreshWorktreeIndex,
+  standaloneWorktreeCleanup,
+} from "./lib/worktree-maintenance.ts";
 
-const VERSION = "0.12.15";
+const VERSION = "0.12.16";
 const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const SCHEMA_KIND_LINE_LIMIT = 78;
 const schemaKindLines = SCHEMA_NAMES.reduce<string[]>((lines, name) => {
@@ -192,6 +197,8 @@ Usage:
   simple-changes loop recover --agent-id ID [--json] [--repo PATH]
   simple-changes loop takeover --run-id ID --agent-id ID
     --manifest-digest SHA256 --approved-by ID --reason TEXT [--json] [--repo PATH]
+  simple-changes loop rebaseline --run-id ID --agent-id ID
+    --approved-by ID --reason TEXT [--json] [--repo PATH]
   simple-changes loop allow --run-id ID --agent-id ID --worktree PATH
     --status-digest SHA256 --approved-by ID --reason TEXT [--json] [--repo PATH]
   simple-changes loop dispose-worktree --run-id ID --agent-id ID --worktree PATH
@@ -235,6 +242,9 @@ Usage:
     [--json] [--repo PATH]
   simple-changes worktree equivalence --worktree PATH [--target REF]
     [--json] [--repo PATH]
+  simple-changes worktree refresh-index [--json] [--repo PATH]
+  simple-changes worktree cleanup --agent-id ID --approved-by ID --reason TEXT
+    [--target REF] [--json] [--repo PATH]
   simple-changes prepare-agent --run-id ID --agent-id ID --purpose SLUG
     [--json] [--repo PATH]
   simple-changes release-notes [--check] [--json] [--repo PATH] [--version VERSION]
@@ -1933,6 +1943,30 @@ const runLoopTakeover = (
   return true;
 };
 
+const runLoopRebaseline = (
+  action: string,
+  options: CliOptions,
+  runId: string,
+  agentId: string
+): boolean => {
+  if (action !== "rebaseline") {
+    return false;
+  }
+  const result = rebaselineLoopWorktrees(
+    options.repo,
+    runId,
+    agentId,
+    requireCliOption(options.approvedBy, "--approved-by"),
+    requireCliOption(options.reason, "--reason")
+  );
+  writeOutput(
+    { ...result, manifestDigest: loopManifestDigest(result.lease) },
+    options.json,
+    `Re-baselined ${runId}: registered ${result.rebaseline.registered.length} late worktree(s) as preserved at their exact current state.\nManifest: ${loopManifestDigest(result.lease)}\n${renderLoopVerification(result.verification)}`
+  );
+  return true;
+};
+
 const runLoopOpeningAction = (action: string, options: CliOptions): boolean => {
   if (action === "start") {
     const agentId = requireCliOption(options.agentId, "--agent-id");
@@ -1980,13 +2014,17 @@ const runLoopOpeningAction = (action: string, options: CliOptions): boolean => {
   }
   if (action === "status") {
     const status = loopStatus(options.repo);
+    const guidanceLines = [
+      status.guidance.headline,
+      ...status.guidance.nextCommands.map((command) => `  Next: ${command}`),
+    ];
     writeOutput(
       {
         ...status,
         manifestDigest: status.lease ? loopManifestDigest(status.lease) : null,
       },
       options.json,
-      renderLoopVerification(status.verification)
+      `${renderLoopVerification(status.verification)}${guidanceLines.join("\n")}\n`
     );
     return true;
   }
@@ -2058,11 +2096,26 @@ const runLoopRecoveryAction = (
   return false;
 };
 
+const runLoopVerifyAction = (action: string, options: CliOptions): boolean => {
+  if (action !== "verify") {
+    return false;
+  }
+  const verification = verifyLoop(options.repo);
+  writeOutput(verification, options.json, renderLoopVerification(verification));
+  if (!verification.ok) {
+    throw new SimpleChangesError(
+      "Active-loop manifest verification failed.",
+      EXIT_CODES.unsafe
+    );
+  }
+  return true;
+};
+
 const runLoopCommand = async (options: CliOptions): Promise<void> => {
   const [action] = options.positional;
   if (!action) {
     throw new SimpleChangesError(
-      "loop requires start, status, verify, record-scope, refresh-scope, record-outcome, guard, exec, recover, recover-post-cleanup, close-equivalent, takeover, allow, dispose-worktree, retain-worktree, adopt-worktree, accept-paused-change, end, or finalize",
+      "loop requires start, status, verify, record-scope, refresh-scope, record-outcome, guard, exec, recover, recover-post-cleanup, close-equivalent, takeover, rebaseline, allow, dispose-worktree, retain-worktree, adopt-worktree, accept-paused-change, end, or finalize",
       EXIT_CODES.usage
     );
   }
@@ -2080,19 +2133,7 @@ const runLoopCommand = async (options: CliOptions): Promise<void> => {
       EXIT_CODES.unsafe
     );
   }
-  if (action === "verify") {
-    const verification = verifyLoop(options.repo);
-    writeOutput(
-      verification,
-      options.json,
-      renderLoopVerification(verification)
-    );
-    if (!verification.ok) {
-      throw new SimpleChangesError(
-        "Active-loop manifest verification failed.",
-        EXIT_CODES.unsafe
-      );
-    }
+  if (runLoopVerifyAction(action, options)) {
     return;
   }
   if (await runLoopEmergencyAction(options, runId)) {
@@ -2121,6 +2162,9 @@ const runLoopCommand = async (options: CliOptions): Promise<void> => {
     return;
   }
   if (runLoopTakeover(action, options, runId, agentId)) {
+    return;
+  }
+  if (runLoopRebaseline(action, options, runId, agentId)) {
     return;
   }
   if (action === "guard") {
@@ -2275,11 +2319,42 @@ const runWorktreeClaim = (options: CliOptions, agentId: string): void => {
   );
 };
 
+const runWorktreeMaintenance = (
+  action: string,
+  options: CliOptions
+): boolean => {
+  if (action === "refresh-index") {
+    const result = refreshWorktreeIndex(options.repo);
+    writeOutput(
+      result,
+      options.json,
+      `Refreshed the Git worktree inventory: pruned ${result.prunedPaths.length} stale record(s); ${result.remainingWorktreePaths.length} worktree(s) remain.\n${result.notes.join("\n")}\n`
+    );
+    return true;
+  }
+  if (action === "cleanup") {
+    const receipt = standaloneWorktreeCleanup({
+      agentId: requireCliOption(options.agentId, "--agent-id"),
+      approvedBy: requireCliOption(options.approvedBy, "--approved-by"),
+      reason: requireCliOption(options.reason, "--reason"),
+      repositoryPath: options.repo,
+      targetRef: options.targetRef,
+    });
+    writeOutput(
+      receipt,
+      options.json,
+      `Standalone cleanup ${receipt.cleanupId} vs ${receipt.targetRef}: removed ${receipt.removed.length} proven worktree(s), pruned ${receipt.prunedPaths.length} stale record(s), preserved ${receipt.preserved.length}.\n${receipt.preserved.map((entry) => `- preserved ${entry.path}: ${entry.reason}`).join("\n")}${receipt.preserved.length > 0 ? "\n" : ""}`
+    );
+    return true;
+  }
+  return false;
+};
+
 const runWorktreeCommand = (options: CliOptions): void => {
   const [action] = options.positional;
   if (!action) {
     throw new SimpleChangesError(
-      "worktree requires status, observe, equivalence, request, claim, pause, detach, attach, resume-ready, release, or takeover",
+      "worktree requires status, observe, equivalence, refresh-index, cleanup, request, claim, pause, detach, attach, resume-ready, release, or takeover",
       EXIT_CODES.usage
     );
   }
@@ -2315,6 +2390,9 @@ const runWorktreeCommand = (options: CliOptions): void => {
       options.json,
       `Equivalence vs ${report.targetRef}: ${report.equivalence} (${report.commits.length} commits, ${report.paths.length} dirty paths audited).\n${report.disclaimer}\n`
     );
+    return;
+  }
+  if (runWorktreeMaintenance(action, options)) {
     return;
   }
   const agentId = requireCliOption(options.agentId, "--agent-id");

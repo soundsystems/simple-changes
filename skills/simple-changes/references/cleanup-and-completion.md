@@ -91,9 +91,14 @@ beyond its stated scope.
 **Stale claim takeover.** When a claim's recorded owner no longer exists, use
 `worktree takeover --claim-id <id> --agent-id <new-owner> --approved-by <who>
 --reason <why> [--release]`. It binds to the worktree's exact current status
-digest (re-observe on mismatch), refuses claims a live lease still requires,
-and either reassigns ownership or releases the claim. It never edits, removes,
-or repairs the worktree itself.
+digest (re-observe on mismatch), and either reassigns ownership or releases
+the claim. It refuses claims a loop still requires, judged by lifecycle rather
+than bare path membership: an active loop protects every registered path, but
+a relinquished loop preserves work through the worktrees themselves, so its
+registered paths no longer freeze takeover; only an adopted coordination
+linkage (a preserved registration bound to a claim and pause receipt) stays
+protected for the resumed controller to verify. It never edits, removes, or
+repairs the worktree itself.
 
 **Equivalence evidence.** `worktree equivalence --worktree <path>
 [--target <ref>] --json` is read-only: it compares each commit ahead of the
@@ -104,7 +109,11 @@ concurrent edit invalidates the audit. It classifies the whole checkout
 `contained`, `partial`, or `divergent`. This is patch, object, mode, and byte
 evidence only; a textually different but semantically equivalent change still
 reports unmatched, and deciding that residue is review work, not tooling
-output.
+output. When unmatched work remains, the report adds advisory `residue` hints
+for review: each unmatched commit's touched paths and whether their end state
+already matches the target byte-for-byte, and whether a differing dirty path
+differs only in whitespace. Hints narrow the review; they never upgrade the
+classification and are never proof.
 
 **Nothing-to-ship close.** When a relinquished, frozen-scope, or legacy
 close-only loop's registered work is already contained in the refreshed
@@ -123,11 +132,42 @@ For providers without that gate, the closure records that GitLab reconciliation
 was not applicable. One missing or unproven path blocks the close and is named
 exactly.
 
+**Manifest re-baseline.** In a repository where other agents keep creating
+worktrees, the opening manifest can go stale mid-run: verification blocks every
+guarded mutation on the late arrivals, registering them needs owner pause
+receipts the controller cannot produce, and the same block reaches the
+reconciliation that `loop end` or `loop close-equivalent` requires. The escape
+is `loop rebaseline --run-id <id> --agent-id <owner> --approved-by <who>
+--reason <why>`: with one exact user approval, the active (or resumed)
+controller registers every worktree that appeared after loop start as
+preserved at its exact current head and status digest, recorded on the lease
+as an audited re-baseline. Registered late arrivals stay owner-controlled and
+untouched; if one changes afterward, verification blocks again until its owner
+coordinates or an exact `loop allow` override is approved. Re-baseline grants
+no mutation, cleanup, or shipping authority over the registered worktrees and
+never obligates them in a later `close-equivalent` proof.
+
+**Standalone cleanup.** When no loop record exists at all and orphaned
+worktrees remain, `worktree cleanup --agent-id <you> --approved-by <who>
+--reason <why> [--target <ref>]` runs one audited pass without reopening a
+shipment. It removes only what is proven safe right now: an unclaimed clean
+worktree whose head the refreshed target contains by exact ancestry or
+complete per-commit patch equivalence, and stale metadata whose directory no
+longer exists. Every live claim, dirty checkout, or unmatched head is
+preserved and named with the exact next command (equivalence audit, claim
+takeover, or loop lifecycle). The whole pass is recorded as an append-only
+receipt, and the command refuses to run while any loop record exists, active
+or relinquished; those repositories recover through `loop status` guidance
+instead.
+
 **External UI caches.** Editor and desktop surfaces (for example Codex
 Desktop) cache their own view of worktrees outside this workflow's ownership.
-After cleanup, `git worktree prune` refreshes the authoritative Git inventory
-those surfaces read. Their session and task history are audit records, not
-live registrations; never delete them to make a list look clean.
+After cleanup, `worktree refresh-index` prunes only metadata for worktree
+directories that no longer exist and reports, per coordination adapter,
+whether a cached surface view re-syncs from the refreshed Git inventory
+(`git worktree prune` remains the manual equivalent). Their session and task
+history are audit records, not live registrations; never delete them to make a
+list look clean.
 
 Before reporting completion:
 

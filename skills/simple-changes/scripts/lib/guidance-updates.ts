@@ -1,6 +1,6 @@
 import type { ChangelogCoordination, RepoPolicy } from "./types.ts";
 
-export const CURRENT_GUIDANCE_VERSION = 20;
+export const CURRENT_GUIDANCE_VERSION = 21;
 
 export type GuidanceUpdateAction =
   | "review-settings"
@@ -562,6 +562,37 @@ const GUIDANCE_UPDATES: GuidanceUpdateDefinition[] = [
       },
     ],
     version: 20,
+  },
+  {
+    changelogReviewRelevant: false,
+    changes: [
+      {
+        kind: "integration",
+        summary:
+          "An active or resumed controller can re-baseline its worktree manifest with exact user approval, registering worktrees that appeared after loop start as preserved and untouched so a busy repository no longer deadlocks the run or its recovery paths.",
+        version: 21,
+      },
+      {
+        kind: "behavior",
+        summary:
+          "Loop status now names the exact next recoverable command, a standalone audited cleanup pass removes proven-contained worktrees when no loop record exists, a read-only index refresh re-syncs cached editor and desktop worktree views, and equivalence reports carry advisory residue hints for unmatched work.",
+        version: 21,
+      },
+      {
+        kind: "integration",
+        summary:
+          "Stale-claim takeover now judges lease protection by controller lifecycle: a relinquished run's registered paths no longer freeze claim recovery, while active loops and adopted claim linkages stay protected.",
+        version: 21,
+      },
+    ],
+    noticeBullets: [
+      {
+        priority: 145,
+        summary:
+          "Stale opening manifests, orphaned worktrees, and stuck loops now resolve through approved re-baseline, standalone cleanup, and next-command status guidance.",
+      },
+    ],
+    version: 21,
   },
 ];
 

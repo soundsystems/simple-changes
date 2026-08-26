@@ -38,6 +38,23 @@ export interface WorktreeEquivalencePath {
   status: "identical" | "differs" | "absent-in-target";
 }
 
+export interface WorktreeEquivalenceResidueCommit {
+  endStateMatchesTarget: boolean;
+  sha: string;
+  touchedPaths: string[];
+}
+
+export interface WorktreeEquivalenceResiduePath {
+  path: string;
+  whitespaceOnly: boolean;
+}
+
+export interface WorktreeEquivalenceResidue {
+  commits: WorktreeEquivalenceResidueCommit[];
+  note: string;
+  paths: WorktreeEquivalenceResiduePath[];
+}
+
 export interface WorktreeEquivalenceReport {
   changeDigest: string;
   commits: WorktreeEquivalenceCommit[];
@@ -46,6 +63,7 @@ export interface WorktreeEquivalenceReport {
   head: string;
   mergeBase: string;
   paths: WorktreeEquivalencePath[];
+  residue?: WorktreeEquivalenceResidue;
   schemaVersion: 1;
   targetRef: string;
   targetRevision: string;
@@ -339,6 +357,110 @@ const classifyEquivalence = (
   return "partial";
 };
 
+const RESIDUE_NOTE =
+  "Residue hints are advisory review leads, not proof; unmatched work still requires independent review before any equivalence decision.";
+
+const blobBytesAt = (
+  worktreeRoot: string,
+  revision: string,
+  path: string
+): Uint8Array | null => {
+  const result = rawGit(
+    worktreeRoot,
+    ["cat-file", "blob", `${revision}:${path}`],
+    undefined,
+    true
+  );
+  return result.exitCode === 0 ? result.stdout : null;
+};
+
+const nullableBytesEqual = (
+  left: Uint8Array | null,
+  right: Uint8Array | null
+): boolean => {
+  if (left === null || right === null) {
+    return left === null && right === null;
+  }
+  return bytesEqual(left, right);
+};
+
+const strippedWhitespaceEqual = (
+  left: Uint8Array,
+  right: Uint8Array
+): boolean =>
+  textDecoder.decode(left).replaceAll(/\s+/gu, "") ===
+  textDecoder.decode(right).replaceAll(/\s+/gu, "");
+
+const commitResidueHint = (
+  worktreeRoot: string,
+  sha: string,
+  targetRevision: string
+): WorktreeEquivalenceResidueCommit => {
+  const touchedPaths = runGit(worktreeRoot, [
+    "diff-tree",
+    "--no-commit-id",
+    "--name-only",
+    "-r",
+    sha,
+  ])
+    .stdout.split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .sort((left, right) => left.localeCompare(right));
+  const endStateMatchesTarget =
+    touchedPaths.length > 0 &&
+    touchedPaths.every((path) =>
+      nullableBytesEqual(
+        blobBytesAt(worktreeRoot, "HEAD", path),
+        blobBytesAt(worktreeRoot, targetRevision, path)
+      )
+    );
+  return { endStateMatchesTarget, sha, touchedPaths };
+};
+
+const pathResidueHint = (
+  worktreeRoot: string,
+  path: string,
+  targetRevision: string
+): WorktreeEquivalenceResiduePath => {
+  const safe = assertSafeRelativePath(worktreeRoot, path);
+  const targetBytes = blobBytesAt(worktreeRoot, targetRevision, path);
+  let whitespaceOnly = false;
+  if (
+    targetBytes !== null &&
+    existsSync(safe.absolutePath) &&
+    lstatSync(safe.absolutePath).isFile()
+  ) {
+    whitespaceOnly = strippedWhitespaceEqual(
+      new Uint8Array(readFileSync(safe.absolutePath)),
+      targetBytes
+    );
+  }
+  return { path, whitespaceOnly };
+};
+
+const equivalenceResidue = (
+  worktreeRoot: string,
+  commits: WorktreeEquivalenceCommit[],
+  paths: WorktreeEquivalencePath[],
+  targetRevision: string
+): WorktreeEquivalenceResidue | undefined => {
+  const unmatched = commits.filter((commit) => commit.status === "unmatched");
+  const differing = paths.filter((item) => item.status !== "identical");
+  if (unmatched.length === 0 && differing.length === 0) {
+    return;
+  }
+  return {
+    commits: unmatched.map((commit) =>
+      commitResidueHint(worktreeRoot, commit.sha, targetRevision)
+    ),
+    note: RESIDUE_NOTE,
+    paths: differing
+      .filter((item) => item.status === "differs")
+      .map((item) => pathResidueHint(worktreeRoot, item.path, targetRevision)),
+  };
+};
+
 const worktreeEvidence = (
   worktreeRoot: string
 ): { changeDigest: string; headSha: string } => {
@@ -428,6 +550,12 @@ export const auditWorktreeEquivalence = (
     );
     writeFileSync(mutationPath.absolutePath, "mutated during audit\n");
   }
+  const residue = equivalenceResidue(
+    worktreeRoot,
+    commits,
+    paths,
+    targetRevision
+  );
   const finalEvidence = worktreeEvidence(worktreeRoot);
   if (
     finalEvidence.headSha !== openingEvidence.headSha ||
@@ -446,6 +574,7 @@ export const auditWorktreeEquivalence = (
     head,
     mergeBase,
     paths,
+    ...(residue ? { residue } : {}),
     schemaVersion: 1,
     targetRef,
     targetRevision,

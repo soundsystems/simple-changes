@@ -667,6 +667,19 @@ export interface LoopControllerHandoff {
   toAgentId: string;
 }
 
+export interface LoopRebaselineRegistration {
+  changeDigest: string;
+  headSha: string | null;
+  path: string;
+}
+
+export interface LoopRebaselineRecord {
+  approvedBy: string;
+  reason: string;
+  recordedAt: string;
+  registered: LoopRebaselineRegistration[];
+}
+
 export interface LoopControllerLifecycle {
   acquiredAt: string;
   handoffs: LoopControllerHandoff[];
@@ -955,6 +968,7 @@ export interface LoopLease {
   ownerAgentId: string;
   preparations: LoopWorktreePreparation[];
   primaryCheckout: string;
+  rebaselines?: LoopRebaselineRecord[];
   remoteBindings?: RemoteBinding[];
   remoteBranchReconciliation?: RemoteBranchReconciliationReceipt;
   runId: string;
@@ -1042,4 +1056,5 @@ export type SchemaName =
   | "loop-close-equivalent"
   | "worktree-coordination"
   | "worktree-takeover"
-  | "worktree-equivalence";
+  | "worktree-equivalence"
+  | "worktree-cleanup";

@@ -403,7 +403,18 @@ const activeLoopNeedsPath = (
   if (!lease) {
     return false;
   }
-  return lease.worktrees.some((item) => item.path === worktreePath);
+  const registered = lease.worktrees.find((item) => item.path === worktreePath);
+  if (!registered) {
+    return false;
+  }
+  if (!lease.controller || lease.controller.status === "active") {
+    return true;
+  }
+  // A relinquished loop preserves work through the worktrees themselves, not
+  // through claim ownership, so a stale claim on one of its registered paths
+  // may be taken over. The exception is an adopted coordination linkage: a
+  // resumed controller must still verify that exact claim and pause receipt.
+  return registered.role === "preserved" && Boolean(registered.claimId);
 };
 
 const assertNoGitOperation = (worktreePath: string): void => {

@@ -1,5 +1,67 @@
 # Developer changelog
 
+## 0.12.16 - 2026-08-26
+
+- Closed the stale-opening-manifest deadlock reported twice from live runs in
+  a multi-agent repository:
+  - New `rebaselineLoopWorktrees` / `loop rebaseline --run-id --agent-id
+    --approved-by --reason`. An active or resumed controller registers every
+    current `unregistered-worktree` violation path as a `preserved` lease
+    entry at its exact current head and change digest (`createdByRun: false`,
+    `mutationAllowed: false`), appends an audited `rebaselines` record
+    (approver, reason, timestamp, exact registrations) to the lease, and
+    returns the post-rebaseline verification. Owner-only, refuses when no late
+    arrivals exist, and never touches the registered worktrees. The loop-lease
+    schema gained the optional `rebaselines` field. Because
+    `closeEquivalentObligatedPaths` only obligates controller, author, and
+    run-created worktrees, re-baselined late arrivals never block or join a
+    later `close-equivalent` proof; the recovery chain for a relinquished run
+    is takeover/resume, rebaseline, reconcile, then close.
+  - `loopStatus` now returns a `guidance` object (`headline`,
+    `nextCommands`) mapping the observed state to the exact next recoverable
+    commands: rebaseline for `unregistered-worktree`, `loop allow` with the
+    exact path and digest for `preserved-worktree-changed`, disposal for
+    missing preserved/retained paths, takeover and close-equivalent for a
+    relinquished lease (ordered by whether a first scope was recorded), and
+    record-scope/record-outcome/finalize for a healthy lease. The CLI prints
+    the guidance after the verification block.
+- New `worktree-maintenance.ts` module:
+  - `standaloneWorktreeCleanup` / `worktree cleanup --agent-id --approved-by
+    --reason [--target REF]`: refuses while any loop record exists (active or
+    relinquished), then removes only unclaimed clean worktrees whose head is
+    target-contained by exact ancestry or full per-commit patch equivalence
+    (200-commit cap, shared patch-id cache), re-auditing each candidate
+    against fresh inventory immediately before `git worktree remove`. Deletes
+    a removed worktree's branch only when its tip equals the removed head.
+    Prunes stale metadata for missing directories and verifies it is gone.
+    Live-claimed, dirty, unresolved, or unmatched worktrees are preserved with
+    a reason and exact next command. Appends a schema-validated receipt
+    (new `worktree-cleanup` schema) to
+    `simple-changes/worktree-coordination/cleanups.json`.
+  - `refreshWorktreeIndex` / `worktree refresh-index`: prunes only stale
+    worktree metadata under the coordination lock and reports per-adapter
+    notes driven by the `worktreeIdentity` capability (native surfaces re-sync
+    from Git; claim-only adapters have no cached index), plus the pruned and
+    remaining paths.
+- `auditWorktreeEquivalence` computes optional `residue` hints when unmatched
+  commits or differing paths remain: per unmatched commit, the sorted touched
+  paths and whether every touched path's HEAD blob equals the target blob;
+  per differing dirty path, whether it differs only in whitespace. Residue is
+  computed before the closing evidence re-check, carries an explicit
+  advisory-only note, and never affects the `contained`/`partial`/`divergent`
+  classification. The report schema gained the optional `residue` field.
+- `activeLoopNeedsPath` in `worktree-coordination.ts` now consults the lease's
+  controller lifecycle and the registered entry instead of bare path
+  membership: with an active controller every registered path still refuses
+  `worktree takeover`, but under a relinquished controller only a `preserved`
+  registration carrying a `claimId` (an adopted coordination linkage the
+  resumed controller must verify) stays protected. Field-reported regression:
+  a run's own opening `concurrent-author` registrations froze the release of
+  three stale claims even after the run relinquished.
+- Guidance version 21 records the re-baseline, status-guidance, standalone
+  cleanup, index refresh, residue-hint, and lifecycle-aware takeover
+  behaviors.
+
 ## 0.12.15 - 2026-08-26
 
 - Closed three cleanup accumulation gaps reported from field runs:

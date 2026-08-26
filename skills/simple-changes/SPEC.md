@@ -49,8 +49,8 @@
 - For Sync, the fetched target and resulting or preserved local branch state.
 - For Ship, a pre-mutation scope brief and a final shipped-state receipt with
   review-driven deltas.
-- For public releases, negotiated changelog protocol evidence — shared
-  request/receipt versions plus advisory `schemaDigestStatus` — phased
+- For public releases, negotiated changelog protocol evidence (shared
+  request/receipt versions plus advisory `schemaDigestStatus`), phased
   classification/preparation/verification receipts, and a composite delivery
   receipt binding version identity to the deployed revision.
 - For Emergency Ship, a run-only urgency classification, revision-bound
@@ -79,8 +79,8 @@
   so.
 - Run-prepared and independently claimed authors perform ordinary worktree-local
   edits, generation, formatting, checks, staging, and commits concurrently on
-  their distinct registered branches. Shared integration mutations—not normal
-  authoring—hold the lease lock across fresh preflight inventory, one bounded
+  their distinct registered branches. Shared integration mutations (not normal
+  authoring) hold the lease lock across fresh preflight inventory, one bounded
   argument-array command or awaited asynchronous callback, and
   post-mutation verification. Guarded child/process-group identity remains
   recorded while commands run. Background descendants are terminated and the

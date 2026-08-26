@@ -142,8 +142,8 @@ change, say so explicitly.
 ## Final shipped summary
 
 Open with what shipped, not with how it shipped. The first line after the
-status names the actual change in plain language — the behavior, fix, or
-capability that is now live and who it affects — using each shipped unit's
+status names the actual change in plain language: the behavior, fix, or
+capability that is now live and who it affects, using each shipped unit's
 recorded outcome from the plan, refined into a real product statement. This
 lead is required even when no changelog entry was written and no customer
 notes apply: a merge identity, a green check list, and a resolving domain

@@ -25,7 +25,7 @@ gates.
 ## Required confirmation copy
 
 Whenever the user selects `configure-harness` or asks colloquially for “auto
-push” — during onboarding, an update notice, or any later run — explain and
+push” (during onboarding, an update notice, or any later run), explain and
 confirm this exact consequence before saving:
 
 > Automatic Git pushes let Simple Changes request the harness's narrowest

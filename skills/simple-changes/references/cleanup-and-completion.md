@@ -55,8 +55,8 @@ discovered:
    ```
 
 Pagination evidence must include a consolidated ledger digest plus complete
-branch and open/merged/closed proposal page chains — a terminal cursor chain
-and response digest for every page and every proposal state — from the
+branch and open/merged/closed proposal page chains (a terminal cursor chain
+and response digest for every page and every proposal state) from the
 persisted opening and final inventories.
 
 `loop end` refuses a detected GitLab integration/reconciliation run when this
@@ -111,7 +111,7 @@ remote-reconciliation lifecycle. Every obligated worktree must be proven: a
 clean checkout whose head the target contains, or a current `contained`
 equivalence receipt for that exact path and head. Actively claimed and
 preserved/retained worktrees are excluded and untouched. On success it records
-a terminal `target-equivalent` outcome — never reportable as shipped — runs
+a terminal `target-equivalent` outcome (never reportable as shipped) runs
 only the normal proven-safe local cleanup, and releases the lease; the GitLab
 remote-reconciliation gate is skipped and that skip is recorded, because no
 provider mutation occurred. One unproven path blocks the close and is named

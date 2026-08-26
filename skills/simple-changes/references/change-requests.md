@@ -29,7 +29,7 @@ were intended, loses material sections, or renders malformed Markdown. Store a
 normalized receipt rather than provider-specific response data.
 
 When the request says `all`, `every`, or otherwise names a complete proposal
-corpus, paginate every provider page and include every relevant state—not only
+corpus, paginate every provider page and include every relevant state, not only
 open proposals or the first page. Record the queried states, page/cursor
 coverage, and total objects so a partial listing cannot be reported as a
 complete audit.

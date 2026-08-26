@@ -71,7 +71,7 @@ chosen?** only when the current task will preserve multiple UI artifacts and no
 repository convention already answers it. Offer repository convention
 (recommended), number and ISO date, ISO date only, or zero-padded number only.
 This preference applies to saved screenshots, design exports, and static
-previews—not source files, Git revisions, deployments, packages, or releases.
+previews, not source files, Git revisions, deployments, packages, or releases.
 
 In an interactive terminal, `initialize` directly launches setup. In a
 non-interactive agent runtime, it emits a closed machine-readable status. The
@@ -186,7 +186,7 @@ user chooses **Add the pointer**, ask:
 
 Offer:
 
-- **Ask if it's ready — Recommended:** Ask whether the implementation is ready
+- **Ask if it's ready (Recommended):** Ask whether the implementation is ready
   or whether more changes are needed before handing it off.
 - **Automatically after implementation:** Hand off completed, verified
   implementation work immediately, subject to current authority.
@@ -243,7 +243,7 @@ permission:
 
 The readiness question is: **The implementation and checks are complete. Is
 this ready for Simple Changes, or do you want more changes first?** The choices
-are **Ready—hand it off** and **More changes first**.
+are **Ready, hand it off** and **More changes first**.
 
 The pointer may be considered only after completed, attributable implementation
 that changed repository files and passed proportionate verification. Planning,

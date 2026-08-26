@@ -192,7 +192,7 @@ export const SHIPPING_MODE_CHOICES = [
   {
     description:
       "Deploy one exact candidate before independent review when production is pre-approved and rollback is verified, then immediately finish checks, review, reconciliation, and verification.",
-    label: "Break-glass by default — Advanced",
+    label: "Break-glass by default (Advanced)",
     value: "break-glass",
   },
 ] as const satisfies readonly OnboardingChoice[];
@@ -228,13 +228,13 @@ export const MIGRATION_HANDLING_CHOICES = [
   {
     description:
       "After review, automatically apply only routine, reversible, bounded, lock-safe migrations to saved exact targets.",
-    label: "Auto-apply routine after review — Advanced",
+    label: "Auto-apply routine after review (Advanced)",
     value: "auto-apply-reviewed-routine",
   },
   {
     description:
       "After review, automatically apply routine and other eligible safe migrations to saved exact targets; hard exclusions still require approval.",
-    label: "Auto-apply eligible after review — Advanced",
+    label: "Auto-apply eligible after review (Advanced)",
     value: "auto-apply-reviewed",
   },
   {
@@ -424,15 +424,15 @@ const renderFirstScreenIntroduction = (
   return [
     "Simple Changes begins with a repository inventory, separates stable work into focused change units, runs the relevant checks, obtains required review, and then stops, merges, or ships according to your preference. A shipping run will verify the exact delivered revision and clean up only work that is proven safe to remove.",
     "Here are the main ways you can use it:",
-    "- “Sync with main” — Safely update your local checkout without pushing anything.",
-    `- “Put this up” — Turn ready work into a focused ${proposalTerms(forgeProvider).singular} and stop for review.`,
-    `- “Open changes for everything ready” — Create separate ${proposalTerms(forgeProvider).plural} for each ready piece of work.`,
-    "- “Merge what’s ready” — Run checks and merge work that has the required approval.",
-    "- “Ship what’s ready” — Merge, deploy when authorized, and verify exactly what went live.",
-    "- “Clean up the repo” — Reconcile branches and worktrees, removing only things proven safe.",
-    "- “Show me what you would do” — Preview the plan without changing anything.",
-    "- “Continue” — Safely resume an unfinished Simple Changes run.",
-    "- “Leave this work alone” — Preserve active work while handling independent changes.",
+    "- “Sync with main”: Safely update your local checkout without pushing anything.",
+    `- “Put this up”: Turn ready work into a focused ${proposalTerms(forgeProvider).singular} and stop for review.`,
+    `- “Open changes for everything ready”: Create separate ${proposalTerms(forgeProvider).plural} for each ready piece of work.`,
+    "- “Merge what’s ready”: Run checks and merge work that has the required approval.",
+    "- “Ship what’s ready”: Merge, deploy when authorized, and verify exactly what went live.",
+    "- “Clean up the repo”: Reconcile branches and worktrees, removing only things proven safe.",
+    "- “Show me what you would do”: Preview the plan without changing anything.",
+    "- “Continue”: Safely resume an unfinished Simple Changes run.",
+    "- “Leave this work alone”: Preserve active work while handling independent changes.",
     "Simple Changes can also coordinate release-note work with Simple Changelogs when it is installed, but it does not write changelogs itself. Mention urgency when speed matters; reserve deploy-before-review direction for a real user-impacting emergency.",
     "This is first-use onboarding inside your original Simple Changes task. It decides the normal stopping point, when I interrupt you, and where those answers are remembered. It does not itself create a branch, push, merge, or deploy anything.",
     "",

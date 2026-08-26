@@ -295,7 +295,7 @@ must include **Outstanding work** for every omitted discovered unit, including
 its location, current revision/state, why it was deferred, and the next action;
 it may not silently omit it. For GitLab reconciliation, report every disposition
 and every preserved uncertain branch. A Ship receipt opens by naming the actual
-shipped change in plain language — what is different now and for whom — before
+shipped change in plain language, what is different now and for whom, before
 merge, check, and deployment evidence, even when no changelog entry was
 written. For Ship, compare the pre-ship brief with
 the result and report review-driven changes or explicitly state none. Never

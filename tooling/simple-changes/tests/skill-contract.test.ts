@@ -103,7 +103,7 @@ describe("Simple Changes skill contract", () => {
       "The JSON result is not user-facing onboarding copy"
     );
     expect(normalizedOnboarding).toContain(
-      "Use recommended setup — Recommended"
+      "Use recommended setup (Recommended)"
     );
     expect(normalizedOnboarding).toContain("Walk me through it");
     expect(normalizedOnboarding).toContain("Sync with main");
@@ -118,7 +118,7 @@ describe("Simple Changes skill contract", () => {
     expect(normalizedOnboarding).toContain(
       "How should routine Ship requests run?"
     );
-    expect(normalizedOnboarding).toContain("Break-glass by default — Advanced");
+    expect(normalizedOnboarding).toContain("Break-glass by default (Advanced)");
     expect(normalizedOnboarding).toContain(
       "How should reviewed database migrations be handled during Ship?"
     );
@@ -318,22 +318,22 @@ describe("Simple Changes skill contract", () => {
       "show every option with its one-sentence consequence"
     );
     expect(onboarding).toContain(
-      "**Put it up for review** — Create focused proposals, run checks, and stop."
+      "**Put it up for review**: Create focused proposals, run checks, and stop."
     );
     expect(onboarding).toContain(
-      "**Ask me first — Recommended** — Merge automatically, then confirm before a production deployment."
+      "**Ask me first (Recommended)**: Merge automatically, then confirm before a production deployment."
     );
     expect(onboarding).toContain(
-      "**Delegate when available — Recommended when installed** — Use a compatible changelog skill when present;"
+      "**Delegate when available (Recommended when installed)**: Use a compatible changelog skill when present;"
     );
     expect(onboarding).toContain(
-      "**Only when blocked — Recommended** — Continue through already-authorized work"
+      "**Only when blocked (Recommended)**: Continue through already-authorized work"
     );
     expect(onboarding).toContain(
-      "**This run only** — Write no preference file and ask again next time."
+      "**This run only**: Write no preference file and ask again next time."
     );
     expect(setupAndPolicy).toContain(
-      "**Ask if it's ready — Recommended:** Ask whether the implementation is ready"
+      "**Ask if it's ready (Recommended):** Ask whether the implementation is ready"
     );
     expect(setupAndPolicy).toContain(
       "**Automatically after implementation:** Hand off completed, verified implementation work immediately"
@@ -342,10 +342,10 @@ describe("Simple Changes skill contract", () => {
       "**When I say it's ready:** Wait for the user to ask to put up, merge, ship"
     );
     expect(onboarding).toContain(
-      "**Follow repository convention — Recommended** — Use the established format"
+      "**Follow repository convention (Recommended)**: Use the established format"
     );
     expect(onboarding).toContain(
-      "**Number and date** — Use zero-padded sequence and ISO date names"
+      "**Number and date**: Use zero-padded sequence and ISO date names"
     );
     expect(onboarding).toContain(
       "Ordinary UI source files, Git revisions, deployment identities, package versions, and release versions do not use this preference"
@@ -573,7 +573,7 @@ describe("Simple Changes skill contract", () => {
     expect(normalizedCommunication).toContain(
       "I’m reopening that run, applying only the setting you approved"
     );
-    expect(normalizedCommunication).toContain("there—nothing will be shipped");
+    expect(normalizedCommunication).toContain("there; nothing will be shipped");
     expect(normalizedCommunication).toContain(
       "Put dense audit details last, under a clearly optional technical section"
     );

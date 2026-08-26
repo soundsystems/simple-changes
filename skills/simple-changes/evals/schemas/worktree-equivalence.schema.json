@@ -10,6 +10,7 @@
     "targetRevision",
     "mergeBase",
     "head",
+    "changeDigest",
     "commits",
     "paths",
     "equivalence",
@@ -21,6 +22,7 @@
     "targetRevision": { "type": "string", "pattern": "^[0-9a-f]{40,64}$" },
     "mergeBase": { "type": "string", "pattern": "^[0-9a-f]{40,64}$" },
     "head": { "type": "string", "pattern": "^[0-9a-f]{40,64}$" },
+    "changeDigest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
     "commits": {
       "type": "array",
       "items": { "$ref": "#/$defs/commit" }

@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { inspectGuidanceUpdate } from "../../../skills/simple-changes/scripts/lib/guidance-updates.ts";
 import { inspectInitialization } from "../../../skills/simple-changes/scripts/lib/initialization.ts";
 import { DEFAULT_POLICY } from "../../../skills/simple-changes/scripts/lib/policy.ts";
 import { classifyEmergencyShipping } from "../../../skills/simple-changes/scripts/lib/triggers.ts";
@@ -35,6 +36,42 @@ const availableChangelogUpdate: ChangelogCoordination["guidanceUpdate"] = {
 };
 
 describe("first-run initialization", () => {
+  test("explains proposalScheduling to version 18 and 19 upgrades", () => {
+    const changelogCoordination: ChangelogCoordination = {
+      capabilityAvailable: false,
+      capabilityHelpers: [],
+      capabilityStatus: "absent",
+      guidanceUpdate: absentChangelogUpdate,
+      providerEvidence: "none",
+      providers: [],
+      releaseSurfaces: [],
+      relevant: false,
+    };
+    const from18 = inspectGuidanceUpdate(
+      {
+        ...DEFAULT_POLICY,
+        guidance: { disposition: "accepted", version: 18 },
+      },
+      changelogCoordination
+    );
+    expect(from18.changes.map((item) => item.version)).toContain(19);
+    expect(from18.changes.map((item) => item.version)).toContain(20);
+    expect(from18.changes.map((item) => item.summary).join(" ")).toContain(
+      "`proposalScheduling`"
+    );
+    expect(from18.changes.map((item) => item.summary).join(" ")).toContain(
+      "balanced default"
+    );
+
+    const from19 = inspectGuidanceUpdate(
+      {
+        ...DEFAULT_POLICY,
+        guidance: { disposition: "accepted", version: 19 },
+      },
+      changelogCoordination
+    );
+    expect(from19.changes.map((item) => item.version)).toEqual([20, 20]);
+  });
   test("propagates the saved shipping preference into emergency classification", () => {
     for (const shippingMode of ["expedited", "break-glass"] as const) {
       const status = inspectInitialization("ship", {
@@ -235,7 +272,7 @@ describe("first-run initialization", () => {
           available: true,
           owner: "simple-changelogs",
         },
-        currentVersion: 18,
+        currentVersion: 20,
         headline: "**Simple Changes has recently been updated.**",
         presentationOrder: [
           "required-answers",
@@ -255,10 +292,10 @@ describe("first-run initialization", () => {
     });
     expect(status.guidanceUpdate.summaryBullets).toHaveLength(3);
     expect(status.guidanceUpdate.summaryBullets.join(" ")).toContain(
-      "Relinquished controllers"
+      "Inherited stale shipment state"
     );
     expect(status.guidanceUpdate.summaryBullets.join(" ")).toContain(
-      "run-created checkout artifacts"
+      "`proposalScheduling` setting"
     );
     expect(status.guidanceUpdate.recommendedChanges[0]).toMatchObject({
       question: "How should changelog work be handled?",

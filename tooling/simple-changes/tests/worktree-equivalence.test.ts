@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
-import { symlinkSync } from "node:fs";
+import { chmodSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
 import { validateSchema } from "../../../skills/simple-changes/scripts/lib/schema.ts";
 import {
@@ -211,6 +211,88 @@ describe("worktree equivalence evidence", () => {
     expect(result.fullyMatched).toBe(false);
     expect(result.commitCount).toBe(2);
     expect(result.commits).toEqual([]);
+  });
+
+  test("rejects unique staged content even when worktree bytes match target", () => {
+    const fixture = repository();
+    const worktree = featureWorktree(fixture);
+    writeFixture(fixture.root, "shared.ts", "export const shared = 2;\n");
+    git(fixture.root, ["add", "shared.ts"]);
+    git(fixture.root, ["commit", "-m", "Add target shared module"]);
+
+    writeFixture(worktree, "shared.ts", "export const staged = 99;\n");
+    git(worktree, ["add", "shared.ts"]);
+    writeFixture(worktree, "shared.ts", "export const shared = 2;\n");
+
+    const report = auditWorktreeEquivalence({
+      targetRef: "main",
+      worktreePath: worktree,
+    });
+    expect(report.paths).toEqual([{ path: "shared.ts", status: "differs" }]);
+    expect(report.equivalence).not.toBe("contained");
+  });
+
+  test("rejects executable-mode-only changes", () => {
+    const fixture = repository();
+    const worktree = featureWorktree(fixture);
+    writeFixture(fixture.root, "script.sh", "exit 0\n");
+    git(fixture.root, ["add", "script.sh"]);
+    git(fixture.root, ["commit", "-m", "Add target script"]);
+    writeFixture(worktree, "script.sh", "exit 0\n");
+    chmodSync(join(worktree, "script.sh"), 0o755);
+
+    const report = auditWorktreeEquivalence({
+      targetRef: "main",
+      worktreePath: worktree,
+    });
+    expect(report.paths).toEqual([{ path: "script.sh", status: "differs" }]);
+    expect(report.equivalence).not.toBe("contained");
+  });
+
+  test("rejects unique staged gitlink state", () => {
+    const fixture = repository();
+    const worktree = featureWorktree(fixture);
+    const targetGitlink = git(fixture.root, ["rev-parse", "HEAD"]);
+    const featureGitlink = git(worktree, ["rev-parse", "HEAD"]);
+    git(fixture.root, [
+      "update-index",
+      "--add",
+      "--cacheinfo",
+      `160000,${targetGitlink},vendor/dependency`,
+    ]);
+    git(fixture.root, ["commit", "-m", "Add target gitlink"]);
+    git(worktree, [
+      "update-index",
+      "--add",
+      "--cacheinfo",
+      `160000,${featureGitlink},vendor/dependency`,
+    ]);
+
+    const report = auditWorktreeEquivalence({
+      targetRef: "main",
+      worktreePath: worktree,
+    });
+    expect(report.paths).toEqual([
+      { path: "vendor/dependency", status: "differs" },
+    ]);
+    expect(report.equivalence).not.toBe("contained");
+  });
+
+  test("rejects a worktree that changes while evidence is computed", () => {
+    const fixture = repository();
+    const worktree = featureWorktree(fixture);
+    writeFixture(worktree, "raced.ts", "opening bytes\n");
+    process.env.SIMPLE_CHANGES_TEST_EQUIVALENCE_MUTATE_PATH = "raced.ts";
+    try {
+      expect(() =>
+        auditWorktreeEquivalence({ targetRef: "main", worktreePath: worktree })
+      ).toThrow("changed while equivalence evidence was being computed");
+    } finally {
+      Reflect.deleteProperty(
+        process.env,
+        "SIMPLE_CHANGES_TEST_EQUIVALENCE_MUTATE_PATH"
+      );
+    }
   });
 
   test("refuses symlinked dirty paths", () => {

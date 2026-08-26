@@ -192,8 +192,10 @@
   close-only loop only when every obligated worktree is proven contained in
   the refreshed target, records a terminal `target-equivalent` outcome that is
   never reported as shipped, performs only proven-safe local cleanup, and
-  records why the remote-reconciliation gate did not apply. Frozen shipment
-  scope blocks new authoring, not the target-equivalent close.
+  requires final verification plus any GitLab branch/proposal reconciliation
+  bound to the current target. For providers without that GitLab gate, it
+  records that the reconciliation was not applicable. Frozen shipment scope
+  blocks new authoring, not the target-equivalent close.
 - `proposalScheduling` controls only whether independent proposals are
   authored consecutively or in parallel claimed worktrees. It never shares a
   checkout, weakens controller guards or worktree isolation, changes cleanup

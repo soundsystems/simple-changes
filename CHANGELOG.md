@@ -1,6 +1,33 @@
 # Changelog
 
-## Unreleased
+## 0.12.14 - 2026-08-25
+
+- Inherited shipment state now has audited recovery paths:
+  - `worktree takeover` can reassign or release a stale claim when its owner no
+    longer exists. Approval remains bound to the checkout's current status, and
+    a durable recoverable intent protects the audit trail without changing the
+    worktree itself.
+  - Read-only `worktree equivalence` issues a report only when the checkout's
+    opening and final commit and status digest still match, then compares commit
+    patches, worktree bytes, staged content, file modes, and Git links. Unique,
+    changing, or unverifiable state remains blocking, while semantic equivalence
+    remains a review decision.
+  - `loop close-equivalent` can safely close relinquished, frozen-scope, and
+    legacy close-only loops only after every obligated worktree is present and
+    proven, verification and cleanup finish, and any required GitLab branch and
+    proposal reconciliation is complete. It never reports that work as shipped
+    and leaves claimed, preserved, and retained worktrees untouched.
+  - Recovery failures now identify the exact next command, and the recovery
+    close record is available through `simple-changes validate`. The recovery
+    guide also explains how to refresh external worktree lists without deleting
+    session or task history.
+- Loop starts and stale-claim takeovers now share ordered coordination so a new
+  loop cannot adopt a claim while its ownership is being reassigned or released.
+- Installed update guidance now names `proposalScheduling` and explains that
+  existing policies without the setting use the **Balanced** default.
+<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-25T13:28:22-05:00" -->
+
+## 0.12.13 - 2026-08-24
 
 - Setup now lets you choose how multiple independent PRs or MRs are scheduled:
   **Balanced** works consecutively by default and parallelizes when it
@@ -12,24 +39,7 @@
 - User-facing terminology now follows the detected forge: GitHub workflows say
   **PR**, GitLab workflows say **MR**, and provider-neutral **change proposal**
   wording is reserved for unknown or differently named forges.
-<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-23T13:39:21-05:00" -->
-
-- Inherited shipment state now has audited recovery paths:
-  - `worktree takeover` can reassign or release a stale claim when its owner no
-    longer exists, with explicit approval bound to the checkout's current
-    status and without changing the worktree itself.
-  - Read-only `worktree equivalence` reports whether committed and uncommitted
-    work is contained in the target using patch and byte evidence, while
-    leaving semantic equivalence to review.
-  - `loop close-equivalent` can safely close relinquished, frozen-scope, and
-    legacy close-only loops after proving their obligated work is already in
-    the refreshed target. It never reports that work as shipped, runs only
-    proven-safe local cleanup, and leaves claimed, preserved, and retained
-    worktrees untouched.
-  - Recovery failures now identify the exact next command, and the recovery
-    guide explains how to refresh external worktree lists without deleting
-    session or task history.
-<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-25T12:15:04-05:00" -->
+<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-24T13:23:14-05:00" -->
 
 ## 0.12.12 - 2026-08-23
 

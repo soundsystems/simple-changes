@@ -1,6 +1,13 @@
-import { existsSync, lstatSync, readFileSync } from "node:fs";
+import {
+  existsSync,
+  lstatSync,
+  readFileSync,
+  realpathSync,
+  writeFileSync,
+} from "node:fs";
 import { spawnSync } from "bun";
 import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
+import { captureInventory } from "./inventory.ts";
 import { assertSafeRelativePath } from "./path-safety.ts";
 import { runGit } from "./process.ts";
 import { redactSecrets } from "./redact.ts";
@@ -10,6 +17,8 @@ const EQUIVALENCE_DISCLAIMER =
   "Patch and byte evidence only; semantic equivalence requires review.";
 const RENAME_STATUSES = new Set(["R", "C"]);
 const WHITESPACE_PATTERN = /\s+/u;
+const TREE_ENTRY_PATTERN = /^(\d+)\s+(\w+)\s+([0-9a-f]+)\t/u;
+const INDEX_ENTRY_PATTERN = /^(\d+)\s+([0-9a-f]+)\s+0\t/u;
 
 export interface WorktreeEquivalenceOptions {
   repositoryRoot?: string;
@@ -30,6 +39,7 @@ export interface WorktreeEquivalencePath {
 }
 
 export interface WorktreeEquivalenceReport {
+  changeDigest: string;
   commits: WorktreeEquivalenceCommit[];
   disclaimer: string;
   equivalence: "contained" | "partial" | "divergent";
@@ -184,14 +194,16 @@ export const commitEquivalenceAgainstTarget = (
 const bytesEqual = (left: Uint8Array, right: Uint8Array): boolean =>
   left.length === right.length && Buffer.compare(left, right) === 0;
 
-const statusEntryPaths = (raw: string): string[] => {
+const statusEntries = (
+  raw: string
+): Array<{ path: string; status: string }> => {
   const tokens = raw.split("\0").filter(Boolean);
-  const paths = new Set<string>();
+  const paths = new Map<string, string>();
   let index = 0;
   while (index < tokens.length) {
     const token = tokens[index] ?? "";
     const status = token.slice(0, 2);
-    paths.add(token.slice(3));
+    paths.set(token.slice(3), status);
     index += 1;
     if (
       RENAME_STATUSES.has(status.slice(0, 1)) ||
@@ -199,18 +211,66 @@ const statusEntryPaths = (raw: string): string[] => {
     ) {
       const original = tokens[index];
       if (original) {
-        paths.add(original);
+        paths.set(original, status);
       }
       index += 1;
     }
   }
-  return [...paths].sort((left, right) => left.localeCompare(right));
+  return [...paths]
+    .map(([path, status]) => ({ path, status }))
+    .sort((left, right) => left.path.localeCompare(right.path));
+};
+
+const treeEntry = (
+  worktreeRoot: string,
+  revision: string,
+  path: string
+): { mode: string; objectId: string; type: string } | null => {
+  const result = runGit(worktreeRoot, ["ls-tree", revision, "--", path], true);
+  const line = result.stdout.trim();
+  if (result.exitCode !== 0 || !line) {
+    return null;
+  }
+  const match = TREE_ENTRY_PATTERN.exec(line);
+  return match
+    ? { mode: match[1] ?? "", objectId: match[3] ?? "", type: match[2] ?? "" }
+    : null;
+};
+
+const indexEntry = (
+  worktreeRoot: string,
+  path: string
+): { mode: string; objectId: string } | null => {
+  const result = runGit(worktreeRoot, ["ls-files", "-s", "--", path], true);
+  const line = result.stdout.trim();
+  const match = INDEX_ENTRY_PATTERN.exec(line);
+  return match ? { mode: match[1] ?? "", objectId: match[2] ?? "" } : null;
+};
+
+const stagedStateDiffers = (
+  indexChanged: boolean,
+  targetEntry: ReturnType<typeof treeEntry>,
+  stagedEntry: ReturnType<typeof indexEntry>
+): boolean =>
+  indexChanged &&
+  (!(targetEntry && stagedEntry) ||
+    targetEntry.mode !== stagedEntry.mode ||
+    targetEntry.objectId !== stagedEntry.objectId);
+
+const fileModeIsExecutable = (mode: number): boolean => {
+  const permissionMode = mode % 512;
+  return (
+    Math.floor(permissionMode / 64) % 2 === 1 ||
+    Math.floor(permissionMode / 8) % 2 === 1 ||
+    permissionMode % 2 === 1
+  );
 };
 
 const classifyDirtyPath = (
   worktreeRoot: string,
   targetRevision: string,
-  path: string
+  path: string,
+  status: string
 ): WorktreeEquivalencePath | null => {
   const safe = assertSafeRelativePath(worktreeRoot, path);
   if (safe.symlink) {
@@ -219,10 +279,19 @@ const classifyDirtyPath = (
       EXIT_CODES.unsafe
     );
   }
+  const targetEntry = treeEntry(worktreeRoot, targetRevision, path);
+  const stagedEntry = indexEntry(worktreeRoot, path);
+  const indexChanged = status.slice(0, 1) !== " " && status.slice(0, 1) !== "?";
+  if (stagedStateDiffers(indexChanged, targetEntry, stagedEntry)) {
+    return { path, status: targetEntry ? "differs" : "absent-in-target" };
+  }
+  if (targetEntry && targetEntry.type !== "blob") {
+    return { path, status: "differs" };
+  }
   let localBytes: Uint8Array | null = null;
   if (existsSync(safe.absolutePath)) {
     if (!lstatSync(safe.absolutePath).isFile()) {
-      return null;
+      return { path, status: "differs" };
     }
     localBytes = new Uint8Array(readFileSync(safe.absolutePath));
   }
@@ -240,6 +309,11 @@ const classifyDirtyPath = (
     };
   }
   if (localBytes !== null && bytesEqual(localBytes, targetBytes)) {
+    const executable = fileModeIsExecutable(lstatSync(safe.absolutePath).mode);
+    const expectedExecutable = targetEntry?.mode === "100755";
+    if (executable !== expectedExecutable) {
+      return { path, status: "differs" };
+    }
     return { path, status: "identical" };
   }
   return { path, status: "differs" };
@@ -262,6 +336,22 @@ const classifyEquivalence = (
   return "partial";
 };
 
+const worktreeEvidence = (
+  worktreeRoot: string
+): { changeDigest: string; headSha: string } => {
+  const canonicalWorktree = realpathSync(worktreeRoot);
+  const current = captureInventory(worktreeRoot).worktrees.find(
+    (worktree) => worktree.path === canonicalWorktree
+  );
+  if (!current?.headSha) {
+    throw new SimpleChangesError(
+      "Equivalence evidence could not bind the current worktree inventory.",
+      EXIT_CODES.inventory
+    );
+  }
+  return { changeDigest: current.changeDigest, headSha: current.headSha };
+};
+
 export const auditWorktreeEquivalence = (
   options: WorktreeEquivalenceOptions
 ): WorktreeEquivalenceReport => {
@@ -279,7 +369,14 @@ export const auditWorktreeEquivalence = (
       EXIT_CODES.usage
     );
   }
+  const openingEvidence = worktreeEvidence(worktreeRoot);
   const head = runGit(worktreeRoot, ["rev-parse", "HEAD"]).stdout.trim();
+  if (head !== openingEvidence.headSha) {
+    throw new SimpleChangesError(
+      "The worktree changed while equivalence evidence was opening; retry the read-only audit.",
+      EXIT_CODES.unsafe
+    );
+  }
   const targetRevision = runGit(worktreeRoot, [
     "rev-parse",
     "--verify",
@@ -307,13 +404,39 @@ export const auditWorktreeEquivalence = (
     ]).stdout
   );
   const paths: WorktreeEquivalencePath[] = [];
-  for (const path of statusEntryPaths(statusOutput)) {
-    const classified = classifyDirtyPath(worktreeRoot, targetRevision, path);
+  for (const { path, status } of statusEntries(statusOutput)) {
+    const classified = classifyDirtyPath(
+      worktreeRoot,
+      targetRevision,
+      path,
+      status
+    );
     if (classified) {
       paths.push(classified);
     }
   }
+  if (
+    process.env.NODE_ENV === "test" &&
+    process.env.SIMPLE_CHANGES_TEST_EQUIVALENCE_MUTATE_PATH
+  ) {
+    const mutationPath = assertSafeRelativePath(
+      worktreeRoot,
+      process.env.SIMPLE_CHANGES_TEST_EQUIVALENCE_MUTATE_PATH
+    );
+    writeFileSync(mutationPath.absolutePath, "mutated during audit\n");
+  }
+  const finalEvidence = worktreeEvidence(worktreeRoot);
+  if (
+    finalEvidence.headSha !== openingEvidence.headSha ||
+    finalEvidence.changeDigest !== openingEvidence.changeDigest
+  ) {
+    throw new SimpleChangesError(
+      "The worktree changed while equivalence evidence was being computed; retry the read-only audit.",
+      EXIT_CODES.unsafe
+    );
+  }
   return validateSchema<WorktreeEquivalenceReport>("worktree-equivalence", {
+    changeDigest: finalEvidence.changeDigest,
     commits,
     disclaimer: EQUIVALENCE_DISCLAIMER,
     equivalence: classifyEquivalence(commits, paths),

@@ -1453,6 +1453,45 @@ const assertLegacyRunAllowsMutation = (
   }
 };
 
+const resolveExistingLoopStart = (
+  existing: LoopLease | null,
+  inventory: RepositoryInventory,
+  agentId: string,
+  mode: RequestMode
+): LoopLease | null => {
+  if (!existing) {
+    return null;
+  }
+  const lifecycle = controllerLifecycle(existing);
+  if (
+    lifecycle.status === "active" &&
+    existing.ownerAgentId === agentId &&
+    existing.mode === mode
+  ) {
+    return existing;
+  }
+  if (lifecycle.status === "relinquished" && mode === "resume") {
+    return transferController(
+      existing,
+      inventory,
+      agentId,
+      "resume",
+      lifecycle.reason ?? "Resumed relinquished integration loop.",
+      null
+    );
+  }
+  if (lifecycle.status === "relinquished") {
+    throw new SimpleChangesError(
+      `Integration-controller loop ${existing.runId} was relinquished by ${existing.ownerAgentId}. Resume it explicitly to finish or close its frozen shipment; do not reuse it for a later ${mode} shipment. Next: start the loop again in resume mode to finish it, or run \`simple-changes loop close-equivalent --run-id ${existing.runId} --approved-by <you> --reason <why>\` if there is nothing left to ship.`,
+      EXIT_CODES.unsafe
+    );
+  }
+  throw new SimpleChangesError(
+    `Integration-controller loop ${existing.runId} is already active for ${existing.ownerAgentId}. Independent agents may continue in distinct actively claimed worktrees; start no second push/MR/merge/cleanup controller.`,
+    EXIT_CODES.unsafe
+  );
+};
+
 export const startLoop = (
   repositoryPath: string,
   agentIdInput: string,
@@ -1470,132 +1509,116 @@ export const startLoop = (
   return withStateLock(
     opening.repository.commonGitDirectory,
     "loop start",
-    () => {
-      const inventory = captureInventory(repositoryPath);
-      const existing = readLeaseFromCommonDirectory(
-        inventory.repository.commonGitDirectory
-      );
-      if (existing) {
-        const lifecycle = controllerLifecycle(existing);
-        if (
-          lifecycle.status === "active" &&
-          existing.ownerAgentId === agentId &&
-          existing.mode === mode
-        ) {
-          return existing;
-        }
-        if (lifecycle.status === "relinquished" && mode === "resume") {
-          return transferController(
+    () =>
+      withWorktreeCoordinationLock(
+        opening.repository.commonGitDirectory,
+        "loop start claim snapshot",
+        () => {
+          const inventory = captureInventory(repositoryPath);
+          const existing = readLeaseFromCommonDirectory(
+            inventory.repository.commonGitDirectory
+          );
+          const resumed = resolveExistingLoopStart(
             existing,
             inventory,
             agentId,
-            "resume",
-            lifecycle.reason ?? "Resumed relinquished integration loop.",
-            null
+            mode
           );
-        }
-        if (lifecycle.status === "relinquished") {
-          throw new SimpleChangesError(
-            `Integration-controller loop ${existing.runId} was relinquished by ${existing.ownerAgentId}. Resume it explicitly to finish or close its frozen shipment; do not reuse it for a later ${mode} shipment. Next: start the loop again in resume mode to finish it, or run \`simple-changes loop close-equivalent --run-id ${existing.runId} --approved-by <you> --reason <why>\` if there is nothing left to ship.`,
-            EXIT_CODES.unsafe
+          if (resumed) {
+            return resumed;
+          }
+          const now = new Date().toISOString();
+          const currentPath = inventory.repository.currentCheckout;
+          const concurrentWork =
+            inventory.policy.value.concurrentWork === "strict"
+              ? "strict"
+              : "allow-claimed";
+          const coordination = readCoordinationDocumentFromCommonDirectory(
+            inventory.repository.commonGitDirectory
           );
-        }
-        throw new SimpleChangesError(
-          `Integration-controller loop ${existing.runId} is already active for ${existing.ownerAgentId}. Independent agents may continue in distinct actively claimed worktrees; start no second push/MR/merge/cleanup controller.`,
-          EXIT_CODES.unsafe
-        );
-      }
-      const now = new Date().toISOString();
-      const currentPath = inventory.repository.currentCheckout;
-      const concurrentWork =
-        inventory.policy.value.concurrentWork === "strict"
-          ? "strict"
-          : "allow-claimed";
-      const coordination = readCoordinationDocumentFromCommonDirectory(
-        inventory.repository.commonGitDirectory
-      );
-      const primaryBranch =
-        inventory.worktrees.find((worktree) => worktree.isPrimary)?.branch ??
-        null;
-      const targetBranch = targetBranchForRef(
-        inventory.repository.primaryCheckout,
-        inventory.targetRef
-      );
-      const targetRevision = runGit(inventory.repository.primaryCheckout, [
-        "rev-parse",
-        "--verify",
-        `${inventory.targetRef}^{commit}`,
-      ]).stdout.trim();
-      const openingRemoteInventory = openingRemoteInventoryForStart(
-        inventory,
-        openingRemoteInventoryInput,
-        targetBranch,
-        targetRevision
-      );
-      const worktrees = inventory.worktrees.map((worktree) => {
-        if (worktree.path === currentPath) {
-          return worktreeLease(worktree, "controller", agentId, false);
-        }
-        const claim = concurrentClaimFor(
-          {
+          const primaryBranch =
+            inventory.worktrees.find((worktree) => worktree.isPrimary)
+              ?.branch ?? null;
+          const targetBranch = targetBranchForRef(
+            inventory.repository.primaryCheckout,
+            inventory.targetRef
+          );
+          const targetRevision = runGit(inventory.repository.primaryCheckout, [
+            "rev-parse",
+            "--verify",
+            `${inventory.targetRef}^{commit}`,
+          ]).stdout.trim();
+          const openingRemoteInventory = openingRemoteInventoryForStart(
+            inventory,
+            openingRemoteInventoryInput,
+            targetBranch,
+            targetRevision
+          );
+          const worktrees = inventory.worktrees.map((worktree) => {
+            if (worktree.path === currentPath) {
+              return worktreeLease(worktree, "controller", agentId, false);
+            }
+            const claim = concurrentClaimFor(
+              {
+                commonGitDirectory: inventory.repository.commonGitDirectory,
+                concurrentWork,
+                primaryCheckout: inventory.repository.primaryCheckout,
+              },
+              worktree,
+              coordination,
+              primaryBranch,
+              targetBranch
+            );
+            if (claim) {
+              return {
+                ...worktreeLease(
+                  worktree,
+                  "concurrent-author",
+                  claim.owner.agentId,
+                  false
+                ),
+                claimId: claim.claimId,
+              };
+            }
+            return worktreeLease(worktree, "preserved", null, false);
+          });
+          const lease: LoopLease = {
+            baselineDigest: inventory.baselineDigest,
             commonGitDirectory: inventory.repository.commonGitDirectory,
             concurrentWork,
+            controller: {
+              acquiredAt: now,
+              handoffs: [],
+              reason: null,
+              relinquishedAt: null,
+              status: "active",
+            },
+            createdAt: now,
+            dispositions: [],
+            mode: mode as LoopLease["mode"],
+            openingBranches: inventory.branches.map(({ name, sha }) => ({
+              name,
+              sha,
+            })),
+            ...(openingRemoteInventory ? { openingRemoteInventory } : {}),
+            overrides: [],
+            ownerAgentId: agentId,
+            preparations: [],
             primaryCheckout: inventory.repository.primaryCheckout,
-          },
-          worktree,
-          coordination,
-          primaryBranch,
-          targetBranch
-        );
-        if (claim) {
-          return {
-            ...worktreeLease(
-              worktree,
-              "concurrent-author",
-              claim.owner.agentId,
-              false
-            ),
-            claimId: claim.claimId,
+            remoteBindings: inventory.repository.remoteBindings,
+            runId: `run-${Date.now().toString(36)}-${randomUUID().slice(0, 8)}`,
+            schemaVersion: 1,
+            shipmentScopeFrozenAt: null,
+            shipmentScopeRequired:
+              mode === "ship" && inventory.localChanges.length > 0,
+            targetRef: inventory.targetRef,
+            targetRevision,
+            updatedAt: now,
+            worktrees,
           };
+          return writeLease(lease);
         }
-        return worktreeLease(worktree, "preserved", null, false);
-      });
-      const lease: LoopLease = {
-        baselineDigest: inventory.baselineDigest,
-        commonGitDirectory: inventory.repository.commonGitDirectory,
-        concurrentWork,
-        controller: {
-          acquiredAt: now,
-          handoffs: [],
-          reason: null,
-          relinquishedAt: null,
-          status: "active",
-        },
-        createdAt: now,
-        dispositions: [],
-        mode: mode as LoopLease["mode"],
-        openingBranches: inventory.branches.map(({ name, sha }) => ({
-          name,
-          sha,
-        })),
-        ...(openingRemoteInventory ? { openingRemoteInventory } : {}),
-        overrides: [],
-        ownerAgentId: agentId,
-        preparations: [],
-        primaryCheckout: inventory.repository.primaryCheckout,
-        remoteBindings: inventory.repository.remoteBindings,
-        runId: `run-${Date.now().toString(36)}-${randomUUID().slice(0, 8)}`,
-        schemaVersion: 1,
-        shipmentScopeFrozenAt: null,
-        shipmentScopeRequired:
-          mode === "ship" && inventory.localChanges.length > 0,
-        targetRef: inventory.targetRef,
-        targetRevision,
-        updatedAt: now,
-        worktrees,
-      };
-      return writeLease(lease);
-    }
+      )
   );
 };
 
@@ -3018,7 +3041,7 @@ const auditWorktreeRemoval = (
   );
   if (!(registered && current)) {
     throw new SimpleChangesError(
-      `Disposition path must name a current preserved worktree — one registered at loop start, or adopted through adopt-worktree or accept-paused-change: ${path}`,
+      `Disposition path must name a current preserved worktree (one registered at loop start, or adopted through adopt-worktree or accept-paused-change): ${path}`,
       EXIT_CODES.unsafe
     );
   }
@@ -5323,6 +5346,7 @@ const closeEquivalentRecordSchema = JSON.parse(
  * this module keeps working when that command and its module are absent.
  */
 interface WorktreeEquivalenceReceipt {
+  changeDigest: string;
   commits: Array<{
     matched: boolean;
     matchedTargetSha?: string;
@@ -5400,6 +5424,7 @@ const isEquivalenceReceiptShape = (
     typeof record.targetRevision === "string" &&
     typeof record.mergeBase === "string" &&
     typeof record.head === "string" &&
+    typeof record.changeDigest === "string" &&
     Array.isArray(record.commits) &&
     Array.isArray(record.paths) &&
     typeof record.disclaimer === "string" &&
@@ -5450,6 +5475,11 @@ const equivalenceReceiptProof = (
       failure: `the equivalence receipt is stale: it recorded head ${validated.head}, but the worktree is now at ${current.headSha ?? "(unknown)"}`,
     };
   }
+  if (validated.changeDigest !== current.changeDigest) {
+    return {
+      failure: `the equivalence receipt is stale: its recorded worktree digest ${validated.changeDigest} does not match the current digest ${current.changeDigest}`,
+    };
+  }
   if (
     !targetContainsRevision(
       primaryCheckout,
@@ -5471,17 +5501,14 @@ const equivalenceReceiptProof = (
   };
 };
 
-const closeEquivalentObligatedPaths = (
-  lease: LoopLease,
-  currentByPath: Map<string, WorktreeInventory>
-): string[] => {
+const closeEquivalentObligatedPaths = (lease: LoopLease): string[] => {
   const obligated = new Set<string>();
   for (const registered of lease.worktrees) {
     const eligible =
       registered.role === "controller" ||
       registered.role === "author" ||
       registered.createdByRun;
-    if (eligible && currentByPath.has(registered.path)) {
+    if (eligible) {
       obligated.add(registered.path);
     }
   }
@@ -5489,9 +5516,7 @@ const closeEquivalentObligatedPaths = (
     const path = existsSync(preparation.path)
       ? realpathSync(preparation.path)
       : preparation.path;
-    if (currentByPath.has(path)) {
-      obligated.add(path);
-    }
+    obligated.add(path);
   }
   return [...obligated].sort((left, right) => left.localeCompare(right));
 };
@@ -5515,9 +5540,12 @@ const proveNothingLeftToShip = (
   );
   const proofs: LoopCloseEquivalentWorktreeProof[] = [];
   const unproven: string[] = [];
-  for (const path of closeEquivalentObligatedPaths(lease, currentByPath)) {
+  for (const path of closeEquivalentObligatedPaths(lease)) {
     const current = currentByPath.get(path);
     if (!current) {
+      unproven.push(
+        `${path}: the obligated worktree is missing and no exact absence/branch-containment recovery evidence exists`
+      );
       continue;
     }
     if (
@@ -5595,6 +5623,44 @@ const priorTargetEquivalentClose = (
   };
 };
 
+const assertTargetEquivalentRemoteReconciliation = (
+  lease: LoopLease,
+  inventory: RepositoryInventory,
+  targetRevision: string
+): void => {
+  if (!targetUsesGitLab(inventory)) {
+    return;
+  }
+  const reconciliation = lease.remoteBranchReconciliation;
+  if (
+    !reconciliation?.finalInventoryComplete ||
+    reconciliation.targetRevision !== targetRevision
+  ) {
+    throw new SimpleChangesError(
+      `Cannot close ${lease.runId} as target-equivalent until a complete final GitLab branch/proposal reconciliation is recorded for ${targetRevision}. This recovery path cannot infer that no provider mutation occurred.`,
+      EXIT_CODES.unsafe
+    );
+  }
+};
+
+const assertTargetEquivalentCleanupComplete = (
+  lease: LoopLease,
+  inventory: RepositoryInventory,
+  cleanupErrors: readonly string[]
+): void => {
+  const verification = verificationAgainst(lease, inventory);
+  if (verification.ok && cleanupErrors.length === 0) {
+    return;
+  }
+  throw new SimpleChangesError(
+    `Cannot close ${lease.runId} as target-equivalent because final verification or cleanup is incomplete: ${[
+      ...verification.violations.map((item) => item.message),
+      ...cleanupErrors,
+    ].join("; ")}`,
+    EXIT_CODES.unsafe
+  );
+};
+
 /**
  * Close a loop whose work is already contained in the target, so there is
  * nothing left to ship. This is the recovery path out of the frozen-scope
@@ -5645,6 +5711,11 @@ export const closeLoopTargetEquivalent = (
           );
         }
         const targetRevision = currentTargetRevision(lease);
+        assertTargetEquivalentRemoteReconciliation(
+          lease,
+          inventory,
+          targetRevision
+        );
         const proofs = proveNothingLeftToShip(
           lease,
           inventory,
@@ -5652,8 +5723,9 @@ export const closeLoopTargetEquivalent = (
           equivalenceEvidence
         );
         const recordedAt = new Date().toISOString();
-        const remoteReconciliationSkipped =
-          "Remote reconciliation was not required for this closure: no provider mutation, push, or remote branch change occurred.";
+        const remoteReconciliationSkipped = targetUsesGitLab(inventory)
+          ? "Remote reconciliation was completed and recorded before target-equivalent closure; no reconciliation gate was skipped."
+          : "The target provider does not require GitLab branch/proposal reconciliation.";
         const outcomeRecord: LoopCloseEquivalentOutcome = {
           approvedBy,
           outcome: "target-equivalent",
@@ -5675,6 +5747,11 @@ export const closeLoopTargetEquivalent = (
           verification
         );
         ({ lease } = automaticCleanup);
+        assertTargetEquivalentCleanupComplete(
+          lease,
+          captureInventory(repositoryPath),
+          automaticCleanup.cleanup.errors
+        );
         const record: LoopCloseEquivalentRecord = {
           approvedBy,
           archivedAt: recordedAt,

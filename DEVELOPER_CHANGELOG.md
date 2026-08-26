@@ -1,6 +1,41 @@
 # Developer changelog
 
-## Unreleased
+## 0.12.14 - 2026-08-25
+
+- Added audited recovery contracts for inherited broken shipment state:
+  - Worktree claim takeover requires an exact current status digest, named
+    approver, and reason; persists an `intent` receipt before changing claim
+    state; recovers an applied intent after interruption; refuses claims still
+    required by a live lease; and completes reassignment or release without
+    mutating the checkout. Loop start and takeover acquire the loop-state lock
+    before the coordination lock, serializing lease creation with claim changes.
+  - Worktree equivalence records stable patch-id matches for commits and
+    compares worktree bytes plus staged object IDs, executable modes, and Git
+    links against the target. Evidence captures opening and final HEAD plus
+    `changeDigest`, refuses a receipt unless both snapshots match, classifies the
+    checkout as `contained`, `partial`, or `divergent`, and explicitly reserves
+    semantic equivalence for human review.
+  - Target-equivalent loop closure accepts only ancestry or current
+    digest-bound `contained` evidence for every obligated worktree. Missing
+    registered or preparing worktrees, final manifest violations, and cleanup
+    errors remain blocking; GitLab targets also require a complete final
+    branch/proposal reconciliation for the current target revision before the
+    immutable `target-equivalent` outcome can release the lease.
+- Added closed schemas and CLI validation for takeover, equivalence, and
+  close-equivalent receipts, including public `validate loop-close-equivalent`
+  support; synchronized the skill contract, help, README, and recovery guidance;
+  and added regression coverage for stale digests, unique staged state, mode
+  changes, Git links, equivalence-audit races, missing obligations, recoverable
+  takeover intents, and clean closure.
+- Guidance 19 now names `proposalScheduling`, documents `balanced` as the
+  backward-compatible default for policies without the setting, and has focused
+  upgrade coverage for stored guidance versions 18 and 19.
+- Advanced the package and CLI to 0.12.14 and installed Simple Changes guidance
+  to version 20 so existing installations receive the audited inherited-state
+  recovery paths.
+<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-25T13:28:22-05:00" -->
+
+## 0.12.13 - 2026-08-24
 
 - Added the backward-compatible `proposalScheduling` repository policy and
   setup flag with `balanced`, `consecutive`, and `parallel` values. Existing
@@ -18,28 +53,9 @@
   artifacts only with a proven-safe completed worktree, and that a standalone
   clone must not bypass an active controller or advance the same remote target
   outside its lease.
-<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-23T13:39:21-05:00" -->
-
-- Added audited recovery contracts for inherited broken shipment state:
-  - Worktree claim takeover requires an exact current status digest, named
-    approver, and reason; emits a durable takeover receipt; refuses claims still
-    required by a live lease; and can reassign ownership or release the claim
-    without mutating the checkout.
-  - Worktree equivalence records stable patch-id matches for commits and
-    byte-for-byte comparisons for dirty and untracked paths, classifies the
-    checkout as `contained`, `partial`, or `divergent`, and explicitly reserves
-    semantic equivalence for human review.
-  - Target-equivalent loop closure accepts only ancestry or current
-    `contained` evidence for every obligated worktree, records an immutable
-    `target-equivalent` outcome and the remote-reconciliation skip, performs
-    only proven-safe local cleanup, and releases the lease without touching
-    claimed, preserved, or retained worktrees.
-- Added closed schemas and CLI validation for takeover, equivalence, and
-  close-equivalent receipts; synchronized the skill contract, help, README,
-  and recovery guidance; and added regression coverage for successful paths,
-  stale evidence, unsafe ownership, partial or divergent work, exact recovery
-  diagnostics, and the full inherited-state dead end through clean closure.
-<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-25T12:15:04-05:00" -->
+- Advanced Simple Changes guidance to version 19 so existing installations
+  receive the proposal-scheduling and forge-aware terminology behavior.
+<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-24T13:23:14-05:00" -->
 
 ## 0.12.12 - 2026-08-23
 

@@ -1320,6 +1320,7 @@ export interface WorktreeTakeoverReceipt {
   headSha: string | null;
   newAgentId: string;
   path: string;
+  phase?: "completed" | "intent";
   previousOwner: WorktreeClaimOwner;
   reason: string;
   schemaVersion: 1;
@@ -1379,6 +1380,75 @@ const writeWorktreeTakeovers = (
   renameSync(temporaryPath, worktreeTakeoversPath(commonGitDirectory));
 };
 
+const matchingTakeoverIntent = (
+  history: readonly WorktreeTakeoverReceipt[],
+  options: Pick<
+    WorktreeTakeoverOptions,
+    "action" | "approvedBy" | "claimId" | "newAgentId" | "reason"
+  >,
+  expectedStatusDigest: string
+): WorktreeTakeoverReceipt | undefined =>
+  [...history]
+    .reverse()
+    .find(
+      (item) =>
+        item.phase === "intent" &&
+        item.claimId === options.claimId &&
+        item.action === options.action &&
+        item.newAgentId === options.newAgentId &&
+        item.changeDigest === expectedStatusDigest &&
+        item.approvedBy === options.approvedBy &&
+        item.reason === options.reason
+    );
+
+const recoverAppliedTakeoverIntent = (
+  commonGitDirectory: string,
+  history: WorktreeTakeoverReceipt[],
+  claim: WorktreeClaim,
+  intent: WorktreeTakeoverReceipt | undefined
+): WorktreeTakeoverResult | null => {
+  if (!intent) {
+    return null;
+  }
+  const applied =
+    intent.action === "release"
+      ? claim.state === "released"
+      : claim.owner.agentId === intent.newAgentId &&
+        claim.owner.ownerRef === `takeover:${intent.approvedBy}`;
+  if (!applied) {
+    return null;
+  }
+  const completed = { ...intent, phase: "completed" as const };
+  writeWorktreeTakeovers(
+    commonGitDirectory,
+    history.map((item) =>
+      item.takeoverId === completed.takeoverId ? completed : item
+    )
+  );
+  return { claim, receipt: completed };
+};
+
+const persistTakeoverIntent = (
+  commonGitDirectory: string,
+  history: WorktreeTakeoverReceipt[],
+  receipt: WorktreeTakeoverReceipt,
+  reused: boolean
+): void => {
+  if (!reused) {
+    writeWorktreeTakeovers(commonGitDirectory, [...history, receipt]);
+  }
+  if (
+    process.env.NODE_ENV === "test" &&
+    process.env.SIMPLE_CHANGES_TEST_FAIL_AFTER_TAKEOVER_INTENT ===
+      receipt.claimId
+  ) {
+    throw new SimpleChangesError(
+      "Simulated failure after durable takeover intent.",
+      EXIT_CODES.unsafe
+    );
+  }
+};
+
 export const takeoverWorktreeClaim = (
   options: WorktreeTakeoverOptions
 ): WorktreeTakeoverResult => {
@@ -1398,7 +1468,7 @@ export const takeoverWorktreeClaim = (
     );
   }
   const opening = captureInventory(options.repositoryPath);
-  return withCoordinationLock(
+  return withGitCoordinationLocks(
     opening.repository.commonGitDirectory,
     "worktree takeover",
     () => {
@@ -1412,6 +1482,21 @@ export const takeoverWorktreeClaim = (
           `Unknown worktree claim: ${claimId}`,
           EXIT_CODES.unsafe
         );
+      }
+      const takeoverHistory = readWorktreeTakeovers(commonGitDirectory);
+      const pendingIntent = matchingTakeoverIntent(
+        takeoverHistory,
+        { ...options, approvedBy, claimId, newAgentId, reason },
+        expectedStatusDigest
+      );
+      const recovered = recoverAppliedTakeoverIntent(
+        commonGitDirectory,
+        takeoverHistory,
+        claim,
+        pendingIntent
+      );
+      if (recovered) {
+        return recovered;
       }
       if (!LIVE_STATES.has(claim.state)) {
         throw new SimpleChangesError(
@@ -1433,9 +1518,9 @@ export const takeoverWorktreeClaim = (
         );
       }
       const takenOverAt = new Date().toISOString();
-      const receipt = validateSchema<WorktreeTakeoverReceipt>(
-        "worktree-takeover",
-        {
+      const receipt =
+        pendingIntent ??
+        validateSchema<WorktreeTakeoverReceipt>("worktree-takeover", {
           action: options.action,
           approvedBy,
           branch: current.branch,
@@ -1444,13 +1529,13 @@ export const takeoverWorktreeClaim = (
           headSha: current.headSha,
           newAgentId,
           path: claim.path,
+          phase: "intent",
           previousOwner: { ...claim.owner },
           reason,
           schemaVersion: 1,
           takenOverAt,
           takeoverId: `takeover-${randomUUID()}`,
-        } satisfies WorktreeTakeoverReceipt
-      );
+        } satisfies WorktreeTakeoverReceipt);
       const updated: WorktreeClaim =
         options.action === "reassign"
           ? {
@@ -1470,12 +1555,23 @@ export const takeoverWorktreeClaim = (
         updated.state,
         takenOverAt
       );
-      writeCoordinationDocument(commonGitDirectory, document);
-      writeWorktreeTakeovers(commonGitDirectory, [
-        ...readWorktreeTakeovers(commonGitDirectory),
+      persistTakeoverIntent(
+        commonGitDirectory,
+        takeoverHistory,
         receipt,
-      ]);
-      return { claim: updated, receipt };
+        Boolean(pendingIntent)
+      );
+      writeCoordinationDocument(commonGitDirectory, document);
+      const completed = { ...receipt, phase: "completed" as const };
+      writeWorktreeTakeovers(
+        commonGitDirectory,
+        pendingIntent
+          ? takeoverHistory.map((item) =>
+              item.takeoverId === completed.takeoverId ? completed : item
+            )
+          : [...takeoverHistory, completed]
+      );
+      return { claim: updated, receipt: completed };
     }
   );
 };

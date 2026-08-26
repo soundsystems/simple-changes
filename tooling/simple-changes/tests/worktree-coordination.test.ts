@@ -621,6 +621,60 @@ describe("worktree claim takeover", () => {
     ).toThrow("only a live claim can be taken over");
   });
 
+  test("recovers a durable takeover intent after coordination write interruption", () => {
+    const fixture = repository();
+    const worktree = join(fixture.base, "intent-recovery");
+    git(fixture.root, ["worktree", "add", "-b", "intent-recovery", worktree]);
+    const claim = claimWorktree(
+      worktree,
+      "vanished-owner",
+      worktree,
+      "codex-desktop",
+      "gone-session"
+    );
+    const current = captureInventory(worktree).worktrees.find(
+      (item) => item.path === worktree
+    );
+    if (!current) {
+      throw new Error("Expected takeover recovery worktree inventory");
+    }
+    const options = {
+      action: "reassign" as const,
+      approvedBy: "jaay",
+      claimId: claim.claimId,
+      expectedStatusDigest: current.changeDigest,
+      newAgentId: "admin-agent",
+      reason: "Owner agent no longer exists",
+      repositoryPath: worktree,
+    };
+    process.env.SIMPLE_CHANGES_TEST_FAIL_AFTER_TAKEOVER_INTENT = claim.claimId;
+    try {
+      expect(() => takeoverWorktreeClaim(options)).toThrow(
+        "durable takeover intent"
+      );
+    } finally {
+      Reflect.deleteProperty(
+        process.env,
+        "SIMPLE_CHANGES_TEST_FAIL_AFTER_TAKEOVER_INTENT"
+      );
+    }
+    const { commonGitDirectory } = captureInventory(worktree).repository;
+    expect(readWorktreeTakeovers(commonGitDirectory)).toEqual([
+      expect.objectContaining({ claimId: claim.claimId, phase: "intent" }),
+    ]);
+    expect(
+      readWorktreeCoordination(worktree).claims.find(
+        (item) => item.claimId === claim.claimId
+      )?.owner.agentId
+    ).toBe("vanished-owner");
+
+    const recovered = takeoverWorktreeClaim(options);
+    expect(recovered.receipt.phase).toBe("completed");
+    expect(readWorktreeTakeovers(commonGitDirectory)).toEqual([
+      recovered.receipt,
+    ]);
+  });
+
   test("refuses takeover while a live lease still requires the worktree", () => {
     const fixture = repository();
     const lease = startLoop(fixture.root, "controller", "integrate");

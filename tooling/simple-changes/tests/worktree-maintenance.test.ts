@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
-import { existsSync, rmSync } from "node:fs";
+import { existsSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { captureInventory } from "../../../skills/simple-changes/scripts/lib/inventory.ts";
 import {
@@ -364,8 +364,113 @@ describe("standalone worktree cleanup", () => {
     expect(receipt.errors).toEqual([]);
 
     const history = readWorktreeCleanups(commonGitDirectory(fixture.root));
-    expect(history).toHaveLength(1);
-    expect(history[0]?.cleanupId).toBe(receipt.cleanupId);
+    expect(history).toHaveLength(2);
+    expect(history.map((entry) => entry.phase)).toEqual([
+      "intent",
+      "completed",
+    ]);
+    expect(history[0]).toMatchObject({
+      cleanupId: receipt.cleanupId,
+      plannedPrunePaths: [missingWorktree],
+      plannedRemovals: [
+        expect.objectContaining({
+          branch: "contained-unit",
+          path: containedWorktree,
+        }),
+      ],
+      removed: [],
+    });
+    expect(history[1]?.cleanupId).toBe(receipt.cleanupId);
+  });
+
+  test("preserves the local branch represented by a remote target ref", () => {
+    const fixture = repository();
+    const targetWorktree = join(fixture.base, "target-main");
+    const mergedWorktree = join(fixture.base, "merged-feature");
+    const targetRevision = git(fixture.root, ["rev-parse", "HEAD"]);
+    git(fixture.root, ["switch", "-c", "control"]);
+    git(fixture.root, [
+      "remote",
+      "add",
+      "origin",
+      join(fixture.base, "remote"),
+    ]);
+    git(fixture.root, [
+      "update-ref",
+      "refs/remotes/origin/main",
+      targetRevision,
+    ]);
+    git(fixture.root, ["worktree", "add", targetWorktree, "main"]);
+    git(fixture.root, [
+      "worktree",
+      "add",
+      "-b",
+      "merged-feature",
+      mergedWorktree,
+      targetRevision,
+    ]);
+
+    const receipt = standaloneWorktreeCleanup({
+      agentId: "cleaner",
+      approvedBy: "the-user",
+      reason: "Remove merged work while keeping the target checkout.",
+      repositoryPath: fixture.root,
+      targetRef: "origin/main",
+    });
+
+    expect(receipt.preserved).toContainEqual(
+      expect.objectContaining({
+        path: targetWorktree,
+        reason: expect.stringContaining("target branch main"),
+      })
+    );
+    expect(receipt.removed).toContainEqual(
+      expect.objectContaining({
+        branch: "merged-feature",
+        path: mergedWorktree,
+      })
+    );
+    expect(existsSync(targetWorktree)).toBe(true);
+    expect(existsSync(mergedWorktree)).toBe(false);
+    expect(git(fixture.root, ["branch", "--list", "main"])).toContain("main");
+  });
+
+  test("preserves legacy version 1 cleanup receipts without inventing plans", () => {
+    const fixture = repository();
+    const receipt = standaloneWorktreeCleanup({
+      agentId: "cleaner",
+      approvedBy: "the-user",
+      reason: "Create a completed receipt for compatibility testing.",
+      repositoryPath: fixture.root,
+    });
+    const legacyReceipt = {
+      agentId: receipt.agentId,
+      approvedBy: receipt.approvedBy,
+      cleanupId: receipt.cleanupId,
+      errors: receipt.errors,
+      preserved: receipt.preserved,
+      prunedPaths: receipt.prunedPaths,
+      reason: receipt.reason,
+      recordedAt: receipt.recordedAt,
+      removed: receipt.removed,
+      schemaVersion: 1 as const,
+      targetRef: receipt.targetRef,
+      targetRevision: receipt.targetRevision,
+    };
+    const cleanupHistoryPath = join(
+      commonGitDirectory(fixture.root),
+      "simple-changes",
+      "worktree-coordination",
+      "cleanups.json"
+    );
+    writeFileSync(
+      cleanupHistoryPath,
+      `${JSON.stringify([legacyReceipt], null, 2)}\n`
+    );
+
+    expect(readWorktreeCleanups(commonGitDirectory(fixture.root))).toEqual([
+      legacyReceipt,
+    ]);
   });
 
   test("removes a squash-merged worktree by patch equivalence", () => {

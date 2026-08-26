@@ -20,7 +20,7 @@
   ],
   "properties": {
     "schemaVersion": {
-      "const": 1
+      "enum": [1, 2]
     },
     "cleanupId": {
       "type": "string",
@@ -141,6 +141,47 @@
         "type": "string",
         "minLength": 1
       }
+    },
+    "phase": {
+      "enum": ["intent", "completed"]
+    },
+    "plannedRemovals": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "path",
+          "branch",
+          "headSha",
+          "changeDigest",
+          "containment"
+        ],
+        "properties": {
+          "path": { "type": "string", "minLength": 1 },
+          "branch": {
+            "anyOf": [{ "type": "string", "minLength": 1 }, { "type": "null" }]
+          },
+          "headSha": { "type": "string", "pattern": "^[0-9a-f]{40,64}$" },
+          "changeDigest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+          "containment": { "enum": ["target-contained", "patch-equivalent"] }
+        }
+      }
+    },
+    "plannedPrunePaths": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
     }
-  }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "schemaVersion": { "const": 2 } },
+        "required": ["schemaVersion"]
+      },
+      "then": {
+        "required": ["phase", "plannedRemovals", "plannedPrunePaths"]
+      }
+    }
+  ]
 }

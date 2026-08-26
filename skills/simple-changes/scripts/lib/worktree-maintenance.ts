@@ -38,6 +38,28 @@ const CLEANUP_LIVE_CLAIM_STATES = new Set<WorktreeCoordinationState>([
 
 const CLEANUP_PATCH_EQUIVALENCE_MAX_COMMITS = 200;
 
+const localBranchForTargetRef = (
+  primaryCheckout: string,
+  targetRef: string
+): string | null => {
+  if (targetRef.startsWith("refs/heads/")) {
+    return targetRef.slice("refs/heads/".length);
+  }
+  if (targetRef.startsWith("refs/remotes/")) {
+    const remoteRef = targetRef.slice("refs/remotes/".length);
+    const separator = remoteRef.indexOf("/");
+    return separator === -1 ? null : remoteRef.slice(separator + 1);
+  }
+  const remoteNames = runGit(primaryCheckout, ["remote"], true)
+    .stdout.split("\n")
+    .map((remoteName) => remoteName.trim())
+    .filter(Boolean);
+  const matchedRemote = remoteNames.find((name) =>
+    targetRef.startsWith(`${name}/`)
+  );
+  return matchedRemote ? targetRef.slice(matchedRemote.length + 1) : targetRef;
+};
+
 const cleanupsPath = (commonGitDirectory: string): string =>
   resolve(
     commonGitDirectory,
@@ -66,12 +88,15 @@ export interface WorktreeCleanupReceipt {
   approvedBy: string;
   cleanupId: string;
   errors: string[];
+  phase?: "intent" | "completed";
+  plannedPrunePaths?: string[];
+  plannedRemovals?: Omit<WorktreeCleanupRemoval, "branchDeleted">[];
   preserved: WorktreeCleanupPreserved[];
   prunedPaths: string[];
   reason: string;
   recordedAt: string;
   removed: WorktreeCleanupRemoval[];
-  schemaVersion: 1;
+  schemaVersion: 1 | 2;
   targetRef: string;
   targetRevision: string;
 }
@@ -197,7 +222,8 @@ interface CleanupClassification {
 
 const classifyCleanupCandidates = (
   inventory: RepositoryInventory,
-  targetRevision: string
+  targetRevision: string,
+  targetRef: string
 ): CleanupClassification => {
   const classification: CleanupClassification = {
     preserved: [],
@@ -205,6 +231,10 @@ const classifyCleanupCandidates = (
     removable: [],
   };
   const claimed = liveClaimPaths(inventory.repository.commonGitDirectory);
+  const targetBranch = localBranchForTargetRef(
+    inventory.repository.primaryCheckout,
+    targetRef
+  );
   const targetPatchIdCache = new Map<string, Map<string, string>>();
   for (const worktree of inventory.worktrees) {
     if (worktree.isPrimary) {
@@ -212,6 +242,14 @@ const classifyCleanupCandidates = (
     }
     if (worktree.prunable) {
       classification.prunable.push(worktree);
+      continue;
+    }
+    if (worktree.branch && worktree.branch === targetBranch) {
+      classification.preserved.push({
+        nextCommand: null,
+        path: worktree.path,
+        reason: `The checkout is attached to cleanup target branch ${targetBranch}; target checkouts are preserved.`,
+      });
       continue;
     }
     if (claimed.has(worktree.path)) {
@@ -284,7 +322,8 @@ const deleteContainedBranch = (
   targetRef: string,
   errors: string[]
 ): boolean => {
-  if (!branch || branch === targetRef) {
+  const targetBranch = localBranchForTargetRef(primaryCheckout, targetRef);
+  if (!branch || branch === targetRef || branch === targetBranch) {
     return false;
   }
   if (branchTipSha(primaryCheckout, branch) !== headSha) {
@@ -362,6 +401,22 @@ const pruneStaleWorktreeMetadata = (
   if (prunable.length === 0) {
     return [];
   }
+  const plannedPaths = prunable
+    .map((worktree) => worktree.path)
+    .sort((left, right) => left.localeCompare(right));
+  const freshPaths = captureInventory(repositoryPath)
+    .worktrees.filter((worktree) => worktree.prunable)
+    .map((worktree) => worktree.path)
+    .sort((left, right) => left.localeCompare(right));
+  if (
+    plannedPaths.length !== freshPaths.length ||
+    plannedPaths.some((path, index) => path !== freshPaths[index])
+  ) {
+    errors.push(
+      "Prunable worktree metadata changed after cleanup intent was recorded; no metadata was pruned. Re-run cleanup to record a fresh exact plan."
+    );
+    return [];
+  }
   const result = runGit(
     repositoryPath,
     ["worktree", "prune", "--expire", "now"],
@@ -434,8 +489,46 @@ export const standaloneWorktreeCleanup = (
       const errors: string[] = [];
       const classification = classifyCleanupCandidates(
         inventory,
-        targetRevision
+        targetRevision,
+        targetRef
       );
+      const cleanupId = `cleanup-${randomUUID()}`;
+      const plannedRemovals = classification.removable
+        .map((candidate) => ({
+          branch: candidate.worktree.branch,
+          changeDigest: candidate.worktree.changeDigest,
+          containment: candidate.containment,
+          headSha: candidate.worktree.headSha,
+          path: candidate.worktree.path,
+        }))
+        .sort((left, right) => left.path.localeCompare(right.path));
+      const plannedPrunePaths = classification.prunable
+        .map((worktree) => worktree.path)
+        .sort((left, right) => left.localeCompare(right));
+      const preserved = classification.preserved.sort((left, right) =>
+        left.path.localeCompare(right.path)
+      );
+      const intent = validateSchema<WorktreeCleanupReceipt>(
+        "worktree-cleanup",
+        {
+          agentId,
+          approvedBy,
+          cleanupId,
+          errors: [],
+          phase: "intent",
+          plannedPrunePaths,
+          plannedRemovals,
+          preserved,
+          prunedPaths: [],
+          reason,
+          recordedAt: new Date().toISOString(),
+          removed: [],
+          schemaVersion: 2,
+          targetRef,
+          targetRevision,
+        } satisfies WorktreeCleanupReceipt
+      );
+      appendWorktreeCleanup(commonGitDirectory, intent);
       const removed = removeProvenWorktrees(
         options.repositoryPath,
         targetRef,
@@ -452,18 +545,19 @@ export const standaloneWorktreeCleanup = (
         {
           agentId,
           approvedBy,
-          cleanupId: `cleanup-${randomUUID()}`,
+          cleanupId,
           errors,
-          preserved: classification.preserved.sort((left, right) =>
-            left.path.localeCompare(right.path)
-          ),
+          phase: "completed",
+          plannedPrunePaths,
+          plannedRemovals,
+          preserved,
           prunedPaths,
           reason,
           recordedAt: new Date().toISOString(),
           removed: removed.sort((left, right) =>
             left.path.localeCompare(right.path)
           ),
-          schemaVersion: 1,
+          schemaVersion: 2,
           targetRef,
           targetRevision,
         } satisfies WorktreeCleanupReceipt

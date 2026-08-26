@@ -1,5 +1,14 @@
 # Developer changelog
 
+## 0.12.18 - 2026-08-26
+
+- Hardened standalone worktree cleanup with durable exact-plan intent receipts,
+  remote-ref target protection, and last-moment prune-plan verification. New
+  intent and completion receipts use `schemaVersion: 2`; completed
+  `schemaVersion: 1` receipts remain valid and are preserved exactly without
+  inferred plan evidence.
+<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-26T17:29:43-05:00" -->
+
 ## 0.12.17 - 2026-08-26
 
 - Replaced `Array.prototype.reverse()` on the copied takeover-history array

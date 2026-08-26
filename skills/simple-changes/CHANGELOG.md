@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.12.18 - 2026-08-26
+
+- Standalone cleanup now preserves local worktrees for target branches
+  referenced through remotes and stops safely if cleanup conditions change.
+<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-26T17:29:43-05:00" -->
+
 ## 0.12.17 - 2026-08-26
 
 - Published Simple Changes forks now pass downstream lint checks without

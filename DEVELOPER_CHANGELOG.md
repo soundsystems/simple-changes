@@ -1,5 +1,13 @@
 # Developer changelog
 
+## 0.12.19 - 2026-08-26
+
+- Replaced `bunx ultracite` package scripts with the lockfile-installed
+  Ultracite binary so release gates cannot fetch a moving latest version.
+  Reconciled the Biome development dependency, configuration schema, and
+  lockfile to `2.5.10`. Runtime behavior and guidance are unchanged.
+<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-26T18:27:18-05:00" -->
+
 ## 0.12.18 - 2026-08-26
 
 - Hardened standalone worktree cleanup with durable exact-plan intent receipts,

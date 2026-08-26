@@ -93,6 +93,94 @@ const patchIdFor = (cwd: string, sha: string): string | null => {
   return patchId || null;
 };
 
+export interface CommitEquivalenceOptions {
+  maxCommits?: number;
+}
+
+export interface CommitEquivalenceResult {
+  commitCount: number;
+  commits: WorktreeEquivalenceCommit[];
+  exceededMaxCommits: boolean;
+  fullyMatched: boolean;
+  mergeBase: string | null;
+}
+
+export const commitEquivalenceAgainstTarget = (
+  repositoryPath: string,
+  headSha: string,
+  targetRevision: string,
+  options: CommitEquivalenceOptions = {}
+): CommitEquivalenceResult => {
+  const mergeBaseResult = runGit(
+    repositoryPath,
+    ["merge-base", headSha, targetRevision],
+    true
+  );
+  if (mergeBaseResult.exitCode !== 0) {
+    return {
+      commitCount: 0,
+      commits: [],
+      exceededMaxCommits: false,
+      fullyMatched: false,
+      mergeBase: null,
+    };
+  }
+  const mergeBase = mergeBaseResult.stdout.trim();
+  const commitCount = Number.parseInt(
+    runGit(repositoryPath, [
+      "rev-list",
+      "--count",
+      `${mergeBase}..${headSha}`,
+    ]).stdout.trim(),
+    10
+  );
+  if (
+    typeof options.maxCommits === "number" &&
+    Number.isInteger(commitCount) &&
+    commitCount > options.maxCommits
+  ) {
+    return {
+      commitCount,
+      commits: [],
+      exceededMaxCommits: true,
+      fullyMatched: false,
+      mergeBase,
+    };
+  }
+  const targetPatchIds = new Map<string, string>();
+  for (const sha of revisionList(
+    repositoryPath,
+    `${mergeBase}..${targetRevision}`
+  )) {
+    const patchId = patchIdFor(repositoryPath, sha);
+    if (patchId && !targetPatchIds.has(patchId)) {
+      targetPatchIds.set(patchId, sha);
+    }
+  }
+  const commits: WorktreeEquivalenceCommit[] = revisionList(
+    repositoryPath,
+    `${mergeBase}..${headSha}`
+  ).map((sha) => {
+    const patchId = patchIdFor(repositoryPath, sha);
+    const matchedTargetSha = patchId
+      ? (targetPatchIds.get(patchId) ?? null)
+      : null;
+    return {
+      matchedTargetSha,
+      patchId,
+      sha,
+      status: matchedTargetSha ? "matched" : "unmatched",
+    };
+  });
+  return {
+    commitCount,
+    commits,
+    exceededMaxCommits: false,
+    fullyMatched: commits.every((commit) => commit.status === "matched"),
+    mergeBase,
+  };
+};
+
 const bytesEqual = (left: Uint8Array, right: Uint8Array): boolean =>
   left.length === right.length && Buffer.compare(left, right) === 0;
 
@@ -197,43 +285,19 @@ export const auditWorktreeEquivalence = (
     "--verify",
     `${targetRef}^{commit}`,
   ]).stdout.trim();
-  const mergeBaseResult = runGit(
+  const equivalence = commitEquivalenceAgainstTarget(
     worktreeRoot,
-    ["merge-base", head, targetRevision],
-    true
+    head,
+    targetRevision
   );
-  if (mergeBaseResult.exitCode !== 0) {
+  if (equivalence.mergeBase === null) {
     throw new SimpleChangesError(
       `No common history between HEAD and ${targetRef}; equivalence evidence needs a merge base.`,
       EXIT_CODES.unsafe
     );
   }
-  const mergeBase = mergeBaseResult.stdout.trim();
-  const targetPatchIds = new Map<string, string>();
-  for (const sha of revisionList(
-    worktreeRoot,
-    `${mergeBase}..${targetRevision}`
-  )) {
-    const patchId = patchIdFor(worktreeRoot, sha);
-    if (patchId && !targetPatchIds.has(patchId)) {
-      targetPatchIds.set(patchId, sha);
-    }
-  }
-  const commits: WorktreeEquivalenceCommit[] = revisionList(
-    worktreeRoot,
-    `${mergeBase}..${head}`
-  ).map((sha) => {
-    const patchId = patchIdFor(worktreeRoot, sha);
-    const matchedTargetSha = patchId
-      ? (targetPatchIds.get(patchId) ?? null)
-      : null;
-    return {
-      matchedTargetSha,
-      patchId,
-      sha,
-      status: matchedTargetSha ? "matched" : "unmatched",
-    };
-  });
+  const { mergeBase } = equivalence;
+  const { commits } = equivalence;
   const statusOutput = textDecoder.decode(
     rawGit(worktreeRoot, [
       "status",

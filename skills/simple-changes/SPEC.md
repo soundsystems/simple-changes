@@ -175,6 +175,14 @@
   destructive, irreversible, unbounded, lock-heavy, unprotected, or
   target-mismatched operations. Other high-risk actions retain independent
   authority checks.
+- Automatic local-branch cleanup keeps its eligibility gates but proves
+  containment by exact ancestry or by full per-commit patch equivalence, so
+  squash- and rebase-merged branches stop accumulating; any unmatched commit
+  preserves the branch. Adopting one pause-receipted straggler is never
+  blocked by a sibling worktree that also holds a valid current pause receipt,
+  and an adopted clean worktree with no unique work can be disposed through
+  the same audited disposition as opening work; raw worktree removal is never
+  the sanctioned path for lease-registered state.
 - Inherited broken state has explicit audited recovery paths instead of
   dead ends: `worktree takeover` reassigns or releases a stale claim only with
   a named approver, reason, and exact current status digest, and never mutates

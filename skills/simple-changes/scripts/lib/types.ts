@@ -809,6 +809,7 @@ export interface LoopWorktreeDisposition {
   branch: string | null;
   changeDigest: string;
   completedAt?: string;
+  containmentMethod?: "target-contained" | "patch-equivalent";
   createdAt: string;
   headSha: string;
   outcome: "remove-after-audit";

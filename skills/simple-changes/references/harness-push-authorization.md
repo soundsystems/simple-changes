@@ -76,3 +76,9 @@ When all are supported, configure the narrow rule and verify it. When any are
 missing, do not guess a settings path or syntax. Report the unsupported
 capability and provide a manual next action. Continue local checks and packaging
 that do not require push permission.
+
+Some harnesses forbid an agent from editing its own permission or allowlist
+files at all; user approval in chat does not lift that guard. That refusal is
+correct behavior, not a failure: provide the exact lines and the exact file for
+the user to add themselves, then continue the work that needs no new
+permission.

@@ -254,7 +254,10 @@ Use `loop accept-paused-change` for an opening preserved worktree whose owner
 changed it before pausing. Both commands require the receipt's run, repository,
 path, branch, HEAD, digest, claim owner, and current state to match, register the
 worktree as preserved with `mutationAllowed: false`, and reject the update when
-any unrelated manifest violation remains. `loop allow` remains the separate
+any unrelated manifest violation remains. A sibling unregistered worktree that
+holds its own valid current pause receipt does not count as a blocking
+violation, so several receipted stragglers can be adopted one at a time in any
+order instead of deadlocking against each other. `loop allow` remains the separate
 exceptional user-approved override path.
 
 Harness support is not uniform. The host orchestration layer must probe exact
@@ -300,13 +303,18 @@ opening work as cleanup. An opening worktree that remains unchanged across the
 run, is clean and unclaimed, and has an exact head already contained in the
 refreshed target is a normal automatic cleanup candidate. Use
 `loop retain-worktree` when that checkout should stay. For exceptional changed
-opening work, `loop dispose-worktree` records a manual removal disposition
-under the active lease. The command accepts only the exact current path and
-content-sensitive status digest, requires the loop owner and named approver,
-rejects the canonical primary checkout, and audits that the worktree is clean
-and its head has zero commits outside the lease's pinned canonical target
-revision. The manifest records its branch, head, digest, target ref and revision,
-approver, reason, and zero-unique-commit result before deletion.
+opening work, and for a worktree adopted into the lease mid-run through
+`adopt-worktree` or `accept-paused-change`, `loop dispose-worktree` records a
+manual removal disposition under the active lease; never fall back to raw
+`git worktree remove` for lease-registered state. The command accepts only the
+exact current path and content-sensitive status digest, requires the loop
+owner and named approver, rejects the canonical primary checkout, and audits
+that the worktree is clean and its head has zero unique commits outside the
+lease's pinned canonical target revision, where a commit whose exact patch the
+target already contains (a squash- or rebase-merged straggler) counts as not
+unique and the proving method is recorded. The manifest records its branch,
+head, digest, target ref and revision, approver, reason, and
+zero-unique-commit result before deletion.
 
 The disposition permits only that opening worktree's absence. It does not
 remove the path, authorize `--force`, delete its branch, suppress other

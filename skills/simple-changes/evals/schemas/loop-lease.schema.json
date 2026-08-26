@@ -375,6 +375,9 @@
           },
           "headSha": { "type": "string", "pattern": "^[0-9a-f]{40,64}$" },
           "changeDigest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+          "containmentMethod": {
+            "enum": ["target-contained", "patch-equivalent"]
+          },
           "status": { "enum": ["intended", "completed"] },
           "completedAt": {
             "type": "string",

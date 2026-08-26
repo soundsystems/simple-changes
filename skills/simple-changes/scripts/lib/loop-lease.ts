@@ -3877,7 +3877,8 @@ interface TargetContainmentAudit {
 const targetContainmentAudit = (
   repositoryPath: string,
   targetRevision: string,
-  revision: string | null
+  revision: string | null,
+  targetPatchIdCache?: Map<string, Map<string, string>>
 ): TargetContainmentAudit => {
   if (!revision) {
     return { exceededMaxCommits: false, method: null };
@@ -3889,7 +3890,7 @@ const targetContainmentAudit = (
     repositoryPath,
     revision,
     targetRevision,
-    { maxCommits: PATCH_EQUIVALENCE_MAX_COMMITS }
+    { maxCommits: PATCH_EQUIVALENCE_MAX_COMMITS, targetPatchIdCache }
   );
   if (equivalence.exceededMaxCommits) {
     return { exceededMaxCommits: true, method: null };
@@ -4030,6 +4031,7 @@ const completeAbsentRemovalIntents = (
   const currentPaths = new Set(
     inventory.worktrees.map((worktree) => worktree.path)
   );
+  const dispositionPatchIdCache = new Map<string, Map<string, string>>();
   const completedPaths = (lease.dispositions ?? [])
     .filter(
       (disposition) =>
@@ -4040,7 +4042,8 @@ const completeAbsentRemovalIntents = (
         targetContainmentAudit(
           inventory.repository.primaryCheckout,
           targetRevision,
-          disposition.headSha
+          disposition.headSha,
+          dispositionPatchIdCache
         ).method !== null
     )
     .map((disposition) => disposition.path);
@@ -4291,6 +4294,7 @@ const removeTargetContainedBranches = (
       )
       .map((disposition) => disposition.branch as string)
   );
+  const targetPatchIdCache = new Map<string, Map<string, string>>();
   for (const branch of inventory.branches) {
     const unchangedOpeningBranch =
       openingBranches.get(branch.name) === branch.sha;
@@ -4306,7 +4310,8 @@ const removeTargetContainedBranches = (
     const containment = targetContainmentAudit(
       repositoryPath,
       targetRevision,
-      branch.sha
+      branch.sha,
+      targetPatchIdCache
     );
     if (containment.exceededMaxCommits) {
       cleanup.errors.push(

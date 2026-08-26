@@ -105,6 +105,7 @@ const patchIdFor = (cwd: string, sha: string): string | null => {
 
 export interface CommitEquivalenceOptions {
   maxCommits?: number;
+  targetPatchIdCache?: Map<string, Map<string, string>> | undefined;
 }
 
 export interface CommitEquivalenceResult {
@@ -157,15 +158,17 @@ export const commitEquivalenceAgainstTarget = (
       mergeBase,
     };
   }
-  const targetPatchIds = new Map<string, string>();
-  for (const sha of revisionList(
-    repositoryPath,
-    `${mergeBase}..${targetRevision}`
-  )) {
-    const patchId = patchIdFor(repositoryPath, sha);
-    if (patchId && !targetPatchIds.has(patchId)) {
-      targetPatchIds.set(patchId, sha);
+  const targetRange = `${mergeBase}..${targetRevision}`;
+  const cachedTargetPatchIds = options.targetPatchIdCache?.get(targetRange);
+  const targetPatchIds = cachedTargetPatchIds ?? new Map<string, string>();
+  if (!cachedTargetPatchIds) {
+    for (const sha of revisionList(repositoryPath, targetRange)) {
+      const patchId = patchIdFor(repositoryPath, sha);
+      if (patchId && !targetPatchIds.has(patchId)) {
+        targetPatchIds.set(patchId, sha);
+      }
     }
+    options.targetPatchIdCache?.set(targetRange, targetPatchIds);
   }
   const commits: WorktreeEquivalenceCommit[] = revisionList(
     repositoryPath,

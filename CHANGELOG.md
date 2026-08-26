@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.12.15 - 2026-08-26
+
+- Finished work no longer piles up locally after a shipment:
+  - Automatic branch cleanup keeps its existing eligibility rules but now
+    proves containment by exact ancestry or by matching every unique commit's
+    patch, so squash-merged and rebase-merged branches are deleted instead of
+    accumulating. Each removal records how it was proven. A branch with any
+    unmatched commit, or one too far ahead to audit cheaply, is preserved and
+    named.
+  - Several paused straggler worktrees can now be adopted one at a time in any
+    order. A sibling worktree holding its own valid current pause receipt no
+    longer counts as a blocking violation, so receipted stragglers stop
+    deadlocking against each other.
+  - `loop dispose-worktree` now also accepts a worktree adopted mid-run through
+    `adopt-worktree` or `accept-paused-change`, under the same evidence bar,
+    and treats a commit whose exact patch the target already contains as not
+    unique. A squash-merged straggler can be removed through the audited path
+    instead of a raw `git worktree remove`.
+- Ship receipts now open by naming the shipped change in plain language, what
+  is different now and for whom, before merge, check, and deployment evidence.
+  That opening is required even when no changelog entry was written and no
+  customer notes apply. Receipts also no longer carry internal cross-references
+  that resolve nowhere or lists of evidence that was deliberately not relied
+  on.
+- A harness that forbids an agent from editing its own permission or allowlist
+  file is now documented as correct behavior rather than a failure: Simple
+  Changes gives you the exact file and lines to add yourself and continues the
+  work that needs no new permission.
+<!-- simple-changelogs-signature agent="claude-opus-5 medium" at="2026-08-26T10:35:00-05:00" -->
+
 ## 0.12.14 - 2026-08-25
 
 - Inherited shipment state now has audited recovery paths:

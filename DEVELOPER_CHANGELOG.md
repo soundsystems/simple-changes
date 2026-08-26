@@ -1,5 +1,55 @@
 # Developer changelog
 
+## 0.12.15 - 2026-08-26
+
+- Closed three cleanup accumulation gaps reported from field runs:
+  - `loop finalize` branch deletion keeps its eligibility gates (not the
+    target, not attached to a worktree, and an unchanged opening branch,
+    run-owned, or reconciled-absent) but now accepts containment by exact
+    ancestry or by full per-commit patch equivalence, capped at 200 commits
+    ahead. A branch with any unmatched commit, or one over the cap, is
+    preserved and named instead of deleted. Each removal records
+    `target-contained` or `patch-equivalent` as its containment method.
+  - `adopt-worktree` and `accept-paused-change` no longer treat a sibling
+    unregistered worktree that holds a valid current same-run pause receipt as
+    a blocking manifest violation. That removes a deadlock where two or more
+    receipted stragglers could not be adopted in any order.
+  - `loop dispose-worktree` now accepts a worktree adopted into the lease
+    mid-run through `adopt-worktree` or `accept-paused-change` under the same
+    path, digest, owner, approver, cleanliness, and zero-unique-commit bar as
+    exceptional changed opening work, and counts a commit whose exact patch the
+    pinned canonical target already contains as not unique. The recorded
+    disposition names the proving method.
+  - `LoopWorktreeDisposition` and the loop-lease schema gained the optional
+    `containmentMethod` field (`target-contained` or `patch-equivalent`).
+    Regression coverage spans patch-equivalent and over-cap branch cleanup,
+    sibling-receipt adoption ordering, and adopted-worktree disposition.
+- Ship receipts are contract-bound to lead with the shipped outcome. `SKILL.md`
+  and `references/ship-communication.md` require the first line after the
+  status to name the change in plain language from each shipped unit's recorded
+  outcome, before merge, check, and deployment evidence, and even when no
+  changelog entry was written. The reference adds an avoid/prefer receipt
+  example and bans dangling internal cross-references and lists of evidence
+  that was deliberately not relied on. `tests/skill-contract.test.ts` pins the
+  new prose.
+- Replaced every em dash in the skill (documentation, guidance copy, and
+  CLI-facing strings) with the grammatically appropriate equivalent:
+  parentheses for paired asides and label qualifiers, commas for contrastive
+  and appositive clauses, colons for option label-description separators, and a
+  semicolon between independent clauses. This changes user-visible onboarding
+  and update option copy punctuation, so contract and onboarding test pins were
+  updated with it. Released changelog history was deliberately left untouched.
+- Documented the harness self-permission guard in
+  `references/harness-push-authorization.md`: a harness that forbids an agent
+  from editing its own permission or allowlist file is correct behavior that
+  user approval in chat does not lift, and the agent hands over the exact file
+  and lines instead.
+- Advanced the package and CLI to 0.12.15. Simple Changes guidance stays at
+  version 20: this release introduces no setting and requires no user decision,
+  and the guidance policy reserves a bump for installed releases that
+  materially change behavior, onboarding, settings, or companion integration.
+<!-- simple-changelogs-signature agent="claude-opus-5 medium" at="2026-08-26T10:35:00-05:00" -->
+
 ## 0.12.14 - 2026-08-25
 
 - Added audited recovery contracts for inherited broken shipment state:

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.12.17 - 2026-08-26
+
+- Published Simple Changes forks now pass downstream lint checks without
+  changing worktree-coordination behavior.
+<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-26T16:48:35-05:00" -->
+
 ## 0.12.16 - 2026-08-26
 
 - A busy repository no longer deadlocks a shipment run. When other agents

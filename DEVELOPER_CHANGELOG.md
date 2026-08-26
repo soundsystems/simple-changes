@@ -1,5 +1,13 @@
 # Developer changelog
 
+## 0.12.17 - 2026-08-26
+
+- Replaced `Array.prototype.reverse()` on the copied takeover-history array
+  with an explicit reverse-index scan to satisfy `unicorn/no-array-reverse`
+  under the package's ES2022 TypeScript target while preserving newest-first
+  matching behavior and byte-identical fork publication.
+<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-08-26T16:48:35-05:00" -->
+
 ## 0.12.16 - 2026-08-26
 
 - Closed the stale-opening-manifest deadlock reported twice from live runs in

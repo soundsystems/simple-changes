@@ -1398,19 +1398,22 @@ const matchingTakeoverIntent = (
     "action" | "approvedBy" | "claimId" | "newAgentId" | "reason"
   >,
   expectedStatusDigest: string
-): WorktreeTakeoverReceipt | undefined =>
-  [...history]
-    .reverse()
-    .find(
-      (item) =>
-        item.phase === "intent" &&
-        item.claimId === options.claimId &&
-        item.action === options.action &&
-        item.newAgentId === options.newAgentId &&
-        item.changeDigest === expectedStatusDigest &&
-        item.approvedBy === options.approvedBy &&
-        item.reason === options.reason
-    );
+): WorktreeTakeoverReceipt | undefined => {
+  for (let index = history.length - 1; index >= 0; index -= 1) {
+    const item = history[index];
+    if (
+      item?.phase === "intent" &&
+      item.claimId === options.claimId &&
+      item.action === options.action &&
+      item.newAgentId === options.newAgentId &&
+      item.changeDigest === expectedStatusDigest &&
+      item.approvedBy === options.approvedBy &&
+      item.reason === options.reason
+    ) {
+      return item;
+    }
+  }
+};
 
 const recoverAppliedTakeoverIntent = (
   commonGitDirectory: string,

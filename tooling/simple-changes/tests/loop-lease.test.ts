@@ -59,6 +59,7 @@ import {
   observeWorktreeClaims,
   pauseClaimedWorktree,
   readCoordinationDocumentFromCommonDirectory,
+  readWorktreeCoordination,
   releaseWorktreeClaim,
   withWorktreeCoordinationLock,
 } from "../../../skills/simple-changes/scripts/lib/worktree-coordination.ts";
@@ -358,6 +359,7 @@ describe("active integration-loop lease", () => {
       errors: [],
       primaryUpdated: false,
       prunedWorktreeMetadata: 0,
+      releasedClaims: [],
       removedBranches: [],
       removedWorktrees: [],
     });
@@ -2013,6 +2015,116 @@ describe("active integration-loop lease", () => {
     expect(finalized.outcome).toBe("completed");
     expect(finalized.cleanup.removedWorktrees).not.toContain(claimed);
     expect(existsSync(claimed)).toBe(true);
+  });
+
+  test("releases the controller's own claim on a clean target-contained checkout at finalization", () => {
+    const fixture = repository();
+    const shipped = join(fixture.base, "controller-shipped");
+    git(fixture.root, ["worktree", "add", "-b", "controller-shipped", shipped]);
+    const lease = startLoop(fixture.root, "controller", "integrate");
+    const claim = claimWorktree(
+      fixture.root,
+      "controller",
+      shipped,
+      "codex",
+      "takeover:the-user"
+    );
+
+    const finalized = finalizeLoop(
+      fixture.root,
+      lease.runId,
+      "controller",
+      "The controller's own claimed work is already in the target."
+    );
+
+    expect(finalized.outcome).toBe("completed");
+    expect(finalized.cleanup.releasedClaims).toEqual([
+      { claimId: claim.claimId, path: shipped, releaseReason: "shipped" },
+    ]);
+    expect(finalized.cleanup.removedWorktrees).toContain(shipped);
+    expect(existsSync(shipped)).toBe(false);
+    expect(readWorktreeCoordination(fixture.root).claims[0]).toMatchObject({
+      releaseReason: "shipped",
+      state: "released",
+    });
+  });
+
+  test("keeps another owner's claim on a clean target-contained checkout at finalization", () => {
+    const fixture = repository();
+    const claimed = join(fixture.base, "other-owner-clean");
+    git(fixture.root, ["worktree", "add", "-b", "other-owner-clean", claimed]);
+    const lease = startLoop(fixture.root, "controller", "integrate");
+    claimWorktree(fixture.root, "other-agent", claimed, "codex");
+
+    const finalized = finalizeLoop(
+      fixture.root,
+      lease.runId,
+      "controller",
+      "Another owner's claim is not the controller's to release."
+    );
+
+    expect(finalized.outcome).toBe("completed");
+    expect(finalized.cleanup.releasedClaims).toEqual([]);
+    expect(existsSync(claimed)).toBe(true);
+    expect(readWorktreeCoordination(fixture.root).claims[0]?.state).toBe(
+      "active"
+    );
+  });
+
+  test("releases a claim whose worktree directory vanished and prunes its metadata at finalization", () => {
+    const fixture = repository();
+    const vanished = join(fixture.base, "vanished-claim");
+    git(fixture.root, ["worktree", "add", "-b", "vanished-claim", vanished]);
+    const lease = startLoop(fixture.root, "controller", "integrate");
+    const claim = claimWorktree(fixture.root, "other-agent", vanished, "codex");
+    rmSync(vanished, { force: true, recursive: true });
+
+    const finalized = finalizeLoop(
+      fixture.root,
+      lease.runId,
+      "controller",
+      "A claim on a missing directory protects nothing."
+    );
+
+    expect(finalized.outcome).toBe("completed");
+    expect(finalized.cleanup.releasedClaims).toEqual([
+      {
+        claimId: claim.claimId,
+        path: vanished,
+        releaseReason: "worktree-absent",
+      },
+    ]);
+    expect(finalized.cleanup.prunedWorktreeMetadata).toBe(1);
+    expect(readWorktreeCoordination(fixture.root).claims[0]).toMatchObject({
+      releaseReason: "worktree-absent",
+      state: "released",
+    });
+  });
+
+  test("releases an orphaned claim that was never registered with the lease", () => {
+    const fixture = repository();
+    const orphan = join(fixture.base, "orphan-claim");
+    git(fixture.root, ["worktree", "add", "-b", "orphan-claim", orphan]);
+    const claim = claimWorktree(fixture.root, "gone-agent", orphan, "codex");
+    rmSync(orphan, { force: true, recursive: true });
+    git(fixture.root, ["worktree", "prune"]);
+    const lease = startLoop(fixture.root, "controller", "integrate");
+
+    const finalized = finalizeLoop(
+      fixture.root,
+      lease.runId,
+      "controller",
+      "Release bookkeeping for a checkout that no longer exists."
+    );
+
+    expect(finalized.outcome).toBe("completed");
+    expect(finalized.cleanup.releasedClaims).toEqual([
+      {
+        claimId: claim.claimId,
+        path: orphan,
+        releaseReason: "worktree-absent",
+      },
+    ]);
   });
 
   test("serializes final cleanup against coordination-state mutations", () => {

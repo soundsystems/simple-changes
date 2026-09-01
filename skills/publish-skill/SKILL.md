@@ -73,7 +73,11 @@ Read [references/production-loop.md](references/production-loop.md), then:
    linter as applicable.
 2. Update the canonical repository's customer and developer histories only as
    its changelog policy requires. Use the release-note model and attribution
-   rules required by repository instructions.
+   rules required by repository instructions. When `.simple-changelogs.json`
+   delegates that work to Simple Changelogs, hand it off there instead of
+   authoring entries by hand, and before committing run
+   `simple-changes release-notes --check` so the package version, customer
+   history, and developer history agree.
 3. Commit, push, open the canonical MR or PR, re-read its rendered description,
    wait for required checks, merge it, and fetch the remote default branch.
 4. Freeze the canonical **merged default-branch commit** as the downstream

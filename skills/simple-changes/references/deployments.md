@@ -66,7 +66,10 @@ review rejection requires rollback or a corrective revision. Approval proceeds
 through canonical Git integration and forward changelog/version reconciliation;
 never rewrite an already observed release record. Persist candidate, initial
 deployment, reconciliation, canonical, and final production evidence so Resume
-does not repeat any operation.
+does not repeat any operation. Record each step with
+`loop emergency record --run-id <id> --agent-id <you> --state <file>` and
+read the next required action from `loop emergency status --run-id <id>`;
+both bind to the active run and refuse a stale or replayed ledger.
 
 After reconciliation, decide the final production action from immutable
 evidence:

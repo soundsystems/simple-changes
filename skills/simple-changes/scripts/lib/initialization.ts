@@ -25,6 +25,7 @@ export interface InitializationStatus {
   gitPushAuthorization: RepoPolicy["gitPushAuthorization"];
   guidanceUpdate: GuidanceUpdateNotice;
   handoffAction: HandoffAction;
+  handoffClaimRelease: { claimId: string; path: string } | null;
   handoffTiming: RepoPolicy["handoffTiming"] | null;
   inferredDefaultFinish: Exclude<RepoPolicy["defaultFinish"], "preview"> | null;
   migrationHandling: RepoPolicy["migrationHandling"];
@@ -226,6 +227,7 @@ export const inspectInitialization = (
       : "ask",
     guidanceUpdate,
     handoffAction: handoff.action,
+    handoffClaimRelease: null,
     handoffTiming: handoff.timing,
     inferredDefaultFinish: handoff.finish,
     migrationHandling: policy.value

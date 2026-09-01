@@ -25,16 +25,13 @@
     "state": {
       "enum": [
         "active",
-        "pause-requested",
         "paused",
         "adopted-preserved",
-        "detach-requested",
         "detached",
         "attached",
         "resume-ready",
         "released",
-        "stale",
-        "blocked"
+        "stale"
       ]
     },
     "owner": {
@@ -104,6 +101,16 @@
         "owner": { "$ref": "#/$defs/owner" },
         "state": { "$ref": "#/$defs/state" },
         "resumeTarget": { "$ref": "#/$defs/resumeTarget" },
+        "releaseReason": {
+          "enum": [
+            "owner-release",
+            "handoff",
+            "shipped",
+            "worktree-absent",
+            "takeover",
+            "post-cleanup-recovery"
+          ]
+        },
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" }
       }

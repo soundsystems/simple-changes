@@ -690,16 +690,21 @@ export interface LoopControllerLifecycle {
 
 export type WorktreeCoordinationState =
   | "active"
-  | "pause-requested"
   | "paused"
   | "adopted-preserved"
-  | "detach-requested"
   | "detached"
   | "attached"
   | "resume-ready"
   | "released"
-  | "stale"
-  | "blocked";
+  | "stale";
+
+export type WorktreeClaimReleaseReason =
+  | "owner-release"
+  | "handoff"
+  | "shipped"
+  | "worktree-absent"
+  | "takeover"
+  | "post-cleanup-recovery";
 
 export interface WorktreeClaimOwner {
   adapter: string;
@@ -723,6 +728,7 @@ export interface WorktreeClaim {
   headSha: string | null;
   owner: WorktreeClaimOwner;
   path: string;
+  releaseReason?: WorktreeClaimReleaseReason;
   repositoryId: string;
   resumeTarget?: WorktreeResumeTarget;
   schemaVersion: 1;
@@ -1031,30 +1037,4 @@ export interface LoopVerification {
   violations: LoopViolation[];
 }
 
-export type SchemaName =
-  | "repo-policy"
-  | "changelog-capabilities"
-  | "changelog-request"
-  | "changelog-receipt"
-  | "initialization"
-  | "inventory"
-  | "change-plan"
-  | "permission-bundle"
-  | "emergency-shipping"
-  | "migration-review"
-  | "migration-pending"
-  | "migration-apply-plan"
-  | "run-state"
-  | "provider-receipt"
-  | "release-delivery-receipt"
-  | "post-cleanup-recovery"
-  | "shipment-outcome"
-  | "remote-branch-reconciliation"
-  | "release-consistency"
-  | "release-notes"
-  | "loop-lease"
-  | "loop-close-equivalent"
-  | "worktree-coordination"
-  | "worktree-takeover"
-  | "worktree-equivalence"
-  | "worktree-cleanup";
+export type { SchemaName } from "./schema.ts";

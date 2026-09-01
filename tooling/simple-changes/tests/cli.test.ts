@@ -31,6 +31,8 @@ const cliPath = resolve(
   "../../../skills/simple-changes/scripts/simple-changes.ts"
 );
 const ASYNC_CLI_WAIT_ATTEMPTS = 500;
+const USAGE_LIST_SEPARATOR = /,\s*(?:or\s+)?|\s+or\s+/u;
+const TRAILING_PERIOD = /\.$/u;
 
 interface CliSpawnOptions {
   cwd?: string;
@@ -3276,5 +3278,136 @@ describe("contract CLI", () => {
     expect(decoder.decode(rendered.stdout)).toContain(
       "Repository policy requests consequential authority but has not been confirmed on this clone; running with reduced authority until setup confirms it."
     );
+  });
+
+  test("completed-work handoff releases the author's own worktree claim", () => {
+    const fixture = createTestRepository();
+    repositories.push(fixture);
+    const setup = spawnSync(
+      [
+        process.execPath,
+        cliPath,
+        "setup",
+        "--finish",
+        "review",
+        "--git-push-authorization",
+        "ask",
+        "--questions",
+        "blocking-only",
+        "--scope",
+        "repository",
+        "--instruction-pointer",
+        "leave",
+        "--handoff",
+        "automatic",
+        "--yes",
+        "--json",
+        "--repo",
+        fixture.root,
+      ],
+      { stderr: "pipe", stdout: "pipe" }
+    );
+    expect(setup.exitCode).toBe(0);
+    const worktree = resolve(fixture.base, "handoff-feature");
+    git(fixture.root, ["worktree", "add", "-b", "handoff-feature", worktree]);
+    const claimed = spawnSync(
+      [
+        process.execPath,
+        cliPath,
+        "worktree",
+        "claim",
+        "--agent-id",
+        "feature-author",
+        "--worktree",
+        worktree,
+        "--adapter",
+        "claude-code",
+        "--json",
+        "--repo",
+        fixture.root,
+      ],
+      { stderr: "pipe", stdout: "pipe" }
+    );
+    expect(claimed.exitCode).toBe(0);
+    const { claim } = JSON.parse(decoder.decode(claimed.stdout)) as {
+      claim: { claimId: string };
+    };
+
+    const handoff = spawnSync(
+      [
+        process.execPath,
+        cliPath,
+        "initialize",
+        "--mode",
+        "handoff",
+        "--ready",
+        "--agent-id",
+        "feature-author",
+        "--json",
+        "--repo",
+        worktree,
+      ],
+      { stderr: "pipe", stdout: "pipe" }
+    );
+
+    expect(handoff.exitCode).toBe(0);
+    expect(JSON.parse(decoder.decode(handoff.stdout))).toMatchObject({
+      handoffAction: "proceed",
+      handoffClaimRelease: {
+        claimId: claim.claimId,
+        path: realpathSync(worktree),
+      },
+      mutationAllowed: true,
+    });
+    const status = spawnSync(
+      [
+        process.execPath,
+        cliPath,
+        "worktree",
+        "status",
+        "--json",
+        "--repo",
+        fixture.root,
+      ],
+      { stderr: "pipe", stdout: "pipe" }
+    );
+    expect(JSON.parse(decoder.decode(status.stdout))).toMatchObject({
+      claims: [{ releaseReason: "handoff", state: "released" }],
+    });
+  });
+
+  test("help and the usage errors agree on every dispatched loop and worktree action", () => {
+    const help = decoder.decode(
+      spawnSync([process.execPath, cliPath, "help"], {
+        stderr: "pipe",
+        stdout: "pipe",
+      }).stdout
+    );
+    for (const group of ["loop", "worktree"] as const) {
+      const documented = new Set(
+        [
+          ...help.matchAll(
+            new RegExp(`simple-changes ${group} ([a-z-]+)`, "gu")
+          ),
+        ]
+          .map((match) => match[1])
+          .filter((action): action is string => Boolean(action))
+      );
+      const usage = decoder.decode(
+        spawnSync([process.execPath, cliPath, group], {
+          stderr: "pipe",
+          stdout: "pipe",
+        }).stderr
+      );
+      const listed = usage.match(new RegExp(`${group} requires (.+)$`, "mu"));
+      expect(listed).not.toBeNull();
+      const dispatched = new Set(
+        (listed?.[1] ?? "")
+          .split(USAGE_LIST_SEPARATOR)
+          .map((action) => action.trim().replace(TRAILING_PERIOD, ""))
+          .filter(Boolean)
+      );
+      expect([...documented].sort()).toEqual([...dispatched].sort());
+    }
   });
 });

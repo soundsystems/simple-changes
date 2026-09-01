@@ -117,11 +117,49 @@ export const createChangelogRequest = (
   input: ChangelogRequest
 ): ChangelogRequest => validateSchema("changelog-request", input);
 
-export const changelogReceiptDigest = (receipt: ChangelogReceipt): string =>
+export const changelogReceiptDigest = (receipt: unknown): string =>
   sha256Json(validateSchema<ChangelogReceipt>("changelog-receipt", receipt));
 
 const protocolMismatch = (message: string): never => {
   throw new SimpleChangesError(message, EXIT_CODES.validation);
+};
+
+export type PriorReceiptDigestStatus =
+  | "not-applicable"
+  | "unverified"
+  | "verified";
+
+export interface ChangelogTransactionValidation {
+  priorReceiptDigestStatus: PriorReceiptDigestStatus;
+  receipt: ChangelogReceipt;
+}
+
+// A phase after the first names the receipt it builds on. When that receipt
+// is available, its digest must bind exactly; when it is not, the transaction
+// still validates but reports the digest as unverified rather than proven.
+const verifyPriorReceiptDigest = (
+  request: ChangelogRequest,
+  priorReceiptInput: unknown
+): PriorReceiptDigestStatus => {
+  if (request.priorReceiptDigest === null) {
+    if (priorReceiptInput !== undefined) {
+      protocolMismatch(
+        "A prior receipt was supplied, but the delegated request names no prior receipt digest."
+      );
+    }
+    return "not-applicable";
+  }
+  if (priorReceiptInput === undefined) {
+    return "unverified";
+  }
+  if (
+    changelogReceiptDigest(priorReceiptInput) !== request.priorReceiptDigest
+  ) {
+    protocolMismatch(
+      "Prior receipt digest does not match the delegated request."
+    );
+  }
+  return "verified";
 };
 
 const validateLegacyTransaction = (
@@ -245,10 +283,11 @@ const validateV2Transaction = (
   return receipt;
 };
 
-export const validateChangelogTransaction = (
+export const inspectChangelogTransaction = (
   requestInput: unknown,
-  receiptInput: unknown
-): ChangelogReceipt => {
+  receiptInput: unknown,
+  priorReceiptInput?: unknown
+): ChangelogTransactionValidation => {
   const request = validateSchema<ChangelogRequest>(
     "changelog-request",
     requestInput
@@ -257,11 +296,26 @@ export const validateChangelogTransaction = (
     "changelog-receipt",
     receiptInput
   );
-  if (receipt.schemaVersion === 1) {
-    return validateLegacyTransaction(request, receipt);
-  }
-  return validateV2Transaction(request, receipt);
+  const priorReceiptDigestStatus = verifyPriorReceiptDigest(
+    request,
+    priorReceiptInput
+  );
+  return {
+    priorReceiptDigestStatus,
+    receipt:
+      receipt.schemaVersion === 1
+        ? validateLegacyTransaction(request, receipt)
+        : validateV2Transaction(request, receipt),
+  };
 };
+
+export const validateChangelogTransaction = (
+  requestInput: unknown,
+  receiptInput: unknown,
+  priorReceiptInput?: unknown
+): ChangelogReceipt =>
+  inspectChangelogTransaction(requestInput, receiptInput, priorReceiptInput)
+    .receipt;
 
 export type ReleaseGateAction =
   | "continue"

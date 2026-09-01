@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { join } from "node:path";
+import { symlinkSync } from "node:fs";
+import { delimiter, join } from "node:path";
 import { inspectChangelogCoordination } from "../../../skills/simple-changes/scripts/lib/changelog-coordination.ts";
 import {
   createTestRepository,
@@ -118,6 +119,37 @@ describe("changelog coordination discovery", () => {
     });
     expect(result.providers).toEqual([
       join(skillRoot, "simple-changelogs/SKILL.md"),
+    ]);
+  });
+
+  test("counts a provider reachable through a symlinked root once", () => {
+    const fixture = createTestRepository();
+    repositories.push(fixture);
+    const skillRoot = join(fixture.base, "global-skills");
+    const linkedRoot = join(fixture.base, "linked-skills");
+    writeFixture(
+      skillRoot,
+      "simple-changelogs/SKILL.md",
+      "---\nname: simple-changelogs\ndescription: Test fixture.\n---\n"
+    );
+    writeFixture(
+      skillRoot,
+      "simple-changelogs/scripts/setup.ts",
+      "export {};\n"
+    );
+    symlinkSync(skillRoot, linkedRoot, "dir");
+
+    const result = inspectChangelogCoordination(fixture.root, {
+      environment: {
+        SIMPLE_CHANGES_SKILL_ROOTS: [linkedRoot, skillRoot].join(delimiter),
+      },
+    });
+
+    expect(result.providers).toEqual([
+      join(linkedRoot, "simple-changelogs/SKILL.md"),
+    ]);
+    expect(result.capabilityHelpers).toEqual([
+      join(linkedRoot, "simple-changelogs/scripts/setup.ts"),
     ]);
   });
 
@@ -269,6 +301,37 @@ describe("changelog coordination discovery", () => {
       walkthroughQuestion:
         "Would you like me to walk you through the recent Simple Changelogs updates before I continue?",
     });
+  });
+
+  test("keeps inline code spans intact when summarizing guidance", () => {
+    const fixture = createTestRepository();
+    repositories.push(fixture);
+    const skillRoot = join(fixture.base, "global-skills");
+    writeFixture(
+      skillRoot,
+      "simple-changelogs/SKILL.md",
+      "---\nname: simple-changelogs\ndescription: Test fixture.\n---\n\nCurrent guidance version: 9\n"
+    );
+    writeFixture(
+      skillRoot,
+      "simple-changelogs/references/guidance-updates.md",
+      "# Guidance Updates\n\n## Guidance 9\n\nReleases now rewrite `CHANGELOG.md` in place! Run `scripts/query.ts` for history (v1.2 or later). Nothing else changed.\n"
+    );
+    writeFixture(
+      fixture.root,
+      ".simple-changelogs.json",
+      '{"schemaVersion":1,"guidance":{"version":8,"backfillStatus":"deferred"}}\n'
+    );
+
+    const result = inspectChangelogCoordination(fixture.root, {
+      environment: { SIMPLE_CHANGES_SKILL_ROOTS: skillRoot },
+    });
+
+    expect(result.guidanceUpdate.summaryBullets).toEqual([
+      "Releases now rewrite `CHANGELOG.md` in place!",
+      "Run `scripts/query.ts` for history (v1.2 or later).",
+      "Nothing else changed.",
+    ]);
   });
 
   test("stays silent when Simple Changelogs is installed and current", () => {

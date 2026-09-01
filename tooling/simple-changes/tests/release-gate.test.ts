@@ -3,6 +3,7 @@ import {
   changelogReceiptDigest,
   createChangelogRequest,
   decideReleaseGate,
+  inspectChangelogTransaction,
   negotiateChangelogProtocol,
   packagedChangelogProtocol,
   validateChangelogTransaction,
@@ -173,20 +174,39 @@ describe("changelog protocol negotiation", () => {
   test("fails closed for version skew", () => {
     const consumer = packagedChangelogProtocol();
     expect(
-      negotiateChangelogProtocol(
-        {
-          distribution: "web",
-          features: [],
-          guidanceVersion: 1,
-          provider: "simple-changelogs",
-          receiptVersions: [1],
-          requestVersions: [1],
-          schemaDigests: consumer.schemaDigests,
-          schemaVersion: 1,
-        },
-        { ...consumer, requestVersions: [] }
-      ).reasonCode
-    ).toBe("unsupported-protocol");
+      negotiateChangelogProtocol({
+        distribution: "web",
+        features: [],
+        guidanceVersion: 1,
+        provider: "simple-changelogs",
+        receiptVersions: [1],
+        requestVersions: [2],
+        schemaDigests: consumer.schemaDigests,
+        schemaVersion: 1,
+      })
+    ).toEqual({
+      compatible: false,
+      features: [],
+      reasonCode: "unsupported-protocol",
+      receiptVersion: 1,
+      requestVersion: null,
+      requiredAction: "upgrade-producer",
+      schemaDigestStatus: "match",
+    });
+  });
+
+  test("rejects a provider that advertises no usable protocol version", () => {
+    expect(() =>
+      negotiateChangelogProtocol({
+        distribution: "web",
+        features: [],
+        guidanceVersion: 1,
+        provider: "simple-changelogs",
+        receiptVersions: [1],
+        requestVersions: [0],
+        schemaVersion: 1,
+      })
+    ).toThrow();
   });
 
   test("reports schema drift without blocking a version-compatible peer", () => {
@@ -284,6 +304,44 @@ describe("phased release gate", () => {
     expect(() =>
       validateChangelogTransaction(request("verify"), moved)
     ).toThrow("finalized target");
+  });
+
+  test("binds a later phase to the receipt it builds on", () => {
+    const classified = receipt("decision-required");
+    const prepare = {
+      ...request("prepare"),
+      priorReceiptDigest: changelogReceiptDigest(classified),
+    };
+
+    expect(
+      inspectChangelogTransaction(prepare, receipt("prepared"), classified)
+    ).toMatchObject({
+      priorReceiptDigestStatus: "verified",
+      receipt: { status: "prepared" },
+    });
+    expect(
+      inspectChangelogTransaction(prepare, receipt("prepared"))
+    ).toMatchObject({ priorReceiptDigestStatus: "unverified" });
+    expect(
+      inspectChangelogTransaction(request("classify"), receipt())
+        .priorReceiptDigestStatus
+    ).toBe("not-applicable");
+  });
+
+  test("fails closed on a prior receipt that does not match the request", () => {
+    const stale = receipt("decision-required");
+    stale.evidence = ["Aggregate impact was re-derived."];
+    const prepare = {
+      ...request("prepare"),
+      priorReceiptDigest: changelogReceiptDigest(receipt("decision-required")),
+    };
+
+    expect(() =>
+      validateChangelogTransaction(prepare, receipt("prepared"), stale)
+    ).toThrow("Prior receipt digest does not match");
+    expect(() =>
+      validateChangelogTransaction(request("classify"), receipt(), stale)
+    ).toThrow("names no prior receipt digest");
   });
 
   test("rejects inconsistent resolved and prepared versions", () => {

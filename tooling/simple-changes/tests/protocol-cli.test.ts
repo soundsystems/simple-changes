@@ -2,7 +2,10 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "bun";
-import { packagedChangelogProtocol } from "../../../skills/simple-changes/scripts/lib/release-gate.ts";
+import {
+  changelogReceiptDigest,
+  packagedChangelogProtocol,
+} from "../../../skills/simple-changes/scripts/lib/release-gate.ts";
 import {
   createTestRepository,
   type TestRepository,
@@ -119,8 +122,100 @@ describe("changelog protocol CLI", () => {
 
     expect(result.exitCode).toBe(0);
     expect(JSON.parse(decoder.decode(result.stdout))).toMatchObject({
+      priorReceiptDigestStatus: "not-applicable",
       receipt: { schemaVersion: 1, status: "not-applicable" },
       valid: true,
     });
+  });
+
+  test("verifies the prior receipt digest when the prior receipt is supplied", () => {
+    const fixture = createTestRepository();
+    repositories.push(fixture);
+    const priorReceipt = {
+      checks: [],
+      evidence: [],
+      observedAt: "2026-08-10T12:00:00-05:00",
+      paths: [],
+      provider: "simple-changelogs",
+      reason: null,
+      release: null,
+      releaseImpact: "none",
+      schemaVersion: 1,
+      sourceRevision: revision,
+      status: "not-applicable",
+    };
+    writeFixture(
+      fixture.root,
+      "request.json",
+      JSON.stringify({
+        approvedDecisionDigest: null,
+        approvedVersion: null,
+        attempt: 2,
+        boundary: "none",
+        environment: "production",
+        finalizedTargetRevision: null,
+        inputTargetRevision: revision,
+        mutationScope: "read-only",
+        phase: "classify",
+        priorReceiptDigest: changelogReceiptDigest(priorReceipt),
+        releaseSetId: null,
+        releaseTrain: "web",
+        schemaVersion: 1,
+        supportedReceiptVersions: [1],
+        transactionId: "legacy-classification",
+      })
+    );
+    writeFixture(fixture.root, "receipt.json", JSON.stringify(priorReceipt));
+    writeFixture(
+      fixture.root,
+      "prior-receipt.json",
+      JSON.stringify(priorReceipt)
+    );
+    writeFixture(
+      fixture.root,
+      "stale-receipt.json",
+      JSON.stringify({ ...priorReceipt, checks: ["Re-derived."] })
+    );
+
+    const unverified = runCli(
+      fixture.root,
+      "validate-changelog-transaction",
+      "request.json",
+      "receipt.json",
+      "--json"
+    );
+    expect(unverified.exitCode).toBe(0);
+    expect(JSON.parse(decoder.decode(unverified.stdout))).toMatchObject({
+      priorReceiptDigestStatus: "unverified",
+      valid: true,
+    });
+
+    const verified = runCli(
+      fixture.root,
+      "validate-changelog-transaction",
+      "request.json",
+      "receipt.json",
+      "--prior-receipt",
+      "prior-receipt.json",
+      "--json"
+    );
+    expect(verified.exitCode).toBe(0);
+    expect(JSON.parse(decoder.decode(verified.stdout))).toMatchObject({
+      priorReceiptDigestStatus: "verified",
+      valid: true,
+    });
+
+    const mismatched = runCli(
+      fixture.root,
+      "validate-changelog-transaction",
+      "request.json",
+      "receipt.json",
+      "--prior-receipt",
+      "stale-receipt.json"
+    );
+    expect(mismatched.exitCode).not.toBe(0);
+    expect(decoder.decode(mismatched.stderr)).toContain(
+      "Prior receipt digest does not match"
+    );
   });
 });

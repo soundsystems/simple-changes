@@ -18,9 +18,11 @@ import { redactSecrets } from "./redact.ts";
 import { validateSchema } from "./schema.ts";
 import type {
   LoopLease,
+  RepositoryInventory,
   WorktreeClaim,
   WorktreeClaimObservation,
   WorktreeClaimOwner,
+  WorktreeClaimReleaseReason,
   WorktreeCoordinationDocument,
   WorktreeCoordinationEvent,
   WorktreeCoordinationState,
@@ -43,14 +45,22 @@ const SHA_PATTERN = /^[0-9a-f]{40,64}$/u;
 const PERMISSION_DENIED_CODES = new Set(["EACCES", "EPERM", "EROFS"]);
 const LIVE_STATES = new Set<WorktreeCoordinationState>([
   "active",
-  "pause-requested",
   "paused",
   "adopted-preserved",
-  "detach-requested",
   "detached",
   "attached",
   "resume-ready",
-  "blocked",
+]);
+// A detached claim intentionally has no directory: its owner removed the
+// checkout through the detach protocol and keeps the branch for reattachment.
+// Every other live state expects the worktree to exist, so an absent directory
+// means the claim protects nothing and may be released by evidence.
+const ABSENT_RELEASABLE_STATES = new Set<WorktreeCoordinationState>([
+  "active",
+  "paused",
+  "adopted-preserved",
+  "attached",
+  "resume-ready",
 ]);
 
 const stateRoot = (commonGitDirectory: string): string =>
@@ -1158,19 +1168,135 @@ export const releaseWorktreeClaim = (
     claimId,
     agentId,
     "released",
-    {},
-    [
-      "active",
-      "pause-requested",
-      "paused",
-      "adopted-preserved",
-      "detach-requested",
-      "detached",
-      "attached",
-      "resume-ready",
-      "blocked",
-    ]
+    { releaseReason: "owner-release" },
+    [...LIVE_STATES]
   );
+};
+
+const releasedClaim = (
+  claim: WorktreeClaim,
+  releaseReason: WorktreeClaimReleaseReason,
+  updatedAt: string
+): WorktreeClaim => ({
+  ...claim,
+  releaseReason,
+  state: "released",
+  updatedAt,
+});
+
+/**
+ * Release every live, non-detached claim whose worktree no longer appears in
+ * the inventory or whose directory is gone (`prunable`). The caller must
+ * already hold the coordination lock. Such a claim protects nothing: the
+ * checkout is absent and branch protection is decided separately, so leaving
+ * it active only strands the owner's bookkeeping until a manual takeover.
+ */
+export const releaseAbsentWorktreeClaimsUnderLock = (
+  commonGitDirectory: string,
+  inventory: RepositoryInventory,
+  actorAgentIdInput: string
+): WorktreeClaim[] => {
+  const actorAgentId = requiredText(actorAgentIdInput, "agent ID", 128);
+  const presentPaths = new Set(
+    inventory.worktrees
+      .filter((worktree) => !worktree.prunable)
+      .map((worktree) => worktree.path)
+  );
+  let document =
+    readCoordinationDocumentFromCommonDirectory(commonGitDirectory);
+  const released: WorktreeClaim[] = [];
+  const now = new Date().toISOString();
+  for (const claim of document.claims) {
+    if (
+      claim.commonGitDirectory !== commonGitDirectory ||
+      !ABSENT_RELEASABLE_STATES.has(claim.state) ||
+      presentPaths.has(claim.path)
+    ) {
+      continue;
+    }
+    const updated = releasedClaim(claim, "worktree-absent", now);
+    document = appendEvent(
+      replaceClaim(document, updated),
+      claim.claimId,
+      actorAgentId,
+      "released",
+      now
+    );
+    released.push(updated);
+  }
+  if (released.length > 0) {
+    writeCoordinationDocument(commonGitDirectory, document);
+  }
+  return released;
+};
+
+/**
+ * Release one exact active claim by ID with a recorded reason. The caller must
+ * hold the coordination lock and must already have proven the authority for
+ * the release (for example, the loop controller releasing its own claim after
+ * the work is contained in the target).
+ */
+export const releaseClaimUnderLock = (
+  commonGitDirectory: string,
+  claimId: string,
+  actorAgentIdInput: string,
+  releaseReason: WorktreeClaimReleaseReason
+): WorktreeClaim => {
+  const actorAgentId = requiredText(actorAgentIdInput, "agent ID", 128);
+  let document =
+    readCoordinationDocumentFromCommonDirectory(commonGitDirectory);
+  const claim = document.claims.find((item) => item.claimId === claimId);
+  if (!(claim && LIVE_STATES.has(claim.state))) {
+    throw new SimpleChangesError(
+      `Claim ${claimId} is not a live worktree claim.`,
+      EXIT_CODES.unsafe
+    );
+  }
+  const now = new Date().toISOString();
+  const updated = releasedClaim(claim, releaseReason, now);
+  document = appendEvent(
+    replaceClaim(document, updated),
+    claimId,
+    actorAgentId,
+    "released",
+    now
+  );
+  writeCoordinationDocument(commonGitDirectory, document);
+  return updated;
+};
+
+/**
+ * Completed-work handoff: the author declares the checkout it is running in
+ * finished, so its own live claim there is released and the work becomes an
+ * ordinary stable unit that any controller may ship. A claim held by a
+ * different owner is left untouched and reported as `null`.
+ */
+export const releaseHandoffWorktreeClaim = (
+  repositoryPath: string,
+  agentIdInput: string
+): WorktreeClaim | null => {
+  const agentId = requiredText(agentIdInput, "agent ID", 128);
+  const opening = captureInventory(repositoryPath);
+  const { commonGitDirectory, currentCheckout } = opening.repository;
+  return withCoordinationLock(commonGitDirectory, "handoff release", () => {
+    const document =
+      readCoordinationDocumentFromCommonDirectory(commonGitDirectory);
+    const claim = document.claims.find(
+      (item) =>
+        item.path === canonicalCandidate(currentCheckout) &&
+        item.owner.agentId === agentId &&
+        LIVE_STATES.has(item.state)
+    );
+    if (!claim) {
+      return null;
+    }
+    return releaseClaimUnderLock(
+      commonGitDirectory,
+      claim.claimId,
+      agentId,
+      "handoff"
+    );
+  });
 };
 
 export const retireAbsentWorktreeClaimsUnderLock = (
@@ -1250,11 +1376,7 @@ const projectAbsentWorktreeClaimRetirement = (
       retired.push(claim.claimId);
       continue;
     }
-    const updated: WorktreeClaim = {
-      ...claim,
-      state: "released",
-      updatedAt: retiredAt,
-    };
+    const updated = releasedClaim(claim, "post-cleanup-recovery", retiredAt);
     document = appendEvent(
       replaceClaim(document, updated),
       claim.claimId,
@@ -1561,7 +1683,7 @@ export const takeoverWorktreeClaim = (
               },
               updatedAt: takenOverAt,
             }
-          : { ...claim, state: "released", updatedAt: takenOverAt };
+          : releasedClaim(claim, "takeover", takenOverAt);
       document = appendEvent(
         replaceClaim(document, updated),
         claimId,

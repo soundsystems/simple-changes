@@ -259,7 +259,7 @@ simple-changes prepare-agent --run-id ID --agent-id ID --purpose SLUG
   [--json] [--repo PATH]
 simple-changes release-notes [--check] [--json] [--repo PATH] [--version VERSION]
 simple-changes negotiate-changelog CAPABILITIES_FILE [--json]
-simple-changes validate-changelog-transaction REQUEST_FILE RECEIPT_FILE [--json]
+simple-changes validate-changelog-transaction REQUEST_FILE RECEIPT_FILE [--prior-receipt FILE] [--json]
 simple-changes validate KIND FILE [--json]
 simple-changes verify-markdown FILE [--json]
 simple-changes help

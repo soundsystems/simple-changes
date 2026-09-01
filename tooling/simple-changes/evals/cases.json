@@ -13,7 +13,7 @@
       "expected": true
     },
     {
-      "id": "queue-versioned-ui-artifacts",
+      "id": "trigger-queue-versioned-ui-artifacts",
       "prompt": "Put these generated UI surface iterations up.",
       "expected": true
     },
@@ -128,7 +128,7 @@
       "expected": false
     },
     {
-      "id": "audit-complete-proposal-corpus",
+      "id": "trigger-audit-complete-proposal-corpus",
       "prompt": "Audit every change proposal in every state for malformed escaped newlines.",
       "expected": true
     },

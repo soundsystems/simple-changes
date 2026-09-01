@@ -319,7 +319,7 @@ describe("first-run initialization", () => {
       },
       {
         capabilityAvailable: true,
-        capabilityHelpers: ["/skills/simple-changelogs/scripts/protocol.ts"],
+        capabilityHelpers: ["/skills/simple-changelogs/scripts/setup.ts"],
         capabilityStatus: "unverified",
         guidanceUpdate: {
           ...availableChangelogUpdate,

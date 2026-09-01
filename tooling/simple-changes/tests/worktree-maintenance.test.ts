@@ -11,6 +11,7 @@ import {
 } from "../../../skills/simple-changes/scripts/lib/loop-lease.ts";
 import {
   claimWorktree,
+  readWorktreeCoordination,
   takeoverWorktreeClaim,
 } from "../../../skills/simple-changes/scripts/lib/worktree-coordination.ts";
 import { auditWorktreeEquivalence } from "../../../skills/simple-changes/scripts/lib/worktree-equivalence.ts";
@@ -656,6 +657,34 @@ describe("equivalence residue hints", () => {
     expect(report.residue?.paths).toContainEqual({
       path: "code.ts",
       whitespaceOnly: true,
+    });
+  });
+
+  test("releases an orphaned claim whose worktree directory is gone", () => {
+    const fixture = repository();
+    const orphaned = join(fixture.base, "orphaned-claim");
+    git(fixture.root, ["worktree", "add", "-b", "orphaned-claim", orphaned]);
+    const claim = claimWorktree(fixture.root, "gone-agent", orphaned, "codex");
+    rmSync(orphaned, { force: true, recursive: true });
+
+    const receipt = standaloneWorktreeCleanup({
+      agentId: "cleaner",
+      approvedBy: "the-user",
+      reason: "Reconcile a claim whose checkout disappeared.",
+      repositoryPath: fixture.root,
+    });
+
+    expect(receipt.prunedPaths).toEqual([orphaned]);
+    expect(receipt.releasedClaims).toEqual([
+      {
+        claimId: claim.claimId,
+        path: orphaned,
+        releaseReason: "worktree-absent",
+      },
+    ]);
+    expect(readWorktreeCoordination(fixture.root).claims[0]).toMatchObject({
+      releaseReason: "worktree-absent",
+      state: "released",
     });
   });
 });

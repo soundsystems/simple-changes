@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
-import { chmodSync, mkdirSync, readFileSync, statSync } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
 import {
   buildCoordinationRequest,
@@ -22,6 +22,8 @@ import {
   pauseClaimedWorktree,
   readWorktreeCoordination,
   readWorktreeTakeovers,
+  releaseAbsentWorktreeClaimsUnderLock,
+  releaseHandoffWorktreeClaim,
   releaseWorktreeClaim,
   takeoverWorktreeClaim,
   worktreeCoordinationPath,
@@ -716,5 +718,94 @@ describe("worktree claim takeover", () => {
         repositoryPath: worktree,
       })
     ).toThrow("active loop lease still requires");
+  });
+
+  test("records why a claim was released", () => {
+    const fixture = repository();
+    const worktree = join(fixture.base, "release-reason");
+    git(fixture.root, ["worktree", "add", "-b", "release-reason", worktree]);
+    const claim = claimWorktree(fixture.root, "owner", worktree, "codex");
+
+    const released = releaseWorktreeClaim(fixture.root, "owner", claim.claimId);
+
+    expect(released).toMatchObject({
+      releaseReason: "owner-release",
+      state: "released",
+    });
+    expect(readWorktreeCoordination(fixture.root).claims[0]).toMatchObject({
+      releaseReason: "owner-release",
+    });
+  });
+
+  test("releases only live non-detached claims whose worktree is gone", () => {
+    const fixture = repository();
+    const absent = join(fixture.base, "absent-unit");
+    const present = join(fixture.base, "present-unit");
+    const detached = join(fixture.base, "detached-unit");
+    git(fixture.root, ["worktree", "add", "-b", "absent-unit", absent]);
+    git(fixture.root, ["worktree", "add", "-b", "present-unit", present]);
+    const absentClaim = claimWorktree(fixture.root, "owner", absent, "codex");
+    const presentClaim = claimWorktree(fixture.root, "owner", present, "codex");
+    const lease = startLoop(fixture.root, "controller", "integrate");
+    git(fixture.root, ["worktree", "add", "-b", "detached-unit", detached]);
+    const detachedClaim = claimWorktree(
+      fixture.root,
+      "owner",
+      detached,
+      "codex"
+    );
+    const receipt = pauseClaimedWorktree(
+      fixture.root,
+      "owner",
+      detached,
+      lease.runId,
+      "detach-clean-checkout",
+      "Detach for the test."
+    );
+    detachClaimedWorktree(fixture.root, "owner", detached, receipt.receiptId);
+    rmSync(absent, { force: true, recursive: true });
+    git(fixture.root, ["worktree", "prune"]);
+    const {
+      repository: { commonGitDirectory },
+    } = captureInventory(fixture.root);
+
+    const released = releaseAbsentWorktreeClaimsUnderLock(
+      commonGitDirectory,
+      captureInventory(fixture.root),
+      "controller"
+    );
+
+    expect(released.map((claim) => claim.claimId)).toEqual([
+      absentClaim.claimId,
+    ]);
+    const { claims } = readWorktreeCoordination(fixture.root);
+    expect(
+      claims.find((claim) => claim.claimId === absentClaim.claimId)
+    ).toMatchObject({ releaseReason: "worktree-absent", state: "released" });
+    expect(
+      claims.find((claim) => claim.claimId === presentClaim.claimId)?.state
+    ).toBe("active");
+    expect(
+      claims.find((claim) => claim.claimId === detachedClaim.claimId)?.state
+    ).toBe("detached");
+  });
+
+  test("completed-work handoff releases only the author's own claim on the current checkout", () => {
+    const fixture = repository();
+    const own = join(fixture.base, "handoff-own");
+    const other = join(fixture.base, "handoff-other");
+    git(fixture.root, ["worktree", "add", "-b", "handoff-own", own]);
+    git(fixture.root, ["worktree", "add", "-b", "handoff-other", other]);
+    const ownClaim = claimWorktree(fixture.root, "author", own, "claude-code");
+    claimWorktree(fixture.root, "someone-else", other, "codex");
+
+    expect(releaseHandoffWorktreeClaim(other, "author")).toBeNull();
+    expect(releaseHandoffWorktreeClaim(fixture.root, "author")).toBeNull();
+    expect(releaseHandoffWorktreeClaim(own, "author")).toMatchObject({
+      claimId: ownClaim.claimId,
+      releaseReason: "handoff",
+      state: "released",
+    });
+    expect(releaseHandoffWorktreeClaim(own, "author")).toBeNull();
   });
 });

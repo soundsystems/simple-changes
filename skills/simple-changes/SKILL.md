@@ -115,7 +115,12 @@ legacy GitLab run without this evidence is close-only; see
 
 When an active loop assigns a new author into that same integration unit, run
 `simple-changes prepare-agent` before edits. Independent agents create an
-isolated worktree and immediately run `worktree claim`. After registration,
+isolated worktree and immediately run `worktree claim`. A claim is the lock:
+while it is active, no controller packages, merges, or cleans that checkout.
+When the work is complete and verified, the same owner unlocks it with
+`worktree release`, or with `initialize --mode handoff`, which releases the
+author's own claim on that checkout as it proceeds; released work becomes an
+ordinary stable unit that this or any later controller may ship. After registration,
 both run-prepared and independently claimed authors edit, generate, format,
 test, stage, and commit normally and concurrently in their own distinct
 worktrees and branches; those author-local operations do not use the global

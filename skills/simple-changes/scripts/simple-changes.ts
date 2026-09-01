@@ -91,8 +91,8 @@ import {
   renderReleaseConsistency,
 } from "./lib/release-consistency.ts";
 import {
+  inspectChangelogTransaction,
   negotiateChangelogProtocol,
-  validateChangelogTransaction,
 } from "./lib/release-gate.ts";
 import type { ReleaseNotes } from "./lib/release-notes.ts";
 import { extractReleaseNotes } from "./lib/release-notes.ts";
@@ -115,6 +115,7 @@ import {
   observeWorktreeClaims,
   pauseClaimedWorktree,
   readWorktreeCoordination,
+  releaseHandoffWorktreeClaim,
   releaseWorktreeClaim,
   takeoverWorktreeClaim,
 } from "./lib/worktree-coordination.ts";
@@ -249,7 +250,7 @@ Usage:
     [--json] [--repo PATH]
   simple-changes release-notes [--check] [--json] [--repo PATH] [--version VERSION]
   simple-changes negotiate-changelog CAPABILITIES_FILE [--json]
-  simple-changes validate-changelog-transaction REQUEST_FILE RECEIPT_FILE [--json]
+  simple-changes validate-changelog-transaction REQUEST_FILE RECEIPT_FILE [--prior-receipt FILE] [--json]
   simple-changes validate KIND FILE [--json]
   simple-changes verify-markdown FILE [--json]
   simple-changes help
@@ -291,6 +292,7 @@ interface CliOptions {
   pauseReceiptId?: string;
   pendingPath?: string;
   positional: string[];
+  priorReceiptPath?: string;
   productionDeploy?: RepoPolicy["productionDeploy"];
   proposalScheduling?: RepoPolicy["proposalScheduling"];
   purpose?: string;
@@ -340,6 +342,7 @@ const VALUED_OPTIONS = new Set([
   "--opening-remote-inventory",
   "--pending",
   "--pause-receipt",
+  "--prior-receipt",
   "--production",
   "--proposal-scheduling",
   "--purpose",
@@ -642,6 +645,7 @@ const applyLoopValuedOption = (
     "--owner-ref": "ownerRef",
     "--pause-receipt": "pauseReceiptId",
     "--pending": "pendingPath",
+    "--prior-receipt": "priorReceiptPath",
     "--purpose": "purpose",
     "--reason": "reason",
     "--receipt": "receiptPath",
@@ -1386,6 +1390,11 @@ const renderInitialization = (status: InitializationStatus): string => {
     `Handoff action: ${status.handoffAction}`,
     `Reason: ${status.reason}`,
   ];
+  if (status.handoffClaimRelease) {
+    lines.push(
+      `Released worktree claim ${status.handoffClaimRelease.claimId} on ${status.handoffClaimRelease.path}; this finished work is now shippable by any controller.`
+    );
+  }
   if (status.policyTrust === "untrusted") {
     lines.push(
       "Repository policy requests consequential authority but has not been confirmed on this clone; running with reduced authority until setup confirms it."
@@ -1432,18 +1441,28 @@ const runInitialize = async (options: CliOptions): Promise<void> => {
   const changelogCoordination = inspectChangelogCoordination(
     inventory.repository.primaryCheckout
   );
-  const status = validateSchema<InitializationStatus>(
-    "initialization",
-    inspectInitialization(
-      options.mode,
-      inventory.policy,
-      changelogCoordination,
-      {
-        changelogRequired: options.changelogRequired,
-        readinessConfirmed: options.ready,
-      }
-    )
+  const inspected = inspectInitialization(
+    options.mode,
+    inventory.policy,
+    changelogCoordination,
+    {
+      changelogRequired: options.changelogRequired,
+      readinessConfirmed: options.ready,
+    }
   );
+  // A proceeding handoff declares the current checkout finished: release the
+  // author's own claim there so the work becomes an ordinary stable unit that
+  // any controller may ship, instead of a concurrent-author exclusion.
+  const handoffClaimRelease =
+    inspected.handoffAction === "proceed" && options.agentId
+      ? releaseHandoffWorktreeClaim(options.repo, options.agentId)
+      : null;
+  const status = validateSchema<InitializationStatus>("initialization", {
+    ...inspected,
+    handoffClaimRelease: handoffClaimRelease
+      ? { claimId: handoffClaimRelease.claimId, path: handoffClaimRelease.path }
+      : null,
+  });
   if (!status.onboardingRequired) {
     writeOutput(status, options.json, renderInitialization(status));
     return;
@@ -1704,14 +1723,17 @@ const runChangelogTransactionValidation = (options: CliOptions): void => {
       EXIT_CODES.usage
     );
   }
-  const receipt = validateChangelogTransaction(
+  const { priorReceiptDigestStatus, receipt } = inspectChangelogTransaction(
     readJsonFile(requestFilename),
-    readJsonFile(receiptFilename)
+    readJsonFile(receiptFilename),
+    options.priorReceiptPath === undefined
+      ? undefined
+      : readJsonFile(options.priorReceiptPath)
   );
   writeOutput(
-    { receipt, valid: true },
+    { priorReceiptDigestStatus, receipt, valid: true },
     options.json,
-    `${receiptFilename} matches ${requestFilename}.\n`
+    `${receiptFilename} matches ${requestFilename} (prior receipt digest: ${priorReceiptDigestStatus}).\n`
   );
 };
 
@@ -1862,7 +1884,7 @@ const runLoopFinalizationAction = (
     );
     if (result.outcome === "relinquished") {
       throw new SimpleChangesError(
-        `Relinquished ${runId} with durable state; the shipment is incomplete. Automatic cleanup normalized ${result.cleanup.cleanedPrimaryPaths.length} target-equivalent primary path(s), removed ${result.cleanup.removedWorktrees.length} worktree(s) and ${result.cleanup.removedBranches.length} branch(es), and pruned ${result.cleanup.prunedWorktreeMetadata} stale worktree record(s). Remaining: ${result.blockers.join(" ")}`,
+        `Relinquished ${runId} with durable state; the shipment is incomplete. Automatic cleanup normalized ${result.cleanup.cleanedPrimaryPaths.length} target-equivalent primary path(s), removed ${result.cleanup.removedWorktrees.length} worktree(s) and ${result.cleanup.removedBranches.length} branch(es), pruned ${result.cleanup.prunedWorktreeMetadata} stale worktree record(s), and released ${result.cleanup.releasedClaims.length} finished or orphaned worktree claim(s). Remaining: ${result.blockers.join(" ")}`,
         EXIT_CODES.unsafe
       );
     }
@@ -1872,7 +1894,7 @@ const runLoopFinalizationAction = (
         manifestDigest: result.lease ? loopManifestDigest(result.lease) : null,
       },
       options.json,
-      `Completed and released ${runId}. Normalized ${result.cleanup.cleanedPrimaryPaths.length} target-equivalent primary path(s), removed ${result.cleanup.removedWorktrees.length} worktree(s) and ${result.cleanup.removedBranches.length} branch(es); pruned ${result.cleanup.prunedWorktreeMetadata} stale worktree record(s).\n`
+      `Completed and released ${runId}. Normalized ${result.cleanup.cleanedPrimaryPaths.length} target-equivalent primary path(s), removed ${result.cleanup.removedWorktrees.length} worktree(s) and ${result.cleanup.removedBranches.length} branch(es); pruned ${result.cleanup.prunedWorktreeMetadata} stale worktree record(s); released ${result.cleanup.releasedClaims.length} finished or orphaned worktree claim(s).\n`
     );
     return true;
   }
@@ -2115,7 +2137,7 @@ const runLoopCommand = async (options: CliOptions): Promise<void> => {
   const [action] = options.positional;
   if (!action) {
     throw new SimpleChangesError(
-      "loop requires start, status, verify, record-scope, refresh-scope, record-outcome, guard, exec, recover, recover-post-cleanup, close-equivalent, takeover, rebaseline, allow, dispose-worktree, retain-worktree, adopt-worktree, accept-paused-change, end, or finalize",
+      "loop requires start, status, verify, record-scope, refresh-scope, record-outcome, guard, exec, recover, recover-post-cleanup, close-equivalent, takeover, rebaseline, allow, dispose-worktree, retain-worktree, adopt-worktree, accept-paused-change, reconcile-remote-branches, emergency, end, or finalize",
       EXIT_CODES.usage
     );
   }
@@ -2343,7 +2365,7 @@ const runWorktreeMaintenance = (
     writeOutput(
       receipt,
       options.json,
-      `Standalone cleanup ${receipt.cleanupId} vs ${receipt.targetRef}: removed ${receipt.removed.length} proven worktree(s), pruned ${receipt.prunedPaths.length} stale record(s), preserved ${receipt.preserved.length}.\n${receipt.preserved.map((entry) => `- preserved ${entry.path}: ${entry.reason}`).join("\n")}${receipt.preserved.length > 0 ? "\n" : ""}`
+      `Standalone cleanup ${receipt.cleanupId} vs ${receipt.targetRef}: removed ${receipt.removed.length} proven worktree(s), pruned ${receipt.prunedPaths.length} stale record(s), released ${(receipt.releasedClaims ?? []).length} orphaned claim(s), preserved ${receipt.preserved.length}.\n${receipt.preserved.map((entry) => `- preserved ${entry.path}: ${entry.reason}`).join("\n")}${receipt.preserved.length > 0 ? "\n" : ""}`
     );
     return true;
   }

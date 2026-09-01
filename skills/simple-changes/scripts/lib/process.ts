@@ -111,7 +111,7 @@ const lingeringProcessGroupError = async (
     : new GuardedProcessGroupStillAliveError(command, processGroupId);
 };
 
-export const runCommand = (
+const runCommand = (
   command: string,
   args: readonly string[],
   cwd: string,

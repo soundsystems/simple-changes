@@ -102,6 +102,17 @@ Validate the receipt with:
 simple-changes validate changelog-receipt <receipt.json>
 ```
 
+Then bind it to the delegated request. For every phase after the first, pass
+the receipt the request builds on so its digest is proven against the
+request's `priorReceiptDigest`; a mismatch fails closed. Without
+`--prior-receipt`, the result reports `priorReceiptDigestStatus: "unverified"`
+instead of proof:
+
+```sh
+simple-changes validate-changelog-transaction <request.json> <receipt.json> \
+  --prior-receipt <prior-receipt.json>
+```
+
 For `prepared`, verify every path is safe, belongs to the current stable
 worktree, still matches its recorded digest, and is limited to the delegated
 unit. Re-inventory after delegation because the external workflow changed the
@@ -118,7 +129,7 @@ that file contents are current and safe.
 
 ## Web production release gate
 
-A production deployment of a Web product is always a product release. Preview,
+A production deployment of a Web product is a product release. Preview,
 branch, staging, and internal test deployments do not cross this boundary.
 
 After the final feature merge and before production:

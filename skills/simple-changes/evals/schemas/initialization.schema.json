@@ -40,6 +40,7 @@
     "gitPushAuthorization",
     "guidanceUpdate",
     "handoffAction",
+    "handoffClaimRelease",
     "handoffTiming",
     "writeCapable",
     "mutationAllowed",
@@ -340,6 +341,20 @@
         "confirm-readiness",
         "wait-for-user",
         "proceed"
+      ]
+    },
+    "handoffClaimRelease": {
+      "anyOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["claimId", "path"],
+          "properties": {
+            "claimId": { "type": "string", "pattern": "^claim-[a-z0-9-]+$" },
+            "path": { "type": "string", "minLength": 1 }
+          }
+        }
       ]
     },
     "handoffTiming": {

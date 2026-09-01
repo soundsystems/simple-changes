@@ -119,7 +119,7 @@ const DEFAULT_CHANGELOG_CONTEXT: ChangelogCoordination = {
   relevant: false,
 };
 
-export const FINISH_CHOICES = [
+const FINISH_CHOICES = [
   {
     description: "Create focused change proposals, run checks, and stop.",
     label: "Put it up for review",
@@ -158,7 +158,7 @@ export const PROPOSAL_SCHEDULING_CHOICES = [
   },
 ] as const satisfies readonly OnboardingChoice[];
 
-export const PRODUCTION_CHOICES = [
+const PRODUCTION_CHOICES = [
   {
     description: "Merge automatically, but confirm before production.",
     label: "Ask me first",
@@ -281,7 +281,7 @@ export const parseMigrationTargets = (value: string): MigrationTarget[] => {
   ];
 };
 
-export const PERMISSION_CHOICES = [
+const PERMISSION_CHOICES = [
   {
     description: "Keep working unless a decision is genuinely required.",
     label: "Only when blocked",
@@ -299,7 +299,7 @@ export const PERMISSION_CHOICES = [
   },
 ] as const satisfies readonly OnboardingChoice[];
 
-export const CHANGELOG_CHOICES = [
+const CHANGELOG_CHOICES = [
   {
     description:
       "Use a compatible changelog skill when present; otherwise preserve and report the work.",
@@ -319,7 +319,7 @@ export const CHANGELOG_CHOICES = [
   },
 ] as const satisfies readonly OnboardingChoice[];
 
-export const SCOPE_CHOICES = [
+const SCOPE_CHOICES = [
   {
     description:
       "Save a visible .simple-changes.json beside the project so teammates and future agents use the same workflow.",
@@ -489,7 +489,7 @@ const onboardingStyleChoices = (
   ];
 };
 
-export const INSTRUCTION_POINTER_CHOICES = [
+const INSTRUCTION_POINTER_CHOICES = [
   {
     description:
       "Add or update one managed pointer so agents know when Simple Changes should take over.",

@@ -113,7 +113,12 @@
   target/primary collisions re-block integration. Under `strict`, an owner may
   acknowledge a pause only for its exact path, branch, HEAD, and content digest,
   and the controller adopts that state only as mutation-forbidden preserved
-  work.
+  work. A claim is released by its owner, by a proceeding completed-work
+  handoff for that checkout, or by finalization evidence: the controller's own
+  active claim on a clean checkout whose exact head the target contains, or
+  any live non-detached claim whose worktree directory no longer exists. Every
+  release records its reason; no claim is released by elapsed time or by
+  guessing its owner.
 - Clean non-primary claimed worktrees may be detached only from an exact
   detach receipt, without force or branch deletion. Reattachment requires the
   absent recorded path and the same local branch at the same HEAD; an active

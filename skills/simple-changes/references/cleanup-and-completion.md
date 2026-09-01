@@ -153,7 +153,9 @@ worktrees remain, `worktree cleanup --agent-id <you> --approved-by <who>
 shipment. It removes only what is proven safe right now: an unclaimed clean
 worktree whose head the refreshed target contains by exact ancestry or
 complete per-commit patch equivalence, and stale metadata whose directory no
-longer exists. Every live claim, dirty checkout, or unmatched head is
+longer exists; it then releases orphaned claims whose worktree is gone and
+records them as `releasedClaims` on the receipt. Every live claim on an
+existing checkout, dirty checkout, or unmatched head is
 preserved and named with the exact next command (equivalence audit, claim
 takeover, or loop lifecycle). The whole pass is recorded as an append-only
 receipt, and the command refuses to run while any loop record exists, active
@@ -218,7 +220,10 @@ Before reporting completion:
 The terminal lifecycle command verifies local reconciliation again instead of
 trusting the agent's report. `loop finalize` automatically removes unchanged
 clean target-contained worktrees, prunes stale worktree metadata, deletes
-eligible local branches whose work the target already contains, and normalizes
+eligible local branches whose work the target already contains, releases
+worktree claims proven finished (the controller's own active claim on a clean
+target-contained checkout, and any live non-detached claim whose directory is
+gone, each with a recorded `releaseReason`), and normalizes
 tracked dirty-primary paths
 only when their worktree state exactly matches the refreshed target and their
 index state is recoverable from the current head or target with ordinary index

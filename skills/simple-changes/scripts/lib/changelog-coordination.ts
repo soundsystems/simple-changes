@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, delimiter, resolve } from "node:path";
 import type { ChangelogCoordination } from "./types.ts";
@@ -108,6 +108,45 @@ const installedGuidanceVersion = (provider: string | null): number | null => {
   }
 };
 
+const SENTENCE_TERMINATORS = new Set([".", "!", "?"]);
+const WHITESPACE_PATTERN = /\s/u;
+
+const endsSentenceAt = (text: string, index: number): boolean => {
+  const next = text[index + 1];
+  if (next === undefined) {
+    return true;
+  }
+  // Keep runs of terminators ("?!", "...") together and never split on a
+  // terminator glued to the following token (`scripts/query.ts`, "v1.2").
+  return !SENTENCE_TERMINATORS.has(next) && WHITESPACE_PATTERN.test(next);
+};
+
+// Splits prose into terminated sentences while treating inline code spans
+// (`CHANGELOG.md`) as opaque so their punctuation never ends a sentence.
+const splitSentences = (text: string): string[] => {
+  const sentences: string[] = [];
+  let current = "";
+  let insideCode = false;
+  for (let index = 0; index < text.length; index += 1) {
+    const character = text[index] as string;
+    current += character;
+    if (character === "`") {
+      insideCode = !insideCode;
+      continue;
+    }
+    if (
+      insideCode ||
+      !SENTENCE_TERMINATORS.has(character) ||
+      !endsSentenceAt(text, index)
+    ) {
+      continue;
+    }
+    sentences.push(current.trim());
+    current = "";
+  }
+  return sentences.filter(Boolean);
+};
+
 const guidanceSummaryBullets = (
   detailsPath: string | null,
   storedVersion: number | null,
@@ -137,10 +176,7 @@ const guidanceSummaryBullets = (
       .filter(Boolean)
       .join("\n\n")
       .replace(/\s+/gu, " ");
-    return (relevant.match(/[^.!?]+[.!?]+/gu) ?? [])
-      .map((sentence) => sentence.trim())
-      .filter(Boolean)
-      .slice(0, 3);
+    return splitSentences(relevant).slice(0, 3);
   } catch {
     return [];
   }
@@ -207,6 +243,28 @@ const supportsDistribution = (
   }
 };
 
+const canonicalPath = (path: string): string => {
+  try {
+    return realpathSync(path);
+  } catch {
+    return path;
+  }
+};
+
+// Symlinked skill roots (for example ~/.codex/skills -> ~/.agents/skills)
+// expose one installed provider under several paths. Keep the first path seen
+// for each real location so the same installation is never counted twice.
+const uniqueByRealPath = (candidates: string[]): string[] => {
+  const seen = new Map<string, string>();
+  for (const candidate of candidates) {
+    const key = canonicalPath(candidate);
+    if (!seen.has(key)) {
+      seen.set(key, candidate);
+    }
+  }
+  return [...seen.values()];
+};
+
 const configuredSkillRoots = (options: ChangelogDiscoveryOptions): string[] => {
   const environment = options.environment ?? process.env;
   if (environment.SIMPLE_CHANGES_SKILL_ROOTS !== undefined) {
@@ -241,9 +299,12 @@ export const inspectChangelogCoordination = (
     )
     .filter(existsSync);
   const stored = storedGuidanceVersion(repositoryRoot);
-  const providers = [
-    ...new Set([...repositoryProviders, ...globalProviders]),
-  ].filter((candidate) => supportsDistribution(candidate, stored.distribution));
+  const providers = uniqueByRealPath([
+    ...repositoryProviders,
+    ...globalProviders,
+  ]).filter((candidate) =>
+    supportsDistribution(candidate, stored.distribution)
+  );
   const provider = providers[0] ?? null;
   const capabilityHelpers = providers
     .map((candidate) => resolve(candidate, "..", "scripts", "setup.ts"))

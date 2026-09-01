@@ -235,8 +235,29 @@ adapter slug, and opaque `ownerRef`, and is written atomically with mode `0600`.
 Do not put titles, prompts, message bodies, credentials, or tokens in the owner
 reference.
 
-A claim whose recorded owner no longer exists is not released by guessing the
-owner identity; use the audited `worktree takeover` recovery in
+Release the claim when the work is done. An active claim excludes its
+checkout from packaging, merge, and cleanup, so a finished branch stays
+unshippable until its owner runs `worktree release --claim-id <id>` or hands
+the work off with `initialize --mode handoff --agent-id <owner>`, which
+releases the owner's own claim on the current checkout the moment the handoff
+proceeds. Do not release a claim to "free" a lock or to make a controller's
+inventory smaller; release it because the work is complete, verified, and
+committed on its branch. `worktree status --json` lists every claim, pause
+receipt, and recorded release reason; `worktree request` builds the
+adapter-shaped pause, detach, or resume message for one exact owner and sends
+nothing by itself.
+
+Finalization also releases claims by evidence, never by elapsed time: the
+controller's own active claim on a clean checkout whose exact head the
+refreshed target already contains (`releaseReason: "shipped"`), and any live
+non-detached claim whose worktree directory no longer exists
+(`releaseReason: "worktree-absent"`). A detached claim keeps its branch and is
+never released this way. Another owner's live claim on an existing checkout is
+untouched.
+
+A claim whose recorded owner no longer exists and whose worktree is still
+present is not released by guessing the owner identity; use the audited
+`worktree takeover` recovery in
 [cleanup and completion](cleanup-and-completion.md).
 
 Under `allow-claimed`, a healthy distinct active claim does not block the loop;

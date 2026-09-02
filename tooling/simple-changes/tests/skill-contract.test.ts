@@ -308,6 +308,36 @@ describe("Simple Changes skill contract", () => {
     expect(deliverySchema).toContain('"deployedRevision"');
   });
 
+  test("blocks unsafe production changes for installed clients", async () => {
+    const [skill, migrationActions] = await Promise.all([
+      readFile(skillPath, "utf8"),
+      readFile(migrationActionsPath, "utf8"),
+    ]);
+    const normalizedSkill = skill.replace(/\s+/g, " ");
+    const normalizedMigrationActions = migrationActions.replace(/\s+/g, " ");
+
+    expect(normalizedSkill).toContain(
+      "Installed-client compatibility: <state> (<evidence and reason>)"
+    );
+    expect(normalizedSkill).toContain(
+      "A new client release alone does not make a breaking rollout safe"
+    );
+    expect(normalizedMigrationActions).toContain(
+      "without an enforced minimum-version boundary, older installed clients may still use the production backend"
+    );
+    for (const state of [
+      "`compatible`",
+      "`release-recommended`",
+      "`incompatible`",
+      "`unverified`",
+    ]) {
+      expect(normalizedMigrationActions).toContain(state);
+    }
+    expect(normalizedMigrationActions).toContain(
+      "Use an expand-and-contract sequence instead"
+    );
+  });
+
   test("Onboarding explains the consequence of every option", async () => {
     const source = await readFile(skillPath, "utf8");
     const normalizedSource = source.replace(/\s+/g, " ");

@@ -13,6 +13,44 @@ Follow [database and data-system changes](data-changes.md) for migration-history
 discovery, ORM/generated-schema parity, non-relational data systems, dialect
 risk, bounded backfills, and postcondition evidence.
 
+## Installed-client compatibility gate
+
+Use this gate when a candidate can change behavior consumed by a separately
+released installed client, including mobile or desktop binaries. Trigger it for
+database migrations; API, RPC, GraphQL, authentication, authorization, storage,
+or realtime contract changes; shared validation or persisted-data contracts;
+and client changes that may still need distribution.
+
+Identify the supported production client builds and their source revisions when
+that evidence is available. Do not assume the newest store build is installed;
+without an enforced minimum-version boundary, older installed clients may still
+use the production backend. Compare those clients' reads, writes, RPC calls,
+response parsing, permissions, and offline/retry behavior with the candidate.
+Pay particular attention to removed or renamed fields, tables, endpoints, or
+routines; changed parameter or return shapes; stricter nullability, constraints,
+or enums; and row-level, storage, or realtime rules that reject previously valid
+operations. Additive nullable fields, new independent objects, and indexes are
+usually compatible but still require evidence when they affect a client path.
+
+Record exactly one result with concise evidence:
+
+- `compatible`: supported installed clients remain functional; no client
+  release is required for safety.
+- `release-recommended`: installed clients remain safe, but candidate client
+  behavior is not delivered until a separately authorized client release.
+- `incompatible`: a supported installed client can fail, corrupt work, or
+  crash; block the affected migration or backend/production rollout.
+- `unverified`: the supported client boundary or contract effect could not be
+  established; block only the affected migration or deployment until resolved.
+
+Cutting a client release does not by itself make `incompatible` safe because old
+binaries remain installed during review, rollout, and adoption. Use an
+expand-and-contract sequence instead: preserve the old contract while adding
+the new one, ship the compatible client, establish the enforced support or
+adoption boundary, and remove the legacy contract in a later reviewed change.
+This gate grants no migration, deployment, build, submission, or store-release
+authority.
+
 The presence of a migration never authorizes a remote apply. Queueing,
 integrating, or shipping code does not by itself authorize:
 

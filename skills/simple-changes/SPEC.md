@@ -241,6 +241,13 @@
   the proposal's signature block. A signature is attribution only; it never
   approves, satisfies independent review, or authorizes a merge, and `none`
   suppresses new signatures without removing existing ones.
+- Work that can affect separately released installed clients records exactly
+  one installed-client compatibility result (`compatible`,
+  `release-recommended`, `incompatible`, or `unverified`) with evidence.
+  `incompatible` or `unverified` blocks the affected migration, API, backend,
+  or production deployment; a new client release alone never makes a breaking
+  rollout safe, because older binaries remain installed until an enforced
+  support boundary exists.
 
 ## Forbidden behaviors
 

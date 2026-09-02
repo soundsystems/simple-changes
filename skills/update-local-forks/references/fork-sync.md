@@ -50,9 +50,10 @@ the runtime: the old provenance sha, `CURRENT_GUIDANCE_VERSION = <old>`, and
 `Simple Changes <old version>`. Only those exact strings change; nothing is
 inferred.
 
-A `.upstream-merge` sidecar is the durable record of an unresolved conflict:
-the pin still advances with the rest of the update, and every later plan
-reports the file as `review` until the sidecar is merged in and deleted.
+A `.upstream-merge` sidecar is the durable record of an unresolved conflict.
+When `SKILL.md` conflicts, the provenance pin stays pending; otherwise it can
+advance with the rest of the update. Every later plan reports the conflicted
+file as `review` until the sidecar is merged in and deleted.
 Never leave conflict markers inside a live skill file.
 
 ## Classify what you port by hand

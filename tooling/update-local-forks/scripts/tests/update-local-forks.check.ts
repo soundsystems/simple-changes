@@ -124,9 +124,15 @@ const createFixture = (): Fixture => {
 
   // The fork: runtime layout, its own prose, one reference omitted, a
   // fork-only wrapper and test script pinning upstream literals.
-  const fork = join(base, "project", "skills", "acme-simple-changes");
+  const fork = join(
+    base,
+    "Developer",
+    "project",
+    "skills",
+    "acme-simple-changes"
+  );
   mkdirSync(fork, { recursive: true });
-  git(join(base, "project"), ["init", "-q", "-b", "main"]);
+  git(join(base, "Developer", "project"), ["init", "-q", "-b", "main"]);
   write(
     fork,
     "SKILL.md",
@@ -212,18 +218,16 @@ const createFixture = (): Fixture => {
 describe("update-local-forks", () => {
   test("discovers installed sources and forks, flagging linked worktrees", () => {
     const fixture = createFixture();
-    git(join(fixture.base, "project"), ["config", "user.name", "Fixture"]);
-    git(join(fixture.base, "project"), [
-      "config",
-      "user.email",
-      "f@example.invalid",
-    ]);
-    git(join(fixture.base, "project"), ["add", "."]);
-    git(join(fixture.base, "project"), ["commit", "-q", "-m", "fork"]);
+    const project = join(fixture.base, "Developer", "project");
+    git(project, ["config", "user.name", "Fixture"]);
+    git(project, ["config", "user.email", "f@example.invalid"]);
+    git(project, ["add", "."]);
+    git(project, ["commit", "-q", "-m", "fork"]);
     const linked = join(fixture.base, "linked");
-    git(join(fixture.base, "project"), ["worktree", "add", "-q", linked]);
+    git(project, ["worktree", "add", "-q", linked]);
 
     const result = discover({ home: fixture.base, roots: [fixture.base] });
+    const defaults = discover({ home: fixture.base, roots: [] });
 
     const sourcePaths = result.sources.map((source) => source.path);
     expect(sourcePaths).toContain(realpathSync(fixture.source));
@@ -251,6 +255,9 @@ describe("update-local-forks", () => {
       path: realpathSync(join(linked, "skills", "acme-simple-changes")),
     });
     expect(inspectFork(fixture.source)).toBeNull();
+    expect(defaults.forks.map((fork) => fork.path)).toContain(
+      realpathSync(fixture.fork)
+    );
   });
 
   test("plans and applies an update that keeps every fork delta", () => {
@@ -413,6 +420,96 @@ describe("update-local-forks", () => {
     expect(
       drifted.literalRewrites.some((rewrite) => rewrite.to === fixture.release)
     ).toBe(false);
+  });
+
+  test("rejects hostile saved paths before writing outside the fork", () => {
+    const fixture = createFixture();
+    const plan = planForkUpdate({
+      fork: fixture.fork,
+      source: fixture.source,
+      upstream: fixture.upstream,
+    });
+    const outside = join(fixture.base, "outside.txt");
+    const hostile = structuredClone(plan);
+    const [firstEntry] = hostile.entries;
+    if (!firstEntry) {
+      throw new Error("fixture plan unexpectedly has no entries");
+    }
+    firstEntry.forkPath = "../../../../outside.txt";
+    firstEntry.content = "owned\n";
+
+    expect(() => applyForkPlan(hostile)).toThrow("invalid file entry");
+    expect(existsSync(outside)).toBe(false);
+
+    const moved = structuredClone(plan);
+    moved.fork.path = join(fixture.base, "Developer", "project");
+    expect(() => applyForkPlan(moved)).toThrow("fork identity changed");
+  });
+
+  test("refuses stale literal targets and conflict sidecars", () => {
+    const fixture = createFixture();
+    const literalPlan = planForkUpdate({
+      fork: fixture.fork,
+      source: fixture.source,
+      upstream: fixture.upstream,
+    });
+    writeFileSync(join(fixture.fork, "notes.md"), "concurrent edit\n");
+    expect(() => applyForkPlan(literalPlan)).toThrow(
+      "notes.md changed after the plan was made"
+    );
+
+    const fresh = createFixture();
+    const conflictPlan = planForkUpdate({
+      fork: fresh.fork,
+      source: fresh.source,
+      upstream: fresh.upstream,
+    });
+    const sidecar = join(fresh.fork, "SPEC.md.upstream-merge");
+    writeFileSync(sidecar, "existing review\n");
+    expect(() => applyForkPlan(conflictPlan)).toThrow(
+      "SPEC.md.upstream-merge changed after the plan was made"
+    );
+    expect(readFileSync(sidecar, "utf8")).toBe("existing review\n");
+  });
+
+  test("keeps the provenance pin pending when SKILL.md conflicts", () => {
+    const fixture = createFixture();
+    writeFileSync(
+      join(fixture.fork, "SKILL.md"),
+      `---\nname: acme-simple-changes\n---\n\n# Acme Simple Changes\n\nForked from \`simple-changes\` @ \`${fixture.pin}\`. Acme-specific deltas: GitLab only.\n\nFork intro.\n\n## Rules\n\nRule one.\n`
+    );
+    writeFileSync(
+      join(fixture.upstream, "skills/simple-changes/SKILL.md"),
+      "---\nname: simple-changes\n---\n\n# Simple Changes\n\nUpstream intro.\n\n## Rules\n\nRule one.\n"
+    );
+    git(fixture.upstream, ["add", "."]);
+    git(fixture.upstream, ["commit", "-q", "-m", "conflicting release"]);
+    cpSync(join(fixture.upstream, "skills/simple-changes"), fixture.source, {
+      force: true,
+      recursive: true,
+    });
+
+    const plan = planForkUpdate({
+      fork: fixture.fork,
+      source: fixture.source,
+      upstream: fixture.upstream,
+    });
+    expect(
+      plan.entries.find((entry) => entry.forkPath === "SKILL.md")?.action
+    ).toBe("conflict");
+    expect(plan.pinUpdate.to).toBeNull();
+    expect(
+      plan.literalRewrites.some((rewrite) => rewrite.from === fixture.pin)
+    ).toBe(false);
+
+    const receipt = applyForkPlan(plan);
+    expect(receipt.pin).toEqual({ from: fixture.pin, to: null });
+    expect(readFileSync(join(fixture.fork, "SKILL.md"), "utf8")).toContain(
+      fixture.pin
+    );
+    expect(existsSync(join(fixture.fork, "SKILL.md.upstream-merge"))).toBe(
+      true
+    );
   });
 
   test("the CLI plans, applies, and reports through JSON", () => {

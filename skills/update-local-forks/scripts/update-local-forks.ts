@@ -24,7 +24,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { dirname, join, relative, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { spawnSync } from "bun";
 
 const VERSION = "1.0.0";
@@ -41,6 +41,7 @@ const GLOBAL_SKILL_ROOTS = [
   ".claude/skills",
   ".cursor/skills",
 ];
+const PROJECT_ROOTS = ["Developer", "Projects", "Code", "src"];
 const SKIP_DIRECTORIES = new Set([
   ".git",
   "node_modules",
@@ -256,6 +257,7 @@ export const discover = (options: {
   const home = options.home ?? homedir();
   const roots = [
     ...GLOBAL_SKILL_ROOTS.map((root) => join(home, root)),
+    ...PROJECT_ROOTS.map((root) => join(home, root)),
     ...options.roots,
   ].filter(
     (root, index, all) => existsSync(root) && all.indexOf(root) === index
@@ -506,10 +508,12 @@ export interface PlanEntry {
   forkDigest: string | null;
   forkPath: string;
   reason: string;
+  sidecarDigest?: string | null;
   upstreamPath: string | null;
 }
 
 export interface LiteralRewrite {
+  forkDigest: string;
   forkPath: string;
   from: string;
   to: string;
@@ -712,13 +716,14 @@ const literalRewritesFor = (
   plannedContent: Map<string, string>,
   source: ForkPlan["source"],
   oldPin: string,
+  newPin: string | null,
   oldGuidance: number | null,
   oldVersion: string | null
 ): LiteralRewrite[] => {
   const rewrites: LiteralRewrite[] = [];
   const substitutions: [string, string][] = [];
-  if (source.commit && source.commitVerified) {
-    substitutions.push([oldPin, source.commit]);
+  if (newPin) {
+    substitutions.push([oldPin, newPin]);
   }
   if (oldGuidance !== null && source.guidanceVersion !== null) {
     substitutions.push([
@@ -746,7 +751,7 @@ const literalRewritesFor = (
     }
     for (const [from, to] of substitutions) {
       if (from !== to && content.includes(from)) {
-        rewrites.push({ forkPath, from, to });
+        rewrites.push({ forkDigest: sha256(content), forkPath, from, to });
       }
     }
   }
@@ -785,10 +790,10 @@ const advanceProvenance = (
   entries: PlanEntry[],
   plannedContent: Map<string, string>,
   newPin: string | null
-): void => {
+): boolean => {
   const skillEntry = entries.find((entry) => entry.forkPath === "SKILL.md");
   if (!(newPin && skillEntry) || skillEntry.action === "conflict") {
-    return;
+    return false;
   }
   const basis =
     skillEntry.content ?? readText(join(fork.path, "SKILL.md")) ?? "";
@@ -797,7 +802,7 @@ const advanceProvenance = (
     `Forked from \`simple-changes\` @ \`${newPin}\``
   );
   if (rewritten === basis) {
-    return;
+    return false;
   }
   skillEntry.content = rewritten;
   if (
@@ -808,6 +813,7 @@ const advanceProvenance = (
     skillEntry.reason = "Provenance pin advanced to the installed release.";
   }
   plannedContent.set("SKILL.md", rewritten);
+  return true;
 };
 
 interface ClassifiedFork {
@@ -856,6 +862,9 @@ const classifyForkFiles = (
       current: readText(join(fork.path, forkPath)),
       target: readText(join(source.path, upstreamPath)),
     });
+    if (entry.action === "conflict") {
+      entry.sidecarDigest = null;
+    }
     if (entry.content !== undefined) {
       plannedContent.set(forkPath, entry.content);
     }
@@ -931,17 +940,27 @@ export const planForkUpdate = (options: {
     upstream,
     installed
   );
+  const pinCandidate = source.commitVerified ? source.commit : null;
+  const pinAdvanced = advanceProvenance(
+    fork,
+    entries,
+    plannedContent,
+    pinCandidate
+  );
   const pinUpdate: ForkPlan["pinUpdate"] = {
     from: fork.pin,
-    reason: located.reason,
-    to: source.commitVerified ? source.commit : null,
+    reason:
+      pinCandidate && !pinAdvanced
+        ? "The provenance file conflicts; resolve it before advancing the pin."
+        : located.reason,
+    to: pinAdvanced ? pinCandidate : null,
   };
-  advanceProvenance(fork, entries, plannedContent, pinUpdate.to);
   const literalRewrites = literalRewritesFor(
     fork,
     plannedContent,
     source,
     fork.pin,
+    pinUpdate.to,
     pinnedGuidance ? Number(pinnedGuidance) : null,
     pinnedVersion ?? null
   );
@@ -969,12 +988,252 @@ export interface ApplyReceipt {
 }
 
 const WRITE_ACTIONS = new Set<PlanAction>(["update", "merge", "add"]);
+const DIGEST_PATTERN = /^[0-9a-f]{64}$/u;
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
+const hasExactKeys = (
+  value: Record<string, unknown>,
+  required: string[],
+  optional: string[] = []
+): boolean => {
+  const keys = Object.keys(value);
+  return (
+    required.every((key) => keys.includes(key)) &&
+    keys.every((key) => required.includes(key) || optional.includes(key))
+  );
+};
+
+const safeForkPath = (forkRoot: string, value: unknown): value is string => {
+  if (
+    typeof value !== "string" ||
+    value.length === 0 ||
+    isAbsolute(value) ||
+    value.includes("\\") ||
+    value
+      .split("/")
+      .some((part) => part === "" || part === "." || part === "..")
+  ) {
+    return false;
+  }
+  const contained = relative(forkRoot, resolve(forkRoot, value));
+  return (
+    contained !== "" && !contained.startsWith("..") && !isAbsolute(contained)
+  );
+};
+
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: The closed plan schema is deliberately validated field by field at one trust boundary.
+const validateForkPlan = (value: unknown): ForkPlan => {
+  if (
+    !(
+      isRecord(value) &&
+      hasExactKeys(value, [
+        "entries",
+        "fork",
+        "literalRewrites",
+        "pinUpdate",
+        "schemaVersion",
+        "source",
+        "summary",
+      ])
+    ) ||
+    value.schemaVersion !== 1 ||
+    !Array.isArray(value.entries) ||
+    !Array.isArray(value.literalRewrites) ||
+    !isRecord(value.fork) ||
+    !isRecord(value.pinUpdate) ||
+    !isRecord(value.source) ||
+    !isRecord(value.summary)
+  ) {
+    throw new ForkUpdateError(
+      "The plan file is not a closed fork plan.",
+      EXIT.usage
+    );
+  }
+  const { fork, summary } = value;
+  if (
+    !hasExactKeys(fork, [
+      "name",
+      "path",
+      "pin",
+      "repository",
+      "runtimeLayout",
+    ]) ||
+    typeof fork.name !== "string" ||
+    typeof fork.path !== "string" ||
+    typeof fork.pin !== "string" ||
+    !["runtime-directory", "in-place"].includes(String(fork.runtimeLayout)) ||
+    !(
+      fork.repository === null ||
+      (isRecord(fork.repository) &&
+        hasExactKeys(fork.repository, ["linkedWorktree", "root"]) &&
+        typeof fork.repository.linkedWorktree === "boolean" &&
+        typeof fork.repository.root === "string")
+    )
+  ) {
+    throw new ForkUpdateError(
+      "The plan carries an invalid fork identity.",
+      EXIT.usage
+    );
+  }
+  const canonicalFork = inspectFork(fork.path);
+  if (
+    !canonicalFork ||
+    canonicalFork.path !== fork.path ||
+    canonicalFork.name !== fork.name ||
+    canonicalFork.pin !== fork.pin ||
+    canonicalFork.runtimeLayout !== fork.runtimeLayout ||
+    canonicalFork.repository?.root !==
+      (isRecord(fork.repository) ? fork.repository.root : undefined) ||
+    canonicalFork.repository?.linkedWorktree !==
+      (isRecord(fork.repository) ? fork.repository.linkedWorktree : undefined)
+  ) {
+    throw new ForkUpdateError(
+      "The fork identity changed after the plan was made; re-run plan.",
+      EXIT.blocked
+    );
+  }
+  const forkRoot = canonicalFork.path;
+  const entryPaths = new Set<string>();
+  const writtenEntryPaths = new Set<string>();
+  for (const entry of value.entries) {
+    if (
+      !(
+        isRecord(entry) &&
+        hasExactKeys(
+          entry,
+          ["action", "forkDigest", "forkPath", "reason", "upstreamPath"],
+          ["content", "sidecarDigest"]
+        ) &&
+        PLAN_ACTIONS.includes(entry.action as PlanAction) &&
+        safeForkPath(forkRoot, entry.forkPath)
+      ) ||
+      typeof entry.reason !== "string" ||
+      !(
+        entry.upstreamPath === null ||
+        (typeof entry.upstreamPath === "string" &&
+          safeForkPath(forkRoot, entry.upstreamPath))
+      ) ||
+      !(
+        entry.forkDigest === null ||
+        (typeof entry.forkDigest === "string" &&
+          DIGEST_PATTERN.test(entry.forkDigest))
+      ) ||
+      !(entry.content === undefined || typeof entry.content === "string") ||
+      !(
+        entry.sidecarDigest === undefined ||
+        entry.sidecarDigest === null ||
+        (typeof entry.sidecarDigest === "string" &&
+          DIGEST_PATTERN.test(entry.sidecarDigest))
+      ) ||
+      entryPaths.has(entry.forkPath)
+    ) {
+      throw new ForkUpdateError(
+        "The plan carries an invalid file entry.",
+        EXIT.usage
+      );
+    }
+    entryPaths.add(entry.forkPath);
+    if (
+      WRITE_ACTIONS.has(entry.action as PlanAction) ||
+      entry.action === "delete"
+    ) {
+      writtenEntryPaths.add(entry.forkPath);
+    }
+    if (
+      (entry.action === "conflict") !==
+      Object.hasOwn(entry, "sidecarDigest")
+    ) {
+      throw new ForkUpdateError(
+        "Conflict entries must bind their sidecar state.",
+        EXIT.usage
+      );
+    }
+  }
+  for (const rewrite of value.literalRewrites) {
+    if (
+      !(
+        isRecord(rewrite) &&
+        hasExactKeys(rewrite, ["forkDigest", "forkPath", "from", "to"])
+      ) ||
+      typeof rewrite.forkDigest !== "string" ||
+      !DIGEST_PATTERN.test(rewrite.forkDigest) ||
+      !safeForkPath(forkRoot, rewrite.forkPath) ||
+      typeof rewrite.from !== "string" ||
+      rewrite.from.length === 0 ||
+      typeof rewrite.to !== "string" ||
+      writtenEntryPaths.has(rewrite.forkPath)
+    ) {
+      throw new ForkUpdateError(
+        "The plan carries an invalid literal rewrite.",
+        EXIT.usage
+      );
+    }
+  }
+  if (
+    !hasExactKeys(value.pinUpdate, ["from", "reason", "to"]) ||
+    typeof value.pinUpdate.from !== "string" ||
+    typeof value.pinUpdate.reason !== "string" ||
+    !(value.pinUpdate.to === null || typeof value.pinUpdate.to === "string") ||
+    !hasExactKeys(value.source, [
+      "commit",
+      "commitVerified",
+      "guidanceVersion",
+      "path",
+      "version",
+    ]) ||
+    !(
+      value.source.commit === null || typeof value.source.commit === "string"
+    ) ||
+    typeof value.source.commitVerified !== "boolean" ||
+    !(
+      value.source.guidanceVersion === null ||
+      (typeof value.source.guidanceVersion === "number" &&
+        Number.isInteger(value.source.guidanceVersion))
+    ) ||
+    typeof value.source.path !== "string" ||
+    !(
+      value.source.version === null || typeof value.source.version === "string"
+    ) ||
+    !hasExactKeys(summary, [...PLAN_ACTIONS]) ||
+    !PLAN_ACTIONS.every(
+      (action) =>
+        typeof summary[action] === "number" &&
+        Number.isInteger(summary[action]) &&
+        Number(summary[action]) >= 0
+    )
+  ) {
+    throw new ForkUpdateError("The plan metadata is invalid.", EXIT.usage);
+  }
+  return value as unknown as ForkPlan;
+};
 
 // Fail closed if any file the plan would write or delete changed after the
 // plan was made; never overwrite work that arrived in between.
-const assertForkUnchanged = (forkRoot: string, entries: PlanEntry[]): void => {
+const assertSidecarUnchanged = (forkRoot: string, entry: PlanEntry): void => {
+  const sidecarPath = entry.forkPath + MERGE_SIDECAR_SUFFIX;
+  const sidecar = readText(join(forkRoot, sidecarPath));
+  const sidecarDigest = sidecar === null ? null : sha256(sidecar);
+  if (sidecarDigest !== entry.sidecarDigest) {
+    throw new ForkUpdateError(
+      `${sidecarPath} changed after the plan was made; re-run plan.`,
+      EXIT.blocked
+    );
+  }
+};
+
+const assertForkUnchanged = (
+  forkRoot: string,
+  entries: PlanEntry[],
+  rewrites: LiteralRewrite[]
+): void => {
   for (const entry of entries) {
     if (!(WRITE_ACTIONS.has(entry.action) || entry.action === "delete")) {
+      if (entry.action !== "conflict") {
+        continue;
+      }
+      assertSidecarUnchanged(forkRoot, entry);
       continue;
     }
     const current = readText(join(forkRoot, entry.forkPath));
@@ -982,6 +1241,15 @@ const assertForkUnchanged = (forkRoot: string, entries: PlanEntry[]): void => {
     if (digest !== entry.forkDigest) {
       throw new ForkUpdateError(
         `${entry.forkPath} changed after the plan was made; re-run plan.`,
+        EXIT.blocked
+      );
+    }
+  }
+  for (const rewrite of rewrites) {
+    const current = readText(join(forkRoot, rewrite.forkPath));
+    if (current === null || sha256(current) !== rewrite.forkDigest) {
+      throw new ForkUpdateError(
+        `${rewrite.forkPath} changed after the plan was made; re-run plan.`,
         EXIT.blocked
       );
     }
@@ -1044,23 +1312,24 @@ const applyLiteralRewrites = (
 };
 
 export const applyForkPlan = (plan: ForkPlan): ApplyReceipt => {
-  const forkRoot = plan.fork.path;
-  assertForkUnchanged(forkRoot, plan.entries);
-  const { deleted, written } = applyEntries(forkRoot, plan.entries);
+  const validated = validateForkPlan(plan);
+  const forkRoot = validated.fork.path;
+  assertForkUnchanged(forkRoot, validated.entries, validated.literalRewrites);
+  const { deleted, written } = applyEntries(forkRoot, validated.entries);
   const literalRewrites = applyLiteralRewrites(
     forkRoot,
-    plan.literalRewrites,
+    validated.literalRewrites,
     written
   );
   return {
-    conflicts: plan.entries
+    conflicts: validated.entries
       .filter((entry) => entry.action === "conflict")
       .map((entry) => entry.forkPath),
     deleted,
     fork: forkRoot,
     literalRewrites,
-    pin: { from: plan.pinUpdate.from, to: plan.pinUpdate.to },
-    review: plan.entries
+    pin: { from: validated.pinUpdate.from, to: validated.pinUpdate.to },
+    review: validated.entries
       .filter((entry) => entry.action === "review")
       .map((entry) => entry.forkPath),
     written: written.sort(byText),
@@ -1078,8 +1347,9 @@ Usage:
   update-local-forks apply --plan FILE [--json]
   update-local-forks help
 
-discover  Find every fork (SKILL.md with a provenance pin) and every installed
-          source under the global skill roots and any --root, without writing.
+discover  Find forks (SKILL.md with a provenance pin) and installed sources
+          under global skill roots, conventional project folders, and any
+          --root, without writing.
 plan      Classify every file of one fork against its pinned base and the
           installed source; print the plan. Save it with --json > plan.json.
 apply     Write exactly what a saved plan says: updates, merges, additions,
@@ -1242,10 +1512,7 @@ const runApply = (options: CliOptions): number => {
   if (!options.plan) {
     throw new ForkUpdateError("apply requires --plan FILE", EXIT.usage);
   }
-  const plan = JSON.parse(readFileSync(options.plan, "utf8")) as ForkPlan;
-  if (plan.schemaVersion !== 1 || !(plan as Partial<ForkPlan>).fork?.path) {
-    throw new ForkUpdateError("The plan file is not a fork plan.", EXIT.usage);
-  }
+  const plan = validateForkPlan(JSON.parse(readFileSync(options.plan, "utf8")));
   const receipt = applyForkPlan(plan);
   emit(
     receipt,

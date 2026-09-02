@@ -82,9 +82,10 @@ in this package and is meant for anyone who forked, not only maintainers:
 bunx skills add https://gitlab.com/soundsystems/simple-changes --skill update-local-forks
 ```
 
-Ask an agent to update your local forks, or run the helper directly. It
-discovers every fork on the machine, plans one fork at a time against the
-fork's pinned upstream base and the global install, applies portable upstream
+Ask an agent to update your local forks, or run the helper directly. It scans
+global skill roots and conventional project folders (`Developer`, `Projects`,
+`Code`, and `src`); pass `--root` for forks elsewhere. It plans one fork at a
+time against the fork's pinned upstream base and the global install, applies portable upstream
 changes, keeps every fork-specific edit and file, three-way merges files both
 sides changed, and reports conflicts and omitted references for review instead
 of overwriting them. It also advances the provenance pin only to the exact

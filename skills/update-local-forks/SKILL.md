@@ -25,8 +25,9 @@ saved plan, and it never commits, pushes, or runs a fork's scripts.
 ## Workflow
 
 1. **Discover.** Run `update-local-forks discover [--root <dir> ...] --json`.
-   It lists installed sources (the global skill roots plus any root you pass)
-   and every fork with its pin and layout. Skip forks flagged as a linked Git
+   It lists installed sources and forks under global skill roots, conventional
+   project folders, and any root you pass, with each fork's pin and layout.
+   Skip forks flagged as a linked Git
    worktree; update the primary checkout of that repository instead. If no
    source is installed, stop and tell the user to install Simple Changes
    globally first (see [fork sync](references/fork-sync.md)).

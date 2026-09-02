@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- CMS-only changelog handoffs now advance relevant operator-history changes from
+  classification to preparation without requesting a public version or
+  production approval.
+<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-09-02T15:41:27-05:00" -->
+
 ## 0.13.0 - 2026-09-02
 
 - Change proposals can now carry clear agent-and-model attribution for authored,

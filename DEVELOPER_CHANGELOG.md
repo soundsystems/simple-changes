@@ -1,5 +1,16 @@
 # Developer changelog
 
+## Unreleased
+
+- Added consumer support for the CMS entry-only `classified` receipt: the
+  receipt-v2 schema validates the non-versioned classification, transaction
+  validation binds it to `boundary: "none"`, and the release gate returns
+  `re-delegate` so preparation proceeds without version or production approval.
+  Coverage verifies the complete classification-to-preparation decision path.
+  Also corrected the shipped CLI version constant from `0.12.19` to the
+  package's current `0.13.0` version after the full suite exposed the mismatch.
+<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-09-02T15:41:27-05:00" -->
+
 ## 0.13.0 - 2026-09-02
 
 - Added the `proposalSignatures` repository policy with the

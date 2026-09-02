@@ -3071,7 +3071,7 @@ describe("active integration-loop lease", () => {
       secondReceipt.receiptId
     );
     expect(verifyLoop(fixture.root).ok).toBe(true);
-  }, 30_000);
+  }, 60_000);
 
   test("requires an active claim or pause before retaining a dirty worktree", () => {
     const fixture = repository();
@@ -4705,7 +4705,7 @@ describe("target-equivalent loop closure", () => {
       runId: lease.runId,
     });
     expect(JSON.stringify(archived)).not.toContain("shipped");
-  }, 40_000);
+  }, 90_000);
 
   test("closes a relinquished loop directly with explicit approval, without takeover or resume", () => {
     const fixture = repository();

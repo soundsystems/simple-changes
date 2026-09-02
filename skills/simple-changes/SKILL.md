@@ -201,6 +201,7 @@ For an instruction-pointer handoff, run:
 ```sh
 simple-changes initialize \
   --mode handoff \
+  --agent-id "$AGENT_ID" \
   --json
 ```
 

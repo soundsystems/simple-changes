@@ -411,7 +411,7 @@ describe("Simple Changes skill contract", () => {
     const normalizedSource = source.replace(/\s+/g, " ");
 
     expect(normalizedSource).toContain(
-      "initialize \\ --mode handoff \\ --json"
+      'initialize \\ --mode handoff \\ --agent-id "$AGENT_ID" \\ --json'
     );
     expect(normalizedSource).toContain(
       "Is this ready for Simple Changes, or do you want more changes first?"

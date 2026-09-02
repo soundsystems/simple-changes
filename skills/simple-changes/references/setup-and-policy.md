@@ -233,7 +233,7 @@ isolated automation and tests.
 An automatic or confirmation-based instruction pointer starts with:
 
 ```sh
-simple-changes initialize --mode handoff --json
+simple-changes initialize --mode handoff --agent-id "$AGENT_ID" --json
 ```
 
 The closed status separates a write-capable mode from current mutation

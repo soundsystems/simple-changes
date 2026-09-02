@@ -8,6 +8,7 @@ import {
 } from "../../../skills/simple-changes/scripts/lib/release-gate.ts";
 import {
   createTestRepository,
+  git,
   type TestRepository,
   writeFixture,
 } from "./helpers.ts";
@@ -396,5 +397,46 @@ describe("changelog protocol CLI", () => {
       reasonCode: "deployment-revision-mismatch",
       status: "blocked",
     });
+  });
+
+  test("builds the proposal signature block from commit trailers", () => {
+    const fixture = createTestRepository();
+    repositories.push(fixture);
+    writeFixture(fixture.root, "feature.ts", "export const feature = 1;\n");
+    git(fixture.root, ["checkout", "-b", "feature"]);
+    git(fixture.root, ["add", "feature.ts"]);
+    git(fixture.root, [
+      "commit",
+      "-m",
+      "feat: Feature\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>",
+    ]);
+
+    const result = runCli(
+      fixture.root,
+      "proposal-signatures",
+      "--agent",
+      "Fable 5.1",
+      "--role",
+      "authored",
+      "--base",
+      "main",
+      "--head",
+      "feature",
+      "--json"
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(JSON.parse(decoder.decode(result.stdout))).toMatchObject({
+      block: "[[Authored by Fable 5.1]]\n[[Co-authored by Opus 5]]",
+    });
+    const badRole = runCli(
+      fixture.root,
+      "proposal-signatures",
+      "--agent",
+      "Fable 5.1",
+      "--role",
+      "shipped"
+    );
+    expect(badRole.exitCode).not.toBe(0);
   });
 });

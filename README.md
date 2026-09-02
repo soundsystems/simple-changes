@@ -267,6 +267,8 @@ simple-changes release-gate --request FILE --receipt FILE
   [--version-authorized] [--json]
 simple-changes release-delivery --changelog-receipt FILE --provider-receipt FILE
   [--request FILE] [--json]
+simple-changes proposal-signatures --agent NAME --role authored|reviewed|merged
+  [--base REF --head REF] [--changelog-receipt FILE] [--json] [--repo PATH]
 simple-changes validate KIND FILE [--json]
 simple-changes verify-markdown FILE [--json]
 simple-changes help

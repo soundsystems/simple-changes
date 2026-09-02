@@ -190,9 +190,10 @@ Ask **Should agents sign the PRs/MRs they author, review, or merge?** (use
 the forge's term) in the full walkthrough. Offer:
 
 1. **Sign with model name and version (Recommended)**: Every agent appends
-   an `Authored by`, `Reviewed by`, or `Merged by` line with its model name
-   and version to the proposal description, so provider history shows which
-   model did what.
+   a double-bracketed `Authored by`, `Reviewed by`, or `Merged by` line with
+   its model name and version to the proposal description, and co-authors are
+   credited from commit trailers and changelog signatures, so provider history
+   shows which model did what.
 2. **No signatures**: Proposals carry no agent signature; provider history
    shows only the account that acted.
 

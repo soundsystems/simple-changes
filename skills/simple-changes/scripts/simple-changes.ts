@@ -86,6 +86,10 @@ import {
   writeRepositoryPolicyTrustReceipt,
 } from "./lib/policy.ts";
 import { runGit } from "./lib/process.ts";
+import {
+  buildProposalSignatureBlock,
+  type ProposalSignatureRole,
+} from "./lib/proposal-signatures.ts";
 import { redactSecrets } from "./lib/redact.ts";
 import {
   checkReleaseConsistency,
@@ -268,6 +272,8 @@ Usage:
     [--version-authorized] [--json]
   simple-changes release-delivery --changelog-receipt FILE --provider-receipt FILE
     [--request FILE] [--json]
+  simple-changes proposal-signatures --agent NAME --role authored|reviewed|merged
+    [--base REF --head REF] [--changelog-receipt FILE] [--json] [--repo PATH]
   simple-changes validate KIND FILE [--json]
   simple-changes verify-markdown FILE [--json]
   simple-changes help
@@ -283,9 +289,11 @@ interface CliOptions {
   acknowledgePushScope: boolean;
   adapter?: string;
   agentId?: string;
+  agentName?: string;
   alreadyLive: boolean;
   applyPlanPath?: string;
   approvedBy?: string;
+  baseRef?: string;
   changelogHandling?: RepoPolicy["changelogHandling"];
   changelogInstall?: ChangelogInstallDecision;
   changelogReceiptPath?: string;
@@ -299,6 +307,7 @@ interface CliOptions {
   gitPushAuthorization?: RepoPolicy["gitPushAuthorization"];
   guidanceDecision?: RepoPolicy["guidance"]["disposition"];
   handoffTiming?: RepoPolicy["handoffTiming"];
+  headRef?: string;
   help: boolean;
   instructionFile?: string;
   instructionPointer?: "add" | "leave";
@@ -333,6 +342,7 @@ interface CliOptions {
   scope?: SetupScope;
   settleMs: number;
   shippingMode?: RepoPolicy["shippingMode"];
+  signatureRole?: ProposalSignatureRole;
   statePath?: string;
   statusDigest?: string;
   targetRef?: string;
@@ -351,8 +361,12 @@ const VALUED_OPTIONS = new Set([
   "--changelog",
   "--changelog-install",
   "--concurrent-work",
+  "--agent",
+  "--base",
   "--changelog-receipt",
   "--claim-id",
+  "--head",
+  "--role",
   "--disposition",
   "--evidence",
   "--finish",
@@ -565,6 +579,25 @@ const applyMigrationOption = (
   return true;
 };
 
+const applySignatureRoleOption = (
+  options: CliOptions,
+  option: string,
+  value: string
+): boolean => {
+  if (option !== "--role") {
+    return false;
+  }
+  const roles: ProposalSignatureRole[] = ["authored", "reviewed", "merged"];
+  if (!roles.includes(value as ProposalSignatureRole)) {
+    throw new SimpleChangesError(
+      `--role must be one of ${roles.join(", ")}`,
+      EXIT_CODES.usage
+    );
+  }
+  options.signatureRole = value as ProposalSignatureRole;
+  return true;
+};
+
 const applyProposalSignaturesOption = (
   options: CliOptions,
   option: string,
@@ -651,6 +684,7 @@ const applySetupValuedOption = (
   if (
     applyProposalSchedulingOption(options, option, value) ||
     applyProposalSignaturesOption(options, option, value) ||
+    applySignatureRoleOption(options, option, value) ||
     applyFinishOption(options, option, value) ||
     applyHandoffOption(options, option, value) ||
     applyMigrationOption(options, option, value)
@@ -715,11 +749,14 @@ const applyLoopValuedOption = (
 ): boolean => {
   const textOptions: Record<string, keyof CliOptions> = {
     "--adapter": "adapter",
+    "--agent": "agentName",
     "--agent-id": "agentId",
     "--apply-plan": "applyPlanPath",
     "--approved-by": "approvedBy",
+    "--base": "baseRef",
     "--changelog-receipt": "changelogReceiptPath",
     "--claim-id": "claimId",
+    "--head": "headRef",
     "--manifest-digest": "manifestDigest",
     "--opening-remote-inventory": "openingRemoteInventoryPath",
     "--owner-ref": "ownerRef",
@@ -1845,6 +1882,38 @@ const runReleaseGate = (options: CliOptions): void => {
   );
 };
 
+const runProposalSignatures = (options: CliOptions): void => {
+  const agent = requireCliOption(options.agentName, "--agent");
+  const role = requireCliOption(
+    options.signatureRole,
+    "--role"
+  ) as ProposalSignatureRole;
+  if ((options.baseRef === undefined) !== (options.headRef === undefined)) {
+    throw new SimpleChangesError(
+      "--base and --head must be given together",
+      EXIT_CODES.usage
+    );
+  }
+  const changelogPaths =
+    options.changelogReceiptPath === undefined
+      ? []
+      : (
+          validateSchema<ChangelogReceipt>(
+            "changelog-receipt",
+            readJsonFile(options.changelogReceiptPath)
+          ).paths ?? []
+        ).map((entry) => entry.path);
+  const result = buildProposalSignatureBlock({
+    changelogPaths,
+    repositoryPath: options.repo,
+    self: { agent, role },
+    ...(options.baseRef !== undefined && options.headRef !== undefined
+      ? { baseRef: options.baseRef, headRef: options.headRef }
+      : {}),
+  });
+  writeOutput(result, options.json, `${result.block}\n`);
+};
+
 const runReleaseDelivery = (options: CliOptions): void => {
   const changelogReceiptPath = requireCliOption(
     options.changelogReceiptPath,
@@ -2800,6 +2869,9 @@ const executeCommand = async (
       return EXIT_CODES.success;
     case "release-delivery":
       runReleaseDelivery(options);
+      return EXIT_CODES.success;
+    case "proposal-signatures":
+      runProposalSignatures(options);
       return EXIT_CODES.success;
     case "validate":
       runValidation(options);

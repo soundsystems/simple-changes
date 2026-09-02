@@ -48,10 +48,10 @@ already exists.
 ## Signing reviews and merges
 
 When `proposalSignatures` is `agent-and-version` (the default), the agent that
-completes an independent review appends `Reviewed by <model name> <version>`
-to the proposal's signature block, and the agent that merges appends
-`Merged by <model name> <version>` immediately before the merge, both in the
-format defined in
+completes an independent review appends `[[Reviewed by <model name>
+<version>]]` to the proposal's signature block, and the agent that merges
+appends `[[Merged by <model name> <version>]]` immediately before the merge,
+both in the format defined in
 [change proposals](change-requests.md). Post the same review line as the
 review comment or approval body when the provider supports one, and add the
 trailer `Merged-By-Agent: <model name> <version>` to the merge commit message

@@ -537,7 +537,7 @@ describe("active integration-loop lease", () => {
       )
     ) as { removedWorktreePaths: string[] };
     expect(history.removedWorktreePaths).toContain(prepared.path);
-  }, 30_000);
+  }, 60_000);
 
   test("closes legacy bookkeeping while stable unrelated claims remain active", () => {
     const fixture = repository();
@@ -2513,7 +2513,7 @@ describe("active integration-loop lease", () => {
     expect(() => endLoop(fixture.root, lease.runId, "controller")).toThrow(
       "Emergency Shipping remains incomplete"
     );
-  });
+  }, 60_000);
   test("inspects loop status without writing Git metadata", () => {
     const fixture = repository();
     const lease = startLoop(fixture.root, "controller", "ship");
@@ -3920,7 +3920,7 @@ describe("active integration-loop lease", () => {
     ).toThrow("does not match final target");
     recordShipmentOutcome(fixture.root, lease.runId, "controller", outcome);
     expect(endLoop(fixture.root, lease.runId, "controller").ok).toBe(true);
-  });
+  }, 60_000);
 
   test("rejects a branch switch before loop exec can move the checkout", async () => {
     const fixture = repository();

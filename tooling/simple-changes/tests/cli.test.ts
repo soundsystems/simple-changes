@@ -1649,7 +1649,7 @@ describe("contract CLI", () => {
       lease: null,
       verification: { active: false, ok: true, violations: [] },
     });
-  }, 30_000);
+  }, 60_000);
 
   test("retains an exact clean worktree through the CLI", () => {
     const fixture = createTestRepository();

@@ -1,5 +1,37 @@
 # Developer changelog
 
+## 0.13.0 - 2026-09-02
+
+- Added the `proposalSignatures` repository policy with the
+  `agent-and-version` default and `none` opt-out. Proposal signatures record
+  each agent author, review, or merge action using provider-appropriate PR/MR
+  wording; review attribution is carried in the approval body and providers
+  that support it receive a `Merged-By-Agent` trailer. Attribution remains
+  informational and grants no review or merge authority.
+- Completed the release-delivery protocol:
+  - Exposed `release-gate` through the CLI and made the Web production boundary
+    evaluate delegated release requests and verified receipts.
+  - Added `release-delivery`, which composes delivery identity from verified
+    changelog and production-deployment receipts instead of copied fields and
+    exits nonzero for partial or blocked delivery.
+  - Made changelog-request `attempt` and `environment` optional informational
+    fields and resynchronized the contract across bundled providers.
+- Hardened worktree-claim lifecycle handling. A claim can now release through
+  its owner, a proceeding completed-work handoff, or finalization evidence;
+  handoff ownership is resolved explicitly, and completed handoffs clear their
+  coordination residue without weakening active-loop protection.
+- Added installed-client compatibility gating for production migrations, before
+  any production schema change proceeds.
+- Recognize `simple-changelogs-cms` repositories and their policy when
+  delegating changelog work, report CMS-only release handling as not applicable
+  instead of silently omitting it, and offer compatible Simple Changelogs
+  installation through setup. Removed the unwired coordinated onboarding path
+  and pinned the specification to the implemented request modes and guarantees.
+- Advanced Simple Changes guidance to version 22, covering proposal signatures,
+  claim-release lifecycle, changelog installation, CMS discovery, and the
+  release commands.
+<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-09-02T18:08:00-05:00" -->
+
 ## 0.12.19 - 2026-08-26
 
 - Replaced `bunx ultracite` package scripts with the lockfile-installed

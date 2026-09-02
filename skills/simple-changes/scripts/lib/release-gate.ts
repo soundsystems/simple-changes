@@ -365,6 +365,7 @@ export type ReleaseGateAction =
 
 export interface ReleaseGateContext {
   alreadyLive: boolean;
+  priorReceipt?: ChangelogReceipt;
   productionAuthorized: boolean;
   productionDeploy: "ask" | "allow" | "deny";
   receipt: ChangelogReceipt;
@@ -523,10 +524,21 @@ const decideV2Receipt = (
 export const decideReleaseGate = (
   context: ReleaseGateContext
 ): ReleaseGateDecision => {
-  const receipt = validateChangelogTransaction(
+  const validation = inspectChangelogTransaction(
     context.request,
-    context.receipt
+    context.receipt,
+    context.priorReceipt
   );
+  const { receipt } = validation;
+  if (validation.priorReceiptDigestStatus === "unverified") {
+    return decision(
+      "block",
+      receipt.schemaVersion === 2 ? receipt : null,
+      "The later release phase is not bound to its prior receipt. Pass the exact prior receipt before authorizing merge or deployment.",
+      "malformed-request",
+      "repair-request"
+    );
+  }
   if (receipt.schemaVersion === 1) {
     return decideLegacyReceipt(receipt);
   }

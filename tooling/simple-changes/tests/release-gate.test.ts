@@ -347,6 +347,29 @@ describe("phased release gate", () => {
       inspectChangelogTransaction(request("classify"), receipt())
         .priorReceiptDigestStatus
     ).toBe("not-applicable");
+
+    expect(
+      decideReleaseGate({
+        alreadyLive: false,
+        productionAuthorized: true,
+        productionDeploy: "allow",
+        receipt: receipt("prepared"),
+        request: prepare,
+        versionAuthorized: true,
+      })
+    ).toMatchObject({ action: "block", reasonCode: "malformed-request" });
+
+    expect(
+      decideReleaseGate({
+        alreadyLive: false,
+        priorReceipt: classified,
+        productionAuthorized: true,
+        productionDeploy: "allow",
+        receipt: receipt("prepared"),
+        request: prepare,
+        versionAuthorized: true,
+      })
+    ).toMatchObject({ action: "merge-reconciliation" });
   });
 
   test("fails closed on a prior receipt that does not match the request", () => {

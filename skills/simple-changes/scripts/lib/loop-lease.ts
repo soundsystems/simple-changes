@@ -1062,10 +1062,21 @@ const withConcurrentAuthorAdmissions = (
 const concurrentClaimViolations = (
   registered: LoopWorktreeLease,
   concurrentClaim: WorktreeClaim | undefined,
+  linkedClaim: WorktreeClaim | undefined,
   worktree: WorktreeInventory
 ): LoopViolation[] => {
+  const completedHandoffMatches =
+    linkedClaim?.state === "released" &&
+    linkedClaim.releaseReason === "handoff" &&
+    linkedClaim.claimId === registered.claimId &&
+    linkedClaim.owner.agentId === registered.agentId &&
+    linkedClaim.path === worktree.path &&
+    linkedClaim.branch === worktree.branch &&
+    linkedClaim.headSha === worktree.headSha &&
+    linkedClaim.changeDigest === worktree.changeDigest;
   if (
     registered.role !== "concurrent-author" ||
+    completedHandoffMatches ||
     (concurrentClaim &&
       concurrentClaim.claimId === registered.claimId &&
       concurrentClaim.owner.agentId === registered.agentId)
@@ -1151,7 +1162,8 @@ const currentWorktreeViolations = (
   worktree: WorktreeInventory,
   registered: LoopWorktreeLease | undefined,
   preparation: LoopWorktreePreparation | undefined,
-  concurrentClaim: WorktreeClaim | undefined
+  concurrentClaim: WorktreeClaim | undefined,
+  linkedClaim: WorktreeClaim | undefined
 ): LoopViolation[] => {
   if (!registered) {
     return unregisteredWorktreeViolations(
@@ -1164,6 +1176,7 @@ const currentWorktreeViolations = (
   const violations = concurrentClaimViolations(
     registered,
     concurrentClaim,
+    linkedClaim,
     worktree
   );
   violations.push(...retainedWorktreeViolations(registered, worktree));
@@ -1289,13 +1302,20 @@ const verificationAgainst = (
       primaryBranch,
       targetBranch
     );
+    const registered = registeredByPath.get(worktree.path);
+    const linkedClaim = registered?.claimId
+      ? coordination.claims.find(
+          (claim) => claim.claimId === registered.claimId
+        )
+      : undefined;
     violations.push(
       ...currentWorktreeViolations(
         lease,
         worktree,
-        registeredByPath.get(worktree.path),
+        registered,
         preparationByPath.get(worktree.path),
-        concurrentClaim
+        concurrentClaim,
+        linkedClaim
       )
     );
   }
@@ -4009,7 +4029,29 @@ const reconcileConcurrentAuthorClaims = (
     const claim = coordination.claims.find(
       (item) => item.claimId === registered.claimId
     );
-    if (!(worktree && claim) || claim.state !== "active") {
+    if (!(worktree && claim)) {
+      continue;
+    }
+    const completedHandoffWasShipped =
+      claim.state === "released" &&
+      claim.releaseReason === "handoff" &&
+      claim.owner.agentId === registered.agentId &&
+      claim.path === worktree.path &&
+      claim.branch === worktree.branch &&
+      claim.headSha === worktree.headSha &&
+      claim.changeDigest === worktree.changeDigest &&
+      worktree.changes.length === 0 &&
+      worktree.headSha !== null &&
+      targetContainsRevision(repositoryPath, targetRevision, worktree.headSha);
+    if (completedHandoffWasShipped) {
+      const { claimId: _claimId, ...rest } = registered;
+      demoted.set(registered.path, {
+        ...rest,
+        ...worktreeLease(worktree, "preserved", null, registered.createdByRun),
+      });
+      continue;
+    }
+    if (claim.state !== "active") {
       continue;
     }
     let releaseReason: FinalizationReleasedClaim["releaseReason"] | null = null;

@@ -304,6 +304,7 @@ describe("changelog protocol CLI", () => {
       deliveryModel: "git-connected",
       environment: "production",
       evidence: ["vercel inspect dpl_1"],
+      expectedCanonicalTargets: ["https://example.test"],
       headRevision: observedRevision,
       immutableResultId: "dpl_1",
       intendedRevision: revisionC,

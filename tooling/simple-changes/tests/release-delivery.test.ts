@@ -67,6 +67,7 @@ const deployment = (
   deliveryModel: "git-connected",
   environment: "production",
   evidence: ["vercel inspect dpl_1"],
+  expectedCanonicalTargets: ["https://example.test"],
   headRevision: revisionC,
   immutableResultId: "dpl_1",
   intendedRevision: revisionC,
@@ -153,6 +154,25 @@ describe("release delivery receipt", () => {
 
     expect(receipt).toMatchObject({
       deployedRevision: null,
+      reasonCode: "provider-observation-incomplete",
+      requiredAction: "retry-observation",
+      status: "partial",
+    });
+  });
+
+  test("does not complete without immutable, ready, target, and smoke proof", () => {
+    const receipt = buildReleaseDeliveryReceipt({
+      changelogReceipt: verifiedReceipt(),
+      providerReceipt: deployment({
+        canonicalTargets: [],
+        expectedCanonicalTargets: [],
+        immutableResultId: null,
+        providerReady: null,
+        smoke: null,
+      }),
+    });
+
+    expect(receipt).toMatchObject({
       reasonCode: "provider-observation-incomplete",
       requiredAction: "retry-observation",
       status: "partial",

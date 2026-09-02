@@ -206,13 +206,17 @@ After the final feature merge and before production:
    which composes the `release-delivery-receipt` from both sources.
 
 Decide each boundary with `simple-changes release-gate --request <file>
---receipt <file> --production ask|allow|deny [--already-live]
+--receipt <file> [--prior-receipt <file>] --production ask|allow|deny [--already-live]
 [--production-authorized] [--version-authorized] --json`. Its `action`
 (`continue`, `request-version-approval`, `request-production-approval`,
 `request-combined-approval`, `merge-reconciliation`,
 `verify-existing-production`, `deploy`, `stop-after-integration`,
 `re-delegate`, or `block`) is the decision; do not re-derive it from the
 receipt prose.
+
+When a prepare or verify request names `priorReceiptDigest`, pass that exact
+receipt with `--prior-receipt`; the gate blocks merge and deployment while the
+lineage is unverified.
 
 A `not-applicable` receipt satisfies this gate only when its evidence proves the
 exact refreshed target already contains a dated, versioned release

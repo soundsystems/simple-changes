@@ -716,11 +716,14 @@ export interface LoopControllerLifecycle {
 
 export type WorktreeCoordinationState =
   | "active"
+  | "pause-requested"
   | "paused"
+  | "detach-requested"
   | "adopted-preserved"
   | "detached"
   | "attached"
   | "resume-ready"
+  | "blocked"
   | "released"
   | "stale";
 

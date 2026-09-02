@@ -1,3 +1,4 @@
+import { verifyDeploymentReceipt } from "../adapters/deployment.ts";
 import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
 import { validateSchema } from "./schema.ts";
 import type {
@@ -125,15 +126,14 @@ export const buildReleaseDeliveryReceipt = (
   const releaseTrain = releaseTrainFor(changelog, input.request);
   const deployment = productionDeploymentReceipt(input.providerReceipt);
   const { finalizedTargetRevision } = changelog.revisionLineage;
-  const observationComplete =
-    deployment.status === "succeeded" &&
-    deployment.providerReady !== false &&
-    deployment.observedRevision !== null;
+  const deploymentVerification = verifyDeploymentReceipt(deployment, {
+    receipt: changelog,
+    releaseTrain,
+    version: changelog.release.version,
+  });
   const revisionMatches =
-    observationComplete &&
     deployment.observedRevision === finalizedTargetRevision &&
-    (deployment.intendedRevision === null ||
-      deployment.intendedRevision === finalizedTargetRevision);
+    deployment.intendedRevision === finalizedTargetRevision;
   let outcome: Pick<
     ReleaseDeliveryReceipt,
     "reasonCode" | "requiredAction" | "status"
@@ -142,14 +142,14 @@ export const buildReleaseDeliveryReceipt = (
     requiredAction: "retry-observation",
     status: "partial",
   };
-  if (observationComplete) {
-    outcome = revisionMatches
-      ? { reasonCode: null, requiredAction: null, status: "complete" }
-      : {
-          reasonCode: "deployment-revision-mismatch",
-          requiredAction: "inspect-deployment",
-          status: "blocked",
-        };
+  if (!revisionMatches && deployment.observedRevision !== null) {
+    outcome = {
+      reasonCode: "deployment-revision-mismatch",
+      requiredAction: "inspect-deployment",
+      status: "blocked",
+    };
+  } else if (deploymentVerification.valid) {
+    outcome = { reasonCode: null, requiredAction: null, status: "complete" };
   }
   return validateSchema<ReleaseDeliveryReceipt>("release-delivery-receipt", {
     decisionDigest: changelog.decisionDigest,

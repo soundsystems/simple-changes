@@ -714,6 +714,28 @@ describe("closed schemas", () => {
         document
       )
     ).toEqual(document);
+    const [claim] = document.claims;
+    const [event] = document.events;
+    if (!(claim && event)) {
+      throw new Error("coordination compatibility fixture is incomplete");
+    }
+    for (const state of [
+      "pause-requested",
+      "detach-requested",
+      "blocked",
+    ] as const) {
+      const legacy: WorktreeCoordinationDocument = {
+        ...document,
+        claims: [{ ...claim, state }],
+        events: [{ ...event, state }],
+      };
+      expect(
+        validateSchema<WorktreeCoordinationDocument>(
+          "worktree-coordination",
+          legacy
+        )
+      ).toEqual(legacy);
+    }
     expect(() =>
       validateSchema("worktree-coordination", {
         ...document,

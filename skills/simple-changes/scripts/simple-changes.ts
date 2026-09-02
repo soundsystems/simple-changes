@@ -267,7 +267,7 @@ Usage:
   simple-changes release-notes [--check] [--json] [--repo PATH] [--version VERSION]
   simple-changes negotiate-changelog CAPABILITIES_FILE [--json]
   simple-changes validate-changelog-transaction REQUEST_FILE RECEIPT_FILE [--prior-receipt FILE] [--json]
-  simple-changes release-gate --request FILE --receipt FILE
+  simple-changes release-gate --request FILE --receipt FILE [--prior-receipt FILE]
     --production ask|allow|deny [--already-live] [--production-authorized]
     [--version-authorized] [--json]
   simple-changes release-delivery --changelog-receipt FILE --provider-receipt FILE
@@ -1574,7 +1574,7 @@ const runInitialize = async (options: CliOptions): Promise<void> => {
   }
   const inventory = captureInventory(options.repo);
   const activeLoop = readLoopLease(options.repo);
-  if (activeLoop && !["preview", "pause"].includes(options.mode)) {
+  if (activeLoop && !["preview", "pause", "handoff"].includes(options.mode)) {
     const agentId = requireCliOption(
       options.agentId,
       "--agent-id while an integration loop is active"
@@ -1869,6 +1869,13 @@ const runReleaseGate = (options: CliOptions): void => {
   ) as RepoPolicy["productionDeploy"];
   const decision = decideReleaseGate({
     alreadyLive: options.alreadyLive,
+    ...(options.priorReceiptPath === undefined
+      ? {}
+      : {
+          priorReceipt: readJsonFile(
+            options.priorReceiptPath
+          ) as ChangelogReceipt,
+        }),
     productionAuthorized: options.productionAuthorized,
     productionDeploy,
     receipt: readJsonFile(receiptPath) as ChangelogReceipt,

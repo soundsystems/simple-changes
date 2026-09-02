@@ -45,11 +45,14 @@ const SHA_PATTERN = /^[0-9a-f]{40,64}$/u;
 const PERMISSION_DENIED_CODES = new Set(["EACCES", "EPERM", "EROFS"]);
 const LIVE_STATES = new Set<WorktreeCoordinationState>([
   "active",
+  "pause-requested",
   "paused",
+  "detach-requested",
   "adopted-preserved",
   "detached",
   "attached",
   "resume-ready",
+  "blocked",
 ]);
 // A detached claim intentionally has no directory: its owner removed the
 // checkout through the detach protocol and keeps the branch for reattachment.
@@ -57,10 +60,13 @@ const LIVE_STATES = new Set<WorktreeCoordinationState>([
 // means the claim protects nothing and may be released by evidence.
 const ABSENT_RELEASABLE_STATES = new Set<WorktreeCoordinationState>([
   "active",
+  "pause-requested",
   "paused",
+  "detach-requested",
   "adopted-preserved",
   "attached",
   "resume-ready",
+  "blocked",
 ]);
 
 const stateRoot = (commonGitDirectory: string): string =>

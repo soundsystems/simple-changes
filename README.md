@@ -262,7 +262,7 @@ simple-changes prepare-agent --run-id ID --agent-id ID --purpose SLUG
 simple-changes release-notes [--check] [--json] [--repo PATH] [--version VERSION]
 simple-changes negotiate-changelog CAPABILITIES_FILE [--json]
 simple-changes validate-changelog-transaction REQUEST_FILE RECEIPT_FILE [--prior-receipt FILE] [--json]
-simple-changes release-gate --request FILE --receipt FILE
+simple-changes release-gate --request FILE --receipt FILE [--prior-receipt FILE]
   --production ask|allow|deny [--already-live] [--production-authorized]
   [--version-authorized] [--json]
 simple-changes release-delivery --changelog-receipt FILE --provider-receipt FILE

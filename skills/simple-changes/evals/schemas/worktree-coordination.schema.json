@@ -25,11 +25,14 @@
     "state": {
       "enum": [
         "active",
+        "pause-requested",
         "paused",
+        "detach-requested",
         "adopted-preserved",
         "detached",
         "attached",
         "resume-ready",
+        "blocked",
         "released",
         "stale"
       ]

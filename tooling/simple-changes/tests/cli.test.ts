@@ -3486,6 +3486,26 @@ describe("contract CLI", () => {
     const { claim } = JSON.parse(decoder.decode(claimed.stdout)) as {
       claim: { claimId: string };
     };
+    const started = spawnSync(
+      [
+        process.execPath,
+        cliPath,
+        "loop",
+        "start",
+        "--mode",
+        "ship",
+        "--agent-id",
+        "integration-controller",
+        "--json",
+        "--repo",
+        fixture.root,
+      ],
+      { stderr: "pipe", stdout: "pipe" }
+    );
+    expect(started.exitCode).toBe(0);
+    const { lease } = JSON.parse(decoder.decode(started.stdout)) as {
+      lease: { runId: string };
+    };
 
     const handoff = spawnSync(
       [
@@ -3527,6 +3547,26 @@ describe("contract CLI", () => {
     );
     expect(JSON.parse(decoder.decode(status.stdout))).toMatchObject({
       claims: [{ releaseReason: "handoff", state: "released" }],
+    });
+    const verified = spawnSync(
+      [
+        process.execPath,
+        cliPath,
+        "loop",
+        "verify",
+        "--run-id",
+        lease.runId,
+        "--agent-id",
+        "integration-controller",
+        "--json",
+        "--repo",
+        fixture.root,
+      ],
+      { stderr: "pipe", stdout: "pipe" }
+    );
+    expect(verified.exitCode).toBe(0);
+    expect(JSON.parse(decoder.decode(verified.stdout))).toMatchObject({
+      ok: true,
     });
   });
 

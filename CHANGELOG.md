@@ -1,11 +1,17 @@
 # Changelog
 
-## Unreleased
+## 0.14.0 - 2026-09-02
 
-- CMS-only changelog handoffs now advance relevant operator-history changes from
-  classification to preparation without requesting a public version or
-  production approval.
-<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-09-02T15:41:27-05:00" -->
+- Repository-specific Simple Changes forks can now be updated from the global
+  installation with the new `update-local-forks` skill. It plans each fork
+  against its provenance pin, preserves local behavior, and reports conflicts
+  or omitted references for review without committing or pushing.
+- CMS-only changelog handoffs now advance relevant operator-history changes
+  from classification to preparation without requesting a public version or
+  production approval. Shipped coordination guidance documents the complete
+  handoff.
+- The CLI now reports the installed `0.14.0` package version correctly.
+<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-09-02T16:07:42-05:00" -->
 
 ## 0.13.0 - 2026-09-02
 

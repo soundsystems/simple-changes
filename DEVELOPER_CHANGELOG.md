@@ -1,15 +1,40 @@
 # Developer changelog
 
-## Unreleased
+## 0.14.0 - 2026-09-02
 
-- Added consumer support for the CMS entry-only `classified` receipt: the
-  receipt-v2 schema validates the non-versioned classification, transaction
-  validation binds it to `boundary: "none"`, and the release gate returns
-  `re-delegate` so preparation proceeds without version or production approval.
-  Coverage verifies the complete classification-to-preparation decision path.
-  Also corrected the shipped CLI version constant from `0.12.19` to the
-  package's current `0.13.0` version after the full suite exposed the mismatch.
-<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-09-02T15:41:27-05:00" -->
+- Added the installable `update-local-forks` skill for synchronizing
+  repository-specific forks from one global Simple Changes installation:
+  - Discovery finds local forks, identifies their provenance pins and layouts,
+    and skips linked worktrees in favor of each repository's primary checkout.
+  - Planning compares the pinned base, installed target, and fork file by file;
+    applies upstream-only changes; preserves fork deltas and fork-only files;
+    maps runtime files into supported fork layouts; and three-way merges shared
+    edits.
+  - Conflicts leave live files untouched and produce durable
+    `.upstream-merge` sidecars, while intentionally omitted upstream references
+    remain explicit review items.
+  - Apply fails closed when planned files drift, never executes fork code, and
+    advances provenance only to a release commit whose packaged tree
+    byte-matches the installed source. Exact provenance, guidance-version, and
+    upstream-version literals are reconciled with the verified target.
+  - Integrated the planner into fork-maintenance and publishing guidance,
+    package contents, type checking, and dedicated discovery, merge, conflict,
+    stale-plan, pin-verification, CLI, and packaging coverage.
+- Added consumer support for the CMS entry-only `classified` receipt. The
+  receipt-v2 schema requires a classify-phase, pathless, non-versioned result
+  with `release: null`; transaction validation binds it to
+  `boundary: "none"`; and the release gate returns `re-delegate` with the
+  decision digest so preparation proceeds without version authorization or
+  production approval. End-to-end coverage validates the receipt and this gate
+  path.
+- Closed the reviewer-identified instruction gap by adding `classified` to the
+  shipped classification outcomes and receipt-status inventory, documenting
+  the direct classify-to-prepare handoff, and asserting that guidance in the
+  skill contract.
+- Corrected the stale shipped CLI version constant from `0.12.19` to the
+  then-current `0.13.0` package version after the full suite exposed the
+  mismatch, then reconciled both package and CLI versions to `0.14.0`.
+<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-09-02T16:07:42-05:00" -->
 
 ## 0.13.0 - 2026-09-02
 

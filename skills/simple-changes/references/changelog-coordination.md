@@ -83,8 +83,9 @@ fields: the provider checks their shape when present and never stores, echoes,
 or keys retries on them, so transaction identity rests on the transaction ID,
 phase, revisions, and prior receipt digest alone.
 
-1. `classify` is read-only and returns `decision-required`, `not-applicable`,
-   `blocked`, or an exact selected version.
+1. `classify` is read-only and returns `decision-required`, `classified`,
+   `not-applicable`, `blocked`, or an exact selected version. `classified` is
+   the entry-only outcome that proceeds directly to `prepare`.
 2. `prepare` is the only phase allowed to change established release files. It
    requires the approved version and decision digest and returns a prepared
    reconciliation-head revision.
@@ -108,8 +109,8 @@ The changelog workflow returns a closed `changelog-receipt` contract containing:
 - negotiated protocol version, transaction, phase, release train, and full
   revision lineage;
 - effective-policy and decision digests that invalidate stale approval;
-- `decision-required`, `prepared`, `verified`, `not-applicable`, or `blocked`
-  status;
+- `decision-required`, `classified`, `prepared`, `verified`, `not-applicable`,
+  or `blocked` status;
 - every changed relative path and its SHA-256 digest;
 - release-impact classification, checks, evidence, and any blocking reason.
 
@@ -159,7 +160,10 @@ binds `prepare` and `verify` to the classification.
 
 - `classify` answers whether the change is operator-relevant.
   `not-applicable` with `releaseImpact: "none"` means no operator entry is
-  needed; continue without one.
+  needed; continue without one. An operator-relevant result returns
+  `classified` with the decision digest and classified impact; the gate answers
+  `re-delegate`, so proceed to `prepare` without requesting version or
+  production approval.
 - `prepared` carries `release: null`, `releaseImpact` as classified,
   `versionDecision` either null or `bumpLevel: "none"` with
   `resolution: "not-required"`, and `paths` listing the changed

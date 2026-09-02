@@ -305,6 +305,13 @@ describe("Simple Changes skill contract", () => {
     expect(receiptSchema).toContain('"targetContainedUnreleased"');
     expect(receiptSchema).toContain('"const": "integrated"');
     expect(receiptSchema).toContain('"decision-required"');
+    expect(receiptSchema).toContain('"classified"');
+    expect(normalizedCoordination).toContain(
+      "An operator-relevant result returns `classified`"
+    );
+    expect(normalizedCoordination).toContain(
+      "proceed to `prepare` without requesting version or production approval"
+    );
     expect(deliverySchema).toContain('"deployedRevision"');
   });
 

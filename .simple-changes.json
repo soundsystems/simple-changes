@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "guidance": {
     "disposition": "accepted",
-    "version": 20
+    "version": 22
   },
   "changelogHandling": "delegate-if-available",
   "defaultFinish": "integrate",
@@ -15,5 +15,7 @@
   "handoffTiming": "confirm-ready",
   "migrationHandling": "ask-after-review",
   "migrationTargets": [],
-  "uiArtifactVersioning": "repository-convention"
+  "uiArtifactVersioning": "repository-convention",
+  "proposalScheduling": "balanced",
+  "proposalSignatures": "agent-and-version"
 }

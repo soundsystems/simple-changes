@@ -14,6 +14,7 @@ import { createHash } from "node:crypto";
 import {
   type Dirent,
   existsSync,
+  lstatSync,
   mkdirSync,
   readdirSync,
   readFileSync,
@@ -113,6 +114,20 @@ const walkFiles = (root: string, base = root): string[] => {
     }
     return entry.isFile() ? [relative(base, path)] : [];
   });
+};
+
+const assertNoSymlinkPath = (root: string, relativePath: string): void => {
+  let current = root;
+  for (const component of relativePath.split("/")) {
+    current = join(current, component);
+    const status = lstatSync(current, { throwIfNoEntry: false });
+    if (status?.isSymbolicLink()) {
+      throw new ForkUpdateError(
+        `${relativePath} traverses a symlink inside the fork; replace it with a real path before updating.`,
+        EXIT.blocked
+      );
+    }
+  }
 };
 
 // ---------------------------------------------------------------- discovery
@@ -846,6 +861,8 @@ const classifyForkFiles = (
       continue;
     }
     forkPathsTouched.add(forkPath);
+    assertNoSymlinkPath(fork.path, forkPath);
+    assertNoSymlinkPath(fork.path, forkPath + MERGE_SIDECAR_SUFFIX);
     if (existsSync(join(fork.path, forkPath + MERGE_SIDECAR_SUFFIX))) {
       forkPathsTouched.add(forkPath + MERGE_SIDECAR_SUFFIX);
       entries.push({
@@ -1223,6 +1240,17 @@ const assertSidecarUnchanged = (forkRoot: string, entry: PlanEntry): void => {
   }
 };
 
+const assertFileUnchanged = (forkRoot: string, entry: PlanEntry): void => {
+  const current = readText(join(forkRoot, entry.forkPath));
+  const digest = current === null ? null : sha256(current);
+  if (digest !== entry.forkDigest) {
+    throw new ForkUpdateError(
+      `${entry.forkPath} changed after the plan was made; re-run plan.`,
+      EXIT.blocked
+    );
+  }
+};
+
 const assertForkUnchanged = (
   forkRoot: string,
   entries: PlanEntry[],
@@ -1233,17 +1261,11 @@ const assertForkUnchanged = (
       if (entry.action !== "conflict") {
         continue;
       }
+      assertFileUnchanged(forkRoot, entry);
       assertSidecarUnchanged(forkRoot, entry);
       continue;
     }
-    const current = readText(join(forkRoot, entry.forkPath));
-    const digest = current === null ? null : sha256(current);
-    if (digest !== entry.forkDigest) {
-      throw new ForkUpdateError(
-        `${entry.forkPath} changed after the plan was made; re-run plan.`,
-        EXIT.blocked
-      );
-    }
+    assertFileUnchanged(forkRoot, entry);
   }
   for (const rewrite of rewrites) {
     const current = readText(join(forkRoot, rewrite.forkPath));
@@ -1314,6 +1336,15 @@ const applyLiteralRewrites = (
 export const applyForkPlan = (plan: ForkPlan): ApplyReceipt => {
   const validated = validateForkPlan(plan);
   const forkRoot = validated.fork.path;
+  for (const entry of validated.entries) {
+    assertNoSymlinkPath(forkRoot, entry.forkPath);
+    if (entry.action === "conflict") {
+      assertNoSymlinkPath(forkRoot, entry.forkPath + MERGE_SIDECAR_SUFFIX);
+    }
+  }
+  for (const rewrite of validated.literalRewrites) {
+    assertNoSymlinkPath(forkRoot, rewrite.forkPath);
+  }
   assertForkUnchanged(forkRoot, validated.entries, validated.literalRewrites);
   const { deleted, written } = applyEntries(forkRoot, validated.entries);
   const literalRewrites = applyLiteralRewrites(

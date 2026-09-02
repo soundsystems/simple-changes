@@ -9,6 +9,7 @@ import {
   readFileSync,
   realpathSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -470,6 +471,56 @@ describe("update-local-forks", () => {
       "SPEC.md.upstream-merge changed after the plan was made"
     );
     expect(readFileSync(sidecar, "utf8")).toBe("existing review\n");
+  });
+
+  test("rejects symlink escapes during planning and again before apply", () => {
+    const fixture = createFixture();
+    const outside = join(fixture.base, "outside-core.ts");
+    writeFileSync(outside, "export const core = 1;\n");
+    const core = join(fixture.fork, "runtime/scripts/lib/core.ts");
+    rmSync(core);
+    symlinkSync(outside, core);
+    expect(() =>
+      planForkUpdate({
+        fork: fixture.fork,
+        source: fixture.source,
+        upstream: fixture.upstream,
+      })
+    ).toThrow("traverses a symlink inside the fork");
+    expect(readFileSync(outside, "utf8")).toBe("export const core = 1;\n");
+
+    const fresh = createFixture();
+    const plan = planForkUpdate({
+      fork: fresh.fork,
+      source: fresh.source,
+      upstream: fresh.upstream,
+    });
+    const outsideNotes = join(fresh.base, "outside-notes.md");
+    writeFileSync(outsideNotes, "Bundled Simple Changes 0.1.0.\n");
+    rmSync(join(fresh.fork, "notes.md"));
+    symlinkSync(outsideNotes, join(fresh.fork, "notes.md"));
+    expect(() => applyForkPlan(plan)).toThrow(
+      "traverses a symlink inside the fork"
+    );
+    expect(readFileSync(outsideNotes, "utf8")).toBe(
+      "Bundled Simple Changes 0.1.0.\n"
+    );
+  });
+
+  test("refuses a conflict sidecar after the live file drifts", () => {
+    const fixture = createFixture();
+    const plan = planForkUpdate({
+      fork: fixture.fork,
+      source: fixture.source,
+      upstream: fixture.upstream,
+    });
+    writeFileSync(join(fixture.fork, "SPEC.md"), "concurrent conflict edit\n");
+    expect(() => applyForkPlan(plan)).toThrow(
+      "SPEC.md changed after the plan was made"
+    );
+    expect(existsSync(join(fixture.fork, "SPEC.md.upstream-merge"))).toBe(
+      false
+    );
   });
 
   test("keeps the provenance pin pending when SKILL.md conflicts", () => {

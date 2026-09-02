@@ -1,6 +1,5 @@
-import { existsSync, readFileSync } from "node:fs";
-import { resolve } from "node:path";
 import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
+import { assertSafeRelativePath } from "./path-safety.ts";
 import { runGit } from "./process.ts";
 
 export type ProposalSignatureRole = "authored" | "reviewed" | "merged";
@@ -104,16 +103,32 @@ const commitCredits = (
 
 const changelogCredits = (
   repositoryPath: string,
+  baseRef: string,
+  headRef: string,
   paths: readonly string[]
 ): ProposalCredit[] => {
+  if (paths.length === 0) {
+    return [];
+  }
+  for (const path of paths) {
+    assertSafeRelativePath(repositoryPath, path);
+  }
+  const range = `${requiredRef(baseRef, "base")}..${requiredRef(headRef, "head")}`;
   const credits: ProposalCredit[] = [];
   for (const path of paths) {
-    const absolute = resolve(repositoryPath, path);
-    if (!existsSync(absolute)) {
-      continue;
-    }
-    const contents = readFileSync(absolute, "utf8");
-    for (const match of contents.matchAll(CHANGELOG_SIGNATURE)) {
+    const addedContents = runGit(repositoryPath, [
+      "diff",
+      "--no-ext-diff",
+      "--unified=0",
+      range,
+      "--",
+      path,
+    ])
+      .stdout.split("\n")
+      .filter((line) => line.startsWith("+") && !line.startsWith("+++"))
+      .map((line) => line.slice(1))
+      .join("\n");
+    for (const match of addedContents.matchAll(CHANGELOG_SIGNATURE)) {
       const agent = normalizeAgentName(match[1] ?? "");
       if (agent) {
         credits.push({
@@ -149,6 +164,15 @@ const dedupe = (credits: ProposalCredit[]): ProposalCredit[] => {
 export const buildProposalSignatureBlock = (
   input: ProposalSignatureInput
 ): ProposalSignatureBlock => {
+  if (
+    (input.changelogPaths?.length ?? 0) > 0 &&
+    !(input.baseRef && input.headRef)
+  ) {
+    throw new SimpleChangesError(
+      "base and head refs are required to credit changelog changes.",
+      EXIT_CODES.usage
+    );
+  }
   const credits: ProposalCredit[] = [];
   if (input.self) {
     const agent = normalizeAgentName(input.self.agent);
@@ -167,9 +191,16 @@ export const buildProposalSignatureBlock = (
       ...commitCredits(input.repositoryPath, input.baseRef, input.headRef)
     );
   }
-  credits.push(
-    ...changelogCredits(input.repositoryPath, input.changelogPaths ?? [])
-  );
+  if (input.baseRef && input.headRef) {
+    credits.push(
+      ...changelogCredits(
+        input.repositoryPath,
+        input.baseRef,
+        input.headRef,
+        input.changelogPaths ?? []
+      )
+    );
+  }
   const distinct = dedupe(credits).filter(
     (credit) =>
       credit.evidence === "self" ||

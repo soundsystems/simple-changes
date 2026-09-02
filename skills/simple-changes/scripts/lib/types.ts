@@ -81,8 +81,8 @@ export interface ChangelogCoordination {
   capabilityAvailable: boolean;
   capabilityHelpers: string[];
   // `not-applicable`: a provider was discovered, but every discovered
-  // installation is a discovery-only distribution (CMS operator history)
-  // that implements no release handoff, so delegation cannot run.
+  // installation declares a discovery-only marker (empty request or receipt
+  // versions) and implements no release handoff, so delegation cannot run.
   capabilityStatus: "absent" | "not-applicable" | "unverified";
   guidanceUpdate: {
     actions: Array<"walkthrough" | "continue" | "view-release-notes">;

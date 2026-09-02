@@ -200,6 +200,39 @@ const assertPublicReleaseDecision = (receipt: ChangelogReceiptV2): void => {
   }
 };
 
+// An operator-history handoff (`boundary: "none"`) prepares and verifies an
+// entry, never a version, so its receipts carry no release record. The receipt
+// does not name the boundary itself, so the schema only permits the null
+// record; this binding is what ties it to the delegated boundary.
+const assertEntryOnlyBinding = (
+  request: ChangelogRequest,
+  receipt: ChangelogReceiptV2
+): void => {
+  if (receipt.status !== "prepared" && receipt.status !== "verified") {
+    return;
+  }
+  const entryOnly = request.boundary === "none";
+  if ((receipt.release === null) !== entryOnly) {
+    protocolMismatch(
+      entryOnly
+        ? "An entry-only handoff on the none boundary must not name a release."
+        : "Prepared or verified work on a public boundary must name the release."
+    );
+  }
+  const { versionDecision } = receipt;
+  if (
+    entryOnly &&
+    versionDecision &&
+    (versionDecision.bumpLevel !== "none" ||
+      versionDecision.resolution !== "not-required" ||
+      versionDecision.selectedVersion !== null)
+  ) {
+    protocolMismatch(
+      "An entry-only handoff must not select or bump a version."
+    );
+  }
+};
+
 const validateV2Transaction = (
   request: ChangelogRequest,
   receipt: ChangelogReceiptV2
@@ -224,6 +257,7 @@ const validateV2Transaction = (
     );
   }
   assertPublicReleaseDecision(receipt);
+  assertEntryOnlyBinding(request, receipt);
   const { versionDecision } = receipt;
   if (
     versionDecision &&
@@ -379,6 +413,13 @@ const decidePreparedReceipt = (
   context: ReleaseGateContext,
   receipt: ChangelogReceiptV2
 ): ReleaseGateDecision => {
+  if (context.request.boundary === "none") {
+    return decision(
+      "merge-reconciliation",
+      receipt,
+      "Operator-history entry is prepared without a version; merge the reconciliation."
+    );
+  }
   if (context.productionDeploy === "deny") {
     return decision(
       "stop-after-integration",
@@ -408,6 +449,13 @@ const decideVerifiedReceipt = (
   context: ReleaseGateContext,
   receipt: ChangelogReceiptV2
 ): ReleaseGateDecision => {
+  if (context.request.boundary === "none") {
+    return decision(
+      "continue",
+      receipt,
+      "Operator-history entry is integrated in the finalized target; no deployment gate applies."
+    );
+  }
   if (context.productionDeploy === "deny") {
     return decision(
       "stop-after-integration",

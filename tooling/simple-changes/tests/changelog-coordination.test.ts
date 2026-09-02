@@ -84,7 +84,7 @@ describe("changelog coordination discovery", () => {
     });
   });
 
-  test("reports a CMS-only provider as discovered but not applicable for delegation", () => {
+  test("reports a CMS-only provider as a handoff-capable participant", () => {
     const fixture = createTestRepository();
     repositories.push(fixture);
     writeFixture(
@@ -97,11 +97,15 @@ describe("changelog coordination discovery", () => {
       "skills/simple-changelogs-cms/changelog-provider.json",
       `${JSON.stringify({
         distribution: "cms",
-        features: ["guidance-update-notices"],
+        features: ["classify-prepare-verify", "guidance-update-notices"],
         guidanceVersion: 5,
         provider: "simple-changelogs",
-        receiptVersions: [],
-        requestVersions: [],
+        receiptVersions: [1, 2],
+        requestVersions: [1],
+        schemaDigests: {
+          changelogReceipt: "a".repeat(64),
+          changelogRequest: "b".repeat(64),
+        },
         schemaVersion: 1,
       })}\n`
     );
@@ -128,8 +132,8 @@ describe("changelog coordination discovery", () => {
 
     const result = inspect(fixture);
     expect(result).toMatchObject({
-      capabilityAvailable: false,
-      capabilityStatus: "not-applicable",
+      capabilityAvailable: true,
+      capabilityStatus: "unverified",
       guidanceUpdate: {
         installedVersion: 5,
         owner: "simple-changelogs",
@@ -149,6 +153,43 @@ describe("changelog coordination discovery", () => {
     ]);
   });
 
+  test("reports a provider whose marker advertises no protocol as not applicable", () => {
+    const fixture = createTestRepository();
+    repositories.push(fixture);
+    writeFixture(
+      fixture.root,
+      "skills/simple-changelogs-web/SKILL.md",
+      "---\nname: simple-changelogs-web\ndescription: Web distribution.\n---\n\nCurrent guidance version: 9\n"
+    );
+    writeFixture(
+      fixture.root,
+      "skills/simple-changelogs-web/changelog-provider.json",
+      `${JSON.stringify({
+        distribution: "web",
+        features: ["guidance-update-notices"],
+        guidanceVersion: 9,
+        provider: "simple-changelogs",
+        receiptVersions: [],
+        requestVersions: [],
+        schemaVersion: 1,
+      })}\n`
+    );
+    writeFixture(
+      fixture.root,
+      ".simple-changelogs.json",
+      '{"schemaVersion":1,"distribution":"web","guidance":{"version":9}}\n'
+    );
+
+    expect(inspect(fixture)).toMatchObject({
+      capabilityAvailable: false,
+      capabilityStatus: "not-applicable",
+      providerDistribution: "web",
+      providerEvidence: "marker",
+      providers: [join(fixture.root, "skills/simple-changelogs-web/SKILL.md")],
+      relevant: true,
+    });
+  });
+
   test("infers the CMS distribution from the installation name without a marker", () => {
     const fixture = createTestRepository();
     repositories.push(fixture);
@@ -164,8 +205,8 @@ describe("changelog coordination discovery", () => {
     );
 
     expect(inspect(fixture)).toMatchObject({
-      capabilityAvailable: false,
-      capabilityStatus: "not-applicable",
+      capabilityAvailable: true,
+      capabilityStatus: "unverified",
       guidanceUpdate: {
         installedVersion: 5,
         status: "current",

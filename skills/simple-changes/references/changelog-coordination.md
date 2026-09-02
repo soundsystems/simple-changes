@@ -18,11 +18,13 @@ Keep these states distinct:
 
 - **relevant and available**: delegation can run;
 - **relevant but unavailable**: preserve the paths and report the missing skill;
-- **relevant but not applicable**: the only discovered provider is a
-  discovery-only distribution (`simple-changelogs-cms`), which owns an
-  authenticated operator history and no public release files. Report it as
-  discovered with `capabilityStatus: "not-applicable"`, preserve its files, and
-  never delegate release classification to it;
+- **relevant but not applicable**: every discovered provider declares a
+  discovery-only marker (empty `requestVersions` and `receiptVersions`) and so
+  implements no handoff. Report it as discovered with
+  `capabilityStatus: "not-applicable"`, preserve its files, and never delegate
+  release classification to it. `simple-changelogs-cms` is not such a
+  provider: it owns a version-less operator history and takes the entry-only
+  handoff described below;
 - **not relevant**: do not add a setup question or invent release surfaces.
 
 Availability is not compatibility. Before delegation, obtain the provider's
@@ -141,6 +143,40 @@ report the exact missing capability, authority, evidence, or decision.
 
 Never treat an installed skill name, a policy file, or a receipt alone as proof
 that file contents are current and safe.
+
+## Operator-history entry handoff
+
+The `simple-changelogs-cms` distribution owns a version-less operator history
+(`CMS_CHANGELOG.json`) and no public release files. It is a full handoff
+participant, but its transaction is entry-only: it never classifies, selects,
+or reconciles a version, tag, or public note. A change to the CMS surface
+still produces its operator entry at ship time and is verified before merge,
+exactly as the other distributions write theirs.
+
+Create its request with `boundary: "none"` and `releaseTrain: "cms-operators"`.
+`approvedVersion` stays null in every phase; `approvedDecisionDigest` still
+binds `prepare` and `verify` to the classification.
+
+- `classify` answers whether the change is operator-relevant.
+  `not-applicable` with `releaseImpact: "none"` means no operator entry is
+  needed; continue without one.
+- `prepared` carries `release: null`, `releaseImpact` as classified,
+  `versionDecision` either null or `bumpLevel: "none"` with
+  `resolution: "not-required"`, and `paths` listing the changed
+  `CMS_CHANGELOG.json` with its digest. The gate answers
+  `merge-reconciliation`: package and merge the entry like any other
+  reconciliation.
+- `verified` carries `release: null` and proves through
+  `revisionLineage.reconciliationHeadRevision` and
+  `finalizedTargetRevision` that the finalized target contains the entry. The
+  gate answers `continue`, never `deploy`; `release-delivery` is not involved
+  because no deployment belongs to operator history.
+
+A `prepared` or `verified` receipt may omit its release record only on the
+`none` boundary. The receipt does not carry the boundary, so
+`validate-changelog-transaction` binds it: a public boundary that receives a
+version-less receipt, or a `none` boundary that receives a version, fails
+closed.
 
 ## Web production release gate
 

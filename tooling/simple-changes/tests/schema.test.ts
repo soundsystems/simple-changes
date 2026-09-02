@@ -352,6 +352,54 @@ describe("closed schemas", () => {
     ).toThrow();
   });
 
+  test("accepts a version-less prepared receipt only with a version-less decision", () => {
+    const entryReceipt: ChangelogReceipt = {
+      checks: ["Inspected exact target."],
+      decisionDigest: "d".repeat(64),
+      effectivePolicyDigest: "e".repeat(64),
+      evidence: ["Operator workflow changed."],
+      observedAt: "2026-09-02T12:00:00-05:00",
+      paths: [{ digest: "f".repeat(64), path: "CMS_CHANGELOG.json" }],
+      phase: "prepare",
+      provider: "simple-changelogs",
+      reason: null,
+      reasonCode: null,
+      release: null,
+      releaseImpact: "minor",
+      releaseSetId: null,
+      requiredAction: null,
+      revisionLineage: {
+        finalizedTargetRevision: null,
+        inputTargetRevision: "a".repeat(40),
+        reconciliationHeadRevision: "b".repeat(40),
+      },
+      schemaVersion: 2,
+      sourceRevision: "a".repeat(40),
+      status: "prepared",
+      transactionId: "cms-entry-01",
+      versionDecision: null,
+    };
+    expect(
+      validateSchema<ChangelogReceipt>("changelog-receipt", entryReceipt)
+    ).toEqual(entryReceipt);
+    expect(() =>
+      validateSchema("changelog-receipt", {
+        ...entryReceipt,
+        versionDecision: {
+          boundary: "none",
+          bumpLevel: "patch",
+          currentVersion: null,
+          policyAction: "automatic",
+          releaseTrain: "cms-operators",
+          resolution: "automatic",
+          selectedVersion: "1.0.1",
+          source: "repository-policy",
+          suggestedVersion: "1.0.1",
+        },
+      })
+    ).toThrow();
+  });
+
   test("treats changelog request attempt and environment as optional shape-checked fields", () => {
     const request = {
       approvedDecisionDigest: null,

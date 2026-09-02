@@ -24,11 +24,6 @@ const DISTRIBUTION_BY_INSTALLATION: Record<string, string> = {
   "simple-changelogs-web-cms": "web-cms",
 };
 const INSTALLATION_NAMES = Object.keys(DISTRIBUTION_BY_INSTALLATION);
-// Distributions that own no public release files and implement no
-// classify/prepare/verify handoff. They stay discoverable so a CMS-only
-// repository is never reported as invisible, but release delegation to them
-// is not applicable rather than merely unverified.
-const DISCOVERY_ONLY_DISTRIBUTIONS = new Set(["cms"]);
 const REPOSITORY_SKILL_ROOTS = [
   "skills",
   ".agents/skills",
@@ -63,9 +58,18 @@ const positiveInteger = (value: unknown): number | null =>
   Number.isInteger(value) && Number(value) >= 1 ? Number(value) : null;
 
 interface ProviderMarker {
+  // A marker that advertises an empty request or receipt version list
+  // declares itself discovery-only: identifiable, but implementing no
+  // classify/prepare/verify handoff. It stays discoverable so its repository
+  // is never reported as invisible, while delegation to it is not applicable
+  // rather than merely unverified.
+  discoveryOnly: boolean;
   distribution: string | null;
   guidanceVersion: number | null;
 }
+
+const advertisesNoVersions = (value: unknown): boolean =>
+  Array.isArray(value) && value.length === 0;
 
 const readProviderMarker = (provider: string): ProviderMarker | null => {
   const markerPath = resolve(provider, "..", PROVIDER_MARKER_FILENAME);
@@ -77,12 +81,17 @@ const readProviderMarker = (provider: string): ProviderMarker | null => {
       distribution?: unknown;
       guidanceVersion?: unknown;
       provider?: unknown;
+      receiptVersions?: unknown;
+      requestVersions?: unknown;
       schemaVersion?: unknown;
     };
     if (value.provider !== "simple-changelogs" || value.schemaVersion !== 1) {
       return null;
     }
     return {
+      discoveryOnly:
+        advertisesNoVersions(value.requestVersions) ||
+        advertisesNoVersions(value.receiptVersions),
       distribution:
         typeof value.distribution === "string" && value.distribution.length > 0
           ? value.distribution
@@ -246,12 +255,10 @@ const providerDistribution = (provider: string): string | null =>
   DISTRIBUTION_BY_INSTALLATION[basename(resolve(provider, ".."))] ??
   null;
 
-const supportsReleaseHandoff = (provider: string): boolean => {
-  const distribution = providerDistribution(provider);
-  return (
-    distribution === null || !DISCOVERY_ONLY_DISTRIBUTIONS.has(distribution)
-  );
-};
+// Only a marker can declare a provider discovery-only; an installation without
+// a marker is assumed handoff-capable and its capability record decides.
+const supportsReleaseHandoff = (provider: string): boolean =>
+  readProviderMarker(provider)?.discoveryOnly !== true;
 
 const capabilityStatusFor = (
   providers: string[],

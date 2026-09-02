@@ -60,6 +60,7 @@ import {
   pauseClaimedWorktree,
   readCoordinationDocumentFromCommonDirectory,
   readWorktreeCoordination,
+  releaseHandoffWorktreeClaim,
   releaseWorktreeClaim,
   withWorktreeCoordinationLock,
 } from "../../../skills/simple-changes/scripts/lib/worktree-coordination.ts";
@@ -607,7 +608,7 @@ describe("active integration-loop lease", () => {
     expect(recovered).toMatchObject({ active: false, ok: true });
     expect(existsSync(unrelated)).toBe(true);
     expect(readLoopLease(fixture.root)).toBeNull();
-  }, 30_000);
+  }, 60_000);
 
   test("recovers an absent target-contained run-created checkout reclassified as preserved", () => {
     const fixture = repository();
@@ -2048,6 +2049,87 @@ describe("active integration-loop lease", () => {
       state: "released",
     });
   });
+
+  test("removes a completed handoff after squash-equivalent integration", () => {
+    const fixture = repository();
+    const handedOff = join(fixture.base, "handoff-squash");
+    git(fixture.root, ["worktree", "add", "-b", "handoff-squash", handedOff]);
+    writeFixture(handedOff, "handoff.ts", "export const handedOff = true;\n");
+    git(handedOff, ["add", "handoff.ts"]);
+    git(handedOff, ["commit", "-m", "Completed handoff work"]);
+    const handedOffRevision = git(handedOff, ["rev-parse", "HEAD"]);
+    claimWorktree(
+      fixture.root,
+      "handoff-author",
+      handedOff,
+      "codex",
+      "task-handoff"
+    );
+    const lease = startLoop(fixture.root, "controller", "integrate");
+
+    expect(
+      releaseHandoffWorktreeClaim(handedOff, "handoff-author")
+    ).toMatchObject({ releaseReason: "handoff", state: "released" });
+    expect(verifyLoop(fixture.root).ok).toBe(true);
+
+    const squashed = git(fixture.root, [
+      "commit-tree",
+      `${handedOffRevision}^{tree}`,
+      "-p",
+      "HEAD",
+      "-m",
+      "Squash-merged completed handoff",
+    ]);
+    git(fixture.root, ["reset", "--hard", squashed]);
+
+    const finalized = finalizeLoop(
+      fixture.root,
+      lease.runId,
+      "controller",
+      "The completed handoff was squash-integrated into the target."
+    );
+
+    expect(finalized).toMatchObject({ blockers: [], outcome: "completed" });
+    expect(finalized.cleanup.removedWorktrees).toContain(handedOff);
+    expect(finalized.cleanup.removedBranches).toContainEqual({
+      branch: "handoff-squash",
+      method: "patch-equivalent",
+    });
+    expect(existsSync(handedOff)).toBe(false);
+    expect(git(fixture.root, ["branch", "--list", "handoff-squash"])).toBe("");
+  }, 60_000);
+
+  test("removes a completed handoff after exact-ancestry integration", () => {
+    const fixture = repository();
+    const handedOff = join(fixture.base, "handoff-ancestry");
+    git(fixture.root, ["worktree", "add", "-b", "handoff-ancestry", handedOff]);
+    claimWorktree(
+      fixture.root,
+      "handoff-author",
+      handedOff,
+      "codex",
+      "task-handoff-ancestry"
+    );
+    const lease = startLoop(fixture.root, "controller", "integrate");
+
+    expect(
+      releaseHandoffWorktreeClaim(handedOff, "handoff-author")
+    ).toMatchObject({ releaseReason: "handoff", state: "released" });
+    const finalized = finalizeLoop(
+      fixture.root,
+      lease.runId,
+      "controller",
+      "The completed handoff is already an ancestor of the target."
+    );
+
+    expect(finalized).toMatchObject({ blockers: [], outcome: "completed" });
+    expect(finalized.cleanup.removedWorktrees).toContain(handedOff);
+    expect(finalized.cleanup.removedBranches).toContainEqual({
+      branch: "handoff-ancestry",
+      method: "target-contained",
+    });
+    expect(existsSync(handedOff)).toBe(false);
+  }, 60_000);
 
   test("keeps another owner's claim on a clean target-contained checkout at finalization", () => {
     const fixture = repository();

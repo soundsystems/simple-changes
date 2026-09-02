@@ -3993,6 +3993,32 @@ const emptyFinalizationCleanup = (): FinalizationCleanupResult => ({
   removedWorktrees: [],
 });
 
+const completedHandoffContainment = (
+  registered: LoopWorktreeLease,
+  claim: WorktreeClaim,
+  worktree: WorktreeInventory,
+  repositoryPath: string,
+  targetRevision: string
+): TargetContainmentMethod | null => {
+  if (
+    claim.state !== "released" ||
+    claim.releaseReason !== "handoff" ||
+    claim.owner.agentId !== registered.agentId ||
+    claim.path !== worktree.path ||
+    claim.branch !== worktree.branch ||
+    claim.headSha !== worktree.headSha ||
+    claim.changeDigest !== worktree.changeDigest ||
+    worktree.changes.length > 0
+  ) {
+    return null;
+  }
+  return targetContainmentAudit(
+    repositoryPath,
+    targetRevision,
+    worktree.headSha
+  ).method;
+};
+
 /**
  * Release claims that finalization has already proven obsolete and demote
  * their lease entries from `concurrent-author` to unchanged `preserved`, so
@@ -4021,6 +4047,7 @@ const reconcileConcurrentAuthorClaims = (
     inventory.worktrees.map((worktree) => [worktree.path, worktree])
   );
   const demoted = new Map<string, LoopWorktreeLease>();
+  const handoffDispositions = new Map<string, LoopWorktreeDisposition>();
   for (const registered of lease.worktrees) {
     if (registered.role !== "concurrent-author" || !registered.claimId) {
       continue;
@@ -4032,23 +4059,23 @@ const reconcileConcurrentAuthorClaims = (
     if (!(worktree && claim)) {
       continue;
     }
-    const completedHandoffWasShipped =
-      claim.state === "released" &&
-      claim.releaseReason === "handoff" &&
-      claim.owner.agentId === registered.agentId &&
-      claim.path === worktree.path &&
-      claim.branch === worktree.branch &&
-      claim.headSha === worktree.headSha &&
-      claim.changeDigest === worktree.changeDigest &&
-      worktree.changes.length === 0 &&
-      worktree.headSha !== null &&
-      targetContainsRevision(repositoryPath, targetRevision, worktree.headSha);
-    if (completedHandoffWasShipped) {
+    const handoffContainment = completedHandoffContainment(
+      registered,
+      claim,
+      worktree,
+      repositoryPath,
+      targetRevision
+    );
+    if (handoffContainment) {
       const { claimId: _claimId, ...rest } = registered;
       demoted.set(registered.path, {
         ...rest,
         ...worktreeLease(worktree, "preserved", null, registered.createdByRun),
       });
+      handoffDispositions.set(
+        registered.path,
+        automaticRemovalDisposition(lease, worktree, targetRevision)
+      );
       continue;
     }
     if (claim.state !== "active") {
@@ -4092,6 +4119,12 @@ const reconcileConcurrentAuthorClaims = (
   }
   return writeLease({
     ...lease,
+    dispositions: [
+      ...(lease.dispositions ?? []).filter(
+        (disposition) => !handoffDispositions.has(disposition.path)
+      ),
+      ...handoffDispositions.values(),
+    ],
     updatedAt: new Date().toISOString(),
     worktrees: lease.worktrees.map(
       (worktree) => demoted.get(worktree.path) ?? worktree
@@ -4158,24 +4191,43 @@ const targetContainmentAudit = (
 
 const automaticRemovalDisposition = (
   lease: LoopLease,
-  worktree: WorktreeInventory & { headSha: string },
+  worktree: WorktreeInventory,
   targetRevision: string
-): LoopWorktreeDisposition => ({
-  approvedBy: `mode:${lease.mode}`,
-  branch: worktree.branch,
-  changeDigest: worktree.changeDigest,
-  containmentMethod: "target-contained",
-  createdAt: new Date().toISOString(),
-  headSha: worktree.headSha,
-  outcome: "remove-after-audit",
-  path: worktree.path,
-  reason:
-    "The current integration request authorizes automatic cleanup after repeated inventory proved this unchanged clean checkout has zero commits outside the refreshed target.",
-  status: "intended",
-  targetRef: lease.targetRef,
-  targetRevision,
-  uniqueCommitCount: 0,
-});
+): LoopWorktreeDisposition => {
+  if (!worktree.headSha) {
+    throw new SimpleChangesError(
+      `Cannot record automatic cleanup without a commit identity for ${worktree.path}.`,
+      EXIT_CODES.unsafe
+    );
+  }
+  const containment = targetContainmentAudit(
+    lease.primaryCheckout,
+    targetRevision,
+    worktree.headSha
+  );
+  if (!containment.method) {
+    throw new SimpleChangesError(
+      `Cannot record automatic cleanup without target containment evidence for ${worktree.path}.`,
+      EXIT_CODES.unsafe
+    );
+  }
+  return {
+    approvedBy: `mode:${lease.mode}`,
+    branch: worktree.branch,
+    changeDigest: worktree.changeDigest,
+    containmentMethod: containment.method,
+    createdAt: new Date().toISOString(),
+    headSha: worktree.headSha,
+    outcome: "remove-after-audit",
+    path: worktree.path,
+    reason:
+      "The current integration request authorizes automatic cleanup after repeated inventory proved this unchanged clean checkout is contained in the refreshed target.",
+    status: "intended",
+    targetRef: lease.targetRef,
+    targetRevision,
+    uniqueCommitCount: 0,
+  };
+};
 
 type AutomaticCleanupCandidate = WorktreeInventory & { headSha: string };
 
@@ -4197,6 +4249,20 @@ const automaticCleanupCandidates = (
     )?.branch ?? null;
   return inventory.worktrees.filter((worktree) => {
     const registered = registeredByPath.get(worktree.path);
+    const removalDisposition = matchingRemovalDisposition(lease, worktree);
+    const targetContained = targetContainsRevision(
+      inventory.repository.primaryCheckout,
+      targetRevision,
+      worktree.headSha
+    );
+    const dispositionContained = Boolean(
+      removalDisposition &&
+        targetContainmentAudit(
+          inventory.repository.primaryCheckout,
+          targetRevision,
+          worktree.headSha
+        ).method === removalDisposition.containmentMethod
+    );
     const basicCandidate = Boolean(
       !worktree.isPrimary &&
         registered &&
@@ -4204,11 +4270,7 @@ const automaticCleanupCandidates = (
         registered.role !== "retained" &&
         worktree.changes.length === 0 &&
         worktree.headSha &&
-        targetContainsRevision(
-          inventory.repository.primaryCheckout,
-          targetRevision,
-          worktree.headSha
-        )
+        (targetContained || dispositionContained)
     );
     if (!(basicCandidate && registered)) {
       return false;

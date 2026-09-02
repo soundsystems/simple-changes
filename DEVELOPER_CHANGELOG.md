@@ -17,16 +17,17 @@
     remain explicit review items. A `SKILL.md` conflict keeps the provenance pin
     pending until the conflict is resolved instead of reporting it as advanced.
   - Apply validates the complete saved-plan structure, rechecks fork identity,
-    constrains every target path to the fork, and fails closed when planned
-    updates, deletions, literal rewrites, or conflict sidecars drift. It never
-    executes fork code and advances provenance only to a release commit whose
-    packaged tree byte-matches the installed source. Exact provenance,
-    guidance-version, and upstream-version literals are reconciled with the
-    verified target.
+    constrains every target path to the fork, rejects symlink traversal during
+    planning and immediately before apply, and fails closed when planned
+    updates, deletions, literal rewrites, live conflicted files, or their
+    sidecars drift. It never executes fork code and advances provenance only to
+    a release commit whose packaged tree byte-matches the installed source.
+    Exact provenance, guidance-version, and upstream-version literals are
+    reconciled with the verified target.
   - Integrated the planner into fork-maintenance and publishing guidance,
     package contents, type checking, and dedicated discovery, merge, conflict,
-    stale-plan, hostile-path, literal and sidecar drift, pending-pin,
-    pin-verification, CLI, and packaging coverage.
+    stale-plan, hostile-path, symlink-escape, literal, conflicted-file and
+    sidecar drift, pending-pin, pin-verification, CLI, and packaging coverage.
 - Added consumer support for the CMS entry-only `classified` receipt. The
   receipt-v2 schema requires a classify-phase, pathless, non-versioned result
   with `release: null`; transaction validation binds it to
@@ -41,7 +42,7 @@
 - Corrected the stale shipped CLI version constant from `0.12.19` to the
   then-current `0.13.0` package version after the full suite exposed the
   mismatch, then reconciled both package and CLI versions to `0.14.0`.
-<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-09-02T16:20:24-05:00" -->
+<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-09-02T16:38:19-05:00" -->
 
 ## 0.13.0 - 2026-09-02
 

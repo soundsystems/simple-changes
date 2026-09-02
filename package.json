@@ -1,6 +1,6 @@
 {
   "name": "simple-changes",
-  "version": "0.13.0",
+  "version": "0.14.0",
   "description": "Forge-agnostic skill for focused, verified change proposals.",
   "type": "module",
   "private": false,
@@ -25,6 +25,7 @@
   },
   "files": [
     "skills/simple-changes",
+    "skills/update-local-forks",
     "CHANGELOG.md",
     "README.md",
     "LICENSE"
@@ -36,7 +37,7 @@
     "format": "ultracite fix",
     "lint": "ultracite check",
     "simple-changes": "bun skills/simple-changes/scripts/simple-changes.ts",
-    "test": "bun test tooling/simple-changes/tests && bun tooling/publish-skill/scripts/test.ts",
+    "test": "bun test tooling/simple-changes/tests && bun tooling/publish-skill/scripts/test.ts && bun tooling/update-local-forks/scripts/test.ts",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {

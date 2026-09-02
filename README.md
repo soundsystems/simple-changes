@@ -64,29 +64,56 @@ still owns classification and writing.
 
 ## Repository-specific forks
 
-A repository-local fork can specialize providers, commands, verification, and
-release policy while remaining auditable against the canonical package. Put a
-provenance line directly below its title:
+Install Simple Changes globally once, and let every repository use that one
+install. Fork it only when a repository needs stricter or product-specific
+behavior: copy the installed skill into the repository (for example
+`skills/<project>-simple-changes`), rename it, and put a provenance line
+directly below its title:
 
 ```md
-Forked from `simple-changes` @ `<short-sha>`. <project>-specific deltas:
+Forked from `simple-changes` @ `<sha>`. <project>-specific deltas:
 <provider boundaries, local commands, release surfaces, ...>
 ```
 
-In a source checkout, check that pin against the canonical default branch:
+Then keep the fork current with the `update-local-forks` skill, which ships
+in this package and is meant for anyone who forked, not only maintainers:
+
+```sh
+bunx skills add https://gitlab.com/soundsystems/simple-changes --skill update-local-forks
+```
+
+Ask an agent to update your local forks, or run the helper directly. It scans
+global skill roots and conventional project folders (`Developer`, `Projects`,
+`Code`, and `src`); pass `--root` for forks elsewhere. It plans one fork at a
+time against the fork's pinned upstream base and the global install, applies portable upstream
+changes, keeps every fork-specific edit and file, three-way merges files both
+sides changed, and reports conflicts and omitted references for review instead
+of overwriting them. It also advances the provenance pin only to the exact
+release commit the global install matches, and rewrites the pin, guidance
+version, and upstream version literals the fork's own checks pin. It never
+commits or pushes; the fork repository's own Simple Changes policy ships the
+update. Guidance updates therefore reach a fork's users the same way they
+reach everyone else: through the next write-capable run's one-time notice.
+
+```sh
+bun ~/.agents/skills/update-local-forks/scripts/update-local-forks.ts discover
+bun ~/.agents/skills/update-local-forks/scripts/update-local-forks.ts plan \
+  --fork path/to/fork --json > plan.json
+bun ~/.agents/skills/update-local-forks/scripts/update-local-forks.ts apply --plan plan.json
+```
+
+In a source checkout, the maintainer drift checker still works for a quick
+pin comparison:
 
 ```sh
 tooling/simple-changes/check-fork-sync.sh \
   path/to/fork/SKILL.md /path/to/simple-changes origin/main
 ```
 
-Port applicable changes, preserve the documented local deltas, run canonical
-and fork-native checks, and update the pin only after reviewing the complete
-upstream range. Repository maintainers can invoke
-`skills/publish-skill` for the complete canonical, fork, and consumer
-propagation workflow.
-Repository names and paths are discovered at runtime and are not embedded in
-the public package.
+Repository maintainers can invoke `skills/publish-skill` for the complete
+canonical, fork, and consumer propagation workflow; it reuses the same fork
+update rules. Repository names and paths are discovered at runtime and are
+not embedded in the public package.
 
 Install that workflow project-locally from a source checkout, using the
 third-party [`skills` CLI](https://www.npmjs.com/package/skills) (or copy the

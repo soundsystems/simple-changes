@@ -20,7 +20,9 @@
   "include": [
     "skills/publish-skill/scripts/**/*.ts",
     "skills/simple-changes/scripts/**/*.ts",
+    "skills/update-local-forks/scripts/**/*.ts",
     "tooling/publish-skill/**/*.ts",
-    "tooling/simple-changes/**/*.ts"
+    "tooling/simple-changes/**/*.ts",
+    "tooling/update-local-forks/**/*.ts"
   ]
 }

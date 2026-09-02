@@ -46,6 +46,7 @@ const receipt = (
     ChangelogReceiptV2["phase"]
   > = {
     blocked: "classify",
+    classified: "classify",
     "decision-required": "classify",
     "not-applicable": "classify",
     prepared: "prepare",
@@ -124,6 +125,45 @@ describe("changelog protocol negotiation", () => {
     expect(() => validateChangelogTransaction(request(), internalOnly)).toThrow(
       "Internal-only or non-public work must not request a public version"
     );
+  });
+
+  test("re-delegates a classified entry-only receipt for preparation", () => {
+    const classified = receipt("classified");
+    classified.release = null;
+    classified.versionDecision = {
+      boundary: "none",
+      bumpLevel: "none",
+      currentVersion: null,
+      policyAction: "not-applicable",
+      releaseTrain: "cms-operators",
+      resolution: "not-required",
+      selectedVersion: null,
+      source: "repository-policy",
+      suggestedVersion: null,
+    };
+    const entryRequest: ChangelogRequest = {
+      ...request(),
+      approvedVersion: null,
+      boundary: "none",
+      releaseTrain: "cms-operators",
+      transactionId: "cms-entry-01",
+    };
+    classified.transactionId = "cms-entry-01";
+
+    expect(
+      decideReleaseGate({
+        alreadyLive: false,
+        productionAuthorized: false,
+        productionDeploy: "deny",
+        receipt: classified,
+        request: entryRequest,
+        versionAuthorized: false,
+      })
+    ).toMatchObject({
+      action: "re-delegate",
+      decisionDigest: digest,
+      selectedVersion: null,
+    });
   });
 
   test("negotiates the highest mutually supported exact schemas", () => {

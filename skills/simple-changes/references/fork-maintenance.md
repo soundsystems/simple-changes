@@ -33,7 +33,12 @@ means invalid input, and `3` means the histories diverged. The explicit
 repository and ref are optional when the checker runs inside the canonical
 checkout.
 
-When updating from upstream:
+The installable `update-local-forks` skill from the same package automates
+this loop for every fork on a machine: it plans each fork against its pinned
+base and the globally installed skill, applies portable changes, keeps fork
+deltas, three-way merges shared edits, reports conflicts and omitted
+references, and advances the pin only to the verified release commit. Prefer
+it over hand-porting. When updating by hand from upstream:
 
 1. fetch and verify the canonical default branch;
 2. run the checker and review the entire canonical diff from the old pin;

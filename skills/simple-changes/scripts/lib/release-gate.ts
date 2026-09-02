@@ -208,7 +208,11 @@ const assertEntryOnlyBinding = (
   request: ChangelogRequest,
   receipt: ChangelogReceiptV2
 ): void => {
-  if (receipt.status !== "prepared" && receipt.status !== "verified") {
+  if (
+    receipt.status !== "classified" &&
+    receipt.status !== "prepared" &&
+    receipt.status !== "verified"
+  ) {
     return;
   }
   const entryOnly = request.boundary === "none";
@@ -511,6 +515,12 @@ const decideV2Receipt = (
         receipt.reason ?? "An exact public version direction is required.",
         receipt.reasonCode,
         receipt.requiredAction
+      );
+    case "classified":
+      return decision(
+        "re-delegate",
+        receipt,
+        "The entry is relevant; prepare it against the same decision digest."
       );
     case "prepared":
       return decidePreparedReceipt(context, receipt);

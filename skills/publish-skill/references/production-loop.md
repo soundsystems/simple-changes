@@ -55,7 +55,10 @@ Process forks independently so one blocked repository does not corrupt another.
 
 For each fork:
 
-1. Run the canonical fork-drift checker when one is bundled.
+1. Run the canonical fork-drift checker when one is bundled, and use the
+   packaged `update-local-forks` helper (`skills/update-local-forks/scripts/
+   update-local-forks.ts plan --fork <dir> --upstream <checkout>`) to classify
+   every fork file against the pinned base before editing anything by hand.
 2. Review the entire canonical diff from the old pin through the new merged pin.
 3. Apply package changes while preserving the fork's name, audience, release
    authorities, commands, surfaces, and documented local policies.

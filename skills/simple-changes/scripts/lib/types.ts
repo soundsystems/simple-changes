@@ -543,6 +543,7 @@ export interface ChangelogReceiptV2 {
   sourceRevision: string;
   status:
     | "decision-required"
+    | "classified"
     | "prepared"
     | "verified"
     | "not-applicable"

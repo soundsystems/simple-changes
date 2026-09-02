@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.13.0 - 2026-09-02
+
+- Change proposals can now carry clear agent-and-model attribution for authored,
+  reviewed, and merged work. Attribution documents the action but never replaces
+  review or merge approval.
+- Production release delivery now combines verified changelog and deployment
+  evidence, so an incomplete or blocked release cannot be presented as fully
+  delivered.
+- Worktree claims now release through owner action, completed-work handoff, or
+  finalization evidence, preventing finished work from needlessly blocking an
+  active shipment.
+- Setup now recognizes CMS-only changelog work and offers the compatible Simple
+  Changelogs setup when it is needed. Non-interactive runs must opt into that
+  installation explicitly.
+- Production migrations now check installed-client compatibility before they can
+  proceed.
+<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-09-02T18:08:00-05:00" -->
+
 ## 0.12.19 - 2026-08-26
 
 - Release checks now use the repository's pinned formatting tools, keeping

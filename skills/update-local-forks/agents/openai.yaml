@@ -1,0 +1,4 @@
+interface:
+  display_name: "Update Local Forks"
+  short_description: "Update your Simple Changes forks from the global install"
+  default_prompt: "Use $update-local-forks to bring every repository-specific fork of Simple Changes on this machine up to the globally installed version. Plan one fork at a time, explain the plan before applying it, keep every fork-specific change, and hand the resulting repository change to Simple Changes instead of committing."

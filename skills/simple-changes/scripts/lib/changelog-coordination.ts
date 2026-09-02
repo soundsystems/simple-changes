@@ -3,20 +3,32 @@ import { homedir } from "node:os";
 import { basename, delimiter, resolve } from "node:path";
 import type { ChangelogCoordination } from "./types.ts";
 
+const POLICY_FILENAME = ".simple-changelogs.json";
+// The CMS-only distribution keeps its policy in a separate file that never
+// names a distribution; its presence alone selects the CMS distribution.
+const CMS_POLICY_FILENAME = ".simple-changelogs-cms.json";
 const RELEASE_SURFACES = [
-  ".simple-changelogs.json",
+  POLICY_FILENAME,
   "CHANGELOG.md",
   "DEVELOPER_CHANGELOG.md",
+  CMS_POLICY_FILENAME,
+  "CMS_CHANGELOG.json",
 ] as const;
 
 const DISTRIBUTION_BY_INSTALLATION: Record<string, string> = {
   "simple-changelogs": "full",
+  "simple-changelogs-cms": "cms",
   "simple-changelogs-mobile": "mobile",
   "simple-changelogs-skill-maintainer": "skill-repository",
   "simple-changelogs-web": "web",
   "simple-changelogs-web-cms": "web-cms",
 };
 const INSTALLATION_NAMES = Object.keys(DISTRIBUTION_BY_INSTALLATION);
+// Distributions that own no public release files and implement no
+// classify/prepare/verify handoff. They stay discoverable so a CMS-only
+// repository is never reported as invisible, but release delegation to them
+// is not applicable rather than merely unverified.
+const DISCOVERY_ONLY_DISTRIBUTIONS = new Set(["cms"]);
 const REPOSITORY_SKILL_ROOTS = [
   "skills",
   ".agents/skills",
@@ -182,20 +194,16 @@ const guidanceSummaryBullets = (
   }
 };
 
-const storedGuidanceVersion = (
-  repositoryRoot: string | null
-): {
+interface StoredPolicy {
   distribution: string | null;
   path: string | null;
   version: number | null;
-} => {
-  if (!repositoryRoot) {
-    return { distribution: null, path: null, version: null };
-  }
-  const path = resolve(repositoryRoot, ".simple-changelogs.json");
-  if (!existsSync(path)) {
-    return { distribution: null, path: null, version: null };
-  }
+}
+
+const readStoredPolicy = (
+  path: string,
+  impliedDistribution: string | null
+): StoredPolicy => {
   try {
     const value = JSON.parse(readFileSync(path, "utf8")) as {
       distribution?: unknown;
@@ -203,13 +211,56 @@ const storedGuidanceVersion = (
     };
     return {
       distribution:
-        typeof value.distribution === "string" ? value.distribution : null,
+        typeof value.distribution === "string"
+          ? value.distribution
+          : impliedDistribution,
       path,
       version: positiveInteger(value.guidance?.version),
     };
   } catch {
-    return { distribution: null, path, version: null };
+    return { distribution: impliedDistribution, path, version: null };
   }
+};
+
+// The standard policy wins when both files exist (web-cms records both); the
+// CMS policy is consulted only when it is the sole policy present.
+const storedGuidanceVersion = (repositoryRoot: string | null): StoredPolicy => {
+  if (!repositoryRoot) {
+    return { distribution: null, path: null, version: null };
+  }
+  const path = resolve(repositoryRoot, POLICY_FILENAME);
+  if (existsSync(path)) {
+    return readStoredPolicy(path, null);
+  }
+  const cmsPath = resolve(repositoryRoot, CMS_POLICY_FILENAME);
+  if (existsSync(cmsPath)) {
+    return readStoredPolicy(cmsPath, "cms");
+  }
+  return { distribution: null, path: null, version: null };
+};
+
+// Declared marker first, then the installation directory name; null when
+// only SKILL.md prose could say which distribution this is.
+const providerDistribution = (provider: string): string | null =>
+  readProviderMarker(provider)?.distribution ??
+  DISTRIBUTION_BY_INSTALLATION[basename(resolve(provider, ".."))] ??
+  null;
+
+const supportsReleaseHandoff = (provider: string): boolean => {
+  const distribution = providerDistribution(provider);
+  return (
+    distribution === null || !DISCOVERY_ONLY_DISTRIBUTIONS.has(distribution)
+  );
+};
+
+const capabilityStatusFor = (
+  providers: string[],
+  capabilityAvailable: boolean
+): ChangelogCoordination["capabilityStatus"] => {
+  if (capabilityAvailable) {
+    return "unverified";
+  }
+  return providers.length > 0 ? "not-applicable" : "absent";
 };
 
 const supportsDistribution = (
@@ -219,14 +270,9 @@ const supportsDistribution = (
   if (!distribution) {
     return true;
   }
-  const declaredDistribution = readProviderMarker(provider)?.distribution;
-  if (declaredDistribution) {
-    return declaredDistribution === distribution;
-  }
-  const installedDistribution =
-    DISTRIBUTION_BY_INSTALLATION[basename(resolve(provider, ".."))];
-  if (installedDistribution) {
-    return installedDistribution === distribution;
+  const knownDistribution = providerDistribution(provider);
+  if (knownDistribution) {
+    return knownDistribution === distribution;
   }
   try {
     const source = readFileSync(provider, "utf8");
@@ -302,10 +348,18 @@ export const inspectChangelogCoordination = (
   const providers = uniqueByRealPath([
     ...repositoryProviders,
     ...globalProviders,
-  ]).filter((candidate) =>
-    supportsDistribution(candidate, stored.distribution)
-  );
+  ])
+    .filter((candidate) => supportsDistribution(candidate, stored.distribution))
+    // Handoff-capable providers come first so a discovery-only installation
+    // never shadows one that can actually take the release delegation.
+    .sort(
+      (left, right) =>
+        Number(supportsReleaseHandoff(right)) -
+        Number(supportsReleaseHandoff(left))
+    );
   const provider = providers[0] ?? null;
+  const capabilityAvailable = providers.some(supportsReleaseHandoff);
+  const capabilityStatus = capabilityStatusFor(providers, capabilityAvailable);
   const capabilityHelpers = providers
     .map((candidate) => resolve(candidate, "..", "scripts", "setup.ts"))
     .filter(existsSync);
@@ -338,9 +392,9 @@ export const inspectChangelogCoordination = (
       ? guidanceSummaryBullets(detailsPath, stored.version, installedVersion)
       : [];
   return {
-    capabilityAvailable: providers.length > 0,
+    capabilityAvailable,
     capabilityHelpers,
-    capabilityStatus: providers.length > 0 ? "unverified" : "absent",
+    capabilityStatus,
     guidanceUpdate: {
       actions:
         guidanceStatus === "update-available"
@@ -357,6 +411,7 @@ export const inspectChangelogCoordination = (
       summaryBullets,
       walkthroughQuestion: SIMPLE_CHANGELOGS_QUESTION,
     },
+    providerDistribution: provider ? providerDistribution(provider) : null,
     providerEvidence: providerEvidenceFor(provider),
     providers,
     releaseSurfaces: [...releaseSurfaces],

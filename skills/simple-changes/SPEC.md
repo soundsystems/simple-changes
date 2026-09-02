@@ -3,7 +3,8 @@
 ## Triggers
 
 - Explicit requests to sync with the canonical Git target, package, queue,
-  integrate, merge, ship, reconcile, or preview repository changes.
+  sweep, integrate, merge, ship, reconcile, pause, or preview repository
+  changes.
 - A managed completed-work pointer after attributable implementation and
   proportionate verification.
 - A user signal that completed implementation is ready to put up, merge, ship,
@@ -235,6 +236,11 @@
   Version direction is distinct from a blocker, approvals are digest- and
   revision-bound, and final deployment requires the verified reconciliation
   lineage rather than a prepared-file receipt.
+- `proposalSignatures` defaults to `agent-and-version`: each agent that
+  authors, reviews, or merges a proposal appends its model name and version to
+  the proposal's signature block. A signature is attribution only; it never
+  approves, satisfies independent review, or authorizes a merge, and `none`
+  suppresses new signatures without removing existing ones.
 
 ## Forbidden behaviors
 

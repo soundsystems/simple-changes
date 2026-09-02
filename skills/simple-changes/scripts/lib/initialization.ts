@@ -4,6 +4,7 @@ import {
 } from "./guidance-updates.ts";
 import type {
   ChangelogCoordination,
+  ChangelogInstallOffer,
   InitializationMode,
   PolicySource,
   RepoPolicy,
@@ -20,6 +21,9 @@ export type PolicyTrust = "not-required" | "trusted" | "untrusted";
 
 export interface InitializationStatus {
   changelogCoordination: ChangelogCoordination;
+  // Pending Simple Changelogs install offer (command only; `offered` stays
+  // false until onboarding asks). Absent or null when no offer applies.
+  changelogInstall?: ChangelogInstallOffer | null;
   changelogRequired: boolean;
   firstUseWalkthroughAvailable: boolean;
   gitPushAuthorization: RepoPolicy["gitPushAuthorization"];
@@ -185,6 +189,7 @@ export const inspectInitialization = (
       walkthroughQuestion:
         "Would you like me to walk you through the recent Simple Changelogs updates before I continue?",
     },
+    providerDistribution: null,
     providerEvidence: "none",
     providers: [],
     releaseSurfaces: [],

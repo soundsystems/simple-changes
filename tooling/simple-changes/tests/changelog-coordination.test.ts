@@ -47,10 +47,189 @@ describe("changelog coordination discovery", () => {
         walkthroughQuestion:
           "Would you like me to walk you through the recent Simple Changelogs updates before I continue?",
       },
+      providerDistribution: null,
       providerEvidence: "none",
       providers: [],
       releaseSurfaces: [],
       relevant: false,
+    });
+  });
+
+  test("recognizes CMS-only release surfaces without a provider", () => {
+    const fixture = createTestRepository();
+    repositories.push(fixture);
+    writeFixture(
+      fixture.root,
+      ".simple-changelogs-cms.json",
+      '{"schemaVersion":1,"guidance":{"version":4,"backfillStatus":"completed"},"changelogPath":"CMS_CHANGELOG.json"}\n'
+    );
+    writeFixture(
+      fixture.root,
+      "CMS_CHANGELOG.json",
+      '{"schemaVersion":1,"title":"CMS Changelog","entries":[]}\n'
+    );
+
+    expect(inspect(fixture)).toMatchObject({
+      capabilityAvailable: false,
+      capabilityStatus: "absent",
+      guidanceUpdate: {
+        policyPath: join(fixture.root, ".simple-changelogs-cms.json"),
+        status: "absent",
+        storedVersion: 4,
+      },
+      providerDistribution: null,
+      providers: [],
+      releaseSurfaces: [".simple-changelogs-cms.json", "CMS_CHANGELOG.json"],
+      relevant: true,
+    });
+  });
+
+  test("reports a CMS-only provider as discovered but not applicable for delegation", () => {
+    const fixture = createTestRepository();
+    repositories.push(fixture);
+    writeFixture(
+      fixture.root,
+      "skills/simple-changelogs-cms/SKILL.md",
+      "---\nname: simple-changelogs-cms\ndescription: CMS-only distribution.\n---\n\nCurrent guidance version: 5\n"
+    );
+    writeFixture(
+      fixture.root,
+      "skills/simple-changelogs-cms/changelog-provider.json",
+      `${JSON.stringify({
+        distribution: "cms",
+        features: ["guidance-update-notices"],
+        guidanceVersion: 5,
+        provider: "simple-changelogs",
+        receiptVersions: [],
+        requestVersions: [],
+        schemaVersion: 1,
+      })}\n`
+    );
+    writeFixture(
+      fixture.root,
+      "skills/simple-changelogs-cms/scripts/setup.ts",
+      "export {};\n"
+    );
+    writeFixture(
+      fixture.root,
+      "skills/simple-changelogs-cms/references/guidance-updates.md",
+      "# Guidance Updates\n\n## Guidance 5\n\nOperator history validation changed.\n"
+    );
+    writeFixture(
+      fixture.root,
+      ".simple-changelogs-cms.json",
+      '{"schemaVersion":1,"guidance":{"version":4,"backfillStatus":"completed"},"changelogPath":"CMS_CHANGELOG.json"}\n'
+    );
+    writeFixture(
+      fixture.root,
+      "CMS_CHANGELOG.json",
+      '{"schemaVersion":1,"title":"CMS Changelog","entries":[]}\n'
+    );
+
+    const result = inspect(fixture);
+    expect(result).toMatchObject({
+      capabilityAvailable: false,
+      capabilityStatus: "not-applicable",
+      guidanceUpdate: {
+        installedVersion: 5,
+        owner: "simple-changelogs",
+        policyPath: join(fixture.root, ".simple-changelogs-cms.json"),
+        status: "update-available",
+        storedVersion: 4,
+        summaryBullets: ["Operator history validation changed."],
+      },
+      providerDistribution: "cms",
+      providerEvidence: "marker",
+      providers: [join(fixture.root, "skills/simple-changelogs-cms/SKILL.md")],
+      releaseSurfaces: [".simple-changelogs-cms.json", "CMS_CHANGELOG.json"],
+      relevant: true,
+    });
+    expect(result.capabilityHelpers).toEqual([
+      join(fixture.root, "skills/simple-changelogs-cms/scripts/setup.ts"),
+    ]);
+  });
+
+  test("infers the CMS distribution from the installation name without a marker", () => {
+    const fixture = createTestRepository();
+    repositories.push(fixture);
+    writeFixture(
+      fixture.root,
+      "skills/simple-changelogs-cms/SKILL.md",
+      "---\nname: simple-changelogs-cms\ndescription: CMS-only distribution.\n---\n\nCurrent guidance version: 5\n"
+    );
+    writeFixture(
+      fixture.root,
+      ".simple-changelogs-cms.json",
+      '{"schemaVersion":1,"guidance":{"version":5,"backfillStatus":"completed"}}\n'
+    );
+
+    expect(inspect(fixture)).toMatchObject({
+      capabilityAvailable: false,
+      capabilityStatus: "not-applicable",
+      guidanceUpdate: {
+        installedVersion: 5,
+        status: "current",
+        storedVersion: 5,
+      },
+      providerDistribution: "cms",
+      providerEvidence: "inferred",
+      relevant: true,
+    });
+  });
+
+  test("prefers a handoff-capable provider over a CMS-only installation for a standard policy", () => {
+    const fixture = createTestRepository();
+    repositories.push(fixture);
+    for (const installation of ["simple-changelogs-cms", "simple-changelogs"]) {
+      writeFixture(
+        fixture.root,
+        `skills/${installation}/SKILL.md`,
+        `---\nname: ${installation}\ndescription: ${installation} fixture.\n---\n\nCurrent guidance version: 9\n`
+      );
+    }
+    writeFixture(
+      fixture.root,
+      ".simple-changelogs.json",
+      '{"schemaVersion":1,"guidance":{"version":9,"backfillStatus":"completed"}}\n'
+    );
+
+    const result = inspect(fixture);
+    expect(result).toMatchObject({
+      capabilityAvailable: true,
+      capabilityStatus: "unverified",
+      providerDistribution: "full",
+      releaseSurfaces: [".simple-changelogs.json"],
+      relevant: true,
+    });
+    expect(result.providers).toEqual([
+      join(fixture.root, "skills/simple-changelogs/SKILL.md"),
+      join(fixture.root, "skills/simple-changelogs-cms/SKILL.md"),
+    ]);
+    expect(result.guidanceUpdate.provider).toBe(
+      join(fixture.root, "skills/simple-changelogs/SKILL.md")
+    );
+  });
+
+  test("excludes a CMS-only installation from a repository that selects another distribution", () => {
+    const fixture = createTestRepository();
+    repositories.push(fixture);
+    writeFixture(
+      fixture.root,
+      "skills/simple-changelogs-cms/SKILL.md",
+      "---\nname: simple-changelogs-cms\ndescription: CMS-only distribution.\n---\n"
+    );
+    writeFixture(
+      fixture.root,
+      ".simple-changelogs.json",
+      '{"schemaVersion":1,"distribution":"web","guidance":{"version":9}}\n'
+    );
+
+    expect(inspect(fixture)).toMatchObject({
+      capabilityAvailable: false,
+      capabilityStatus: "absent",
+      providerDistribution: null,
+      providers: [],
+      relevant: true,
     });
   });
 

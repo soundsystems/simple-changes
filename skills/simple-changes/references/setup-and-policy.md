@@ -55,16 +55,12 @@ data-write authority.
 
 Public patch/minor/major behavior remains owned by Simple Changelogs and is
 never stored in `.simple-changes.json`. When first Ship use needs both products'
-preferences, Simple Changes may present one coordinated conversation using a
-structured onboarding contribution from Simple Changelogs. The confirmation
-names both owner-controlled destinations, then each canonical helper writes
-only its own policy.
-
-Persist coordinated setup as `pending`, `completed`, or `partial` with policy
-and write-receipt digests rather than copied values. If one owner write fails,
-preserve the valid write and resume only the incomplete owner after fresh
-inspection. Do not ask public-version questions when the changelog workflow
-reports that no version-owning release train applies.
+preferences, finish the Simple Changes questions first, then hand off to the
+provider's own owner-controlled setup as a separate step; each canonical helper
+writes only its own policy file, and neither setup is rolled back because the
+other has not run yet. Do not ask public-version questions in Simple Changes
+at all, and do not ask them when the changelog workflow reports that no
+version-owning release train applies.
 
 Ask **When I save multiple UI iterations, how should their version names be
 chosen?** only when the current task will preserve multiple UI artifacts and no
@@ -102,6 +98,7 @@ Use these safe defaults when no committed policy exists:
   "migrationHandling": "ask-after-review",
   "migrationTargets": [],
   "proposalScheduling": "balanced",
+  "proposalSignatures": "agent-and-version",
   "uiArtifactVersioning": "repository-convention",
   "questions": "blocking-only",
   "review": "repository-policy",
@@ -123,6 +120,13 @@ for a redundant break-glass phrase. Rollback evidence, focused checks, later
 review, forward reconciliation, verification, and cleanup remain mandatory.
 Initialization returns the effective `shippingMode`; the agent must pass that
 closed value into emergency classification instead of re-defaulting it.
+
+`proposalSignatures` accepts `agent-and-version` or `none` and defaults to
+`agent-and-version`: every agent that authors, reviews, or merges a PR or MR
+appends its model name and version to the proposal description as described in
+[change proposals](change-requests.md) and
+[review and merge](review-and-merge.md). A signature records attribution only;
+it never substitutes for review, approval, merge, or deployment authority.
 
 `proposalScheduling` accepts `balanced`, `consecutive`, or `parallel` and
 defaults to `balanced`. It decides whether independent PRs or MRs are normally

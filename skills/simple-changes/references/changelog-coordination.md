@@ -9,13 +9,20 @@ release-note destinations.
 Treat changelog coordination as relevant when repository evidence includes an
 established changelog surface or a compatible changelog skill. The deterministic
 CLI recognizes `.simple-changelogs.json`, `CHANGELOG.md`,
-`DEVELOPER_CHANGELOG.md`, and repository-local or configured
-`simple-changelogs` skill roots.
+`DEVELOPER_CHANGELOG.md`, the CMS-only `.simple-changelogs-cms.json` and
+`CMS_CHANGELOG.json`, and every `simple-changelogs*` installation name
+(including `simple-changelogs-cms`) under repository-local or configured skill
+roots.
 
 Keep these states distinct:
 
 - **relevant and available**: delegation can run;
 - **relevant but unavailable**: preserve the paths and report the missing skill;
+- **relevant but not applicable**: the only discovered provider is a
+  discovery-only distribution (`simple-changelogs-cms`), which owns an
+  authenticated operator history and no public release files. Report it as
+  discovered with `capabilityStatus: "not-applicable"`, preserve its files, and
+  never delegate release classification to it;
 - **not relevant**: do not add a setup question or invent release surfaces.
 
 Availability is not compatibility. Before delegation, obtain the provider's
@@ -39,11 +46,16 @@ declares itself in a machine-readable `changelog-provider.json` beside its
 distribution matching and installed-guidance comparison. Only when no marker is
 installed may discovery fall back to the installation directory name and
 SKILL.md prose, and it must then report `providerEvidence: "inferred"` rather
-than presenting a guess as a declaration.
+than presenting a guess as a declaration. A discovery-only marker advertises
+empty `requestVersions` and `receiptVersions`; never negotiate a handoff with
+it. When a handoff-capable provider and a discovery-only provider are both
+installed, the handoff-capable one is selected.
 
 Installed-update detection is a narrower read-only pre-loop check, not
 capability negotiation. Compare the selected provider's declared current
-guidance version with `.simple-changelogs.json`. When a request requires
+guidance version with `.simple-changelogs.json`, or with
+`.simple-changelogs-cms.json` when that is the only policy file present (its
+presence alone selects the `cms` distribution). When a request requires
 changelog work and the installed version is newer, route the update notice and
 disposition to Simple Changelogs before starting the Simple Changes integration
 loop. Do not acquire a loop lease and later pause it for this conversation.
@@ -64,7 +76,10 @@ the changelog workflow's own authority checks.
 Create one `changelog-request` per release train with a stable transaction ID,
 exact boundary and target revision, phase-specific mutation scope, prior receipt
 digest, and negotiated receipt versions. The request contains resolved values,
-never raw user text.
+never raw user text. `attempt` and `environment` are optional, informational
+fields: the provider checks their shape when present and never stores, echoes,
+or keys retries on them, so transaction identity rests on the transaction ID,
+phase, revisions, and prior receipt digest alone.
 
 1. `classify` is read-only and returns `decision-required`, `not-applicable`,
    `blocked`, or an exact selected version.
@@ -151,7 +166,17 @@ After the final feature merge and before production:
    version, and proof that the finalized target contains the reconciliation
    head.
 5. Deploy only that verified finalized target and bind the verified changelog
-   receipt to the provider receipt in a `release-delivery-receipt`.
+   receipt to the provider receipt with `simple-changes release-delivery`,
+   which composes the `release-delivery-receipt` from both sources.
+
+Decide each boundary with `simple-changes release-gate --request <file>
+--receipt <file> --production ask|allow|deny [--already-live]
+[--production-authorized] [--version-authorized] --json`. Its `action`
+(`continue`, `request-version-approval`, `request-production-approval`,
+`request-combined-approval`, `merge-reconciliation`,
+`verify-existing-production`, `deploy`, `stop-after-integration`,
+`re-delegate`, or `block`) is the decision; do not re-derive it from the
+receipt prose.
 
 A `not-applicable` receipt satisfies this gate only when its evidence proves the
 exact refreshed target already contains a dated, versioned release

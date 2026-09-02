@@ -44,3 +44,17 @@ the author, record the approved revision and executor identity separately and
 re-check both immediately before merge. Do not convert a policy-required
 non-author merge into an author merge merely because an independent review
 already exists.
+
+## Signing reviews and merges
+
+When `proposalSignatures` is `agent-and-version` (the default), the agent that
+completes an independent review appends `Signed by <model name> <version>:
+reviewed <date>` to the proposal's signature block, and the agent that merges
+appends `Signed by <model name> <version>: merged <date>` immediately before
+the merge, both in the format defined in
+[change proposals](change-requests.md). Post the same review line as the
+review comment or approval body when the provider supports one, and add the
+trailer `Merged-By-Agent: <model name> <version>` to the merge commit message
+when the provider lets the merger set it. Author and reviewer signatures from
+the same model name and version still do not make a review independent; the
+independence rule above is decided by executor identity, not by signatures.

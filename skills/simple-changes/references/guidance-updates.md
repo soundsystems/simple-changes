@@ -89,7 +89,8 @@ Simple Changelogs policy or release-note destination.
 
 `changelogCoordination.guidanceUpdate` compares the selected installed
 provider's declared guidance version with the repository's recorded
-`.simple-changelogs.json` guidance version. Repository-local providers take
+`.simple-changelogs.json` guidance version (or `.simple-changelogs-cms.json`
+when it is the only policy present). Repository-local providers take
 precedence over global providers. Treat malformed, missing, or unprovable
 version evidence as `unknown`, never as an update.
 

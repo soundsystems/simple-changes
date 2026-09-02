@@ -272,6 +272,27 @@ describe("phased release gate", () => {
     });
   });
 
+  test("binds a transaction whose request omits attempt and environment", () => {
+    const { attempt, environment, ...minimal } = request();
+    expect(attempt).toBe(1);
+    expect(environment).toBe("production");
+    const classify = createChangelogRequest(minimal);
+    expect(classify).not.toHaveProperty("attempt");
+    expect(validateChangelogTransaction(classify, receipt())).toMatchObject({
+      status: "decision-required",
+    });
+    expect(
+      decideReleaseGate({
+        alreadyLive: false,
+        productionAuthorized: false,
+        productionDeploy: "allow",
+        receipt: receipt(),
+        request: classify,
+        versionAuthorized: false,
+      })
+    ).toMatchObject({ action: "request-version-approval" });
+  });
+
   test("prepares, verifies, and avoids a duplicate live deployment", () => {
     const prepared = receipt("prepared");
     expect(

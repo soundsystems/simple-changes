@@ -177,6 +177,7 @@ simple-changes initialize --mode MODE
   [--ui-artifacts]
   [--ui-versioning repository|number-and-date|date-only|number-only]
   [--changelog delegate-if-available|preserve-and-report|ask]
+  [--changelog-install now|after-shipment|later|decline]
   [--concurrent-work allow-claimed|strict]
   [--production ask|allow|deny]
   [--shipping-mode standard|expedited]
@@ -189,6 +190,7 @@ simple-changes setup [--finish review|integrate|ship]
   [--ui-artifacts]
   [--ui-versioning repository|number-and-date|date-only|number-only]
   [--changelog delegate-if-available|preserve-and-report|ask]
+  [--changelog-install now|after-shipment|later|decline]
   [--concurrent-work allow-claimed|strict]
   [--production ask|allow|deny]
   [--shipping-mode standard|expedited]
@@ -260,6 +262,11 @@ simple-changes prepare-agent --run-id ID --agent-id ID --purpose SLUG
 simple-changes release-notes [--check] [--json] [--repo PATH] [--version VERSION]
 simple-changes negotiate-changelog CAPABILITIES_FILE [--json]
 simple-changes validate-changelog-transaction REQUEST_FILE RECEIPT_FILE [--prior-receipt FILE] [--json]
+simple-changes release-gate --request FILE --receipt FILE
+  --production ask|allow|deny [--already-live] [--production-authorized]
+  [--version-authorized] [--json]
+simple-changes release-delivery --changelog-receipt FILE --provider-receipt FILE
+  [--request FILE] [--json]
 simple-changes validate KIND FILE [--json]
 simple-changes verify-markdown FILE [--json]
 simple-changes help
@@ -374,6 +381,7 @@ apply only when the repository has no policy. Teams may commit
   "changelogHandling": "delegate-if-available",
   "defaultFinish": "open-change-request",
   "handoffTiming": "confirm-ready",
+  "proposalSignatures": "agent-and-version",
   "uiArtifactVersioning": "repository-convention",
   "questions": "blocking-only",
   "review": "repository-policy",

@@ -229,7 +229,10 @@ read-only work, or incomplete verification.
    current locally validated receipts.
 7. Create/update neutral proposals with real Markdown newlines, re-read stored
    source/rendering, resolve checks/discussions/review, and merge only the exact
-   approved head.
+   approved head. Under the default `proposalSignatures` policy, the agent
+   that authors, reviews, or merges a proposal appends its model name and
+   version to the proposal's signature block; see
+   [change proposals](references/change-requests.md).
 8. Audit every detected migration before any apply. Apply only through
    `simple-changes migration decision` and `simple-changes migration apply`
    with the closed evidence described in

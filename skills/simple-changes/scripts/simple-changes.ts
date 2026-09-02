@@ -64,11 +64,13 @@ import {
   migrationAuthorizationConsumed,
 } from "./lib/migration-automation.ts";
 import {
+  changelogInstallOfferApplies,
   collectOnboardingSelection,
   type OnboardingChoice,
   type OnboardingInputs,
   type OnboardingPrompter,
   parseMigrationTargets,
+  pendingChangelogInstallOffer,
   type SetupScope,
 } from "./lib/onboarding.ts";
 import { assertSafeRelativePath } from "./lib/path-safety.ts";
@@ -90,7 +92,9 @@ import {
   type ReleaseConsistencyReport,
   renderReleaseConsistency,
 } from "./lib/release-consistency.ts";
+import { buildReleaseDeliveryReceipt } from "./lib/release-delivery.ts";
 import {
+  decideReleaseGate,
   inspectChangelogTransaction,
   negotiateChangelogProtocol,
 } from "./lib/release-gate.ts";
@@ -103,6 +107,10 @@ import {
 } from "./lib/repository-instructions.ts";
 import { SCHEMA_NAMES, validateSchema } from "./lib/schema.ts";
 import type {
+  ChangelogCoordination,
+  ChangelogInstallDecision,
+  ChangelogReceipt,
+  ChangelogRequest,
   InitializationMode,
   RepoPolicy,
   RequestMode,
@@ -144,8 +152,10 @@ Usage:
     [--ready]
     [--changelog-required]
     [--changelog delegate-if-available|preserve-and-report|ask]
+    [--changelog-install now|after-shipment|later|decline]
     [--concurrent-work allow-claimed|strict]
     [--proposal-scheduling balanced|consecutive|parallel]
+    [--proposal-signatures agent-and-version|none]
     [--handoff ask|automatic|user-signaled]
     [--instruction-pointer add|leave] [--instruction-file PATH]
     [--ui-artifacts]
@@ -160,8 +170,10 @@ Usage:
     [--agent-id ID] [--yes] [--json] [--repo PATH]
   simple-changes setup [--finish review|integrate|ship]
     [--changelog delegate-if-available|preserve-and-report|ask]
+    [--changelog-install now|after-shipment|later|decline]
     [--concurrent-work allow-claimed|strict]
     [--proposal-scheduling balanced|consecutive|parallel]
+    [--proposal-signatures agent-and-version|none]
     [--handoff ask|automatic|user-signaled]
     [--instruction-pointer add|leave] [--instruction-file PATH]
     [--ui-artifacts]
@@ -251,6 +263,11 @@ Usage:
   simple-changes release-notes [--check] [--json] [--repo PATH] [--version VERSION]
   simple-changes negotiate-changelog CAPABILITIES_FILE [--json]
   simple-changes validate-changelog-transaction REQUEST_FILE RECEIPT_FILE [--prior-receipt FILE] [--json]
+  simple-changes release-gate --request FILE --receipt FILE
+    --production ask|allow|deny [--already-live] [--production-authorized]
+    [--version-authorized] [--json]
+  simple-changes release-delivery --changelog-receipt FILE --provider-receipt FILE
+    [--request FILE] [--json]
   simple-changes validate KIND FILE [--json]
   simple-changes verify-markdown FILE [--json]
   simple-changes help
@@ -266,9 +283,12 @@ interface CliOptions {
   acknowledgePushScope: boolean;
   adapter?: string;
   agentId?: string;
+  alreadyLive: boolean;
   applyPlanPath?: string;
   approvedBy?: string;
   changelogHandling?: RepoPolicy["changelogHandling"];
+  changelogInstall?: ChangelogInstallDecision;
+  changelogReceiptPath?: string;
   changelogRequired: boolean;
   check: boolean;
   claimId?: string;
@@ -293,8 +313,11 @@ interface CliOptions {
   pendingPath?: string;
   positional: string[];
   priorReceiptPath?: string;
+  productionAuthorized: boolean;
   productionDeploy?: RepoPolicy["productionDeploy"];
   proposalScheduling?: RepoPolicy["proposalScheduling"];
+  proposalSignatures?: RepoPolicy["proposalSignatures"];
+  providerReceiptPath?: string;
   purpose?: string;
   questions?: RepoPolicy["questions"];
   ready: boolean;
@@ -305,6 +328,7 @@ interface CliOptions {
   repo: string;
   repoProvided: boolean;
   requestAction?: "request-pause" | "request-detach" | "notify-resume";
+  requestPath?: string;
   runId?: string;
   scope?: SetupScope;
   settleMs: number;
@@ -314,6 +338,7 @@ interface CliOptions {
   targetRef?: string;
   uiArtifacts: boolean;
   uiArtifactVersioning?: RepoPolicy["uiArtifactVersioning"];
+  versionAuthorized: boolean;
   worktreePath?: string;
   yes: boolean;
 }
@@ -324,7 +349,9 @@ const VALUED_OPTIONS = new Set([
   "--agent-id",
   "--approved-by",
   "--changelog",
+  "--changelog-install",
   "--concurrent-work",
+  "--changelog-receipt",
   "--claim-id",
   "--disposition",
   "--evidence",
@@ -344,11 +371,14 @@ const VALUED_OPTIONS = new Set([
   "--pause-receipt",
   "--prior-receipt",
   "--production",
+  "--provider-receipt",
   "--proposal-scheduling",
+  "--proposal-signatures",
   "--purpose",
   "--questions",
   "--reason",
   "--receipt",
+  "--request",
   "--request-action",
   "--repo",
   "--run-id",
@@ -364,6 +394,9 @@ const VALUED_OPTIONS = new Set([
 ]);
 
 const BOOLEAN_OPTIONS = new Set([
+  "--already-live",
+  "--production-authorized",
+  "--version-authorized",
   "--acknowledge-push-scope",
   "--changelog-required",
   "--check",
@@ -401,6 +434,25 @@ const changelogHandlingValue = (
     );
   }
   return value as RepoPolicy["changelogHandling"];
+};
+
+const CHANGELOG_INSTALL_FLAG_VALUES: Record<string, ChangelogInstallDecision> =
+  {
+    "after-shipment": "install-after-shipment",
+    decline: "declined",
+    later: "install-later",
+    now: "install-now",
+  };
+
+const changelogInstallValue = (value: string): ChangelogInstallDecision => {
+  const decision = CHANGELOG_INSTALL_FLAG_VALUES[value];
+  if (!decision) {
+    throw new SimpleChangesError(
+      "--changelog-install must be now, after-shipment, later, or decline",
+      EXIT_CODES.usage
+    );
+  }
+  return decision;
 };
 
 const applyShippingModeOption = (
@@ -513,6 +565,28 @@ const applyMigrationOption = (
   return true;
 };
 
+const applyProposalSignaturesOption = (
+  options: CliOptions,
+  option: string,
+  value: string
+): boolean => {
+  if (option !== "--proposal-signatures") {
+    return false;
+  }
+  const values: RepoPolicy["proposalSignatures"][] = [
+    "agent-and-version",
+    "none",
+  ];
+  if (!values.includes(value as RepoPolicy["proposalSignatures"])) {
+    throw new SimpleChangesError(
+      `--proposal-signatures must be one of ${values.join(", ")}`,
+      EXIT_CODES.usage
+    );
+  }
+  options.proposalSignatures = value as RepoPolicy["proposalSignatures"];
+  return true;
+};
+
 const applyProposalSchedulingOption = (
   options: CliOptions,
   option: string,
@@ -560,6 +634,10 @@ const applySetupValuedOption = (
     options.changelogHandling = changelogHandlingValue(value);
     return true;
   }
+  if (option === "--changelog-install") {
+    options.changelogInstall = changelogInstallValue(value);
+    return true;
+  }
   if (option === "--concurrent-work") {
     if (!["allow-claimed", "strict"].includes(value)) {
       throw new SimpleChangesError(
@@ -572,6 +650,7 @@ const applySetupValuedOption = (
   }
   if (
     applyProposalSchedulingOption(options, option, value) ||
+    applyProposalSignaturesOption(options, option, value) ||
     applyFinishOption(options, option, value) ||
     applyHandoffOption(options, option, value) ||
     applyMigrationOption(options, option, value)
@@ -639,6 +718,7 @@ const applyLoopValuedOption = (
     "--agent-id": "agentId",
     "--apply-plan": "applyPlanPath",
     "--approved-by": "approvedBy",
+    "--changelog-receipt": "changelogReceiptPath",
     "--claim-id": "claimId",
     "--manifest-digest": "manifestDigest",
     "--opening-remote-inventory": "openingRemoteInventoryPath",
@@ -646,9 +726,11 @@ const applyLoopValuedOption = (
     "--pause-receipt": "pauseReceiptId",
     "--pending": "pendingPath",
     "--prior-receipt": "priorReceiptPath",
+    "--provider-receipt": "providerReceiptPath",
     "--purpose": "purpose",
     "--reason": "reason",
     "--receipt": "receiptPath",
+    "--request": "requestPath",
     "--run-id": "runId",
     "--state": "statePath",
     "--status-digest": "statusDigest",
@@ -781,6 +863,12 @@ const applyValuedOption = (
 const applyBooleanOption = (options: CliOptions, option: string): void => {
   if (option === "--acknowledge-push-scope") {
     options.acknowledgePushScope = true;
+  } else if (option === "--already-live") {
+    options.alreadyLive = true;
+  } else if (option === "--production-authorized") {
+    options.productionAuthorized = true;
+  } else if (option === "--version-authorized") {
+    options.versionAuthorized = true;
   } else if (option === "--json") {
     options.json = true;
   } else if (option === "--changelog-required") {
@@ -801,6 +889,7 @@ const applyBooleanOption = (options: CliOptions, option: string): void => {
 const parseOptions = (args: string[]): CliOptions => {
   const options: CliOptions = {
     acknowledgePushScope: false,
+    alreadyLive: false,
     changelogRequired: false,
     check: false,
     evidencePaths: [],
@@ -808,12 +897,14 @@ const parseOptions = (args: string[]): CliOptions => {
     json: false,
     migrationTargets: [],
     positional: [],
+    productionAuthorized: false,
     ready: false,
     releaseClaim: false,
     repo: process.cwd(),
     repoProvided: false,
     settleMs: 0,
     uiArtifacts: false,
+    versionAuthorized: false,
     yes: false,
   };
   let index = 0;
@@ -957,11 +1048,13 @@ const createCliPrompter = (
 const setupNeedsPrompt = (
   options: CliOptions,
   changelogRelevant: boolean,
-  instructionTargetCount: number
+  instructionTargetCount: number,
+  changelogInstallOffered = false
 ): boolean =>
   !(
     options.defaultFinish &&
     (!changelogRelevant || options.changelogHandling) &&
+    (!changelogInstallOffered || options.changelogInstall) &&
     options.questions &&
     options.scope &&
     options.gitPushAuthorization &&
@@ -1016,6 +1109,17 @@ const setupOutcome = (
   return "Selected these preferences for this run; no file was written.";
 };
 
+const describeChangelogCapability = (
+  coordination: ChangelogCoordination
+): string => {
+  if (coordination.capabilityAvailable) {
+    return "available";
+  }
+  return coordination.capabilityStatus === "not-applicable"
+    ? `not applicable (${coordination.providerDistribution ?? "discovery-only"} distribution owns no public release files)`
+    : "not available";
+};
+
 const setupContext = (
   repositoryPath: string
 ): {
@@ -1055,6 +1159,7 @@ const setupContext = (
 
 const SETUP_INPUT_KEYS = [
   "changelogHandling",
+  "changelogInstall",
   "concurrentWork",
   "defaultFinish",
   "gitPushAuthorization",
@@ -1063,6 +1168,7 @@ const SETUP_INPUT_KEYS = [
   "instructionPointer",
   "migrationHandling",
   "proposalScheduling",
+  "proposalSignatures",
   "productionDeploy",
   "questions",
   "scope",
@@ -1105,11 +1211,12 @@ const runSetup = async (options: CliOptions): Promise<void> => {
   const needsPrompt = setupNeedsPrompt(
     options,
     context.changelog.relevant,
-    instructionTargets.length
+    instructionTargets.length,
+    changelogInstallOfferApplies(context.changelog)
   );
   if (needsPrompt && !process.stdin.isTTY) {
     throw new SimpleChangesError(
-      "Interactive setup requires a terminal. Supply --finish, --questions, --scope, --git-push-authorization for every pushing finish, --production and --shipping-mode when shipping, --migration-handling and --migration-target for automatic migration apply, --changelog when relevant, --ui-versioning with --ui-artifacts, --instruction-pointer when an instruction file exists, --handoff when adding the pointer, --instruction-file when selecting among targets, and --yes.",
+      "Interactive setup requires a terminal. Supply --finish, --questions, --scope, --git-push-authorization for every pushing finish, --production and --shipping-mode when shipping, --migration-handling and --migration-target for automatic migration apply, --changelog when relevant, --changelog-install after offering the Simple Changelogs install when changelog work is relevant but no compatible provider is installed, --ui-versioning with --ui-artifacts, --instruction-pointer when an instruction file exists, --handoff when adding the pointer, --instruction-file when selecting among targets, and --yes.",
       EXIT_CODES.usage
     );
   }
@@ -1192,6 +1299,7 @@ const runSetup = async (options: CliOptions): Promise<void> => {
       : applyWrites();
     const result = {
       changelogCoordination: context.changelog,
+      changelogInstall: selection.changelogInstall,
       confirmed: selection.confirmed,
       instructionPointer: {
         ...selection.instructionPointer,
@@ -1374,11 +1482,9 @@ const renderInitialization = (status: InitializationStatus): string => {
     `Changelog coordination: ${
       status.changelogCoordination.relevant ? "relevant" : "not detected"
     }`,
-    `Changelog capability: ${
-      status.changelogCoordination.capabilityAvailable
-        ? "available"
-        : "not available"
-    }`,
+    `Changelog capability: ${describeChangelogCapability(
+      status.changelogCoordination
+    )}`,
     `Simple Changes update: ${status.guidanceUpdate.status}`,
     `Simple Changelogs update: ${status.changelogCoordination.guidanceUpdate.status}`,
     `Changelog required for this request: ${status.changelogRequired ? "yes" : "no"}`,
@@ -1459,6 +1565,7 @@ const runInitialize = async (options: CliOptions): Promise<void> => {
       : null;
   const status = validateSchema<InitializationStatus>("initialization", {
     ...inspected,
+    changelogInstall: pendingChangelogInstallOffer(changelogCoordination),
     handoffClaimRelease: handoffClaimRelease
       ? { claimId: handoffClaimRelease.claimId, path: handoffClaimRelease.path }
       : null,
@@ -1484,7 +1591,8 @@ const runInitialize = async (options: CliOptions): Promise<void> => {
             inventory.repository.primaryCheckout,
             setupOptions.instructionFile
           ).length
-        : 0
+        : 0,
+      changelogInstallOfferApplies(changelogCoordination)
     )
   ) {
     await runSetup(setupOptions);
@@ -1710,6 +1818,57 @@ const runChangelogNegotiation = (options: CliOptions): void => {
   if (!result.compatible) {
     throw new SimpleChangesError(
       "Changelog protocol negotiation failed",
+      EXIT_CODES.validation
+    );
+  }
+};
+
+const runReleaseGate = (options: CliOptions): void => {
+  const requestPath = requireCliOption(options.requestPath, "--request");
+  const receiptPath = requireCliOption(options.receiptPath, "--receipt");
+  const productionDeploy = requireCliOption(
+    options.productionDeploy,
+    "--production"
+  ) as RepoPolicy["productionDeploy"];
+  const decision = decideReleaseGate({
+    alreadyLive: options.alreadyLive,
+    productionAuthorized: options.productionAuthorized,
+    productionDeploy,
+    receipt: readJsonFile(receiptPath) as ChangelogReceipt,
+    request: readJsonFile(requestPath) as ChangelogRequest,
+    versionAuthorized: options.versionAuthorized,
+  });
+  writeOutput(
+    decision,
+    options.json,
+    `Release gate: ${decision.action}${decision.selectedVersion ? ` (version ${decision.selectedVersion})` : ""}. ${decision.reason}\n`
+  );
+};
+
+const runReleaseDelivery = (options: CliOptions): void => {
+  const changelogReceiptPath = requireCliOption(
+    options.changelogReceiptPath,
+    "--changelog-receipt"
+  );
+  const providerReceiptPath = requireCliOption(
+    options.providerReceiptPath,
+    "--provider-receipt"
+  );
+  const receipt = buildReleaseDeliveryReceipt({
+    changelogReceipt: readJsonFile(changelogReceiptPath),
+    providerReceipt: readJsonFile(providerReceiptPath),
+    ...(options.requestPath === undefined
+      ? {}
+      : { request: readJsonFile(options.requestPath) }),
+  });
+  writeOutput(
+    receipt,
+    options.json,
+    `Release delivery ${receipt.status}: ${receipt.releaseTrain} ${receipt.version} finalized at ${receipt.finalizedTargetRevision}, deployed revision ${receipt.deployedRevision ?? "unobserved"}${receipt.reasonCode ? ` (${receipt.reasonCode}; ${receipt.requiredAction})` : ""}.\n`
+  );
+  if (receipt.status !== "complete") {
+    throw new SimpleChangesError(
+      `Release delivery is ${receipt.status}: ${receipt.requiredAction}`,
       EXIT_CODES.validation
     );
   }
@@ -2635,6 +2794,12 @@ const executeCommand = async (
       return EXIT_CODES.success;
     case "validate-changelog-transaction":
       runChangelogTransactionValidation(options);
+      return EXIT_CODES.success;
+    case "release-gate":
+      runReleaseGate(options);
+      return EXIT_CODES.success;
+    case "release-delivery":
+      runReleaseDelivery(options);
       return EXIT_CODES.success;
     case "validate":
       runValidation(options);

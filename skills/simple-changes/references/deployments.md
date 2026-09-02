@@ -115,11 +115,15 @@ Verification requires all of:
    that deployment;
 6. focused smoke checks exercise the changed user journey.
 
-After observation, emit a composite `release-delivery-receipt` containing the
-transaction and optional release-set IDs, train, version, decision digest,
-input/reconciliation/finalized/deployed revisions, and provider receipt ID.
-`complete` requires the observed deployment revision to equal the verified
-finalized target. Use structured failure codes for drift or incomplete
+After observation, build the composite `release-delivery-receipt` with
+`simple-changes release-delivery --changelog-receipt <verified.json>
+--provider-receipt <deployment.json> [--request <request.json>]`. It derives
+the transaction and optional release-set IDs, train, version, decision digest,
+input/reconciliation/finalized revisions, provider receipt ID, and deployed
+revision from those two sources rather than copying them, so the composite
+cannot disagree with its inputs. `complete` requires the observed deployment
+revision to equal the verified finalized target; the command exits nonzero for
+`partial` or `blocked`. Use structured failure codes for drift or incomplete
 observation; never parse provider prose to decide a retry. Release-set grouping
 is reporting only and does not make independent trains atomic.
 

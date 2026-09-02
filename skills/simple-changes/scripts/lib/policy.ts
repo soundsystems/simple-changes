@@ -33,6 +33,7 @@ export const DEFAULT_POLICY: RepoPolicy = {
   migrationTargets: [],
   productionDeploy: "ask",
   proposalScheduling: "balanced",
+  proposalSignatures: "agent-and-version",
   questions: "blocking-only",
   review: "repository-policy",
   schemaVersion: 1,
@@ -49,6 +50,7 @@ type StoredRepoPolicy = Omit<
   | "migrationHandling"
   | "migrationTargets"
   | "proposalScheduling"
+  | "proposalSignatures"
   | "shippingMode"
   | "uiArtifactVersioning"
 > & {
@@ -62,6 +64,7 @@ type StoredRepoPolicy = Omit<
   migrationHandling?: RepoPolicy["migrationHandling"];
   migrationTargets?: RepoPolicy["migrationTargets"];
   proposalScheduling?: RepoPolicy["proposalScheduling"];
+  proposalSignatures?: RepoPolicy["proposalSignatures"];
   shippingMode?: RepoPolicy["shippingMode"];
   uiArtifactVersioning?: RepoPolicy["uiArtifactVersioning"];
 };
@@ -156,6 +159,8 @@ const parsePolicyFile = (path: string): RepoPolicy => {
       validated.migrationTargets ?? DEFAULT_POLICY.migrationTargets,
     proposalScheduling:
       validated.proposalScheduling ?? DEFAULT_POLICY.proposalScheduling,
+    proposalSignatures:
+      validated.proposalSignatures ?? DEFAULT_POLICY.proposalSignatures,
     shippingMode: validated.shippingMode ?? DEFAULT_POLICY.shippingMode,
     uiArtifactVersioning:
       validated.uiArtifactVersioning ?? DEFAULT_POLICY.uiArtifactVersioning,

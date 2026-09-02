@@ -186,6 +186,20 @@ the normal proven-integration rules in
 [inventory and concurrency](inventory-and-concurrency.md). Do not add a
 recurring dependency-cleanup question.
 
+Ask **Should agents sign the PRs/MRs they author, review, or merge?** (use
+the forge's term) in the full walkthrough. Offer:
+
+1. **Sign with model name and version (Recommended)**: Every agent appends
+   its model name and version to the proposal description when it authors,
+   reviews, or merges, so provider history shows which model did what.
+2. **No signatures**: Proposals carry no agent signature; provider history
+   shows only the account that acted.
+
+Recommended setup keeps signatures on. The signature format and placement are
+defined in [change proposals](change-requests.md) and
+[review and merge](review-and-merge.md); a signature is attribution, never
+approval or authority.
+
 Then ask **Should Simple Changes configure this harness for routine repository
 pushes? Choose one:**
 
@@ -246,8 +260,10 @@ When compatible Simple Changelogs is installed, preselect **Delegate when
 available**. When changelog work is relevant but the skill is not installed or
 compatible, first explain that it owns release classification and release-note
 writing, then ask **Would you like me to install Simple Changelogs now?** Never
-install it silently. If the user agrees, ask **When should I set up Simple
-Changelogs: now, after this shipment, or later?**
+install it silently. Offer **Yes, install it** and **No, keep changelog work
+preserved and reported**; run the install command only after that consent. If
+the user agrees, ask **When should I set up Simple Changelogs: now, after this
+shipment, or later?**
 
 - **Now:** Run its separate owner-controlled onboarding, rediscover
   compatibility, then return with delegation recommended.

@@ -352,6 +352,43 @@ describe("closed schemas", () => {
     ).toThrow();
   });
 
+  test("treats changelog request attempt and environment as optional shape-checked fields", () => {
+    const request = {
+      approvedDecisionDigest: null,
+      approvedVersion: null,
+      boundary: "web-production",
+      finalizedTargetRevision: null,
+      inputTargetRevision: "a".repeat(40),
+      mutationScope: "read-only",
+      phase: "classify",
+      priorReceiptDigest: null,
+      releaseSetId: null,
+      releaseTrain: "web",
+      schemaVersion: 1,
+      supportedReceiptVersions: [1, 2],
+      transactionId: "release-01",
+    };
+    expect(
+      validateSchema<typeof request>("changelog-request", request)
+    ).toEqual(request);
+    expect(
+      validateSchema("changelog-request", {
+        ...request,
+        attempt: 2,
+        environment: "production",
+      })
+    ).toMatchObject({ attempt: 2, environment: "production" });
+    expect(() =>
+      validateSchema("changelog-request", { ...request, attempt: 0 })
+    ).toThrow();
+    expect(() =>
+      validateSchema("changelog-request", { ...request, environment: "" })
+    ).toThrow();
+    expect(() =>
+      validateSchema("changelog-request", { ...request, environment: null })
+    ).toThrow();
+  });
+
   test("rejects run approvals without a revision", () => {
     expect(() =>
       validateSchema("run-state", {

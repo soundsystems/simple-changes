@@ -218,4 +218,183 @@ describe("changelog protocol CLI", () => {
       "Prior receipt digest does not match"
     );
   });
+
+  test("decides the release gate and builds the delivery receipt from files", () => {
+    const fixture = createTestRepository();
+    repositories.push(fixture);
+    const revisionC = "c".repeat(40);
+    const digest = "d".repeat(64);
+    writeFixture(
+      fixture.root,
+      "request.json",
+      JSON.stringify({
+        approvedDecisionDigest: digest,
+        approvedVersion: "0.10.0",
+        attempt: 1,
+        boundary: "web-production",
+        environment: "production",
+        finalizedTargetRevision: revisionC,
+        inputTargetRevision: revision,
+        mutationScope: "read-only",
+        phase: "verify",
+        priorReceiptDigest: null,
+        releaseSetId: null,
+        releaseTrain: "web",
+        schemaVersion: 1,
+        supportedReceiptVersions: [1, 2],
+        transactionId: "release-01",
+      })
+    );
+    writeFixture(
+      fixture.root,
+      "receipt.json",
+      JSON.stringify({
+        checks: ["Inspected exact target."],
+        decisionDigest: digest,
+        effectivePolicyDigest: "e".repeat(64),
+        evidence: ["Aggregate impact is minor."],
+        observedAt: "2026-09-02T12:00:00-05:00",
+        paths: [],
+        phase: "verify",
+        provider: "simple-changelogs",
+        reason: null,
+        reasonCode: null,
+        release: {
+          date: "2026-09-02",
+          targetContainedUnreleased: "integrated",
+          version: "0.10.0",
+        },
+        releaseImpact: "minor",
+        releaseSetId: null,
+        requiredAction: null,
+        revisionLineage: {
+          finalizedTargetRevision: revisionC,
+          inputTargetRevision: revision,
+          reconciliationHeadRevision: "b".repeat(40),
+        },
+        schemaVersion: 2,
+        sourceRevision: revisionC,
+        status: "verified",
+        transactionId: "release-01",
+        versionDecision: {
+          boundary: "web-production",
+          bumpLevel: "minor",
+          currentVersion: "0.9.0",
+          policyAction: "automatic",
+          releaseTrain: "web",
+          resolution: "automatic",
+          selectedVersion: "0.10.0",
+          source: "repository-policy",
+          suggestedVersion: "0.10.0",
+        },
+      })
+    );
+    const deployment = (observedRevision: string) => ({
+      action: "deploy-production",
+      approvalRevision: null,
+      baseRevision: null,
+      canonicalTargets: [
+        {
+          matches: true,
+          resolvedResultId: "dpl_1",
+          url: "https://example.test",
+        },
+      ],
+      deliveryModel: "git-connected",
+      environment: "production",
+      evidence: ["vercel inspect dpl_1"],
+      headRevision: observedRevision,
+      immutableResultId: "dpl_1",
+      intendedRevision: revisionC,
+      kind: "deployment",
+      objectId: "dpl_1",
+      observedAt: "2026-09-02T12:05:00-05:00",
+      observedRevision,
+      project: "web",
+      provider: "vercel",
+      providerReady: true,
+      schemaVersion: 1,
+      smoke: { journey: "checkout", passed: true },
+      status: "succeeded",
+      url: "https://example.test",
+    });
+    writeFixture(
+      fixture.root,
+      "deployment.json",
+      JSON.stringify(deployment(revisionC))
+    );
+    writeFixture(
+      fixture.root,
+      "drifted-deployment.json",
+      JSON.stringify(deployment("f".repeat(40)))
+    );
+
+    const awaiting = runCli(
+      fixture.root,
+      "release-gate",
+      "--request",
+      "request.json",
+      "--receipt",
+      "receipt.json",
+      "--production",
+      "ask",
+      "--json"
+    );
+    expect(awaiting.exitCode).toBe(0);
+    expect(JSON.parse(decoder.decode(awaiting.stdout))).toMatchObject({
+      action: "request-production-approval",
+      selectedVersion: "0.10.0",
+    });
+
+    const deploy = runCli(
+      fixture.root,
+      "release-gate",
+      "--request",
+      "request.json",
+      "--receipt",
+      "receipt.json",
+      "--production",
+      "ask",
+      "--production-authorized",
+      "--json"
+    );
+    expect(JSON.parse(decoder.decode(deploy.stdout))).toMatchObject({
+      action: "deploy",
+    });
+
+    const complete = runCli(
+      fixture.root,
+      "release-delivery",
+      "--changelog-receipt",
+      "receipt.json",
+      "--provider-receipt",
+      "deployment.json",
+      "--request",
+      "request.json",
+      "--json"
+    );
+    expect(complete.exitCode).toBe(0);
+    expect(JSON.parse(decoder.decode(complete.stdout))).toMatchObject({
+      deployedRevision: revisionC,
+      releaseTrain: "web",
+      status: "complete",
+      transactionId: "release-01",
+      version: "0.10.0",
+    });
+
+    const drifted = runCli(
+      fixture.root,
+      "release-delivery",
+      "--changelog-receipt",
+      "receipt.json",
+      "--provider-receipt",
+      "drifted-deployment.json",
+      "--json"
+    );
+    expect(drifted.exitCode).not.toBe(0);
+    expect(JSON.parse(decoder.decode(drifted.stdout))).toMatchObject({
+      reasonCode: "deployment-revision-mismatch",
+      status: "blocked",
+    });
+  });
 });

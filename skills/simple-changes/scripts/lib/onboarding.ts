@@ -1,3 +1,4 @@
+import { existsSync, readFileSync } from "node:fs";
 import { CURRENT_GUIDANCE_VERSION } from "./guidance-updates.ts";
 import {
   discoverInstructionTargets,
@@ -6,6 +7,8 @@ import {
 } from "./repository-instructions.ts";
 import type {
   ChangelogCoordination,
+  ChangelogInstallDecision,
+  ChangelogInstallOffer,
   MigrationTarget,
   RepoPolicy,
 } from "./types.ts";
@@ -32,6 +35,7 @@ export interface OnboardingPrompter {
 
 export interface OnboardingInputs {
   changelogHandling?: RepoPolicy["changelogHandling"];
+  changelogInstall?: ChangelogInstallDecision;
   concurrentWork?: RepoPolicy["concurrentWork"];
   defaultFinish?: RepoPolicy["defaultFinish"];
   gitPushAuthorization?: RepoPolicy["gitPushAuthorization"];
@@ -42,6 +46,7 @@ export interface OnboardingInputs {
   migrationTargets?: MigrationTarget[];
   productionDeploy?: RepoPolicy["productionDeploy"];
   proposalScheduling?: RepoPolicy["proposalScheduling"];
+  proposalSignatures?: RepoPolicy["proposalSignatures"];
   questions?: RepoPolicy["questions"];
   scope?: SetupScope;
   shippingMode?: RepoPolicy["shippingMode"];
@@ -49,6 +54,7 @@ export interface OnboardingInputs {
 }
 
 export interface OnboardingSelection {
+  changelogInstall: ChangelogInstallOffer;
   confirmed: boolean;
   instructionPointer: {
     action: "add" | "leave" | "unavailable";
@@ -69,6 +75,9 @@ export interface OnboardingConversationOptions {
 
 export const ONBOARDING_QUESTIONS = {
   changelog: "How should changelog work be handled?",
+  changelogInstall: "Would you like me to install Simple Changelogs now?",
+  changelogInstallTiming:
+    "When should I set up Simple Changelogs: now, after this shipment, or later?",
   existingPersonalDefaults:
     "I found existing global personal defaults. Would you like to use them for this run?",
   finish: "How far should I usually take ready work?",
@@ -87,6 +96,8 @@ export const ONBOARDING_QUESTIONS = {
   production: "What should happen with production?",
   proposalScheduling:
     "When there are multiple independent change proposals, what should I optimize for?",
+  proposalSignatures:
+    "Should agents sign the change proposals they author, review, or merge?",
   scope: "Where should these preferences live?",
   shippingMode: "How should routine Ship requests run?",
   start:
@@ -113,6 +124,7 @@ const DEFAULT_CHANGELOG_CONTEXT: ChangelogCoordination = {
     walkthroughQuestion:
       "Would you like me to walk you through the recent Simple Changelogs updates before I continue?",
   },
+  providerDistribution: null,
   providerEvidence: "none",
   providers: [],
   releaseSurfaces: [],
@@ -136,6 +148,21 @@ const FINISH_CHOICES = [
     value: "ship",
   },
 ] as const satisfies readonly OnboardingChoice[];
+
+export const PROPOSAL_SIGNATURE_CHOICES = [
+  {
+    description:
+      "Every agent appends its model name and version to the proposal description when it authors, reviews, or merges, so provider history shows which model did what.",
+    label: "Sign with model name and version (Recommended)",
+    value: "agent-and-version",
+  },
+  {
+    description:
+      "Proposals carry no agent signature; provider history shows only the account that acted.",
+    label: "No signatures",
+    value: "none",
+  },
+] as const;
 
 export const PROPOSAL_SCHEDULING_CHOICES = [
   {
@@ -318,6 +345,115 @@ const CHANGELOG_CHOICES = [
     value: "ask",
   },
 ] as const satisfies readonly OnboardingChoice[];
+
+export const CHANGELOG_INSTALL_CHOICES = [
+  {
+    description:
+      "Install the Simple Changelogs skill after this consent; installation grants no version, release, publication, deployment, or data-write authority.",
+    label: "Yes, install it",
+    value: "install",
+  },
+  {
+    description:
+      "Do not install anything; leave changelog destinations untouched and report the remaining work for a separate workflow.",
+    label: "No, keep changelog work preserved and reported",
+    value: "decline",
+  },
+] as const satisfies readonly OnboardingChoice[];
+
+export const CHANGELOG_INSTALL_TIMING_CHOICES = [
+  {
+    description:
+      "Run its separate owner-controlled onboarding, rediscover compatibility, then return with delegation recommended.",
+    label: "Now",
+    value: "install-now",
+  },
+  {
+    description:
+      "Record a follow-up and preserve current changelog work; if this shipment requires changelog reconciliation before it can complete, setup must happen now or the shipment must stop at the safe pre-release boundary.",
+    label: "After this shipment",
+    value: "install-after-shipment",
+  },
+  {
+    description:
+      "Leave the skill installed but unconfigured and preserve/report changelog work until you ask to set it up.",
+    label: "Later",
+    value: "install-later",
+  },
+] as const satisfies readonly OnboardingChoice[];
+
+const SIMPLE_CHANGELOGS_SOURCE =
+  "https://gitlab.com/soundsystems/simple-changelogs";
+const DEFAULT_CHANGELOG_INSTALLATION = "simple-changelogs";
+// Inverse of the installation-name -> distribution mapping used by changelog
+// discovery, so the offered command installs the distribution the repository's
+// `.simple-changelogs.json` already declares.
+const INSTALLATION_BY_DISTRIBUTION: Record<string, string> = {
+  full: DEFAULT_CHANGELOG_INSTALLATION,
+  mobile: "simple-changelogs-mobile",
+  "skill-repository": "simple-changelogs-skill-maintainer",
+  web: "simple-changelogs-web",
+  "web-cms": "simple-changelogs-web-cms",
+};
+
+const NO_CHANGELOG_INSTALL_OFFER: ChangelogInstallOffer = {
+  command: null,
+  decision: null,
+  distribution: null,
+  offered: false,
+};
+
+const declaredChangelogDistribution = (
+  policyPath: string | null
+): string | null => {
+  if (!(policyPath && existsSync(policyPath))) {
+    return null;
+  }
+  try {
+    const value = JSON.parse(readFileSync(policyPath, "utf8")) as {
+      distribution?: unknown;
+    };
+    return typeof value.distribution === "string" && value.distribution
+      ? value.distribution
+      : null;
+  } catch {
+    return null;
+  }
+};
+
+export const changelogInstallOfferApplies = (
+  context: ChangelogCoordination
+): boolean => context.relevant && !context.capabilityAvailable;
+
+// The exact install command for the repository's declared distribution. The
+// agent may run it only after the user answers the install offer; nothing here
+// installs anything.
+export const resolveChangelogInstallCommand = (
+  context: ChangelogCoordination
+): { command: string; distribution: string | null } => {
+  const distribution = declaredChangelogDistribution(
+    context.guidanceUpdate.policyPath
+  );
+  const installation =
+    (distribution ? INSTALLATION_BY_DISTRIBUTION[distribution] : undefined) ??
+    DEFAULT_CHANGELOG_INSTALLATION;
+  return {
+    command: `bunx skills add ${SIMPLE_CHANGELOGS_SOURCE} --skill ${installation}`,
+    distribution,
+  };
+};
+
+// Describes the pending offer for a status report before any question has been
+// asked; the command is informational until the user consents.
+export const pendingChangelogInstallOffer = (
+  context: ChangelogCoordination
+): ChangelogInstallOffer | null =>
+  changelogInstallOfferApplies(context)
+    ? {
+        ...NO_CHANGELOG_INSTALL_OFFER,
+        ...resolveChangelogInstallCommand(context),
+      }
+    : null;
 
 const SCOPE_CHOICES = [
   {
@@ -601,6 +737,13 @@ const proposalSchedulingLabel = (
   PROPOSAL_SCHEDULING_CHOICES.find((choice) => choice.value === scheduling)
     ?.label ?? scheduling;
 
+const proposalSignaturesLabel = (
+  signatures: RepoPolicy["proposalSignatures"]
+): string =>
+  signatures === "agent-and-version"
+    ? "signed with each agent's model name and version"
+    : "unsigned";
+
 const proposalTerms = (
   provider: string | null | undefined
 ): { plural: string; singular: string } => {
@@ -632,6 +775,28 @@ const changelogSummary = (
     return "I'll ask before delegating changelog work to a compatible skill.";
   }
   return "Changelog destinations will be preserved and reported for a separate workflow.";
+};
+
+const changelogInstallTimingLabel = (
+  decision: ChangelogInstallDecision
+): string =>
+  CHANGELOG_INSTALL_TIMING_CHOICES.find((choice) => choice.value === decision)
+    ?.label ?? decision;
+
+const changelogInstallSummary = (
+  offer: ChangelogInstallOffer | null | undefined
+): string | null => {
+  if (!offer?.offered) {
+    return null;
+  }
+  if (offer.decision === "declined" || offer.decision === null) {
+    return "Simple Changelogs install: declined; changelog work stays preserved and reported for its owning workflow.";
+  }
+  const followUp =
+    offer.decision === "install-now"
+      ? "setup then continues with the provider's own owner-controlled onboarding"
+      : "its setup is recorded as outstanding work";
+  return `Simple Changelogs install: ${changelogInstallTimingLabel(offer.decision)}. I'll run \`${offer.command}\` only after this consent, and ${followUp}; installation grants no version, release, publication, deployment, or data-write authority.`;
 };
 
 const finishActionSummary = (
@@ -710,7 +875,8 @@ export const renderOnboardingSummary = (
     target: null,
   },
   uiArtifactsRelevant = false,
-  forgeProvider?: string | null
+  forgeProvider?: string | null,
+  changelogInstall?: ChangelogInstallOffer | null
 ): string => {
   const actions = finishActionSummary(policy, forgeProvider);
   const { production, shippingMode } = shippingSummary(policy);
@@ -728,10 +894,12 @@ export const renderOnboardingSummary = (
       ? `Automatic migration targets: ${policy.migrationTargets.map(migrationTargetLabel).join(", ")}.`
       : null,
     changelogSummary(policy, context),
+    changelogInstallSummary(changelogInstall),
     policy.concurrentWork === "strict"
       ? "Concurrent worktrees: strict repository-wide serialization; claimed owners must pause before integration continues."
       : "Concurrent worktrees: independent agents may keep working in distinct actively claimed worktrees while integration stays single-controller.",
     `Multiple ${proposalTerms(forgeProvider).plural}: ${proposalSchedulingLabel(policy.proposalScheduling)}.`,
+    `${proposalTerms(forgeProvider).plural} agents author, review, or merge: ${proposalSignaturesLabel(policy.proposalSignatures)}.`,
     uiArtifactsRelevant
       ? `Saved UI iteration naming: ${uiArtifactVersioningLabel(policy.uiArtifactVersioning)}. Repository conventions still take precedence.`
       : null,
@@ -928,6 +1096,32 @@ const selectDefaultFinish = async (
     ),
     finishChoices,
     ONBOARDING_QUESTIONS.finish
+  );
+};
+
+const selectProposalSignatures = async (
+  defaults: RepoPolicy,
+  inputs: OnboardingInputs,
+  prompter: OnboardingPrompter,
+  customize: boolean,
+  forgeProvider?: string | null
+): Promise<RepoPolicy["proposalSignatures"]> => {
+  if (inputs.proposalSignatures) {
+    return inputs.proposalSignatures;
+  }
+  if (!customize) {
+    return defaults.proposalSignatures;
+  }
+  const terms = proposalTerms(forgeProvider);
+  const question = `Should agents sign the ${terms.plural} they author, review, or merge?`;
+  const choices = PROPOSAL_SIGNATURE_CHOICES.map((choice) => ({
+    ...choice,
+    description: choice.description.replaceAll("proposal", terms.singular),
+  }));
+  return choiceValue<RepoPolicy["proposalSignatures"]>(
+    await prompter.choose(question, choices, defaults.proposalSignatures),
+    choices,
+    question
   );
 };
 
@@ -1143,6 +1337,52 @@ const selectChangelogHandling = async (
   );
 };
 
+const CHANGELOG_INSTALL_EXPLANATION = [
+  "Simple Changelogs owns release classification and release-note writing; Simple Changes never writes release notes itself.",
+  "Changelog surfaces were found, but no compatible Simple Changelogs provider is installed, so changelog work is currently preserved and reported.",
+  "Nothing is installed without your consent, and installation consent grants no version, release, publication, deployment, or data-write authority.",
+].join("\n");
+
+// Offered whenever changelog work is relevant and no compatible provider is
+// available, regardless of setup style: the prose requires the offer, and it
+// is never satisfied silently. A flag-supplied decision skips the prompt.
+const selectChangelogInstall = async (
+  inputs: OnboardingInputs,
+  prompter: OnboardingPrompter,
+  context: ChangelogCoordination
+): Promise<ChangelogInstallOffer> => {
+  if (!changelogInstallOfferApplies(context)) {
+    return NO_CHANGELOG_INSTALL_OFFER;
+  }
+  const resolved = resolveChangelogInstallCommand(context);
+  if (inputs.changelogInstall) {
+    return { ...resolved, decision: inputs.changelogInstall, offered: true };
+  }
+  prompter.present?.(CHANGELOG_INSTALL_EXPLANATION);
+  const consent = choiceValue<"install" | "decline">(
+    await prompter.choose(
+      ONBOARDING_QUESTIONS.changelogInstall,
+      CHANGELOG_INSTALL_CHOICES,
+      "install"
+    ),
+    CHANGELOG_INSTALL_CHOICES,
+    ONBOARDING_QUESTIONS.changelogInstall
+  );
+  if (consent === "decline") {
+    return { ...resolved, decision: "declined", offered: true };
+  }
+  const decision = choiceValue<ChangelogInstallDecision>(
+    await prompter.choose(
+      ONBOARDING_QUESTIONS.changelogInstallTiming,
+      CHANGELOG_INSTALL_TIMING_CHOICES,
+      "install-now"
+    ),
+    CHANGELOG_INSTALL_TIMING_CHOICES,
+    ONBOARDING_QUESTIONS.changelogInstallTiming
+  );
+  return { ...resolved, decision, offered: true };
+};
+
 const selectQuestions = async (
   defaults: RepoPolicy,
   inputs: OnboardingInputs,
@@ -1245,6 +1485,7 @@ export const collectOnboardingSelection = async (
         ),
       ].join("\n\n");
       return {
+        changelogInstall: NO_CHANGELOG_INSTALL_OFFER,
         confirmed: await prompter.confirm(summary),
         instructionPointer,
         policy: existingPersonalDefaults,
@@ -1275,6 +1516,13 @@ export const collectOnboardingSelection = async (
   // resolve this in chat and pass --proposal-scheduling explicitly, which
   // selectProposalScheduling honors before the gate.
   const proposalScheduling = await selectProposalScheduling(
+    defaults,
+    inputs,
+    prompter,
+    customize && (conversation.showFirstScreen ?? false),
+    conversation.forgeProvider
+  );
+  const proposalSignatures = await selectProposalSignatures(
     defaults,
     inputs,
     prompter,
@@ -1322,6 +1570,11 @@ export const collectOnboardingSelection = async (
     context,
     customize
   );
+  const changelogInstall = await selectChangelogInstall(
+    inputs,
+    prompter,
+    context
+  );
   const uiArtifactVersioning =
     customize || inputs.uiArtifactVersioning
       ? await selectUiArtifactVersioning(
@@ -1365,6 +1618,7 @@ export const collectOnboardingSelection = async (
     migrationTargets,
     productionDeploy,
     proposalScheduling,
+    proposalSignatures,
     questions,
     review: defaults.review,
     schemaVersion: 1,
@@ -1377,9 +1631,11 @@ export const collectOnboardingSelection = async (
     context,
     instructionPointer,
     uiArtifactsRelevant,
-    conversation.forgeProvider
+    conversation.forgeProvider,
+    changelogInstall
   );
   return {
+    changelogInstall,
     confirmed: await prompter.confirm(summary),
     instructionPointer,
     policy,

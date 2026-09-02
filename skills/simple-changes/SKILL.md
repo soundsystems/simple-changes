@@ -115,7 +115,12 @@ legacy GitLab run without this evidence is close-only; see
 
 When an active loop assigns a new author into that same integration unit, run
 `simple-changes prepare-agent` before edits. Independent agents create an
-isolated worktree and immediately run `worktree claim`. After registration,
+isolated worktree and immediately run `worktree claim`. A claim is the lock:
+while it is active, no controller packages, merges, or cleans that checkout.
+When the work is complete and verified, the same owner unlocks it with
+`worktree release`, or with `initialize --mode handoff`, which releases the
+author's own claim on that checkout as it proceeds; released work becomes an
+ordinary stable unit that this or any later controller may ship. After registration,
 both run-prepared and independently claimed authors edit, generate, format,
 test, stage, and commit normally and concurrently in their own distinct
 worktrees and branches; those author-local operations do not use the global
@@ -196,6 +201,7 @@ For an instruction-pointer handoff, run:
 ```sh
 simple-changes initialize \
   --mode handoff \
+  --agent-id "$AGENT_ID" \
   --json
 ```
 
@@ -215,7 +221,10 @@ read-only work, or incomplete verification.
    hashes changed regular files in bounded chunks and records special files
    without reading FIFOs, sockets, or devices.
 4. Group stable work by outcome, dependency, data boundary, ownership, and
-   parity. Every path belongs to one unit or an explicit preserved set.
+   parity. For work that can affect separately released installed clients,
+   record the installed-client compatibility result from
+   [high-risk actions](references/migrations-and-high-risk-actions.md). Every
+   path belongs to one unit or an explicit preserved set.
 5. Run proportionate repository-native checks and distinguish introduced from
    pre-existing failures.
 6. Coordinate changelog ownership without authoring release text. Negotiate
@@ -224,13 +233,17 @@ read-only work, or incomplete verification.
    current locally validated receipts.
 7. Create/update neutral proposals with real Markdown newlines, re-read stored
    source/rendering, resolve checks/discussions/review, and merge only the exact
-   approved head.
+   approved head. Under the default `proposalSignatures` policy, the agent
+   that authors, reviews, or merges a proposal appends its model name and
+   version to the proposal's signature block; see
+   [change proposals](references/change-requests.md).
 8. Audit every detected migration before any apply. Apply only through
    `simple-changes migration decision` and `simple-changes migration apply`
    with the closed evidence described in
    [high-risk actions](references/migrations-and-high-risk-actions.md). Broad
    apply-all, stale, replayed, target-mismatched, or command-changed plans
-   require new review/authority.
+   require new review/authority. Do not apply a migration while installed-client
+   compatibility is `incompatible` or `unverified`.
 9. Treat every production Web deployment as a product release. Prepare release
    reconciliation, refresh the canonical remote target branch (normally
    `main`), require a read-only `verified` receipt, and deploy only that exact
@@ -263,6 +276,10 @@ Public release versioning and release-note authorship belong to a compatible
 changelog owner. Database automatic modes apply only to the exact saved
 provider/project/environment target and exclude destructive or data-deleting,
 irreversible, unbounded, lock-heavy, target-mismatched, or unprotected changes.
+An installed-client compatibility finding of `incompatible` or `unverified`
+blocks the affected migration, API, backend, or production deployment. A new
+client release alone does not make a breaking rollout safe because older
+binaries may remain installed.
 
 GitLab cleanup is required only when the selected target remote is GitLab, not
 merely because an auxiliary GitLab remote exists.
@@ -300,10 +317,12 @@ Report queued, merged, deployed, preserved, and blocked items separately. Queue
 must include **Outstanding work** for every omitted discovered unit, including
 its location, current revision/state, why it was deferred, and the next action;
 it may not silently omit it. For GitLab reconciliation, report every disposition
-and every preserved uncertain branch. A Ship receipt opens by naming the actual
-shipped change in plain language, what is different now and for whom, before
-merge, check, and deployment evidence, even when no changelog entry was
-written. For Ship, compare the pre-ship brief with
+and every preserved uncertain branch. When the installed-client gate applies,
+report `Installed-client compatibility: <state> (<evidence and reason>)` and
+name any required client release or phased rollout. A Ship receipt opens by
+naming the actual shipped change in plain language, what is different now and
+for whom, before merge, check, and deployment evidence, even when no changelog
+entry was written. For Ship, compare the pre-ship brief with
 the result and report review-driven changes or explicitly state none. Never
 claim completion until final inventory proves requested scope and primary state.
 When Ship finalizes or reconciles a public release, end with concise **Latest

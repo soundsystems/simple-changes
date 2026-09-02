@@ -40,6 +40,7 @@
     "gitPushAuthorization",
     "guidanceUpdate",
     "handoffAction",
+    "handoffClaimRelease",
     "handoffTiming",
     "writeCapable",
     "mutationAllowed",
@@ -212,6 +213,44 @@
         }
       }
     },
+    "changelogInstall": {
+      "anyOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["command", "decision", "distribution", "offered"],
+          "properties": {
+            "command": {
+              "anyOf": [
+                { "type": "string", "minLength": 1 },
+                { "type": "null" }
+              ]
+            },
+            "decision": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "install-now",
+                    "install-after-shipment",
+                    "install-later",
+                    "declined"
+                  ]
+                },
+                { "type": "null" }
+              ]
+            },
+            "distribution": {
+              "anyOf": [
+                { "type": "string", "minLength": 1 },
+                { "type": "null" }
+              ]
+            },
+            "offered": { "type": "boolean" }
+          }
+        }
+      ]
+    },
     "changelogCoordination": {
       "type": "object",
       "additionalProperties": false,
@@ -223,18 +262,24 @@
         "guidanceUpdate",
         "releaseSurfaces",
         "providers",
+        "providerDistribution",
         "providerEvidence"
       ],
       "properties": {
         "relevant": { "type": "boolean" },
         "capabilityAvailable": { "type": "boolean" },
+        "providerDistribution": {
+          "anyOf": [{ "type": "string", "minLength": 1 }, { "type": "null" }]
+        },
         "providerEvidence": { "enum": ["marker", "inferred", "none"] },
         "capabilityHelpers": {
           "type": "array",
           "uniqueItems": true,
           "items": { "type": "string", "minLength": 1 }
         },
-        "capabilityStatus": { "enum": ["absent", "unverified"] },
+        "capabilityStatus": {
+          "enum": ["absent", "not-applicable", "unverified"]
+        },
         "guidanceUpdate": {
           "type": "object",
           "additionalProperties": false,
@@ -340,6 +385,20 @@
         "confirm-readiness",
         "wait-for-user",
         "proceed"
+      ]
+    },
+    "handoffClaimRelease": {
+      "anyOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["claimId", "path"],
+          "properties": {
+            "claimId": { "type": "string", "pattern": "^claim-[a-z0-9-]+$" },
+            "path": { "type": "string", "minLength": 1 }
+          }
+        }
       ]
     },
     "handoffTiming": {

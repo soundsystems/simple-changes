@@ -20,20 +20,18 @@ import type {
 } from "./types.ts";
 import {
   readCoordinationDocumentFromCommonDirectory,
+  releaseAbsentWorktreeClaimsUnderLock,
   withWorktreeCoordinationLock,
 } from "./worktree-coordination.ts";
 import { commitEquivalenceAgainstTarget } from "./worktree-equivalence.ts";
 
 const CLEANUP_LIVE_CLAIM_STATES = new Set<WorktreeCoordinationState>([
   "active",
-  "pause-requested",
   "paused",
   "adopted-preserved",
-  "detach-requested",
   "detached",
   "attached",
   "resume-ready",
-  "blocked",
 ]);
 
 const CLEANUP_PATCH_EQUIVALENCE_MAX_COMMITS = 200;
@@ -83,6 +81,12 @@ export interface WorktreeCleanupPreserved {
   reason: string;
 }
 
+export interface WorktreeCleanupReleasedClaim {
+  claimId: string;
+  path: string;
+  releaseReason: "worktree-absent";
+}
+
 export interface WorktreeCleanupReceipt {
   agentId: string;
   approvedBy: string;
@@ -95,6 +99,7 @@ export interface WorktreeCleanupReceipt {
   prunedPaths: string[];
   reason: string;
   recordedAt: string;
+  releasedClaims?: WorktreeCleanupReleasedClaim[];
   removed: WorktreeCleanupRemoval[];
   schemaVersion: 1 | 2;
   targetRef: string;
@@ -540,6 +545,19 @@ export const standaloneWorktreeCleanup = (
         classification.prunable,
         errors
       );
+      // A claim whose checkout is gone (removed above, pruned above, or already
+      // absent) protects nothing; release it so it stops demanding a takeover.
+      const releasedClaims = releaseAbsentWorktreeClaimsUnderLock(
+        commonGitDirectory,
+        captureInventory(options.repositoryPath),
+        agentId
+      )
+        .map((claim) => ({
+          claimId: claim.claimId,
+          path: claim.path,
+          releaseReason: "worktree-absent" as const,
+        }))
+        .sort((left, right) => left.path.localeCompare(right.path));
       const receipt = validateSchema<WorktreeCleanupReceipt>(
         "worktree-cleanup",
         {
@@ -554,6 +572,7 @@ export const standaloneWorktreeCleanup = (
           prunedPaths,
           reason,
           recordedAt: new Date().toISOString(),
+          releasedClaims,
           removed: removed.sort((left, right) =>
             left.path.localeCompare(right.path)
           ),

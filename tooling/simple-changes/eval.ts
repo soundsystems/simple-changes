@@ -63,6 +63,25 @@ const manifest = validateToolingSchema<EvalManifest>(
 );
 const failures: string[] = [];
 
+// Case IDs are the only handle failure messages have, so they must be unique
+// across every array, and journeys must carry real behavior expectations even
+// though only the model-backed behavior eval can execute them.
+const caseIds = [
+  ...manifest.triggers,
+  ...manifest.journeys,
+  ...manifest.releaseCases,
+].map((entry) => entry.id);
+for (const duplicate of caseIds.filter(
+  (id, index) => caseIds.indexOf(id) !== index
+)) {
+  failures.push(`${duplicate}: case ID is reused across the manifest`);
+}
+for (const journey of manifest.journeys) {
+  if (journey.expectedBehaviors.length === 0) {
+    failures.push(`${journey.id}: journey declares no expected behaviors`);
+  }
+}
+
 for (const triggerCase of manifest.triggers) {
   const contextEstablished = triggerCase.id.includes("resume");
   const actual = shouldTrigger(triggerCase.prompt, contextEstablished);

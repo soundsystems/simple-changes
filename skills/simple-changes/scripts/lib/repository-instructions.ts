@@ -159,7 +159,7 @@ const formatWithNewline = (source: string, value: string): string => {
   return value.replaceAll("\n", newline);
 };
 
-export const planInstructionPointer = (
+const planInstructionPointer = (
   target: InstructionTarget,
   timing: HandoffTiming
 ): InstructionPointerPlan & { contents: string } => {

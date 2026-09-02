@@ -3,6 +3,7 @@ import {
   changelogReceiptDigest,
   createChangelogRequest,
   decideReleaseGate,
+  inspectChangelogTransaction,
   negotiateChangelogProtocol,
   packagedChangelogProtocol,
   validateChangelogTransaction,
@@ -173,20 +174,39 @@ describe("changelog protocol negotiation", () => {
   test("fails closed for version skew", () => {
     const consumer = packagedChangelogProtocol();
     expect(
-      negotiateChangelogProtocol(
-        {
-          distribution: "web",
-          features: [],
-          guidanceVersion: 1,
-          provider: "simple-changelogs",
-          receiptVersions: [1],
-          requestVersions: [1],
-          schemaDigests: consumer.schemaDigests,
-          schemaVersion: 1,
-        },
-        { ...consumer, requestVersions: [] }
-      ).reasonCode
-    ).toBe("unsupported-protocol");
+      negotiateChangelogProtocol({
+        distribution: "web",
+        features: [],
+        guidanceVersion: 1,
+        provider: "simple-changelogs",
+        receiptVersions: [1],
+        requestVersions: [2],
+        schemaDigests: consumer.schemaDigests,
+        schemaVersion: 1,
+      })
+    ).toEqual({
+      compatible: false,
+      features: [],
+      reasonCode: "unsupported-protocol",
+      receiptVersion: 1,
+      requestVersion: null,
+      requiredAction: "upgrade-producer",
+      schemaDigestStatus: "match",
+    });
+  });
+
+  test("rejects a provider that advertises no usable protocol version", () => {
+    expect(() =>
+      negotiateChangelogProtocol({
+        distribution: "web",
+        features: [],
+        guidanceVersion: 1,
+        provider: "simple-changelogs",
+        receiptVersions: [1],
+        requestVersions: [0],
+        schemaVersion: 1,
+      })
+    ).toThrow();
   });
 
   test("reports schema drift without blocking a version-compatible peer", () => {
@@ -252,6 +272,27 @@ describe("phased release gate", () => {
     });
   });
 
+  test("binds a transaction whose request omits attempt and environment", () => {
+    const { attempt, environment, ...minimal } = request();
+    expect(attempt).toBe(1);
+    expect(environment).toBe("production");
+    const classify = createChangelogRequest(minimal);
+    expect(classify).not.toHaveProperty("attempt");
+    expect(validateChangelogTransaction(classify, receipt())).toMatchObject({
+      status: "decision-required",
+    });
+    expect(
+      decideReleaseGate({
+        alreadyLive: false,
+        productionAuthorized: false,
+        productionDeploy: "allow",
+        receipt: receipt(),
+        request: classify,
+        versionAuthorized: false,
+      })
+    ).toMatchObject({ action: "request-version-approval" });
+  });
+
   test("prepares, verifies, and avoids a duplicate live deployment", () => {
     const prepared = receipt("prepared");
     expect(
@@ -286,6 +327,67 @@ describe("phased release gate", () => {
     ).toThrow("finalized target");
   });
 
+  test("binds a later phase to the receipt it builds on", () => {
+    const classified = receipt("decision-required");
+    const prepare = {
+      ...request("prepare"),
+      priorReceiptDigest: changelogReceiptDigest(classified),
+    };
+
+    expect(
+      inspectChangelogTransaction(prepare, receipt("prepared"), classified)
+    ).toMatchObject({
+      priorReceiptDigestStatus: "verified",
+      receipt: { status: "prepared" },
+    });
+    expect(
+      inspectChangelogTransaction(prepare, receipt("prepared"))
+    ).toMatchObject({ priorReceiptDigestStatus: "unverified" });
+    expect(
+      inspectChangelogTransaction(request("classify"), receipt())
+        .priorReceiptDigestStatus
+    ).toBe("not-applicable");
+
+    expect(
+      decideReleaseGate({
+        alreadyLive: false,
+        productionAuthorized: true,
+        productionDeploy: "allow",
+        receipt: receipt("prepared"),
+        request: prepare,
+        versionAuthorized: true,
+      })
+    ).toMatchObject({ action: "block", reasonCode: "malformed-request" });
+
+    expect(
+      decideReleaseGate({
+        alreadyLive: false,
+        priorReceipt: classified,
+        productionAuthorized: true,
+        productionDeploy: "allow",
+        receipt: receipt("prepared"),
+        request: prepare,
+        versionAuthorized: true,
+      })
+    ).toMatchObject({ action: "merge-reconciliation" });
+  });
+
+  test("fails closed on a prior receipt that does not match the request", () => {
+    const stale = receipt("decision-required");
+    stale.evidence = ["Aggregate impact was re-derived."];
+    const prepare = {
+      ...request("prepare"),
+      priorReceiptDigest: changelogReceiptDigest(receipt("decision-required")),
+    };
+
+    expect(() =>
+      validateChangelogTransaction(prepare, receipt("prepared"), stale)
+    ).toThrow("Prior receipt digest does not match");
+    expect(() =>
+      validateChangelogTransaction(request("classify"), receipt(), stale)
+    ).toThrow("names no prior receipt digest");
+  });
+
   test("rejects inconsistent resolved and prepared versions", () => {
     const unresolved = receipt("prepared");
     if (unresolved.versionDecision) {
@@ -304,3 +406,165 @@ describe("phased release gate", () => {
     ).toThrow("does not match");
   });
 });
+
+// The CMS distribution owns a version-less operator history: its handoff
+// prepares and verifies an entry on the `none` boundary and never a version.
+describe("entry-only operator-history handoff", () => {
+  const entryRequest = (
+    phase: ChangelogRequest["phase"] = "classify"
+  ): ChangelogRequest => ({
+    ...request(phase),
+    approvedVersion: null,
+    boundary: "none",
+    releaseTrain: "cms-operators",
+    transactionId: "cms-entry-01",
+  });
+
+  const entryReceipt = (
+    status: Extract<
+      ChangelogReceiptV2["status"],
+      "prepared" | "verified" | "not-applicable"
+    >
+  ): ChangelogReceiptV2 => {
+    const base = receipt(status);
+    return {
+      ...base,
+      evidence: ["Operator-visible workflow change recorded."],
+      paths:
+        status === "prepared"
+          ? [{ digest: "f".repeat(64), path: "CMS_CHANGELOG.json" }]
+          : [],
+      release: null,
+      releaseImpact: status === "not-applicable" ? "none" : "minor",
+      transactionId: "cms-entry-01",
+      versionDecision: {
+        boundary: "none",
+        bumpLevel: "none",
+        currentVersion: null,
+        policyAction: "not-applicable",
+        releaseTrain: "cms-operators",
+        resolution: "not-required",
+        selectedVersion: null,
+        source: "repository-policy",
+        suggestedVersion: null,
+      },
+    };
+  };
+
+  const gate = (
+    phase: ChangelogRequest["phase"],
+    status: "prepared" | "verified" | "not-applicable",
+    overrides: Partial<
+      Omit<ReleaseGateContextInput, "request" | "receipt">
+    > = {}
+  ) =>
+    decideReleaseGate({
+      alreadyLive: false,
+      productionAuthorized: false,
+      productionDeploy: "ask",
+      versionAuthorized: false,
+      ...overrides,
+      receipt: entryReceipt(status),
+      request: entryRequest(phase),
+    });
+
+  test("accepts a version-less prepare request on the none boundary only", () => {
+    expect(createChangelogRequest(entryRequest("prepare"))).toMatchObject({
+      approvedVersion: null,
+      boundary: "none",
+    });
+    expect(() =>
+      createChangelogRequest({ ...request("prepare"), approvedVersion: null })
+    ).toThrow();
+    expect(() =>
+      createChangelogRequest({
+        ...entryRequest("prepare"),
+        approvedVersion: "1.0.0",
+      })
+    ).toThrow();
+  });
+
+  test("merges a prepared entry regardless of production policy", () => {
+    expect(gate("prepare", "prepared")).toMatchObject({
+      action: "merge-reconciliation",
+      selectedVersion: null,
+    });
+    expect(
+      gate("prepare", "prepared", { productionDeploy: "deny" }).action
+    ).toBe("merge-reconciliation");
+  });
+
+  test("continues after a verified entry and never deploys", () => {
+    expect(gate("verify", "verified")).toMatchObject({
+      action: "continue",
+      selectedVersion: null,
+    });
+    expect(
+      gate("verify", "verified", {
+        productionAuthorized: true,
+        productionDeploy: "allow",
+      }).action
+    ).toBe("continue");
+  });
+
+  test("continues when the change is not operator-relevant", () => {
+    expect(gate("classify", "not-applicable").action).toBe("continue");
+  });
+
+  test("accepts a null version decision on the none boundary", () => {
+    const prepared = { ...entryReceipt("prepared"), versionDecision: null };
+    expect(
+      validateChangelogTransaction(entryRequest("prepare"), prepared)
+    ).toMatchObject({ status: "prepared" });
+  });
+
+  test("rejects a version on the none boundary", () => {
+    const versioned = entryReceipt("prepared");
+    versioned.release = {
+      date: "2026-08-10",
+      targetContainedUnreleased: "prepared",
+      version: "0.10.0",
+    };
+    expect(() =>
+      validateChangelogTransaction(entryRequest("prepare"), versioned)
+    ).toThrow("must not name a release");
+
+    const bumped = entryReceipt("prepared");
+    if (bumped.versionDecision) {
+      bumped.versionDecision.bumpLevel = "patch";
+    }
+    expect(() =>
+      validateChangelogTransaction(entryRequest("prepare"), bumped)
+    ).toThrow();
+  });
+
+  test("still requires a release on a web-production boundary", () => {
+    // A versioned decision with no release record already fails the schema;
+    // a version-less receipt passes it and must then fail the boundary binding.
+    const versionedWithoutRelease = receipt("prepared");
+    versionedWithoutRelease.release = null;
+    expect(() =>
+      validateChangelogTransaction(request("prepare"), versionedWithoutRelease)
+    ).toThrow("must match one allowed schema");
+
+    const versionless = {
+      ...receipt("prepared"),
+      release: null,
+      versionDecision: null,
+    };
+    expect(() =>
+      validateChangelogTransaction(request("prepare"), versionless)
+    ).toThrow("must name the release");
+
+    const verifiedWithoutRelease = {
+      ...receipt("verified"),
+      release: null,
+      versionDecision: null,
+    };
+    expect(() =>
+      validateChangelogTransaction(request("verify"), verifiedWithoutRelease)
+    ).toThrow("must name the release");
+  });
+});
+
+type ReleaseGateContextInput = Parameters<typeof decideReleaseGate>[0];

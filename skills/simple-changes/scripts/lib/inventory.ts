@@ -437,6 +437,11 @@ const discoverCapabilities = (
       "Changelog surfaces were discovered, but no compatible changelog skill is available.";
     changelogStatus = "configuration";
   }
+  if (changelog.capabilityStatus === "not-applicable") {
+    changelogDetail = `Simple Changelogs ${changelog.providerDistribution ?? "discovery-only"} distribution discovered at ${changelog.providers.length} path(s); its marker advertises no request or receipt protocol, so release delegation is not applicable.`;
+    changelogProvider = "simple-changelogs";
+    changelogStatus = "unsupported";
+  }
   if (changelog.capabilityAvailable) {
     changelogDetail = `Compatible changelog capability discovered at ${changelog.providers.length} path(s).`;
     changelogProvider = "simple-changelogs";

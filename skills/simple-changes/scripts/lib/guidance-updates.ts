@@ -1,6 +1,6 @@
 import type { ChangelogCoordination, RepoPolicy } from "./types.ts";
 
-export const CURRENT_GUIDANCE_VERSION = 21;
+export const CURRENT_GUIDANCE_VERSION = 22;
 
 export type GuidanceUpdateAction =
   | "review-settings"
@@ -593,6 +593,43 @@ const GUIDANCE_UPDATES: GuidanceUpdateDefinition[] = [
       },
     ],
     version: 21,
+  },
+  {
+    changelogReviewRelevant: true,
+    changes: [
+      {
+        kind: "onboarding",
+        summary:
+          "Setup now records `proposalSignatures` as agent-and-version or none; existing policies without the setting default to agent-and-version, so agents append their model name and version to every PR or MR they author, review, or merge.",
+        version: 22,
+      },
+      {
+        kind: "behavior",
+        summary:
+          "A worktree claim is now released by its owner, by a proceeding completed-work handoff, or by finalization evidence when the controller's own claimed work is contained in the target or the claimed directory no longer exists; every release records its reason.",
+        version: 22,
+      },
+      {
+        kind: "integration",
+        summary:
+          "When changelog work is relevant and Simple Changelogs is not installed, setup offers to install it and asks whether its own setup runs now, after this shipment, or later; the CMS-only distribution is discovered and reported as not applicable for release delegation.",
+        version: 22,
+      },
+      {
+        kind: "behavior",
+        summary:
+          "`release-gate` decides each public release boundary from the delegated request and receipt, and `release-delivery` composes the delivery receipt from the verified changelog receipt and the production deployment receipt instead of hand-copied fields.",
+        version: 22,
+      },
+    ],
+    noticeBullets: [
+      {
+        priority: 150,
+        summary:
+          "The new `proposalSignatures` setting defaults to signing every PR or MR an agent authors, reviews, or merges with its model name and version; finished worktree claims now release themselves at handoff and finalization.",
+      },
+    ],
+    version: 22,
   },
 ];
 

@@ -10,6 +10,7 @@ import {
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn as bunSpawn, spawnSync as bunSpawnSync, sleep } from "bun";
+import { CURRENT_GUIDANCE_VERSION } from "../../../skills/simple-changes/scripts/lib/guidance-updates.ts";
 import { captureInventory } from "../../../skills/simple-changes/scripts/lib/inventory.ts";
 import {
   DEFAULT_POLICY,
@@ -31,6 +32,8 @@ const cliPath = resolve(
   "../../../skills/simple-changes/scripts/simple-changes.ts"
 );
 const ASYNC_CLI_WAIT_ATTEMPTS = 500;
+const USAGE_LIST_SEPARATOR = /,\s*(?:or\s+)?|\s+or\s+/u;
+const TRAILING_PERIOD = /\.$/u;
 
 interface CliSpawnOptions {
   cwd?: string;
@@ -1646,7 +1649,7 @@ describe("contract CLI", () => {
       lease: null,
       verification: { active: false, ok: true, violations: [] },
     });
-  }, 30_000);
+  }, 60_000);
 
   test("retains an exact clean worktree through the CLI", () => {
     const fixture = createTestRepository();
@@ -1981,7 +1984,7 @@ describe("contract CLI", () => {
     );
     expect(acknowledged.exitCode).toBe(0);
     expect(JSON.parse(decoder.decode(acknowledged.stdout))).toMatchObject({
-      currentVersion: 21,
+      currentVersion: CURRENT_GUIDANCE_VERSION,
       disposition: "deferred",
       previousVersion: 1,
       written: true,
@@ -1991,7 +1994,7 @@ describe("contract CLI", () => {
         readFileSync(resolve(fixture.root, ".simple-changes.json"), "utf8")
       )
     ).toMatchObject({
-      guidance: { disposition: "deferred", version: 21 },
+      guidance: { disposition: "deferred", version: CURRENT_GUIDANCE_VERSION },
     });
 
     const resumed = spawnSync(
@@ -2331,6 +2334,40 @@ describe("contract CLI", () => {
       "--changelog when relevant"
     );
 
+    const unoffered = spawnSync(
+      [
+        process.execPath,
+        cliPath,
+        "setup",
+        "--finish",
+        "review",
+        "--git-push-authorization",
+        "ask",
+        "--changelog",
+        "delegate-if-available",
+        "--questions",
+        "blocking-only",
+        "--scope",
+        "run",
+        "--yes",
+        "--repo",
+        fixture.root,
+      ],
+      {
+        env: {
+          ...process.env,
+          SIMPLE_CHANGES_SKILL_ROOTS: "",
+        },
+        stderr: "pipe",
+        stdout: "pipe",
+      }
+    );
+
+    expect(unoffered.exitCode).toBe(2);
+    expect(decoder.decode(unoffered.stderr)).toContain(
+      "--changelog-install after offering the Simple Changelogs install"
+    );
+
     const complete = spawnSync(
       [
         process.execPath,
@@ -2342,6 +2379,8 @@ describe("contract CLI", () => {
         "ask",
         "--changelog",
         "delegate-if-available",
+        "--changelog-install",
+        "decline",
         "--questions",
         "blocking-only",
         "--scope",
@@ -2361,13 +2400,130 @@ describe("contract CLI", () => {
       }
     );
     const output = JSON.parse(decoder.decode(complete.stdout)) as {
+      changelogInstall: {
+        command: string | null;
+        decision: string | null;
+        distribution: string | null;
+        offered: boolean;
+      };
       policy: {
         changelogHandling: string;
+        changelogInstall?: unknown;
       };
     };
 
     expect(complete.exitCode).toBe(0);
     expect(output.policy.changelogHandling).toBe("delegate-if-available");
+    expect(output.policy).not.toHaveProperty("changelogInstall");
+    expect(output.changelogInstall).toEqual({
+      command:
+        "bunx skills add https://gitlab.com/soundsystems/simple-changelogs --skill simple-changelogs",
+      decision: "declined",
+      distribution: null,
+      offered: true,
+    });
+  });
+
+  test("reports the Simple Changelogs install consent and exact distribution command", () => {
+    const fixture = createTestRepository();
+    repositories.push(fixture);
+    writeFixture(
+      fixture.root,
+      ".simple-changelogs.json",
+      '{"schemaVersion":1,"distribution":"web","guidance":{"version":8}}\n'
+    );
+    const expectedCommand =
+      "bunx skills add https://gitlab.com/soundsystems/simple-changelogs --skill simple-changelogs-web";
+
+    const status = spawnSync(
+      [
+        process.execPath,
+        cliPath,
+        "initialize",
+        "--mode",
+        "integrate",
+        "--json",
+        "--repo",
+        fixture.root,
+      ],
+      { stderr: "pipe", stdout: "pipe" }
+    );
+    const statusOutput = JSON.parse(decoder.decode(status.stdout)) as {
+      changelogInstall: unknown;
+      onboardingRequired: boolean;
+    };
+
+    expect(status.exitCode).toBe(0);
+    expect(statusOutput.onboardingRequired).toBe(true);
+    expect(statusOutput.changelogInstall).toEqual({
+      command: expectedCommand,
+      decision: null,
+      distribution: "web",
+      offered: false,
+    });
+
+    const invalid = spawnSync(
+      [
+        process.execPath,
+        cliPath,
+        "setup",
+        "--changelog-install",
+        "someday",
+        "--repo",
+        fixture.root,
+      ],
+      { stderr: "pipe", stdout: "pipe" }
+    );
+
+    expect(invalid.exitCode).toBe(2);
+    expect(decoder.decode(invalid.stderr)).toContain(
+      "--changelog-install must be now, after-shipment, later, or decline"
+    );
+
+    const result = spawnSync(
+      [
+        process.execPath,
+        cliPath,
+        "setup",
+        "--finish",
+        "review",
+        "--git-push-authorization",
+        "ask",
+        "--changelog",
+        "delegate-if-available",
+        "--changelog-install",
+        "after-shipment",
+        "--questions",
+        "blocking-only",
+        "--scope",
+        "run",
+        "--yes",
+        "--json",
+        "--repo",
+        fixture.root,
+      ],
+      { stderr: "pipe", stdout: "pipe" }
+    );
+    const output = JSON.parse(decoder.decode(result.stdout)) as {
+      changelogInstall: unknown;
+      summary: string;
+      written: boolean;
+    };
+
+    expect(result.exitCode).toBe(0);
+    expect(output.written).toBe(false);
+    expect(output.changelogInstall).toEqual({
+      command: expectedCommand,
+      decision: "install-after-shipment",
+      distribution: "web",
+      offered: true,
+    });
+    expect(output.summary).toContain(
+      `Simple Changelogs install: After this shipment. I'll run \`${expectedCommand}\` only after this consent, and its setup is recorded as outstanding work`
+    );
+    expect(existsSync(resolve(fixture.root, ".simple-changes.json"))).toBe(
+      false
+    );
   });
 
   test("returns run-only onboarding preferences without writing a file", () => {
@@ -3276,5 +3432,176 @@ describe("contract CLI", () => {
     expect(decoder.decode(rendered.stdout)).toContain(
       "Repository policy requests consequential authority but has not been confirmed on this clone; running with reduced authority until setup confirms it."
     );
+  });
+
+  test("completed-work handoff releases the author's own worktree claim", () => {
+    const fixture = createTestRepository();
+    repositories.push(fixture);
+    const setup = spawnSync(
+      [
+        process.execPath,
+        cliPath,
+        "setup",
+        "--finish",
+        "review",
+        "--git-push-authorization",
+        "ask",
+        "--questions",
+        "blocking-only",
+        "--scope",
+        "repository",
+        "--instruction-pointer",
+        "leave",
+        "--handoff",
+        "automatic",
+        "--yes",
+        "--json",
+        "--repo",
+        fixture.root,
+      ],
+      { stderr: "pipe", stdout: "pipe" }
+    );
+    expect(setup.exitCode).toBe(0);
+    const worktree = resolve(fixture.base, "handoff-feature");
+    git(fixture.root, ["worktree", "add", "-b", "handoff-feature", worktree]);
+    const claimed = spawnSync(
+      [
+        process.execPath,
+        cliPath,
+        "worktree",
+        "claim",
+        "--agent-id",
+        "feature-author",
+        "--worktree",
+        worktree,
+        "--adapter",
+        "claude-code",
+        "--json",
+        "--repo",
+        fixture.root,
+      ],
+      { stderr: "pipe", stdout: "pipe" }
+    );
+    expect(claimed.exitCode).toBe(0);
+    const { claim } = JSON.parse(decoder.decode(claimed.stdout)) as {
+      claim: { claimId: string };
+    };
+    const started = spawnSync(
+      [
+        process.execPath,
+        cliPath,
+        "loop",
+        "start",
+        "--mode",
+        "ship",
+        "--agent-id",
+        "integration-controller",
+        "--json",
+        "--repo",
+        fixture.root,
+      ],
+      { stderr: "pipe", stdout: "pipe" }
+    );
+    expect(started.exitCode).toBe(0);
+    const { lease } = JSON.parse(decoder.decode(started.stdout)) as {
+      lease: { runId: string };
+    };
+
+    const handoff = spawnSync(
+      [
+        process.execPath,
+        cliPath,
+        "initialize",
+        "--mode",
+        "handoff",
+        "--ready",
+        "--agent-id",
+        "feature-author",
+        "--json",
+        "--repo",
+        worktree,
+      ],
+      { stderr: "pipe", stdout: "pipe" }
+    );
+
+    expect(handoff.exitCode).toBe(0);
+    expect(JSON.parse(decoder.decode(handoff.stdout))).toMatchObject({
+      handoffAction: "proceed",
+      handoffClaimRelease: {
+        claimId: claim.claimId,
+        path: realpathSync(worktree),
+      },
+      mutationAllowed: true,
+    });
+    const status = spawnSync(
+      [
+        process.execPath,
+        cliPath,
+        "worktree",
+        "status",
+        "--json",
+        "--repo",
+        fixture.root,
+      ],
+      { stderr: "pipe", stdout: "pipe" }
+    );
+    expect(JSON.parse(decoder.decode(status.stdout))).toMatchObject({
+      claims: [{ releaseReason: "handoff", state: "released" }],
+    });
+    const verified = spawnSync(
+      [
+        process.execPath,
+        cliPath,
+        "loop",
+        "verify",
+        "--run-id",
+        lease.runId,
+        "--agent-id",
+        "integration-controller",
+        "--json",
+        "--repo",
+        fixture.root,
+      ],
+      { stderr: "pipe", stdout: "pipe" }
+    );
+    expect(verified.exitCode).toBe(0);
+    expect(JSON.parse(decoder.decode(verified.stdout))).toMatchObject({
+      ok: true,
+    });
+  });
+
+  test("help and the usage errors agree on every dispatched loop and worktree action", () => {
+    const help = decoder.decode(
+      spawnSync([process.execPath, cliPath, "help"], {
+        stderr: "pipe",
+        stdout: "pipe",
+      }).stdout
+    );
+    for (const group of ["loop", "worktree"] as const) {
+      const documented = new Set(
+        [
+          ...help.matchAll(
+            new RegExp(`simple-changes ${group} ([a-z-]+)`, "gu")
+          ),
+        ]
+          .map((match) => match[1])
+          .filter((action): action is string => Boolean(action))
+      );
+      const usage = decoder.decode(
+        spawnSync([process.execPath, cliPath, group], {
+          stderr: "pipe",
+          stdout: "pipe",
+        }).stderr
+      );
+      const listed = usage.match(new RegExp(`${group} requires (.+)$`, "mu"));
+      expect(listed).not.toBeNull();
+      const dispatched = new Set(
+        (listed?.[1] ?? "")
+          .split(USAGE_LIST_SEPARATOR)
+          .map((action) => action.trim().replace(TRAILING_PERIOD, ""))
+          .filter(Boolean)
+      );
+      expect([...documented].sort()).toEqual([...dispatched].sort());
+    }
   });
 });

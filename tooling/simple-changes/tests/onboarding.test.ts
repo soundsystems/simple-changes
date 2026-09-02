@@ -2,6 +2,8 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, readFileSync, symlinkSync } from "node:fs";
 import { resolve } from "node:path";
 import {
+  CHANGELOG_INSTALL_CHOICES,
+  CHANGELOG_INSTALL_TIMING_CHOICES,
   collectOnboardingSelection,
   GIT_PUSH_AUTHORIZATION_CHOICES,
   HANDOFF_CHOICES,
@@ -9,7 +11,9 @@ import {
   ONBOARDING_QUESTIONS,
   type OnboardingChoice,
   PROPOSAL_SCHEDULING_CHOICES,
+  pendingChangelogInstallOffer,
   renderOnboardingSummary,
+  resolveChangelogInstallCommand,
   SHIPPING_MODE_CHOICES,
   UI_ARTIFACT_VERSIONING_CHOICES,
 } from "../../../skills/simple-changes/scripts/lib/onboarding.ts";
@@ -21,7 +25,11 @@ import {
   writePolicyFile,
   writeRepositoryPolicyTrustReceipt,
 } from "../../../skills/simple-changes/scripts/lib/policy.ts";
-import type { RepoPolicy } from "../../../skills/simple-changes/scripts/lib/types.ts";
+import type {
+  ChangelogCoordination,
+  ChangelogInstallDecision,
+  RepoPolicy,
+} from "../../../skills/simple-changes/scripts/lib/types.ts";
 import {
   createTestRepository,
   type TestRepository,
@@ -40,6 +48,32 @@ afterEach(() => {
 const configuredPolicy = (changes: Partial<RepoPolicy> = {}): RepoPolicy => ({
   ...DEFAULT_POLICY,
   ...changes,
+});
+
+// Changelog surfaces exist but no compatible Simple Changelogs provider does.
+const unavailableChangelogContext = (): ChangelogCoordination => ({
+  capabilityAvailable: false,
+  capabilityHelpers: [],
+  capabilityStatus: "absent",
+  guidanceUpdate: {
+    actions: [],
+    detailsPath: null,
+    headline: "**Simple Changelogs has recently been updated.**",
+    installedVersion: null,
+    owner: null,
+    policyPath: null,
+    provider: null,
+    status: "absent",
+    storedVersion: null,
+    summaryBullets: [],
+    walkthroughQuestion:
+      "Would you like me to walk you through the recent Simple Changelogs updates before I continue?",
+  },
+  providerDistribution: null,
+  providerEvidence: "none",
+  providers: [],
+  releaseSurfaces: ["CHANGELOG.md"],
+  relevant: true,
 });
 
 describe("preference storage", () => {
@@ -487,6 +521,8 @@ describe("onboarding conversation", () => {
       [ONBOARDING_QUESTIONS.finish, "open-change-request"],
       [ONBOARDING_QUESTIONS.gitPushAuthorization, "ask"],
       [ONBOARDING_QUESTIONS.changelog, "delegate-if-available"],
+      [ONBOARDING_QUESTIONS.changelogInstall, "install"],
+      [ONBOARDING_QUESTIONS.changelogInstallTiming, "install-now"],
       [ONBOARDING_QUESTIONS.permission, "blocking-only"],
       [ONBOARDING_QUESTIONS.scope, "repository"],
     ]);
@@ -500,35 +536,15 @@ describe("onboarding conversation", () => {
         },
         confirm: () => Promise.resolve(true),
       },
-      {
-        capabilityAvailable: false,
-        capabilityHelpers: [],
-        capabilityStatus: "absent",
-        guidanceUpdate: {
-          actions: [],
-          detailsPath: null,
-          headline: "**Simple Changelogs has recently been updated.**",
-          installedVersion: null,
-          owner: null,
-          policyPath: null,
-          provider: null,
-          status: "absent",
-          storedVersion: null,
-          summaryBullets: [],
-          walkthroughQuestion:
-            "Would you like me to walk you through the recent Simple Changelogs updates before I continue?",
-        },
-        providerEvidence: "none",
-        providers: [],
-        releaseSurfaces: ["CHANGELOG.md"],
-        relevant: true,
-      }
+      unavailableChangelogContext()
     );
 
     expect(questions).toEqual([
       ONBOARDING_QUESTIONS.finish,
       ONBOARDING_QUESTIONS.gitPushAuthorization,
       ONBOARDING_QUESTIONS.changelog,
+      ONBOARDING_QUESTIONS.changelogInstall,
+      ONBOARDING_QUESTIONS.changelogInstallTiming,
       ONBOARDING_QUESTIONS.permission,
       ONBOARDING_QUESTIONS.scope,
     ]);
@@ -536,6 +552,271 @@ describe("onboarding conversation", () => {
     expect(selection.summary).toContain(
       "otherwise it will be preserved and reported"
     );
+  });
+
+  test("offers the Simple Changelogs install with the exact prose questions", () => {
+    expect(ONBOARDING_QUESTIONS.changelogInstall).toBe(
+      "Would you like me to install Simple Changelogs now?"
+    );
+    expect(ONBOARDING_QUESTIONS.changelogInstallTiming).toBe(
+      "When should I set up Simple Changelogs: now, after this shipment, or later?"
+    );
+    expect(CHANGELOG_INSTALL_CHOICES.map((choice) => choice.label)).toEqual([
+      "Yes, install it",
+      "No, keep changelog work preserved and reported",
+    ]);
+    expect(
+      CHANGELOG_INSTALL_TIMING_CHOICES.map((choice) => choice.label)
+    ).toEqual(["Now", "After this shipment", "Later"]);
+    expect(
+      CHANGELOG_INSTALL_TIMING_CHOICES.map((choice) => choice.value)
+    ).toEqual(["install-now", "install-after-shipment", "install-later"]);
+  });
+
+  test("explains ownership before offering the install and records consent with the exact command", async () => {
+    const events: string[] = [];
+    const selection = await collectOnboardingSelection(
+      DEFAULT_POLICY,
+      {
+        changelogHandling: "delegate-if-available",
+        defaultFinish: "open-change-request",
+        gitPushAuthorization: "ask",
+        questions: "blocking-only",
+        scope: "run",
+      },
+      {
+        choose: (question: string) => {
+          events.push(`question:${question}`);
+          if (question === ONBOARDING_QUESTIONS.changelogInstall) {
+            return Promise.resolve("install");
+          }
+          if (question === ONBOARDING_QUESTIONS.changelogInstallTiming) {
+            return Promise.resolve("install-after-shipment");
+          }
+          return Promise.resolve("");
+        },
+        confirm: () => Promise.resolve(true),
+        present: (message: string) => events.push(`present:${message}`),
+      },
+      unavailableChangelogContext()
+    );
+
+    const explanationIndex = events.findIndex(
+      (event) =>
+        event.startsWith("present:") &&
+        event.includes("owns release classification and release-note writing")
+    );
+    expect(explanationIndex).toBeGreaterThanOrEqual(0);
+    expect(events[explanationIndex + 1]).toBe(
+      `question:${ONBOARDING_QUESTIONS.changelogInstall}`
+    );
+    expect(events[explanationIndex + 2]).toBe(
+      `question:${ONBOARDING_QUESTIONS.changelogInstallTiming}`
+    );
+    expect(selection.changelogInstall).toEqual({
+      command:
+        "bunx skills add https://gitlab.com/soundsystems/simple-changelogs --skill simple-changelogs",
+      decision: "install-after-shipment",
+      distribution: null,
+      offered: true,
+    });
+    expect(selection.summary).toContain(
+      "Simple Changelogs install: After this shipment."
+    );
+    expect(selection.summary).toContain(
+      "only after this consent, and its setup is recorded as outstanding work"
+    );
+    expect(selection.summary).toContain(
+      "grants no version, release, publication, deployment, or data-write authority"
+    );
+    expect(selection.policy).not.toHaveProperty("changelogInstall");
+  });
+
+  test("records a declined install without asking about timing", async () => {
+    const questions: string[] = [];
+    const selection = await collectOnboardingSelection(
+      DEFAULT_POLICY,
+      {
+        changelogHandling: "preserve-and-report",
+        defaultFinish: "open-change-request",
+        gitPushAuthorization: "ask",
+        questions: "blocking-only",
+        scope: "run",
+      },
+      {
+        choose: (question: string) => {
+          questions.push(question);
+          return Promise.resolve(
+            question === ONBOARDING_QUESTIONS.changelogInstall ? "decline" : ""
+          );
+        },
+        confirm: () => Promise.resolve(true),
+      },
+      unavailableChangelogContext()
+    );
+
+    expect(questions).toEqual([ONBOARDING_QUESTIONS.changelogInstall]);
+    expect(selection.changelogInstall).toMatchObject({
+      decision: "declined",
+      offered: true,
+    });
+    expect(selection.changelogInstall.command).toContain("bunx skills add");
+    expect(selection.summary).toContain(
+      "Simple Changelogs install: declined; changelog work stays preserved and reported"
+    );
+  });
+
+  test("offers every setup timing and distinguishes immediate onboarding from outstanding work", async () => {
+    const decisions = [
+      "install-now",
+      "install-later",
+    ] as const satisfies readonly ChangelogInstallDecision[];
+    const selections = await Promise.all(
+      decisions.map((decision) =>
+        collectOnboardingSelection(
+          DEFAULT_POLICY,
+          {
+            changelogHandling: "delegate-if-available",
+            defaultFinish: "open-change-request",
+            gitPushAuthorization: "ask",
+            questions: "blocking-only",
+            scope: "run",
+          },
+          {
+            choose: (question: string) =>
+              Promise.resolve(
+                question === ONBOARDING_QUESTIONS.changelogInstall
+                  ? "install"
+                  : decision
+              ),
+            confirm: () => Promise.resolve(true),
+          },
+          unavailableChangelogContext()
+        )
+      )
+    );
+    for (const [index, selection] of selections.entries()) {
+      const decision = decisions[index] as ChangelogInstallDecision;
+      expect(selection.changelogInstall.decision).toBe(decision);
+      expect(selection.summary).toContain(
+        decision === "install-now"
+          ? "setup then continues with the provider's own owner-controlled onboarding"
+          : "its setup is recorded as outstanding work"
+      );
+    }
+  });
+
+  test("skips the install questions when a flag already carries the decision", async () => {
+    const questions: string[] = [];
+    const selection = await collectOnboardingSelection(
+      DEFAULT_POLICY,
+      {
+        changelogHandling: "delegate-if-available",
+        changelogInstall: "install-later",
+        defaultFinish: "open-change-request",
+        gitPushAuthorization: "ask",
+        questions: "blocking-only",
+        scope: "run",
+      },
+      {
+        choose: (question: string) => {
+          questions.push(question);
+          return Promise.resolve("");
+        },
+        confirm: () => Promise.resolve(true),
+      },
+      unavailableChangelogContext()
+    );
+
+    expect(questions).toEqual([]);
+    expect(selection.changelogInstall).toMatchObject({
+      decision: "install-later",
+      offered: true,
+    });
+  });
+
+  test("does not offer the install when a compatible provider is available or changelog work is irrelevant", async () => {
+    const questions: string[] = [];
+    const prompter = {
+      choose: (question: string) => {
+        questions.push(question);
+        return Promise.resolve("");
+      },
+      confirm: () => Promise.resolve(true),
+    };
+    const inputs = {
+      changelogHandling: "delegate-if-available",
+      defaultFinish: "open-change-request",
+      gitPushAuthorization: "ask",
+      questions: "blocking-only",
+      scope: "run",
+    } as const;
+    const installed = await collectOnboardingSelection(
+      DEFAULT_POLICY,
+      inputs,
+      prompter,
+      {
+        ...unavailableChangelogContext(),
+        capabilityAvailable: true,
+        capabilityStatus: "unverified",
+        providerEvidence: "inferred",
+        providers: ["/skills/simple-changelogs/SKILL.md"],
+      }
+    );
+    const irrelevant = await collectOnboardingSelection(
+      DEFAULT_POLICY,
+      inputs,
+      prompter
+    );
+
+    expect(questions).toEqual([]);
+    for (const selection of [installed, irrelevant]) {
+      expect(selection.changelogInstall).toEqual({
+        command: null,
+        decision: null,
+        distribution: null,
+        offered: false,
+      });
+      expect(selection.summary).not.toContain("Simple Changelogs install");
+    }
+  });
+
+  test("resolves the install command from the declared changelog distribution", () => {
+    const fixture = createTestRepository();
+    repositories.push(fixture);
+    const policyPath = resolve(fixture.root, ".simple-changelogs.json");
+    writeFixture(
+      fixture.root,
+      ".simple-changelogs.json",
+      '{"schemaVersion":1,"distribution":"web-cms","guidance":{"version":8}}\n'
+    );
+    const context = {
+      ...unavailableChangelogContext(),
+      guidanceUpdate: {
+        ...unavailableChangelogContext().guidanceUpdate,
+        policyPath,
+      },
+      releaseSurfaces: [".simple-changelogs.json"],
+    };
+
+    expect(resolveChangelogInstallCommand(context)).toEqual({
+      command:
+        "bunx skills add https://gitlab.com/soundsystems/simple-changelogs --skill simple-changelogs-web-cms",
+      distribution: "web-cms",
+    });
+    expect(pendingChangelogInstallOffer(context)).toEqual({
+      command:
+        "bunx skills add https://gitlab.com/soundsystems/simple-changelogs --skill simple-changelogs-web-cms",
+      decision: null,
+      distribution: "web-cms",
+      offered: false,
+    });
+    expect(
+      pendingChangelogInstallOffer({
+        ...context,
+        capabilityAvailable: true,
+      })
+    ).toBeNull();
   });
 
   test("defaults to delegation when a compatible changelog skill is installed", async () => {
@@ -559,7 +840,7 @@ describe("onboarding conversation", () => {
       },
       {
         capabilityAvailable: true,
-        capabilityHelpers: ["/skills/simple-changelogs/scripts/protocol.ts"],
+        capabilityHelpers: ["/skills/simple-changelogs/scripts/setup.ts"],
         capabilityStatus: "unverified",
         guidanceUpdate: {
           actions: [],
@@ -575,6 +856,7 @@ describe("onboarding conversation", () => {
           walkthroughQuestion:
             "Would you like me to walk you through the recent Simple Changelogs updates before I continue?",
         },
+        providerDistribution: "full",
         providerEvidence: "inferred",
         providers: ["/skills/simple-changelogs/SKILL.md"],
         releaseSurfaces: ["CHANGELOG.md"],

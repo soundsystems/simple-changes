@@ -120,13 +120,10 @@ describe("Git inventory and concurrency", () => {
     git(fixture.root, ["config", "branch.main.remote", "origin"]);
     git(fixture.root, ["config", "branch.main.merge", "refs/heads/main"]);
 
-    expect(captureInventory(fixture.root).targetRef).toBe("origin/main");
-    expect(captureInventory(fixture.root).repository.targetRemote).toBe(
-      "origin"
-    );
-    expect(
-      captureInventory(fixture.root).repository.remoteBindings
-    ).toContainEqual({
+    const inventory = captureInventory(fixture.root);
+    expect(inventory.targetRef).toBe("origin/main");
+    expect(inventory.repository.targetRemote).toBe("origin");
+    expect(inventory.repository.remoteBindings).toContainEqual({
       fetchUrls: ["https://example.invalid/canonical.git"],
       name: "origin",
       provider: "example.invalid",

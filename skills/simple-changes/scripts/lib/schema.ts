@@ -2,13 +2,14 @@ import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
-import type { SchemaName } from "./types.ts";
 
 type JsonSchema = Record<string, unknown>;
 
 const moduleDirectory = dirname(fileURLToPath(import.meta.url));
 const schemaDirectory = resolve(moduleDirectory, "../../evals/schemas");
-export const SCHEMA_NAMES: readonly SchemaName[] = [
+// Single source of truth for packaged schema names; `SchemaName` is derived
+// from it so the runtime registry and the type can never drift apart.
+export const SCHEMA_NAMES = [
   "repo-policy",
   "changelog-capabilities",
   "changelog-request",
@@ -35,7 +36,8 @@ export const SCHEMA_NAMES: readonly SchemaName[] = [
   "worktree-takeover",
   "worktree-equivalence",
   "worktree-cleanup",
-];
+] as const;
+export type SchemaName = (typeof SCHEMA_NAMES)[number];
 const schemas = new Map<string, JsonSchema>();
 
 for (const schemaName of SCHEMA_NAMES) {

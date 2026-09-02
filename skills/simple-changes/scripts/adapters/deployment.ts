@@ -76,7 +76,7 @@ const canonicalTargetUrl = (value: string): string => {
   return `${parsed.origin}${path}`;
 };
 
-export const canonicalTargetIssues = (receipt: ProviderReceipt): string[] => {
+const canonicalTargetIssues = (receipt: ProviderReceipt): string[] => {
   if (receipt.environment !== "production") {
     return [];
   }

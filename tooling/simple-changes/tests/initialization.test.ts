@@ -42,6 +42,7 @@ describe("first-run initialization", () => {
       capabilityHelpers: [],
       capabilityStatus: "absent",
       guidanceUpdate: absentChangelogUpdate,
+      providerDistribution: null,
       providerEvidence: "none",
       providers: [],
       releaseSurfaces: [],
@@ -71,7 +72,7 @@ describe("first-run initialization", () => {
       changelogCoordination
     );
     expect(from19.changes.map((item) => item.version)).toEqual([
-      20, 20, 21, 21, 21,
+      20, 20, 21, 21, 21, 22, 22, 22, 22,
     ]);
   });
   test("propagates the saved shipping preference into emergency classification", () => {
@@ -142,6 +143,7 @@ describe("first-run initialization", () => {
           capabilityHelpers: [],
           capabilityStatus: "absent",
           guidanceUpdate: absentChangelogUpdate,
+          providerDistribution: null,
           providerEvidence: "none",
           providers: [],
           releaseSurfaces: ["CHANGELOG.md"],
@@ -253,6 +255,7 @@ describe("first-run initialization", () => {
         capabilityHelpers: ["/skills/simple-changelogs/scripts/setup.ts"],
         capabilityStatus: "unverified",
         guidanceUpdate: availableChangelogUpdate,
+        providerDistribution: "full",
         providerEvidence: "inferred",
         providers: ["/skills/simple-changelogs/SKILL.md"],
         releaseSurfaces: ["CHANGELOG.md"],
@@ -274,7 +277,7 @@ describe("first-run initialization", () => {
           available: true,
           owner: "simple-changelogs",
         },
-        currentVersion: 21,
+        currentVersion: 22,
         headline: "**Simple Changes has recently been updated.**",
         presentationOrder: [
           "required-answers",
@@ -297,7 +300,7 @@ describe("first-run initialization", () => {
       "Inherited stale shipment state"
     );
     expect(status.guidanceUpdate.summaryBullets.join(" ")).toContain(
-      "`proposalScheduling` setting"
+      "`proposalSignatures` setting"
     );
     expect(status.guidanceUpdate.recommendedChanges[0]).toMatchObject({
       question: "How should changelog work be handled?",
@@ -319,12 +322,13 @@ describe("first-run initialization", () => {
       },
       {
         capabilityAvailable: true,
-        capabilityHelpers: ["/skills/simple-changelogs/scripts/protocol.ts"],
+        capabilityHelpers: ["/skills/simple-changelogs/scripts/setup.ts"],
         capabilityStatus: "unverified",
         guidanceUpdate: {
           ...availableChangelogUpdate,
           status: "current",
         },
+        providerDistribution: "full",
         providerEvidence: "inferred",
         providers: ["/skills/simple-changelogs/SKILL.md"],
         releaseSurfaces: ["CHANGELOG.md"],
@@ -361,6 +365,7 @@ describe("first-run initialization", () => {
         capabilityHelpers: ["/skills/simple-changelogs/scripts/setup.ts"],
         capabilityStatus: "unverified",
         guidanceUpdate: availableChangelogUpdate,
+        providerDistribution: "full",
         providerEvidence: "inferred",
         providers: ["/skills/simple-changelogs/SKILL.md"],
         releaseSurfaces: ["CHANGELOG.md"],

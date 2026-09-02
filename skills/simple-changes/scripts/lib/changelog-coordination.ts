@@ -1,16 +1,23 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, delimiter, resolve } from "node:path";
 import type { ChangelogCoordination } from "./types.ts";
 
+const POLICY_FILENAME = ".simple-changelogs.json";
+// The CMS-only distribution keeps its policy in a separate file that never
+// names a distribution; its presence alone selects the CMS distribution.
+const CMS_POLICY_FILENAME = ".simple-changelogs-cms.json";
 const RELEASE_SURFACES = [
-  ".simple-changelogs.json",
+  POLICY_FILENAME,
   "CHANGELOG.md",
   "DEVELOPER_CHANGELOG.md",
+  CMS_POLICY_FILENAME,
+  "CMS_CHANGELOG.json",
 ] as const;
 
 const DISTRIBUTION_BY_INSTALLATION: Record<string, string> = {
   "simple-changelogs": "full",
+  "simple-changelogs-cms": "cms",
   "simple-changelogs-mobile": "mobile",
   "simple-changelogs-skill-maintainer": "skill-repository",
   "simple-changelogs-web": "web",
@@ -51,9 +58,18 @@ const positiveInteger = (value: unknown): number | null =>
   Number.isInteger(value) && Number(value) >= 1 ? Number(value) : null;
 
 interface ProviderMarker {
+  // A marker that advertises an empty request or receipt version list
+  // declares itself discovery-only: identifiable, but implementing no
+  // classify/prepare/verify handoff. It stays discoverable so its repository
+  // is never reported as invisible, while delegation to it is not applicable
+  // rather than merely unverified.
+  discoveryOnly: boolean;
   distribution: string | null;
   guidanceVersion: number | null;
 }
+
+const advertisesNoVersions = (value: unknown): boolean =>
+  Array.isArray(value) && value.length === 0;
 
 const readProviderMarker = (provider: string): ProviderMarker | null => {
   const markerPath = resolve(provider, "..", PROVIDER_MARKER_FILENAME);
@@ -65,12 +81,17 @@ const readProviderMarker = (provider: string): ProviderMarker | null => {
       distribution?: unknown;
       guidanceVersion?: unknown;
       provider?: unknown;
+      receiptVersions?: unknown;
+      requestVersions?: unknown;
       schemaVersion?: unknown;
     };
     if (value.provider !== "simple-changelogs" || value.schemaVersion !== 1) {
       return null;
     }
     return {
+      discoveryOnly:
+        advertisesNoVersions(value.requestVersions) ||
+        advertisesNoVersions(value.receiptVersions),
       distribution:
         typeof value.distribution === "string" && value.distribution.length > 0
           ? value.distribution
@@ -108,6 +129,45 @@ const installedGuidanceVersion = (provider: string | null): number | null => {
   }
 };
 
+const SENTENCE_TERMINATORS = new Set([".", "!", "?"]);
+const WHITESPACE_PATTERN = /\s/u;
+
+const endsSentenceAt = (text: string, index: number): boolean => {
+  const next = text[index + 1];
+  if (next === undefined) {
+    return true;
+  }
+  // Keep runs of terminators ("?!", "...") together and never split on a
+  // terminator glued to the following token (`scripts/query.ts`, "v1.2").
+  return !SENTENCE_TERMINATORS.has(next) && WHITESPACE_PATTERN.test(next);
+};
+
+// Splits prose into terminated sentences while treating inline code spans
+// (`CHANGELOG.md`) as opaque so their punctuation never ends a sentence.
+const splitSentences = (text: string): string[] => {
+  const sentences: string[] = [];
+  let current = "";
+  let insideCode = false;
+  for (let index = 0; index < text.length; index += 1) {
+    const character = text[index] as string;
+    current += character;
+    if (character === "`") {
+      insideCode = !insideCode;
+      continue;
+    }
+    if (
+      insideCode ||
+      !SENTENCE_TERMINATORS.has(character) ||
+      !endsSentenceAt(text, index)
+    ) {
+      continue;
+    }
+    sentences.push(current.trim());
+    current = "";
+  }
+  return sentences.filter(Boolean);
+};
+
 const guidanceSummaryBullets = (
   detailsPath: string | null,
   storedVersion: number | null,
@@ -137,29 +197,22 @@ const guidanceSummaryBullets = (
       .filter(Boolean)
       .join("\n\n")
       .replace(/\s+/gu, " ");
-    return (relevant.match(/[^.!?]+[.!?]+/gu) ?? [])
-      .map((sentence) => sentence.trim())
-      .filter(Boolean)
-      .slice(0, 3);
+    return splitSentences(relevant).slice(0, 3);
   } catch {
     return [];
   }
 };
 
-const storedGuidanceVersion = (
-  repositoryRoot: string | null
-): {
+interface StoredPolicy {
   distribution: string | null;
   path: string | null;
   version: number | null;
-} => {
-  if (!repositoryRoot) {
-    return { distribution: null, path: null, version: null };
-  }
-  const path = resolve(repositoryRoot, ".simple-changelogs.json");
-  if (!existsSync(path)) {
-    return { distribution: null, path: null, version: null };
-  }
+}
+
+const readStoredPolicy = (
+  path: string,
+  impliedDistribution: string | null
+): StoredPolicy => {
   try {
     const value = JSON.parse(readFileSync(path, "utf8")) as {
       distribution?: unknown;
@@ -167,13 +220,54 @@ const storedGuidanceVersion = (
     };
     return {
       distribution:
-        typeof value.distribution === "string" ? value.distribution : null,
+        typeof value.distribution === "string"
+          ? value.distribution
+          : impliedDistribution,
       path,
       version: positiveInteger(value.guidance?.version),
     };
   } catch {
-    return { distribution: null, path, version: null };
+    return { distribution: impliedDistribution, path, version: null };
   }
+};
+
+// The standard policy wins when both files exist (web-cms records both); the
+// CMS policy is consulted only when it is the sole policy present.
+const storedGuidanceVersion = (repositoryRoot: string | null): StoredPolicy => {
+  if (!repositoryRoot) {
+    return { distribution: null, path: null, version: null };
+  }
+  const path = resolve(repositoryRoot, POLICY_FILENAME);
+  if (existsSync(path)) {
+    return readStoredPolicy(path, null);
+  }
+  const cmsPath = resolve(repositoryRoot, CMS_POLICY_FILENAME);
+  if (existsSync(cmsPath)) {
+    return readStoredPolicy(cmsPath, "cms");
+  }
+  return { distribution: null, path: null, version: null };
+};
+
+// Declared marker first, then the installation directory name; null when
+// only SKILL.md prose could say which distribution this is.
+const providerDistribution = (provider: string): string | null =>
+  readProviderMarker(provider)?.distribution ??
+  DISTRIBUTION_BY_INSTALLATION[basename(resolve(provider, ".."))] ??
+  null;
+
+// Only a marker can declare a provider discovery-only; an installation without
+// a marker is assumed handoff-capable and its capability record decides.
+const supportsReleaseHandoff = (provider: string): boolean =>
+  readProviderMarker(provider)?.discoveryOnly !== true;
+
+const capabilityStatusFor = (
+  providers: string[],
+  capabilityAvailable: boolean
+): ChangelogCoordination["capabilityStatus"] => {
+  if (capabilityAvailable) {
+    return "unverified";
+  }
+  return providers.length > 0 ? "not-applicable" : "absent";
 };
 
 const supportsDistribution = (
@@ -183,14 +277,9 @@ const supportsDistribution = (
   if (!distribution) {
     return true;
   }
-  const declaredDistribution = readProviderMarker(provider)?.distribution;
-  if (declaredDistribution) {
-    return declaredDistribution === distribution;
-  }
-  const installedDistribution =
-    DISTRIBUTION_BY_INSTALLATION[basename(resolve(provider, ".."))];
-  if (installedDistribution) {
-    return installedDistribution === distribution;
+  const knownDistribution = providerDistribution(provider);
+  if (knownDistribution) {
+    return knownDistribution === distribution;
   }
   try {
     const source = readFileSync(provider, "utf8");
@@ -205,6 +294,28 @@ const supportsDistribution = (
   } catch {
     return false;
   }
+};
+
+const canonicalPath = (path: string): string => {
+  try {
+    return realpathSync(path);
+  } catch {
+    return path;
+  }
+};
+
+// Symlinked skill roots (for example ~/.codex/skills -> ~/.agents/skills)
+// expose one installed provider under several paths. Keep the first path seen
+// for each real location so the same installation is never counted twice.
+const uniqueByRealPath = (candidates: string[]): string[] => {
+  const seen = new Map<string, string>();
+  for (const candidate of candidates) {
+    const key = canonicalPath(candidate);
+    if (!seen.has(key)) {
+      seen.set(key, candidate);
+    }
+  }
+  return [...seen.values()];
 };
 
 const configuredSkillRoots = (options: ChangelogDiscoveryOptions): string[] => {
@@ -241,10 +352,21 @@ export const inspectChangelogCoordination = (
     )
     .filter(existsSync);
   const stored = storedGuidanceVersion(repositoryRoot);
-  const providers = [
-    ...new Set([...repositoryProviders, ...globalProviders]),
-  ].filter((candidate) => supportsDistribution(candidate, stored.distribution));
+  const providers = uniqueByRealPath([
+    ...repositoryProviders,
+    ...globalProviders,
+  ])
+    .filter((candidate) => supportsDistribution(candidate, stored.distribution))
+    // Handoff-capable providers come first so a discovery-only installation
+    // never shadows one that can actually take the release delegation.
+    .sort(
+      (left, right) =>
+        Number(supportsReleaseHandoff(right)) -
+        Number(supportsReleaseHandoff(left))
+    );
   const provider = providers[0] ?? null;
+  const capabilityAvailable = providers.some(supportsReleaseHandoff);
+  const capabilityStatus = capabilityStatusFor(providers, capabilityAvailable);
   const capabilityHelpers = providers
     .map((candidate) => resolve(candidate, "..", "scripts", "setup.ts"))
     .filter(existsSync);
@@ -277,9 +399,9 @@ export const inspectChangelogCoordination = (
       ? guidanceSummaryBullets(detailsPath, stored.version, installedVersion)
       : [];
   return {
-    capabilityAvailable: providers.length > 0,
+    capabilityAvailable,
     capabilityHelpers,
-    capabilityStatus: providers.length > 0 ? "unverified" : "absent",
+    capabilityStatus,
     guidanceUpdate: {
       actions:
         guidanceStatus === "update-available"
@@ -296,6 +418,7 @@ export const inspectChangelogCoordination = (
       summaryBullets,
       walkthroughQuestion: SIMPLE_CHANGELOGS_QUESTION,
     },
+    providerDistribution: provider ? providerDistribution(provider) : null,
     providerEvidence: providerEvidenceFor(provider),
     providers,
     releaseSurfaces: [...releaseSurfaces],

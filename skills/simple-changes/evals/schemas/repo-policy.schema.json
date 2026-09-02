@@ -78,6 +78,9 @@
     "proposalScheduling": {
       "enum": ["balanced", "consecutive", "parallel"]
     },
+    "proposalSignatures": {
+      "enum": ["agent-and-version", "none"]
+    },
     "uiArtifactVersioning": {
       "enum": [
         "repository-convention",

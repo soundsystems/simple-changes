@@ -5,6 +5,12 @@ const skillPath = new URL(
   "../../../skills/simple-changes/SKILL.md",
   import.meta.url
 );
+const MODE_TABLE_PATTERN = /\| Intent \| Mode \| Boundary \|[\s\S]*?\n\n/u;
+const MODE_ROW_PATTERN = /^\| [^|]+ \| ([A-Za-z]+) \|/gmu;
+const specPath = new URL(
+  "../../../skills/simple-changes/SPEC.md",
+  import.meta.url
+);
 const changelogCoordinationPath = new URL(
   "../../../skills/simple-changes/references/changelog-coordination.md",
   import.meta.url
@@ -302,6 +308,36 @@ describe("Simple Changes skill contract", () => {
     expect(deliverySchema).toContain('"deployedRevision"');
   });
 
+  test("blocks unsafe production changes for installed clients", async () => {
+    const [skill, migrationActions] = await Promise.all([
+      readFile(skillPath, "utf8"),
+      readFile(migrationActionsPath, "utf8"),
+    ]);
+    const normalizedSkill = skill.replace(/\s+/g, " ");
+    const normalizedMigrationActions = migrationActions.replace(/\s+/g, " ");
+
+    expect(normalizedSkill).toContain(
+      "Installed-client compatibility: <state> (<evidence and reason>)"
+    );
+    expect(normalizedSkill).toContain(
+      "A new client release alone does not make a breaking rollout safe"
+    );
+    expect(normalizedMigrationActions).toContain(
+      "without an enforced minimum-version boundary, older installed clients may still use the production backend"
+    );
+    for (const state of [
+      "`compatible`",
+      "`release-recommended`",
+      "`incompatible`",
+      "`unverified`",
+    ]) {
+      expect(normalizedMigrationActions).toContain(state);
+    }
+    expect(normalizedMigrationActions).toContain(
+      "Use an expand-and-contract sequence instead"
+    );
+  });
+
   test("Onboarding explains the consequence of every option", async () => {
     const source = await readFile(skillPath, "utf8");
     const normalizedSource = source.replace(/\s+/g, " ");
@@ -375,7 +411,7 @@ describe("Simple Changes skill contract", () => {
     const normalizedSource = source.replace(/\s+/g, " ");
 
     expect(normalizedSource).toContain(
-      "initialize \\ --mode handoff \\ --json"
+      'initialize \\ --mode handoff \\ --agent-id "$AGENT_ID" \\ --json'
     );
     expect(normalizedSource).toContain(
       "Is this ready for Simple Changes, or do you want more changes first?"
@@ -719,6 +755,52 @@ describe("Simple Changes skill contract", () => {
     );
     expect(normalizedConcurrency).toContain(
       "target ref or revision differs from the active lease"
+    );
+  });
+
+  test("SPEC.md stays bound to the skill it specifies", async () => {
+    const [skill, spec] = await Promise.all([
+      readFile(skillPath, "utf8"),
+      readFile(specPath, "utf8"),
+    ]);
+    const normalizedSpec = spec.replace(/\s+/g, " ");
+    for (const heading of [
+      "## Triggers",
+      "## Non-triggers",
+      "## Inputs",
+      "## Outputs",
+      "## Guarantees",
+      "## Forbidden behaviors",
+    ]) {
+      expect(spec).toContain(heading);
+    }
+    // Every request mode the skill classifies must be specified.
+    const modeTable = skill.match(MODE_TABLE_PATTERN);
+    expect(modeTable).not.toBeNull();
+    const modes = [...(modeTable?.[0] ?? "").matchAll(MODE_ROW_PATTERN)]
+      .map((match) => match[1])
+      .filter((mode): mode is string => Boolean(mode) && mode !== "Mode");
+    expect(modes.length).toBeGreaterThanOrEqual(9);
+    for (const mode of modes) {
+      expect(normalizedSpec.toLowerCase()).toContain(mode.toLowerCase());
+    }
+    // Guarantees that the skill and code rely on must not silently disappear.
+    for (const guarantee of [
+      "Existing and concurrent work is preserved unless ownership and scope are proven",
+      "Write-capable integration modes hold one atomic integration-controller lease",
+      "A worktree owner can persist an opaque local claim",
+      "A claim is released by its owner, by a proceeding completed-work handoff for that checkout, or by finalization evidence",
+      "no claim is released by elapsed time or by guessing its owner",
+      "Completed-work handoff cannot mutate while readiness confirmation is pending",
+      "Harness automation is capability-gated",
+      "A required changelog update blocks loop creation until Simple Changelogs owns and records the user's disposition",
+    ]) {
+      expect(normalizedSpec).toContain(guarantee);
+    }
+    // The readiness question is one contract in three places.
+    expect(normalizedSpec).toContain("completed-work handoff");
+    expect(skill.replace(/\s+/g, " ")).toContain(
+      "Is this ready for Simple Changes, or do you want more changes first?"
     );
   });
 });

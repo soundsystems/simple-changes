@@ -177,6 +177,7 @@ simple-changes initialize --mode MODE
   [--ui-artifacts]
   [--ui-versioning repository|number-and-date|date-only|number-only]
   [--changelog delegate-if-available|preserve-and-report|ask]
+  [--changelog-install now|after-shipment|later|decline]
   [--concurrent-work allow-claimed|strict]
   [--production ask|allow|deny]
   [--shipping-mode standard|expedited]
@@ -189,6 +190,7 @@ simple-changes setup [--finish review|integrate|ship]
   [--ui-artifacts]
   [--ui-versioning repository|number-and-date|date-only|number-only]
   [--changelog delegate-if-available|preserve-and-report|ask]
+  [--changelog-install now|after-shipment|later|decline]
   [--concurrent-work allow-claimed|strict]
   [--production ask|allow|deny]
   [--shipping-mode standard|expedited]
@@ -259,7 +261,14 @@ simple-changes prepare-agent --run-id ID --agent-id ID --purpose SLUG
   [--json] [--repo PATH]
 simple-changes release-notes [--check] [--json] [--repo PATH] [--version VERSION]
 simple-changes negotiate-changelog CAPABILITIES_FILE [--json]
-simple-changes validate-changelog-transaction REQUEST_FILE RECEIPT_FILE [--json]
+simple-changes validate-changelog-transaction REQUEST_FILE RECEIPT_FILE [--prior-receipt FILE] [--json]
+simple-changes release-gate --request FILE --receipt FILE [--prior-receipt FILE]
+  --production ask|allow|deny [--already-live] [--production-authorized]
+  [--version-authorized] [--json]
+simple-changes release-delivery --changelog-receipt FILE --provider-receipt FILE
+  [--request FILE] [--json]
+simple-changes proposal-signatures --agent NAME --role authored|reviewed|merged
+  [--base REF --head REF] [--changelog-receipt FILE] [--json] [--repo PATH]
 simple-changes validate KIND FILE [--json]
 simple-changes verify-markdown FILE [--json]
 simple-changes help
@@ -374,6 +383,7 @@ apply only when the repository has no policy. Teams may commit
   "changelogHandling": "delegate-if-available",
   "defaultFinish": "open-change-request",
   "handoffTiming": "confirm-ready",
+  "proposalSignatures": "agent-and-version",
   "uiArtifactVersioning": "repository-convention",
   "questions": "blocking-only",
   "review": "repository-policy",
@@ -415,8 +425,9 @@ runtime-established global instruction file after confirmation. It never
 creates a missing file or duplicates its managed block. The recommended pointer
 asks whether implementation and checks are complete before Simple Changes takes
 over. A completed-work agent can inspect the saved behavior with
-`initialize --mode handoff`; after confirmation, `--ready` resolves the normal
-queue, integrate, ship, or preview boundary.
+`initialize --mode handoff --agent-id <owner>`; after confirmation, `--ready`
+resolves the normal queue, integrate, ship, or preview boundary. The exact
+claim owner identity lets a completed handoff release its own worktree claim.
 
 UI iteration naming is conditional and applies only to deliberately preserved
 screenshots, design exports, static previews, or similar artifacts. Repository

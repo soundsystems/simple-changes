@@ -378,7 +378,7 @@ export const decideMigrationAutomation = (
   };
 };
 
-export const consumeMigrationAuthorization = (
+const consumeMigrationAuthorization = (
   commonGitDirectory: string,
   decision: MigrationAutomationDecision
 ): string => {

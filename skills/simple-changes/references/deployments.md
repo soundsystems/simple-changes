@@ -66,7 +66,10 @@ review rejection requires rollback or a corrective revision. Approval proceeds
 through canonical Git integration and forward changelog/version reconciliation;
 never rewrite an already observed release record. Persist candidate, initial
 deployment, reconciliation, canonical, and final production evidence so Resume
-does not repeat any operation.
+does not repeat any operation. Record each step with
+`loop emergency record --run-id <id> --agent-id <you> --state <file>` and
+read the next required action from `loop emergency status --run-id <id>`;
+both bind to the active run and refuse a stale or replayed ledger.
 
 After reconciliation, decide the final production action from immutable
 evidence:
@@ -112,11 +115,15 @@ Verification requires all of:
    that deployment;
 6. focused smoke checks exercise the changed user journey.
 
-After observation, emit a composite `release-delivery-receipt` containing the
-transaction and optional release-set IDs, train, version, decision digest,
-input/reconciliation/finalized/deployed revisions, and provider receipt ID.
-`complete` requires the observed deployment revision to equal the verified
-finalized target. Use structured failure codes for drift or incomplete
+After observation, build the composite `release-delivery-receipt` with
+`simple-changes release-delivery --changelog-receipt <verified.json>
+--provider-receipt <deployment.json> [--request <request.json>]`. It derives
+the transaction and optional release-set IDs, train, version, decision digest,
+input/reconciliation/finalized revisions, provider receipt ID, and deployed
+revision from those two sources rather than copying them, so the composite
+cannot disagree with its inputs. `complete` requires the observed deployment
+revision to equal the verified finalized target; the command exits nonzero for
+`partial` or `blocked`. Use structured failure codes for drift or incomplete
 observation; never parse provider prose to decide a retry. Release-set grouping
 is reporting only and does not make independent trains atomic.
 

@@ -3,7 +3,8 @@
 ## Triggers
 
 - Explicit requests to sync with the canonical Git target, package, queue,
-  integrate, merge, ship, reconcile, or preview repository changes.
+  sweep, integrate, merge, ship, reconcile, pause, or preview repository
+  changes.
 - A managed completed-work pointer after attributable implementation and
   proportionate verification.
 - A user signal that completed implementation is ready to put up, merge, ship,
@@ -113,7 +114,12 @@
   target/primary collisions re-block integration. Under `strict`, an owner may
   acknowledge a pause only for its exact path, branch, HEAD, and content digest,
   and the controller adopts that state only as mutation-forbidden preserved
-  work.
+  work. A claim is released by its owner, by a proceeding completed-work
+  handoff for that checkout, or by finalization evidence: the controller's own
+  active claim on a clean checkout whose exact head the target contains, or
+  any live non-detached claim whose worktree directory no longer exists. Every
+  release records its reason; no claim is released by elapsed time or by
+  guessing its owner.
 - Clean non-primary claimed worktrees may be detached only from an exact
   detach receipt, without force or branch deletion. Reattachment requires the
   absent recorded path and the same local branch at the same HEAD; an active
@@ -230,6 +236,18 @@
   Version direction is distinct from a blocker, approvals are digest- and
   revision-bound, and final deployment requires the verified reconciliation
   lineage rather than a prepared-file receipt.
+- `proposalSignatures` defaults to `agent-and-version`: each agent that
+  authors, reviews, or merges a proposal appends its model name and version to
+  the proposal's signature block. A signature is attribution only; it never
+  approves, satisfies independent review, or authorizes a merge, and `none`
+  suppresses new signatures without removing existing ones.
+- Work that can affect separately released installed clients records exactly
+  one installed-client compatibility result (`compatible`,
+  `release-recommended`, `incompatible`, or `unverified`) with evidence.
+  `incompatible` or `unverified` blocks the affected migration, API, backend,
+  or production deployment; a new client release alone never makes a breaking
+  rollout safe, because older binaries remain installed until an enforced
+  support boundary exists.
 
 ## Forbidden behaviors
 

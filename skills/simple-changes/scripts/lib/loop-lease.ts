@@ -76,6 +76,8 @@ import {
   planAbsentWorktreeClaimRetirementUnderLock,
   readCoordinationDocumentFromCommonDirectory,
   recoverStaleWorktreeCoordinationLock,
+  releaseAbsentWorktreeClaimsUnderLock,
+  releaseClaimUnderLock,
   retireAbsentWorktreeClaimsUnderLock,
   withWorktreeCoordinationLock,
   worktreeClaimDocumentDigest,
@@ -979,6 +981,17 @@ const concurrentClaimFor = (
   );
 };
 
+const resolvePrimaryAndTargetBranches = (
+  lease: LoopLease,
+  inventory: RepositoryInventory
+): { primaryBranch: string | null; targetBranch: string | null } => ({
+  primaryBranch:
+    inventory.worktrees.find(
+      (worktree) => worktree.path === lease.primaryCheckout
+    )?.branch ?? null,
+  targetBranch: targetBranchForRef(lease.primaryCheckout, lease.targetRef),
+});
+
 const withConcurrentAuthorAdmissions = (
   lease: LoopLease,
   inventory: RepositoryInventory
@@ -995,13 +1008,9 @@ const withConcurrentAuthorAdmissions = (
   const coordination = readCoordinationDocumentFromCommonDirectory(
     lease.commonGitDirectory
   );
-  const primaryBranch =
-    inventory.worktrees.find(
-      (worktree) => worktree.path === lease.primaryCheckout
-    )?.branch ?? null;
-  const targetBranch = targetBranchForRef(
-    lease.primaryCheckout,
-    lease.targetRef
+  const { primaryBranch, targetBranch } = resolvePrimaryAndTargetBranches(
+    lease,
+    inventory
   );
   const admissions = new Map<string, LoopWorktreeLease>();
   for (const worktree of inventory.worktrees) {
@@ -1053,10 +1062,21 @@ const withConcurrentAuthorAdmissions = (
 const concurrentClaimViolations = (
   registered: LoopWorktreeLease,
   concurrentClaim: WorktreeClaim | undefined,
+  linkedClaim: WorktreeClaim | undefined,
   worktree: WorktreeInventory
 ): LoopViolation[] => {
+  const completedHandoffMatches =
+    linkedClaim?.state === "released" &&
+    linkedClaim.releaseReason === "handoff" &&
+    linkedClaim.claimId === registered.claimId &&
+    linkedClaim.owner.agentId === registered.agentId &&
+    linkedClaim.path === worktree.path &&
+    linkedClaim.branch === worktree.branch &&
+    linkedClaim.headSha === worktree.headSha &&
+    linkedClaim.changeDigest === worktree.changeDigest;
   if (
     registered.role !== "concurrent-author" ||
+    completedHandoffMatches ||
     (concurrentClaim &&
       concurrentClaim.claimId === registered.claimId &&
       concurrentClaim.owner.agentId === registered.agentId)
@@ -1142,7 +1162,8 @@ const currentWorktreeViolations = (
   worktree: WorktreeInventory,
   registered: LoopWorktreeLease | undefined,
   preparation: LoopWorktreePreparation | undefined,
-  concurrentClaim: WorktreeClaim | undefined
+  concurrentClaim: WorktreeClaim | undefined,
+  linkedClaim: WorktreeClaim | undefined
 ): LoopViolation[] => {
   if (!registered) {
     return unregisteredWorktreeViolations(
@@ -1155,6 +1176,7 @@ const currentWorktreeViolations = (
   const violations = concurrentClaimViolations(
     registered,
     concurrentClaim,
+    linkedClaim,
     worktree
   );
   violations.push(...retainedWorktreeViolations(registered, worktree));
@@ -1268,13 +1290,9 @@ const verificationAgainst = (
   const coordination = readCoordinationDocumentFromCommonDirectory(
     lease.commonGitDirectory
   );
-  const primaryBranch =
-    inventory.worktrees.find(
-      (worktree) => worktree.path === lease.primaryCheckout
-    )?.branch ?? null;
-  const targetBranch = targetBranchForRef(
-    lease.primaryCheckout,
-    lease.targetRef
+  const { primaryBranch, targetBranch } = resolvePrimaryAndTargetBranches(
+    lease,
+    inventory
   );
   for (const worktree of inventory.worktrees) {
     const concurrentClaim = concurrentClaimFor(
@@ -1284,13 +1302,20 @@ const verificationAgainst = (
       primaryBranch,
       targetBranch
     );
+    const registered = registeredByPath.get(worktree.path);
+    const linkedClaim = registered?.claimId
+      ? coordination.claims.find(
+          (claim) => claim.claimId === registered.claimId
+        )
+      : undefined;
     violations.push(
       ...currentWorktreeViolations(
         lease,
         worktree,
-        registeredByPath.get(worktree.path),
+        registered,
         preparationByPath.get(worktree.path),
-        concurrentClaim
+        concurrentClaim,
+        linkedClaim
       )
     );
   }
@@ -1355,6 +1380,24 @@ const requireLease = (inventory: RepositoryInventory): LoopLease => {
     );
   }
   return withConcurrentAuthorAdmissions(lease, inventory);
+};
+
+const requireOwnedLease = (
+  repositoryPath: string,
+  runId: string,
+  ownerAgentId: string,
+  action: string
+): { inventory: RepositoryInventory; lease: LoopLease } => {
+  const inventory = captureInventory(repositoryPath);
+  const lease = requireLease(inventory);
+  assertMatchingRun(lease, runId);
+  if (lease.ownerAgentId !== ownerAgentId) {
+    throw new SimpleChangesError(
+      `Only loop owner ${lease.ownerAgentId} may ${action}.`,
+      EXIT_CODES.unsafe
+    );
+  }
+  return { inventory, lease };
 };
 
 const assertShipmentScopeRecorded = (lease: LoopLease): void => {
@@ -2351,7 +2394,7 @@ export const takeoverLoop = (
         );
       }
       assertMatchingRun(lease, runId);
-      const actualManifestDigest = sha256(JSON.stringify(lease));
+      const actualManifestDigest = loopManifestDigest(lease);
       if (actualManifestDigest !== expectedManifestDigest) {
         throw new SimpleChangesError(
           `Active-loop manifest digest changed: expected ${expectedManifestDigest}, observed ${actualManifestDigest}. Re-inspect before authorizing takeover.`,
@@ -2376,6 +2419,17 @@ export const takeoverLoop = (
   );
 };
 
+const emptyVerification = (
+  inventory: RepositoryInventory
+): LoopVerification => ({
+  active: false,
+  checkedAt: new Date().toISOString(),
+  currentBaselineDigest: inventory.baselineDigest,
+  ok: true,
+  runId: null,
+  violations: [],
+});
+
 export const verifyLoop = (repositoryPath: string): LoopVerification => {
   const opening = captureInventory(repositoryPath);
   return withStateLock(
@@ -2387,14 +2441,7 @@ export const verifyLoop = (repositoryPath: string): LoopVerification => {
         inventory.repository.commonGitDirectory
       );
       if (!storedLease) {
-        return {
-          active: false,
-          checkedAt: new Date().toISOString(),
-          currentBaselineDigest: inventory.baselineDigest,
-          ok: true,
-          runId: null,
-          violations: [],
-        };
+        return emptyVerification(inventory);
       }
       const projected = withConcurrentAuthorAdmissions(storedLease, inventory);
       const lease =
@@ -3017,54 +3064,79 @@ interface WorktreeRemovalAudit {
   targetRevision: string;
 }
 
+interface CleanWorktreeAuditMessages {
+  digestLabel: string;
+  dirty: (path: string) => string;
+  isRegistered: (path: string) => boolean;
+  missing: (path: string) => string;
+  missingHead: (path: string) => string;
+  primary: string;
+}
+
+const auditCleanNonPrimaryWorktree = (
+  lease: LoopLease,
+  inventory: RepositoryInventory,
+  pathInput: string,
+  changeDigest: string,
+  messages: CleanWorktreeAuditMessages
+): { current: WorktreeInventory & { headSha: string }; path: string } => {
+  const path = existsSync(pathInput)
+    ? realpathSync(pathInput)
+    : resolve(pathInput);
+  if (path === lease.primaryCheckout) {
+    throw new SimpleChangesError(messages.primary, EXIT_CODES.unsafe);
+  }
+  const current = inventory.worktrees.find(
+    (worktree) => worktree.path === path
+  );
+  if (!(current && messages.isRegistered(path))) {
+    throw new SimpleChangesError(messages.missing(path), EXIT_CODES.unsafe);
+  }
+  if (current.changeDigest !== changeDigest) {
+    throw new SimpleChangesError(
+      `${messages.digestLabel} digest does not match ${path}; expected current digest ${current.changeDigest}.`,
+      EXIT_CODES.unsafe
+    );
+  }
+  if (current.changes.length > 0) {
+    throw new SimpleChangesError(messages.dirty(path), EXIT_CODES.unsafe);
+  }
+  if (!current.headSha) {
+    throw new SimpleChangesError(messages.missingHead(path), EXIT_CODES.unsafe);
+  }
+  return { current: current as WorktreeInventory & { headSha: string }, path };
+};
+
 const auditWorktreeRemoval = (
   lease: LoopLease,
   inventory: RepositoryInventory,
   pathInput: string,
   changeDigest: string
 ): WorktreeRemovalAudit => {
-  const path = existsSync(pathInput)
-    ? realpathSync(pathInput)
-    : resolve(pathInput);
-  if (path === lease.primaryCheckout) {
-    throw new SimpleChangesError(
-      "The canonical primary checkout cannot be disposed by the active loop.",
-      EXIT_CODES.unsafe
-    );
-  }
-  const registered = lease.worktrees.find(
-    (worktree) =>
-      worktree.path === path &&
-      worktree.role === "preserved" &&
-      !worktree.createdByRun
+  const { current, path } = auditCleanNonPrimaryWorktree(
+    lease,
+    inventory,
+    pathInput,
+    changeDigest,
+    {
+      digestLabel: "Disposition",
+      dirty: (candidate) =>
+        `Opening worktree ${candidate} must be clean before removal can be authorized.`,
+      isRegistered: (candidate) =>
+        lease.worktrees.some(
+          (worktree) =>
+            worktree.path === candidate &&
+            worktree.role === "preserved" &&
+            !worktree.createdByRun
+        ),
+      missing: (candidate) =>
+        `Disposition path must name a current preserved worktree (one registered at loop start, or adopted through adopt-worktree or accept-paused-change): ${candidate}`,
+      missingHead: (candidate) =>
+        `Opening worktree ${candidate} has no auditable HEAD revision.`,
+      primary:
+        "The canonical primary checkout cannot be disposed by the active loop.",
+    }
   );
-  const current = inventory.worktrees.find(
-    (worktree) => worktree.path === path
-  );
-  if (!(registered && current)) {
-    throw new SimpleChangesError(
-      `Disposition path must name a current preserved worktree (one registered at loop start, or adopted through adopt-worktree or accept-paused-change): ${path}`,
-      EXIT_CODES.unsafe
-    );
-  }
-  if (current.changeDigest !== changeDigest) {
-    throw new SimpleChangesError(
-      `Disposition digest does not match ${path}; expected current digest ${current.changeDigest}.`,
-      EXIT_CODES.unsafe
-    );
-  }
-  if (current.changes.length > 0) {
-    throw new SimpleChangesError(
-      `Opening worktree ${path} must be clean before removal can be authorized.`,
-      EXIT_CODES.unsafe
-    );
-  }
-  if (!current.headSha) {
-    throw new SimpleChangesError(
-      `Opening worktree ${path} has no auditable HEAD revision.`,
-      EXIT_CODES.unsafe
-    );
-  }
   const targetRevision = currentTargetRevision(lease);
   const targetDescendsFromPinned =
     runGit(
@@ -3112,12 +3184,32 @@ const auditWorktreeRemoval = (
     }
     containmentMethod = "patch-equivalent";
   }
-  return {
-    containmentMethod,
-    current: current as WorktreeInventory & { headSha: string },
-    path,
-    targetRevision,
-  };
+  return { containmentMethod, current, path, targetRevision };
+};
+
+const validatedWorktreeDispositionInputs = (
+  ownerAgentIdInput: string,
+  changeDigestInput: string,
+  approvedByInput: string,
+  reasonInput: string,
+  reasonName: string
+): {
+  approvedBy: string;
+  changeDigest: string;
+  ownerAgentId: string;
+  reason: string;
+} => {
+  const ownerAgentId = requiredText(ownerAgentIdInput, "agent ID");
+  const approvedBy = requiredText(approvedByInput, "approved-by identity");
+  const reason = requiredText(reasonInput, reasonName);
+  const changeDigest = requiredText(changeDigestInput, "status digest");
+  if (!DIGEST_PATTERN.test(changeDigest)) {
+    throw new SimpleChangesError(
+      "status digest must be a 64-character lowercase SHA-256 value.",
+      EXIT_CODES.usage
+    );
+  }
+  return { approvedBy, changeDigest, ownerAgentId, reason };
 };
 
 export const authorizeWorktreeRemoval = (
@@ -3129,30 +3221,25 @@ export const authorizeWorktreeRemoval = (
   approvedByInput: string,
   reasonInput: string
 ): LoopLease => {
-  const ownerAgentId = requiredText(ownerAgentIdInput, "agent ID");
-  const approvedBy = requiredText(approvedByInput, "approved-by identity");
-  const reason = requiredText(reasonInput, "disposition reason");
-  const changeDigest = requiredText(changeDigestInput, "status digest");
-  if (!DIGEST_PATTERN.test(changeDigest)) {
-    throw new SimpleChangesError(
-      "status digest must be a 64-character lowercase SHA-256 value.",
-      EXIT_CODES.usage
+  const { approvedBy, changeDigest, ownerAgentId, reason } =
+    validatedWorktreeDispositionInputs(
+      ownerAgentIdInput,
+      changeDigestInput,
+      approvedByInput,
+      reasonInput,
+      "disposition reason"
     );
-  }
   const opening = captureInventory(repositoryPath);
   return withStateLock(
     opening.repository.commonGitDirectory,
     "authorize opening worktree removal",
     () => {
-      const inventory = captureInventory(repositoryPath);
-      const lease = requireLease(inventory);
-      assertMatchingRun(lease, runId);
-      if (lease.ownerAgentId !== ownerAgentId) {
-        throw new SimpleChangesError(
-          `Only loop owner ${lease.ownerAgentId} may record a worktree disposition.`,
-          EXIT_CODES.unsafe
-        );
-      }
+      const { inventory, lease } = requireOwnedLease(
+        repositoryPath,
+        runId,
+        ownerAgentId,
+        "record a worktree disposition"
+      );
       assertControllerActive(lease);
       const { containmentMethod, current, path, targetRevision } =
         auditWorktreeRemoval(lease, inventory, pathInput, changeDigest);
@@ -3198,42 +3285,24 @@ const auditWorktreeRetention = (
   pathInput: string,
   changeDigest: string
 ): { current: WorktreeInventory & { headSha: string }; path: string } => {
-  const path = existsSync(pathInput)
-    ? realpathSync(pathInput)
-    : resolve(pathInput);
-  if (path === lease.primaryCheckout) {
-    throw new SimpleChangesError(
-      "The canonical primary checkout cannot be retained as excluded concurrent state.",
-      EXIT_CODES.unsafe
-    );
-  }
-  const current = inventory.worktrees.find(
-    (worktree) => worktree.path === path
+  const { current, path } = auditCleanNonPrimaryWorktree(
+    lease,
+    inventory,
+    pathInput,
+    changeDigest,
+    {
+      digestLabel: "Retention",
+      dirty: (candidate) =>
+        `Worktree ${candidate} is changing or dirty; its owner must claim it as an active concurrent author or pause it before it can be excluded from this shipment.`,
+      isRegistered: () => true,
+      missing: (candidate) =>
+        `Retention path must name a current worktree: ${candidate}`,
+      missingHead: (candidate) =>
+        `Worktree ${candidate} has no auditable HEAD revision.`,
+      primary:
+        "The canonical primary checkout cannot be retained as excluded concurrent state.",
+    }
   );
-  if (!current) {
-    throw new SimpleChangesError(
-      `Retention path must name a current worktree: ${path}`,
-      EXIT_CODES.unsafe
-    );
-  }
-  if (current.changeDigest !== changeDigest) {
-    throw new SimpleChangesError(
-      `Retention digest does not match ${path}; expected current digest ${current.changeDigest}.`,
-      EXIT_CODES.unsafe
-    );
-  }
-  if (current.changes.length > 0) {
-    throw new SimpleChangesError(
-      `Worktree ${path} is changing or dirty; its owner must claim it as an active concurrent author or pause it before it can be excluded from this shipment.`,
-      EXIT_CODES.unsafe
-    );
-  }
-  if (!current.headSha) {
-    throw new SimpleChangesError(
-      `Worktree ${path} has no auditable HEAD revision.`,
-      EXIT_CODES.unsafe
-    );
-  }
   const registered = lease.worktrees.find((worktree) => worktree.path === path);
   if (
     registered &&
@@ -3263,7 +3332,7 @@ const auditWorktreeRetention = (
       EXIT_CODES.unsafe
     );
   }
-  return { current: current as WorktreeInventory & { headSha: string }, path };
+  return { current, path };
 };
 
 export const retainExcludedWorktree = (
@@ -3275,30 +3344,25 @@ export const retainExcludedWorktree = (
   approvedByInput: string,
   reasonInput: string
 ): LoopLease => {
-  const ownerAgentId = requiredText(ownerAgentIdInput, "agent ID");
-  const approvedBy = requiredText(approvedByInput, "approved-by identity");
-  const reason = requiredText(reasonInput, "retention reason");
-  const changeDigest = requiredText(changeDigestInput, "status digest");
-  if (!DIGEST_PATTERN.test(changeDigest)) {
-    throw new SimpleChangesError(
-      "status digest must be a 64-character lowercase SHA-256 value.",
-      EXIT_CODES.usage
+  const { approvedBy, changeDigest, ownerAgentId, reason } =
+    validatedWorktreeDispositionInputs(
+      ownerAgentIdInput,
+      changeDigestInput,
+      approvedByInput,
+      reasonInput,
+      "retention reason"
     );
-  }
   const opening = captureInventory(repositoryPath);
   return withStateLock(
     opening.repository.commonGitDirectory,
     "retain excluded worktree",
     () => {
-      const inventory = captureInventory(repositoryPath);
-      const lease = requireLease(inventory);
-      assertMatchingRun(lease, runId);
-      if (lease.ownerAgentId !== ownerAgentId) {
-        throw new SimpleChangesError(
-          `Only loop owner ${lease.ownerAgentId} may retain an excluded worktree.`,
-          EXIT_CODES.unsafe
-        );
-      }
+      const { inventory, lease } = requireOwnedLease(
+        repositoryPath,
+        runId,
+        ownerAgentId,
+        "retain an excluded worktree"
+      );
       assertControllerActive(lease);
       const { current, path } = auditWorktreeRetention(
         lease,
@@ -3343,30 +3407,25 @@ export const grantLoopOverride = (
   approvedByInput: string,
   reasonInput: string
 ): LoopLease => {
-  const ownerAgentId = requiredText(ownerAgentIdInput, "agent ID");
-  const approvedBy = requiredText(approvedByInput, "approved-by identity");
-  const reason = requiredText(reasonInput, "override reason");
-  const changeDigest = requiredText(changeDigestInput, "status digest");
-  if (!DIGEST_PATTERN.test(changeDigest)) {
-    throw new SimpleChangesError(
-      "status digest must be a 64-character lowercase SHA-256 value.",
-      EXIT_CODES.usage
+  const { approvedBy, changeDigest, ownerAgentId, reason } =
+    validatedWorktreeDispositionInputs(
+      ownerAgentIdInput,
+      changeDigestInput,
+      approvedByInput,
+      reasonInput,
+      "override reason"
     );
-  }
   const opening = captureInventory(repositoryPath);
   return withStateLock(
     opening.repository.commonGitDirectory,
     "loop allow",
     () => {
-      const inventory = captureInventory(repositoryPath);
-      const lease = requireLease(inventory);
-      assertMatchingRun(lease, runId);
-      if (lease.ownerAgentId !== ownerAgentId) {
-        throw new SimpleChangesError(
-          `Only loop owner ${lease.ownerAgentId} may record an override.`,
-          EXIT_CODES.unsafe
-        );
-      }
+      const { inventory, lease } = requireOwnedLease(
+        repositoryPath,
+        runId,
+        ownerAgentId,
+        "record an override"
+      );
       assertControllerActive(lease);
       const path = existsSync(pathInput)
         ? realpathSync(pathInput)
@@ -3529,15 +3588,12 @@ export const adoptPausedWorktree = (
     opening.repository.commonGitDirectory,
     "loop adopt-worktree",
     () => {
-      const inventory = captureInventory(repositoryPath);
-      const lease = requireLease(inventory);
-      assertMatchingRun(lease, runId);
-      if (lease.ownerAgentId !== ownerAgentId) {
-        throw new SimpleChangesError(
-          `Only loop owner ${lease.ownerAgentId} may adopt a paused worktree.`,
-          EXIT_CODES.unsafe
-        );
-      }
+      const { inventory, lease } = requireOwnedLease(
+        repositoryPath,
+        runId,
+        ownerAgentId,
+        "adopt a paused worktree"
+      );
       assertControllerActive(lease);
       const evidence = exactPausedEvidence(
         lease,
@@ -3619,15 +3675,12 @@ export const rebaselineLoopWorktrees = (
     opening.repository.commonGitDirectory,
     "loop rebaseline",
     () => {
-      const inventory = captureInventory(repositoryPath);
-      const lease = requireLease(inventory);
-      assertMatchingRun(lease, runId);
-      if (lease.ownerAgentId !== ownerAgentId) {
-        throw new SimpleChangesError(
-          `Only loop owner ${lease.ownerAgentId} may re-baseline the worktree manifest. Next: run \`simple-changes loop takeover\` first if this controller is being resumed by a different agent.`,
-          EXIT_CODES.unsafe
-        );
-      }
+      const { inventory, lease } = requireOwnedLease(
+        repositoryPath,
+        runId,
+        ownerAgentId,
+        "re-baseline the worktree manifest. Next: run `simple-changes loop takeover` first if this controller is being resumed by a different agent"
+      );
       assertControllerActive(lease);
       const lateArrivalPaths = new Set(
         verificationAgainst(lease, inventory)
@@ -3692,15 +3745,12 @@ export const acceptPausedWorktreeChange = (
     opening.repository.commonGitDirectory,
     "loop accept-paused-change",
     () => {
-      const inventory = captureInventory(repositoryPath);
-      const lease = requireLease(inventory);
-      assertMatchingRun(lease, runId);
-      if (lease.ownerAgentId !== ownerAgentId) {
-        throw new SimpleChangesError(
-          `Only loop owner ${lease.ownerAgentId} may accept a paused change.`,
-          EXIT_CODES.unsafe
-        );
-      }
+      const { inventory, lease } = requireOwnedLease(
+        repositoryPath,
+        runId,
+        ownerAgentId,
+        "accept a paused change"
+      );
       assertControllerActive(lease);
       const evidence = exactPausedEvidence(
         lease,
@@ -3778,15 +3828,12 @@ export const markWorktreeResumeReady = (
     opening.repository.commonGitDirectory,
     "worktree resume-ready",
     () => {
-      const inventory = captureInventory(repositoryPath);
-      const lease = requireLease(inventory);
-      assertMatchingRun(lease, runId);
-      if (lease.ownerAgentId !== ownerAgentId) {
-        throw new SimpleChangesError(
-          `Only loop owner ${lease.ownerAgentId} may mark a worktree resume-ready.`,
-          EXIT_CODES.unsafe
-        );
-      }
+      const { inventory, lease } = requireOwnedLease(
+        repositoryPath,
+        runId,
+        ownerAgentId,
+        "mark a worktree resume-ready"
+      );
       assertControllerActive(lease);
       const verification = verificationAgainst(lease, inventory);
       if (!verification.ok) {
@@ -3845,15 +3892,12 @@ export const recordRemoteBranchReconciliation = (
     opening.repository.commonGitDirectory,
     "record remote branch reconciliation",
     () => {
-      const inventory = captureInventory(repositoryPath);
-      const lease = requireLease(inventory);
-      assertMatchingRun(lease, runId);
-      if (lease.ownerAgentId !== ownerAgentId) {
-        throw new SimpleChangesError(
-          `Only loop owner ${lease.ownerAgentId} may record remote branch reconciliation.`,
-          EXIT_CODES.unsafe
-        );
-      }
+      const { inventory, lease } = requireOwnedLease(
+        repositoryPath,
+        runId,
+        ownerAgentId,
+        "record remote branch reconciliation"
+      );
       assertControllerActive(lease);
       if (!lease.openingRemoteInventory) {
         throw new SimpleChangesError(
@@ -3923,11 +3967,18 @@ export interface FinalizationRemovedBranch {
   method: TargetContainmentMethod;
 }
 
+export interface FinalizationReleasedClaim {
+  claimId: string;
+  path: string;
+  releaseReason: "shipped" | "worktree-absent";
+}
+
 export interface FinalizationCleanupResult {
   cleanedPrimaryPaths: string[];
   errors: string[];
   primaryUpdated: boolean;
   prunedWorktreeMetadata: number;
+  releasedClaims: FinalizationReleasedClaim[];
   removedBranches: FinalizationRemovedBranch[];
   removedWorktrees: string[];
 }
@@ -3937,9 +3988,149 @@ const emptyFinalizationCleanup = (): FinalizationCleanupResult => ({
   errors: [],
   primaryUpdated: false,
   prunedWorktreeMetadata: 0,
+  releasedClaims: [],
   removedBranches: [],
   removedWorktrees: [],
 });
+
+const completedHandoffContainment = (
+  registered: LoopWorktreeLease,
+  claim: WorktreeClaim,
+  worktree: WorktreeInventory,
+  repositoryPath: string,
+  targetRevision: string
+): TargetContainmentMethod | null => {
+  if (
+    claim.state !== "released" ||
+    claim.releaseReason !== "handoff" ||
+    claim.owner.agentId !== registered.agentId ||
+    claim.path !== worktree.path ||
+    claim.branch !== worktree.branch ||
+    claim.headSha !== worktree.headSha ||
+    claim.changeDigest !== worktree.changeDigest ||
+    worktree.changes.length > 0
+  ) {
+    return null;
+  }
+  return targetContainmentAudit(
+    repositoryPath,
+    targetRevision,
+    worktree.headSha
+  ).method;
+};
+
+/**
+ * Release claims that finalization has already proven obsolete and demote
+ * their lease entries from `concurrent-author` to unchanged `preserved`, so
+ * the ordinary cleanup candidate audit can see them:
+ *
+ * - a claim on a prunable worktree (directory gone) protects nothing;
+ * - the controller's own active claim on a clean checkout whose exact head the
+ *   target already contains is finished work, not concurrent authoring.
+ *
+ * Any other owner's live claim is untouched. This runs under both the loop
+ * and coordination locks; the demoted entry keeps its exact current head and
+ * digest as the new baseline so later verification still fails closed on any
+ * change.
+ */
+const reconcileConcurrentAuthorClaims = (
+  lease: LoopLease,
+  inventory: RepositoryInventory,
+  repositoryPath: string,
+  targetRevision: string,
+  cleanup: FinalizationCleanupResult
+): LoopLease => {
+  const coordination = readCoordinationDocumentFromCommonDirectory(
+    lease.commonGitDirectory
+  );
+  const worktreesByPath = new Map(
+    inventory.worktrees.map((worktree) => [worktree.path, worktree])
+  );
+  const demoted = new Map<string, LoopWorktreeLease>();
+  const handoffDispositions = new Map<string, LoopWorktreeDisposition>();
+  for (const registered of lease.worktrees) {
+    if (registered.role !== "concurrent-author" || !registered.claimId) {
+      continue;
+    }
+    const worktree = worktreesByPath.get(registered.path);
+    const claim = coordination.claims.find(
+      (item) => item.claimId === registered.claimId
+    );
+    if (!(worktree && claim)) {
+      continue;
+    }
+    const handoffContainment = completedHandoffContainment(
+      registered,
+      claim,
+      worktree,
+      repositoryPath,
+      targetRevision
+    );
+    if (handoffContainment) {
+      const { claimId: _claimId, ...rest } = registered;
+      demoted.set(registered.path, {
+        ...rest,
+        ...worktreeLease(worktree, "preserved", null, registered.createdByRun),
+      });
+      handoffDispositions.set(
+        registered.path,
+        automaticRemovalDisposition(lease, worktree, targetRevision)
+      );
+      continue;
+    }
+    if (claim.state !== "active") {
+      continue;
+    }
+    let releaseReason: FinalizationReleasedClaim["releaseReason"] | null = null;
+    if (worktree.prunable) {
+      releaseReason = "worktree-absent";
+    } else if (
+      claim.owner.agentId === lease.ownerAgentId &&
+      claim.headSha === worktree.headSha &&
+      claim.changeDigest === worktree.changeDigest &&
+      worktree.changes.length === 0 &&
+      worktree.headSha &&
+      targetContainsRevision(repositoryPath, targetRevision, worktree.headSha)
+    ) {
+      releaseReason = "shipped";
+    }
+    if (!releaseReason) {
+      continue;
+    }
+    releaseClaimUnderLock(
+      lease.commonGitDirectory,
+      claim.claimId,
+      lease.ownerAgentId,
+      releaseReason
+    );
+    cleanup.releasedClaims.push({
+      claimId: claim.claimId,
+      path: claim.path,
+      releaseReason,
+    });
+    const { claimId: _claimId, ...rest } = registered;
+    demoted.set(registered.path, {
+      ...rest,
+      ...worktreeLease(worktree, "preserved", null, registered.createdByRun),
+    });
+  }
+  if (demoted.size === 0) {
+    return lease;
+  }
+  return writeLease({
+    ...lease,
+    dispositions: [
+      ...(lease.dispositions ?? []).filter(
+        (disposition) => !handoffDispositions.has(disposition.path)
+      ),
+      ...handoffDispositions.values(),
+    ],
+    updatedAt: new Date().toISOString(),
+    worktrees: lease.worktrees.map(
+      (worktree) => demoted.get(worktree.path) ?? worktree
+    ),
+  });
+};
 
 const targetContainsRevision = (
   repositoryPath: string,
@@ -4000,24 +4191,43 @@ const targetContainmentAudit = (
 
 const automaticRemovalDisposition = (
   lease: LoopLease,
-  worktree: WorktreeInventory & { headSha: string },
+  worktree: WorktreeInventory,
   targetRevision: string
-): LoopWorktreeDisposition => ({
-  approvedBy: `mode:${lease.mode}`,
-  branch: worktree.branch,
-  changeDigest: worktree.changeDigest,
-  containmentMethod: "target-contained",
-  createdAt: new Date().toISOString(),
-  headSha: worktree.headSha,
-  outcome: "remove-after-audit",
-  path: worktree.path,
-  reason:
-    "The current integration request authorizes automatic cleanup after repeated inventory proved this unchanged clean checkout has zero commits outside the refreshed target.",
-  status: "intended",
-  targetRef: lease.targetRef,
-  targetRevision,
-  uniqueCommitCount: 0,
-});
+): LoopWorktreeDisposition => {
+  if (!worktree.headSha) {
+    throw new SimpleChangesError(
+      `Cannot record automatic cleanup without a commit identity for ${worktree.path}.`,
+      EXIT_CODES.unsafe
+    );
+  }
+  const containment = targetContainmentAudit(
+    lease.primaryCheckout,
+    targetRevision,
+    worktree.headSha
+  );
+  if (!containment.method) {
+    throw new SimpleChangesError(
+      `Cannot record automatic cleanup without target containment evidence for ${worktree.path}.`,
+      EXIT_CODES.unsafe
+    );
+  }
+  return {
+    approvedBy: `mode:${lease.mode}`,
+    branch: worktree.branch,
+    changeDigest: worktree.changeDigest,
+    containmentMethod: containment.method,
+    createdAt: new Date().toISOString(),
+    headSha: worktree.headSha,
+    outcome: "remove-after-audit",
+    path: worktree.path,
+    reason:
+      "The current integration request authorizes automatic cleanup after repeated inventory proved this unchanged clean checkout is contained in the refreshed target.",
+    status: "intended",
+    targetRef: lease.targetRef,
+    targetRevision,
+    uniqueCommitCount: 0,
+  };
+};
 
 type AutomaticCleanupCandidate = WorktreeInventory & { headSha: string };
 
@@ -4039,6 +4249,20 @@ const automaticCleanupCandidates = (
     )?.branch ?? null;
   return inventory.worktrees.filter((worktree) => {
     const registered = registeredByPath.get(worktree.path);
+    const removalDisposition = matchingRemovalDisposition(lease, worktree);
+    const targetContained = targetContainsRevision(
+      inventory.repository.primaryCheckout,
+      targetRevision,
+      worktree.headSha
+    );
+    const dispositionContained = Boolean(
+      removalDisposition &&
+        targetContainmentAudit(
+          inventory.repository.primaryCheckout,
+          targetRevision,
+          worktree.headSha
+        ).method === removalDisposition.containmentMethod
+    );
     const basicCandidate = Boolean(
       !worktree.isPrimary &&
         registered &&
@@ -4046,11 +4270,7 @@ const automaticCleanupCandidates = (
         registered.role !== "retained" &&
         worktree.changes.length === 0 &&
         worktree.headSha &&
-        targetContainsRevision(
-          inventory.repository.primaryCheckout,
-          targetRevision,
-          worktree.headSha
-        )
+        (targetContained || dispositionContained)
     );
     if (!(basicCandidate && registered)) {
       return false;
@@ -4697,6 +4917,13 @@ const automaticFinalizationCleanup = (
   }
   const repositoryPath = inventoryInput.repository.primaryCheckout;
   lease = completeAbsentRemovalIntents(lease, inventoryInput, targetRevision);
+  lease = reconcileConcurrentAuthorClaims(
+    lease,
+    inventoryInput,
+    repositoryPath,
+    targetRevision,
+    cleanup
+  );
   const candidates = automaticCleanupCandidates(
     lease,
     inventoryInput,
@@ -4765,6 +4992,20 @@ const automaticFinalizationCleanup = (
     ).values(),
   ].sort((left, right) => left.branch.localeCompare(right.branch));
   cleanup.removedWorktrees = [...new Set(cleanup.removedWorktrees)].sort();
+  for (const claim of releaseAbsentWorktreeClaimsUnderLock(
+    lease.commonGitDirectory,
+    captureInventory(repositoryPath),
+    lease.ownerAgentId
+  )) {
+    cleanup.releasedClaims.push({
+      claimId: claim.claimId,
+      path: claim.path,
+      releaseReason: "worktree-absent",
+    });
+  }
+  cleanup.releasedClaims.sort((left, right) =>
+    left.path.localeCompare(right.path)
+  );
   return { cleanup, lease };
 };
 
@@ -4986,7 +5227,7 @@ export interface PostCleanupRecoveryResult {
 const completedPostCleanupRecovery = (
   commonGitDirectory: string,
   runId: string,
-  receiptDigest: string
+  receiptDigests: readonly string[]
 ): PostCleanupRecoveryResult | null => {
   const completedPath = recoveryHistoryPath(
     commonGitDirectory,
@@ -5004,7 +5245,7 @@ const completedPostCleanupRecovery = (
     receiptDigest: string;
     retiredClaimIds: string[];
   }>(completedPath);
-  if (completed.receiptDigest !== receiptDigest) {
+  if (!receiptDigests.includes(completed.receiptDigest)) {
     throw new SimpleChangesError(
       "Post-cleanup recovery was already completed with different evidence.",
       EXIT_CODES.unsafe
@@ -5186,7 +5427,8 @@ const preparePostCleanupRecoveryIntent = (
   lease: LoopLease,
   ownerAgentId: string,
   receipt: PostCleanupRecoveryReceipt,
-  receiptDigest: string
+  canonicalReceiptDigest: string,
+  legacyReceiptDigest: string
 ): { absentPaths: string[]; intent: PostCleanupRecoveryIntent } => {
   const intentPath = recoveryHistoryPath(
     commonGitDirectory,
@@ -5196,6 +5438,12 @@ const preparePostCleanupRecoveryIntent = (
   const existingIntent = existsSync(intentPath)
     ? readImmutableRecoveryEvent<PostCleanupRecoveryIntent>(intentPath)
     : null;
+  // An intent recorded by an earlier version carries the key-order-sensitive
+  // digest; keep using it so that interrupted recovery can still resume.
+  const receiptDigest =
+    existingIntent?.receiptDigest === legacyReceiptDigest
+      ? legacyReceiptDigest
+      : canonicalReceiptDigest;
   const absentPaths = postCleanupAbsentPaths(
     inventory,
     lease,
@@ -5262,12 +5510,15 @@ export const recoverPostCleanupLoop = (
   const opening = captureInventory(repositoryPath);
   const { commonGitDirectory } = opening.repository;
   return withStateLock(commonGitDirectory, "post-cleanup recovery", () => {
-    const receiptDigest = sha256(JSON.stringify(receipt));
-    const prior = completedPostCleanupRecovery(
-      commonGitDirectory,
-      runId,
-      receiptDigest
-    );
+    const receiptDigest = sha256Json(receipt);
+    // Earlier versions digested the receipt with key-order-sensitive
+    // JSON.stringify; accept that digest too so recovery evidence recorded
+    // under the old version still matches.
+    const legacyReceiptDigest = sha256(JSON.stringify(receipt));
+    const prior = completedPostCleanupRecovery(commonGitDirectory, runId, [
+      receiptDigest,
+      legacyReceiptDigest,
+    ]);
     if (prior) {
       return prior;
     }
@@ -5284,7 +5535,8 @@ export const recoverPostCleanupLoop = (
           lease,
           ownerAgentId,
           receipt,
-          receiptDigest
+          receiptDigest,
+          legacyReceiptDigest
         );
         if (
           process.env.NODE_ENV === "test" &&
@@ -5312,13 +5564,13 @@ export const recoverPostCleanupLoop = (
             archivedAt: intent.archivedAt,
             authority: "close-only",
             kind: "post-cleanup-recovery-completed",
-            receiptDigest,
+            receiptDigest: intent.receiptDigest,
             retiredClaimIds,
             runId,
             schemaVersion: 1,
           }
         );
-        if (completed.receiptDigest !== receiptDigest) {
+        if (completed.receiptDigest !== intent.receiptDigest) {
           throw new SimpleChangesError(
             "Post-cleanup recovery completion evidence does not match the approved receipt.",
             EXIT_CODES.unsafe
@@ -5895,15 +6147,12 @@ export const endLoop = (
     opening.repository.commonGitDirectory,
     "loop end",
     () => {
-      const inventory = captureInventory(repositoryPath);
-      const lease = requireLease(inventory);
-      assertMatchingRun(lease, runId);
-      if (lease.ownerAgentId !== ownerAgentId) {
-        throw new SimpleChangesError(
-          `Only loop owner ${lease.ownerAgentId} may end this loop.`,
-          EXIT_CODES.unsafe
-        );
-      }
+      const { inventory, lease } = requireOwnedLease(
+        repositoryPath,
+        runId,
+        ownerAgentId,
+        "end this loop"
+      );
       assertControllerActive(lease);
       const verification = verificationAgainst(lease, inventory);
       const blockers = loopCompletionBlockers(lease, inventory, verification);
@@ -6053,14 +6302,7 @@ export const loopStatus = (
   }
   const verification = lease
     ? verificationAgainst(lease, inventory)
-    : {
-        active: false,
-        checkedAt: new Date().toISOString(),
-        currentBaselineDigest: inventory.baselineDigest,
-        ok: true,
-        runId: null,
-        violations: [],
-      };
+    : emptyVerification(inventory);
   return {
     guidance: loopGuidanceFor(lease, verification),
     lease,

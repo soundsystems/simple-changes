@@ -9,10 +9,8 @@
     "transactionId",
     "releaseSetId",
     "phase",
-    "attempt",
     "releaseTrain",
     "boundary",
-    "environment",
     "mutationScope",
     "inputTargetRevision",
     "finalizedTargetRevision",
@@ -95,7 +93,6 @@
         "properties": {
           "mutationScope": { "const": "prepare-release-files" },
           "finalizedTargetRevision": { "type": "null" },
-          "approvedVersion": { "type": "string", "minLength": 1 },
           "approvedDecisionDigest": {
             "type": "string",
             "pattern": "^[0-9a-f]{64}$"
@@ -115,12 +112,42 @@
             "type": "string",
             "pattern": "^[0-9a-f]{40,64}$"
           },
-          "approvedVersion": { "type": "string", "minLength": 1 },
           "approvedDecisionDigest": {
             "type": "string",
             "pattern": "^[0-9a-f]{64}$"
           }
         }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "phase": { "enum": ["prepare", "verify"] },
+          "boundary": {
+            "enum": [
+              "release-bearing-merge",
+              "web-production",
+              "package-publication",
+              "store-release",
+              "other-public-release"
+            ]
+          }
+        },
+        "required": ["phase", "boundary"]
+      },
+      "then": {
+        "properties": {
+          "approvedVersion": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": { "boundary": { "const": "none" } },
+        "required": ["boundary"]
+      },
+      "then": {
+        "properties": { "approvedVersion": { "type": "null" } }
       }
     }
   ]

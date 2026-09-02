@@ -18,7 +18,9 @@
     "useUnknownInCatchVariables": true
   },
   "include": [
+    "skills/publish-skill/scripts/**/*.ts",
     "skills/simple-changes/scripts/**/*.ts",
+    "tooling/publish-skill/**/*.ts",
     "tooling/simple-changes/**/*.ts"
   ]
 }

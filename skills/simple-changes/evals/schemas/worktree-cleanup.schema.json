@@ -171,6 +171,19 @@
     "plannedPrunePaths": {
       "type": "array",
       "items": { "type": "string", "minLength": 1 }
+    },
+    "releasedClaims": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["claimId", "path", "releaseReason"],
+        "properties": {
+          "claimId": { "type": "string", "pattern": "^claim-[a-z0-9-]+$" },
+          "path": { "type": "string", "minLength": 1 },
+          "releaseReason": { "enum": ["worktree-absent"] }
+        }
+      }
     }
   },
   "allOf": [

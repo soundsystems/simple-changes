@@ -37,17 +37,17 @@ interface LockFile {
 }
 
 interface Candidate {
-  computedHash?: string;
+  computedHash?: string | undefined;
   installIdentities: Set<string>;
   installPaths: Set<string>;
   lockPath?: string;
   physicalInstallPaths: Set<string>;
-  ref?: string;
+  ref?: string | undefined;
   repositoryRoot: string;
   skill: string;
-  skillPath?: string;
+  skillPath?: string | undefined;
   source: string;
-  sourceType?: string;
+  sourceType?: string | undefined;
   symlinkPaths: Set<string>;
 }
 

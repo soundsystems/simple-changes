@@ -47,6 +47,22 @@ export type ChangelogHandling =
   | "preserve-and-report"
   | "ask";
 
+export type ChangelogInstallDecision =
+  | "install-now"
+  | "install-after-shipment"
+  | "install-later"
+  | "declined";
+
+// Outcome of the Simple Changelogs install offer. It is a per-run consent
+// record, never a saved preference: installation grants no version, release,
+// publication, deployment, or data-write authority.
+export interface ChangelogInstallOffer {
+  command: string | null;
+  decision: ChangelogInstallDecision | null;
+  distribution: string | null;
+  offered: boolean;
+}
+
 export type MigrationHandling =
   | "ask-after-review"
   | "auto-apply-reviewed-routine"
@@ -64,7 +80,10 @@ export interface MigrationTarget {
 export interface ChangelogCoordination {
   capabilityAvailable: boolean;
   capabilityHelpers: string[];
-  capabilityStatus: "absent" | "unverified";
+  // `not-applicable`: a provider was discovered, but every discovered
+  // installation declares a discovery-only marker (empty request or receipt
+  // versions) and implements no release handoff, so delegation cannot run.
+  capabilityStatus: "absent" | "not-applicable" | "unverified";
   guidanceUpdate: {
     actions: Array<"walkthrough" | "continue" | "view-release-notes">;
     detailsPath: string | null;
@@ -83,6 +102,9 @@ export interface ChangelogCoordination {
     summaryBullets: string[];
     walkthroughQuestion: "Would you like me to walk you through the recent Simple Changelogs updates before I continue?";
   };
+  // Distribution of the selected provider (`full`, `web`, `cms`, ...) from
+  // its marker or installation name; null when unselected or prose-only.
+  providerDistribution: string | null;
   providerEvidence: "marker" | "inferred" | "none";
   providers: string[];
   releaseSurfaces: string[];
@@ -103,6 +125,7 @@ export interface RepoPolicy {
   migrationTargets: MigrationTarget[];
   productionDeploy: "ask" | "allow" | "deny";
   proposalScheduling: "balanced" | "consecutive" | "parallel";
+  proposalSignatures: "agent-and-version" | "none";
   questions: "blocking-only" | "always" | "never";
   review: "repository-policy" | "independent" | "provider-policy";
   schemaVersion: 1;
@@ -428,9 +451,12 @@ export interface ChangelogCapabilities {
 export interface ChangelogRequest {
   approvedDecisionDigest: string | null;
   approvedVersion: string | null;
-  attempt: number;
+  // Informational only: the provider validates these when present but never
+  // stores, echoes, or keys retries on them. Transaction identity is the
+  // transaction ID, phase, revisions, and prior receipt digest.
+  attempt?: number;
   boundary: ReleaseBoundary;
-  environment: string;
+  environment?: string;
   finalizedTargetRevision: string | null;
   inputTargetRevision: string;
   mutationScope: "read-only" | "prepare-release-files";
@@ -692,14 +718,22 @@ export type WorktreeCoordinationState =
   | "active"
   | "pause-requested"
   | "paused"
-  | "adopted-preserved"
   | "detach-requested"
+  | "adopted-preserved"
   | "detached"
   | "attached"
   | "resume-ready"
+  | "blocked"
   | "released"
-  | "stale"
-  | "blocked";
+  | "stale";
+
+export type WorktreeClaimReleaseReason =
+  | "owner-release"
+  | "handoff"
+  | "shipped"
+  | "worktree-absent"
+  | "takeover"
+  | "post-cleanup-recovery";
 
 export interface WorktreeClaimOwner {
   adapter: string;
@@ -723,6 +757,7 @@ export interface WorktreeClaim {
   headSha: string | null;
   owner: WorktreeClaimOwner;
   path: string;
+  releaseReason?: WorktreeClaimReleaseReason;
   repositoryId: string;
   resumeTarget?: WorktreeResumeTarget;
   schemaVersion: 1;
@@ -1031,30 +1066,4 @@ export interface LoopVerification {
   violations: LoopViolation[];
 }
 
-export type SchemaName =
-  | "repo-policy"
-  | "changelog-capabilities"
-  | "changelog-request"
-  | "changelog-receipt"
-  | "initialization"
-  | "inventory"
-  | "change-plan"
-  | "permission-bundle"
-  | "emergency-shipping"
-  | "migration-review"
-  | "migration-pending"
-  | "migration-apply-plan"
-  | "run-state"
-  | "provider-receipt"
-  | "release-delivery-receipt"
-  | "post-cleanup-recovery"
-  | "shipment-outcome"
-  | "remote-branch-reconciliation"
-  | "release-consistency"
-  | "release-notes"
-  | "loop-lease"
-  | "loop-close-equivalent"
-  | "worktree-coordination"
-  | "worktree-takeover"
-  | "worktree-equivalence"
-  | "worktree-cleanup";
+export type { SchemaName } from "./schema.ts";

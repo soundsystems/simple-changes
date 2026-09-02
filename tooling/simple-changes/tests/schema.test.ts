@@ -352,6 +352,91 @@ describe("closed schemas", () => {
     ).toThrow();
   });
 
+  test("accepts a version-less prepared receipt only with a version-less decision", () => {
+    const entryReceipt: ChangelogReceipt = {
+      checks: ["Inspected exact target."],
+      decisionDigest: "d".repeat(64),
+      effectivePolicyDigest: "e".repeat(64),
+      evidence: ["Operator workflow changed."],
+      observedAt: "2026-09-02T12:00:00-05:00",
+      paths: [{ digest: "f".repeat(64), path: "CMS_CHANGELOG.json" }],
+      phase: "prepare",
+      provider: "simple-changelogs",
+      reason: null,
+      reasonCode: null,
+      release: null,
+      releaseImpact: "minor",
+      releaseSetId: null,
+      requiredAction: null,
+      revisionLineage: {
+        finalizedTargetRevision: null,
+        inputTargetRevision: "a".repeat(40),
+        reconciliationHeadRevision: "b".repeat(40),
+      },
+      schemaVersion: 2,
+      sourceRevision: "a".repeat(40),
+      status: "prepared",
+      transactionId: "cms-entry-01",
+      versionDecision: null,
+    };
+    expect(
+      validateSchema<ChangelogReceipt>("changelog-receipt", entryReceipt)
+    ).toEqual(entryReceipt);
+    expect(() =>
+      validateSchema("changelog-receipt", {
+        ...entryReceipt,
+        versionDecision: {
+          boundary: "none",
+          bumpLevel: "patch",
+          currentVersion: null,
+          policyAction: "automatic",
+          releaseTrain: "cms-operators",
+          resolution: "automatic",
+          selectedVersion: "1.0.1",
+          source: "repository-policy",
+          suggestedVersion: "1.0.1",
+        },
+      })
+    ).toThrow();
+  });
+
+  test("treats changelog request attempt and environment as optional shape-checked fields", () => {
+    const request = {
+      approvedDecisionDigest: null,
+      approvedVersion: null,
+      boundary: "web-production",
+      finalizedTargetRevision: null,
+      inputTargetRevision: "a".repeat(40),
+      mutationScope: "read-only",
+      phase: "classify",
+      priorReceiptDigest: null,
+      releaseSetId: null,
+      releaseTrain: "web",
+      schemaVersion: 1,
+      supportedReceiptVersions: [1, 2],
+      transactionId: "release-01",
+    };
+    expect(
+      validateSchema<typeof request>("changelog-request", request)
+    ).toEqual(request);
+    expect(
+      validateSchema("changelog-request", {
+        ...request,
+        attempt: 2,
+        environment: "production",
+      })
+    ).toMatchObject({ attempt: 2, environment: "production" });
+    expect(() =>
+      validateSchema("changelog-request", { ...request, attempt: 0 })
+    ).toThrow();
+    expect(() =>
+      validateSchema("changelog-request", { ...request, environment: "" })
+    ).toThrow();
+    expect(() =>
+      validateSchema("changelog-request", { ...request, environment: null })
+    ).toThrow();
+  });
+
   test("rejects run approvals without a revision", () => {
     expect(() =>
       validateSchema("run-state", {
@@ -629,6 +714,28 @@ describe("closed schemas", () => {
         document
       )
     ).toEqual(document);
+    const [claim] = document.claims;
+    const [event] = document.events;
+    if (!(claim && event)) {
+      throw new Error("coordination compatibility fixture is incomplete");
+    }
+    for (const state of [
+      "pause-requested",
+      "detach-requested",
+      "blocked",
+    ] as const) {
+      const legacy: WorktreeCoordinationDocument = {
+        ...document,
+        claims: [{ ...claim, state }],
+        events: [{ ...event, state }],
+      };
+      expect(
+        validateSchema<WorktreeCoordinationDocument>(
+          "worktree-coordination",
+          legacy
+        )
+      ).toEqual(legacy);
+    }
     expect(() =>
       validateSchema("worktree-coordination", {
         ...document,

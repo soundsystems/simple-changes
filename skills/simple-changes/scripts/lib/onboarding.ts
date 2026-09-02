@@ -152,7 +152,7 @@ const FINISH_CHOICES = [
 export const PROPOSAL_SIGNATURE_CHOICES = [
   {
     description:
-      "Every agent appends its model name and version to the proposal description when it authors, reviews, or merges, so provider history shows which model did what.",
+      "Every agent appends an `Authored by`, `Reviewed by`, or `Merged by` line with its model name and version to the proposal description, so provider history shows which model did what.",
     label: "Sign with model name and version (Recommended)",
     value: "agent-and-version",
   },

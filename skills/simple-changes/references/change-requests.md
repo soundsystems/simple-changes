@@ -39,19 +39,20 @@ complete audit.
 When `proposalSignatures` is `agent-and-version` (the default), end the
 proposal description with a signature block that names every agent that acted
 on it. Use exactly one line per action, in the order the actions happened,
-after a horizontal rule:
+after a horizontal rule. No dates: the provider already timestamps every
+proposal event.
 
 ```markdown
 ---
-Signed by Claude Fable 5.1: authored 2026-09-02
-Signed by Claude Sonnet 5: reviewed 2026-09-02
-Signed by Claude Fable 5.1: merged 2026-09-02
+Authored by Fable 5.1
+Reviewed by Opus 5
+Merged by Fable 5.1
 ```
 
-Use the model's public name and version as the harness reports it; if the
-version is genuinely unavailable, write the name followed by `(version
-unknown)` rather than guessing. Never rewrite or remove an earlier signature
-line; append. When a later update changes the description body, keep the block
+The line is `<Authored|Reviewed|Merged> by <model name> <version>`, using the
+model's public name and version as the harness reports it; if the version is
+genuinely unavailable, write the name followed by `(version unknown)` rather
+than guessing. Never rewrite or remove an earlier signature line; append. When a later update changes the description body, keep the block
 as the last element and re-read the rendered result. When `proposalSignatures`
 is `none`, add no signature block and leave existing blocks untouched.
 

@@ -271,12 +271,24 @@ result of a squash or rebase merge) is deleted with method `patch-equivalent`
 recorded, so merged provider branches stop accumulating locally. A branch with
 any unmatched commit, or one too far ahead to audit cheaply, is preserved and
 named. It then restores or fast-forwards the primary under the controller and
-coordination locks and refuses completion while the target remains
-missing or stale, the primary remains dirty or off-target, or another safe
-cleanup candidate remains. Incomplete finalization relinquishes durable state
-and exits nonzero. Dirty primary work is never a valid preserved final state:
-classify every remaining path, ship genuine newer deltas, remove proven
-target-contained/stale/generated entries, and resume. Dirty non-primary
+coordination locks. Without an exact verified shipment outcome, a missing or
+stale target, dirty or off-target primary, or remaining cleanup candidate keeps
+the run open. With that outcome, clean source worktrees proven contained in the
+current target may finish while an unchanged primary explicitly preserved by
+the scope or unrelated late arrivals remain untouched. Missing registrations,
+changed claims, changed preserved bytes, remote destination changes, incomplete
+preparations, and stale outcome evidence still block closure; late arrivals
+are exempt only from the finalization registration check, never from shared
+mutation checks or cleanup protection.
+
+Every finalization writes a durable receipt before releasing or relinquishing
+the controller. It reports `shipmentStatus`, `controllerStatus`,
+`deliveryStatus`, `cleanupStatus`, `blocksNextShipment`, blockers, and preserved
+worktrees. A closed shipment with pending cleanup does not block the next
+shipment; run guarded `prune` separately when safe. Incomplete finalization
+relinquishes durable state and exits nonzero. An authorized agent resumes that
+run with `loop start --mode resume --agent-id <you>` without takeover approval;
+its existing frozen scope and safety checks remain in force. Dirty non-primary
 worktrees, untracked or divergent primary paths, unique staged state, conflicts,
 late arrivals, retained exclusions, active claims, and branches with unique
 commits remain preserved.

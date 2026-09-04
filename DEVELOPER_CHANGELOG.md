@@ -1,5 +1,18 @@
 # Developer changelog
 
+## 0.15.1 - 2026-09-04
+
+- Check the current fork pin before reconstructing the prior upstream version,
+  allowing repeat application of an already-current reviewed synchronization plan.
+- Finalization now accepts the shipped target recorded by a verified shipment
+  outcome while preserving unrelated opening branches and dirty worktrees.
+  Conflicting shipment evidence and unverified outcomes still block closure.
+- Added fork-pin and finalization regression coverage and updated the CLI contract
+  assertion for the verified shipment completion path.
+- Advanced the package, CLI, and packaged public notes to 0.15.1. Guidance remains
+  at version 22 because these corrections restore existing workflow behavior.
+<!-- simple-changelogs-signature agent="Astra medium" at="2026-09-04T23:38:58+00:00" -->
+
 ## 0.15.0 - 2026-09-04
 
 - Extracted the proven-safe cleanup core into `scripts/lib/cleanup-core.ts` and

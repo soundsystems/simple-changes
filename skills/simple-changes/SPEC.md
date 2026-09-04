@@ -64,6 +64,14 @@
 
 ## Guarantees
 
+- Finalization closes an exact verified shipment independently of unrelated
+  cleanup. Scoped source checkouts must be clean and contained in the current
+  target, or have completed audited removals. Only an unchanged primary whose
+  dirty paths were explicitly preserved and unrelated late arrivals may remain
+  without holding the shipment open. Ordinary mutation verification is unchanged.
+  Each attempt persists a receipt reporting shipment, controller, delivery,
+  cleanup, blockers, and preserved worktrees before release. A relinquished
+  controller is resumed without takeover approval; frozen scope still applies.
 - Existing and concurrent work is preserved unless ownership and scope are
   proven.
 - Write-capable integration modes hold one atomic integration-controller lease

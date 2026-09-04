@@ -214,7 +214,7 @@ describe("Simple Changes skill contract", () => {
       "automatically removes proven safe worktrees, stale metadata, and merged local branches"
     );
     expect(normalizedSkill).toContain(
-      "any unresolved dirty-primary path keeps the run incomplete"
+      "An exact verified shipment may close with an unchanged primary explicitly preserved in its scope"
     );
     expect(normalizedSkill).toContain(
       "exact current run ID and manifest digest plus approver and reason"

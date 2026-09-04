@@ -188,9 +188,19 @@ rebaseline` to register worktrees that appeared after loop start as preserved
 and untouched when a stale opening manifest deadlocks a run, and `worktree
 cleanup` for one audited standalone pass when no loop record exists. A
 target-equivalent close is never reported as shipped. `loop status` names the
-exact next recoverable command for whatever state it finds, and `worktree
-refresh-index` re-syncs cached editor and desktop worktree views from the
-authoritative Git inventory.
+exact next recoverable command for whatever state it finds and reports lease
+liveness (`live`, `stale`, or `unknown`), and `worktree refresh-index`
+re-syncs cached editor and desktop worktree views from the authoritative Git
+inventory.
+
+Cleanup is not tied to finalization. When work is merged but no loop will
+finalize it, run `prune --approved-by "$USER" --reason "$WHY"` (add
+`--dry-run` to see the plan first): it applies the same proven-safe audit
+without a lease, naming the containment method for every removal, and refuses
+to touch anything a lease that is not provably stale registers. When a lease
+itself is stale, `loop recover --stale-lease --run-id "$RUN_ID" --agent-id
+"$AGENT_ID" --approved-by "$USER" --reason "$WHY"` clears the bookkeeping
+record on explicit user authority while preserving every worktree and receipt.
 
 Follow [inventory and concurrency](references/inventory-and-concurrency.md).
 

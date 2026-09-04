@@ -162,6 +162,42 @@ receipt, and the command refuses to run while any loop record exists, active
 or relinquished; those repositories recover through `loop status` guidance
 instead.
 
+**Lease-less prune.** Cleanup that only ever runs inside `loop finalize`
+leaves residue whenever an agent merges its work and stops, merges outside a
+loop, or relinquishes on blockers. `prune --approved-by <who> --reason <why>
+[--target <ref>] [--dry-run]` runs the same proven-safe audit with no lease of
+its own. It removes an unclaimed clean worktree whose head the refreshed target
+contains by exact ancestry or complete per-commit patch equivalence, stale
+metadata whose directory no longer exists, and a local branch that is not the
+target, not attached to a worktree, and whose unique commits the target
+contains by the same two proofs. Each disposition names its containment method
+(`target-contained` or `patch-equivalent`), and everything preserved is named
+with its reason: the primary checkout, the target branch, any dirty or
+actively claimed checkout, anything registered `preserved` or `retained` in a
+lease, and any branch beyond the patch-equivalence commit bound. When a lease
+exists and is not provably stale, prune refuses to touch anything that lease
+registers and says so, pruning only what is outside that manifest. `--dry-run`
+changes nothing; the destructive form still reports the exact plan before
+applying it. Prune never edits lease state, worktree claims, or recorded
+receipts, and unlike `worktree cleanup` it does not release claims.
+
+**Stale lease recovery.** A lease whose owner died mid-run used to block every
+other agent in the repository until a human-approved `loop takeover`. Each
+operation that already writes lease state now records a heartbeat: the lease's
+`updatedAt` plus the owner process identity. A lease is `live` while that
+process is provably running or the heartbeat is recent, `stale` only when the
+owner cannot be proven alive and the heartbeat is older than the published
+threshold, and `unknown` when its timestamp cannot be parsed. `loop status`
+reports that state, so no caller has to compare timestamps itself. `loop
+recover --stale-lease --run-id <id> --agent-id <you> --approved-by <who>
+--reason <why>` clears a stale lease on explicit user authority: it refuses a
+live lease, archives the cleared record into the run history like other
+terminal records, and preserves every worktree, branch, claim, and durable
+receipt. It clears the bookkeeping record only, never user work; run `prune`
+afterward to reconcile whatever local cleanup the dead owner never finished.
+(`loop recover --agent-id <you>` still recovers a dead *lock*; run it first if
+one remains.)
+
 **External UI caches.** Editor and desktop surfaces (for example Codex
 Desktop) cache their own view of worktrees outside this workflow's ownership.
 After cleanup, `worktree refresh-index` prunes only metadata for worktree

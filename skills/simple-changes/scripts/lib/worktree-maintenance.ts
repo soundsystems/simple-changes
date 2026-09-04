@@ -7,10 +7,22 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, resolve } from "node:path";
+import {
+  type ContainedBranchPreservation,
+  type ContainedBranchRemoval,
+  deleteTargetContainedBranches,
+  localBranchForTargetRef,
+  type TargetContainmentMethod,
+  targetContainmentAudit,
+} from "./cleanup-core.ts";
 import { probeCoordinationAdapter } from "./coordination-adapter.ts";
 import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
 import { captureInventory } from "./inventory.ts";
-import { readLoopLease } from "./loop-lease.ts";
+import {
+  type LeaseLiveness,
+  leaseLiveness,
+  readLoopLease,
+} from "./loop-lease.ts";
 import { runGit } from "./process.ts";
 import { validateSchema } from "./schema.ts";
 import type {
@@ -23,7 +35,6 @@ import {
   releaseAbsentWorktreeClaimsUnderLock,
   withWorktreeCoordinationLock,
 } from "./worktree-coordination.ts";
-import { commitEquivalenceAgainstTarget } from "./worktree-equivalence.ts";
 
 const CLEANUP_LIVE_CLAIM_STATES = new Set<WorktreeCoordinationState>([
   "active",
@@ -33,30 +44,6 @@ const CLEANUP_LIVE_CLAIM_STATES = new Set<WorktreeCoordinationState>([
   "attached",
   "resume-ready",
 ]);
-
-const CLEANUP_PATCH_EQUIVALENCE_MAX_COMMITS = 200;
-
-const localBranchForTargetRef = (
-  primaryCheckout: string,
-  targetRef: string
-): string | null => {
-  if (targetRef.startsWith("refs/heads/")) {
-    return targetRef.slice("refs/heads/".length);
-  }
-  if (targetRef.startsWith("refs/remotes/")) {
-    const remoteRef = targetRef.slice("refs/remotes/".length);
-    const separator = remoteRef.indexOf("/");
-    return separator === -1 ? null : remoteRef.slice(separator + 1);
-  }
-  const remoteNames = runGit(primaryCheckout, ["remote"], true)
-    .stdout.split("\n")
-    .map((remoteName) => remoteName.trim())
-    .filter(Boolean);
-  const matchedRemote = remoteNames.find((name) =>
-    targetRef.startsWith(`${name}/`)
-  );
-  return matchedRemote ? targetRef.slice(matchedRemote.length + 1) : targetRef;
-};
 
 const cleanupsPath = (commonGitDirectory: string): string =>
   resolve(
@@ -70,7 +57,7 @@ export interface WorktreeCleanupRemoval {
   branch: string | null;
   branchDeleted: boolean;
   changeDigest: string;
-  containment: "target-contained" | "patch-equivalent";
+  containment: TargetContainmentMethod;
   headSha: string;
   path: string;
 }
@@ -122,6 +109,32 @@ const requiredText = (value: string, name: string): string => {
   return trimmed;
 };
 
+const resolveCleanupTarget = (
+  inventory: RepositoryInventory,
+  requestedTargetRef: string | undefined
+): { targetRef: string; targetRevision: string } => {
+  const targetRef = (requestedTargetRef ?? inventory.targetRef).trim();
+  if (!targetRef || targetRef.startsWith("-")) {
+    throw new SimpleChangesError(
+      "Standalone cleanup requires a plain target reference.",
+      EXIT_CODES.usage
+    );
+  }
+  const targetResult = runGit(
+    inventory.repository.primaryCheckout,
+    ["rev-parse", "--verify", `${targetRef}^{commit}`],
+    true
+  );
+  const targetRevision = targetResult.stdout.trim();
+  if (targetResult.exitCode !== 0 || !targetRevision) {
+    throw new SimpleChangesError(
+      `Cannot resolve cleanup target ${targetRef}.`,
+      EXIT_CODES.unsafe
+    );
+  }
+  return { targetRef, targetRevision };
+};
+
 export const readWorktreeCleanups = (
   commonGitDirectory: string
 ): WorktreeCleanupReceipt[] => {
@@ -161,7 +174,7 @@ const assertNoLoopLease = (repositoryPath: string): void => {
   const lease = readLoopLease(repositoryPath);
   if (lease) {
     throw new SimpleChangesError(
-      `A Simple Changes loop record exists for ${lease.runId}; standalone cleanup is refused while any loop record exists, because cleanup then belongs to that loop's audited lifecycle. Next: run \`simple-changes loop status --json\` and follow its guidance (finalize, close-equivalent, or takeover).`,
+      `A Simple Changes loop record exists for ${lease.runId}; standalone cleanup is refused while any loop record exists, because cleanup then belongs to that loop's audited lifecycle. Next: run \`simple-changes loop status --json\` and follow its guidance (finalize, close-equivalent, takeover, or \`loop recover --stale-lease\` when it reports a stale lease), or run \`simple-changes prune --approved-by <user> --reason <why>\` to clean only what that loop does not register.`,
       EXIT_CODES.unsafe
     );
   }
@@ -172,39 +185,13 @@ const containmentFor = (
   targetRevision: string,
   headSha: string,
   targetPatchIdCache: Map<string, Map<string, string>>
-): "target-contained" | "patch-equivalent" | null => {
-  const ancestry = runGit(
+): TargetContainmentMethod | null =>
+  targetContainmentAudit(
     primaryCheckout,
-    [
-      "merge-base",
-      "--is-ancestor",
-      `${headSha}^{commit}`,
-      `${targetRevision}^{commit}`,
-    ],
-    true
-  );
-  if (ancestry.exitCode === 0) {
-    return "target-contained";
-  }
-  const equivalence = commitEquivalenceAgainstTarget(
-    primaryCheckout,
-    headSha,
     targetRevision,
-    {
-      maxCommits: CLEANUP_PATCH_EQUIVALENCE_MAX_COMMITS,
-      targetPatchIdCache,
-    }
-  );
-  if (
-    !equivalence.exceededMaxCommits &&
-    equivalence.mergeBase !== null &&
-    equivalence.commitCount > 0 &&
-    equivalence.fullyMatched
-  ) {
-    return "patch-equivalent";
-  }
-  return null;
-};
+    headSha,
+    targetPatchIdCache
+  ).method;
 
 const liveClaimPaths = (commonGitDirectory: string): Set<string> => {
   const document =
@@ -220,7 +207,7 @@ interface CleanupClassification {
   preserved: WorktreeCleanupPreserved[];
   prunable: WorktreeInventory[];
   removable: Array<{
-    containment: "target-contained" | "patch-equivalent";
+    containment: TargetContainmentMethod;
     worktree: WorktreeInventory & { headSha: string };
   }>;
 }
@@ -228,7 +215,8 @@ interface CleanupClassification {
 const classifyCleanupCandidates = (
   inventory: RepositoryInventory,
   targetRevision: string,
-  targetRef: string
+  targetRef: string,
+  protectedPaths: ReadonlyMap<string, string> = new Map()
 ): CleanupClassification => {
   const classification: CleanupClassification = {
     preserved: [],
@@ -243,6 +231,15 @@ const classifyCleanupCandidates = (
   const targetPatchIdCache = new Map<string, Map<string, string>>();
   for (const worktree of inventory.worktrees) {
     if (worktree.isPrimary) {
+      continue;
+    }
+    const protection = protectedPaths.get(worktree.path);
+    if (protection) {
+      classification.preserved.push({
+        nextCommand: "simple-changes loop status --json",
+        path: worktree.path,
+        reason: protection,
+      });
       continue;
     }
     if (worktree.prunable) {
@@ -472,25 +469,10 @@ export const standaloneWorktreeCleanup = (
     () => {
       assertNoLoopLease(options.repositoryPath);
       const inventory = captureInventory(options.repositoryPath);
-      const targetRef = (options.targetRef ?? inventory.targetRef).trim();
-      if (!targetRef || targetRef.startsWith("-")) {
-        throw new SimpleChangesError(
-          "Standalone cleanup requires a plain target reference.",
-          EXIT_CODES.usage
-        );
-      }
-      const targetResult = runGit(
-        inventory.repository.primaryCheckout,
-        ["rev-parse", "--verify", `${targetRef}^{commit}`],
-        true
+      const { targetRef, targetRevision } = resolveCleanupTarget(
+        inventory,
+        options.targetRef
       );
-      const targetRevision = targetResult.stdout.trim();
-      if (targetResult.exitCode !== 0 || !targetRevision) {
-        throw new SimpleChangesError(
-          `Cannot resolve cleanup target ${targetRef}.`,
-          EXIT_CODES.unsafe
-        );
-      }
       const errors: string[] = [];
       const classification = classifyCleanupCandidates(
         inventory,
@@ -585,6 +567,279 @@ export const standaloneWorktreeCleanup = (
       return receipt;
     }
   );
+};
+
+export interface PruneOptions {
+  approvedBy?: string | undefined;
+  dryRun: boolean;
+  reason?: string | undefined;
+  repositoryPath: string;
+  targetRef?: string | undefined;
+}
+
+export interface PruneLeaseProtection {
+  liveness: LeaseLiveness;
+  ownerAgentId: string;
+  protectedBranches: string[];
+  protectedPaths: string[];
+  runId: string;
+  scope: "everything-registered" | "preserved-and-retained";
+}
+
+export interface PrunePlannedRemoval {
+  branch: string | null;
+  containment: TargetContainmentMethod;
+  headSha: string;
+  path: string;
+}
+
+export interface PruneReport {
+  approvedBy: string | null;
+  dryRun: boolean;
+  errors: string[];
+  lease: PruneLeaseProtection | null;
+  notes: string[];
+  plannedBranchRemovals: ContainedBranchRemoval[];
+  plannedPrunePaths: string[];
+  plannedRemovals: PrunePlannedRemoval[];
+  preserved: WorktreeCleanupPreserved[];
+  preservedBranches: ContainedBranchPreservation[];
+  prunedPaths: string[];
+  reason: string | null;
+  removed: WorktreeCleanupRemoval[];
+  removedBranches: ContainedBranchRemoval[];
+  targetRef: string;
+  targetRevision: string;
+}
+
+const leaseProtectionFor = (
+  repositoryPath: string
+): {
+  branches: Set<string>;
+  paths: Map<string, string>;
+  protection: PruneLeaseProtection | null;
+} => {
+  const lease = readLoopLease(repositoryPath);
+  if (!lease) {
+    return { branches: new Set(), paths: new Map(), protection: null };
+  }
+  const liveness = leaseLiveness(lease);
+  const registeredScope = liveness.state !== "stale";
+  const branches = new Set<string>();
+  const paths = new Map<string, string>();
+  for (const worktree of lease.worktrees) {
+    const durableRole =
+      worktree.role === "preserved" || worktree.role === "retained";
+    if (!(registeredScope || durableRole)) {
+      continue;
+    }
+    paths.set(
+      worktree.path,
+      registeredScope
+        ? `Loop ${lease.runId} is ${liveness.state} and registers this checkout; prune never touches what a lease that may still be working registers.`
+        : `Loop ${lease.runId} registers this checkout as ${worktree.role}; prune never removes preserved or retained work.`
+    );
+    if (worktree.branch) {
+      branches.add(worktree.branch);
+    }
+  }
+  if (registeredScope) {
+    for (const preparation of lease.preparations) {
+      branches.add(preparation.branch);
+      paths.set(
+        preparation.path,
+        `Loop ${lease.runId} is ${liveness.state} and prepared this checkout; prune never touches what a lease that may still be working registers.`
+      );
+    }
+  }
+  return {
+    branches,
+    paths,
+    protection: {
+      liveness,
+      ownerAgentId: lease.ownerAgentId,
+      protectedBranches: [...branches].sort((left, right) =>
+        left.localeCompare(right)
+      ),
+      protectedPaths: [...paths.keys()].sort((left, right) =>
+        left.localeCompare(right)
+      ),
+      runId: lease.runId,
+      scope: registeredScope
+        ? "everything-registered"
+        : "preserved-and-retained",
+    },
+  };
+};
+
+const prunableBranchCandidates = (
+  inventory: RepositoryInventory,
+  targetRef: string,
+  protectedBranches: ReadonlySet<string>
+): {
+  candidates: Array<{ name: string; sha: string }>;
+  protectedByLease: ContainedBranchPreservation[];
+} => {
+  const targetBranch = localBranchForTargetRef(
+    inventory.repository.primaryCheckout,
+    targetRef
+  );
+  const candidates: Array<{ name: string; sha: string }> = [];
+  const protectedByLease: ContainedBranchPreservation[] = [];
+  for (const branch of inventory.branches) {
+    if (branch.name === targetBranch || branch.name === targetRef) {
+      continue;
+    }
+    if (branch.worktreePath !== null) {
+      continue;
+    }
+    if (protectedBranches.has(branch.name)) {
+      protectedByLease.push({
+        branch: branch.name,
+        reason:
+          "An active loop lease registers this branch; prune leaves the lease manifest alone.",
+      });
+      continue;
+    }
+    candidates.push({ name: branch.name, sha: branch.sha });
+  }
+  return { candidates, protectedByLease };
+};
+
+const sortedByPath = <T extends { path: string }>(items: T[]): T[] =>
+  [...items].sort((left, right) => left.path.localeCompare(right.path));
+
+const sortedByBranch = <T extends { branch: string }>(items: T[]): T[] =>
+  [...items].sort((left, right) => left.branch.localeCompare(right.branch));
+
+/**
+ * Prune proven-obsolete local state without a lease of its own.
+ *
+ * This runs the same proven-safe audit finalization runs, so an agent that
+ * merged its work and stopped without finalizing can still clean up: unchanged
+ * clean checkouts the refreshed target already contains, stale worktree
+ * metadata whose directory is gone, and local branches whose unique commits
+ * the target contains by ancestry or complete per-commit patch equivalence.
+ *
+ * Nothing else is touched. The primary checkout, the target branch, any dirty
+ * or claimed checkout, anything a lease registers as preserved or retained,
+ * and everything registered by a lease that is not provably stale are all
+ * preserved and named with the reason. Lease state, claims, and durable
+ * receipts are never modified.
+ */
+export const pruneRepository = (options: PruneOptions): PruneReport => {
+  if (!options.dryRun) {
+    requiredText(options.approvedBy ?? "", "approver");
+    requiredText(options.reason ?? "", "prune reason");
+  }
+  const approvedBy = options.approvedBy?.trim() || null;
+  const reason = options.reason?.trim() || null;
+  const opening = captureInventory(options.repositoryPath);
+  const { commonGitDirectory } = opening.repository;
+  return withWorktreeCoordinationLock(commonGitDirectory, "prune", () => {
+    const inventory = captureInventory(options.repositoryPath);
+    const { targetRef, targetRevision } = resolveCleanupTarget(
+      inventory,
+      options.targetRef
+    );
+    const lease = leaseProtectionFor(options.repositoryPath);
+    const errors: string[] = [];
+    const notes: string[] = [];
+    if (lease.protection) {
+      notes.push(
+        lease.protection.scope === "everything-registered"
+          ? `Loop ${lease.protection.runId} is ${lease.protection.liveness.state}; prune refused to touch anything it registers and pruned only unrelated state.`
+          : `Loop ${lease.protection.runId} is stale, so prune audited its unregistered state; its preserved and retained checkouts were still left alone. Clear the lease itself with \`simple-changes loop recover --stale-lease\`.`
+      );
+    }
+    notes.push(
+      "Prune never edits lease state, worktree claims, or recorded receipts."
+    );
+    const classification = classifyCleanupCandidates(
+      inventory,
+      targetRevision,
+      targetRef,
+      lease.paths
+    );
+    const branchPlan = prunableBranchCandidates(
+      inventory,
+      targetRef,
+      lease.branches
+    );
+    const plannedBranches = deleteTargetContainedBranches({
+      branches: branchPlan.candidates,
+      dryRun: true,
+      repositoryPath: inventory.repository.primaryCheckout,
+      targetRevision,
+    });
+    const plannedRemovals = sortedByPath(
+      classification.removable.map((candidate) => ({
+        branch: candidate.worktree.branch,
+        containment: candidate.containment,
+        headSha: candidate.worktree.headSha,
+        path: candidate.worktree.path,
+      }))
+    );
+    const plannedPrunePaths = classification.prunable
+      .map((worktree) => worktree.path)
+      .sort((left, right) => left.localeCompare(right));
+    const plannedBranchRemovals = sortedByBranch(plannedBranches.removed);
+    const report: PruneReport = {
+      approvedBy,
+      dryRun: options.dryRun,
+      errors,
+      lease: lease.protection,
+      notes,
+      plannedBranchRemovals,
+      plannedPrunePaths,
+      plannedRemovals,
+      preserved: sortedByPath(classification.preserved),
+      preservedBranches: sortedByBranch([
+        ...branchPlan.protectedByLease,
+        ...plannedBranches.preserved,
+      ]),
+      prunedPaths: [],
+      reason,
+      removed: [],
+      removedBranches: [],
+      targetRef,
+      targetRevision,
+    };
+    if (options.dryRun) {
+      return report;
+    }
+    report.removed = sortedByPath(
+      removeProvenWorktrees(
+        options.repositoryPath,
+        targetRef,
+        classification.removable,
+        errors
+      )
+    );
+    report.prunedPaths = pruneStaleWorktreeMetadata(
+      options.repositoryPath,
+      classification.prunable,
+      errors
+    );
+    const refreshed = captureInventory(options.repositoryPath);
+    const finalBranches = prunableBranchCandidates(
+      refreshed,
+      targetRef,
+      lease.branches
+    );
+    const deletion = deleteTargetContainedBranches({
+      branches: finalBranches.candidates,
+      repositoryPath: refreshed.repository.primaryCheckout,
+      targetRevision,
+    });
+    errors.push(...deletion.errors);
+    report.removedBranches = sortedByBranch(deletion.removed);
+    report.preservedBranches = sortedByBranch([
+      ...finalBranches.protectedByLease,
+      ...deletion.preserved,
+    ]);
+    return report;
+  });
 };
 
 export interface WorktreeIndexAdapterNote {

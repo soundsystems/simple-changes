@@ -27,6 +27,16 @@
       "enum": ["queue", "sweep", "integrate", "ship", "reconcile", "resume"]
     },
     "ownerAgentId": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "ownerProcess": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["hostname", "pid", "recordedAt"],
+      "properties": {
+        "hostname": { "type": "string", "minLength": 1 },
+        "pid": { "type": "integer", "minimum": 1 },
+        "recordedAt": { "type": "string", "format": "date-time" }
+      }
+    },
     "createdAt": { "type": "string", "format": "date-time" },
     "updatedAt": { "type": "string", "format": "date-time" },
     "baselineDigest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },

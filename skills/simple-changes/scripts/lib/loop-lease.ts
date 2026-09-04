@@ -18,6 +18,13 @@ import { hostname } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  deleteTargetContainedBranches,
+  PATCH_EQUIVALENCE_MAX_COMMITS,
+  type TargetContainmentMethod,
+  targetContainmentAudit,
+  targetContainsRevision,
+} from "./cleanup-core.ts";
+import {
   decideEmergencyShipping,
   deriveEmergencyShippingStatus,
 } from "./emergency-shipping.ts";
@@ -51,6 +58,7 @@ import type {
   LoopControllerLifecycle,
   LoopLease,
   LoopOverride,
+  LoopOwnerProcess,
   LoopRebaselineRecord,
   LoopRebaselineRegistration,
   LoopVerification,
@@ -82,7 +90,6 @@ import {
   withWorktreeCoordinationLock,
   worktreeClaimDocumentDigest,
 } from "./worktree-coordination.ts";
-import { commitEquivalenceAgainstTarget } from "./worktree-equivalence.ts";
 
 const STATE_DIRECTORY = "simple-changes";
 const STATE_FILENAME = "active-loop.json";
@@ -611,6 +618,71 @@ const processGroupIsAlive = (processGroupId: number): boolean => {
     }
     return true;
   }
+};
+
+/**
+ * How long a lease may go without a heartbeat before an unprovable owner makes
+ * it stale. Exported so callers and tests reference one definition instead of
+ * re-deriving a timeout.
+ */
+export const LEASE_STALE_AFTER_MS = 4 * 60 * 60 * 1000;
+
+export interface LeaseLiveness {
+  ageMs: number | null;
+  lastUpdatedAt: string;
+  ownerProcessProvable: boolean;
+  state: "live" | "stale" | "unknown";
+}
+
+const ownerProcessEvidence = (recordedAt: string): LoopOwnerProcess => ({
+  hostname: hostname(),
+  pid: process.pid,
+  recordedAt,
+});
+
+/**
+ * Decide whether a lease still has a living owner. A lease is `stale` only
+ * when its owner cannot be proven alive (no recorded process, a process
+ * recorded on another host, or a recorded PID that is gone) and its last
+ * heartbeat is older than the threshold. A lease whose `updatedAt` cannot be
+ * parsed is `unknown`, never stale: unreadable evidence is not proof of death.
+ */
+export const leaseLiveness = (
+  lease: LoopLease,
+  now: number = Date.now(),
+  staleAfterMs: number = LEASE_STALE_AFTER_MS
+): LeaseLiveness => {
+  const ownerProcessProvable = Boolean(
+    lease.ownerProcess &&
+      lease.ownerProcess.hostname === hostname() &&
+      processIsAlive(lease.ownerProcess.pid)
+  );
+  const updatedAt = Date.parse(lease.updatedAt);
+  const ageMs = Number.isFinite(updatedAt)
+    ? Math.max(0, now - updatedAt)
+    : null;
+  if (ownerProcessProvable) {
+    return {
+      ageMs,
+      lastUpdatedAt: lease.updatedAt,
+      ownerProcessProvable,
+      state: "live",
+    };
+  }
+  if (ageMs === null) {
+    return {
+      ageMs,
+      lastUpdatedAt: lease.updatedAt,
+      ownerProcessProvable,
+      state: "unknown",
+    };
+  }
+  return {
+    ageMs,
+    lastUpdatedAt: lease.updatedAt,
+    ownerProcessProvable,
+    state: ageMs > staleAfterMs ? "stale" : "live",
+  };
 };
 
 export interface LoopLockRecovery {
@@ -1939,6 +2011,7 @@ export const recordShipmentScope = (
       writeLease({
         ...lease,
         ...(shipmentScopeHistory ? { shipmentScopeHistory } : {}),
+        ownerProcess: ownerProcessEvidence(recordedAt),
         shipmentScope: {
           openingChanges,
           plan: activePlan,
@@ -2344,6 +2417,7 @@ export const recordShipmentOutcome = (
       const receiptDigest = sha256Json(receipt);
       writeLease({
         ...lease,
+        ownerProcess: ownerProcessEvidence(recordedAt),
         shipmentOutcome: { receipt, receiptDigest, recordedAt },
         updatedAt: recordedAt,
       });
@@ -2445,9 +2519,12 @@ export const verifyLoop = (repositoryPath: string): LoopVerification => {
       }
       const projected = withConcurrentAuthorAdmissions(storedLease, inventory);
       const lease =
-        controllerLifecycle(storedLease).status === "active" &&
-        projected !== storedLease
-          ? writeLease(projected)
+        controllerLifecycle(storedLease).status === "active"
+          ? writeLease({
+              ...projected,
+              ownerProcess: ownerProcessEvidence(new Date().toISOString()),
+              updatedAt: new Date().toISOString(),
+            })
           : projected;
       return verificationAgainst(lease, inventory);
     }
@@ -2480,6 +2557,7 @@ export const guardLoopMutation = (
       }
       writeLease({
         ...lease,
+        ownerProcess: ownerProcessEvidence(verification.checkedAt),
         updatedAt: verification.checkedAt,
       });
       return verification;
@@ -2561,6 +2639,7 @@ export const withLoopMutationLease = <T>(
       const closingVerification = verificationAgainst(currentLease, after);
       writeLease({
         ...currentLease,
+        ownerProcess: ownerProcessEvidence(closingVerification.checkedAt),
         updatedAt: closingVerification.checkedAt,
       });
       if (!closingVerification.ok) {
@@ -3949,18 +4028,18 @@ export const recordRemoteBranchReconciliation = (
           EXIT_CODES.validation
         );
       }
+      const reconciledAt = new Date().toISOString();
       return writeLease({
         ...lease,
+        ownerProcess: ownerProcessEvidence(reconciledAt),
         remoteBranchReconciliation: receipt,
-        updatedAt: new Date().toISOString(),
+        updatedAt: reconciledAt,
       }) as LoopLease & {
         remoteBranchReconciliation: RemoteBranchReconciliationReceipt;
       };
     }
   );
 };
-
-export type TargetContainmentMethod = "target-contained" | "patch-equivalent";
 
 export interface FinalizationRemovedBranch {
   branch: string;
@@ -4130,63 +4209,6 @@ const reconcileConcurrentAuthorClaims = (
       (worktree) => demoted.get(worktree.path) ?? worktree
     ),
   });
-};
-
-const targetContainsRevision = (
-  repositoryPath: string,
-  targetRevision: string,
-  revision: string | null
-): boolean =>
-  Boolean(
-    revision &&
-      runGit(
-        repositoryPath,
-        [
-          "merge-base",
-          "--is-ancestor",
-          `${revision}^{commit}`,
-          `${targetRevision}^{commit}`,
-        ],
-        true
-      ).exitCode === 0
-  );
-
-const PATCH_EQUIVALENCE_MAX_COMMITS = 200;
-
-interface TargetContainmentAudit {
-  exceededMaxCommits: boolean;
-  method: TargetContainmentMethod | null;
-}
-
-const targetContainmentAudit = (
-  repositoryPath: string,
-  targetRevision: string,
-  revision: string | null,
-  targetPatchIdCache?: Map<string, Map<string, string>>
-): TargetContainmentAudit => {
-  if (!revision) {
-    return { exceededMaxCommits: false, method: null };
-  }
-  if (targetContainsRevision(repositoryPath, targetRevision, revision)) {
-    return { exceededMaxCommits: false, method: "target-contained" };
-  }
-  const equivalence = commitEquivalenceAgainstTarget(
-    repositoryPath,
-    revision,
-    targetRevision,
-    { maxCommits: PATCH_EQUIVALENCE_MAX_COMMITS, targetPatchIdCache }
-  );
-  if (equivalence.exceededMaxCommits) {
-    return { exceededMaxCommits: true, method: null };
-  }
-  if (
-    equivalence.mergeBase !== null &&
-    equivalence.commitCount > 0 &&
-    equivalence.fullyMatched
-  ) {
-    return { exceededMaxCommits: false, method: "patch-equivalent" };
-  }
-  return { exceededMaxCommits: false, method: null };
 };
 
 const automaticRemovalDisposition = (
@@ -4607,55 +4629,22 @@ const removeTargetContainedBranches = (
       )
       .map((disposition) => disposition.branch as string)
   );
-  const targetPatchIdCache = new Map<string, Map<string, string>>();
-  for (const branch of inventory.branches) {
-    const unchangedOpeningBranch =
-      openingBranches.get(branch.name) === branch.sha;
-    const eligible =
-      branch.name !== targetBranch &&
-      branch.worktreePath === null &&
-      (unchangedOpeningBranch ||
-        runOwnedBranches.has(branch.name) ||
-        reconciledAbsentBranches.has(branch.name));
-    if (!eligible) {
-      continue;
-    }
-    const containment = targetContainmentAudit(
-      repositoryPath,
-      targetRevision,
-      branch.sha,
-      targetPatchIdCache
-    );
-    if (containment.exceededMaxCommits) {
-      cleanup.errors.push(
-        `Skipped the patch-equivalence audit for branch ${branch.name}: it is more than ${PATCH_EQUIVALENCE_MAX_COMMITS} commits ahead of the target. The branch was preserved.`
-      );
-      continue;
-    }
-    if (!containment.method) {
-      continue;
-    }
-    const deleted = runGit(
-      repositoryPath,
-      ["update-ref", "-d", `refs/heads/${branch.name}`, branch.sha],
-      true
-    );
-    if (deleted.exitCode !== 0) {
-      cleanup.errors.push(
-        `Could not delete proven target-contained branch ${branch.name}: ${deleted.stderr.trim() || deleted.stdout.trim()}`
-      );
-      continue;
-    }
-    cleanup.removedBranches.push({
-      branch: branch.name,
-      method: containment.method,
-    });
-    runGit(
-      repositoryPath,
-      ["config", "--remove-section", `branch.${branch.name}`],
-      true
-    );
-  }
+  const deletion = deleteTargetContainedBranches({
+    branches: inventory.branches.filter(
+      (branch) =>
+        branch.name !== targetBranch &&
+        branch.worktreePath === null &&
+        (openingBranches.get(branch.name) === branch.sha ||
+          runOwnedBranches.has(branch.name) ||
+          reconciledAbsentBranches.has(branch.name))
+    ),
+    repositoryPath,
+    targetRevision,
+  });
+  cleanup.errors.push(...deletion.errors);
+  cleanup.removedBranches.push(
+    ...deletion.removed.map(({ branch, method }) => ({ branch, method }))
+  );
 };
 
 const switchCleanPrimaryToTarget = (
@@ -6136,6 +6125,119 @@ export const closeLoopTargetEquivalent = (
   );
 };
 
+export interface StaleLeaseRecoveryReceipt {
+  agentId: string;
+  approvedBy: string;
+  archivedAt: string;
+  kind: "stale-lease-recovery";
+  leaseDigest: string;
+  liveness: {
+    ageMs: number | null;
+    lastUpdatedAt: string;
+    ownerProcessProvable: false;
+    state: "stale";
+  };
+  mode: LoopLease["mode"];
+  ownerAgentId: string;
+  preservedWorktreePaths: string[];
+  reason: string;
+  runId: string;
+  schemaVersion: 1;
+  staleAfterMs: number;
+  targetRef: string;
+  targetRevision: string;
+}
+
+const staleLeaseRecoveryPath = (
+  commonGitDirectory: string,
+  runId: string
+): string =>
+  resolve(
+    recoveryHistoryDirectory(commonGitDirectory, runId),
+    "stale-lease-recovery.json"
+  );
+
+/**
+ * Clear a lease whose owner cannot be proven alive and whose heartbeat has
+ * gone quiet past the staleness threshold, on explicit user authority. This
+ * clears the bookkeeping record only: every worktree, branch, claim, and
+ * durable receipt survives untouched, and the cleared lease is archived into
+ * the run history the way other terminal records are. A lease that is still
+ * live is refused; recovering it needs its owner, or an approved takeover.
+ */
+export const recoverStaleLoopLease = (
+  repositoryPath: string,
+  runIdInput: string,
+  agentIdInput: string,
+  approvedByInput: string,
+  reasonInput: string
+): StaleLeaseRecoveryReceipt => {
+  const runId = requiredRunId(runIdInput);
+  const agentId = requiredText(agentIdInput, "agent ID");
+  const approvedBy = requiredText(approvedByInput, "approver");
+  const reason = requiredText(reasonInput, "stale-lease recovery reason");
+  const opening = captureInventory(repositoryPath);
+  const { commonGitDirectory } = opening.repository;
+  return withStateLock(commonGitDirectory, "loop recover stale lease", () => {
+    const archivePath = staleLeaseRecoveryPath(commonGitDirectory, runId);
+    const lease = readLeaseFromCommonDirectory(commonGitDirectory);
+    if (!lease) {
+      if (existsSync(archivePath)) {
+        return readImmutableRecoveryEvent<StaleLeaseRecoveryReceipt>(
+          archivePath
+        );
+      }
+      throw new SimpleChangesError(
+        `No Simple Changes loop lease exists to recover for ${runId}.`,
+        EXIT_CODES.unsafe
+      );
+    }
+    assertMatchingRun(lease, runId);
+    const liveness = leaseLiveness(lease);
+    if (liveness.state !== "stale") {
+      throw new SimpleChangesError(
+        `Loop ${runId} is ${liveness.state}, not stale: ${
+          liveness.ownerProcessProvable
+            ? `its owner process ${lease.ownerProcess?.pid} is still running`
+            : `its last heartbeat ${liveness.lastUpdatedAt} is not older than ${LEASE_STALE_AFTER_MS} ms`
+        }. Simple Changes never clears a lease whose owner may still be working. Next: finish the run as its controller, or run \`simple-changes loop takeover --run-id ${runId} --agent-id <you> --manifest-digest ${loopManifestDigest(lease)} --approved-by <user> --reason <why>\`.`,
+        EXIT_CODES.unsafe
+      );
+    }
+    const archivedAt = new Date().toISOString();
+    const record: StaleLeaseRecoveryReceipt = {
+      agentId,
+      approvedBy,
+      archivedAt,
+      kind: "stale-lease-recovery",
+      leaseDigest: loopManifestDigest(lease),
+      liveness: {
+        ageMs: liveness.ageMs,
+        lastUpdatedAt: liveness.lastUpdatedAt,
+        ownerProcessProvable: false,
+        state: "stale",
+      },
+      mode: lease.mode,
+      ownerAgentId: lease.ownerAgentId,
+      preservedWorktreePaths: lease.worktrees
+        .map((worktree) => worktree.path)
+        .sort((left, right) => left.localeCompare(right)),
+      reason,
+      runId,
+      schemaVersion: 1,
+      staleAfterMs: LEASE_STALE_AFTER_MS,
+      targetRef: lease.targetRef,
+      targetRevision: lease.targetRevision,
+    };
+    const archived = writeImmutableRecoveryEvent(
+      archivePath,
+      validateSchema<StaleLeaseRecoveryReceipt>("stale-lease-recovery", record)
+    );
+    rmSync(loopLeasePath(commonGitDirectory), { force: true });
+    return archived;
+  });
+};
+
 export const endLoop = (
   repositoryPath: string,
   runId: string,
@@ -6232,12 +6334,22 @@ const violationGuidanceCommands = (
 
 const loopGuidanceFor = (
   lease: LoopLease | null,
-  verification: LoopVerification
+  verification: LoopVerification,
+  liveness: LeaseLiveness | null = null
 ): LoopGuidance => {
   if (!lease) {
     return {
       headline: "No active integration loop.",
       nextCommands: ["simple-changes loop start --mode MODE --agent-id <you>"],
+    };
+  }
+  if (liveness?.state === "stale") {
+    return {
+      headline: `Loop ${lease.runId} is stale: its owner ${lease.ownerAgentId} cannot be proven alive and it last recorded activity at ${liveness.lastUpdatedAt}. Clearing the lease with user approval keeps every worktree and receipt.`,
+      nextCommands: [
+        `simple-changes loop recover --stale-lease --run-id ${lease.runId} --agent-id <you> --approved-by <user> --reason <why>`,
+        `simple-changes loop takeover --run-id ${lease.runId} --agent-id <you> --manifest-digest ${loopManifestDigest(lease)} --approved-by <user> --reason <why>`,
+      ],
     };
   }
   const takeoverCommand = `simple-changes loop takeover --run-id ${lease.runId} --agent-id <you> --manifest-digest ${loopManifestDigest(lease)} --approved-by <user> --reason <why>`;
@@ -6290,6 +6402,7 @@ export const loopStatus = (
 ): {
   guidance: LoopGuidance;
   lease: LoopLease | null;
+  liveness: LeaseLiveness | null;
   verification: LoopVerification;
 } => {
   const inventory = captureInventory(repositoryPath);
@@ -6303,9 +6416,11 @@ export const loopStatus = (
   const verification = lease
     ? verificationAgainst(lease, inventory)
     : emptyVerification(inventory);
+  const liveness = storedLease ? leaseLiveness(storedLease) : null;
   return {
-    guidance: loopGuidanceFor(lease, verification),
+    guidance: loopGuidanceFor(lease, verification, liveness),
     lease,
+    liveness,
     verification,
   };
 };

@@ -171,9 +171,12 @@ recover --agent-id "$AGENT_ID"`; never delete state by hand. Before every
 terminal assistant response after a loop has started, run `loop finalize`. It
 performs the proven-safe cleanup described in
 [cleanup and completion](references/cleanup-and-completion.md) and releases
-completed state; if blockers remain, it relinquishes durable state and exits
-nonzero so preservation cannot be mistaken for shipment completion. Takeover
-requires the exact current run ID and manifest digest plus approver and reason.
+completed state. An exact verified shipment can close while unrelated work
+remains preserved; its durable finalization receipt reports delivery and cleanup
+separately. If delivery or safety blockers remain, it relinquishes durable state
+and exits nonzero. Resume a relinquished run with `loop start --mode resume`;
+takeover approval is only needed to replace an active controller.
+Takeover requires the exact current run ID and manifest digest plus approver and reason.
 
 If an older relinquished run already finished cleanup but lacks opening remote
 evidence, never relabel later observations as its opening inventory; use the
@@ -262,8 +265,7 @@ read-only work, or incomplete verification.
    loop is incomplete when the live revision differs from the latest canonical
    target revision.
 10. Run final local/provider inventory and clean only proven objects. A dirty
-    primary is an intermediate reconciliation blocker, never a valid completed
-    Ship result. Finalization safely normalizes tracked target-identical paths;
+    primary requires classification before completion. Finalization safely normalizes tracked target-identical paths;
     classify every remaining path against the refreshed target, ship genuine
     newer work, and prune proven obsolete or generated entries. For a target
     GitLab remote, complete the remote-branch reconciliation gate across every
@@ -272,8 +274,10 @@ read-only work, or incomplete verification.
 11. Restore the exact original primary checkout clean at the refreshed target,
     retain exact authorized exclusions, verify again, and finalize the lease.
     Finalization automatically removes proven safe worktrees, stale metadata,
-    and merged local branches; any unresolved dirty-primary path keeps the run
-    incomplete.
+    and merged local branches. An exact verified shipment may close with an
+    unchanged primary explicitly preserved in its scope, or unrelated late
+    arrivals. Report pending cleanup separately and use guarded `prune` when
+    safe; do not keep a delivered shipment open solely for that housekeeping.
 
 ## Authority and invariants
 

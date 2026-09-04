@@ -277,7 +277,7 @@ describe("loop status guidance", () => {
     ).toBe(true);
   });
 
-  test("for a relinquished lease it offers takeover and close-equivalent", () => {
+  test("for a relinquished lease it offers resume and close-equivalent", () => {
     const fixture = repository();
     const lease = startLoop(fixture.root, "controller", "integrate");
     const lateWorktree = join(fixture.base, "late-unit");
@@ -290,10 +290,10 @@ describe("loop status guidance", () => {
     );
 
     const status = loopStatus(fixture.root);
-    expect(status.guidance.headline).toContain("relinquished");
+    expect(status.guidance.headline).toContain("released its controller");
     expect(
       status.guidance.nextCommands.some((command) =>
-        command.includes("loop takeover")
+        command.includes("loop start --mode resume")
       )
     ).toBe(true);
     expect(

@@ -5060,47 +5060,13 @@ const shipmentOutcomeCompletionBlockers = (
   );
 };
 
-const loopCompletionBlockers = (
+const repositoryCleanupBlockers = (
   lease: LoopLease,
   inventory: RepositoryInventory,
-  verification: LoopVerification,
-  cleanupErrors: string[] = []
+  targetBranch: string | null,
+  targetRevision: string | null
 ): string[] => {
-  const blockers: string[] = [...cleanupErrors];
-  blockers.push(...missingShipmentScopeBlockers(lease));
-  if (!verification.ok) {
-    blockers.push(
-      `manifest violations: ${verification.violations
-        .map((violation) => `${violation.code}:${violation.path}`)
-        .join(", ")}`
-    );
-  }
-  const liveRunWorktrees = lease.worktrees.filter(
-    (worktree) =>
-      worktree.createdByRun &&
-      inventory.worktrees.some((current) => current.path === worktree.path)
-  );
-  if (liveRunWorktrees.length > 0) {
-    blockers.push(
-      `Remove run-created worktrees before ending the loop: ${liveRunWorktrees
-        .map((worktree) => worktree.path)
-        .join(", ")}`
-    );
-  }
-  let targetBranch: string | null = null;
-  let targetRevision: string | null = null;
-  try {
-    targetBranch = targetBranchForRef(
-      inventory.repository.primaryCheckout,
-      lease.targetRef
-    );
-    targetRevision = currentTargetRevision(lease);
-  } catch {
-    blockers.push(
-      `Refresh unresolved target ref ${lease.targetRef} before ending the loop.`
-    );
-  }
-  blockers.push(...shipmentOutcomeCompletionBlockers(lease, targetRevision));
+  const blockers: string[] = [];
   const localTarget = targetBranch
     ? inventory.branches.find((branch) => branch.name === targetBranch)
     : undefined;
@@ -5178,6 +5144,61 @@ const loopCompletionBlockers = (
       `Delete local branches contained in ${lease.targetRef}: ${mergedCleanupBranchNames.join(", ")}`
     );
   }
+  return blockers;
+};
+
+const loopCompletionBlockers = (
+  lease: LoopLease,
+  inventory: RepositoryInventory,
+  verification: LoopVerification,
+  cleanupErrors: string[] = [],
+  scopedCompletion = false
+): string[] => {
+  const blockers: string[] = [...cleanupErrors];
+  blockers.push(...missingShipmentScopeBlockers(lease));
+  if (!verification.ok) {
+    blockers.push(
+      `manifest violations: ${verification.violations
+        .map((violation) => `${violation.code}:${violation.path}`)
+        .join(", ")}`
+    );
+  }
+  const liveRunWorktrees = lease.worktrees.filter(
+    (worktree) =>
+      worktree.createdByRun &&
+      inventory.worktrees.some((current) => current.path === worktree.path)
+  );
+  if (!scopedCompletion && liveRunWorktrees.length > 0) {
+    blockers.push(
+      `Remove run-created worktrees before ending the loop: ${liveRunWorktrees
+        .map((worktree) => worktree.path)
+        .join(", ")}`
+    );
+  }
+  let targetBranch: string | null = null;
+  let targetRevision: string | null = null;
+  try {
+    targetBranch = targetBranchForRef(
+      inventory.repository.primaryCheckout,
+      lease.targetRef
+    );
+    targetRevision = currentTargetRevision(lease);
+  } catch {
+    blockers.push(
+      `Refresh unresolved target ref ${lease.targetRef} before ending the loop.`
+    );
+  }
+  blockers.push(...shipmentOutcomeCompletionBlockers(lease, targetRevision));
+  if (!scopedCompletion) {
+    blockers.push(
+      ...repositoryCleanupBlockers(
+        lease,
+        inventory,
+        targetBranch,
+        targetRevision
+      )
+    );
+  }
   if (
     lease.emergencyShipping &&
     deriveEmergencyShippingStatus(lease.emergencyShipping) !== "complete"
@@ -5201,7 +5222,27 @@ export interface LoopFinalizationResult {
   cleanup: FinalizationCleanupResult;
   lease: LoopLease | null;
   outcome: "completed" | "relinquished";
+  receipt: LoopFinalizationReceipt;
+  receiptPath: string;
   verification: LoopVerification;
+}
+
+export interface LoopFinalizationReceipt {
+  blockers: string[];
+  blocksNextShipment: boolean;
+  cleanup: FinalizationCleanupResult;
+  cleanupStatus: "complete" | "pending";
+  controllerStatus: "released" | "relinquished";
+  deliveryStatus: "verified" | "unverified";
+  finalizedAt: string;
+  kind: "loop-finalization";
+  leaseDigest: string;
+  preservedWorktrees: string[];
+  reason: string;
+  runId: string;
+  schemaVersion: 1;
+  shipmentStatus: "closed" | "open";
+  targetRevision: string | null;
 }
 
 export interface PostCleanupRecoveryResult {
@@ -5579,6 +5620,240 @@ export const recoverPostCleanupLoop = (
   });
 };
 
+// Delivery and repository housekeeping are separate completion conditions. Only
+// an exact delivered outcome may close with unrelated state left in place.
+const hasVerifiedDelivery = (
+  lease: LoopLease,
+  inventory: RepositoryInventory
+): boolean => {
+  const scope = lease.shipmentScope;
+  const outcome = lease.shipmentOutcome?.receipt;
+  if (!(scope && outcome && outcome.units.length > 0)) {
+    return false;
+  }
+  const target = currentTargetRevision(lease);
+  if (shipmentOutcomeCompletionBlockers(lease, target).length > 0) {
+    return false;
+  }
+  return scope.plan.units.every((unit) => {
+    const source = inventory.worktrees.find(
+      (worktree) => worktree.path === unit.sourceWorktree
+    );
+    if (!source) {
+      return (lease.dispositions ?? []).some(
+        (item) =>
+          item.path === unit.sourceWorktree &&
+          item.status === "completed" &&
+          item.targetRevision === target
+      );
+    }
+    return Boolean(
+      source.changes.length === 0 &&
+        source.headSha &&
+        targetContainmentAudit(lease.primaryCheckout, target, source.headSha)
+          .method
+    );
+  });
+};
+
+const preservesUnchangedPrimary = (
+  lease: LoopLease,
+  inventory: RepositoryInventory
+): boolean => {
+  const primary = inventory.worktrees.find((worktree) => worktree.isPrimary);
+  const registered = lease.worktrees.find(
+    (worktree) => worktree.path === lease.primaryCheckout
+  );
+  const scope = lease.shipmentScope;
+  if (
+    !(primary && registered && scope) ||
+    primary.branch !== registered.branch ||
+    primary.changeDigest !== registered.baselineChangeDigest ||
+    scope.plan.units.some((unit) => unit.sourceWorktree === primary.path)
+  ) {
+    return false;
+  }
+  const preservedPaths = new Set(
+    scope.plan.preserved
+      .filter((item) => item.worktreePath === primary.path)
+      .flatMap((item) => item.paths)
+  );
+  return (
+    primary.changes.every((change) => preservedPaths.has(change.path)) &&
+    (primary.headSha === registered.baselineHeadSha ||
+      primary.headSha === currentTargetRevision(lease))
+  );
+};
+
+const shipmentFinalizationVerification = (
+  lease: LoopLease,
+  inventory: RepositoryInventory,
+  verification: LoopVerification,
+  verifiedDelivery: boolean
+): LoopVerification => {
+  if (!verifiedDelivery) {
+    return verification;
+  }
+  const targetBranch = targetBranchForRef(
+    lease.primaryCheckout,
+    lease.targetRef
+  );
+  const primary = inventory.worktrees.find((worktree) => worktree.isPrimary);
+  const violations = verification.violations.filter((violation) => {
+    if (
+      violation.code === "preserved-worktree-changed" &&
+      violation.path === lease.primaryCheckout &&
+      preservesUnchangedPrimary(lease, inventory)
+    ) {
+      return false;
+    }
+    if (violation.code !== "unregistered-worktree") {
+      return true;
+    }
+    const arrival = inventory.worktrees.find(
+      (worktree) => worktree.path === violation.path
+    );
+    return !(
+      arrival &&
+      !arrival.isPrimary &&
+      arrival.branch !== targetBranch &&
+      arrival.branch !== primary?.branch &&
+      !lease.preparations.some((item) => item.path === arrival.path)
+    );
+  });
+  return { ...verification, ok: violations.length === 0, violations };
+};
+
+const finalizationDecision = (
+  lease: LoopLease,
+  finalInventory: RepositoryInventory,
+  cleanup: FinalizationCleanupResult,
+  reason: string
+): {
+  blockers: string[];
+  verification: LoopVerification;
+  receipt: LoopFinalizationReceipt;
+} => {
+  const strictVerification = verificationAgainst(lease, finalInventory);
+  let verifiedDelivery = false;
+  try {
+    verifiedDelivery = hasVerifiedDelivery(lease, finalInventory);
+  } catch {
+    // The ordinary blockers below report unresolved target evidence.
+  }
+  const primary = finalInventory.worktrees.find(
+    (worktree) => worktree.isPrimary
+  );
+  const scopedCompletion =
+    verifiedDelivery &&
+    (!primary?.changes.length ||
+      preservesUnchangedPrimary(lease, finalInventory));
+  const verification = shipmentFinalizationVerification(
+    lease,
+    finalInventory,
+    strictVerification,
+    scopedCompletion
+  );
+  const blockers = loopCompletionBlockers(
+    lease,
+    finalInventory,
+    verification,
+    cleanup.errors,
+    scopedCompletion
+  );
+  if (
+    lease.shipmentOutcome?.receipt.units.some(
+      (unit) => unit.disposition === "delivered"
+    ) &&
+    !verifiedDelivery
+  ) {
+    blockers.push(
+      "Reconcile delivered source worktrees and the exact current target before finalization; unaccounted source changes must remain open."
+    );
+  }
+  const lifecycle: Pick<
+    LoopFinalizationReceipt,
+    "blocksNextShipment" | "controllerStatus" | "shipmentStatus"
+  > =
+    blockers.length === 0
+      ? {
+          blocksNextShipment: false,
+          controllerStatus: "released",
+          shipmentStatus: "closed",
+        }
+      : {
+          blocksNextShipment: true,
+          controllerStatus: "relinquished",
+          shipmentStatus: "open",
+        };
+  const cleanupPending =
+    loopCompletionBlockers(
+      lease,
+      finalInventory,
+      strictVerification,
+      cleanup.errors
+    ).length > 0;
+  const now = new Date().toISOString();
+  const receipt: LoopFinalizationReceipt = {
+    ...lifecycle,
+    blockers,
+    cleanup,
+    cleanupStatus: cleanupPending ? "pending" : "complete",
+    deliveryStatus: verifiedDelivery ? "verified" : "unverified",
+    finalizedAt: now,
+    kind: "loop-finalization",
+    leaseDigest: loopManifestDigest(lease),
+    preservedWorktrees: finalInventory.worktrees
+      .map((worktree) => worktree.path)
+      .sort((left, right) => left.localeCompare(right)),
+    reason,
+    runId: lease.runId,
+    schemaVersion: 1,
+    targetRevision: verifiedDelivery
+      ? (lease.shipmentOutcome?.receipt.targetRevision ?? null)
+      : null,
+  };
+  return { blockers, receipt, verification };
+};
+
+const releaseDeliveredSourceClaims = (
+  lease: LoopLease,
+  inventory: RepositoryInventory,
+  cleanup: FinalizationCleanupResult
+): void => {
+  const sourcePaths = new Set(
+    lease.shipmentScope?.plan.units.map((unit) => unit.sourceWorktree)
+  );
+  const { claims } = readCoordinationDocumentFromCommonDirectory(
+    lease.commonGitDirectory
+  );
+  for (const claim of claims) {
+    const source = inventory.worktrees.find(
+      (worktree) => worktree.path === claim.path
+    );
+    if (
+      claim.state === "active" &&
+      claim.owner.agentId === lease.ownerAgentId &&
+      sourcePaths.has(claim.path) &&
+      source &&
+      source.branch === claim.branch &&
+      source.changes.length === 0
+    ) {
+      releaseClaimUnderLock(
+        lease.commonGitDirectory,
+        claim.claimId,
+        lease.ownerAgentId,
+        "shipped"
+      );
+      cleanup.releasedClaims.push({
+        claimId: claim.claimId,
+        path: claim.path,
+        releaseReason: "shipped",
+      });
+    }
+  }
+};
+
 export const finalizeLoop = (
   repositoryPath: string,
   runId: string,
@@ -5618,13 +5893,25 @@ export const finalizeLoop = (
                 );
           ({ lease } = automaticCleanup);
           const finalInventory = captureInventory(repositoryPath);
-          const verification = verificationAgainst(lease, finalInventory);
-          const blockers = loopCompletionBlockers(
+          const { blockers, verification, receipt } = finalizationDecision(
             lease,
             finalInventory,
-            verification,
-            automaticCleanup.cleanup.errors
+            automaticCleanup.cleanup,
+            reason
           );
+          const now = receipt.finalizedAt;
+          if (blockers.length === 0 && receipt.deliveryStatus === "verified") {
+            releaseDeliveredSourceClaims(
+              lease,
+              finalInventory,
+              automaticCleanup.cleanup
+            );
+          }
+          const receiptPath = resolve(
+            recoveryHistoryDirectory(lease.commonGitDirectory, lease.runId),
+            `finalization-${sha256Json(receipt)}.json`
+          );
+          writeImmutableRecoveryEvent(receiptPath, { lease, receipt });
           if (blockers.length === 0) {
             rmSync(loopLeasePath(lease.commonGitDirectory), { force: true });
             return {
@@ -5632,10 +5919,11 @@ export const finalizeLoop = (
               cleanup: automaticCleanup.cleanup,
               lease: null,
               outcome: "completed",
+              receipt,
+              receiptPath,
               verification,
             };
           }
-          const now = new Date().toISOString();
           const updated = writeLease({
             ...lease,
             controller: {
@@ -5657,6 +5945,8 @@ export const finalizeLoop = (
             cleanup: automaticCleanup.cleanup,
             lease: updated,
             outcome: "relinquished",
+            receipt,
+            receiptPath,
             verification,
           };
         }
@@ -6343,6 +6633,15 @@ const loopGuidanceFor = (
       nextCommands: ["simple-changes loop start --mode MODE --agent-id <you>"],
     };
   }
+  if (controllerLifecycle(lease).status === "relinquished") {
+    return {
+      headline: `Loop ${lease.runId} has released its controller. Resume it to finish its recorded work; takeover approval is unnecessary. Its existing scope and safety checks still apply.`,
+      nextCommands: [
+        "simple-changes loop start --mode resume --agent-id <you>",
+        `simple-changes loop close-equivalent --run-id ${lease.runId} --agent-id <you> --approved-by <user> --reason <why>`,
+      ],
+    };
+  }
   if (liveness?.state === "stale") {
     return {
       headline: `Loop ${lease.runId} is stale: its owner ${lease.ownerAgentId} cannot be proven alive and it last recorded activity at ${liveness.lastUpdatedAt}. Clearing the lease with user approval keeps every worktree and receipt.`,
@@ -6350,20 +6649,6 @@ const loopGuidanceFor = (
         `simple-changes loop recover --stale-lease --run-id ${lease.runId} --agent-id <you> --approved-by <user> --reason <why>`,
         `simple-changes loop takeover --run-id ${lease.runId} --agent-id <you> --manifest-digest ${loopManifestDigest(lease)} --approved-by <user> --reason <why>`,
       ],
-    };
-  }
-  const takeoverCommand = `simple-changes loop takeover --run-id ${lease.runId} --agent-id <you> --manifest-digest ${loopManifestDigest(lease)} --approved-by <user> --reason <why>`;
-  const closeEquivalentCommand = `simple-changes loop close-equivalent --run-id ${lease.runId} --agent-id <you> --approved-by <user> --reason <why>`;
-  if (controllerLifecycle(lease).status === "relinquished") {
-    if (effectiveShipmentScopeFrozenAt(lease) && !lease.shipmentScope) {
-      return {
-        headline: `Loop ${lease.runId} was relinquished before recording a first shipment scope, so it cannot author new work. Close it as target-equivalent if its registered work is already contained in the target, or take it over to finish registered work only.`,
-        nextCommands: [closeEquivalentCommand, takeoverCommand],
-      };
-    }
-    return {
-      headline: `Loop ${lease.runId} was relinquished; a new controller must take it over to finish its shipment, or close it as target-equivalent if nothing is left to ship.`,
-      nextCommands: [takeoverCommand, closeEquivalentCommand],
     };
   }
   if (!verification.ok) {
@@ -6428,8 +6713,10 @@ export const loopStatus = (
 // Liveness fields are deliberately excluded: a heartbeat must never invalidate
 // a manifest digest that takeover and finalization compare against.
 export const loopManifestDigest = (lease: LoopLease): string => {
-  const manifest: Record<string, unknown> = { ...lease };
-  delete manifest.ownerProcess;
-  delete manifest.updatedAt;
+  const {
+    ownerProcess: _ownerProcess,
+    updatedAt: _updatedAt,
+    ...manifest
+  } = lease;
   return sha256(JSON.stringify(manifest));
 };

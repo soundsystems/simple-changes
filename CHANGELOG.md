@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.15.0 - 2026-09-04
+
+- Local cleanup no longer depends on a shipment run reaching finalization. The
+  new `prune` command runs the same proven-safe pass finalization already ran,
+  without holding a controller lease, so an agent that merged its work and then
+  stopped no longer leaves merged worktrees and branches piling up:
+  - It removes unchanged clean checkouts the refreshed target already contains,
+    worktree records whose directory is gone, and eligible local branches.
+    Containment is proven by exact ancestry or by matching every commit's
+    patch, and each removal records which proof was used.
+  - The complete plan is always reported before anything is removed, and
+    `--dry-run` reports that plan and changes nothing.
+  - Dirty, claimed, preserved, and retained work is never touched, and anything
+    registered by a lease that is not provably stale is left alone.
+- An abandoned shipment lease no longer blocks every other agent in the
+  repository. Leases now record a heartbeat, `loop status` reports whether a
+  lease is live, stale, or unknown, and `loop recover --stale-lease` clears a
+  stale lease with your explicit approval, records a recovery receipt, and
+  preserves every worktree, branch, claim, and durable record. It clears the
+  bookkeeping record only, never your work. A lease counts as stale only when
+  its owner cannot be proven alive and its last heartbeat is more than four
+  hours old; a lease whose state cannot be proven is never treated as stale.
+  Recording a heartbeat never affects `loop takeover`, which still compares the
+  same safety-relevant manifest and still refuses when it genuinely changed.
+<!-- simple-changelogs-signature agent="claude-opus-5 medium" at="2026-09-04T10:05:00-05:00" -->
+
 ## 0.14.0 - 2026-09-02
 
 - Repository-specific Simple Changes forks can now be updated from the global

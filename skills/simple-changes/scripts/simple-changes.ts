@@ -140,7 +140,7 @@ import {
   standaloneWorktreeCleanup,
 } from "./lib/worktree-maintenance.ts";
 
-const VERSION = "0.14.0";
+const VERSION = "0.15.0";
 const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const SCHEMA_KIND_LINE_LIMIT = 78;
 const schemaKindLines = SCHEMA_NAMES.reduce<string[]>((lines, name) => {

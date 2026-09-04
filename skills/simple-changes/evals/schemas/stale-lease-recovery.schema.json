@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://simple-changes.dev/schemas/stale-lease-recovery.schema.json",
+  "title": "Simple Changes stale loop-lease recovery receipt",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "kind",
+    "runId",
+    "mode",
+    "ownerAgentId",
+    "agentId",
+    "approvedBy",
+    "reason",
+    "archivedAt",
+    "leaseDigest",
+    "liveness",
+    "staleAfterMs",
+    "preservedWorktreePaths",
+    "targetRef",
+    "targetRevision"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "kind": { "const": "stale-lease-recovery" },
+    "runId": { "type": "string", "pattern": "^run-[a-z0-9-]+$" },
+    "mode": {
+      "enum": ["queue", "sweep", "integrate", "ship", "reconcile", "resume"]
+    },
+    "ownerAgentId": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "agentId": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "approvedBy": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "reason": { "type": "string", "minLength": 1, "maxLength": 500 },
+    "archivedAt": { "type": "string", "format": "date-time" },
+    "leaseDigest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "liveness": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ageMs", "lastUpdatedAt", "ownerProcessProvable", "state"],
+      "properties": {
+        "ageMs": {
+          "anyOf": [{ "type": "integer", "minimum": 0 }, { "type": "null" }]
+        },
+        "lastUpdatedAt": { "type": "string", "minLength": 1 },
+        "ownerProcessProvable": { "const": false },
+        "state": { "const": "stale" }
+      }
+    },
+    "staleAfterMs": { "type": "integer", "minimum": 1 },
+    "preservedWorktreePaths": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "targetRef": { "type": "string", "minLength": 1 },
+    "targetRevision": { "type": "string", "pattern": "^[0-9a-f]{40,64}$" }
+  }
+}

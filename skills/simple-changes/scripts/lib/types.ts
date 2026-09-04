@@ -988,6 +988,12 @@ export interface LoopCloseEquivalentOutcome {
   worktrees: LoopCloseEquivalentWorktreeProof[];
 }
 
+export interface LoopOwnerProcess {
+  hostname: string;
+  pid: number;
+  recordedAt: string;
+}
+
 export interface LoopLease {
   baselineDigest: string;
   closeEquivalentOutcome?: LoopCloseEquivalentOutcome;
@@ -1002,6 +1008,7 @@ export interface LoopLease {
   openingRemoteInventory?: RemoteBranchReconciliationReceipt;
   overrides: LoopOverride[];
   ownerAgentId: string;
+  ownerProcess?: LoopOwnerProcess;
   preparations: LoopWorktreePreparation[];
   primaryCheckout: string;
   rebaselines?: LoopRebaselineRecord[];

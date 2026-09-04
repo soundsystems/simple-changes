@@ -202,6 +202,16 @@
   bound to the current target. For providers without that GitLab gate, it
   records that the reconciliation was not applicable. Frozen shipment scope
   blocks new authoring, not the target-equivalent close.
+- A lease records a heartbeat: every operation that already writes lease state
+  refreshes `updatedAt` and the owner process identity. A lease is `live` while
+  its recorded owner process is provably running or its heartbeat is recent,
+  `stale` only when the owner cannot be proven alive and the heartbeat is older
+  than the published threshold, and `unknown` when its timestamp cannot be
+  read. `loop status` reports that state directly. `loop recover --stale-lease`
+  clears a stale lease with a named approver and reason, refuses a live one,
+  archives the cleared record into the run history, and preserves every
+  worktree, branch, claim, and durable receipt; it clears the bookkeeping
+  record only, never user work.
 - A stale opening manifest is recoverable without abandoning the run:
   `loop rebaseline` lets the active or resumed controller register every
   worktree that appeared after loop start as preserved at its exact current
@@ -215,6 +225,15 @@
   target (by exact ancestry or full per-commit patch equivalence) plus stale
   metadata, preserves everything else with the exact next command, and
   records an append-only receipt; it is refused while any loop record exists.
+  `prune` runs that same proven-safe pass with no lease of its own, so an
+  agent that merged its work and stopped without finalizing still leaves no
+  residue: it removes unclaimed clean target-contained checkouts, stale
+  metadata, and local branches whose unique commits the refreshed target
+  contains by ancestry or full per-commit patch equivalence, naming the
+  containment method for each. It requires an approver and a reason, supports
+  `--dry-run`, always reports the exact plan before applying it, and refuses to
+  touch anything a lease that is not provably stale registers. It never edits
+  lease state, claims, or recorded receipts.
   `worktree refresh-index` prunes only missing-directory metadata so cached
   editor and desktop surfaces re-sync from the authoritative Git inventory,
   and equivalence reports may carry advisory residue hints that never change

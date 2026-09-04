@@ -158,6 +158,15 @@ discovery and the production release map stay scoped to that repository.
   background descendants before normal lease release, and recovers only locks
   whose recorded processes are proven dead. Each new authoring agent receives
   one branch-bound, resumable isolated worktree from a pinned clean revision.
+- Records a lease heartbeat on every operation that already writes lease state,
+  reports `live`, `stale`, or `unknown` liveness in `loop status`, and clears
+  only a provably stale lease through an approved `loop recover --stale-lease`
+  that preserves every worktree, branch, claim, and receipt.
+- Prunes proven-obsolete local checkouts, stale worktree metadata, and merged
+  local branches without a lease through `prune`, so cleanup no longer depends
+  on a run reaching `loop finalize`. It requires an approver and reason,
+  supports `--dry-run`, names the containment method for each removal, and
+  refuses to touch anything a lease that is not provably stale registers.
 - Builds a deterministic preview plan for stable work and validates path
   conservation, authority, and closed JSON schemas.
 - Classifies database and data-system changes without prescribing a provider,
@@ -242,6 +251,8 @@ simple-changes loop record-outcome --run-id ID --agent-id ID
 simple-changes loop exec --run-id ID --agent-id ID [--json] [--repo PATH]
   -- COMMAND [ARG ...]
 simple-changes loop recover --agent-id ID [--json] [--repo PATH]
+simple-changes loop recover --stale-lease --run-id ID --agent-id ID
+  --approved-by ID --reason TEXT [--json] [--repo PATH]
 simple-changes loop takeover --run-id ID --agent-id ID
   --manifest-digest SHA256 --approved-by ID --reason TEXT [--json] [--repo PATH]
 simple-changes loop allow --run-id ID --agent-id ID --worktree PATH
@@ -284,6 +295,8 @@ simple-changes worktree takeover --claim-id ID --agent-id NEW_OWNER
   [--json] [--repo PATH]
 simple-changes worktree equivalence --worktree PATH [--target REF]
   [--json] [--repo PATH]
+simple-changes prune --approved-by ID --reason TEXT [--target REF]
+  [--dry-run] [--json] [--repo PATH]
 simple-changes prepare-agent --run-id ID --agent-id ID --purpose SLUG
   [--json] [--repo PATH]
 simple-changes release-notes [--check] [--json] [--repo PATH] [--version VERSION]
@@ -307,8 +320,9 @@ simple-changes help
 `release-delivery-receipt`, `remote-branch-reconciliation`,
 `release-consistency`, `release-notes`, `loop-lease`, `loop-close-equivalent`,
 `migration-review`, `migration-pending`, `migration-apply-plan`,
-`post-cleanup-recovery`, `shipment-outcome`, `worktree-coordination`,
-`worktree-takeover`, or `worktree-equivalence` (the schema filenames under
+`post-cleanup-recovery`, `shipment-outcome`, `stale-lease-recovery`,
+`worktree-cleanup`, `worktree-coordination`, `worktree-takeover`, or
+`worktree-equivalence` (the schema filenames under
 `skills/simple-changes/evals/schemas/`).
 
 Worktree claims and pause receipts are local, mode-`0600` coordination evidence

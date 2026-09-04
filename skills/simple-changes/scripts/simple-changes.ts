@@ -47,6 +47,7 @@ import {
   recordShipmentScope,
   recoverLoopLock,
   recoverPostCleanupLoop,
+  recoverStaleLoopLease,
   retainExcludedWorktree,
   startLoop,
   takeoverLoop,
@@ -133,11 +134,13 @@ import {
 } from "./lib/worktree-coordination.ts";
 import { auditWorktreeEquivalence } from "./lib/worktree-equivalence.ts";
 import {
+  type PruneReport,
+  pruneRepository,
   refreshWorktreeIndex,
   standaloneWorktreeCleanup,
 } from "./lib/worktree-maintenance.ts";
 
-const VERSION = "0.14.0";
+const VERSION = "0.15.0";
 const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const SCHEMA_KIND_LINE_LIMIT = 78;
 const schemaKindLines = SCHEMA_NAMES.reduce<string[]>((lines, name) => {
@@ -212,6 +215,8 @@ Usage:
   simple-changes loop exec --run-id ID --agent-id ID [--json] [--repo PATH]
     -- COMMAND [ARG ...]
   simple-changes loop recover --agent-id ID [--json] [--repo PATH]
+  simple-changes loop recover --stale-lease --run-id ID --agent-id ID
+    --approved-by ID --reason TEXT [--json] [--repo PATH]
   simple-changes loop takeover --run-id ID --agent-id ID
     --manifest-digest SHA256 --approved-by ID --reason TEXT [--json] [--repo PATH]
   simple-changes loop rebaseline --run-id ID --agent-id ID
@@ -262,6 +267,8 @@ Usage:
   simple-changes worktree refresh-index [--json] [--repo PATH]
   simple-changes worktree cleanup --agent-id ID --approved-by ID --reason TEXT
     [--target REF] [--json] [--repo PATH]
+  simple-changes prune --approved-by ID --reason TEXT [--target REF]
+    [--dry-run] [--json] [--repo PATH]
   simple-changes prepare-agent --run-id ID --agent-id ID --purpose SLUG
     [--json] [--repo PATH]
   simple-changes release-notes [--check] [--json] [--repo PATH] [--version VERSION]
@@ -303,6 +310,7 @@ interface CliOptions {
   concurrentWork?: RepoPolicy["concurrentWork"];
   defaultFinish?: "open-change-request" | "integrate" | "ship";
   disposition?: "preserve-in-place" | "detach-clean-checkout";
+  dryRun: boolean;
   evidencePaths: string[];
   gitPushAuthorization?: RepoPolicy["gitPushAuthorization"];
   guidanceDecision?: RepoPolicy["guidance"]["disposition"];
@@ -343,6 +351,7 @@ interface CliOptions {
   settleMs: number;
   shippingMode?: RepoPolicy["shippingMode"];
   signatureRole?: ProposalSignatureRole;
+  staleLease: boolean;
   statePath?: string;
   statusDigest?: string;
   targetRef?: string;
@@ -414,9 +423,11 @@ const BOOLEAN_OPTIONS = new Set([
   "--acknowledge-push-scope",
   "--changelog-required",
   "--check",
+  "--dry-run",
   "--json",
   "--ready",
   "--release",
+  "--stale-lease",
   "--ui-artifacts",
   "--yes",
 ]);
@@ -912,6 +923,10 @@ const applyBooleanOption = (options: CliOptions, option: string): void => {
     options.changelogRequired = true;
   } else if (option === "--check") {
     options.check = true;
+  } else if (option === "--dry-run") {
+    options.dryRun = true;
+  } else if (option === "--stale-lease") {
+    options.staleLease = true;
   } else if (option === "--ready") {
     options.ready = true;
   } else if (option === "--release") {
@@ -929,6 +944,7 @@ const parseOptions = (args: string[]): CliOptions => {
     alreadyLive: false,
     changelogRequired: false,
     check: false,
+    dryRun: false,
     evidencePaths: [],
     help: false,
     json: false,
@@ -940,6 +956,7 @@ const parseOptions = (args: string[]): CliOptions => {
     repo: process.cwd(),
     repoProvided: false,
     settleMs: 0,
+    staleLease: false,
     uiArtifacts: false,
     versionAuthorized: false,
     yes: false,
@@ -2026,6 +2043,21 @@ const renderLoopVerification = (
 };
 
 const runLoopRecovery = (options: CliOptions): void => {
+  if (options.staleLease) {
+    const receipt = recoverStaleLoopLease(
+      options.repo,
+      requireCliOption(options.runId, "--run-id"),
+      requireCliOption(options.agentId, "--agent-id"),
+      requireCliOption(options.approvedBy, "--approved-by"),
+      requireCliOption(options.reason, "--reason")
+    );
+    writeOutput(
+      receipt,
+      options.json,
+      `Cleared stale lease ${receipt.runId} (last heartbeat ${receipt.liveness.lastUpdatedAt}) and archived it in the run history.\nEvery worktree, branch, claim, and receipt was preserved: ${receipt.preservedWorktreePaths.length} registered checkout(s) are untouched.\n`
+    );
+    return;
+  }
   const recovery = recoverLoopLock(
     options.repo,
     requireCliOption(options.agentId, "--agent-id")
@@ -2272,6 +2304,11 @@ const runLoopOpeningAction = (action: string, options: CliOptions): boolean => {
   if (action === "status") {
     const status = loopStatus(options.repo);
     const guidanceLines = [
+      ...(status.liveness
+        ? [
+            `Liveness: ${status.liveness.state} (last activity ${status.liveness.lastUpdatedAt}; owner process ${status.liveness.ownerProcessProvable ? "running" : "unprovable"})`,
+          ]
+        : []),
       status.guidance.headline,
       ...status.guidance.nextCommands.map((command) => `  Next: ${command}`),
     ];
@@ -2761,6 +2798,49 @@ const runWorktreeCommand = (options: CliOptions): void => {
   );
 };
 
+const renderPrune = (report: PruneReport): string => {
+  const verb = report.dryRun ? "Would remove" : "Removed";
+  const lines = [
+    `Prune vs ${report.targetRef} at ${report.targetRevision}${report.dryRun ? " (dry run; nothing was changed)" : ""}.`,
+    `Plan: ${report.plannedRemovals.length} worktree(s), ${report.plannedPrunePaths.length} stale record(s), ${report.plannedBranchRemovals.length} branch(es).`,
+  ];
+  for (const candidate of report.plannedRemovals) {
+    lines.push(
+      `- ${verb} worktree ${candidate.path} (${candidate.containment})`
+    );
+  }
+  for (const path of report.plannedPrunePaths) {
+    lines.push(`- ${verb} stale worktree record ${path}`);
+  }
+  for (const branch of report.plannedBranchRemovals) {
+    lines.push(`- ${verb} branch ${branch.branch} (${branch.method})`);
+  }
+  if (!report.dryRun) {
+    lines.push(
+      `Applied: removed ${report.removed.length} worktree(s), pruned ${report.prunedPaths.length} stale record(s), deleted ${report.removedBranches.length} branch(es).`
+    );
+  }
+  for (const entry of report.preserved) {
+    lines.push(`- preserved ${entry.path}: ${entry.reason}`);
+  }
+  for (const entry of report.preservedBranches) {
+    lines.push(`- preserved branch ${entry.branch}: ${entry.reason}`);
+  }
+  lines.push(...report.notes, ...report.errors.map((error) => `! ${error}`));
+  return `${lines.join("\n")}\n`;
+};
+
+const runPrune = (options: CliOptions): void => {
+  const report = pruneRepository({
+    approvedBy: options.approvedBy,
+    dryRun: options.dryRun,
+    reason: options.reason,
+    repositoryPath: options.repo,
+    targetRef: options.targetRef,
+  });
+  writeOutput(report, options.json, renderPrune(report));
+};
+
 const runPrepareAgent = (options: CliOptions): void => {
   const prepared = prepareAgentWorktree(
     options.repo,
@@ -2859,6 +2939,9 @@ const executeCommand = async (
       return EXIT_CODES.success;
     case "worktree":
       runWorktreeCommand(options);
+      return EXIT_CODES.success;
+    case "prune":
+      runPrune(options);
       return EXIT_CODES.success;
     case "prepare-agent":
       runPrepareAgent(options);

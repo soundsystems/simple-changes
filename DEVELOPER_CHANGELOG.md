@@ -1,5 +1,75 @@
 # Developer changelog
 
+## 0.15.0 - 2026-09-04
+
+- Extracted the proven-safe cleanup core into `scripts/lib/cleanup-core.ts` and
+  reused it from loop finalization, `standaloneWorktreeCleanup`, and the new
+  prune path: `targetContainsRevision` and `targetContainmentAudit` (exact
+  ancestry first, then full per-commit patch equivalence under
+  `PATCH_EQUIVALENCE_MAX_COMMITS`), `localBranchForTargetRef`, and
+  `deleteTargetContainedBranches`. The three callers now share one
+  implementation instead of parallel copies, and no safety check was weakened
+  or relaxed in the move.
+- Added `pruneRepository` and `prune --approved-by ID --reason TEXT
+  [--target REF] [--dry-run] [--json] [--repo PATH]`, a cleanup pass that holds
+  no controller lease of its own:
+  - It computes the complete plan (`plannedRemovals`, `plannedPrunePaths`,
+    `plannedBranchRemovals`) and reports it before any mutation, so the
+    destructive form and `--dry-run` produce the same plan.
+  - Each disposition carries its containment method, `target-contained` or
+    `patch-equivalent`, and each candidate is re-audited against fresh
+    inventory immediately before removal.
+  - Preserved entries carry a reason: the primary checkout, the target branch,
+    dirty or actively claimed checkouts, anything registered `preserved` or
+    `retained` in a lease, and branches beyond the patch-equivalence commit
+    bound.
+  - When a lease exists and is not provably stale, prune refuses to touch what
+    that lease registers and prunes only what is outside the manifest. It never
+    edits lease state, worktree claims, or recorded receipts, and unlike
+    `worktree cleanup` it does not release claims.
+- Added lease liveness. `LoopLease` gained an optional `ownerProcess`
+  (`hostname`, `pid`, `recordedAt`) written alongside `updatedAt` by the
+  operations that already persist lease state, with a matching closed object in
+  `loop-lease.schema.json`. Exported `LEASE_STALE_AFTER_MS` (4 hours) and
+  `leaseLiveness`, which reports `live` when the owner process is provably
+  running or the heartbeat is recent, `stale` only when `ownerProcessProvable`
+  is false and the heartbeat age exceeds the threshold, and `unknown` when the
+  timestamp cannot be read. `loopStatus` returns the liveness object and the
+  CLI prints it above the existing guidance block, so no caller compares
+  timestamps itself.
+- Added `recoverStaleLoopLease` and `loop recover --stale-lease --run-id ID
+  --agent-id ID --approved-by ID --reason TEXT`. It refuses any lease not
+  proven stale, archives the cleared lease into the run history like other
+  terminal records, and emits a new `stale-lease-recovery` receipt
+  (`schemaVersion: 1`, registered in `SCHEMA_NAMES`) pinning
+  `liveness.state: "stale"`, `liveness.ownerProcessProvable: false`, the
+  observed `staleAfterMs` and lease digest, and every preserved worktree path.
+  `unknown` liveness is deliberately never recoverable, so an unparseable
+  heartbeat can never be escalated into a clearance.
+- Fixed `loopManifestDigest`, which hashed the whole lease and so covered
+  bookkeeping fields despite its name. `loop takeover` compares that digest
+  exactly, so any lease write between reading the digest and taking over
+  invalidated it; the new heartbeat made that constant and would have turned a
+  read-only-looking `loop verify` into a tamper-shaped failure for a safe
+  operation. The digest now excludes only `ownerProcess` and `updatedAt` and
+  still covers every safety-relevant field, so a genuine manifest change still
+  trips takeover.
+- Added `tooling/simple-changes/tests/prune-and-liveness.test.ts` covering
+  prune planning and dry-run, both containment proofs, lease-registered skips,
+  preservation reasons, liveness classification against the named threshold,
+  stale-lease recovery and its refusals, and a regression test pinning that a
+  guarded mutation advances the heartbeat without moving the manifest digest.
+  Documented the new commands and schema in the README, `SKILL.md`, `SPEC.md`,
+  and `references/cleanup-and-completion.md`.
+- Advanced the package and CLI to 0.15.0. Simple Changes guidance stays at
+  version 22: this release adds capability without changing how any existing
+  command behaves for a user, introduces no setting, and requires no user
+  decision, and the guidance policy reserves a bump for installed releases that
+  materially change behavior, onboarding, settings, or companion integration.
+  The new commands reach agents through the shipped `SKILL.md` and reference
+  documentation, which install with the package regardless of guidance version.
+<!-- simple-changelogs-signature agent="claude-opus-5 medium" at="2026-09-04T10:05:00-05:00" -->
+
 ## 0.14.0 - 2026-09-02
 
 - Added the installable `update-local-forks` skill for synchronizing

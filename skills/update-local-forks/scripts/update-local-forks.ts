@@ -817,7 +817,7 @@ const advanceProvenance = (
     `Forked from \`simple-changes\` @ \`${newPin}\``
   );
   if (rewritten === basis) {
-    return false;
+    return PROVENANCE_PATTERN.exec(basis)?.[1] === newPin;
   }
   skillEntry.content = rewritten;
   if (
@@ -958,7 +958,7 @@ export const planForkUpdate = (options: {
     installed
   );
   const pinCandidate = source.commitVerified ? source.commit : null;
-  const pinAdvanced = advanceProvenance(
+  const pinReady = advanceProvenance(
     fork,
     entries,
     plannedContent,
@@ -967,10 +967,10 @@ export const planForkUpdate = (options: {
   const pinUpdate: ForkPlan["pinUpdate"] = {
     from: fork.pin,
     reason:
-      pinCandidate && !pinAdvanced
+      pinCandidate && !pinReady
         ? "The provenance file conflicts; resolve it before advancing the pin."
         : located.reason,
-    to: pinAdvanced ? pinCandidate : null,
+    to: pinReady ? pinCandidate : null,
   };
   const literalRewrites = literalRewritesFor(
     fork,

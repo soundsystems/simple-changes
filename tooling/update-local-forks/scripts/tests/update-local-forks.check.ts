@@ -389,6 +389,12 @@ describe("update-local-forks", () => {
       settled.entries.find((entry) => entry.forkPath === "SPEC.md")
     ).toMatchObject({ action: "keep-fork-delta" });
     expect(settled.literalRewrites).toEqual([]);
+    expect(settled.pinUpdate.to).toBe(fixture.release);
+    expect(settled.pinUpdate.reason).not.toContain("conflicts");
+    expect(applyForkPlan(settled)).toMatchObject({
+      pin: { from: fixture.release, to: fixture.release },
+      written: [],
+    });
   });
 
   test("refuses to apply a plan after the fork changed and refuses an unverified pin", () => {

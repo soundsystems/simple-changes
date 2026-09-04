@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.15.1 - 2026-09-04
+
+- Fork synchronization now recognizes an already-current provenance pin and
+  verifies the reviewed plan before reporting success.
+- Verified shipments can now close while unrelated local work remains preserved,
+  without requiring that work to be merged or discarded.
+<!-- simple-changelogs-signature agent="Astra medium" at="2026-09-04T23:38:58+00:00" -->
+
 ## 0.15.0 - 2026-09-04
 
 - Local cleanup no longer depends on a shipment run reaching finalization. The

@@ -6425,5 +6425,11 @@ export const loopStatus = (
   };
 };
 
-export const loopManifestDigest = (lease: LoopLease): string =>
-  sha256(JSON.stringify(lease));
+// Liveness fields are deliberately excluded: a heartbeat must never invalidate
+// a manifest digest that takeover and finalization compare against.
+export const loopManifestDigest = (lease: LoopLease): string => {
+  const manifest: Record<string, unknown> = { ...lease };
+  delete manifest.ownerProcess;
+  delete manifest.updatedAt;
+  return sha256(JSON.stringify(manifest));
+};

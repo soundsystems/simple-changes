@@ -9,6 +9,7 @@ import {
   guardLoopMutation,
   LEASE_STALE_AFTER_MS,
   leaseLiveness,
+  loopManifestDigest,
   loopLeasePath,
   loopStatus,
   readLoopLease,
@@ -395,6 +396,21 @@ describe("loop lease liveness", () => {
       pid: process.pid,
     });
     expect(leaseLiveness(beat).state).toBe("live");
+  });
+
+  test("a heartbeat does not invalidate the manifest digest", async () => {
+    const fixture = repository();
+    const lease = startLoop(fixture.root, "controller", "integrate");
+    const digestBeforeHeartbeat = loopManifestDigest(lease);
+    await sleep(5);
+
+    guardLoopMutation(fixture.root, lease.runId, "controller");
+
+    const beat = readLeaseFile(fixture.root);
+    expect(Date.parse(beat.updatedAt)).toBeGreaterThan(
+      Date.parse(lease.updatedAt)
+    );
+    expect(loopManifestDigest(beat)).toBe(digestBeforeHeartbeat);
   });
 
   test("loop status reports liveness without parsing timestamps", () => {

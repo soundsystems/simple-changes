@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.15.2 - 2026-09-04
+
+- Standalone cleanup now preserves every checkout and branch registered by an
+  open shipment, even when its heartbeat is stale. Cleanup also waits for shared
+  integration operations, preventing concurrent work from losing its registration.
+<!-- simple-changelogs-signature agent="gpt-6-astra medium" at="2026-09-04T20:23:24-05:00" -->
+
 ## 0.15.1 - 2026-09-04
 
 - Fork synchronization now recognizes an already-current provenance pin and

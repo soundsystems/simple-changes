@@ -1,5 +1,21 @@
 # Developer changelog
 
+## 0.15.2 - 2026-09-04
+
+- Share the controller state lock with standalone maintenance, taking it before
+  the worktree coordination lock so inventory and cleanup cannot race guarded
+  integration or registration changes.
+- Preserve all worktrees, prepared paths, and opening branches registered by an
+  open loop regardless of heartbeat liveness, including later checkouts attached
+  to those protected branches. Defer Git metadata pruning when
+  its global operation would remove a protected registration.
+- Add regression coverage for stale open-loop protection, shared integration
+  locking, opening branches, and protected missing-worktree metadata. Retain
+  the existing controller ownership and explicit recovery boundaries.
+- Advance package, CLI, and packaged public notes to 0.15.2. Guidance remains 22;
+  these safety corrections restore the existing preservation contract.
+<!-- simple-changelogs-signature agent="gpt-6-astra medium" at="2026-09-04T20:23:24-05:00" -->
+
 ## 0.15.1 - 2026-09-04
 
 - Check the current fork pin before reconstructing the prior upstream version,

@@ -556,6 +556,39 @@ describe("standalone worktree cleanup", () => {
 });
 
 describe("worktree index refresh", () => {
+  test("keeps registered missing metadata and defers Git's global prune", () => {
+    const fixture = repository();
+    const registered = join(fixture.base, "registered-missing");
+    git(fixture.root, [
+      "worktree",
+      "add",
+      "-b",
+      "registered-missing",
+      registered,
+    ]);
+    startLoop(fixture.root, "controller", "integrate");
+    const unrelated = join(fixture.base, "unrelated-missing");
+    git(fixture.root, [
+      "worktree",
+      "add",
+      "-b",
+      "unrelated-missing",
+      unrelated,
+    ]);
+    rmSync(registered, { force: true, recursive: true });
+    rmSync(unrelated, { force: true, recursive: true });
+
+    const result = refreshWorktreeIndex(fixture.root);
+
+    expect(result.prunedPaths).toEqual([]);
+    expect(result.remainingWorktreePaths).toContain(registered);
+    expect(result.remainingWorktreePaths).toContain(unrelated);
+    expect(result.notes[0]).toContain("deferred");
+    expect(
+      git(fixture.root, ["branch", "--list", "registered-missing"])
+    ).not.toBe("");
+  });
+
   test("prunes stale metadata only and reports the remaining inventory", () => {
     const fixture = repository();
     const keptWorktree = join(fixture.base, "kept-unit");

@@ -199,8 +199,11 @@ inventory.
 Cleanup is not tied to finalization. When work is merged but no loop will
 finalize it, run `prune --approved-by "$USER" --reason "$WHY"` (add
 `--dry-run` to see the plan first): it applies the same proven-safe audit
-without a lease, naming the containment method for every removal, and refuses
-to touch anything a lease that is not provably stale registers. When a lease
+without a lease, naming the containment method for every removal, and defers
+anything registered by an open lease to that run's controller. A stale heartbeat
+or released author claim never authorizes removing its registrations. Use the
+controller's audited removal path or wait for closure; never bypass this with
+raw Git removal or filesystem deletion. When a lease
 itself is stale, `loop recover --stale-lease --run-id "$RUN_ID" --agent-id
 "$AGENT_ID" --approved-by "$USER" --reason "$WHY"` clears the bookkeeping
 record on explicit user authority while preserving every worktree and receipt.

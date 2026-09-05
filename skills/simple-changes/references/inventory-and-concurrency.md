@@ -344,6 +344,16 @@ target ref or revision differs from the active lease. Run the exact removal
 through `loop exec` so preflight sees the recorded disposition and postflight
 proves only the authorized path disappeared.
 
+Concurrent cleanup must preserve every path and branch registered by an open
+loop, including prepared authors, released claims, and stale or relinquished
+runs. Run `prune` to clean eligible unrelated state; its deferred items belong
+to the controller or a later pass after closure. Do not remove a registered
+checkout through raw Git, filesystem deletion, or editor cleanup. The
+controller's exact removal disposition already lets verification accept the
+authorized absence without a separate repair. A missing path without that
+evidence still requires investigation; a formerly clean HEAD does not prove
+that no uncommitted work was lost.
+
 ## Exact retained exclusions
 
 When the user explicitly wants a clean, target-contained, non-primary worktree

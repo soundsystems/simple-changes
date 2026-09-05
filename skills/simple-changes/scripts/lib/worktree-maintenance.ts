@@ -22,6 +22,7 @@ import {
   type LeaseLiveness,
   leaseLiveness,
   readLoopLease,
+  withLoopStateLock,
 } from "./loop-lease.ts";
 import { runGit } from "./process.ts";
 import { validateSchema } from "./schema.ts";
@@ -44,6 +45,15 @@ const CLEANUP_LIVE_CLAIM_STATES = new Set<WorktreeCoordinationState>([
   "attached",
   "resume-ready",
 ]);
+
+const withCleanupLocks = <T>(
+  commonGitDirectory: string,
+  operationName: string,
+  operation: () => T
+): T =>
+  withLoopStateLock(commonGitDirectory, operationName, () =>
+    withWorktreeCoordinationLock(commonGitDirectory, operationName, operation)
+  );
 
 const cleanupsPath = (commonGitDirectory: string): string =>
   resolve(
@@ -229,6 +239,9 @@ const classifyCleanupCandidates = (
     targetRef
   );
   const targetPatchIdCache = new Map<string, Map<string, string>>();
+  const protectedMetadata = inventory.worktrees.find(
+    (worktree) => worktree.prunable && protectedPaths.has(worktree.path)
+  );
   for (const worktree of inventory.worktrees) {
     if (worktree.isPrimary) {
       continue;
@@ -300,6 +313,16 @@ const classifyCleanupCandidates = (
       containment,
       worktree: worktree as WorktreeInventory & { headSha: string },
     });
+  }
+  if (protectedMetadata) {
+    classification.preserved.push(
+      ...classification.prunable.map((worktree) => ({
+        nextCommand: "simple-changes loop status --json",
+        path: worktree.path,
+        reason: `Metadata cleanup is deferred: Git prunes registrations together, and the open loop still protects ${protectedMetadata.path}.`,
+      }))
+    );
+    classification.prunable = [];
   }
   return classification;
 };
@@ -463,7 +486,7 @@ export const standaloneWorktreeCleanup = (
   assertNoLoopLease(options.repositoryPath);
   const opening = captureInventory(options.repositoryPath);
   const { commonGitDirectory } = opening.repository;
-  return withWorktreeCoordinationLock(
+  return withCleanupLocks(
     commonGitDirectory,
     "standalone worktree cleanup",
     () => {
@@ -624,33 +647,25 @@ const leaseProtectionFor = (
     return { branches: new Set(), paths: new Map(), protection: null };
   }
   const liveness = leaseLiveness(lease);
-  const registeredScope = liveness.state !== "stale";
-  const branches = new Set<string>();
+  const branches = new Set(
+    (lease.openingBranches ?? []).map((branch) => branch.name)
+  );
   const paths = new Map<string, string>();
   for (const worktree of lease.worktrees) {
-    const durableRole =
-      worktree.role === "preserved" || worktree.role === "retained";
-    if (!(registeredScope || durableRole)) {
-      continue;
-    }
     paths.set(
       worktree.path,
-      registeredScope
-        ? `Loop ${lease.runId} is ${liveness.state} and registers this checkout; prune never touches what a lease that may still be working registers.`
-        : `Loop ${lease.runId} registers this checkout as ${worktree.role}; prune never removes preserved or retained work.`
+      `Loop ${lease.runId} registers this checkout; defer cleanup to its controller or wait until the run closes. A stale heartbeat does not authorize removal.`
     );
     if (worktree.branch) {
       branches.add(worktree.branch);
     }
   }
-  if (registeredScope) {
-    for (const preparation of lease.preparations) {
-      branches.add(preparation.branch);
-      paths.set(
-        preparation.path,
-        `Loop ${lease.runId} is ${liveness.state} and prepared this checkout; prune never touches what a lease that may still be working registers.`
-      );
-    }
+  for (const preparation of lease.preparations) {
+    branches.add(preparation.branch);
+    paths.set(
+      preparation.path,
+      `Loop ${lease.runId} prepared this checkout; cleanup waits until its controller finishes or the run is explicitly recovered.`
+    );
   }
   return {
     branches,
@@ -665,9 +680,7 @@ const leaseProtectionFor = (
         left.localeCompare(right)
       ),
       runId: lease.runId,
-      scope: registeredScope
-        ? "everything-registered"
-        : "preserved-and-retained",
+      scope: "everything-registered",
     },
   };
 };
@@ -722,8 +735,7 @@ const sortedByBranch = <T extends { branch: string }>(items: T[]): T[] =>
  * the target contains by ancestry or complete per-commit patch equivalence.
  *
  * Nothing else is touched. The primary checkout, the target branch, any dirty
- * or claimed checkout, anything a lease registers as preserved or retained,
- * and everything registered by a lease that is not provably stale are all
+ * or claimed checkout, and everything registered by any open lease are all
  * preserved and named with the reason. Lease state, claims, and durable
  * receipts are never modified.
  */
@@ -736,7 +748,7 @@ export const pruneRepository = (options: PruneOptions): PruneReport => {
   const reason = options.reason?.trim() || null;
   const opening = captureInventory(options.repositoryPath);
   const { commonGitDirectory } = opening.repository;
-  return withWorktreeCoordinationLock(commonGitDirectory, "prune", () => {
+  return withCleanupLocks(commonGitDirectory, "prune", () => {
     const inventory = captureInventory(options.repositoryPath);
     const { targetRef, targetRevision } = resolveCleanupTarget(
       inventory,
@@ -747,9 +759,7 @@ export const pruneRepository = (options: PruneOptions): PruneReport => {
     const notes: string[] = [];
     if (lease.protection) {
       notes.push(
-        lease.protection.scope === "everything-registered"
-          ? `Loop ${lease.protection.runId} is ${lease.protection.liveness.state}; prune refused to touch anything it registers and pruned only unrelated state.`
-          : `Loop ${lease.protection.runId} is stale, so prune audited its unregistered state; its preserved and retained checkouts were still left alone. Clear the lease itself with \`simple-changes loop recover --stale-lease\`.`
+        `Loop ${lease.protection.runId} is ${lease.protection.liveness.state}; cleanup of its registered work is deferred to its controller. Only unrelated state is eligible. A stale or relinquished run keeps its protections until it closes or is explicitly recovered.`
       );
     }
     notes.push(
@@ -866,14 +876,14 @@ export const refreshWorktreeIndex = (
 ): WorktreeIndexRefreshResult => {
   const opening = captureInventory(repositoryPath);
   const { commonGitDirectory } = opening.repository;
-  return withWorktreeCoordinationLock(
-    commonGitDirectory,
-    "worktree index refresh",
-    () => {
-      const before = captureInventory(repositoryPath);
-      const stale = before.worktrees
-        .filter((worktree) => worktree.prunable)
-        .map((worktree) => worktree.path);
+  return withCleanupLocks(commonGitDirectory, "worktree index refresh", () => {
+    const before = captureInventory(repositoryPath);
+    const stale = before.worktrees
+      .filter((worktree) => worktree.prunable)
+      .map((worktree) => worktree.path);
+    const lease = leaseProtectionFor(repositoryPath);
+    const deferred = stale.some((path) => lease.paths.has(path));
+    if (!deferred) {
       const result = runGit(
         before.repository.primaryCheckout,
         ["worktree", "prune", "--expire", "now"],
@@ -885,40 +895,42 @@ export const refreshWorktreeIndex = (
           EXIT_CODES.inventory
         );
       }
-      const remainingWorktreePaths = captureInventory(repositoryPath)
-        .worktrees.map((worktree) => worktree.path)
-        .sort((left, right) => left.localeCompare(right));
-      const remaining = new Set(remainingWorktreePaths);
-      const document =
-        readCoordinationDocumentFromCommonDirectory(commonGitDirectory);
-      const adapters = [
-        ...new Set(
-          document.claims
-            .filter((claim) => CLEANUP_LIVE_CLAIM_STATES.has(claim.state))
-            .map((claim) => claim.owner.adapter)
-        ),
-      ].sort((left, right) => left.localeCompare(right));
-      const adapterNotes = adapters.map((adapter) => {
-        const { capabilities } = probeCoordinationAdapter(adapter, null);
-        return {
-          adapter,
-          note:
-            capabilities.worktreeIdentity === "native"
-              ? "This surface derives worktree identity natively; its live inventory re-reads the pruned Git state on its next sync. Session and task history are audit records and are not touched."
-              : "This adapter tracks worktrees by claim only; there is no cached surface index to refresh.",
-          worktreeIdentity: capabilities.worktreeIdentity,
-        };
-      });
-      return {
-        adapterNotes,
-        notes: [
-          "Pruning removed metadata only for worktree directories that no longer exist; no working files, branches, or claims were touched.",
-        ],
-        prunedPaths: stale
-          .filter((path) => !remaining.has(path))
-          .sort((left, right) => left.localeCompare(right)),
-        remainingWorktreePaths,
-      };
     }
-  );
+    const remainingWorktreePaths = captureInventory(repositoryPath)
+      .worktrees.map((worktree) => worktree.path)
+      .sort((left, right) => left.localeCompare(right));
+    const remaining = new Set(remainingWorktreePaths);
+    const document =
+      readCoordinationDocumentFromCommonDirectory(commonGitDirectory);
+    const adapters = [
+      ...new Set(
+        document.claims
+          .filter((claim) => CLEANUP_LIVE_CLAIM_STATES.has(claim.state))
+          .map((claim) => claim.owner.adapter)
+      ),
+    ].sort((left, right) => left.localeCompare(right));
+    const adapterNotes = adapters.map((adapter) => {
+      const { capabilities } = probeCoordinationAdapter(adapter, null);
+      return {
+        adapter,
+        note:
+          capabilities.worktreeIdentity === "native"
+            ? "This surface derives worktree identity natively; its live inventory re-reads the pruned Git state on its next sync. Session and task history are audit records and are not touched."
+            : "This adapter tracks worktrees by claim only; there is no cached surface index to refresh.",
+        worktreeIdentity: capabilities.worktreeIdentity,
+      };
+    });
+    return {
+      adapterNotes,
+      notes: [
+        deferred
+          ? `Metadata cleanup is deferred while loop ${lease.protection?.runId} protects a missing checkout. Git prunes registrations together; the controller must reconcile its exact removal before metadata cleanup. The current inventory is still reported.`
+          : "Pruning removed metadata only for worktree directories that no longer exist; no working files, branches, or claims were touched.",
+      ],
+      prunedPaths: stale
+        .filter((path) => !remaining.has(path))
+        .sort((left, right) => left.localeCompare(right)),
+      remainingWorktreePaths,
+    };
+  });
 };

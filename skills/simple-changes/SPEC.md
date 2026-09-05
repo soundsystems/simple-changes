@@ -240,11 +240,19 @@
   contains by ancestry or full per-commit patch equivalence, naming the
   containment method for each. It requires an approver and a reason, supports
   `--dry-run`, always reports the exact plan before applying it, and refuses to
-  touch anything a lease that is not provably stale registers. It never edits
-  lease state, claims, or recorded receipts.
+  touch any path or branch an open lease registers, including pending authors,
+  opening branches, and stale or relinquished runs. An old heartbeat or
+  released claim does not reduce protection. Registered cleanup belongs to
+  the controller's exact disposition and guarded removal, or a later pass
+  after closure. It never edits lease state, claims, or recorded receipts.
+  Standalone cleanup, prune, and metadata refresh acquire the short integration
+  lock before the coordination lock and re-read inventory under both locks.
   `worktree refresh-index` prunes only missing-directory metadata so cached
   editor and desktop surfaces re-sync from the authoritative Git inventory,
-  and equivalence reports may carry advisory residue hints that never change
+  deferring global metadata pruning when any missing registration belongs to
+  an open loop; prune applies the same deferral. Unexplained worktree deletion
+  still fails verification; a clean opening HEAD is not proof of safe removal.
+  Equivalence reports may carry advisory residue hints that never change
   the classification. Claim protection under `worktree takeover` follows the
   controller lifecycle: an active loop protects every registered path, while
   a relinquished loop protects only adopted claim-and-pause linkages, so a

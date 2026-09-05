@@ -12,13 +12,19 @@ import {
   loopLeasePath,
   loopManifestDigest,
   loopStatus,
+  prepareAgentWorktree,
   readLoopLease,
   recoverStaleLoopLease,
   startLoop,
+  verifyLoop,
+  withLoopMutationLease,
 } from "../../../skills/simple-changes/scripts/lib/loop-lease.ts";
 import type { LoopLease } from "../../../skills/simple-changes/scripts/lib/types.ts";
 import { claimWorktree } from "../../../skills/simple-changes/scripts/lib/worktree-coordination.ts";
-import { pruneRepository } from "../../../skills/simple-changes/scripts/lib/worktree-maintenance.ts";
+import {
+  pruneRepository,
+  refreshWorktreeIndex,
+} from "../../../skills/simple-changes/scripts/lib/worktree-maintenance.ts";
 import {
   createTestRepository,
   git,
@@ -262,6 +268,108 @@ describe("simple-changes prune", () => {
     expect(report.removedBranches).toEqual([]);
     expect(existsSync(merged.path)).toBe(true);
     expect(branchExists(fixture.root, "planned-branch")).toBe(true);
+  });
+
+  test("an old heartbeat never makes a registered author or opening branch disposable", () => {
+    const fixture = repository();
+    git(fixture.root, ["branch", "opening-branch"]);
+    const lease = startLoop(fixture.root, "controller", "integrate");
+    const author = prepareAgentWorktree(
+      fixture.root,
+      lease.runId,
+      "shipping-author",
+      "pending shipment"
+    );
+    const quiet = {
+      ...readLeaseFile(fixture.root),
+      updatedAt: new Date(
+        Date.now() - LEASE_STALE_AFTER_MS - 60_000
+      ).toISOString(),
+    };
+    writeLeaseFile(fixture.root, quiet);
+    const before = readFileSync(
+      loopLeasePath(commonGitDirectory(fixture.root))
+    );
+
+    const report = pruneRepository({
+      approvedBy: "the-user",
+      dryRun: false,
+      reason: "Clean around a controller between commands.",
+      repositoryPath: fixture.root,
+    });
+
+    expect(report.lease?.liveness.state).toBe("stale");
+    expect(report.lease?.protectedPaths).toContain(author.path);
+    expect(report.lease?.protectedBranches).toContain("opening-branch");
+    expect(report.removed).toEqual([]);
+    expect(report.removedBranches).toEqual([]);
+    expect(report.errors).toEqual([]);
+    expect(existsSync(author.path)).toBe(true);
+    expect(branchExists(fixture.root, author.branch)).toBe(true);
+    expect(branchExists(fixture.root, "opening-branch")).toBe(true);
+    expect(
+      readFileSync(loopLeasePath(commonGitDirectory(fixture.root)))
+    ).toEqual(before);
+    expect(verifyLoop(fixture.root).ok).toBe(true);
+  });
+
+  test("prune defers global metadata removal when it would erase a registered checkout", () => {
+    const fixture = repository();
+    const registered = addMergedWorktree(fixture, "registered-metadata");
+    const lease = startLoop(fixture.root, "controller", "integrate");
+    const unrelated = addMergedWorktree(fixture, "unrelated-metadata");
+    rmSync(registered.path, { force: true, recursive: true });
+    rmSync(unrelated.path, { force: true, recursive: true });
+
+    const report = pruneRepository({
+      approvedBy: "the-user",
+      dryRun: false,
+      reason: "Refresh unrelated missing checkouts.",
+      repositoryPath: fixture.root,
+    });
+
+    expect(report.lease?.runId).toBe(lease.runId);
+    expect(report.plannedPrunePaths).toEqual([]);
+    expect(report.prunedPaths).toEqual([]);
+    expect(report.errors).toEqual([]);
+    expect(
+      report.preserved.find((item) => item.path === unrelated.path)?.reason
+    ).toContain("deferred");
+    expect(
+      captureInventory(fixture.root).worktrees.map((item) => item.path)
+    ).toEqual(expect.arrayContaining([registered.path, unrelated.path]));
+  });
+
+  test("maintenance waits for the same short lock used by shipping mutations", async () => {
+    const fixture = repository();
+    const registered = addMergedWorktree(fixture, "locked-unit");
+    const lease = startLoop(fixture.root, "controller", "integrate");
+
+    const mutation = await withLoopMutationLease(
+      fixture.root,
+      lease.runId,
+      "controller",
+      "integration in progress",
+      () => {
+        expect(() =>
+          pruneRepository({
+            approvedBy: "the-user",
+            dryRun: false,
+            reason: "Concurrent cleanup.",
+            repositoryPath: fixture.root,
+          })
+        ).toThrow("state is busy");
+        expect(() => refreshWorktreeIndex(fixture.root)).toThrow(
+          "state is busy"
+        );
+        return "done";
+      }
+    );
+
+    expect(mutation.result).toBe("done");
+    expect(mutation.verification.ok).toBe(true);
+    expect(existsSync(registered.path)).toBe(true);
+    expect(refreshWorktreeIndex(fixture.root).prunedPaths).toEqual([]);
   });
 
   test("requires an approver and a reason for the destructive form", () => {

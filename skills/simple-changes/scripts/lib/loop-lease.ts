@@ -396,6 +396,10 @@ const withStateLock = <T>(
   }
 };
 
+// Standalone maintenance shares this short lock without acquiring a controller
+// lease, so its inventory cannot race a registration or integration mutation.
+export { withStateLock as withLoopStateLock };
+
 const withAsyncStateLock = async <T>(
   commonGitDirectory: string,
   operationName: string,

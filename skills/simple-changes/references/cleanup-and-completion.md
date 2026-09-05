@@ -173,13 +173,19 @@ target, not attached to a worktree, and whose unique commits the target
 contains by the same two proofs. Each disposition names its containment method
 (`target-contained` or `patch-equivalent`), and everything preserved is named
 with its reason: the primary checkout, the target branch, any dirty or
-actively claimed checkout, anything registered `preserved` or `retained` in a
-lease, and any branch beyond the patch-equivalence commit bound. When a lease
-exists and is not provably stale, prune refuses to touch anything that lease
-registers and says so, pruning only what is outside that manifest. `--dry-run`
+actively claimed checkout, every path or branch registered by an open lease,
+and any branch beyond the patch-equivalence commit bound. Prune defers the
+lease's registered work to its controller, even when the run is stale or
+relinquished, and cleans only eligible unrelated state. An old heartbeat or
+released claim is not removal authority. For registered cleanup, use the
+controller's exact disposition and guarded removal or wait for closure; never
+fall back to raw Git removal or filesystem deletion. `--dry-run`
 changes nothing; the destructive form still reports the exact plan before
 applying it. Prune never edits lease state, worktree claims, or recorded
 receipts, and unlike `worktree cleanup` it does not release claims.
+Cleanup and metadata refresh take the same short integration lock before the
+coordination lock, then re-read inventory and registrations. If an integration
+operation is busy, retry cleanup after it finishes; leave the shipment running.
 
 **Stale lease recovery.** A lease whose owner died mid-run used to block every
 other agent in the repository until a human-approved `loop takeover`. Each
@@ -197,13 +203,19 @@ receipt. It clears the bookkeeping record only, never user work; run `prune`
 afterward to reconcile whatever local cleanup the dead owner never finished.
 (`loop recover --agent-id <you>` still recovers a dead *lock*; run it first if
 one remains.)
+Do not clear another task's run merely to complete a concurrent prune request.
+If that task is still shipping, defer its cleanup; recover the run only on
+explicit recovery authority after checking its owner.
 
 **External UI caches.** Editor and desktop surfaces (for example Codex
 Desktop) cache their own view of worktrees outside this workflow's ownership.
 After cleanup, `worktree refresh-index` prunes only metadata for worktree
 directories that no longer exist and reports, per coordination adapter,
-whether a cached surface view re-syncs from the refreshed Git inventory
-(`git worktree prune` remains the manual equivalent). Their session and task
+whether a cached surface view re-syncs from the refreshed Git inventory. If
+any missing checkout is registered by an open loop, metadata pruning is
+deferred because Git prunes registrations together; the current inventory is
+still returned. Prune uses the same deferral. Never substitute raw
+`git worktree prune` for this protection. Their session and task
 history are audit records, not live registrations; never delete them to make a
 list look clean.
 

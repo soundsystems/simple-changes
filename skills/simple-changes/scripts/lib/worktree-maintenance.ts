@@ -636,13 +636,13 @@ export interface PruneReport {
 }
 
 const leaseProtectionFor = (
-  repositoryPath: string
+  inventory: RepositoryInventory
 ): {
   branches: Set<string>;
   paths: Map<string, string>;
   protection: PruneLeaseProtection | null;
 } => {
-  const lease = readLoopLease(repositoryPath);
+  const lease = readLoopLease(inventory.repository.root);
   if (!lease) {
     return { branches: new Set(), paths: new Map(), protection: null };
   }
@@ -666,6 +666,18 @@ const leaseProtectionFor = (
       preparation.path,
       `Loop ${lease.runId} prepared this checkout; cleanup waits until its controller finishes or the run is explicitly recovered.`
     );
+  }
+  for (const worktree of inventory.worktrees) {
+    if (
+      worktree.branch &&
+      branches.has(worktree.branch) &&
+      !paths.has(worktree.path)
+    ) {
+      paths.set(
+        worktree.path,
+        `Loop ${lease.runId} protects branch ${worktree.branch}; its attached checkout and metadata remain protected until the run closes or is explicitly recovered.`
+      );
+    }
   }
   return {
     branches,
@@ -754,7 +766,7 @@ export const pruneRepository = (options: PruneOptions): PruneReport => {
       inventory,
       options.targetRef
     );
-    const lease = leaseProtectionFor(options.repositoryPath);
+    const lease = leaseProtectionFor(inventory);
     const errors: string[] = [];
     const notes: string[] = [];
     if (lease.protection) {
@@ -881,7 +893,7 @@ export const refreshWorktreeIndex = (
     const stale = before.worktrees
       .filter((worktree) => worktree.prunable)
       .map((worktree) => worktree.path);
-    const lease = leaseProtectionFor(repositoryPath);
+    const lease = leaseProtectionFor(before);
     const deferred = stale.some((path) => lease.paths.has(path));
     if (!deferred) {
       const result = runGit(

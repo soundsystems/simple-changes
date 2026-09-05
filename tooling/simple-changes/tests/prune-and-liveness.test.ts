@@ -313,6 +313,71 @@ describe("simple-changes prune", () => {
     expect(verifyLoop(fixture.root).ok).toBe(true);
   });
 
+  test("preserves a new checkout attached to a protected opening branch", () => {
+    const fixture = repository();
+    git(fixture.root, ["branch", "opening-branch"]);
+    startLoop(fixture.root, "controller", "integrate");
+    const path = join(fixture.base, "late-opening-checkout");
+    git(fixture.root, ["worktree", "add", path, "opening-branch"]);
+    const before = readFileSync(
+      loopLeasePath(commonGitDirectory(fixture.root))
+    );
+
+    const preview = pruneRepository({
+      dryRun: true,
+      repositoryPath: fixture.root,
+    });
+    const report = pruneRepository({
+      approvedBy: "the-user",
+      dryRun: false,
+      reason: "Clean unrelated state without deleting an opening branch.",
+      repositoryPath: fixture.root,
+    });
+
+    expect(existsSync(path)).toBe(true);
+    expect(branchExists(fixture.root, "opening-branch")).toBe(true);
+    expect(preview.plannedRemovals).toEqual([]);
+    expect(report.removed).toEqual([]);
+    expect(report.removedBranches).toEqual([]);
+    expect(report.lease?.protectedPaths).toContain(path);
+    expect(
+      report.preserved.find((item) => item.path === path)?.reason
+    ).toContain("opening-branch");
+    expect(
+      readFileSync(loopLeasePath(commonGitDirectory(fixture.root)))
+    ).toEqual(before);
+  });
+
+  test.each(["prune", "refresh-index"])(
+    "%s preserves missing metadata attached to a protected opening branch",
+    (operation) => {
+      const fixture = repository();
+      git(fixture.root, ["branch", "opening-branch"]);
+      startLoop(fixture.root, "controller", "integrate");
+      const path = join(fixture.base, "late-opening-metadata");
+      git(fixture.root, ["worktree", "add", path, "opening-branch"]);
+      rmSync(path, { force: true, recursive: true });
+
+      if (operation === "prune") {
+        const report = pruneRepository({
+          approvedBy: "the-user",
+          dryRun: false,
+          reason: "Preserve metadata attached to an opening branch.",
+          repositoryPath: fixture.root,
+        });
+        expect(report.plannedPrunePaths).toEqual([]);
+        expect(report.prunedPaths).toEqual([]);
+      } else {
+        refreshWorktreeIndex(fixture.root);
+      }
+
+      expect(
+        captureInventory(fixture.root).worktrees.map((item) => item.path)
+      ).toContain(path);
+      expect(branchExists(fixture.root, "opening-branch")).toBe(true);
+    }
+  );
+
   test("prune defers global metadata removal when it would erase a registered checkout", () => {
     const fixture = repository();
     const registered = addMergedWorktree(fixture, "registered-metadata");

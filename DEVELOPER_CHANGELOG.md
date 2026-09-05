@@ -6,7 +6,8 @@
   the worktree coordination lock so inventory and cleanup cannot race guarded
   integration or registration changes.
 - Preserve all worktrees, prepared paths, and opening branches registered by an
-  open loop regardless of heartbeat liveness. Defer Git metadata pruning when
+  open loop regardless of heartbeat liveness, including later checkouts attached
+  to those protected branches. Defer Git metadata pruning when
   its global operation would remove a protected registration.
 - Add regression coverage for stale open-loop protection, shared integration
   locking, opening branches, and protected missing-worktree metadata. Retain

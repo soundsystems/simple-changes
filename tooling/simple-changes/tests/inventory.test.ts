@@ -131,6 +131,44 @@ describe("Git inventory and concurrency", () => {
     });
   });
 
+  test("targets the integration remote of the default branch from an unbound feature branch", () => {
+    const fixture = repository();
+    git(fixture.root, [
+      "remote",
+      "add",
+      "origin",
+      "https://example.invalid/mirror.git",
+    ]);
+    git(fixture.root, [
+      "remote",
+      "add",
+      "gitlab",
+      "https://example.invalid/canonical.git",
+    ]);
+    for (const remote of ["origin", "gitlab"]) {
+      git(fixture.root, ["update-ref", `refs/remotes/${remote}/main`, "HEAD"]);
+      git(fixture.root, [
+        "symbolic-ref",
+        `refs/remotes/${remote}/HEAD`,
+        `refs/remotes/${remote}/main`,
+      ]);
+    }
+    // The repository integrates through gitlab and keeps origin as a mirror.
+    git(fixture.root, ["config", "branch.main.remote", "gitlab"]);
+    git(fixture.root, ["config", "branch.main.merge", "refs/heads/main"]);
+    // A feature branch cut before its first push binds no remote of its own.
+    git(fixture.root, ["checkout", "-b", "feature/unbound"]);
+
+    const inventory = captureInventory(fixture.root);
+    expect(inventory.targetRef).toBe("gitlab/main");
+    expect(inventory.repository.targetRemote).toBe("gitlab");
+
+    git(fixture.root, ["symbolic-ref", "--delete", "refs/remotes/gitlab/HEAD"]);
+    const withoutRemoteHead = captureInventory(fixture.root);
+    expect(withoutRemoteHead.targetRef).toBe("gitlab/main");
+    expect(withoutRemoteHead.repository.targetRemote).toBe("gitlab");
+  });
+
   test("reports changelog relevance separately from skill availability", () => {
     const fixture = repository();
     writeFixture(fixture.root, "CHANGELOG.md", "# Changelog\n");

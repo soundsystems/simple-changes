@@ -1,5 +1,23 @@
 # Developer changelog
 
+## 0.16.0 - 2026-09-07
+
+- Compare upstream CLI commands at the fork's provenance pin with the installed
+  source, using help text and dispatch cases. Promote fork-owned scripts and
+  manifests from `keep-fork-only` to `review` when a concentrated command list
+  omits an added command. Preserve the file for maintainer review; document
+  heuristic limits and cover command additions, complete gates, and scattered
+  mentions.
+- Prefer the current branch's configured remote, then the local integration
+  branch's remote, before `origin` and other remotes during target discovery.
+  Add regression coverage for repositories that integrate through a remote
+  other than their `origin` mirror.
+- Advance the package, CLI, and packaged public history to 0.16.0. Simple Changes
+  guidance remains 22: target selection repairs existing behavior, and command
+  parity findings use the existing fork-review workflow without introducing
+  settings or an onboarding decision.
+<!-- simple-changelogs-signature agent="gpt-6-astra medium" at="2026-09-07T12:49:08-05:00" -->
+
 ## 0.15.2 - 2026-09-04
 
 - Share the controller state lock with standalone maintenance, taking it before

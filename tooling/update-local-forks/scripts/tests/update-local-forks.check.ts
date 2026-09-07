@@ -66,6 +66,33 @@ interface Fixture {
   upstream: string;
 }
 
+/** A CLI whose documented and answered command surfaces both list `commands`. */
+const cliSource = (commands: string[]): string => {
+  const help = commands.map(
+    (command) => `  simple-changes ${command} [--json]`
+  );
+  const cases = commands.map(
+    (command) => `    case "${command}":\n      return 0;`
+  );
+  return [
+    "const HELP = `Usage:",
+    ...help,
+    "`;",
+    "",
+    "export const executeCommand = (command: string): number => {",
+    "  switch (command) {",
+    ...cases,
+    "    default:",
+    "      return 2;",
+    "  }",
+    "};",
+    "",
+  ].join("\n");
+};
+
+const PINNED_COMMANDS = ["help", "initialize", "loop", "worktree"];
+const RELEASED_COMMANDS = [...PINNED_COMMANDS, "prune"];
+
 /**
  * Build a tiny canonical repository with two commits: the pin the fork was
  * cut from, and a later release. The installed source is the release tree.
@@ -111,6 +138,11 @@ const createFixture = (): Fixture => {
   write(upstream, `${skill}/scripts/lib/core.ts`, "export const core = 1;\n");
   write(
     upstream,
+    `${skill}/scripts/simple-changes.ts`,
+    cliSource(PINNED_COMMANDS)
+  );
+  write(
+    upstream,
     `${skill}/evals/schemas/policy.schema.json`,
     '{"version":1}\n'
   );
@@ -152,6 +184,7 @@ const createFixture = (): Fixture => {
     "export const CURRENT_GUIDANCE_VERSION = 1;\n"
   );
   write(fork, "runtime/scripts/lib/core.ts", "export const core = 1;\n");
+  write(fork, "runtime/scripts/simple-changes.ts", cliSource(PINNED_COMMANDS));
   write(fork, "runtime/evals/schemas/policy.schema.json", '{"version":1}\n');
   write(
     fork,
@@ -196,6 +229,11 @@ const createFixture = (): Fixture => {
     "export const CURRENT_GUIDANCE_VERSION = 2;\n"
   );
   write(upstream, `${skill}/scripts/lib/core.ts`, "export const core = 2;\n");
+  write(
+    upstream,
+    `${skill}/scripts/simple-changes.ts`,
+    cliSource(RELEASED_COMMANDS)
+  );
   write(
     upstream,
     `${skill}/scripts/lib/extra.ts`,
@@ -259,6 +297,91 @@ describe("update-local-forks", () => {
     expect(defaults.forks.map((fork) => fork.path)).toContain(
       realpathSync(fixture.fork)
     );
+  });
+
+  test("reports a fork-owned command gate that a new upstream command escapes", () => {
+    const fixture = createFixture();
+    // The shape that shipped broken: the wrapper refuses anything outside its
+    // own allowlist, and the allowlist was written against the pinned surface.
+    write(
+      fixture.fork,
+      "scripts/simple-changes-runtime.sh",
+      [
+        "#!/bin/sh",
+        'case "$1" in',
+        "  help | initialize | loop | worktree) ;;",
+        "  *)",
+        "    echo 'error: this fork permits only initialize, loop and worktree' >&2",
+        "    exit 64",
+        "    ;;",
+        "esac",
+        'exec bun runtime/scripts/simple-changes.ts "$@"',
+        "",
+      ].join("\n")
+    );
+
+    const plan = planForkUpdate({
+      fork: fixture.fork,
+      source: fixture.source,
+      upstream: fixture.upstream,
+    });
+    const gate = plan.entries.find(
+      (entry) => entry.forkPath === "scripts/simple-changes-runtime.sh"
+    );
+
+    expect(gate?.action).toBe("review");
+    expect(gate?.reason).toContain("prune");
+    // The vendored runtime still updates cleanly; only the gate is reported.
+    expect(
+      plan.entries.find(
+        (entry) => entry.forkPath === "runtime/scripts/simple-changes.ts"
+      )?.action
+    ).toBe("update");
+    expect(applyForkPlan(plan).review).toContain(
+      "scripts/simple-changes-runtime.sh"
+    );
+    // A review entry is never written, so the gate keeps its own contents.
+    expect(
+      readFileSync(
+        join(fixture.fork, "scripts/simple-changes-runtime.sh"),
+        "utf8"
+      )
+    ).toContain("exit 64");
+  });
+
+  test("does not mistake scattered command prose for a command gate", () => {
+    const fixture = createFixture();
+    // An eval suite names as many commands as an allowlist does, one per case.
+    // Density, not the total, is what separates it from a gate.
+    write(
+      fixture.fork,
+      "evals/evals.json",
+      JSON.stringify(
+        {
+          cases: PINNED_COMMANDS.map((command) => ({
+            expected: [`Holds the lease for the whole ${command} run.`],
+            prompt: `Walk an agent through ${command} without inferring authority it was never granted.`,
+          })),
+        },
+        null,
+        2
+      )
+    );
+
+    const plan = planForkUpdate({
+      fork: fixture.fork,
+      source: fixture.source,
+      upstream: fixture.upstream,
+    });
+    const byPath = Object.fromEntries(
+      plan.entries.map((entry) => [entry.forkPath, entry.action])
+    );
+
+    expect(byPath["evals/evals.json"]).toBe("keep-fork-only");
+    // The stock wrapper execs the runtime without enumerating any command, so
+    // it gates nothing and the new upstream command is not its problem.
+    expect(byPath["scripts/simple-changes-runtime.sh"]).toBe("keep-fork-only");
+    expect(byPath["notes.md"]).toBe("keep-fork-only");
   });
 
   test("plans and applies an update that keeps every fork delta", () => {

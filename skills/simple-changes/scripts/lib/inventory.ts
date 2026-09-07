@@ -456,22 +456,53 @@ const discoverCapabilities = (
   return capabilities;
 };
 
+const DEFAULT_BRANCH_CANDIDATES = ["main", "master"];
+
+const localBranchExists = (root: string, branch: string): boolean =>
+  runGit(
+    root,
+    ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`],
+    true
+  ).exitCode === 0;
+
+const boundRemoteFor = (root: string, branch: string | null): string => {
+  if (!branch) {
+    return "";
+  }
+  const remote = runGit(
+    root,
+    ["config", "--get", `branch.${branch}.remote`],
+    true
+  ).stdout.trim();
+  return remote === "." ? "" : remote;
+};
+
+const localDefaultBranch = (root: string): string | null =>
+  DEFAULT_BRANCH_CANDIDATES.find((candidate) =>
+    localBranchExists(root, candidate)
+  ) ?? null;
+
+// Most branches configure no remote of their own, so the remote the
+// repository's own integration branch is bound to decides the target before
+// any fallback to a remote merely named "origin". A repository that
+// integrates through a second remote and keeps origin as a read-only mirror
+// would otherwise be audited against the mirror.
 const resolveTargetRef = (root: string, branch: string | null): string => {
   const remotes = runGit(root, ["remote"], true)
     .stdout.split("\n")
     .filter(Boolean);
-  const configuredRemote = branch
-    ? runGit(
-        root,
-        ["config", "--get", `branch.${branch}.remote`],
-        true
-      ).stdout.trim()
-    : "";
+  const defaultBranch = localDefaultBranch(root);
   const preferredRemotes = [
-    ...(configuredRemote && configuredRemote !== "." ? [configuredRemote] : []),
-    ...(remotes.includes("origin") ? ["origin"] : []),
+    boundRemoteFor(root, branch),
+    defaultBranch === null ? "" : boundRemoteFor(root, defaultBranch),
+    remotes.includes("origin") ? "origin" : "",
     ...remotes,
-  ].filter((remote, index, candidates) => candidates.indexOf(remote) === index);
+  ].filter(
+    (remote, index, candidates) =>
+      remote !== "" &&
+      remotes.includes(remote) &&
+      candidates.indexOf(remote) === index
+  );
   for (const remote of preferredRemotes) {
     const symbolic = runGit(
       root,
@@ -481,19 +512,27 @@ const resolveTargetRef = (root: string, branch: string | null): string => {
     if (symbolic.exitCode === 0 && symbolic.stdout.trim()) {
       return symbolic.stdout.trim();
     }
-  }
-  for (const candidate of ["main", "master"]) {
-    if (
-      runGit(
+    if (defaultBranch && boundRemoteFor(root, defaultBranch) === remote) {
+      const mergeRef = runGit(
         root,
-        ["show-ref", "--verify", "--quiet", `refs/heads/${candidate}`],
+        ["config", "--get", `branch.${defaultBranch}.merge`],
         true
-      ).exitCode === 0
-    ) {
-      return candidate;
+      ).stdout.trim();
+      if (mergeRef.startsWith("refs/heads/")) {
+        const candidate = `${remote}/${mergeRef.slice("refs/heads/".length)}`;
+        if (
+          runGit(
+            root,
+            ["show-ref", "--verify", "--quiet", `refs/remotes/${candidate}`],
+            true
+          ).exitCode === 0
+        ) {
+          return candidate;
+        }
+      }
     }
   }
-  return branch ?? "main";
+  return defaultBranch ?? branch ?? "main";
 };
 
 const targetRemoteFor = (

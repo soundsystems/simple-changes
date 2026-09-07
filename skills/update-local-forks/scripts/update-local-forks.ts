@@ -905,6 +905,162 @@ const classifyForkFiles = (
   return { entries, plannedContent };
 };
 
+// ----------------------------------------------------------- command parity
+
+/**
+ * Every classifier above reasons about one file in isolation, which cannot see
+ * an invariant that spans two: a fork that gates the runtime behind its own
+ * allowlist has encoded the upstream command surface in a fork-owned file, and
+ * a command added upstream silently falls outside it. The vendored runtime
+ * updates cleanly, the gate keeps its fork-only classification, and the new
+ * command is unreachable until someone runs into it. This pass runs over the
+ * finished plan and reports that consequence.
+ */
+const CLI_SOURCE_PATH = "scripts/simple-changes.ts";
+/** Documented surface: `  simple-changes <command>` lines in the help text. */
+const HELP_COMMAND_PATTERN = /^ {2}simple-changes ([a-z][a-z0-9-]*)/gmu;
+/** Answered surface: the case labels of the top-level dispatch switch. */
+const DISPATCH_CASE_PATTERN = /case "([a-z][a-z0-9-]*)":/gu;
+const DISPATCH_ANCHOR = "switch (command) {";
+/** Extensions that can plausibly gate a command; prose is excluded on purpose. */
+const GATE_EXTENSIONS = new Set([
+  "bash",
+  "cjs",
+  "js",
+  "json",
+  "mjs",
+  "py",
+  "sh",
+  "ts",
+  "zsh",
+]);
+/**
+ * A gate enumerates commands together, in an allowlist or a dispatch table.
+ * Prose that happens to name commands scatters them across a document, so
+ * density over a short window separates the two far better than a total count:
+ * a shell allowlist packs five commands into one line, while an eval suite
+ * naming as many spreads them over a case apiece.
+ */
+const GATE_MIN_COMMANDS = 3;
+const GATE_WINDOW = 120;
+
+// Brace-balanced slice of the dispatch switch. Template literals inside it
+// balance their own braces; an unbalanced brace in a string would truncate the
+// slice, which only costs the secondary source, since help text still covers.
+const dispatchRegion = (source: string): string => {
+  const start = source.indexOf(DISPATCH_ANCHOR);
+  if (start < 0) {
+    return "";
+  }
+  let depth = 0;
+  for (let index = start; index < source.length; index += 1) {
+    const character = source[index];
+    if (character === "{") {
+      depth += 1;
+    } else if (character === "}") {
+      depth -= 1;
+      if (depth === 0) {
+        return source.slice(start, index + 1);
+      }
+    }
+  }
+  return source.slice(start);
+};
+
+const commandSurface = (cliSource: string | null): Set<string> => {
+  const commands = new Set<string>();
+  if (cliSource === null) {
+    return commands;
+  }
+  for (const [, name] of cliSource.matchAll(HELP_COMMAND_PATTERN)) {
+    if (name) {
+      commands.add(name);
+    }
+  }
+  for (const [, name] of dispatchRegion(cliSource).matchAll(
+    DISPATCH_CASE_PATTERN
+  )) {
+    if (name) {
+      commands.add(name);
+    }
+  }
+  return commands;
+};
+
+const namesCommand = (content: string, command: string): boolean =>
+  new RegExp(String.raw`(?<![\w-])${command}(?![\w-])`, "u").test(content);
+
+/** Most distinct commands named inside any GATE_WINDOW-character span. */
+const densestCommandRun = (content: string, commands: Set<string>): number => {
+  const hits: { command: string; index: number }[] = [];
+  for (const command of commands) {
+    for (const match of content.matchAll(
+      new RegExp(String.raw`(?<![\w-])${command}(?![\w-])`, "gu")
+    )) {
+      hits.push({ command, index: match.index });
+    }
+  }
+  hits.sort((left, right) => left.index - right.index);
+  let densest = 0;
+  let start = 0;
+  for (let end = 0; end < hits.length; end += 1) {
+    const last = hits[end];
+    if (!last) {
+      continue;
+    }
+    while ((hits[start]?.index ?? 0) < last.index - GATE_WINDOW) {
+      start += 1;
+    }
+    densest = Math.max(
+      densest,
+      new Set(hits.slice(start, end + 1).map((hit) => hit.command)).size
+    );
+  }
+  return densest;
+};
+
+const isGateCandidate = (forkPath: string, content: string): boolean => {
+  const name = forkPath.slice(forkPath.lastIndexOf("/") + 1);
+  const dot = name.lastIndexOf(".");
+  const extension = dot > 0 ? name.slice(dot + 1) : "";
+  return GATE_EXTENSIONS.has(extension) || content.startsWith("#!");
+};
+
+const commandParityReview = (
+  fork: DiscoveredFork,
+  entries: PlanEntry[],
+  upstream: UpstreamHandle,
+  source: DiscoveredSource
+): void => {
+  const base = commandSurface(treeFile(upstream, fork.pin, CLI_SOURCE_PATH));
+  const target = commandSurface(readText(join(source.path, CLI_SOURCE_PATH)));
+  const added = [...target]
+    .filter((command) => !base.has(command))
+    .sort(byText);
+  if (added.length === 0 || base.size === 0) {
+    return;
+  }
+  for (const entry of entries) {
+    if (entry.action !== "keep-fork-only") {
+      continue;
+    }
+    const content = readText(join(fork.path, entry.forkPath));
+    if (content === null || !isGateCandidate(entry.forkPath, content)) {
+      continue;
+    }
+    const gated = densestCommandRun(content, base);
+    if (gated < GATE_MIN_COMMANDS) {
+      continue;
+    }
+    const missing = added.filter((command) => !namesCommand(content, command));
+    if (missing.length === 0) {
+      continue;
+    }
+    entry.action = "review";
+    entry.reason = `This fork-owned file lists ${gated} upstream commands together, so it reads as a gate on the runtime surface. Upstream added ${missing.join(", ")}, which it does not name; extend it or confirm the omission is deliberate.`;
+  }
+};
+
 export const planForkUpdate = (options: {
   branch?: string;
   cache?: string;
@@ -957,6 +1113,7 @@ export const planForkUpdate = (options: {
     upstream,
     installed
   );
+  commandParityReview(fork, entries, upstream, installed);
   const pinCandidate = source.commitVerified ? source.commit : null;
   const pinReady = advanceProvenance(
     fork,

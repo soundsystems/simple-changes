@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.16.0 - 2026-09-07
+
+- Fork synchronization now flags fork-owned command lists that may hide newly
+  added upstream commands. Review identifies the missing commands so maintainers
+  can expose them or confirm that the omission is intentional.
+- Target discovery now respects the remote configured for the repository's
+  integration branch when the working branch has no remote of its own,
+  preventing an `origin` mirror from taking precedence.
+<!-- simple-changelogs-signature agent="gpt-6-astra medium" at="2026-09-07T12:49:08-05:00" -->
+
 ## 0.15.2 - 2026-09-04
 
 - Standalone cleanup now preserves every checkout and branch registered by an

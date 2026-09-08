@@ -123,9 +123,11 @@ lifecycle. Every obligated worktree must be present and proven: a
 clean checkout whose head the target contains, or a current `contained`
 equivalence receipt for that exact path and head. Actively claimed and
 preserved/retained worktrees are excluded and untouched. On success it records
-a terminal `target-equivalent` outcome (never reportable as shipped), runs
-only the normal proven-safe local cleanup, and releases the lease only after
-final verification and cleanup succeed. For a GitLab target, a complete final
+a terminal `target-equivalent` outcome (never reportable as shipped) in its
+immutable archive after the normal proven-safe local cleanup and final
+verification succeed. It then releases the lease. A failed cleanup or archive
+write leaves the run open without adding a terminal outcome; completed removal
+intents remain available for a verified retry. For a GitLab target, a complete final
 branch/proposal reconciliation bound to the current target revision is required
 before closure; the command never infers that provider mutation did not occur.
 For providers without that gate, the closure records that GitLab reconciliation
@@ -312,6 +314,13 @@ clear only stale loop and coordination locks owned by that same dead local PID;
 the persisted intent then permits the next finalization attempt to account for
 that exact absence, mark the disposition completed, and continue. Both
 run-created and opening worktree removals remain in the historical audit.
+Because Git prunes stale registrations together, finalization defers all
+metadata pruning if any missing checkout is outside the freshly audited set.
+Unique work, retained checkouts, and active claims keep their registrations.
+Before synchronizing a clean preserved primary, finalization records its old
+baseline and exact expected result. A retry can reconcile that intent only when
+the primary is clean at the same target branch and commit; unrelated edits
+still block completion. Dirty or claimed preserved primaries stay untouched.
 
 Temporary detach is not disposal. `worktree detach` is owner-controlled and
 requires an exact `detach-clean-checkout` receipt, a clean non-primary checkout,

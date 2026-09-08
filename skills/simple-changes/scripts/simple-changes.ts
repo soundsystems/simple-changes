@@ -36,6 +36,7 @@ import {
   guardLoopMutation,
   type LoopEquivalenceEvidence,
   loopManifestDigest,
+  loopReplanStatus,
   loopStatus,
   markWorktreeResumeReady,
   prepareAgentWorktree,
@@ -48,6 +49,7 @@ import {
   recoverLoopLock,
   recoverPostCleanupLoop,
   recoverStaleLoopLease,
+  replanLoop,
   retainExcludedWorktree,
   startLoop,
   takeoverLoop,
@@ -204,6 +206,10 @@ Usage:
     [--opening-remote-inventory FILE]
     [--json] [--repo PATH]
   simple-changes loop status [--json] [--repo PATH]
+  simple-changes loop replan-status [--json] [--repo PATH]
+  simple-changes loop replan --run-id ID --agent-id ID
+    --manifest-digest SHA256 --status-digest SHA256
+    --approved-by ID --reason TEXT [--json] [--repo PATH]
   simple-changes loop verify --run-id ID [--json] [--repo PATH]
   simple-changes loop guard --run-id ID --agent-id ID [--json] [--repo PATH]
   simple-changes loop record-scope --run-id ID --agent-id ID
@@ -2364,6 +2370,30 @@ const runLoopRecoveryAction = (
   action: string,
   options: CliOptions
 ): boolean => {
+  if (action === "replan-status") {
+    const status = loopReplanStatus(options.repo);
+    writeOutput(status, options.json, `${JSON.stringify(status, null, 2)}\n`);
+    return true;
+  }
+  if (action === "replan") {
+    const result = replanLoop(options.repo, {
+      agentId: requireCliOption(options.agentId, "--agent-id"),
+      approvedBy: requireCliOption(options.approvedBy, "--approved-by"),
+      manifestDigest: requireCliOption(
+        options.manifestDigest,
+        "--manifest-digest"
+      ),
+      reason: requireCliOption(options.reason, "--reason"),
+      runId: requireCliOption(options.runId, "--run-id"),
+      statusDigest: requireCliOption(options.statusDigest, "--status-digest"),
+    });
+    writeOutput(
+      result,
+      options.json,
+      `Replanned ${result.request.runId}; the original lease is archived, this transition did not ship or clean work. Start a fresh loop through the normal workflow.\n`
+    );
+    return true;
+  }
   if (action === "close-equivalent") {
     runLoopCloseEquivalent(options);
     return true;
@@ -2409,7 +2439,7 @@ const runLoopCommand = async (options: CliOptions): Promise<void> => {
   const [action] = options.positional;
   if (!action) {
     throw new SimpleChangesError(
-      "loop requires start, status, verify, record-scope, refresh-scope, record-outcome, guard, exec, recover, recover-post-cleanup, close-equivalent, takeover, rebaseline, allow, dispose-worktree, retain-worktree, adopt-worktree, accept-paused-change, reconcile-remote-branches, emergency, end, or finalize",
+      "loop requires start, status, verify, record-scope, refresh-scope, record-outcome, guard, exec, recover, recover-post-cleanup, close-equivalent, replan-status, replan, takeover, rebaseline, allow, dispose-worktree, retain-worktree, adopt-worktree, accept-paused-change, reconcile-remote-branches, emergency, end, or finalize",
       EXIT_CODES.usage
     );
   }

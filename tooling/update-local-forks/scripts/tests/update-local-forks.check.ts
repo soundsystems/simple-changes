@@ -308,6 +308,7 @@ describe("update-local-forks", () => {
       "scripts/simple-changes-runtime.sh",
       [
         "#!/bin/sh",
+        "# Bundled Simple Changes 0.1.0",
         'case "$1" in',
         "  help | initialize | loop | worktree) ;;",
         "  *)",
@@ -318,6 +319,12 @@ describe("update-local-forks", () => {
         'exec bun runtime/scripts/simple-changes.ts "$@"',
         "",
       ].join("\n")
+    );
+
+    const skillPath = join(fixture.fork, "SKILL.md");
+    writeFileSync(
+      skillPath,
+      `${readFileSync(skillPath, "utf8")}\nBundled Simple Changes 0.1.0.\n`
     );
 
     const plan = planForkUpdate({
@@ -337,9 +344,29 @@ describe("update-local-forks", () => {
         (entry) => entry.forkPath === "runtime/scripts/simple-changes.ts"
       )?.action
     ).toBe("update");
+    const gateBefore = readFileSync(
+      join(fixture.fork, "scripts/simple-changes-runtime.sh"),
+      "utf8"
+    );
+    const skillBefore = readFileSync(join(fixture.fork, "SKILL.md"), "utf8");
     expect(applyForkPlan(plan).review).toContain(
       "scripts/simple-changes-runtime.sh"
     );
+    expect(readFileSync(join(fixture.fork, "SKILL.md"), "utf8")).toBe(
+      skillBefore
+    );
+    expect(
+      readFileSync(
+        join(fixture.fork, "runtime/scripts/simple-changes.ts"),
+        "utf8"
+      )
+    ).toBe(cliSource(RELEASED_COMMANDS));
+    expect(
+      readFileSync(
+        join(fixture.fork, "scripts/simple-changes-runtime.sh"),
+        "utf8"
+      )
+    ).toBe(gateBefore);
     // A review entry is never written, so the gate keeps its own contents.
     expect(
       readFileSync(
@@ -347,6 +374,48 @@ describe("update-local-forks", () => {
         "utf8"
       )
     ).toContain("exit 64");
+    expect(plan.pinUpdate.to).toBeNull();
+    expect(plan.pinUpdate.reason).toContain("gate review");
+    const repeated = planForkUpdate({
+      fork: fixture.fork,
+      source: fixture.source,
+      upstream: fixture.upstream,
+    });
+    expect(repeated.pinUpdate.from).toBe(fixture.pin);
+    expect(repeated.pinUpdate.to).toBeNull();
+    expect(
+      repeated.entries.find(
+        (entry) => entry.forkPath === "scripts/simple-changes-runtime.sh"
+      )?.action
+    ).toBe("review");
+
+    const gatePath = join(fixture.fork, "scripts/simple-changes-runtime.sh");
+    writeFileSync(
+      gatePath,
+      readFileSync(gatePath, "utf8").replace(
+        "loop | worktree)",
+        "loop | worktree | prune)"
+      )
+    );
+    const resolved = planForkUpdate({
+      fork: fixture.fork,
+      source: fixture.source,
+      upstream: fixture.upstream,
+    });
+    expect(resolved.pinUpdate.to).toBe(fixture.release);
+    expect(
+      resolved.entries.find(
+        (entry) => entry.forkPath === "scripts/simple-changes-runtime.sh"
+      )?.action
+    ).toBe("keep-fork-only");
+    applyForkPlan(resolved);
+    expect(
+      planForkUpdate({
+        fork: fixture.fork,
+        source: fixture.source,
+        upstream: fixture.upstream,
+      }).pinUpdate.from
+    ).toBe(fixture.release);
   });
 
   test("does not mistake scattered command prose for a command gate", () => {

@@ -350,3 +350,9 @@ version-binding, blockquote presentation, and content rules.
 
 Preview may run `simple-changes preview` and must create no branch, commit,
 stash, ledger, proposal, or deployment.
+
+
+For a frozen shipment whose scope cannot cover later work, use the explicitly
+approved, owner-bound [replan recovery](references/cleanup-and-completion.md#replan-a-frozen-shipment-without-cleanup).
+It archives the old run without cleanup; fresh inventory and normal authority
+checks still govern the next shipment.

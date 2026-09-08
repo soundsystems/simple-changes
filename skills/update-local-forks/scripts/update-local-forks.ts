@@ -1031,15 +1031,16 @@ const commandParityReview = (
   entries: PlanEntry[],
   upstream: UpstreamHandle,
   source: DiscoveredSource
-): void => {
+): Set<string> => {
   const base = commandSurface(treeFile(upstream, fork.pin, CLI_SOURCE_PATH));
   const target = commandSurface(readText(join(source.path, CLI_SOURCE_PATH)));
   const added = [...target]
     .filter((command) => !base.has(command))
     .sort(byText);
   if (added.length === 0 || base.size === 0) {
-    return;
+    return new Set();
   }
+  const pending = new Set<string>();
   for (const entry of entries) {
     if (entry.action !== "keep-fork-only") {
       continue;
@@ -1056,9 +1057,11 @@ const commandParityReview = (
     if (missing.length === 0) {
       continue;
     }
+    pending.add(entry.forkPath);
     entry.action = "review";
     entry.reason = `This fork-owned file lists ${gated} upstream commands together, so it reads as a gate on the runtime surface. Upstream added ${missing.join(", ")}, which it does not name; extend it or confirm the omission is deliberate.`;
   }
+  return pending;
 };
 
 export const planForkUpdate = (options: {
@@ -1113,20 +1116,39 @@ export const planForkUpdate = (options: {
     upstream,
     installed
   );
-  commandParityReview(fork, entries, upstream, installed);
-  const pinCandidate = source.commitVerified ? source.commit : null;
-  const pinReady = advanceProvenance(
+  const parityReviewPaths = commandParityReview(
     fork,
     entries,
-    plannedContent,
-    pinCandidate
+    upstream,
+    installed
   );
+  const parityPending = parityReviewPaths.size > 0;
+  // Keep the provenance-bearing file on its old base while gate review is
+  // pending. Partially merging it without advancing its pin can conflict with
+  // that same upstream hunk when the next plan retries after review.
+  if (parityPending) {
+    const skillEntry = entries.find((entry) => entry.forkPath === "SKILL.md");
+    if (skillEntry && skillEntry.action !== "conflict") {
+      skillEntry.action = "review";
+      skillEntry.reason =
+        "Keep the provenance file unchanged until new-command gate review is resolved.";
+      Reflect.deleteProperty(skillEntry, "content");
+      plannedContent.delete("SKILL.md");
+    }
+  }
+  const pinCandidate = source.commitVerified ? source.commit : null;
+  const pinReady =
+    !parityPending &&
+    advanceProvenance(fork, entries, plannedContent, pinCandidate);
+  const ordinaryPinReason =
+    pinCandidate && !pinReady
+      ? "The provenance file conflicts; resolve it before advancing the pin."
+      : located.reason;
   const pinUpdate: ForkPlan["pinUpdate"] = {
     from: fork.pin,
-    reason:
-      pinCandidate && !pinReady
-        ? "The provenance file conflicts; resolve it before advancing the pin."
-        : located.reason,
+    reason: parityPending
+      ? "New upstream commands require fork-owned gate review; resolve it before advancing the pin."
+      : ordinaryPinReason,
     to: pinReady ? pinCandidate : null,
   };
   const literalRewrites = literalRewritesFor(
@@ -1137,6 +1159,10 @@ export const planForkUpdate = (options: {
     pinUpdate.to,
     pinnedGuidance ? Number(pinnedGuidance) : null,
     pinnedVersion ?? null
+  ).filter(
+    (rewrite) =>
+      !parityReviewPaths.has(rewrite.forkPath) &&
+      (!parityPending || rewrite.forkPath !== "SKILL.md")
   );
   return {
     entries,

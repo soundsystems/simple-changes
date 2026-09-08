@@ -78,7 +78,11 @@ because a gate that still permits a retired command is refused by the runtime
 anyway.
 
 A `.upstream-merge` sidecar is the durable record of an unresolved conflict.
-When `SKILL.md` conflicts, the provenance pin stays pending; otherwise it can
+When `SKILL.md` conflicts or new-command gate review remains unresolved, the
+provenance pin stays pending so a later plan cannot lose that review. Pending
+command-gate review also keeps `SKILL.md` unchanged, avoiding a partial prose
+merge against an old pin when planning again. Other clean runtime updates can
+still apply. Otherwise the pin can
 advance with the rest of the update. Every later plan reports the conflicted
 file as `review` until the sidecar is merged in and deleted.
 Never leave conflict markers inside a live skill file.

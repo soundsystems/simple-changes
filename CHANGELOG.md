@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.16.0 - 2026-09-07
+## 0.16.0 - 2026-09-08
 
 - Fork synchronization now flags fork-owned command lists that may hide newly
   added upstream commands. Review identifies the missing commands so maintainers
@@ -9,6 +9,14 @@
   integration branch when the working branch has no remote of its own,
   preventing an `origin` mirror from taking precedence.
 <!-- simple-changelogs-signature agent="gpt-6-astra medium" at="2026-09-07T12:49:08-05:00" -->
+
+- Recover a frozen shipment whose scope no longer covers the work to integrate.
+  With the current owner's explicit user approval and exact inventory evidence,
+  `loop replan` archives the old run so a fresh shipment can be planned. It keeps
+  every file, commit, worktree, claim, and prior receipt in place.
+- Finish a reviewed clean-branch integration after its exact target changes are
+  reconciled, while preserving unrelated local work and other authors' claims.
+<!-- simple-changelogs-signature agent="gpt-6-astra medium" at="2026-09-08T08:53:51-05:00" -->
 
 ## 0.15.2 - 2026-09-04
 

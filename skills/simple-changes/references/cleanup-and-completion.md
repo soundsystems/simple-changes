@@ -372,3 +372,14 @@ in place. A matching retry verifies this archive and returns the receipt without
 touching a newer active loop. A crash before the move can retry the exact request;
 if work changed meanwhile, a newly approved request creates a separate attempt
 and preserves the earlier intent. Never delete or modify an intent to retry.
+
+
+A ready clean branch is represented by its existing committed revision and
+independent review, not invented dirty paths in the conserved opening plan.
+After its authorized merge, record its exact target delta in `additionalPaths`
+as `external-target-change`, with the reviewed source/MR evidence in each reason.
+A nonempty, fully reconciled target delta can satisfy delivery completion even
+when the conserved plan has no dirty units. Finalization still checks the current
+target and every entry, every scoped source's cleanliness and containment, and
+unchanged excluded primary state; it does not release unrelated authors' claims.
+An empty outcome supplies no verified delivery evidence.

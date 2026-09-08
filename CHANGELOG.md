@@ -6,6 +6,8 @@
   With the current owner's explicit user approval and exact inventory evidence,
   `loop replan` archives the old run so a fresh shipment can be planned. It keeps
   every file, commit, worktree, claim, and prior receipt in place.
+- Finish a reviewed clean-branch integration after its exact target changes are
+  reconciled, while preserving unrelated local work and other authors' claims.
 <!-- simple-changelogs-signature agent="gpt-6-astra medium" at="2026-09-08T08:53:51-05:00" -->
 
 ## 0.15.2 - 2026-09-04

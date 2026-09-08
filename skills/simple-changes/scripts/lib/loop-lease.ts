@@ -5634,7 +5634,13 @@ const hasVerifiedDelivery = (
 ): boolean => {
   const scope = lease.shipmentScope;
   const outcome = lease.shipmentOutcome?.receipt;
-  if (!(scope && outcome && outcome.units.length > 0)) {
+  if (
+    !(
+      scope &&
+      outcome &&
+      (outcome.units.length > 0 || outcome.additionalPaths.length > 0)
+    )
+  ) {
     return false;
   }
   const target = currentTargetRevision(lease);

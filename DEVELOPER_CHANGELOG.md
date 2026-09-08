@@ -11,6 +11,10 @@
   original lease bytes. Exact retries preserve successor runs; changed evidence
   requires a fresh observation and approval in a separate immutable attempt.
   Replan performs no shipment, cleanup, claim transfer, or provider operation.
+- Recognize nonempty reconciled additional target paths as verified delivery in
+  finalization, alongside scoped units. Keep exact target and tree-entry checks,
+  scoped-source containment, unchanged-primary preservation, and claim ownership
+  checks. Empty outcomes do not qualify as delivery.
 - Cover preservation, ownership and evidence drift, held locks, invalid terminal
   states, symlink and audit corruption, interrupted attempts, and successor
   protection. Keep normal refresh and guard semantics and guidance version 22.

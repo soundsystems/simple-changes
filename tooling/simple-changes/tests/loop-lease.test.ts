@@ -1146,6 +1146,7 @@ describe("active integration-loop lease", () => {
     git(fixture.root, ["update-ref", "refs/remotes/origin/main", movedTarget]);
     startLoop(fixture.root, "recovery-controller", "resume");
     const finalSnapshot = remoteSnapshot(movedTarget);
+    const leaseBefore = readFileSync(leasePath);
 
     expect(() =>
       recoverPostCleanupLoop(fixture.root, lease.runId, "recovery-controller", {
@@ -1168,9 +1169,10 @@ describe("active integration-loop lease", () => {
         targetRevision: movedTarget,
       })
     ).toThrow(
-      "exact current GitLab project, target branch, and target revision"
+      "Post-cleanup recovery is close-only and cannot proceed while cleanup remains: Update local target branch main"
     );
     expect(git(fixture.root, ["rev-parse", "main"])).toBe(openingTarget);
+    expect(readFileSync(leasePath)).toEqual(leaseBefore);
   }, 30_000);
   test("reads and safely verifies a pre-remote-binding lease", () => {
     const fixture = repository();
@@ -3324,8 +3326,12 @@ describe("active integration-loop lease", () => {
     const targetRegistration = lease.worktrees.find(
       (worktree) => worktree.path === targetPath
     );
-    expect(lease.targetRef).toBe("main");
+    expect(lease.targetRef).toBe("origin/main");
+    expect(lease.targetRevision).toBe(
+      git(fixture.root, ["rev-parse", "origin/main"])
+    );
     expect(targetRegistration).toMatchObject({
+      branch: "main",
       mutationAllowed: false,
       role: "preserved",
     });

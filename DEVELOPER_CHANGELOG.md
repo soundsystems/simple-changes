@@ -1,10 +1,13 @@
 # Developer changelog
 
-## Unreleased
+## 0.16.1 - 2026-09-08
 
 - Defer global worktree pruning unless every affected registration passes a fresh containment and preservation audit. Record exact primary synchronization intent and recovery evidence so an interrupted finalizer can distinguish its own change from unrelated work.
 - Persist removal dispositions for retry, but record terminal closure only after cleanup, verification, and archival succeed. Four regressions reproduce the original failures; this does not automatically repair every historical interrupted record.
 <!-- simple-changelogs-signature agent="GPT-6 Astra medium" at="2026-09-08T18:04:48+00:00" -->
+
+- Cut package 0.16.1 and align CLI and packaged public notes. Guidance remains 22 because these corrections restore existing cleanup and retry guarantees without new settings or authority.
+<!-- simple-changelogs-signature agent="GPT-6 Astra medium" at="2026-09-08T19:53:19+00:00" -->
 
 ## 0.16.0 - 2026-09-08
 

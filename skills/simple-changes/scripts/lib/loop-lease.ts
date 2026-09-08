@@ -55,7 +55,6 @@ import { validateSchema, validateSchemaDocument } from "./schema.ts";
 import type {
   ChangePlan,
   EmergencyShippingLedgerEntry,
-  LoopCloseEquivalentOutcome,
   LoopCloseEquivalentWorktreeProof,
   LoopControllerLifecycle,
   LoopLease,
@@ -4561,6 +4560,7 @@ const pruneAutomaticWorktreeMetadata = (
   lease: LoopLease,
   repositoryPath: string,
   candidates: AutomaticCleanupCandidate[],
+  targetBranch: string,
   targetRevision: string,
   cleanup: FinalizationCleanupResult
 ): AutomaticRemovalResult => {
@@ -4568,6 +4568,31 @@ const pruneAutomaticWorktreeMetadata = (
   const removed: AutomaticCleanupCandidate[] = [];
   const prunable = candidates.filter((candidate) => candidate.prunable);
   if (prunable.length === 0) {
+    return { lease: currentLease, removed };
+  }
+  // Git prunes every stale registration, not just the candidates we pass to
+  // this helper. Preserve the entire set if even one path lacks a fresh audit.
+  const freshInventory = captureInventory(repositoryPath);
+  const freshCandidates = automaticCleanupCandidates(
+    currentLease,
+    freshInventory,
+    targetBranch,
+    targetRevision
+  );
+  const freshPrunable = freshInventory.worktrees.filter(
+    (worktree) => worktree.prunable
+  );
+  const fullyAudited = freshPrunable.every(
+    (worktree) =>
+      prunable.some(
+        (candidate) =>
+          candidate.path === worktree.path &&
+          candidate.branch === worktree.branch &&
+          candidate.headSha === worktree.headSha &&
+          candidate.changeDigest === worktree.changeDigest
+      ) && freshCandidates.some((candidate) => candidate.path === worktree.path)
+  );
+  if (!fullyAudited || freshPrunable.length !== prunable.length) {
     return { lease: currentLease, removed };
   }
   currentLease = recordAutomaticDispositions(
@@ -4847,6 +4872,154 @@ const fastForwardCleanPrimary = (
   );
 };
 
+const primarySynchronizationIntent = (
+  lease: LoopLease,
+  targetBranch: string,
+  targetRevision: string
+) => {
+  const before = lease.worktrees.find(
+    (worktree) => worktree.path === lease.primaryCheckout
+  );
+  if (before?.role !== "preserved" || before.claimId) {
+    return null;
+  }
+  const after = {
+    ...before,
+    baselineChangeDigest: sha256(
+      JSON.stringify({ changes: [], contentIdentities: [] })
+    ),
+    baselineHeadSha: targetRevision,
+    branch: targetBranch,
+  };
+  const record = {
+    after,
+    before,
+    kind: "automatic-primary-synchronization",
+    runId: lease.runId,
+    targetRef: lease.targetRef,
+    targetRevision,
+  };
+  return {
+    path: resolve(
+      recoveryHistoryDirectory(lease.commonGitDirectory, lease.runId),
+      `primary-synchronization-${sha256Json(record)}.json`
+    ),
+    record,
+  };
+};
+
+const reconcilePrimarySynchronization = (
+  lease: LoopLease,
+  inventory: RepositoryInventory
+): LoopLease => {
+  const registered = lease.worktrees.find(
+    (worktree) => worktree.path === lease.primaryCheckout
+  );
+  if (registered?.role !== "preserved" || registered.claimId) {
+    return lease;
+  }
+  const targetBranch = targetBranchForRef(
+    lease.primaryCheckout,
+    lease.targetRef
+  );
+  if (!targetBranch) {
+    return lease;
+  }
+  let targetRevision: string;
+  try {
+    targetRevision = currentTargetRevision(lease);
+  } catch {
+    // Ordinary finalization must still record its unresolved-target blocker
+    // and relinquish. Missing recovery evidence cannot short-circuit that.
+    return lease;
+  }
+  const intent = primarySynchronizationIntent(
+    lease,
+    targetBranch,
+    targetRevision
+  );
+  const primary = inventory.worktrees.find(
+    (worktree) => worktree.path === lease.primaryCheckout
+  );
+  if (!(intent && primary && existsSync(intent.path))) {
+    return lease;
+  }
+  const recorded = readImmutableRecoveryEvent(intent.path);
+  if (sha256Json(recorded) !== sha256Json(intent.record)) {
+    throw new SimpleChangesError(
+      "Primary synchronization intent does not match this run and target.",
+      EXIT_CODES.unsafe
+    );
+  }
+  const expected = intent.record.after;
+  if (
+    primary.branch !== expected.branch ||
+    primary.headSha !== expected.baselineHeadSha ||
+    primary.changeDigest !== expected.baselineChangeDigest ||
+    primary.changes.length > 0
+  ) {
+    return lease;
+  }
+  return writeLease({
+    ...lease,
+    updatedAt: new Date().toISOString(),
+    worktrees: lease.worktrees.map((worktree) =>
+      worktree.path === primary.path ? expected : worktree
+    ),
+  });
+};
+
+const preparePrimarySynchronization = (
+  lease: LoopLease,
+  inventory: RepositoryInventory,
+  targetBranch: string,
+  targetRevision: string
+): boolean => {
+  const registered = lease.worktrees.find(
+    (worktree) => worktree.path === lease.primaryCheckout
+  );
+  if (registered?.role !== "preserved") {
+    return true;
+  }
+  const intent = primarySynchronizationIntent(
+    lease,
+    targetBranch,
+    targetRevision
+  );
+  const primary = inventory.worktrees.find(
+    (worktree) => worktree.path === lease.primaryCheckout
+  );
+  if (
+    !(intent && primary) ||
+    primary.changes.length > 0 ||
+    primary.branch !== registered.branch ||
+    primary.headSha !== registered.baselineHeadSha ||
+    primary.changeDigest !== registered.baselineChangeDigest
+  ) {
+    return false;
+  }
+  if (primary.branch === targetBranch && primary.headSha === targetRevision) {
+    return true;
+  }
+  if (
+    !targetContainsRevision(
+      lease.primaryCheckout,
+      targetRevision,
+      primary.headSha
+    )
+  ) {
+    return false;
+  }
+  const recorded = writeImmutableRecoveryEvent(intent.path, intent.record);
+  if (sha256Json(recorded) !== sha256Json(intent.record)) {
+    throw new SimpleChangesError(
+      "Primary synchronization intent does not match this run and target.",
+      EXIT_CODES.unsafe
+    );
+  }
+  return true;
+};
+
 const bindAutomaticPrimaryBranchChange = (
   lease: LoopLease,
   inventory: RepositoryInventory
@@ -4867,7 +5040,7 @@ const bindAutomaticPrimaryBranchChange = (
     ...lease,
     updatedAt: new Date().toISOString(),
     worktrees: lease.worktrees.map((worktree) =>
-      worktree.path === lease.primaryCheckout
+      worktree.path === primary.path
         ? { ...worktree, branch: primary.branch }
         : worktree
     ),
@@ -4938,6 +5111,7 @@ const automaticFinalizationCleanup = (
     lease,
     repositoryPath,
     candidates,
+    targetBranch,
     targetRevision,
     cleanup
   );
@@ -4950,30 +5124,49 @@ const automaticFinalizationCleanup = (
     cleanup
   );
   let inventory = captureInventory(repositoryPath);
-  reconcileTargetEquivalentPrimaryChanges(
-    lease,
-    inventory,
-    targetRevision,
-    cleanup
-  );
-  inventory = captureInventory(repositoryPath);
-  switchCleanPrimaryToTarget(
-    lease,
-    inventory,
-    targetBranch,
-    targetRevision,
-    cleanup
-  );
-  inventory = captureInventory(repositoryPath);
-  fastForwardCleanPrimary(
-    lease,
-    inventory,
-    targetBranch,
-    targetRevision,
-    cleanup
-  );
-  inventory = captureInventory(repositoryPath);
-  lease = bindAutomaticPrimaryBranchChange(lease, inventory);
+  if (
+    preparePrimarySynchronization(
+      lease,
+      inventory,
+      targetBranch,
+      targetRevision
+    )
+  ) {
+    reconcileTargetEquivalentPrimaryChanges(
+      lease,
+      inventory,
+      targetRevision,
+      cleanup
+    );
+    inventory = captureInventory(repositoryPath);
+    switchCleanPrimaryToTarget(
+      lease,
+      inventory,
+      targetBranch,
+      targetRevision,
+      cleanup
+    );
+    inventory = captureInventory(repositoryPath);
+    fastForwardCleanPrimary(
+      lease,
+      inventory,
+      targetBranch,
+      targetRevision,
+      cleanup
+    );
+    if (
+      process.env.NODE_ENV === "test" &&
+      process.env.SIMPLE_CHANGES_TEST_FAIL_AFTER_PRIMARY_SYNC === lease.runId
+    ) {
+      throw new SimpleChangesError(
+        "Injected failure after primary synchronization.",
+        EXIT_CODES.unsafe
+      );
+    }
+    inventory = captureInventory(repositoryPath);
+    lease = reconcilePrimarySynchronization(lease, inventory);
+    lease = bindAutomaticPrimaryBranchChange(lease, inventory);
+  }
   removeTargetContainedBranches(
     lease,
     repositoryPath,
@@ -5894,6 +6087,7 @@ export const finalizeLoop = (
           }
           assertControllerActive(lease);
           lease = reconcileAbsentRetainedWorktrees(lease, inventory);
+          lease = reconcilePrimarySynchronization(lease, inventory);
           const openingVerification = verificationAgainst(lease, inventory);
           const automaticCleanup =
             lease.shipmentScopeRequired && !lease.shipmentScope
@@ -6351,6 +6545,7 @@ export const closeLoopTargetEquivalent = (
             EXIT_CODES.unsafe
           );
         }
+        lease = reconcilePrimarySynchronization(lease, inventory);
         const targetRevision = currentTargetRevision(lease);
         assertTargetEquivalentRemoteReconciliation(
           lease,
@@ -6367,20 +6562,9 @@ export const closeLoopTargetEquivalent = (
         const remoteReconciliationSkipped = targetUsesGitLab(inventory)
           ? "Remote reconciliation was completed and recorded before target-equivalent closure; no reconciliation gate was skipped."
           : "The target provider does not require GitLab branch/proposal reconciliation.";
-        const outcomeRecord: LoopCloseEquivalentOutcome = {
-          approvedBy,
-          outcome: "target-equivalent",
-          reason,
-          recordedAt,
-          remoteReconciliationSkipped,
-          targetRevision,
-          worktrees: proofs,
-        };
-        lease = writeLease({
-          ...lease,
-          closeEquivalentOutcome: outcomeRecord,
-          updatedAt: recordedAt,
-        });
+        // Completion belongs in the immutable archive. A failed cleanup or
+        // archive write must leave the active run resumable, without a terminal
+        // outcome that would disable replan.
         const verification = verificationAgainst(lease, inventory);
         const automaticCleanup = automaticFinalizationCleanup(
           lease,

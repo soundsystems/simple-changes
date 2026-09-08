@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.15.3 - 2026-09-08
+
+- Recover a frozen shipment whose scope no longer covers the work to integrate.
+  With the current owner's explicit user approval and exact inventory evidence,
+  `loop replan` archives the old run so a fresh shipment can be planned. It keeps
+  every file, commit, worktree, claim, and prior receipt in place.
+<!-- simple-changelogs-signature agent="gpt-6-astra medium" at="2026-09-08T08:53:51-05:00" -->
+
 ## 0.15.2 - 2026-09-04
 
 - Standalone cleanup now preserves every checkout and branch registered by an

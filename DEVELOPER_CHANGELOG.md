@@ -1,5 +1,23 @@
 # Developer changelog
 
+## 0.15.3 - 2026-09-08
+
+- Add owner-bound `loop replan-status` and `loop replan` recovery for active or
+  relinquished frozen runs. Bind approval to the manifest, current checkout
+  inventory, worktree coordination, and resolved target under the shared state
+  then coordination locks. Preserve stale claims and changed work for the next
+  run to reconcile; do not claim that ordinary verification passed.
+- Persist an immutable request-specific intent and atomically archive the exact
+  original lease bytes. Exact retries preserve successor runs; changed evidence
+  requires a fresh observation and approval in a separate immutable attempt.
+  Replan performs no shipment, cleanup, claim transfer, or provider operation.
+- Cover preservation, ownership and evidence drift, held locks, invalid terminal
+  states, symlink and audit corruption, interrupted attempts, and successor
+  protection. Keep normal refresh and guard semantics and guidance version 22.
+- Advance package, CLI, and packaged public notes to the authorized patch 0.15.3.
+  The separate 0.16.0 candidate remains outside this repair.
+<!-- simple-changelogs-signature agent="gpt-6-astra medium" at="2026-09-08T08:53:51-05:00" -->
+
 ## 0.15.2 - 2026-09-04
 
 - Share the controller state lock with standalone maintenance, taking it before

@@ -55,6 +55,9 @@ saved plan, and it never commits, pushes, or runs a fork's scripts.
    then delete the sidecar. Until it is deleted, every later plan reports the
    file as unresolved. Review items are upstream files the fork
    deliberately omits; confirm each omission still holds, or port the change.
+   A review item on a fork-owned script or manifest means that file gates the
+   runtime behind its own list of commands and does not name one this update
+   added; extend the gate, or record why the fork withholds that command.
    Follow the fork's classification rules in
    [fork sync](references/fork-sync.md).
 6. **Verify.** Run the fork's own checks (commonly `scripts/test.sh` beside

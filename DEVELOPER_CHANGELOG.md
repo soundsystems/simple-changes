@@ -1,5 +1,48 @@
 # Developer changelog
 
+## 0.16.0 - 2026-09-08
+
+- Compare upstream CLI commands at the fork's provenance pin with the installed
+  source, using help text and dispatch cases. Promote fork-owned scripts and
+  manifests from `keep-fork-only` to `review` when a concentrated command list
+  omits an added command. Preserve the file for maintainer review; document
+  heuristic limits and cover command additions, complete gates, and scattered
+  mentions.
+- Prefer the current branch's configured remote, then the local integration
+  branch's remote, before `origin` and other remotes during target discovery.
+  Add regression coverage for repositories that integrate through a remote
+  other than their `origin` mirror.
+- Advance the package, CLI, and packaged public history to 0.16.0. Simple Changes
+  guidance remains 22: target selection repairs existing behavior, and command
+  parity findings use the existing fork-review workflow without introducing
+  settings or an onboarding decision.
+<!-- simple-changelogs-signature agent="gpt-6-astra medium" at="2026-09-07T12:49:08-05:00" -->
+
+- Add owner-bound `loop replan-status` and `loop replan` recovery for active or
+  relinquished frozen runs. Bind approval to the manifest, current checkout
+  inventory, worktree coordination, and resolved target under the shared state
+  then coordination locks. Preserve stale claims and changed work for the next
+  run to reconcile; do not claim that ordinary verification passed.
+- Persist an immutable request-specific intent and atomically archive the exact
+  original lease bytes. Exact retries preserve successor runs; changed evidence
+  requires a fresh observation and approval in a separate immutable attempt.
+  Replan performs no shipment, cleanup, claim transfer, or provider operation.
+- Recognize nonempty reconciled additional target paths as verified delivery in
+  finalization, alongside scoped units. Keep exact target and tree-entry checks,
+  scoped-source containment, unchanged-primary preservation, and claim ownership
+  checks. Empty outcomes do not qualify as delivery.
+- Cover preservation, ownership and evidence drift, held locks, invalid terminal
+  states, symlink and audit corruption, interrupted attempts, and successor
+  protection. Keep normal refresh and guard semantics and guidance version 22.
+<!-- simple-changelogs-signature agent="gpt-6-astra medium" at="2026-09-08T08:53:51-05:00" -->
+
+- Keep the fork provenance pin pending while new-command gate review remains
+  unresolved. Cover apply followed by replanning and pin advancement after the
+  gate includes the added command.
+- Consolidate the prepared fork and target-discovery work with the reviewed
+  workflow recovery repairs in the 0.16.0 release. No 0.15.3 release was published.
+<!-- simple-changelogs-signature agent="gpt-6-astra medium" at="2026-09-08T10:00:38-05:00" -->
+
 ## 0.15.2 - 2026-09-04
 
 - Share the controller state lock with standalone maintenance, taking it before

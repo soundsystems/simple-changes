@@ -912,6 +912,7 @@ describe("contract CLI", () => {
     const { lease } = JSON.parse(decoder.decode(started.stdout)) as {
       lease: { runId: string };
     };
+    const releasePath = resolve(fixture.base, "release-guarded-child");
     const running = bunSpawn(
       [
         process.execPath,
@@ -927,46 +928,61 @@ describe("contract CLI", () => {
         "--",
         process.execPath,
         "-e",
-        "await Bun.sleep(10_000)",
+        `import { existsSync } from "node:fs";
+const deadline = Date.now() + 120_000;
+while (!existsSync(process.env.SIMPLE_CHANGES_TEST_RELEASE_PATH)) {
+  if (Date.now() > deadline) { process.exit(2); }
+  await Bun.sleep(10);
+}`,
       ],
       {
         env: {
           ...process.env,
           SIMPLE_CHANGES_SKILL_ROOTS: "",
+          SIMPLE_CHANGES_TEST_RELEASE_PATH: releasePath,
         },
         stderr: "pipe",
         stdout: "pipe",
       }
     );
-    const lockPath = resolve(
-      fixture.root,
-      ".git/simple-changes/active-loop.lock"
-    );
-    await waitForPath(lockPath);
-    expect(existsSync(lockPath)).toBe(true);
-    const guardedProcess = await waitForGuardedProcess(
-      resolve(lockPath, "owner.json")
-    );
-    expect(guardedProcess.processGroupId).toBe(guardedProcess.childProcessId);
-
-    const competing = spawnSync(
-      [
-        process.execPath,
-        cliPath,
-        "loop",
-        "guard",
-        "--run-id",
-        lease.runId,
-        "--agent-id",
-        "controller",
-        "--repo",
+    try {
+      const lockPath = resolve(
         fixture.root,
-      ],
-      { stderr: "pipe", stdout: "pipe" }
-    );
-    expect(competing.exitCode).toBe(5);
-    expect(decoder.decode(competing.stderr)).toContain("state is busy");
-    expect(await running.exited).toBe(0);
+        ".git/simple-changes/active-loop.lock"
+      );
+      await waitForPath(lockPath);
+      expect(existsSync(lockPath)).toBe(true);
+      const guardedProcess = await waitForGuardedProcess(
+        resolve(lockPath, "owner.json")
+      );
+      expect(guardedProcess.processGroupId).toBe(guardedProcess.childProcessId);
+
+      const competing = spawnSync(
+        [
+          process.execPath,
+          cliPath,
+          "loop",
+          "guard",
+          "--run-id",
+          lease.runId,
+          "--agent-id",
+          "controller",
+          "--repo",
+          fixture.root,
+        ],
+        { stderr: "pipe", stdout: "pipe" }
+      );
+      expect(competing.exitCode).toBe(5);
+      expect(decoder.decode(competing.stderr)).toContain("state is busy");
+      expect(existsSync(releasePath)).toBe(false);
+      writeFileSync(releasePath, "release\n");
+      expect(await running.exited).toBe(0);
+    } finally {
+      // Release even when a contention assertion fails, so the child cannot
+      // outlive this fixture and contaminate the following tests.
+      writeFileSync(releasePath, "release\n");
+      await running.exited;
+    }
   }, 20_000);
 
   test("starts a lease and prepares an isolated agent worktree", () => {

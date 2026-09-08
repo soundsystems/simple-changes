@@ -282,3 +282,162 @@ describe("shipment finalization", () => {
     );
   });
 });
+
+function externalTargetFixture(advance = true) {
+  const fixture = createTestRepository();
+  fixtures.push(fixture);
+  writeFixture(fixture.root, "personal.txt", "unrelated work\n");
+  const author = join(fixture.base, "ready-author");
+  git(fixture.root, ["worktree", "add", "-b", "ready-author", author]);
+  writeFixture(author, "feature.txt", "already committed repair\n");
+  git(author, ["add", "feature.txt"]);
+  git(author, ["commit", "-m", "Reviewed repair"]);
+  claimWorktree(fixture.root, "independent-author", author, "test");
+  const lease = startLoop(fixture.root, "controller", "ship");
+  const inventory = captureInventory(fixture.root);
+  const preview = buildPreviewPlan(
+    inventory,
+    inventory,
+    compareSnapshots(inventory, inventory)
+  );
+  const plan: ChangePlan = {
+    ...preview,
+    preserved: [
+      {
+        classification: "paused",
+        paths: ["personal.txt"],
+        reason: "Preserve unrelated primary work.",
+        worktreePath: fixture.root,
+      },
+    ],
+    units: [],
+  };
+  recordShipmentScope(fixture.root, lease.runId, "controller", plan);
+  if (advance) {
+    git(fixture.root, ["merge", "--ff-only", "ready-author"]);
+  }
+  const targetRevision = git(fixture.root, ["rev-parse", "HEAD"]);
+  const outcome: ShipmentOutcomeReceipt = {
+    additionalPaths: advance
+      ? [
+          {
+            classification: "external-target-change",
+            entry: `100644:blob:${git(fixture.root, ["rev-parse", "HEAD:feature.txt"])}`,
+            path: "feature.txt",
+            reason:
+              "Exact reviewed clean branch merged outside the dirty-path scope.",
+          },
+        ]
+      : [],
+    runId: lease.runId,
+    schemaVersion: 1,
+    targetRevision,
+    units: [],
+  };
+  recordShipmentOutcome(fixture.root, lease.runId, "controller", outcome);
+  return { ...fixture, author, lease, outcome };
+}
+
+test("reconciled external-only target delivery closes with excluded primary and claims preserved", () => {
+  const fixture = externalTargetFixture();
+  const claims = readWorktreeCoordination(fixture.root);
+  const result = finalizeLoop(
+    fixture.root,
+    fixture.lease.runId,
+    "controller",
+    "Reviewed external target delta reconciled."
+  );
+  expect(result.outcome).toBe("completed");
+  expect(result.receipt.deliveryStatus).toBe("verified");
+  expect(result.cleanup.releasedClaims).toHaveLength(0);
+  expect(readWorktreeCoordination(fixture.root)).toEqual(claims);
+  expect(readFileSync(join(fixture.root, "personal.txt"), "utf8")).toBe(
+    "unrelated work\n"
+  );
+  expect(existsSync(fixture.author)).toBe(true);
+});
+
+test("empty outcome without target delivery does not close around excluded primary", () => {
+  const fixture = externalTargetFixture(false);
+  const result = finalizeLoop(
+    fixture.root,
+    fixture.lease.runId,
+    "controller",
+    "No verified target delivery."
+  );
+  expect(result.outcome).toBe("relinquished");
+  expect(result.receipt.deliveryStatus).not.toBe("verified");
+});
+
+test.each(["target", "excluded-primary"])(
+  "external target delivery still blocks %s drift",
+  (kind) => {
+    const fixture = externalTargetFixture();
+    if (kind === "target") {
+      git(fixture.root, ["commit", "--allow-empty", "-m", "Later target"]);
+    } else {
+      writeFixture(fixture.root, "personal.txt", "new unrelated edit\n");
+    }
+    const result = finalizeLoop(
+      fixture.root,
+      fixture.lease.runId,
+      "controller",
+      "Changed evidence must remain open."
+    );
+    expect(result.outcome).toBe("relinquished");
+  }
+);
+
+test("external-only outcome refuses wrong target entry before finalization", () => {
+  const fixture = externalTargetFixture();
+  const invalid = structuredClone(fixture.outcome);
+  const [entry] = invalid.additionalPaths;
+  if (!entry) {
+    throw new Error("Missing fixture entry");
+  }
+  entry.entry = `100644:blob:${"a".repeat(40)}`;
+  expect(() =>
+    recordShipmentOutcome(
+      fixture.root,
+      fixture.lease.runId,
+      "controller",
+      invalid
+    )
+  ).toThrow();
+});
+
+test.each(["dirty", "unique-commit"])(
+  "additional target paths do not bypass %s scoped source",
+  (kind) => {
+    const fixture = deliveredFixture();
+    writeFixture(fixture.root, "release.txt", "external target change\n");
+    git(fixture.root, ["add", "release.txt"]);
+    git(fixture.root, ["commit", "-m", "Release reconciliation"]);
+    const targetRevision = git(fixture.root, ["rev-parse", "HEAD"]);
+    recordShipmentOutcome(fixture.author, fixture.lease.runId, "controller", {
+      ...fixture.outcome,
+      additionalPaths: [
+        {
+          classification: "external-target-change",
+          entry: `100644:blob:${git(fixture.root, ["rev-parse", "HEAD:release.txt"])}`,
+          path: "release.txt",
+          reason: "Reconciled external target delta.",
+        },
+      ],
+      targetRevision,
+    });
+    writeFixture(fixture.author, "leftover.txt", "unaccounted source work\n");
+    if (kind === "unique-commit") {
+      git(fixture.author, ["add", "leftover.txt"]);
+      git(fixture.author, ["commit", "-m", "Unaccounted source work"]);
+    }
+    const result = finalizeLoop(
+      fixture.author,
+      fixture.lease.runId,
+      "controller",
+      "Scoped source remains outstanding."
+    );
+    expect(result.outcome).toBe("relinquished");
+    expect(result.receipt.deliveryStatus).not.toBe("verified");
+  }
+);

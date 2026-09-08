@@ -50,8 +50,39 @@ the runtime: the old provenance sha, `CURRENT_GUIDANCE_VERSION = <old>`, and
 `Simple Changes <old version>`. Only those exact strings change; nothing is
 inferred.
 
+## Command gates
+
+Every rule above weighs one file on its own, which cannot see an invariant
+that spans two. A fork that puts its own wrapper in front of the runtime has
+copied the upstream command surface into a fork-owned file. When upstream adds
+a command, the vendored runtime updates cleanly, the wrapper keeps its
+`keep-fork-only` classification, and the new command stays unreachable through
+the fork until somebody runs into the refusal.
+
+So the plan compares the command surface at the pin against the surface in the
+installed source, taking both the documented commands in the CLI help text and
+the case labels of its dispatch switch. A fork-owned script or manifest that
+lists three or more of the pinned commands close together reads as a gate. If
+it does not name a command upstream added, it is reported as `review` naming
+the command; the file itself is never written.
+
+Prose is not a gate. Markdown is excluded outright, and the check measures how
+many distinct commands appear within a short span rather than how many the file
+mentions in total, so an eval suite naming a command per case stays
+`keep-fork-only`.
+
+The check reads what a file says, not what it enforces. A gate that loads its
+allowlist from elsewhere, or matches by pattern, is invisible to it; a fork
+that shape needs its own test. Commands upstream *removes* are not reported,
+because a gate that still permits a retired command is refused by the runtime
+anyway.
+
 A `.upstream-merge` sidecar is the durable record of an unresolved conflict.
-When `SKILL.md` conflicts, the provenance pin stays pending; otherwise it can
+When `SKILL.md` conflicts or new-command gate review remains unresolved, the
+provenance pin stays pending so a later plan cannot lose that review. Pending
+command-gate review also keeps `SKILL.md` unchanged, avoiding a partial prose
+merge against an old pin when planning again. Other clean runtime updates can
+still apply. Otherwise the pin can
 advance with the rest of the update. Every later plan reports the conflicted
 file as `review` until the sidecar is merged in and deleted.
 Never leave conflict markers inside a live skill file.

@@ -332,3 +332,54 @@ Completion comes from fresh evidence, not the run ledger or conversational
 memory. For every preserved or blocked item, include the evidence supporting its
 classification, the missing completion condition or decision, and the exact
 safe next action.
+
+
+### Replan a frozen shipment without cleanup
+
+When a frozen scope cannot represent later work, the exact current controller
+may use `loop replan` with explicit named user approval. This applies to active
+and relinquished frozen runs. A different agent must obtain the existing
+supported controller handoff or takeover first; replan never transfers authority.
+Do not edit the lease or widen its frozen scope by hand.
+
+1. Stop guarded operations and observe with
+   `simple-changes loop replan-status --repo <checkout> --json`.
+2. Review that exact inventory, coordination state and current target with the
+   user. Record their approver identity and reason. Run
+   `simple-changes loop replan --repo <same-checkout> --run-id <observed-run>`
+   `--agent-id <observed-owner> --manifest-digest <observed-manifest>`
+   `--status-digest <observed-status> --approved-by <user> --reason <reason>`.
+   Both commands must use the same checkout: inventory digests include checkout
+   identity. Any change to the bound evidence requires a fresh observation and
+   approval. An earlier approval to ship does not by itself authorize replan.
+3. Keep the returned `replanned` receipt and start a fresh loop through the normal
+   workflow. Inventory and reconcile all remaining work and provider truth;
+   replan does not prove that earlier merge or deployment actions never occurred.
+
+Replan takes the existing state lock before the coordination lock and never
+recovers held locks. It refuses unfinished author preparations, recorded shipment
+or target-equivalent outcomes, and emergency shipping ledgers. Changed files and
+stale claims may be archived as observed; this does not mark verification passed
+or alter those claims. It runs no Git cleanup, reference, index, worktree, claim,
+provider, or deployment mutations.
+
+Each exact approved request has an immutable attempt directory at
+`<common-git-dir>/simple-changes/history/<run-id>/replan-<request-digest>/`.
+`replan.json` is the durable intent and receipt metadata; **intent alone does not
+prove completion**. The atomic move of the complete original lease into
+`replan-lease.json` completes the transition. Existing evidence directories stay
+in place. A matching retry verifies this archive and returns the receipt without
+touching a newer active loop. A crash before the move can retry the exact request;
+if work changed meanwhile, a newly approved request creates a separate attempt
+and preserves the earlier intent. Never delete or modify an intent to retry.
+
+
+A ready clean branch is represented by its existing committed revision and
+independent review, not invented dirty paths in the conserved opening plan.
+After its authorized merge, record its exact target delta in `additionalPaths`
+as `external-target-change`, with the reviewed source/MR evidence in each reason.
+A nonempty, fully reconciled target delta can satisfy delivery completion even
+when the conserved plan has no dirty units. Finalization still checks the current
+target and every entry, every scoped source's cleanliness and containment, and
+unchanged excluded primary state; it does not release unrelated authors' claims.
+An empty outcome supplies no verified delivery evidence.

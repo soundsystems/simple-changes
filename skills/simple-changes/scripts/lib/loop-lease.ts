@@ -4,6 +4,8 @@ import {
   constants,
   existsSync,
   fstatSync,
+  fsyncSync,
+  linkSync,
   lstatSync,
   mkdirSync,
   openSync,
@@ -5632,7 +5634,13 @@ const hasVerifiedDelivery = (
 ): boolean => {
   const scope = lease.shipmentScope;
   const outcome = lease.shipmentOutcome?.receipt;
-  if (!(scope && outcome && outcome.units.length > 0)) {
+  if (
+    !(
+      scope &&
+      outcome &&
+      (outcome.units.length > 0 || outcome.additionalPaths.length > 0)
+    )
+  ) {
     return false;
   }
   const target = currentTargetRevision(lease);
@@ -6723,4 +6731,386 @@ export const loopManifestDigest = (lease: LoopLease): string => {
     ...manifest
   } = lease;
   return sha256(JSON.stringify(manifest));
+};
+
+const requireReplanLease = (inventory: RepositoryInventory): LoopLease => {
+  const common = inventory.repository.commonGitDirectory;
+  const lease = readLeaseFromCommonDirectory(common);
+  if (!lease || lease.commonGitDirectory !== common) {
+    throw new SimpleChangesError(
+      "Replan requires the active lease of this exact repository.",
+      EXIT_CODES.unsafe
+    );
+  }
+  // Do not virtually admit concurrent authors: approval and archive must bind
+  // the stored manifest, while observation separately includes current claims.
+  return lease;
+};
+
+export interface LoopReplanRequest {
+  agentId: string;
+  approvedBy: string;
+  manifestDigest: string;
+  reason: string;
+  runId: string;
+  statusDigest: string;
+}
+
+interface LoopReplanRecord {
+  archivedAt: string;
+  fullLeaseDigest: string;
+  kind: "loop-replan";
+  lease: LoopLease;
+  observation: ReturnType<typeof replanObservation>;
+  outcome: "replanned";
+  request: LoopReplanRequest;
+  schemaVersion: 1;
+}
+
+const replanObservation = (
+  lease: LoopLease,
+  inventory: RepositoryInventory
+) => ({
+  coordination: readCoordinationDocumentFromCommonDirectory(
+    lease.commonGitDirectory
+  ),
+  inventoryDigest: inventory.baselineDigest,
+  targetRevision: currentTargetRevision(lease),
+});
+
+// Observe from the same checkout used for execution. Inventory digests include
+// checkout identity, while coordination and the current target bind shared state.
+export const loopReplanStatus = (repositoryPath: string) => {
+  const opening = captureInventory(repositoryPath);
+  return withStateLock(
+    opening.repository.commonGitDirectory,
+    "loop replan status",
+    () =>
+      withWorktreeCoordinationLock(
+        opening.repository.commonGitDirectory,
+        "loop replan status",
+        () => {
+          const inventory = captureInventory(repositoryPath);
+          const lease = requireReplanLease(inventory);
+          const observation = replanObservation(lease, inventory);
+          return {
+            agentId: lease.ownerAgentId,
+            manifestDigest: loopManifestDigest(lease),
+            observation,
+            runId: lease.runId,
+            statusDigest: sha256Json(observation),
+          };
+        }
+      )
+  );
+};
+
+const syncReplanPath = (path: string): void => {
+  const descriptor = openSync(path, constants.O_RDONLY);
+  try {
+    fsyncSync(descriptor);
+  } finally {
+    closeSync(descriptor);
+  }
+};
+
+// Publish without replacing an existing audit record. A partial temporary write
+// is never considered an intent; retries validate every field of a published one.
+const publishReplanIntent = (path: string, record: LoopReplanRecord): void => {
+  mkdirSync(dirname(path), { mode: 0o700, recursive: true });
+  // Persist each new history ancestor before an intent can authorize removal
+  // of the active directory entry, including on filesystems with delayed metadata.
+  let ancestor = dirname(path);
+  while (ancestor !== record.lease.commonGitDirectory) {
+    syncReplanPath(ancestor);
+    ancestor = dirname(ancestor);
+  }
+  syncReplanPath(ancestor);
+  const temporary = `${path}.${randomUUID()}.tmp`;
+  const descriptor = openSync(temporary, "wx", 0o600);
+  try {
+    writeFileSync(descriptor, `${JSON.stringify(record, null, 2)}\n`);
+    fsyncSync(descriptor);
+  } finally {
+    closeSync(descriptor);
+  }
+  try {
+    linkSync(temporary, path);
+    syncReplanPath(dirname(path));
+  } finally {
+    rmSync(temporary);
+  }
+};
+
+const replanPathExists = (path: string): boolean => {
+  try {
+    lstatSync(path);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return false;
+    }
+    throw error;
+  }
+};
+
+const readReplanLeaseBytes = (path: string): string => {
+  // Validate the inode before reading. In particular, do not follow a dangling
+  // symlink or block opening a FIFO supplied in place of an audit record.
+  if (!lstatSync(path).isFile()) {
+    throw new SimpleChangesError(
+      "Replan lease must be a regular file.",
+      EXIT_CODES.unsafe
+    );
+  }
+  // biome-ignore lint/suspicious/noBitwiseOperators: POSIX open flags are a bitmask.
+  const descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    if (!fstatSync(descriptor).isFile()) {
+      throw new SimpleChangesError(
+        "Replan lease must be a regular file.",
+        EXIT_CODES.unsafe
+      );
+    }
+    return readFileSync(descriptor, "utf8");
+  } finally {
+    closeSync(descriptor);
+  }
+};
+
+const assertReplanRecord = (
+  record: LoopReplanRecord,
+  request: LoopReplanRequest
+): void => {
+  validateSchemaDocument(
+    "loop-replan",
+    {
+      additionalProperties: false,
+      properties: {
+        archivedAt: { format: "date-time", type: "string" },
+        fullLeaseDigest: { pattern: "^[0-9a-f]{64}$", type: "string" },
+        kind: { const: "loop-replan" },
+        lease: { type: "object" },
+        observation: {
+          additionalProperties: false,
+          properties: {
+            coordination: { type: "object" },
+            inventoryDigest: { pattern: "^[0-9a-f]{64}$", type: "string" },
+            targetRevision: { minLength: 1, type: "string" },
+          },
+          required: ["coordination", "inventoryDigest", "targetRevision"],
+          type: "object",
+        },
+        outcome: { const: "replanned" },
+        request: {
+          additionalProperties: false,
+          properties: Object.fromEntries(
+            Object.keys(request).map((key) => [
+              key,
+              { const: request[key as keyof LoopReplanRequest] },
+            ])
+          ),
+          required: [
+            "agentId",
+            "approvedBy",
+            "manifestDigest",
+            "reason",
+            "runId",
+            "statusDigest",
+          ],
+          type: "object",
+        },
+        schemaVersion: { const: 1 },
+      },
+      required: [
+        "archivedAt",
+        "fullLeaseDigest",
+        "kind",
+        "lease",
+        "observation",
+        "outcome",
+        "request",
+        "schemaVersion",
+      ],
+      type: "object",
+    },
+    record
+  );
+  const lease = validateSchema<LoopLease>("loop-lease", record.lease);
+  if (
+    record.schemaVersion !== 1 ||
+    record.kind !== "loop-replan" ||
+    record.outcome !== "replanned" ||
+    typeof record.archivedAt !== "string" ||
+    !DIGEST_PATTERN.test(record.fullLeaseDigest) ||
+    JSON.stringify(record.request) !== JSON.stringify(request) ||
+    lease.runId !== request.runId ||
+    lease.ownerAgentId !== request.agentId ||
+    loopManifestDigest(lease) !== request.manifestDigest ||
+    sha256Json(record.observation) !== request.statusDigest
+  ) {
+    throw new SimpleChangesError(
+      "Replan archive does not match the exact approved request.",
+      EXIT_CODES.unsafe
+    );
+  }
+};
+
+const createReplanIntent = (
+  repositoryPath: string,
+  request: LoopReplanRequest,
+  activePath: string,
+  intentPath: string
+): LoopReplanRecord => {
+  const inventory = captureInventory(repositoryPath);
+  const lease = requireReplanLease(inventory);
+  assertMatchingRun(lease, request.runId);
+  if (
+    lease.ownerAgentId !== request.agentId ||
+    !effectiveShipmentScopeFrozenAt(lease) ||
+    lease.shipmentOutcome ||
+    lease.closeEquivalentOutcome ||
+    lease.emergencyShipping ||
+    verificationAgainst(lease, inventory).violations.some(
+      (violation) => violation.code === "incomplete-worktree-preparation"
+    )
+  ) {
+    throw new SimpleChangesError(
+      "Replan requires the frozen loop's exact owner, no terminal outcome, and complete preparations.",
+      EXIT_CODES.unsafe
+    );
+  }
+  const observation = replanObservation(lease, inventory);
+  if (
+    loopManifestDigest(lease) !== request.manifestDigest ||
+    sha256Json(observation) !== request.statusDigest
+  ) {
+    throw new SimpleChangesError(
+      "Replan manifest or current inventory/coordination/target digest changed.",
+      EXIT_CODES.unsafe
+    );
+  }
+  const bytes = readReplanLeaseBytes(activePath);
+  if (JSON.stringify(JSON.parse(bytes)) !== JSON.stringify(lease)) {
+    throw new SimpleChangesError(
+      "Active lease changed during replan.",
+      EXIT_CODES.unsafe
+    );
+  }
+  const record: LoopReplanRecord = {
+    archivedAt: new Date().toISOString(),
+    fullLeaseDigest: sha256(bytes),
+    kind: "loop-replan",
+    lease,
+    observation,
+    outcome: "replanned",
+    request,
+    schemaVersion: 1,
+  };
+  publishReplanIntent(intentPath, record);
+  return record;
+};
+
+const replanLeaseMatches = (bytes: string, record: LoopReplanRecord): boolean =>
+  sha256(bytes) === record.fullLeaseDigest &&
+  JSON.stringify(JSON.parse(bytes)) === JSON.stringify(record.lease);
+
+export const replanLoop = (
+  repositoryPath: string,
+  input: LoopReplanRequest
+): LoopReplanRecord => {
+  const request: LoopReplanRequest = {
+    agentId: requiredText(input.agentId, "agent ID"),
+    approvedBy: requiredText(input.approvedBy, "approver"),
+    manifestDigest: requiredText(input.manifestDigest, "manifest digest"),
+    reason: requiredText(input.reason, "replan reason"),
+    runId: requiredRunId(input.runId),
+    statusDigest: requiredText(input.statusDigest, "status digest"),
+  };
+  if (
+    !(
+      DIGEST_PATTERN.test(request.manifestDigest) &&
+      DIGEST_PATTERN.test(request.statusDigest)
+    )
+  ) {
+    throw new SimpleChangesError(
+      "Replan requires exact SHA256 digests.",
+      EXIT_CODES.usage
+    );
+  }
+  const opening = captureInventory(repositoryPath);
+  const common = opening.repository.commonGitDirectory;
+  return withStateLock(common, "loop replan", () =>
+    withWorktreeCoordinationLock(common, "loop replan", () => {
+      const directory = assertNoSymlinkAncestors(
+        common,
+        join(
+          STATE_DIRECTORY,
+          RECOVERY_HISTORY_DIRECTORY,
+          request.runId,
+          `replan-${sha256Json(request)}`
+        )
+      );
+      const intentPath = join(directory, "replan.json");
+      const archivePath = join(directory, "replan-lease.json");
+      const activePath = loopLeasePath(common);
+      let record: LoopReplanRecord;
+      if (replanPathExists(intentPath)) {
+        record = JSON.parse(
+          readReplanLeaseBytes(intentPath)
+        ) as LoopReplanRecord;
+        assertReplanRecord(record, request);
+        if (record.lease.commonGitDirectory !== common) {
+          throw new SimpleChangesError(
+            "Replan archive belongs to another repository.",
+            EXIT_CODES.unsafe
+          );
+        }
+      } else {
+        if (replanPathExists(archivePath)) {
+          throw new SimpleChangesError(
+            "Replan lease archive has no matching intent.",
+            EXIT_CODES.unsafe
+          );
+        }
+        record = createReplanIntent(
+          repositoryPath,
+          request,
+          activePath,
+          intentPath
+        );
+      }
+      if (replanPathExists(archivePath)) {
+        const bytes = readReplanLeaseBytes(archivePath);
+        if (!replanLeaseMatches(bytes, record)) {
+          throw new SimpleChangesError(
+            "Replan archived lease integrity check failed.",
+            EXIT_CODES.unsafe
+          );
+        }
+        // A completed retry must never remove a successor, even with the same actor.
+        return record;
+      }
+      const bytes = readReplanLeaseBytes(activePath);
+      const inventory = captureInventory(repositoryPath);
+      if (
+        !replanLeaseMatches(bytes, record) ||
+        sha256Json(replanObservation(record.lease, inventory)) !==
+          request.statusDigest
+      ) {
+        throw new SimpleChangesError(
+          "Replan intent no longer matches the active lease or exact inventory.",
+          EXIT_CODES.unsafe
+        );
+      }
+      // Both directories are within the same common Git directory. This atomic
+      // rename is the transition: every original byte is preserved, and a crash
+      // cannot leave an unarchived cleared lease. No Git or claim cleanup occurs.
+      renameSync(activePath, archivePath);
+      syncReplanPath(archivePath);
+      syncReplanPath(directory);
+      syncReplanPath(dirname(activePath));
+      return record;
+    })
+  );
 };

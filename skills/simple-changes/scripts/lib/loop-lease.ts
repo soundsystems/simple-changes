@@ -5878,11 +5878,14 @@ const preservesUnchangedPrimary = (
   ) {
     return false;
   }
-  const preservedPaths = new Set(
-    scope.plan.preserved
+  const preservedPaths = new Set([
+    ...scope.plan.preserved
       .filter((item) => item.worktreePath === primary.path)
-      .flatMap((item) => item.paths)
-  );
+      .flatMap((item) => item.paths),
+    ...scope.plan.exclusions
+      .filter((item) => item.worktreePath === primary.path)
+      .map((item) => item.path),
+  ]);
   return (
     primary.changes.every((change) => preservedPaths.has(change.path)) &&
     (primary.headSha === registered.baselineHeadSha ||

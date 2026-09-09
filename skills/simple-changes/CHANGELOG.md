@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.16.2 - 2026-09-09
+
+- Finished shipments can now close while unchanged local work explicitly excluded from the shipment stays safely in place.
+<!-- simple-changelogs-signature agent="Astra medium" at="2026-09-09T17:57:46+00:00" -->
+
 ## 0.16.1 - 2026-09-08
 
 - Cleanup preserves missing-worktree records until every record affected by pruning is freshly checked. It recognizes its own verified primary-checkout synchronization and keeps failed closure attempts retryable without recording completion.

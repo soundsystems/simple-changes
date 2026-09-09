@@ -1,5 +1,12 @@
 # Developer changelog
 
+## 0.16.2 - 2026-09-09
+
+- Accept explicitly excluded primary-checkout paths alongside preserved paths during finalization. Retain exact change-digest, head, branch, delivery, source, and target checks.
+- Cover unchanged excluded work and unrelated claims, rejection of drift and missing removal evidence, and recovery after an audited run-created worktree removal while the primary remains behind the target.
+- Keep Simple Changes guidance at 22: this compatible fix restores the existing preservation guarantee without new settings or authority.
+<!-- simple-changelogs-signature agent="Astra medium" at="2026-09-09T17:57:46+00:00" -->
+
 ## 0.16.1 - 2026-09-08
 
 - Defer global worktree pruning unless every affected registration passes a fresh containment and preservation audit. Record exact primary synchronization intent and recovery evidence so an interrupted finalizer can distinguish its own change from unrelated work.

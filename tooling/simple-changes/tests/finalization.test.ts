@@ -1,6 +1,9 @@
 import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
+import { spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
+import { pathToFileURL } from "node:url";
 import {
   captureInventory,
   compareSnapshots,
@@ -8,9 +11,11 @@ import {
 import {
   finalizeLoop,
   loopStatus,
+  prepareAgentWorktree,
   readLoopLease,
   recordShipmentOutcome,
   recordShipmentScope,
+  recoverLoopLock,
   startLoop,
 } from "../../../skills/simple-changes/scripts/lib/loop-lease.ts";
 import { buildPreviewPlan } from "../../../skills/simple-changes/scripts/lib/planner.ts";
@@ -38,12 +43,31 @@ afterEach(() => {
   fixtures.length = 0;
 });
 
-function deliveredFixture(squash = false) {
+function deliveredFixture(
+  squash = false,
+  excludePrimary = false,
+  runCreated = false
+) {
   const fixture = createTestRepository();
   fixtures.push(fixture);
+  if (runCreated) {
+    git(fixture.root, [
+      "remote",
+      "add",
+      "origin",
+      "https://example.invalid/repo.git",
+    ]);
+    git(fixture.root, ["update-ref", "refs/remotes/origin/main", "HEAD"]);
+    git(fixture.root, [
+      "symbolic-ref",
+      "refs/remotes/origin/HEAD",
+      "refs/remotes/origin/main",
+    ]);
+  }
   writeFixture(fixture.root, "personal.txt", "unrelated work\n");
   const author = join(fixture.base, "shipping");
-  git(fixture.root, ["worktree", "add", "-b", "shipping", author]);
+  const authorBranch = "shipping";
+  git(fixture.root, ["worktree", "add", "-b", authorBranch, author]);
   writeFixture(author, "feature.txt", "shipped feature\n");
   const lease = startLoop(author, "controller", "ship");
   const opening = captureInventory(author);
@@ -55,14 +79,25 @@ function deliveredFixture(squash = false) {
   );
   const plan: ChangePlan = {
     ...preview,
-    preserved: [
-      {
-        classification: "paused",
-        paths: ["personal.txt"],
-        reason: "User's unrelated work stays in place.",
-        worktreePath: fixture.root,
-      },
-    ],
+    exclusions: excludePrimary
+      ? [
+          {
+            path: "personal.txt",
+            reason: "Outside shipment scope.",
+            worktreePath: fixture.root,
+          },
+        ]
+      : preview.exclusions,
+    preserved: excludePrimary
+      ? []
+      : [
+          {
+            classification: "paused",
+            paths: ["personal.txt"],
+            reason: "User's unrelated work stays in place.",
+            worktreePath: fixture.root,
+          },
+        ],
     units: preview.units
       .filter((unit) => unit.sourceWorktree === author)
       .map((unit) => ({
@@ -72,16 +107,31 @@ function deliveredFixture(squash = false) {
       })),
   };
   recordShipmentScope(author, lease.runId, "controller", plan);
+  const prepared = runCreated
+    ? prepareAgentWorktree(author, lease.runId, "delivery-author", "delivery")
+    : null;
   git(author, ["add", "feature.txt"]);
   git(author, ["commit", "-m", "Feature"]);
-  if (squash) {
-    git(fixture.root, ["merge", "--squash", "shipping"]);
+  if (prepared) {
+    git(prepared.path, ["merge", "--ff-only", authorBranch]);
+  }
+  if (runCreated) {
+    git(fixture.root, [
+      "update-ref",
+      "refs/remotes/origin/main",
+      git(author, ["rev-parse", "HEAD"]),
+    ]);
+  } else if (squash) {
+    git(fixture.root, ["merge", "--squash", authorBranch]);
     git(fixture.root, ["commit", "-m", "Squash feature"]);
   } else {
-    git(fixture.root, ["merge", "--ff-only", "shipping"]);
+    git(fixture.root, ["merge", "--ff-only", authorBranch]);
   }
-  const target = git(fixture.root, ["rev-parse", "HEAD"]);
-  const blob = git(fixture.root, ["rev-parse", "HEAD:feature.txt"]);
+  const target = git(fixture.root, [
+    "rev-parse",
+    runCreated ? "origin/main" : "HEAD",
+  ]);
+  const blob = git(fixture.root, ["rev-parse", `${target}:feature.txt`]);
   const outcome: ShipmentOutcomeReceipt = {
     additionalPaths: [],
     runId: lease.runId,
@@ -97,10 +147,144 @@ function deliveredFixture(squash = false) {
     })),
   };
   recordShipmentOutcome(author, lease.runId, "controller", outcome);
-  return { ...fixture, author, lease, outcome, plan };
+  return { ...fixture, author, lease, outcome, plan, prepared };
 }
 
 describe("shipment finalization", () => {
+  test("closes exact delivery with explicit exclusions without changing unrelated claims or primary bytes", () => {
+    const fixture = deliveredFixture(false, true);
+    const otherPath = join(fixture.base, "other-author");
+    git(fixture.root, ["worktree", "add", "-b", "other-author", otherPath]);
+    claimWorktree(fixture.root, "other", otherPath, "test");
+    const claims = readWorktreeCoordination(fixture.root);
+    const primaryBefore = captureInventory(fixture.root).worktrees.find(
+      (item) => item.isPrimary
+    );
+    const result = finalizeLoop(
+      fixture.author,
+      fixture.lease.runId,
+      "controller",
+      "Close only delivered scope."
+    );
+    expect(result.outcome).toBe("completed");
+    expect(result.receipt.blocksNextShipment).toBe(false);
+    expect(result.receipt.deliveryStatus).toBe("verified");
+    expect(result.cleanup.cleanedPrimaryPaths).toHaveLength(0);
+    expect(result.cleanup.primaryUpdated).toBe(false);
+    expect(readWorktreeCoordination(fixture.root)).toEqual(claims);
+    const primaryAfter = captureInventory(fixture.root).worktrees.find(
+      (item) => item.isPrimary
+    );
+    expect(primaryAfter?.changeDigest).toBe(primaryBefore?.changeDigest);
+    expect(primaryAfter?.headSha).toBe(primaryBefore?.headSha);
+    expect(readFileSync(join(fixture.root, "personal.txt"), "utf8")).toBe(
+      "unrelated work\n"
+    );
+    expect(existsSync(otherPath)).toBe(true);
+    expect(readLoopLease(fixture.root)).toBeNull();
+  });
+
+  test("resumes explicit-exclusion finalization after audited run-created author removal", async () => {
+    const fixture = deliveredFixture(false, true, true);
+    if (!fixture.prepared) {
+      throw new Error("Missing run-created delivery author fixture");
+    }
+    const removedAuthor = fixture.prepared.path;
+    const moduleUrl = pathToFileURL(
+      join(
+        import.meta.dir,
+        "../../../skills/simple-changes/scripts/lib/loop-lease.ts"
+      )
+    ).href;
+    const child = spawn(
+      process.execPath,
+      [
+        "-e",
+        `import { finalizeLoop } from ${JSON.stringify(moduleUrl)}; finalizeLoop(${JSON.stringify(fixture.root)}, ${JSON.stringify(fixture.lease.runId)}, "controller", "Crash after audited removal.");`,
+      ],
+      {
+        env: {
+          ...process.env,
+          NODE_ENV: "test",
+          SIMPLE_CHANGES_TEST_CRASH_AFTER_WORKTREE_REMOVE: removedAuthor,
+        },
+        stdio: ["ignore", "ignore", "pipe"],
+      }
+    );
+    let stderr = "";
+    child.stderr?.on("data", (chunk) => {
+      stderr += chunk.toString();
+    });
+    const termination = await new Promise<{
+      code: number | null;
+      signal: NodeJS.Signals | null;
+    }>((resolveExit) =>
+      child.once("exit", (code, signal) => resolveExit({ code, signal }))
+    );
+    expect({ ...termination, stderr }).toEqual({
+      code: null,
+      signal: "SIGKILL",
+      stderr: "",
+    });
+    expect(existsSync(removedAuthor)).toBe(false);
+    expect(readLoopLease(fixture.root)?.dispositions).toContainEqual(
+      expect.objectContaining({
+        outcome: "remove-after-audit",
+        path: removedAuthor,
+      })
+    );
+    await sleep(5100);
+    expect(recoverLoopLock(fixture.root, "controller").recovered).toBe(true);
+    const result = finalizeLoop(
+      fixture.root,
+      fixture.lease.runId,
+      "controller",
+      "Resume exact audited removal."
+    );
+    expect(result.outcome).toBe("completed");
+    expect(result.receipt.deliveryStatus).toBe("verified");
+    expect(result.cleanup.cleanedPrimaryPaths).toHaveLength(0);
+    expect(result.cleanup.primaryUpdated).toBe(false);
+    expect(readFileSync(join(fixture.root, "personal.txt"), "utf8")).toBe(
+      "unrelated work\n"
+    );
+  });
+
+  test("explicit exclusions do not excuse a missing source without removal evidence", () => {
+    const fixture = deliveredFixture(false, true);
+    git(fixture.root, ["worktree", "remove", fixture.author]);
+    const result = finalizeLoop(
+      fixture.root,
+      fixture.lease.runId,
+      "controller",
+      "Do not assume removal was safe."
+    );
+    expect(result.outcome).toBe("relinquished");
+    expect(result.receipt.deliveryStatus).not.toBe("verified");
+    expect(result.receipt.blocksNextShipment).toBe(true);
+  });
+
+  test.each(["changed-bytes", "unclassified-path"])(
+    "explicit exclusions never accept %s",
+    (kind) => {
+      const fixture = deliveredFixture(false, true);
+      writeFixture(
+        fixture.root,
+        kind === "changed-bytes" ? "personal.txt" : "extra.txt",
+        "new work\n"
+      );
+      const result = finalizeLoop(
+        fixture.author,
+        fixture.lease.runId,
+        "controller",
+        "Preserve changed work."
+      );
+      expect(result.outcome).toBe("relinquished");
+      expect(result.receipt.blocksNextShipment).toBe(true);
+      expect(readLoopLease(fixture.root)).not.toBeNull();
+    }
+  );
+
   test("closes a verified squash merge while preserving unrelated work", () => {
     const fixture = deliveredFixture(true);
     const result = finalizeLoop(

@@ -1,6 +1,6 @@
 # Developer changelog
 
-## Unreleased
+## 0.17.0 - 2026-09-11
 
 - Add the `branch-audit` CLI and schema with resolved commit identities,
   target-reachable candidates from full `Original-Commit` trailers or matching

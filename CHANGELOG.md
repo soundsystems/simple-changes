@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.17.0 - 2026-09-11
 
 - Check old branches for work already shipped through a rebased or squashed
   replacement with the new read-only `branch audit` command. It reports

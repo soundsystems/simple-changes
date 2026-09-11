@@ -1,5 +1,18 @@
 # Developer changelog
 
+## Unreleased
+
+- Add the `branch-audit` CLI and schema with resolved commit identities,
+  target-reachable candidates from full `Original-Commit` trailers or matching
+  subjects and shared paths, comparison arguments, and explicit truncation
+  flags. Include advisory replacement evidence in worktree-equivalence reports
+  with unmatched commits while retaining existing containment decisions.
+- Cover replacement discovery, squash lineage, incomplete searches, target
+  reachability, newer source work, and read-only CLI behavior. Add shipment and
+  reconciliation evals requiring independent review without weakening cleanup
+  authorization.
+<!-- simple-changelogs-signature agent="gpt-6-astra" at="2026-09-11T14:09:32-05:00" -->
+
 ## 0.16.2 - 2026-09-09
 
 - Accept explicitly excluded primary-checkout paths alongside preserved paths during finalization. Retain exact change-digest, head, branch, delivery, source, and target checks.

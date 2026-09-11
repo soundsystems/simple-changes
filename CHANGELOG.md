@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- Check old branches for work already shipped through a rebased or squashed
+  replacement with the new read-only `branch audit` command. It reports
+  candidates for independent review before reapplying work, and guidance now
+  preserves original commit lineage when preparing replacements. Candidate
+  matches do not authorize cleanup.
+<!-- simple-changelogs-signature agent="gpt-6-astra" at="2026-09-11T14:09:32-05:00" -->
+
 ## 0.16.2 - 2026-09-09
 
 - Finished shipments can now close while unchanged local work explicitly excluded from the shipment stays safely in place.

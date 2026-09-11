@@ -10,6 +10,7 @@ const schemaDirectory = resolve(moduleDirectory, "../../evals/schemas");
 // Single source of truth for packaged schema names; `SchemaName` is derived
 // from it so the runtime registry and the type can never drift apart.
 export const SCHEMA_NAMES = [
+  "branch-audit",
   "repo-policy",
   "changelog-capabilities",
   "changelog-request",

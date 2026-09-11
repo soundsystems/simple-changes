@@ -575,6 +575,31 @@
       ]
     },
     {
+      "id": "reconcile-rebased-replacement-lineage",
+      "prompt": "Clean this repo up. The old record-actions branch still has a unique commit, but I think we shipped it from a replacement branch after review changed its patch.",
+      "mode": "reconcile",
+      "authority": ["local-write"],
+      "expectedBehaviors": [
+        "Run branch audit against the refreshed target from the primary checkout before creating a worktree or attempting to reapply the old branch",
+        "Treat an unmatched patch ID or a missing proposal for the original branch name as inconclusive, not proof of unshipped work",
+        "Use replacement candidates to locate the actual merged proposal and request independent comparison against the current target, including later changes or reverts",
+        "Preserve the source if existing ancestry and patch proofs do not authorize cleanup; never turn a candidate, trailer, or semantic opinion into mechanical deletion authority"
+      ]
+    },
+    {
+      "id": "ship-squashed-replacement-with-new-source-work",
+      "prompt": "Ship everything ready. Two old commits were squashed under another title, but someone added another commit to the source branch afterward.",
+      "mode": "ship",
+      "authority": ["local-write", "proposal-write", "merge", "preview-deploy"],
+      "expectedBehaviors": [
+        "Use full Original-Commit trailers to find the target-reachable squash without relying on matching titles or branch names",
+        "Account for every source commit and preserve the newer commit as outstanding work rather than declaring the entire branch shipped",
+        "Treat truncated history and absent candidates as incomplete evidence requiring further investigation",
+        "Preserve prior lineage trailers and record full original SHA mappings in any new replacement commits and proposal evidence",
+        "Never rewrite already merged history to backfill provenance"
+      ]
+    },
+    {
       "id": "resume-sequential-historical-overrides",
       "prompt": "Continue cleanup. I approve the two exact historical preserved worktrees we audited, one path and digest at a time.",
       "mode": "resume",

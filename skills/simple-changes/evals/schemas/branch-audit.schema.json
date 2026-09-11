@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Advisory replacement branch audit",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "head",
+    "headRef",
+    "targetRef",
+    "targetRevision",
+    "mergeBase",
+    "status",
+    "commits",
+    "sourceHistoryTruncated",
+    "targetHistoryTruncated",
+    "disclaimer"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "head": { "$ref": "#/$defs/sha" },
+    "headRef": { "type": "string", "minLength": 1 },
+    "targetRevision": { "$ref": "#/$defs/sha" },
+    "targetRef": { "type": "string", "minLength": 1 },
+    "mergeBase": { "anyOf": [{ "$ref": "#/$defs/sha" }, { "type": "null" }] },
+    "status": { "enum": ["target-contained", "review-required", "unproven"] },
+    "sourceHistoryTruncated": { "type": "boolean" },
+    "targetHistoryTruncated": { "type": "boolean" },
+    "disclaimer": {
+      "const": "Replacement candidates are advisory. Verify the merged proposal and independently review every source commit before deciding what remains to ship. This report never authorizes cleanup."
+    },
+    "commits": {
+      "type": "array",
+      "maxItems": 200,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["sha", "candidates", "candidatesTruncated"],
+        "properties": {
+          "sha": { "$ref": "#/$defs/sha" },
+          "candidatesTruncated": { "type": "boolean" },
+          "candidates": {
+            "type": "array",
+            "maxItems": 10,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "targetSha",
+                "basis",
+                "sharedPaths",
+                "rangeDiffArgs"
+              ],
+              "properties": {
+                "targetSha": { "$ref": "#/$defs/sha" },
+                "basis": {
+                  "enum": ["original-commit-trailer", "subject-and-paths"]
+                },
+                "sharedPaths": {
+                  "type": "array",
+                  "items": { "type": "string" }
+                },
+                "rangeDiffArgs": {
+                  "type": "array",
+                  "items": { "type": "string" }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "$defs": { "sha": { "type": "string", "pattern": "^[0-9a-f]{40,64}$" } }
+}

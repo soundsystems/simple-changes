@@ -1,5 +1,11 @@
 # Cleanup and completion
 
+An unmatched old branch may already be shipped through a replacement proposal.
+Run `branch audit --head <source-ref> --target <ref> --json` before classifying it
+as unfinished or attempting another merge. Follow
+[replacement lineage](replacement-lineage.md) for discovery and independent
+review. Candidate evidence does not relax any cleanup gate below.
+
 Cleanup is evidence-driven and automatic for proven local candidates in
 Integrate, Ship, Reconcile, and Resume. Remove only objects proven:
 

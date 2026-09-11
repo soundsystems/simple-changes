@@ -6,6 +6,7 @@ import { dirname, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { fileURLToPath } from "node:url";
 import { sleep } from "bun";
+import { auditBranchReplacements } from "./lib/branch-audit.ts";
 import { inspectChangelogCoordination } from "./lib/changelog-coordination.ts";
 import {
   buildCoordinationRequest,
@@ -142,7 +143,7 @@ import {
   standaloneWorktreeCleanup,
 } from "./lib/worktree-maintenance.ts";
 
-const VERSION = "0.16.2";
+const VERSION = "0.17.0";
 const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const SCHEMA_KIND_LINE_LIMIT = 78;
 const schemaKindLines = SCHEMA_NAMES.reduce<string[]>((lines, name) => {
@@ -268,6 +269,7 @@ Usage:
   simple-changes worktree takeover --claim-id ID --agent-id NEW_OWNER
     --status-digest SHA256 --approved-by ID --reason TEXT [--release]
     [--json] [--repo PATH]
+  simple-changes branch audit --head REF --target REF [--json] [--repo PATH]
   simple-changes worktree equivalence --worktree PATH [--target REF]
     [--json] [--repo PATH]
   simple-changes worktree refresh-index [--json] [--repo PATH]
@@ -2967,6 +2969,18 @@ const executeCommand = async (
     case "loop":
       await runLoopCommand(options);
       return EXIT_CODES.success;
+    case "branch": {
+      if (options.positional[0] !== "audit") {
+        throw new SimpleChangesError("branch requires audit", EXIT_CODES.usage);
+      }
+      const report = auditBranchReplacements({
+        headRef: requireCliOption(options.headRef, "--head"),
+        repositoryRoot: options.repo,
+        targetRef: requireCliOption(options.targetRef, "--target"),
+      });
+      writeOutput(report, options.json, `${JSON.stringify(report, null, 2)}\n`);
+      return EXIT_CODES.success;
+    }
     case "worktree":
       runWorktreeCommand(options);
       return EXIT_CODES.success;

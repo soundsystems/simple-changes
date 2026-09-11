@@ -101,6 +101,17 @@ checklist. Let the user approve all, decline all, or approve named items in one
 reply. Never stretch that bundle to unknown future actions; ask again only for
 a newly discovered boundary or invalidated target.
 
+## Check for already-shipped work
+
+Before creating a worktree, rebasing, cherry-picking, or merging an old local
+branch, run `simple-changes branch audit --head <branch> --target <ref> --json`
+against the refreshed target. A unique SHA or a missing MR on that branch name
+does not establish unshipped work. Resolve replacement candidates against merged
+proposals and independent review first; follow
+[replacement lineage](references/replacement-lineage.md). Record original SHAs
+in replacement commits when moving work to a different branch. Discovery hints
+never permit deletion or waive the existing cleanup proofs.
+
 ## Hold one controller lease
 
 For Queue, Sweep, Integrate, Ship, Reconcile, and Resume, start one active loop

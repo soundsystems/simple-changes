@@ -156,7 +156,7 @@ export const deleteTargetContainedBranches = (
       result.preserved.push({
         branch: branch.name,
         reason:
-          "The branch has commits that are neither contained in nor patch-equivalent to the refreshed target.",
+          "The branch has commits that are neither contained in nor patch-equivalent to the refreshed target. Run branch audit --head <branch> --target <target> before treating it as unshipped; a replacement may have changed patch IDs during review.",
       });
       continue;
     }

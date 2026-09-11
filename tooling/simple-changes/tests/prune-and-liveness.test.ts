@@ -182,7 +182,7 @@ describe("simple-changes prune", () => {
     expect(report.preservedBranches).toContainEqual({
       branch: "unmerged-branch",
       reason:
-        "The branch has commits that are neither contained in nor patch-equivalent to the refreshed target.",
+        "The branch has commits that are neither contained in nor patch-equivalent to the refreshed target. Run branch audit --head <branch> --target <target> before treating it as unshipped; a replacement may have changed patch IDs during review.",
     });
     expect(branchExists(fixture.root, "unmerged-branch")).toBe(true);
     expect(report.errors).toEqual([]);

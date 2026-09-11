@@ -11,6 +11,11 @@ Capture the opening inventory before mutation:
 - open proposals and provider capabilities when available;
 - policy sources and a stable baseline digest.
 
+Before interpreting unique commits on an old branch as new work, run
+`branch audit --head <source-ref> --target <ref> --json` from the primary
+checkout. Resolve any replacement candidates before creating an author
+worktree or reapplying the branch. See [replacement lineage](replacement-lineage.md).
+
 Before assigning several independent authors, apply `proposalScheduling`:
 
 - `balanced`: prefer consecutive work, but parallelize when it saves meaningful

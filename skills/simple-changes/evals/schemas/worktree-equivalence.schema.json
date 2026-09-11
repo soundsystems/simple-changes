@@ -17,6 +17,7 @@
     "disclaimer"
   ],
   "properties": {
+    "replacementAudit": { "$ref": "branch-audit.schema.json" },
     "schemaVersion": { "const": 1 },
     "targetRef": { "type": "string", "minLength": 1 },
     "targetRevision": { "type": "string", "pattern": "^[0-9a-f]{40,64}$" },

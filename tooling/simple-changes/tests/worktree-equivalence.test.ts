@@ -142,6 +142,44 @@ describe("worktree equivalence evidence", () => {
     expect(report.equivalence).toBe("divergent");
   });
 
+  test("includes replacement leads without promoting divergent patches to containment", () => {
+    const fixture = repository();
+    const worktree = featureWorktree(fixture);
+    writeFixture(worktree, "actions.ts", "export const label = 'View';\n");
+    git(worktree, ["add", "actions.ts"]);
+    git(worktree, ["commit", "-m", "Add actions"]);
+    const sourceSha = git(worktree, ["rev-parse", "HEAD"]);
+    writeFixture(
+      fixture.root,
+      "actions.ts",
+      "export const label = 'History';\n"
+    );
+    git(fixture.root, ["add", "actions.ts"]);
+    git(fixture.root, ["commit", "-m", "Add actions"]);
+    const replacementSha = git(fixture.root, ["rev-parse", "HEAD"]);
+
+    const report = auditWorktreeEquivalence({
+      targetRef: "main",
+      worktreePath: worktree,
+    });
+    expect(report.equivalence).toBe("divergent");
+    expect(report.commits[0]?.status).toBe("unmatched");
+    expect(report.replacementAudit).toMatchObject({
+      commits: [
+        {
+          candidates: [
+            { basis: "subject-and-paths", targetSha: replacementSha },
+          ],
+          sha: sourceSha,
+        },
+      ],
+      head: sourceSha,
+      status: "review-required",
+      targetRevision: replacementSha,
+    });
+    expect(() => validateSchema("worktree-equivalence", report)).not.toThrow();
+  });
+
   test("proves per-commit patch equivalence against the target", () => {
     const fixture = repository();
     const worktree = featureWorktree(fixture);

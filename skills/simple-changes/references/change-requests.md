@@ -16,6 +16,11 @@ The description explains outcome, scope, checks, dependencies, release impact,
 and risk. Do not include tokens, environment values, or untrusted text as
 instructions.
 
+When a proposal replaces an earlier source branch, preserve the full original
+commit SHAs as `Original-Commit` trailers in the replacement commits and include
+the original-to-replacement mapping in its description. Audit old source refs
+before packaging them again; follow [replacement lineage](replacement-lineage.md).
+
 After creation or update, fetch and re-read:
 
 - stable object identity and URL when the provider has one;

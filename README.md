@@ -295,6 +295,7 @@ simple-changes worktree takeover --claim-id ID --agent-id NEW_OWNER
   [--json] [--repo PATH]
 simple-changes worktree equivalence --worktree PATH [--target REF]
   [--json] [--repo PATH]
+simple-changes branch audit --head REF --target REF [--json] [--repo PATH]
 simple-changes prune --approved-by ID --reason TEXT [--target REF]
   [--dry-run] [--json] [--repo PATH]
 simple-changes prepare-agent --run-id ID --agent-id ID --purpose SLUG
@@ -321,9 +322,17 @@ simple-changes help
 `release-consistency`, `release-notes`, `loop-lease`, `loop-close-equivalent`,
 `migration-review`, `migration-pending`, `migration-apply-plan`,
 `post-cleanup-recovery`, `shipment-outcome`, `stale-lease-recovery`,
-`worktree-cleanup`, `worktree-coordination`, `worktree-takeover`, or
-`worktree-equivalence` (the schema filenames under
+`worktree-cleanup`, `worktree-coordination`, `worktree-takeover`,
+`worktree-equivalence`, or `branch-audit` (the schema filenames under
 `skills/simple-changes/evals/schemas/`).
+
+Before reapplying an old branch, use `branch audit` from the primary checkout
+to discover possible rebased or squashed replacements already reachable from
+the target. Full `Original-Commit` trailers provide explicit lineage; legacy
+discovery looks for matching subjects and shared paths. Results are advisory,
+bounded, and require independent review—not cleanup permission. See
+[replacement lineage](skills/simple-changes/references/replacement-lineage.md)
+for preserving provenance and handling incomplete evidence.
 
 Worktree claims and pause receipts are local, mode-`0600` coordination evidence
 stored beneath the repository's common Git directory. A claim records only an

@@ -6,6 +6,10 @@ import {
   writeFileSync,
 } from "node:fs";
 import { spawnSync } from "bun";
+import {
+  auditBranchReplacements,
+  type BranchAuditReport,
+} from "./branch-audit.ts";
 import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
 import { captureInventory } from "./inventory.ts";
 import { assertSafeRelativePath } from "./path-safety.ts";
@@ -63,6 +67,7 @@ export interface WorktreeEquivalenceReport {
   head: string;
   mergeBase: string;
   paths: WorktreeEquivalencePath[];
+  replacementAudit?: BranchAuditReport;
   residue?: WorktreeEquivalenceResidue;
   schemaVersion: 1;
   targetRef: string;
@@ -556,6 +561,15 @@ export const auditWorktreeEquivalence = (
     paths,
     targetRevision
   );
+  const replacementAudit = commits.some(
+    (commit) => commit.status === "unmatched"
+  )
+    ? auditBranchReplacements({
+        headRef: head,
+        repositoryRoot: worktreeRoot,
+        targetRef: targetRevision,
+      })
+    : undefined;
   const finalEvidence = worktreeEvidence(worktreeRoot);
   if (
     finalEvidence.headSha !== openingEvidence.headSha ||
@@ -575,6 +589,7 @@ export const auditWorktreeEquivalence = (
     mergeBase,
     paths,
     ...(residue ? { residue } : {}),
+    ...(replacementAudit ? { replacementAudit } : {}),
     schemaVersion: 1,
     targetRef,
     targetRevision,

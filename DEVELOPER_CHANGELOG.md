@@ -1,5 +1,21 @@
 # Developer changelog
 
+## 0.17.1 - 2026-09-16
+
+- Add the read-only `primaryDeliveryProof` predicate and share it between
+  `loop record-outcome` (`primaryReviewedResultAllowed`) and finalization
+  (`preservesUnchangedPrimary`, `hasVerifiedDelivery`). A delivered unit
+  sourced from the primary may bind the reviewed target entry instead of its
+  frozen opening entry only while the primary's branch and change digest match
+  the baseline and its HEAD is contained in the bound target.
+- Skip target-equivalent normalization when it would only partially clean a
+  proven delivered mixed-source primary, preserving its bytes and index so the
+  proof still holds at closure.
+- Cover the predicate with unit cases and add an end-to-end finalization test
+  that rejects rewritten history and a primary edited after scope opening
+  before closing the reviewed shipment. Keep Simple Changes guidance at 22.
+<!-- simple-changelogs-signature agent="Fable 5.1" at="2026-09-16T19:29:27-05:00" -->
+
 ## 0.17.0 - 2026-09-11
 
 - Add the `branch-audit` CLI and schema with resolved commit identities,

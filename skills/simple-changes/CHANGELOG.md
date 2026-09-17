@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.17.1 - 2026-09-16
+
+- Shipments whose work was packaged from a dirty primary checkout and then
+  changed by review can now record their outcome and close. Delivery is proven
+  when that checkout is unchanged from its baseline, its head is contained in
+  the target, and every remaining changed path was delivered, preserved, or
+  excluded; the checkout's bytes stay in place instead of blocking closure.
+<!-- simple-changelogs-signature agent="Fable 5.1" at="2026-09-16T19:29:27-05:00" -->
+
 ## 0.17.0 - 2026-09-11
 
 - Check old branches for work already shipped through a rebased or squashed

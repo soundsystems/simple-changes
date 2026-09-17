@@ -295,7 +295,12 @@ coordination locks. Without an exact verified shipment outcome, a missing or
 stale target, dirty or off-target primary, or remaining cleanup candidate keeps
 the run open. With that outcome, clean source worktrees proven contained in the
 current target may finish while an unchanged primary explicitly preserved by
-the scope or unrelated late arrivals remain untouched. Missing registrations,
+the scope or unrelated late arrivals remain untouched. The same holds for an
+unchanged primary whose scoped dirty paths were packaged elsewhere and shipped
+as reviewed results recorded in the target: delivery is proven when its branch
+and content digest match the baseline, its HEAD is contained in the target, and
+every remaining dirty path is delivered, preserved, or excluded; its bytes and
+index stay in place rather than being normalized. Missing registrations,
 changed claims, changed preserved bytes, remote destination changes, incomplete
 preparations, and stale outcome evidence still block closure; late arrivals
 are exempt only from the finalization registration check, never from shared

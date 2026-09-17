@@ -289,8 +289,9 @@ read-only work, or incomplete verification.
     retain exact authorized exclusions, verify again, and finalize the lease.
     Finalization automatically removes proven safe worktrees, stale metadata,
     and merged local branches. An exact verified shipment may close with an
-    unchanged primary explicitly preserved in its scope, or unrelated late
-    arrivals. Report pending cleanup separately and use guarded `prune` when
+    unchanged primary explicitly preserved in its scope, an unchanged primary
+    whose scoped dirty paths shipped as reviewed results now in the target, or
+    unrelated late arrivals. Report pending cleanup separately and use guarded `prune` when
     safe; do not keep a delivered shipment open solely for that housekeeping.
 
 ## Authority and invariants

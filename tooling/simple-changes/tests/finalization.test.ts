@@ -151,6 +151,156 @@ function deliveredFixture(
 }
 
 describe("shipment finalization", () => {
+  test("proves delivery for a shipment packaged from a changed primary checkout", () => {
+    const fixture = createTestRepository();
+    fixtures.push(fixture);
+    git(fixture.root, [
+      "remote",
+      "add",
+      "origin",
+      "https://example.invalid/repo.git",
+    ]);
+    git(fixture.root, ["update-ref", "refs/remotes/origin/main", "HEAD"]);
+    git(fixture.root, [
+      "symbolic-ref",
+      "refs/remotes/origin/HEAD",
+      "refs/remotes/origin/main",
+    ]);
+    // Shippable work sits uncommitted in the dirty primary next to unrelated work.
+    writeFixture(fixture.root, "feature.txt", "draft feature\n");
+    writeFixture(fixture.root, "helper.txt", "final helper\n");
+    writeFixture(fixture.root, "personal.txt", "unrelated work\n");
+    const baselineHead = git(fixture.root, ["rev-parse", "HEAD"]);
+    const lease = startLoop(fixture.root, "controller", "ship");
+    const opening = captureInventory(fixture.root);
+    const preview = buildPreviewPlan(
+      opening,
+      opening,
+      compareSnapshots(opening, opening)
+    );
+    const plan: ChangePlan = {
+      ...preview,
+      exclusions: [
+        {
+          path: "personal.txt",
+          reason: "Outside shipment scope.",
+          worktreePath: fixture.root,
+        },
+      ],
+      preserved: [],
+      units: preview.units
+        .map((unit) => ({
+          ...unit,
+          operations: ["commit"] as ChangePlan["units"][number]["operations"],
+          paths: unit.paths.filter((path) => path !== "personal.txt"),
+          requiredAuthority: [
+            "local-write",
+          ] as ChangePlan["units"][number]["requiredAuthority"],
+        }))
+        .filter((unit) => unit.paths.length > 0),
+    };
+    recordShipmentScope(fixture.root, lease.runId, "controller", plan);
+    const primaryBefore = captureInventory(fixture.root).worktrees.find(
+      (item) => item.isPrimary
+    );
+
+    // The work is copied into a run-prepared author worktree, where review
+    // changes the bytes that actually ship.
+    const prepared = prepareAgentWorktree(
+      fixture.root,
+      lease.runId,
+      "delivery-author",
+      "delivery"
+    );
+    writeFixture(prepared.path, "feature.txt", "reviewed feature\n");
+    writeFixture(prepared.path, "helper.txt", "final helper\n");
+    git(prepared.path, ["add", "feature.txt", "helper.txt"]);
+    git(prepared.path, ["commit", "-m", "Reviewed feature"]);
+    const reviewed = git(prepared.path, ["rev-parse", "HEAD"]);
+    const receiptFor = (target: string): ShipmentOutcomeReceipt => ({
+      additionalPaths: [],
+      runId: lease.runId,
+      schemaVersion: 1,
+      targetRevision: target,
+      units: plan.units.map((unit) => ({
+        disposition: "delivered",
+        evidence: ["Review changed the feature before merge."],
+        finalPaths: unit.paths.map((path) => ({
+          entry: `100644:blob:${git(fixture.root, ["rev-parse", `${target}:${path}`])}`,
+          path,
+        })),
+        originalPaths: [],
+        summary: "Reviewed feature integrated",
+        unitId: unit.id,
+      })),
+    });
+
+    // A target holding the reviewed bytes without the primary's history does
+    // not prove the primary's work was delivered.
+    const orphan = git(fixture.root, [
+      "commit-tree",
+      `${reviewed}^{tree}`,
+      "-m",
+      "Rewritten history",
+    ]);
+    git(fixture.root, ["update-ref", "refs/remotes/origin/main", orphan]);
+    expect(() =>
+      recordShipmentOutcome(
+        fixture.root,
+        lease.runId,
+        "controller",
+        receiptFor(orphan)
+      )
+    ).toThrow("contained in the bound target");
+
+    git(fixture.root, ["update-ref", "refs/remotes/origin/main", reviewed]);
+    // A primary edited after the scope opened cannot launder its edits.
+    writeFixture(fixture.root, "feature.txt", "tampered after opening\n");
+    expect(() =>
+      recordShipmentOutcome(
+        fixture.root,
+        lease.runId,
+        "controller",
+        receiptFor(reviewed)
+      )
+    ).toThrow("does not match its exact opening source result");
+    writeFixture(fixture.root, "feature.txt", "draft feature\n");
+
+    recordShipmentOutcome(
+      fixture.root,
+      lease.runId,
+      "controller",
+      receiptFor(reviewed)
+    );
+    const result = finalizeLoop(
+      fixture.root,
+      lease.runId,
+      "controller",
+      "Close the reviewed shipment."
+    );
+    expect(result.blockers).toEqual([]);
+    expect(result.outcome).toBe("completed");
+    expect(result.receipt.deliveryStatus).toBe("verified");
+    expect(result.cleanup.cleanedPrimaryPaths).toHaveLength(0);
+    expect(result.cleanup.primaryUpdated).toBe(false);
+    expect(existsSync(prepared.path)).toBe(false);
+    expect(readLoopLease(fixture.root)).toBeNull();
+    const primaryAfter = captureInventory(fixture.root).worktrees.find(
+      (item) => item.isPrimary
+    );
+    expect(primaryAfter?.changeDigest).toBe(primaryBefore?.changeDigest);
+    expect(primaryAfter?.headSha).toBe(baselineHead);
+    expect(readFileSync(join(fixture.root, "feature.txt"), "utf8")).toBe(
+      "draft feature\n"
+    );
+    expect(readFileSync(join(fixture.root, "helper.txt"), "utf8")).toBe(
+      "final helper\n"
+    );
+    expect(readFileSync(join(fixture.root, "personal.txt"), "utf8")).toBe(
+      "unrelated work\n"
+    );
+  });
+
   test("closes exact delivery with explicit exclusions without changing unrelated claims or primary bytes", () => {
     const fixture = deliveredFixture(false, true);
     const otherPath = join(fixture.base, "other-author");

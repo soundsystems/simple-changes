@@ -67,8 +67,11 @@
 - Finalization closes an exact verified shipment independently of unrelated
   cleanup. Scoped source checkouts must be clean and contained in the current
   target, or have completed audited removals. Only an unchanged primary whose
-  dirty paths were explicitly preserved and unrelated late arrivals may remain
-  without holding the shipment open. Ordinary mutation verification is unchanged.
+  dirty paths were explicitly preserved or delivered as reviewed results now in
+  the target, and unrelated late arrivals, may remain without holding the
+  shipment open. A reviewed result for work packaged from the primary is accepted
+  only while that primary matches its baseline and its HEAD is contained in the
+  bound target. Ordinary mutation verification is unchanged.
   Each attempt persists a receipt reporting shipment, controller, delivery,
   cleanup, blockers, and preserved worktrees before release. A relinquished
   controller is resumed without takeover approval; frozen scope still applies.

@@ -38,6 +38,7 @@ import {
   assertSafeRelativePath,
 } from "./path-safety.ts";
 import { validatePlanConservation } from "./planner.ts";
+import { primaryDeliveryProof } from "./primary-delivery-proof.ts";
 import {
   type CommandProcess,
   type CommandResult,
@@ -2212,28 +2213,93 @@ const validateOutcomeUnitOriginalPaths = (
   return new Set(names);
 };
 
+/**
+ * A unit packaged from the dirty primary checkout may ship a reviewed result
+ * whose bytes differ from the frozen opening copy. That is accepted only while
+ * the primary is provably untouched since the run's baseline and its HEAD is
+ * contained in the bound target, so the outcome cannot launder controller
+ * edits made in the primary itself.
+ */
+const primaryReviewedResultAllowed = (
+  lease: LoopLease,
+  inventory: RepositoryInventory,
+  receipt: ShipmentOutcomeReceipt,
+  unit: OutcomeUnit,
+  expected: PlannedUnit
+): boolean => {
+  if (
+    unit.disposition !== "delivered" ||
+    expected.sourceWorktree !== lease.primaryCheckout
+  ) {
+    return false;
+  }
+  const primary = inventory.worktrees.find(
+    (worktree) => worktree.path === lease.primaryCheckout
+  );
+  const registered = lease.worktrees.find(
+    (worktree) => worktree.path === lease.primaryCheckout
+  );
+  if (!(primary?.isPrimary && primary.headSha && registered)) {
+    return false;
+  }
+  const baselineDigest =
+    matchingOverride(lease, primary)?.changeDigest ??
+    registered.baselineChangeDigest;
+  return (
+    primary.branch === registered.branch &&
+    primary.changeDigest === baselineDigest &&
+    (primary.headSha === registered.baselineHeadSha ||
+      primary.headSha === receipt.targetRevision) &&
+    targetContainsRevision(
+      lease.primaryCheckout,
+      receipt.targetRevision,
+      primary.headSha
+    )
+  );
+};
+
 const assertDirectOutcomeMatchesSource = (
+  lease: LoopLease,
+  inventory: RepositoryInventory,
+  receipt: ShipmentOutcomeReceipt,
   unit: OutcomeUnit,
   expected: PlannedUnit,
   openingChanges: OpeningShipmentChange[]
 ): void => {
+  let reviewedPrimaryResultAllowed: boolean | null = null;
   for (const item of unit.finalPaths) {
     const sources = openingChanges.filter(
       (change) =>
         change.worktreePath === expected.sourceWorktree &&
         change.path === item.path
     );
-    if (sources.length !== 1 || sources[0]?.sourceEntry !== item.entry) {
-      throw new SimpleChangesError(
-        `Shipment outcome unit ${unit.unitId} does not match its exact opening source result for ${item.path}.`,
-        EXIT_CODES.validation
-      );
+    if (sources.length === 1 && sources[0]?.sourceEntry === item.entry) {
+      continue;
     }
+    reviewedPrimaryResultAllowed ??= primaryReviewedResultAllowed(
+      lease,
+      inventory,
+      receipt,
+      unit,
+      expected
+    );
+    if (sources.length === 1 && reviewedPrimaryResultAllowed) {
+      continue;
+    }
+    throw new SimpleChangesError(
+      `Shipment outcome unit ${unit.unitId} does not match its exact opening source result for ${item.path}.${
+        expected.sourceWorktree === lease.primaryCheckout
+          ? " A reviewed result for work packaged from the primary checkout is accepted only while that checkout is unchanged from its baseline and its HEAD is contained in the bound target."
+          : ""
+      }`,
+      EXIT_CODES.validation
+    );
   }
 };
 
 const validateShipmentOutcomeUnits = (
   lease: LoopLease,
+  inventory: RepositoryInventory,
   receipt: ShipmentOutcomeReceipt,
   targetDeltaPaths: Set<string>,
   renameOriginals: Map<string, string>
@@ -2282,7 +2348,14 @@ const validateShipmentOutcomeUnits = (
     for (const path of originalPaths) {
       accountedPaths.add(path);
     }
-    assertDirectOutcomeMatchesSource(unit, expected, scope.openingChanges);
+    assertDirectOutcomeMatchesSource(
+      lease,
+      inventory,
+      receipt,
+      unit,
+      expected,
+      scope.openingChanges
+    );
   }
   const missing = [...expectedUnits.keys()].filter(
     (unitId) => !seenUnits.has(unitId)
@@ -2406,6 +2479,7 @@ export const recordShipmentOutcome = (
       );
       const { accountedPaths, scopedPaths } = validateShipmentOutcomeUnits(
         lease,
+        inventory,
         receipt,
         targetDeltaPaths,
         renameOriginals
@@ -4751,6 +4825,31 @@ const indexHasOnlyOrdinaryEntries = (
     return flags.every((match) => match[1] === "0");
   });
 
+/**
+ * When review changed some scoped bytes, normalizing only the
+ * target-equivalent paths would alter the primary's baseline digest and defeat
+ * the delivery proof that lets the run close. Proven delivered mixed-source
+ * state is then preserved byte-for-byte, including the index.
+ */
+const preservesProvenMixedPrimary = (
+  lease: LoopLease,
+  inventory: RepositoryInventory,
+  primary: WorktreeInventory,
+  eligiblePaths: Set<string>
+): boolean => {
+  const scopedPrimaryPaths = new Set(
+    (lease.shipmentScope?.plan.units ?? [])
+      .filter((unit) => unit.sourceWorktree === primary.path)
+      .flatMap((unit) => unit.paths)
+  );
+  return (
+    primary.changes.some(
+      (change) =>
+        scopedPrimaryPaths.has(change.path) && !eligiblePaths.has(change.path)
+    ) && preservesUnchangedPrimary(lease, inventory)
+  );
+};
+
 const reconcileTargetEquivalentPrimaryChanges = (
   lease: LoopLease,
   inventory: RepositoryInventory,
@@ -4797,6 +4896,9 @@ const reconcileTargetEquivalentPrimaryChanges = (
     }
   }
   if (eligiblePaths.size === 0) {
+    return;
+  }
+  if (preservesProvenMixedPrimary(lease, inventory, primary, eligiblePaths)) {
     return;
   }
   const freshPrimary = captureInventory(lease.primaryCheckout).worktrees.find(
@@ -5853,14 +5955,21 @@ const hasVerifiedDelivery = (
       );
     }
     return Boolean(
-      source.changes.length === 0 &&
-        source.headSha &&
-        targetContainmentAudit(lease.primaryCheckout, target, source.headSha)
-          .method
+      (source.isPrimary && preservesUnchangedPrimary(lease, inventory)) ||
+        (source.changes.length === 0 &&
+          source.headSha &&
+          targetContainmentAudit(lease.primaryCheckout, target, source.headSha)
+            .method)
     );
   });
 };
 
+/**
+ * Proves that a primary checkout still carrying dirty paths does not hold the
+ * shipment open: it is unchanged from its baseline, its HEAD is contained in
+ * the target, every scoped path has its recorded reviewed result in the
+ * target, and every other dirty path was explicitly preserved or excluded.
+ */
 const preservesUnchangedPrimary = (
   lease: LoopLease,
   inventory: RepositoryInventory
@@ -5870,27 +5979,56 @@ const preservesUnchangedPrimary = (
     (worktree) => worktree.path === lease.primaryCheckout
   );
   const scope = lease.shipmentScope;
-  if (
-    !(primary && registered && scope) ||
-    primary.branch !== registered.branch ||
-    primary.changeDigest !== registered.baselineChangeDigest ||
-    scope.plan.units.some((unit) => unit.sourceWorktree === primary.path)
-  ) {
+  if (!(primary && registered && scope)) {
     return false;
   }
-  const preservedPaths = new Set([
-    ...scope.plan.preserved
-      .filter((item) => item.worktreePath === primary.path)
-      .flatMap((item) => item.paths),
-    ...scope.plan.exclusions
+  const units = scope.plan.units.filter(
+    (unit) => unit.sourceWorktree === primary.path
+  );
+  const outcome = lease.shipmentOutcome?.receipt;
+  const delivered = new Map<string, string | null>();
+  for (const unit of units) {
+    const result = outcome?.units.find((item) => item.unitId === unit.id);
+    if (!result) {
+      return false;
+    }
+    for (const item of [...result.finalPaths, ...result.originalPaths]) {
+      delivered.set(item.path, item.entry);
+    }
+  }
+  const target = currentTargetRevision(lease);
+  return primaryDeliveryProof({
+    baselineBranch: registered.branch,
+    baselineDigest:
+      matchingOverride(lease, primary)?.changeDigest ??
+      registered.baselineChangeDigest,
+    baselineHead: registered.baselineHeadSha,
+    branch: primary.branch,
+    changes: primary.changes,
+    delivered,
+    digest: primary.changeDigest,
+    excluded: scope.plan.exclusions
       .filter((item) => item.worktreePath === primary.path)
       .map((item) => item.path),
-  ]);
-  return (
-    primary.changes.every((change) => preservedPaths.has(change.path)) &&
-    (primary.headSha === registered.baselineHeadSha ||
-      primary.headSha === currentTargetRevision(lease))
-  );
+    head: primary.headSha,
+    headContained: Boolean(
+      primary.headSha &&
+        targetContainsRevision(lease.primaryCheckout, target, primary.headSha)
+    ),
+    headEntry: (path) =>
+      primary.headSha
+        ? targetTreeEntry(primary.path, primary.headSha, path)
+        : null,
+    isPrimary: primary.isPrimary,
+    outcomeTarget: units.length > 0 ? outcome?.targetRevision : target,
+    preserved: scope.plan.preserved
+      .filter((item) => item.worktreePath === primary.path)
+      .flatMap((item) => item.paths),
+    scoped: units.flatMap((unit) => unit.paths),
+    sourceEntry: (path) => worktreeSourceEntry(primary.path, path),
+    target,
+    targetEntry: (path) => targetTreeEntry(lease.primaryCheckout, target, path),
+  });
 };
 
 const shipmentFinalizationVerification = (

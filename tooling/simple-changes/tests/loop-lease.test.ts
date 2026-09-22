@@ -35,6 +35,7 @@ import {
   loopStatus,
   prepareAgentWorktree,
   readLoopLease,
+  rebaselineLoopWorktrees,
   recordEmergencyShipping,
   recordRemoteBranchReconciliation,
   recordShipmentOutcome,
@@ -42,6 +43,7 @@ import {
   recoverLoopLock,
   recoverPostCleanupLoop,
   retainExcludedWorktree,
+  retireAbsentWorktree,
   startLoop,
   takeoverLoop,
   verifyLoop,
@@ -3592,6 +3594,206 @@ describe("active integration-loop lease", () => {
     expect(verifyLoop(fixture.root).ok).toBe(true);
     expect(endLoop(fixture.root, lease.runId, "controller").ok).toBe(true);
   }, 20_000);
+
+  test("retires a rebaselined worktree after its owner deletes it", () => {
+    const fixture = repository();
+    const lease = startLoop(fixture.root, "controller", "reconcile");
+    const late = join(fixture.base, "late-author");
+    git(fixture.root, ["worktree", "add", "-b", "late-work", late]);
+    writeFixture(late, "late.txt", "unique work\n");
+    git(late, ["add", "late.txt"]);
+    git(late, ["commit", "-m", "Late unique work"]);
+    const rebaselined = rebaselineLoopWorktrees(
+      fixture.root,
+      lease.runId,
+      "controller",
+      "user",
+      "Register the late author"
+    );
+    const registered = rebaselined.lease.worktrees.find(
+      (worktree) => worktree.path === late
+    );
+    expect(registered?.role).toBe("preserved");
+    expect(() =>
+      retireAbsentWorktree(
+        fixture.root,
+        lease.runId,
+        "controller",
+        late,
+        "user",
+        "Still present"
+      )
+    ).toThrow("still exists on disk");
+
+    const lateHead = git(fixture.root, ["rev-parse", "--verify", "late-work"]);
+    git(fixture.root, ["worktree", "remove", "--force", late]);
+    expect(verifyLoop(fixture.root).violations).toContainEqual(
+      expect.objectContaining({
+        code: "missing-preserved-worktree",
+        path: late,
+      })
+    );
+    expect(loopStatus(fixture.root).guidance.nextCommands).toContainEqual(
+      expect.stringContaining("loop retire-absent-worktree")
+    );
+
+    const retired = retireAbsentWorktree(
+      fixture.root,
+      lease.runId,
+      "controller",
+      late,
+      "user",
+      "The owning task removed its checkout."
+    );
+    expect(retired.retirements).toEqual([
+      expect.objectContaining({
+        actorAgentId: "controller",
+        approvedBy: "user",
+        baselineChangeDigest: registered?.baselineChangeDigest,
+        baselineHeadSha: registered?.baselineHeadSha,
+        branch: "late-work",
+        path: late,
+        registration: "rebaseline",
+        targetRef: lease.targetRef,
+      }),
+    ]);
+    expect(retired.dispositions ?? []).toEqual([]);
+    expect(verifyLoop(fixture.root).ok).toBe(true);
+    expect(
+      retireAbsentWorktree(
+        fixture.root,
+        lease.runId,
+        "controller",
+        late,
+        "user",
+        "Repeat"
+      ).retirements
+    ).toHaveLength(1);
+    expect(git(fixture.root, ["rev-parse", "--verify", "late-work"])).toBe(
+      lateHead
+    );
+    expect(endLoop(fixture.root, lease.runId, "controller").ok).toBe(true);
+    expect(git(fixture.root, ["branch", "--list", "late-work"])).toContain(
+      "late-work"
+    );
+  }, 30_000);
+
+  test("retires an opening worktree deleted outside Git while stale metadata remains", () => {
+    const fixture = repository();
+    const preserved = join(fixture.base, "preserved");
+    git(fixture.root, ["worktree", "add", "-b", "preserved-work", preserved]);
+    const lease = startLoop(fixture.root, "controller", "reconcile");
+    rmSync(preserved, { force: true, recursive: true });
+    expect(
+      captureInventory(fixture.root).worktrees.find(
+        (worktree) => worktree.path === preserved
+      )?.prunable
+    ).toBe(true);
+    expect(verifyLoop(fixture.root).ok).toBe(false);
+
+    const retired = retireAbsentWorktree(
+      fixture.root,
+      lease.runId,
+      "controller",
+      preserved,
+      "user",
+      "Removed by its owner without git worktree remove."
+    );
+    expect(retired.retirements?.[0]?.registration).toBe("opening");
+    expect(verifyLoop(fixture.root).ok).toBe(true);
+    git(fixture.root, ["worktree", "prune"]);
+    expect(verifyLoop(fixture.root).ok).toBe(true);
+  });
+
+  test("a retirement stops applying once something reappears at the path", () => {
+    const fixture = repository();
+    const preserved = join(fixture.base, "preserved");
+    git(fixture.root, ["worktree", "add", "-b", "preserved-work", preserved]);
+    const lease = startLoop(fixture.root, "controller", "reconcile");
+    git(fixture.root, ["worktree", "remove", "--force", preserved]);
+    retireAbsentWorktree(
+      fixture.root,
+      lease.runId,
+      "controller",
+      preserved,
+      "user",
+      "Removed by its owner."
+    );
+    expect(verifyLoop(fixture.root).ok).toBe(true);
+
+    // A dangling symlink is not absence.
+    symlinkSync(join(fixture.base, "nowhere"), preserved);
+    expect(verifyLoop(fixture.root).violations).toContainEqual(
+      expect.objectContaining({ code: "missing-preserved-worktree" })
+    );
+    rmSync(preserved);
+
+    // A recreated checkout with different content is checked again.
+    git(fixture.root, ["worktree", "add", "--detach", preserved]);
+    writeFixture(preserved, "changed.txt", "new bytes\n");
+    expect(verifyLoop(fixture.root).violations).toContainEqual(
+      expect.objectContaining({
+        code: "preserved-worktree-changed",
+        path: preserved,
+      })
+    );
+    git(fixture.root, ["worktree", "remove", "--force", preserved]);
+    expect(verifyLoop(fixture.root).ok).toBe(true);
+  }, 30_000);
+
+  test("refuses retirement for live, unregistered, run-created, or primary paths", () => {
+    const fixture = repository();
+    const controller = join(fixture.base, "controller");
+    git(fixture.root, ["worktree", "add", "-b", "controller-work", controller]);
+    const lease = startLoop(controller, "controller", "reconcile");
+    expect(() =>
+      retireAbsentWorktree(
+        controller,
+        lease.runId,
+        "controller",
+        fixture.root,
+        "user",
+        "Primary"
+      )
+    ).toThrow("primary checkout cannot be retired");
+    expect(() =>
+      retireAbsentWorktree(
+        controller,
+        lease.runId,
+        "controller",
+        join(fixture.base, "never-registered"),
+        "user",
+        "Unknown"
+      )
+    ).toThrow("must name a preserved registration");
+    const prepared = prepareAgentWorktree(
+      controller,
+      lease.runId,
+      "author",
+      "run-created"
+    );
+    git(fixture.root, ["worktree", "remove", "--force", prepared.path]);
+    expect(() =>
+      retireAbsentWorktree(
+        controller,
+        lease.runId,
+        "controller",
+        prepared.path,
+        "user",
+        "Run-created"
+      )
+    ).toThrow("must name a preserved registration");
+    expect(() =>
+      retireAbsentWorktree(
+        controller,
+        lease.runId,
+        "other-agent",
+        prepared.path,
+        "user",
+        "Wrong owner"
+      )
+    ).toThrow("Only loop owner");
+  }, 30_000);
 
   test("keeps an opening worktree protected without an approved disposition", () => {
     const fixture = repository();

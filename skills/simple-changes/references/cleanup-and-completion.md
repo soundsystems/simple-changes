@@ -258,7 +258,16 @@ Before reporting completion:
    `loop retain-worktree` when that checkout should remain. For changed opening
    work later proven obsolete, record a user-approved `loop dispose-worktree`
    disposition only when it is clean and has zero unique commits. Remove that
-   exact path through `loop exec`; audit its branch separately. Remove every run-created authoring worktree only after
+   exact path through `loop exec`; audit its branch separately. When a
+   preserved checkout has already been removed by its owning task, whether it
+   was registered at loop start, adopted, or added by `loop rebaseline`, record
+   `loop retire-absent-worktree` with a named approver and reason. It requires
+   the path to be absent from both the filesystem and `git worktree list`,
+   binds to the exact registered baseline, writes an immutable retirement
+   receipt, and clears only the missing-worktree violation. It never deletes
+   anything, never proves a scoped unit was delivered, and never authorizes
+   branch cleanup; do not recreate a deleted checkout merely to satisfy the
+   record. Remove every run-created authoring worktree only after
    its branch is merged,
    otherwise accounted for, or explicitly preserved. Completed-run release must refuse to
    release the lease while one remains registered and live.

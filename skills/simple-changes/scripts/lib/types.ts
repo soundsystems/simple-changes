@@ -700,6 +700,26 @@ export interface LoopRebaselineRegistration {
   path: string;
 }
 
+/**
+ * Records that a preserved registration's checkout is gone from disk and from
+ * Git's worktree list, with named approval. It accounts for the absence only;
+ * it proves neither delivery nor cleanup and never authorizes deletion.
+ */
+export interface LoopWorktreeRetirement {
+  absenceCheckedAt: string;
+  actorAgentId: string;
+  approvedBy: string;
+  baselineChangeDigest: string;
+  baselineHeadSha: string | null;
+  branch: string | null;
+  createdAt: string;
+  path: string;
+  reason: string;
+  registration: "opening" | "rebaseline" | "adopted";
+  targetRef: string;
+  targetRevision: string;
+}
+
 export interface LoopRebaselineRecord {
   approvedBy: string;
   reason: string;
@@ -1014,6 +1034,7 @@ export interface LoopLease {
   rebaselines?: LoopRebaselineRecord[];
   remoteBindings?: RemoteBinding[];
   remoteBranchReconciliation?: RemoteBranchReconciliationReceipt;
+  retirements?: LoopWorktreeRetirement[];
   runId: string;
   schemaVersion: 1;
   shipmentOutcome?: {

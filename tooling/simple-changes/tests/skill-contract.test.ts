@@ -754,6 +754,7 @@ describe("Simple Changes skill contract", () => {
       "An override is an exceptional user handoff, not a way to suppress the guard"
     );
     expect(normalizedSkill).toContain("loop dispose-worktree");
+    expect(normalizedSkill).toContain("loop retire-absent-worktree");
     expect(normalizedSkill).toContain(
       "proving it clean with zero unique commits"
     );

@@ -169,7 +169,10 @@ rather than removing it. An unchanged clean opening checkout is automatically
 removed at finalization when it is unclaimed, unretained, and its exact head is
 already contained in the refreshed target. For changed opening work that later
 becomes obsolete, use `loop dispose-worktree` only after proving it clean with
-zero unique commits.
+zero unique commits. When a preserved checkout, including one registered by
+`loop rebaseline`, has been removed by its owning task, record that absence with
+`loop retire-absent-worktree` on named approval; it requires the path to be gone
+from disk and from Git's worktree list, deletes nothing, and proves no delivery.
 
 Remote fetch and push URLs are lease-bound. A destination change invalidates
 the loop; re-verify repository ownership and start a new lease.

@@ -68,6 +68,7 @@ import type {
   LoopWorktreeDisposition,
   LoopWorktreeLease,
   LoopWorktreePreparation,
+  LoopWorktreeRetirement,
   PostCleanupRecoveryReceipt,
   RemoteBranchReconciliationReceipt,
   RepositoryInventory,
@@ -868,6 +869,72 @@ const removalDispositionForPath = (
       disposition.targetRevision === resolvedCurrentTargetRevision(lease)
   );
 
+const retirementForRegistration = (
+  lease: LoopLease,
+  registered: LoopWorktreeLease
+): LoopWorktreeRetirement | undefined =>
+  (lease.retirements ?? []).find(
+    (retirement) =>
+      retirement.path === registered.path &&
+      retirement.baselineChangeDigest === registered.baselineChangeDigest &&
+      retirement.baselineHeadSha === registered.baselineHeadSha
+  );
+
+// Nothing at all may sit at the path: a dangling symlink is not absence.
+const nothingAtPath = (path: string): boolean => {
+  try {
+    lstatSync(path);
+    return false;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return true;
+    }
+    throw error;
+  }
+};
+
+// Canonicalize through the nearest existing ancestor so a deleted path is
+// spelled the way the lease recorded it (for example /private/var on macOS).
+const canonicalAbsentPath = (pathInput: string): string => {
+  const absolute = resolve(pathInput);
+  let ancestor = dirname(absolute);
+  const trailing: string[] = [basename(absolute)];
+  while (!existsSync(ancestor) && dirname(ancestor) !== ancestor) {
+    trailing.unshift(basename(ancestor));
+    ancestor = dirname(ancestor);
+  }
+  return existsSync(ancestor)
+    ? join(realpathSync(ancestor), ...trailing)
+    : absolute;
+};
+
+// Absent means nothing is at the path and Git either no longer lists the
+// worktree or only lists it as prunable metadata.
+const worktreeIsAbsent = (
+  inventory: RepositoryInventory,
+  path: string
+): boolean => {
+  const current = inventory.worktrees.find(
+    (worktree) => worktree.path === path
+  );
+  return nothingAtPath(path) && (!current || current.prunable);
+};
+
+const retiredAbsentPaths = (
+  lease: LoopLease,
+  inventory: RepositoryInventory
+): Set<string> =>
+  new Set(
+    lease.worktrees
+      .filter(
+        (registered) =>
+          registered.role === "preserved" &&
+          retirementForRegistration(lease, registered) &&
+          worktreeIsAbsent(inventory, registered.path)
+      )
+      .map((registered) => registered.path)
+  );
+
 const targetBranchForRef = (
   repositoryPath: string,
   targetRef: string
@@ -1372,7 +1439,11 @@ const verificationAgainst = (
     lease,
     inventory
   );
+  const retired = retiredAbsentPaths(lease, inventory);
   for (const worktree of inventory.worktrees) {
+    if (retired.has(worktree.path)) {
+      continue;
+    }
     const concurrentClaim = concurrentClaimFor(
       lease,
       worktree,
@@ -1411,7 +1482,8 @@ const verificationAgainst = (
     if (
       registered.role === "preserved" &&
       !currentByPath.has(registered.path) &&
-      !removalDispositionForPath(lease, registered.path)
+      !removalDispositionForPath(lease, registered.path) &&
+      !retired.has(registered.path)
     ) {
       violations.push({
         changeDigest: null,
@@ -3433,6 +3505,117 @@ export const authorizeWorktreeRemoval = (
         );
       }
       return writeLease(candidate);
+    }
+  );
+};
+
+const registrationKind = (
+  lease: LoopLease,
+  registered: LoopWorktreeLease
+): LoopWorktreeRetirement["registration"] => {
+  if (
+    (lease.rebaselines ?? []).some((record) =>
+      record.registered.some((item) => item.path === registered.path)
+    )
+  ) {
+    return "rebaseline";
+  }
+  return registered.claimId ? "adopted" : "opening";
+};
+
+/**
+ * Accounts for a preserved registration whose checkout another task removed.
+ * The path must be absent from disk and from Git's live worktree list; the
+ * record is bound to the exact registered baseline and to named approval.
+ * Nothing is deleted, no delivery is proven, and no branch cleanup follows.
+ */
+export const retireAbsentWorktree = (
+  repositoryPath: string,
+  runId: string,
+  ownerAgentIdInput: string,
+  pathInput: string,
+  approvedByInput: string,
+  reasonInput: string
+): LoopLease => {
+  const ownerAgentId = requiredText(ownerAgentIdInput, "agent ID");
+  const approvedBy = requiredText(approvedByInput, "approved-by identity");
+  const reason = requiredText(reasonInput, "retirement reason");
+  const opening = captureInventory(repositoryPath);
+  return withStateLock(
+    opening.repository.commonGitDirectory,
+    "loop retire-absent-worktree",
+    () => {
+      const { inventory, lease } = requireOwnedLease(
+        repositoryPath,
+        runId,
+        ownerAgentId,
+        "retire an absent worktree"
+      );
+      assertControllerActive(lease);
+      const path = existsSync(pathInput)
+        ? realpathSync(pathInput)
+        : canonicalAbsentPath(pathInput);
+      if (path === lease.primaryCheckout) {
+        throw new SimpleChangesError(
+          "The canonical primary checkout cannot be retired by the active loop.",
+          EXIT_CODES.unsafe
+        );
+      }
+      const registered = lease.worktrees.find(
+        (worktree) => worktree.path === path
+      );
+      if (registered?.role !== "preserved" || registered.createdByRun) {
+        throw new SimpleChangesError(
+          `Retirement path must name a preserved registration that this run did not create (an opening, rebaselined, or adopted worktree): ${path}`,
+          EXIT_CODES.unsafe
+        );
+      }
+      if (!nothingAtPath(path)) {
+        throw new SimpleChangesError(
+          `Worktree ${path} still exists on disk. Retirement records an absence; use loop allow, loop retain-worktree, or loop dispose-worktree for a checkout that is present.`,
+          EXIT_CODES.unsafe
+        );
+      }
+      const current = inventory.worktrees.find(
+        (worktree) => worktree.path === path
+      );
+      if (current && !current.prunable) {
+        throw new SimpleChangesError(
+          `Git still lists ${path} as a live worktree. Retirement requires the checkout to be absent from both the filesystem and the worktree list.`,
+          EXIT_CODES.unsafe
+        );
+      }
+      const existing = retirementForRegistration(lease, registered);
+      if (existing) {
+        return lease;
+      }
+      const now = new Date().toISOString();
+      const retirement: LoopWorktreeRetirement = {
+        absenceCheckedAt: now,
+        actorAgentId: ownerAgentId,
+        approvedBy,
+        baselineChangeDigest: registered.baselineChangeDigest,
+        baselineHeadSha: registered.baselineHeadSha,
+        branch: registered.branch,
+        createdAt: now,
+        path,
+        reason,
+        registration: registrationKind(lease, registered),
+        targetRef: lease.targetRef,
+        targetRevision: currentTargetRevision(lease),
+      };
+      writeImmutableRecoveryEvent(
+        resolve(
+          recoveryHistoryDirectory(lease.commonGitDirectory, lease.runId),
+          `worktree-retirement-${sha256Json(retirement)}.json`
+        ),
+        { retirement, runId: lease.runId }
+      );
+      return writeLease({
+        ...lease,
+        retirements: [...(lease.retirements ?? []), retirement],
+        updatedAt: now,
+      });
     }
   );
 };
@@ -6921,6 +7104,11 @@ const violationGuidanceCommands = (
         `simple-changes loop allow --run-id ${lease.runId} --agent-id ${lease.ownerAgentId} --worktree ${violation.path} --status-digest ${violation.changeDigest ?? "<digest>"} --approved-by <user> --reason <why>`
       );
     }
+  }
+  if (codes.has("missing-preserved-worktree")) {
+    add(
+      `simple-changes loop retire-absent-worktree --run-id ${lease.runId} --agent-id ${lease.ownerAgentId} --worktree <path> --approved-by <user> --reason <why>`
+    );
   }
   if (
     codes.has("missing-preserved-worktree") ||

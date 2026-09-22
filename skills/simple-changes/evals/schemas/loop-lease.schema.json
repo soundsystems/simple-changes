@@ -434,6 +434,58 @@
         }
       }
     },
+    "retirements": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "absenceCheckedAt",
+          "actorAgentId",
+          "approvedBy",
+          "baselineChangeDigest",
+          "baselineHeadSha",
+          "branch",
+          "createdAt",
+          "path",
+          "reason",
+          "registration",
+          "targetRef",
+          "targetRevision"
+        ],
+        "properties": {
+          "absenceCheckedAt": { "type": "string", "format": "date-time" },
+          "actorAgentId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "approvedBy": { "type": "string", "minLength": 1, "maxLength": 128 },
+          "baselineChangeDigest": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "baselineHeadSha": {
+            "anyOf": [
+              { "type": "string", "pattern": "^[0-9a-f]{40,64}$" },
+              { "type": "null" }
+            ]
+          },
+          "branch": {
+            "anyOf": [{ "type": "string", "minLength": 1 }, { "type": "null" }]
+          },
+          "createdAt": { "type": "string", "format": "date-time" },
+          "path": { "type": "string", "minLength": 1 },
+          "reason": { "type": "string", "minLength": 1, "maxLength": 500 },
+          "registration": { "enum": ["opening", "rebaseline", "adopted"] },
+          "targetRef": { "type": "string", "minLength": 1 },
+          "targetRevision": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{40,64}$"
+          }
+        }
+      }
+    },
     "rebaselines": {
       "type": "array",
       "items": {

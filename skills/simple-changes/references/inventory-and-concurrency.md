@@ -332,7 +332,11 @@ refreshed target is a normal automatic cleanup candidate. Use
 opening work, and for a worktree adopted into the lease mid-run through
 `adopt-worktree` or `accept-paused-change`, `loop dispose-worktree` records a
 manual removal disposition under the active lease; never fall back to raw
-`git worktree remove` for lease-registered state. The command accepts only the
+`git worktree remove` for lease-registered state. If such a preserved worktree
+has already disappeared because its owning task removed it, `loop
+retire-absent-worktree` records the absence instead: it accepts only a path
+missing from disk and from the live worktree list, needs the loop owner and a
+named approver, and leaves branches, claims, and delivery proof untouched. The command accepts only the
 exact current path and content-sensitive status digest, requires the loop
 owner and named approver, rejects the canonical primary checkout, and audits
 that the worktree is clean and its head has zero unique commits outside the

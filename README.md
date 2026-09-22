@@ -261,6 +261,8 @@ simple-changes loop dispose-worktree --run-id ID --agent-id ID --worktree PATH
   --status-digest SHA256 --approved-by ID --reason TEXT [--json] [--repo PATH]
 simple-changes loop retain-worktree --run-id ID --agent-id ID --worktree PATH
   --status-digest SHA256 --approved-by ID --reason TEXT [--json] [--repo PATH]
+simple-changes loop retire-absent-worktree --run-id ID --agent-id ID
+  --worktree PATH --approved-by ID --reason TEXT [--json] [--repo PATH]
 simple-changes loop adopt-worktree --run-id ID --agent-id ID
   --pause-receipt ID [--json] [--repo PATH]
 simple-changes loop accept-paused-change --run-id ID --agent-id ID

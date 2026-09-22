@@ -76,7 +76,9 @@
   cleanup, blockers, and preserved worktrees before release. A relinquished
   controller is resumed without takeover approval; frozen scope still applies.
 - Existing and concurrent work is preserved unless ownership and scope are
-  proven.
+  proven. A preserved worktree that its owner removed mid-run can be retired
+  only with named approval and proof that it is absent from disk and from the
+  worktree list; retirement deletes nothing and proves no delivery.
 - Write-capable integration modes hold one atomic integration-controller lease
   with an opening worktree manifest. A second controller, unclaimed worktree,
   target/primary collision, lost claim, branch switch, or changed preserved

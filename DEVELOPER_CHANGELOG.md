@@ -1,5 +1,14 @@
 # Developer changelog
 
+## Unreleased
+
+- Move the `loop retire-absent-worktree` sentences in
+  `references/inventory-and-concurrency.md` out of the middle of the
+  `loop dispose-worktree` paragraph, which had made the disposition's
+  digest-and-audit requirements read as if they applied to retirement. Prose
+  only; no runtime, schema, or version change.
+<!-- simple-changelogs-signature agent="Fable 5.1" at="2026-09-22T16:57:57-05:00" -->
+
 ## 0.18.0 - 2026-09-22
 
 - Add `retirements` to the loop lease and `retireAbsentWorktree`: bound to the

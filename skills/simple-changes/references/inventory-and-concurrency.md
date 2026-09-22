@@ -332,11 +332,7 @@ refreshed target is a normal automatic cleanup candidate. Use
 opening work, and for a worktree adopted into the lease mid-run through
 `adopt-worktree` or `accept-paused-change`, `loop dispose-worktree` records a
 manual removal disposition under the active lease; never fall back to raw
-`git worktree remove` for lease-registered state. If such a preserved worktree
-has already disappeared because its owning task removed it, `loop
-retire-absent-worktree` records the absence instead: it accepts only a path
-missing from disk and from the live worktree list, needs the loop owner and a
-named approver, and leaves branches, claims, and delivery proof untouched. The command accepts only the
+`git worktree remove` for lease-registered state. The command accepts only the
 exact current path and content-sensitive status digest, requires the loop
 owner and named approver, rejects the canonical primary checkout, and audits
 that the worktree is clean and its head has zero unique commits outside the
@@ -353,15 +349,24 @@ target ref or revision differs from the active lease. Run the exact removal
 through `loop exec` so preflight sees the recorded disposition and postflight
 proves only the authorized path disappeared.
 
+If a preserved worktree the run did not create, whether registered at loop
+start, adopted, or added by `loop rebaseline`, has already disappeared because
+its owning task removed it, `loop retire-absent-worktree` records the absence
+instead. It
+accepts only a path missing from disk and from the live worktree list, needs
+the loop owner and a named approver, binds to the exact registered baseline,
+and leaves branches, claims, and delivery proof untouched.
+
 Concurrent cleanup must preserve every path and branch registered by an open
 loop, including prepared authors, released claims, and stale or relinquished
 runs. Run `prune` to clean eligible unrelated state; its deferred items belong
 to the controller or a later pass after closure. Do not remove a registered
 checkout through raw Git, filesystem deletion, or editor cleanup. The
-controller's exact removal disposition already lets verification accept the
-authorized absence without a separate repair. A missing path without that
-evidence still requires investigation; a formerly clean HEAD does not prove
-that no uncommitted work was lost.
+controller's exact removal disposition, or an approved retirement record for
+a checkout its owner removed, already lets verification accept the absence
+without a separate repair. A missing path without either record still requires
+investigation; a formerly clean HEAD does not prove that no uncommitted work
+was lost.
 
 ## Exact retained exclusions
 

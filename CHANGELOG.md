@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.18.0 - 2026-09-22
+
+- Account for a preserved worktree that its owning task deleted mid-run with the
+  new `loop retire-absent-worktree` command. On named approval, and only when
+  the path is gone from both the filesystem and Git's worktree list, it records
+  the absence so the run can continue instead of being blocked by a
+  missing-worktree violation or forced to recreate the deleted checkout. It
+  deletes nothing, proves no delivery, and never authorizes branch cleanup.
+<!-- simple-changelogs-signature agent="Fable 5.1" at="2026-09-22T16:17:07-05:00" -->
+
 ## 0.17.1 - 2026-09-16
 
 - Shipments whose work was packaged from a dirty primary checkout and then

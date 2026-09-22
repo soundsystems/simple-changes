@@ -1,5 +1,23 @@
 # Developer changelog
 
+## 0.18.0 - 2026-09-22
+
+- Add `retirements` to the loop lease and `retireAbsentWorktree`: bound to the
+  exact registered baseline head and change digest, accepted only for a
+  preserved registration the run did not create, refused for the primary
+  checkout, a live checkout, a dangling symlink, or a path Git still lists as
+  live; idempotent per registration; writes an immutable
+  `worktree-retirement-<digest>.json` receipt in the run's recovery history.
+- Verification skips a retired path only while nothing is at it and Git shows
+  no live entry, so a recreated checkout is audited against the baseline again.
+  Retirement creates no disposition, so delivery proof, absent-removal intents,
+  and reconciled-branch deletion are unaffected. `loop status` names the
+  command for `missing-preserved-worktree`.
+- Canonicalize a deleted path through its nearest existing ancestor so spelling
+  such as `/var` versus `/private/var` matches the lease. Cover rebaselined,
+  stale-metadata, reappearance, and refusal cases. Keep guidance at 22.
+<!-- simple-changelogs-signature agent="Fable 5.1" at="2026-09-22T16:17:07-05:00" -->
+
 ## 0.17.1 - 2026-09-16
 
 - Add the read-only `primaryDeliveryProof` predicate and share it between

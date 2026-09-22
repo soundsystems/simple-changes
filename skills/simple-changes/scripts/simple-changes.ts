@@ -52,6 +52,7 @@ import {
   recoverStaleLoopLease,
   replanLoop,
   retainExcludedWorktree,
+  retireAbsentWorktree,
   startLoop,
   takeoverLoop,
   verifyLoop,
@@ -143,7 +144,7 @@ import {
   standaloneWorktreeCleanup,
 } from "./lib/worktree-maintenance.ts";
 
-const VERSION = "0.17.1";
+const VERSION = "0.18.0";
 const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const SCHEMA_KIND_LINE_LIMIT = 78;
 const schemaKindLines = SCHEMA_NAMES.reduce<string[]>((lines, name) => {
@@ -234,6 +235,8 @@ Usage:
     --status-digest SHA256 --approved-by ID --reason TEXT [--json] [--repo PATH]
   simple-changes loop retain-worktree --run-id ID --agent-id ID --worktree PATH
     --status-digest SHA256 --approved-by ID --reason TEXT [--json] [--repo PATH]
+  simple-changes loop retire-absent-worktree --run-id ID --agent-id ID
+    --worktree PATH --approved-by ID --reason TEXT [--json] [--repo PATH]
   simple-changes loop adopt-worktree --run-id ID --agent-id ID
     --pause-receipt ID [--json] [--repo PATH]
   simple-changes loop accept-paused-change --run-id ID --agent-id ID
@@ -2441,7 +2444,7 @@ const runLoopCommand = async (options: CliOptions): Promise<void> => {
   const [action] = options.positional;
   if (!action) {
     throw new SimpleChangesError(
-      "loop requires start, status, verify, record-scope, refresh-scope, record-outcome, guard, exec, recover, recover-post-cleanup, close-equivalent, replan-status, replan, takeover, rebaseline, allow, dispose-worktree, retain-worktree, adopt-worktree, accept-paused-change, reconcile-remote-branches, emergency, end, or finalize",
+      "loop requires start, status, verify, record-scope, refresh-scope, record-outcome, guard, exec, recover, recover-post-cleanup, close-equivalent, replan-status, replan, takeover, rebaseline, allow, dispose-worktree, retain-worktree, retire-absent-worktree, adopt-worktree, accept-paused-change, reconcile-remote-branches, emergency, end, or finalize",
       EXIT_CODES.usage
     );
   }
@@ -2537,6 +2540,22 @@ const runLoopCommand = async (options: CliOptions): Promise<void> => {
       { lease: updated, manifestDigest: loopManifestDigest(updated) },
       options.json,
       `Recorded an audited removal disposition for ${options.worktreePath}.\nManifest: ${loopManifestDigest(updated)}\n`
+    );
+    return;
+  }
+  if (action === "retire-absent-worktree") {
+    const updated = retireAbsentWorktree(
+      options.repo,
+      runId,
+      agentId,
+      requireCliOption(options.worktreePath, "--worktree"),
+      requireCliOption(options.approvedBy, "--approved-by"),
+      requireCliOption(options.reason, "--reason")
+    );
+    writeOutput(
+      { lease: updated, manifestDigest: loopManifestDigest(updated) },
+      options.json,
+      `Retired absent worktree ${options.worktreePath}; nothing was deleted and no delivery was proven.\nManifest: ${loopManifestDigest(updated)}\n`
     );
     return;
   }

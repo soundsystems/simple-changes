@@ -250,7 +250,8 @@ Usage:
   simple-changes loop emergency status --run-id ID [--json] [--repo PATH]
   simple-changes loop emergency record --run-id ID --agent-id ID --state FILE
     [--json] [--repo PATH]
-  simple-changes loop end --run-id ID --agent-id ID [--json] [--repo PATH]
+  simple-changes loop end --run-id ID --agent-id ID [--reason TEXT]
+    [--json] [--repo PATH]
   simple-changes loop finalize --run-id ID --agent-id ID --reason TEXT
     [--json] [--repo PATH]
   simple-changes worktree status [--json] [--repo PATH]
@@ -2145,11 +2146,13 @@ const runLoopFinalizationAction = (
     return true;
   }
   if (action === "end") {
-    const verification = endLoop(options.repo, runId, agentId);
+    const ended = endLoop(options.repo, runId, agentId, options.reason ?? null);
     writeOutput(
-      verification,
+      ended,
       options.json,
-      `Ended ${runId} after a clean manifest verification.\n`
+      ended.closedWithoutMutation
+        ? `Closed ${runId} without changing anything; it owed no shipment scope, reconciliation, or cleanup. Start a fresh loop for a new baseline.\nReceipt: ${ended.closedWithoutMutation.receiptPath}\n`
+        : `Ended ${runId} after a clean manifest verification.\n`
     );
     return true;
   }
@@ -2165,6 +2168,14 @@ const runLoopFinalizationAction = (
         `Relinquished ${runId} with durable state; the shipment is incomplete. Automatic cleanup normalized ${result.cleanup.cleanedPrimaryPaths.length} target-equivalent primary path(s), removed ${result.cleanup.removedWorktrees.length} worktree(s) and ${result.cleanup.removedBranches.length} branch(es), pruned ${result.cleanup.prunedWorktreeMetadata} stale worktree record(s), and released ${result.cleanup.releasedClaims.length} finished or orphaned worktree claim(s). Remaining: ${result.blockers.join(" ")}`,
         EXIT_CODES.unsafe
       );
+    }
+    if (result.closedWithoutMutation) {
+      writeOutput(
+        { ...result, manifestDigest: null },
+        options.json,
+        `Closed ${runId} without changing anything: the repository changed after the loop started, so its shipment scope could not be recorded. Start a fresh loop for a new baseline.\nReceipt: ${result.closedWithoutMutation.receiptPath}\n`
+      );
+      return true;
     }
     writeOutput(
       {

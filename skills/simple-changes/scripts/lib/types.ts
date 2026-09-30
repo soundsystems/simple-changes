@@ -1023,6 +1023,12 @@ export interface LoopLease {
   createdAt: string;
   dispositions?: LoopWorktreeDisposition[];
   emergencyShipping?: EmergencyShippingLedgerEntry;
+  /**
+   * When the run first changed shared state or recorded run evidence. A lease
+   * started by this version holds `null` until then; a lease without the field
+   * predates it and cannot prove that it never mutated.
+   */
+  firstMutationAt?: string | null;
   mode: Exclude<RequestMode, "pause" | "preview" | "sync">;
   openingBranches?: Array<{ name: string; sha: string }>;
   openingRemoteInventory?: RemoteBranchReconciliationReceipt;

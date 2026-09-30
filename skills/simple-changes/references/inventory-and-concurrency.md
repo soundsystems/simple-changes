@@ -102,9 +102,12 @@ For a Ship lease whose opening inventory contains local changes, first record
 the conserved preview plan with `loop record-scope --receipt <file>`. The
 command rechecks the exact unchanged opening digest and every changed path in
 every worktree, persists the plan digest, and returns the pre-ship scope summary.
-Until then, `loop guard`, `loop exec`, and completion fail closed. Do not infer
-shipment exclusion from a `preserved` lease role: it means only that the
-checkout cannot be changed or removed by the controller.
+Until then, `loop guard`, `loop exec`, and completion fail closed. If the
+repository changes after `loop start`, the first scope can no longer be
+recorded; when the run has changed nothing yet, `loop end` closes it with an
+`abort-unmutated.json` receipt, and a fresh `loop start` takes a new baseline.
+Do not infer shipment exclusion from a `preserved` lease role: it means only
+that the checkout cannot be changed or removed by the controller.
 If independent review requires source changes, generate a new non-mutating
 preview from the exact current inventory and record it with
 `loop refresh-scope --receipt <change-plan.json>` before another mutation. This

@@ -724,6 +724,9 @@ describe("Simple Changes skill contract", () => {
       "Until then, `loop guard`, `loop exec`, and completion fail closed"
     );
     expect(normalizedConcurrency).toContain(
+      "when the run has changed nothing yet, `loop end` closes it with an `abort-unmutated.json` receipt, and a fresh `loop start` takes a new baseline"
+    );
+    expect(normalizedConcurrency).toContain(
       "The author may keep editing and committing without a pause receipt"
     );
     expect(normalizedConcurrency).toContain(

@@ -39,6 +39,9 @@
     },
     "createdAt": { "type": "string", "format": "date-time" },
     "updatedAt": { "type": "string", "format": "date-time" },
+    "firstMutationAt": {
+      "anyOf": [{ "type": "string", "format": "date-time" }, { "type": "null" }]
+    },
     "baselineDigest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
     "closeEquivalentOutcome": {
       "type": "object",

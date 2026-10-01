@@ -192,7 +192,10 @@ rule; see
 
 The lock records process-group evidence. If recovery is proven safe, use `loop
 recover --agent-id "$AGENT_ID"`; never delete state by hand. Before every
-terminal assistant response after a loop has started, run `loop finalize`. It
+terminal assistant response after a loop has started, including a blocked or
+failed handoff, run `loop finalize --json`, then `loop status --json` and verify
+that your controller is released or relinquished. A nonzero exit alone does not
+prove release; if state cannot be written, report that exact blocker. Finalization
 performs the proven-safe cleanup described in
 [cleanup and completion](references/cleanup-and-completion.md) and releases
 completed state. An exact verified shipment can close while unrelated work
@@ -234,6 +237,8 @@ raw Git removal or filesystem deletion. When a lease
 itself is stale, `loop recover --stale-lease --run-id "$RUN_ID" --agent-id
 "$AGENT_ID" --approved-by "$USER" --reason "$WHY"` clears the bookkeeping
 record on explicit user authority while preserving every worktree and receipt.
+Reuse session authority that already covers this recovery. A dead helper PID or
+old heartbeat alone does not establish that the owning agent has stopped.
 
 Follow [inventory and concurrency](references/inventory-and-concurrency.md).
 

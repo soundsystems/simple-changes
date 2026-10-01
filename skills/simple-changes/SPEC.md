@@ -72,8 +72,13 @@
   shipment open. A reviewed result for work packaged from the primary is accepted
   only while that primary matches its baseline and its HEAD is contained in the
   bound target. Ordinary mutation verification is unchanged.
-  Each attempt persists a receipt reporting shipment, controller, delivery,
-  cleanup, blockers, and preserved worktrees before release. A relinquished
+  Finalization persists a receipt reporting shipment, controller, delivery,
+  cleanup, blockers, and preserved worktrees before closing the run. If an
+  unexpected error prevents finalization after ownership and lock checks, it
+  relinquishes the latest writable lease with the failure reason and preserves
+  the incomplete run; an untouched Ship run stays active instead, so its
+  unrecorded scope is never frozen. An unwritable lease is reported beside the
+  original error as an explicit blocker. A relinquished
   controller is resumed without takeover approval; frozen scope still applies.
 - A first shipment scope (`loop record-scope`) requires a non-mutating preview
   plan generated from the exact current inventory, with no open questions and

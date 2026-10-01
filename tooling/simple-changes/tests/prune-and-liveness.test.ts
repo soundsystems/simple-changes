@@ -615,6 +615,17 @@ describe("stale loop-lease recovery", () => {
     return quiet;
   };
 
+  test("a new controller gets the exact stale recovery command without changing the old run", () => {
+    const fixture = repository();
+    const lease = startLoop(fixture.root, "controller", "integrate");
+    const stale = makeStale(fixture.root, lease);
+
+    expect(() => startLoop(fixture.root, "next-controller", "ship")).toThrow(
+      `loop recover --stale-lease --run-id ${lease.runId}`
+    );
+    expect(readLoopLease(fixture.root)).toEqual(stale);
+  });
+
   test("refuses a live lease", () => {
     const fixture = repository();
     const lease = startLoop(fixture.root, "controller", "integrate");

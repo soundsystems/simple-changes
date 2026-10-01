@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { spawn } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
@@ -10,6 +10,7 @@ import {
 } from "../../../skills/simple-changes/scripts/lib/inventory.ts";
 import {
   finalizeLoop,
+  guardLoopMutation,
   loopStatus,
   prepareAgentWorktree,
   readLoopLease,
@@ -299,6 +300,110 @@ describe("shipment finalization", () => {
     expect(readFileSync(join(fixture.root, "personal.txt"), "utf8")).toBe(
       "unrelated work\n"
     );
+  });
+
+  test.each(["wrong-owner", "wrong-run"])(
+    "a %s finalization request cannot relinquish a working controller",
+    (kind) => {
+      const fixture = createTestRepository();
+      fixtures.push(fixture);
+      const lease = startLoop(fixture.root, "controller", "integrate");
+
+      expect(() =>
+        finalizeLoop(
+          fixture.root,
+          kind === "wrong-run" ? "run-wrong" : lease.runId,
+          kind === "wrong-owner" ? "other-controller" : "controller",
+          "Unauthorized finalization."
+        )
+      ).toThrow();
+      expect(readLoopLease(fixture.root)).toEqual(lease);
+    }
+  );
+
+  test("an archive failure preserves cleanup evidence saved during finalization", () => {
+    const fixture = createTestRepository();
+    fixtures.push(fixture);
+    const candidate = join(fixture.base, "already-merged");
+    git(fixture.root, ["worktree", "add", "-b", "already-merged", candidate]);
+    const lease = startLoop(fixture.root, "controller", "integrate");
+    writeFileSync(
+      join(lease.commonGitDirectory, "simple-changes", "history"),
+      "archive unavailable\n"
+    );
+
+    expect(() =>
+      finalizeLoop(fixture.root, lease.runId, "controller", "Finish cleanup.")
+    ).toThrow();
+
+    const retained = readLoopLease(fixture.root);
+    expect(retained?.controller?.status).toBe("relinquished");
+    expect(existsSync(candidate)).toBe(false);
+    expect(retained?.dispositions).toContainEqual(
+      expect.objectContaining({
+        outcome: "remove-after-audit",
+        path: candidate,
+        status: "completed",
+      })
+    );
+  });
+
+  test("relinquishes after a finalization archive error and resumes the preserved shipment", () => {
+    const fixture = deliveredFixture(false, true);
+    const historyPath = join(
+      fixture.lease.commonGitDirectory,
+      "simple-changes",
+      "history"
+    );
+    // A blocked archive must fail finalization without retaining control.
+    writeFileSync(historyPath, "archive unavailable\n");
+    const before = readLoopLease(fixture.root);
+    const worktrees = git(fixture.root, ["worktree", "list", "--porcelain"]);
+    const branches = git(fixture.root, ["show-ref", "--heads"]);
+
+    expect(() =>
+      finalizeLoop(
+        fixture.author,
+        fixture.lease.runId,
+        "controller",
+        "Finish the shipment."
+      )
+    ).toThrow();
+
+    const retained = readLoopLease(fixture.root);
+    expect(retained?.controller?.status).toBe("relinquished");
+    expect(retained?.controller?.reason).toContain("Finalization failed:");
+    expect(retained?.shipmentScopeFrozenAt).toBeTruthy();
+    expect(retained?.shipmentScope).toEqual(before?.shipmentScope);
+    expect(retained?.shipmentOutcome).toEqual(before?.shipmentOutcome);
+    expect(
+      retained?.worktrees.find((worktree) => worktree.role === "controller")
+        ?.mutationAllowed
+    ).toBe(false);
+    expect(() =>
+      guardLoopMutation(fixture.author, fixture.lease.runId, "controller")
+    ).toThrow("relinquished");
+    expect(git(fixture.root, ["worktree", "list", "--porcelain"])).toBe(
+      worktrees
+    );
+    expect(git(fixture.root, ["show-ref", "--heads"])).toBe(branches);
+    expect(readFileSync(join(fixture.root, "personal.txt"), "utf8")).toBe(
+      "unrelated work\n"
+    );
+
+    rmSync(historyPath);
+    expect(startLoop(fixture.author, "next-controller", "resume").runId).toBe(
+      fixture.lease.runId
+    );
+    expect(
+      finalizeLoop(
+        fixture.author,
+        fixture.lease.runId,
+        "next-controller",
+        "Retry after restoring the archive."
+      ).outcome
+    ).toBe("completed");
+    expect(readLoopLease(fixture.root)).toBeNull();
   });
 
   test("closes exact delivery with explicit exclusions without changing unrelated claims or primary bytes", () => {

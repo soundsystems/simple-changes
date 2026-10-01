@@ -707,6 +707,9 @@ export interface LoopLockRecovery {
   staleOwner: LoopLockOwner;
 }
 
+const staleLeaseRecoveryCommand = (lease: LoopLease): string =>
+  `simple-changes loop recover --stale-lease --run-id ${lease.runId} --agent-id <you> --approved-by <user> --reason <why>`;
+
 export const recoverLoopLock = (
   repositoryPath: string,
   agentIdInput: string
@@ -1688,6 +1691,12 @@ const resolveExistingLoopStart = (
   if (lifecycle.status === "relinquished") {
     throw new SimpleChangesError(
       `Integration-controller loop ${existing.runId} was relinquished by ${existing.ownerAgentId}. Resume it explicitly to finish or close its frozen shipment; do not reuse it for a later ${mode} shipment. Next: start the loop again in resume mode to finish it, or run \`simple-changes loop close-equivalent --run-id ${existing.runId} --approved-by <you> --reason <why>\` if there is nothing left to ship.`,
+      EXIT_CODES.unsafe
+    );
+  }
+  if (leaseLiveness(existing).state === "stale") {
+    throw new SimpleChangesError(
+      `Integration-controller loop ${existing.runId} has no recent activity; this alone does not prove its agent has stopped. On existing user authority for stale bookkeeping recovery, run \`${staleLeaseRecoveryCommand(existing)}\`, then retry from fresh inventory.`,
       EXIT_CODES.unsafe
     );
   }
@@ -6848,6 +6857,117 @@ const finalizeUnmutatedRun = (
   };
 };
 
+const relinquishController = (
+  lease: LoopLease,
+  reason: string,
+  now: string
+): LoopLease =>
+  writeLease({
+    ...withMutationEvidence(lease, now),
+    controller: {
+      ...controllerLifecycle(lease),
+      reason,
+      relinquishedAt: now,
+      status: "relinquished",
+    },
+    shipmentScopeFrozenAt: effectiveShipmentScopeFrozenAt(lease) ?? now,
+    updatedAt: now,
+    worktrees: lease.worktrees.map((worktree) =>
+      worktree.role === "controller"
+        ? { ...worktree, mutationAllowed: false }
+        : worktree
+    ),
+  });
+
+const finalizeOwnedLoop = (
+  repositoryPath: string,
+  openingLease: LoopLease,
+  inventory: RepositoryInventory,
+  reason: string
+): LoopFinalizationResult => {
+  let lease = reconcileAbsentRetainedWorktrees(openingLease, inventory);
+  lease = reconcilePrimarySynchronization(lease, inventory);
+  const openingVerification = verificationAgainst(lease, inventory);
+  const automaticCleanup =
+    lease.shipmentScopeRequired && !lease.shipmentScope
+      ? { cleanup: emptyFinalizationCleanup(), lease }
+      : automaticFinalizationCleanup(lease, inventory, openingVerification);
+  ({ lease } = automaticCleanup);
+  const finalInventory = captureInventory(repositoryPath);
+  const { blockers, verification, receipt } = finalizationDecision(
+    lease,
+    finalInventory,
+    automaticCleanup.cleanup,
+    reason
+  );
+  const now = receipt.finalizedAt;
+  if (blockers.length === 0 && receipt.deliveryStatus === "verified") {
+    releaseDeliveredSourceClaims(
+      lease,
+      finalInventory,
+      automaticCleanup.cleanup
+    );
+  }
+  const receiptPath = resolve(
+    recoveryHistoryDirectory(lease.commonGitDirectory, lease.runId),
+    `finalization-${sha256Json(receipt)}.json`
+  );
+  writeImmutableRecoveryEvent(receiptPath, { lease, receipt });
+  if (blockers.length === 0) {
+    rmSync(loopLeasePath(lease.commonGitDirectory), { force: true });
+    return {
+      blockers,
+      cleanup: automaticCleanup.cleanup,
+      lease: null,
+      outcome: "completed",
+      receipt,
+      receiptPath,
+      verification,
+    };
+  }
+  const updated = relinquishController(lease, reason, now);
+  return {
+    blockers,
+    cleanup: automaticCleanup.cleanup,
+    lease: updated,
+    outcome: "relinquished",
+    receipt,
+    receiptPath,
+    verification,
+  };
+};
+
+// Cleanup may already have persisted removal or synchronization evidence.
+// Release the latest state under both locks, never the opening snapshot, and
+// keep the failure that stopped finalization visible: an unwritable lease is
+// reported beside it, never instead of it.
+const relinquishAfterFinalizationError = (
+  lease: LoopLease,
+  error: unknown
+): never => {
+  const detail = error instanceof Error ? error.message : String(error);
+  try {
+    const current = readLeaseFromCommonDirectory(lease.commonGitDirectory);
+    if (current?.runId === lease.runId) {
+      relinquishController(
+        current,
+        `Finalization failed: ${detail}`.slice(0, 500),
+        new Date().toISOString()
+      );
+    }
+  } catch (relinquishError) {
+    const relinquishDetail =
+      relinquishError instanceof Error
+        ? relinquishError.message
+        : String(relinquishError);
+    throw new Error(
+      `Finalization failed: ${detail}. The controller could not be relinquished: ${relinquishDetail}`,
+      { cause: relinquishError }
+    );
+  }
+  throw error;
+};
+
 export const finalizeLoop = (
   repositoryPath: string,
   runId: string,
@@ -6866,7 +6986,7 @@ export const finalizeLoop = (
         "loop finalize cleanup",
         () => {
           const inventory = captureInventory(repositoryPath);
-          let lease = requireLease(inventory);
+          const lease = requireLease(inventory);
           assertMatchingRun(lease, runId);
           if (lease.ownerAgentId !== ownerAgentId) {
             throw new SimpleChangesError(
@@ -6879,75 +6999,11 @@ export const finalizeLoop = (
           if (untouched) {
             return untouched;
           }
-          lease = reconcileAbsentRetainedWorktrees(lease, inventory);
-          lease = reconcilePrimarySynchronization(lease, inventory);
-          const openingVerification = verificationAgainst(lease, inventory);
-          const automaticCleanup =
-            lease.shipmentScopeRequired && !lease.shipmentScope
-              ? { cleanup: emptyFinalizationCleanup(), lease }
-              : automaticFinalizationCleanup(
-                  lease,
-                  inventory,
-                  openingVerification
-                );
-          ({ lease } = automaticCleanup);
-          const finalInventory = captureInventory(repositoryPath);
-          const { blockers, verification, receipt } = finalizationDecision(
-            lease,
-            finalInventory,
-            automaticCleanup.cleanup,
-            reason
-          );
-          const now = receipt.finalizedAt;
-          if (blockers.length === 0 && receipt.deliveryStatus === "verified") {
-            releaseDeliveredSourceClaims(
-              lease,
-              finalInventory,
-              automaticCleanup.cleanup
-            );
+          try {
+            return finalizeOwnedLoop(repositoryPath, lease, inventory, reason);
+          } catch (error) {
+            return relinquishAfterFinalizationError(lease, error);
           }
-          const receiptPath = resolve(
-            recoveryHistoryDirectory(lease.commonGitDirectory, lease.runId),
-            `finalization-${sha256Json(receipt)}.json`
-          );
-          writeImmutableRecoveryEvent(receiptPath, { lease, receipt });
-          if (blockers.length === 0) {
-            rmSync(loopLeasePath(lease.commonGitDirectory), { force: true });
-            return {
-              blockers,
-              cleanup: automaticCleanup.cleanup,
-              lease: null,
-              outcome: "completed",
-              receipt,
-              receiptPath,
-              verification,
-            };
-          }
-          const updated = writeLease({
-            ...withMutationEvidence(lease, now),
-            controller: {
-              ...controllerLifecycle(lease),
-              reason,
-              relinquishedAt: now,
-              status: "relinquished",
-            },
-            shipmentScopeFrozenAt: effectiveShipmentScopeFrozenAt(lease) ?? now,
-            updatedAt: now,
-            worktrees: lease.worktrees.map((worktree) =>
-              worktree.role === "controller"
-                ? { ...worktree, mutationAllowed: false }
-                : worktree
-            ),
-          });
-          return {
-            blockers,
-            cleanup: automaticCleanup.cleanup,
-            lease: updated,
-            outcome: "relinquished",
-            receipt,
-            receiptPath,
-            verification,
-          };
         }
       )
   );
@@ -7675,7 +7731,7 @@ const loopGuidanceFor = (
     return {
       headline: `Loop ${lease.runId} is stale: its owner ${lease.ownerAgentId} cannot be proven alive and it last recorded activity at ${liveness.lastUpdatedAt}. Clearing the lease with user approval keeps every worktree and receipt.`,
       nextCommands: [
-        `simple-changes loop recover --stale-lease --run-id ${lease.runId} --agent-id <you> --approved-by <user> --reason <why>`,
+        staleLeaseRecoveryCommand(lease),
         `simple-changes loop takeover --run-id ${lease.runId} --agent-id <you> --manifest-digest ${loopManifestDigest(lease)} --approved-by <user> --reason <why>`,
       ],
     };

@@ -184,17 +184,21 @@ paths. `loop recover` never transfers the persistent lease. A controller that
 reaches the end of its agent turn must run `loop finalize`: a fully reconciled
 run closes and deletes the lease, while an incomplete run records its blockers,
 marks the controller `relinquished`, disables its mutation authority, and keeps
-all ledger evidence. The next controller starts with mode `resume` (or the same
-original mode), adopts that exact run ID, and continues from fresh evidence.
+all ledger evidence. Unexpected finalization errors also relinquish the latest
+saved state once ownership and both locks are established, if that state remains
+writable; the command still fails and records the error on the controller.
+Re-read `loop status --json` before replying to verify release. The next controller
+starts with mode `resume`, adopts that exact run ID, and continues from fresh evidence.
 Relinquishment is not a repository-wide authoring pause: registered authors may
 continue ordinary author-local work, and no controller should destructively
 park or clean their work merely to manufacture a lease-null interval.
 
 If a controller disappears before finalization, do not delete the state file or
-infer abandonment from elapsed time. Re-read `loop status`, obtain explicit user
-authority, and run `loop takeover` with the exact current run ID and manifest
-digest, approver, and reason. Any intervening manifest change invalidates the
-takeover evidence.
+infer abandonment from elapsed time or a dead helper PID: helper commands exit
+between agent steps. Re-read `loop status` and follow its recovery guidance using
+explicit session authority. A stale lease can use `loop recover --stale-lease`;
+an active takeover requires the exact current run ID and manifest digest,
+approver, and reason. Any intervening manifest change invalidates takeover evidence.
 
 Normal command completion is also process-group scoped. A direct command
 leader that exits while background descendants remain does not complete the

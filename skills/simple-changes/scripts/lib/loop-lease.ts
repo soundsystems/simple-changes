@@ -6788,10 +6788,11 @@ const releaseDeliveredSourceClaims = (
   }
 };
 
-// Finalization runs before every terminal response, so it closes an untouched
-// Ship run only after its opening inventory moved and its first scope can never
-// be recorded. While that inventory is unchanged, finalization keeps the
-// durable relinquish; an explicit `loop end` closes the untouched run either way.
+// Finalization runs before every terminal response, including one that ends
+// the turn on a scope question. Relinquishing an untouched Ship run would freeze
+// a scope it never recorded and leave only an approved replan, so finalization
+// closes it instead, whether or not the repository moved. Nothing is lost: a
+// fresh `loop start` on an unchanged repository takes the same baseline.
 const finalizeUnmutatedRun = (
   lease: LoopLease,
   inventory: RepositoryInventory,
@@ -6801,14 +6802,7 @@ const finalizeUnmutatedRun = (
     return null;
   }
   const verification = verificationAgainst(lease, inventory);
-  // Deliberately the whole-repository comparison rather than record-scope's
-  // narrower invariants: closing a run that changed nothing is harmless
-  // whenever anything moved, while relinquishing it would freeze a scope that
-  // record-scope could otherwise still accept.
-  if (
-    verification.currentBaselineDigest === lease.baselineDigest ||
-    !unmutatedCloseReady(lease, inventory, verification)
-  ) {
+  if (!unmutatedCloseReady(lease, inventory, verification)) {
     return null;
   }
   const cleanup = emptyFinalizationCleanup();

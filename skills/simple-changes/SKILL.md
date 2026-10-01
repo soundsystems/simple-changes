@@ -191,11 +191,10 @@ performs the proven-safe cleanup described in
 completed state. An exact verified shipment can close while unrelated work
 remains preserved; its durable finalization receipt reports delivery and cleanup
 separately. If delivery or safety blockers remain, it relinquishes durable state
-and exits nonzero. The exception is an untouched Ship run, one that recorded no
-scope and changed nothing: when the repository moved after `loop start`,
-finalization closes it instead of freezing its scope.
-`loop end` also closes an untouched run; then start a fresh loop for a new
-baseline. Resume a relinquished run with `loop start --mode resume`;
+and exits nonzero. The exception is an untouched Ship run, one that owed a
+scope, recorded none, and changed nothing: finalization closes it instead of
+freezing its scope, so ending a turn on a scope question never strands it.
+`loop end` closes it the same way; then start a fresh loop for a new baseline. Resume a relinquished run with `loop start --mode resume`;
 takeover approval is only needed to replace an active controller.
 Takeover requires the exact current run ID and manifest digest plus approver and reason.
 

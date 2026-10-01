@@ -85,12 +85,13 @@
   loop start, including claimed authors' edits and commits, other branches, and
   stashes, do not block it. A lease that predates these recorded invariants
   still requires the exact unchanged opening inventory.
-- A Ship run that changed nothing and never recorded its scope may close
-  without it: `loop end` closes it, and finalization does so once the opening
-  inventory has moved, writing an immutable `abort-unmutated.json` receipt and
-  removing only the lease. Any recorded mutation evidence, or any violation
-  other than a changed unclaimed opening checkout or a lapsed concurrent claim,
-  keeps every ordinary completion gate.
+- A Ship run that owed a shipment scope (`shipmentScopeRequired`), never
+  recorded it, and changed nothing, with a controller that is still active and
+  was never handed off, may close without it: `loop end` and finalization both
+  close it, whether or not the repository moved, writing an immutable
+  `abort-unmutated.json` receipt and removing only the lease. Any recorded
+  mutation evidence, or any violation other than a changed unclaimed opening
+  checkout or a lapsed concurrent claim, keeps every ordinary completion gate.
 - Existing and concurrent work is preserved unless ownership and scope are
   proven. A preserved worktree that its owner removed mid-run can be retired
   only with named approval and proof that it is absent from disk and from the

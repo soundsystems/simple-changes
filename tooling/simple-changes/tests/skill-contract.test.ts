@@ -735,6 +735,9 @@ describe("Simple Changes skill contract", () => {
     expect(normalizedSkill).toContain(
       "generate one non-mutating preview plan from the current inventory"
     );
+    expect(normalizedSkill).toContain(
+      "one that owed a scope, recorded none, and changed nothing: finalization closes it instead of freezing its scope"
+    );
     expect(normalizedConcurrency).toContain(
       "The author may keep editing and committing without a pause receipt"
     );

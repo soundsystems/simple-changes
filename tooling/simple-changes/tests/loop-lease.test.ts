@@ -215,6 +215,18 @@ const claimEvidence = (repositoryPath: string) => {
   };
 };
 
+// Finalization closes a Ship run that changed nothing instead of freezing its
+// scope. Tests about relinquished, frozen runs record mutation evidence first,
+// as any guarded operation would, so finalization relinquishes them.
+const stampFirstMutation = (root: string): void => {
+  const path = loopLeasePath(
+    captureInventory(root).repository.commonGitDirectory
+  );
+  const stored = JSON.parse(readFileSync(path, "utf8")) as LoopLease;
+  stored.firstMutationAt = new Date().toISOString();
+  writeFileSync(path, `${JSON.stringify(stored, null, 2)}\n`, "utf8");
+};
+
 afterEach(() => {
   for (const fixture of repositories) {
     fixture.cleanup();
@@ -1392,6 +1404,7 @@ describe("active integration-loop lease", () => {
     writeFixture(fixture.root, "opening.txt", "opening shipment work\n");
     const opening = captureInventory(fixture.root);
     const lease = startLoop(fixture.root, "first-controller", "ship");
+    stampFirstMutation(fixture.root);
     expect(
       finalizeLoop(
         fixture.root,
@@ -5003,6 +5016,7 @@ describe("target-equivalent loop closure", () => {
     const fixture = repository();
     writeFixture(fixture.root, "opening.txt", "opening shipment work\n");
     const lease = startLoop(fixture.root, "first-controller", "ship");
+    stampFirstMutation(fixture.root);
     expect(
       finalizeLoop(
         fixture.root,
@@ -5587,6 +5601,203 @@ describe("untouched Ship run close", () => {
       lease.runId
     );
   }, 60_000);
+  test("finalize closes an untouched run even when nothing moved", () => {
+    const { fixture, lease } = dirtyShipRun();
+    expect(captureInventory(fixture.root).baselineDigest).toBe(
+      lease.baselineDigest
+    );
+
+    const finalized = finalizeLoop(
+      fixture.root,
+      lease.runId,
+      "controller",
+      "The turn ended on a scope question."
+    );
+
+    expect(finalized).toMatchObject({
+      lease: null,
+      outcome: "closed-without-mutation",
+      receipt: { shipmentStatus: "unstarted" },
+    });
+    expect(readLoopLease(fixture.root)).toBeNull();
+    expect(readFileSync(join(fixture.root, "contact.ts"), "utf8")).toBe(
+      "export const email = 1;\n"
+    );
+    const fresh = startLoop(fixture.root, "controller", "ship");
+    expect(fresh.runId).not.toBe(lease.runId);
+    expect(fresh.baselineDigest).toBe(lease.baselineDigest);
+  }, 60_000);
+
+  // Each of these records lease evidence without a shipment scope. The run
+  // stays healthy, so only that evidence can be what refuses the close.
+  const gitLabTarget = (root: string): string => {
+    git(root, ["remote", "add", "origin", "git@gitlab.com:group/project.git"]);
+    return git(root, ["rev-parse", "HEAD"]);
+  };
+  type EvidenceCase = [
+    string,
+    (root: string, base: string) => ReturnType<typeof remoteSnapshot> | null,
+    (root: string, base: string, runId: string) => void,
+  ];
+  const evidenceCases: EvidenceCase[] = [
+    [
+      "loop allow",
+      (root: string, base: string) => {
+        git(root, ["worktree", "add", "--detach", join(base, "unclaimed")]);
+        return null;
+      },
+      (root: string, base: string, runId: string) => {
+        const path = join(base, "unclaimed");
+        writeFixture(path, "notes.txt", "still being written\n");
+        const changed = captureInventory(root).worktrees.find(
+          (worktree) => worktree.path === path
+        );
+        grantLoopOverride(
+          root,
+          runId,
+          "controller",
+          path,
+          changed?.changeDigest ?? "",
+          "user",
+          "Keep the notes in place."
+        );
+      },
+    ],
+    [
+      "loop dispose-worktree",
+      (root: string, base: string) => {
+        git(root, ["worktree", "add", "-b", "obsolete-work", join(base, "o")]);
+        return null;
+      },
+      (root: string, base: string, runId: string) => {
+        const path = join(base, "o");
+        const current = captureInventory(root).worktrees.find(
+          (worktree) => worktree.path === path
+        );
+        authorizeWorktreeRemoval(
+          root,
+          runId,
+          "controller",
+          path,
+          current?.changeDigest ?? "",
+          "user",
+          "Audited obsolete with no unique work."
+        );
+      },
+    ],
+    [
+      "loop retain-worktree",
+      () => null,
+      (root: string, base: string, runId: string) => {
+        const path = join(base, "walkthrough");
+        git(root, ["worktree", "add", "-b", "walkthrough", path]);
+        const current = captureInventory(root).worktrees.find(
+          (worktree) => worktree.path === path
+        );
+        retainExcludedWorktree(
+          root,
+          runId,
+          "controller",
+          path,
+          current?.changeDigest ?? "",
+          "user",
+          "Keep the walkthrough out of this shipment."
+        );
+      },
+    ],
+    [
+      "loop retire-absent-worktree",
+      (root: string, base: string) => {
+        git(root, ["worktree", "add", "-b", "gone-work", join(base, "gone")]);
+        return null;
+      },
+      (root: string, base: string, runId: string) => {
+        const path = join(base, "gone");
+        rmSync(path, { force: true, recursive: true });
+        git(root, ["worktree", "prune"]);
+        retireAbsentWorktree(
+          root,
+          runId,
+          "controller",
+          path,
+          "user",
+          "Removed by its owner."
+        );
+      },
+    ],
+    [
+      "loop adopt-worktree",
+      () => null,
+      (root: string, base: string, runId: string) => {
+        const path = join(base, "straggler");
+        git(root, ["worktree", "add", "-b", "straggler", path]);
+        claimWorktree(path, "straggler-author", path, "codex", "task-s");
+        const pause = pauseClaimedWorktree(
+          path,
+          "straggler-author",
+          path,
+          runId,
+          "preserve-in-place",
+          "Pause at a stable boundary for adoption."
+        );
+        adoptPausedWorktree(root, runId, "controller", pause.receiptId);
+      },
+    ],
+    [
+      "loop reconcile-remote-branches",
+      (root: string) => remoteSnapshot(gitLabTarget(root)),
+      (root: string, _base: string, runId: string) => {
+        recordRemoteBranchReconciliation(
+          root,
+          runId,
+          "controller",
+          remoteSnapshot(git(root, ["rev-parse", "HEAD"]))
+        );
+      },
+    ],
+  ];
+  test.each(evidenceCases)(
+    "refuses the untouched close after %s records lease evidence",
+    (_name, beforeStart, act) => {
+      const fixture = repository();
+      writeFixture(fixture.root, "contact.ts", "export const email = 1;\n");
+      const openingRemote = beforeStart(fixture.root, fixture.base);
+      const lease = startLoop(
+        fixture.root,
+        "controller",
+        "ship",
+        openingRemote ?? undefined
+      );
+      expect(lease).toMatchObject({
+        firstMutationAt: null,
+        shipmentScopeRequired: true,
+      });
+
+      act(fixture.root, fixture.base, lease.runId);
+
+      expect(readLoopLease(fixture.root)?.firstMutationAt).toEqual(
+        expect.any(String)
+      );
+      expect(verifyLoop(fixture.root).ok).toBe(true);
+      expect(() => endLoop(fixture.root, lease.runId, "controller")).toThrow(
+        "Record the comprehensive shipment scope"
+      );
+      expect(
+        finalizeLoop(
+          fixture.root,
+          lease.runId,
+          "controller",
+          "Scope was never recorded."
+        ).outcome
+      ).toBe("relinquished");
+      expect(
+        existsSync(
+          historyPath(fixture.root, lease.runId, "abort-unmutated.json")
+        )
+      ).toBe(false);
+    },
+    60_000
+  );
 });
 
 describe("first shipment scope after unrelated changes", () => {

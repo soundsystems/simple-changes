@@ -72,7 +72,7 @@ describe("first-run initialization", () => {
       changelogCoordination
     );
     expect(from19.changes.map((item) => item.version)).toEqual([
-      20, 20, 21, 21, 21, 22, 22, 22, 22, 23, 23,
+      20, 20, 21, 21, 21, 22, 22, 22, 22, 23, 23, 24, 24, 24,
     ]);
   });
   test("propagates the saved shipping preference into emergency classification", () => {
@@ -277,7 +277,7 @@ describe("first-run initialization", () => {
           available: true,
           owner: "simple-changelogs",
         },
-        currentVersion: 23,
+        currentVersion: 24,
         headline: "**Simple Changes has recently been updated.**",
         presentationOrder: [
           "required-answers",
@@ -296,6 +296,9 @@ describe("first-run initialization", () => {
       preLoopActionRequired: true,
     });
     expect(status.guidanceUpdate.summaryBullets).toHaveLength(3);
+    expect(status.guidanceUpdate.summaryBullets.join(" ")).toContain(
+      "`loop finalize --awaiting-user`"
+    );
     expect(status.guidanceUpdate.summaryBullets.join(" ")).toContain(
       "hand off ready work and hold a shipment"
     );

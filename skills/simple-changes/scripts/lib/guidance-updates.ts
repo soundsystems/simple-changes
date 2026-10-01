@@ -1,6 +1,6 @@
 import type { ChangelogCoordination, RepoPolicy } from "./types.ts";
 
-export const CURRENT_GUIDANCE_VERSION = 23;
+export const CURRENT_GUIDANCE_VERSION = 24;
 
 export type GuidanceUpdateAction =
   | "review-settings"
@@ -655,6 +655,37 @@ const GUIDANCE_UPDATES: GuidanceUpdateDefinition[] = [
       },
     ],
     version: 23,
+  },
+  {
+    changelogReviewRelevant: false,
+    changes: [
+      {
+        kind: "behavior",
+        summary:
+          'A controller that ends its turn on a decision the run needs pauses it with `loop finalize --awaiting-user "<question>"`: the run relinquishes, records the questions, exits zero, and hands them to the controller that resumes it.',
+        version: 24,
+      },
+      {
+        kind: "integration",
+        summary:
+          "An optional user-level Stop hook, installed with `harness stop-hook --write` after the user agrees, blocks a Claude Code or Codex session from ending its turn while it still controls an active run; initialization reports whether it is installed, and guard, exec, and verify output repeat the finalize step.",
+        version: 24,
+      },
+      {
+        kind: "behavior",
+        summary:
+          "A run whose harness session process has exited is stale after ten quiet minutes, and an unprovable owner becomes stale after two quiet hours instead of four; stale recovery archives the complete lease, and a runtime older than the target branch's copy is reported before shipping.",
+        version: 24,
+      },
+    ],
+    noticeBullets: [
+      {
+        priority: 160,
+        summary:
+          "Agents that stop to ask you something now pause their run with `loop finalize --awaiting-user`, and an optional Stop hook keeps a session from ending its turn while it still controls a shipment.",
+      },
+    ],
+    version: 24,
   },
 ];
 

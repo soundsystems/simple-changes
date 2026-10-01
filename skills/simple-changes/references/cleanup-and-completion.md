@@ -17,6 +17,48 @@ Never use broad globs, unresolved variables, guessed branch names, force, reset,
 or cleanup stashes to manufacture a clean repository. Existing stashes remain
 inventory. Uncertain work remains untouched.
 
+## Turn-end guard
+
+Every controller finalizes before it replies; see the finalize rule in
+`SKILL.md`. Three mechanisms keep that rule from depending on memory alone:
+
+- **Pause for the user.** When the turn ends on a decision the run needs, such
+  as a migration, deployment, or cleanup approval, run `loop finalize --reason
+  "<why>" --awaiting-user "<question>" --json` (repeat the flag per question,
+  at most 10). The run relinquishes even if nothing else blocks it, records the
+  questions beside the lease and in the finalization receipt, and exits zero.
+  `loop status` shows the questions, and `loop start --mode resume` hands them
+  to the next controller, which confirms the user's answer before continuing.
+  Do not use it for questions about later work.
+- **Stop hook.** `simple-changes harness stop-hook --harness claude-code|codex`
+  reports whether the user-level Stop hook is installed; add `--write`, after
+  the user agrees, to merge it into `~/.claude/settings.json` or
+  `~/.codex/hooks.json` (`CLAUDE_CONFIG_DIR` and `CODEX_HOME` are honored)
+  without touching other settings. It refuses a copy inside a linked worktree,
+  which disappears when its work ships, and it leaves another copy's hook in
+  place while that copy is at least as new. The hook runs `loop turn-check
+  --hook` and exits quietly if its script is gone. A run started, resumed, or
+  commanded by its owner in a harness session records that session in a file
+  beside the lease, and a per-user pointer lets the hook find it in any
+  repository. If the ending
+  session still controls an active run, the hook blocks the turn once with the
+  exact finalize command; if the agent tries to stop again, it only warns, so
+  it never traps a session. The lease is always re-read, and a pointer to a
+  closed, paused, or transferred run is dropped. Codex may ask the user to
+  trust a new hook the first time it runs.
+- **Reminders and freshness.** `loop guard`, `loop exec`, and `loop verify`
+  print the finalize step for the current run, and their JSON carries it as
+  `turnEnd`. When this runtime runs from a checkout whose branch carries an
+  older copy than the target, initialization, `loop start`, and `loop status`
+  warn with `runtimeFreshness: behind-target`; run the target's copy before
+  integrating or shipping.
+
+A run whose recorded harness session process has exited is `stale` after ten
+quiet minutes; otherwise an unprovable owner becomes `stale` after two quiet
+hours. A session process the runtime cannot see, as inside a sandbox, is never
+recorded. Stale recovery archives the complete lease beside its receipt, so its
+scope, outcome, and paused questions survive.
+
 ## Remote-branch reconciliation gate
 
 Whole-repository integration and cleanup includes provider branches. Do not

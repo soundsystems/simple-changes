@@ -44,7 +44,24 @@ export interface InitializationStatus {
   readinessConfirmed: boolean;
   reason: string;
   resolvedMode: RequestMode | null;
+  /** Whether the running runtime is older than the target branch's copy. */
+  runtimeFreshness?: {
+    message: string | null;
+    path: string | null;
+    runningVersion: string;
+    status: "current" | "behind-target" | "not-applicable";
+    targetRef: string | null;
+    targetVersion: string | null;
+  };
   shippingMode: RepoPolicy["shippingMode"];
+  /** The detected harness's turn-end Stop hook, or null outside a harness. */
+  turnEndGuard?: {
+    current: boolean;
+    harness: "claude-code" | "codex";
+    installCommand: string | null;
+    installed: boolean;
+    path: string;
+  } | null;
   writeCapable: boolean;
 }
 

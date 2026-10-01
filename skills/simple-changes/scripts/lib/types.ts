@@ -701,6 +701,40 @@ export interface LoopControllerHandoff {
   toAgentId: string;
 }
 
+/** The harness session that started or adopted a controller. */
+export interface LoopControllerSession {
+  harness: "claude-code" | "codex";
+  hostname: string;
+  /** The session's own process when the harness reports it, else null. */
+  hostPid: number | null;
+  sessionId: string;
+}
+
+/** Decisions a paused controller needs from the user before it can continue. */
+export interface LoopAwaitingUser {
+  questions: string[];
+  recordedAt: string;
+}
+
+/**
+ * Advisory controller facts kept beside the lease rather than in it, so older
+ * runtimes that validate the lease strictly can still read it: the harness
+ * session that controls the run, and the questions a paused controller left.
+ * It counts only while its run and owner match the lease.
+ */
+export interface LoopControllerBinding {
+  awaitingUser: LoopAwaitingUser | null;
+  /** The controller tenure this binding belongs to. */
+  controllerAcquiredAt: string;
+  /** Questions the previous controller paused on, kept for its successor. */
+  inheritedAwaitingUser: string[] | null;
+  ownerAgentId: string;
+  runId: string;
+  schemaVersion: 1;
+  session: LoopControllerSession | null;
+  updatedAt: string;
+}
+
 export interface LoopRebaselineRegistration {
   changeDigest: string;
   headSha: string | null;

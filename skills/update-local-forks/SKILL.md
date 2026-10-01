@@ -31,11 +31,12 @@ saved plan, and it never commits, pushes, or runs a fork's scripts.
    worktree; update the primary checkout of that repository instead. If no
    source is installed, stop and tell the user to install Simple Changes
    globally first (see [fork sync](references/fork-sync.md)).
-2. **Plan one fork at a time.** Run
-   `update-local-forks plan --fork <dir> --json > <plan.json>` and read the
-   summary. The plan pins the fork to the exact upstream release commit only
-   when the installed source is byte-identical to that release; otherwise it
-   says why the pin stays. Use `--upstream <checkout>` when a canonical source
+2. **Plan each fork.** Run
+   `update-local-forks plan --fork <dir> --json > <plan.json>` once per fork,
+   saving a separate plan file for each, and read every summary. The plan
+   pins the fork to the exact upstream release commit only when the installed
+   source is byte-identical to that release; otherwise it says why the pin
+   stays. Use `--upstream <checkout>` when a canonical source
    checkout is on this machine; without it, the pinned base is fetched into a
    local cache from the canonical repository.
 3. **Explain before writing.** Tell the user, in plain language, how many
@@ -43,10 +44,12 @@ saved plan, and it never commits, pushes, or runs a fork's scripts.
    fork-only files stay untouched, which files conflict, and which upstream
    changes the fork omits and should be re-checked. Show the literal rewrites
    (provenance pin, guidance version, upstream version) the plan will make in
-   the fork's own tests and notes. Wait for approval; a plan with conflicts
-   still applies everything else, leaves each conflicting file exactly as it
-   was, and writes the marked three-way merge beside it as
-   `<file>.upstream-merge`.
+   the fork's own tests and notes. Present every fork's plan together, with
+   the step 7 handoff (queue, integrate, or ship) proposed for each
+   repository, so the user can approve all, none, or named forks and their
+   handoffs in one reply. Wait for approval; a plan with conflicts still
+   applies everything else, leaves each conflicting file exactly as it was,
+   and writes the marked three-way merge beside it as `<file>.upstream-merge`.
 4. **Apply.** Run `update-local-forks apply --plan <plan.json>`. It fails
    closed if any file it would write changed after the plan was made.
 5. **Resolve the rest by hand.** Conflicts are usually the fork's rewritten
@@ -69,6 +72,32 @@ saved plan, and it never commits, pushes, or runs a fork's scripts.
    upstream range and what was ported, kept, or omitted. Then hand the fork
    repository change to Simple Changes to queue, integrate, or ship under that
    repository's own policy. This skill never commits or pushes.
+
+## Several forks at once
+
+Forks in different repositories share no writable state except the upstream
+fetch cache once their plans are approved.
+When the host can start isolated agents and learn when each one finishes, run
+steps 4 through 7 for each approved repository in its own agent, all
+together, so the sweep takes about as long as its slowest fork. Without that
+host support, work through the forks one at a time.
+
+- Discover, plan, and explain yourself; start agents only after approval.
+- Assign one agent per repository. Forks in the same repository share one
+  Simple Changes controller, so that agent updates them in turn.
+- Give each agent its fork directories, saved plan files, and the handoff the
+  user approved for that repository in step 3. The boundaries below apply to
+  every agent unchanged.
+- Pass the same `--upstream <checkout>` to every agent's step 6 re-plan when
+  a canonical checkout exists; without it, overlapping fetches into the
+  shared base cache can fail and must be retried.
+- An agent that cannot resolve a conflict without weakening a documented fork
+  rule, cannot make a failing check pass inside the fork, or needs a decision
+  beyond its handoff stops and reports it. Ask the user, then resume that
+  fork; the others continue.
+- Stagger repositories whose native checks are heavy.
+- Report per fork once every agent has finished, including any fork that
+  stopped and why.
 
 ## Boundaries
 

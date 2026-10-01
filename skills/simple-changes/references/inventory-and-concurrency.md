@@ -25,10 +25,11 @@ Before assigning several independent authors, apply `proposalScheduling`:
   confirm unusually expensive fan-out.
 
 Once parallel authoring is selected, every author still requires a distinct
-claimed worktree. After verified integration, ordinary finalization removes
-proven-safe completed worktrees, including their local dependencies and build
-artifacts. Never delete dependencies from an active, retained, or uncertain
-worktree merely to reclaim space.
+claimed worktree. To hand independent units to separate agents, follow
+[parallel agents](#parallel-agents). After verified integration, ordinary
+finalization removes proven-safe completed worktrees, including their local
+dependencies and build artifacts. Never delete dependencies from an active,
+retained, or uncertain worktree merely to reclaim space.
 
 Do not substitute a standalone clone for a claimed worktree. Its separate
 common Git directory cannot see this repository's controller and claims, so it
@@ -224,6 +225,74 @@ the active integration run.
 Read-only review can inspect commit objects or provider diffs without an
 authoring worktree. The moment a reviewer needs to make a change, it becomes an
 author and must prepare an isolated worktree first.
+
+## Parallel agents
+
+When scheduling selects parallel authoring and the host can start isolated
+agents and learn when each one finishes, the controller may hand each
+independent unit to its own agent instead of authoring the units one after
+another. Delegation changes who edits a unit, not what the agents share. When
+the host cannot start agents or report their completion, author the units
+consecutively; that is a harness limit, not a policy change.
+
+`consecutive` delegates only for necessary isolation, `balanced` delegates
+when the time saved is meaningful, and `parallel` delegates every independent
+unit while still confirming unusually expensive fan-out. Every prepared branch
+starts from the lease's pinned target revision, so a unit that needs another
+unit's result is either authored by the controller after that result is
+integrated or delegated only after the controller refreshes its prepared
+branch onto the updated target through `loop exec`.
+
+1. After any required scope is recorded, the controller runs `prepare-agent`
+   once per independent unit, one call at a time, before starting those
+   agents. Give each unit a new agent ID that is never the controller's own,
+   and require `created: true` from its first call: a repeated ID returns
+   whatever that ID already registered, including the controller's checkout.
+   Concurrent calls collide on the busy state lock, so agents gain nothing by
+   preparing their own worktrees.
+2. Start the agents together. Give each one its exact prepared path, branch,
+   agent ID, and unit scope; the checks to run; and its boundary: edit,
+   generate, format, check, stage, and commit only inside that worktree. A
+   delegated agent runs no `initialize` or `loop` command, push, provider call,
+   merge, release, deployment, or cleanup, and never touches another worktree,
+   branch, stash, or tag. The runtime still lets any run-prepared author use
+   the guarded executor, so this boundary lives in the brief.
+3. Each agent returns its final commit, the checks it ran with their results,
+   and any open question, leaving its worktree clean. Before treating the unit
+   as ready, the controller confirms that the registered branch head equals the
+   reported commit and that no uncommitted changes remain. A unit with an open
+   question or a failed check waits while the others continue.
+4. The controller alone pushes, opens or updates proposals, and merges each
+   unit through the ordinary serialized path, refreshing and re-verifying
+   downstream units after every target move. It changes a delegated worktree,
+   including a refresh onto the new target, only after every agent using that
+   worktree, whether author or check runner, has returned.
+
+Never let the host create an agent's checkout, including through its own
+worktree isolation. A worktree that appears after loop start without run
+preparation is an `unregistered-worktree` violation: it blocks every guarded
+operation and further `prepare-agent` until it is claimed under
+`allow-claimed`, adopted, or rebaselined, and even a claimed one becomes
+concurrent-author work this run cannot integrate.
+
+To retry a stopped agent, first confirm the earlier agent has ended, then give
+the replacement the same agent ID and prepared path; `prepare-agent` returns
+the existing registration instead of creating a second worktree. The
+replacement inspects the existing commits and uncommitted changes before
+editing. A resumed run whose scope froze can finish registered agents but
+cannot prepare new ones.
+
+Read-only work pinned to one exact head may also run in parallel: independent
+review and local reproduction of required checks. An agent never reviews a
+unit it authored. Reproduce checks inside the unit's registered worktree after
+its author has returned, never in a new checkout. Changelog phases keep the
+order in [changelog coordination](changelog-coordination.md); because
+`prepare` moves the head, review and checks for that head start only after it
+lands, and any later commit invalidates pinned results the usual way.
+
+Inventory snapshots, the controller lease, target movement, pushes, merges,
+version selection, release, deployment, and finalization stay with the
+controller. A snapshot split across agents is not one baseline.
 
 ## Ready work blocked by another shipping controller
 

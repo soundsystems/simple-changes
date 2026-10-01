@@ -781,6 +781,64 @@ describe("Simple Changes skill contract", () => {
     );
   });
 
+  test("Parallel agents author in prepared worktrees and never integrate", async () => {
+    const [skill, concurrency, spec] = await Promise.all([
+      readFile(skillPath, "utf8"),
+      readFile(inventoryConcurrencyPath, "utf8"),
+      readFile(specPath, "utf8"),
+    ]);
+    const normalizedSkill = skill.replace(/\s+/g, " ");
+    const normalizedConcurrency = concurrency.replace(/\s+/g, " ");
+    const normalizedSpec = spec.replace(/\s+/g, " ");
+
+    expect(normalizedSkill).toContain(
+      "the controller prepares every agent's worktree with `prepare-agent`"
+    );
+    expect(normalizedSkill).toContain(
+      "the controller alone pushes, merges, and finalizes"
+    );
+    expect(normalizedSkill).toContain(
+      "references/inventory-and-concurrency.md#parallel-agents"
+    );
+    expect(normalizedConcurrency).toContain("## Parallel agents");
+    expect(normalizedConcurrency).toContain(
+      "When the host cannot start agents or report their completion, author the units consecutively"
+    );
+    expect(normalizedConcurrency).toContain(
+      "Give each unit a new agent ID that is never the controller's own, and require `created: true` from its first call"
+    );
+    expect(normalizedConcurrency).toContain(
+      "Never let the host create an agent's checkout, including through its own worktree isolation"
+    );
+    expect(normalizedConcurrency).toContain(
+      "preparation is an `unregistered-worktree` violation: it blocks every guarded operation and further `prepare-agent`"
+    );
+    expect(normalizedConcurrency).toContain(
+      "first confirm the earlier agent has ended"
+    );
+    expect(normalizedConcurrency).toContain(
+      "Reproduce checks inside the unit's registered worktree after its author has returned, never in a new checkout"
+    );
+    expect(normalizedConcurrency).toContain(
+      "A delegated agent runs no `initialize` or `loop` command, push, provider call, merge, release, deployment, or cleanup"
+    );
+    expect(normalizedConcurrency).toContain(
+      "the controller confirms that the registered branch head equals the reported commit"
+    );
+    expect(normalizedConcurrency).toContain(
+      "An agent never reviews a unit it authored"
+    );
+    expect(normalizedConcurrency).toContain(
+      "A snapshot split across agents is not one baseline"
+    );
+    expect(normalizedSpec).toContain(
+      "a host-created checkout is an unregistered worktree that blocks guarded operations"
+    );
+    expect(normalizedSpec).toContain(
+      "inventory snapshots are never split across agents"
+    );
+  });
+
   test("SPEC.md stays bound to the skill it specifies", async () => {
     const [skill, spec] = await Promise.all([
       readFile(skillPath, "utf8"),

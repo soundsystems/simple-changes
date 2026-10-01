@@ -283,6 +283,16 @@
   authored consecutively or in parallel claimed worktrees. It never shares a
   checkout, weakens controller guards or worktree isolation, changes cleanup
   safety, or grants provider mutation authority.
+- Parallel agents author only inside worktrees the controller prepared with
+  `prepare-agent` under a distinct agent ID that is never the controller's
+  own; a host-created checkout is an unregistered worktree that blocks guarded
+  operations. Delegated agents never run loop commands, push, call providers,
+  merge, release, deploy, or clean up, and the controller confirms each
+  reported commit against the registered branch before integrating it
+  serially. Pinned read-only work (independent review and check reproduction
+  in the registered worktree) may run in parallel against one exact head; no
+  agent reviews its own unit, and inventory snapshots are never split across
+  agents.
 - Changelog compatibility is decided by request/receipt version overlap plus
   local schema validation at use time; advertised schema digests are recorded
   as advisory `schemaDigestStatus` and never block a version-compatible peer.

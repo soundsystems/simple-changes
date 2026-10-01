@@ -148,6 +148,13 @@ After review and integration settle, record one exact
 completion; see [focused units](references/focused-units.md). This controller
 audit step is not another user decision.
 
+When scheduling allows parallel authoring and the host can start isolated
+agents, delegate independent units instead of authoring them one after
+another: the controller prepares every agent's worktree with `prepare-agent`
+under a new agent ID, each agent edits and checks only inside its own, and the
+controller alone pushes, merges, and finalizes. Follow
+[parallel agents](references/inventory-and-concurrency.md#parallel-agents).
+
 A busy lock blocks only the named short integration operation; it is never a
 reason to pause unrelated authors, demand a lease-null handback, export patches,
 or clean their worktrees. A permission-denied error while creating controller

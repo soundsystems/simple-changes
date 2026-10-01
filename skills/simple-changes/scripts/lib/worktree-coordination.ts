@@ -73,6 +73,9 @@ const stateRoot = (commonGitDirectory: string): string =>
   resolve(commonGitDirectory, STATE_DIRECTORY);
 const coordinationRoot = (commonGitDirectory: string): string =>
   resolve(stateRoot(commonGitDirectory), COORDINATION_DIRECTORY);
+export const worktreeCoordinationDirectory = (
+  commonGitDirectory: string
+): string => coordinationRoot(commonGitDirectory);
 export const worktreeCoordinationPath = (commonGitDirectory: string): string =>
   resolve(coordinationRoot(commonGitDirectory), STATE_FILENAME);
 export const worktreeTakeoversPath = (commonGitDirectory: string): string =>
@@ -109,7 +112,7 @@ const requiredText = (
 const canonicalCandidate = (path: string): string =>
   existsSync(path) ? realpathSync(path) : resolve(path);
 
-const repositoryIdFor = (commonGitDirectory: string): string =>
+export const repositoryIdFor = (commonGitDirectory: string): string =>
   sha256(commonGitDirectory);
 
 interface CoordinationLockOwner {
@@ -433,7 +436,7 @@ const activeLoopNeedsPath = (
   return registered.role === "preserved" && Boolean(registered.claimId);
 };
 
-const assertNoGitOperation = (worktreePath: string): void => {
+export const assertNoGitOperation = (worktreePath: string): void => {
   const gitDirectory = realpathSync(
     runGit(worktreePath, ["rev-parse", "--absolute-git-dir"]).stdout.trim()
   );
@@ -1246,7 +1249,8 @@ export const releaseClaimUnderLock = (
   commonGitDirectory: string,
   claimId: string,
   actorAgentIdInput: string,
-  releaseReason: WorktreeClaimReleaseReason
+  releaseReason: WorktreeClaimReleaseReason,
+  currentEvidence?: Pick<WorktreeClaim, "branch" | "changeDigest" | "headSha">
 ): WorktreeClaim => {
   const actorAgentId = requiredText(actorAgentIdInput, "agent ID", 128);
   let document =
@@ -1259,7 +1263,13 @@ export const releaseClaimUnderLock = (
     );
   }
   const now = new Date().toISOString();
-  const updated = releasedClaim(claim, releaseReason, now);
+  // A completed-work release may record the checkout's exact current evidence,
+  // so an active loop can recognize the handed-off state it now admits.
+  const updated = releasedClaim(
+    { ...claim, ...currentEvidence },
+    releaseReason,
+    now
+  );
   document = appendEvent(
     replaceClaim(document, updated),
     claimId,

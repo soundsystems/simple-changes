@@ -371,3 +371,78 @@ export const runGitConcurrently = (
       : runGit(request.cwd, request.args);
   });
 };
+
+const REMOTE_GIT_TIMEOUT_MS = 30_000;
+
+/**
+ * Run a network Git command (`ls-remote`, `fetch`, `push`) that must never
+ * wait for a person: terminal credential prompts are disabled, SSH runs in
+ * batch mode unless the user configured their own SSH command, and the
+ * command is killed after a bounded time. Failures are returned, not thrown.
+ */
+export const runGitRemote = (
+  cwd: string,
+  args: readonly string[],
+  timeoutMs = REMOTE_GIT_TIMEOUT_MS
+): CommandResult => {
+  const env: Record<string, string | undefined> = {
+    ...process.env,
+    GCM_INTERACTIVE: "never",
+    GIT_TERMINAL_PROMPT: "0",
+    LC_ALL: "C",
+  };
+  const customSsh =
+    process.env.GIT_SSH_COMMAND ||
+    process.env.GIT_SSH ||
+    runGit(cwd, ["config", "--get", "core.sshCommand"], true).stdout.trim();
+  if (!customSsh) {
+    env.GIT_SSH_COMMAND = "ssh -o BatchMode=yes";
+  }
+  const result = spawnSync([gitExecutable(), "-C", cwd, ...args], {
+    cwd,
+    env,
+    stderr: "pipe",
+    stdout: "pipe",
+    timeout: timeoutMs,
+  });
+  const stdout = textDecoder.decode(result.stdout);
+  const stderr = textDecoder.decode(result.stderr);
+  if (result.exitCode === null) {
+    return {
+      exitCode: 124,
+      stderr: `git ${args[0] ?? ""} did not finish within ${timeoutMs} ms.`,
+      stdout,
+    };
+  }
+  return { exitCode: result.exitCode, stderr, stdout };
+};
+
+/** Run Git with `input` on stdin, for plumbing such as `hash-object --stdin`. */
+export const runGitWithInput = (
+  cwd: string,
+  args: readonly string[],
+  input: string,
+  env: Record<string, string> = {}
+): CommandResult => {
+  const result = spawnSync([gitExecutable(), "-C", cwd, ...args], {
+    cwd,
+    env: {
+      ...process.env,
+      ...env,
+      LC_ALL: "C",
+    },
+    stderr: "pipe",
+    stdin: new TextEncoder().encode(input),
+    stdout: "pipe",
+  });
+  const stdout = textDecoder.decode(result.stdout);
+  const stderr = textDecoder.decode(result.stderr);
+  if (result.exitCode !== 0) {
+    const detail = redactSecrets(stderr.trim() || stdout.trim());
+    throw new SimpleChangesError(
+      `git ${args[0] ?? ""} failed${detail ? `: ${detail}` : ""}`,
+      EXIT_CODES.inventory
+    );
+  }
+  return { exitCode: result.exitCode, stderr, stdout };
+};

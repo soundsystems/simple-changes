@@ -2,6 +2,45 @@
 
 ## Unreleased
 
+## 0.21.0 - 2026-10-01
+
+- Add `lib/ready-work.ts` and `evals/schemas/ready-work-receipt.schema.json`:
+  `worktree release --ready-receipt <file>` validates the author half (scope,
+  checks, releaseImpact, migrations, deploymentConstraints,
+  unresolvedAuthority), rejects runtime-bound fields and secrets, requires a
+  clean attached checkout with no Git operation in progress, binds claim,
+  owner, path, branch, exact head, and content digest, and releases the claim
+  as a completed-work `handoff` in the same lock interval;
+  `releaseWorktreeClaim` now accepts that current evidence so an active loop
+  admits the handed-off state. `worktree status --json` reports `readyWork`
+  freshness as `current`, `stale`, or `shipped` through the new one-pass
+  `revisionContainmentMethod` in `cleanup-core.ts` (ancestry, then
+  `rev-list --cherry-pick --right-only --count`).
+- Add `lib/ship-holds.ts` and `evals/schemas/ship-holds.schema.json`:
+  `hold add|status|check|release|waive|publish` keep `holds.json` beside the
+  claims. `loop verify --for merge|deploy|migrations`, `hold check --for`, and
+  `migration apply` fail closed on an active covering hold or on published
+  holds they cannot read; `--local-only` opts out. A waiver binds the run ID
+  and the hold's content digest, is recorded only by that run's active
+  controller, and a halt needs `--override-halt`, as does another agent's
+  release of one. `hold publish` builds a deterministic commit with the new
+  `runGitWithInput` and pushes `refs/simple-changes/holds/<id>` with the
+  publication intent recorded before the push; `runGitRemote` in
+  `process.ts` disables terminal and credential-manager prompts, forces SSH
+  batch mode unless the user configured an SSH command, and kills the command
+  after 30 s, returning failures instead of throwing.
+- Keep new state in new files (`holds.json`, `ready-receipts.json`) under the
+  new `ready-work-receipt` and `ship-holds` schema names; `state.json` and
+  the lease are untouched so installed 0.19/0.20 clients keep reading them.
+  Document ready-work receipts and shipment holds in
+  `references/inventory-and-concurrency.md`, add "Shipment holds" to
+  `SKILL.md`, and pin the invariants and prohibitions in `SPEC.md`;
+  `skill-contract.test.ts` pins the prose and `ship-holds.test.ts` covers
+  the gates, waivers, publication, and remote failures. Bump guidance to 23
+  with two change entries and a notice bullet; `.simple-changes.json` records
+  it as accepted.
+<!-- simple-changelogs-signature agent="Fable 5.1" at="2026-10-01T16:10:25-05:00" -->
+
 ## 0.20.0 - 2026-10-01
 
 - Cut inventory capture from one Git process per path and per worktree to a

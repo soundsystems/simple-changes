@@ -304,18 +304,129 @@ When a separate task already owns the active shipping controller, finished and
 verified work must remain on its exact worktree, branch, and commit. Do not
 start a competing shipment. Offer the user two choices in plain language:
 
-- **Fold into the active shipment:** with explicit approval, contact the exact
-  owning task and send a ready-work receipt containing the repository,
-  worktree, branch, commit, scope, completed checks, release impact, migrations,
-  deployment constraints, and any unresolved authority.
+- **Fold into the active shipment:** with explicit approval, record a
+  [ready-work receipt](#ready-work-receipts) with `worktree release
+  --ready-receipt <file>`. The active controller finds it through `worktree
+  status --json` at its next planning point, so no message is needed. When the
+  host can identify and contact the exact owning task, you may also tell it
+  that the receipt is recorded.
 - **Ship separately afterward:** preserve the claim and work unchanged, wait
   for the active shipment to close, then begin a fresh shipment.
 
-Do not message another task or imply that it accepted, integrated, shipped, or
-deployed the work before confirmation. A ready-work receipt is coordination,
-not authority to take ownership, merge, deploy, apply migrations, or clean up.
-If the host cannot identify and contact the exact owning task, give the user a
-manual receipt to forward; never guess the recipient.
+Do not imply that another task accepted, integrated, shipped, or deployed the
+work before confirmation. A ready-work receipt is coordination, not authority
+to take ownership, merge, deploy, apply migrations, or clean up. Never guess a
+recipient; the recorded receipt reaches every controller without one.
+
+## Ready-work receipts
+
+A ready-work receipt is the passive form of a handoff. The finished author
+records it once, and every controller in every harness on this machine reads it
+from the shared coordination directory without either side messaging the
+other. Write the author half as JSON:
+
+```json
+{
+  "scope": "One sentence naming what this unit changes.",
+  "checks": [{ "command": "bun run check", "result": "passed" }],
+  "releaseImpact": "patch",
+  "migrations": [],
+  "deploymentConstraints": ["Deploy only after the 17:00 freeze lifts."],
+  "unresolvedAuthority": []
+}
+```
+
+Then run `worktree release --agent-id <owner> --claim-id <id> --ready-receipt
+<file>`. The checkout must be clean and on its branch, so commit first. The
+runtime binds the claim, owner, path, branch, exact head, and content digest
+itself, rejects those fields in the input, and refuses secrets.
+`releaseImpact` is `none`, `patch`, `minor`, `major`, or `unknown`; each check
+`result` is `passed`, `failed`, or `skipped` with an optional `note`. In the
+same lock interval it releases the claim as a completed-work `handoff` that
+records the receipted evidence, so an active loop that admitted the author
+keeps integrating instead of reporting a stale claim.
+
+`worktree status --json` lists every receipt under `readyWork` with its
+freshness: `current` while the branch is still at the receipted head and the
+checkout is unchanged, `stale` once either moves, and `shipped` once the target
+contains the head. For a stale receipt, ask the owner for a new one; never ship
+newer commits on an old receipt. A controller plans current receipts as
+ordinary released units and carries their migrations and deployment
+constraints into the shipment. A receipt is evidence, not authority: it never
+grants merge, deploy, migration, or cleanup permission.
+
+## Shipment holds
+
+A hold is how any agent tells every shipping controller to stop or wait without
+contacting it. Add one when a task outside the shipment could break, or be
+broken by, the next merge, deployment, or migration: a production backfill or
+migration in progress, an incident, a release freeze, or a companion change
+that must land first.
+
+```sh
+simple-changes hold add --agent-id "$AGENT_ID" --adapter <harness> \
+  --hold-scope ship|deploy|migrations --severity delay|halt \
+  --reason "<plain reason the user will read>" [--until-merged <branch>]
+```
+
+- **Scope:** `ship` covers merges, deployments, and migrations; `deploy` covers
+  deployments; `migrations` covers migration applies. Before a merge, a
+  `deploy` or `migrations` hold is advisory: if merging the target deploys or
+  migrates automatically, treat it as blocking and ask the user.
+- **Severity:** a `delay` pauses the covered step until the user decides; a
+  `halt` stops it until the hold ends.
+- **Evidence:** `--until-merged <branch>` ends the hold once the target
+  contains that branch by ancestry or patch equivalence, and the first gate
+  that observes it records the release as `merged`. The branch must exist and
+  must not already be contained.
+
+Holds live in `holds.json` beside the worktree claims, so agents in any harness
+on this machine see them at once. To reach clones on other machines or in cloud
+sandboxes, the owner runs `hold publish --agent-id <owner> --hold-id <id>`,
+which pushes the hold as `refs/simple-changes/holds/<id>` to the target remote.
+Publishing is a push, so follow
+[harness push authorization](harness-push-authorization.md); a repository whose
+push authorization is `never` keeps its holds local. Publication is recorded
+before the push and confirmed only once the remote lists the ref, so a retry
+pushes the same commit and a release that races the push still withdraws it.
+Published holds are read with plain `ls-remote` and fetch, never prompt for
+credentials, and time out instead of waiting. Another clone judges a published
+`--until-merged` hold only from that remote's copy of the branch, never from a
+same-named local branch, so push the branch too; otherwise other clones can
+clear the hold only when its owner releases it.
+
+The owner ends a hold with `hold release --agent-id <owner> --hold-id <id>` as
+soon as its reason is over. Release also withdraws a published ref and reports
+a failed withdrawal with its retry; status lists released holds whose refs are
+still published. Another agent releases a hold only with `--approved-by` and
+`--reason` from the user, plus `--override-halt` for a halt; the owner's own
+clone keeps its record until the owner releases it there. No hold is released
+by elapsed time.
+
+Check holds at each covered step: run `loop verify --for merge`, `--for
+deploy`, or `--for migrations` immediately before that step, and `hold check
+--for <step>` for a step outside a loop. `migration apply` enforces
+`migrations` holds itself. `loop start` and `loop status` list the holds
+recorded here; the gates also evaluate merge evidence and read published holds
+from the target remote, plus any `--remote` you name. A gate fails closed when
+published holds cannot be read, including when remotes exist but none is the
+target; pass `--local-only` only after the user agrees.
+
+When a hold blocks:
+
+- **Delay:** stop and ask: **<owner> asked to delay <step> because <reason>.
+  Should I wait, or continue without it?** If the user chooses to continue,
+  record `hold waive --run-id <run> --agent-id <controller> --hold-id <id>
+  --approved-by <user> --reason "<why>"`.
+- **Halt:** stop the covered step and tell the user who halted it and why.
+  Waive it only when the user explicitly approves overriding that exact hold,
+  adding `--override-halt`.
+
+A waiver binds the current run and the hold's exact content, so it never
+carries into the next shipment. Only that run's active controller records one,
+and it applies only while that controller holds control. Work a hold does not cover may continue. Holds never block `loop
+finalize`: a halted run relinquishes with its blockers recorded like any other
+incomplete run.
 
 ## Owner claims and safe pauses
 

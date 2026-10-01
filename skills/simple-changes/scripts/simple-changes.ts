@@ -99,6 +99,12 @@ import {
   buildProposalSignatureBlock,
   type ProposalSignatureRole,
 } from "./lib/proposal-signatures.ts";
+import {
+  parseReadyWorkInput,
+  type ReadyWorkStatus,
+  readyWorkStatus,
+  recordReadyWork,
+} from "./lib/ready-work.ts";
 import { redactSecrets } from "./lib/redact.ts";
 import {
   checkReleaseConsistency,
@@ -119,6 +125,21 @@ import {
   writeInstructionPointer,
 } from "./lib/repository-instructions.ts";
 import { SCHEMA_NAMES, validateSchema } from "./lib/schema.ts";
+import {
+  addShipHold,
+  assertShipHoldsClear,
+  checkShipHolds,
+  publishShipHold,
+  type RecordedShipHolds,
+  recordedShipHolds,
+  releaseShipHold,
+  SHIP_HOLD_ACTIONS,
+  SHIP_HOLD_SCOPES,
+  SHIP_HOLD_SEVERITIES,
+  type ShipHoldReadOptions,
+  type ShipHoldReport,
+  waiveShipHold,
+} from "./lib/ship-holds.ts";
 import type {
   ChangelogCoordination,
   ChangelogInstallDecision,
@@ -128,6 +149,9 @@ import type {
   RepoPolicy,
   RequestMode,
   SchemaName,
+  ShipHoldAction,
+  ShipHoldScope,
+  ShipHoldSeverity,
 } from "./lib/types.ts";
 import {
   attachClaimedWorktree,
@@ -135,6 +159,7 @@ import {
   detachClaimedWorktree,
   observeWorktreeClaims,
   pauseClaimedWorktree,
+  readCoordinationDocumentFromCommonDirectory,
   readWorktreeCoordination,
   releaseHandoffWorktreeClaim,
   releaseWorktreeClaim,
@@ -148,7 +173,7 @@ import {
   standaloneWorktreeCleanup,
 } from "./lib/worktree-maintenance.ts";
 
-const VERSION = "0.20.0";
+const VERSION = "0.21.0";
 const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const SCHEMA_KIND_LINE_LIMIT = 78;
 const schemaKindLines = SCHEMA_NAMES.reduce<string[]>((lines, name) => {
@@ -216,7 +241,8 @@ Usage:
   simple-changes loop replan --run-id ID --agent-id ID
     --manifest-digest SHA256 --status-digest SHA256
     --approved-by ID --reason TEXT [--json] [--repo PATH]
-  simple-changes loop verify --run-id ID [--json] [--repo PATH]
+  simple-changes loop verify --run-id ID [--for merge|deploy|migrations]
+    [--remote NAME | --local-only] [--json] [--repo PATH]
   simple-changes loop guard --run-id ID --agent-id ID [--json] [--repo PATH]
   simple-changes loop record-scope --run-id ID --agent-id ID
     --receipt CHANGE_PLAN_FILE [--json] [--repo PATH]
@@ -273,7 +299,8 @@ Usage:
   simple-changes worktree attach --agent-id ID --claim-id ID [--json] [--repo PATH]
   simple-changes worktree resume-ready --run-id ID --agent-id ID --claim-id ID
     [--json] [--repo PATH]
-  simple-changes worktree release --agent-id ID --claim-id ID [--json] [--repo PATH]
+  simple-changes worktree release --agent-id ID --claim-id ID
+    [--ready-receipt FILE] [--json] [--repo PATH]
   simple-changes worktree takeover --claim-id ID --agent-id NEW_OWNER
     --status-digest SHA256 --approved-by ID --reason TEXT [--release]
     [--json] [--repo PATH]
@@ -283,6 +310,20 @@ Usage:
   simple-changes worktree refresh-index [--json] [--repo PATH]
   simple-changes worktree cleanup --agent-id ID --approved-by ID --reason TEXT
     [--target REF] [--json] [--repo PATH]
+  simple-changes hold add --agent-id ID --adapter ID
+    --hold-scope ship|deploy|migrations --severity delay|halt --reason TEXT
+    [--until-merged BRANCH] [--owner-ref REF] [--json] [--repo PATH]
+  simple-changes hold status [--remote NAME | --local-only] [--json] [--repo PATH]
+  simple-changes hold check --for merge|deploy|migrations [--run-id ID]
+    [--remote NAME | --local-only] [--json] [--repo PATH]
+  simple-changes hold release --agent-id ID --hold-id ID
+    [--approved-by ID --reason TEXT [--override-halt]] [--remote NAME]
+    [--json] [--repo PATH]
+  simple-changes hold waive --run-id ID --agent-id ID --hold-id ID
+    --approved-by ID --reason TEXT [--override-halt]
+    [--remote NAME | --local-only] [--json] [--repo PATH]
+  simple-changes hold publish --agent-id ID --hold-id ID [--remote NAME]
+    [--json] [--repo PATH]
   simple-changes prune --approved-by ID --reason TEXT [--target REF]
     [--dry-run] [--json] [--repo PATH]
   simple-changes prepare-agent --run-id ID --agent-id ID --purpose SLUG
@@ -333,14 +374,20 @@ interface CliOptions {
   handoffTiming?: RepoPolicy["handoffTiming"];
   headRef?: string;
   help: boolean;
+  holdAction?: ShipHoldAction;
+  holdId?: string;
+  holdScope?: ShipHoldScope;
+  holdSeverity?: ShipHoldSeverity;
   instructionFile?: string;
   instructionPointer?: "add" | "leave";
   json: boolean;
+  localOnly: boolean;
   manifestDigest?: string;
   migrationHandling?: RepoPolicy["migrationHandling"];
   migrationTargets: RepoPolicy["migrationTargets"];
   mode?: InitializationMode;
   openingRemoteInventoryPath?: string;
+  overrideHalt: boolean;
   ownerRef?: string;
   pauseReceiptId?: string;
   pendingPath?: string;
@@ -354,10 +401,12 @@ interface CliOptions {
   purpose?: string;
   questions?: RepoPolicy["questions"];
   ready: boolean;
+  readyReceiptPath?: string;
   reason?: string;
   receiptPath?: string;
   releaseClaim: boolean;
   releaseVersion?: string;
+  remoteName?: string;
   repo: string;
   repoProvided: boolean;
   requestAction?: "request-pause" | "request-detach" | "notify-resume";
@@ -373,6 +422,7 @@ interface CliOptions {
   targetRef?: string;
   uiArtifacts: boolean;
   uiArtifactVersioning?: RepoPolicy["uiArtifactVersioning"];
+  untilMerged?: string;
   versionAuthorized: boolean;
   worktreePath?: string;
   yes: boolean;
@@ -395,9 +445,12 @@ const VALUED_OPTIONS = new Set([
   "--disposition",
   "--evidence",
   "--finish",
+  "--for",
   "--handoff",
   "--guidance-decision",
   "--git-push-authorization",
+  "--hold-id",
+  "--hold-scope",
   "--instruction-file",
   "--instruction-pointer",
   "--manifest-digest",
@@ -415,8 +468,10 @@ const VALUED_OPTIONS = new Set([
   "--proposal-signatures",
   "--purpose",
   "--questions",
+  "--ready-receipt",
   "--reason",
   "--receipt",
+  "--remote",
   "--request",
   "--request-action",
   "--repo",
@@ -424,10 +479,12 @@ const VALUED_OPTIONS = new Set([
   "--scope",
   "--shipping-mode",
   "--settle-ms",
+  "--severity",
   "--status-digest",
   "--state",
   "--target",
   "--ui-versioning",
+  "--until-merged",
   "--version",
   "--worktree",
 ]);
@@ -441,6 +498,8 @@ const BOOLEAN_OPTIONS = new Set([
   "--check",
   "--dry-run",
   "--json",
+  "--local-only",
+  "--override-halt",
   "--ready",
   "--release",
   "--stale-lease",
@@ -784,6 +843,7 @@ const applyLoopValuedOption = (
     "--changelog-receipt": "changelogReceiptPath",
     "--claim-id": "claimId",
     "--head": "headRef",
+    "--hold-id": "holdId",
     "--manifest-digest": "manifestDigest",
     "--opening-remote-inventory": "openingRemoteInventoryPath",
     "--owner-ref": "ownerRef",
@@ -794,10 +854,12 @@ const applyLoopValuedOption = (
     "--purpose": "purpose",
     "--reason": "reason",
     "--receipt": "receiptPath",
+    "--remote": "remoteName",
     "--request": "requestPath",
     "--run-id": "runId",
     "--state": "statePath",
     "--status-digest": "statusDigest",
+    "--until-merged": "untilMerged",
   };
   const key = textOptions[option];
   if (key) {
@@ -814,6 +876,10 @@ const applyLoopValuedOption = (
   }
   if (option === "--evidence") {
     options.evidencePaths.push(resolve(value));
+    return true;
+  }
+  if (option === "--ready-receipt") {
+    options.readyReceiptPath = resolve(value);
     return true;
   }
   if (option === "--disposition") {
@@ -841,6 +907,40 @@ const applyLoopValuedOption = (
   return false;
 };
 
+const enumOption = <T extends string>(
+  option: string,
+  value: string,
+  allowed: readonly T[]
+): T => {
+  if (!allowed.includes(value as T)) {
+    throw new SimpleChangesError(
+      `${option} must be ${allowed.slice(0, -1).join(", ")}${allowed.length > 2 ? "," : ""} or ${allowed.at(-1)}`,
+      EXIT_CODES.usage
+    );
+  }
+  return value as T;
+};
+
+const applyHoldValuedOption = (
+  options: CliOptions,
+  option: string,
+  value: string
+): boolean => {
+  if (option === "--for") {
+    options.holdAction = enumOption(option, value, SHIP_HOLD_ACTIONS);
+    return true;
+  }
+  if (option === "--hold-scope") {
+    options.holdScope = enumOption(option, value, SHIP_HOLD_SCOPES);
+    return true;
+  }
+  if (option === "--severity") {
+    options.holdSeverity = enumOption(option, value, SHIP_HOLD_SEVERITIES);
+    return true;
+  }
+  return false;
+};
+
 const applyValuedOption = (
   options: CliOptions,
   option: string,
@@ -849,7 +949,8 @@ const applyValuedOption = (
   if (
     applyShippingModeOption(options, option, value) ||
     applySetupValuedOption(options, option, value) ||
-    applyLoopValuedOption(options, option, value)
+    applyLoopValuedOption(options, option, value) ||
+    applyHoldValuedOption(options, option, value)
   ) {
     return;
   }
@@ -935,6 +1036,10 @@ const applyBooleanOption = (options: CliOptions, option: string): void => {
     options.versionAuthorized = true;
   } else if (option === "--json") {
     options.json = true;
+  } else if (option === "--local-only") {
+    options.localOnly = true;
+  } else if (option === "--override-halt") {
+    options.overrideHalt = true;
   } else if (option === "--changelog-required") {
     options.changelogRequired = true;
   } else if (option === "--check") {
@@ -964,7 +1069,9 @@ const parseOptions = (args: string[]): CliOptions => {
     evidencePaths: [],
     help: false,
     json: false,
+    localOnly: false,
     migrationTargets: [],
+    overrideHalt: false,
     positional: [],
     productionAuthorized: false,
     ready: false,
@@ -1823,6 +1930,12 @@ const runMigrationCommand = (options: CliOptions): void => {
 
 const runMigrationApplyCommand = (options: CliOptions): void => {
   const { commonGitDirectory, decision } = migrationDecisionForOptions(options);
+  assertShipHoldsClear(
+    checkShipHolds(options.repo, {
+      ...holdReadOptions(options),
+      action: "migrations",
+    })
+  );
   if (
     decision.authorizationDigest &&
     migrationAuthorizationConsumed(
@@ -2282,70 +2395,81 @@ const runLoopRebaseline = (
   return true;
 };
 
+const runLoopStart = (options: CliOptions): void => {
+  const agentId = requireCliOption(options.agentId, "--agent-id");
+  if (!options.mode) {
+    throw new SimpleChangesError(
+      "loop start requires --mode",
+      EXIT_CODES.usage
+    );
+  }
+  if (options.changelogRequired) {
+    const inventory = captureInventory(options.repo);
+    const changelogCoordination = inspectChangelogCoordination(
+      inventory.repository.primaryCheckout
+    );
+    const initialization = inspectInitialization(
+      options.mode,
+      inventory.policy,
+      changelogCoordination,
+      { changelogRequired: true }
+    );
+    if (initialization.preLoopActionRequired) {
+      throw new SimpleChangesError(
+        "Complete Simple Changes initialization and every required update choice before loop start.",
+        EXIT_CODES.unsafe
+      );
+    }
+  }
+  const openingRemoteInventory = options.openingRemoteInventoryPath
+    ? (JSON.parse(
+        readFileSync(resolve(options.openingRemoteInventoryPath), "utf8")
+      ) as unknown)
+    : undefined;
+  const lease = startLoop(
+    options.repo,
+    agentId,
+    options.mode as RequestMode,
+    openingRemoteInventory
+  );
+  const holds = informationalHolds(options.repo);
+  writeOutput(
+    { holds, lease, manifestDigest: loopManifestDigest(lease) },
+    options.json,
+    `Started ${lease.runId} for ${lease.ownerAgentId}.\nManifest: ${loopManifestDigest(lease)}\n${renderRecordedHolds(holds)}`
+  );
+};
+
+const runLoopStatus = (options: CliOptions): void => {
+  const status = loopStatus(options.repo);
+  const guidanceLines = [
+    ...(status.liveness
+      ? [
+          `Liveness: ${status.liveness.state} (last activity ${status.liveness.lastUpdatedAt}; owner process ${status.liveness.ownerProcessProvable ? "running" : "unprovable"})`,
+        ]
+      : []),
+    status.guidance.headline,
+    ...status.guidance.nextCommands.map((command) => `  Next: ${command}`),
+  ];
+  const holds = informationalHolds(options.repo);
+  writeOutput(
+    {
+      ...status,
+      holds,
+      manifestDigest: status.lease ? loopManifestDigest(status.lease) : null,
+    },
+    options.json,
+    `${renderLoopVerification(status.verification)}${guidanceLines.join("\n")}\n${renderRecordedHolds(holds)}`
+  );
+};
+
 const runLoopOpeningAction = (action: string, options: CliOptions): boolean => {
   if (action === "start") {
-    const agentId = requireCliOption(options.agentId, "--agent-id");
-    if (!options.mode) {
-      throw new SimpleChangesError(
-        "loop start requires --mode",
-        EXIT_CODES.usage
-      );
-    }
-    if (options.changelogRequired) {
-      const inventory = captureInventory(options.repo);
-      const changelogCoordination = inspectChangelogCoordination(
-        inventory.repository.primaryCheckout
-      );
-      const initialization = inspectInitialization(
-        options.mode,
-        inventory.policy,
-        changelogCoordination,
-        { changelogRequired: true }
-      );
-      if (initialization.preLoopActionRequired) {
-        throw new SimpleChangesError(
-          "Complete Simple Changes initialization and every required update choice before loop start.",
-          EXIT_CODES.unsafe
-        );
-      }
-    }
-    const openingRemoteInventory = options.openingRemoteInventoryPath
-      ? (JSON.parse(
-          readFileSync(resolve(options.openingRemoteInventoryPath), "utf8")
-        ) as unknown)
-      : undefined;
-    const lease = startLoop(
-      options.repo,
-      agentId,
-      options.mode as RequestMode,
-      openingRemoteInventory
-    );
-    writeOutput(
-      { lease, manifestDigest: loopManifestDigest(lease) },
-      options.json,
-      `Started ${lease.runId} for ${lease.ownerAgentId}.\nManifest: ${loopManifestDigest(lease)}\n`
-    );
+    runLoopStart(options);
     return true;
   }
   if (action === "status") {
-    const status = loopStatus(options.repo);
-    const guidanceLines = [
-      ...(status.liveness
-        ? [
-            `Liveness: ${status.liveness.state} (last activity ${status.liveness.lastUpdatedAt}; owner process ${status.liveness.ownerProcessProvable ? "running" : "unprovable"})`,
-          ]
-        : []),
-      status.guidance.headline,
-      ...status.guidance.nextCommands.map((command) => `  Next: ${command}`),
-    ];
-    writeOutput(
-      {
-        ...status,
-        manifestDigest: status.lease ? loopManifestDigest(status.lease) : null,
-      },
-      options.json,
-      `${renderLoopVerification(status.verification)}${guidanceLines.join("\n")}\n`
-    );
+    runLoopStatus(options);
     return true;
   }
   if (action === "recover") {
@@ -2445,12 +2569,28 @@ const runLoopVerifyAction = (action: string, options: CliOptions): boolean => {
     return false;
   }
   const verification = verifyLoop(options.repo);
-  writeOutput(verification, options.json, renderLoopVerification(verification));
+  // `--for` names the shipping step about to run, so holds covering it gate
+  // the same verification every controller already runs before that step.
+  const holds = options.holdAction
+    ? checkShipHolds(options.repo, {
+        action: options.holdAction,
+        localOnly: options.localOnly,
+        remote: options.remoteName,
+      })
+    : null;
+  writeOutput(
+    holds ? { ...verification, holds } : verification,
+    options.json,
+    `${renderLoopVerification(verification)}${holds ? renderHoldReport(holds) : ""}`
+  );
   if (!verification.ok) {
     throw new SimpleChangesError(
       "Active-loop manifest verification failed.",
       EXIT_CODES.unsafe
     );
+  }
+  if (holds) {
+    assertShipHoldsClear(holds);
   }
   return true;
 };
@@ -2710,6 +2850,62 @@ const runWorktreeMaintenance = (
   return false;
 };
 
+const runWorktreeStatus = (options: CliOptions): void => {
+  const inventory = captureInventory(options.repo);
+  const state = readCoordinationDocumentFromCommonDirectory(
+    inventory.repository.commonGitDirectory
+  );
+  let readyWork: ReadyWorkStatus[] | { error: string };
+  try {
+    readyWork = readyWorkStatus(inventory);
+  } catch (error) {
+    readyWork = { error: (error as Error).message };
+  }
+  writeOutput(
+    { ...state, readyWork },
+    options.json,
+    `Worktree claims: ${state.claims.length}\nPause receipts: ${state.receipts.length}\n${renderReadyWork(readyWork)}`
+  );
+};
+
+const runWorktreeReadyRelease = (
+  options: CliOptions,
+  agentId: string
+): void => {
+  const readyReceiptPath = requireCliOption(
+    options.readyReceiptPath,
+    "--ready-receipt"
+  );
+  const result = recordReadyWork(
+    options.repo,
+    agentId,
+    requireCliOption(options.claimId, "--claim-id"),
+    parseReadyWorkInput(readJsonFile(readyReceiptPath))
+  );
+  writeOutput(
+    result,
+    options.json,
+    `Released ${result.claim.claimId} as ready work ${result.receipt.receiptId} on ${result.receipt.branch} at ${result.receipt.headSha}.\n`
+  );
+};
+
+const runWorktreeRelease = (options: CliOptions, agentId: string): void => {
+  if (options.readyReceiptPath) {
+    runWorktreeReadyRelease(options, agentId);
+    return;
+  }
+  const claim = releaseWorktreeClaim(
+    options.repo,
+    agentId,
+    requireCliOption(options.claimId, "--claim-id")
+  );
+  writeOutput(
+    claim,
+    options.json,
+    `Released ${claim.claimId} without deleting work.\n`
+  );
+};
+
 const runWorktreeCommand = (options: CliOptions): void => {
   const [action] = options.positional;
   if (!action) {
@@ -2719,12 +2915,7 @@ const runWorktreeCommand = (options: CliOptions): void => {
     );
   }
   if (action === "status") {
-    const state = readWorktreeCoordination(options.repo);
-    writeOutput(
-      state,
-      options.json,
-      `Worktree claims: ${state.claims.length}\nPause receipts: ${state.receipts.length}\n`
-    );
+    runWorktreeStatus(options);
     return;
   }
   if (action === "observe") {
@@ -2824,16 +3015,7 @@ const runWorktreeCommand = (options: CliOptions): void => {
     return;
   }
   if (action === "release") {
-    const claim = releaseWorktreeClaim(
-      options.repo,
-      agentId,
-      requireCliOption(options.claimId, "--claim-id")
-    );
-    writeOutput(
-      claim,
-      options.json,
-      `Released ${claim.claimId} without deleting work.\n`
-    );
+    runWorktreeRelease(options, agentId);
     return;
   }
   if (action === "takeover") {
@@ -2862,6 +3044,228 @@ const runWorktreeCommand = (options: CliOptions): void => {
     `Unknown worktree action: ${action}`,
     EXIT_CODES.usage
   );
+};
+
+const renderReadyWork = (
+  readyWork: readonly ReadyWorkStatus[] | { error: string }
+): string =>
+  "error" in readyWork
+    ? `Ready-work receipts: unreadable (${readyWork.error})\n`
+    : [
+        `Ready-work receipts: ${readyWork.length}`,
+        ...readyWork.map(
+          (item) =>
+            `- ${item.receipt.branch} (${item.receipt.owner.agentId}) ${item.freshness}: ${item.receipt.scope}`
+        ),
+        "",
+      ].join("\n");
+
+// Loop start and status only list recorded holds: they must keep working when
+// the holds file is unreadable, and the `--for` gates do the full evaluation.
+const informationalHolds = (
+  repositoryPath: string
+): RecordedShipHolds | { error: string } => {
+  try {
+    return recordedShipHolds(repositoryPath);
+  } catch (error) {
+    return { error: (error as Error).message };
+  }
+};
+
+const renderRecordedHolds = (
+  holds: RecordedShipHolds | { error: string }
+): string => {
+  if ("error" in holds) {
+    return `Shipment holds: unreadable (${holds.error}); gates fail closed until this is fixed.\n`;
+  }
+  if (holds.active.length === 0) {
+    return "";
+  }
+  return `${[
+    `Shipment holds: ${holds.active.length} recorded here; run loop verify --for <step> before each covered step.`,
+    ...holds.active.map(
+      (hold) =>
+        `- ${hold.holdId}: ${hold.severity} ${hold.scope} by ${hold.owner.agentId}: ${hold.reason}`
+    ),
+  ].join("\n")}\n`;
+};
+
+const REMOTE_HOLD_SUMMARIES: Record<
+  ShipHoldReport["remote"]["status"],
+  (report: ShipHoldReport) => string
+> = {
+  "no-remote": () => "no target remote",
+  read: (report) =>
+    `${report.remote.refCount} published on ${report.remote.name}`,
+  skipped: () => "remote not read",
+  unavailable: (report) =>
+    `unreadable on ${report.remote.name}: ${report.remote.error}`,
+};
+
+const renderHoldReport = (report: ShipHoldReport): string => {
+  const remote = REMOTE_HOLD_SUMMARIES[report.remote.status](report);
+  const lines = [
+    report.action
+      ? `Shipment holds for ${report.action}: ${report.clear ? "clear" : "blocked"} (${remote})`
+      : `Shipment holds: ${report.active.length} active (${remote})`,
+    ...report.holds.map(
+      (item) =>
+        `- ${item.hold.holdId} ${item.status}: ${item.hold.severity} ${item.hold.scope} by ${item.hold.owner.agentId}: ${item.hold.reason}`
+    ),
+    ...report.nextSteps.map((step) => `  Next: ${step}`),
+  ];
+  return `${lines.join("\n")}\n`;
+};
+
+const holdReadOptions = (options: CliOptions): ShipHoldReadOptions => ({
+  localOnly: options.localOnly,
+  remote: options.remoteName,
+  runId: options.runId,
+});
+
+const requiredHoldValue = <T>(value: T | undefined, option: string): T => {
+  if (value === undefined) {
+    throw new SimpleChangesError(
+      `${option} is required for this command`,
+      EXIT_CODES.usage
+    );
+  }
+  return value;
+};
+
+const runHoldMutation = (
+  action: string,
+  options: CliOptions,
+  agentId: string
+): boolean => {
+  if (action === "add") {
+    const hold = addShipHold(options.repo, {
+      adapter: requireCliOption(options.adapter, "--adapter"),
+      agentId,
+      ownerRef: options.ownerRef,
+      reason: requireCliOption(options.reason, "--reason"),
+      scope: requiredHoldValue(options.holdScope, "--hold-scope"),
+      severity: requiredHoldValue(options.holdSeverity, "--severity"),
+      untilMerged: options.untilMerged,
+    });
+    writeOutput(
+      hold,
+      options.json,
+      `Added ${hold.severity} ${hold.scope} hold ${hold.holdId}. Agents in any harness on this machine see it now; run hold publish to share it through the remote.\n`
+    );
+    return true;
+  }
+  if (action === "waive") {
+    const waiver = waiveShipHold(options.repo, {
+      ...holdReadOptions(options),
+      agentId,
+      approvedBy: requireCliOption(options.approvedBy, "--approved-by"),
+      holdId: requireCliOption(options.holdId, "--hold-id"),
+      overrideHalt: options.overrideHalt,
+      reason: requireCliOption(options.reason, "--reason"),
+      runId: requireCliOption(options.runId, "--run-id"),
+    });
+    writeOutput(
+      waiver,
+      options.json,
+      `Waived ${waiver.holdId} for ${waiver.runId} with approval from ${waiver.approvedBy}.\n`
+    );
+    return true;
+  }
+  if (action === "publish") {
+    const hold = publishShipHold(options.repo, {
+      agentId,
+      holdId: requireCliOption(options.holdId, "--hold-id"),
+      remote: options.remoteName,
+    });
+    const remote = hold.publication?.remote ?? "";
+    // Other clones judge --until-merged from their remote-tracking branch, so
+    // an unpushed branch can only be cleared there by its owner's release.
+    const unpushedBranch =
+      hold.untilMerged &&
+      runGit(
+        options.repo,
+        [
+          "rev-parse",
+          "--verify",
+          "--quiet",
+          `refs/remotes/${remote}/${hold.untilMerged}`,
+        ],
+        true
+      ).exitCode !== 0
+        ? `Note: ${hold.untilMerged} is not on ${remote}, so other clones cannot see it merge; release this hold yourself once it lands.\n`
+        : "";
+    writeOutput(
+      hold,
+      options.json,
+      `Published ${hold.holdId} as ${hold.publication?.ref} on ${remote}.\n${unpushedBranch}`
+    );
+    return true;
+  }
+  return false;
+};
+
+const runHoldRelease = (options: CliOptions, agentId: string): void => {
+  const result = releaseShipHold(options.repo, {
+    agentId,
+    approvedBy: options.approvedBy,
+    holdId: requireCliOption(options.holdId, "--hold-id"),
+    overrideHalt: options.overrideHalt,
+    reason: options.reason,
+    remote: options.remoteName,
+  });
+  const { publication } = result.hold;
+  const withdrawal =
+    result.withdrawal.attempted && publication
+      ? `${result.withdrawal.ok ? "Withdrew" : "Could not withdraw"} ${publication.ref} from ${publication.remote}.\n`
+      : "";
+  writeOutput(
+    result,
+    options.json,
+    `Released ${result.hold.holdId}.\n${withdrawal}`
+  );
+  if (!result.withdrawal.ok) {
+    throw new SimpleChangesError(
+      `The hold is released locally, but its published ref is still on the remote: ${result.withdrawal.error} Rerun hold release to retry the withdrawal.`,
+      EXIT_CODES.inventory
+    );
+  }
+};
+
+const runHoldCommand = (options: CliOptions): void => {
+  const [action] = options.positional;
+  if (action === "status" || action === "check") {
+    const holdAction =
+      action === "check"
+        ? requiredHoldValue(options.holdAction, "--for")
+        : undefined;
+    const report = checkShipHolds(options.repo, {
+      ...holdReadOptions(options),
+      action: holdAction,
+    });
+    writeOutput(report, options.json, renderHoldReport(report));
+    if (holdAction) {
+      assertShipHoldsClear(report);
+    }
+    return;
+  }
+  if (!action) {
+    throw new SimpleChangesError(
+      "hold requires add, status, check, release, waive, or publish",
+      EXIT_CODES.usage
+    );
+  }
+  const agentId = requireCliOption(options.agentId, "--agent-id");
+  if (action === "release") {
+    runHoldRelease(options, agentId);
+    return;
+  }
+  if (!runHoldMutation(action, options, agentId)) {
+    throw new SimpleChangesError(
+      `Unknown hold action: ${action}`,
+      EXIT_CODES.usage
+    );
+  }
 };
 
 const renderPrune = (report: PruneReport): string => {
@@ -3017,6 +3421,9 @@ const executeCommand = async (
     }
     case "worktree":
       runWorktreeCommand(options);
+      return EXIT_CODES.success;
+    case "hold":
+      runHoldCommand(options);
       return EXIT_CODES.success;
     case "prune":
       runPrune(options);

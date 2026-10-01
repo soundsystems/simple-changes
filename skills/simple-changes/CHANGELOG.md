@@ -2,6 +2,37 @@
 
 ## Unreleased
 
+## 0.21.0 - 2026-10-01
+
+- Hand off finished work without sending a message. An author whose checkout
+  is clean and committed runs `worktree release --ready-receipt <file>` to
+  record what the unit changes, which checks passed, its release impact,
+  migrations, and deployment constraints against that exact head. Every
+  controller in every harness on the machine sees the receipt in
+  `worktree status --json`, marked current, stale, or shipped, so an active
+  shipment picks the work up at its next planning point and nobody has to find
+  the other agent's thread. A receipt is evidence, not authority: it never
+  grants merge, deploy, migration, or cleanup permission.
+- Pause or halt a shipment from any agent. `hold add` records a hold that
+  delays or halts merges, deployments, or migrations, with a plain reason the
+  user will read and an optional `--until-merged <branch>` that ends the hold
+  once the target contains that branch. `loop verify --for merge`,
+  `--for deploy`, or `--for migrations`, `hold check --for`, and
+  `migration apply` stop on a covering hold: a delay asks the user whether to
+  wait or continue, and a halt stops the step until the hold ends. Only the
+  owner releases a hold without approval, a waiver applies to one run, and
+  overriding a halt takes an explicit override.
+- Share a hold with other machines. `hold publish` pushes it to the target
+  remote as `refs/simple-changes/holds/<id>` so clones elsewhere, including
+  cloud sandboxes, see it, and `hold release` withdraws it. Reading published
+  holds never prompts for credentials and times out instead of hanging, and a
+  gate that cannot read them fails closed rather than treating them as absent.
+- Existing installations keep working. Receipts and holds live in new files
+  beside the worktree claims, so 0.19 and 0.20 clients sharing a repository
+  keep reading their state and leases unchanged. Simple Changes guidance moves
+  to version 23 to explain the new abilities.
+<!-- simple-changelogs-signature agent="Fable 5.1" at="2026-10-01T16:10:25-05:00" -->
+
 ## 0.20.0 - 2026-10-01
 
 - Inventory capture is much faster. Commands that read the repository

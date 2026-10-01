@@ -1,0 +1,181 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://simple-changes.dev/schemas/ship-holds.schema.json",
+  "title": "Simple Changes shipment holds",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "repositoryId", "holds", "waivers"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "repositoryId": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "holds": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/hold" }
+    },
+    "waivers": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/waiver" }
+    }
+  },
+  "$defs": {
+    "text": { "type": "string", "minLength": 1, "maxLength": 500 },
+    "agentId": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "holdId": { "type": "string", "pattern": "^hold-[a-z0-9-]+$" },
+    "sha": { "type": "string", "pattern": "^[0-9a-f]{40,64}$" },
+    "owner": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["agentId", "adapter", "ownerRef"],
+      "properties": {
+        "agentId": { "$ref": "#/$defs/agentId" },
+        "adapter": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+        },
+        "ownerRef": {
+          "anyOf": [
+            { "type": "string", "minLength": 1, "maxLength": 512 },
+            { "type": "null" }
+          ]
+        }
+      }
+    },
+    "identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "holdId",
+        "owner",
+        "scope",
+        "severity",
+        "reason",
+        "untilMerged",
+        "createdAt"
+      ],
+      "properties": {
+        "schemaVersion": { "const": 1 },
+        "holdId": { "$ref": "#/$defs/holdId" },
+        "owner": { "$ref": "#/$defs/owner" },
+        "scope": { "enum": ["ship", "deploy", "migrations"] },
+        "severity": { "enum": ["delay", "halt"] },
+        "reason": { "$ref": "#/$defs/text" },
+        "untilMerged": {
+          "anyOf": [
+            { "type": "string", "minLength": 1, "maxLength": 255 },
+            { "type": "null" }
+          ]
+        },
+        "createdAt": { "type": "string", "format": "date-time" }
+      }
+    },
+    "release": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["reason", "releasedAt", "releasedBy", "approvedBy", "note"],
+      "properties": {
+        "reason": { "enum": ["owner-release", "merged", "approved-release"] },
+        "releasedAt": { "type": "string", "format": "date-time" },
+        "releasedBy": { "$ref": "#/$defs/agentId" },
+        "approvedBy": {
+          "anyOf": [{ "$ref": "#/$defs/agentId" }, { "type": "null" }]
+        },
+        "note": { "anyOf": [{ "$ref": "#/$defs/text" }, { "type": "null" }] }
+      }
+    },
+    "publication": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["remote", "ref", "commitSha", "publishedAt", "withdrawnAt"],
+      "properties": {
+        "remote": { "type": "string", "minLength": 1, "maxLength": 255 },
+        "ref": {
+          "type": "string",
+          "pattern": "^refs/simple-changes/holds/hold-[a-z0-9-]+$"
+        },
+        "commitSha": { "$ref": "#/$defs/sha" },
+        "publishedAt": {
+          "anyOf": [
+            { "type": "string", "format": "date-time" },
+            { "type": "null" }
+          ]
+        },
+        "withdrawnAt": {
+          "anyOf": [
+            { "type": "string", "format": "date-time" },
+            { "type": "null" }
+          ]
+        }
+      }
+    },
+    "hold": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "holdId",
+        "owner",
+        "scope",
+        "severity",
+        "reason",
+        "untilMerged",
+        "createdAt",
+        "source",
+        "state",
+        "release",
+        "publication",
+        "updatedAt"
+      ],
+      "properties": {
+        "schemaVersion": { "const": 1 },
+        "holdId": { "$ref": "#/$defs/holdId" },
+        "owner": { "$ref": "#/$defs/owner" },
+        "scope": { "enum": ["ship", "deploy", "migrations"] },
+        "severity": { "enum": ["delay", "halt"] },
+        "reason": { "$ref": "#/$defs/text" },
+        "untilMerged": {
+          "anyOf": [
+            { "type": "string", "minLength": 1, "maxLength": 255 },
+            { "type": "null" }
+          ]
+        },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "source": { "enum": ["local", "remote"] },
+        "state": { "enum": ["active", "released"] },
+        "release": {
+          "anyOf": [{ "$ref": "#/$defs/release" }, { "type": "null" }]
+        },
+        "publication": {
+          "anyOf": [{ "$ref": "#/$defs/publication" }, { "type": "null" }]
+        },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      }
+    },
+    "waiver": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "holdId",
+        "holdDigest",
+        "runId",
+        "waivedBy",
+        "approvedBy",
+        "reason",
+        "overrideHalt",
+        "waivedAt"
+      ],
+      "properties": {
+        "holdId": { "$ref": "#/$defs/holdId" },
+        "holdDigest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "runId": { "type": "string", "pattern": "^run-[a-z0-9-]+$" },
+        "waivedBy": { "$ref": "#/$defs/agentId" },
+        "approvedBy": { "$ref": "#/$defs/agentId" },
+        "reason": { "$ref": "#/$defs/text" },
+        "overrideHalt": { "type": "boolean" },
+        "waivedAt": { "type": "string", "format": "date-time" }
+      }
+    }
+  }
+}

@@ -142,7 +142,9 @@ controller lock. Run only shared integration mutations through `loop exec`,
 including target movement, integration merges or cherry-picks, pushes,
 worktree/branch lifecycle changes, and cleanup. Use `loop guard` only for
 external provider calls and verify immediately afterward. Before merge,
-deployment, cleanup, and completion, run `loop verify`.
+deployment, cleanup, and completion, run `loop verify`; immediately before a
+merge, deployment, or migration, add `--for merge`, `--for deploy`, or `--for
+migrations` so [shipment holds](#shipment-holds) gate that step.
 After review and integration settle, record one exact
 `loop record-outcome --receipt <shipment-outcome.json>` receipt before
 completion; see [focused units](references/focused-units.md). This controller
@@ -168,7 +170,8 @@ release impact, and constraints instead of starting a second shipment. Ask:
 **Do you want me to ask that agent to fold this work into the active shipment,
 or should I wait until that shipment finishes and ship this separately
 afterward?** Do not contact the other task until the user chooses the first
-option. If approved, send an exact ready-work receipt; that receipt requests
+option. If approved, record the receipt with `worktree release --ready-receipt
+<file>`; the active controller reads it without a message. The receipt requests
 integration but grants no ownership, merge, deploy, migration, or cleanup
 authority. If the user chooses the second option, leave the work untouched and
 wait for the active shipment to close.
@@ -241,6 +244,24 @@ Reuse session authority that already covers this recovery. A dead helper PID or
 old heartbeat alone does not establish that the owning agent has stopped.
 
 Follow [inventory and concurrency](references/inventory-and-concurrency.md).
+
+## Shipment holds
+
+Agents in different harnesses coordinate shipments through the shared
+coordination directory without messaging each other. A finished author records
+its handoff with `worktree release --ready-receipt <file>`; controllers read
+every receipt and its freshness in `worktree status --json`. Any agent whose
+task could break, or be broken by, the next merge, deployment, or migration
+records a hold with `hold add --hold-scope ship|deploy|migrations --severity
+delay|halt --reason <why>`, optionally `--until-merged <branch>`, and releases
+it the moment the reason ends; `hold publish` shares one with clones elsewhere.
+Release another agent's hold only with the user's explicit approval, adding
+`--override-halt` for a halt. For a blocking `delay`, ask:
+**<owner> asked to delay <step> because <reason>. Should I wait, or continue
+without it?** Record approval with `hold waive`. Waive a `halt` only when the
+user explicitly approves overriding that exact hold. Follow
+[ready-work receipts](references/inventory-and-concurrency.md#ready-work-receipts)
+and [shipment holds](references/inventory-and-concurrency.md#shipment-holds).
 
 ## Completed-work handoff
 

@@ -1,5 +1,36 @@
 # Changelog
 
+## Unreleased
+
+## 0.20.0 - 2026-10-01
+
+- Inventory capture is much faster. Commands that read the repository
+  inventory, including `loop start`, `loop status`, and `loop finalize`, now
+  make far fewer Git calls, so a capture that took 8 to 17 seconds on a large
+  macOS repository completes in about a second. Inventory digests are
+  unchanged, so existing leases, plans, and receipts keep matching.
+- Ship independent units in parallel. The new parallel agents guidance in
+  Simple Changes explains how a controller prepares one worktree per unit with
+  `prepare-agent`, lets each agent author and commit only inside its own
+  worktree, and alone pushes, merges, and finalizes. `publish-skill` gains
+  matching guidance for synchronizing several forks at once, and
+  `update-local-forks` now plans every fork up front so one approval can cover
+  all of them, then updates each repository in its own agent where the host
+  supports isolated agents.
+- A failed `loop finalize` no longer leaves a live controller behind. When
+  finalization fails after ownership and locks are established, the run is
+  relinquished with the failure reason and the original error is still
+  reported, so the next agent can resume instead of facing a lease it can
+  neither resume nor take over. An untouched Ship run still closes as before.
+  `loop start` against a stale lease now names the exact stale-lease recovery
+  command, and the skill tells controllers to confirm release with
+  `loop status --json` after every finalize.
+- `release-notes --check` now accepts one empty `## Unreleased` heading when it
+  is the first heading in a changelog, the anchor Simple Changelogs keeps after
+  every release, instead of reporting it as a failure. A second `Unreleased`
+  heading, or an empty one anywhere else, is still reported.
+<!-- simple-changelogs-signature agent="Fable 5.1" at="2026-10-01T14:12:24-05:00" -->
+
 ## 0.19.0 - 2026-09-30
 
 - A Ship run no longer dead-ends when something unrelated changes between

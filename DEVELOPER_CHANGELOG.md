@@ -1,5 +1,43 @@
 # Developer changelog
 
+## Unreleased
+
+## 0.20.0 - 2026-10-01
+
+- Cut inventory capture from one Git process per path and per worktree to a
+  handful: resolve the real Git binary behind the `/usr/bin/git` xcrun shim
+  once per process, batch per-path index lookups into a single
+  `ls-files --stage`, read worktree statuses concurrently through the new
+  `lib/git-worker.ts`, memoize repeated metadata reads, and use
+  `locateRepository` where a command only needs the lock location. Digests
+  are byte-identical to the previous implementation; a capture on a large
+  repository drops from 8-17 s to 0.4-1 s. Cover batching, memoization, and
+  shim resolution in `inventory.test.ts` and `process.test.ts`.
+- Split `finalizeLoop` into `finalizeOwnedLoop` and
+  `relinquishAfterFinalizationError`: after ownership and both locks are
+  established, any error relinquishes the latest saved lease (never the
+  opening snapshot) with the failure reason and rethrows; an unwritable lease
+  is reported beside the original error. The untouched-run path still runs
+  first, and wrong-owner or wrong-run requests change nothing. `startLoop`
+  against a stale lease names `loop recover --stale-lease` with the run ID.
+  Add finalization and liveness regressions for an unwritable recovery
+  archive after cleanup, resume after relinquish, and the stale-lease message.
+- Document "Parallel agents" in `references/inventory-and-concurrency.md`,
+  route to it from `SKILL.md`, and pin the invariant in `SPEC.md`: delegated
+  agents author only in `prepare-agent` worktrees under a distinct agent ID
+  and never run loop, provider, push, merge, release, or cleanup commands;
+  the controller integrates serially. Add "Parallel fork agents" to
+  publish-skill and "Several forks at once" to update-local-forks. Contract
+  tests and package-design checks pin the new prose. Keep guidance at 22: no
+  setting or authority change.
+- Replace `hasEmptyUnreleased` in `release-consistency.ts` with
+  `unreleasedIssues`: an empty `## Unreleased` is allowed only as the first
+  `##` heading (the Simple Changelogs guidance 13 prepend anchor); an empty one
+  elsewhere reports "contains an empty Unreleased section." and two or more
+  `Unreleased` headings report "contains more than one Unreleased section."
+  `release-consistency.test.ts` covers the leading anchor and the duplicate.
+<!-- simple-changelogs-signature agent="Fable 5.1" at="2026-10-01T14:12:24-05:00" -->
+
 ## 0.19.0 - 2026-09-30
 
 - Add `firstMutationAt` to the lease, stamped in the same write as the first
@@ -20,8 +58,6 @@
   `shipmentScope.openingInventoryDigest` records the scope-time digest. Status
   guidance reuses the same checks. Keep guidance at 22: no setting changes.
 <!-- simple-changelogs-signature agent="Fable 5.1" at="2026-09-30T19:46:51-05:00" -->
-
-## Unreleased
 
 - Move the `loop retire-absent-worktree` sentences in
   `references/inventory-and-concurrency.md` out of the middle of the

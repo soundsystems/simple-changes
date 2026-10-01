@@ -51,6 +51,7 @@ import {
 } from "../../../skills/simple-changes/scripts/lib/loop-lease.ts";
 import { buildPreviewPlan } from "../../../skills/simple-changes/scripts/lib/planner.ts";
 import { DEFAULT_POLICY } from "../../../skills/simple-changes/scripts/lib/policy.ts";
+import { validateSchema } from "../../../skills/simple-changes/scripts/lib/schema.ts";
 import type {
   ChangePlan,
   LoopLease,
@@ -76,6 +77,7 @@ import {
 
 let repositories: TestRepository[] = [];
 const TREE_ENTRY_PATTERN = /^(\d+)\s+(blob|commit)\s+([0-9a-f]+)\t/u;
+const SHA256_PATTERN = /^[0-9a-f]{64}$/u;
 setDefaultTimeout(30_000);
 
 const repository = (): TestRepository => {
@@ -211,6 +213,18 @@ const claimEvidence = (repositoryPath: string) => {
       ).toISOString(),
     },
   };
+};
+
+// Finalization closes a Ship run that changed nothing instead of freezing its
+// scope. Tests about relinquished, frozen runs record mutation evidence first,
+// as any guarded operation would, so finalization relinquishes them.
+const stampFirstMutation = (root: string): void => {
+  const path = loopLeasePath(
+    captureInventory(root).repository.commonGitDirectory
+  );
+  const stored = JSON.parse(readFileSync(path, "utf8")) as LoopLease;
+  stored.firstMutationAt = new Date().toISOString();
+  writeFileSync(path, `${JSON.stringify(stored, null, 2)}\n`, "utf8");
 };
 
 afterEach(() => {
@@ -1390,6 +1404,7 @@ describe("active integration-loop lease", () => {
     writeFixture(fixture.root, "opening.txt", "opening shipment work\n");
     const opening = captureInventory(fixture.root);
     const lease = startLoop(fixture.root, "first-controller", "ship");
+    stampFirstMutation(fixture.root);
     expect(
       finalizeLoop(
         fixture.root,
@@ -5001,6 +5016,7 @@ describe("target-equivalent loop closure", () => {
     const fixture = repository();
     writeFixture(fixture.root, "opening.txt", "opening shipment work\n");
     const lease = startLoop(fixture.root, "first-controller", "ship");
+    stampFirstMutation(fixture.root);
     expect(
       finalizeLoop(
         fixture.root,
@@ -5177,4 +5193,1060 @@ describe("target-equivalent loop closure", () => {
     ).toThrow("reason is required");
     expect(readLoopLease(fixture.root)).toMatchObject({ runId: lease.runId });
   });
+});
+
+describe("untouched Ship run close", () => {
+  const editLease = (root: string, edit: (lease: LoopLease) => void): void => {
+    const path = loopLeasePath(
+      captureInventory(root).repository.commonGitDirectory
+    );
+    const stored = JSON.parse(readFileSync(path, "utf8")) as LoopLease;
+    edit(stored);
+    writeFileSync(path, `${JSON.stringify(stored, null, 2)}\n`, "utf8");
+  };
+
+  const historyPath = (root: string, runId: string, name: string): string =>
+    join(
+      captureInventory(root).repository.commonGitDirectory,
+      "simple-changes",
+      "history",
+      runId,
+      name
+    );
+
+  // A Ship run whose opening inventory holds local changes must record its
+  // scope before shared mutations. A claimed concurrent author keeps working.
+  const scopeRequiredShipRun = () => {
+    const fixture = repository();
+    const authorPath = join(fixture.base, "claimed-author");
+    git(fixture.root, [
+      "worktree",
+      "add",
+      "-b",
+      "claimed-author-work",
+      authorPath,
+    ]);
+    claimWorktree(
+      fixture.root,
+      "feature-agent",
+      authorPath,
+      "codex",
+      "task-feature"
+    );
+    writeFixture(
+      fixture.root,
+      "contact.ts",
+      "export const email = 'resend';\n"
+    );
+    const lease = startLoop(fixture.root, "controller", "ship");
+    expect(lease).toMatchObject({
+      firstMutationAt: null,
+      shipmentScopeRequired: true,
+    });
+    expect(lease.worktrees).toContainEqual(
+      expect.objectContaining({ path: authorPath, role: "concurrent-author" })
+    );
+    return { authorPath, fixture, lease };
+  };
+
+  // The lighter form: only the controller's own checkout holds opening work.
+  const dirtyShipRun = () => {
+    const fixture = repository();
+    writeFixture(fixture.root, "contact.ts", "export const email = 1;\n");
+    const lease = startLoop(fixture.root, "controller", "ship");
+    expect(lease).toMatchObject({
+      firstMutationAt: null,
+      shipmentScopeRequired: true,
+    });
+    return { fixture, lease };
+  };
+
+  test("closes a run whose scope can no longer be recorded, then starts fresh", () => {
+    const { authorPath, fixture, lease } = scopeRequiredShipRun();
+    expect(() =>
+      guardLoopMutation(fixture.root, lease.runId, "controller")
+    ).toThrow("comprehensive shipment scope");
+
+    // The claimed author's edit alone would not block record-scope; the
+    // controller's own later edit changes source bytes registered at start.
+    writeFixture(authorPath, "feature.ts", "export const feature = 1;\n");
+    writeFixture(fixture.root, "later.ts", "export const later = 1;\n");
+    const current = captureInventory(fixture.root);
+    expect(current.baselineDigest).not.toBe(lease.baselineDigest);
+    const plan = buildPreviewPlan(
+      current,
+      current,
+      compareSnapshots(current, current),
+      "Ship every finished local change"
+    );
+    expect(() =>
+      recordShipmentScope(fixture.root, lease.runId, "controller", plan)
+    ).toThrow(
+      `This run has not changed anything yet, so if the scope can no longer be recorded, close it with \`simple-changes loop end --run-id ${lease.runId} --agent-id controller\``
+    );
+    const status = loopStatus(fixture.root);
+    expect(status.verification.ok).toBe(true);
+    expect(status.guidance.headline).toContain("has not changed anything");
+    expect(status.guidance.nextCommands[0]).toContain(
+      `loop end --run-id ${lease.runId} --agent-id controller`
+    );
+    expect(status.guidance.nextCommands[1]).toContain("loop start --mode ship");
+    expect(readLoopLease(fixture.root)?.firstMutationAt).toBeNull();
+
+    const ended = endLoop(
+      fixture.root,
+      lease.runId,
+      "controller",
+      "The opening inventory moved before scope was recorded."
+    );
+
+    const receiptPath = historyPath(
+      fixture.root,
+      lease.runId,
+      "abort-unmutated.json"
+    );
+    expect(ended.ok).toBe(true);
+    expect(ended.closedWithoutMutation?.receiptPath).toBe(receiptPath);
+    expect(ended.closedWithoutMutation?.receipt).toMatchObject({
+      closedBy: "loop end",
+      kind: "loop-unmutated-close",
+      openingBaselineDigest: lease.baselineDigest,
+      ownerAgentId: "controller",
+      reason: "The opening inventory moved before scope was recorded.",
+      runId: lease.runId,
+      verification: {
+        currentBaselineDigest: current.baselineDigest,
+        ok: true,
+        violations: [],
+      },
+    });
+    expect(JSON.parse(readFileSync(receiptPath, "utf8"))).toEqual(
+      ended.closedWithoutMutation?.receipt
+    );
+    expect(readLoopLease(fixture.root)).toBeNull();
+    expect(readFileSync(join(authorPath, "feature.ts"), "utf8")).toBe(
+      "export const feature = 1;\n"
+    );
+    expect(readFileSync(join(fixture.root, "contact.ts"), "utf8")).toBe(
+      "export const email = 'resend';\n"
+    );
+
+    const fresh = startLoop(fixture.root, "controller", "ship");
+    expect(fresh.runId).not.toBe(lease.runId);
+    expect(fresh.baselineDigest).toBe(current.baselineDigest);
+    expect(fresh.firstMutationAt).toBeNull();
+  }, 90_000);
+
+  test("closes over an unclaimed opening worktree that kept changing and records it", () => {
+    const fixture = repository();
+    const preservedPath = join(fixture.base, "unclaimed");
+    git(fixture.root, ["worktree", "add", "--detach", preservedPath]);
+    writeFixture(fixture.root, "contact.ts", "export const email = 1;\n");
+    const lease = startLoop(fixture.root, "controller", "ship");
+    writeFixture(preservedPath, "notes.txt", "still being written\n");
+    const current = captureInventory(fixture.root);
+    expect(() =>
+      recordShipmentScope(
+        fixture.root,
+        lease.runId,
+        "controller",
+        buildPreviewPlan(
+          current,
+          current,
+          compareSnapshots(current, current),
+          "Ship every finished local change"
+        )
+      )
+    ).toThrow(
+      `preserved-worktree-changed:${preservedPath}. Run \`simple-changes loop status\` for the exact next commands; a changed unclaimed opening worktree needs a user-approved \`loop allow\` before scope is recorded. Because this run has not changed anything yet, \`simple-changes loop end --run-id ${lease.runId} --agent-id controller\` can instead close it`
+    );
+
+    const ended = endLoop(fixture.root, lease.runId, "controller");
+
+    expect(ended.ok).toBe(false);
+    expect(ended.closedWithoutMutation?.receipt).toMatchObject({
+      reason: null,
+      verification: {
+        ok: false,
+        violations: [
+          { code: "preserved-worktree-changed", path: preservedPath },
+        ],
+      },
+    });
+    expect(readLoopLease(fixture.root)).toBeNull();
+    expect(readFileSync(join(preservedPath, "notes.txt"), "utf8")).toBe(
+      "still being written\n"
+    );
+  }, 60_000);
+
+  test("refuses the untouched close when an unregistered worktree appears", () => {
+    const { fixture, lease } = scopeRequiredShipRun();
+    const late = join(fixture.base, "late-unregistered");
+    git(fixture.root, ["worktree", "add", "-b", "late-unregistered", late]);
+    const current = captureInventory(fixture.root);
+    const plan = buildPreviewPlan(
+      current,
+      current,
+      compareSnapshots(current, current),
+      "Ship every finished local change"
+    );
+    let message = "";
+    try {
+      recordShipmentScope(fixture.root, lease.runId, "controller", plan);
+    } catch (error) {
+      ({ message } = error as Error);
+    }
+    expect(message).toBe(
+      `Shipment scope cannot be recorded while loop ${lease.runId} verification fails: unregistered-worktree:${late}. Run \`simple-changes loop status\` for the exact next commands; a changed unclaimed opening worktree needs a user-approved \`loop allow\` before scope is recorded.`
+    );
+    expect(loopStatus(fixture.root).guidance.headline).toContain(
+      "Verification"
+    );
+
+    expect(() => endLoop(fixture.root, lease.runId, "controller")).toThrow(
+      `Record the comprehensive shipment scope and pre-ship brief before ending this Ship run. manifest violations: unregistered-worktree:${late}`
+    );
+    expect(readLoopLease(fixture.root)?.runId).toBe(lease.runId);
+    expect(
+      existsSync(historyPath(fixture.root, lease.runId, "abort-unmutated.json"))
+    ).toBe(false);
+  }, 60_000);
+
+  // Guarded operations refuse before scope is recorded, so the requirement is
+  // lifted around them; their mutation evidence alone must keep the blocker.
+  const withScopeRequirementLifted = async (
+    root: string,
+    action: () => unknown
+  ): Promise<void> => {
+    editLease(root, (lease) => {
+      lease.shipmentScopeRequired = false;
+    });
+    try {
+      await action();
+    } finally {
+      editLease(root, (lease) => {
+        lease.shipmentScopeRequired = true;
+      });
+    }
+  };
+
+  test.each([
+    [
+      "loop guard",
+      (root: string, runId: string) =>
+        withScopeRequirementLifted(root, () =>
+          guardLoopMutation(root, runId, "controller")
+        ),
+    ],
+    [
+      "loop exec",
+      (root: string, runId: string) =>
+        withScopeRequirementLifted(root, () =>
+          executeLoopMutation(root, runId, "controller", [
+            "git",
+            "status",
+            "--short",
+          ])
+        ),
+    ],
+    [
+      "prepare-agent",
+      (root: string, runId: string) =>
+        withScopeRequirementLifted(root, () =>
+          prepareAgentWorktree(root, runId, "author", "unit")
+        ),
+    ],
+    [
+      "loop rebaseline",
+      (root: string, runId: string, base: string) => {
+        git(root, [
+          "worktree",
+          "add",
+          "-b",
+          "late-rebaselined",
+          join(base, "late-rebaselined"),
+        ]);
+        rebaselineLoopWorktrees(
+          root,
+          runId,
+          "controller",
+          "user",
+          "Register the late worktree"
+        );
+      },
+    ],
+  ] as const)(
+    "keeps the scope blocker after %s records mutation evidence",
+    async (_name, act) => {
+      const { fixture, lease } = dirtyShipRun();
+      await act(fixture.root, lease.runId, fixture.base);
+      writeFixture(fixture.root, "later.ts", "export const later = 1;\n");
+
+      expect(readLoopLease(fixture.root)?.firstMutationAt).toEqual(
+        expect.any(String)
+      );
+      expect(() => endLoop(fixture.root, lease.runId, "controller")).toThrow(
+        "Record the comprehensive shipment scope and pre-ship brief before ending this Ship run."
+      );
+      expect(readLoopLease(fixture.root)?.runId).toBe(lease.runId);
+      expect(
+        existsSync(
+          historyPath(fixture.root, lease.runId, "abort-unmutated.json")
+        )
+      ).toBe(false);
+    },
+    60_000
+  );
+
+  test("records the first mutation once and keeps it across a takeover", async () => {
+    const fixture = repository();
+    const lease = startLoop(fixture.root, "controller", "ship");
+    expect(lease.firstMutationAt).toBeNull();
+
+    guardLoopMutation(fixture.root, lease.runId, "controller");
+    const first = readLoopLease(fixture.root)?.firstMutationAt;
+    expect(first).toEqual(expect.any(String));
+    await sleep(5);
+    guardLoopMutation(fixture.root, lease.runId, "controller");
+    await executeLoopMutation(fixture.root, lease.runId, "controller", [
+      "git",
+      "status",
+      "--short",
+    ]);
+    expect(readLoopLease(fixture.root)?.firstMutationAt).toBe(first);
+
+    const taken = takeoverLoop(
+      fixture.root,
+      lease.runId,
+      "replacement-controller",
+      loopManifestDigest(readLoopLease(fixture.root) as LoopLease),
+      "repository-owner",
+      "The prior controller stopped responding."
+    );
+    expect(taken.ownerAgentId).toBe("replacement-controller");
+    expect(taken.firstMutationAt).toBe(first);
+  }, 60_000);
+
+  test("treats a takeover of an untouched run as mutation evidence", () => {
+    const { fixture, lease } = dirtyShipRun();
+    const taken = takeoverLoop(
+      fixture.root,
+      lease.runId,
+      "replacement-controller",
+      loopManifestDigest(lease),
+      "repository-owner",
+      "The prior controller stopped responding."
+    );
+    expect(taken.firstMutationAt).toEqual(expect.any(String));
+    writeFixture(fixture.root, "later.ts", "export const later = 1;\n");
+
+    expect(() =>
+      endLoop(fixture.root, lease.runId, "replacement-controller")
+    ).toThrow("Record the comprehensive shipment scope");
+    expect(readLoopLease(fixture.root)?.runId).toBe(lease.runId);
+  }, 60_000);
+
+  test("accepts a lease without the field or with null, but never closes a legacy lease as untouched", () => {
+    const { fixture, lease } = dirtyShipRun();
+    expect(
+      validateSchema<LoopLease>("loop-lease", lease).firstMutationAt
+    ).toBeNull();
+    const { firstMutationAt: _firstMutationAt, ...legacy } = lease;
+    expect(
+      validateSchema<LoopLease>("loop-lease", legacy).firstMutationAt
+    ).toBeUndefined();
+
+    editLease(fixture.root, (stored) => {
+      Reflect.deleteProperty(stored, "firstMutationAt");
+    });
+    writeFixture(fixture.root, "later.ts", "export const later = 1;\n");
+    expect(readLoopLease(fixture.root)?.firstMutationAt).toBeUndefined();
+    expect(() => endLoop(fixture.root, lease.runId, "controller")).toThrow(
+      "Record the comprehensive shipment scope"
+    );
+    expect(readLoopLease(fixture.root)?.runId).toBe(lease.runId);
+  }, 60_000);
+
+  test("finalize closes the moved untouched run instead of freezing its scope", () => {
+    const { authorPath, fixture, lease } = scopeRequiredShipRun();
+    writeFixture(authorPath, "feature.ts", "export const feature = 1;\n");
+
+    const finalized = finalizeLoop(
+      fixture.root,
+      lease.runId,
+      "controller",
+      "The opening inventory moved before scope was recorded."
+    );
+
+    expect(finalized).toMatchObject({
+      blockers: [],
+      lease: null,
+      outcome: "closed-without-mutation",
+      receipt: {
+        blocksNextShipment: false,
+        controllerStatus: "released",
+        deliveryStatus: "unverified",
+        shipmentStatus: "unstarted",
+      },
+    });
+    expect(finalized.closedWithoutMutation?.receipt.closedBy).toBe(
+      "loop finalize"
+    );
+    expect(existsSync(finalized.receiptPath)).toBe(true);
+    expect(
+      existsSync(historyPath(fixture.root, lease.runId, "abort-unmutated.json"))
+    ).toBe(true);
+    expect(readLoopLease(fixture.root)).toBeNull();
+    expect(startLoop(fixture.root, "controller", "ship").runId).not.toBe(
+      lease.runId
+    );
+  }, 60_000);
+  test("finalize closes an untouched run even when nothing moved", () => {
+    const { fixture, lease } = dirtyShipRun();
+    expect(captureInventory(fixture.root).baselineDigest).toBe(
+      lease.baselineDigest
+    );
+
+    const finalized = finalizeLoop(
+      fixture.root,
+      lease.runId,
+      "controller",
+      "The turn ended on a scope question."
+    );
+
+    expect(finalized).toMatchObject({
+      lease: null,
+      outcome: "closed-without-mutation",
+      receipt: { shipmentStatus: "unstarted" },
+    });
+    expect(readLoopLease(fixture.root)).toBeNull();
+    expect(readFileSync(join(fixture.root, "contact.ts"), "utf8")).toBe(
+      "export const email = 1;\n"
+    );
+    const fresh = startLoop(fixture.root, "controller", "ship");
+    expect(fresh.runId).not.toBe(lease.runId);
+    expect(fresh.baselineDigest).toBe(lease.baselineDigest);
+  }, 60_000);
+
+  // Each of these records lease evidence without a shipment scope. The run
+  // stays healthy, so only that evidence can be what refuses the close.
+  const gitLabTarget = (root: string): string => {
+    git(root, ["remote", "add", "origin", "git@gitlab.com:group/project.git"]);
+    return git(root, ["rev-parse", "HEAD"]);
+  };
+  type EvidenceCase = [
+    string,
+    (root: string, base: string) => ReturnType<typeof remoteSnapshot> | null,
+    (root: string, base: string, runId: string) => void,
+  ];
+  const evidenceCases: EvidenceCase[] = [
+    [
+      "loop allow",
+      (root: string, base: string) => {
+        git(root, ["worktree", "add", "--detach", join(base, "unclaimed")]);
+        return null;
+      },
+      (root: string, base: string, runId: string) => {
+        const path = join(base, "unclaimed");
+        writeFixture(path, "notes.txt", "still being written\n");
+        const changed = captureInventory(root).worktrees.find(
+          (worktree) => worktree.path === path
+        );
+        grantLoopOverride(
+          root,
+          runId,
+          "controller",
+          path,
+          changed?.changeDigest ?? "",
+          "user",
+          "Keep the notes in place."
+        );
+      },
+    ],
+    [
+      "loop dispose-worktree",
+      (root: string, base: string) => {
+        git(root, ["worktree", "add", "-b", "obsolete-work", join(base, "o")]);
+        return null;
+      },
+      (root: string, base: string, runId: string) => {
+        const path = join(base, "o");
+        const current = captureInventory(root).worktrees.find(
+          (worktree) => worktree.path === path
+        );
+        authorizeWorktreeRemoval(
+          root,
+          runId,
+          "controller",
+          path,
+          current?.changeDigest ?? "",
+          "user",
+          "Audited obsolete with no unique work."
+        );
+      },
+    ],
+    [
+      "loop retain-worktree",
+      () => null,
+      (root: string, base: string, runId: string) => {
+        const path = join(base, "walkthrough");
+        git(root, ["worktree", "add", "-b", "walkthrough", path]);
+        const current = captureInventory(root).worktrees.find(
+          (worktree) => worktree.path === path
+        );
+        retainExcludedWorktree(
+          root,
+          runId,
+          "controller",
+          path,
+          current?.changeDigest ?? "",
+          "user",
+          "Keep the walkthrough out of this shipment."
+        );
+      },
+    ],
+    [
+      "loop retire-absent-worktree",
+      (root: string, base: string) => {
+        git(root, ["worktree", "add", "-b", "gone-work", join(base, "gone")]);
+        return null;
+      },
+      (root: string, base: string, runId: string) => {
+        const path = join(base, "gone");
+        rmSync(path, { force: true, recursive: true });
+        git(root, ["worktree", "prune"]);
+        retireAbsentWorktree(
+          root,
+          runId,
+          "controller",
+          path,
+          "user",
+          "Removed by its owner."
+        );
+      },
+    ],
+    [
+      "loop adopt-worktree",
+      () => null,
+      (root: string, base: string, runId: string) => {
+        const path = join(base, "straggler");
+        git(root, ["worktree", "add", "-b", "straggler", path]);
+        claimWorktree(path, "straggler-author", path, "codex", "task-s");
+        const pause = pauseClaimedWorktree(
+          path,
+          "straggler-author",
+          path,
+          runId,
+          "preserve-in-place",
+          "Pause at a stable boundary for adoption."
+        );
+        adoptPausedWorktree(root, runId, "controller", pause.receiptId);
+      },
+    ],
+    [
+      "loop reconcile-remote-branches",
+      (root: string) => remoteSnapshot(gitLabTarget(root)),
+      (root: string, _base: string, runId: string) => {
+        recordRemoteBranchReconciliation(
+          root,
+          runId,
+          "controller",
+          remoteSnapshot(git(root, ["rev-parse", "HEAD"]))
+        );
+      },
+    ],
+  ];
+  test.each(evidenceCases)(
+    "refuses the untouched close after %s records lease evidence",
+    (_name, beforeStart, act) => {
+      const fixture = repository();
+      writeFixture(fixture.root, "contact.ts", "export const email = 1;\n");
+      const openingRemote = beforeStart(fixture.root, fixture.base);
+      const lease = startLoop(
+        fixture.root,
+        "controller",
+        "ship",
+        openingRemote ?? undefined
+      );
+      expect(lease).toMatchObject({
+        firstMutationAt: null,
+        shipmentScopeRequired: true,
+      });
+
+      act(fixture.root, fixture.base, lease.runId);
+
+      expect(readLoopLease(fixture.root)?.firstMutationAt).toEqual(
+        expect.any(String)
+      );
+      expect(verifyLoop(fixture.root).ok).toBe(true);
+      expect(() => endLoop(fixture.root, lease.runId, "controller")).toThrow(
+        "Record the comprehensive shipment scope"
+      );
+      expect(
+        finalizeLoop(
+          fixture.root,
+          lease.runId,
+          "controller",
+          "Scope was never recorded."
+        ).outcome
+      ).toBe("relinquished");
+      expect(
+        existsSync(
+          historyPath(fixture.root, lease.runId, "abort-unmutated.json")
+        )
+      ).toBe(false);
+    },
+    60_000
+  );
+});
+
+describe("first shipment scope after unrelated changes", () => {
+  const editLease = (root: string, edit: (lease: LoopLease) => void): void => {
+    const path = loopLeasePath(
+      captureInventory(root).repository.commonGitDirectory
+    );
+    const stored = JSON.parse(readFileSync(path, "utf8")) as LoopLease;
+    edit(stored);
+    writeFileSync(path, `${JSON.stringify(stored, null, 2)}\n`, "utf8");
+  };
+
+  // A preview of the exact current inventory in which every unit from a
+  // `preserve` worktree moves to the preserved section, as a controller does
+  // for work a claimed concurrent author still owns.
+  const currentPlan = (root: string, preserve: string[] = []): ChangePlan => {
+    const inventory = captureInventory(root);
+    const preview = buildPreviewPlan(
+      inventory,
+      inventory,
+      compareSnapshots(inventory, inventory),
+      "Ship every finished local change"
+    );
+    const preservedWork = preserve
+      .map((worktreePath) => ({
+        classification: "actively-changing" as const,
+        paths: preview.units
+          .filter((unit) => unit.sourceWorktree === worktreePath)
+          .flatMap((unit) => unit.paths)
+          .sort(),
+        reason: "Another author still owns this work.",
+        worktreePath,
+      }))
+      .filter((item) => item.paths.length > 0);
+    return {
+      ...preview,
+      preserved: [...preview.preserved, ...preservedWork],
+      units: preview.units.filter(
+        (unit) => !preserve.includes(unit.sourceWorktree)
+      ),
+    };
+  };
+
+  const refusal = (action: () => unknown): string => {
+    try {
+      action();
+    } catch (error) {
+      return (error as Error).message;
+    }
+    throw new Error("Expected record-scope to refuse.");
+  };
+
+  // A Ship run whose controller checkout holds opening work while a claimed
+  // concurrent author works on its own branch.
+  const shipRunWithClaimedAuthor = (
+    beforeStart: (fixture: TestRepository) => void = () => undefined
+  ) => {
+    const fixture = repository();
+    const authorPath = join(fixture.base, "claimed-author");
+    git(fixture.root, [
+      "worktree",
+      "add",
+      "-b",
+      "claimed-author-work",
+      authorPath,
+    ]);
+    claimWorktree(
+      fixture.root,
+      "feature-agent",
+      authorPath,
+      "codex",
+      "task-feature"
+    );
+    writeFixture(
+      fixture.root,
+      "contact.ts",
+      "export const email = 'resend';\n"
+    );
+    beforeStart(fixture);
+    const lease = startLoop(fixture.root, "controller", "ship");
+    expect(lease).toMatchObject({
+      firstMutationAt: null,
+      openingInvariantDigest: expect.stringMatching(SHA256_PATTERN),
+      shipmentScopeRequired: true,
+    });
+    expect(lease.openingWorktrees).toContainEqual(
+      expect.objectContaining({
+        branch: "claimed-author-work",
+        path: authorPath,
+      })
+    );
+    return { authorPath, fixture, lease };
+  };
+
+  const endCommand = (lease: LoopLease): string =>
+    `close it with \`simple-changes loop end --run-id ${lease.runId} --agent-id controller\``;
+
+  test("records scope while a claimed author keeps editing and committing", () => {
+    const { authorPath, fixture, lease } = shipRunWithClaimedAuthor();
+    writeFixture(authorPath, "feature.ts", "export const feature = 1;\n");
+    git(authorPath, ["add", "feature.ts"]);
+    git(authorPath, ["commit", "-m", "Author-local commit"]);
+    writeFixture(authorPath, "draft.ts", "export const draft = true;\n");
+    const current = captureInventory(fixture.root);
+    expect(current.baselineDigest).not.toBe(lease.baselineDigest);
+
+    const status = loopStatus(fixture.root);
+    expect(status.verification.ok).toBe(true);
+    expect(status.guidance.headline).toContain(
+      "Record-scope accepts unrelated changes made since loop start"
+    );
+    expect(status.guidance.nextCommands).toEqual([
+      expect.stringContaining(`loop record-scope --run-id ${lease.runId}`),
+    ]);
+
+    const receipt = recordShipmentScope(
+      fixture.root,
+      lease.runId,
+      "controller",
+      currentPlan(fixture.root, [authorPath])
+    );
+
+    expect(receipt).toMatchObject({ includedPaths: 1, preservedPaths: 1 });
+    expect(receipt.summary).toContain(
+      `Branch claimed-author-work; worktree ${authorPath}.`
+    );
+    const stored = readLoopLease(fixture.root);
+    expect(stored?.shipmentScope?.plan.preserved).toContainEqual(
+      expect.objectContaining({ paths: ["draft.ts"], worktreePath: authorPath })
+    );
+    expect(stored?.shipmentScope?.plan.units).toEqual([
+      expect.objectContaining({
+        paths: ["contact.ts"],
+        sourceWorktree: fixture.root,
+      }),
+    ]);
+    expect(stored?.shipmentScope?.openingInventoryDigest).toBe(
+      current.baselineDigest
+    );
+    expect(stored?.baselineDigest).toBe(lease.baselineDigest);
+    expect(guardLoopMutation(fixture.root, lease.runId, "controller").ok).toBe(
+      true
+    );
+  }, 60_000);
+
+  test("records scope after an unrelated branch commit and a stash", () => {
+    const { authorPath, fixture, lease } = shipRunWithClaimedAuthor(
+      ({ root }) => {
+        git(root, ["branch", "side"]);
+      }
+    );
+    const tree = git(fixture.root, ["rev-parse", "HEAD^{tree}"]);
+    const sideCommit = git(fixture.root, [
+      "commit-tree",
+      tree,
+      "-p",
+      "side",
+      "-m",
+      "Unrelated side work",
+    ]);
+    git(fixture.root, ["update-ref", "refs/heads/side", sideCommit]);
+    git(fixture.root, ["branch", "late-unrelated", sideCommit]);
+    writeFixture(authorPath, "README.md", "# Stashed author edit\n");
+    git(authorPath, ["stash", "push", "-m", "Author stash"]);
+    const current = captureInventory(fixture.root);
+    expect(current.stashes).toHaveLength(1);
+    expect(current.baselineDigest).not.toBe(lease.baselineDigest);
+
+    expect(
+      refusal(() =>
+        recordShipmentScope(
+          authorPath,
+          lease.runId,
+          "controller",
+          currentPlan(authorPath)
+        )
+      )
+    ).toBe(
+      `Record shipment scope from the controller checkout ${fixture.root}; this command ran from ${authorPath}. Generate the preview there too.`
+    );
+    const receipt = recordShipmentScope(
+      fixture.root,
+      lease.runId,
+      "controller",
+      currentPlan(fixture.root)
+    );
+    expect(receipt.includedPaths).toBe(1);
+    expect(readLoopLease(fixture.root)?.shipmentScope?.openingChanges).toEqual([
+      expect.objectContaining({
+        path: "contact.ts",
+        worktreePath: fixture.root,
+      }),
+    ]);
+  }, 60_000);
+
+  test("refuses scope when the controller or a scoped source changed since start", () => {
+    const { authorPath, fixture, lease } = shipRunWithClaimedAuthor(
+      ({ base, root }) => {
+        const unclaimed = join(base, "claimed-later");
+        git(root, ["worktree", "add", "-b", "claimed-later-work", unclaimed]);
+        writeFixture(unclaimed, "later.ts", "export const later = 1;\n");
+      }
+    );
+    const claimedLater = join(fixture.base, "claimed-later");
+    writeFixture(authorPath, "feature.ts", "export const feature = 1;\n");
+
+    // A claimed author's changed worktree cannot be packaged as a unit.
+    const authorRefusal = refusal(() =>
+      recordShipmentScope(
+        fixture.root,
+        lease.runId,
+        "controller",
+        currentPlan(fixture.root, [claimedLater])
+      )
+    );
+    expect(authorRefusal).toContain(
+      `Scoped source worktree ${authorPath} changed after loop ${lease.runId} started: its staged, unstaged, or untracked content changed. Scoped source bytes must be the ones registered at loop start; keep its paths preserved or excluded in the plan instead.`
+    );
+    expect(authorRefusal).toContain(endCommand(lease));
+
+    // Claiming an opening worktree later re-baselines its lease registration,
+    // but its source bytes are still compared with the loop-start record.
+    writeFixture(claimedLater, "later.ts", "export const later = 2;\n");
+    claimWorktree(
+      fixture.root,
+      "later-agent",
+      claimedLater,
+      "codex",
+      "task-later"
+    );
+    expect(verifyLoop(fixture.root).ok).toBe(true);
+    expect(
+      refusal(() =>
+        recordShipmentScope(
+          fixture.root,
+          lease.runId,
+          "controller",
+          currentPlan(fixture.root, [authorPath])
+        )
+      )
+    ).toContain(
+      `Scoped source worktree ${claimedLater} changed after loop ${lease.runId} started: its staged, unstaged, or untracked content changed.`
+    );
+    recordShipmentScope(
+      fixture.root,
+      lease.runId,
+      "controller",
+      currentPlan(fixture.root, [authorPath, claimedLater])
+    );
+    expect(readLoopLease(fixture.root)?.shipmentScope?.plan.units).toEqual([
+      expect.objectContaining({ sourceWorktree: fixture.root }),
+    ]);
+  }, 90_000);
+
+  test("refuses scope from a changed controller checkout and names the next step", () => {
+    const { authorPath, fixture, lease } = shipRunWithClaimedAuthor();
+    writeFixture(fixture.root, "later.ts", "export const later = 1;\n");
+    const plan = currentPlan(fixture.root, [authorPath]);
+
+    const untouched = refusal(() =>
+      recordShipmentScope(fixture.root, lease.runId, "controller", plan)
+    );
+    expect(untouched).toContain(
+      `Controller checkout ${fixture.root} changed after loop ${lease.runId} started: its staged, unstaged, or untracked content changed. Scoped source bytes must be the ones registered at loop start.`
+    );
+    expect(untouched).toContain(
+      `This run has not changed anything yet, so if the scope can no longer be recorded, ${endCommand(lease)}`
+    );
+    const status = loopStatus(fixture.root);
+    expect(status.guidance.headline).toContain(
+      `Loop ${lease.runId} has not changed anything, but its shipment scope can no longer be recorded. Controller checkout ${fixture.root} changed`
+    );
+    expect(status.guidance.nextCommands[0]).toContain(
+      `loop end --run-id ${lease.runId} --agent-id controller`
+    );
+
+    // Once the run holds mutation evidence, `loop end` is no longer offered.
+    editLease(fixture.root, (stored) => {
+      stored.firstMutationAt = new Date().toISOString();
+    });
+    const mutated = refusal(() =>
+      recordShipmentScope(fixture.root, lease.runId, "controller", plan)
+    );
+    expect(mutated).toContain(
+      `Controller checkout ${fixture.root} changed after loop ${lease.runId} started`
+    );
+    expect(mutated).toContain(
+      "This run has already recorded mutation evidence, so `loop end` cannot close it."
+    );
+    expect(mutated).toContain(
+      `finalize it with \`simple-changes loop finalize --run-id ${lease.runId} --agent-id controller --reason <why>\`, which relinquishes its controller, then replan it`
+    );
+    expect(mutated).not.toContain("loop end --run-id");
+    const mutatedStatus = loopStatus(fixture.root).guidance;
+    expect(mutatedStatus.headline).toContain(
+      `Loop ${lease.runId} can no longer record its first shipment scope.`
+    );
+    expect(mutatedStatus.nextCommands[0]).toContain(
+      `loop finalize --run-id ${lease.runId}`
+    );
+    expect(mutatedStatus.nextCommands.join("\n")).not.toContain("loop end");
+  }, 60_000);
+
+  test("refuses scope after the pinned target moves", () => {
+    const { authorPath, fixture, lease } = shipRunWithClaimedAuthor();
+    const tree = git(fixture.root, ["rev-parse", "HEAD^{tree}"]);
+    const moved = git(fixture.root, [
+      "commit-tree",
+      tree,
+      "-p",
+      "HEAD",
+      "-m",
+      "Target moved",
+    ]);
+    git(fixture.root, ["update-ref", "refs/heads/main", moved]);
+
+    const message = refusal(() =>
+      recordShipmentScope(
+        fixture.root,
+        lease.runId,
+        "controller",
+        currentPlan(fixture.root, [authorPath])
+      )
+    );
+    expect(message).toContain(
+      `Target main moved from ${lease.targetRevision.slice(0, 12)} to ${moved.slice(0, 12)} after loop ${lease.runId} started, so a first shipment scope can no longer be recorded against the pinned target revision.`
+    );
+    expect(message).toContain(endCommand(lease));
+    expect(loopStatus(fixture.root).guidance.headline).toContain(
+      `Target main moved from ${lease.targetRevision.slice(0, 12)}`
+    );
+  }, 60_000);
+
+  test("refuses scope after repository policy changes", () => {
+    const { authorPath, fixture, lease } = shipRunWithClaimedAuthor();
+    writeFixture(
+      fixture.root,
+      ".simple-changes.json",
+      `${JSON.stringify({ ...DEFAULT_POLICY, questions: "always" })}\n`
+    );
+
+    const message = refusal(() =>
+      recordShipmentScope(
+        fixture.root,
+        lease.runId,
+        "controller",
+        currentPlan(fixture.root, [authorPath])
+      )
+    );
+    expect(message).toContain(
+      `Repository policy, discovered capabilities, remote bindings, or the target binding changed after loop ${lease.runId} started, so a first shipment scope can no longer be recorded.`
+    );
+    expect(message).toContain(endCommand(lease));
+  }, 60_000);
+
+  test("requires an explicit allow for a changed unclaimed opening worktree", () => {
+    const fixture = repository();
+    const preservedPath = join(fixture.base, "unclaimed");
+    git(fixture.root, ["worktree", "add", "--detach", preservedPath]);
+    writeFixture(fixture.root, "contact.ts", "export const email = 1;\n");
+    const lease = startLoop(fixture.root, "controller", "ship");
+    writeFixture(preservedPath, "notes.txt", "still being written\n");
+    const plan = currentPlan(fixture.root, [preservedPath]);
+
+    const message = refusal(() =>
+      recordShipmentScope(fixture.root, lease.runId, "controller", plan)
+    );
+    expect(message).toContain(
+      `Shipment scope cannot be recorded while loop ${lease.runId} verification fails: preserved-worktree-changed:${preservedPath}. Run \`simple-changes loop status\` for the exact next commands; a changed unclaimed opening worktree needs a user-approved \`loop allow\` before scope is recorded.`
+    );
+    expect(message).toContain("can instead close it for a fresh `loop start`");
+    const status = loopStatus(fixture.root).guidance;
+    expect(status.nextCommands[0]).toContain(
+      `loop allow --run-id ${lease.runId} --agent-id controller --worktree ${preservedPath}`
+    );
+    expect(status.nextCommands.at(-1)).toContain(
+      `loop end --run-id ${lease.runId}`
+    );
+
+    const changed = captureInventory(fixture.root).worktrees.find(
+      (worktree) => worktree.path === preservedPath
+    );
+    grantLoopOverride(
+      fixture.root,
+      lease.runId,
+      "controller",
+      preservedPath,
+      changed?.changeDigest ?? "",
+      "user",
+      "Keep these notes in place while contact.ts ships."
+    );
+    // The allowed worktree may be preserved, but never packaged.
+    expect(
+      refusal(() =>
+        recordShipmentScope(
+          fixture.root,
+          lease.runId,
+          "controller",
+          currentPlan(fixture.root)
+        )
+      )
+    ).toContain(
+      `Scoped source worktree ${preservedPath} changed after loop ${lease.runId} started`
+    );
+    const receipt = recordShipmentScope(
+      fixture.root,
+      lease.runId,
+      "controller",
+      plan
+    );
+    expect(receipt).toMatchObject({ includedPaths: 1, preservedPaths: 1 });
+  }, 60_000);
+
+  test("keeps the whole-inventory rule for a lease without scoped invariants", () => {
+    const { authorPath, fixture, lease } = shipRunWithClaimedAuthor();
+    editLease(fixture.root, (stored) => {
+      Reflect.deleteProperty(stored, "openingInvariantDigest");
+      Reflect.deleteProperty(stored, "openingWorktrees");
+    });
+    const legacy = readLoopLease(fixture.root);
+    expect(legacy?.openingInvariantDigest).toBeUndefined();
+    expect(legacy?.openingWorktrees).toBeUndefined();
+    writeFixture(authorPath, "feature.ts", "export const feature = 1;\n");
+
+    const message = refusal(() =>
+      recordShipmentScope(
+        fixture.root,
+        lease.runId,
+        "controller",
+        currentPlan(fixture.root, [authorPath])
+      )
+    );
+    expect(message).toContain(
+      `Shipment scope must match the exact unchanged opening repository inventory: loop ${lease.runId} predates scoped record-scope checks, and the repository changed after it started.`
+    );
+    expect(message).toContain(endCommand(lease));
+
+    rmSync(join(authorPath, "feature.ts"));
+    expect(captureInventory(fixture.root).baselineDigest).toBe(
+      lease.baselineDigest
+    );
+    recordShipmentScope(
+      fixture.root,
+      lease.runId,
+      "controller",
+      currentPlan(fixture.root, [authorPath])
+    );
+    expect(
+      readLoopLease(fixture.root)?.shipmentScope?.openingInventoryDigest
+    ).toBe(lease.baselineDigest);
+  }, 60_000);
 });

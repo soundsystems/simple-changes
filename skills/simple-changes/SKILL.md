@@ -87,9 +87,12 @@ preserved work. Explain that this is an interruption window rather than a
 permission gate when existing authority already covers the run. Follow
 [ship communication](references/ship-communication.md).
 When a Ship run opens with any local changes, generate one non-mutating preview
-plan from that unchanged opening inventory, record it with
+plan from the current inventory, record it with
 `loop record-scope --receipt <change-plan.json>`, and present the returned
-pre-ship scope before any `loop guard` or `loop exec`. A worktree marked
+pre-ship scope before any `loop guard` or `loop exec`. Unrelated changes since
+`loop start`, such as a claimed author's edits, are accounted for in that plan;
+a moved target, changed policy, failing verification, or a changed controller or
+scoped source worktree still blocks it. A worktree marked
 `preserved` in the safety lease is protected from deletion; that label never
 excludes its finished changes from shipment scope by itself. If independent
 review requires source changes, record a fresh preview with
@@ -188,7 +191,10 @@ performs the proven-safe cleanup described in
 completed state. An exact verified shipment can close while unrelated work
 remains preserved; its durable finalization receipt reports delivery and cleanup
 separately. If delivery or safety blockers remain, it relinquishes durable state
-and exits nonzero. Resume a relinquished run with `loop start --mode resume`;
+and exits nonzero. The exception is an untouched Ship run, one that owed a
+scope, recorded none, and changed nothing: finalization closes it instead of
+freezing its scope, so ending a turn on a scope question never strands it.
+`loop end` closes it the same way; then start a fresh loop for a new baseline. Resume a relinquished run with `loop start --mode resume`;
 takeover approval is only needed to replace an active controller.
 Takeover requires the exact current run ID and manifest digest plus approver and reason.
 

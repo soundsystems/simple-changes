@@ -1,5 +1,26 @@
 # Developer changelog
 
+## 0.19.0 - 2026-09-30
+
+- Add `firstMutationAt` to the lease, stamped in the same write as the first
+  guard, exec, prepare-agent, disposition, override, retention, retirement,
+  adoption, rebaseline, scope, outcome, reconciliation, relinquish, takeover,
+  or resume; it is excluded from the manifest digest. `endLoop` and
+  `finalizeLoop` close a scope-required Ship run with no scope, no mutation
+  stamp, and no run evidence of any kind, tolerating only
+  `preserved-worktree-changed` and `coordination-claim-stale`, writing an
+  immutable `abort-unmutated.json` receipt in the run's recovery history.
+- Replace the whole-digest opening check in `recordShipmentScope` with
+  explicit invariants: plan digest equals the current inventory, command runs
+  from the controller checkout, `currentTargetRevision` equals the pinned
+  target, `openingInvariantDigest` (capabilities, policy, remote bindings,
+  target ref and remote) is unchanged, the controller and every unit source
+  worktree match the new immutable `openingWorktrees` record, and manifest
+  verification passes. Leases without the new fields keep the old rule.
+  `shipmentScope.openingInventoryDigest` records the scope-time digest. Status
+  guidance reuses the same checks. Keep guidance at 22: no setting changes.
+<!-- simple-changelogs-signature agent="Fable 5.1" at="2026-09-30T19:46:51-05:00" -->
+
 ## Unreleased
 
 - Move the `loop retire-absent-worktree` sentences in

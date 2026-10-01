@@ -67,7 +67,9 @@ persisted opening and final inventories.
 
 `loop end` refuses a detected GitLab integration/reconciliation run when this
 receipt is missing, semantically unsafe, or stale against the final target
-revision. Closed/unmerged and no-MR branches that remain uncertain are valid
+revision. The one exception is an untouched Ship run with opening remote
+evidence, no recorded scope, and no mutation evidence: it never touched
+provider state, so it closes without this receipt. Closed/unmerged and no-MR branches that remain uncertain are valid
 preserved outcomes, but they must be named and reported; they cannot disappear
 from the ledger.
 
@@ -320,12 +322,18 @@ the controller. It reports `shipmentStatus`, `controllerStatus`,
 `deliveryStatus`, `cleanupStatus`, `blocksNextShipment`, blockers, and preserved
 worktrees. A closed shipment with pending cleanup does not block the next
 shipment; run guarded `prune` separately when safe. Incomplete finalization
-relinquishes durable state and exits nonzero. An authorized agent resumes that
-run with `loop start --mode resume --agent-id <you>` without takeover approval;
-its existing frozen scope and safety checks remain in force. Dirty non-primary
-worktrees, untracked or divergent primary paths, unique staged state, conflicts,
-late arrivals, retained exclusions, active claims, and branches with unique
-commits remain preserved.
+relinquishes durable state and exits nonzero. The exception is an untouched Ship
+run, with no recorded scope and no mutation evidence: finalization closes it
+with `shipmentStatus: unstarted` and an `abort-unmutated.json` receipt instead
+of freezing its scope, whether or not the repository moved, and `loop end`
+closes it the same way. A fresh `loop start` on an unchanged repository takes
+the same baseline, so nothing is lost.
+An authorized agent resumes a relinquished run with `loop start --mode resume
+--agent-id <you>` without takeover approval; its existing frozen scope and
+safety checks remain in force. Dirty non-primary worktrees, untracked or
+divergent primary paths, unique staged state, conflicts, late arrivals,
+retained exclusions, active claims, and branches with unique commits remain
+preserved.
 
 For every automatic opening-worktree removal or stale-metadata prune,
 finalization persists the exact freshly revalidated removal intent before the

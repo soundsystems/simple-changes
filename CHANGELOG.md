@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.19.0 - 2026-09-30
+
+- A Ship run no longer dead-ends when something unrelated changes between
+  `loop start` and `loop record-scope`. Recording the first scope now checks
+  only what the shipment depends on: the plan must come from the current
+  inventory, the target and the repository's policy and provider bindings must
+  be unchanged, the controller checkout and every scoped source worktree must
+  still match what the run registered at start, and verification must pass.
+  Claimed authors may keep editing, and unrelated branch commits or stashes no
+  longer block the run; each refusal names the exact cause and next step.
+- A Ship run that recorded no scope and changed nothing can be closed cleanly
+  with `loop end` or `loop finalize`, which writes an abort receipt and deletes
+  the lease so a fresh `loop start` takes a new baseline. The lease now records
+  when the run first mutated shared state, and any evidence of mutation keeps
+  the existing finalize-and-replan path in force.
+<!-- simple-changelogs-signature agent="Fable 5.1" at="2026-09-30T19:46:51-05:00" -->
+
 ## 0.18.0 - 2026-09-22
 
 - Account for a preserved worktree that its owning task deleted mid-run with the

@@ -72,7 +72,9 @@ as `simple-changes/active-loop.json` beneath the repository's common Git
 directory. `loop start` creates it atomically and records:
 
 - the run and controller identities;
-- the opening inventory digest, canonical target ref, and exact target revision;
+- the opening inventory digest, canonical target ref, and exact target revision,
+  plus a digest of the policy, capabilities, remote bindings, and target
+  binding that a first shipment scope depends on;
 - every worktree's exact path, branch, head, and content-sensitive change
   digest, including staged and unstaged patches plus untracked contents;
 - whether the worktree is controller-owned, run-author-owned,
@@ -99,12 +101,23 @@ preserved worktree. Run `loop verify` before merge, deployment, cleanup, and
 completion even when every earlier operation passed.
 
 For a Ship lease whose opening inventory contains local changes, first record
-the conserved preview plan with `loop record-scope --receipt <file>`. The
-command rechecks the exact unchanged opening digest and every changed path in
-every worktree, persists the plan digest, and returns the pre-ship scope summary.
-Until then, `loop guard`, `loop exec`, and completion fail closed. Do not infer
-shipment exclusion from a `preserved` lease role: it means only that the
-checkout cannot be changed or removed by the controller.
+the conserved preview plan with `loop record-scope --receipt <file>`. The plan
+must come from the exact current inventory and account for every changed path
+in every worktree; the command persists the plan digest with that inventory's
+digest and returns the pre-ship scope summary. Until then, `loop guard`,
+`loop exec`, and completion fail closed. Record-scope accepts unrelated changes
+made after `loop start`: claimed authors' edits and commits, other branches,
+stashes, and late claimed worktrees. It still refuses when the pinned target
+moved; when policy, discovered capabilities, remote bindings, or the target
+binding changed; when `loop verify` fails, so a changed unclaimed opening
+worktree first needs `loop allow`; or when the controller checkout or any unit
+source worktree differs from its loop-start branch, head, or content. When the
+first scope can no longer be recorded and the run has changed nothing yet,
+`loop end` closes it with an `abort-unmutated.json` receipt, and a fresh
+`loop start` takes a new baseline; a run with mutation evidence is finalized
+and replanned instead.
+Do not infer shipment exclusion from a `preserved` lease role: it means only
+that the checkout cannot be changed or removed by the controller.
 If independent review requires source changes, generate a new non-mutating
 preview from the exact current inventory and record it with
 `loop refresh-scope --receipt <change-plan.json>` before another mutation. This

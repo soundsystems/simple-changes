@@ -488,6 +488,14 @@ const effectiveShipmentScopeFrozenAt = (lease: LoopLease): string | null => {
   return lifecycle.handoffs.at(0)?.at ?? null;
 };
 
+// Durable evidence that the run began changing shared state or recording run
+// evidence. It is set once, in the same write as the first such change, and is
+// never cleared or replaced, so `loop end` can tell an untouched run apart.
+const withMutationEvidence = (lease: LoopLease, at: string): LoopLease => ({
+  ...lease,
+  firstMutationAt: lease.firstMutationAt ?? at,
+});
+
 const assertControllerActive = (lease: LoopLease): void => {
   if (controllerLifecycle(lease).status === "relinquished") {
     throw new SimpleChangesError(
@@ -536,7 +544,7 @@ const transferController = (
     );
   }
   return writeLease({
-    ...lease,
+    ...withMutationEvidence(lease, now),
     controller: {
       acquiredAt: now,
       handoffs: [
@@ -1512,6 +1520,8 @@ const verificationAgainst = (
   return {
     active: true,
     checkedAt: new Date().toISOString(),
+    // Reported evidence of the whole current inventory. It is not a scope
+    // gate: record-scope checks its own narrower invariants.
     currentBaselineDigest: inventory.baselineDigest,
     ok: violations.length === 0,
     runId: lease.runId,
@@ -1687,6 +1697,18 @@ const resolveExistingLoopStart = (
   );
 };
 
+// Repository facts a first shipment scope depends on besides worktree bytes:
+// policy, discovered capabilities, remote bindings, and the target binding.
+// None of them carries a timestamp, so an unchanged repository digests alike.
+const scopeInvariantDigest = (inventory: RepositoryInventory): string =>
+  sha256Json({
+    capabilities: inventory.capabilities,
+    policy: inventory.policy,
+    remoteBindings: inventory.repository.remoteBindings,
+    targetRef: inventory.targetRef,
+    targetRemote: inventory.repository.targetRemote,
+  });
+
 export const startLoop = (
   repositoryPath: string,
   agentIdInput: string,
@@ -1790,12 +1812,22 @@ export const startLoop = (
             },
             createdAt: now,
             dispositions: [],
+            firstMutationAt: null,
             mode: mode as LoopLease["mode"],
             openingBranches: inventory.branches.map(({ name, sha }) => ({
               name,
               sha,
             })),
+            openingInvariantDigest: scopeInvariantDigest(inventory),
             ...(openingRemoteInventory ? { openingRemoteInventory } : {}),
+            openingWorktrees: inventory.worktrees.map(
+              ({ branch, changeDigest, headSha, path }) => ({
+                branch,
+                changeDigest,
+                headSha,
+                path,
+              })
+            ),
             overrides: [],
             ownerAgentId: agentId,
             preparations: [],
@@ -1935,6 +1967,194 @@ const worktreeSourceEntry = (
   return `${mode}:blob:${objectId}`;
 };
 
+const shortRevision = (revision: string | null): string =>
+  revision ? revision.slice(0, 12) : "(unresolved)";
+
+// A lease records these at `loop start`. Without them it predates scoped
+// record-scope checks, and its first scope keeps the whole-inventory rule.
+const hasScopedOpeningInvariants = (
+  lease: LoopLease
+): lease is LoopLease & {
+  openingInvariantDigest: string;
+  openingWorktrees: NonNullable<LoopLease["openingWorktrees"]>;
+} => Boolean(lease.openingInvariantDigest && lease.openingWorktrees);
+
+// A first scope can still be recorded only by an active controller of a run
+// that owes one and has not frozen it by relinquishing.
+const owesFirstScope = (lease: LoopLease): boolean =>
+  lease.shipmentScopeRequired === true &&
+  !lease.shipmentScope &&
+  !effectiveShipmentScopeFrozenAt(lease) &&
+  controllerLifecycle(lease).status === "active";
+
+const registeredController = (lease: LoopLease): LoopWorktreeLease | null =>
+  lease.worktrees.find((worktree) => worktree.role === "controller") ?? null;
+
+/**
+ * Describes how a worktree differs from the exact state `loop start` saw, or
+ * returns null when its branch, head, and content digest are all unchanged.
+ * A first shipment scope may only package bytes that were present then.
+ */
+const openingWorktreeDrift = (
+  lease: LoopLease,
+  inventory: RepositoryInventory,
+  path: string
+): string | null => {
+  const opening = lease.openingWorktrees?.find(
+    (worktree) => worktree.path === path
+  );
+  if (!opening) {
+    return "it was not in the loop-start inventory";
+  }
+  const current = inventory.worktrees.find(
+    (worktree) => worktree.path === path
+  );
+  if (!current) {
+    return "it is missing";
+  }
+  if (current.branch !== opening.branch) {
+    return `its branch moved from ${opening.branch ?? "(detached)"} to ${current.branch ?? "(detached)"}`;
+  }
+  if (current.headSha !== opening.headSha) {
+    return `its head moved from ${shortRevision(opening.headSha)} to ${shortRevision(current.headSha)}`;
+  }
+  if (current.changeDigest !== opening.changeDigest) {
+    return "its staged, unstaged, or untracked content changed";
+  }
+  return null;
+};
+
+/**
+ * The first plan-independent reason a first shipment scope can no longer be
+ * recorded, or null. Unrelated changes (claimed authors' edits and commits,
+ * other branches, stashes, late claimed worktrees) do not count: the plan
+ * accounts for them from the current inventory. What still counts is a moved
+ * target, changed policy, capabilities, remote bindings or target binding, and
+ * a changed controller checkout. A lease that predates these invariants keeps
+ * the old rule: the whole-repository inventory must equal its opening digest.
+ */
+const openingScopeFailure = (
+  lease: LoopLease,
+  inventory: RepositoryInventory
+): string | null => {
+  if (!hasScopedOpeningInvariants(lease)) {
+    return inventory.baselineDigest === lease.baselineDigest
+      ? null
+      : `Shipment scope must match the exact unchanged opening repository inventory: loop ${lease.runId} predates scoped record-scope checks, and the repository changed after it started.`;
+  }
+  const targetRevision = resolvedCurrentTargetRevision(lease);
+  if (targetRevision !== lease.targetRevision) {
+    return `Target ${lease.targetRef} moved from ${shortRevision(lease.targetRevision)} to ${shortRevision(targetRevision)} after loop ${lease.runId} started, so a first shipment scope can no longer be recorded against the pinned target revision.`;
+  }
+  if (scopeInvariantDigest(inventory) !== lease.openingInvariantDigest) {
+    return `Repository policy, discovered capabilities, remote bindings, or the target binding changed after loop ${lease.runId} started, so a first shipment scope can no longer be recorded.`;
+  }
+  const controller = registeredController(lease);
+  const controllerDrift = controller
+    ? openingWorktreeDrift(lease, inventory, controller.path)
+    : "no controller checkout is registered";
+  if (controllerDrift) {
+    return `Controller checkout ${controller?.path ?? "(none)"} changed after loop ${lease.runId} started: ${controllerDrift}. Scoped source bytes must be the ones registered at loop start.`;
+  }
+  return null;
+};
+
+// The next step after a first scope is refused for a reason the plan cannot
+// fix. Only a run with no mutation evidence may close through `loop end`; any
+// other run must relinquish through finalization and be replanned.
+const firstScopeRecoveryStep = (
+  lease: LoopLease,
+  inventory: RepositoryInventory,
+  verification: LoopVerification
+): string => {
+  if (unmutatedCloseReady(lease, inventory, verification)) {
+    return ` This run has not changed anything yet, so if the scope can no longer be recorded, close it with \`simple-changes loop end --run-id ${lease.runId} --agent-id ${lease.ownerAgentId}\`, then run \`simple-changes loop start --mode ${lease.mode} --agent-id ${lease.ownerAgentId}\` to take a new baseline.`;
+  }
+  if (lease.firstMutationAt === null) {
+    return " This run has not changed anything yet, but `loop end` cannot close it yet; run `simple-changes loop status` for the exact next commands.";
+  }
+  const evidence =
+    lease.firstMutationAt === undefined
+      ? "This lease predates mutation tracking and cannot prove it changed nothing"
+      : "This run has already recorded mutation evidence";
+  return ` ${evidence}, so \`loop end\` cannot close it. If the scope can no longer be recorded, finalize it with \`simple-changes loop finalize --run-id ${lease.runId} --agent-id ${lease.ownerAgentId} --reason <why>\`, which relinquishes its controller, then replan it with \`simple-changes loop replan-status\` and an approved \`simple-changes loop replan\`.`;
+};
+
+const refuseFirstScope = (
+  lease: LoopLease,
+  inventory: RepositoryInventory,
+  verification: LoopVerification,
+  reason: string
+): never => {
+  throw new SimpleChangesError(
+    `${reason}${firstScopeRecoveryStep(lease, inventory, verification)}`,
+    EXIT_CODES.unsafe
+  );
+};
+
+/**
+ * A first scope must describe the repository as it is now and package only
+ * source bytes the run registered at loop start. Beyond the plan matching the
+ * current inventory, that requires: the controller runs it from its own
+ * checkout; the pinned target has not moved; policy, capabilities, remote
+ * bindings, and the target binding are unchanged; manifest verification
+ * passes (so a changed unclaimed opening worktree needs an explicit `loop
+ * allow`, while claimed concurrent authors keep editing); and the controller
+ * checkout and every unit source worktree still match their loop-start state.
+ */
+const assertFirstScopeInvariants = (
+  lease: LoopLease,
+  plan: ChangePlan,
+  inventory: RepositoryInventory
+): void => {
+  const verification = verificationAgainst(lease, inventory);
+  const controller = registeredController(lease);
+  if (
+    hasScopedOpeningInvariants(lease) &&
+    controller &&
+    inventory.repository.currentCheckout !== controller.path
+  ) {
+    throw new SimpleChangesError(
+      `Record shipment scope from the controller checkout ${controller.path}; this command ran from ${inventory.repository.currentCheckout}. Generate the preview there too.`,
+      EXIT_CODES.unsafe
+    );
+  }
+  const failure = openingScopeFailure(lease, inventory);
+  if (failure) {
+    refuseFirstScope(lease, inventory, verification, failure);
+  }
+  if (!hasScopedOpeningInvariants(lease)) {
+    return;
+  }
+  if (!verification.ok) {
+    const alternative = unmutatedCloseReady(lease, inventory, verification)
+      ? ` Because this run has not changed anything yet, \`simple-changes loop end --run-id ${lease.runId} --agent-id ${lease.ownerAgentId}\` can instead close it for a fresh \`loop start\`.`
+      : "";
+    throw new SimpleChangesError(
+      `Shipment scope cannot be recorded while loop ${lease.runId} verification fails: ${verification.violations
+        .map((violation) => `${violation.code}:${violation.path}`)
+        .join(
+          ", "
+        )}. Run \`simple-changes loop status\` for the exact next commands; a changed unclaimed opening worktree needs a user-approved \`loop allow\` before scope is recorded.${alternative}`,
+      EXIT_CODES.unsafe
+    );
+  }
+  const sources = [
+    ...new Set(plan.units.map((unit) => unit.sourceWorktree)),
+  ].sort((left, right) => left.localeCompare(right));
+  for (const source of sources) {
+    const drift = openingWorktreeDrift(lease, inventory, source);
+    if (drift) {
+      refuseFirstScope(
+        lease,
+        inventory,
+        verification,
+        `Scoped source worktree ${source} changed after loop ${lease.runId} started: ${drift}. Scoped source bytes must be the ones registered at loop start; keep its paths preserved or excluded in the plan instead.`
+      );
+    }
+  }
+};
+
 const assertShipmentScopeRecordable = (
   lease: LoopLease,
   plan: ChangePlan,
@@ -1965,18 +2185,24 @@ const assertShipmentScopeRecordable = (
       EXIT_CODES.unsafe
     );
   }
-  const inventoryMatches =
-    plan.repositoryRoot === inventory.repository.root &&
-    plan.baselineDigest === inventory.baselineDigest;
-  const openingMatches =
-    refresh || inventory.baselineDigest === lease.baselineDigest;
-  if (!(inventoryMatches && openingMatches)) {
+  // The plan must describe the repository exactly as it is now, so the
+  // returned pre-ship brief is current. This holds for first and refreshed
+  // scopes alike; only the comparison with loop start differs.
+  if (
+    !(
+      plan.repositoryRoot === inventory.repository.root &&
+      plan.baselineDigest === inventory.baselineDigest
+    )
+  ) {
     throw new SimpleChangesError(
       refresh
         ? "Refreshed shipment scope must match the exact current repository inventory."
-        : "Shipment scope must match the exact unchanged opening repository inventory. Re-run preview before mutation.",
+        : "Shipment scope must come from a preview of the exact current repository inventory. Re-run preview and record the new plan.",
       EXIT_CODES.unsafe
     );
+  }
+  if (!refresh) {
+    assertFirstScopeInvariants(lease, plan, inventory);
   }
   if (plan.questions.length > 0) {
     throw new SimpleChangesError(
@@ -2011,6 +2237,21 @@ const assertShipmentScopeRecordable = (
       );
     }
   }
+};
+
+// The inventory a scope's opening changes came from. A refresh keeps the
+// first scope's value, because it keeps that scope's opening changes. A scope
+// recorded before this field existed was recorded at the unchanged opening
+// inventory, so the lease's opening digest stands in for it.
+const scopeOpeningInventoryDigest = (
+  lease: LoopLease,
+  inventory: RepositoryInventory,
+  refresh: boolean
+): string => {
+  if (refresh && lease.shipmentScope) {
+    return lease.shipmentScope.openingInventoryDigest ?? lease.baselineDigest;
+  }
+  return inventory.baselineDigest;
 };
 
 export const recordShipmentScope = (
@@ -2076,6 +2317,11 @@ export const recordShipmentScope = (
       const planDigest = refresh
         ? sha256Json({ openingChanges, plan: activePlan })
         : sha256Json(activePlan);
+      const openingInventoryDigest = scopeOpeningInventoryDigest(
+        lease,
+        inventory,
+        refresh
+      );
       const shipmentScopeHistory = lease.shipmentScope
         ? [
             ...(lease.shipmentScopeHistory ?? []),
@@ -2087,11 +2333,12 @@ export const recordShipmentScope = (
           ]
         : lease.shipmentScopeHistory;
       writeLease({
-        ...lease,
+        ...withMutationEvidence(lease, recordedAt),
         ...(shipmentScopeHistory ? { shipmentScopeHistory } : {}),
         ownerProcess: ownerProcessEvidence(recordedAt),
         shipmentScope: {
           openingChanges,
+          openingInventoryDigest,
           plan: activePlan,
           planDigest,
           recordedAt,
@@ -2567,7 +2814,7 @@ export const recordShipmentOutcome = (
       const recordedAt = new Date().toISOString();
       const receiptDigest = sha256Json(receipt);
       writeLease({
-        ...lease,
+        ...withMutationEvidence(lease, recordedAt),
         ownerProcess: ownerProcessEvidence(recordedAt),
         shipmentOutcome: { receipt, receiptDigest, recordedAt },
         updatedAt: recordedAt,
@@ -2707,7 +2954,7 @@ export const guardLoopMutation = (
         );
       }
       writeLease({
-        ...lease,
+        ...withMutationEvidence(lease, verification.checkedAt),
         ownerProcess: ownerProcessEvidence(verification.checkedAt),
         updatedAt: verification.checkedAt,
       });
@@ -2760,6 +3007,7 @@ export const withLoopMutationLease = <T>(
         );
       }
 
+      const operationStartedAt = new Date().toISOString();
       let operationError: unknown;
       let result: T | undefined;
       try {
@@ -2789,7 +3037,7 @@ export const withLoopMutationLease = <T>(
       assertMatchingRun(currentLease, runId);
       const closingVerification = verificationAgainst(currentLease, after);
       writeLease({
-        ...currentLease,
+        ...withMutationEvidence(currentLease, operationStartedAt),
         ownerProcess: ownerProcessEvidence(closingVerification.checkedAt),
         updatedAt: closingVerification.checkedAt,
       });
@@ -2934,10 +3182,11 @@ export const recordEmergencyShipping = async (
         status: deriveEmergencyShippingStatus(validated),
       };
       assertEmergencyUpdate(lease.emergencyShipping, next);
+      const recordedAt = new Date().toISOString();
       writeLease({
-        ...lease,
+        ...withMutationEvidence(lease, recordedAt),
         emergencyShipping: next,
-        updatedAt: new Date().toISOString(),
+        updatedAt: recordedAt,
       });
       return next;
     }
@@ -3128,12 +3377,13 @@ export const prepareAgentWorktree = (
             EXIT_CODES.unsafe
           );
         }
+        const completedAt = new Date().toISOString();
         const completedLease: LoopLease = {
-          ...currentLease,
+          ...withMutationEvidence(currentLease, completedAt),
           preparations: currentLease.preparations.filter(
             (item) => item.agentId !== preparation.agentId
           ),
-          updatedAt: new Date().toISOString(),
+          updatedAt: completedAt,
           worktrees: [
             ...currentLease.worktrees,
             worktreeLease(createdWorktree, "author", agentId, true),
@@ -3278,7 +3528,7 @@ export const prepareAgentWorktree = (
         purpose,
       };
       const preparingLease = writeLease({
-        ...lease,
+        ...withMutationEvidence(lease, newPreparation.createdAt),
         preparations: [...lease.preparations, newPreparation],
         updatedAt: newPreparation.createdAt,
       });
@@ -3504,7 +3754,7 @@ export const authorizeWorktreeRemoval = (
           EXIT_CODES.unsafe
         );
       }
-      return writeLease(candidate);
+      return writeLease(withMutationEvidence(candidate, candidate.updatedAt));
     }
   );
 };
@@ -3612,7 +3862,7 @@ export const retireAbsentWorktree = (
         { retirement, runId: lease.runId }
       );
       return writeLease({
-        ...lease,
+        ...withMutationEvidence(lease, now),
         retirements: [...(lease.retirements ?? []), retirement],
         updatedAt: now,
       });
@@ -3734,7 +3984,7 @@ export const retainExcludedWorktree = (
           EXIT_CODES.unsafe
         );
       }
-      return writeLease(candidate);
+      return writeLease(withMutationEvidence(candidate, candidate.updatedAt));
     }
   );
 };
@@ -3825,7 +4075,7 @@ export const grantLoopOverride = (
           EXIT_CODES.unsafe
         );
       }
-      return writeLease(candidate);
+      return writeLease(withMutationEvidence(candidate, candidate.updatedAt));
     }
   );
 };
@@ -3981,7 +4231,7 @@ export const adoptPausedWorktree = (
         evidence.pauseReceiptId,
         ownerAgentId
       );
-      return writeLease(candidate);
+      return writeLease(withMutationEvidence(candidate, candidate.updatedAt));
     }
   );
 };
@@ -4064,7 +4314,9 @@ export const rebaselineLoopWorktrees = (
           ),
         ],
       };
-      const updated = writeLease(candidate);
+      const updated = writeLease(
+        withMutationEvidence(candidate, candidate.updatedAt)
+      );
       return {
         lease: updated,
         rebaseline,
@@ -4146,7 +4398,7 @@ export const acceptPausedWorktreeChange = (
         evidence.pauseReceiptId,
         ownerAgentId
       );
-      return writeLease(candidate);
+      return writeLease(withMutationEvidence(candidate, candidate.updatedAt));
     }
   );
 };
@@ -4209,7 +4461,7 @@ export const markWorktreeResumeReady = (
       };
       return {
         claimId,
-        lease: writeLease(candidate),
+        lease: writeLease(withMutationEvidence(candidate, candidate.updatedAt)),
         targetRef: lease.targetRef,
         targetSha,
       };
@@ -4292,7 +4544,7 @@ export const recordRemoteBranchReconciliation = (
       }
       const reconciledAt = new Date().toISOString();
       return writeLease({
-        ...lease,
+        ...withMutationEvidence(lease, reconciledAt),
         ownerProcess: ownerProcessEvidence(reconciledAt),
         remoteBranchReconciliation: receipt,
         updatedAt: reconciledAt,
@@ -5501,6 +5753,158 @@ const targetTreeEntry = (
   }
 };
 
+/**
+ * A Ship run that still owes its first shipment scope may close without it
+ * only when it provably did nothing. `firstMutationAt` must be explicitly
+ * null, because a lease written before the field existed cannot prove that,
+ * and the lease must carry no other evidence of action: no preparation,
+ * disposition, override, rebaseline, retirement, Emergency Shipping state,
+ * shipment outcome, remote reconciliation, target-equivalent outcome,
+ * superseded or frozen scope, controller handoff or relinquishment, and no
+ * worktree that the run created, retained, adopted, or marked resume-ready.
+ */
+const isUnmutatedScopelessRun = (lease: LoopLease): boolean => {
+  const lifecycle = controllerLifecycle(lease);
+  return (
+    lease.shipmentScopeRequired === true &&
+    !lease.shipmentScope &&
+    lease.firstMutationAt === null &&
+    lease.preparations.length === 0 &&
+    (lease.dispositions ?? []).length === 0 &&
+    lease.overrides.length === 0 &&
+    (lease.rebaselines ?? []).length === 0 &&
+    (lease.retirements ?? []).length === 0 &&
+    !lease.emergencyShipping &&
+    !lease.shipmentOutcome &&
+    !lease.remoteBranchReconciliation &&
+    !lease.closeEquivalentOutcome &&
+    (lease.shipmentScopeHistory ?? []).length === 0 &&
+    !effectiveShipmentScopeFrozenAt(lease) &&
+    lifecycle.status === "active" &&
+    lifecycle.handoffs.length === 0 &&
+    lease.worktrees.every(
+      (worktree) =>
+        !worktree.createdByRun &&
+        worktree.role !== "author" &&
+        worktree.role !== "retained" &&
+        worktree.retention === undefined &&
+        worktree.pauseReceiptId === undefined &&
+        worktree.coordinationState === undefined
+    )
+  );
+};
+
+// Violations an untouched run may still close over. Each describes a change
+// that someone else made to a worktree this run never had authority over: an
+// opening checkout its owner kept editing, or a concurrent author whose claim
+// lapsed. Closing deletes nothing, and the next loop start re-baselines both.
+// Every other code refuses the close. A new unregistered worktree, a missing
+// opening worktree, a moved controller branch, or a changed remote destination
+// may be this run acting outside the loop, and a wrong-repository or legacy
+// binding cannot vouch for itself. Retained, preparation, and adopted-claim
+// codes cannot arise without evidence that already disqualifies the run.
+const UNMUTATED_CLOSE_COMPATIBLE_VIOLATIONS: ReadonlySet<
+  LoopViolation["code"]
+> = new Set(["coordination-claim-stale", "preserved-worktree-changed"]);
+
+/**
+ * Returns null when the untouched-run close does not apply, so the ordinary
+ * completion gates decide. Otherwise returns the violations that still refuse
+ * it; an empty list means the run may close without mutation.
+ */
+const unmutatedCloseBlockers = (
+  lease: LoopLease,
+  inventory: RepositoryInventory,
+  verification: LoopVerification
+): string[] | null => {
+  if (
+    !isUnmutatedScopelessRun(lease) ||
+    (targetUsesGitLab(inventory) && !lease.openingRemoteInventory)
+  ) {
+    return null;
+  }
+  return verification.violations
+    .filter(
+      (violation) => !UNMUTATED_CLOSE_COMPATIBLE_VIOLATIONS.has(violation.code)
+    )
+    .map((violation) => `${violation.code}:${violation.path}`);
+};
+
+const unmutatedCloseReady = (
+  lease: LoopLease,
+  inventory: RepositoryInventory,
+  verification: LoopVerification
+): boolean =>
+  unmutatedCloseBlockers(lease, inventory, verification)?.length === 0;
+
+export interface LoopUnmutatedCloseReceipt {
+  checkedAt: string;
+  closedBy: "loop end" | "loop finalize";
+  kind: "loop-unmutated-close";
+  leaseDigest: string;
+  mode: LoopLease["mode"];
+  openingBaselineDigest: string;
+  ownerAgentId: string;
+  reason: string | null;
+  runId: string;
+  schemaVersion: 1;
+  targetRef: string;
+  targetRevision: string;
+  verification: {
+    currentBaselineDigest: string | null;
+    ok: boolean;
+    violations: Pick<LoopViolation, "code" | "path">[];
+  };
+}
+
+export interface LoopUnmutatedClose {
+  receipt: LoopUnmutatedCloseReceipt;
+  receiptPath: string;
+}
+
+// Records why an untouched run closed, then releases only its bookkeeping.
+// No worktree, branch, claim, or provider state is touched.
+const closeUnmutatedRun = (
+  lease: LoopLease,
+  verification: LoopVerification,
+  reason: string | null,
+  closedBy: LoopUnmutatedCloseReceipt["closedBy"]
+): LoopUnmutatedClose => {
+  const receiptPath = resolve(
+    recoveryHistoryDirectory(lease.commonGitDirectory, lease.runId),
+    "abort-unmutated.json"
+  );
+  const receipt = writeImmutableRecoveryEvent<LoopUnmutatedCloseReceipt>(
+    receiptPath,
+    {
+      checkedAt: verification.checkedAt,
+      closedBy,
+      kind: "loop-unmutated-close",
+      leaseDigest: loopManifestDigest(lease),
+      mode: lease.mode,
+      // An untouched run never recorded a scope, so its only opening is the
+      // loop-start inventory; there is no scope-time digest to report.
+      openingBaselineDigest: lease.baselineDigest,
+      ownerAgentId: lease.ownerAgentId,
+      reason,
+      runId: lease.runId,
+      schemaVersion: 1,
+      targetRef: lease.targetRef,
+      targetRevision: lease.targetRevision,
+      verification: {
+        currentBaselineDigest: verification.currentBaselineDigest,
+        ok: verification.ok,
+        violations: verification.violations.map(({ code, path }) => ({
+          code,
+          path,
+        })),
+      },
+    }
+  );
+  rmSync(loopLeasePath(lease.commonGitDirectory), { force: true });
+  return { receipt, receiptPath };
+};
+
 const missingShipmentScopeBlockers = (lease: LoopLease): string[] =>
   lease.shipmentScopeRequired && !lease.shipmentScope
     ? [
@@ -5704,8 +6108,9 @@ const loopCompletionBlockers = (
 export interface LoopFinalizationResult {
   blockers: string[];
   cleanup: FinalizationCleanupResult;
+  closedWithoutMutation?: LoopUnmutatedClose;
   lease: LoopLease | null;
-  outcome: "completed" | "relinquished";
+  outcome: "completed" | "relinquished" | "closed-without-mutation";
   receipt: LoopFinalizationReceipt;
   receiptPath: string;
   verification: LoopVerification;
@@ -5725,7 +6130,7 @@ export interface LoopFinalizationReceipt {
   reason: string;
   runId: string;
   schemaVersion: 1;
-  shipmentStatus: "closed" | "open";
+  shipmentStatus: "closed" | "open" | "unstarted";
   targetRevision: string | null;
 }
 
@@ -6383,6 +6788,66 @@ const releaseDeliveredSourceClaims = (
   }
 };
 
+// Finalization runs before every terminal response, including one that ends
+// the turn on a scope question. Relinquishing an untouched Ship run would freeze
+// a scope it never recorded and leave only an approved replan, so finalization
+// closes it instead, whether or not the repository moved. Nothing is lost: a
+// fresh `loop start` on an unchanged repository takes the same baseline.
+const finalizeUnmutatedRun = (
+  lease: LoopLease,
+  inventory: RepositoryInventory,
+  reason: string
+): LoopFinalizationResult | null => {
+  if (!isUnmutatedScopelessRun(lease)) {
+    return null;
+  }
+  const verification = verificationAgainst(lease, inventory);
+  if (!unmutatedCloseReady(lease, inventory, verification)) {
+    return null;
+  }
+  const cleanup = emptyFinalizationCleanup();
+  const receipt: LoopFinalizationReceipt = {
+    blockers: [],
+    blocksNextShipment: false,
+    cleanup,
+    // No automatic cleanup runs for a run that never recorded its scope.
+    cleanupStatus: "pending",
+    controllerStatus: "released",
+    deliveryStatus: "unverified",
+    finalizedAt: verification.checkedAt,
+    kind: "loop-finalization",
+    leaseDigest: loopManifestDigest(lease),
+    preservedWorktrees: inventory.worktrees
+      .map((worktree) => worktree.path)
+      .sort((left, right) => left.localeCompare(right)),
+    reason,
+    runId: lease.runId,
+    schemaVersion: 1,
+    shipmentStatus: "unstarted",
+    targetRevision: null,
+  };
+  const receiptPath = resolve(
+    recoveryHistoryDirectory(lease.commonGitDirectory, lease.runId),
+    `finalization-${sha256Json(receipt)}.json`
+  );
+  writeImmutableRecoveryEvent(receiptPath, { lease, receipt });
+  return {
+    blockers: [],
+    cleanup,
+    closedWithoutMutation: closeUnmutatedRun(
+      lease,
+      verification,
+      reason,
+      "loop finalize"
+    ),
+    lease: null,
+    outcome: "closed-without-mutation",
+    receipt,
+    receiptPath,
+    verification,
+  };
+};
+
 export const finalizeLoop = (
   repositoryPath: string,
   runId: string,
@@ -6410,6 +6875,10 @@ export const finalizeLoop = (
             );
           }
           assertControllerActive(lease);
+          const untouched = finalizeUnmutatedRun(lease, inventory, reason);
+          if (untouched) {
+            return untouched;
+          }
           lease = reconcileAbsentRetainedWorktrees(lease, inventory);
           lease = reconcilePrimarySynchronization(lease, inventory);
           const openingVerification = verificationAgainst(lease, inventory);
@@ -6455,7 +6924,7 @@ export const finalizeLoop = (
             };
           }
           const updated = writeLease({
-            ...lease,
+            ...withMutationEvidence(lease, now),
             controller: {
               ...controllerLifecycle(lease),
               reason,
@@ -7048,12 +7517,18 @@ export const recoverStaleLoopLease = (
   });
 };
 
+export interface LoopEndResult extends LoopVerification {
+  closedWithoutMutation?: LoopUnmutatedClose;
+}
+
 export const endLoop = (
   repositoryPath: string,
   runId: string,
-  ownerAgentIdInput: string
-): LoopVerification => {
+  ownerAgentIdInput: string,
+  reasonInput: string | null = null
+): LoopEndResult => {
   const ownerAgentId = requiredText(ownerAgentIdInput, "agent ID");
+  const reason = reasonInput?.trim() || null;
   const opening = captureInventory(repositoryPath);
   return withStateLock(
     opening.repository.commonGitDirectory,
@@ -7067,6 +7542,19 @@ export const endLoop = (
       );
       assertControllerActive(lease);
       const verification = verificationAgainst(lease, inventory);
+      // A Ship run that never changed anything owes no shipment scope, remote
+      // reconciliation, or cleanup; those gates protect integrated work.
+      if (unmutatedCloseReady(lease, inventory, verification)) {
+        return {
+          ...verification,
+          closedWithoutMutation: closeUnmutatedRun(
+            lease,
+            verification,
+            reason,
+            "loop end"
+          ),
+        };
+      }
       const blockers = loopCompletionBlockers(lease, inventory, verification);
       if (blockers.length > 0) {
         throw new SimpleChangesError(blockers.join(" "), EXIT_CODES.unsafe);
@@ -7147,10 +7635,26 @@ const violationGuidanceCommands = (
   return commands;
 };
 
+interface LoopGuidanceContext {
+  // Why this run's first shipment scope can no longer be recorded, whatever
+  // plan is offered; null when it still can, or when no first scope is owed.
+  firstScopeFailure: string | null;
+  liveness: LeaseLiveness | null;
+  unmutatedCloseAvailable: boolean;
+}
+
 const loopGuidanceFor = (
   lease: LoopLease | null,
   verification: LoopVerification,
-  liveness: LeaseLiveness | null = null
+  {
+    firstScopeFailure,
+    liveness,
+    unmutatedCloseAvailable,
+  }: LoopGuidanceContext = {
+    firstScopeFailure: null,
+    liveness: null,
+    unmutatedCloseAvailable: false,
+  }
 ): LoopGuidance => {
   if (!lease) {
     return {
@@ -7176,15 +7680,46 @@ const loopGuidanceFor = (
       ],
     };
   }
+  // Scope guidance follows record-scope's own invariants rather than the
+  // whole-repository digest, so an untouched run whose scope can still be
+  // recorded is told to record it, not to end.
+  const endCommand = `simple-changes loop end --run-id ${lease.runId} --agent-id ${lease.ownerAgentId} --reason <why>`;
+  const startCommand = `simple-changes loop start --mode ${lease.mode} --agent-id ${lease.ownerAgentId}`;
+  if (unmutatedCloseAvailable && firstScopeFailure) {
+    return {
+      headline: `Loop ${lease.runId} has not changed anything, but its shipment scope can no longer be recorded. ${firstScopeFailure} Close this untouched run with \`loop end\`; a fresh \`loop start\` then takes a new baseline.`,
+      nextCommands: [endCommand, startCommand],
+    };
+  }
+  if (firstScopeFailure && lease.firstMutationAt !== null) {
+    return {
+      headline: `Loop ${lease.runId} can no longer record its first shipment scope. ${firstScopeFailure} It has already recorded mutation evidence, so \`loop end\` cannot close it: finalize it, which relinquishes its controller, then replan it with explicit approval.`,
+      nextCommands: [
+        `simple-changes loop finalize --run-id ${lease.runId} --agent-id ${lease.ownerAgentId} --reason <why>`,
+        "simple-changes loop replan-status --json",
+        `simple-changes loop replan --run-id ${lease.runId} --agent-id ${lease.ownerAgentId} --manifest-digest <digest> --status-digest <digest> --approved-by <user> --reason <why>`,
+      ],
+    };
+  }
   if (!verification.ok) {
+    const nextCommands = violationGuidanceCommands(
+      lease,
+      verification.violations
+    );
+    if (unmutatedCloseAvailable) {
+      return {
+        headline: `Verification for ${lease.runId} is failing with ${verification.violations.length} violation(s); resolve each violation before recording scope or guarded mutations. This run has not changed anything yet, so \`loop end\` can instead close it for a fresh \`loop start\`.`,
+        nextCommands: [...nextCommands, endCommand],
+      };
+    }
     return {
       headline: `Verification for ${lease.runId} is failing with ${verification.violations.length} violation(s); resolve each violation before guarded mutations.`,
-      nextCommands: violationGuidanceCommands(lease, verification.violations),
+      nextCommands,
     };
   }
   if (lease.shipmentScopeRequired && !lease.shipmentScope) {
     return {
-      headline: `Loop ${lease.runId} is healthy but has no recorded shipment scope; record it before shared integration or worktree mutations.`,
+      headline: `Loop ${lease.runId} is healthy but has no recorded shipment scope; record it before shared integration or worktree mutations. Record-scope accepts unrelated changes made since loop start, such as claimed authors' edits and commits, other branches, and stashes. It still refuses when the target moved; policy, capabilities, or remote bindings changed; verification fails; or the controller checkout or a scoped source worktree changed since loop start.`,
       nextCommands: [
         `simple-changes loop record-scope --run-id ${lease.runId} --agent-id ${lease.ownerAgentId} --receipt <file>`,
       ],
@@ -7228,7 +7763,22 @@ export const loopStatus = (
     : emptyVerification(inventory);
   const liveness = storedLease ? leaseLiveness(storedLease) : null;
   return {
-    guidance: loopGuidanceFor(lease, verification, liveness),
+    guidance: loopGuidanceFor(lease, verification, {
+      // The target binding is resolved from the current checkout's branch,
+      // so the scope invariants are judged only from the controller checkout,
+      // where record-scope itself must run.
+      firstScopeFailure:
+        lease &&
+        owesFirstScope(lease) &&
+        registeredController(lease)?.path ===
+          inventory.repository.currentCheckout
+          ? openingScopeFailure(lease, inventory)
+          : null,
+      liveness,
+      unmutatedCloseAvailable: lease
+        ? unmutatedCloseReady(lease, inventory, verification)
+        : false,
+    }),
     lease,
     liveness,
     verification,
@@ -7236,9 +7786,12 @@ export const loopStatus = (
 };
 
 // Liveness fields are deliberately excluded: a heartbeat must never invalidate
-// a manifest digest that takeover and finalization compare against.
+// a manifest digest that takeover and finalization compare against. The first
+// mutation timestamp is excluded for the same reason: `loop guard` and
+// `loop exec` stamp it on their heartbeat write and never changed the manifest.
 export const loopManifestDigest = (lease: LoopLease): string => {
   const {
+    firstMutationAt: _firstMutationAt,
     ownerProcess: _ownerProcess,
     updatedAt: _updatedAt,
     ...manifest

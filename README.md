@@ -273,7 +273,8 @@ simple-changes loop recover-post-cleanup --run-id ID --agent-id ID
   --receipt FILE [--json] [--repo PATH]
 simple-changes loop close-equivalent --run-id ID --agent-id ID
   --approved-by ID --reason TEXT [--evidence FILE ...] [--json] [--repo PATH]
-simple-changes loop end --run-id ID --agent-id ID [--json] [--repo PATH]
+simple-changes loop end --run-id ID --agent-id ID [--reason TEXT]
+  [--json] [--repo PATH]
 simple-changes loop finalize --run-id ID --agent-id ID --reason TEXT
   [--json] [--repo PATH]
 simple-changes worktree status [--json] [--repo PATH]

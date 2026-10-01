@@ -685,6 +685,13 @@ export interface LoopWorktreeLease {
   role: LoopWorktreeRole;
 }
 
+export interface LoopOpeningWorktree {
+  branch: string | null;
+  changeDigest: string;
+  headSha: string | null;
+  path: string;
+}
+
 export interface LoopControllerHandoff {
   approvedBy: string | null;
   at: string;
@@ -1023,9 +1030,29 @@ export interface LoopLease {
   createdAt: string;
   dispositions?: LoopWorktreeDisposition[];
   emergencyShipping?: EmergencyShippingLedgerEntry;
+  /**
+   * When the run first changed shared state or recorded run evidence. A lease
+   * started by this version holds `null` until then; a lease without the field
+   * predates it and cannot prove that it never mutated.
+   */
+  firstMutationAt?: string | null;
   mode: Exclude<RequestMode, "pause" | "preview" | "sync">;
   openingBranches?: Array<{ name: string; sha: string }>;
+  /**
+   * Digest of the repository facts a first shipment scope depends on besides
+   * worktree bytes: policy, discovered capabilities, remote bindings, and the
+   * target binding, as captured at `loop start`. A lease without it predates
+   * scoped record-scope checks and still needs the exact opening inventory.
+   */
+  openingInvariantDigest?: string;
   openingRemoteInventory?: RemoteBranchReconciliationReceipt;
+  /**
+   * Every worktree exactly as `loop start` saw it. Unlike `worktrees`, whose
+   * baselines move when a claim is admitted, a paused change is accepted, or a
+   * late worktree is re-baselined, this record never changes, so a first scope
+   * can prove that its source bytes are the ones present at loop start.
+   */
+  openingWorktrees?: LoopOpeningWorktree[];
   overrides: LoopOverride[];
   ownerAgentId: string;
   ownerProcess?: LoopOwnerProcess;
@@ -1043,6 +1070,12 @@ export interface LoopLease {
     recordedAt: string;
   };
   shipmentScope?: {
+    /**
+     * The whole-repository inventory digest when this scope's opening changes
+     * were recorded. Absent on scopes recorded before record-scope tolerated
+     * unrelated changes; those were recorded at `baselineDigest` exactly.
+     */
+    openingInventoryDigest?: string;
     openingChanges: Array<{
       originalPath: string | null;
       path: string;

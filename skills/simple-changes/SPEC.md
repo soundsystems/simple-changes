@@ -75,6 +75,23 @@
   Each attempt persists a receipt reporting shipment, controller, delivery,
   cleanup, blockers, and preserved worktrees before release. A relinquished
   controller is resumed without takeover approval; frozen scope still applies.
+- A first shipment scope (`loop record-scope`) requires a non-mutating preview
+  plan generated from the exact current inventory, with no open questions and
+  every changed path accounted for once; the controller's own checkout; the
+  pinned target revision; unchanged policy, discovered capabilities, remote
+  bindings, and target binding since loop start; passing manifest
+  verification; and the controller checkout and every unit source worktree at
+  their exact loop-start branch, head, and content digest. Other changes after
+  loop start, including claimed authors' edits and commits, other branches, and
+  stashes, do not block it. A lease that predates these recorded invariants
+  still requires the exact unchanged opening inventory.
+- A Ship run that owed a shipment scope (`shipmentScopeRequired`), never
+  recorded it, and changed nothing, with a controller that is still active and
+  was never handed off, may close without it: `loop end` and finalization both
+  close it, whether or not the repository moved, writing an immutable
+  `abort-unmutated.json` receipt and removing only the lease. Any recorded
+  mutation evidence, or any violation other than a changed unclaimed opening
+  checkout or a lapsed concurrent claim, keeps every ordinary completion gate.
 - Existing and concurrent work is preserved unless ownership and scope are
   proven. A preserved worktree that its owner removed mid-run can be retired
   only with named approval and proof that it is absent from disk and from the

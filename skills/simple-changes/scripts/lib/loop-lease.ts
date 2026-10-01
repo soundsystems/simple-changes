@@ -32,7 +32,7 @@ import {
 } from "./emergency-shipping.ts";
 import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
 import { sha256, sha256Json } from "./hash.ts";
-import { captureInventory } from "./inventory.ts";
+import { captureInventory, locateRepository } from "./inventory.ts";
 import {
   assertNoSymlinkAncestors,
   assertSafeRelativePath,
@@ -1610,7 +1610,7 @@ const assertAgentMutationAllowed = (
 };
 
 export const readLoopLease = (repositoryPath: string): LoopLease | null => {
-  const inventory = captureInventory(repositoryPath);
+  const inventory = locateRepository(repositoryPath);
   return readLeaseFromCommonDirectory(inventory.repository.commonGitDirectory);
 };
 
@@ -1722,7 +1722,7 @@ export const startLoop = (
       EXIT_CODES.usage
     );
   }
-  const opening = captureInventory(repositoryPath);
+  const opening = locateRepository(repositoryPath);
   return withStateLock(
     opening.repository.commonGitDirectory,
     "loop start",
@@ -2264,7 +2264,7 @@ export const recordShipmentScope = (
   const runId = requiredRunId(runIdInput);
   const agentId = requiredText(agentIdInput, "agent ID");
   const plan = validateSchema<ChangePlan>("change-plan", planInput);
-  const opening = captureInventory(repositoryPath);
+  const opening = locateRepository(repositoryPath);
   return withStateLock(
     opening.repository.commonGitDirectory,
     "record shipment scope",
@@ -2759,7 +2759,7 @@ export const recordShipmentOutcome = (
     "shipment-outcome",
     receiptInput
   );
-  const opening = captureInventory(repositoryPath);
+  const opening = locateRepository(repositoryPath);
   return withStateLock(
     opening.repository.commonGitDirectory,
     "record shipment outcome",
@@ -2850,7 +2850,7 @@ export const takeoverLoop = (
       EXIT_CODES.usage
     );
   }
-  const opening = captureInventory(repositoryPath);
+  const opening = locateRepository(repositoryPath);
   return withStateLock(
     opening.repository.commonGitDirectory,
     "loop takeover",
@@ -2903,7 +2903,7 @@ const emptyVerification = (
 });
 
 export const verifyLoop = (repositoryPath: string): LoopVerification => {
-  const opening = captureInventory(repositoryPath);
+  const opening = locateRepository(repositoryPath);
   return withStateLock(
     opening.repository.commonGitDirectory,
     "loop verify",
@@ -2935,7 +2935,7 @@ export const guardLoopMutation = (
   agentIdInput: string
 ): LoopVerification => {
   const agentId = requiredText(agentIdInput, "agent ID");
-  const opening = captureInventory(repositoryPath);
+  const opening = locateRepository(repositoryPath);
   return withStateLock(
     opening.repository.commonGitDirectory,
     "loop guard",
@@ -2988,7 +2988,7 @@ export const withLoopMutationLease = <T>(
 ): Promise<LoopOperationResult<T>> => {
   const agentId = requiredText(agentIdInput, "agent ID");
   const operationName = requiredText(operationNameInput, "operation name");
-  const opening = captureInventory(repositoryPath);
+  const opening = locateRepository(repositoryPath);
   return withAsyncStateLock(
     opening.repository.commonGitDirectory,
     operationName,
@@ -3306,7 +3306,7 @@ export const prepareAgentWorktree = (
 ): PreparedAgentWorktree => {
   const agentId = requiredText(agentIdInput, "agent ID");
   const purpose = slug(requiredText(purposeInput, "purpose"), "work");
-  const opening = captureInventory(repositoryPath);
+  const opening = locateRepository(repositoryPath);
   return withStateLock(
     opening.repository.commonGitDirectory,
     "prepare agent worktree",
@@ -3709,7 +3709,7 @@ export const authorizeWorktreeRemoval = (
       reasonInput,
       "disposition reason"
     );
-  const opening = captureInventory(repositoryPath);
+  const opening = locateRepository(repositoryPath);
   return withStateLock(
     opening.repository.commonGitDirectory,
     "authorize opening worktree removal",
@@ -3790,7 +3790,7 @@ export const retireAbsentWorktree = (
   const ownerAgentId = requiredText(ownerAgentIdInput, "agent ID");
   const approvedBy = requiredText(approvedByInput, "approved-by identity");
   const reason = requiredText(reasonInput, "retirement reason");
-  const opening = captureInventory(repositoryPath);
+  const opening = locateRepository(repositoryPath);
   return withStateLock(
     opening.repository.commonGitDirectory,
     "loop retire-absent-worktree",
@@ -3943,7 +3943,7 @@ export const retainExcludedWorktree = (
       reasonInput,
       "retention reason"
     );
-  const opening = captureInventory(repositoryPath);
+  const opening = locateRepository(repositoryPath);
   return withStateLock(
     opening.repository.commonGitDirectory,
     "retain excluded worktree",
@@ -4006,7 +4006,7 @@ export const grantLoopOverride = (
       reasonInput,
       "override reason"
     );
-  const opening = captureInventory(repositoryPath);
+  const opening = locateRepository(repositoryPath);
   return withStateLock(
     opening.repository.commonGitDirectory,
     "loop allow",
@@ -4174,7 +4174,7 @@ export const adoptPausedWorktree = (
   pauseReceiptIdInput: string
 ): LoopLease => {
   const ownerAgentId = requiredText(ownerAgentIdInput, "agent ID");
-  const opening = captureInventory(repositoryPath);
+  const opening = locateRepository(repositoryPath);
   return withStateLock(
     opening.repository.commonGitDirectory,
     "loop adopt-worktree",
@@ -4261,7 +4261,7 @@ export const rebaselineLoopWorktrees = (
   const ownerAgentId = requiredText(ownerAgentIdInput, "agent ID");
   const approvedBy = requiredText(approvedByInput, "approved-by identity");
   const reason = requiredText(reasonInput, "rebaseline reason");
-  const opening = captureInventory(repositoryPath);
+  const opening = locateRepository(repositoryPath);
   return withStateLock(
     opening.repository.commonGitDirectory,
     "loop rebaseline",
@@ -4333,7 +4333,7 @@ export const acceptPausedWorktreeChange = (
   pauseReceiptIdInput: string
 ): LoopLease => {
   const ownerAgentId = requiredText(ownerAgentIdInput, "agent ID");
-  const opening = captureInventory(repositoryPath);
+  const opening = locateRepository(repositoryPath);
   return withStateLock(
     opening.repository.commonGitDirectory,
     "loop accept-paused-change",
@@ -4416,7 +4416,7 @@ export const markWorktreeResumeReady = (
 } => {
   const ownerAgentId = requiredText(ownerAgentIdInput, "agent ID");
   const claimId = requiredText(claimIdInput, "claim ID");
-  const opening = captureInventory(repositoryPath);
+  const opening = locateRepository(repositoryPath);
   return withStateLock(
     opening.repository.commonGitDirectory,
     "worktree resume-ready",
@@ -4480,7 +4480,7 @@ export const recordRemoteBranchReconciliation = (
   const ownerAgentId = requiredText(ownerAgentIdInput, "agent ID");
   const receipt: RemoteBranchReconciliationReceipt =
     validateRemoteBranchReconciliation(receiptInput);
-  const opening = captureInventory(repositoryPath);
+  const opening = locateRepository(repositoryPath);
   return withStateLock(
     opening.repository.commonGitDirectory,
     "record remote branch reconciliation",
@@ -6426,7 +6426,7 @@ export const recoverPostCleanupLoop = (
   const ownerAgentId = requiredText(ownerAgentIdInput, "agent ID");
   const receipt: PostCleanupRecoveryReceipt =
     validatePostCleanupRecovery(receiptInput);
-  const opening = captureInventory(repositoryPath);
+  const opening = locateRepository(repositoryPath);
   const { commonGitDirectory } = opening.repository;
   return withStateLock(commonGitDirectory, "post-cleanup recovery", () => {
     const receiptDigest = sha256Json(receipt);
@@ -6856,7 +6856,7 @@ export const finalizeLoop = (
 ): LoopFinalizationResult => {
   const ownerAgentId = requiredText(ownerAgentIdInput, "agent ID");
   const reason = requiredText(reasonInput, "finalization reason");
-  const opening = captureInventory(repositoryPath);
+  const opening = locateRepository(repositoryPath);
   return withStateLock(
     opening.repository.commonGitDirectory,
     "loop finalize",
@@ -7309,7 +7309,7 @@ export const closeLoopTargetEquivalent = (
   const agentId = requiredText(agentIdInput, "agent ID");
   const approvedBy = requiredText(approvedByInput, "approver");
   const reason = requiredText(reasonInput, "close-equivalent reason");
-  const opening = captureInventory(repositoryPath);
+  const opening = locateRepository(repositoryPath);
   const { commonGitDirectory } = opening.repository;
   return withStateLock(commonGitDirectory, "loop close-equivalent", () =>
     withWorktreeCoordinationLock(
@@ -7455,7 +7455,7 @@ export const recoverStaleLoopLease = (
   const agentId = requiredText(agentIdInput, "agent ID");
   const approvedBy = requiredText(approvedByInput, "approver");
   const reason = requiredText(reasonInput, "stale-lease recovery reason");
-  const opening = captureInventory(repositoryPath);
+  const opening = locateRepository(repositoryPath);
   const { commonGitDirectory } = opening.repository;
   return withStateLock(commonGitDirectory, "loop recover stale lease", () => {
     const archivePath = staleLeaseRecoveryPath(commonGitDirectory, runId);
@@ -7529,7 +7529,7 @@ export const endLoop = (
 ): LoopEndResult => {
   const ownerAgentId = requiredText(ownerAgentIdInput, "agent ID");
   const reason = reasonInput?.trim() || null;
-  const opening = captureInventory(repositoryPath);
+  const opening = locateRepository(repositoryPath);
   return withStateLock(
     opening.repository.commonGitDirectory,
     "loop end",
@@ -7847,7 +7847,7 @@ const replanObservation = (
 // Observe from the same checkout used for execution. Inventory digests include
 // checkout identity, while coordination and the current target bind shared state.
 export const loopReplanStatus = (repositoryPath: string) => {
-  const opening = captureInventory(repositoryPath);
+  const opening = locateRepository(repositoryPath);
   return withStateLock(
     opening.repository.commonGitDirectory,
     "loop replan status",
@@ -8104,7 +8104,7 @@ export const replanLoop = (
       EXIT_CODES.usage
     );
   }
-  const opening = captureInventory(repositoryPath);
+  const opening = locateRepository(repositoryPath);
   const common = opening.repository.commonGitDirectory;
   return withStateLock(common, "loop replan", () =>
     withWorktreeCoordinationLock(common, "loop replan", () => {

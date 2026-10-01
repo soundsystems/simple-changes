@@ -15,7 +15,7 @@ import { inspectChangelogCoordination } from "./changelog-coordination.ts";
 import { sha256 } from "./hash.ts";
 import { assertSafeRelativePath } from "./path-safety.ts";
 import { loadPolicy } from "./policy.ts";
-import { runGit } from "./process.ts";
+import { type CommandResult, runGit, runGitConcurrently } from "./process.ts";
 import { validateSchema } from "./schema.ts";
 import type {
   BranchInventory,
@@ -45,6 +45,7 @@ const BEHIND_PATTERN = /behind ([0-9]+)/u;
 const HTTP_REMOTE_CREDENTIAL_PATTERN = /^(https?:\/\/)[^/@]+@/iu;
 const SCP_REMOTE_PATTERN = /^[^@]+@([^:]+):/u;
 const CONFLICT_CODES = new Set(["DD", "AU", "UD", "UA", "DU", "AA", "UU"]);
+const TRAILING_NEWLINE_PATTERN = /\n$/u;
 
 const nullableSha = (value: string | undefined): string | null => {
   if (!value || ZERO_SHA_PATTERN.test(value)) {
@@ -170,33 +171,127 @@ const filesystemIdentity = (path: string): string => {
   return `${kind}:${status.mode}:${status.size}`;
 };
 
+const revisionIndexObjectId = (
+  worktreePath: string,
+  path: string
+): string | null => {
+  const index = runGit(
+    worktreePath,
+    ["rev-parse", "--verify", `:${path}`],
+    true
+  );
+  return index.exitCode === 0 && index.stdout.trim()
+    ? index.stdout.trim()
+    : null;
+};
+
+// `:<n>:<path>` (n in 0-3) names an index stage rather than a path, and
+// `rev-parse` first tries the whole argument as a revision expression, so a
+// name containing range, reflog, ancestry, or `describe` syntax may resolve to
+// something other than its index entry; see gitrevisions(7).
+const REVISION_STAGE_PREFIX_PATTERN = /^[0-3]:/u;
+const REVISION_SYNTAX_PATTERN = /\.\.|@\{|[~^]|-g[0-9a-f]{4,}$/iu;
+// Beyond this many paths, or this many argument bytes, one full listing is
+// cheaper than matching every index entry against every pathspec and stays
+// clear of command-line length limits.
+const PATHSPEC_LISTING_LIMIT = 256;
+const PATHSPEC_LISTING_BYTES = 64 * 1024;
+
+// Names the listing cannot answer byte for byte keep the per-path lookup: a
+// decoded replacement character, a name Git would normalize to another form,
+// or a name `rev-parse` may read as revision syntax.
+const needsRevisionLookup = (path: string): boolean =>
+  path.includes("\uFFFD") ||
+  path.normalize("NFC") !== path ||
+  REVISION_STAGE_PREFIX_PATTERN.test(path) ||
+  REVISION_SYNTAX_PATTERN.test(path);
+
+// Lists stage-0 index entries for the given literal paths, or the whole index
+// when there are many. Returns null when Git cannot read the index, so callers
+// fall back to the per-path lookup and its null results.
+const stageZeroIndexEntries = (
+  worktreePath: string,
+  paths: readonly string[]
+): Map<string, string> | null => {
+  const listAll =
+    paths.length > PATHSPEC_LISTING_LIMIT ||
+    paths.reduce((bytes, path) => bytes + Buffer.byteLength(path) + 1, 0) >
+      PATHSPEC_LISTING_BYTES;
+  const pathspecs = listAll ? [] : ["--", ...paths];
+  const listing = runGit(
+    worktreePath,
+    ["--literal-pathspecs", "ls-files", "--stage", "-z", ...pathspecs],
+    true
+  );
+  if (listing.exitCode !== 0) {
+    return null;
+  }
+  const entries = new Map<string, string>();
+  for (const record of listing.stdout.split("\0")) {
+    const tab = record.indexOf("\t");
+    const [, objectId, stage] = record.slice(0, tab).split(" ");
+    if (tab >= 0 && objectId && stage === "0") {
+      entries.set(record.slice(tab + 1), objectId);
+    }
+  }
+  return entries;
+};
+
+/**
+ * Resolves the index object ID that `git rev-parse --verify :<path>` would
+ * print for each path, listing those paths' index entries in one `ls-files`
+ * call instead of starting one Git process per path. Names the listing cannot
+ * answer exactly, and every name when the index cannot be read, keep the
+ * per-path lookup so change digests stay identical.
+ */
+export const indexObjectIds = (
+  worktreePath: string,
+  paths: readonly string[]
+): Map<string, string | null> => {
+  const objectIds = new Map<string, string | null>();
+  const listable = [
+    ...new Set(paths.filter((path) => !needsRevisionLookup(path))),
+  ];
+  const entries =
+    listable.length > 0
+      ? stageZeroIndexEntries(worktreePath, listable)
+      : new Map<string, string>();
+  for (const path of paths) {
+    objectIds.set(
+      path,
+      entries === null || needsRevisionLookup(path)
+        ? revisionIndexObjectId(worktreePath, path)
+        : (entries.get(path) ?? null)
+    );
+  }
+  return objectIds;
+};
+
+const WORKTREE_STATUS_ARGS = [
+  "status",
+  "--porcelain=v1",
+  "-z",
+  "--untracked-files=all",
+] as const;
+
 const inventoryWorktree = (
   worktree: RawWorktree,
+  status: string | null,
   primaryPath: string,
   currentPath: string
 ): WorktreeInventory => {
   let changes: GitChange[] = [];
   let changeDigest = sha256("");
-  if (!(worktree.bare || worktree.prunable) && existsSync(worktree.path)) {
-    const status = runGit(worktree.path, [
-      "status",
-      "--porcelain=v1",
-      "-z",
-      "--untracked-files=all",
-    ]).stdout;
+  if (status !== null) {
     changes = parseStatus(worktree.path, status);
+    const objectIds = indexObjectIds(
+      worktree.path,
+      changes.map((change) => change.path)
+    );
     const contentIdentities = changes.map((change) => {
       const safePath = assertSafeRelativePath(worktree.path, change.path);
-      const index = runGit(
-        worktree.path,
-        ["rev-parse", "--verify", `:${change.path}`],
-        true
-      );
       return {
-        indexObjectId:
-          index.exitCode === 0 && index.stdout.trim()
-            ? index.stdout.trim()
-            : null,
+        indexObjectId: objectIds.get(change.path) ?? null,
         path: change.path,
         worktreeIdentity: filesystemIdentity(safePath.absolutePath),
       };
@@ -210,6 +305,40 @@ const inventoryWorktree = (
     isCurrent: worktree.path === currentPath,
     isPrimary: worktree.path === primaryPath,
   };
+};
+
+// Each worktree's status reads only its own index and files, so the statuses
+// run concurrently; a repository with many agent worktrees otherwise waits on
+// one Git process per worktree in turn.
+const inventoryWorktrees = (
+  rawWorktrees: readonly RawWorktree[],
+  primaryPath: string,
+  currentPath: string
+): WorktreeInventory[] => {
+  const readable = rawWorktrees.filter(
+    (worktree) =>
+      !(worktree.bare || worktree.prunable) && existsSync(worktree.path)
+  );
+  const statuses = runGitConcurrently(
+    readable.map((worktree) => ({
+      args: WORKTREE_STATUS_ARGS,
+      cwd: worktree.path,
+    }))
+  );
+  const statusByPath = new Map(
+    readable.map((worktree, index) => [
+      worktree.path,
+      statuses[index]?.stdout ?? "",
+    ])
+  );
+  return rawWorktrees.map((worktree) =>
+    inventoryWorktree(
+      worktree,
+      statusByPath.get(worktree.path) ?? null,
+      primaryPath,
+      currentPath
+    )
+  );
 };
 
 const parseTracking = (tracking: string): { ahead: number; behind: number } => {
@@ -296,8 +425,35 @@ const providerFromRemote = (remoteUrl: string): string => {
   }
 };
 
-const remoteUrls = (root: string, remote: string, push: boolean): string[] => {
-  const result = runGit(
+type ReadGit = (
+  cwd: string,
+  args: readonly string[],
+  allowFailure?: boolean
+) => CommandResult;
+
+// Target, remote, and capability discovery ask Git the same read-only
+// questions several times; answer each exact call once per capture.
+const memoizedGitReader = (): ReadGit => {
+  const results = new Map<string, CommandResult>();
+  return (cwd, args, allowFailure = false) => {
+    const key = JSON.stringify([cwd, args, allowFailure]);
+    const cached = results.get(key);
+    if (cached) {
+      return cached;
+    }
+    const result = runGit(cwd, args, allowFailure);
+    results.set(key, result);
+    return result;
+  };
+};
+
+const remoteUrls = (
+  readGit: ReadGit,
+  root: string,
+  remote: string,
+  push: boolean
+): string[] => {
+  const result = readGit(
     root,
     ["remote", "get-url", ...(push ? ["--push"] : []), "--all", remote],
     true
@@ -320,16 +476,19 @@ export const credentialFreeRemoteUrl = (remoteUrl: string): string => {
   }
 };
 
-const inventoryRemoteBindings = (root: string): RemoteBinding[] =>
-  runGit(root, ["remote"], true)
+const inventoryRemoteBindings = (
+  readGit: ReadGit,
+  root: string
+): RemoteBinding[] =>
+  readGit(root, ["remote"], true)
     .stdout.split("\n")
     .filter(Boolean)
     .sort()
     .map((name) => {
-      const fetchUrls = remoteUrls(root, name, false).map(
+      const fetchUrls = remoteUrls(readGit, root, name, false).map(
         credentialFreeRemoteUrl
       );
-      const pushUrls = remoteUrls(root, name, true).map(
+      const pushUrls = remoteUrls(readGit, root, name, true).map(
         credentialFreeRemoteUrl
       );
       return {
@@ -346,6 +505,7 @@ export interface CaptureInventoryOptions {
 }
 
 const discoverCapabilities = (
+  readGit: ReadGit,
   root: string,
   options: CaptureInventoryOptions
 ): Capability[] => {
@@ -357,7 +517,7 @@ const discoverCapabilities = (
       status: "supported",
     },
   ];
-  const remotes = runGit(root, ["remote"], true)
+  const remotes = readGit(root, ["remote"], true)
     .stdout.split("\n")
     .filter(Boolean);
   if (remotes.length === 0) {
@@ -371,7 +531,7 @@ const discoverCapabilities = (
   } else {
     const providers = new Set<string>();
     for (const remote of remotes) {
-      const url = runGit(
+      const url = readGit(
         root,
         ["remote", "get-url", remote],
         true
@@ -458,18 +618,26 @@ const discoverCapabilities = (
 
 const DEFAULT_BRANCH_CANDIDATES = ["main", "master"];
 
-const localBranchExists = (root: string, branch: string): boolean =>
-  runGit(
+const localBranchExists = (
+  readGit: ReadGit,
+  root: string,
+  branch: string
+): boolean =>
+  readGit(
     root,
     ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`],
     true
   ).exitCode === 0;
 
-const boundRemoteFor = (root: string, branch: string | null): string => {
+const boundRemoteFor = (
+  readGit: ReadGit,
+  root: string,
+  branch: string | null
+): string => {
   if (!branch) {
     return "";
   }
-  const remote = runGit(
+  const remote = readGit(
     root,
     ["config", "--get", `branch.${branch}.remote`],
     true
@@ -477,9 +645,9 @@ const boundRemoteFor = (root: string, branch: string | null): string => {
   return remote === "." ? "" : remote;
 };
 
-const localDefaultBranch = (root: string): string | null =>
+const localDefaultBranch = (readGit: ReadGit, root: string): string | null =>
   DEFAULT_BRANCH_CANDIDATES.find((candidate) =>
-    localBranchExists(root, candidate)
+    localBranchExists(readGit, root, candidate)
   ) ?? null;
 
 // Most branches configure no remote of their own, so the remote the
@@ -487,14 +655,18 @@ const localDefaultBranch = (root: string): string | null =>
 // any fallback to a remote merely named "origin". A repository that
 // integrates through a second remote and keeps origin as a read-only mirror
 // would otherwise be audited against the mirror.
-const resolveTargetRef = (root: string, branch: string | null): string => {
-  const remotes = runGit(root, ["remote"], true)
+const resolveTargetRef = (
+  readGit: ReadGit,
+  root: string,
+  branch: string | null
+): string => {
+  const remotes = readGit(root, ["remote"], true)
     .stdout.split("\n")
     .filter(Boolean);
-  const defaultBranch = localDefaultBranch(root);
+  const defaultBranch = localDefaultBranch(readGit, root);
   const preferredRemotes = [
-    boundRemoteFor(root, branch),
-    defaultBranch === null ? "" : boundRemoteFor(root, defaultBranch),
+    boundRemoteFor(readGit, root, branch),
+    defaultBranch === null ? "" : boundRemoteFor(readGit, root, defaultBranch),
     remotes.includes("origin") ? "origin" : "",
     ...remotes,
   ].filter(
@@ -504,7 +676,7 @@ const resolveTargetRef = (root: string, branch: string | null): string => {
       candidates.indexOf(remote) === index
   );
   for (const remote of preferredRemotes) {
-    const symbolic = runGit(
+    const symbolic = readGit(
       root,
       ["symbolic-ref", "--quiet", "--short", `refs/remotes/${remote}/HEAD`],
       true
@@ -512,8 +684,11 @@ const resolveTargetRef = (root: string, branch: string | null): string => {
     if (symbolic.exitCode === 0 && symbolic.stdout.trim()) {
       return symbolic.stdout.trim();
     }
-    if (defaultBranch && boundRemoteFor(root, defaultBranch) === remote) {
-      const mergeRef = runGit(
+    if (
+      defaultBranch &&
+      boundRemoteFor(readGit, root, defaultBranch) === remote
+    ) {
+      const mergeRef = readGit(
         root,
         ["config", "--get", `branch.${defaultBranch}.merge`],
         true
@@ -521,7 +696,7 @@ const resolveTargetRef = (root: string, branch: string | null): string => {
       if (mergeRef.startsWith("refs/heads/")) {
         const candidate = `${remote}/${mergeRef.slice("refs/heads/".length)}`;
         if (
-          runGit(
+          readGit(
             root,
             ["show-ref", "--verify", "--quiet", `refs/remotes/${candidate}`],
             true
@@ -536,6 +711,7 @@ const resolveTargetRef = (root: string, branch: string | null): string => {
 };
 
 const targetRemoteFor = (
+  readGit: ReadGit,
   root: string,
   branch: string | null,
   targetRef: string,
@@ -546,7 +722,7 @@ const targetRemoteFor = (
     return prefix;
   }
   const configured = branch
-    ? runGit(
+    ? readGit(
         root,
         ["config", "--get", `branch.${branch}.remote`],
         true
@@ -562,31 +738,78 @@ const targetRemoteFor = (
   return null;
 };
 
+const REPOSITORY_DIRECTORY_FLAGS = [
+  "--is-bare-repository",
+  "--absolute-git-dir",
+  "--git-common-dir",
+] as const;
+
+// One rev-parse answers all three questions, one line each in flag order. A
+// Git directory path containing a newline cannot be split that way, so it
+// falls back to asking one flag at a time.
+const repositoryDirectories = (
+  root: string
+): { bare: boolean; commonGitDirectory: string; gitDirectory: string } => {
+  let lines = runGit(root, ["rev-parse", ...REPOSITORY_DIRECTORY_FLAGS])
+    .stdout.replace(TRAILING_NEWLINE_PATTERN, "")
+    .split("\n");
+  if (lines.length !== REPOSITORY_DIRECTORY_FLAGS.length) {
+    lines = REPOSITORY_DIRECTORY_FLAGS.map(
+      (flag) => runGit(root, ["rev-parse", flag]).stdout
+    );
+  }
+  const [bareOutput = "", gitDirectory = "", commonGitDirectory = ""] = lines;
+  return {
+    bare: bareOutput.trim() === "true",
+    commonGitDirectory: absoluteGitPath(root, commonGitDirectory.trim()),
+    gitDirectory: absoluteGitPath(root, gitDirectory.trim()),
+  };
+};
+
+const repositoryRoot = (directory: string): string =>
+  realpathSync(
+    runGit(directory, ["rev-parse", "--show-toplevel"]).stdout.trim()
+  );
+
+export interface RepositoryLocation {
+  repository: Pick<RepositoryInventory["repository"], "commonGitDirectory">;
+}
+
+/**
+ * Locates the repository exactly as `captureInventory` would, without
+ * inventorying any worktree. Commands use it to choose the lock to hold, then
+ * capture the inventory they act on inside that lock.
+ */
+export const locateRepository = (directory: string): RepositoryLocation => {
+  const root = repositoryRoot(directory);
+  return {
+    repository: {
+      commonGitDirectory: absoluteGitPath(
+        root,
+        runGit(root, ["rev-parse", "--git-common-dir"]).stdout.trim()
+      ),
+    },
+  };
+};
+
 export const captureInventory = (
   directory: string,
   options: CaptureInventoryOptions = {}
 ): RepositoryInventory => {
-  const rootOutput = runGit(directory, ["rev-parse", "--show-toplevel"]).stdout;
-  const root = realpathSync(rootOutput.trim());
+  const root = repositoryRoot(directory);
   const currentCheckout = root;
-  const bare =
-    runGit(root, ["rev-parse", "--is-bare-repository"]).stdout.trim() ===
-    "true";
-  const gitDirectory = absoluteGitPath(
-    root,
-    runGit(root, ["rev-parse", "--absolute-git-dir"]).stdout.trim()
-  );
-  const commonGitDirectory = absoluteGitPath(
-    root,
-    runGit(root, ["rev-parse", "--git-common-dir"]).stdout.trim()
-  );
+  const readGit = memoizedGitReader();
+  const { bare, commonGitDirectory, gitDirectory } =
+    repositoryDirectories(root);
   const rawWorktrees = parseWorktreeList(
     runGit(root, ["worktree", "list", "--porcelain"]).stdout
   );
   const primaryCheckout =
     rawWorktrees.find((worktree) => !worktree.bare)?.path ?? root;
-  const worktrees = rawWorktrees.map((worktree) =>
-    inventoryWorktree(worktree, primaryCheckout, currentCheckout)
+  const worktrees = inventoryWorktrees(
+    rawWorktrees,
+    primaryCheckout,
+    currentCheckout
   );
   const headResult = runGit(root, ["rev-parse", "--verify", "HEAD"], true);
   const branchResult = runGit(
@@ -603,15 +826,16 @@ export const captureInventory = (
   const branches = inventoryBranches(root);
   const stashes = inventoryStashes(root);
   const localChanges = worktrees.flatMap((worktree) => worktree.changes);
-  const targetRef = resolveTargetRef(root, branch);
-  const remoteBindings = inventoryRemoteBindings(primaryCheckout);
+  const targetRef = resolveTargetRef(readGit, root, branch);
+  const remoteBindings = inventoryRemoteBindings(readGit, primaryCheckout);
   const targetRemote = targetRemoteFor(
+    readGit,
     primaryCheckout,
     branch,
     targetRef,
     remoteBindings
   );
-  const capabilities = discoverCapabilities(primaryCheckout, options);
+  const capabilities = discoverCapabilities(readGit, primaryCheckout, options);
   const policy = loadPolicy(primaryCheckout, { commonGitDirectory });
   const digestInput = JSON.stringify({
     branches,

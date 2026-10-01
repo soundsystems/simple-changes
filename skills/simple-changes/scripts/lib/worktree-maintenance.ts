@@ -17,7 +17,7 @@ import {
 } from "./cleanup-core.ts";
 import { probeCoordinationAdapter } from "./coordination-adapter.ts";
 import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
-import { captureInventory } from "./inventory.ts";
+import { captureInventory, locateRepository } from "./inventory.ts";
 import {
   type LeaseLiveness,
   leaseLiveness,
@@ -484,7 +484,7 @@ export const standaloneWorktreeCleanup = (
   const approvedBy = requiredText(options.approvedBy, "approver");
   const reason = requiredText(options.reason, "cleanup reason");
   assertNoLoopLease(options.repositoryPath);
-  const opening = captureInventory(options.repositoryPath);
+  const opening = locateRepository(options.repositoryPath);
   const { commonGitDirectory } = opening.repository;
   return withCleanupLocks(
     commonGitDirectory,
@@ -758,7 +758,7 @@ export const pruneRepository = (options: PruneOptions): PruneReport => {
   }
   const approvedBy = options.approvedBy?.trim() || null;
   const reason = options.reason?.trim() || null;
-  const opening = captureInventory(options.repositoryPath);
+  const opening = locateRepository(options.repositoryPath);
   const { commonGitDirectory } = opening.repository;
   return withCleanupLocks(commonGitDirectory, "prune", () => {
     const inventory = captureInventory(options.repositoryPath);
@@ -886,7 +886,7 @@ export interface WorktreeIndexRefreshResult {
 export const refreshWorktreeIndex = (
   repositoryPath: string
 ): WorktreeIndexRefreshResult => {
-  const opening = captureInventory(repositoryPath);
+  const opening = locateRepository(repositoryPath);
   const { commonGitDirectory } = opening.repository;
   return withCleanupLocks(commonGitDirectory, "worktree index refresh", () => {
     const before = captureInventory(repositoryPath);

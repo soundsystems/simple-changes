@@ -23,7 +23,11 @@ import {
   type InitializationStatus,
   inspectInitialization,
 } from "./lib/initialization.ts";
-import { captureInventory, compareSnapshots } from "./lib/inventory.ts";
+import {
+  captureInventory,
+  compareSnapshots,
+  locateRepository,
+} from "./lib/inventory.ts";
 import {
   acceptPausedWorktreeChange,
   adoptPausedWorktree,
@@ -1335,10 +1339,10 @@ const runSetup = async (options: CliOptions): Promise<void> => {
       if (written && path) {
         writePolicyFile(path, selection.policy, selection.scope === "user");
         if (selection.scope === "repository" && context.primaryCheckout) {
-          const trustedInventory = captureInventory(context.primaryCheckout);
           writeRepositoryPolicyTrustReceipt(
             context.primaryCheckout,
-            trustedInventory.repository.commonGitDirectory,
+            locateRepository(context.primaryCheckout).repository
+              .commonGitDirectory,
             "confirmed-setup-user",
             "User confirmed these exact consequential repository settings in Simple Changes setup."
           );

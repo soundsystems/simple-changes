@@ -839,6 +839,75 @@ describe("Simple Changes skill contract", () => {
     );
   });
 
+  test("Ready receipts and shipment holds coordinate without messaging", async () => {
+    const [skill, concurrency, spec] = await Promise.all([
+      readFile(skillPath, "utf8"),
+      readFile(inventoryConcurrencyPath, "utf8"),
+      readFile(specPath, "utf8"),
+    ]);
+    const normalizedSkill = skill.replace(/\s+/g, " ");
+    const normalizedConcurrency = concurrency.replace(/\s+/g, " ");
+    const normalizedSpec = spec.replace(/\s+/g, " ");
+
+    expect(skill).toContain("## Shipment holds");
+    expect(normalizedSkill).toContain(
+      "Agents in different harnesses coordinate shipments through the shared coordination directory without messaging each other."
+    );
+    expect(normalizedSkill).toContain(
+      "add `--for merge`, `--for deploy`, or `--for migrations` so [shipment holds](#shipment-holds) gate that step"
+    );
+    expect(normalizedSkill).toContain(
+      "Release another agent's hold only with the user's explicit approval, adding `--override-halt` for a halt."
+    );
+    expect(normalizedSkill).toContain(
+      "Waive a `halt` only when the user explicitly approves overriding that exact hold."
+    );
+    expect(normalizedSkill).toContain(
+      "record the receipt with `worktree release --ready-receipt <file>`; the active controller reads it without a message"
+    );
+    expect(normalizedConcurrency).toContain("## Ready-work receipts");
+    expect(normalizedConcurrency).toContain("## Shipment holds");
+    expect(normalizedConcurrency).toContain(
+      "releases the claim as a completed-work `handoff` that records the receipted evidence, so an active loop that admitted the author keeps integrating"
+    );
+    expect(normalizedConcurrency).toContain(
+      "never ship newer commits on an old receipt"
+    );
+    expect(normalizedConcurrency).toContain(
+      "`ship` covers merges, deployments, and migrations; `deploy` covers deployments; `migrations` covers migration applies"
+    );
+    expect(normalizedConcurrency).toContain(
+      "if merging the target deploys or migrates automatically, treat it as blocking and ask the user"
+    );
+    expect(normalizedConcurrency).toContain(
+      "Publishing is a push, so follow [harness push authorization](harness-push-authorization.md)"
+    );
+    expect(normalizedConcurrency).toContain(
+      "No hold is released by elapsed time."
+    );
+    expect(normalizedConcurrency).toContain(
+      "A gate fails closed when published holds cannot be read, including when remotes exist but none is the target; pass `--local-only` only after the user agrees."
+    );
+    expect(normalizedConcurrency).toContain(
+      "Holds never block `loop finalize`"
+    );
+    expect(normalizedConcurrency).toContain(
+      "Another clone judges a published `--until-merged` hold only from that remote's copy of the branch, never from a same-named local branch"
+    );
+    expect(normalizedConcurrency).toContain(
+      "it applies only while that controller holds control"
+    );
+    expect(normalizedSpec).toContain(
+      "releases the claim as a completed-work handoff carrying that exact evidence so an active loop keeps integrating"
+    );
+    expect(normalizedSpec).toContain(
+      "A hold ends only by its owner, by a user-approved release, or by `--until-merged` containment evidence, never by elapsed time."
+    );
+    expect(normalizedSpec).toContain(
+      "Releasing or waiving another agent's shipment hold without user approval, or treating an unreadable published hold as absent."
+    );
+  });
+
   test("SPEC.md stays bound to the skill it specifies", async () => {
     const [skill, spec] = await Promise.all([
       readFile(skillPath, "utf8"),

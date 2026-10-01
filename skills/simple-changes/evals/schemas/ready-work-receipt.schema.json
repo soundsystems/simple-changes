@@ -1,0 +1,85 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://simple-changes.dev/schemas/ready-work-receipt.schema.json",
+  "title": "Simple Changes ready-work receipt",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "receiptId",
+    "claimId",
+    "owner",
+    "path",
+    "branch",
+    "headSha",
+    "changeDigest",
+    "recordedAt",
+    "scope",
+    "checks",
+    "releaseImpact",
+    "migrations",
+    "deploymentConstraints",
+    "unresolvedAuthority"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "receiptId": { "type": "string", "pattern": "^ready-[a-z0-9-]+$" },
+    "claimId": { "type": "string", "pattern": "^claim-[a-z0-9-]+$" },
+    "owner": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["agentId", "adapter", "ownerRef"],
+      "properties": {
+        "agentId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "adapter": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+        },
+        "ownerRef": {
+          "anyOf": [
+            { "type": "string", "minLength": 1, "maxLength": 512 },
+            { "type": "null" }
+          ]
+        }
+      }
+    },
+    "path": { "type": "string", "minLength": 1 },
+    "branch": { "type": "string", "minLength": 1 },
+    "headSha": { "type": "string", "pattern": "^[0-9a-f]{40,64}$" },
+    "changeDigest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "recordedAt": { "type": "string", "format": "date-time" },
+    "scope": { "type": "string", "minLength": 1, "maxLength": 500 },
+    "checks": {
+      "type": "array",
+      "maxItems": 50,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["command", "result", "note"],
+        "properties": {
+          "command": { "type": "string", "minLength": 1, "maxLength": 500 },
+          "result": { "enum": ["passed", "failed", "skipped"] },
+          "note": {
+            "anyOf": [
+              { "type": "string", "minLength": 1, "maxLength": 500 },
+              { "type": "null" }
+            ]
+          }
+        }
+      }
+    },
+    "releaseImpact": { "enum": ["none", "patch", "minor", "major", "unknown"] },
+    "migrations": { "$ref": "#/$defs/notes" },
+    "deploymentConstraints": { "$ref": "#/$defs/notes" },
+    "unresolvedAuthority": { "$ref": "#/$defs/notes" }
+  },
+  "$defs": {
+    "notes": {
+      "type": "array",
+      "maxItems": 50,
+      "items": { "type": "string", "minLength": 1, "maxLength": 500 }
+    }
+  }
+}

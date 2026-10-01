@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "guidance": {
     "disposition": "accepted",
-    "version": 22
+    "version": 23
   },
   "changelogHandling": "delegate-if-available",
   "defaultFinish": "integrate",

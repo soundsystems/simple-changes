@@ -72,7 +72,7 @@ describe("first-run initialization", () => {
       changelogCoordination
     );
     expect(from19.changes.map((item) => item.version)).toEqual([
-      20, 20, 21, 21, 21, 22, 22, 22, 22,
+      20, 20, 21, 21, 21, 22, 22, 22, 22, 23, 23,
     ]);
   });
   test("propagates the saved shipping preference into emergency classification", () => {
@@ -277,7 +277,7 @@ describe("first-run initialization", () => {
           available: true,
           owner: "simple-changelogs",
         },
-        currentVersion: 22,
+        currentVersion: 23,
         headline: "**Simple Changes has recently been updated.**",
         presentationOrder: [
           "required-answers",
@@ -297,7 +297,7 @@ describe("first-run initialization", () => {
     });
     expect(status.guidanceUpdate.summaryBullets).toHaveLength(3);
     expect(status.guidanceUpdate.summaryBullets.join(" ")).toContain(
-      "Inherited stale shipment state"
+      "hand off ready work and hold a shipment"
     );
     expect(status.guidanceUpdate.summaryBullets.join(" ")).toContain(
       "`proposalSignatures` setting"

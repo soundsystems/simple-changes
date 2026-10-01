@@ -30,6 +30,37 @@ export const targetContainsRevision = (
   );
 
 /**
+ * One-pass containment for advisory evidence such as shipment-hold release and
+ * ready-receipt freshness: exact ancestry, or no commit of `revision` left
+ * unmatched by patch ID in the target. Merge commits never match a patch ID,
+ * so a branch carrying one stays uncontained unless ancestry proves it. Unlike
+ * the cleanup audit below, it costs at most two Git calls on any history.
+ */
+export const revisionContainmentMethod = (
+  repositoryPath: string,
+  targetRevision: string,
+  revision: string
+): TargetContainmentMethod | null => {
+  if (targetContainsRevision(repositoryPath, targetRevision, revision)) {
+    return "target-contained";
+  }
+  const unmatched = runGit(
+    repositoryPath,
+    [
+      "rev-list",
+      "--cherry-pick",
+      "--right-only",
+      "--count",
+      `${targetRevision}...${revision}`,
+    ],
+    true
+  );
+  return unmatched.exitCode === 0 && unmatched.stdout.trim() === "0"
+    ? "patch-equivalent"
+    : null;
+};
+
+/**
  * The single containment proof every cleanup path shares: a revision counts as
  * contained only when the refreshed target reaches it by exact ancestry, or
  * when every one of its unique commits has a patch-equivalent commit in the

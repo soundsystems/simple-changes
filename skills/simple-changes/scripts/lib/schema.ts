@@ -35,6 +35,8 @@ export const SCHEMA_NAMES = [
   "loop-close-equivalent",
   "worktree-coordination",
   "worktree-takeover",
+  "ready-work-receipt",
+  "ship-holds",
   "worktree-equivalence",
   "worktree-cleanup",
   "stale-lease-recovery",

@@ -1,6 +1,6 @@
 import type { ChangelogCoordination, RepoPolicy } from "./types.ts";
 
-export const CURRENT_GUIDANCE_VERSION = 22;
+export const CURRENT_GUIDANCE_VERSION = 23;
 
 export type GuidanceUpdateAction =
   | "review-settings"
@@ -630,6 +630,31 @@ const GUIDANCE_UPDATES: GuidanceUpdateDefinition[] = [
       },
     ],
     version: 22,
+  },
+  {
+    changelogReviewRelevant: false,
+    changes: [
+      {
+        kind: "integration",
+        summary:
+          "A finished author can release its claim with `worktree release --ready-receipt <file>`, recording scope, checks, release impact, migrations, and deployment constraints against the exact clean head; every controller reads each receipt and its freshness in `worktree status --json` without messaging the author.",
+        version: 23,
+      },
+      {
+        kind: "behavior",
+        summary:
+          "Any agent can add a shipment hold with `hold add` that delays or halts merges, deployments, or migrations. `loop verify --for`, `hold check --for`, and `migration apply` honor it; a waiver binds one run with user approval, a halt needs an explicit override, and `hold publish` shares a hold with other clones through `refs/simple-changes/holds/`.",
+        version: 23,
+      },
+    ],
+    noticeBullets: [
+      {
+        priority: 155,
+        summary:
+          "Agents in different harnesses can now hand off ready work and hold a shipment through shared repository state instead of messaging each other; controllers run `loop verify --for merge`, `--for deploy`, or `--for migrations` before those steps.",
+      },
+    ],
+    version: 23,
   },
 ];
 

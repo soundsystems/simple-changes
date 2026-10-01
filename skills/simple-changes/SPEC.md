@@ -155,6 +155,26 @@
   any live non-detached claim whose worktree directory no longer exists. Every
   release records its reason; no claim is released by elapsed time or by
   guessing its owner.
+- Ready-work receipts and shipment holds let agents in different harnesses
+  coordinate a shipment through the shared coordination directory without
+  messaging each other. Only a claim's owner
+  records a ready-work receipt, and only for its clean, attached, committed
+  checkout; the runtime binds the claim, owner, branch, exact head, and content
+  digest, and releases the claim as a completed-work handoff carrying that
+  exact evidence so an active loop keeps integrating. A receipt reads `stale`
+  once its branch or checkout moves and `shipped` once the target contains it,
+  and it grants no merge, deploy, migration, or cleanup authority.
+- Shipment holds are local records beside the claims, optionally published as
+  `refs/simple-changes/holds/<id>` for other clones. A `ship` hold covers
+  merges, deployments, and migrations; `deploy` and `migrations` holds cover
+  their own step. A hold ends only by its owner, by a user-approved release, or
+  by `--until-merged` containment evidence, never by elapsed time.
+  `loop verify --for`, `hold check --for`, and `migration apply` fail closed on
+  an active covering hold or on published holds they cannot read. A waiver
+  binds one run and the hold's exact content digest, is recorded only by that
+  run's active controller with user approval, applies only while that
+  controller holds control, and a halt additionally requires an explicit
+  override, as does another agent's release of a halt.
 - Clean non-primary claimed worktrees may be detached only from an exact
   detach receipt, without force or branch deletion. Reattachment requires the
   absent recorded path and the same local branch at the same HEAD; an active
@@ -327,6 +347,8 @@
   store-release, or history-rewrite authority.
 - Automatically handing off planning, diagnosis, blocked work, no-change work,
   or another agent's work.
+- Releasing or waiving another agent's shipment hold without user approval,
+  or treating an unreadable published hold as absent.
 - Starting a competing integration loop, mutating another owner's checkout,
   running controller/target integration mutations outside the atomic executor,
   or bypassing an active manifest with a blanket exception.

@@ -824,6 +824,100 @@ export interface WorktreeCoordinationDocument {
   schemaVersion: 1;
 }
 
+export interface ReadyWorkCheck {
+  command: string;
+  note: string | null;
+  result: "passed" | "failed" | "skipped";
+}
+
+export type ReadyWorkReleaseImpact =
+  | "none"
+  | "patch"
+  | "minor"
+  | "major"
+  | "unknown";
+
+export interface ReadyWorkReceipt {
+  branch: string;
+  changeDigest: string;
+  checks: ReadyWorkCheck[];
+  claimId: string;
+  deploymentConstraints: string[];
+  headSha: string;
+  migrations: string[];
+  owner: WorktreeClaimOwner;
+  path: string;
+  receiptId: string;
+  recordedAt: string;
+  releaseImpact: ReadyWorkReleaseImpact;
+  schemaVersion: 1;
+  scope: string;
+  unresolvedAuthority: string[];
+}
+
+export type ShipHoldScope = "ship" | "deploy" | "migrations";
+export type ShipHoldSeverity = "delay" | "halt";
+export type ShipHoldAction = "merge" | "deploy" | "migrations";
+export type ShipHoldReleaseReason =
+  | "owner-release"
+  | "merged"
+  | "approved-release";
+
+/** The immutable part of a hold: what is published and what a waiver binds. */
+export interface ShipHoldIdentity {
+  createdAt: string;
+  holdId: string;
+  owner: WorktreeClaimOwner;
+  reason: string;
+  schemaVersion: 1;
+  scope: ShipHoldScope;
+  severity: ShipHoldSeverity;
+  untilMerged: string | null;
+}
+
+export interface ShipHoldRelease {
+  approvedBy: string | null;
+  note: string | null;
+  reason: ShipHoldReleaseReason;
+  releasedAt: string;
+  releasedBy: string;
+}
+
+export interface ShipHoldPublication {
+  commitSha: string;
+  /** Null while the push is recorded as intent but not yet confirmed. */
+  publishedAt: string | null;
+  ref: string;
+  remote: string;
+  withdrawnAt: string | null;
+}
+
+export interface ShipHold extends ShipHoldIdentity {
+  publication: ShipHoldPublication | null;
+  release: ShipHoldRelease | null;
+  source: "local" | "remote";
+  state: "active" | "released";
+  updatedAt: string;
+}
+
+export interface ShipHoldWaiver {
+  approvedBy: string;
+  holdDigest: string;
+  holdId: string;
+  overrideHalt: boolean;
+  reason: string;
+  runId: string;
+  waivedAt: string;
+  waivedBy: string;
+}
+
+export interface ShipHoldDocument {
+  holds: ShipHold[];
+  repositoryId: string;
+  schemaVersion: 1;
+  waivers: ShipHoldWaiver[];
+}
+
 export type CoordinationDiscoveryCapability =
   | "exact-ref"
   | "enumerate-local"

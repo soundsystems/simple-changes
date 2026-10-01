@@ -416,7 +416,7 @@ const withAsyncStateLock = async <T>(
   }
 };
 
-const readLeaseFromCommonDirectory = (
+export const readLeaseFromCommonDirectory = (
   commonGitDirectory: string
 ): LoopLease | null => {
   const path = loopLeasePath(commonGitDirectory);

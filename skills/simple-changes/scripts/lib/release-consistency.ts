@@ -4,6 +4,8 @@ import { extractReleaseNotes } from "./release-notes.ts";
 
 const EMPTY_UNRELEASED_PATTERN =
   /^##[ \t]+Unreleased[ \t]*\n(?:[ \t]*\n|<!--[\s\S]*?-->[ \t]*\n)*(?=##[ \t]+|(?![\s\S]))/imu;
+const RELEASE_HEADING_PATTERN = /^##[ \t]+(.*?)[ \t]*$/gmu;
+const UNRELEASED_HEADING_PATTERN = /^\[?unreleased\]?$/iu;
 
 export interface ReleaseVersionRecord {
   date: string | null;
@@ -40,8 +42,24 @@ const readJsonVersion = (path: string, issues: string[]): string | null => {
   return null;
 };
 
-const hasEmptyUnreleased = (markdown: string): boolean =>
-  EMPTY_UNRELEASED_PATTERN.test(markdown);
+// One empty `## Unreleased` heading, placed first, is the prepend anchor that
+// Simple Changelogs keeps after every reconciled release. An empty heading
+// anywhere else, or a second Unreleased heading, means a release absorbed it.
+const unreleasedIssues = (markdown: string, name: string): string[] => {
+  const headings = [...markdown.matchAll(RELEASE_HEADING_PATTERN)];
+  const unreleased = headings.filter((heading) =>
+    UNRELEASED_HEADING_PATTERN.test(heading[1] ?? "")
+  );
+  const issues: string[] = [];
+  if (unreleased.length > 1) {
+    issues.push(`${name} contains more than one Unreleased section.`);
+  }
+  const empty = EMPTY_UNRELEASED_PATTERN.exec(markdown);
+  if (empty && empty.index !== headings[0]?.index) {
+    issues.push(`${name} contains an empty Unreleased section.`);
+  }
+  return issues;
+};
 
 const inspectHistory = (
   path: string,
@@ -69,9 +87,7 @@ const inspectHistory = (
         : `${basename(path)} has invalid release history.`
     );
   }
-  if (hasEmptyUnreleased(markdown)) {
-    issues.push(`${basename(path)} contains an empty Unreleased section.`);
-  }
+  issues.push(...unreleasedIssues(markdown, basename(path)));
 };
 
 export const checkReleaseConsistency = (

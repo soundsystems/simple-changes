@@ -13,7 +13,7 @@ import {
 import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
 import { captureInventory } from "./inventory.ts";
 import { assertSafeRelativePath } from "./path-safety.ts";
-import { runGit } from "./process.ts";
+import { gitExecutable, runGit } from "./process.ts";
 import { redactSecrets } from "./redact.ts";
 import { validateSchema } from "./schema.ts";
 
@@ -82,7 +82,7 @@ const rawGit = (
   stdin?: Uint8Array,
   allowFailure = false
 ): { exitCode: number; stdout: Uint8Array } => {
-  const result = spawnSync(["git", "-C", cwd, ...args], {
+  const result = spawnSync([gitExecutable(), "-C", cwd, ...args], {
     cwd,
     env: { ...process.env, LC_ALL: "C" },
     stderr: "pipe",

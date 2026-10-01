@@ -85,7 +85,9 @@ Read [references/production-loop.md](references/production-loop.md), then:
 5. Synchronize each maintained fork independently. Port applicable upstream
    changes, preserve documented local deltas, update the provenance pin, run
    the fork's tests and native checks, and perform any guidance-version history
-   audit required by the fork's changelog policy.
+   audit required by the fork's changelog policy. When the host can start
+   isolated agents, run one agent per fork repository concurrently as
+   described in the production loop's parallel fork agents section.
 6. Open, verify, and merge every downstream MR or PR. Focused changes may use
    separate MRs or PRs; all required work still has to reach the default branch.
 7. Run

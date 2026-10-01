@@ -812,6 +812,11 @@ describe("update-local-forks", () => {
       "linked Git",
       "never commits",
       "byte-identical",
+      "Several forks at once",
+      "Assign one agent per repository",
+      "start agents only after approval",
+      "work through the forks one at a time",
+      "the step 7 handoff (queue, integrate, or ship) proposed for each",
     ]) {
       expect(skill).toContain(required);
     }

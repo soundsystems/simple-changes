@@ -72,8 +72,13 @@
   shipment open. A reviewed result for work packaged from the primary is accepted
   only while that primary matches its baseline and its HEAD is contained in the
   bound target. Ordinary mutation verification is unchanged.
-  Each attempt persists a receipt reporting shipment, controller, delivery,
-  cleanup, blockers, and preserved worktrees before release. A relinquished
+  Finalization persists a receipt reporting shipment, controller, delivery,
+  cleanup, blockers, and preserved worktrees before closing the run. If an
+  unexpected error prevents finalization after ownership and lock checks, it
+  relinquishes the latest writable lease with the failure reason and preserves
+  the incomplete run; an untouched Ship run stays active instead, so its
+  unrecorded scope is never frozen. An unwritable lease is reported beside the
+  original error as an explicit blocker. A relinquished
   controller is resumed without takeover approval; frozen scope still applies.
 - A first shipment scope (`loop record-scope`) requires a non-mutating preview
   plan generated from the exact current inventory, with no open questions and
@@ -283,6 +288,16 @@
   authored consecutively or in parallel claimed worktrees. It never shares a
   checkout, weakens controller guards or worktree isolation, changes cleanup
   safety, or grants provider mutation authority.
+- Parallel agents author only inside worktrees the controller prepared with
+  `prepare-agent` under a distinct agent ID that is never the controller's
+  own; a host-created checkout is an unregistered worktree that blocks guarded
+  operations. Delegated agents never run loop commands, push, call providers,
+  merge, release, deploy, or clean up, and the controller confirms each
+  reported commit against the registered branch before integrating it
+  serially. Pinned read-only work (independent review and check reproduction
+  in the registered worktree) may run in parallel against one exact head; no
+  agent reviews its own unit, and inventory snapshots are never split across
+  agents.
 - Changelog compatibility is decided by request/receipt version overlap plus
   local schema validation at use time; advertised schema digests are recorded
   as advisory `schemaDigestStatus` and never block a version-compatible peer.

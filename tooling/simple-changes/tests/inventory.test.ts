@@ -1,11 +1,19 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { existsSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  symlinkSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import {
   captureInventory,
   compareSnapshots,
   credentialFreeRemoteUrl,
+  indexObjectIds,
+  locateRepository,
 } from "../../../skills/simple-changes/scripts/lib/inventory.ts";
 import { buildPreviewPlan } from "../../../skills/simple-changes/scripts/lib/planner.ts";
 import {
@@ -289,5 +297,197 @@ describe("Git inventory and concurrency", () => {
     expect(inventory.stashes).toHaveLength(1);
     expect(inventory.stashes[0]?.subject).toContain("existing fixture stash");
     expect(after).toBe(before);
+  });
+
+  test("resolves index object IDs exactly as a per-path rev-parse would", () => {
+    const fixture = repository();
+    const { root } = fixture;
+    for (const path of [
+      "tracked.txt",
+      "deleted-staged.txt",
+      "deleted-unstaged.txt",
+      "renamed-from.txt",
+      "conflict.txt",
+      "foo",
+      "with space é.txt",
+      "foo..",
+      "tilde~1",
+      "caret^",
+      "reflog@{u}",
+    ]) {
+      writeFixture(root, path, `${path}\n`);
+    }
+    git(root, ["add", "."]);
+    git(root, ["commit", "-m", "Tracked fixtures"]);
+    git(root, ["switch", "-c", "other"]);
+    writeFixture(root, "conflict.txt", "other side\n");
+    git(root, ["commit", "-am", "Other side"]);
+    git(root, ["switch", "main"]);
+    writeFixture(root, "conflict.txt", "main side\n");
+    git(root, ["commit", "-am", "Main side"]);
+    spawnSync("git", ["-C", root, "merge", "other"]);
+
+    writeFixture(root, "tracked.txt", "unstaged edit\n");
+    writeFixture(root, "with space é.txt", "staged edit\n");
+    git(root, ["add", "with space é.txt"]);
+    git(root, ["rm", "--quiet", "deleted-staged.txt"]);
+    unlinkSync(join(root, "deleted-unstaged.txt"));
+    git(root, ["mv", "renamed-from.txt", "renamed-to.txt"]);
+    writeFixture(root, "untracked.txt", "untracked\n");
+    writeFixture(root, "intent.txt", "intent to add\n");
+    git(root, ["add", "--intent-to-add", "intent.txt"]);
+    const submodule = git(root, ["rev-parse", "HEAD"]);
+    const describeName = `v1-2-g${submodule.slice(0, 7)}`;
+    writeFixture(root, describeName, "describe-shaped\n");
+    git(root, ["add", "--", describeName]);
+    const blob = spawnSync(
+      "git",
+      ["-C", root, "hash-object", "-w", "--stdin"],
+      {
+        input: "index only\n",
+      }
+    )
+      .stdout.toString()
+      .trim();
+    // Store the decomposed name byte for byte, as a commit made on Linux
+    // would, then let the repository precompose arguments as macOS does, so
+    // a pathspec listing and `rev-parse` disagree about that name.
+    git(root, [
+      "-c",
+      "core.precomposeunicode=false",
+      "update-index",
+      "--add",
+      "--cacheinfo",
+      `100644,${blob},cafe\u0301.txt`,
+    ]);
+    git(root, ["config", "core.precomposeunicode", "true"]);
+    git(root, [
+      "update-index",
+      "--add",
+      "--cacheinfo",
+      `160000,${submodule},vendor/module`,
+    ]);
+
+    const paths = [
+      "conflict.txt",
+      "deleted-staged.txt",
+      "deleted-unstaged.txt",
+      "intent.txt",
+      "missing.txt",
+      "renamed-from.txt",
+      "renamed-to.txt",
+      "tracked.txt",
+      "untracked.txt",
+      "vendor/module",
+      "with space é.txt",
+      // `:<stage>:<path>` revision syntax: these name stages of `foo` and
+      // `conflict.txt`, which the batched lookup must reproduce.
+      "0:foo",
+      "1:conflict.txt",
+      "2:conflict.txt",
+      "3:conflict.txt",
+      "1:",
+      // Names `rev-parse` may read as range, ancestry, reflog, or `describe`
+      // syntax, and both spellings of a name Git may precompose.
+      "foo..",
+      "tilde~1",
+      "caret^",
+      "reflog@{u}",
+      describeName,
+      "cafe\u0301.txt",
+      "caf\u00e9.txt",
+    ];
+    const expected = new Map(
+      paths.map((path) => {
+        const result = spawnSync("git", [
+          "-C",
+          root,
+          "rev-parse",
+          "--verify",
+          `:${path}`,
+        ]);
+        const output = result.stdout.toString().trim();
+        return [path, result.status === 0 && output ? output : null];
+      })
+    );
+
+    expect(indexObjectIds(root, paths)).toEqual(expected);
+    // `rev-parse` reads `:foo..` as a range, so only the per-path fallback
+    // reproduces its answer; the index entry itself holds a different ID.
+    const [, listed] = git(root, ["ls-files", "--stage", "--", "foo.."]).split(
+      " "
+    );
+    expect(listed).toBeDefined();
+    expect(expected.get("foo..")).not.toBe(listed);
+    expect(expected.get("conflict.txt")).toBeNull();
+    expect(expected.get("2:conflict.txt")).not.toBeNull();
+    expect(expected.get("vendor/module")).toBe(submodule);
+    expect(indexObjectIds(root, [])).toEqual(new Map());
+  }, 30_000);
+
+  test("keeps per-path null object IDs when the index cannot be listed", () => {
+    const fixture = repository();
+    const notARepository = join(fixture.base, "not-a-repository");
+    mkdirSync(notARepository);
+
+    expect(indexObjectIds(notARepository, ["a.txt", "b.txt"])).toEqual(
+      new Map([
+        ["a.txt", null],
+        ["b.txt", null],
+      ])
+    );
+  });
+
+  test("keeps each worktree's changes when statuses run concurrently", () => {
+    const fixture = repository();
+    const linked = ["one", "two", "three", "four"].map((name) => {
+      const path = join(fixture.base, `linked-${name}`);
+      git(fixture.root, ["worktree", "add", "-b", `work-${name}`, path]);
+      writeFixture(path, `src/${name}.ts`, `export const ${name} = 1;\n`);
+      return { name, path };
+    });
+    writeFixture(fixture.root, "src/primary.ts", "export const primary = 1;\n");
+
+    const opening = captureInventory(fixture.root);
+    for (const { name, path } of linked) {
+      const worktree = opening.worktrees.find((item) => item.path === path);
+      expect(worktree?.changes.map((change) => change.path)).toEqual([
+        `src/${name}.ts`,
+      ]);
+    }
+    expect(
+      opening.worktrees
+        .find((item) => item.isPrimary)
+        ?.changes.map((change) => change.path)
+    ).toEqual(["src/primary.ts"]);
+
+    const [first, ...others] = linked;
+    writeFixture(first?.path ?? "", "src/one.ts", "export const one = 2;\n");
+    const current = captureInventory(fixture.root);
+    const digest = (inventory: typeof opening, path: string) =>
+      inventory.worktrees.find((item) => item.path === path)?.changeDigest;
+    expect(digest(current, first?.path ?? "")).not.toBe(
+      digest(opening, first?.path ?? "")
+    );
+    for (const { path } of others) {
+      expect(digest(current, path)).toBe(digest(opening, path));
+    }
+  }, 30_000);
+
+  test("locates the same common Git directory a full capture reports", () => {
+    const fixture = repository();
+    const linked = join(fixture.base, "linked-locate");
+    git(fixture.root, ["worktree", "add", "-b", "locate", linked]);
+    writeFixture(fixture.root, "nested/file.ts", "export const nested = 1;\n");
+
+    for (const directory of [
+      fixture.root,
+      join(fixture.root, "nested"),
+      linked,
+    ]) {
+      expect(locateRepository(directory).repository.commonGitDirectory).toBe(
+        captureInventory(directory).repository.commonGitDirectory
+      );
+    }
   });
 });

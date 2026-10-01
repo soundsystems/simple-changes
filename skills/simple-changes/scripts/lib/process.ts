@@ -1,6 +1,9 @@
 import { spawn } from "node:child_process";
+import { accessSync, constants, realpathSync } from "node:fs";
+import { isAbsolute } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { spawnSync } from "bun";
+import { fileURLToPath } from "node:url";
+import { spawnSync, which } from "bun";
 import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
 import { redactSecrets } from "./redact.ts";
 
@@ -115,7 +118,8 @@ const runCommand = (
   command: string,
   args: readonly string[],
   cwd: string,
-  allowFailure = false
+  allowFailure = false,
+  displayName = command
 ): CommandResult => {
   const result = spawnSync([command, ...args], {
     cwd,
@@ -132,11 +136,78 @@ const runCommand = (
   if (exitCode !== 0 && !allowFailure) {
     const detail = redactSecrets(stderr.trim() || stdout.trim());
     throw new SimpleChangesError(
-      `${command} ${args[0] ?? ""} failed${detail ? `: ${detail}` : ""}`,
+      `${displayName} ${args[0] ?? ""} failed${detail ? `: ${detail}` : ""}`,
       EXIT_CODES.inventory
     );
   }
   return { exitCode, stderr, stdout };
+};
+
+const XCRUN_GIT_SHIM = "/usr/bin/git";
+
+export interface GitExecutableProbe {
+  platform: NodeJS.Platform;
+  realpath: (path: string) => string;
+  which: (command: string) => string | null;
+  xcrunFind: () => string | null;
+}
+
+// On macOS `/usr/bin/git` is an xcrun shim that locates the active developer
+// directory before every exec, which costs far more than most read-only Git
+// commands themselves. Resolve the binary it would run once per process and
+// call that directly; any other Git on PATH, or a failed lookup, keeps `git`.
+export const resolveGitExecutable = (probe: GitExecutableProbe): string => {
+  if (probe.platform !== "darwin") {
+    return "git";
+  }
+  const onPath = probe.which("git");
+  if (!onPath) {
+    return "git";
+  }
+  let resolvedOnPath: string;
+  try {
+    resolvedOnPath = probe.realpath(onPath);
+  } catch {
+    return "git";
+  }
+  if (resolvedOnPath !== XCRUN_GIT_SHIM) {
+    return "git";
+  }
+  const developerGit = probe.xcrunFind();
+  return developerGit &&
+    isAbsolute(developerGit) &&
+    developerGit !== XCRUN_GIT_SHIM
+    ? developerGit
+    : "git";
+};
+
+const xcrunFindGit = (): string | null => {
+  const result = spawnSync(["xcrun", "--find", "git"], {
+    stderr: "pipe",
+    stdout: "pipe",
+  });
+  if (result.exitCode !== 0) {
+    return null;
+  }
+  const path = textDecoder.decode(result.stdout).trim();
+  try {
+    accessSync(path, constants.X_OK);
+  } catch {
+    return null;
+  }
+  return path;
+};
+
+let cachedGitExecutable: string | undefined;
+
+export const gitExecutable = (): string => {
+  cachedGitExecutable ??= resolveGitExecutable({
+    platform: process.platform,
+    realpath: realpathSync,
+    which: (command) => which(command),
+    xcrunFind: xcrunFindGit,
+  });
+  return cachedGitExecutable;
 };
 
 export const runCommandInProcessGroup = (
@@ -216,4 +287,87 @@ export const runGit = (
   cwd: string,
   args: readonly string[],
   allowFailure = false
-): CommandResult => runCommand("git", ["-C", cwd, ...args], cwd, allowFailure);
+): CommandResult =>
+  runCommand(gitExecutable(), ["-C", cwd, ...args], cwd, allowFailure, "git");
+
+export interface GitRequest {
+  args: readonly string[];
+  cwd: string;
+}
+
+// Below this many requests the worker's own startup costs more than it saves.
+const CONCURRENT_GIT_MINIMUM = 4;
+const CONCURRENT_GIT_LIMIT = 8;
+const GIT_WORKER_PATH = fileURLToPath(
+  new URL("./git-worker.ts", import.meta.url)
+);
+
+const concurrentGitResults = (
+  requests: readonly GitRequest[]
+): (CommandResult | null)[] | null => {
+  const worker = spawnSync([process.execPath, GIT_WORKER_PATH], {
+    env: {
+      ...process.env,
+      LC_ALL: "C",
+    },
+    stderr: "pipe",
+    stdin: Buffer.from(
+      JSON.stringify({
+        concurrency: CONCURRENT_GIT_LIMIT,
+        executable: gitExecutable(),
+        requests,
+      })
+    ),
+    stdout: "pipe",
+  });
+  if (worker.exitCode !== 0) {
+    return null;
+  }
+  let reply: unknown;
+  try {
+    reply = JSON.parse(textDecoder.decode(worker.stdout));
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(reply) || reply.length !== requests.length) {
+    return null;
+  }
+  return reply.map((item: unknown) => {
+    const result = item as { exitCode?: unknown; stdout?: unknown } | null;
+    if (
+      typeof result?.exitCode !== "number" ||
+      typeof result.stdout !== "string"
+    ) {
+      return null;
+    }
+    return {
+      exitCode: result.exitCode,
+      stderr: "",
+      stdout: textDecoder.decode(Buffer.from(result.stdout, "base64")),
+    };
+  });
+};
+
+/**
+ * Runs independent read-only Git commands concurrently and returns results in
+ * request order with the stdout `runGit` would return without
+ * `allowFailure`; stderr is not collected on success. The
+ * inventory is synchronous, so the fan-out happens in one short-lived worker
+ * process. Any request the worker did not complete successfully, or every
+ * request when the worker itself fails, runs again through `runGit`, so
+ * output and failures are identical to the sequential path.
+ */
+export const runGitConcurrently = (
+  requests: readonly GitRequest[]
+): CommandResult[] => {
+  const results =
+    requests.length >= CONCURRENT_GIT_MINIMUM
+      ? concurrentGitResults(requests)
+      : null;
+  return requests.map((request, index) => {
+    const result = results?.[index];
+    return result && result.exitCode === 0
+      ? result
+      : runGit(request.cwd, request.args);
+  });
+};

@@ -105,6 +105,27 @@ describe("publish-skill package design", () => {
     );
   });
 
+  test("fans fork repositories out to isolated agents when the host can", () => {
+    expect(skill).toContain("run one agent per fork repository concurrently");
+    expect(productionLoop).toContain("### Parallel fork agents");
+    expect(productionLoop).toContain(
+      "Assign one agent per repository, not per fork directory"
+    );
+    expect(productionLoop).toContain("process the forks one at a time");
+    expect(productionLoop).toContain(
+      "baseline yourself before starting any agent"
+    );
+    expect(productionLoop).toContain(
+      "Wait for all fork agents to finish; one failure must not cancel the others"
+    );
+    expect(productionLoop).toContain(
+      "Ownership Gate: continue only from an independent remote-default worktree"
+    );
+    expect(productionLoop.replace(/\s+/g, " ")).toContain(
+      "Delegation never lets you push or merge work the agent could not."
+    );
+  });
+
   test("advertises the same scope in agent metadata", () => {
     expect(agentMetadata).toContain("every maintained fork");
     expect(agentMetadata).toContain("discovered local consumer");

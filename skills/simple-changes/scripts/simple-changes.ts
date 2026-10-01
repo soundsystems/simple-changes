@@ -23,7 +23,11 @@ import {
   type InitializationStatus,
   inspectInitialization,
 } from "./lib/initialization.ts";
-import { captureInventory, compareSnapshots } from "./lib/inventory.ts";
+import {
+  captureInventory,
+  compareSnapshots,
+  locateRepository,
+} from "./lib/inventory.ts";
 import {
   acceptPausedWorktreeChange,
   adoptPausedWorktree,
@@ -144,7 +148,7 @@ import {
   standaloneWorktreeCleanup,
 } from "./lib/worktree-maintenance.ts";
 
-const VERSION = "0.19.0";
+const VERSION = "0.20.0";
 const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const SCHEMA_KIND_LINE_LIMIT = 78;
 const schemaKindLines = SCHEMA_NAMES.reduce<string[]>((lines, name) => {
@@ -1335,10 +1339,10 @@ const runSetup = async (options: CliOptions): Promise<void> => {
       if (written && path) {
         writePolicyFile(path, selection.policy, selection.scope === "user");
         if (selection.scope === "repository" && context.primaryCheckout) {
-          const trustedInventory = captureInventory(context.primaryCheckout);
           writeRepositoryPolicyTrustReceipt(
             context.primaryCheckout,
-            trustedInventory.repository.commonGitDirectory,
+            locateRepository(context.primaryCheckout).repository
+              .commonGitDirectory,
             "confirmed-setup-user",
             "User confirmed these exact consequential repository settings in Simple Changes setup."
           );

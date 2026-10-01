@@ -148,6 +148,13 @@ After review and integration settle, record one exact
 completion; see [focused units](references/focused-units.md). This controller
 audit step is not another user decision.
 
+When scheduling allows parallel authoring and the host can start isolated
+agents, delegate independent units instead of authoring them one after
+another: the controller prepares every agent's worktree with `prepare-agent`
+under a new agent ID, each agent edits and checks only inside its own, and the
+controller alone pushes, merges, and finalizes. Follow
+[parallel agents](references/inventory-and-concurrency.md#parallel-agents).
+
 A busy lock blocks only the named short integration operation; it is never a
 reason to pause unrelated authors, demand a lease-null handback, export patches,
 or clean their worktrees. A permission-denied error while creating controller
@@ -185,7 +192,10 @@ rule; see
 
 The lock records process-group evidence. If recovery is proven safe, use `loop
 recover --agent-id "$AGENT_ID"`; never delete state by hand. Before every
-terminal assistant response after a loop has started, run `loop finalize`. It
+terminal assistant response after a loop has started, including a blocked or
+failed handoff, run `loop finalize --json`, then `loop status --json` and verify
+that your controller is released or relinquished. A nonzero exit alone does not
+prove release; if state cannot be written, report that exact blocker. Finalization
 performs the proven-safe cleanup described in
 [cleanup and completion](references/cleanup-and-completion.md) and releases
 completed state. An exact verified shipment can close while unrelated work
@@ -227,6 +237,8 @@ raw Git removal or filesystem deletion. When a lease
 itself is stale, `loop recover --stale-lease --run-id "$RUN_ID" --agent-id
 "$AGENT_ID" --approved-by "$USER" --reason "$WHY"` clears the bookkeeping
 record on explicit user authority while preserving every worktree and receipt.
+Reuse session authority that already covers this recovery. A dead helper PID or
+old heartbeat alone does not establish that the owning agent has stopped.
 
 Follow [inventory and concurrency](references/inventory-and-concurrency.md).
 

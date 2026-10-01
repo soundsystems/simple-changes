@@ -32,7 +32,7 @@ import {
 } from "./emergency-shipping.ts";
 import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
 import { sha256, sha256Json } from "./hash.ts";
-import { captureInventory } from "./inventory.ts";
+import { captureInventory, locateRepository } from "./inventory.ts";
 import {
   assertNoSymlinkAncestors,
   assertSafeRelativePath,
@@ -706,6 +706,9 @@ export interface LoopLockRecovery {
   recoveredAt: string;
   staleOwner: LoopLockOwner;
 }
+
+const staleLeaseRecoveryCommand = (lease: LoopLease): string =>
+  `simple-changes loop recover --stale-lease --run-id ${lease.runId} --agent-id <you> --approved-by <user> --reason <why>`;
 
 export const recoverLoopLock = (
   repositoryPath: string,
@@ -1610,7 +1613,7 @@ const assertAgentMutationAllowed = (
 };
 
 export const readLoopLease = (repositoryPath: string): LoopLease | null => {
-  const inventory = captureInventory(repositoryPath);
+  const inventory = locateRepository(repositoryPath);
   return readLeaseFromCommonDirectory(inventory.repository.commonGitDirectory);
 };
 
@@ -1691,6 +1694,12 @@ const resolveExistingLoopStart = (
       EXIT_CODES.unsafe
     );
   }
+  if (leaseLiveness(existing).state === "stale") {
+    throw new SimpleChangesError(
+      `Integration-controller loop ${existing.runId} has no recent activity; this alone does not prove its agent has stopped. On existing user authority for stale bookkeeping recovery, run \`${staleLeaseRecoveryCommand(existing)}\`, then retry from fresh inventory.`,
+      EXIT_CODES.unsafe
+    );
+  }
   throw new SimpleChangesError(
     `Integration-controller loop ${existing.runId} is already active for ${existing.ownerAgentId}. Independent agents may continue in distinct actively claimed worktrees; start no second push/MR/merge/cleanup controller.`,
     EXIT_CODES.unsafe
@@ -1722,7 +1731,7 @@ export const startLoop = (
       EXIT_CODES.usage
     );
   }
-  const opening = captureInventory(repositoryPath);
+  const opening = locateRepository(repositoryPath);
   return withStateLock(
     opening.repository.commonGitDirectory,
     "loop start",
@@ -2264,7 +2273,7 @@ export const recordShipmentScope = (
   const runId = requiredRunId(runIdInput);
   const agentId = requiredText(agentIdInput, "agent ID");
   const plan = validateSchema<ChangePlan>("change-plan", planInput);
-  const opening = captureInventory(repositoryPath);
+  const opening = locateRepository(repositoryPath);
   return withStateLock(
     opening.repository.commonGitDirectory,
     "record shipment scope",
@@ -2759,7 +2768,7 @@ export const recordShipmentOutcome = (
     "shipment-outcome",
     receiptInput
   );
-  const opening = captureInventory(repositoryPath);
+  const opening = locateRepository(repositoryPath);
   return withStateLock(
     opening.repository.commonGitDirectory,
     "record shipment outcome",
@@ -2850,7 +2859,7 @@ export const takeoverLoop = (
       EXIT_CODES.usage
     );
   }
-  const opening = captureInventory(repositoryPath);
+  const opening = locateRepository(repositoryPath);
   return withStateLock(
     opening.repository.commonGitDirectory,
     "loop takeover",
@@ -2903,7 +2912,7 @@ const emptyVerification = (
 });
 
 export const verifyLoop = (repositoryPath: string): LoopVerification => {
-  const opening = captureInventory(repositoryPath);
+  const opening = locateRepository(repositoryPath);
   return withStateLock(
     opening.repository.commonGitDirectory,
     "loop verify",
@@ -2935,7 +2944,7 @@ export const guardLoopMutation = (
   agentIdInput: string
 ): LoopVerification => {
   const agentId = requiredText(agentIdInput, "agent ID");
-  const opening = captureInventory(repositoryPath);
+  const opening = locateRepository(repositoryPath);
   return withStateLock(
     opening.repository.commonGitDirectory,
     "loop guard",
@@ -2988,7 +2997,7 @@ export const withLoopMutationLease = <T>(
 ): Promise<LoopOperationResult<T>> => {
   const agentId = requiredText(agentIdInput, "agent ID");
   const operationName = requiredText(operationNameInput, "operation name");
-  const opening = captureInventory(repositoryPath);
+  const opening = locateRepository(repositoryPath);
   return withAsyncStateLock(
     opening.repository.commonGitDirectory,
     operationName,
@@ -3306,7 +3315,7 @@ export const prepareAgentWorktree = (
 ): PreparedAgentWorktree => {
   const agentId = requiredText(agentIdInput, "agent ID");
   const purpose = slug(requiredText(purposeInput, "purpose"), "work");
-  const opening = captureInventory(repositoryPath);
+  const opening = locateRepository(repositoryPath);
   return withStateLock(
     opening.repository.commonGitDirectory,
     "prepare agent worktree",
@@ -3709,7 +3718,7 @@ export const authorizeWorktreeRemoval = (
       reasonInput,
       "disposition reason"
     );
-  const opening = captureInventory(repositoryPath);
+  const opening = locateRepository(repositoryPath);
   return withStateLock(
     opening.repository.commonGitDirectory,
     "authorize opening worktree removal",
@@ -3790,7 +3799,7 @@ export const retireAbsentWorktree = (
   const ownerAgentId = requiredText(ownerAgentIdInput, "agent ID");
   const approvedBy = requiredText(approvedByInput, "approved-by identity");
   const reason = requiredText(reasonInput, "retirement reason");
-  const opening = captureInventory(repositoryPath);
+  const opening = locateRepository(repositoryPath);
   return withStateLock(
     opening.repository.commonGitDirectory,
     "loop retire-absent-worktree",
@@ -3943,7 +3952,7 @@ export const retainExcludedWorktree = (
       reasonInput,
       "retention reason"
     );
-  const opening = captureInventory(repositoryPath);
+  const opening = locateRepository(repositoryPath);
   return withStateLock(
     opening.repository.commonGitDirectory,
     "retain excluded worktree",
@@ -4006,7 +4015,7 @@ export const grantLoopOverride = (
       reasonInput,
       "override reason"
     );
-  const opening = captureInventory(repositoryPath);
+  const opening = locateRepository(repositoryPath);
   return withStateLock(
     opening.repository.commonGitDirectory,
     "loop allow",
@@ -4174,7 +4183,7 @@ export const adoptPausedWorktree = (
   pauseReceiptIdInput: string
 ): LoopLease => {
   const ownerAgentId = requiredText(ownerAgentIdInput, "agent ID");
-  const opening = captureInventory(repositoryPath);
+  const opening = locateRepository(repositoryPath);
   return withStateLock(
     opening.repository.commonGitDirectory,
     "loop adopt-worktree",
@@ -4261,7 +4270,7 @@ export const rebaselineLoopWorktrees = (
   const ownerAgentId = requiredText(ownerAgentIdInput, "agent ID");
   const approvedBy = requiredText(approvedByInput, "approved-by identity");
   const reason = requiredText(reasonInput, "rebaseline reason");
-  const opening = captureInventory(repositoryPath);
+  const opening = locateRepository(repositoryPath);
   return withStateLock(
     opening.repository.commonGitDirectory,
     "loop rebaseline",
@@ -4333,7 +4342,7 @@ export const acceptPausedWorktreeChange = (
   pauseReceiptIdInput: string
 ): LoopLease => {
   const ownerAgentId = requiredText(ownerAgentIdInput, "agent ID");
-  const opening = captureInventory(repositoryPath);
+  const opening = locateRepository(repositoryPath);
   return withStateLock(
     opening.repository.commonGitDirectory,
     "loop accept-paused-change",
@@ -4416,7 +4425,7 @@ export const markWorktreeResumeReady = (
 } => {
   const ownerAgentId = requiredText(ownerAgentIdInput, "agent ID");
   const claimId = requiredText(claimIdInput, "claim ID");
-  const opening = captureInventory(repositoryPath);
+  const opening = locateRepository(repositoryPath);
   return withStateLock(
     opening.repository.commonGitDirectory,
     "worktree resume-ready",
@@ -4480,7 +4489,7 @@ export const recordRemoteBranchReconciliation = (
   const ownerAgentId = requiredText(ownerAgentIdInput, "agent ID");
   const receipt: RemoteBranchReconciliationReceipt =
     validateRemoteBranchReconciliation(receiptInput);
-  const opening = captureInventory(repositoryPath);
+  const opening = locateRepository(repositoryPath);
   return withStateLock(
     opening.repository.commonGitDirectory,
     "record remote branch reconciliation",
@@ -6426,7 +6435,7 @@ export const recoverPostCleanupLoop = (
   const ownerAgentId = requiredText(ownerAgentIdInput, "agent ID");
   const receipt: PostCleanupRecoveryReceipt =
     validatePostCleanupRecovery(receiptInput);
-  const opening = captureInventory(repositoryPath);
+  const opening = locateRepository(repositoryPath);
   const { commonGitDirectory } = opening.repository;
   return withStateLock(commonGitDirectory, "post-cleanup recovery", () => {
     const receiptDigest = sha256Json(receipt);
@@ -6848,6 +6857,117 @@ const finalizeUnmutatedRun = (
   };
 };
 
+const relinquishController = (
+  lease: LoopLease,
+  reason: string,
+  now: string
+): LoopLease =>
+  writeLease({
+    ...withMutationEvidence(lease, now),
+    controller: {
+      ...controllerLifecycle(lease),
+      reason,
+      relinquishedAt: now,
+      status: "relinquished",
+    },
+    shipmentScopeFrozenAt: effectiveShipmentScopeFrozenAt(lease) ?? now,
+    updatedAt: now,
+    worktrees: lease.worktrees.map((worktree) =>
+      worktree.role === "controller"
+        ? { ...worktree, mutationAllowed: false }
+        : worktree
+    ),
+  });
+
+const finalizeOwnedLoop = (
+  repositoryPath: string,
+  openingLease: LoopLease,
+  inventory: RepositoryInventory,
+  reason: string
+): LoopFinalizationResult => {
+  let lease = reconcileAbsentRetainedWorktrees(openingLease, inventory);
+  lease = reconcilePrimarySynchronization(lease, inventory);
+  const openingVerification = verificationAgainst(lease, inventory);
+  const automaticCleanup =
+    lease.shipmentScopeRequired && !lease.shipmentScope
+      ? { cleanup: emptyFinalizationCleanup(), lease }
+      : automaticFinalizationCleanup(lease, inventory, openingVerification);
+  ({ lease } = automaticCleanup);
+  const finalInventory = captureInventory(repositoryPath);
+  const { blockers, verification, receipt } = finalizationDecision(
+    lease,
+    finalInventory,
+    automaticCleanup.cleanup,
+    reason
+  );
+  const now = receipt.finalizedAt;
+  if (blockers.length === 0 && receipt.deliveryStatus === "verified") {
+    releaseDeliveredSourceClaims(
+      lease,
+      finalInventory,
+      automaticCleanup.cleanup
+    );
+  }
+  const receiptPath = resolve(
+    recoveryHistoryDirectory(lease.commonGitDirectory, lease.runId),
+    `finalization-${sha256Json(receipt)}.json`
+  );
+  writeImmutableRecoveryEvent(receiptPath, { lease, receipt });
+  if (blockers.length === 0) {
+    rmSync(loopLeasePath(lease.commonGitDirectory), { force: true });
+    return {
+      blockers,
+      cleanup: automaticCleanup.cleanup,
+      lease: null,
+      outcome: "completed",
+      receipt,
+      receiptPath,
+      verification,
+    };
+  }
+  const updated = relinquishController(lease, reason, now);
+  return {
+    blockers,
+    cleanup: automaticCleanup.cleanup,
+    lease: updated,
+    outcome: "relinquished",
+    receipt,
+    receiptPath,
+    verification,
+  };
+};
+
+// Cleanup may already have persisted removal or synchronization evidence.
+// Release the latest state under both locks, never the opening snapshot, and
+// keep the failure that stopped finalization visible: an unwritable lease is
+// reported beside it, never instead of it.
+const relinquishAfterFinalizationError = (
+  lease: LoopLease,
+  error: unknown
+): never => {
+  const detail = error instanceof Error ? error.message : String(error);
+  try {
+    const current = readLeaseFromCommonDirectory(lease.commonGitDirectory);
+    if (current?.runId === lease.runId) {
+      relinquishController(
+        current,
+        `Finalization failed: ${detail}`.slice(0, 500),
+        new Date().toISOString()
+      );
+    }
+  } catch (relinquishError) {
+    const relinquishDetail =
+      relinquishError instanceof Error
+        ? relinquishError.message
+        : String(relinquishError);
+    throw new Error(
+      `Finalization failed: ${detail}. The controller could not be relinquished: ${relinquishDetail}`,
+      { cause: relinquishError }
+    );
+  }
+  throw error;
+};
+
 export const finalizeLoop = (
   repositoryPath: string,
   runId: string,
@@ -6856,7 +6976,7 @@ export const finalizeLoop = (
 ): LoopFinalizationResult => {
   const ownerAgentId = requiredText(ownerAgentIdInput, "agent ID");
   const reason = requiredText(reasonInput, "finalization reason");
-  const opening = captureInventory(repositoryPath);
+  const opening = locateRepository(repositoryPath);
   return withStateLock(
     opening.repository.commonGitDirectory,
     "loop finalize",
@@ -6866,7 +6986,7 @@ export const finalizeLoop = (
         "loop finalize cleanup",
         () => {
           const inventory = captureInventory(repositoryPath);
-          let lease = requireLease(inventory);
+          const lease = requireLease(inventory);
           assertMatchingRun(lease, runId);
           if (lease.ownerAgentId !== ownerAgentId) {
             throw new SimpleChangesError(
@@ -6879,75 +6999,11 @@ export const finalizeLoop = (
           if (untouched) {
             return untouched;
           }
-          lease = reconcileAbsentRetainedWorktrees(lease, inventory);
-          lease = reconcilePrimarySynchronization(lease, inventory);
-          const openingVerification = verificationAgainst(lease, inventory);
-          const automaticCleanup =
-            lease.shipmentScopeRequired && !lease.shipmentScope
-              ? { cleanup: emptyFinalizationCleanup(), lease }
-              : automaticFinalizationCleanup(
-                  lease,
-                  inventory,
-                  openingVerification
-                );
-          ({ lease } = automaticCleanup);
-          const finalInventory = captureInventory(repositoryPath);
-          const { blockers, verification, receipt } = finalizationDecision(
-            lease,
-            finalInventory,
-            automaticCleanup.cleanup,
-            reason
-          );
-          const now = receipt.finalizedAt;
-          if (blockers.length === 0 && receipt.deliveryStatus === "verified") {
-            releaseDeliveredSourceClaims(
-              lease,
-              finalInventory,
-              automaticCleanup.cleanup
-            );
+          try {
+            return finalizeOwnedLoop(repositoryPath, lease, inventory, reason);
+          } catch (error) {
+            return relinquishAfterFinalizationError(lease, error);
           }
-          const receiptPath = resolve(
-            recoveryHistoryDirectory(lease.commonGitDirectory, lease.runId),
-            `finalization-${sha256Json(receipt)}.json`
-          );
-          writeImmutableRecoveryEvent(receiptPath, { lease, receipt });
-          if (blockers.length === 0) {
-            rmSync(loopLeasePath(lease.commonGitDirectory), { force: true });
-            return {
-              blockers,
-              cleanup: automaticCleanup.cleanup,
-              lease: null,
-              outcome: "completed",
-              receipt,
-              receiptPath,
-              verification,
-            };
-          }
-          const updated = writeLease({
-            ...withMutationEvidence(lease, now),
-            controller: {
-              ...controllerLifecycle(lease),
-              reason,
-              relinquishedAt: now,
-              status: "relinquished",
-            },
-            shipmentScopeFrozenAt: effectiveShipmentScopeFrozenAt(lease) ?? now,
-            updatedAt: now,
-            worktrees: lease.worktrees.map((worktree) =>
-              worktree.role === "controller"
-                ? { ...worktree, mutationAllowed: false }
-                : worktree
-            ),
-          });
-          return {
-            blockers,
-            cleanup: automaticCleanup.cleanup,
-            lease: updated,
-            outcome: "relinquished",
-            receipt,
-            receiptPath,
-            verification,
-          };
         }
       )
   );
@@ -7309,7 +7365,7 @@ export const closeLoopTargetEquivalent = (
   const agentId = requiredText(agentIdInput, "agent ID");
   const approvedBy = requiredText(approvedByInput, "approver");
   const reason = requiredText(reasonInput, "close-equivalent reason");
-  const opening = captureInventory(repositoryPath);
+  const opening = locateRepository(repositoryPath);
   const { commonGitDirectory } = opening.repository;
   return withStateLock(commonGitDirectory, "loop close-equivalent", () =>
     withWorktreeCoordinationLock(
@@ -7455,7 +7511,7 @@ export const recoverStaleLoopLease = (
   const agentId = requiredText(agentIdInput, "agent ID");
   const approvedBy = requiredText(approvedByInput, "approver");
   const reason = requiredText(reasonInput, "stale-lease recovery reason");
-  const opening = captureInventory(repositoryPath);
+  const opening = locateRepository(repositoryPath);
   const { commonGitDirectory } = opening.repository;
   return withStateLock(commonGitDirectory, "loop recover stale lease", () => {
     const archivePath = staleLeaseRecoveryPath(commonGitDirectory, runId);
@@ -7529,7 +7585,7 @@ export const endLoop = (
 ): LoopEndResult => {
   const ownerAgentId = requiredText(ownerAgentIdInput, "agent ID");
   const reason = reasonInput?.trim() || null;
-  const opening = captureInventory(repositoryPath);
+  const opening = locateRepository(repositoryPath);
   return withStateLock(
     opening.repository.commonGitDirectory,
     "loop end",
@@ -7675,7 +7731,7 @@ const loopGuidanceFor = (
     return {
       headline: `Loop ${lease.runId} is stale: its owner ${lease.ownerAgentId} cannot be proven alive and it last recorded activity at ${liveness.lastUpdatedAt}. Clearing the lease with user approval keeps every worktree and receipt.`,
       nextCommands: [
-        `simple-changes loop recover --stale-lease --run-id ${lease.runId} --agent-id <you> --approved-by <user> --reason <why>`,
+        staleLeaseRecoveryCommand(lease),
         `simple-changes loop takeover --run-id ${lease.runId} --agent-id <you> --manifest-digest ${loopManifestDigest(lease)} --approved-by <user> --reason <why>`,
       ],
     };
@@ -7847,7 +7903,7 @@ const replanObservation = (
 // Observe from the same checkout used for execution. Inventory digests include
 // checkout identity, while coordination and the current target bind shared state.
 export const loopReplanStatus = (repositoryPath: string) => {
-  const opening = captureInventory(repositoryPath);
+  const opening = locateRepository(repositoryPath);
   return withStateLock(
     opening.repository.commonGitDirectory,
     "loop replan status",
@@ -8104,7 +8160,7 @@ export const replanLoop = (
       EXIT_CODES.usage
     );
   }
-  const opening = captureInventory(repositoryPath);
+  const opening = locateRepository(repositoryPath);
   const common = opening.repository.commonGitDirectory;
   return withStateLock(common, "loop replan", () =>
     withWorktreeCoordinationLock(common, "loop replan", () => {

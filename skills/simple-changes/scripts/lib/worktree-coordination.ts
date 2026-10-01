@@ -12,7 +12,7 @@ import { hostname } from "node:os";
 import { dirname, resolve } from "node:path";
 import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
 import { sha256, sha256Json } from "./hash.ts";
-import { captureInventory } from "./inventory.ts";
+import { captureInventory, locateRepository } from "./inventory.ts";
 import { runGit } from "./process.ts";
 import { redactSecrets } from "./redact.ts";
 import { validateSchema } from "./schema.ts";
@@ -556,7 +556,7 @@ export const claimWorktree = (
       EXIT_CODES.unsafe
     );
   }
-  const opening = captureInventory(repositoryPath);
+  const opening = locateRepository(repositoryPath);
   return withCoordinationLock(
     opening.repository.commonGitDirectory,
     "worktree claim",
@@ -676,7 +676,7 @@ export const pauseClaimedWorktree = (
       EXIT_CODES.usage
     );
   }
-  const opening = captureInventory(repositoryPath);
+  const opening = locateRepository(repositoryPath);
   return withCoordinationLock(
     opening.repository.commonGitDirectory,
     "worktree pause",
@@ -928,7 +928,7 @@ export const detachClaimedWorktree = (
 ): WorktreeClaim => {
   const agentId = requiredText(agentIdInput, "agent ID", 128);
   const receiptId = requiredText(receiptIdInput, "pause receipt ID", 128);
-  const opening = captureInventory(repositoryPath);
+  const opening = locateRepository(repositoryPath);
   return withGitCoordinationLocks(
     opening.repository.commonGitDirectory,
     "worktree detach",
@@ -1056,7 +1056,7 @@ export const attachClaimedWorktree = (
 ): WorktreeClaim => {
   const agentId = requiredText(agentIdInput, "agent ID", 128);
   const claimId = requiredText(claimIdInput, "claim ID", 128);
-  const opening = captureInventory(repositoryPath);
+  const opening = locateRepository(repositoryPath);
   return withGitCoordinationLocks(
     opening.repository.commonGitDirectory,
     "worktree attach",
@@ -1609,7 +1609,7 @@ export const takeoverWorktreeClaim = (
       EXIT_CODES.usage
     );
   }
-  const opening = captureInventory(options.repositoryPath);
+  const opening = locateRepository(options.repositoryPath);
   return withGitCoordinationLocks(
     opening.repository.commonGitDirectory,
     "worktree takeover",

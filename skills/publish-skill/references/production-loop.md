@@ -78,6 +78,38 @@ Use a repository-required writing model for raw release-note or changelog text.
 If delegation is required, give that writer the actual diff and evidence, then
 verify its output against repository policy before committing it.
 
+### Parallel fork agents
+
+Fork repositories share nothing after the canonical pin is frozen, so when the
+host can start isolated agents and learn when each one finishes, run the
+per-fork steps above in one agent per fork repository, concurrently with
+bounded parallelism. The fork phase then takes about as long as its slowest
+repository instead of the sum of all of them. Without that host support,
+process the forks one at a time.
+
+- Freeze the canonical merged commit and capture every fork's ownership
+  baseline yourself before starting any agent.
+- Assign one agent per repository, not per fork directory: forks that share a
+  repository share one branch, one MR or PR, and one Simple Changes controller.
+- Give each agent its repository, fork paths, captured baseline, the frozen
+  canonical commit, the canonical checkout as read-only input, and the exact
+  merge authority this loop already holds for that repository. It works in its
+  own isolated worktree and never touches another repository, the canonical
+  checkout, or a global install.
+- An agent stops at the step it cannot finish and reports its evidence; the
+  remedy depends on why. For new external activity on its target, apply the
+  Ownership Gate: continue only from an independent remote-default worktree
+  when the work does not overlap, otherwise record that exact target as
+  outstanding. Delegation never lets you push or merge work the agent could
+  not. For a decision outside the loop's authority, ask the user. For a writer
+  or reviewer the host will not let the agent start, run that delegation
+  yourself and resume the same repository.
+- Stagger repositories whose native checks are heavy instead of starting them
+  all at once.
+- Wait for all fork agents to finish; one failure must not cancel the others.
+  Confirm each reported merge on the fork's remote default branch before
+  starting the consumer phase.
+
 ## 3. Consumer Installations
 
 Inventory every exact-source consumer with

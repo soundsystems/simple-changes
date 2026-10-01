@@ -65,13 +65,40 @@ describe("release consistency", () => {
     }
   });
 
-  test("rejects version drift and empty pending sections", () => {
+  test("accepts one leading empty Unreleased anchor and rejects a duplicate", () => {
     const fixture = createTestRepository();
     try {
       writeFixture(
         fixture.root,
         "CHANGELOG.md",
         "# Changelog\n\n## Unreleased\n\n## 1.2.0 - 2026-07-23\n\n- Public outcome.\n"
+      );
+      writeFixture(
+        fixture.root,
+        "DEVELOPER_CHANGELOG.md",
+        "# Developer changelog\n\n## Unreleased\n\n## 1.2.0 - 2026-07-23\n\n- Technical outcome.\n\n## Unreleased\n\n- Absorbed.\n"
+      );
+      writeFixture(
+        fixture.root,
+        "package.json",
+        '{ "name": "fixture", "version": "1.2.0" }\n'
+      );
+
+      expect(checkReleaseConsistency(fixture.root).issues).toEqual([
+        "DEVELOPER_CHANGELOG.md contains more than one Unreleased section.",
+      ]);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  test("rejects version drift and empty pending sections", () => {
+    const fixture = createTestRepository();
+    try {
+      writeFixture(
+        fixture.root,
+        "CHANGELOG.md",
+        "# Changelog\n\n## 1.2.0 - 2026-07-23\n\n- Public outcome.\n\n## Unreleased\n\n## 1.1.0 - 2026-07-22\n\n- Earlier outcome.\n"
       );
       writeFixture(
         fixture.root,

@@ -31,6 +31,9 @@ If opening local changes exist, the brief must be the summary returned after
 `loop record-scope --receipt <change-plan.json>`. Do not push an early subset
 and audit the other worktrees afterward. The recorded plan must first account
 for every changed path across the primary checkout and all linked worktrees.
+It describes the repository as it is when scope is recorded: a claimed author's
+edits since `loop start` belong in the preserved section, while every included
+unit must still hold exactly the bytes its worktree had at `loop start`.
 Safety-lease `preserved` status protects a checkout from mutation or deletion;
 it does not prove that finished work is unrelated or excluded.
 For each included unit, show a short feature/outcome description, its branch or

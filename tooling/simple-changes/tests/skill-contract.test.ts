@@ -724,7 +724,16 @@ describe("Simple Changes skill contract", () => {
       "Until then, `loop guard`, `loop exec`, and completion fail closed"
     );
     expect(normalizedConcurrency).toContain(
-      "when the run has changed nothing yet, `loop end` closes it with an `abort-unmutated.json` receipt, and a fresh `loop start` takes a new baseline"
+      "the run has changed nothing yet, `loop end` closes it with an `abort-unmutated.json` receipt, and a fresh `loop start` takes a new baseline"
+    );
+    expect(normalizedConcurrency).toContain(
+      "Record-scope accepts unrelated changes made after `loop start`: claimed authors' edits and commits, other branches, stashes, and late claimed worktrees"
+    );
+    expect(normalizedConcurrency).toContain(
+      "or when the controller checkout or any unit source worktree differs from its loop-start branch, head, or content"
+    );
+    expect(normalizedSkill).toContain(
+      "generate one non-mutating preview plan from the current inventory"
     );
     expect(normalizedConcurrency).toContain(
       "The author may keep editing and committing without a pause receipt"
@@ -805,6 +814,7 @@ describe("Simple Changes skill contract", () => {
       "Completed-work handoff cannot mutate while readiness confirmation is pending",
       "Harness automation is capability-gated",
       "A required changelog update blocks loop creation until Simple Changelogs owns and records the user's disposition",
+      "the controller checkout and every unit source worktree at their exact loop-start branch, head, and content digest",
     ]) {
       expect(normalizedSpec).toContain(guarantee);
     }

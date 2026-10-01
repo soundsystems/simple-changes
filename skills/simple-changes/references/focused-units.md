@@ -26,8 +26,8 @@ When the same relative path is changed in multiple worktrees, bind an exclusion
 to both `worktreePath` and `path`; never force the user to exclude every source
 with that filename.
 
-For Ship, bind this conserved plan to the active loop with `loop record-scope`
-while the opening inventory is still exact. The resulting pre-ship scope is a
+For Ship, bind this conserved plan, generated from the current inventory, to
+the active loop with `loop record-scope`. The resulting pre-ship scope is a
 runtime gate, not optional narration: guarded mutation and completion fail
 until it exists. Treat lease role `preserved` only as deletion protection;
 classify that work's paths independently as included, deliberately preserved,

@@ -323,8 +323,8 @@ shipment; run guarded `prune` separately when safe. Incomplete finalization
 relinquishes durable state and exits nonzero. The exception is an untouched Ship
 run, with no recorded scope and no mutation evidence, whose opening inventory
 moved: finalization closes it with `shipmentStatus: unstarted` and an
-`abort-unmutated.json` receipt instead of freezing a scope that can never be
-recorded, and `loop end` closes such a run whether or not the inventory moved.
+`abort-unmutated.json` receipt instead of freezing its scope, and `loop end`
+closes such a run whether or not the inventory moved.
 An authorized agent resumes a relinquished run with `loop start --mode resume
 --agent-id <you>` without takeover approval; its existing frozen scope and
 safety checks remain in force. Dirty non-primary worktrees, untracked or

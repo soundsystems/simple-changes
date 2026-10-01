@@ -160,8 +160,33 @@
         }
       }
     },
+    "openingInvariantDigest": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
     "openingRemoteInventory": {
       "$ref": "remote-branch-reconciliation.schema.json"
+    },
+    "openingWorktrees": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "branch", "headSha", "changeDigest"],
+        "properties": {
+          "path": { "type": "string", "minLength": 1 },
+          "branch": {
+            "anyOf": [{ "type": "string", "minLength": 1 }, { "type": "null" }]
+          },
+          "headSha": {
+            "anyOf": [
+              { "type": "string", "pattern": "^[0-9a-f]{40,64}$" },
+              { "type": "null" }
+            ]
+          },
+          "changeDigest": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+        }
+      }
     },
     "remoteBindings": {
       "type": "array",
@@ -208,6 +233,10 @@
       "additionalProperties": false,
       "required": ["openingChanges", "plan", "planDigest", "recordedAt"],
       "properties": {
+        "openingInventoryDigest": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
         "openingChanges": {
           "type": "array",
           "items": {

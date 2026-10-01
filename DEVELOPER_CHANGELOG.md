@@ -2,6 +2,90 @@
 
 ## Unreleased
 
+## 0.21.1 - 2026-10-01
+
+- Add `lib/harness-session.ts`: `currentHarnessSession` reads
+  `CLAUDE_CODE_SESSION_ID` plus `CLAUDE_PID` (kept only when the PID is visible
+  from this process, so a sandbox with its own namespace never records one) or
+  `CODEX_THREAD_ID`. `recordControllerSession`, `forgetControllerSession`, and
+  `listControllerSessionEntries` keep a best-effort per-user pointer index in
+  `controller-sessions/<sha256(session)>/<runId>.json` beside the personal
+  preferences file; a pointer names only a common Git directory and is never
+  authority.
+- Keep the new controller facts out of the lease. `loop-lease.ts` writes
+  `active-loop-controller.json` (`LoopControllerBinding`, `schemaVersion: 1`)
+  beside the lease with `session`, `awaitingUser`, and `inheritedAwaitingUser`;
+  `readControllerBinding` honors it only while `runId`, `ownerAgentId`, and
+  `controllerAcquiredAt` match the lease's current tenure, so a resume or
+  takeover by a runtime that does not write bindings leaves the old one inert.
+  `startLoop`, resume, takeover, and owner `guardLoopMutation` and
+  `withLoopMutationLease` refresh it; finalization, unmutated closure, and stale
+  recovery remove it. The lease schema, manifest digest, and
+  `stale-lease-recovery` receipt are unchanged.
+- `finalizeLoop` takes `{ awaitingUser }` (1-10 non-empty questions of at most
+  500 characters, validated before any write): the questions become a
+  finalization blocker, land in the receipt as `awaitingUser`, and
+  `relinquishController` stores them in the binding with `session: null`; the
+  CLI reports the pause and returns success. An untouched Ship run still closes.
+  `transferController` copies the predecessor's questions into
+  `inheritedAwaitingUser`, `loop start` prints and emits them, and
+  `loopGuidanceFor` shows them for a relinquished lease.
+- Add `lib/turn-guard.ts`: `turnCheck` re-reads every lease the session index
+  points at, keeps only an active controller bound to this session, prunes the
+  rest, and decides `block`, or `warn` when `stop_hook_active` is set;
+  `turnCheckHookOutput` renders `{decision, reason}` or `{systemMessage}`.
+  `loop turn-check --hook` reads stdin with a 2 s timeout, swallows every
+  error, and exits 0 explicitly. `stopHookCommand` is
+  `[ -f <script> ] || exit 0; '<bun>' '<script>' loop turn-check --hook || exit 0`
+  with `which("bun")`. `stopHookStatus` merges into `~/.claude/settings.json`
+  or `~/.codex/hooks.json` (honoring `CLAUDE_CONFIG_DIR` and `CODEX_HOME`,
+  writing through a symlink, keeping file mode and every other key), updates an
+  older turn-check handler in place, treats another copy's hook as current
+  while it ends fail-open and its script declares a version at least as new and
+  contains `"turn-check"`, and refuses to write a path inside a linked worktree;
+  `hookInstallScript` maps a worktree copy to the primary checkout's copy when
+  that one qualifies. `initialize` reports `turnEndGuard` without installing,
+  and `initialization.schema.json` gains `turnEndGuard` and `runtimeFreshness`.
+- Add `lib/runtime-freshness.ts`: when the running script lives inside an
+  inventory worktree, compare its `VERSION` with `git show <targetRef>:<path>`
+  and report `behind-target`; a global install is `not-applicable`.
+- Liveness: `LEASE_STALE_AFTER_MS` drops from four hours to two, and
+  `SESSION_EXIT_GRACE_MS` (10 min) makes a quiet run stale once the bound
+  session's recorded PID is gone on this host and the process can see its own
+  `CLAUDE_PID`; `LeaseLiveness.ownerSessionEnded` surfaces it.
+  `recoverStaleLoopLease` writes `stale-lease-recovery-lease.json` (lease,
+  binding, `ownerSessionEnded`) beside the unchanged receipt.
+- Harden hold withdrawal in `ship-holds.ts`. `refAlreadyGone` accepts a delete
+  as already withdrawn only for a client-side `remote ref does not exist`
+  naming this ref or a bare `unable to resolve reference '<ref>'` with no
+  suffix, so `: reference broken` or `: Permission denied` stay failures. When
+  a release beats `publishShipHold`'s clean-up delete and that delete fails,
+  `markWithdrawalPending` resets `publication.withdrawnAt` so the next
+  `hold release` retries, and a failed reset names the manual
+  `git push <remote> :<ref>`. `evaluateShipHolds` adds `unpublishedElsewhere`
+  (local holds that are neither released nor satisfied, confirmed published,
+  not withdrawn, and absent from a successfully read remote) with a
+  `nextSteps` line naming the owner's release command, and `publishShipHold`
+  re-lists the remote before trusting a `publishedAt` record so the owner can
+  republish after a withdrawal elsewhere. Four regressions in
+  `ship-holds.test.ts` cover the lost delete race, the broken ref,
+  republishing, and the owner's clone; `inventory-and-concurrency.md` says the
+  gates report the withdrawal.
+- Mark `skills/publish-skill/SKILL.md` `metadata.internal: true` and drop the
+  README section that installed it with `bunx skills add . --skill
+  publish-skill` and told skill repositories to bundle it. No tooling reads the
+  flag; the publish-skill package-design and consumer-discovery checks and the
+  lean one-skill package eval are unchanged.
+- Bump guidance to 24 with three change entries and a notice bullet
+  (`changelogReviewRelevant: false`). Add a `bunfig.toml` test preload that
+  deletes the harness session variables so tests never bind to the session
+  running them. `turn-guard.test.ts` covers detection, block-then-warn,
+  inheritance, rebinding, pointer pruning, hook stdin, reminders, liveness, the
+  archive, the installer, and freshness; `skill-contract.test.ts` pins the
+  SKILL, SPEC, and cleanup prose; `initialization.test.ts` covers the guidance
+  24 notice.
+<!-- simple-changelogs-signature agent="Fable 5.1" at="2026-10-01T20:10:14-05:00" -->
+
 ## 0.21.0 - 2026-10-01
 
 - Add `lib/ready-work.ts` and `evals/schemas/ready-work-receipt.schema.json`:

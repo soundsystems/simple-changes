@@ -190,7 +190,7 @@ import {
   standaloneWorktreeCleanup,
 } from "./lib/worktree-maintenance.ts";
 
-const VERSION = "0.21.0";
+const VERSION = "0.21.1";
 const SCRIPT_FILE = fileURLToPath(import.meta.url);
 const PLAIN_SHELL_WORD_PATTERN = /^[\w./-]+$/u;
 const PACKAGE_ROOT = resolve(dirname(SCRIPT_FILE), "..");

@@ -31,6 +31,11 @@ import {
   deriveEmergencyShippingStatus,
 } from "./emergency-shipping.ts";
 import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
+import {
+  currentHarnessSession,
+  forgetControllerSession,
+  recordControllerSession,
+} from "./harness-session.ts";
 import { sha256, sha256Json } from "./hash.ts";
 import { captureInventory, locateRepository } from "./inventory.ts";
 import {
@@ -57,7 +62,9 @@ import type {
   ChangePlan,
   EmergencyShippingLedgerEntry,
   LoopCloseEquivalentWorktreeProof,
+  LoopControllerBinding,
   LoopControllerLifecycle,
+  LoopControllerSession,
   LoopLease,
   LoopOverride,
   LoopOwnerProcess,
@@ -477,6 +484,163 @@ const controllerLifecycle = (lease: LoopLease): LoopControllerLifecycle =>
     status: "active",
   };
 
+const CONTROLLER_BINDING_FILENAME = "active-loop-controller.json";
+
+const controllerBindingPath = (commonGitDirectory: string): string =>
+  resolve(stateDirectory(commonGitDirectory), CONTROLLER_BINDING_FILENAME);
+
+const isControllerSession = (
+  value: unknown
+): value is LoopControllerSession => {
+  const session = value as Partial<LoopControllerSession> | null;
+  return Boolean(
+    session &&
+      (session.harness === "claude-code" || session.harness === "codex") &&
+      typeof session.sessionId === "string" &&
+      typeof session.hostname === "string" &&
+      (session.hostPid === null || Number.isSafeInteger(session.hostPid))
+  );
+};
+
+const stringList = (value: unknown): string[] | null =>
+  Array.isArray(value) && value.every((item) => typeof item === "string")
+    ? (value as string[])
+    : null;
+
+/**
+ * The controller binding for this exact run and owner, or null. It is advisory
+ * evidence kept beside the lease: a missing, unreadable, or mismatched file
+ * means no session binding and no recorded questions, never an error.
+ */
+export const readControllerBinding = (
+  lease: Pick<
+    LoopLease,
+    "commonGitDirectory" | "controller" | "createdAt" | "ownerAgentId" | "runId"
+  >
+): LoopControllerBinding | null => {
+  try {
+    const parsed = JSON.parse(
+      readFileSync(controllerBindingPath(lease.commonGitDirectory), "utf8")
+    ) as Partial<LoopControllerBinding>;
+    // Matching the controller's acquisition time ties the binding to this
+    // exact controller tenure, so a resume or takeover by a runtime that does
+    // not write bindings leaves the old one behind as inert.
+    if (
+      parsed.schemaVersion !== 1 ||
+      parsed.runId !== lease.runId ||
+      parsed.ownerAgentId !== lease.ownerAgentId ||
+      parsed.controllerAcquiredAt !==
+        (lease.controller?.acquiredAt ?? lease.createdAt)
+    ) {
+      return null;
+    }
+    const questions = stringList(parsed.awaitingUser?.questions);
+    return {
+      awaitingUser:
+        questions && typeof parsed.awaitingUser?.recordedAt === "string"
+          ? { questions, recordedAt: parsed.awaitingUser.recordedAt }
+          : null,
+      controllerAcquiredAt: parsed.controllerAcquiredAt,
+      inheritedAwaitingUser: stringList(parsed.inheritedAwaitingUser),
+      ownerAgentId: parsed.ownerAgentId,
+      runId: parsed.runId,
+      schemaVersion: 1,
+      session: isControllerSession(parsed.session) ? parsed.session : null,
+      updatedAt: typeof parsed.updatedAt === "string" ? parsed.updatedAt : "",
+    };
+  } catch {
+    return null;
+  }
+};
+
+// Best effort: the binding never gates a loop operation, so a write failure
+// leaves the run without a session binding rather than failing the command.
+const writeControllerBinding = (
+  lease: LoopLease,
+  changes: Partial<
+    Pick<
+      LoopControllerBinding,
+      "awaitingUser" | "inheritedAwaitingUser" | "session"
+    >
+  >
+): void => {
+  const current = readControllerBinding(lease);
+  const binding: LoopControllerBinding = {
+    awaitingUser: current?.awaitingUser ?? null,
+    controllerAcquiredAt: controllerLifecycle(lease).acquiredAt,
+    inheritedAwaitingUser: current?.inheritedAwaitingUser ?? null,
+    ownerAgentId: lease.ownerAgentId,
+    runId: lease.runId,
+    schemaVersion: 1,
+    session: current?.session ?? null,
+    updatedAt: new Date().toISOString(),
+    ...changes,
+  };
+  try {
+    const path = controllerBindingPath(lease.commonGitDirectory);
+    mkdirSync(dirname(path), { mode: 0o700, recursive: true });
+    const temporary = `${path}.${process.pid}.${randomUUID()}.tmp`;
+    writeFileSync(temporary, `${JSON.stringify(binding, null, 2)}\n`, {
+      mode: 0o600,
+    });
+    renameSync(temporary, path);
+  } catch {
+    // The run continues without a binding; turn-end hooks find nothing.
+  }
+  if (binding.session) {
+    recordControllerSession(
+      binding.session,
+      lease.commonGitDirectory,
+      lease.runId
+    );
+  }
+};
+
+const removeControllerBinding = (lease: LoopLease): void => {
+  rmSync(controllerBindingPath(lease.commonGitDirectory), { force: true });
+};
+
+/**
+ * Bind the run to the harness session issuing an owner command, so a restarted
+ * harness process or a resumed session keeps a current binding. Only commands
+ * that already proved ownership call this.
+ */
+const refreshControllerSession = (lease: LoopLease): void => {
+  const session = currentHarnessSession();
+  if (!session) {
+    return;
+  }
+  const current = readControllerBinding(lease)?.session;
+  if (
+    current?.sessionId === session.sessionId &&
+    current.hostPid === session.hostPid &&
+    current.hostname === session.hostname
+  ) {
+    return;
+  }
+  if (current && current.sessionId !== session.sessionId) {
+    forgetControllerSession(current.sessionId, lease.runId);
+  }
+  writeControllerBinding(lease, { session });
+};
+
+// The session index is only a pointer for turn-end hooks; drop it whenever
+// this session stops controlling the run.
+const forgetLeaseSession = (lease: LoopLease): void => {
+  const session = readControllerBinding(lease)?.session;
+  if (session) {
+    forgetControllerSession(session.sessionId, lease.runId);
+  }
+};
+
+/**
+ * The step every controller owes before it replies to the user. Commands that
+ * touch shared state repeat it, because an agent reads command output far more
+ * reliably than a rule it read once in the skill.
+ */
+export const turnEndReminder = (lease: LoopLease): string =>
+  `Before you reply to the user, run \`simple-changes loop finalize --run-id ${lease.runId} --agent-id ${lease.ownerAgentId} --reason "<why>" --json\` (add \`--awaiting-user "<question>"\` when you are about to ask them to decide something), then \`simple-changes loop status --json\` to confirm the controller is released or paused.`;
+
 const effectiveShipmentScopeFrozenAt = (lease: LoopLease): string | null => {
   if (lease.shipmentScopeFrozenAt !== undefined) {
     return lease.shipmentScopeFrozenAt;
@@ -533,6 +697,8 @@ const transferController = (
   const now = new Date().toISOString();
   const previous = controllerLifecycle(lease);
   const frozenAt = effectiveShipmentScopeFrozenAt(lease);
+  const session = currentHarnessSession();
+  const previousBinding = readControllerBinding(lease);
   const mayRebindLegacyDestinations =
     !lease.remoteBindings &&
     (previous.status === "relinquished" ||
@@ -543,7 +709,8 @@ const transferController = (
       EXIT_CODES.unsafe
     );
   }
-  return writeLease({
+  forgetLeaseSession(lease);
+  const transferred = writeLease({
     ...withMutationEvidence(lease, now),
     controller: {
       acquiredAt: now,
@@ -593,6 +760,12 @@ const transferController = (
       return worktree;
     }),
   });
+  writeControllerBinding(transferred, {
+    awaitingUser: null,
+    inheritedAwaitingUser: previousBinding?.awaitingUser?.questions ?? null,
+    session,
+  });
+  return transferred;
 };
 
 const requiredRunId = (value: string): string => {
@@ -638,14 +811,36 @@ const processGroupIsAlive = (processGroupId: number): boolean => {
 /**
  * How long a lease may go without a heartbeat before an unprovable owner makes
  * it stale. Exported so callers and tests reference one definition instead of
- * re-deriving a timeout.
+ * re-deriving a timeout. Agent harnesses run each loop command as a short-lived
+ * process, so the recorded command process is almost never provable; two
+ * hours covers long checks and reviews without leaving an abandoned run
+ * looking live for half a working day.
  */
-export const LEASE_STALE_AFTER_MS = 4 * 60 * 60 * 1000;
+export const LEASE_STALE_AFTER_MS = 2 * 60 * 60 * 1000;
+
+/**
+ * How long a run whose recorded harness session process has exited may stay
+ * live, so a restarted harness can refresh its binding with its next command.
+ */
+export const SESSION_EXIT_GRACE_MS = 10 * 60 * 1000;
+
+// When this process runs inside a harness that exports its own PID but cannot
+// see it, it sits in a separate process namespace where liveness checks of
+// recorded harness PIDs are meaningless.
+const harnessProcessesVisible = (): boolean => {
+  const own = Number.parseInt(process.env.CLAUDE_PID ?? "", 10);
+  return !(Number.isSafeInteger(own) && own > 0) || processIsAlive(own);
+};
 
 export interface LeaseLiveness {
   ageMs: number | null;
   lastUpdatedAt: string;
   ownerProcessProvable: boolean;
+  /**
+   * The harness session that acquired the controller recorded its own process,
+   * and that process has exited on this host: the owner is provably gone.
+   */
+  ownerSessionEnded: boolean;
   state: "live" | "stale" | "unknown";
 }
 
@@ -656,11 +851,13 @@ const ownerProcessEvidence = (recordedAt: string): LoopOwnerProcess => ({
 });
 
 /**
- * Decide whether a lease still has a living owner. A lease is `stale` only
- * when its owner cannot be proven alive (no recorded process, a process
- * recorded on another host, or a recorded PID that is gone) and its last
- * heartbeat is older than the threshold. A lease whose `updatedAt` cannot be
- * parsed is `unknown`, never stale: unreadable evidence is not proof of death.
+ * Decide whether a lease still has a living owner. A lease is `stale` when its
+ * owner cannot be proven alive (no recorded process, a process recorded on
+ * another host, or a recorded PID that is gone) and either its last heartbeat
+ * is older than the threshold, or the harness session process bound to the
+ * controller has exited on this host and the heartbeat is older than the
+ * short grace period. A lease whose `updatedAt` cannot be parsed is `unknown`,
+ * never stale: unreadable evidence is not proof of death.
  */
 export const leaseLiveness = (
   lease: LoopLease,
@@ -676,28 +873,36 @@ export const leaseLiveness = (
   const ageMs = Number.isFinite(updatedAt)
     ? Math.max(0, now - updatedAt)
     : null;
-  if (ownerProcessProvable) {
-    return {
-      ageMs,
-      lastUpdatedAt: lease.updatedAt,
-      ownerProcessProvable,
-      state: "live",
-    };
-  }
-  if (ageMs === null) {
-    return {
-      ageMs,
-      lastUpdatedAt: lease.updatedAt,
-      ownerProcessProvable,
-      state: "unknown",
-    };
-  }
-  return {
+  const session = readControllerBinding(lease)?.session;
+  // A restarted harness refreshes the binding on its next owner command, so a
+  // dead session process counts only after a short quiet period, and only when
+  // this process can see its own harness process: inside a sandbox with its
+  // own process namespace, an invisible PID proves nothing.
+  const ownerSessionEnded = Boolean(
+    !ownerProcessProvable &&
+      ageMs !== null &&
+      ageMs > SESSION_EXIT_GRACE_MS &&
+      session?.hostPid &&
+      session.hostname === hostname() &&
+      harnessProcessesVisible() &&
+      !processIsAlive(session.hostPid)
+  );
+  const evidence = {
     ageMs,
     lastUpdatedAt: lease.updatedAt,
     ownerProcessProvable,
-    state: ageMs > staleAfterMs ? "stale" : "live",
+    ownerSessionEnded,
   };
+  if (ownerProcessProvable) {
+    return { ...evidence, state: "live" };
+  }
+  if (ownerSessionEnded) {
+    return { ...evidence, state: "stale" };
+  }
+  if (ageMs === null) {
+    return { ...evidence, state: "unknown" };
+  }
+  return { ...evidence, state: ageMs > staleAfterMs ? "stale" : "live" };
 };
 
 export interface LoopLockRecovery {
@@ -1751,9 +1956,11 @@ export const startLoop = (
             mode
           );
           if (resumed) {
+            refreshControllerSession(resumed);
             return resumed;
           }
           const now = new Date().toISOString();
+          const session = currentHarnessSession();
           const currentPath = inventory.repository.currentCheckout;
           const concurrentWork =
             inventory.policy.value.concurrentWork === "strict"
@@ -1852,7 +2059,13 @@ export const startLoop = (
             updatedAt: now,
             worktrees,
           };
-          return writeLease(lease);
+          const written = writeLease(lease);
+          writeControllerBinding(written, {
+            awaitingUser: null,
+            inheritedAwaitingUser: null,
+            session,
+          });
+          return written;
         }
       )
   );
@@ -2953,6 +3166,9 @@ export const guardLoopMutation = (
       const lease = requireLease(inventory);
       assertMatchingRun(lease, runId);
       assertAgentMutationAllowed(lease, inventory, agentId);
+      if (agentId === lease.ownerAgentId) {
+        refreshControllerSession(lease);
+      }
       const verification = verificationAgainst(lease, inventory);
       if (!verification.ok) {
         throw new SimpleChangesError(
@@ -3006,6 +3222,9 @@ export const withLoopMutationLease = <T>(
       const lease = requireLease(before);
       assertMatchingRun(lease, runId);
       assertAgentMutationAllowed(lease, before, agentId);
+      if (agentId === lease.ownerAgentId) {
+        refreshControllerSession(lease);
+      }
       const openingVerification = verificationAgainst(lease, before);
       if (!openingVerification.ok) {
         throw new SimpleChangesError(
@@ -6126,6 +6345,8 @@ export interface LoopFinalizationResult {
 }
 
 export interface LoopFinalizationReceipt {
+  /** Questions a paused controller left for the user. */
+  awaitingUser?: string[];
   blockers: string[];
   blocksNextShipment: boolean;
   cleanup: FinalizationCleanupResult;
@@ -6671,7 +6892,8 @@ const finalizationDecision = (
   lease: LoopLease,
   finalInventory: RepositoryInventory,
   cleanup: FinalizationCleanupResult,
-  reason: string
+  reason: string,
+  awaitingUser: string[] | null = null
 ): {
   blockers: string[];
   verification: LoopVerification;
@@ -6714,6 +6936,11 @@ const finalizationDecision = (
       "Reconcile delivered source worktrees and the exact current target before finalization; unaccounted source changes must remain open."
     );
   }
+  if (awaitingUser) {
+    blockers.push(
+      `Paused for the user's answer before this run can continue: ${awaitingUser.join(" | ")}`
+    );
+  }
   const lifecycle: Pick<
     LoopFinalizationReceipt,
     "blocksNextShipment" | "controllerStatus" | "shipmentStatus"
@@ -6739,6 +6966,7 @@ const finalizationDecision = (
   const now = new Date().toISOString();
   const receipt: LoopFinalizationReceipt = {
     ...lifecycle,
+    ...(awaitingUser ? { awaitingUser } : {}),
     blockers,
     cleanup,
     cleanupStatus: cleanupPending ? "pending" : "complete",
@@ -6805,7 +7033,8 @@ const releaseDeliveredSourceClaims = (
 const finalizeUnmutatedRun = (
   lease: LoopLease,
   inventory: RepositoryInventory,
-  reason: string
+  reason: string,
+  awaitingUser: string[] | null
 ): LoopFinalizationResult | null => {
   if (!isUnmutatedScopelessRun(lease)) {
     return null;
@@ -6816,6 +7045,7 @@ const finalizeUnmutatedRun = (
   }
   const cleanup = emptyFinalizationCleanup();
   const receipt: LoopFinalizationReceipt = {
+    ...(awaitingUser ? { awaitingUser } : {}),
     blockers: [],
     blocksNextShipment: false,
     cleanup,
@@ -6840,6 +7070,8 @@ const finalizeUnmutatedRun = (
     `finalization-${sha256Json(receipt)}.json`
   );
   writeImmutableRecoveryEvent(receiptPath, { lease, receipt });
+  forgetLeaseSession(lease);
+  removeControllerBinding(lease);
   return {
     blockers: [],
     cleanup,
@@ -6860,9 +7092,18 @@ const finalizeUnmutatedRun = (
 const relinquishController = (
   lease: LoopLease,
   reason: string,
-  now: string
-): LoopLease =>
-  writeLease({
+  now: string,
+  awaitingUser: string[] | null = null
+): LoopLease => {
+  forgetLeaseSession(lease);
+  // A released controller is no session's to finish; only its questions stay.
+  writeControllerBinding(lease, {
+    awaitingUser: awaitingUser
+      ? { questions: awaitingUser, recordedAt: now }
+      : null,
+    session: null,
+  });
+  return writeLease({
     ...withMutationEvidence(lease, now),
     controller: {
       ...controllerLifecycle(lease),
@@ -6878,12 +7119,14 @@ const relinquishController = (
         : worktree
     ),
   });
+};
 
 const finalizeOwnedLoop = (
   repositoryPath: string,
   openingLease: LoopLease,
   inventory: RepositoryInventory,
-  reason: string
+  reason: string,
+  awaitingUser: string[] | null
 ): LoopFinalizationResult => {
   let lease = reconcileAbsentRetainedWorktrees(openingLease, inventory);
   lease = reconcilePrimarySynchronization(lease, inventory);
@@ -6898,7 +7141,8 @@ const finalizeOwnedLoop = (
     lease,
     finalInventory,
     automaticCleanup.cleanup,
-    reason
+    reason,
+    awaitingUser
   );
   const now = receipt.finalizedAt;
   if (blockers.length === 0 && receipt.deliveryStatus === "verified") {
@@ -6915,6 +7159,8 @@ const finalizeOwnedLoop = (
   writeImmutableRecoveryEvent(receiptPath, { lease, receipt });
   if (blockers.length === 0) {
     rmSync(loopLeasePath(lease.commonGitDirectory), { force: true });
+    forgetLeaseSession(lease);
+    removeControllerBinding(lease);
     return {
       blockers,
       cleanup: automaticCleanup.cleanup,
@@ -6925,7 +7171,7 @@ const finalizeOwnedLoop = (
       verification,
     };
   }
-  const updated = relinquishController(lease, reason, now);
+  const updated = relinquishController(lease, reason, now, awaitingUser);
   return {
     blockers,
     cleanup: automaticCleanup.cleanup,
@@ -6943,7 +7189,8 @@ const finalizeOwnedLoop = (
 // reported beside it, never instead of it.
 const relinquishAfterFinalizationError = (
   lease: LoopLease,
-  error: unknown
+  error: unknown,
+  awaitingUser: string[] | null
 ): never => {
   const detail = error instanceof Error ? error.message : String(error);
   try {
@@ -6952,7 +7199,8 @@ const relinquishAfterFinalizationError = (
       relinquishController(
         current,
         `Finalization failed: ${detail}`.slice(0, 500),
-        new Date().toISOString()
+        new Date().toISOString(),
+        awaitingUser
       );
     }
   } catch (relinquishError) {
@@ -6968,14 +7216,51 @@ const relinquishAfterFinalizationError = (
   throw error;
 };
 
+export interface LoopFinalizationOptions {
+  /**
+   * Decisions the controller is about to ask the user for. The run pauses:
+   * it relinquishes even when nothing else blocks closure, records the
+   * questions, and resumes with `loop start --mode resume` after the answer.
+   */
+  awaitingUser?: readonly string[];
+}
+
+const MAX_AWAITING_USER_QUESTIONS = 10;
+const MAX_AWAITING_USER_QUESTION_LENGTH = 500;
+
+const awaitingUserQuestions = (
+  input: readonly string[] | undefined
+): string[] | null => {
+  if (!input || input.length === 0) {
+    return null;
+  }
+  const questions = input.map((question) =>
+    requiredText(question, "awaiting-user question")
+  );
+  if (
+    questions.length > MAX_AWAITING_USER_QUESTIONS ||
+    questions.some(
+      (question) => question.length > MAX_AWAITING_USER_QUESTION_LENGTH
+    )
+  ) {
+    throw new SimpleChangesError(
+      `Record at most ${MAX_AWAITING_USER_QUESTIONS} awaiting-user questions of at most ${MAX_AWAITING_USER_QUESTION_LENGTH} characters each.`,
+      EXIT_CODES.usage
+    );
+  }
+  return questions;
+};
+
 export const finalizeLoop = (
   repositoryPath: string,
   runId: string,
   ownerAgentIdInput: string,
-  reasonInput: string
+  reasonInput: string,
+  options: LoopFinalizationOptions = {}
 ): LoopFinalizationResult => {
   const ownerAgentId = requiredText(ownerAgentIdInput, "agent ID");
   const reason = requiredText(reasonInput, "finalization reason");
+  const awaitingUser = awaitingUserQuestions(options.awaitingUser);
   const opening = locateRepository(repositoryPath);
   return withStateLock(
     opening.repository.commonGitDirectory,
@@ -6995,14 +7280,25 @@ export const finalizeLoop = (
             );
           }
           assertControllerActive(lease);
-          const untouched = finalizeUnmutatedRun(lease, inventory, reason);
+          const untouched = finalizeUnmutatedRun(
+            lease,
+            inventory,
+            reason,
+            awaitingUser
+          );
           if (untouched) {
             return untouched;
           }
           try {
-            return finalizeOwnedLoop(repositoryPath, lease, inventory, reason);
+            return finalizeOwnedLoop(
+              repositoryPath,
+              lease,
+              inventory,
+              reason,
+              awaitingUser
+            );
           } catch (error) {
-            return relinquishAfterFinalizationError(lease, error);
+            return relinquishAfterFinalizationError(lease, error, awaitingUser);
           }
         }
       )
@@ -7492,6 +7788,15 @@ const staleLeaseRecoveryPath = (
     "stale-lease-recovery.json"
   );
 
+export const staleLeaseArchivePath = (
+  commonGitDirectory: string,
+  runId: string
+): string =>
+  resolve(
+    recoveryHistoryDirectory(commonGitDirectory, runId),
+    "stale-lease-recovery-lease.json"
+  );
+
 /**
  * Clear a lease whose owner cannot be proven alive and whose heartbeat has
  * gone quiet past the staleness threshold, on explicit user authority. This
@@ -7568,7 +7873,20 @@ export const recoverStaleLoopLease = (
       archivePath,
       validateSchema<StaleLeaseRecoveryReceipt>("stale-lease-recovery", record)
     );
+    // The receipt keeps its established shape for older runtimes; the full
+    // cleared lease and its controller binding go beside it, so the run's
+    // scope, outcome, and paused questions survive recovery.
+    writeImmutableRecoveryEvent(
+      staleLeaseArchivePath(commonGitDirectory, runId),
+      {
+        controllerBinding: readControllerBinding(lease),
+        lease,
+        ownerSessionEnded: liveness.ownerSessionEnded,
+      }
+    );
     rmSync(loopLeasePath(commonGitDirectory), { force: true });
+    forgetLeaseSession(lease);
+    removeControllerBinding(lease);
     return archived;
   });
 };
@@ -7718,7 +8036,21 @@ const loopGuidanceFor = (
       nextCommands: ["simple-changes loop start --mode MODE --agent-id <you>"],
     };
   }
-  if (controllerLifecycle(lease).status === "relinquished") {
+  const lifecycle = controllerLifecycle(lease);
+  const awaitingUser =
+    lifecycle.status === "relinquished"
+      ? readControllerBinding(lease)?.awaitingUser
+      : null;
+  if (awaitingUser) {
+    return {
+      headline: `Loop ${lease.runId} is paused waiting on the user: ${awaitingUser.questions.join(" | ")}. Once they answer, resume it; takeover approval is unnecessary, and its existing scope and safety checks still apply.`,
+      nextCommands: [
+        "simple-changes loop start --mode resume --agent-id <you>",
+        `simple-changes loop close-equivalent --run-id ${lease.runId} --agent-id <you> --approved-by <user> --reason <why>`,
+      ],
+    };
+  }
+  if (lifecycle.status === "relinquished") {
     return {
       headline: `Loop ${lease.runId} has released its controller. Resume it to finish its recorded work; takeover approval is unnecessary. Its existing scope and safety checks still apply.`,
       nextCommands: [
@@ -7729,7 +8061,11 @@ const loopGuidanceFor = (
   }
   if (liveness?.state === "stale") {
     return {
-      headline: `Loop ${lease.runId} is stale: its owner ${lease.ownerAgentId} cannot be proven alive and it last recorded activity at ${liveness.lastUpdatedAt}. Clearing the lease with user approval keeps every worktree and receipt.`,
+      headline: `Loop ${lease.runId} is stale: ${
+        liveness.ownerSessionEnded
+          ? `the harness session of its owner ${lease.ownerAgentId} has exited`
+          : `its owner ${lease.ownerAgentId} cannot be proven alive`
+      } and it last recorded activity at ${liveness.lastUpdatedAt}. Clearing the lease with user approval keeps every worktree and receipt.`,
       nextCommands: [
         staleLeaseRecoveryCommand(lease),
         `simple-changes loop takeover --run-id ${lease.runId} --agent-id <you> --manifest-digest ${loopManifestDigest(lease)} --approved-by <user> --reason <why>`,

@@ -632,6 +632,173 @@ describe("shipment holds", () => {
     ).toBe("");
   });
 
+  test("reopen a withdrawal when a racing release beats publish's clean-up", () => {
+    const fixture = repository();
+    const origin = withOrigin(fixture);
+    const hold = addShipHold(fixture.root, {
+      adapter: "claude-code",
+      agentId: "owner",
+      reason: "Race.",
+      scope: "ship",
+      severity: "halt",
+    });
+    const raced = join(fixture.base, "raced");
+    const blockDeletes = join(fixture.base, "block-deletes");
+    const zero = "0".repeat(40);
+    // When the hold ref arrives, release the hold from inside the push (its
+    // delete finds nothing yet), then refuse further deletes so publish's own
+    // clean-up of the ref it just pushed fails.
+    writeFileSync(
+      join(origin, "hooks", "pre-receive"),
+      `#!/bin/sh
+while read old new ref; do
+  if [ "$new" = "${zero}" ] && [ -f "${blockDeletes}" ]; then
+    echo "deletes blocked" >&2
+    exit 1
+  fi
+  case "$ref" in
+    ${HOLD_REF_PREFIX}*)
+      if [ "$new" != "${zero}" ] && [ ! -f "${raced}" ]; then
+        touch "${raced}"
+        env -u GIT_DIR -u GIT_QUARANTINE_PATH -u GIT_OBJECT_DIRECTORY -u GIT_ALTERNATE_OBJECT_DIRECTORIES SIMPLE_CHANGES_SKILL_ROOTS= "${process.execPath}" "${cliPath}" hold release --agent-id owner --hold-id "\${ref##*/}" --repo "${fixture.root}" >>"${fixture.base}/hook.log" 2>&1
+        touch "${blockDeletes}"
+      fi
+      ;;
+  esac
+done
+exit 0
+`,
+      { mode: 0o755 }
+    );
+    // A developer's global core.hooksPath must not disable this hook.
+    git(origin, ["config", "core.hooksPath", join(origin, "hooks")]);
+
+    expect(() =>
+      publishShipHold(fixture.root, { agentId: "owner", holdId: hold.holdId })
+    ).toThrow("Rerun hold release to retry");
+    expect(
+      git(fixture.root, ["ls-remote", "origin", `${HOLD_REF_PREFIX}*`])
+    ).toContain(hold.holdId);
+    const pending = checkShipHolds(fixture.root, { localOnly: true });
+    expect(pending.pendingWithdrawals.map((item) => item.holdId)).toEqual([
+      hold.holdId,
+    ]);
+
+    rmSync(blockDeletes);
+    const retried = releaseShipHold(fixture.root, {
+      agentId: "owner",
+      holdId: hold.holdId,
+    });
+    expect(retried.withdrawal).toMatchObject({ attempted: true, ok: true });
+    expect(
+      git(fixture.root, ["ls-remote", "origin", `${HOLD_REF_PREFIX}*`])
+    ).toBe("");
+  });
+
+  test("count a lost delete race as withdrawn but not a broken ref", () => {
+    const fixture = repository();
+    const origin = withOrigin(fixture);
+    const publish = (reason: string) => {
+      const hold = addShipHold(fixture.root, {
+        adapter: "claude-code",
+        agentId: "owner",
+        reason,
+        scope: "ship",
+        severity: "delay",
+      });
+      publishShipHold(fixture.root, { agentId: "owner", holdId: hold.holdId });
+      return hold;
+    };
+    const lost = publish("Lost race.");
+    // Delete the ref on the server before the incoming delete applies, so Git
+    // reports the bare "unable to resolve reference" a lost race produces.
+    writeFileSync(
+      join(origin, "hooks", "pre-receive"),
+      `#!/bin/sh
+while read old new ref; do
+  if [ "$new" = "${"0".repeat(40)}" ]; then
+    git update-ref -d "$ref"
+  fi
+done
+exit 0
+`,
+      { mode: 0o755 }
+    );
+    git(origin, ["config", "core.hooksPath", join(origin, "hooks")]);
+    const raced = releaseShipHold(fixture.root, {
+      agentId: "owner",
+      holdId: lost.holdId,
+    });
+    expect(raced.withdrawal).toMatchObject({ attempted: true, ok: true });
+    expect(
+      git(fixture.root, ["ls-remote", "origin", `${HOLD_REF_PREFIX}*`])
+    ).toBe("");
+
+    rmSync(join(origin, "hooks", "pre-receive"));
+    const broken = publish("Broken ref.");
+    // A corrupt ref file fails the delete with a suffixed message; that must
+    // stay a failure instead of being recorded as withdrawn.
+    writeFileSync(
+      join(origin, `${HOLD_REF_PREFIX}${broken.holdId}`),
+      "not-a-sha\n"
+    );
+    const failed = releaseShipHold(fixture.root, {
+      agentId: "owner",
+      holdId: broken.holdId,
+    });
+    expect(failed.withdrawal.ok).toBe(false);
+    expect(failed.hold.publication?.withdrawnAt).toBeNull();
+  });
+
+  test("republish a hold whose ref was withdrawn elsewhere", () => {
+    const fixture = repository();
+    const origin = withOrigin(fixture);
+    const hold = addShipHold(fixture.root, {
+      adapter: "claude-code",
+      agentId: "owner",
+      reason: "Still frozen.",
+      scope: "ship",
+      severity: "delay",
+    });
+    publishShipHold(fixture.root, { agentId: "owner", holdId: hold.holdId });
+    git(fixture.root, ["push", "origin", `:${HOLD_REF_PREFIX}${hold.holdId}`]);
+    publishShipHold(fixture.root, { agentId: "owner", holdId: hold.holdId });
+    expect(git(origin, ["for-each-ref", `${HOLD_REF_PREFIX}`])).toContain(
+      hold.holdId
+    );
+  });
+
+  test("tell the owner's clone when its published hold was withdrawn elsewhere", () => {
+    const fixture = repository();
+    const origin = withOrigin(fixture);
+    const hold = addShipHold(fixture.root, {
+      adapter: "claude-code",
+      agentId: "owner",
+      reason: "Freeze.",
+      scope: "ship",
+      severity: "delay",
+    });
+    publishShipHold(fixture.root, { agentId: "owner", holdId: hold.holdId });
+    const other = join(fixture.base, "approver-clone");
+    git(fixture.base, ["clone", origin, other]);
+    releaseShipHold(other, {
+      agentId: "approver",
+      approvedBy: "jaay",
+      holdId: hold.holdId,
+      reason: "Freeze lifted.",
+    });
+
+    const report = checkShipHolds(fixture.root, { action: "merge" });
+    expect(report.clear).toBe(false);
+    expect(report.unpublishedElsewhere.map((item) => item.holdId)).toEqual([
+      hold.holdId,
+    ]);
+    expect(report.nextSteps.join("\n")).toContain("withdrawn elsewhere");
+    expect(
+      checkShipHolds(fixture.root, { localOnly: true }).unpublishedElsewhere
+    ).toEqual([]);
+  });
+
   test("treat a published payload from a newer format as unreadable", () => {
     const fixture = repository();
     withOrigin(fixture);

@@ -74,6 +74,15 @@ effective only with the private digest-bound local trust receipt described in
 [setup and policy](references/setup-and-policy.md); a repository policy symlink
 is unsafe.
 
+When initialization reports `turnEndGuard` as not installed or outdated, offer
+once to install it with its `installCommand` when it has one: a harness Stop hook that blocks
+ending a turn while this session still controls an active run. It is persistent
+harness configuration, so ask first; declining changes nothing. When it reports
+`runtimeFreshness` as `behind-target`, you are running an older copy of this
+runtime than the target branch carries; run the target's copy, or update the
+checkout, before integrating or shipping. See
+[cleanup and completion](references/cleanup-and-completion.md#turn-end-guard).
+
 ## Communicate in plain language
 
 Default every user-facing message to plain language, even when the underlying
@@ -209,7 +218,11 @@ The lock records process-group evidence. If recovery is proven safe, use `loop
 recover --agent-id "$AGENT_ID"`; never delete state by hand. Before every
 terminal assistant response after a loop has started, including a blocked or
 failed handoff, run `loop finalize --json`, then `loop status --json` and verify
-that your controller is released or relinquished. A nonzero exit alone does not
+that your controller is released or relinquished. When the turn ends on a
+question the run needs answered, such as a migration, deployment, or cleanup
+approval, add `--awaiting-user "<question>"` once per question: the run pauses,
+records the questions, exits zero, and resumes with `loop start --mode resume`
+after the answer. A nonzero exit alone does not
 prove release; if state cannot be written, report that exact blocker. Finalization
 performs the proven-safe cleanup described in
 [cleanup and completion](references/cleanup-and-completion.md) and releases

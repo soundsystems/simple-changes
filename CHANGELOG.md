@@ -2,6 +2,58 @@
 
 ## Unreleased
 
+## 0.21.1 - 2026-10-01
+
+- A controller that stops to ask the user something no longer leaves a
+  live-looking run behind. When a shipment needs a decision, such as a
+  migration, deployment, or cleanup approval, the controller runs
+  `loop finalize --awaiting-user "<question>"` (once per question, up to ten):
+  the run pauses and releases its controller even when nothing else blocks
+  closure, the questions are recorded beside the lease and in the finalization
+  receipt, and the command exits successfully. `loop status` shows what the run
+  is waiting on, and `loop start --mode resume` hands the questions to the next
+  controller as `inheritedAwaitingUser` so it confirms the answer first.
+- An optional turn-end guard keeps a Claude Code or Codex session from ending
+  its turn while it still controls an active run. `harness stop-hook` reports
+  whether the user-level Stop hook is installed for the current harness, and
+  `--write`, only after the user agrees, merges it into `~/.claude/settings.json`
+  or `~/.codex/hooks.json` without touching other settings. The hook blocks the
+  turn once with the exact finalize command, then only warns, so it can never
+  trap a session; it lets the turn end when its script is missing or too old,
+  never points into a linked worktree, and leaves another copy's hook alone
+  while that copy is at least as new. `initialize` reports the guard as
+  `turnEndGuard`, and `loop guard`, `loop exec`, and `loop verify` print the
+  finalize step for the run (`turnEnd` in JSON).
+- Abandoned runs go stale sooner. A run whose recorded harness session process
+  has exited is stale after ten quiet minutes, and a run whose owner cannot be
+  proven alive is stale after two quiet hours instead of four. `loop status`
+  says when the owner's session has exited, and `loop recover --stale-lease`
+  now archives the complete lease as `stale-lease-recovery-lease.json` beside
+  its receipt, so the run's scope, outcome, and paused questions survive.
+- `initialize`, `loop start`, and `loop status` warn with
+  `runtimeFreshness: behind-target` when the running copy of Simple Changes is
+  older than the copy on the target branch, so a stale checkout's guidance does
+  not drive a shipment.
+- Shipment holds withdraw and republish cleanly across clones. `hold release`
+  counts a published ref as already withdrawn only when Git reports that exact
+  ref absent, so a broken ref or a permission failure is still reported as a
+  failure. When a release races `hold publish` and the clean-up delete fails,
+  the withdrawal is reopened so the next `hold release` retries instead of
+  trusting a withdrawal the push undid. `hold status`, `hold check`, and
+  `loop verify --for` now tell an owner when a hold that still blocks here was
+  withdrawn from another clone (`unpublishedElsewhere`), with the release
+  command, and the owner can publish that hold again.
+- `publish-skill` is now a maintainer-internal workflow: its frontmatter marks
+  it `internal`, and the README no longer tells repository maintainers or skill
+  repositories to install it project-locally. The `simple-changes` and
+  `update-local-forks` packages the README installs are unchanged, and an
+  existing project-local copy keeps working.
+- Existing installations keep working. The session binding and paused
+  questions live in a new file beside the lease, so 0.21.0 clients sharing a
+  repository still read every lease and receipt. Simple Changes guidance moves
+  to version 24 to explain the new abilities.
+<!-- simple-changelogs-signature agent="Fable 5.1" at="2026-10-01T20:10:14-05:00" -->
+
 ## 0.21.0 - 2026-10-01
 
 - Hand off finished work without sending a message. An author whose checkout

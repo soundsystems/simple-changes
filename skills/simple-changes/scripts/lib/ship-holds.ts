@@ -43,6 +43,7 @@ const HOLD_PAYLOAD_PATH = "hold.json";
 const ADAPTER_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/u;
 const HOLD_ID_PATTERN = /^hold-[a-z0-9-]+$/u;
 const MISSING_REMOTE_REF = /remote ref does not exist/iu;
+const UNRESOLVED_REFERENCE = /unable to resolve reference '([^']+)'(:?)/giu;
 const WHITESPACE = /\s+/u;
 const SENTENCE_END = /[.!?]$/u;
 // Pushes may run the user's pre-push hooks, so they get more time than reads.
@@ -565,6 +566,8 @@ export interface ShipHoldReport {
   remote: RemoteHoldRead;
   runId: string | null;
   targetRef: string;
+  /** Active here and confirmed published, but its ref is gone from the remote. */
+  unpublishedElsewhere: ShipHold[];
 }
 
 export interface ShipHoldReadOptions {
@@ -736,6 +739,36 @@ const combinedHolds = (
   return [...local, ...remote.filter((hold) => !known.has(hold.holdId))];
 };
 
+/**
+ * Local holds still active here whose confirmed ref no longer appears on a
+ * remote that was read successfully: someone withdrew them elsewhere, usually
+ * through an approved release. The hold still blocks here (fail closed), but
+ * its owner should learn that it was lifted for everyone else.
+ */
+const unpublishedHolds = (
+  evaluations: readonly ShipHoldEvaluation[],
+  listing: RemoteHoldListing
+): ShipHold[] => {
+  if (listing.read.status !== "read") {
+    return [];
+  }
+  const readRemotes = new Set(
+    (listing.read.name ?? "").split(", ").filter(Boolean)
+  );
+  const listed = new Set(listing.holds.map((hold) => hold.holdId));
+  return evaluations
+    .filter((item) => item.status !== "released" && item.status !== "satisfied")
+    .map((item) => item.hold)
+    .filter(
+      (hold) =>
+        hold.source === "local" &&
+        hold.publication?.publishedAt &&
+        hold.publication.withdrawnAt === null &&
+        readRemotes.has(hold.publication.remote) &&
+        !listed.has(hold.holdId)
+    );
+};
+
 const awaitingWithdrawal = (evaluation: ShipHoldEvaluation): boolean => {
   const { hold } = evaluation;
   return (
@@ -794,6 +827,7 @@ export const evaluateShipHolds = (
   const pendingWithdrawals = evaluations
     .filter(awaitingWithdrawal)
     .map((item) => item.hold);
+  const unpublishedElsewhere = unpublishedHolds(evaluations, listing);
   return {
     action,
     active,
@@ -810,11 +844,16 @@ export const evaluateShipHolds = (
         (hold) =>
           `${hold.holdId} is released here but still published as ${hold.publication?.ref} on ${hold.publication?.remote}; withdraw it with: simple-changes hold release --agent-id ${hold.owner.agentId} --hold-id ${hold.holdId}`
       ),
+      ...unpublishedElsewhere.map(
+        (hold) =>
+          `${hold.holdId} is still active here, but ${hold.publication?.ref} is gone from ${hold.publication?.remote}, so it was likely withdrawn elsewhere with approval. It keeps blocking here until its owner releases it: simple-changes hold release --agent-id ${hold.owner.agentId} --hold-id ${hold.holdId}`
+      ),
     ],
     pendingWithdrawals,
     remote: listing.read,
     runId,
     targetRef: inventory.targetRef,
+    unpublishedElsewhere,
   };
 };
 
@@ -1020,6 +1059,18 @@ const releaseRecord = (
 const pushAuthorizationNever = (inventory: RepositoryInventory): boolean =>
   inventory.policy.value.gitPushAuthorization === "never";
 
+/**
+ * True only when Git reports this exact ref as already absent: either the
+ * client-side "remote ref does not exist", or a lost delete race's bare
+ * "unable to resolve reference '<ref>'". A suffixed form such as
+ * "...: reference broken" or "...: Permission denied" is a real failure.
+ */
+const refAlreadyGone = (detail: string, ref: string): boolean =>
+  (MISSING_REMOTE_REF.test(detail) && detail.includes(ref)) ||
+  [...detail.matchAll(UNRESOLVED_REFERENCE)].some(
+    ([, name, suffix]) => name === ref && suffix === ""
+  );
+
 const deleteRemoteRef = (
   root: string,
   remote: string,
@@ -1031,7 +1082,7 @@ const deleteRemoteRef = (
     PUSH_TIMEOUT_MS
   );
   const detail = pushed.stderr || pushed.stdout;
-  if (pushed.exitCode === 0 || MISSING_REMOTE_REF.test(detail)) {
+  if (pushed.exitCode === 0 || refAlreadyGone(detail, ref)) {
     return { attempted: true, error: null, ok: true };
   }
   return {
@@ -1076,6 +1127,29 @@ const markWithdrawn = (commonGitDirectory: string, holdId: string): ShipHold =>
     };
     return { document: replaceHold(document, withdrawn), result: withdrawn };
   });
+
+/**
+ * Mark a publication as still awaiting withdrawal, so the next `hold release`
+ * retries the delete instead of trusting an earlier withdrawal that a racing
+ * push has since undone.
+ */
+const markWithdrawalPending = (
+  commonGitDirectory: string,
+  holdId: string
+): void => {
+  updateShipHolds(commonGitDirectory, "hold withdrawal pending", (document) => {
+    const current = document.holds.find((hold) => hold.holdId === holdId);
+    if (!current?.publication) {
+      return { document, result: null };
+    }
+    const pending: ShipHold = {
+      ...current,
+      publication: { ...current.publication, withdrawnAt: null },
+      updatedAt: new Date().toISOString(),
+    };
+    return { document: replaceHold(document, pending), result: null };
+  });
+};
 
 const findHold = (
   inventory: RepositoryInventory,
@@ -1277,8 +1351,21 @@ export const publishShipHold = (
     );
   }
   const hold = publishableHold(commonGitDirectory, holdId, agentId);
-  if (hold.publication?.publishedAt && !hold.publication.withdrawnAt) {
-    return hold;
+  const { publication } = hold;
+  if (publication?.publishedAt && !publication.withdrawnAt) {
+    // Trust the record only while the remote still lists the ref; after a
+    // withdrawal elsewhere the owner must be able to publish again.
+    const listed = listRemoteHoldRefs(
+      primaryCheckout,
+      publication.remote,
+      publication.ref
+    );
+    if (
+      typeof listed === "string" ||
+      listed.some((item) => item.ref === publication.ref)
+    ) {
+      return hold;
+    }
   }
   const remote = configuredRemote(inventory, options.remote);
   if (!remote) {
@@ -1322,11 +1409,22 @@ export const publishShipHold = (
   const withdrawal = deleteRemoteRef(primaryCheckout, remote, ref);
   if (withdrawal.ok) {
     markWithdrawn(commonGitDirectory, holdId);
+    throw new SimpleChangesError(
+      `Hold ${holdId} was released while it was being published; the pushed ref was withdrawn.`,
+      EXIT_CODES.unsafe
+    );
+  }
+  // A racing release may already have recorded a withdrawal that this push
+  // undid; reopen it so `hold release` retries the delete. If even that write
+  // fails, name the manual delete instead of hiding the stranded ref.
+  let retry = "Rerun hold release to retry.";
+  try {
+    markWithdrawalPending(commonGitDirectory, holdId);
+  } catch (error) {
+    retry = `Recording the retry also failed (${(error as Error).message}); remove the ref yourself: git push ${remote} :${ref}`;
   }
   throw new SimpleChangesError(
-    withdrawal.ok
-      ? `Hold ${holdId} was released while it was being published; the pushed ref was withdrawn.`
-      : `Hold ${holdId} was released while it was being published and ${ref} could not be withdrawn: ${withdrawal.error} Rerun hold release to retry.`,
+    `Hold ${holdId} was released while it was being published and ${ref} could not be withdrawn: ${withdrawal.error} ${retry}`,
     EXIT_CODES.unsafe
   );
 };

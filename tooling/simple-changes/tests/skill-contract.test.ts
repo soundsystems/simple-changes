@@ -908,6 +908,44 @@ describe("Simple Changes skill contract", () => {
     );
   });
 
+  test("Controllers finalize before replying, and a turn-end guard backs the rule", async () => {
+    const [skill, cleanup, spec] = await Promise.all([
+      readFile(skillPath, "utf8"),
+      readFile(cleanupCompletionPath, "utf8"),
+      readFile(specPath, "utf8"),
+    ]);
+    const normalizedSkill = skill.replace(/\s+/g, " ");
+    const normalizedCleanup = cleanup.replace(/\s+/g, " ");
+    const normalizedSpec = spec.replace(/\s+/g, " ");
+
+    expect(normalizedSkill).toContain(
+      'add `--awaiting-user "<question>"` once per question: the run pauses, records the questions, exits zero, and resumes with `loop start --mode resume` after the answer'
+    );
+    expect(normalizedSkill).toContain(
+      "When initialization reports `turnEndGuard` as not installed or outdated, offer once to install it with its `installCommand`"
+    );
+    expect(normalizedSkill).toContain(
+      "It is persistent harness configuration, so ask first; declining changes nothing."
+    );
+    expect(normalizedSkill).toContain("`runtimeFreshness` as `behind-target`");
+    expect(cleanup).toContain("## Turn-end guard");
+    expect(normalizedCleanup).toContain(
+      "if the agent tries to stop again, it only warns, so it never traps a session"
+    );
+    expect(normalizedCleanup).toContain(
+      "Do not use it for questions about later work."
+    );
+    expect(normalizedSpec).toContain(
+      "`loop finalize --awaiting-user` pauses a run for a user decision"
+    );
+    expect(normalizedSpec).toContain(
+      "A running session process alone never keeps an idle run live."
+    );
+    expect(normalizedSpec).toContain(
+      "Initialization reports whether the hook is installed and never installs it."
+    );
+  });
+
   test("SPEC.md stays bound to the skill it specifies", async () => {
     const [skill, spec] = await Promise.all([
       readFile(skillPath, "utf8"),

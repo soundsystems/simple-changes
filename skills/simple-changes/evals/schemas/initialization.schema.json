@@ -468,6 +468,54 @@
     "shippingMode": {
       "enum": ["standard", "expedited", "break-glass"]
     },
-    "reason": { "type": "string", "minLength": 1 }
+    "reason": { "type": "string", "minLength": 1 },
+    "runtimeFreshness": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "message",
+        "path",
+        "runningVersion",
+        "status",
+        "targetRef",
+        "targetVersion"
+      ],
+      "properties": {
+        "message": { "anyOf": [{ "type": "string" }, { "type": "null" }] },
+        "path": { "anyOf": [{ "type": "string" }, { "type": "null" }] },
+        "runningVersion": { "type": "string", "minLength": 1 },
+        "status": { "enum": ["current", "behind-target", "not-applicable"] },
+        "targetRef": { "anyOf": [{ "type": "string" }, { "type": "null" }] },
+        "targetVersion": { "anyOf": [{ "type": "string" }, { "type": "null" }] }
+      }
+    },
+    "turnEndGuard": {
+      "anyOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "current",
+            "harness",
+            "installCommand",
+            "installed",
+            "path"
+          ],
+          "properties": {
+            "current": { "type": "boolean" },
+            "harness": { "enum": ["claude-code", "codex"] },
+            "installCommand": {
+              "anyOf": [
+                { "type": "string", "minLength": 1 },
+                { "type": "null" }
+              ]
+            },
+            "installed": { "type": "boolean" },
+            "path": { "type": "string", "minLength": 1 }
+          }
+        }
+      ]
+    }
   }
 }

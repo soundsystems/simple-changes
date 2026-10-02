@@ -133,12 +133,21 @@ and replanned instead.
 Do not infer shipment exclusion from a `preserved` lease role: it means only
 that the checkout cannot be changed or removed by the controller.
 If independent review requires source changes, generate a new non-mutating
-preview from the exact current inventory and record it with
-`loop refresh-scope --receipt <change-plan.json>` before another mutation. This
-controller-only action is rejected after an outcome exists and preserves the
-superseded scope digest and timestamps in the lease history. `loop exec` also
-rejects `git switch` and `git checkout` before Git can move a registered
-checkout; prepare the correct branch-bound worktree before the loop instead.
+preview from the exact current inventory and record it with `loop refresh-scope
+--receipt <change-plan.json>` before another mutation. This controller-only
+action is rejected after an outcome exists and preserves the superseded scope
+digest and timestamps in the lease history. A refresh keeps the scoped units and
+cannot add a path to a scoped source worktree, but it accepts new paths that the
+refreshed plan lists in `preserved` for any other worktree, such as another
+agent's actively changing checkout. Outside scoped source worktrees, every path
+preserved earlier stays preserved while it is still changed, whatever the
+refreshed preview proposes for it. A refresh does not excuse the change itself:
+`loop verify` still reports a registered worktree as changed, so record a
+user-approved exact-state `loop allow` each time it changes; a worktree that
+appeared after loop start is an `unregistered-worktree` violation instead,
+handled as described below. `loop exec` also rejects `git switch` and `git
+checkout` before Git can move a registered checkout; prepare the correct
+branch-bound worktree before the loop instead.
 
 Use these boundaries after an author is registered:
 

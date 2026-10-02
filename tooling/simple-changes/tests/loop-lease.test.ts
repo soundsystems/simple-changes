@@ -4141,6 +4141,263 @@ describe("active integration-loop lease", () => {
     expect(result.verification.ok).toBe(true);
   });
 
+  test("refreshes scope while another agent's preserved worktree keeps changing", () => {
+    const fixture = repository();
+    const codexWorktree = join(fixture.base, "codex");
+    git(fixture.root, ["worktree", "add", "--detach", codexWorktree]);
+    writeFixture(fixture.root, "contact.ts", "export const email = 'v1';\n");
+    writeFixture(codexWorktree, "draft.ts", "export const draft = 1;\n");
+    const opening = captureInventory(fixture.root);
+    const lease = startLoop(fixture.root, "controller", "ship");
+    const preserveCodex = (plan: ChangePlan): ChangePlan => ({
+      ...plan,
+      preserved: [
+        ...plan.preserved,
+        {
+          classification: "actively-changing",
+          paths: plan.units
+            .filter((unit) => unit.sourceWorktree === codexWorktree)
+            .flatMap((unit) => unit.paths),
+          reason: "Another agent's in-progress worktree; never shipped here.",
+          worktreePath: codexWorktree,
+        },
+      ],
+      units: plan.units.filter((unit) => unit.sourceWorktree !== codexWorktree),
+    });
+    const previewNow = () => {
+      const current = captureInventory(fixture.root);
+      return buildPreviewPlan(
+        current,
+        current,
+        compareSnapshots(current, current),
+        "Ship reviewed local changes"
+      );
+    };
+    const scoped = preserveCodex(
+      buildPreviewPlan(
+        opening,
+        captureInventory(fixture.root),
+        compareSnapshots(opening, captureInventory(fixture.root)),
+        "Ship my contact change"
+      )
+    );
+    recordShipmentScope(fixture.root, lease.runId, "controller", scoped);
+
+    // Review changes the shipped file while the other agent adds a file.
+    writeFixture(fixture.root, "contact.ts", "export const email = 'v2';\n");
+    writeFixture(codexWorktree, "later.ts", "export const later = 2;\n");
+    expect(() =>
+      recordShipmentScope(
+        fixture.root,
+        lease.runId,
+        "controller",
+        previewNow(),
+        true
+      )
+    ).toThrow("cannot add a new path: later.ts");
+
+    const refreshed = recordShipmentScope(
+      fixture.root,
+      lease.runId,
+      "controller",
+      preserveCodex(previewNow()),
+      true
+    );
+    expect(refreshed.summary).toContain("2 path(s) preserved");
+    const activePlan = readLoopLease(fixture.root)?.shipmentScope?.plan;
+    expect(activePlan?.units).toEqual(scoped.units);
+    expect(activePlan?.preserved).toEqual([
+      expect.objectContaining({
+        paths: ["draft.ts", "later.ts"],
+        worktreePath: codexWorktree,
+      }),
+    ]);
+
+    // Excluding, rather than preserving, another agent's new path is still
+    // expanded scope.
+    writeFixture(codexWorktree, "excluded.ts", "export const excluded = 3;\n");
+    const excludedPlan = preserveCodex(previewNow());
+    expect(() =>
+      recordShipmentScope(
+        fixture.root,
+        lease.runId,
+        "controller",
+        {
+          ...excludedPlan,
+          exclusions: [
+            ...excludedPlan.exclusions,
+            {
+              path: "excluded.ts",
+              reason: "Not ours.",
+              worktreePath: codexWorktree,
+            },
+          ],
+          preserved: excludedPlan.preserved.map((item) => ({
+            ...item,
+            paths: item.paths.filter((path) => path !== "excluded.ts"),
+          })),
+        },
+        true
+      )
+    ).toThrow("cannot add a new path: excluded.ts");
+    rmSync(join(codexWorktree, "excluded.ts"));
+
+    // Preserving a new path inside the shipped source worktree is still
+    // expanded scope.
+    writeFixture(fixture.root, "extra.ts", "export const extra = true;\n");
+    const sourcePreserved = preserveCodex(previewNow());
+    const extraUnit = sourcePreserved.units.find((unit) =>
+      unit.paths.includes("extra.ts")
+    );
+    expect(extraUnit).toBeDefined();
+    expect(() =>
+      recordShipmentScope(
+        fixture.root,
+        lease.runId,
+        "controller",
+        {
+          ...sourcePreserved,
+          preserved: [
+            ...sourcePreserved.preserved,
+            {
+              classification: "actively-changing",
+              paths: ["extra.ts"],
+              reason: "Not part of this shipment.",
+              worktreePath: fixture.root,
+            },
+          ],
+          units: sourcePreserved.units.map((unit) => ({
+            ...unit,
+            paths: unit.paths.filter((path) => path !== "extra.ts"),
+          })),
+        },
+        true
+      )
+    ).toThrow("cannot add a new path: extra.ts");
+  });
+
+  test("a refresh from the raw preview keeps the primary's preserved work preserved", () => {
+    const fixture = repository();
+    const featureWorktree = join(fixture.base, "feature");
+    git(fixture.root, ["worktree", "add", "--detach", featureWorktree]);
+    writeFixture(featureWorktree, "feature.ts", "export const feature = 1;\n");
+    writeFixture(fixture.root, "wip.ts", "export const wip = true;\n");
+    const opening = captureInventory(fixture.root);
+    const lease = startLoop(fixture.root, "controller", "ship");
+    const raw = buildPreviewPlan(
+      opening,
+      captureInventory(fixture.root),
+      compareSnapshots(opening, captureInventory(fixture.root)),
+      "Ship the feature"
+    );
+    recordShipmentScope(fixture.root, lease.runId, "controller", {
+      ...raw,
+      preserved: [
+        {
+          classification: "actively-changing",
+          paths: ["wip.ts"],
+          reason: "The user's uncommitted work in the primary checkout.",
+          worktreePath: fixture.root,
+        },
+      ],
+      units: raw.units.filter((unit) => unit.sourceWorktree !== fixture.root),
+    });
+
+    writeFixture(featureWorktree, "feature.ts", "export const feature = 2;\n");
+    const reviewed = captureInventory(fixture.root);
+    const refreshed = recordShipmentScope(
+      fixture.root,
+      lease.runId,
+      "controller",
+      buildPreviewPlan(
+        reviewed,
+        reviewed,
+        compareSnapshots(reviewed, reviewed),
+        "Ship the reviewed feature"
+      ),
+      true
+    );
+    expect(refreshed.summary).toContain("1 path(s) preserved");
+    expect(readLoopLease(fixture.root)?.shipmentScope?.plan.preserved).toEqual([
+      expect.objectContaining({
+        paths: ["wip.ts"],
+        worktreePath: fixture.root,
+      }),
+    ]);
+  });
+
+  test("a pathless exclusion keeps excluding only the path it covered", () => {
+    const fixture = repository();
+    const codexWorktree = join(fixture.base, "codex");
+    git(fixture.root, ["worktree", "add", "--detach", codexWorktree]);
+    writeFixture(fixture.root, "contact.ts", "export const email = 'v1';\n");
+    writeFixture(fixture.root, "notes.md", "local notes\n");
+    const opening = captureInventory(fixture.root);
+    const lease = startLoop(fixture.root, "controller", "ship");
+    const raw = buildPreviewPlan(
+      opening,
+      captureInventory(fixture.root),
+      compareSnapshots(opening, captureInventory(fixture.root)),
+      "Ship the contact change"
+    );
+    recordShipmentScope(fixture.root, lease.runId, "controller", {
+      ...raw,
+      exclusions: [{ path: "notes.md", reason: "Local notes stay unshipped." }],
+      units: raw.units.map((unit) => ({
+        ...unit,
+        paths: unit.paths.filter((path) => path !== "notes.md"),
+      })),
+    });
+
+    // Another agent's worktree later gains a file with the same name.
+    writeFixture(fixture.root, "contact.ts", "export const email = 'v2';\n");
+    writeFixture(codexWorktree, "notes.md", "another agent's notes\n");
+    const reviewed = captureInventory(fixture.root);
+    const refreshedRaw = buildPreviewPlan(
+      reviewed,
+      reviewed,
+      compareSnapshots(reviewed, reviewed),
+      "Ship the reviewed contact change"
+    );
+    const refreshed = recordShipmentScope(
+      fixture.root,
+      lease.runId,
+      "controller",
+      {
+        ...refreshedRaw,
+        exclusions: [
+          {
+            path: "notes.md",
+            reason: "Local notes stay unshipped.",
+            worktreePath: fixture.root,
+          },
+        ],
+        preserved: [
+          {
+            classification: "actively-changing",
+            paths: ["notes.md"],
+            reason: "Another agent's in-progress worktree.",
+            worktreePath: codexWorktree,
+          },
+        ],
+        units: refreshedRaw.units
+          .filter((unit) => unit.sourceWorktree === fixture.root)
+          .map((unit) => ({
+            ...unit,
+            paths: unit.paths.filter((path) => path !== "notes.md"),
+          })),
+      },
+      true
+    );
+    expect(refreshed.summary).toContain("1 path(s) preserved");
+    expect(readLoopLease(fixture.root)?.shipmentScope?.plan.preserved).toEqual([
+      expect.objectContaining({
+        paths: ["notes.md"],
+        worktreePath: codexWorktree,
+      }),
+    ]);
+  });
+
   test("blocks Ship mutations until every opening worktree change is accounted for", () => {
     const fixture = repository();
     const analyticsWorktree = join(fixture.base, "analytics");

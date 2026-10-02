@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.22.3 - 2026-10-02
 
 - Every Simple Changes reference longer than a hundred lines, and `SKILL.md`
   itself, now opens with a short contents list naming its sections, so an
@@ -18,6 +18,32 @@
   fix-and-re-run loops rather than one-shot checks. Other modes keep the same
   order without the written checklist, and no setting or default changed.
 <!-- simple-changelogs-signature agent="claude-fable-5-1" at="2026-10-02T13:39:48-05:00" -->
+- A GitLab Ship, Integrate, or Reconcile run can now close when a branch it
+  listed at the start was deleted, by anyone or outside the run, while the
+  target did not contain its head. Before, a closed-unmerged or
+  no-merge-request branch in that state had no valid entry in the remote-branch
+  reconciliation receipt, so the run could never end; the real case was a hash
+  fork branch whose closed merge request's work had already shipped the same
+  day as a differently packaged commit, so its patches did not match. Now, once
+  you confirm the branch was superseded, the agent records it as deleted and
+  proven obsolete with a `supersession` entry naming the deleted head, the
+  target commits that replaced its work, you as the approver, and the reason.
+  The agent must show you the branch, its deleted head, and the replacement
+  commits and never make that judgment itself, and the entry is only for a
+  branch that is already gone or that you explicitly asked to delete.
+  `loop reconcile-remote-branches` checks with Git that the clone is not
+  shallow, that the deleted head is still present locally (GitLab keeps merge
+  request heads at `refs/merge-requests/<iid>/head`), shares history with the
+  target, and is not already in it, and that every replacement is in the
+  target and is not an ancestor of the deleted head; `loop end` checks again.
+  The deleted head is pinned at `refs/simple-changes/superseded/<run-id>/<head>`
+  so Git's garbage collection cannot lose the work or strand the run, and you
+  can restore the branch from the pin. The approval is kept in a separate file,
+  `simple-changes/remote-branch-supersession/<runId>.json` beside the run's
+  lease under the repository's Git directory, so a 0.22.0 client can still
+  read the lease; an older client cannot end a run whose receipt relies on it
+  and stops instead.
+<!-- simple-changelogs-signature agent="Fable 5.1" at="2026-10-02T15:10:30-05:00" -->
 
 ## 0.22.2 - 2026-10-02
 

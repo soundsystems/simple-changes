@@ -1064,6 +1064,27 @@ export interface RemoteBranchProposalEvidence {
   state: "open" | "merged" | "closed";
 }
 
+/**
+ * Merged-head ancestry proof for a deleted-merged branch: the same proposal
+ * was open at the initial head and merged at a head equal to or descending
+ * from it. Persisted in a sidecar beside the lease (never inside the lease) so
+ * older clients can still read the lease; the recorder verifies ancestry and
+ * target containment with git.
+ */
+export interface RemoteBranchAncestryProof {
+  branch: string;
+  initialHeadRevision: string;
+  mergedHeadRevision: string;
+  proposalObjectId: string;
+}
+
+export interface RemoteBranchAncestryRecord {
+  proofs: RemoteBranchAncestryProof[];
+  receiptDigest: string;
+  runId: string;
+  schemaVersion: 1;
+}
+
 export interface RemoteBranchReconciliationEntry {
   classification:
     | "canonical-target"

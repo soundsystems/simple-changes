@@ -1,12 +1,22 @@
 import { createHash } from "node:crypto";
 import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
-import { validateSchema } from "./schema.ts";
+import { sha256Json } from "./hash.ts";
+import { validateSchema, validateSchemaDocument } from "./schema.ts";
 import type {
   PostCleanupRecoveryReceipt,
+  RemoteBranchAncestryProof,
+  RemoteBranchAncestryRecord,
   RemoteBranchReconciliationEntry,
   RemoteBranchReconciliationReceipt,
   RemoteInventoryCoverage,
 } from "./types.ts";
+
+const ANCESTRY_PROOF_SCHEMA = {
+  $ref: "remote-branch-ancestry.schema.json#/$defs/proof",
+};
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
 
 const inventoryEntries = (
   receipt: RemoteBranchReconciliationReceipt,
@@ -292,7 +302,7 @@ const assertObserved = (branch: RemoteBranchReconciliationEntry): void => {
   }
 };
 
-const validateDeletedMerged = (
+const validateDeletedMergedShape = (
   branch: RemoteBranchReconciliationEntry
 ): void => {
   if (
@@ -308,6 +318,12 @@ const validateDeletedMerged = (
   if (!branch.initialHeadRevision) {
     fail(branch.name, "a deleted branch must exist in the initial inventory");
   }
+};
+
+const validateDeletedMerged = (
+  branch: RemoteBranchReconciliationEntry
+): void => {
+  validateDeletedMergedShape(branch);
   const exactMergedProposal = branch.proposals.some(
     (proposal) =>
       proposal.state === "merged" &&
@@ -320,6 +336,62 @@ const validateDeletedMerged = (
     );
   }
   if (branch.proposals.some((proposal) => proposal.state === "open")) {
+    fail(branch.name, "an open proposal branch cannot be deleted");
+  }
+};
+
+/**
+ * A source branch with an open proposal at its initial head may be merged at
+ * that head or after a fast-forward, then deleted by the provider. The ledger
+ * must show the same proposal open at the initial head and merged at the proof
+ * head; ancestry and target containment are verified with git where the
+ * receipt is recorded and again where it is accepted.
+ */
+const validateAncestryMerged = (
+  branch: RemoteBranchReconciliationEntry,
+  proof: RemoteBranchAncestryProof
+): void => {
+  if (branch.classification !== "merged-obsolete") {
+    fail(
+      branch.name,
+      "merged-head ancestry proof requires a merged-obsolete classification"
+    );
+  }
+  validateDeletedMergedShape(branch);
+  if (proof.initialHeadRevision !== branch.initialHeadRevision) {
+    fail(
+      branch.name,
+      "merged-head ancestry proof must start at the exact initial branch head"
+    );
+  }
+  const initiallyOpen = branch.proposals.filter(
+    (proposal) =>
+      proposal.objectId === proof.proposalObjectId &&
+      proposal.state === "open" &&
+      proposal.headRevision === proof.initialHeadRevision &&
+      proposal.observedInitially !== false &&
+      proposal.observedFinally === false
+  );
+  const finallyMerged = branch.proposals.filter(
+    (proposal) =>
+      proposal.objectId === proof.proposalObjectId &&
+      proposal.state === "merged" &&
+      proposal.headRevision === proof.mergedHeadRevision &&
+      proposal.observedInitially === false &&
+      proposal.observedFinally !== false
+  );
+  if (!(initiallyOpen.length === 1 && finallyMerged.length === 1)) {
+    fail(
+      branch.name,
+      "merged-head ancestry proof must bind the same proposal open at the initial head and merged at the proof head"
+    );
+  }
+  const [openEvidence] = initiallyOpen;
+  if (
+    branch.proposals.some(
+      (proposal) => proposal.state === "open" && proposal !== openEvidence
+    )
+  ) {
     fail(branch.name, "an open proposal branch cannot be deleted");
   }
 };
@@ -422,8 +494,115 @@ const validateBranch = (
   assertPreserved(branch, "preserved-ambiguous");
 };
 
-export const validateRemoteBranchReconciliation = (
+const validateLedgerBranch = (
+  branch: RemoteBranchReconciliationEntry,
+  receipt: RemoteBranchReconciliationReceipt,
+  proof: RemoteBranchAncestryProof | undefined
+): void => {
+  if (!proof) {
+    validateBranch(branch, receipt);
+    return;
+  }
+  assertObserved(branch);
+  if (branch.name === receipt.targetBranch || branch.protected) {
+    fail(
+      branch.name,
+      "merged-head ancestry proof cannot apply to the canonical target or a protected branch"
+    );
+  }
+  validateAncestryMerged(branch, proof);
+};
+
+const ancestryProofsByBranch = (
+  receipt: RemoteBranchReconciliationReceipt,
+  proofs: readonly RemoteBranchAncestryProof[]
+): Map<string, RemoteBranchAncestryProof> => {
+  const byBranch = new Map<string, RemoteBranchAncestryProof>();
+  const names = new Set(receipt.branches.map((branch) => branch.name));
+  for (const proof of proofs) {
+    validateSchemaDocument<RemoteBranchAncestryProof>(
+      "remote-branch-ancestry proof",
+      ANCESTRY_PROOF_SCHEMA,
+      proof
+    );
+    if (!names.has(proof.branch) || byBranch.has(proof.branch)) {
+      throw new SimpleChangesError(
+        `Invalid remote branch reconciliation: merged-head ancestry proof for ${proof.branch} must name exactly one ledger branch`,
+        EXIT_CODES.validation
+      );
+    }
+    byBranch.set(proof.branch, proof);
+  }
+  return byBranch;
+};
+
+/**
+ * The receipt input may carry `mergedHeadAncestry` on a branch entry. It is
+ * split out before the receipt is validated and embedded in the lease, so the
+ * lease keeps the original receipt schema that older clients read.
+ */
+export const splitRemoteBranchReconciliationInput = (
   value: unknown
+): { ancestryProofs: RemoteBranchAncestryProof[]; receipt: unknown } => {
+  if (!(isRecord(value) && Array.isArray(value.branches))) {
+    return { ancestryProofs: [], receipt: value };
+  }
+  const ancestryProofs: RemoteBranchAncestryProof[] = [];
+  const branches = value.branches.map((branch: unknown) => {
+    if (!(isRecord(branch) && "mergedHeadAncestry" in branch)) {
+      return branch;
+    }
+    const { mergedHeadAncestry, ...entry } = branch;
+    if (!isRecord(mergedHeadAncestry) || "branch" in mergedHeadAncestry) {
+      throw new SimpleChangesError(
+        `Invalid remote branch reconciliation: mergedHeadAncestry for ${String(entry.name)} must be an object naming proposalObjectId, initialHeadRevision, and mergedHeadRevision`,
+        EXIT_CODES.validation
+      );
+    }
+    ancestryProofs.push(
+      validateSchemaDocument<RemoteBranchAncestryProof>(
+        "remote-branch-ancestry proof",
+        ANCESTRY_PROOF_SCHEMA,
+        { ...mergedHeadAncestry, branch: entry.name }
+      )
+    );
+    return entry;
+  });
+  return { ancestryProofs, receipt: { ...value, branches } };
+};
+
+export const remoteBranchReconciliationDigest = (
+  receipt: RemoteBranchReconciliationReceipt
+): string => sha256Json(receipt);
+
+/**
+ * Re-joins a sidecar with the exact receipt it was recorded for. A sidecar for
+ * another run or another receipt fails closed instead of being ignored.
+ */
+export const validateRemoteBranchAncestryRecord = (
+  value: unknown,
+  runId: string,
+  receipt: RemoteBranchReconciliationReceipt
+): RemoteBranchAncestryProof[] => {
+  const record = validateSchema<RemoteBranchAncestryRecord>(
+    "remote-branch-ancestry",
+    value
+  );
+  if (
+    record.runId !== runId ||
+    record.receiptDigest !== remoteBranchReconciliationDigest(receipt)
+  ) {
+    throw new SimpleChangesError(
+      "Remote-branch ancestry proofs do not match this run's recorded reconciliation receipt; record the final reconciliation again.",
+      EXIT_CODES.unsafe
+    );
+  }
+  return record.proofs;
+};
+
+export const validateRemoteBranchReconciliation = (
+  value: unknown,
+  ancestryProofs: readonly RemoteBranchAncestryProof[] = []
 ): RemoteBranchReconciliationReceipt => {
   const receipt = validateSchema<RemoteBranchReconciliationReceipt>(
     "remote-branch-reconciliation",
@@ -479,8 +658,9 @@ export const validateRemoteBranchReconciliation = (
     finalProposalCount,
     "final"
   );
+  const proofs = ancestryProofsByBranch(receipt, ancestryProofs);
   for (const branch of receipt.branches) {
-    validateBranch(branch, receipt);
+    validateLedgerBranch(branch, receipt, proofs.get(branch.name));
   }
   if (
     !receipt.branches.some((branch) => branch.name === receipt.targetBranch)

@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://simple-changes.dev/schemas/remote-branch-ancestry.schema.json",
+  "title": "Simple Changes remote branch merged-head ancestry proofs",
+  "description": "Sidecar beside the loop lease for one remote-branch reconciliation receipt. Each proof lets a deleted-merged branch bind the same proposal open at the initial head and merged at a head that descends from (or equals) it. Kept out of the lease so older clients can still read the lease.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "runId", "receiptDigest", "proofs"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "runId": { "type": "string", "minLength": 1 },
+    "receiptDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "proofs": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/proof" }
+    }
+  },
+  "$defs": {
+    "proof": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "branch",
+        "proposalObjectId",
+        "initialHeadRevision",
+        "mergedHeadRevision"
+      ],
+      "properties": {
+        "branch": { "type": "string", "minLength": 1 },
+        "proposalObjectId": { "type": "string", "minLength": 1 },
+        "initialHeadRevision": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40,64}$"
+        },
+        "mergedHeadRevision": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40,64}$"
+        }
+      }
+    }
+  }
+}

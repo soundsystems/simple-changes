@@ -52,9 +52,12 @@ import {
   runGit,
 } from "./process.ts";
 import {
+  remoteBranchReconciliationDigest,
   remoteInventoryDigest,
+  splitRemoteBranchReconciliationInput,
   validateOpeningRemoteInventory,
   validatePostCleanupRecovery,
+  validateRemoteBranchAncestryRecord,
   validateRemoteBranchReconciliation,
 } from "./remote-branch-reconciliation.ts";
 import { validateSchema, validateSchemaDocument } from "./schema.ts";
@@ -77,6 +80,8 @@ import type {
   LoopWorktreePreparation,
   LoopWorktreeRetirement,
   PostCleanupRecoveryReceipt,
+  RemoteBranchAncestryProof,
+  RemoteBranchAncestryRecord,
   RemoteBranchReconciliationReceipt,
   RepositoryInventory,
   RequestMode,
@@ -106,6 +111,7 @@ const STATE_FILENAME = "active-loop.json";
 const LOCK_DIRECTORY = "active-loop.lock";
 const LOCK_OWNER_FILENAME = "owner.json";
 const RECOVERY_HISTORY_DIRECTORY = "history";
+const REMOTE_BRANCH_ANCESTRY_DIRECTORY = "remote-branch-ancestry";
 const STALE_LOCK_MINIMUM_AGE_MS = 5000;
 const RUN_ID_PATTERN = /^run-[a-z0-9-]+$/u;
 const DIGEST_PATTERN = /^[0-9a-f]{64}$/u;
@@ -1266,6 +1272,104 @@ const currentTargetRevision = (lease: LoopLease): string => {
   return revision;
 };
 
+const remoteBranchAncestryPath = (
+  commonGitDirectory: string,
+  runId: string
+): string =>
+  assertNoSymlinkAncestors(
+    commonGitDirectory,
+    join(
+      STATE_DIRECTORY,
+      REMOTE_BRANCH_ANCESTRY_DIRECTORY,
+      `${requiredRunId(runId)}.json`
+    )
+  );
+
+const readRemoteBranchAncestry = (
+  commonGitDirectory: string,
+  runId: string
+): unknown => {
+  const path = remoteBranchAncestryPath(commonGitDirectory, runId);
+  if (!existsSync(path)) {
+    return null;
+  }
+  return readImmutableRecoveryEvent<object>(path);
+};
+
+/**
+ * Merged-head ancestry proofs live beside the lease, never inside it: older
+ * clients strictly validate the lease, so the embedded receipt keeps the
+ * original schema. The sidecar is replaced or removed under the state lock
+ * whenever a receipt is recorded, and is kept afterward as audit evidence.
+ */
+const writeRemoteBranchAncestry = (
+  lease: LoopLease,
+  receipt: RemoteBranchReconciliationReceipt,
+  proofs: RemoteBranchAncestryProof[]
+): void => {
+  const path = remoteBranchAncestryPath(lease.commonGitDirectory, lease.runId);
+  if (proofs.length === 0) {
+    rmSync(path, { force: true });
+    return;
+  }
+  const record = validateSchema<RemoteBranchAncestryRecord>(
+    "remote-branch-ancestry",
+    {
+      proofs,
+      receiptDigest: remoteBranchReconciliationDigest(receipt),
+      runId: lease.runId,
+      schemaVersion: 1,
+    }
+  );
+  mkdirSync(dirname(path), { mode: 0o700, recursive: true });
+  const temporaryPath = `${path}.${process.pid}.${randomUUID()}.tmp`;
+  writeFileSync(temporaryPath, `${JSON.stringify(record, null, 2)}\n`, {
+    encoding: "utf8",
+    flag: "wx",
+    mode: 0o600,
+  });
+  renameSync(temporaryPath, path);
+};
+
+/**
+ * The receipt validator is pure, so an ancestry proof is only a claim until
+ * git confirms the initial head is the merged head or its ancestor and the
+ * target contains the merged head. Missing objects fail closed.
+ */
+const assertRemoteBranchAncestry = (
+  repositoryPath: string,
+  receipt: RemoteBranchReconciliationReceipt,
+  proofs: readonly RemoteBranchAncestryProof[]
+): void => {
+  for (const proof of proofs) {
+    const reportable = `Report branch ${proof.branch}, initial head ${proof.initialHeadRevision}, and proposal ${proof.proposalObjectId} to the user; this receipt cannot be recorded.`;
+    if (
+      !targetContainsRevision(
+        repositoryPath,
+        proof.mergedHeadRevision,
+        proof.initialHeadRevision
+      )
+    ) {
+      throw new SimpleChangesError(
+        `Merged-head ancestry proof for ${proof.branch} is not verified: initial head ${proof.initialHeadRevision} is not the merged head ${proof.mergedHeadRevision} or a local ancestor of it (rewritten, force-pushed, or GitLab-rebased history, or missing objects). ${reportable}`,
+        EXIT_CODES.unsafe
+      );
+    }
+    if (
+      !targetContainsRevision(
+        repositoryPath,
+        receipt.targetRevision,
+        proof.mergedHeadRevision
+      )
+    ) {
+      throw new SimpleChangesError(
+        `Merged-head ancestry proof for ${proof.branch} is not verified: merged head ${proof.mergedHeadRevision} is not contained in target ${receipt.targetRevision} (for example after a squash merge). ${reportable}`,
+        EXIT_CODES.unsafe
+      );
+    }
+  }
+};
+
 const assertCurrentRemoteBranchReconciliation = (
   lease: LoopLease,
   inventory: RepositoryInventory
@@ -1290,7 +1394,30 @@ const assertCurrentRemoteBranchReconciliation = (
       EXIT_CODES.unsafe
     );
   }
-  validateRemoteBranchReconciliation(receipt);
+  const storedAncestry = readRemoteBranchAncestry(
+    lease.commonGitDirectory,
+    lease.runId
+  );
+  const ancestryProofs =
+    storedAncestry === null
+      ? []
+      : validateRemoteBranchAncestryRecord(
+          storedAncestry,
+          lease.runId,
+          receipt
+        );
+  try {
+    validateRemoteBranchReconciliation(receipt, ancestryProofs);
+  } catch (error) {
+    if (storedAncestry === null && error instanceof SimpleChangesError) {
+      throw SimpleChangesError.withCause(
+        `${error.message} No merged-head ancestry proof sidecar exists for ${lease.runId}; if one was recorded it is missing, so record the final reconciliation again.`,
+        error.exitCode,
+        error
+      );
+    }
+    throw error;
+  }
   const targetBranch = targetBranchForRef(
     inventory.repository.primaryCheckout,
     lease.targetRef
@@ -1311,6 +1438,7 @@ const assertCurrentRemoteBranchReconciliation = (
       EXIT_CODES.unsafe
     );
   }
+  assertRemoteBranchAncestry(lease.primaryCheckout, receipt, ancestryProofs);
 };
 
 const concurrentClaimFor = (
@@ -4706,8 +4834,10 @@ export const recordRemoteBranchReconciliation = (
   remoteBranchReconciliation: RemoteBranchReconciliationReceipt;
 } => {
   const ownerAgentId = requiredText(ownerAgentIdInput, "agent ID");
+  const split = splitRemoteBranchReconciliationInput(receiptInput);
+  const { ancestryProofs } = split;
   const receipt: RemoteBranchReconciliationReceipt =
-    validateRemoteBranchReconciliation(receiptInput);
+    validateRemoteBranchReconciliation(split.receipt, ancestryProofs);
   const opening = locateRepository(repositoryPath);
   return withStateLock(
     opening.repository.commonGitDirectory,
@@ -4770,6 +4900,12 @@ export const recordRemoteBranchReconciliation = (
           EXIT_CODES.validation
         );
       }
+      assertRemoteBranchAncestry(
+        lease.primaryCheckout,
+        receipt,
+        ancestryProofs
+      );
+      writeRemoteBranchAncestry(lease, receipt, ancestryProofs);
       const reconciledAt = new Date().toISOString();
       return writeLease({
         ...withMutationEvidence(lease, reconciledAt),

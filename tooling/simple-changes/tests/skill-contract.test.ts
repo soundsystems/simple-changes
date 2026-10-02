@@ -947,6 +947,12 @@ describe("Simple Changes skill contract", () => {
     expect(normalizedCleanup).toContain(
       "Do not use it for questions about later work."
     );
+    expect(normalizedCleanup).toContain(
+      "do not finalize a run your running subagent drives. If the session also controls a run of its own, the hook still blocks and names both. Once the subagent finishes, or its run goes stale, the hook blocks the parent again until the run is finalized. Workflow agents are not excused yet, and an unreadable, oversized, or slow transcript scan blocks."
+    );
+    expect(normalizedSpec).toContain(
+      "A live run that a still running background subagent of the same session drives only advises."
+    );
     expect(normalizedSpec).toContain(
       "`loop finalize --awaiting-user` pauses a run for a user decision"
     );

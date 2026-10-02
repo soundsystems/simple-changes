@@ -91,7 +91,9 @@
   user-installed Stop hook (`loop turn-check
   --hook`) blocks a turn from ending once while that session still controls an
   active run, then warns instead so it can never trap a session; it reads each
-  lease again and never grants or removes authority. Guard, exec, and verify
+  lease again and never grants or removes authority. A live run that a still
+  running background subagent of the same session drives only advises.
+  Guard, exec, and verify
   output repeat the finalize step. Initialization reports whether the hook is
   installed and never installs it.
 - When the running runtime lives inside a checkout of the repository it

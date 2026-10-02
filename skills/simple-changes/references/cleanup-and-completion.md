@@ -46,6 +46,17 @@ Every controller finalizes before it replies; see the finalize rule in
   it never traps a session. The lease is always re-read, and a pointer to a
   closed, paused, or transferred run is dropped. Codex may ask the user to
   trust a new hook the first time it runs.
+- **Background subagents.** A Claude Code background subagent shares its
+  parent's session, so its run is bound to the parent too. The hook only
+  advises the user, naming the run, when it lists that subagent as still
+  running, the subagent's own transcript issued a Simple Changes `loop`
+  command for the live run with its owner `--agent-id`, and neither the
+  parent's transcript nor a later lease write shows control moving back: do
+  not finalize a run your running subagent drives. If the session also
+  controls a run of its own, the hook still blocks and names both. Once the
+  subagent finishes, or its run goes stale, the hook blocks the parent again
+  until the run is finalized. Workflow agents are not excused yet, and an
+  unreadable, oversized, or slow transcript scan blocks.
 - **Reminders and freshness.** `loop guard`, `loop exec`, and `loop verify`
   print the finalize step for the current run, and their JSON carries it as
   `turnEnd`. When this runtime runs from a checkout whose branch carries an

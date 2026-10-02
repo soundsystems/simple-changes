@@ -92,12 +92,13 @@ const upstreamTree = (upstream: string, commit: string): Map<string, string> =>
     runGit(upstream, ["ls-tree", "-r", "-z", commit, "--", SKILL_PATH])
       .stdout.split("\0")
       .filter(Boolean)
-      .map((entry) => TREE_ENTRY.exec(entry))
-      .filter((match): match is RegExpExecArray => match !== null)
-      .map((match) => [
-        (match[3] ?? "").slice(SKILL_PATH.length + 1),
-        match[2] ?? "",
-      ])
+      .map((entry): [string, string] => {
+        // A symlink, submodule, or other non-regular entry can never match a
+        // copied file, so keep it with an impossible hash instead of dropping it.
+        const match = TREE_ENTRY.exec(entry);
+        const path = match?.[3] ?? entry.slice(entry.indexOf("\t") + 1);
+        return [path.slice(SKILL_PATH.length + 1), match?.[2] ?? "unsupported"];
+      })
   );
 
 /** Paths that differ between the installed source and one upstream tree. */

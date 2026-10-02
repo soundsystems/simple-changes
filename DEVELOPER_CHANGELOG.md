@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+- `skills/simple-changes/SKILL.md` gains a `metadata.models` frontmatter key
+  (`Claude Opus 5.5, Claude Fable 5.1`). `fork create` (`FRONTMATTER_NAME`)
+  and `update-local-forks` (`SKILL_NAME_PATTERN`) match the `name:` line
+  only, so the extra key is inert for them; a top-level `model` key is
+  avoided because Claude Code treats one as a runtime model selection. A
+  `Contents:` list under the title mirrors the file's `##` headings; the Core
+  workflow closes with a checklist paragraph scoped to Ship, Integrate, and
+  Reconcile (source changed: return to step 4, with `loop refresh-scope` in
+  Ship; target, policy, controller checkout, or scoped source worktree
+  changed: return to step 3); step 5 and the `loop verify` sentence state the
+  fix-and-re-run loop. The file is 468 lines against the 500-line cap in
+  `tooling/simple-changes/tests/skill-contract.test.ts`.
+- The eleven references over 100 lines (`changelog-coordination`,
+  `cleanup-and-completion`, `data-changes`, `deployments`,
+  `guidance-updates`, `inventory-and-concurrency`,
+  `migrations-and-high-risk-actions`, `onboarding`, `setup-and-policy`,
+  `ship-communication`, `user-communication`) open with a `Contents:` list
+  generated from their `##`/`###` headings, and `references/verification.md`
+  step 4 is a fix-and-re-run loop. `CURRENT_GUIDANCE_VERSION` stays 24: no
+  setting, default, onboarding step, or companion integration changed.
+<!-- simple-changelogs-signature agent="claude-fable-5-1" at="2026-10-02T13:39:48-05:00" -->
+
 ## 0.22.2 - 2026-10-02
 
 - `lib/subagent-control.ts`: `AGENT_FLAG` and `RUN_FLAG` now reject values

@@ -1,5 +1,11 @@
 # Deployments
 
+Contents:
+
+- Emergency Ship exception
+- Discover canonical targets completely
+- Reconcile stale provider-managed targets
+
 Deployment support is a capability contract, not a provider name. Discover the
 repository's documented workflow and classify the delivery model:
 

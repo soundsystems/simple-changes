@@ -1,5 +1,13 @@
 # Ship communication
 
+Contents:
+
+- Before the first consequential mutation
+- Emergency Ship communication
+- Compose version and production direction
+- Track review-driven changes
+- Final shipped summary
+
 Ship combines consequential operations that may take time and may change during
 review. Keep the user oriented with a pre-ship brief and a final delivery
 receipt in the same agent run. Apply

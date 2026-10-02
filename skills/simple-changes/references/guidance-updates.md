@@ -1,5 +1,12 @@
 # Installed guidance updates
 
+Contents:
+
+- Present the update
+- Detect the companion update separately
+- Resolve required changelog updates before a loop
+- Maintain guidance versions
+
 Treat a meaningful installed-skill update as a one-time workflow checkpoint,
 not as first-use onboarding and not as changelog authoring. Pure fixes,
 refactors, packaging changes, and other updates that do not materially alter

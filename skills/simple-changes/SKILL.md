@@ -1,9 +1,27 @@
 ---
 name: simple-changes
 description: Use when a user asks to sync with remote main, package, queue, publish, integrate, review, merge, ship, reconcile, or clean local Git changes, branches, worktrees, proposals, or deployments. Preserve concurrent work, create focused proposals, satisfy checks and review, merge current approved heads, verify authorized deployment, and reconcile proven cleanup. Do not use to author changelogs or release notes directly, for non-Git synchronization, or for read-only code review.
+metadata:
+  models: Claude Opus 5.5, Claude Fable 5.1
 ---
 
 # Simple Changes
+
+Contents:
+
+- Create a repository-specific fork
+- Classify the request
+- Initialize before mutation
+- Communicate in plain language
+- Communicate Ship scope
+- Check for already-shipped work
+- Hold one controller lease
+- Shipment holds
+- Completed-work handoff
+- Core workflow
+- Authority and invariants
+- Reference router
+- Reports
 
 Turn ready repository work into focused, verified proposals without disturbing
 active work. Requires Git for repository work; deterministic helpers require
@@ -165,7 +183,9 @@ worktree/branch lifecycle changes, and cleanup. Use `loop guard` only for
 external provider calls and verify immediately afterward. Before merge,
 deployment, cleanup, and completion, run `loop verify`; immediately before a
 merge, deployment, or migration, add `--for merge`, `--for deploy`, or `--for
-migrations` so [shipment holds](#shipment-holds) gate that step.
+migrations` so [shipment holds](#shipment-holds) gate that step. When it
+fails, resolve exactly what it reports and run it again; proceed only on a
+passing result.
 After review and integration settle, record one exact
 `loop record-outcome --receipt <shipment-outcome.json>` receipt before
 completion; see [focused units](references/focused-units.md). This controller
@@ -320,7 +340,8 @@ read-only work, or incomplete verification.
    [high-risk actions](references/migrations-and-high-risk-actions.md). Every
    path belongs to one unit or an explicit preserved set.
 5. Run proportionate repository-native checks and distinguish introduced from
-   pre-existing failures.
+   pre-existing failures; fix what an introduced failure reports and re-run
+   the checks until they pass.
 6. Coordinate changelog ownership without authoring release text. Negotiate
    supported versions and features from the provider's declared marker when
    present (inferred discovery is reported as inferred), and accept only
@@ -360,6 +381,15 @@ read-only work, or incomplete verification.
     whose scoped dirty paths shipped as reviewed results now in the target, or
     unrelated late arrivals. Report pending cleanup separately and use guarded `prune` when
     safe; do not keep a delivered shipment open solely for that housekeeping.
+
+For Ship, Integrate, and Reconcile, carry these steps as a checklist in the
+reply: list them once in plain language, tick a step only after its evidence
+exists, and leave a failed step unticked. Fix what the failure reports and run
+that step again until it passes. When the fix changed source, return to step 4
+(in Ship, record the fresh preview with `loop refresh-scope`); when the
+target, policy, controller checkout, or a scoped source worktree changed,
+return to step 3. Other modes follow the same order without the written
+checklist.
 
 ## Authority and invariants
 

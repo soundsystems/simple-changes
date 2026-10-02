@@ -1,11 +1,11 @@
 #!/usr/bin/env bun
 
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { readFileSync, writeSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { fileURLToPath } from "node:url";
-import { sleep } from "bun";
+import { sleep, stdin } from "bun";
 import { auditBranchReplacements } from "./lib/branch-audit.ts";
 import { inspectChangelogCoordination } from "./lib/changelog-coordination.ts";
 import {
@@ -19,6 +19,7 @@ import {
   CURRENT_GUIDANCE_VERSION,
   type GuidanceUpdateAction,
 } from "./lib/guidance-updates.ts";
+import { currentHarnessSession } from "./lib/harness-session.ts";
 import {
   type InitializationStatus,
   inspectInitialization,
@@ -45,6 +46,7 @@ import {
   loopStatus,
   markWorktreeResumeReady,
   prepareAgentWorktree,
+  readControllerBinding,
   readLoopLease,
   rebaselineLoopWorktrees,
   recordEmergencyShipping,
@@ -59,6 +61,7 @@ import {
   retireAbsentWorktree,
   startLoop,
   takeoverLoop,
+  turnEndReminder,
   verifyLoop,
   withLoopMutationLease,
 } from "./lib/loop-lease.ts";
@@ -124,6 +127,10 @@ import {
   discoverInstructionTargets,
   writeInstructionPointer,
 } from "./lib/repository-instructions.ts";
+import {
+  type RuntimeFreshness,
+  runtimeFreshness,
+} from "./lib/runtime-freshness.ts";
 import { SCHEMA_NAMES, validateSchema } from "./lib/schema.ts";
 import {
   addShipHold,
@@ -140,12 +147,22 @@ import {
   type ShipHoldReport,
   waiveShipHold,
 } from "./lib/ship-holds.ts";
+import {
+  hookInstallScript,
+  parseTurnCheckHookInput,
+  type StopHookStatus,
+  stopHookStatus,
+  type TurnGuardHarness,
+  turnCheck,
+  turnCheckHookOutput,
+} from "./lib/turn-guard.ts";
 import type {
   ChangelogCoordination,
   ChangelogInstallDecision,
   ChangelogReceipt,
   ChangelogRequest,
   InitializationMode,
+  LoopLease,
   RepoPolicy,
   RequestMode,
   SchemaName,
@@ -173,8 +190,10 @@ import {
   standaloneWorktreeCleanup,
 } from "./lib/worktree-maintenance.ts";
 
-const VERSION = "0.21.0";
-const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const VERSION = "0.21.1";
+const SCRIPT_FILE = fileURLToPath(import.meta.url);
+const PLAIN_SHELL_WORD_PATTERN = /^[\w./-]+$/u;
+const PACKAGE_ROOT = resolve(dirname(SCRIPT_FILE), "..");
 const SCHEMA_KIND_LINE_LIMIT = 78;
 const schemaKindLines = SCHEMA_NAMES.reduce<string[]>((lines, name) => {
   const current = lines.at(-1);
@@ -283,7 +302,10 @@ Usage:
   simple-changes loop end --run-id ID --agent-id ID [--reason TEXT]
     [--json] [--repo PATH]
   simple-changes loop finalize --run-id ID --agent-id ID --reason TEXT
-    [--json] [--repo PATH]
+    [--awaiting-user TEXT ...] [--json] [--repo PATH]
+  simple-changes loop turn-check [--hook] [--json]
+  simple-changes harness stop-hook [--harness claude-code|codex] [--write]
+    [--json]
   simple-changes worktree status [--json] [--repo PATH]
   simple-changes worktree observe [--json] [--repo PATH]
   simple-changes worktree request --claim-id ID --run-id ID
@@ -357,6 +379,7 @@ interface CliOptions {
   alreadyLive: boolean;
   applyPlanPath?: string;
   approvedBy?: string;
+  awaitingUser: string[];
   baseRef?: string;
   changelogHandling?: RepoPolicy["changelogHandling"];
   changelogInstall?: ChangelogInstallDecision;
@@ -372,12 +395,14 @@ interface CliOptions {
   gitPushAuthorization?: RepoPolicy["gitPushAuthorization"];
   guidanceDecision?: RepoPolicy["guidance"]["disposition"];
   handoffTiming?: RepoPolicy["handoffTiming"];
+  harness?: TurnGuardHarness;
   headRef?: string;
   help: boolean;
   holdAction?: ShipHoldAction;
   holdId?: string;
   holdScope?: ShipHoldScope;
   holdSeverity?: ShipHoldSeverity;
+  hook: boolean;
   instructionFile?: string;
   instructionPointer?: "add" | "leave";
   json: boolean;
@@ -425,6 +450,7 @@ interface CliOptions {
   untilMerged?: string;
   versionAuthorized: boolean;
   worktreePath?: string;
+  write: boolean;
   yes: boolean;
 }
 
@@ -433,6 +459,7 @@ const VALUED_OPTIONS = new Set([
   "--apply-plan",
   "--agent-id",
   "--approved-by",
+  "--awaiting-user",
   "--changelog",
   "--changelog-install",
   "--concurrent-work",
@@ -447,6 +474,7 @@ const VALUED_OPTIONS = new Set([
   "--finish",
   "--for",
   "--handoff",
+  "--harness",
   "--guidance-decision",
   "--git-push-authorization",
   "--hold-id",
@@ -497,6 +525,7 @@ const BOOLEAN_OPTIONS = new Set([
   "--changelog-required",
   "--check",
   "--dry-run",
+  "--hook",
   "--json",
   "--local-only",
   "--override-halt",
@@ -504,6 +533,7 @@ const BOOLEAN_OPTIONS = new Set([
   "--release",
   "--stale-lease",
   "--ui-artifacts",
+  "--write",
   "--yes",
 ]);
 
@@ -878,6 +908,20 @@ const applyLoopValuedOption = (
     options.evidencePaths.push(resolve(value));
     return true;
   }
+  if (option === "--awaiting-user") {
+    options.awaitingUser.push(value);
+    return true;
+  }
+  if (option === "--harness") {
+    if (value !== "claude-code" && value !== "codex") {
+      throw new SimpleChangesError(
+        "--harness must be claude-code or codex",
+        EXIT_CODES.usage
+      );
+    }
+    options.harness = value;
+    return true;
+  }
   if (option === "--ready-receipt") {
     options.readyReceiptPath = resolve(value);
     return true;
@@ -1025,6 +1069,21 @@ const applyValuedOption = (
   options.settleMs = settleMs;
 };
 
+const applyTurnGuardBooleanOption = (
+  options: CliOptions,
+  option: string
+): boolean => {
+  if (option === "--hook") {
+    options.hook = true;
+    return true;
+  }
+  if (option === "--write") {
+    options.write = true;
+    return true;
+  }
+  return false;
+};
+
 const applyBooleanOption = (options: CliOptions, option: string): void => {
   if (option === "--acknowledge-push-scope") {
     options.acknowledgePushScope = true;
@@ -1063,11 +1122,13 @@ const parseOptions = (args: string[]): CliOptions => {
   const options: CliOptions = {
     acknowledgePushScope: false,
     alreadyLive: false,
+    awaitingUser: [],
     changelogRequired: false,
     check: false,
     dryRun: false,
     evidencePaths: [],
     help: false,
+    hook: false,
     json: false,
     localOnly: false,
     migrationTargets: [],
@@ -1082,6 +1143,7 @@ const parseOptions = (args: string[]): CliOptions => {
     staleLease: false,
     uiArtifacts: false,
     versionAuthorized: false,
+    write: false,
     yes: false,
   };
   let index = 0;
@@ -1097,7 +1159,9 @@ const parseOptions = (args: string[]): CliOptions => {
       continue;
     }
     if (argument && BOOLEAN_OPTIONS.has(argument)) {
-      applyBooleanOption(options, argument);
+      if (!applyTurnGuardBooleanOption(options, argument)) {
+        applyBooleanOption(options, argument);
+      }
       index += 1;
       continue;
     }
@@ -1648,6 +1712,18 @@ const appendFirstUseWalkthroughOffer = (
   }
 };
 
+const renderTurnEndGuard = (
+  guard: NonNullable<InitializationStatus["turnEndGuard"]>
+): string => {
+  if (guard.current) {
+    return `Turn-end guard: installed for ${guard.harness}`;
+  }
+  const state = guard.installed ? "outdated" : "not installed";
+  return guard.installCommand
+    ? `Turn-end guard: ${state} for ${guard.harness}; with the user's agreement, run \`${guard.installCommand}\``
+    : `Turn-end guard: ${state} for ${guard.harness}; this copy cannot be installed from here, so install it from the globally installed Simple Changes`;
+};
+
 const renderInitialization = (status: InitializationStatus): string => {
   const lines = [
     "Simple Changes initialization",
@@ -1673,6 +1749,12 @@ const renderInitialization = (status: InitializationStatus): string => {
     `Handoff action: ${status.handoffAction}`,
     `Reason: ${status.reason}`,
   ];
+  if (status.turnEndGuard) {
+    lines.push(renderTurnEndGuard(status.turnEndGuard));
+  }
+  if (status.runtimeFreshness?.message) {
+    lines.push(`Warning: ${status.runtimeFreshness.message}`);
+  }
   if (status.handoffClaimRelease) {
     lines.push(
       `Released worktree claim ${status.handoffClaimRelease.claimId} on ${status.handoffClaimRelease.path}; this finished work is now shippable by any controller.`
@@ -1697,6 +1779,35 @@ const renderInitialization = (status: InitializationStatus): string => {
   appendCombinedUpdateChoice(lines, status);
   appendFirstUseWalkthroughOffer(lines, status);
   return `${lines.join("\n")}\n`;
+};
+
+// Reported, never installed, by initialize: a Stop hook is persistent harness
+// configuration the user agrees to first. Unreadable settings report nothing.
+const initializationTurnEndGuard = (): InitializationStatus["turnEndGuard"] => {
+  const harness = currentHarnessSession()?.harness;
+  if (!harness) {
+    return null;
+  }
+  try {
+    const script = hookInstallScript(SCRIPT_FILE, VERSION);
+    const status = stopHookStatus(
+      harness,
+      script ?? SCRIPT_FILE,
+      VERSION,
+      false
+    );
+    return {
+      current: status.current,
+      harness,
+      installCommand: script
+        ? `${shellWord(process.execPath)} ${shellWord(script)} harness stop-hook --harness ${harness} --write`
+        : null,
+      installed: status.installed,
+      path: status.path,
+    };
+  } catch {
+    return null;
+  }
 };
 
 const runInitialize = async (options: CliOptions): Promise<void> => {
@@ -1746,6 +1857,15 @@ const runInitialize = async (options: CliOptions): Promise<void> => {
     handoffClaimRelease: handoffClaimRelease
       ? { claimId: handoffClaimRelease.claimId, path: handoffClaimRelease.path }
       : null,
+    runtimeFreshness: runtimeFreshness(
+      {
+        targetRef: inventory.targetRef,
+        worktreePaths: inventory.worktrees.map((worktree) => worktree.path),
+      },
+      VERSION,
+      SCRIPT_FILE
+    ),
+    turnEndGuard: initializationTurnEndGuard(),
   });
   if (!status.onboardingRequired) {
     writeOutput(status, options.json, renderInitialization(status));
@@ -2201,7 +2321,8 @@ const runLoopRecovery = (options: CliOptions): void => {
 const runLoopExec = async (
   options: CliOptions,
   runId: string,
-  agentId: string
+  agentId: string,
+  turnEnd: string
 ): Promise<void> => {
   const result = await executeLoopMutation(
     options.repo,
@@ -2210,7 +2331,7 @@ const runLoopExec = async (
     options.positional.slice(1)
   );
   if (options.json) {
-    writeOutput(result, true, "");
+    writeOutput({ ...result, turnEnd }, true, "");
     return;
   }
   if (result.result.stdout) {
@@ -2220,7 +2341,7 @@ const runLoopExec = async (
     process.stderr.write(result.result.stderr);
   }
   process.stdout.write(
-    `Loop mutation completed under ${runId}; manifest is clean.\n`
+    `Loop mutation completed under ${runId}; manifest is clean.\n${turnEnd}\n`
   );
 };
 
@@ -2278,8 +2399,22 @@ const runLoopFinalizationAction = (
       options.repo,
       runId,
       agentId,
-      requireCliOption(options.reason, "--reason")
+      requireCliOption(options.reason, "--reason"),
+      { awaitingUser: options.awaitingUser }
     );
+    if (result.outcome === "relinquished" && options.awaitingUser.length > 0) {
+      writeOutput(
+        {
+          ...result,
+          manifestDigest: result.lease
+            ? loopManifestDigest(result.lease)
+            : null,
+        },
+        options.json,
+        `Paused ${runId} until the user answers: ${options.awaitingUser.join(" | ")}\nWhen they answer, resume it with \`simple-changes loop start --mode resume --agent-id <you>\`; its scope and safety checks stay in force.\n`
+      );
+      return true;
+    }
     if (result.outcome === "relinquished") {
       throw new SimpleChangesError(
         `Relinquished ${runId} with durable state; the shipment is incomplete. Automatic cleanup normalized ${result.cleanup.cleanedPrimaryPaths.length} target-equivalent primary path(s), removed ${result.cleanup.removedWorktrees.length} worktree(s) and ${result.cleanup.removedBranches.length} branch(es), pruned ${result.cleanup.prunedWorktreeMetadata} stale worktree record(s), and released ${result.cleanup.releasedClaims.length} finished or orphaned worktree claim(s). Remaining: ${result.blockers.join(" ")}`,
@@ -2433,33 +2568,69 @@ const runLoopStart = (options: CliOptions): void => {
     openingRemoteInventory
   );
   const holds = informationalHolds(options.repo);
+  const freshness = leaseRuntimeFreshness(lease);
+  const resumedQuestions = resumedAwaitingUser(lease);
   writeOutput(
-    { holds, lease, manifestDigest: loopManifestDigest(lease) },
+    {
+      holds,
+      inheritedAwaitingUser: resumedQuestions,
+      lease,
+      manifestDigest: loopManifestDigest(lease),
+      runtimeFreshness: freshness,
+    },
     options.json,
-    `Started ${lease.runId} for ${lease.ownerAgentId}.\nManifest: ${loopManifestDigest(lease)}\n${renderRecordedHolds(holds)}`
+    `Started ${lease.runId} for ${lease.ownerAgentId}.\nManifest: ${loopManifestDigest(lease)}\n${
+      resumedQuestions
+        ? `The previous controller paused for the user's answer to: ${resumedQuestions.join(" | ")}. Confirm their answer before continuing.\n`
+        : ""
+    }${renderFreshnessWarning(freshness)}${renderRecordedHolds(holds)}`
   );
 };
+
+// A freshly resumed controller sees what its predecessor was waiting on.
+const resumedAwaitingUser = (lease: LoopLease): string[] | null => {
+  const { controller } = lease;
+  const latest = controller?.handoffs.at(-1);
+  return latest && latest.at === controller?.acquiredAt
+    ? (readControllerBinding(lease)?.inheritedAwaitingUser ?? null)
+    : null;
+};
+
+const leaseRuntimeFreshness = (lease: LoopLease): RuntimeFreshness =>
+  runtimeFreshness(
+    {
+      targetRef: lease.targetRef,
+      worktreePaths: lease.worktrees.map((worktree) => worktree.path),
+    },
+    VERSION,
+    SCRIPT_FILE
+  );
+
+const renderFreshnessWarning = (freshness: RuntimeFreshness | null): string =>
+  freshness?.message ? `Warning: ${freshness.message}\n` : "";
 
 const runLoopStatus = (options: CliOptions): void => {
   const status = loopStatus(options.repo);
   const guidanceLines = [
     ...(status.liveness
       ? [
-          `Liveness: ${status.liveness.state} (last activity ${status.liveness.lastUpdatedAt}; owner process ${status.liveness.ownerProcessProvable ? "running" : "unprovable"})`,
+          `Liveness: ${status.liveness.state} (last activity ${status.liveness.lastUpdatedAt}; owner process ${status.liveness.ownerProcessProvable ? "running" : "unprovable"}${status.liveness.ownerSessionEnded ? "; owner session has exited" : ""})`,
         ]
       : []),
     status.guidance.headline,
     ...status.guidance.nextCommands.map((command) => `  Next: ${command}`),
   ];
   const holds = informationalHolds(options.repo);
+  const freshness = status.lease ? leaseRuntimeFreshness(status.lease) : null;
   writeOutput(
     {
       ...status,
       holds,
       manifestDigest: status.lease ? loopManifestDigest(status.lease) : null,
+      runtimeFreshness: freshness,
     },
     options.json,
-    `${renderLoopVerification(status.verification)}${guidanceLines.join("\n")}\n${renderRecordedHolds(holds)}`
+    `${renderLoopVerification(status.verification)}${guidanceLines.join("\n")}\n${renderFreshnessWarning(freshness)}${renderRecordedHolds(holds)}`
   );
 };
 
@@ -2564,7 +2735,11 @@ const runLoopRecoveryAction = (
   return false;
 };
 
-const runLoopVerifyAction = (action: string, options: CliOptions): boolean => {
+const runLoopVerifyAction = (
+  action: string,
+  options: CliOptions,
+  turnEnd: string
+): boolean => {
   if (action !== "verify") {
     return false;
   }
@@ -2579,9 +2754,9 @@ const runLoopVerifyAction = (action: string, options: CliOptions): boolean => {
       })
     : null;
   writeOutput(
-    holds ? { ...verification, holds } : verification,
+    { ...verification, ...(holds ? { holds } : {}), turnEnd },
     options.json,
-    `${renderLoopVerification(verification)}${holds ? renderHoldReport(holds) : ""}`
+    `${renderLoopVerification(verification)}${holds ? renderHoldReport(holds) : ""}${turnEnd}\n`
   );
   if (!verification.ok) {
     throw new SimpleChangesError(
@@ -2595,11 +2770,54 @@ const runLoopVerifyAction = (action: string, options: CliOptions): boolean => {
   return true;
 };
 
+const HOOK_INPUT_TIMEOUT_MS = 2000;
+
+const readHookInput = async (): Promise<string> => {
+  if (process.stdin.isTTY) {
+    return "";
+  }
+  return await Promise.race([
+    stdin.text(),
+    sleep(HOOK_INPUT_TIMEOUT_MS).then(() => ""),
+  ]);
+};
+
+/**
+ * Run as a harness Stop hook, this never fails the harness: any error allows
+ * the turn to end, and the process exits explicitly so an unread stdin cannot
+ * keep it alive. Run directly, it reports what this session still controls.
+ */
+const runLoopTurnCheck = async (options: CliOptions): Promise<void> => {
+  if (!options.hook) {
+    const result = turnCheck({ sessionId: null, stopHookActive: false });
+    writeOutput(
+      result,
+      options.json,
+      result.decision === "allow"
+        ? "No Simple Changes run is waiting on this session to finalize.\n"
+        : `${result.reason}\n`
+    );
+    return;
+  }
+  let output = "";
+  try {
+    output = turnCheckHookOutput(
+      turnCheck(parseTurnCheckHookInput(await readHookInput()))
+    );
+  } catch {
+    output = "";
+  }
+  if (output) {
+    writeSync(1, output);
+  }
+  process.exit(0);
+};
+
 const runLoopCommand = async (options: CliOptions): Promise<void> => {
   const [action] = options.positional;
   if (!action) {
     throw new SimpleChangesError(
-      "loop requires start, status, verify, record-scope, refresh-scope, record-outcome, guard, exec, recover, recover-post-cleanup, close-equivalent, replan-status, replan, takeover, rebaseline, allow, dispose-worktree, retain-worktree, retire-absent-worktree, adopt-worktree, accept-paused-change, reconcile-remote-branches, emergency, end, or finalize",
+      "loop requires start, status, verify, record-scope, refresh-scope, record-outcome, guard, exec, recover, recover-post-cleanup, close-equivalent, replan-status, replan, takeover, rebaseline, allow, dispose-worktree, retain-worktree, retire-absent-worktree, adopt-worktree, accept-paused-change, reconcile-remote-branches, emergency, end, finalize, or turn-check",
       EXIT_CODES.usage
     );
   }
@@ -2617,7 +2835,7 @@ const runLoopCommand = async (options: CliOptions): Promise<void> => {
       EXIT_CODES.unsafe
     );
   }
-  if (runLoopVerifyAction(action, options)) {
+  if (runLoopVerifyAction(action, options, turnEndReminder(lease))) {
     return;
   }
   if (await runLoopEmergencyAction(options, runId)) {
@@ -2653,15 +2871,16 @@ const runLoopCommand = async (options: CliOptions): Promise<void> => {
   }
   if (action === "guard") {
     const verification = guardLoopMutation(options.repo, runId, agentId);
+    const turnEnd = turnEndReminder(lease);
     writeOutput(
-      verification,
+      { ...verification, turnEnd },
       options.json,
-      `Mutation guard passed for ${agentId} in ${lease.runId}.\n`
+      `Mutation guard passed for ${agentId} in ${lease.runId}.\n${turnEnd}\n`
     );
     return;
   }
   if (action === "exec") {
-    await runLoopExec(options, runId, agentId);
+    await runLoopExec(options, runId, agentId, turnEndReminder(lease));
     return;
   }
   if (action === "allow") {
@@ -3360,6 +3579,64 @@ const runReleaseNotes = (options: CliOptions): number => {
   return EXIT_CODES.success;
 };
 
+const renderStopHookStatus = (status: StopHookStatus): string => {
+  if (status.written) {
+    return `Installed the Simple Changes turn-end guard for ${status.harness} in ${status.path}. New sessions pick it up${status.harness === "codex" ? "; Codex may ask you to trust the hook the first time it runs" : ""}.\n`;
+  }
+  if (status.current) {
+    return `The Simple Changes turn-end guard is installed for ${status.harness} in ${status.path}.\n`;
+  }
+  if (status.installed) {
+    return `An older Simple Changes turn-end guard is installed for ${status.harness} in ${status.path}. With the user's agreement, rerun with --write to point it at this runtime.\n`;
+  }
+  return `The Simple Changes turn-end guard is not installed for ${status.harness}. With the user's agreement, run \`simple-changes harness stop-hook --harness ${status.harness} --write\` to add this Stop hook to ${status.path}:\n  ${status.command}\n`;
+};
+
+const NOT_INSTALLABLE_HERE =
+  "This Simple Changes copy lives in a linked worktree with no matching primary-checkout copy that supports the turn check, so a user-level hook pointing here would break when the worktree is removed. Install the turn-end guard from the globally installed Simple Changes instead.";
+
+const resolveHarness = (options: CliOptions): TurnGuardHarness => {
+  const harness = options.harness ?? currentHarnessSession()?.harness;
+  if (!harness) {
+    throw new SimpleChangesError(
+      "No harness session detected; pass --harness claude-code or --harness codex.",
+      EXIT_CODES.usage
+    );
+  }
+  return harness;
+};
+
+const shellWord = (value: string): string =>
+  PLAIN_SHELL_WORD_PATTERN.test(value)
+    ? value
+    : `'${value.replaceAll("'", "'\\''")}'`;
+
+const runHarnessCommand = (options: CliOptions): void => {
+  if (options.positional[0] !== "stop-hook") {
+    throw new SimpleChangesError(
+      "harness requires stop-hook",
+      EXIT_CODES.usage
+    );
+  }
+  const script = hookInstallScript(SCRIPT_FILE, VERSION);
+  if (!script && options.write) {
+    throw new SimpleChangesError(NOT_INSTALLABLE_HERE, EXIT_CODES.unsafe);
+  }
+  const status = stopHookStatus(
+    resolveHarness(options),
+    script ?? SCRIPT_FILE,
+    VERSION,
+    options.write
+  );
+  writeOutput(
+    { ...status, installable: script !== null },
+    options.json,
+    script || status.current
+      ? renderStopHookStatus(status)
+      : `${NOT_INSTALLABLE_HERE}\n`
+  );
+};
+
 const executeCommand = async (
   command: string,
   options: CliOptions
@@ -3405,7 +3682,9 @@ const executeCommand = async (
       await runPreview(options);
       return EXIT_CODES.success;
     case "loop":
-      await runLoopCommand(options);
+      await (options.positional[0] === "turn-check"
+        ? runLoopTurnCheck(options)
+        : runLoopCommand(options));
       return EXIT_CODES.success;
     case "branch": {
       if (options.positional[0] !== "audit") {
@@ -3424,6 +3703,9 @@ const executeCommand = async (
       return EXIT_CODES.success;
     case "hold":
       runHoldCommand(options);
+      return EXIT_CODES.success;
+    case "harness":
+      runHarnessCommand(options);
       return EXIT_CODES.success;
     case "prune":
       runPrune(options);

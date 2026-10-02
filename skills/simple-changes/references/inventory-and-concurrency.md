@@ -400,8 +400,9 @@ soon as its reason is over. Release also withdraws a published ref and reports
 a failed withdrawal with its retry; status lists released holds whose refs are
 still published. Another agent releases a hold only with `--approved-by` and
 `--reason` from the user, plus `--override-halt` for a halt; the owner's own
-clone keeps its record until the owner releases it there. No hold is released
-by elapsed time.
+clone keeps its record until the owner releases it there, and its gates report
+that the published ref was withdrawn elsewhere. No hold is released by elapsed
+time.
 
 Check holds at each covered step: run `loop verify --for merge`, `--for
 deploy`, or `--for migrations` immediately before that step, and `hold check

@@ -80,6 +80,24 @@
   unrecorded scope is never frozen. An unwritable lease is reported beside the
   original error as an explicit blocker. A relinquished
   controller is resumed without takeover approval; frozen scope still applies.
+  `loop finalize --awaiting-user` pauses a run for a user decision: it
+  relinquishes even when nothing else blocks closure, records the questions
+  beside the lease and in the receipt, exits zero, and hands them to the
+  resuming controller. An untouched Ship run still closes instead.
+- A controller records the harness session that started, resumed, or last
+  commanded it, when the harness exports one. That binding and any paused
+  questions live in a file beside the lease, never in it, so runtimes that
+  validate the lease strictly can still read leases written by newer ones. A
+  user-installed Stop hook (`loop turn-check
+  --hook`) blocks a turn from ending once while that session still controls an
+  active run, then warns instead so it can never trap a session; it reads each
+  lease again and never grants or removes authority. Guard, exec, and verify
+  output repeat the finalize step. Initialization reports whether the hook is
+  installed and never installs it.
+- When the running runtime lives inside a checkout of the repository it
+  operates on and the target branch carries a newer version of the same file,
+  initialization, `loop start`, and `loop status` report it as
+  `behind-target`.
 - A first shipment scope (`loop record-scope`) requires a non-mutating preview
   plan generated from the exact current inventory, with no open questions and
   every changed path accounted for once; the controller's own checkout; the
@@ -260,11 +278,15 @@
 - A lease records a heartbeat: every operation that already writes lease state
   refreshes `updatedAt` and the owner process identity. A lease is `live` while
   its recorded owner process is provably running or its heartbeat is recent,
-  `stale` only when the owner cannot be proven alive and the heartbeat is older
-  than the published threshold, and `unknown` when its timestamp cannot be
-  read. `loop status` reports that state directly. `loop recover --stale-lease`
-  clears a stale lease with a named approver and reason, refuses a live one,
-  archives the cleared record into the run history, and preserves every
+  `stale` when the harness session process bound to the controller has
+  provably exited on this host and the heartbeat is older than a ten-minute
+  grace period, or when the owner cannot be proven alive and the heartbeat is
+  older than the published two-hour threshold, and `unknown`
+  when its timestamp cannot be read. A running session process alone never
+  keeps an idle run live. `loop status` reports that state directly. `loop
+  recover --stale-lease` clears a stale lease with a named approver and reason,
+  refuses a live one, archives the complete cleared lease beside its receipt
+  in the run history, and preserves every
   worktree, branch, claim, and durable receipt; it clears the bookkeeping
   record only, never user work.
 - A stale opening manifest is recoverable without abandoning the run:

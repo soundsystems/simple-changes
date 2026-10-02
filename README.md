@@ -110,23 +110,6 @@ tooling/simple-changes/check-fork-sync.sh \
   path/to/fork/SKILL.md /path/to/simple-changes origin/main
 ```
 
-Repository maintainers can invoke `skills/publish-skill` for the complete
-canonical, fork, and consumer propagation workflow; it reuses the same fork
-update rules. Repository names and paths are discovered at runtime and are
-not embedded in the public package.
-
-Install that workflow project-locally from a source checkout, using the
-third-party [`skills` CLI](https://www.npmjs.com/package/skills) (or copy the
-skill directory manually as shown in Quick start):
-
-```sh
-bunx skills add . --skill publish-skill --agent codex -y
-```
-
-Skill repositories may bundle the same generic `publish-skill` workflow. Use
-the project-local copy from the canonical repository being published so
-discovery and the production release map stay scoped to that repository.
-
 ## What the current source provides
 
 - Resolves the canonical primary checkout across linked worktrees.

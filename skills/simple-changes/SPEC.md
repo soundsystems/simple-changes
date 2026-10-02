@@ -204,8 +204,18 @@
   union of complete initial and final provider inventories. The canonical
   target, protected branches, open-MR branches, concurrent movement, and
   ambiguous work are preserved. Merged source branches are deleted only at the
-  exact recorded merged head; closed/unmerged and no-MR branches require a
-  separate audit and exact obsolescence proof.
+  exact recorded merged head, or with Git-verified merged-head ancestry when
+  the same MR was open at the opening head and merged at a descendant.
+  Closed/unmerged and no-MR branches require a separate audit and Git or
+  provider obsolescence proof; `target-contains-head` is verified with Git
+  (exact ancestry or full per-commit patch equivalence, whose patch IDs ignore
+  whitespace) when the receipt is recorded. Such a branch deleted while the
+  target contains neither its head nor patch-equivalent commits, and without
+  provider evidence of an empty diff, may close only with an explicitly
+  user-approved supersession naming the deleted head, a reason, and replacement
+  target commits; Git verifies it, the deleted head is pinned under
+  `refs/simple-changes/superseded/`, and the approval lives in a sidecar beside
+  the lease, never in it.
 - GitLab loops persist a complete unchanged opening provider inventory at lease
   creation and reject integration mutations when legacy state lacks it. A
   distinct explicitly approved post-cleanup recovery may close only a clean,

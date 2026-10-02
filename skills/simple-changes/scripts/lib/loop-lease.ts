@@ -1434,11 +1434,20 @@ const supersededHeadRef = (runId: string, head: string): string =>
  * whose boundary commits hide their parents, or a head with no history shared
  * with the target would pass it falsely; both fail closed. Missing objects fail
  * closed.
+ *
+ * Whether the approval is unnecessary is a tidiness check, not a safety one.
+ * Where the receipt is recorded it uses the same containment audit as
+ * target-contains-head, so the two can never disagree; at loop end it stays the
+ * cheap exact-ancestry check older clients recorded against, so a run recorded
+ * by 0.22.3 still ends.
  */
 const assertRemoteBranchSupersession = (
   repositoryPath: string,
   receipt: RemoteBranchReconciliationReceipt,
-  supersessions: readonly RemoteBranchSupersession[]
+  supersessions: readonly RemoteBranchSupersession[],
+  check:
+    | { phase: "record"; targetPatchIdCache: Map<string, Map<string, string>> }
+    | { phase: "loop-end" }
 ): void => {
   if (
     supersessions.length > 0 &&
@@ -1481,9 +1490,22 @@ const assertRemoteBranchSupersession = (
         EXIT_CODES.unsafe
       );
     }
-    if (targetContainsRevision(repositoryPath, receipt.targetRevision, head)) {
+    const containment =
+      check.phase === "record"
+        ? targetContainmentAudit(
+            repositoryPath,
+            receipt.targetRevision,
+            head,
+            check.targetPatchIdCache
+          ).method
+        : targetContainsRevision(
+            repositoryPath,
+            receipt.targetRevision,
+            head
+          ) && "target-contained";
+    if (containment) {
       throw new SimpleChangesError(
-        `Supersession of ${supersession.branch} is unnecessary: target ${receipt.targetRevision} already contains deleted head ${head}, so record target-contains-head proof instead.`,
+        `Supersession of ${supersession.branch} is unnecessary: target ${receipt.targetRevision} already contains deleted head ${head} (${containment}), so record target-contains-head proof instead.`,
         EXIT_CODES.validation
       );
     }
@@ -1507,6 +1529,76 @@ const assertRemoteBranchSupersession = (
         );
       }
     }
+  }
+};
+
+/**
+ * `target-contains-head` is the one audited deletion proof Git can check
+ * locally: the deleted head must be present and the target must contain it by
+ * exact ancestry or by full per-commit patch equivalence (`git patch-id
+ * --stable`, which ignores whitespace, as `git cherry` does), the containment
+ * proof every local cleanup path shares. Both are positive checks, so a shallow
+ * clone fails closed; the refusal then names the shallow clone rather than
+ * suggesting lost work. It is checked where the receipt is recorded and not
+ * again at loop end: loop end already binds the receipt to the current target
+ * revision, so re-running the audit there would only repeat this answer for
+ * receipts recorded by this client, while receipts recorded by older clients
+ * never had this check and could strand a run that already deleted the branch.
+ * `provider-diff-empty` is provider evidence that Git cannot reproduce locally.
+ */
+const assertTargetContainsDeletedHeads = (
+  repositoryPath: string,
+  receipt: RemoteBranchReconciliationReceipt,
+  targetPatchIdCache: Map<string, Map<string, string>>
+): void => {
+  const nextStep =
+    "If the branch is already gone and the user judges its work shipped another way, record their supersession approval instead; otherwise report the branch and head to the user.";
+  for (const branch of receipt.branches) {
+    if (
+      branch.disposition !== "deleted-proven-obsolete" ||
+      branch.obsoleteProof !== "target-contains-head"
+    ) {
+      continue;
+    }
+    const head = branch.initialHeadRevision;
+    const reportable = `Report branch ${branch.name} and deleted head ${head} to the user; this receipt cannot be recorded.`;
+    if (
+      !head ||
+      runGit(repositoryPath, ["cat-file", "-e", `${head}^{commit}`], true)
+        .exitCode !== 0
+    ) {
+      throw new SimpleChangesError(
+        `target-contains-head proof for ${branch.name} is not verified: deleted head ${head} is not present locally. Fetch it first at full depth (GitLab keeps a merge request's head at refs/merge-requests/<iid>/head after its branch is deleted); if no clone or merge request still has it, stop and report the branch to the user. ${reportable}`,
+        EXIT_CODES.unsafe
+      );
+    }
+    const audit = targetContainmentAudit(
+      repositoryPath,
+      receipt.targetRevision,
+      head,
+      targetPatchIdCache
+    );
+    if (audit.method !== null) {
+      continue;
+    }
+    if (
+      runGit(
+        repositoryPath,
+        ["rev-parse", "--is-shallow-repository"],
+        true
+      ).stdout.trim() !== "false"
+    ) {
+      throw new SimpleChangesError(
+        `target-contains-head proof for ${branch.name} cannot be verified in a shallow clone: missing history hides whether target ${receipt.targetRevision} contains deleted head ${head}. Run \`git fetch --unshallow\`, then record the final reconciliation again.`,
+        EXIT_CODES.unsafe
+      );
+    }
+    throw new SimpleChangesError(
+      audit.exceededMaxCommits
+        ? `target-contains-head proof for ${branch.name} is not verified: deleted head ${head} is not in target ${receipt.targetRevision} and has more than ${PATCH_EQUIVALENCE_MAX_COMMITS} unique commits, too many to prove by patch equivalence. ${nextStep} ${reportable}`
+        : `target-contains-head proof for ${branch.name} is not verified: target ${receipt.targetRevision} neither contains deleted head ${head} nor has a patch-equivalent commit for each of its unique commits (merge and empty commits never match). ${nextStep} ${reportable}`,
+      EXIT_CODES.unsafe
+    );
   }
 };
 
@@ -1651,7 +1743,14 @@ const assertCurrentRemoteBranchReconciliation = (
     );
   }
   assertRemoteBranchAncestry(lease.primaryCheckout, receipt, ancestryProofs);
-  assertRemoteBranchSupersession(lease.primaryCheckout, receipt, supersessions);
+  assertRemoteBranchSupersession(
+    lease.primaryCheckout,
+    receipt,
+    supersessions,
+    {
+      phase: "loop-end",
+    }
+  );
 };
 
 const concurrentClaimFor = (
@@ -5122,10 +5221,17 @@ export const recordRemoteBranchReconciliation = (
         receipt,
         ancestryProofs
       );
+      const targetPatchIdCache = new Map<string, Map<string, string>>();
       assertRemoteBranchSupersession(
         lease.primaryCheckout,
         receipt,
-        supersessions
+        supersessions,
+        { phase: "record", targetPatchIdCache }
+      );
+      assertTargetContainsDeletedHeads(
+        lease.primaryCheckout,
+        receipt,
+        targetPatchIdCache
       );
       pinSupersededHeads(lease.primaryCheckout, lease.runId, supersessions);
       writeRemoteBranchAncestry(lease, receipt, ancestryProofs);

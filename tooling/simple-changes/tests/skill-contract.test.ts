@@ -530,6 +530,15 @@ describe("Simple Changes skill contract", () => {
       "`loop reconcile-remote-branches` refuses a shallow clone"
     );
     expect(normalizedCleanup).toContain(
+      "`loop reconcile-remote-branches` checks `target-contains-head` with Git: the deleted head must be present locally"
+    );
+    expect(normalizedCleanup).toContain(
+      "Git cannot check `provider-diff-empty`; record it only from the provider's own compare result"
+    );
+    expect(normalizedCleanup).toContain(
+      "When the check fails after the branch is already gone, ask the user whether its work shipped another way (supersession, below), or report it"
+    );
+    expect(normalizedCleanup).toContain(
       "that restores their work and is never a way to make the ledger fit"
     );
     expect(normalizedCleanup).toContain(
@@ -1000,6 +1009,15 @@ describe("Simple Changes skill contract", () => {
       "## Forbidden behaviors",
     ]) {
       expect(spec).toContain(heading);
+    }
+    // Remote-branch deletion proofs must match the runtime's verified set.
+    for (const guarantee of [
+      "or with Git-verified merged-head ancestry when the same MR was open at the opening head and merged at a descendant",
+      "`target-contains-head` is verified with Git (exact ancestry or full per-commit patch equivalence, whose patch IDs ignore whitespace) when the receipt is recorded",
+      "and without provider evidence of an empty diff, may close only with an explicitly user-approved supersession",
+      "explicitly user-approved supersession naming the deleted head, a reason, and replacement target commits",
+    ]) {
+      expect(normalizedSpec).toContain(guarantee);
     }
     // Every request mode the skill classifies must be specified.
     const modeTable = skill.match(MODE_TABLE_PATTERN);

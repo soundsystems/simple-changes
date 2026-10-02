@@ -111,14 +111,22 @@ discovered:
    recorded head of that merged MR, no open MR uses it, it is unprotected, and
    provider evidence proves there are no later commits. Record
    `merged-proposal-head` proof; an MR setting or branch name is not proof.
-5. Audit closed/unmerged branches separately from branches with no MR. Preserve
-   either class unless exact Git/provider evidence proves the target contains
-   the head or the provider diff is empty. Only then may it be deleted as
-   `deleted-proven-obsolete`. The one judgment-based exception is a
-   user-approved supersession (below) for a branch that is already gone or
-   that the user explicitly asked to delete; never delete a branch on that
-   basis without the user's explicit approval for that branch, and fetch its
-   head at full depth before any such deletion.
+5. Audit closed/unmerged branches separately from branches with no MR.
+   Preserve either class unless exact Git/provider evidence proves the target
+   contains the head or the provider diff is empty. Only then may it be deleted
+   as `deleted-proven-obsolete`. `loop reconcile-remote-branches` checks
+   `target-contains-head` with Git: the deleted head must be present locally and
+   the target must contain it by exact ancestry or full per-commit patch
+   equivalence (patch IDs ignore whitespace, as `git cherry` does, and merge or
+   empty commits never match), so fetch the head at full depth before deleting
+   the branch. When the check fails after the branch is already gone, ask the
+   user whether its work shipped another way (supersession, below), or report
+   it. Git cannot check `provider-diff-empty`; record it only from the
+   provider's own compare result. The one judgment-based exception is a
+   user-approved supersession (below) for a branch that is already gone or that
+   the user explicitly asked to delete; never delete a branch on that basis
+   without the user's explicit approval for that branch, and fetch its head at
+   full depth before any such deletion.
 6. Run `loop guard` immediately before each provider deletion and `loop verify`
    immediately after it. Never batch by prefix, wildcard, or age.
 7. Paginate a fresh final provider inventory. Reclassify any new or moved branch
@@ -168,14 +176,16 @@ record it as `deleted-proven-obsolete` with `obsoleteProof: null`, and add
 `approvedBy` (the user), and `reason`. `loop reconcile-remote-branches` refuses
 a shallow clone and verifies with Git that the deleted head is still present
 locally (fetch it at full depth first; GitLab keeps an MR's head at
-`refs/merge-requests/<iid>/head`), shares history with the target, is not in
-the target (record `target-contains-head` when it is), and that every
-replacement is in the target and is not an ancestor of the deleted head. It
-pins the deleted head at `refs/simple-changes/superseded/<run-id>/<head>`,
-keeps the approval in a sidecar beside the lease, and `loop end` checks it
-again. When the user instead wants the work back, restore the branch from that
-pin or its deleted head only at their request; that restores their work and is
-never a way to make the ledger fit. A restored branch records as preserved.
+`refs/merge-requests/<iid>/head`), shares history with the target, is not
+contained by the target through ancestry or patch equivalence (record
+`target-contains-head` when it is), and that every replacement is in the target
+and is not an ancestor of the deleted head. It pins the deleted head at
+`refs/simple-changes/superseded/<run-id>/<head>`, keeps the approval in a
+sidecar beside the lease, and `loop end` checks it again (there the target
+check is exact ancestry only, so a run recorded by 0.22.3 still ends). When the
+user instead wants the work back, restore the branch from that pin or its
+deleted head only at their request; that restores their work and is never a way
+to make the ledger fit. A restored branch records as preserved.
 
 `loop end` refuses a detected GitLab integration/reconciliation run when this
 receipt is missing, semantically unsafe, or stale against the final target

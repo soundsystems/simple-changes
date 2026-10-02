@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.22.4 - 2026-10-02
+
+- A GitLab Ship, Integrate, or Reconcile run can no longer record a deleted
+  closed-unmerged or no-merge-request branch as proven obsolete because the
+  target contains its head unless Git confirms that it does. Before, that
+  proof in the final remote-branch reconciliation receipt was taken on the
+  agent's word, so a mistaken receipt could close a run over a deleted branch's
+  unique work with nobody approving it. Now `loop reconcile-remote-branches`
+  requires the deleted head to be present locally and proves the target
+  contains it, either by exact ancestry or by matching each of its unique
+  commits to a patch-equivalent commit in the target: the same proof local
+  cleanup already uses, which ignores whitespace as `git cherry` does, never
+  matches a merge or empty commit, and gives up past 200 unique commits. When
+  the check fails, the refusal names the next step: fetch the head at full
+  depth (GitLab keeps a merge request's head at
+  `refs/merge-requests/<iid>/head` after its branch is deleted); in a shallow
+  clone, run `git fetch --unshallow` rather than being told the work was lost;
+  if the branch is already gone and its work shipped another way, record your
+  supersession approval from 0.22.3; otherwise report the branch to you. An
+  empty provider diff stays provider evidence that Git cannot check, recorded
+  only from GitLab's own compare result. The check runs where the receipt is
+  recorded, not again when the run ends, so a run whose receipt an earlier
+  version recorded still ends; the check that a supersession approval is
+  unnecessary now uses the same containment proof at record time, so an
+  approval cannot stand in for proof Git already has, while a 0.22.3 run that
+  superseded a cherry-picked head still ends. `SPEC.md` and the cleanup
+  reference now describe all three remote-branch deletion proofs: the
+  merged-head ancestry proof from 0.22.1, the Git-verified
+  target-contains-head proof, and the user-approved supersession from 0.22.3.
+<!-- simple-changelogs-signature agent="Fable 5.1" at="2026-10-02T16:17:10-05:00" -->
+
 ## 0.22.3 - 2026-10-02
 
 - Every Simple Changes reference longer than a hundred lines, and `SKILL.md`

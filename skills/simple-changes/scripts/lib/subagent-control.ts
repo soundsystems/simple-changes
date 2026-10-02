@@ -1,5 +1,5 @@
-import { lstatSync, readFileSync } from "node:fs";
-import { basename, dirname, resolve } from "node:path";
+import { lstatSync, readFileSync, realpathSync } from "node:fs";
+import { basename, dirname, isAbsolute, relative, resolve } from "node:path";
 
 /**
  * One in-flight background task as a Claude Code Stop hook reports it in
@@ -49,9 +49,12 @@ const IN_FLIGHT = new Set(["pending", "running"]);
 const RUN_ID_FIELD = /"runId"\s*:\s*"(run-[a-z0-9-]+)"/gu;
 const LOOP_ACTION = /(?:^|[\s;&|(])loop\s+([a-z][a-z-]*)/gu;
 const SEGMENT_END = /;|&&|\|\||\||\n|\s--(?:\s|$)/u;
-// A value ends at whitespace, a quote, or a shell operator or closer.
-const AGENT_FLAG = /--agent-id(?:=|\s+)(["']?)([^\s"';&|()<>`]+)\1/u;
-const RUN_FLAG = /--run-id(?:=|\s+)(["']?)([^\s"';&|()<>`]+)\1/u;
+// A value is a literal: it ends at whitespace, a quote, or a shell operator or
+// closer, and one that starts with `$` is a shell expansion, not an ID.
+const AGENT_FLAG =
+  /--agent-id(?:=|\s+)(["']?)([^\s"';&|()<>`$]+)\1(?=$|[\s"';&|()<>`])/u;
+const RUN_FLAG =
+  /--run-id(?:=|\s+)(["']?)([^\s"';&|()<>`$]+)\1(?=$|[\s"';&|()<>`])/u;
 // Actions that only read state prove nothing about who drives a run; `verify`
 // takes no owner and checks evidence anyone may check.
 const READ_ONLY_ACTIONS = new Set([
@@ -78,6 +81,12 @@ interface OwnerCommand {
   at: number;
   /** When its output arrived; null while it is still running. */
   completedAt: number | null;
+  /** The literal directory it ran in, or null when unknown. */
+  directory: string | null;
+  /** A subagent command that failed names its agent but shows no control. */
+  failed: boolean;
+  /** A read-only action names an agent but never shows control. */
+  readOnly: boolean;
   runIds: Set<string>;
 }
 
@@ -93,6 +102,7 @@ interface TranscriptBlock {
 
 interface TranscriptEntry {
   agentId?: unknown;
+  cwd?: unknown;
   isSidechain?: unknown;
   message?: { content?: unknown };
   timestamp?: unknown;
@@ -125,12 +135,53 @@ const resultText = (content: unknown): string => {
  */
 export const ownerLoopInvocations = (
   command: string
-): { action: string; agentId: string; runId: string | null }[] => {
-  const invocations: {
-    action: string;
-    agentId: string;
-    runId: string | null;
-  }[] = [];
+): { action: string; agentId: string; runId: string | null }[] =>
+  loopInvocations(command)
+    .filter((invocation) => !invocation.readOnly)
+    .map(({ action, agentId, runId }) => ({ action, agentId, runId }));
+
+interface LoopInvocation {
+  action: string;
+  agentId: string;
+  /** The literal directory the invocation ran in, or null when unknown. */
+  directory: string | null;
+  readOnly: boolean;
+  runId: string | null;
+}
+
+const REPO_FLAG =
+  /--repo(?:=|\s+)(["']?)([^\s"';&|()<>`$]+)\1(?=$|[\s"';&|()<>`])/u;
+const CHANGE_DIRECTORY =
+  /(?:^|[\s;&|(])(?:cd|pushd)\s+(["']?)([^\s"';&|()<>`]*)\1(?=$|[\s;&|()])/gu;
+
+const literalDirectory = (value: string | undefined): string | null =>
+  value && isAbsolute(value) && !value.includes("$") ? value : null;
+
+// Where an invocation ran: its own `--repo`, else the last `cd` before it,
+// else the shell's directory when the command never changed it. A `cd` to
+// anything but a literal absolute path makes the directory unknown.
+const invocationDirectory = (
+  command: string,
+  start: number,
+  segment: string,
+  shellDirectory: string | null
+): string | null => {
+  const repo = REPO_FLAG.exec(segment)?.[2];
+  if (repo) {
+    return literalDirectory(repo);
+  }
+  const changes = [...command.slice(0, start).matchAll(CHANGE_DIRECTORY)];
+  const last = changes.at(-1);
+  return last ? literalDirectory(last[2]) : shellDirectory;
+};
+
+// Every Simple Changes `loop` invocation naming a literal `--agent-id`,
+// read-only ones included.
+const loopInvocations = (
+  command: string,
+  shellDirectory: string | null = null
+): LoopInvocation[] => {
+  const invocations: LoopInvocation[] = [];
   for (const match of command.matchAll(LOOP_ACTION)) {
     const start = match.index ?? 0;
     if (!command.slice(0, start).includes("simple-changes")) {
@@ -140,10 +191,13 @@ export const ownerLoopInvocations = (
     const end = SEGMENT_END.exec(rest)?.index ?? rest.length;
     const segment = rest.slice(0, end);
     const agentId = AGENT_FLAG.exec(segment)?.[2];
-    if (agentId && !READ_ONLY_ACTIONS.has(match[1] ?? "")) {
+    if (agentId) {
+      const action = match[1] ?? "";
       invocations.push({
-        action: match[1] ?? "",
+        action,
         agentId,
+        directory: invocationDirectory(command, start, segment, shellDirectory),
+        readOnly: READ_ONLY_ACTIONS.has(action),
         runId: RUN_FLAG.exec(segment)?.[2] ?? null,
       });
     }
@@ -250,7 +304,10 @@ const recordBlock = (
     typeof block.id === "string" &&
     typeof block.input?.command === "string"
   ) {
-    const invocations = ownerLoopInvocations(block.input.command);
+    const invocations = loopInvocations(
+      block.input.command,
+      typeof entry.cwd === "string" ? literalDirectory(entry.cwd) : null
+    );
     if (invocations.length > 0) {
       commands.set(
         block.id,
@@ -259,6 +316,9 @@ const recordBlock = (
           agentId: invocation.agentId,
           at,
           completedAt: null,
+          directory: invocation.directory,
+          failed: false,
+          readOnly: invocation.readOnly,
           runIds: new Set(invocation.runId ? [invocation.runId] : []),
         }))
       );
@@ -272,24 +332,32 @@ const recordBlock = (
   ) {
     return;
   }
+  recordResult(block, block.tool_use_id, at, commands, dropFailed);
+};
+
+// Output completes its commands. A failed subagent command shows no control;
+// a run ID is read only from a successful start or takeover's JSON.
+const recordResult = (
+  block: TranscriptBlock,
+  toolUseId: string,
+  at: number,
+  commands: Map<string, OwnerCommand[]>,
+  dropFailed: boolean
+): void => {
   const failed = block.is_error === true;
-  if (failed && dropFailed) {
-    commands.delete(block.tool_use_id);
-    return;
-  }
-  for (const command of commands.get(block.tool_use_id) ?? []) {
+  for (const command of commands.get(toolUseId) ?? []) {
     command.completedAt = at;
+    command.failed = failed && dropFailed;
     if (
-      !failed &&
-      command.runIds.size === 0 &&
-      RUN_FROM_OUTPUT.has(command.action)
+      failed ||
+      command.runIds.size > 0 ||
+      !RUN_FROM_OUTPUT.has(command.action)
     ) {
-      for (const [, runId] of resultText(block.content).matchAll(
-        RUN_ID_FIELD
-      )) {
-        if (runId) {
-          command.runIds.add(runId);
-        }
+      continue;
+    }
+    for (const [, runId] of resultText(block.content).matchAll(RUN_ID_FIELD)) {
+      if (runId) {
+        command.runIds.add(runId);
       }
     }
   }
@@ -302,14 +370,7 @@ interface RunActivity {
   lastAt: number;
 }
 
-const runActivity = (
-  commands: OwnerCommand[],
-  runId: string,
-  ownerAgentId: string
-): RunActivity | null => {
-  const matching = commands.filter(
-    (command) => command.agentId === ownerAgentId && command.runIds.has(runId)
-  );
+const activityOf = (matching: OwnerCommand[]): RunActivity | null => {
   if (matching.length === 0) {
     return null;
   }
@@ -323,9 +384,58 @@ const runActivity = (
   };
 };
 
+// Owner commands that name the run literally.
+const runActivity = (
+  commands: OwnerCommand[],
+  runId: string,
+  ownerAgentId: string
+): RunActivity | null =>
+  activityOf(
+    commands.filter(
+      (command) =>
+        !(command.readOnly || command.failed) &&
+        command.agentId === ownerAgentId &&
+        command.runIds.has(runId)
+    )
+  );
+
+// Owner commands under the run's owner ID that name no run, as when the run
+// ID is a shell variable or `loop start` output went to a file.
+const unnamedOwnerCommands = (
+  commands: OwnerCommand[],
+  ownerAgentId: string
+): OwnerCommand[] =>
+  commands.filter(
+    (command) =>
+      !(command.readOnly || command.failed) &&
+      command.agentId === ownerAgentId &&
+      command.runIds.size === 0
+  );
+
+const canonical = (path: string): string => {
+  try {
+    return realpathSync(path);
+  } catch {
+    return resolve(path);
+  }
+};
+
+const within = (path: string, roots: string[]): boolean => {
+  const target = canonical(path);
+  return roots.some((root) => {
+    const offset = relative(canonical(root), target);
+    return offset === "" || !(offset.startsWith("..") || isAbsolute(offset));
+  });
+};
+
+const usesAgentId = (commands: OwnerCommand[], agentId: string): boolean =>
+  commands.some((command) => command.agentId === agentId);
+
 export interface RunToAttribute {
   leaseUpdatedAt: string;
   ownerAgentId: string;
+  /** The run's primary checkout and every worktree of its repository. */
+  repositoryRoots: string[];
   runId: string;
 }
 
@@ -350,7 +460,10 @@ interface SubagentTranscript {
  * drives a run only when the hook lists it as in flight, its own transcript
  * issued an owner `loop` command for the run, the parent's transcript did not
  * issue one since, and the lease was not written well after the subagent's
- * last such command, which would mean something else is driving it. An
+ * last such command, which would mean something else is driving it. When no
+ * command names the run literally, successful owner commands under the
+ * lease's exact owner ID count instead, but only when no parent command and
+ * no other running subagent ever used that ID. An
  * unreadable, oversized, or slow parent transcript proves nothing, so every
  * run stays the parent's and the guard blocks. Workflow agents are not
  * considered.
@@ -400,17 +513,40 @@ export const subagentControlIndex = (
     return NOBODY;
   }
   return {
-    controllerOf: ({ leaseUpdatedAt, ownerAgentId, runId }) => {
-      let best: { activity: RunActivity; task: HookBackgroundTask } | null =
-        null;
-      for (const { commands, task } of transcripts) {
-        const activity = runActivity(commands, runId, ownerAgentId);
-        if (activity && (!best || activity.lastAt > best.activity.lastAt)) {
-          best = { activity, task };
+    controllerOf: ({
+      leaseUpdatedAt,
+      ownerAgentId,
+      repositoryRoots,
+      runId,
+    }) => {
+      const leaseWrittenAt = Date.parse(leaseUpdatedAt);
+      // Without a literal run ID, the owner ID alone identifies the driver,
+      // but only while exactly one running subagent and never the parent
+      // used it.
+      const users = transcripts.filter(({ commands }) =>
+        usesAgentId(commands, ownerAgentId)
+      );
+      const ownerIdDriver =
+        users.length === 1 && !usesAgentId(parent, ownerAgentId)
+          ? users[0]
+          : undefined;
+      let best: Driver | null = null;
+      for (const transcript of transcripts) {
+        const driver = driverOf(
+          transcript,
+          transcript === ownerIdDriver,
+          runId,
+          ownerAgentId,
+          repositoryRoots
+        );
+        if (
+          driver &&
+          (!best || driver.activity.lastAt > best.activity.lastAt)
+        ) {
+          best = driver;
         }
       }
       const parentLastAt = runActivity(parent, runId, ownerAgentId)?.lastAt;
-      const leaseWrittenAt = Date.parse(leaseUpdatedAt);
       if (
         !best ||
         (parentLastAt !== undefined && parentLastAt >= best.activity.lastAt) ||
@@ -427,6 +563,48 @@ export const subagentControlIndex = (
       };
     },
   };
+};
+
+interface Driver {
+  activity: RunActivity;
+  task: HookBackgroundTask;
+}
+
+/**
+ * One subagent's evidence for a run. Commands naming the run count as they
+ * are. When the owner ID uniquely identifies this subagent, its commands that
+ * name no run count too, but those could serve another run under the same ID:
+ * at least one of them must have run in this run's repository, and no command
+ * still waiting for output excuses a later lease write.
+ */
+const driverOf = (
+  { commands, task }: SubagentTranscript,
+  ownerIdOnly: boolean,
+  runId: string,
+  ownerAgentId: string,
+  repositoryRoots: string[]
+): Driver | null => {
+  const named = commands.filter(
+    (command) =>
+      !(command.readOnly || command.failed) &&
+      command.agentId === ownerAgentId &&
+      command.runIds.has(runId)
+  );
+  const unnamed = ownerIdOnly
+    ? unnamedOwnerCommands(commands, ownerAgentId)
+    : [];
+  // Commands that name no run count only when one of them ran in this run's
+  // repository; otherwise they may serve another run under the same ID.
+  const inRepository = unnamed.some(
+    (command) =>
+      command.directory !== null && within(command.directory, repositoryRoots)
+  );
+  if (!inRepository) {
+    const activity = activityOf(named);
+    return activity ? { activity, task } : null;
+  }
+  const activity = activityOf([...named, ...unnamed]);
+  return activity ? { activity: { ...activity, inFlight: false }, task } : null;
 };
 
 export const parseHookBackgroundTasks = (

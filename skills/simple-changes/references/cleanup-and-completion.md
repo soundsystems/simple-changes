@@ -52,7 +52,14 @@ Every controller finalizes before it replies; see the finalize rule in
   running, the subagent's own transcript issued a Simple Changes `loop`
   command for the live run with its owner `--agent-id`, and neither the
   parent's transcript nor a later lease write shows control moving back: do
-  not finalize a run your running subagent drives. If the session also
+  not finalize a run your running subagent drives. When no command names the
+  run literally, as with `--run-id "$R"`, the subagent's successful owner
+  commands under the lease's exact literal `--agent-id` count instead, but
+  only if no parent command and no other running subagent ever used that ID;
+  give each agent its own ID. At least one of them must have run in the
+  run's checkout or one of its worktrees, by a literal `cd`, `--repo`, or the
+  recorded shell directory, and a still-running command never excuses a later
+  lease write. If the session also
   controls a run of its own, the hook still blocks and names both. Once the
   subagent finishes, or its run goes stale, the hook blocks the parent again
   until the run is finalized. Workflow agents are not excused yet, and an

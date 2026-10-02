@@ -2,6 +2,7 @@ import {
   existsSync,
   lstatSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   realpathSync,
   renameSync,
@@ -66,6 +67,31 @@ export interface TurnCheckResult {
   sessionId: string | null;
 }
 
+// The run's primary checkout and every linked worktree Git records for its
+// repository, read from `<common>/worktrees/*/gitdir`.
+const repositoryRoots = (lease: LoopLease): string[] => {
+  const roots = [lease.primaryCheckout];
+  const worktrees = resolve(lease.commonGitDirectory, "worktrees");
+  try {
+    for (const name of readdirSync(worktrees)) {
+      try {
+        const gitdir = readFileSync(
+          resolve(worktrees, name, "gitdir"),
+          "utf8"
+        ).trim();
+        if (gitdir) {
+          roots.push(dirname(resolve(worktrees, name, gitdir)));
+        }
+      } catch {
+        // A worktree without a readable gitdir is not a root.
+      }
+    }
+  } catch {
+    // No linked worktrees.
+  }
+  return roots;
+};
+
 const readLease = (commonGitDirectory: string): LoopLease | null => {
   try {
     return JSON.parse(
@@ -108,6 +134,7 @@ export const turnCheck = (
     return subagents.controllerOf({
       leaseUpdatedAt: lease.updatedAt,
       ownerAgentId: lease.ownerAgentId,
+      repositoryRoots: repositoryRoots(lease),
       runId: lease.runId,
     });
   };

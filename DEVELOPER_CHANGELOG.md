@@ -1,5 +1,44 @@
 # Developer changelog
 
+## 0.22.4 - 2026-10-02
+
+- `lib/loop-lease.ts`: new `assertTargetContainsDeletedHeads(repo, receipt,
+  targetPatchIdCache)`, called from `recordRemoteBranchReconciliation` after
+  the supersession check, walks every `deleted-proven-obsolete` branch with
+  `obsoleteProof: "target-contains-head"`: the head must pass `git cat-file
+  -e <head>^{commit}` and `targetContainmentAudit` must return a method
+  (exact ancestry or full per-commit `git patch-id --stable` equivalence, the
+  containment proof local cleanup shares, capped at
+  `PATCH_EQUIVALENCE_MAX_COMMITS` = 200). A failure in a shallow clone names
+  the shallow clone and says `git fetch --unshallow`; otherwise the refusal
+  distinguishes the commit cap from a missing patch-equivalent commit and
+  names the next step (fetch at `refs/merge-requests/<iid>/head`, record a
+  supersession, or report the branch). It is not re-run at `loop end`, which
+  already binds the receipt to the current target revision, so a receipt an
+  older client recorded without the check cannot strand a run.
+  `assertRemoteBranchSupersession` takes a required `check` argument,
+  `{ phase: "record", targetPatchIdCache }` or `{ phase: "loop-end" }`: the
+  "unnecessary" refusal uses `targetContainmentAudit` at record time, sharing
+  one patch-ID cache with the new check and naming the method in the message,
+  and stays `targetContainsRevision` exact ancestry at loop end.
+  `provider-diff-empty` is untouched.
+- `SPEC.md` now states the 0.22.1 merged-head ancestry proof, the Git-verified
+  `target-contains-head` proof, and the 0.22.3 user-approved supersession;
+  `references/cleanup-and-completion.md` step 5 and the supersession paragraph
+  are updated. `skill-contract.test.ts` pins six new sentences (three from
+  `SPEC.md`, three from the reference). `loop-lease.test.ts` adds a shared
+  `deletedHeadFixture` and two Git-backed tests: target-contains-head
+  verification (exact ancestry, a cherry-pick, unique work, a partial
+  cherry-pick, a 201-commit branch built with `git fast-import`, a missing
+  object, a shallow clone, `provider-diff-empty` without the object, and a
+  head gc'd before `loop end`) and a 0.22.3 receipt whose supersession of a
+  patch-equivalent head still ends at loop end. Full suite: 697 tests.
+  Independent review by Opus 5.5 (high) found a loop-end regression for
+  0.22.3 supersessions, a shallow-clone refusal that suggested lost work, and
+  doc and test gaps; all are fixed and a re-review confirmed the fixes.
+  Guidance stays at 24; `.simple-changes.json` is unchanged.
+<!-- simple-changelogs-signature agent="Fable 5.1" at="2026-10-02T16:17:10-05:00" -->
+
 ## 0.22.3 - 2026-10-02
 
 - `skills/simple-changes/SKILL.md` gains a `metadata.models` frontmatter key

@@ -1085,6 +1085,29 @@ export interface RemoteBranchAncestryRecord {
   schemaVersion: 1;
 }
 
+/**
+ * User-approved supersession for a deleted closed-unmerged or no-proposal
+ * branch whose head the target does not contain: the named user judged its
+ * work replaced by the named target commits. Persisted in a sidecar beside the
+ * lease (never inside the lease) so older clients can still read the lease;
+ * the recorder verifies with git that the deleted head is still present
+ * locally and that every replacement is in the target after the branch forked.
+ */
+export interface RemoteBranchSupersession {
+  approvedBy: string;
+  branch: string;
+  initialHeadRevision: string;
+  reason: string;
+  replacementRevisions: string[];
+}
+
+export interface RemoteBranchSupersessionRecord {
+  receiptDigest: string;
+  runId: string;
+  schemaVersion: 1;
+  supersessions: RemoteBranchSupersession[];
+}
+
 export interface RemoteBranchReconciliationEntry {
   classification:
     | "canonical-target"

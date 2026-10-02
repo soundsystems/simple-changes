@@ -59,6 +59,7 @@ import {
   validatePostCleanupRecovery,
   validateRemoteBranchAncestryRecord,
   validateRemoteBranchReconciliation,
+  validateRemoteBranchSupersessionRecord,
 } from "./remote-branch-reconciliation.ts";
 import { validateSchema, validateSchemaDocument } from "./schema.ts";
 import type {
@@ -83,6 +84,8 @@ import type {
   RemoteBranchAncestryProof,
   RemoteBranchAncestryRecord,
   RemoteBranchReconciliationReceipt,
+  RemoteBranchSupersession,
+  RemoteBranchSupersessionRecord,
   RepositoryInventory,
   RequestMode,
   ShipmentOutcomeReceipt,
@@ -112,6 +115,7 @@ const LOCK_DIRECTORY = "active-loop.lock";
 const LOCK_OWNER_FILENAME = "owner.json";
 const RECOVERY_HISTORY_DIRECTORY = "history";
 const REMOTE_BRANCH_ANCESTRY_DIRECTORY = "remote-branch-ancestry";
+const REMOTE_BRANCH_SUPERSESSION_DIRECTORY = "remote-branch-supersession";
 const STALE_LOCK_MINIMUM_AGE_MS = 5000;
 const RUN_ID_PATTERN = /^run-[a-z0-9-]+$/u;
 const DIGEST_PATTERN = /^[0-9a-f]{64}$/u;
@@ -1272,28 +1276,58 @@ const currentTargetRevision = (lease: LoopLease): string => {
   return revision;
 };
 
-const remoteBranchAncestryPath = (
+type ReceiptSidecarDirectory =
+  | typeof REMOTE_BRANCH_ANCESTRY_DIRECTORY
+  | typeof REMOTE_BRANCH_SUPERSESSION_DIRECTORY;
+
+const receiptSidecarPath = (
   commonGitDirectory: string,
+  directory: ReceiptSidecarDirectory,
   runId: string
 ): string =>
   assertNoSymlinkAncestors(
     commonGitDirectory,
-    join(
-      STATE_DIRECTORY,
-      REMOTE_BRANCH_ANCESTRY_DIRECTORY,
-      `${requiredRunId(runId)}.json`
-    )
+    join(STATE_DIRECTORY, directory, `${requiredRunId(runId)}.json`)
   );
 
-const readRemoteBranchAncestry = (
+const readReceiptSidecar = (
   commonGitDirectory: string,
+  directory: ReceiptSidecarDirectory,
   runId: string
 ): unknown => {
-  const path = remoteBranchAncestryPath(commonGitDirectory, runId);
+  const path = receiptSidecarPath(commonGitDirectory, directory, runId);
   if (!existsSync(path)) {
     return null;
   }
   return readImmutableRecoveryEvent<object>(path);
+};
+
+/**
+ * Writes or removes one receipt sidecar atomically. Callers hold the state
+ * lock; a null record removes a stale sidecar from an earlier receipt.
+ */
+const writeReceiptSidecar = (
+  lease: LoopLease,
+  directory: ReceiptSidecarDirectory,
+  record: object | null
+): void => {
+  const path = receiptSidecarPath(
+    lease.commonGitDirectory,
+    directory,
+    lease.runId
+  );
+  if (record === null) {
+    rmSync(path, { force: true });
+    return;
+  }
+  mkdirSync(dirname(path), { mode: 0o700, recursive: true });
+  const temporaryPath = `${path}.${process.pid}.${randomUUID()}.tmp`;
+  writeFileSync(temporaryPath, `${JSON.stringify(record, null, 2)}\n`, {
+    encoding: "utf8",
+    flag: "wx",
+    mode: 0o600,
+  });
+  renameSync(temporaryPath, path);
 };
 
 /**
@@ -1306,30 +1340,45 @@ const writeRemoteBranchAncestry = (
   lease: LoopLease,
   receipt: RemoteBranchReconciliationReceipt,
   proofs: RemoteBranchAncestryProof[]
-): void => {
-  const path = remoteBranchAncestryPath(lease.commonGitDirectory, lease.runId);
-  if (proofs.length === 0) {
-    rmSync(path, { force: true });
-    return;
-  }
-  const record = validateSchema<RemoteBranchAncestryRecord>(
-    "remote-branch-ancestry",
-    {
-      proofs,
-      receiptDigest: remoteBranchReconciliationDigest(receipt),
-      runId: lease.runId,
-      schemaVersion: 1,
-    }
+): void =>
+  writeReceiptSidecar(
+    lease,
+    REMOTE_BRANCH_ANCESTRY_DIRECTORY,
+    proofs.length === 0
+      ? null
+      : validateSchema<RemoteBranchAncestryRecord>("remote-branch-ancestry", {
+          proofs,
+          receiptDigest: remoteBranchReconciliationDigest(receipt),
+          runId: lease.runId,
+          schemaVersion: 1,
+        })
   );
-  mkdirSync(dirname(path), { mode: 0o700, recursive: true });
-  const temporaryPath = `${path}.${process.pid}.${randomUUID()}.tmp`;
-  writeFileSync(temporaryPath, `${JSON.stringify(record, null, 2)}\n`, {
-    encoding: "utf8",
-    flag: "wx",
-    mode: 0o600,
-  });
-  renameSync(temporaryPath, path);
-};
+
+/**
+ * Supersession approvals follow the ancestry sidecar's rules: beside the
+ * lease, bound to the exact receipt digest, replaced or removed whenever a
+ * receipt is recorded, and kept afterward as audit evidence.
+ */
+const writeRemoteBranchSupersession = (
+  lease: LoopLease,
+  receipt: RemoteBranchReconciliationReceipt,
+  supersessions: RemoteBranchSupersession[]
+): void =>
+  writeReceiptSidecar(
+    lease,
+    REMOTE_BRANCH_SUPERSESSION_DIRECTORY,
+    supersessions.length === 0
+      ? null
+      : validateSchema<RemoteBranchSupersessionRecord>(
+          "remote-branch-supersession",
+          {
+            receiptDigest: remoteBranchReconciliationDigest(receipt),
+            runId: lease.runId,
+            schemaVersion: 1,
+            supersessions,
+          }
+        )
+  );
 
 /**
  * The receipt validator is pure, so an ancestry proof is only a claim until
@@ -1370,6 +1419,147 @@ const assertRemoteBranchAncestry = (
   }
 };
 
+const SUPERSEDED_HEAD_REF_PREFIX = "refs/simple-changes/superseded/";
+
+const supersededHeadRef = (runId: string, head: string): string =>
+  `${SUPERSEDED_HEAD_REF_PREFIX}${requiredRunId(runId)}/${head}`;
+
+/**
+ * A supersession approval is a user's judgment, but its facts are Git's: the
+ * deleted head must still exist locally (so the work stays auditable and
+ * restorable) and lie outside the target (otherwise target-contains-head is
+ * the proof to record), and every replacement must be in the target without
+ * being an ancestor of the deleted head, so the shared fork point can never be
+ * named as the replacement. That last check is negative, so a shallow clone,
+ * whose boundary commits hide their parents, or a head with no history shared
+ * with the target would pass it falsely; both fail closed. Missing objects fail
+ * closed.
+ */
+const assertRemoteBranchSupersession = (
+  repositoryPath: string,
+  receipt: RemoteBranchReconciliationReceipt,
+  supersessions: readonly RemoteBranchSupersession[]
+): void => {
+  if (
+    supersessions.length > 0 &&
+    runGit(
+      repositoryPath,
+      ["rev-parse", "--is-shallow-repository"],
+      true
+    ).stdout.trim() !== "false"
+  ) {
+    throw new SimpleChangesError(
+      "Supersession cannot be verified in a shallow clone: Git cannot prove a replacement came after the branch forked when commit parents are missing. Run `git fetch --unshallow` (and fetch the deleted head at full depth), then record the final reconciliation again.",
+      EXIT_CODES.unsafe
+    );
+  }
+  for (const supersession of supersessions) {
+    const head = supersession.initialHeadRevision;
+    const reportable = `Report branch ${supersession.branch} and deleted head ${head} to the user; this receipt cannot be recorded.`;
+    if (
+      runGit(repositoryPath, ["cat-file", "-e", `${head}^{commit}`], true)
+        .exitCode !== 0
+    ) {
+      throw new SimpleChangesError(
+        `Supersession of ${supersession.branch} is not verified: deleted head ${head} is not present locally. Fetch it first at full depth (GitLab keeps a merge request's head at refs/merge-requests/<iid>/head after its branch is deleted). ${reportable}`,
+        EXIT_CODES.unsafe
+      );
+    }
+    if (
+      runGit(
+        repositoryPath,
+        [
+          "merge-base",
+          `${head}^{commit}`,
+          `${receipt.targetRevision}^{commit}`,
+        ],
+        true
+      ).exitCode !== 0
+    ) {
+      throw new SimpleChangesError(
+        `Supersession of ${supersession.branch} is not verified: deleted head ${head} shares no history with target ${receipt.targetRevision}. ${reportable}`,
+        EXIT_CODES.unsafe
+      );
+    }
+    if (targetContainsRevision(repositoryPath, receipt.targetRevision, head)) {
+      throw new SimpleChangesError(
+        `Supersession of ${supersession.branch} is unnecessary: target ${receipt.targetRevision} already contains deleted head ${head}, so record target-contains-head proof instead.`,
+        EXIT_CODES.validation
+      );
+    }
+    for (const replacement of supersession.replacementRevisions) {
+      if (
+        !targetContainsRevision(
+          repositoryPath,
+          receipt.targetRevision,
+          replacement
+        )
+      ) {
+        throw new SimpleChangesError(
+          `Supersession of ${supersession.branch} is not verified: replacement ${replacement} is not contained in target ${receipt.targetRevision} (or is missing locally). ${reportable}`,
+          EXIT_CODES.unsafe
+        );
+      }
+      if (targetContainsRevision(repositoryPath, head, replacement)) {
+        throw new SimpleChangesError(
+          `Supersession of ${supersession.branch} is not verified: replacement ${replacement} is already an ancestor of deleted head ${head}, so it cannot be the work that replaced it. ${reportable}`,
+          EXIT_CODES.unsafe
+        );
+      }
+    }
+  }
+};
+
+/**
+ * A deleted head is otherwise an unreachable object that gc may remove, which
+ * would leave the run unable to end and the work unrecoverable. Pin each
+ * approved head under `refs/simple-changes/superseded/<runId>/<head>`; the pin
+ * is kept afterward so the user can restore the branch from it.
+ */
+const pinSupersededHeads = (
+  repositoryPath: string,
+  runId: string,
+  supersessions: readonly RemoteBranchSupersession[]
+): void => {
+  for (const { branch, initialHeadRevision } of supersessions) {
+    const pinned = runGit(
+      repositoryPath,
+      [
+        "update-ref",
+        "-m",
+        `simple-changes: pin superseded ${branch}`,
+        supersededHeadRef(runId, initialHeadRevision),
+        initialHeadRevision,
+      ],
+      true
+    );
+    if (pinned.exitCode !== 0) {
+      throw new SimpleChangesError(
+        `Could not pin superseded head ${initialHeadRevision} of ${branch}: ${pinned.stderr.trim()}`,
+        EXIT_CODES.unsafe
+      );
+    }
+  }
+};
+
+const isSupersededShape = (
+  branch: RemoteBranchReconciliationReceipt["branches"][number]
+): boolean =>
+  branch.disposition === "deleted-proven-obsolete" &&
+  branch.obsoleteProof === null;
+
+/** A deleted-merged branch the exact merged-proposal-head rule cannot prove. */
+const needsAncestryShape = (
+  branch: RemoteBranchReconciliationReceipt["branches"][number]
+): boolean =>
+  branch.disposition === "deleted-merged" &&
+  (branch.proposals.some((proposal) => proposal.state === "open") ||
+    !branch.proposals.some(
+      (proposal) =>
+        proposal.state === "merged" &&
+        proposal.headRevision === branch.initialHeadRevision
+    ));
+
 const assertCurrentRemoteBranchReconciliation = (
   lease: LoopLease,
   inventory: RepositoryInventory
@@ -1394,8 +1584,9 @@ const assertCurrentRemoteBranchReconciliation = (
       EXIT_CODES.unsafe
     );
   }
-  const storedAncestry = readRemoteBranchAncestry(
+  const storedAncestry = readReceiptSidecar(
     lease.commonGitDirectory,
+    REMOTE_BRANCH_ANCESTRY_DIRECTORY,
     lease.runId
   );
   const ancestryProofs =
@@ -1406,12 +1597,33 @@ const assertCurrentRemoteBranchReconciliation = (
           lease.runId,
           receipt
         );
+  const storedSupersession = readReceiptSidecar(
+    lease.commonGitDirectory,
+    REMOTE_BRANCH_SUPERSESSION_DIRECTORY,
+    lease.runId
+  );
+  const supersessions =
+    storedSupersession === null
+      ? []
+      : validateRemoteBranchSupersessionRecord(
+          storedSupersession,
+          lease.runId,
+          receipt
+        );
   try {
-    validateRemoteBranchReconciliation(receipt, ancestryProofs);
+    validateRemoteBranchReconciliation(receipt, ancestryProofs, supersessions);
   } catch (error) {
-    if (storedAncestry === null && error instanceof SimpleChangesError) {
+    const missing = [
+      storedAncestry === null && receipt.branches.some(needsAncestryShape)
+        ? "merged-head ancestry proof"
+        : null,
+      storedSupersession === null && receipt.branches.some(isSupersededShape)
+        ? "supersession approval"
+        : null,
+    ].filter((kind) => kind !== null);
+    if (missing.length > 0 && error instanceof SimpleChangesError) {
       throw SimpleChangesError.withCause(
-        `${error.message} No merged-head ancestry proof sidecar exists for ${lease.runId}; if one was recorded it is missing, so record the final reconciliation again.`,
+        `${error.message} No ${missing.join(" or ")} sidecar exists for ${lease.runId}; if one was recorded it is missing, so record the final reconciliation again.`,
         error.exitCode,
         error
       );
@@ -1439,6 +1651,7 @@ const assertCurrentRemoteBranchReconciliation = (
     );
   }
   assertRemoteBranchAncestry(lease.primaryCheckout, receipt, ancestryProofs);
+  assertRemoteBranchSupersession(lease.primaryCheckout, receipt, supersessions);
 };
 
 const concurrentClaimFor = (
@@ -4835,9 +5048,13 @@ export const recordRemoteBranchReconciliation = (
 } => {
   const ownerAgentId = requiredText(ownerAgentIdInput, "agent ID");
   const split = splitRemoteBranchReconciliationInput(receiptInput);
-  const { ancestryProofs } = split;
+  const { ancestryProofs, supersessions } = split;
   const receipt: RemoteBranchReconciliationReceipt =
-    validateRemoteBranchReconciliation(split.receipt, ancestryProofs);
+    validateRemoteBranchReconciliation(
+      split.receipt,
+      ancestryProofs,
+      supersessions
+    );
   const opening = locateRepository(repositoryPath);
   return withStateLock(
     opening.repository.commonGitDirectory,
@@ -4905,7 +5122,14 @@ export const recordRemoteBranchReconciliation = (
         receipt,
         ancestryProofs
       );
+      assertRemoteBranchSupersession(
+        lease.primaryCheckout,
+        receipt,
+        supersessions
+      );
+      pinSupersededHeads(lease.primaryCheckout, lease.runId, supersessions);
       writeRemoteBranchAncestry(lease, receipt, ancestryProofs);
+      writeRemoteBranchSupersession(lease, receipt, supersessions);
       const reconciledAt = new Date().toISOString();
       return writeLease({
         ...withMutationEvidence(lease, reconciledAt),

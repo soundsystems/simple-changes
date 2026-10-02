@@ -6,10 +6,12 @@ import {
   validatePostCleanupRecovery,
   validateRemoteBranchAncestryRecord,
   validateRemoteBranchReconciliation,
+  validateRemoteBranchSupersessionRecord,
 } from "../../../skills/simple-changes/scripts/lib/remote-branch-reconciliation.ts";
 import type {
   RemoteBranchAncestryProof,
   RemoteBranchReconciliationReceipt,
+  RemoteBranchSupersession,
 } from "../../../skills/simple-changes/scripts/lib/types.ts";
 
 const SHA = {
@@ -311,6 +313,60 @@ const shippedBranch = (value: RemoteBranchReconciliationReceipt) => {
   const branch = value.branches.find((entry) => entry.name === "fix/shipped");
   if (!branch) {
     throw new Error("missing fast-forward fixture branch");
+  }
+  return branch;
+};
+
+const SUPERSEDED = {
+  head: "4".repeat(40),
+  replacement: "5".repeat(40),
+};
+
+/**
+ * The hash !981 shape: a branch with a closed MR at its opening head was
+ * deleted outside the run while its head stayed outside the target, because
+ * the same work shipped through a different commit.
+ */
+const supersededReceipt = (): RemoteBranchReconciliationReceipt => {
+  const value = receipt();
+  value.branches = [
+    ...value.branches.filter((branch) => branch.name !== "feature/merged"),
+    {
+      classification: "closed-unmerged",
+      disposition: "deleted-proven-obsolete",
+      evidence: [
+        "MR !981 closed at the opening head; the user approved deleting the branch as superseded by target commits.",
+      ],
+      finalHeadRevision: null,
+      initialHeadRevision: SUPERSEDED.head,
+      name: "feature/superseded",
+      obsoleteProof: null,
+      proposals: [
+        { headRevision: SUPERSEDED.head, objectId: "981", state: "closed" },
+      ],
+      protected: false,
+    },
+  ];
+  return recomputeCoverage(value);
+};
+
+const supersession = (
+  overrides: Partial<RemoteBranchSupersession> = {}
+): RemoteBranchSupersession => ({
+  approvedBy: "jaay",
+  branch: "feature/superseded",
+  initialHeadRevision: SUPERSEDED.head,
+  reason: "Shipped through a different commit the same day.",
+  replacementRevisions: [SUPERSEDED.replacement],
+  ...overrides,
+});
+
+const supersededBranch = (value: RemoteBranchReconciliationReceipt) => {
+  const branch = value.branches.find(
+    (entry) => entry.name === "feature/superseded"
+  );
+  if (!branch) {
+    throw new Error("missing superseded fixture branch");
   }
   return branch;
 };
@@ -767,6 +823,257 @@ describe("remote branch reconciliation", () => {
     ).toThrow("do not match this run's recorded reconciliation receipt");
     expect(() =>
       validateRemoteBranchAncestryRecord(record, "run-abc", receipt())
+    ).toThrow("do not match this run's recorded reconciliation receipt");
+  });
+
+  test("accepts a closed-unmerged branch deleted with an approved supersession", () => {
+    const value = supersededReceipt();
+    expect(
+      validateRemoteBranchReconciliation(value, [], [supersession()])
+    ).toEqual(value);
+    expect(() => validateRemoteBranchReconciliation(value)).toThrow(
+      "audited deletion requires deleted-proven-obsolete, no final ref, and target containment or an empty provider diff"
+    );
+  });
+
+  test("accepts a no-proposal branch deleted with an approved supersession", () => {
+    const value = supersededReceipt();
+    const branch = supersededBranch(value);
+    branch.classification = "no-proposal";
+    branch.proposals = [];
+    recomputeCoverage(value);
+    expect(
+      validateRemoteBranchReconciliation(value, [], [supersession()])
+    ).toEqual(value);
+  });
+
+  test("binds a supersession approval to the exact deleted head", () => {
+    expect(() =>
+      validateRemoteBranchReconciliation(
+        supersededReceipt(),
+        [],
+        [supersession({ initialHeadRevision: "6".repeat(40) })]
+      )
+    ).toThrow("must name the exact initial branch head");
+  });
+
+  test("rejects blank, duplicate, or self-referential supersession evidence", () => {
+    for (const overrides of [{ approvedBy: "  " }, { reason: "\t" }]) {
+      expect(() =>
+        validateRemoteBranchReconciliation(
+          supersededReceipt(),
+          [],
+          [supersession(overrides)]
+        )
+      ).toThrow("nonblank approver and reason");
+    }
+    for (const replacementRevisions of [
+      [SUPERSEDED.replacement, SUPERSEDED.replacement],
+      [SUPERSEDED.head],
+    ]) {
+      expect(() =>
+        validateRemoteBranchReconciliation(
+          supersededReceipt(),
+          [],
+          [supersession({ replacementRevisions })]
+        )
+      ).toThrow("distinct target commits other than the deleted head");
+    }
+    expect(() =>
+      validateRemoteBranchReconciliation(
+        supersededReceipt(),
+        [],
+        [supersession({ replacementRevisions: [] })]
+      )
+    ).toThrow("Invalid remote-branch-supersession approval");
+  });
+
+  test("keeps supersession to deleted closed-unmerged or no-proposal branches", () => {
+    const withProof = supersededReceipt();
+    supersededBranch(withProof).obsoleteProof = "target-contains-head";
+    expect(() =>
+      validateRemoteBranchReconciliation(withProof, [], [supersession()])
+    ).toThrow("a null obsoleteProof");
+
+    const remaining = supersededReceipt();
+    supersededBranch(remaining).finalHeadRevision = SUPERSEDED.head;
+    recomputeCoverage(remaining);
+    expect(() =>
+      validateRemoteBranchReconciliation(remaining, [], [supersession()])
+    ).toThrow("no final ref");
+
+    const open = supersededReceipt();
+    supersededBranch(open).proposals.push({
+      headRevision: SUPERSEDED.head,
+      objectId: "982",
+      state: "open",
+    });
+    recomputeCoverage(open);
+    expect(() =>
+      validateRemoteBranchReconciliation(open, [], [supersession()])
+    ).toThrow("an open proposal branch cannot be deleted");
+
+    const merged = supersededReceipt();
+    supersededBranch(merged).proposals.push({
+      headRevision: SUPERSEDED.head,
+      objectId: "983",
+      state: "merged",
+    });
+    recomputeCoverage(merged);
+    expect(() =>
+      validateRemoteBranchReconciliation(merged, [], [supersession()])
+    ).toThrow("closed-unmerged requires closed proposal evidence");
+
+    const ambiguous = supersededReceipt();
+    supersededBranch(ambiguous).classification = "ambiguous";
+    expect(() =>
+      validateRemoteBranchReconciliation(ambiguous, [], [supersession()])
+    ).toThrow("requires a closed-unmerged or no-proposal classification");
+  });
+
+  test("rejects supersession on the target, protected, unknown, or doubly proven branches", () => {
+    expect(() =>
+      validateRemoteBranchReconciliation(
+        supersededReceipt(),
+        [],
+        [supersession({ branch: "main", initialHeadRevision: SHA.target })]
+      )
+    ).toThrow(
+      "supersession approval cannot apply to the canonical target or a protected branch"
+    );
+    const protectedBranch = supersededReceipt();
+    supersededBranch(protectedBranch).protected = true;
+    expect(() =>
+      validateRemoteBranchReconciliation(protectedBranch, [], [supersession()])
+    ).toThrow(
+      "supersession approval cannot apply to the canonical target or a protected branch"
+    );
+    const arrived = supersededReceipt();
+    supersededBranch(arrived).initialHeadRevision = null;
+    recomputeCoverage(arrived);
+    expect(() =>
+      validateRemoteBranchReconciliation(arrived, [], [supersession()])
+    ).toThrow("the branch must appear in the initial or final inventory");
+    for (const approvals of [
+      [supersession(), supersession()],
+      [supersession({ branch: "missing" })],
+    ]) {
+      expect(() =>
+        validateRemoteBranchReconciliation(supersededReceipt(), [], approvals)
+      ).toThrow("must name exactly one ledger branch");
+    }
+    expect(() =>
+      validateRemoteBranchReconciliation(
+        supersededReceipt(),
+        [
+          {
+            branch: "feature/superseded",
+            initialHeadRevision: SUPERSEDED.head,
+            mergedHeadRevision: SUPERSEDED.head,
+            proposalObjectId: "981",
+          },
+        ],
+        [supersession()]
+      )
+    ).toThrow(
+      "cannot carry both merged-head ancestry proof and a supersession approval"
+    );
+  });
+
+  test("accepts ancestry proof and a supersession on different branches together", () => {
+    const value = fastForwardReceipt();
+    value.branches.push(supersededBranch(supersededReceipt()));
+    recomputeCoverage(value);
+    expect(
+      validateRemoteBranchReconciliation(
+        value,
+        [ancestryProof()],
+        [supersession()]
+      )
+    ).toEqual(value);
+    expect(() =>
+      validateRemoteBranchReconciliation(value, [ancestryProof()])
+    ).toThrow("audited deletion requires deleted-proven-obsolete");
+  });
+
+  test("names a blank supersession approver or reason in the receipt input", () => {
+    for (const blank of [{ approvedBy: "   " }, { reason: " \n" }]) {
+      const input = structuredClone(supersededReceipt()) as unknown as {
+        branches: Record<string, unknown>[];
+      };
+      const superseded = input.branches.find(
+        (branch) => branch.name === "feature/superseded"
+      );
+      if (!superseded) {
+        throw new Error("missing input branch");
+      }
+      const { branch: _branch, ...approval } = supersession(blank);
+      superseded.supersession = approval;
+      expect(() => splitRemoteBranchReconciliationInput(input)).toThrow(
+        "supersession requires a nonblank approver and reason"
+      );
+    }
+  });
+
+  test("splits input supersession out of the embedded receipt", () => {
+    const value = supersededReceipt();
+    const input = structuredClone(value) as unknown as {
+      branches: Record<string, unknown>[];
+    };
+    const superseded = input.branches.find(
+      (branch) => branch.name === "feature/superseded"
+    );
+    if (!superseded) {
+      throw new Error("missing input branch");
+    }
+    superseded.supersession = {
+      approvedBy: " jaay ",
+      initialHeadRevision: SUPERSEDED.head,
+      reason: "Shipped through a different commit the same day.\n",
+      replacementRevisions: [SUPERSEDED.replacement],
+    };
+    expect(() => validateRemoteBranchReconciliation(input)).toThrow(
+      "Invalid remote-branch-reconciliation"
+    );
+    const split = splitRemoteBranchReconciliationInput(input);
+    expect(split.ancestryProofs).toEqual([]);
+    expect(split.supersessions).toEqual([supersession()]);
+    expect(split.receipt).toEqual(value);
+    expect(
+      validateRemoteBranchReconciliation(
+        split.receipt,
+        split.ancestryProofs,
+        split.supersessions
+      )
+    ).toEqual(value);
+
+    superseded.supersession = { ...supersession() };
+    expect(() => splitRemoteBranchReconciliationInput(input)).toThrow(
+      "must be an object naming initialHeadRevision"
+    );
+    const { branch: _branch, ...withoutBranch } = supersession();
+    superseded.supersession = { ...withoutBranch, verified: true };
+    expect(() => splitRemoteBranchReconciliationInput(input)).toThrow(
+      "Invalid remote-branch-supersession approval"
+    );
+  });
+
+  test("re-joins supersession sidecars only with the exact run and receipt", () => {
+    const value = supersededReceipt();
+    const record = {
+      receiptDigest: remoteBranchReconciliationDigest(value),
+      runId: "run-abc",
+      schemaVersion: 1,
+      supersessions: [supersession()],
+    };
+    expect(
+      validateRemoteBranchSupersessionRecord(record, "run-abc", value)
+    ).toEqual([supersession()]);
+    expect(() =>
+      validateRemoteBranchSupersessionRecord(record, "run-other", value)
+    ).toThrow("do not match this run's recorded reconciliation receipt");
+    expect(() =>
+      validateRemoteBranchSupersessionRecord(record, "run-abc", receipt())
     ).toThrow("do not match this run's recorded reconciliation receipt");
   });
 

@@ -518,6 +518,21 @@ describe("Simple Changes skill contract", () => {
       "Never recreate a deleted branch to make the ledger fit"
     );
     expect(normalizedCleanup).toContain(
+      "never delete a branch on that basis without the user's explicit approval for that branch"
+    );
+    expect(normalizedCleanup).toContain(
+      "never make that judgment yourself. Only when the user confirms the branch was superseded"
+    );
+    expect(normalizedCleanup).toContain(
+      "every replacement is in the target and is not an ancestor of the deleted head"
+    );
+    expect(normalizedCleanup).toContain(
+      "`loop reconcile-remote-branches` refuses a shallow clone"
+    );
+    expect(normalizedCleanup).toContain(
+      "that restores their work and is never a way to make the ledger fit"
+    );
+    expect(normalizedCleanup).toContain(
       "`loop end` refuses a detected GitLab integration/reconciliation run"
     );
     expect(normalizedGitlab).toContain(

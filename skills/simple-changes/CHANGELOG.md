@@ -1,5 +1,51 @@
 # Changelog
 
+## 0.22.5 - 2026-10-02
+
+- The turn-end guard now credits a Claude Code background subagent that drives
+  a Ship run through a shell variable the same command assigned, such as
+  `R=run-…; … loop exec --run-id $R` or `W=/path; cd $W`. 0.22.2 treated every
+  value containing `$` as unknown, so a subagent that passed its agent id
+  literally but kept the run id and directory in variables it had just
+  assigned was never credited, and the guard kept telling the parent session
+  to finalize a run the subagent was still driving; that is what happened in
+  the hash 0.22.4 sync, and replaying its transcript, 0.22.4 credits nobody
+  while 0.22.5 credits the subagent. A `$NAME` value counts as the literal
+  only when the same command assigns NAME exactly once, as a plain token with
+  no space, quote, shell operator, or leading `-`, as its own unconditional
+  top-level statement, before using it. Anything else stays a variable: a
+  prefix, subshell, chained, or conditional assignment, `+=`, a builtin that
+  assigns (`for`, `read`, `unset`, `printf -v`, and the like), any command
+  containing `eval` or an `if`, `while`, `until`, `case`, or `{ }` block, an
+  assignment or use in a comment or heredoc, a `$(…)` value, or a value set by
+  an earlier command. This is a conservative reading, not a shell, so pass ids
+  literally when in doubt. When a running subagent used the run's owner agent
+  id but still is not credited, the blocking message now names the exact
+  cause: a shared id, a different run named, a failed command, no command in
+  the run's repository, a later command by the session itself, or a later
+  write to the run. Unless the evidence shows control moved away from that
+  agent, it also asks the session to wait for the agent instead of finalizing.
+- `loop refresh-scope` now accepts a changed path the first scope never
+  recorded when the refreshed plan preserves it in a worktree that is not a
+  scoped unit's source, such as another agent's actively changing checkout.
+  Before, a refresh refused every unrecorded path, even one the plan
+  preserved, so in the hash 0.22.4 sync, where main moved after review, the
+  shipped changelog needed a merge resolution, and two Codex worktrees kept
+  adding files, the refresh could never succeed and the run had to close as
+  already-in-target instead of shipped. Outside scoped source worktrees, every
+  path preserved earlier stays preserved while it is still changed, whatever
+  the refreshed preview proposes for it, so recording a raw preview can no
+  longer drop your preserved primary work, and a file-name-only exclusion
+  keeps excluding only the worktree it originally covered. The scoped units
+  and exclusions are unchanged: a new path in a scoped source worktree, or one
+  only excluded elsewhere, still needs a new shipment run. A refresh does not
+  excuse the change itself: `loop verify` still reports a changed registered
+  worktree, so each change still needs a user-approved exact-state
+  `loop allow`, and a worktree that appeared after loop start is still an
+  `unregistered-worktree` violation. The concurrency reference describes all
+  of this.
+<!-- simple-changelogs-signature agent="Fable 5.1" at="2026-10-02T17:59:47-05:00" -->
+
 ## 0.22.4 - 2026-10-02
 
 - A GitLab Ship, Integrate, or Reconcile run can no longer record a deleted

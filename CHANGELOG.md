@@ -2,6 +2,40 @@
 
 ## Unreleased
 
+## 0.22.1 - 2026-10-02
+
+- A branch that GitLab deleted after its merge request merged can now be
+  recorded as merged and deleted, even when the Ship run moved it. Before, a
+  branch whose merge request was already open when the run started, which the
+  run fast-forwarded (or left as it was) before the request merged and GitLab
+  removed the branch, could not be recorded at all, so the run could not end
+  cleanly. Add `mergedHeadAncestry` to that branch in the reconciliation
+  receipt, naming the merge request, the branch head when the run opened, and
+  the head that merged; `loop reconcile-remote-branches` checks with Git that
+  the merged head is the opening head or descends from it and that the target
+  contains it, and `loop end` checks again. Squash merges and rebased merges
+  still cannot be recorded: the tool stops and asks you to report the branch,
+  its opening head, and the merge request.
+- The proof is kept in a separate file,
+  `simple-changes/remote-branch-ancestry/<runId>.json` beside the run's lease
+  under the repository's Git directory, so a 0.22.0 client can still read the
+  lease. A 0.22.0 client cannot end a run whose receipt relies on this proof,
+  though: it reports a misleading "an open proposal branch cannot be deleted"
+  error. Upgrade to 0.22.1 to end such runs.
+- The turn-end guard no longer blocks a Claude Code session whose still-running
+  background subagent is driving a Ship loop. A background subagent shares its
+  parent's session identity, so the 0.21.1 Stop hook blocked the parent as if
+  it controlled the run itself. Now, when Claude Code reports the subagent as
+  still running, the subagent's own transcript issued the Simple Changes `loop`
+  command that took the run, and nothing shows control moving back to the
+  parent, the hook lets the turn end and shows you a note naming the run and
+  the agent instead. Everything uncertain still blocks: a run the session
+  controls itself, a subagent that has finished, workflow agents, a run that has
+  gone stale, a transcript that is unreadable, larger than 64 MB, or slower
+  than five seconds to scan, and loop commands that failed or did not take
+  control.
+<!-- simple-changelogs-signature agent="Fable 5.1" at="2026-10-02T12:50:14-05:00" -->
+
 ## 0.22.0 - 2026-10-01
 
 - Create a repository-specific fork of Simple Changes with one command. From

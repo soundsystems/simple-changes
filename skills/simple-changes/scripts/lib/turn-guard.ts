@@ -31,6 +31,7 @@ import {
   type SubagentControl,
   type SubagentControlIndex,
   subagentControlIndex,
+  type UncreditedSubagent,
 } from "./subagent-control.ts";
 import type { LoopControllerSession, LoopLease } from "./types.ts";
 
@@ -53,6 +54,11 @@ export interface TurnCheckRun {
   primaryCheckout: string;
   reminder: string;
   runId: string;
+  /**
+   * Why a still-running subagent that used the run's owner ID is not credited
+   * with driving it; null when none did or one is credited.
+   */
+  uncredited: UncreditedSubagent | null;
 }
 
 export interface TurnCheckResult {
@@ -126,18 +132,19 @@ export const turnCheck = (
   // Built on first use and shared by every run, so each transcript is read
   // at most once per hook.
   let subagents: SubagentControlIndex | null = null;
-  const subagentDriving = (lease: LoopLease): SubagentControl | null => {
+  const subagentIndex = (): SubagentControlIndex => {
     subagents ??= subagentControlIndex(
       input.transcriptPath ?? null,
       input.backgroundTasks ?? []
     );
-    return subagents.controllerOf({
-      leaseUpdatedAt: lease.updatedAt,
-      ownerAgentId: lease.ownerAgentId,
-      repositoryRoots: repositoryRoots(lease),
-      runId: lease.runId,
-    });
+    return subagents;
   };
+  const attributed = (lease: LoopLease) => ({
+    leaseUpdatedAt: lease.updatedAt,
+    ownerAgentId: lease.ownerAgentId,
+    repositoryRoots: repositoryRoots(lease),
+    runId: lease.runId,
+  });
   for (const entry of listControllerSessionEntries(sessionId, environment)) {
     const lease = readLease(entry.commonGitDirectory);
     if (
@@ -151,14 +158,17 @@ export const turnCheck = (
     }
     // A quiet run is never excused: a subagent that stopped driving it leaves
     // the finalize step to this session.
-    const drivenBy =
-      leaseLiveness(lease).state === "live" ? subagentDriving(lease) : null;
+    const attribution =
+      leaseLiveness(lease).state === "live"
+        ? subagentIndex().attribution(attributed(lease))
+        : null;
     runs.push({
-      drivenBy,
+      drivenBy: attribution?.control ?? null,
       ownerAgentId: lease.ownerAgentId,
       primaryCheckout: lease.primaryCheckout,
       reminder: turnEndReminder(lease),
       runId: lease.runId,
+      uncredited: attribution?.uncredited ?? null,
     });
   }
   if (runs.length === 0) {
@@ -187,6 +197,13 @@ export const turnCheck = (
       .map((run) => `${run.runId} in ${run.primaryCheckout}`)
       .join(", ")}.`,
     ...owned.map((run) => run.reminder),
+    ...owned.flatMap(({ runId, uncredited }) =>
+      uncredited
+        ? [
+            `${runId} is not credited to a background agent: ${uncredited.reason}.${uncredited.mayStillDrive ? " If that agent is still driving it, wait for it instead of finalizing." : ""}`,
+          ]
+        : []
+    ),
     ...delegated.map(
       (run) =>
         `Leave ${run.runId} in ${run.primaryCheckout} alone: ${agentName(run)} is still driving it, so do not finalize it.`

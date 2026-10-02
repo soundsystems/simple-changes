@@ -54,23 +54,33 @@ Every controller finalizes before it replies; see the finalize rule in
   closed, paused, or transferred run is dropped. Codex may ask the user to
   trust a new hook the first time it runs.
 - **Background subagents.** A Claude Code background subagent shares its
-  parent's session, so its run is bound to the parent too. The hook only
-  advises the user, naming the run, when it lists that subagent as still
-  running, the subagent's own transcript issued a Simple Changes `loop`
-  command for the live run with its owner `--agent-id`, and neither the
-  parent's transcript nor a later lease write shows control moving back: do
-  not finalize a run your running subagent drives. When no command names the
-  run literally, as with `--run-id "$R"`, the subagent's successful owner
-  commands under the lease's exact literal `--agent-id` count instead, but
-  only if no parent command and no other running subagent ever used that ID;
-  give each agent its own ID. At least one of them must have run in the
-  run's checkout or one of its worktrees, by a literal `cd`, `--repo`, or the
-  recorded shell directory, and a still-running command never excuses a later
-  lease write. If the session also
-  controls a run of its own, the hook still blocks and names both. Once the
-  subagent finishes, or its run goes stale, the hook blocks the parent again
-  until the run is finalized. Workflow agents are not excused yet, and an
-  unreadable, oversized, or slow transcript scan blocks.
+  parent's session, so its run is bound to the parent too. The hook only advises
+  the user, naming the run, when it lists that subagent as still running, the
+  subagent's own transcript issued a Simple Changes `loop` command for the live
+  run with its owner `--agent-id`, and neither the parent's transcript nor a
+  later lease write shows control moving back: do not finalize a run your
+  running subagent drives. A `$NAME` value counts as literal when the same
+  command assigns NAME exactly once, as a plain token (no space, quote, shell
+  operator, or leading `-`) that starts and ends an unconditional top-level
+  statement, before using it, as in `R=run-…; … loop exec --run-id $R`. The
+  reading is conservative, not a shell: any other assignment, a builtin that
+  assigns, an assignment in a comment or after a heredoc, or a command
+  containing `eval` or an `if`, `while`, `until`, `case`, or `{ … }` block
+  leaves it a variable, so pass IDs literally when in doubt. When no command
+  names the run literally, as with `R=$(cat file); … --run-id "$R"`, the
+  subagent's successful owner commands under the lease's exact literal
+  `--agent-id` count instead, but only if no parent command and no other running
+  subagent ever used that ID; give each agent its own ID. At least one of them
+  must have run in the run's checkout or one of its worktrees, by a literal
+  `cd`, `--repo`, or the recorded shell directory, and a still-running command
+  never excuses a later lease write. If the session also controls a run of its
+  own, the hook still blocks and names both. Once the subagent finishes, or its
+  run goes stale, the hook blocks the parent again until the run is finalized.
+  Workflow agents are not excused yet, and an unreadable, oversized, or slow
+  transcript scan blocks. When a running subagent used the run's owner ID but is
+  not credited, the blocking message says which condition failed and, unless
+  control visibly moved back to this session, asks the session to wait for that
+  agent instead of finalizing.
 - **Reminders and freshness.** `loop guard`, `loop exec`, and `loop verify`
   print the finalize step for the current run, and their JSON carries it as
   `turnEnd`. When this runtime runs from a checkout whose branch carries an

@@ -64,15 +64,51 @@ still owns classification and writing.
 
 ## Repository-specific forks
 
-Install Simple Changes globally once, and let every repository use that one
-install. Fork it only when a repository needs stricter or product-specific
-behavior: copy the installed skill into the repository (for example
-`skills/<project>-simple-changes`), rename it, and put a provenance line
-directly below its title:
+Install Simple Changes globally once. Configure each repository first; create a
+fork only when its behavior cannot be expressed through settings or repository
+instructions.
+
+| What you want to change | Use | Why |
+| --- | --- | --- |
+| Review, merge, deploy, question, or migration preferences | Repository `.simple-changes.json` | The shared skill already supports these choices. |
+| Local commands, providers, deployment targets, or project conventions | Repository instructions and supported config | Project context does not require copying the skill. |
+| Additional gates or workflow behavior that settings cannot express | A repository-specific fork | The skill's instructions or runtime need to change. |
+| The same custom workflow across several projects | A maintained shared fork | Keep one customized source and update its consumers. |
+| Refresh an existing fork while preserving its customizations | `update-local-forks` | Reconcile the fork with its pinned base and the updated global install. |
+
+From the target repository, create a fork with a distinct skill name and a short
+description of the behavior you intend to customize:
+
+```sh
+bun ~/.agents/skills/simple-changes/scripts/simple-changes.ts fork create \
+  --name product-simple-changes \
+  --deltas "Product-specific release gates and verification"
+```
+
+The command copies the complete installed skill to
+`.agents/skills/product-simple-changes`, renames its skill identity, and records
+the exact upstream commit after verifying every source file's bytes (a
+mismatch names the differing files; Finder `.DS_Store` files are ignored). It
+always writes inside the Git repository that contains the working directory or
+`--repo`, refuses an existing destination or a name that matches an installed
+skill, and leaves the global installation untouched. Pass
+`--destination skills/product-simple-changes` for a different repository-local
+location, `--repo /path/to/repository` to select a repository, or `--json` for
+machine-readable output. Upstream verification needs GitLab connectivity;
+`--upstream /path/to/simple-changes` uses a complete source checkout offline.
+An altered or incomplete global install must be refreshed before it can be
+forked with a verified pin.
+
+The new copy starts with the same behavior as upstream. Edit its `SKILL.md` and
+runtime to implement the stated deltas, verify those changes, and commit the
+fork in its owning repository. Use the fork by its distinct skill name; if you
+choose a location outside `.agents/skills`, point repository instructions to
+its `SKILL.md`. Claude Code loads project skills from `.claude/skills`, so for
+Claude Code create the fork with `--destination .claude/skills/<name>` or link
+that path to the fork. The provenance line below its title lets the updater find it:
 
 ```md
-Forked from `simple-changes` @ `<sha>`. <project>-specific deltas:
-<provider boundaries, local commands, release surfaces, ...>
+Forked from `simple-changes` @ `<sha>`. Fork-specific deltas: ...
 ```
 
 Then keep the fork current with the `update-local-forks` skill, which ships
@@ -190,6 +226,8 @@ extensions followed by agents and provider adapters.
 ## CLI
 
 ```text
+simple-changes fork create --name NAME --deltas TEXT
+  [--destination PATH] [--upstream PATH] [--json] [--repo PATH]
 simple-changes initialize --mode MODE
   [--ready] [--handoff ask|automatic|user-signaled]
   [--instruction-pointer add|leave] [--instruction-file PATH]

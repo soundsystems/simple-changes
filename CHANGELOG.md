@@ -2,6 +2,38 @@
 
 ## Unreleased
 
+## 0.22.0 - 2026-10-01
+
+- Create a repository-specific fork of Simple Changes with one command. From
+  the repository that will own it, run
+  `simple-changes fork create --name <name> --deltas "<what you intend to
+  customize>"`: the complete installed skill is copied into
+  `.agents/skills/<name>` (or the path you pass with `--destination`), its
+  skill identity is renamed, and a provenance line below its title records the
+  exact upstream commit together with your customization notes, so
+  `update-local-forks` can find and refresh it later. The global install is
+  never touched, and the new copy is left uncommitted for you to customize,
+  verify, and commit in its repository.
+- The recorded upstream commit is verified, not guessed. The command compares
+  every installed file byte for byte with upstream history (over the network
+  by default, or offline with `--upstream /path/to/simple-changes`) and refuses
+  to fork a modified or incomplete install, naming the files that differ;
+  Finder `.DS_Store` files are ignored. A `SKILL.md` with Windows line endings
+  is explained as such instead of being reported as a mismatch.
+- Forks always land inside their repository. The destination is anchored at the
+  Git repository root of the working directory or `--repo`, and the command
+  refuses to run outside a repository, to overwrite an existing destination, to
+  reuse the name of an installed sibling skill such as `update-local-forks`, and
+  to write through traversal, symlinks, or a differently cased path that
+  resolves into the source install. `--json` returns the destination, upstream
+  commit, and file count for scripts.
+- The README now explains when to adjust `.simple-changes.json` or repository
+  instructions instead of forking, how to create, customize, commit, and update
+  a fork, and that Claude Code loads project skills from `.claude/skills`, so a
+  fork for Claude Code is created with `--destination .claude/skills/<name>`
+  or linked there. The skill's own instructions carry the same guidance.
+<!-- simple-changelogs-signature agent="Fable 5.1" at="2026-10-01T22:17:12-05:00" -->
+
 ## 0.21.1 - 2026-10-01
 
 - A controller that stops to ask the user something no longer leaves a

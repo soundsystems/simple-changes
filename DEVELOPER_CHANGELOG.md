@@ -2,6 +2,54 @@
 
 ## Unreleased
 
+## 0.22.0 - 2026-10-01
+
+- Add `lib/fork.ts` with `createFork({ name, deltas, repositoryPath,
+  sourcePath, destination?, upstreamPath? })`, wired to
+  `simple-changes fork create` (`--name`, `--deltas`, `--destination`,
+  `--upstream` join `VALUED_OPTIONS` and the loop valued-option map; any
+  positional other than `create` is a usage error). The source is the skill
+  root resolved from the running script, so a fork copies whichever install is
+  executing.
+- Verification snapshots the installed tree once (`snapshotSource`, sorted,
+  `.DS_Store` ignored, symlinks and special files refused) so the verified
+  bytes are the bytes copied. `verifySourceCommit` hashes every file as a Git
+  blob and compares it with `git ls-tree -r -z <commit> -- skills/simple-changes`
+  for `HEAD` and then each commit from `git log --format=%H HEAD --
+  skills/simple-changes`; non-blob tree entries map to an impossible hash so a
+  symlink or submodule upstream is a mismatch rather than dropped. Without
+  `--upstream`, a bare `--filter=blob:none` clone of
+  `https://gitlab.com/soundsystems/simple-changes.git` in a temporary directory
+  is used and removed afterwards. A miss reports up to five `extra`,
+  `missing`, or `changed` paths against the latest tree with an `unsafe` exit.
+- Path safety: `repositoryRoot` resolves `git rev-parse --show-toplevel` through
+  `realpathSync` and rejects a non-repository as usage; `separated` requires
+  the destination inside the root and disjoint from the source; names must
+  match `^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$`, be at most 64 characters, and not be
+  `simple-changes` or any sibling directory of the installed skill.
+  `reserveDestination` creates parents with `mkdirSync` one segment at a time,
+  refusing symlinked parents, reserves the final directory exclusively (`EEXIST`
+  is "already exists"), and re-checks separation on the real created path to
+  catch case-insensitive aliases; `removeCreated` unwinds only what this call
+  created. Files are written with `wx` and `chmod(mode % 0o1000)`. `SKILL.md`
+  must start with frontmatter `name: simple-changes` and a `# Simple Changes`
+  title, must not already carry a `Forked from` line, and must use LF (a CRLF
+  file gets a dedicated `core.autocrlf` explanation); the rewrite replaces the
+  name and inserts the provenance line with whitespace-collapsed deltas.
+- `SKILL.md` gains a "Create a repository-specific fork" section; the README
+  replaces the manual copy-and-rename instructions with a preferences versus
+  instructions versus fork table, the create command, destination and offline
+  options, the Claude Code `.claude/skills` note, and the CLI synopsis line.
+- `tooling/simple-changes/tests/fork.test.ts` (16 tests) covers the verified
+  pin and executable bits, existing-destination refusal, modified, untracked,
+  and incomplete sources, committed updates between releases, a CLI-created
+  fork that `update-local-forks discover` recognizes, name and deltas
+  validation, traversal, overlap, and symlink refusals, explicit destinations,
+  repository-root anchoring, the case-insensitive alias, mismatch naming with
+  Finder metadata, sibling-name refusal, and the CRLF explanation. Guidance
+  stays at 24; `.simple-changes.json` is unchanged.
+<!-- simple-changelogs-signature agent="Fable 5.1" at="2026-10-01T22:17:12-05:00" -->
+
 ## 0.21.1 - 2026-10-01
 
 - Add `lib/harness-session.ts`: `currentHarnessSession` reads

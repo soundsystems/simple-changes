@@ -14,6 +14,7 @@ import {
   probeCoordinationAdapter,
 } from "./lib/coordination-adapter.ts";
 import { EXIT_CODES, SimpleChangesError } from "./lib/errors.ts";
+import { createFork } from "./lib/fork.ts";
 import {
   acknowledgeGuidanceUpdate,
   CURRENT_GUIDANCE_VERSION,
@@ -190,7 +191,7 @@ import {
   standaloneWorktreeCleanup,
 } from "./lib/worktree-maintenance.ts";
 
-const VERSION = "0.21.1";
+const VERSION = "0.22.0";
 const SCRIPT_FILE = fileURLToPath(import.meta.url);
 const PLAIN_SHELL_WORD_PATTERN = /^[\w./-]+$/u;
 const PACKAGE_ROOT = resolve(dirname(SCRIPT_FILE), "..");
@@ -207,6 +208,8 @@ const schemaKindLines = SCHEMA_NAMES.reduce<string[]>((lines, name) => {
 const HELP = `Simple Changes ${VERSION}
 
 Usage:
+  simple-changes fork create --name NAME --deltas TEXT
+    [--destination PATH] [--upstream PATH] [--json] [--repo PATH]
   simple-changes initialize --mode MODE
     [--ready]
     [--changelog-required]
@@ -392,6 +395,10 @@ interface CliOptions {
   disposition?: "preserve-in-place" | "detach-clean-checkout";
   dryRun: boolean;
   evidencePaths: string[];
+  forkDeltas?: string;
+  forkDestination?: string;
+  forkName?: string;
+  forkUpstream?: string;
   gitPushAuthorization?: RepoPolicy["gitPushAuthorization"];
   guidanceDecision?: RepoPolicy["guidance"]["disposition"];
   handoffTiming?: RepoPolicy["handoffTiming"];
@@ -455,6 +462,10 @@ interface CliOptions {
 }
 
 const VALUED_OPTIONS = new Set([
+  "--name",
+  "--deltas",
+  "--destination",
+  "--upstream",
   "--adapter",
   "--apply-plan",
   "--agent-id",
@@ -872,9 +883,12 @@ const applyLoopValuedOption = (
     "--base": "baseRef",
     "--changelog-receipt": "changelogReceiptPath",
     "--claim-id": "claimId",
+    "--deltas": "forkDeltas",
+    "--destination": "forkDestination",
     "--head": "headRef",
     "--hold-id": "holdId",
     "--manifest-digest": "manifestDigest",
+    "--name": "forkName",
     "--opening-remote-inventory": "openingRemoteInventoryPath",
     "--owner-ref": "ownerRef",
     "--pause-receipt": "pauseReceiptId",
@@ -890,6 +904,7 @@ const applyLoopValuedOption = (
     "--state": "statePath",
     "--status-digest": "statusDigest",
     "--until-merged": "untilMerged",
+    "--upstream": "forkUpstream",
   };
   const key = textOptions[option];
   if (key) {
@@ -3656,6 +3671,28 @@ const executeCommand = async (
     case "-v":
       process.stdout.write(`${VERSION}\n`);
       return EXIT_CODES.success;
+    case "fork": {
+      if (
+        options.positional.length !== 1 ||
+        options.positional[0] !== "create"
+      ) {
+        throw new SimpleChangesError("fork requires create", EXIT_CODES.usage);
+      }
+      const result = createFork({
+        deltas: requireCliOption(options.forkDeltas, "--deltas"),
+        destination: options.forkDestination,
+        name: requireCliOption(options.forkName, "--name"),
+        repositoryPath: options.repo,
+        sourcePath: resolve(dirname(fileURLToPath(import.meta.url)), ".."),
+        upstreamPath: options.forkUpstream,
+      });
+      writeOutput(
+        result,
+        options.json,
+        `Created ${result.name} at ${result.destination}\nUpstream: ${result.upstreamCommit}\nCustomize SKILL.md, then verify and commit the fork in its repository.\n`
+      );
+      return EXIT_CODES.success;
+    }
     case "inventory":
       runInventory(options);
       return EXIT_CODES.success;

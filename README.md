@@ -87,8 +87,11 @@ bun ~/.agents/skills/simple-changes/scripts/simple-changes.ts fork create \
 
 The command copies the complete installed skill to
 `.agents/skills/product-simple-changes`, renames its skill identity, and records
-the exact upstream commit after verifying every source file. It refuses
-an existing destination and leaves the global installation untouched. Pass
+the exact upstream commit after verifying every source file's bytes (a
+mismatch names the differing files; Finder `.DS_Store` files are ignored). It
+always writes inside the Git repository that contains the working directory or
+`--repo`, refuses an existing destination or a name that matches an installed
+skill, and leaves the global installation untouched. Pass
 `--destination skills/product-simple-changes` for a different repository-local
 location, `--repo /path/to/repository` to select a repository, or `--json` for
 machine-readable output. Upstream verification needs GitLab connectivity;
@@ -100,7 +103,9 @@ The new copy starts with the same behavior as upstream. Edit its `SKILL.md` and
 runtime to implement the stated deltas, verify those changes, and commit the
 fork in its owning repository. Use the fork by its distinct skill name; if you
 choose a location outside `.agents/skills`, point repository instructions to
-its `SKILL.md`. The provenance line below its title lets the updater find it:
+its `SKILL.md`. Claude Code loads project skills from `.claude/skills`, so for
+Claude Code create the fork with `--destination .claude/skills/<name>` or link
+that path to the fork. The provenance line below its title lets the updater find it:
 
 ```md
 Forked from `simple-changes` @ `<sha>`. Fork-specific deltas: ...

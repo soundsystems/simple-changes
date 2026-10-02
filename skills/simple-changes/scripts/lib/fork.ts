@@ -1,12 +1,14 @@
 import { createHash } from "node:crypto";
 import {
   chmodSync,
+  existsSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
   readFileSync,
   realpathSync,
+  rmdirSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -21,6 +23,14 @@ const NAME_PATTERN = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/u;
 const FRONTMATTER_NAME = /^name: simple-changes\r?$/mu;
 const TITLE = /^# Simple Changes\r?$/mu;
 const TREE_ENTRY = /^(100644|100755) blob ([0-9a-f]+)\t(.+)$/u;
+const WHITESPACE_RUN = /\s+/gu;
+// Finder metadata is never part of the skill and must not block verification.
+const IGNORED_NAMES = new Set([".DS_Store"]);
+const MISMATCH_LIMIT = 5;
+
+const usage = (message: string): never => {
+  throw new SimpleChangesError(message, EXIT_CODES.usage);
+};
 
 interface SourceFile {
   content: Buffer;
@@ -54,6 +64,9 @@ const unsafe = (message: string): never => {
 const snapshotSource = (root: string, directory = ""): SourceFile[] => {
   const files: SourceFile[] = [];
   for (const name of readdirSync(join(root, directory)).sort()) {
+    if (IGNORED_NAMES.has(name)) {
+      continue;
+    }
     const path = directory ? `${directory}/${name}` : name;
     const absolute = join(root, path);
     const stat = lstatSync(absolute);
@@ -68,38 +81,52 @@ const snapshotSource = (root: string, directory = ""): SourceFile[] => {
   return files;
 };
 
+const blobHash = (content: Buffer): string =>
+  createHash("sha1")
+    .update(`blob ${content.length}\0`)
+    .update(content)
+    .digest("hex");
+
+const upstreamTree = (upstream: string, commit: string): Map<string, string> =>
+  new Map(
+    runGit(upstream, ["ls-tree", "-r", "-z", commit, "--", SKILL_PATH])
+      .stdout.split("\0")
+      .filter(Boolean)
+      .map((entry) => TREE_ENTRY.exec(entry))
+      .filter((match): match is RegExpExecArray => match !== null)
+      .map((match) => [
+        (match[3] ?? "").slice(SKILL_PATH.length + 1),
+        match[2] ?? "",
+      ])
+  );
+
+/** Paths that differ between the installed source and one upstream tree. */
+const treeDifferences = (
+  tree: Map<string, string>,
+  files: SourceFile[]
+): string[] => {
+  const local = new Map(
+    files.map((file) => [file.path, blobHash(file.content)])
+  );
+  return [
+    ...[...local.keys()]
+      .filter((path) => !tree.has(path))
+      .map((path) => `extra ${path}`),
+    ...[...tree.keys()]
+      .filter((path) => !local.has(path))
+      .map((path) => `missing ${path}`),
+    ...[...local.entries()]
+      .filter(([path, hash]) => tree.has(path) && tree.get(path) !== hash)
+      .map(([path]) => `changed ${path}`),
+  ];
+};
+
 const treeMatches = (
   upstream: string,
   commit: string,
   files: SourceFile[]
-): boolean => {
-  const entries = runGit(upstream, [
-    "ls-tree",
-    "-r",
-    "-z",
-    commit,
-    "--",
-    SKILL_PATH,
-  ])
-    .stdout.split("\0")
-    .filter(Boolean);
-  if (entries.length !== files.length) {
-    return false;
-  }
-  const hashes = new Map(
-    files.map((file) => [
-      `${SKILL_PATH}/${file.path}`,
-      createHash("sha1")
-        .update(`blob ${file.content.length}\0`)
-        .update(file.content)
-        .digest("hex"),
-    ])
-  );
-  return entries.every((entry) => {
-    const match = TREE_ENTRY.exec(entry);
-    return match !== null && hashes.get(match[3] ?? "") === match[2];
-  });
-};
+): boolean =>
+  treeDifferences(upstreamTree(upstream, commit), files).length === 0;
 
 const verifySourceCommit = (upstream: string, files: SourceFile[]): string => {
   const head = runGit(upstream, ["rev-parse", "HEAD"]).stdout.trim();
@@ -113,11 +140,17 @@ const verifySourceCommit = (upstream: string, files: SourceFile[]): string => {
   const commit = candidates.find((candidate) =>
     treeMatches(upstream, candidate, files)
   );
-  return (
-    commit ??
-    unsafe(
-      "The installed source does not match an upstream commit. Update the global skill, or pass --upstream PATH to its complete source checkout. No fork was created."
-    )
+  if (commit) {
+    return commit;
+  }
+  const differences = treeDifferences(upstreamTree(upstream, head), files);
+  const shown = differences.slice(0, MISMATCH_LIMIT).join(", ");
+  const more =
+    differences.length > MISMATCH_LIMIT
+      ? ` and ${differences.length - MISMATCH_LIMIT} more`
+      : "";
+  return unsafe(
+    `The installed source does not match an upstream commit (against the latest: ${shown}${more}). Update the global skill, or pass --upstream PATH to its complete source checkout. No fork was created.`
   );
 };
 
@@ -126,7 +159,14 @@ const locateSourceCommit = (
   files: SourceFile[]
 ): string => {
   if (options.upstreamPath) {
-    return verifySourceCommit(resolve(options.upstreamPath), files);
+    const upstream = resolve(options.upstreamPath);
+    if (
+      !existsSync(upstream) ||
+      runGit(upstream, ["rev-parse", "--git-dir"], true).exitCode !== 0
+    ) {
+      usage(`--upstream must be a Simple Changes Git checkout: ${upstream}`);
+    }
+    return verifySourceCommit(upstream, files);
   }
   const temporary = mkdtempSync(join(tmpdir(), "simple-changes-fork-"));
   try {
@@ -162,7 +202,8 @@ const inside = (root: string, path: string): boolean => {
 
 // Never follow a repository symlink while creating the destination. Reserve
 // the final directory exclusively so another invocation cannot be overwritten.
-const reserveDestination = (root: string, destination: string): void => {
+const reserveDestination = (root: string, destination: string): string[] => {
+  const created: string[] = [];
   let directory = root;
   for (const part of relative(root, dirname(destination))
     .split(sep)
@@ -170,6 +211,7 @@ const reserveDestination = (root: string, destination: string): void => {
     directory = join(directory, part);
     try {
       mkdirSync(directory);
+      created.push(directory);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
         throw error;
@@ -190,38 +232,79 @@ const reserveDestination = (root: string, destination: string): void => {
     }
     throw error;
   }
+  return [...created, destination];
+};
+
+/** Remove what this command created, innermost first, keeping anything else. */
+const removeCreated = (created: readonly string[]): void => {
+  const [destination, ...parents] = [...created].reverse();
+  if (destination) {
+    rmSync(destination, { force: true, recursive: true });
+  }
+  for (const parent of parents) {
+    try {
+      rmdirSync(parent);
+    } catch {
+      // Not empty or already gone: someone else's content stays.
+    }
+  }
+};
+
+/** The top level of the Git worktree that contains `path`. */
+const repositoryRoot = (path: string): string => {
+  const candidate = resolve(path);
+  if (!existsSync(candidate)) {
+    usage(`--repo does not exist: ${candidate}`);
+  }
+  const top = runGit(candidate, ["rev-parse", "--show-toplevel"], true);
+  if (top.exitCode !== 0 || !top.stdout.trim()) {
+    usage(
+      `A fork belongs to a repository; run inside a Git worktree or pass --repo PATH: ${candidate}`
+    );
+  }
+  return realpathSync(top.stdout.trim());
+};
+
+const separated = (root: string, source: string, path: string): boolean =>
+  inside(root, path) &&
+  path !== source &&
+  !inside(source, path) &&
+  !inside(path, source);
+
+// An installed sibling such as `update-local-forks` or `simple-changelogs`
+// must never be shadowed by a repository-local copy of this skill.
+const assertDistinctName = (name: string, source: string): void => {
+  const installed = new Set(
+    existsSync(dirname(source)) ? readdirSync(dirname(source)) : []
+  );
+  if (
+    !NAME_PATTERN.test(name) ||
+    name.length > 64 ||
+    name === "simple-changes" ||
+    installed.has(name)
+  ) {
+    usage(
+      "--name must be a distinct lowercase skill name, at most 64 characters, using letters, digits, and hyphens, and must not match an installed skill."
+    );
+  }
 };
 
 export const createFork = (options: CreateForkOptions): CreatedFork => {
-  if (
-    !NAME_PATTERN.test(options.name) ||
-    options.name.length > 64 ||
-    options.name === "simple-changes"
-  ) {
-    throw new SimpleChangesError(
-      "--name must be a distinct lowercase skill name, at most 64 characters, using letters, digits, and hyphens.",
-      EXIT_CODES.usage
-    );
-  }
-  const deltas = options.deltas.trim().replace(/\s+/gu, " ");
+  const source = realpathSync(options.sourcePath);
+  assertDistinctName(options.name, source);
+  const deltas = options.deltas.trim().replace(WHITESPACE_RUN, " ");
   if (!deltas) {
     throw new SimpleChangesError(
       "--deltas must describe the fork's intended custom behavior.",
       EXIT_CODES.usage
     );
   }
-  const root = realpathSync(options.repositoryPath);
-  const source = realpathSync(options.sourcePath);
+  const root = repositoryRoot(options.repositoryPath);
   const destination = resolve(
     root,
     options.destination ?? `.agents/skills/${options.name}`
   );
-  if (
-    !inside(root, destination) ||
-    destination === source ||
-    inside(source, destination) ||
-    inside(destination, source)
-  ) {
+  if (!separated(root, source, destination)) {
     unsafe(
       "Destination must be inside the repository and separate from the source skill."
     );
@@ -229,6 +312,11 @@ export const createFork = (options: CreateForkOptions): CreatedFork => {
   const files = snapshotSource(source);
   const skill = files.find((file) => file.path === "SKILL.md");
   const original = skill?.content.toString("utf8") ?? "";
+  if (original.includes("\r\n")) {
+    unsafe(
+      "The installed SKILL.md uses Windows line endings (for example from core.autocrlf), so its bytes cannot match upstream. Reinstall the skill with LF line endings, then retry."
+    );
+  }
   if (
     !(
       skill &&
@@ -252,7 +340,15 @@ export const createFork = (options: CreateForkOptions): CreatedFork => {
           `# ${options.name}\n\nForked from \`simple-changes\` @ \`${upstreamCommit}\`. Fork-specific deltas: ${deltas}`
       )
   );
-  reserveDestination(root, destination);
+  const created = reserveDestination(root, destination);
+  // Case-insensitive filesystems can resolve a differently cased path into the
+  // source install; judge separation again on the real, created path.
+  if (!separated(root, source, realpathSync(destination))) {
+    removeCreated(created);
+    unsafe(
+      "Destination must be inside the repository and separate from the source skill."
+    );
+  }
   try {
     for (const file of files) {
       const path = join(destination, file.path);
@@ -261,7 +357,7 @@ export const createFork = (options: CreateForkOptions): CreatedFork => {
       chmodSync(path, file.mode % 0o1000);
     }
   } catch (error) {
-    rmSync(destination, { force: true, recursive: true });
+    removeCreated(created);
     throw error;
   }
   return {

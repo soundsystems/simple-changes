@@ -271,4 +271,77 @@ describe("fork create", () => {
       readFileSync(join(result.destination, "SKILL.md"), "utf8")
     ).toContain("Fork-specific deltas: Literal $& and $` release notes");
   });
+  test("anchors the fork at the repository root and refuses a non-repository", () => {
+    const { options, target } = fixture();
+    const nested = join(target.root, "sub/dir");
+    mkdirSync(nested, { recursive: true });
+    const result = createFork({ ...options, repositoryPath: nested });
+    expect(result.destination).toBe(
+      join(target.root, ".agents/skills/product-simple-changes")
+    );
+    const outside = join(target.base, "not-a-repo");
+    mkdirSync(outside);
+    expect(() =>
+      createFork({
+        ...options,
+        name: "other-simple-changes",
+        repositoryPath: outside,
+      })
+    ).toThrow("A fork belongs to a repository");
+    expect(existsSync(join(outside, ".agents"))).toBe(false);
+    expect(() =>
+      createFork({
+        ...options,
+        name: "other-simple-changes",
+        repositoryPath: join(target.base, "missing"),
+      })
+    ).toThrow("--repo does not exist");
+  });
+
+  test("refuses a differently cased destination that resolves into the source", () => {
+    const { options, upstream } = fixture();
+    const probe = join(upstream.root, "SKILLS");
+    if (!existsSync(probe)) {
+      return; // case-sensitive filesystem: the alias cannot exist
+    }
+    expect(() =>
+      createFork({
+        ...options,
+        destination: "Skills/Simple-Changes/nested",
+        repositoryPath: upstream.root,
+      })
+    ).toThrow("separate from the source skill");
+    expect(existsSync(join(options.sourcePath, "nested"))).toBe(false);
+  });
+
+  test("names mismatching files, ignores Finder metadata, and checks --upstream", () => {
+    const { options } = fixture();
+    writeFileSync(join(options.sourcePath, ".DS_Store"), "finder");
+    writeFileSync(join(options.sourcePath, "stray.txt"), "stray\n");
+    expect(() => createFork(options)).toThrow("extra stray.txt");
+    rmSync(join(options.sourcePath, "stray.txt"));
+    expect(createFork(options).fileCount).toBe(4);
+    expect(() =>
+      createFork({
+        ...options,
+        name: "other-simple-changes",
+        upstreamPath: "/nonexistent/upstream",
+      })
+    ).toThrow("--upstream must be a Simple Changes Git checkout");
+  });
+
+  test("refuses a name that matches an installed sibling skill", () => {
+    const { options, upstream } = fixture();
+    mkdirSync(join(upstream.root, "skills/update-local-forks"));
+    expect(() =>
+      createFork({ ...options, name: "update-local-forks" })
+    ).toThrow("must not match an installed skill");
+  });
+
+  test("explains Windows line endings instead of misreporting a fork", () => {
+    const { options } = fixture();
+    const skill = join(options.sourcePath, "SKILL.md");
+    writeFileSync(skill, readFileSync(skill, "utf8").replaceAll("\n", "\r\n"));
+    expect(() => createFork(options)).toThrow("Windows line endings");
+  });
 });

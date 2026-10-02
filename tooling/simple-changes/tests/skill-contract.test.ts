@@ -506,6 +506,18 @@ describe("Simple Changes skill contract", () => {
     );
     expect(normalizedCleanup).toContain("loop reconcile-remote-branches");
     expect(normalizedCleanup).toContain(
+      "verifies with Git that the initial head is the merged head or its ancestor and that the target contains the merged head"
+    );
+    expect(normalizedCleanup).toContain(
+      "the receipt cannot be recorded: the branch is already gone, so stop and report the branch, initial head, and MR to the user"
+    );
+    expect(normalizedCleanup).toContain(
+      "Squash-merge projects, and GitLab rebase-merge projects whenever GitLab rebased the MR, always land there"
+    );
+    expect(normalizedCleanup).toContain(
+      "Never recreate a deleted branch to make the ledger fit"
+    );
+    expect(normalizedCleanup).toContain(
       "`loop end` refuses a detected GitLab integration/reconciliation run"
     );
     expect(normalizedGitlab).toContain(
@@ -934,6 +946,12 @@ describe("Simple Changes skill contract", () => {
     );
     expect(normalizedCleanup).toContain(
       "Do not use it for questions about later work."
+    );
+    expect(normalizedCleanup).toContain(
+      "do not finalize a run your running subagent drives. If the session also controls a run of its own, the hook still blocks and names both. Once the subagent finishes, or its run goes stale, the hook blocks the parent again until the run is finalized. Workflow agents are not excused yet, and an unreadable, oversized, or slow transcript scan blocks."
+    );
+    expect(normalizedSpec).toContain(
+      "A live run that a still running background subagent of the same session drives only advises."
     );
     expect(normalizedSpec).toContain(
       "`loop finalize --awaiting-user` pauses a run for a user decision"

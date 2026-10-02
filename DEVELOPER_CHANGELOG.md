@@ -2,6 +2,75 @@
 
 ## Unreleased
 
+## 0.22.1 - 2026-10-02
+
+- `lib/types.ts` adds `RemoteBranchAncestryProof` (`branch`,
+  `proposalObjectId`, `initialHeadRevision`, `mergedHeadRevision`) and
+  `RemoteBranchAncestryRecord` (`schemaVersion: 1`, `runId`, `receiptDigest`,
+  `proofs`); `evals/schemas/remote-branch-ancestry.schema.json` joins
+  `SCHEMA_NAMES` and the README schema list. Revisions are 40 to 64 hex
+  characters and the digest 64; `proofs` needs at least one entry.
+- `lib/remote-branch-reconciliation.ts`: `splitRemoteBranchReconciliationInput`
+  lifts `mergedHeadAncestry` off each receipt branch entry (an object without
+  its own `branch`, else a validation error) before the receipt is validated
+  and embedded, so the lease keeps the receipt schema 0.22.0 clients
+  strict-validate. `validateRemoteBranchReconciliation(value, ancestryProofs =
+  [])` routes a branch with a proof through `validateLedgerBranch` and
+  `validateAncestryMerged`: `merged-obsolete` classification, the
+  `deleted-merged` shape, a proof starting at the exact `initialHeadRevision`,
+  exactly one open evidence for the proof's `proposalObjectId` at the initial
+  head with `observedFinally: false` and one merged evidence at the merged head
+  with `observedInitially: false`, no other open proposal, never the canonical
+  target or a protected branch, and each proof naming exactly one ledger
+  branch. `remoteBranchReconciliationDigest` is `sha256Json(receipt)`;
+  `validateRemoteBranchAncestryRecord` rejects a sidecar whose `runId` or
+  `receiptDigest` differ with an `unsafe` exit.
+- `lib/loop-lease.ts`: `assertRemoteBranchAncestry` runs
+  `targetContainsRevision` against `lease.primaryCheckout` twice per proof
+  (initial head within merged head, merged head within
+  `receipt.targetRevision`) and fails `unsafe` with the branch, initial head,
+  and proposal to report; missing objects fail closed. Recording writes
+  `<commonGitDirectory>/simple-changes/remote-branch-ancestry/<runId>.json`
+  (0700 directory, 0600 file, `wx` temporary then rename, symlink ancestors
+  refused) under the state lock, or removes it when the receipt carries no
+  proofs; the file is kept afterward as audit evidence. `loop end` reads it,
+  re-joins it with the embedded receipt, re-validates, and re-verifies
+  ancestry, and a validation failure with no sidecar says one may be missing
+  and asks for the final reconciliation to be recorded again.
+- `references/cleanup-and-completion.md` documents the `merged-proposal-head`
+  recipe (list the MR twice, add `mergedHeadAncestry`, stop and report on
+  rewritten, force-pushed, squashed, or rebased heads, never recreate a deleted
+  branch); `tooling/simple-changes/tests/skill-contract.test.ts` pins four of
+  its sentences. `remote-branch-reconciliation.test.ts` grows from 15 to 27
+  tests and `loop-lease.test.ts` adds two (Git-verified ancestry kept out of
+  the lease; the same proposal merged at the unchanged opening head).
+- Add `lib/subagent-control.ts`: `parseHookBackgroundTasks` reads the Stop
+  hook's `background_tasks`; `ownerLoopInvocations` parses Simple Changes
+  `loop` commands that name `--agent-id` (a `loop` word counts only after the
+  command named Simple Changes by script, bin, or a fork's runtime wrapper, and
+  flags are read up to the next shell separator or `--`); run ids come from
+  `--run-id` or, only for a successful `loop start` or `takeover`, the
+  command's JSON output. `subagentControlIndex(transcriptPath,
+  backgroundTasks).controllerOf({ runId, ownerAgentId, leaseUpdatedAt })`
+  reads each transcript at most once per hook and names a still-running
+  subagent only when it issued the owner command, the parent did not command
+  the run since (parent entries without a readable time count as newest,
+  sidechain entries are never the parent's, failed parent commands still
+  count), and the lease was not written more than `LEASE_WRITE_TOLERANCE_MS`
+  (60 s) after the subagent's last command. `TRANSCRIPT_SCAN_LIMITS` is 5 s and
+  64 MiB inside the 15 s hook timeout; past either, nothing is proven and the
+  guard blocks. Workflow agents are not considered.
+- `lib/turn-guard.ts`: `TurnCheckInput` gains `backgroundTasks` and
+  `transcriptPath` (from the hook's `background_tasks` and `transcript_path`),
+  `TurnCheckRun` gains `drivenBy`, and the decision adds `advise`, returned
+  when every run the session controls is live (`leaseLiveness(lease).state ===
+  "live"`) and subagent-driven; it is emitted as a `systemMessage` like `warn`.
+  A block that also has delegated runs lists them with a "Leave ... alone"
+  line. `SPEC.md` and the cleanup reference describe the exception and
+  `skill-contract.test.ts` pins two sentences; `turn-guard.test.ts` grows from
+  23 to 34 tests. Guidance stays at 24; `.simple-changes.json` is unchanged.
+<!-- simple-changelogs-signature agent="Fable 5.1" at="2026-10-02T12:50:14-05:00" -->
+
 ## 0.22.0 - 2026-10-01
 
 - Add `lib/fork.ts` with `createFork({ name, deltas, repositoryPath,

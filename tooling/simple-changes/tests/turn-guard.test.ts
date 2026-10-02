@@ -31,6 +31,10 @@ import {
 } from "../../../skills/simple-changes/scripts/lib/loop-lease.ts";
 import { runtimeFreshness } from "../../../skills/simple-changes/scripts/lib/runtime-freshness.ts";
 import {
+  ownerLoopInvocations,
+  subagentControlIndex,
+} from "../../../skills/simple-changes/scripts/lib/subagent-control.ts";
+import {
   hookInstallScript,
   parseTurnCheckHookInput,
   stopHookStatus,
@@ -364,10 +368,42 @@ describe("turn-end guard", () => {
       parseTurnCheckHookInput(
         JSON.stringify({ session_id: SESSION, stop_hook_active: true })
       )
-    ).toEqual({ sessionId: SESSION, stopHookActive: true });
+    ).toEqual({
+      backgroundTasks: [],
+      sessionId: SESSION,
+      stopHookActive: true,
+      transcriptPath: null,
+    });
+    expect(
+      parseTurnCheckHookInput(
+        JSON.stringify({
+          background_tasks: [
+            {
+              description: "Ship",
+              id: "a1",
+              status: "running",
+              type: "subagent",
+            },
+            { id: 7, status: "running", type: "subagent" },
+            null,
+          ],
+          session_id: SESSION,
+          transcript_path: "/t/session.jsonl",
+        })
+      )
+    ).toEqual({
+      backgroundTasks: [
+        { description: "Ship", id: "a1", status: "running", type: "subagent" },
+      ],
+      sessionId: SESSION,
+      stopHookActive: false,
+      transcriptPath: "/t/session.jsonl",
+    });
     expect(parseTurnCheckHookInput("not json")).toEqual({
+      backgroundTasks: [],
       sessionId: null,
       stopHookActive: false,
+      transcriptPath: null,
     });
     expect(
       turnCheckHookOutput({
@@ -406,6 +442,484 @@ describe("turn-end guard", () => {
     const garbage = run("{");
     expect(garbage.status).toBe(0);
     expect(garbage.stdout).toBe("");
+  });
+});
+
+describe("turn-end guard with background subagents", () => {
+  const SUBAGENT = "a40a5185ff03e378c";
+  const OTHER_SUBAGENT = "a0316717ea7f4d2f6";
+
+  interface Transcripts {
+    parent: string;
+    subagent: (id: string) => string;
+  }
+
+  // Claude Code keeps a session's transcript at <dir>/<session>.jsonl and each
+  // subagent's at <dir>/<session>/subagents/agent-<id>.jsonl.
+  const transcripts = (): Transcripts => {
+    const directory = mkdtempSync(
+      join(tmpdir(), "simple-changes-transcripts-")
+    );
+    fixtures.push({
+      cleanup: () => rmSync(directory, { force: true, recursive: true }),
+    } as TestRepository);
+    const parent = join(directory, `${SESSION}.jsonl`);
+    writeFileSync(parent, "");
+    return {
+      parent,
+      subagent: (id) => {
+        const path = join(directory, SESSION, "subagents", `agent-${id}.jsonl`);
+        mkdirSync(dirname(path), { recursive: true });
+        return path;
+      },
+    };
+  };
+
+  interface CallContext {
+    /** The subagent writing the entry; omitted for the parent. */
+    agentId?: string;
+    /** Null leaves the timestamp out. */
+    at: Date | null;
+    /** Marks the output as a failed command, as a nonzero exit does. */
+    isError?: boolean;
+    sidechain?: boolean;
+  }
+
+  let toolUse = 0;
+  // One Bash call and its output, as transcript lines.
+  const bashCall = (
+    command: string,
+    output: string,
+    context: CallContext
+  ): string => {
+    toolUse += 1;
+    const id = `toolu_${toolUse}`;
+    const common = {
+      ...(context.agentId ? { agentId: context.agentId } : {}),
+      isSidechain: context.sidechain ?? context.agentId !== undefined,
+      ...(context.at ? { timestamp: context.at.toISOString() } : {}),
+    };
+    return `${[
+      {
+        ...common,
+        message: {
+          content: [{ id, input: { command }, name: "Bash", type: "tool_use" }],
+          role: "assistant",
+        },
+        type: "assistant",
+      },
+      {
+        ...common,
+        message: {
+          content: [
+            {
+              content: output,
+              is_error: context.isError ?? false,
+              tool_use_id: id,
+              type: "tool_result",
+            },
+          ],
+          role: "user",
+        },
+        type: "user",
+      },
+    ]
+      .map((entry) => JSON.stringify(entry))
+      .join("\n")}\n`;
+  };
+
+  const secondsAgo = (seconds: number): Date =>
+    new Date(Date.now() - seconds * 1000);
+
+  const running = (id: string, status = "running") => ({
+    description: "Ship the fork update",
+    id,
+    status,
+    type: "subagent",
+  });
+
+  const START =
+    "sh scripts/simple-changes-runtime.sh loop start --mode ship --agent-id controller --json";
+  const exec = (runId: string): string =>
+    `R="bun simple-changes.ts"; $R loop exec --run-id ${runId} --agent-id controller -- git push`;
+
+  // A subagent's `loop start`, whose output alone names the run, then an owner
+  // command naming both.
+  const driveFromSubagent = (
+    paths: Transcripts,
+    id: string,
+    lease: LoopLease,
+    lastSecondsAgo = 5
+  ): void => {
+    writeFileSync(
+      paths.subagent(id),
+      bashCall(START, `{"runId":"${lease.runId}"}`, {
+        agentId: id,
+        at: secondsAgo(lastSecondsAgo + 5),
+      }) +
+        bashCall(exec(lease.runId), "ok", {
+          agentId: id,
+          at: secondsAgo(lastSecondsAgo),
+        })
+    );
+  };
+
+  const check = (paths: Transcripts, backgroundTasks = [running(SUBAGENT)]) =>
+    turnCheck({
+      backgroundTasks,
+      sessionId: SESSION,
+      stopHookActive: false,
+      transcriptPath: paths.parent,
+    });
+
+  const setup = () => {
+    const repository = fixture();
+    useSession(SESSION);
+    const lease = startLoop(repository.root, "controller", "ship");
+    const paths = transcripts();
+    return { lease, paths, repository };
+  };
+
+  test("reads only Simple Changes loop invocations that name an owner", () => {
+    expect(
+      ownerLoopInvocations(
+        `R="sh x/simple-changes-runtime.sh"; $R loop exec --run-id=run-a1 --agent-id 'ctl' -- git push --agent-id other; simple-changes loop guard --agent-id=ctl2 --run-id "run-b2"`
+      )
+    ).toEqual([
+      { action: "exec", agentId: "ctl", runId: "run-a1" },
+      { action: "guard", agentId: "ctl2", runId: "run-b2" },
+    ]);
+    expect(
+      ownerLoopInvocations(
+        "(simple-changes loop exec --run-id run-a1 --agent-id ctl) && echo ok"
+      )
+    ).toEqual([{ action: "exec", agentId: "ctl", runId: "run-a1" }]);
+    for (const probe of [
+      "simple-changes loop status --agent-id ctl --run-id run-a1",
+      "simple-changes loop replan-status --agent-id ctl",
+      "simple-changes loop turn-check --agent-id ctl",
+      "simple-changes loop verify --run-id run-a1 --agent-id ctl",
+      "rg -n ctl notes.md",
+      "cat /var/ctl/state.json",
+      "echo loop start --agent-id ctl",
+      "simple-changes loop status --json",
+      "simple-changes loop status --json; echo --agent-id ctl",
+    ]) {
+      expect(ownerLoopInvocations(probe)).toEqual([]);
+    }
+  });
+
+  test("a live run a running subagent drives only advises the user", () => {
+    const { lease, paths } = setup();
+    driveFromSubagent(paths, SUBAGENT, lease);
+    // The parent only looked at status, and another agent's sidechain entries
+    // in its transcript are not its own commands.
+    writeFileSync(
+      paths.parent,
+      bashCall(
+        "simple-changes loop status --json",
+        `{"runId":"${lease.runId}","ownerAgentId":"controller"}`,
+        { at: secondsAgo(2) }
+      ) +
+        bashCall(exec(lease.runId), "ok", {
+          at: secondsAgo(1),
+          sidechain: true,
+        })
+    );
+
+    const advised = check(paths);
+    expect(advised.decision).toBe("advise");
+    expect(advised.runs[0]?.drivenBy).toMatchObject({ agentId: SUBAGENT });
+    expect(advised.reason).toBe(
+      `Simple Changes: run ${lease.runId} in ${lease.primaryCheckout} is being driven by background agent ${SUBAGENT} (Ship the fork update); that agent finalizes it when it finishes, and this session is asked to if it does not.`
+    );
+    expect(JSON.parse(turnCheckHookOutput(advised))).toEqual({
+      systemMessage: advised.reason,
+    });
+    // The pointer stays: once the subagent is gone, the guard blocks again.
+    expect(listControllerSessionEntries(SESSION)).toHaveLength(1);
+
+    // A subagent command still waiting for its output covers a lease write.
+    writeFileSync(
+      loopLeasePath(lease.commonGitDirectory),
+      `${JSON.stringify({ ...lease, updatedAt: new Date().toISOString() })}\n`
+    );
+    const [inFlight] = bashCall(exec(lease.runId), "", {
+      agentId: SUBAGENT,
+      at: secondsAgo(600),
+    }).split("\n");
+    writeFileSync(paths.subagent(SUBAGENT), `${inFlight}\n`);
+    expect(check(paths).decision).toBe("advise");
+  });
+
+  test("the parent's own run still blocks", () => {
+    const { lease, paths } = setup();
+    driveFromSubagent(paths, SUBAGENT, lease);
+
+    // An unrelated running subagent never excuses the parent's run.
+    expect(check(paths, [running(OTHER_SUBAGENT)]).decision).toBe("block");
+
+    // Loose mentions of the owner are not owner commands.
+    writeFileSync(
+      paths.subagent(OTHER_SUBAGENT),
+      [
+        "rg -n controller notes.md",
+        "cat /var/controller/state.json",
+        "simple-changes loop status --json",
+        "simple-changes loop guard --agent-id controller --json",
+      ]
+        .map((command) =>
+          bashCall(command, `{"runId":"${lease.runId}"}`, {
+            agentId: OTHER_SUBAGENT,
+            at: secondsAgo(1),
+          })
+        )
+        .join("")
+    );
+    expect(check(paths, [running(OTHER_SUBAGENT)]).decision).toBe("block");
+
+    // A transcript claiming to be another agent's is not this subagent's.
+    writeFileSync(
+      paths.subagent(OTHER_SUBAGENT),
+      bashCall(exec(lease.runId), "ok", {
+        agentId: SUBAGENT,
+        at: secondsAgo(1),
+      })
+    );
+    expect(check(paths, [running(OTHER_SUBAGENT)]).decision).toBe("block");
+
+    // The parent's `loop start`, named only by its output, after the subagent.
+    writeFileSync(
+      paths.parent,
+      bashCall(
+        START.replace("sh scripts/simple-changes-runtime.sh", "simple-changes"),
+        `{"runId":"${lease.runId}"}`,
+        {
+          at: secondsAgo(1),
+        }
+      )
+    );
+    const parentOwned = check(paths);
+    expect(parentOwned.decision).toBe("block");
+    expect(parentOwned.runs[0]?.drivenBy).toBeNull();
+    expect(parentOwned.reason).toContain("loop finalize");
+
+    // A parent owner command without a time counts as the newest.
+    writeFileSync(
+      paths.parent,
+      bashCall(exec(lease.runId), "ok", { at: null })
+    );
+    expect(check(paths).decision).toBe("block");
+
+    // An unreadable parent transcript proves nothing.
+    writeFileSync(paths.parent, "");
+    expect(check(paths).decision).toBe("advise");
+    expect(
+      turnCheck({
+        backgroundTasks: [running(SUBAGENT)],
+        sessionId: SESSION,
+        stopHookActive: false,
+        transcriptPath: `${paths.parent}.missing.jsonl`,
+      }).decision
+    ).toBe("block");
+  });
+
+  test("failed or prose-only subagent output proves nothing", () => {
+    const { lease, paths } = setup();
+    const start = (output: string, isError: boolean): string =>
+      bashCall(START, output, {
+        agentId: SUBAGENT,
+        at: secondsAgo(2),
+        isError,
+      });
+    for (const evidence of [
+      // A refused start names the parent's run in its error.
+      start(`${lease.runId} is already active for controller.`, true),
+      start(`{"runId":"${lease.runId}"}`, true),
+      // A successful start whose output names the run only in prose.
+      start(`Integration-controller loop ${lease.runId} is active.`, false),
+      // A failed owner command is not control.
+      bashCall(exec(lease.runId), "rejected", {
+        agentId: SUBAGENT,
+        at: secondsAgo(2),
+        isError: true,
+      }),
+    ]) {
+      writeFileSync(paths.subagent(SUBAGENT), evidence);
+      expect(check(paths).decision).toBe("block");
+    }
+
+    // The parent's failed attempt still counts as the parent commanding it.
+    driveFromSubagent(paths, SUBAGENT, lease, 10);
+    expect(check(paths).decision).toBe("advise");
+    writeFileSync(
+      paths.parent,
+      bashCall(exec(lease.runId), "rejected", {
+        at: secondsAgo(1),
+        isError: true,
+      })
+    );
+    expect(check(paths).decision).toBe("block");
+  });
+
+  test("subagent commands without a time prove nothing", () => {
+    const { lease, paths } = setup();
+    writeFileSync(
+      paths.subagent(SUBAGENT),
+      bashCall(exec(lease.runId), "ok", { agentId: SUBAGENT, at: null })
+    );
+    expect(check(paths).decision).toBe("block");
+  });
+
+  test("a lease written well after the subagent's last command blocks", () => {
+    const { lease, paths } = setup();
+    // The parent drove the run some other way, as through a wrapper script.
+    driveFromSubagent(paths, SUBAGENT, lease, 300);
+    expect(check(paths).decision).toBe("block");
+    writeFileSync(
+      loopLeasePath(lease.commonGitDirectory),
+      `${JSON.stringify({ ...lease, updatedAt: secondsAgo(290).toISOString() })}\n`
+    );
+    expect(check(paths).decision).toBe("advise");
+  });
+
+  test("a mix of parent-owned and subagent-driven runs blocks and names both", () => {
+    const first = setup();
+    const second = startLoop(fixture().root, "controller", "ship");
+    driveFromSubagent(first.paths, SUBAGENT, first.lease);
+
+    const mixed = check(first.paths);
+    expect(mixed.decision).toBe("block");
+    expect(mixed.reason).toContain(
+      `this session still controls ${second.runId}`
+    );
+    expect(mixed.reason).toContain(`loop finalize --run-id ${second.runId}`);
+    expect(mixed.reason).toContain(`Leave ${first.lease.runId}`);
+    expect(mixed.reason).not.toContain(
+      `loop finalize --run-id ${first.lease.runId}`
+    );
+  });
+
+  test("a finished or stale subagent run still blocks", () => {
+    const { lease, paths } = setup();
+    driveFromSubagent(paths, SUBAGENT, lease);
+
+    for (const backgroundTasks of [
+      [],
+      [running(SUBAGENT, "completed")],
+      [{ ...running(SUBAGENT), type: "workflow" }],
+    ]) {
+      expect(check(paths, backgroundTasks).decision).toBe("block");
+    }
+
+    // Listed as running, but the run went quiet past the stale threshold and
+    // its recorded command process is gone: the subagent no longer drives it.
+    const stored = JSON.parse(
+      readFileSync(loopLeasePath(lease.commonGitDirectory), "utf8")
+    ) as LoopLease;
+    writeFileSync(
+      loopLeasePath(lease.commonGitDirectory),
+      `${JSON.stringify({
+        ...stored,
+        ownerProcess: { ...stored.ownerProcess, pid: deadPid() },
+        updatedAt: new Date(
+          Date.now() - LEASE_STALE_AFTER_MS - 60_000
+        ).toISOString(),
+      })}\n`
+    );
+    const stale = check(paths);
+    expect(stale.decision).toBe("block");
+    expect(stale.reason).toContain("loop finalize");
+  });
+
+  test("an oversized or slow transcript scan blocks instead of timing out", () => {
+    const { lease, paths } = setup();
+    driveFromSubagent(paths, SUBAGENT, lease);
+    const run = {
+      leaseUpdatedAt: new Date().toISOString(),
+      ownerAgentId: "controller",
+      runId: lease.runId,
+    };
+    const tasks = [running(SUBAGENT)];
+    expect(
+      subagentControlIndex(paths.parent, tasks).controllerOf(run)
+    ).toMatchObject({ agentId: SUBAGENT });
+    writeFileSync(paths.parent, "x".repeat(2048));
+    expect(
+      subagentControlIndex(paths.parent, tasks, {
+        budgetMs: 60_000,
+        maxBytes: 1024,
+      }).controllerOf(run)
+    ).toBeNull();
+    expect(
+      subagentControlIndex(paths.parent, tasks, {
+        budgetMs: -1,
+        maxBytes: 1024 * 1024,
+      }).controllerOf(run)
+    ).toBeNull();
+  });
+
+  test("scans a 20 MB transcript well inside the hook timeout", () => {
+    const { lease, paths } = setup();
+    driveFromSubagent(paths, SUBAGENT, lease);
+    // Mostly ordinary output, with loop and owner-flag text in tool results
+    // that are not the parent's commands.
+    const filler = bashCall(
+      "rg -n loop skills/simple-changes/SKILL.md",
+      `loop exec --run-id ${lease.runId} --agent-id controller ${"x".repeat(4000)}`,
+      { at: secondsAgo(30) }
+    );
+    const plain = `${JSON.stringify({ message: { content: "y".repeat(4000) }, type: "user" })}\n`;
+    const chunk = filler + plain.repeat(9);
+    writeFileSync(
+      paths.parent,
+      chunk.repeat(Math.ceil((20 * 1024 * 1024) / chunk.length))
+    );
+    const started = performance.now();
+    const control = subagentControlIndex(paths.parent, [running(SUBAGENT)], {
+      budgetMs: 60_000,
+      maxBytes: 64 * 1024 * 1024,
+    }).controllerOf({
+      leaseUpdatedAt: new Date().toISOString(),
+      ownerAgentId: "controller",
+      runId: lease.runId,
+    });
+    const elapsed = performance.now() - started;
+    expect(control).toMatchObject({ agentId: SUBAGENT });
+    expect(elapsed).toBeLessThan(3000);
+  });
+
+  test("the CLI hook advises over stdin for a subagent run and is silent without a pointer", () => {
+    const { lease, paths } = setup();
+    driveFromSubagent(paths, SUBAGENT, lease);
+    const { CLAUDE_CODE_SESSION_ID: _session, ...environment } = process.env;
+    const run = (input: object) =>
+      spawnSync(process.execPath, [SCRIPT, "loop", "turn-check", "--hook"], {
+        cwd: tmpdir(),
+        encoding: "utf8",
+        env: environment,
+        input: JSON.stringify(input),
+      });
+
+    const advised = run({
+      background_tasks: [running(SUBAGENT)],
+      hook_event_name: "Stop",
+      session_id: SESSION,
+      stop_hook_active: false,
+      transcript_path: paths.parent,
+    });
+    expect(advised.status).toBe(0);
+    const message = JSON.parse(advised.stdout);
+    expect(message.decision).toBeUndefined();
+    expect(message.systemMessage).toContain(lease.runId);
+
+    const none = run({
+      background_tasks: [running(SUBAGENT)],
+      session_id: OTHER_SESSION,
+      transcript_path: paths.parent,
+    });
+    expect(none.status).toBe(0);
+    expect(none.stdout).toBe("");
   });
 });
 

@@ -1,10 +1,16 @@
 import { describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import {
+  remoteBranchReconciliationDigest,
+  splitRemoteBranchReconciliationInput,
   validatePostCleanupRecovery,
+  validateRemoteBranchAncestryRecord,
   validateRemoteBranchReconciliation,
 } from "../../../skills/simple-changes/scripts/lib/remote-branch-reconciliation.ts";
-import type { RemoteBranchReconciliationReceipt } from "../../../skills/simple-changes/scripts/lib/types.ts";
+import type {
+  RemoteBranchAncestryProof,
+  RemoteBranchReconciliationReceipt,
+} from "../../../skills/simple-changes/scripts/lib/types.ts";
 
 const SHA = {
   feature: "b".repeat(40),
@@ -192,6 +198,122 @@ const postCleanupReceipt = (
   targetBranch: "main",
   targetRevision: SHA.target,
 });
+
+const FAST_FORWARD = {
+  initial: "1".repeat(40),
+  merged: "2".repeat(40),
+};
+
+const recomputeCoverage = (
+  value: RemoteBranchReconciliationReceipt
+): RemoteBranchReconciliationReceipt => {
+  const branchEntries = (phase: "initial" | "final") =>
+    value.branches
+      .filter((branch) =>
+        phase === "initial"
+          ? branch.initialHeadRevision !== null
+          : branch.finalHeadRevision !== null
+      )
+      .map((branch) => ({
+        headRevision:
+          phase === "initial"
+            ? branch.initialHeadRevision
+            : branch.finalHeadRevision,
+        name: branch.name,
+      }));
+  const proposalEntries = (phase: "initial" | "final") =>
+    value.branches.flatMap((branch) =>
+      branch.proposals
+        .filter((proposal) =>
+          phase === "initial"
+            ? proposal.observedInitially !== false
+            : proposal.observedFinally !== false
+        )
+        .map((proposal) => ({
+          branch: branch.name,
+          headRevision: proposal.headRevision,
+          objectId: proposal.objectId,
+          state: proposal.state,
+        }))
+    );
+  value.initialBranchCount = branchEntries("initial").length;
+  value.finalBranchCount = branchEntries("final").length;
+  value.initialCoverage = coverage(
+    branchEntries("initial"),
+    proposalEntries("initial")
+  );
+  value.finalCoverage = coverage(
+    branchEntries("final"),
+    proposalEntries("final")
+  );
+  return value;
+};
+
+/**
+ * The shipping MR !70 shape: the source branch was open at the initial head,
+ * the controller fast-forwarded it, and GitLab merged and deleted it.
+ */
+const fastForwardReceipt = (): RemoteBranchReconciliationReceipt => {
+  const value = receipt();
+  value.branches = [
+    ...value.branches.filter((branch) => branch.name !== "feature/merged"),
+    {
+      classification: "merged-obsolete",
+      disposition: "deleted-merged",
+      evidence: [
+        "MR !70 was open at the opening head, fast-forwarded, merged, and its source branch deleted.",
+      ],
+      finalHeadRevision: null,
+      initialHeadRevision: FAST_FORWARD.initial,
+      name: "fix/shipped",
+      obsoleteProof: "merged-proposal-head",
+      proposals: [
+        {
+          headRevision: FAST_FORWARD.initial,
+          objectId: "70",
+          observedFinally: false,
+          state: "open",
+        },
+        {
+          headRevision: FAST_FORWARD.merged,
+          objectId: "70",
+          observedInitially: false,
+          state: "merged",
+        },
+      ],
+      protected: false,
+    },
+  ];
+  return recomputeCoverage(value);
+};
+
+const ancestryProof = (
+  mergedHeadRevision = FAST_FORWARD.merged
+): RemoteBranchAncestryProof => ({
+  branch: "fix/shipped",
+  initialHeadRevision: FAST_FORWARD.initial,
+  mergedHeadRevision,
+  proposalObjectId: "70",
+});
+
+/** Same proposal open and merged at the unchanged initial head. */
+const sameHeadReceipt = (): RemoteBranchReconciliationReceipt => {
+  const value = fastForwardReceipt();
+  const [, merged] = shippedBranch(value).proposals;
+  if (!merged) {
+    throw new Error("missing merged proposal");
+  }
+  merged.headRevision = FAST_FORWARD.initial;
+  return recomputeCoverage(value);
+};
+
+const shippedBranch = (value: RemoteBranchReconciliationReceipt) => {
+  const branch = value.branches.find((entry) => entry.name === "fix/shipped");
+  if (!branch) {
+    throw new Error("missing fast-forward fixture branch");
+  }
+  return branch;
+};
 
 describe("remote branch reconciliation", () => {
   test("accepts two matching ordered post-cleanup snapshots", () => {
@@ -459,5 +581,208 @@ describe("remote branch reconciliation", () => {
       pageDigests: proof.pages.map((page) => page.responseDigest),
     });
     expect(validateRemoteBranchReconciliation(value)).toEqual(value);
+  });
+  test("accepts a same-proposal fast-forward merge whose source branch was deleted", () => {
+    const value = fastForwardReceipt();
+    expect(
+      validateRemoteBranchReconciliation(value, [ancestryProof()])
+    ).toEqual(value);
+  });
+
+  test("accepts the same proposal merged at the unchanged initial head", () => {
+    const value = sameHeadReceipt();
+    expect(
+      validateRemoteBranchReconciliation(value, [
+        ancestryProof(FAST_FORWARD.initial),
+      ])
+    ).toEqual(value);
+    expect(() => validateRemoteBranchReconciliation(value)).toThrow(
+      "an open proposal branch must be classified as open"
+    );
+  });
+
+  test("keeps the moved-and-deleted shape unrecordable without ancestry proof", () => {
+    const value = fastForwardReceipt();
+    expect(() => validateRemoteBranchReconciliation(value)).toThrow(
+      "an open proposal branch must be classified as open"
+    );
+  });
+
+  test("rejects ancestry proof that does not start at the exact initial head", () => {
+    const value = fastForwardReceipt();
+    const proof = { ...ancestryProof(), initialHeadRevision: "3".repeat(40) };
+    expect(() => validateRemoteBranchReconciliation(value, [proof])).toThrow(
+      "must start at the exact initial branch head"
+    );
+  });
+
+  test("rejects ancestry proof across different proposals", () => {
+    const value = fastForwardReceipt();
+    const [, merged] = shippedBranch(value).proposals;
+    if (!merged) {
+      throw new Error("missing merged proposal");
+    }
+    merged.objectId = "71";
+    recomputeCoverage(value);
+    expect(() =>
+      validateRemoteBranchReconciliation(value, [ancestryProof()])
+    ).toThrow(
+      "must bind the same proposal open at the initial head and merged at the proof head"
+    );
+  });
+
+  test("rejects ancestry proof whose merged head differs from the proposal", () => {
+    const value = fastForwardReceipt();
+    expect(() =>
+      validateRemoteBranchReconciliation(value, [ancestryProof(SHA.target)])
+    ).toThrow(
+      "must bind the same proposal open at the initial head and merged at the proof head"
+    );
+  });
+
+  test("rejects ancestry deletion while an open proposal remains", () => {
+    const value = fastForwardReceipt();
+    shippedBranch(value).proposals.push({
+      headRevision: FAST_FORWARD.merged,
+      objectId: "72",
+      observedInitially: false,
+      state: "open",
+    });
+    recomputeCoverage(value);
+    expect(() =>
+      validateRemoteBranchReconciliation(value, [ancestryProof()])
+    ).toThrow("an open proposal branch cannot be deleted");
+  });
+
+  test("rejects ancestry proof when the same proposal is still open finally", () => {
+    const value = fastForwardReceipt();
+    const [open] = shippedBranch(value).proposals;
+    if (!open) {
+      throw new Error("missing open proposal");
+    }
+    Reflect.deleteProperty(open, "observedFinally");
+    recomputeCoverage(value);
+    expect(() =>
+      validateRemoteBranchReconciliation(value, [ancestryProof()])
+    ).toThrow(
+      "must bind the same proposal open at the initial head and merged at the proof head"
+    );
+  });
+
+  test("rejects ancestry proof on preserved, target, remaining, or unknown branches", () => {
+    const preserved = receipt();
+    expect(() =>
+      validateRemoteBranchReconciliation(preserved, [
+        {
+          branch: "build/manual",
+          initialHeadRevision: "c".repeat(40),
+          mergedHeadRevision: SHA.target,
+          proposalObjectId: "1",
+        },
+      ])
+    ).toThrow("requires a merged-obsolete classification");
+    expect(() =>
+      validateRemoteBranchReconciliation(receipt(), [
+        {
+          branch: "main",
+          initialHeadRevision: SHA.target,
+          mergedHeadRevision: SHA.target,
+          proposalObjectId: "1",
+        },
+      ])
+    ).toThrow("cannot apply to the canonical target or a protected branch");
+    const remaining = fastForwardReceipt();
+    shippedBranch(remaining).finalHeadRevision = FAST_FORWARD.merged;
+    recomputeCoverage(remaining);
+    expect(() =>
+      validateRemoteBranchReconciliation(remaining, [ancestryProof()])
+    ).toThrow("require deleted-merged, no final ref");
+    expect(() =>
+      validateRemoteBranchReconciliation(fastForwardReceipt(), [
+        ancestryProof(),
+        ancestryProof(),
+      ])
+    ).toThrow("must name exactly one ledger branch");
+    expect(() =>
+      validateRemoteBranchReconciliation(fastForwardReceipt(), [
+        { ...ancestryProof(), branch: "missing" },
+      ])
+    ).toThrow("must name exactly one ledger branch");
+  });
+
+  test("splits input ancestry proof out of the embedded receipt", () => {
+    const value = fastForwardReceipt();
+    const input = structuredClone(value) as unknown as {
+      branches: Record<string, unknown>[];
+    };
+    const shipped = input.branches.find(
+      (branch) => branch.name === "fix/shipped"
+    );
+    if (!shipped) {
+      throw new Error("missing input branch");
+    }
+    shipped.mergedHeadAncestry = {
+      initialHeadRevision: FAST_FORWARD.initial,
+      mergedHeadRevision: FAST_FORWARD.merged,
+      proposalObjectId: "70",
+    };
+    expect(() => validateRemoteBranchReconciliation(input)).toThrow(
+      "Invalid remote-branch-reconciliation"
+    );
+    const split = splitRemoteBranchReconciliationInput(input);
+    expect(split.ancestryProofs).toEqual([ancestryProof()]);
+    expect(split.receipt).toEqual(value);
+    expect(
+      validateRemoteBranchReconciliation(split.receipt, split.ancestryProofs)
+    ).toEqual(value);
+
+    shipped.mergedHeadAncestry = {
+      initialHeadRevision: FAST_FORWARD.initial,
+      mergedHeadRevision: FAST_FORWARD.merged,
+      proposalObjectId: "70",
+      verified: true,
+    };
+    expect(() => splitRemoteBranchReconciliationInput(input)).toThrow(
+      "Invalid remote-branch-ancestry proof"
+    );
+    shipped.mergedHeadAncestry = { ...ancestryProof() };
+    expect(() => splitRemoteBranchReconciliationInput(input)).toThrow(
+      "must be an object naming proposalObjectId"
+    );
+  });
+
+  test("re-joins ancestry sidecars only with the exact run and receipt", () => {
+    const value = fastForwardReceipt();
+    const record = {
+      proofs: [ancestryProof()],
+      receiptDigest: remoteBranchReconciliationDigest(value),
+      runId: "run-abc",
+      schemaVersion: 1,
+    };
+    expect(
+      validateRemoteBranchAncestryRecord(record, "run-abc", value)
+    ).toEqual([ancestryProof()]);
+    expect(() =>
+      validateRemoteBranchAncestryRecord(record, "run-other", value)
+    ).toThrow("do not match this run's recorded reconciliation receipt");
+    expect(() =>
+      validateRemoteBranchAncestryRecord(record, "run-abc", receipt())
+    ).toThrow("do not match this run's recorded reconciliation receipt");
+  });
+
+  test("validates receipts without ancestry proof exactly as before", () => {
+    const value = receipt();
+    expect(validateRemoteBranchReconciliation(value)).toEqual(value);
+    expect(validateRemoteBranchReconciliation(value, [])).toEqual(value);
+    const [, merged] = value.branches;
+    const proposal = merged?.proposals[0];
+    if (!proposal) {
+      throw new Error("missing merged proposal");
+    }
+    proposal.headRevision = "e".repeat(40);
+    recomputeCoverage(value);
+    expect(() => validateRemoteBranchReconciliation(value)).toThrow(
+      "merged deletion proof must bind a merged proposal to the exact initial branch head"
+    );
   });
 });

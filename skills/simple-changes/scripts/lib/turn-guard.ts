@@ -18,22 +18,36 @@ import {
   listControllerSessionEntries,
 } from "./harness-session.ts";
 import {
+  leaseLiveness,
   loopLeasePath,
   readControllerBinding,
   turnEndReminder,
 } from "./loop-lease.ts";
 import { declaredVersion, isOlderVersion } from "./runtime-freshness.ts";
+import {
+  type HookBackgroundTask,
+  parseHookBackgroundTasks,
+  type SubagentControl,
+  type SubagentControlIndex,
+  subagentControlIndex,
+} from "./subagent-control.ts";
 import type { LoopControllerSession, LoopLease } from "./types.ts";
 
 type Environment = Record<string, string | undefined>;
 export type TurnGuardHarness = LoopControllerSession["harness"];
 
 export interface TurnCheckInput {
+  /** In-flight background work the Stop hook reported, if any. */
+  backgroundTasks?: HookBackgroundTask[];
   sessionId: string | null;
   stopHookActive: boolean;
+  /** The ending session's own transcript, as the Stop hook reported it. */
+  transcriptPath?: string | null;
 }
 
 export interface TurnCheckRun {
+  /** A still-running background subagent of this session driving the run. */
+  drivenBy: SubagentControl | null;
   ownerAgentId: string;
   primaryCheckout: string;
   reminder: string;
@@ -41,7 +55,12 @@ export interface TurnCheckRun {
 }
 
 export interface TurnCheckResult {
-  decision: "allow" | "block" | "warn";
+  /**
+   * `advise` means every run this session controls is being driven by one of
+   * its own still-running background subagents: the turn may end, and the
+   * user is told which runs are still open.
+   */
+  decision: "advise" | "allow" | "block" | "warn";
   reason: string | null;
   runs: TurnCheckRun[];
   sessionId: string | null;
@@ -61,7 +80,10 @@ const readLease = (commonGitDirectory: string): LoopLease | null => {
  * Find the runs this harness session still actively controls. The session
  * index only points at repositories; each lease is read again and must name
  * this session on an active controller. Pointers to closed, paused, resumed,
- * or taken-over runs are pruned as they are found.
+ * or taken-over runs are pruned as they are found. A live run that a still
+ * running background subagent of this session is driving only advises: the
+ * subagent shares this session's identity, and finalizing would revoke its
+ * control mid-shipment.
  */
 export const turnCheck = (
   input: TurnCheckInput,
@@ -75,6 +97,20 @@ export const turnCheck = (
     return { decision: "allow", reason: null, runs: [], sessionId: null };
   }
   const runs: TurnCheckRun[] = [];
+  // Built on first use and shared by every run, so each transcript is read
+  // at most once per hook.
+  let subagents: SubagentControlIndex | null = null;
+  const subagentDriving = (lease: LoopLease): SubagentControl | null => {
+    subagents ??= subagentControlIndex(
+      input.transcriptPath ?? null,
+      input.backgroundTasks ?? []
+    );
+    return subagents.controllerOf({
+      leaseUpdatedAt: lease.updatedAt,
+      ownerAgentId: lease.ownerAgentId,
+      runId: lease.runId,
+    });
+  };
   for (const entry of listControllerSessionEntries(sessionId, environment)) {
     const lease = readLease(entry.commonGitDirectory);
     if (
@@ -86,7 +122,12 @@ export const turnCheck = (
       forgetControllerSession(sessionId, entry.runId, environment);
       continue;
     }
+    // A quiet run is never excused: a subagent that stopped driving it leaves
+    // the finalize step to this session.
+    const drivenBy =
+      leaseLiveness(lease).state === "live" ? subagentDriving(lease) : null;
     runs.push({
+      drivenBy,
       ownerAgentId: lease.ownerAgentId,
       primaryCheckout: lease.primaryCheckout,
       reminder: turnEndReminder(lease),
@@ -96,11 +137,33 @@ export const turnCheck = (
   if (runs.length === 0) {
     return { decision: "allow", reason: null, runs, sessionId };
   }
+  const owned = runs.filter((run) => run.drivenBy === null);
+  const delegated = runs.filter((run) => run.drivenBy !== null);
+  const agentName = (run: TurnCheckRun): string =>
+    `background agent ${run.drivenBy?.agentId}${run.drivenBy?.description ? ` (${run.drivenBy.description})` : ""}`;
+  if (owned.length === 0) {
+    // A Stop hook's system message is shown to the user, not the agent.
+    return {
+      decision: "advise",
+      reason: delegated
+        .map(
+          (run) =>
+            `Simple Changes: run ${run.runId} in ${run.primaryCheckout} is being driven by ${agentName(run)}; that agent finalizes it when it finishes, and this session is asked to if it does not.`
+        )
+        .join(" "),
+      runs,
+      sessionId,
+    };
+  }
   const reason = [
-    `Simple Changes: this session still controls ${runs
+    `Simple Changes: this session still controls ${owned
       .map((run) => `${run.runId} in ${run.primaryCheckout}`)
       .join(", ")}.`,
-    ...runs.map((run) => run.reminder),
+    ...owned.map((run) => run.reminder),
+    ...delegated.map(
+      (run) =>
+        `Leave ${run.runId} in ${run.primaryCheckout} alone: ${agentName(run)} is still driving it, so do not finalize it.`
+    ),
   ].join(" ");
   return {
     decision: input.stopHookActive ? "warn" : "block",
@@ -119,7 +182,7 @@ export const turnCheckHookOutput = (result: TurnCheckResult): string => {
   if (result.decision === "block") {
     return `${JSON.stringify({ decision: "block", reason: result.reason })}\n`;
   }
-  if (result.decision === "warn") {
+  if (result.decision === "warn" || result.decision === "advise") {
     return `${JSON.stringify({ systemMessage: result.reason })}\n`;
   }
   return "";
@@ -128,16 +191,28 @@ export const turnCheckHookOutput = (result: TurnCheckResult): string => {
 export const parseTurnCheckHookInput = (raw: string): TurnCheckInput => {
   try {
     const parsed = JSON.parse(raw) as {
+      background_tasks?: unknown;
       session_id?: unknown;
       stop_hook_active?: unknown;
+      transcript_path?: unknown;
     };
     return {
+      backgroundTasks: parseHookBackgroundTasks(parsed.background_tasks),
       sessionId:
         typeof parsed.session_id === "string" ? parsed.session_id : null,
       stopHookActive: parsed.stop_hook_active === true,
+      transcriptPath:
+        typeof parsed.transcript_path === "string"
+          ? parsed.transcript_path
+          : null,
     };
   } catch {
-    return { sessionId: null, stopHookActive: false };
+    return {
+      backgroundTasks: [],
+      sessionId: null,
+      stopHookActive: false,
+      transcriptPath: null,
+    };
   }
 };
 

@@ -46,6 +46,17 @@ Every controller finalizes before it replies; see the finalize rule in
   it never traps a session. The lease is always re-read, and a pointer to a
   closed, paused, or transferred run is dropped. Codex may ask the user to
   trust a new hook the first time it runs.
+- **Background subagents.** A Claude Code background subagent shares its
+  parent's session, so its run is bound to the parent too. The hook only
+  advises the user, naming the run, when it lists that subagent as still
+  running, the subagent's own transcript issued a Simple Changes `loop`
+  command for the live run with its owner `--agent-id`, and neither the
+  parent's transcript nor a later lease write shows control moving back: do
+  not finalize a run your running subagent drives. If the session also
+  controls a run of its own, the hook still blocks and names both. Once the
+  subagent finishes, or its run goes stale, the hook blocks the parent again
+  until the run is finalized. Workflow agents are not excused yet, and an
+  unreadable, oversized, or slow transcript scan blocks.
 - **Reminders and freshness.** `loop guard`, `loop exec`, and `loop verify`
   print the finalize step for the current run, and their JSON carries it as
   `turnEnd`. When this runtime runs from a checkout whose branch carries an
@@ -79,8 +90,9 @@ discovered:
 2. Build one ledger over the union of the initial and final inventories. A
    branch appearing in either inventory must occur exactly once.
 3. Always preserve the canonical target, protected branches, branches used by
-   any open MR, branches that arrive or move during reconciliation, and any work
-   whose ownership or obsolescence is ambiguous.
+   any open MR, branches that arrive or move during reconciliation (except the
+   merged-head ancestry case below), and any work whose ownership or
+   obsolescence is ambiguous.
 4. Delete a merged-MR branch only when the branch's current head is the exact
    recorded head of that merged MR, no open MR uses it, it is unprotected, and
    provider evidence proves there are no later commits. Record
@@ -92,7 +104,8 @@ discovered:
 6. Run `loop guard` immediately before each provider deletion and `loop verify`
    immediately after it. Never batch by prefix, wildcard, or age.
 7. Paginate a fresh final provider inventory. Reclassify any new or moved branch
-   as ambiguous and preserve it. Verify that every remaining branch has a
+   as ambiguous and preserve it, unless it is a provider-deleted branch with
+   merged-head ancestry proof (below). Verify that every remaining branch has a
    preserved ledger disposition and every deleted branch is absent.
 8. Validate and bind the complete receipt to the final canonical target, then
    record the completion gate:
@@ -106,6 +119,24 @@ Pagination evidence must include a consolidated ledger digest plus complete
 branch and open/merged/closed proposal page chains (a terminal cursor chain
 and response digest for every page and every proposal state) from the
 persisted opening and final inventories.
+
+A source branch whose MR was open at the opening inventory, then merged at that
+same head or after a fast-forward, and deleted by GitLab is recorded as
+`deleted-merged` with `merged-proposal-head` proof. List that MR twice (open at
+the initial head with `observedFinally: false`, merged at the merged head with
+`observedInitially: false`) and add `mergedHeadAncestry` with the MR's
+`proposalObjectId`, `initialHeadRevision`, and `mergedHeadRevision` (equal when
+the head never moved) to that branch in the receipt file. `loop
+reconcile-remote-branches` verifies with Git that the initial head is the merged
+head or its ancestor and that the target contains the merged head, then keeps
+the proof in a sidecar beside the lease so older clients can still read the
+lease; `loop end` checks it again. A rewritten or force-pushed head, a different
+MR, a merged head outside the target, or a remaining open MR means the receipt
+cannot be recorded: the branch is already gone, so stop and report the branch,
+initial head, and MR to the user. Squash-merge projects, and GitLab
+rebase-merge projects whenever GitLab rebased the MR, always land there: the
+squashed source head is not in the target, and a rebased head does not descend
+from the initial head. Never recreate a deleted branch to make the ledger fit.
 
 `loop end` refuses a detected GitLab integration/reconciliation run when this
 receipt is missing, semantically unsafe, or stale against the final target

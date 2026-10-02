@@ -11,8 +11,8 @@ import {
   writeFileSync,
 } from "node:fs";
 import { hostname } from "node:os";
-import { join } from "node:path";
-import { pathToFileURL } from "node:url";
+import { dirname, join } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { sleep } from "bun";
 import {
   captureInventory,
@@ -51,10 +51,16 @@ import {
 } from "../../../skills/simple-changes/scripts/lib/loop-lease.ts";
 import { buildPreviewPlan } from "../../../skills/simple-changes/scripts/lib/planner.ts";
 import { DEFAULT_POLICY } from "../../../skills/simple-changes/scripts/lib/policy.ts";
+import {
+  remoteBranchReconciliationDigest,
+  splitRemoteBranchReconciliationInput,
+  validateRemoteBranchReconciliation,
+} from "../../../skills/simple-changes/scripts/lib/remote-branch-reconciliation.ts";
 import { validateSchema } from "../../../skills/simple-changes/scripts/lib/schema.ts";
 import type {
   ChangePlan,
   LoopLease,
+  RemoteBranchReconciliationReceipt,
   ShipmentOutcomeReceipt,
 } from "../../../skills/simple-changes/scripts/lib/types.ts";
 import {
@@ -4822,6 +4828,493 @@ describe("active integration-loop lease", () => {
     expect(endLoop(fixture.root, lease.runId, "controller").ok).toBe(true);
     expect(readLoopLease(fixture.root)).toBeNull();
   }, 20_000);
+
+  test("verifies merged-head ancestry with git and keeps the proof out of the lease", () => {
+    const fixture = repository();
+    git(fixture.root, [
+      "remote",
+      "add",
+      "origin",
+      "git@gitlab.com:group/project.git",
+    ]);
+    const baseRevision = git(fixture.root, ["rev-parse", "HEAD"]);
+    writeFixture(fixture.root, "shipped.txt", "opening head\n");
+    git(fixture.root, ["add", "shipped.txt"]);
+    git(fixture.root, ["commit", "-m", "Opening MR head"]);
+    const initialHead = git(fixture.root, ["rev-parse", "HEAD"]);
+    writeFixture(fixture.root, "shipped.txt", "fast-forwarded head\n");
+    git(fixture.root, ["add", "shipped.txt"]);
+    git(fixture.root, ["commit", "-m", "Release preparation"]);
+    const mergedHead = git(fixture.root, ["rev-parse", "HEAD"]);
+    const targetRevision = mergedHead;
+    const tree = git(fixture.root, ["rev-parse", "HEAD^{tree}"]);
+    const rewrittenHead = git(fixture.root, [
+      "commit-tree",
+      tree,
+      "-p",
+      baseRevision,
+      "-m",
+      "Force-pushed replacement",
+    ]);
+    const outsideTarget = git(fixture.root, [
+      "commit-tree",
+      tree,
+      "-p",
+      mergedHead,
+      "-m",
+      "Never merged",
+    ]);
+    const sha256Of = (value: unknown) =>
+      createHash("sha256").update(JSON.stringify(value)).digest("hex");
+    const mainEntry = {
+      classification: "canonical-target" as const,
+      disposition: "preserved-target" as const,
+      evidence: ["Complete GitLab inventory includes protected main."],
+      finalHeadRevision: targetRevision,
+      initialHeadRevision: targetRevision,
+      name: "main",
+      obsoleteProof: null,
+      proposals: [],
+      protected: true,
+    };
+    const ledger = (
+      branches: Array<{
+        finalHeadRevision: string | null;
+        initialHeadRevision: string | null;
+        name: string;
+        proposals: Array<{
+          headRevision: string | null;
+          objectId: string;
+          observedFinally?: boolean;
+          observedInitially?: boolean;
+          state: string;
+        }>;
+      }>,
+      phase: "initial" | "final"
+    ) => {
+      const branchEntries = branches
+        .filter((branch) =>
+          phase === "initial"
+            ? branch.initialHeadRevision !== null
+            : branch.finalHeadRevision !== null
+        )
+        .map((branch) => ({
+          headRevision:
+            phase === "initial"
+              ? branch.initialHeadRevision
+              : branch.finalHeadRevision,
+          name: branch.name,
+        }));
+      const proposalEntries = branches.flatMap((branch) =>
+        branch.proposals
+          .filter((proposal) =>
+            phase === "initial"
+              ? proposal.observedInitially !== false
+              : proposal.observedFinally !== false
+          )
+          .map((proposal) => ({
+            branch: branch.name,
+            headRevision: proposal.headRevision,
+            objectId: proposal.objectId,
+            state: proposal.state,
+          }))
+      );
+      return {
+        count: branchEntries.length,
+        coverage: paginationCoverage(
+          branchEntries.length,
+          sha256Of(branchEntries),
+          proposalEntries.length,
+          sha256Of(proposalEntries)
+        ),
+      };
+    };
+    const openingBranches = [
+      mainEntry,
+      {
+        classification: "open-proposal" as const,
+        disposition: "preserved-open-proposal" as const,
+        evidence: ["MR !70 is open at the opening source head."],
+        finalHeadRevision: initialHead,
+        initialHeadRevision: initialHead,
+        name: "fix/shipped",
+        obsoleteProof: null,
+        proposals: [
+          { headRevision: initialHead, objectId: "70", state: "open" as const },
+        ],
+        protected: false,
+      },
+    ];
+    const openingLedger = ledger(openingBranches, "initial");
+    const lease = startLoop(fixture.root, "controller", "integrate", {
+      branches: openingBranches,
+      finalBranchCount: openingLedger.count,
+      finalCoverage: openingLedger.coverage,
+      finalInventoryComplete: true,
+      initialBranchCount: openingLedger.count,
+      initialCoverage: openingLedger.coverage,
+      initialInventoryComplete: true,
+      observedAt: new Date().toISOString(),
+      project: "group/project",
+      provider: "gitlab",
+      schemaVersion: 1,
+      targetBranch: "main",
+      targetRevision,
+    });
+    const finalReceipt = (claimedMergedHead: string) => {
+      const branches = [
+        mainEntry,
+        {
+          classification: "merged-obsolete" as const,
+          disposition: "deleted-merged" as const,
+          evidence: [
+            "MR !70 merged at the fast-forwarded head and GitLab deleted the source branch.",
+          ],
+          finalHeadRevision: null,
+          initialHeadRevision: initialHead,
+          mergedHeadAncestry: {
+            initialHeadRevision: initialHead,
+            mergedHeadRevision: claimedMergedHead,
+            proposalObjectId: "70",
+          },
+          name: "fix/shipped",
+          obsoleteProof: "merged-proposal-head" as const,
+          proposals: [
+            {
+              headRevision: initialHead,
+              objectId: "70",
+              observedFinally: false,
+              state: "open" as const,
+            },
+            {
+              headRevision: claimedMergedHead,
+              objectId: "70",
+              observedInitially: false,
+              state: "merged" as const,
+            },
+          ],
+          protected: false,
+        },
+      ];
+      const initial = ledger(branches, "initial");
+      const final = ledger(branches, "final");
+      return {
+        branches,
+        finalBranchCount: final.count,
+        finalCoverage: final.coverage,
+        finalInventoryComplete: true as const,
+        initialBranchCount: initial.count,
+        initialCoverage: initial.coverage,
+        initialInventoryComplete: true as const,
+        observedAt: new Date().toISOString(),
+        project: "group/project",
+        provider: "gitlab",
+        schemaVersion: 1 as const,
+        targetBranch: "main",
+        targetRevision,
+      };
+    };
+
+    const embedded = (claimedMergedHead: string) =>
+      splitRemoteBranchReconciliationInput(finalReceipt(claimedMergedHead));
+    const leasePath = loopLeasePath(join(fixture.root, ".git"));
+    const ancestryPath = join(
+      fixture.root,
+      ".git",
+      "simple-changes",
+      "remote-branch-ancestry",
+      `${lease.runId}.json`
+    );
+
+    for (const [claimedMergedHead, message] of [
+      [rewrittenHead, "is not the merged head"],
+      [outsideTarget, "is not contained in target"],
+      ["f".repeat(40), "is not the merged head"],
+    ] as const) {
+      const forged = embedded(claimedMergedHead);
+      expect(
+        validateRemoteBranchReconciliation(
+          forged.receipt,
+          forged.ancestryProofs
+        )
+      ).toEqual(forged.receipt as RemoteBranchReconciliationReceipt);
+      expect(() =>
+        recordRemoteBranchReconciliation(
+          fixture.root,
+          lease.runId,
+          "controller",
+          finalReceipt(claimedMergedHead)
+        )
+      ).toThrow(message);
+    }
+    expect(readLoopLease(fixture.root)?.remoteBranchReconciliation).toBe(
+      undefined
+    );
+    expect(existsSync(ancestryPath)).toBe(false);
+
+    const genuineInput = finalReceipt(mergedHead);
+    const updated = recordRemoteBranchReconciliation(
+      fixture.root,
+      lease.runId,
+      "controller",
+      genuineInput
+    );
+    const genuine = splitRemoteBranchReconciliationInput(genuineInput);
+    expect(updated.remoteBranchReconciliation).toEqual(
+      genuine.receipt as RemoteBranchReconciliationReceipt
+    );
+    expect(JSON.parse(readFileSync(ancestryPath, "utf8"))).toEqual({
+      proofs: [
+        {
+          branch: "fix/shipped",
+          initialHeadRevision: initialHead,
+          mergedHeadRevision: mergedHead,
+          proposalObjectId: "70",
+        },
+      ],
+      receiptDigest: remoteBranchReconciliationDigest(
+        updated.remoteBranchReconciliation
+      ),
+      runId: lease.runId,
+      schemaVersion: 1,
+    });
+
+    // Older clients strictly validate the lease with the 0.22.0 schemas; the
+    // lease must not change shape when an ancestry proof is recorded.
+    const storedLease = readFileSync(leasePath, "utf8");
+    expect(storedLease).not.toContain("mergedHeadAncestry");
+    const repositoryRoot = git(dirname(fileURLToPath(import.meta.url)), [
+      "rev-parse",
+      "--show-toplevel",
+    ]);
+    const pending = ["loop-lease.schema.json"];
+    const seen = new Set<string>();
+    while (pending.length > 0) {
+      const filename = pending.pop() ?? "";
+      if (seen.has(filename)) {
+        continue;
+      }
+      seen.add(filename);
+      const released = git(repositoryRoot, [
+        "show",
+        `5ce7345:skills/simple-changes/evals/schemas/${filename}`,
+      ]);
+      const current = readFileSync(
+        join(repositoryRoot, "skills/simple-changes/evals/schemas", filename),
+        "utf8"
+      );
+      expect({ filename, schema: JSON.parse(current) }).toEqual({
+        filename,
+        schema: JSON.parse(released),
+      });
+      for (const match of released.matchAll(
+        /"\$ref": "([a-z-]+\.schema\.json)/gu
+      )) {
+        pending.push(match[1] ?? "");
+      }
+    }
+    expect(seen.has("remote-branch-reconciliation.schema.json")).toBe(true);
+    expect(() =>
+      validateSchema("loop-lease", JSON.parse(storedLease))
+    ).not.toThrow();
+
+    const sidecar = readFileSync(ancestryPath, "utf8");
+    rmSync(ancestryPath);
+    expect(() => endLoop(fixture.root, lease.runId, "controller")).toThrow(
+      "No merged-head ancestry proof sidecar exists"
+    );
+    writeFileSync(
+      ancestryPath,
+      sidecar.replace(
+        remoteBranchReconciliationDigest(updated.remoteBranchReconciliation),
+        "0".repeat(64)
+      )
+    );
+    expect(() => endLoop(fixture.root, lease.runId, "controller")).toThrow(
+      "do not match this run's recorded reconciliation receipt"
+    );
+
+    // A lease and sidecar edited together to claim a rewritten head still
+    // fail at loop end because git re-verifies the ancestry there.
+    const forgedEnd = embedded(rewrittenHead);
+    const forgedReceipt =
+      forgedEnd.receipt as RemoteBranchReconciliationReceipt;
+    writeFileSync(
+      leasePath,
+      `${JSON.stringify(
+        {
+          ...JSON.parse(storedLease),
+          remoteBranchReconciliation: forgedReceipt,
+        },
+        null,
+        2
+      )}\n`
+    );
+    writeFileSync(
+      ancestryPath,
+      `${JSON.stringify(
+        {
+          proofs: forgedEnd.ancestryProofs,
+          receiptDigest: remoteBranchReconciliationDigest(forgedReceipt),
+          runId: lease.runId,
+          schemaVersion: 1,
+        },
+        null,
+        2
+      )}\n`
+    );
+    expect(() => endLoop(fixture.root, lease.runId, "controller")).toThrow(
+      "is not the merged head"
+    );
+
+    writeFileSync(leasePath, storedLease);
+    writeFileSync(ancestryPath, sidecar);
+    expect(endLoop(fixture.root, lease.runId, "controller").ok).toBe(true);
+  });
+
+  test("records the same proposal merged at the unchanged opening head", () => {
+    const fixture = repository();
+    git(fixture.root, [
+      "remote",
+      "add",
+      "origin",
+      "git@gitlab.com:group/project.git",
+    ]);
+    writeFixture(fixture.root, "shipped.txt", "opening head\n");
+    git(fixture.root, ["add", "shipped.txt"]);
+    git(fixture.root, ["commit", "-m", "Opening MR head"]);
+    const head = git(fixture.root, ["rev-parse", "HEAD"]);
+    const sha256Of = (value: unknown) =>
+      createHash("sha256").update(JSON.stringify(value)).digest("hex");
+    const main = {
+      classification: "canonical-target" as const,
+      disposition: "preserved-target" as const,
+      evidence: ["Complete GitLab inventory includes protected main."],
+      finalHeadRevision: head,
+      initialHeadRevision: head,
+      name: "main",
+      obsoleteProof: null,
+      proposals: [],
+      protected: true,
+    };
+    const openingBranches = [
+      main,
+      {
+        classification: "open-proposal" as const,
+        disposition: "preserved-open-proposal" as const,
+        evidence: ["MR !71 is open at the opening source head."],
+        finalHeadRevision: head,
+        initialHeadRevision: head,
+        name: "fix/same-head",
+        obsoleteProof: null,
+        proposals: [
+          { headRevision: head, objectId: "71", state: "open" as const },
+        ],
+        protected: false,
+      },
+    ];
+    const branchEntries = [
+      { headRevision: head, name: "main" },
+      { headRevision: head, name: "fix/same-head" },
+    ];
+    const openProposal = [
+      {
+        branch: "fix/same-head",
+        headRevision: head,
+        objectId: "71",
+        state: "open",
+      },
+    ];
+    const mergedProposal = [
+      {
+        branch: "fix/same-head",
+        headRevision: head,
+        objectId: "71",
+        state: "merged",
+      },
+    ];
+    const openingCoverage = paginationCoverage(
+      2,
+      sha256Of(branchEntries),
+      1,
+      sha256Of(openProposal)
+    );
+    const lease = startLoop(fixture.root, "controller", "integrate", {
+      branches: openingBranches,
+      finalBranchCount: 2,
+      finalCoverage: openingCoverage,
+      finalInventoryComplete: true,
+      initialBranchCount: 2,
+      initialCoverage: openingCoverage,
+      initialInventoryComplete: true,
+      observedAt: new Date().toISOString(),
+      project: "group/project",
+      provider: "gitlab",
+      schemaVersion: 1,
+      targetBranch: "main",
+      targetRevision: head,
+    });
+    const updated = recordRemoteBranchReconciliation(
+      fixture.root,
+      lease.runId,
+      "controller",
+      {
+        branches: [
+          main,
+          {
+            classification: "merged-obsolete",
+            disposition: "deleted-merged",
+            evidence: [
+              "MR !71 merged at its opening head and GitLab deleted the source branch.",
+            ],
+            finalHeadRevision: null,
+            initialHeadRevision: head,
+            mergedHeadAncestry: {
+              initialHeadRevision: head,
+              mergedHeadRevision: head,
+              proposalObjectId: "71",
+            },
+            name: "fix/same-head",
+            obsoleteProof: "merged-proposal-head",
+            proposals: [
+              {
+                headRevision: head,
+                objectId: "71",
+                observedFinally: false,
+                state: "open",
+              },
+              {
+                headRevision: head,
+                objectId: "71",
+                observedInitially: false,
+                state: "merged",
+              },
+            ],
+            protected: false,
+          },
+        ],
+        finalBranchCount: 1,
+        finalCoverage: paginationCoverage(
+          1,
+          sha256Of([{ headRevision: head, name: "main" }]),
+          1,
+          sha256Of(mergedProposal)
+        ),
+        finalInventoryComplete: true,
+        initialBranchCount: 2,
+        initialCoverage: openingCoverage,
+        initialInventoryComplete: true,
+        observedAt: new Date().toISOString(),
+        project: "group/project",
+        provider: "gitlab",
+        schemaVersion: 1,
+        targetBranch: "main",
+        targetRevision: head,
+      }
+    );
+    expect(updated.remoteBranchReconciliation.branches).toHaveLength(2);
+    expect(endLoop(fixture.root, lease.runId, "controller").ok).toBe(true);
+  });
 
   test("requires a final accounted GitLab branch inventory before integration completion", () => {
     const fixture = repository();

@@ -2,8 +2,9 @@ import { redactSecrets } from "../lib/redact.ts";
 import { validateSchema } from "../lib/schema.ts";
 import type {
   Authority,
-  ChangelogReceiptV2,
+  ChangelogReceipt,
   DeliveryModel,
+  ModernChangelogReceipt,
   ProviderReceipt,
   ProviderStatus,
   ReleaseDeliveryReceipt,
@@ -38,7 +39,7 @@ export interface DeploymentVerification {
 }
 
 export interface ReleaseDeploymentBinding {
-  receipt: ChangelogReceiptV2;
+  receipt: ModernChangelogReceipt;
   releaseTrain: string;
   version: string;
 }
@@ -122,6 +123,50 @@ const canonicalTargetIssues = (receipt: ProviderReceipt): string[] => {
   return issues;
 };
 
+// A deployment bound to a release must deploy that release's exact verified
+// finalized target under its train and version. A legacy receipt carries no
+// lineage or decision to bind, so it only earns the refusal.
+const releaseBindingIssues = (
+  receipt: ProviderReceipt,
+  releaseBinding: ReleaseDeploymentBinding
+): string[] => {
+  const releaseReceipt = validateSchema<ChangelogReceipt>(
+    "changelog-receipt",
+    releaseBinding.receipt
+  );
+  if (releaseReceipt.schemaVersion === 1) {
+    return ["Web production requires a verified changelog receipt."];
+  }
+  const issues: string[] = [];
+  if (
+    releaseReceipt.status !== "verified" ||
+    releaseReceipt.phase !== "verify"
+  ) {
+    issues.push("Web production requires a verified changelog receipt.");
+  }
+  if (
+    releaseReceipt.revisionLineage.finalizedTargetRevision !==
+      receipt.intendedRevision ||
+    releaseReceipt.revisionLineage.finalizedTargetRevision !==
+      receipt.observedRevision
+  ) {
+    issues.push(
+      "Deployment revision does not match the verified finalized release target."
+    );
+  }
+  if (
+    releaseReceipt.versionDecision?.releaseTrain !==
+      releaseBinding.releaseTrain ||
+    releaseReceipt.release?.version !== releaseBinding.version ||
+    releaseReceipt.versionDecision?.selectedVersion !== releaseBinding.version
+  ) {
+    issues.push(
+      "Deployment release train or version does not match the verified changelog receipt."
+    );
+  }
+  return issues;
+};
+
 export const verifyDeploymentReceipt = (
   receipt: ProviderReceipt,
   releaseBinding?: ReleaseDeploymentBinding
@@ -152,37 +197,7 @@ export const verifyDeploymentReceipt = (
     issues.push(`Provider status is ${receipt.status}.`);
   }
   if (releaseBinding) {
-    const releaseReceipt = validateSchema<ChangelogReceiptV2>(
-      "changelog-receipt",
-      releaseBinding.receipt
-    );
-    if (
-      releaseReceipt.schemaVersion !== 2 ||
-      releaseReceipt.status !== "verified" ||
-      releaseReceipt.phase !== "verify"
-    ) {
-      issues.push("Web production requires a verified changelog receipt.");
-    }
-    if (
-      releaseReceipt.revisionLineage.finalizedTargetRevision !==
-        receipt.intendedRevision ||
-      releaseReceipt.revisionLineage.finalizedTargetRevision !==
-        receipt.observedRevision
-    ) {
-      issues.push(
-        "Deployment revision does not match the verified finalized release target."
-      );
-    }
-    if (
-      releaseReceipt.versionDecision?.releaseTrain !==
-        releaseBinding.releaseTrain ||
-      releaseReceipt.release?.version !== releaseBinding.version ||
-      releaseReceipt.versionDecision?.selectedVersion !== releaseBinding.version
-    ) {
-      issues.push(
-        "Deployment release train or version does not match the verified changelog receipt."
-      );
-    }
+    issues.push(...releaseBindingIssues(receipt, releaseBinding));
   }
   return {
     issues,
@@ -194,10 +209,16 @@ export const createReleaseDeliveryReceipt = (
   releaseBinding: ReleaseDeploymentBinding,
   deployment: ProviderReceipt
 ): ReleaseDeliveryReceipt => {
-  const releaseReceipt = validateSchema<ChangelogReceiptV2>(
+  const checked = validateSchema<ChangelogReceipt>(
     "changelog-receipt",
     releaseBinding.receipt
   );
+  if (checked.schemaVersion === 1) {
+    throw new Error(
+      "A composite delivery receipt requires a changelog receipt v2 or later; a legacy receipt carries no revision lineage."
+    );
+  }
+  const releaseReceipt: ModernChangelogReceipt = checked;
   const deploymentVerification = verifyDeploymentReceipt(
     deployment,
     releaseBinding

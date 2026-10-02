@@ -184,20 +184,38 @@ const validateObject = (
     ? schema.required.filter((item): item is string => typeof item === "string")
     : [];
   for (const key of required) {
-    if (!(key in value)) {
+    if (!Object.hasOwn(value, key)) {
       errors.push(`${path}/${key} is required`);
     }
   }
+  if (
+    typeof schema.minProperties === "number" &&
+    Object.keys(value).length < schema.minProperties
+  ) {
+    errors.push(
+      `${path} must have at least ${schema.minProperties} properties`
+    );
+  }
   const properties = isRecord(schema.properties) ? schema.properties : {};
-  if (schema.additionalProperties === false) {
-    for (const key of Object.keys(value)) {
-      if (!(key in properties)) {
-        errors.push(`${path}/${key} contains additional properties`);
-      }
+  const additional = schema.additionalProperties;
+  for (const key of Object.keys(value)) {
+    if (Object.hasOwn(properties, key)) {
+      continue;
+    }
+    if (additional === false) {
+      errors.push(`${path}/${key} contains additional properties`);
+    } else if (isRecord(additional)) {
+      validateValue(
+        value[key],
+        additional,
+        rootSchema,
+        `${path}/${key}`,
+        errors
+      );
     }
   }
   for (const [key, propertySchema] of Object.entries(properties)) {
-    if (key in value && isRecord(propertySchema)) {
+    if (Object.hasOwn(value, key) && isRecord(propertySchema)) {
       validateValue(
         value[key],
         propertySchema,

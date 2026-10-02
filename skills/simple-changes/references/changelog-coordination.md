@@ -6,6 +6,7 @@ Contents:
 - Apply the preference
 - Use a closed three-phase transaction
 - Require a handoff receipt
+- Shared version lines
 - Operator-history entry handoff
 - Web production release gate
 
@@ -43,6 +44,13 @@ every request and receipt is then validated against the packaged schema at the
 moment it is used, which is what actually enforces the contract. A missing
 helper or unsupported version blocks only the release boundary; safe non-release
 integration may continue.
+
+Negotiation ignores versions and features this consumer does not know, so a
+provider may advertise newer ones without breaking it. That holds only from
+Simple Changes 0.23.0 on: earlier consumers reject any feature outside their
+closed list, so a provider must not advertise `shared-version-lines` in a
+repository until every Simple Changes controller there, including fork copies,
+is 0.23.0 or later.
 
 Advertised schema digests are advisory. When both sides publish them, record
 `schemaDigestStatus` as `match`, `differs`, or `unadvertised` so drift stays
@@ -153,6 +161,72 @@ report the exact missing capability, authority, evidence, or decision.
 
 Never treat an installed skill name, a policy file, or a receipt alone as proof
 that file contents are current and safe.
+
+## Shared version lines
+
+A monorepo may keep two or more release trains (for example `web`, `ios`, and
+`android`) on one shared public version line. The changelog workflow owns the
+policy and the number; the protocol only carries the decision so Simple
+Changes can bind it. It needs request v2 and receipt v3, which a provider
+advertises together with the `shared-version-lines` feature.
+
+- **Request v2** adds `releaseSetTrains`: every train released together from
+  one input target revision under one `releaseSetId`, or null. It is null
+  whenever `releaseSetId` is null, includes the request's own `releaseTrain`,
+  and lets `supportedReceiptVersions` include 3. Request v1 still works
+  unchanged.
+- **Receipt v3** is receipt v2 plus `releaseSetTrains`, which must echo the
+  request, and `versionDecision.versionLine`: null for an independent train,
+  otherwise `mode` (`catch-up` or `bump-shared`), `members` (the line's
+  trains, sorted), `memberVersions` (each member's latest stable public
+  version at the input target revision, or null), `sharedVersion` (the line
+  head H: the highest of those, or null), `sharedVersionTrains` (the members
+  holding H, sorted; empty when H is null), and `outcome` (`catch-up` or
+  `advance`). A train that skips a number releases nothing and has no
+  receipt.
+
+`validate-changelog-transaction` checks a v3 receipt beyond the schema:
+
+- `members` names the releasing train, and `memberVersions` names exactly the
+  members;
+- `sharedVersion` and `sharedVersionTrains` are recomputed from
+  `memberVersions`;
+- `catch-up` takes exactly H, and only for a train below H;
+- `advance` exceeds H, or H is null; `bump-shared` always advances. A train
+  that reclassifies after a partner released must advance past it or start a
+  new release set, because `memberVersions` cannot tell a release inside the
+  set from one before it;
+- the proposed version exceeds the train's own previous version and is not
+  below a stable `currentVersion` (the version owner's value, which may
+  already be bumped). It is the
+  suggestion on `decision-required` and the selection on `classified`,
+  `prepared`, or `verified`; a `blocked` or `not-applicable` receipt gets only
+  the structural checks and keeps its closed-code routing.
+
+Versions compare as one to three dotted numbers, zero-padded (`1.2` equals
+`1.2.0`), with `+build` metadata ignored; any other version on a line fails
+closed. The receipt's `decisionDigest` must cover the line state (`mode`,
+`members`, `memberVersions`, and `sharedVersion`), so a release on another
+member changes it and invalidates an outstanding approval. The `outcome` may
+change under the same digest, because an approved direction can turn a
+catch-up into an advance. When the prior receipt is supplied, a later phase
+whose line state changed under the same digest fails closed.
+
+A multi-train release set stays non-atomic: each train keeps its own request,
+receipt, and phases, and a train that fails later reclassifies on its own.
+After the receipts of one release set exist, check them together:
+
+```sh
+simple-changes validate-changelog-release-set <receipt.json> <receipt.json>...
+```
+
+It requires receipt v3 from one release set, input target revision, and train
+list (in any order), at most one receipt per train, and each train on at most
+one line, carried by its own receipt. Every receipt on one line must agree on
+the line state, compared by value, and publish one identical version string.
+Trains with no receipt yet are reported as `missingTrains`, not refused. That no two members of a `bump-shared` line ever share a
+number outside one release set is the changelog workflow's `verify`
+invariant; Simple Changes cannot see other trains' released sections.
 
 ## Operator-history entry handoff
 

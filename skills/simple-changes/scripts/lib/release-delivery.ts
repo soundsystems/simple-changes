@@ -1,10 +1,10 @@
 import { verifyDeploymentReceipt } from "../adapters/deployment.ts";
 import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
+import { validateChangelogRequest } from "./release-gate.ts";
 import { validateSchema } from "./schema.ts";
 import type {
   ChangelogReceipt,
-  ChangelogReceiptV2,
-  ChangelogRequest,
+  ModernChangelogReceipt,
   ProviderReceipt,
   ReleaseDeliveryReceipt,
 } from "./types.ts";
@@ -22,8 +22,8 @@ const invalid = (message: string): never => {
   );
 };
 
-type VerifiedChangelogReceipt = ChangelogReceiptV2 & {
-  release: NonNullable<ChangelogReceiptV2["release"]>;
+type VerifiedChangelogReceipt = ModernChangelogReceipt & {
+  release: NonNullable<ModernChangelogReceipt["release"]>;
   revisionLineage: {
     finalizedTargetRevision: string;
     inputTargetRevision: string;
@@ -33,9 +33,9 @@ type VerifiedChangelogReceipt = ChangelogReceiptV2 & {
 
 const verifiedChangelogReceipt = (input: unknown): VerifiedChangelogReceipt => {
   const receipt = validateSchema<ChangelogReceipt>("changelog-receipt", input);
-  if (receipt.schemaVersion !== 2) {
+  if (receipt.schemaVersion === 1) {
     return invalid(
-      "the changelog receipt must be schema version 2; legacy receipts carry no revision lineage"
+      "the changelog receipt must be schema version 2 or later; legacy receipts carry no revision lineage"
     );
   }
   if (receipt.status !== "verified" || !receipt.release) {
@@ -72,10 +72,7 @@ const releaseTrainFor = (
   requestInput: unknown
 ): string => {
   if (requestInput !== undefined) {
-    const request = validateSchema<ChangelogRequest>(
-      "changelog-request",
-      requestInput
-    );
+    const request = validateChangelogRequest(requestInput);
     if (request.transactionId !== receipt.transactionId) {
       return invalid(
         `the request transaction ${request.transactionId} does not match receipt transaction ${receipt.transactionId}`

@@ -429,18 +429,26 @@ export type ReleaseRequiredAction =
   | "repair-policy"
   | "review-finalization";
 
+/** Changelog features this consumer understands. */
+export type ChangelogFeature =
+  | "public-version-policy"
+  | "classify-prepare-verify"
+  | "multi-train-receipts"
+  | "guidance-update-notices"
+  | "shared-version-lines";
+
+/**
+ * A provider's advertised capabilities. Versions and features are open: a
+ * provider may advertise ones this consumer does not know, and negotiation
+ * ignores them.
+ */
 export interface ChangelogCapabilities {
   distribution: string;
-  features: Array<
-    | "public-version-policy"
-    | "classify-prepare-verify"
-    | "multi-train-receipts"
-    | "guidance-update-notices"
-  >;
+  features: string[];
   guidanceVersion: number;
   provider: "simple-changelogs";
-  receiptVersions: Array<1 | 2>;
-  requestVersions: 1[];
+  receiptVersions: number[];
+  requestVersions: number[];
   schemaDigests?: {
     changelogReceipt: string;
     changelogRequest: string;
@@ -463,9 +471,15 @@ export interface ChangelogRequest {
   phase: ReleasePhase;
   priorReceiptDigest: string | null;
   releaseSetId: string | null;
+  /**
+   * Request v2: every release train released together from one input target
+   * revision under `releaseSetId`, or null. Absent from request v1.
+   */
+  releaseSetTrains?: string[] | null;
   releaseTrain: string;
-  schemaVersion: 1;
-  supportedReceiptVersions: Array<1 | 2>;
+  schemaVersion: 1 | 2;
+  /** Request v1 advertises receipts 1 and 2; request v2 may add 3. */
+  supportedReceiptVersions: Array<1 | 2 | 3>;
   transactionId: string;
 }
 
@@ -489,6 +503,26 @@ export interface VersionDecision {
     | "run-only"
     | "repository-convention";
   suggestedVersion: string | null;
+}
+
+/**
+ * Receipt v3: how a release relates to the shared public version line its
+ * train belongs to. `members` is the line's trains, sorted; `memberVersions`
+ * is each member's latest stable public version at the input target revision
+ * (null before its first stable release); `sharedVersion` (H) is their
+ * highest, held by `sharedVersionTrains`.
+ */
+export interface VersionLine {
+  members: string[];
+  memberVersions: Record<string, string | null>;
+  mode: "catch-up" | "bump-shared";
+  outcome: "catch-up" | "advance";
+  sharedVersion: string | null;
+  sharedVersionTrains: string[];
+}
+
+export interface VersionDecisionV3 extends VersionDecision {
+  versionLine: VersionLine | null;
 }
 
 export interface ChangelogReceiptV1 {
@@ -552,7 +586,18 @@ export interface ChangelogReceiptV2 {
   versionDecision: VersionDecision | null;
 }
 
-export type ChangelogReceipt = ChangelogReceiptV1 | ChangelogReceiptV2;
+export interface ChangelogReceiptV3
+  extends Omit<ChangelogReceiptV2, "schemaVersion" | "versionDecision"> {
+  /** Echoes the request's release set; null outside a multi-train set. */
+  releaseSetTrains: string[] | null;
+  schemaVersion: 3;
+  versionDecision: VersionDecisionV3 | null;
+}
+
+/** Receipts that carry revision lineage and a decision digest. */
+export type ModernChangelogReceipt = ChangelogReceiptV2 | ChangelogReceiptV3;
+
+export type ChangelogReceipt = ChangelogReceiptV1 | ModernChangelogReceipt;
 
 export interface ReleaseDeliveryReceipt {
   decisionDigest: string;

@@ -6,12 +6,16 @@ import {
   inspectChangelogTransaction,
   negotiateChangelogProtocol,
   packagedChangelogProtocol,
+  validateChangelogReleaseSet,
   validateChangelogTransaction,
 } from "../../../skills/simple-changes/scripts/lib/release-gate.ts";
 import type {
   ChangelogReceiptV2,
+  ChangelogReceiptV3,
   ChangelogRequest,
+  VersionLine,
 } from "../../../skills/simple-changes/scripts/lib/types.ts";
+import { compareStableVersions } from "../../../skills/simple-changes/scripts/lib/version-line.ts";
 
 const revisionA = "a".repeat(40);
 const revisionB = "b".repeat(40);
@@ -220,7 +224,7 @@ describe("changelog protocol negotiation", () => {
         guidanceVersion: 1,
         provider: "simple-changelogs",
         receiptVersions: [1],
-        requestVersions: [2],
+        requestVersions: [3],
         schemaDigests: consumer.schemaDigests,
         schemaVersion: 1,
       })
@@ -608,3 +612,609 @@ describe("entry-only operator-history handoff", () => {
 });
 
 type ReleaseGateContextInput = Parameters<typeof decideReleaseGate>[0];
+
+describe("shared version lines (request v2, receipt v3)", () => {
+  const requestV2 = (
+    phase: ChangelogRequest["phase"] = "classify",
+    overrides: Partial<ChangelogRequest> = {}
+  ): ChangelogRequest => ({
+    ...request(phase),
+    releaseSetTrains: null,
+    schemaVersion: 2,
+    supportedReceiptVersions: [1, 2, 3],
+    ...overrides,
+  });
+
+  // Web is behind iOS at 0.10.0 on a catch-up line, so it catches up.
+  const line = (overrides: Partial<VersionLine> = {}): VersionLine => ({
+    members: ["ios", "web"],
+    memberVersions: { ios: "0.10.0", web: "0.9.0" },
+    mode: "catch-up",
+    outcome: "catch-up",
+    sharedVersion: "0.10.0",
+    sharedVersionTrains: ["ios"],
+    ...overrides,
+  });
+
+  const receiptV3 = (
+    status: ChangelogReceiptV2["status"] = "prepared",
+    versionLine: VersionLine | null = line(),
+    releaseSetTrains: string[] | null = null
+  ): ChangelogReceiptV3 => {
+    const base = receipt(status);
+    const decision = base.versionDecision;
+    return {
+      ...base,
+      releaseSetTrains,
+      schemaVersion: 3,
+      versionDecision: decision
+        ? {
+            ...decision,
+            // A receipt's own previous version is its line entry.
+            currentVersion: versionLine
+              ? (versionLine.memberVersions[decision.releaseTrain] ?? null)
+              : decision.currentVersion,
+            versionLine,
+          }
+        : null,
+    };
+  };
+
+  const decisionOf = (value: ChangelogReceiptV3) => {
+    if (!value.versionDecision) {
+      throw new Error("fixture requires a version decision");
+    }
+    return value.versionDecision;
+  };
+
+  test("negotiates request v2 and receipt v3 and ignores unknown features", () => {
+    const consumer = packagedChangelogProtocol();
+    expect(consumer).toMatchObject({
+      receiptVersions: [1, 2, 3],
+      requestVersions: [1, 2],
+    });
+    expect(
+      negotiateChangelogProtocol({
+        distribution: "full",
+        features: [
+          "shared-version-lines",
+          "a-later-feature",
+          "multi-train-receipts",
+        ],
+        guidanceVersion: 30,
+        provider: "simple-changelogs",
+        receiptVersions: [1, 2, 3, 4],
+        requestVersions: [1, 2, 3],
+        schemaDigests: consumer.schemaDigests,
+        schemaVersion: 1,
+      })
+    ).toMatchObject({
+      compatible: true,
+      // Producer order, as before 0.23.0.
+      features: ["shared-version-lines", "multi-train-receipts"],
+      receiptVersion: 3,
+      requestVersion: 2,
+    });
+  });
+
+  test("binds request v2's release set to its own train", () => {
+    expect(() =>
+      createChangelogRequest(
+        requestV2("classify", { releaseSetTrains: ["ios", "web"] })
+      )
+    ).toThrow("Invalid changelog-request");
+    expect(() =>
+      createChangelogRequest(
+        requestV2("classify", {
+          releaseSetId: "set-1",
+          releaseSetTrains: ["android", "ios"],
+        })
+      )
+    ).toThrow("must include the releasing train");
+    expect(
+      createChangelogRequest(
+        requestV2("classify", {
+          releaseSetId: "set-1",
+          releaseSetTrains: ["ios", "web"],
+        })
+      ).releaseSetTrains
+    ).toEqual(["ios", "web"]);
+    // Request v1 cannot advertise receipt v3.
+    expect(() =>
+      createChangelogRequest({
+        ...request(),
+        supportedReceiptVersions: [1, 2, 3],
+      })
+    ).toThrow("Invalid changelog-request");
+  });
+
+  test("accepts receipt v3 only for a request that advertised it", () => {
+    expect(() =>
+      validateChangelogTransaction(request("prepare"), receiptV3())
+    ).toThrow("did not advertise receipt v3");
+    expect(() =>
+      validateChangelogTransaction(
+        requestV2("prepare", { supportedReceiptVersions: [1, 2] }),
+        receiptV3()
+      )
+    ).toThrow("did not advertise receipt v3");
+    expect(
+      validateChangelogTransaction(requestV2("prepare"), receiptV3())
+    ).toMatchObject({
+      schemaVersion: 3,
+    });
+  });
+
+  test("checks a catch-up against the line head", () => {
+    const behind = receiptV3();
+    decisionOf(behind).selectedVersion = "0.10.1";
+    if (behind.release) {
+      behind.release.version = "0.10.1";
+    }
+    expect(() =>
+      validateChangelogTransaction(
+        requestV2("prepare", { approvedVersion: "0.10.1" }),
+        behind
+      )
+    ).toThrow("must take the line head 0.10.0");
+    expect(() =>
+      validateChangelogTransaction(
+        requestV2("prepare"),
+        receiptV3(
+          "prepared",
+          line({
+            memberVersions: { ios: "0.10.0", web: "0.10.0" },
+            sharedVersionTrains: ["ios", "web"],
+          })
+        )
+      )
+    ).toThrow("Only a train behind the line head can catch up");
+  });
+
+  test("checks an advance and a bump-shared line", () => {
+    const level = line({
+      memberVersions: { ios: "0.9.0", web: "0.9.0" },
+      outcome: "advance",
+      sharedVersion: "0.9.0",
+      sharedVersionTrains: ["ios", "web"],
+    });
+    expect(
+      validateChangelogTransaction(
+        requestV2("prepare"),
+        receiptV3("prepared", level)
+      )
+    ).toMatchObject({ schemaVersion: 3 });
+    expect(() =>
+      validateChangelogTransaction(
+        requestV2("prepare"),
+        receiptV3("prepared", line({ outcome: "advance" }))
+      )
+    ).toThrow("must exceed the line head 0.10.0");
+    expect(() =>
+      validateChangelogTransaction(
+        requestV2("prepare"),
+        receiptV3("prepared", line({ mode: "bump-shared" }))
+      )
+    ).toThrow("A bump-shared line only ever advances");
+    // A first release on a line with no stable version yet advances.
+    expect(
+      validateChangelogTransaction(
+        requestV2("prepare"),
+        receiptV3(
+          "prepared",
+          line({
+            memberVersions: { ios: null, web: null },
+            outcome: "advance",
+            sharedVersion: null,
+            sharedVersionTrains: [],
+          })
+        )
+      )
+    ).toMatchObject({ schemaVersion: 3 });
+  });
+
+  test("recomputes the line from memberVersions", () => {
+    for (const [broken, message] of [
+      [line({ members: ["web", "ios"] }), "sorted and unique"],
+      [
+        line({
+          members: ["android", "ios"],
+          memberVersions: { android: "0.1.0", ios: "0.10.0" },
+        }),
+        "including the releasing train",
+      ],
+      [
+        line({ memberVersions: { ios: "0.10.0", tv: "0.9.0" } }),
+        "must name exactly its members",
+      ],
+      // The schema itself refuses a prerelease member version.
+      [
+        line({ memberVersions: { ios: "0.10.0-beta.1", web: "0.9.0" } }),
+        "Invalid changelog-receipt",
+      ],
+      [line({ sharedVersion: "0.9.0" }), "highest memberVersions value"],
+      [line({ sharedVersionTrains: ["web"] }), "highest memberVersions value"],
+    ] as const) {
+      expect(() =>
+        validateChangelogTransaction(
+          requestV2("prepare"),
+          receiptV3("prepared", broken)
+        )
+      ).toThrow(message);
+    }
+  });
+
+  test("never lowers a train's own version", () => {
+    const repeat = receiptV3(
+      "prepared",
+      line({
+        memberVersions: { ios: "0.9.0", web: "0.10.0" },
+        outcome: "advance",
+        sharedVersionTrains: ["web"],
+      })
+    );
+    expect(() =>
+      validateChangelogTransaction(requestV2("prepare"), repeat)
+    ).toThrow("must exceed its train's previous public version 0.10.0");
+  });
+
+  test("compares one to three dotted numbers, zero-padded", () => {
+    expect(compareStableVersions("1.2", "1.2.0")).toBe(0);
+    expect(compareStableVersions("1", "1.0.0+build.7")).toBe(0);
+    expect(compareStableVersions("2026.10.2", "2026.9.30")).toBe(1);
+    expect(compareStableVersions("0.9.0", "0.10.0")).toBe(-1);
+    expect(compareStableVersions("1.0.0-rc.1", "1.0.0")).toBeNull();
+    expect(compareStableVersions("v1.0.0", "1.0.0")).toBeNull();
+    const shortForm = receiptV3(
+      "prepared",
+      line({
+        memberVersions: { ios: "0.10", web: "0.9.0" },
+        sharedVersion: "0.10.0",
+      })
+    );
+    expect(
+      validateChangelogTransaction(requestV2("prepare"), shortForm)
+    ).toMatchObject({ schemaVersion: 3 });
+  });
+
+  test("echoes the request's release set", () => {
+    const setRequest = requestV2("prepare", {
+      releaseSetId: "set-1",
+      releaseSetTrains: ["ios", "web"],
+    });
+    const echoed = receiptV3("prepared", line(), ["ios", "web"]);
+    echoed.releaseSetId = "set-1";
+    expect(validateChangelogTransaction(setRequest, echoed)).toMatchObject({
+      releaseSetTrains: ["ios", "web"],
+    });
+    const missing = receiptV3();
+    missing.releaseSetId = "set-1";
+    expect(() => validateChangelogTransaction(setRequest, missing)).toThrow(
+      "must echo the delegated request"
+    );
+  });
+
+  test("checks one release set's receipts together", () => {
+    // Both trains release together from one target: one number for both.
+    const sharedLine = line({
+      memberVersions: { ios: "0.9.0", web: "0.9.0" },
+      outcome: "advance",
+      sharedVersion: "0.9.0",
+      sharedVersionTrains: ["ios", "web"],
+    });
+    const forTrain = (train: string, version = "0.10.0") => {
+      const value = receiptV3("prepared", sharedLine, ["ios", "web"]);
+      value.releaseSetId = "set-1";
+      value.transactionId = `release-${train}`;
+      const decision = decisionOf(value);
+      decision.releaseTrain = train;
+      decision.selectedVersion = version;
+      return value;
+    };
+    expect(
+      validateChangelogReleaseSet([forTrain("web"), forTrain("ios")])
+    ).toEqual({
+      lines: [{ members: ["ios", "web"], selectedVersion: "0.10.0" }],
+      missingTrains: [],
+      receipts: 2,
+      releaseSetId: "set-1",
+    });
+    expect(() =>
+      validateChangelogReleaseSet([forTrain("web"), forTrain("ios", "0.10.1")])
+    ).toThrow("must take one number");
+    const moved = forTrain("ios");
+    moved.revisionLineage.inputTargetRevision = revisionB;
+    expect(() => validateChangelogReleaseSet([forTrain("web"), moved])).toThrow(
+      "share its releaseSetId, input target revision, and releaseSetTrains"
+    );
+    expect(() =>
+      validateChangelogReleaseSet([forTrain("web"), forTrain("android")])
+    ).toThrow("Train android is not in the release set's releaseSetTrains");
+    expect(() =>
+      validateChangelogReleaseSet([forTrain("web"), receipt("prepared")])
+    ).toThrow("needs receipt v3");
+  });
+
+  const setReceipt = (
+    train: string,
+    version: string,
+    versionLine: VersionLine | null,
+    trains = ["ios", "web"]
+  ) => {
+    const value = receiptV3("prepared", versionLine, trains);
+    value.releaseSetId = "set-1";
+    value.transactionId = `release-${train}`;
+    const decision = decisionOf(value);
+    decision.releaseTrain = train;
+    decision.selectedVersion = version;
+    return value;
+  };
+  const level = (members = ["ios", "web"]) =>
+    line({
+      members,
+      memberVersions: Object.fromEntries(members.map((m) => [m, "0.9.0"])),
+      outcome: "advance",
+      sharedVersion: "0.9.0",
+      sharedVersionTrains: members,
+    });
+
+  test("ties each train in a release set to one line", () => {
+    const trains = ["android", "ios", "web"];
+    // The two receipts disagree about which line web belongs to.
+    expect(() =>
+      validateChangelogReleaseSet([
+        setReceipt("web", "0.10.0", level(["ios", "web"]), trains),
+        setReceipt("ios", "0.11.0", level(["android", "ios", "web"]), trains),
+      ])
+    ).toThrow("Receipts disagree about the line ios belongs to");
+    // iOS places web on its line, but web's own receipt has no line.
+    expect(() =>
+      validateChangelogReleaseSet([
+        setReceipt("web", "0.12.0", null),
+        setReceipt("ios", "0.10.0", level()),
+      ])
+    ).toThrow("Another receipt places web on the line [ios, web]");
+  });
+
+  test("requires a receipt's line to include its own train", () => {
+    const trains = ["android", "ios", "web"];
+    expect(() =>
+      validateChangelogReleaseSet([
+        setReceipt("ios", "0.10.0", level(), trains),
+        setReceipt("android", "0.10.0", level(), trains),
+      ])
+    ).toThrow(
+      "The receipt for android carries a line that does not include it"
+    );
+    // A receipt blocked before any version decision names no train and is
+    // skipped by the per-train checks.
+    const undecided = receiptV3("blocked", null, ["ios", "web"]);
+    undecided.releaseSetId = "set-1";
+    undecided.transactionId = "release-web";
+    undecided.reason = "Two files claim the web version.";
+    undecided.reasonCode = "version-owner-ambiguous";
+    undecided.requiredAction = "resolve-version-owner";
+    undecided.versionDecision = null;
+    expect(
+      validateChangelogReleaseSet([
+        setReceipt("ios", "0.10.0", null),
+        undecided,
+      ]).missingTrains
+    ).toEqual(["web"]);
+  });
+
+  test("refuses duplicate receipts and reports trains without one", () => {
+    expect(() =>
+      validateChangelogReleaseSet([
+        setReceipt("ios", "0.10.0", level()),
+        setReceipt("ios", "0.10.0", level()),
+      ])
+    ).toThrow("more than one receipt for ios");
+    expect(
+      validateChangelogReleaseSet([
+        setReceipt("web", "0.10.0", level(), ["android", "ios", "web"]),
+        setReceipt("ios", "0.10.0", level(), ["android", "ios", "web"]),
+      ]).missingTrains
+    ).toEqual(["android"]);
+    const unlisted = setReceipt("ios", "0.10.0", level());
+    unlisted.releaseSetTrains = null;
+    expect(() =>
+      validateChangelogReleaseSet([
+        setReceipt("web", "0.10.0", level()),
+        unlisted,
+      ])
+    ).toThrow("names no releaseSetTrains");
+  });
+
+  test("compares a release set by value but publishes one version string", () => {
+    const reordered = setReceipt(
+      "ios",
+      "0.10.0",
+      {
+        ...level(),
+        memberVersions: { ios: "0.9.0", web: "0.9" },
+        sharedVersion: "0.9",
+      },
+      ["web", "ios"]
+    );
+    expect(
+      validateChangelogReleaseSet([
+        setReceipt("web", "0.10.0", level()),
+        reordered,
+      ]).receipts
+    ).toBe(2);
+    expect(() =>
+      validateChangelogReleaseSet([
+        setReceipt("web", "0.10.0", level()),
+        setReceipt("ios", "0.10", level()),
+      ])
+    ).toThrow("must take one number, not 0.10.0 and 0.10");
+  });
+
+  test("keeps a blocked v3 receipt's closed-code routing", () => {
+    const blocked = receiptV3(
+      "blocked",
+      line({
+        memberVersions: { ios: "0.10.0", web: "0.10.0" },
+        outcome: "advance",
+        sharedVersionTrains: ["ios", "web"],
+      })
+    );
+    blocked.reason = "The direction would fork the line.";
+    blocked.reasonCode = "invalid-version-direction";
+    blocked.requiredAction = "choose-version";
+    const decision = decisionOf(blocked);
+    decision.currentVersion = "0.10.0";
+    decision.resolution = "blocked";
+    decision.suggestedVersion = "0.10.0";
+    expect(
+      decideReleaseGate({
+        alreadyLive: false,
+        productionAuthorized: false,
+        productionDeploy: "ask",
+        receipt: blocked,
+        request: requestV2(),
+        versionAuthorized: false,
+      })
+    ).toMatchObject({
+      action: "block",
+      reasonCode: "invalid-version-direction",
+      requiredAction: "choose-version",
+    });
+  });
+
+  test("never selects below a stable currentVersion", () => {
+    // The version owner says 2.0.0 while the line still records 1.0.0.
+    const regressed = receiptV3(
+      "prepared",
+      line({
+        memberVersions: { ios: "1.5.0", web: "1.0.0" },
+        sharedVersion: "1.5.0",
+      })
+    );
+    const decision = decisionOf(regressed);
+    decision.currentVersion = "2.0.0";
+    decision.selectedVersion = "1.5.0";
+    if (regressed.release) {
+      regressed.release.version = "1.5.0";
+    }
+    expect(() =>
+      validateChangelogTransaction(
+        requestV2("prepare", { approvedVersion: "1.5.0" }),
+        regressed
+      )
+    ).toThrow("must not go below its train's current version 2.0.0");
+
+    // A manifest already bumped to the number being released is fine.
+    const bumped = receiptV3();
+    decisionOf(bumped).currentVersion = "0.10.0";
+    expect(
+      validateChangelogTransaction(requestV2("prepare"), bumped)
+    ).toMatchObject({ schemaVersion: 3 });
+
+    // A train with no stable public release yet may still have a stable
+    // owner version, and may catch up above it.
+    const firstPublic = receiptV3(
+      "prepared",
+      line({
+        memberVersions: { ios: "1.1.0", web: null },
+        sharedVersion: "1.1.0",
+      })
+    );
+    const first = decisionOf(firstPublic);
+    first.currentVersion = "1.0.0";
+    first.selectedVersion = "1.1.0";
+    if (firstPublic.release) {
+      firstPublic.release.version = "1.1.0";
+    }
+    expect(
+      validateChangelogTransaction(
+        requestV2("prepare", { approvedVersion: "1.1.0" }),
+        firstPublic
+      )
+    ).toMatchObject({ schemaVersion: 3 });
+  });
+
+  test("refuses a bump-shared train reusing a number a partner released", () => {
+    // memberVersions come from the set's shared input target, so a partner
+    // holding H there released it before this set: web must advance past it.
+    const partnerHead = line({
+      memberVersions: { ios: "0.10.0", web: "0.9.0" },
+      mode: "bump-shared",
+      outcome: "advance",
+      sharedVersionTrains: ["ios"],
+    });
+    const setRequest = requestV2("prepare", {
+      releaseSetId: "set-1",
+      releaseSetTrains: ["ios", "web"],
+    });
+    const sameSet = receiptV3("prepared", partnerHead, ["ios", "web"]);
+    sameSet.releaseSetId = "set-1";
+    expect(() => validateChangelogTransaction(setRequest, sameSet)).toThrow(
+      "must exceed the line head 0.10.0"
+    );
+  });
+
+  test("requires the decision digest to cover the line state", () => {
+    const prior = receiptV3("decision-required");
+    const prepare = requestV2("prepare", {
+      priorReceiptDigest: changelogReceiptDigest(prior),
+    });
+    const changed = receiptV3(
+      "prepared",
+      line({
+        memberVersions: { ios: "0.10.0", web: "0.9.1" },
+      })
+    );
+    expect(() => inspectChangelogTransaction(prepare, changed, prior)).toThrow(
+      "the digest must cover the line state"
+    );
+    expect(
+      inspectChangelogTransaction(prepare, receiptV3(), prior)
+        .priorReceiptDigestStatus
+    ).toBe("verified");
+
+    // An approved direction above the suggested catch-up turns it into an
+    // advance under the same digest; the line state is unchanged.
+    const overridden = receiptV3("prepared", line({ outcome: "advance" }));
+    const decision = decisionOf(overridden);
+    decision.resolution = "explicit-direction";
+    decision.selectedVersion = "0.11.0";
+    if (overridden.release) {
+      overridden.release.version = "0.11.0";
+    }
+    expect(
+      inspectChangelogTransaction(
+        { ...prepare, approvedVersion: "0.11.0" },
+        overridden,
+        prior
+      ).receipt
+    ).toMatchObject({ schemaVersion: 3 });
+  });
+
+  test("reports field-level errors for an invalid request", () => {
+    expect(() =>
+      createChangelogRequest({
+        ...request("prepare"),
+        approvedDecisionDigest: null,
+        mutationScope: "read-only",
+      })
+    ).toThrow('/mutationScope must equal "prepare-release-files"');
+  });
+
+  test("gates a v3 receipt exactly like v2", () => {
+    expect(
+      decideReleaseGate({
+        alreadyLive: false,
+        productionAuthorized: true,
+        productionDeploy: "allow",
+        receipt: receiptV3(),
+        request: requestV2("prepare"),
+        versionAuthorized: true,
+      })
+    ).toMatchObject({
+      action: "merge-reconciliation",
+      selectedVersion: "0.10.0",
+    });
+  });
+});

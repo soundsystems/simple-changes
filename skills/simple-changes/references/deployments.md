@@ -19,7 +19,7 @@ Distinguish preview, staging, and production. Production requires explicit
 current authority or committed policy that clearly grants it.
 
 A production deployment of a Web product is a product release. Normally, before
-invoking the provider, require a v2 `verified` changelog receipt for the exact
+invoking the provider, require a v2 or later `verified` changelog receipt for the exact
 refreshed canonical target. It must bind the effective policy, selected version,
 decision digest, input target, reconciliation head, and finalized target. An
 unresolved version, `decision-required`, unavailable or blocked delegation,

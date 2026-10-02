@@ -13,7 +13,8 @@ import {
 import { hostname } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { sleep } from "bun";
+import { sleep, spawnSync } from "bun";
+import { PATCH_EQUIVALENCE_MAX_COMMITS } from "../../../skills/simple-changes/scripts/lib/cleanup-core.ts";
 import {
   captureInventory,
   compareSnapshots,
@@ -5709,6 +5710,338 @@ describe("active integration-loop lease", () => {
         }
       )
     ).toThrow("record target-contains-head proof instead");
+  });
+
+  /**
+   * Deleted no-MR branches the target contains by ancestry, by patch
+   * equivalence, only partly, not at all, or past the patch-equivalence bound.
+   */
+  const deletedHeadFixture = () => {
+    const fixture = repository();
+    git(fixture.root, [
+      "remote",
+      "add",
+      "origin",
+      "git@gitlab.com:group/project.git",
+    ]);
+    const forkPoint = git(fixture.root, ["rev-parse", "HEAD"]);
+    const sideCommits = (branch: string, files: string[]) => {
+      git(fixture.root, ["switch", "-q", "-c", branch, forkPoint]);
+      const heads = files.map((file) => {
+        writeFixture(fixture.root, file, `${file}\n`);
+        git(fixture.root, ["add", file]);
+        git(fixture.root, ["commit", "-q", "-m", `Work on ${file}`]);
+        return git(fixture.root, ["rev-parse", "HEAD"]);
+      });
+      git(fixture.root, ["switch", "-q", "main"]);
+      git(fixture.root, ["branch", "-q", "-D", branch]);
+      return heads;
+    };
+    const [cherryHead = ""] = sideCommits("cherry-src", ["cherry.txt"]);
+    const [uniqueHead = ""] = sideCommits("unique-src", ["unique.txt"]);
+    const [partialFirst = "", partialHead = ""] = sideCommits("partial-src", [
+      "partial-a.txt",
+      "partial-b.txt",
+    ]);
+    const stream = Array.from(
+      { length: PATCH_EQUIVALENCE_MAX_COMMITS + 1 },
+      (_, index) =>
+        [
+          "commit refs/heads/big-src",
+          "committer Simple Changes Tests <tests@example.com> 1700000000 +0000",
+          `data ${`Big ${index}`.length}`,
+          `Big ${index}`,
+          index === 0 ? `from ${forkPoint}` : "",
+          "M 100644 inline big.txt",
+          `data ${`${index}\n`.length}`,
+          `${index}`,
+          "",
+        ]
+          .filter((line, position) => position !== 4 || line)
+          .join("\n")
+    ).join("\n");
+    const imported = spawnSync(
+      ["git", "-C", fixture.root, "fast-import", "--quiet"],
+      { stdin: new TextEncoder().encode(`${stream}\n`) }
+    );
+    expect(imported.exitCode).toBe(0);
+    const bigHead = git(fixture.root, ["rev-parse", "refs/heads/big-src"]);
+    git(fixture.root, ["update-ref", "-d", "refs/heads/big-src"]);
+    writeFixture(fixture.root, "merged.txt", "merged\n");
+    git(fixture.root, ["add", "merged.txt"]);
+    git(fixture.root, ["commit", "-q", "-m", "Merged work"]);
+    const ancestryHead = git(fixture.root, ["rev-parse", "HEAD"]);
+    git(fixture.root, ["cherry-pick", cherryHead]);
+    git(fixture.root, ["cherry-pick", partialFirst]);
+    const targetRevision = git(fixture.root, ["rev-parse", "HEAD"]);
+    const providerHead = "e".repeat(40);
+    const mainEntry = {
+      classification: "canonical-target" as const,
+      disposition: "preserved-target" as const,
+      evidence: ["Complete GitLab inventory includes protected main."],
+      finalHeadRevision: targetRevision,
+      initialHeadRevision: targetRevision,
+      name: "main",
+      obsoleteProof: null,
+      proposals: [],
+      protected: true,
+    };
+    const audited = (name: string, head: string) => ({
+      classification: "no-proposal" as const,
+      disposition: "preserved-audited" as const,
+      evidence: [`No MR ever used ${name}.`],
+      finalHeadRevision: head,
+      initialHeadRevision: head,
+      name,
+      obsoleteProof: null,
+      proposals: [],
+      protected: false,
+    });
+    const deleted = (
+      name: string,
+      head: string,
+      obsoleteProof:
+        | "target-contains-head"
+        | "provider-diff-empty" = "target-contains-head"
+    ) => ({
+      ...audited(name, head),
+      disposition: "deleted-proven-obsolete" as const,
+      evidence: [`Deleted ${name} with ${obsoleteProof} evidence.`],
+      finalHeadRevision: null,
+      obsoleteProof,
+    });
+    const heads = {
+      "build/ancestry": ancestryHead,
+      "build/big": bigHead,
+      "build/cherry": cherryHead,
+      "build/partial": partialHead,
+      "build/provider": providerHead,
+      "build/unique": uniqueHead,
+    };
+    const openingBranches = [
+      mainEntry,
+      ...Object.entries(heads).map(([name, head]) => audited(name, head)),
+    ];
+    const opening = remoteLedger(openingBranches, "initial");
+    const lease = startLoop(fixture.root, "controller", "integrate", {
+      branches: openingBranches,
+      finalBranchCount: opening.count,
+      finalCoverage: opening.coverage,
+      finalInventoryComplete: true,
+      initialBranchCount: opening.count,
+      initialCoverage: opening.coverage,
+      initialInventoryComplete: true,
+      observedAt: new Date().toISOString(),
+      project: "group/project",
+      provider: "gitlab",
+      schemaVersion: 1,
+      targetBranch: "main",
+      targetRevision,
+    });
+    /** Every branch preserved except the overrides, in a fixed order. */
+    const receiptFor = (overrides: Record<string, Record<string, unknown>>) => {
+      const branches = [
+        mainEntry,
+        ...Object.entries(heads).map(
+          ([name, head]) => overrides[name] ?? audited(name, head)
+        ),
+      ] as Parameters<typeof remoteLedger>[0];
+      const initial = remoteLedger(branches, "initial");
+      const final = remoteLedger(branches, "final");
+      return {
+        branches,
+        finalBranchCount: final.count,
+        finalCoverage: final.coverage,
+        finalInventoryComplete: true as const,
+        initialBranchCount: initial.count,
+        initialCoverage: initial.coverage,
+        initialInventoryComplete: true as const,
+        observedAt: new Date().toISOString(),
+        project: "group/project",
+        provider: "gitlab",
+        schemaVersion: 1 as const,
+        targetBranch: "main",
+        targetRevision,
+      };
+    };
+    const record = (overrides: Record<string, Record<string, unknown>>) =>
+      recordRemoteBranchReconciliation(
+        fixture.root,
+        lease.runId,
+        "controller",
+        receiptFor(overrides)
+      );
+    const objectPath = (revision: string) =>
+      join(
+        fixture.root,
+        ".git",
+        "objects",
+        revision.slice(0, 2),
+        revision.slice(2)
+      );
+    return {
+      deleted,
+      fixture,
+      heads,
+      lease,
+      objectPath,
+      receiptFor,
+      record,
+      targetRevision,
+    };
+  };
+
+  test("verifies target-contains-head deletion proof with git when the receipt is recorded", () => {
+    const {
+      deleted,
+      fixture,
+      heads,
+      lease,
+      objectPath,
+      record,
+      targetRevision,
+    } = deletedHeadFixture();
+    const proven = {
+      "build/ancestry": deleted("build/ancestry", heads["build/ancestry"]),
+      "build/cherry": deleted("build/cherry", heads["build/cherry"]),
+    };
+
+    // Work the target lacks, wholly or partly, cannot be closed over by a claim.
+    for (const name of ["build/unique", "build/partial"] as const) {
+      expect(() =>
+        record({ ...proven, [name]: deleted(name, heads[name]) })
+      ).toThrow(
+        `target ${targetRevision} neither contains deleted head ${heads[name]}`
+      );
+    }
+    expect(() =>
+      record({ "build/unique": deleted("build/unique", heads["build/unique"]) })
+    ).toThrow("record their supersession approval instead");
+    expect(() =>
+      record({ "build/big": deleted("build/big", heads["build/big"]) })
+    ).toThrow(`has more than ${PATCH_EQUIVALENCE_MAX_COMMITS} unique commits`);
+
+    // An approval cannot stand in for proof Git already has.
+    expect(() =>
+      record({
+        "build/cherry": {
+          ...deleted("build/cherry", heads["build/cherry"]),
+          obsoleteProof: null,
+          supersession: {
+            approvedBy: "jaay",
+            initialHeadRevision: heads["build/cherry"],
+            reason: "Cherry-picked into the target.",
+            replacementRevisions: [targetRevision],
+          },
+        },
+      })
+    ).toThrow(
+      "(patch-equivalent), so record target-contains-head proof instead"
+    );
+
+    // A head that was never fetched cannot be audited.
+    const cherryObject = objectPath(heads["build/cherry"]);
+    const cherryBytes = readFileSync(cherryObject);
+    rmSync(cherryObject);
+    expect(() => record(proven)).toThrow(
+      `deleted head ${heads["build/cherry"]} is not present locally`
+    );
+    writeFileSync(cherryObject, cherryBytes);
+
+    // Missing history is named as such, not reported as lost work.
+    const shallowPath = join(fixture.root, ".git", "shallow");
+    writeFileSync(shallowPath, `${targetRevision}\n`);
+    expect(() => record(proven)).toThrow(
+      "cannot be verified in a shallow clone"
+    );
+    rmSync(shallowPath);
+    expect(readLoopLease(fixture.root)?.remoteBranchReconciliation).toBe(
+      undefined
+    );
+
+    // Exact ancestry and full per-commit patch equivalence both prove it, and
+    // provider-diff-empty stays provider evidence Git does not check.
+    const updated = record({
+      ...proven,
+      "build/provider": deleted(
+        "build/provider",
+        heads["build/provider"],
+        "provider-diff-empty"
+      ),
+    });
+    expect(
+      updated.remoteBranchReconciliation.branches
+        .filter((branch) => branch.finalHeadRevision === null)
+        .map((branch) => `${branch.name}:${branch.obsoleteProof}`)
+    ).toEqual([
+      "build/ancestry:target-contains-head",
+      "build/cherry:target-contains-head",
+      "build/provider:provider-diff-empty",
+    ]);
+
+    // The proof is checked once, where it is recorded: gc later removing the
+    // unreachable patch-equivalent head must not strand the run.
+    rmSync(cherryObject);
+    expect(endLoop(fixture.root, lease.runId, "controller").ok).toBe(true);
+  });
+
+  test("ends a run whose 0.22.3 receipt superseded a patch-equivalent head", () => {
+    const {
+      deleted,
+      fixture,
+      heads,
+      lease,
+      receiptFor,
+      record,
+      targetRevision,
+    } = deletedHeadFixture();
+    record({});
+    // 0.22.3 checked only exact ancestry before accepting this approval.
+    const legacy = splitRemoteBranchReconciliationInput(
+      receiptFor({
+        "build/cherry": {
+          ...deleted("build/cherry", heads["build/cherry"]),
+          obsoleteProof: null,
+          supersession: {
+            approvedBy: "jaay",
+            initialHeadRevision: heads["build/cherry"],
+            reason: "Recorded by 0.22.3 before the audit existed.",
+            replacementRevisions: [targetRevision],
+          },
+        },
+      })
+    );
+    const legacyReceipt = legacy.receipt as RemoteBranchReconciliationReceipt;
+    const leasePath = loopLeasePath(join(fixture.root, ".git"));
+    writeFileSync(
+      leasePath,
+      `${JSON.stringify(
+        {
+          ...JSON.parse(readFileSync(leasePath, "utf8")),
+          remoteBranchReconciliation: legacyReceipt,
+        },
+        null,
+        2
+      )}\n`
+    );
+    const sidecar = join(
+      fixture.root,
+      ".git",
+      "simple-changes",
+      "remote-branch-supersession",
+      `${lease.runId}.json`
+    );
+    mkdirSync(dirname(sidecar), { recursive: true });
+    writeFileSync(
+      sidecar,
+      `${JSON.stringify({
+        receiptDigest: remoteBranchReconciliationDigest(legacyReceipt),
+        runId: lease.runId,
+        schemaVersion: 1,
+        supersessions: legacy.supersessions,
+      })}\n`
+    );
+    expect(endLoop(fixture.root, lease.runId, "controller").ok).toBe(true);
   });
 
   test("requires a final accounted GitLab branch inventory before integration completion", () => {

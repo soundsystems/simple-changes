@@ -11,6 +11,18 @@ Bun 1.2 or later. In commands below, `simple-changes` means
 `bun <skill-root>/scripts/simple-changes.ts` (or an installed `simple-changes`
 bin); use the same invocation everywhere.
 
+## Create a repository-specific fork
+
+Use repository policy and instructions for supported preferences and project
+context. For behavior that requires changing the skill, run
+`simple-changes fork create --name <project>-simple-changes --deltas "<intended custom behavior>"`
+from the owning repository. This copies the complete installed skill into
+`.agents/skills/<project>-simple-changes`, verifies and records its upstream
+commit, and refuses existing destinations. It does not change the
+global install or commit the new copy. Use `--destination` for another path
+inside the repository and `--upstream` for an offline source checkout.
+Customize and verify the fork, then use `update-local-forks` for future updates.
+
 ## Classify the request
 
 | Intent | Mode | Boundary |

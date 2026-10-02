@@ -1,5 +1,7 @@
 ---
 name: publish-skill
+metadata:
+  internal: true
 description: Publish a canonical skill-package update through upstream validation, default-branch merge, downstream fork synchronization and guidance backfills, concurrent Skills CLI reinstallation across every discovered local consumer, merge-request verification, and final remote-state cleanup. Use when asked to run or rerun a skill production loop, propagate a skill update across maintained forks, discover or update local skill installs, validate that a complete skill and its references install correctly, update consumer skill locks, or prove that all related changes reached each repository's default branch.
 ---
 

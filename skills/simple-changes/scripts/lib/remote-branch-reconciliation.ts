@@ -8,11 +8,17 @@ import type {
   RemoteBranchAncestryRecord,
   RemoteBranchReconciliationEntry,
   RemoteBranchReconciliationReceipt,
+  RemoteBranchSupersession,
+  RemoteBranchSupersessionRecord,
   RemoteInventoryCoverage,
 } from "./types.ts";
 
 const ANCESTRY_PROOF_SCHEMA = {
   $ref: "remote-branch-ancestry.schema.json#/$defs/proof",
+};
+
+const SUPERSESSION_SCHEMA = {
+  $ref: "remote-branch-supersession.schema.json#/$defs/supersession",
 };
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -396,7 +402,7 @@ const validateAncestryMerged = (
   }
 };
 
-const validateAuditedBranch = (
+const assertAuditedClassification = (
   branch: RemoteBranchReconciliationEntry
 ): void => {
   const states = proposalStates(branch);
@@ -409,9 +415,25 @@ const validateAuditedBranch = (
         "closed-unmerged requires closed proposal evidence and no open or merged proposal"
       );
     }
-  } else if (branch.proposals.length > 0) {
-    fail(branch.name, "no-proposal branches cannot include proposal evidence");
+  } else if (branch.classification === "no-proposal") {
+    if (branch.proposals.length > 0) {
+      fail(
+        branch.name,
+        "no-proposal branches cannot include proposal evidence"
+      );
+    }
+  } else {
+    fail(
+      branch.name,
+      "superseded deletion requires a closed-unmerged or no-proposal classification"
+    );
   }
+};
+
+const validateAuditedBranch = (
+  branch: RemoteBranchReconciliationEntry
+): void => {
+  assertAuditedClassification(branch);
 
   if (branch.disposition === "preserved-audited") {
     assertPreserved(branch, "preserved-audited");
@@ -494,23 +516,86 @@ const validateBranch = (
   assertPreserved(branch, "preserved-ambiguous");
 };
 
+/**
+ * A closed-unmerged or no-proposal branch deleted while its head is outside
+ * the target has no mechanical obsolescence proof. It may still be recorded
+ * as deleted when a named user judged its work superseded by named target
+ * commits; `obsoleteProof` stays null because the approval, not Git, is the
+ * proof. Git verifies the deleted head and replacements where the receipt is
+ * recorded and again where it is accepted.
+ */
+const validateSuperseded = (
+  branch: RemoteBranchReconciliationEntry,
+  supersession: RemoteBranchSupersession
+): void => {
+  if (branch.proposals.some((proposal) => proposal.state === "open")) {
+    fail(branch.name, "an open proposal branch cannot be deleted");
+  }
+  assertAuditedClassification(branch);
+  if (
+    branch.disposition !== "deleted-proven-obsolete" ||
+    branch.finalHeadRevision !== null ||
+    branch.obsoleteProof !== null
+  ) {
+    fail(
+      branch.name,
+      "superseded deletion requires deleted-proven-obsolete, no final ref, and a null obsoleteProof"
+    );
+  }
+  if (
+    !branch.initialHeadRevision ||
+    supersession.initialHeadRevision !== branch.initialHeadRevision
+  ) {
+    fail(
+      branch.name,
+      "supersession approval must name the exact initial branch head"
+    );
+  }
+  if (
+    new Set(supersession.replacementRevisions).size !==
+      supersession.replacementRevisions.length ||
+    supersession.replacementRevisions.includes(supersession.initialHeadRevision)
+  ) {
+    fail(
+      branch.name,
+      "supersession replacements must be distinct target commits other than the deleted head"
+    );
+  }
+  if (!(supersession.approvedBy.trim() && supersession.reason.trim())) {
+    fail(branch.name, "supersession requires a nonblank approver and reason");
+  }
+};
+
 const validateLedgerBranch = (
   branch: RemoteBranchReconciliationEntry,
   receipt: RemoteBranchReconciliationReceipt,
-  proof: RemoteBranchAncestryProof | undefined
+  proof: RemoteBranchAncestryProof | undefined,
+  supersession: RemoteBranchSupersession | undefined
 ): void => {
-  if (!proof) {
+  if (!(proof || supersession)) {
     validateBranch(branch, receipt);
     return;
   }
   assertObserved(branch);
+  if (proof && supersession) {
+    fail(
+      branch.name,
+      "a branch cannot carry both merged-head ancestry proof and a supersession approval"
+    );
+  }
   if (branch.name === receipt.targetBranch || branch.protected) {
     fail(
       branch.name,
-      "merged-head ancestry proof cannot apply to the canonical target or a protected branch"
+      `${proof ? "merged-head ancestry proof" : "supersession approval"} cannot apply to the canonical target or a protected branch`
     );
   }
-  validateAncestryMerged(branch, proof);
+  if (proof) {
+    validateAncestryMerged(branch, proof);
+    return;
+  }
+  if (supersession) {
+    validateSuperseded(branch, supersession);
+  }
 };
 
 const ancestryProofsByBranch = (
@@ -536,39 +621,99 @@ const ancestryProofsByBranch = (
   return byBranch;
 };
 
-/**
- * The receipt input may carry `mergedHeadAncestry` on a branch entry. It is
- * split out before the receipt is validated and embedded in the lease, so the
- * lease keeps the original receipt schema that older clients read.
- */
-export const splitRemoteBranchReconciliationInput = (
-  value: unknown
-): { ancestryProofs: RemoteBranchAncestryProof[]; receipt: unknown } => {
-  if (!(isRecord(value) && Array.isArray(value.branches))) {
-    return { ancestryProofs: [], receipt: value };
-  }
-  const ancestryProofs: RemoteBranchAncestryProof[] = [];
-  const branches = value.branches.map((branch: unknown) => {
-    if (!(isRecord(branch) && "mergedHeadAncestry" in branch)) {
-      return branch;
-    }
-    const { mergedHeadAncestry, ...entry } = branch;
-    if (!isRecord(mergedHeadAncestry) || "branch" in mergedHeadAncestry) {
+const supersessionsByBranch = (
+  receipt: RemoteBranchReconciliationReceipt,
+  supersessions: readonly RemoteBranchSupersession[]
+): Map<string, RemoteBranchSupersession> => {
+  const byBranch = new Map<string, RemoteBranchSupersession>();
+  const names = new Set(receipt.branches.map((branch) => branch.name));
+  for (const supersession of supersessions) {
+    validateSchemaDocument<RemoteBranchSupersession>(
+      "remote-branch-supersession approval",
+      SUPERSESSION_SCHEMA,
+      supersession
+    );
+    if (!names.has(supersession.branch) || byBranch.has(supersession.branch)) {
       throw new SimpleChangesError(
-        `Invalid remote branch reconciliation: mergedHeadAncestry for ${String(entry.name)} must be an object naming proposalObjectId, initialHeadRevision, and mergedHeadRevision`,
+        `Invalid remote branch reconciliation: supersession approval for ${supersession.branch} must name exactly one ledger branch`,
         EXIT_CODES.validation
       );
     }
-    ancestryProofs.push(
-      validateSchemaDocument<RemoteBranchAncestryProof>(
-        "remote-branch-ancestry proof",
-        ANCESTRY_PROOF_SCHEMA,
-        { ...mergedHeadAncestry, branch: entry.name }
+    byBranch.set(supersession.branch, supersession);
+  }
+  return byBranch;
+};
+
+/**
+ * The receipt input may carry `mergedHeadAncestry` or `supersession` on a
+ * branch entry. Both are split out before the receipt is validated and
+ * embedded in the lease, so the lease keeps the original receipt schema that
+ * older clients read.
+ */
+export const splitRemoteBranchReconciliationInput = (
+  value: unknown
+): {
+  ancestryProofs: RemoteBranchAncestryProof[];
+  receipt: unknown;
+  supersessions: RemoteBranchSupersession[];
+} => {
+  if (!(isRecord(value) && Array.isArray(value.branches))) {
+    return { ancestryProofs: [], receipt: value, supersessions: [] };
+  }
+  const ancestryProofs: RemoteBranchAncestryProof[] = [];
+  const supersessions: RemoteBranchSupersession[] = [];
+  const branches = value.branches.map((branch: unknown) => {
+    if (
+      !(
+        isRecord(branch) &&
+        ("mergedHeadAncestry" in branch || "supersession" in branch)
       )
-    );
+    ) {
+      return branch;
+    }
+    const { mergedHeadAncestry, supersession, ...entry } = branch;
+    if ("mergedHeadAncestry" in branch) {
+      if (!isRecord(mergedHeadAncestry) || "branch" in mergedHeadAncestry) {
+        throw new SimpleChangesError(
+          `Invalid remote branch reconciliation: mergedHeadAncestry for ${String(entry.name)} must be an object naming proposalObjectId, initialHeadRevision, and mergedHeadRevision`,
+          EXIT_CODES.validation
+        );
+      }
+      ancestryProofs.push(
+        validateSchemaDocument<RemoteBranchAncestryProof>(
+          "remote-branch-ancestry proof",
+          ANCESTRY_PROOF_SCHEMA,
+          { ...mergedHeadAncestry, branch: entry.name }
+        )
+      );
+    }
+    if ("supersession" in branch) {
+      if (!isRecord(supersession) || "branch" in supersession) {
+        throw new SimpleChangesError(
+          `Invalid remote branch reconciliation: supersession for ${String(entry.name)} must be an object naming initialHeadRevision, replacementRevisions, approvedBy, and reason`,
+          EXIT_CODES.validation
+        );
+      }
+      const approval = validateSchemaDocument<RemoteBranchSupersession>(
+        "remote-branch-supersession approval",
+        SUPERSESSION_SCHEMA,
+        { ...supersession, branch: entry.name }
+      );
+      if (!(approval.approvedBy.trim() && approval.reason.trim())) {
+        fail(
+          approval.branch,
+          "supersession requires a nonblank approver and reason"
+        );
+      }
+      supersessions.push({
+        ...approval,
+        approvedBy: approval.approvedBy.trim(),
+        reason: approval.reason.trim(),
+      });
+    }
     return entry;
   });
-  return { ancestryProofs, receipt: { ...value, branches } };
+  return { ancestryProofs, receipt: { ...value, branches }, supersessions };
 };
 
 export const remoteBranchReconciliationDigest = (
@@ -600,9 +745,36 @@ export const validateRemoteBranchAncestryRecord = (
   return record.proofs;
 };
 
+/**
+ * Re-joins a supersession sidecar with the exact receipt it was recorded for.
+ * A sidecar for another run or another receipt fails closed instead of being
+ * ignored.
+ */
+export const validateRemoteBranchSupersessionRecord = (
+  value: unknown,
+  runId: string,
+  receipt: RemoteBranchReconciliationReceipt
+): RemoteBranchSupersession[] => {
+  const record = validateSchema<RemoteBranchSupersessionRecord>(
+    "remote-branch-supersession",
+    value
+  );
+  if (
+    record.runId !== runId ||
+    record.receiptDigest !== remoteBranchReconciliationDigest(receipt)
+  ) {
+    throw new SimpleChangesError(
+      "Remote-branch supersession approvals do not match this run's recorded reconciliation receipt; record the final reconciliation again.",
+      EXIT_CODES.unsafe
+    );
+  }
+  return record.supersessions;
+};
+
 export const validateRemoteBranchReconciliation = (
   value: unknown,
-  ancestryProofs: readonly RemoteBranchAncestryProof[] = []
+  ancestryProofs: readonly RemoteBranchAncestryProof[] = [],
+  supersessions: readonly RemoteBranchSupersession[] = []
 ): RemoteBranchReconciliationReceipt => {
   const receipt = validateSchema<RemoteBranchReconciliationReceipt>(
     "remote-branch-reconciliation",
@@ -659,8 +831,14 @@ export const validateRemoteBranchReconciliation = (
     "final"
   );
   const proofs = ancestryProofsByBranch(receipt, ancestryProofs);
+  const approvals = supersessionsByBranch(receipt, supersessions);
   for (const branch of receipt.branches) {
-    validateLedgerBranch(branch, receipt, proofs.get(branch.name));
+    validateLedgerBranch(
+      branch,
+      receipt,
+      proofs.get(branch.name),
+      approvals.get(branch.name)
+    );
   }
   if (
     !receipt.branches.some((branch) => branch.name === receipt.targetBranch)

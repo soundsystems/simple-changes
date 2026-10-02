@@ -114,7 +114,11 @@ discovered:
 5. Audit closed/unmerged branches separately from branches with no MR. Preserve
    either class unless exact Git/provider evidence proves the target contains
    the head or the provider diff is empty. Only then may it be deleted as
-   `deleted-proven-obsolete`.
+   `deleted-proven-obsolete`. The one judgment-based exception is a
+   user-approved supersession (below) for a branch that is already gone or
+   that the user explicitly asked to delete; never delete a branch on that
+   basis without the user's explicit approval for that branch, and fetch its
+   head at full depth before any such deletion.
 6. Run `loop guard` immediately before each provider deletion and `loop verify`
    immediately after it. Never batch by prefix, wildcard, or age.
 7. Paginate a fresh final provider inventory. Reclassify any new or moved branch
@@ -151,6 +155,27 @@ initial head, and MR to the user. Squash-merge projects, and GitLab
 rebase-merge projects whenever GitLab rebased the MR, always land there: the
 squashed source head is not in the target, and a rebased head does not descend
 from the initial head. Never recreate a deleted branch to make the ledger fit.
+
+A closed/unmerged or no-MR branch can also disappear, by anyone and outside the
+run, or at the user's explicit request, while the target does not contain its
+head. That leaves no mechanical proof even when its work shipped another way,
+for example repackaged into a different commit. Show the user the branch, its
+deleted head, and the target commits that replaced its work; never make that
+judgment yourself. Only when the user confirms the branch was superseded,
+record it as `deleted-proven-obsolete` with `obsoleteProof: null`, and add
+`supersession` to that branch in the receipt file with its
+`initialHeadRevision`, `replacementRevisions` (the target commits),
+`approvedBy` (the user), and `reason`. `loop reconcile-remote-branches` refuses
+a shallow clone and verifies with Git that the deleted head is still present
+locally (fetch it at full depth first; GitLab keeps an MR's head at
+`refs/merge-requests/<iid>/head`), shares history with the target, is not in
+the target (record `target-contains-head` when it is), and that every
+replacement is in the target and is not an ancestor of the deleted head. It
+pins the deleted head at `refs/simple-changes/superseded/<run-id>/<head>`,
+keeps the approval in a sidecar beside the lease, and `loop end` checks it
+again. When the user instead wants the work back, restore the branch from that
+pin or its deleted head only at their request; that restores their work and is
+never a way to make the ledger fit. A restored branch records as preserved.
 
 `loop end` refuses a detected GitLab integration/reconciliation run when this
 receipt is missing, semantically unsafe, or stale against the final target

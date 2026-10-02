@@ -170,6 +170,62 @@ const paginationCoverage = (
   },
 });
 
+const sha256Of = (value: unknown) =>
+  createHash("sha256").update(JSON.stringify(value)).digest("hex");
+/** Branch and proposal ledgers with one-page coverage for a reconciliation receipt. */
+const remoteLedger = (
+  branches: Array<{
+    finalHeadRevision: string | null;
+    initialHeadRevision: string | null;
+    name: string;
+    proposals: Array<{
+      headRevision: string | null;
+      objectId: string;
+      observedFinally?: boolean;
+      observedInitially?: boolean;
+      state: string;
+    }>;
+  }>,
+  phase: "initial" | "final"
+) => {
+  const branchEntries = branches
+    .filter((branch) =>
+      phase === "initial"
+        ? branch.initialHeadRevision !== null
+        : branch.finalHeadRevision !== null
+    )
+    .map((branch) => ({
+      headRevision:
+        phase === "initial"
+          ? branch.initialHeadRevision
+          : branch.finalHeadRevision,
+      name: branch.name,
+    }));
+  const proposalEntries = branches.flatMap((branch) =>
+    branch.proposals
+      .filter((proposal) =>
+        phase === "initial"
+          ? proposal.observedInitially !== false
+          : proposal.observedFinally !== false
+      )
+      .map((proposal) => ({
+        branch: branch.name,
+        headRevision: proposal.headRevision,
+        objectId: proposal.objectId,
+        state: proposal.state,
+      }))
+  );
+  return {
+    count: branchEntries.length,
+    coverage: paginationCoverage(
+      branchEntries.length,
+      sha256Of(branchEntries),
+      proposalEntries.length,
+      sha256Of(proposalEntries)
+    ),
+  };
+};
+
 const remoteSnapshot = (
   targetRevision: string,
   observedAt = new Date().toISOString(),
@@ -4864,8 +4920,6 @@ describe("active integration-loop lease", () => {
       "-m",
       "Never merged",
     ]);
-    const sha256Of = (value: unknown) =>
-      createHash("sha256").update(JSON.stringify(value)).digest("hex");
     const mainEntry = {
       classification: "canonical-target" as const,
       disposition: "preserved-target" as const,
@@ -4876,58 +4930,6 @@ describe("active integration-loop lease", () => {
       obsoleteProof: null,
       proposals: [],
       protected: true,
-    };
-    const ledger = (
-      branches: Array<{
-        finalHeadRevision: string | null;
-        initialHeadRevision: string | null;
-        name: string;
-        proposals: Array<{
-          headRevision: string | null;
-          objectId: string;
-          observedFinally?: boolean;
-          observedInitially?: boolean;
-          state: string;
-        }>;
-      }>,
-      phase: "initial" | "final"
-    ) => {
-      const branchEntries = branches
-        .filter((branch) =>
-          phase === "initial"
-            ? branch.initialHeadRevision !== null
-            : branch.finalHeadRevision !== null
-        )
-        .map((branch) => ({
-          headRevision:
-            phase === "initial"
-              ? branch.initialHeadRevision
-              : branch.finalHeadRevision,
-          name: branch.name,
-        }));
-      const proposalEntries = branches.flatMap((branch) =>
-        branch.proposals
-          .filter((proposal) =>
-            phase === "initial"
-              ? proposal.observedInitially !== false
-              : proposal.observedFinally !== false
-          )
-          .map((proposal) => ({
-            branch: branch.name,
-            headRevision: proposal.headRevision,
-            objectId: proposal.objectId,
-            state: proposal.state,
-          }))
-      );
-      return {
-        count: branchEntries.length,
-        coverage: paginationCoverage(
-          branchEntries.length,
-          sha256Of(branchEntries),
-          proposalEntries.length,
-          sha256Of(proposalEntries)
-        ),
-      };
     };
     const openingBranches = [
       mainEntry,
@@ -4945,7 +4947,7 @@ describe("active integration-loop lease", () => {
         protected: false,
       },
     ];
-    const openingLedger = ledger(openingBranches, "initial");
+    const openingLedger = remoteLedger(openingBranches, "initial");
     const lease = startLoop(fixture.root, "controller", "integrate", {
       branches: openingBranches,
       finalBranchCount: openingLedger.count,
@@ -4996,8 +4998,8 @@ describe("active integration-loop lease", () => {
           protected: false,
         },
       ];
-      const initial = ledger(branches, "initial");
-      const final = ledger(branches, "final");
+      const initial = remoteLedger(branches, "initial");
+      const final = remoteLedger(branches, "final");
       return {
         branches,
         finalBranchCount: final.count,
@@ -5184,8 +5186,6 @@ describe("active integration-loop lease", () => {
     git(fixture.root, ["add", "shipped.txt"]);
     git(fixture.root, ["commit", "-m", "Opening MR head"]);
     const head = git(fixture.root, ["rev-parse", "HEAD"]);
-    const sha256Of = (value: unknown) =>
-      createHash("sha256").update(JSON.stringify(value)).digest("hex");
     const main = {
       classification: "canonical-target" as const,
       disposition: "preserved-target" as const,
@@ -5314,6 +5314,401 @@ describe("active integration-loop lease", () => {
     );
     expect(updated.remoteBranchReconciliation.branches).toHaveLength(2);
     expect(endLoop(fixture.root, lease.runId, "controller").ok).toBe(true);
+  });
+
+  test("verifies an approved supersession with git and keeps it out of the lease", () => {
+    const fixture = repository();
+    git(fixture.root, [
+      "remote",
+      "add",
+      "origin",
+      "git@gitlab.com:group/project.git",
+    ]);
+    const forkPoint = git(fixture.root, ["rev-parse", "HEAD"]);
+    writeFixture(fixture.root, "community.txt", "closed MR version\n");
+    git(fixture.root, ["add", "community.txt"]);
+    git(fixture.root, ["commit", "-m", "Closed MR head"]);
+    const deletedHead = git(fixture.root, ["rev-parse", "HEAD"]);
+    git(fixture.root, ["reset", "--hard", forkPoint]);
+    writeFixture(fixture.root, "community.txt", "shipped version\n");
+    git(fixture.root, ["add", "community.txt"]);
+    git(fixture.root, ["commit", "-m", "Ship the same work another way"]);
+    const replacement = git(fixture.root, ["rev-parse", "HEAD"]);
+    const targetRevision = replacement;
+    const outsideTarget = git(fixture.root, [
+      "commit-tree",
+      git(fixture.root, ["rev-parse", "HEAD^{tree}"]),
+      "-p",
+      replacement,
+      "-m",
+      "Never merged",
+    ]);
+    const mainEntry = {
+      classification: "canonical-target" as const,
+      disposition: "preserved-target" as const,
+      evidence: ["Complete GitLab inventory includes protected main."],
+      finalHeadRevision: targetRevision,
+      initialHeadRevision: targetRevision,
+      name: "main",
+      obsoleteProof: null,
+      proposals: [],
+      protected: true,
+    };
+    const closedProposal = {
+      headRevision: deletedHead,
+      objectId: "981",
+      state: "closed" as const,
+    };
+    const openingBranches = [
+      mainEntry,
+      {
+        classification: "closed-unmerged" as const,
+        disposition: "preserved-audited" as const,
+        evidence: ["MR !981 is closed at the opening source head."],
+        finalHeadRevision: deletedHead,
+        initialHeadRevision: deletedHead,
+        name: "feature/superseded",
+        obsoleteProof: null,
+        proposals: [closedProposal],
+        protected: false,
+      },
+    ];
+    const openingLedger = remoteLedger(openingBranches, "initial");
+    const lease = startLoop(fixture.root, "controller", "integrate", {
+      branches: openingBranches,
+      finalBranchCount: openingLedger.count,
+      finalCoverage: openingLedger.coverage,
+      finalInventoryComplete: true,
+      initialBranchCount: openingLedger.count,
+      initialCoverage: openingLedger.coverage,
+      initialInventoryComplete: true,
+      observedAt: new Date().toISOString(),
+      project: "group/project",
+      provider: "gitlab",
+      schemaVersion: 1,
+      targetBranch: "main",
+      targetRevision,
+    });
+    const finalReceipt = (replacementRevisions: string[]) => {
+      const branches = [
+        mainEntry,
+        {
+          classification: "closed-unmerged" as const,
+          disposition: "deleted-proven-obsolete" as const,
+          evidence: [
+            "The branch was deleted outside the run; the user judged MR !981 superseded.",
+          ],
+          finalHeadRevision: null,
+          initialHeadRevision: deletedHead,
+          name: "feature/superseded",
+          obsoleteProof: null,
+          proposals: [closedProposal],
+          protected: false,
+          supersession: {
+            approvedBy: "jaay",
+            initialHeadRevision: deletedHead,
+            reason: "The same work shipped through another commit.",
+            replacementRevisions,
+          },
+        },
+      ];
+      const initial = remoteLedger(branches, "initial");
+      const final = remoteLedger(branches, "final");
+      return {
+        branches,
+        finalBranchCount: final.count,
+        finalCoverage: final.coverage,
+        finalInventoryComplete: true as const,
+        initialBranchCount: initial.count,
+        initialCoverage: initial.coverage,
+        initialInventoryComplete: true as const,
+        observedAt: new Date().toISOString(),
+        project: "group/project",
+        provider: "gitlab",
+        schemaVersion: 1 as const,
+        targetBranch: "main",
+        targetRevision,
+      };
+    };
+    const record = (replacementRevisions: string[]) =>
+      recordRemoteBranchReconciliation(
+        fixture.root,
+        lease.runId,
+        "controller",
+        finalReceipt(replacementRevisions)
+      );
+    const endMessage = () => {
+      try {
+        endLoop(fixture.root, lease.runId, "controller");
+      } catch (error) {
+        return error instanceof Error ? error.message : String(error);
+      }
+      return "";
+    };
+    const leasePath = loopLeasePath(join(fixture.root, ".git"));
+    const sidecarPath = (directory: string) =>
+      join(
+        fixture.root,
+        ".git",
+        "simple-changes",
+        directory,
+        `${lease.runId}.json`
+      );
+    const supersessionPath = sidecarPath("remote-branch-supersession");
+
+    for (const [replacementRevisions, message] of [
+      [[outsideTarget], "is not contained in target"],
+      [[forkPoint], "is already an ancestor of deleted head"],
+      [[replacement, "f".repeat(40)], "is not contained in target"],
+    ] as const) {
+      const forged = splitRemoteBranchReconciliationInput(
+        finalReceipt([...replacementRevisions])
+      );
+      expect(
+        validateRemoteBranchReconciliation(
+          forged.receipt,
+          forged.ancestryProofs,
+          forged.supersessions
+        )
+      ).toEqual(forged.receipt as RemoteBranchReconciliationReceipt);
+      expect(() => record([...replacementRevisions])).toThrow(message);
+    }
+
+    // A deleted head that was never fetched cannot be audited or restored.
+    const objectPath = join(
+      fixture.root,
+      ".git",
+      "objects",
+      deletedHead.slice(0, 2),
+      deletedHead.slice(2)
+    );
+    const objectBytes = readFileSync(objectPath);
+    rmSync(objectPath);
+    expect(() => record([replacement])).toThrow("is not present locally");
+    writeFileSync(objectPath, objectBytes);
+    expect(readLoopLease(fixture.root)?.remoteBranchReconciliation).toBe(
+      undefined
+    );
+    expect(existsSync(supersessionPath)).toBe(false);
+
+    // A shallow boundary hides the deleted head's parents, so the fork point
+    // would falsely look unrelated to it.
+    const shallowPath = join(fixture.root, ".git", "shallow");
+    writeFileSync(shallowPath, `${deletedHead}\n`);
+    expect(() => record([forkPoint])).toThrow("shallow clone");
+    expect(() => record([replacement])).toThrow("shallow clone");
+    rmSync(shallowPath);
+
+    const updated = record([replacement]);
+    expect(
+      git(fixture.root, [
+        "rev-parse",
+        `refs/simple-changes/superseded/${lease.runId}/${deletedHead}`,
+      ])
+    ).toBe(deletedHead);
+    expect(JSON.parse(readFileSync(supersessionPath, "utf8"))).toEqual({
+      receiptDigest: remoteBranchReconciliationDigest(
+        updated.remoteBranchReconciliation
+      ),
+      runId: lease.runId,
+      schemaVersion: 1,
+      supersessions: [
+        {
+          approvedBy: "jaay",
+          branch: "feature/superseded",
+          initialHeadRevision: deletedHead,
+          reason: "The same work shipped through another commit.",
+          replacementRevisions: [replacement],
+        },
+      ],
+    });
+    expect(existsSync(sidecarPath("remote-branch-ancestry"))).toBe(false);
+
+    // Re-recording without the approval removes the stale sidecar; the pin
+    // stays so the work remains restorable.
+    recordRemoteBranchReconciliation(fixture.root, lease.runId, "controller", {
+      ...finalReceipt([replacement]),
+      branches: openingBranches,
+      finalBranchCount: openingLedger.count,
+      finalCoverage: openingLedger.coverage,
+    });
+    expect(existsSync(supersessionPath)).toBe(false);
+    expect(
+      git(fixture.root, [
+        "rev-parse",
+        `refs/simple-changes/superseded/${lease.runId}/${deletedHead}`,
+      ])
+    ).toBe(deletedHead);
+    const rerecorded = record([replacement]);
+    expect(rerecorded.remoteBranchReconciliation.branches).toEqual(
+      (
+        splitRemoteBranchReconciliationInput(finalReceipt([replacement]))
+          .receipt as RemoteBranchReconciliationReceipt
+      ).branches
+    );
+    expect(existsSync(supersessionPath)).toBe(true);
+
+    // Older clients strictly validate the lease; the approval stays outside it.
+    const storedLease = readFileSync(leasePath, "utf8");
+    expect(storedLease).not.toContain("supersession");
+    expect(storedLease).not.toContain("replacementRevisions");
+    expect(() =>
+      validateSchema("loop-lease", JSON.parse(storedLease))
+    ).not.toThrow();
+
+    const sidecar = readFileSync(supersessionPath, "utf8");
+    rmSync(supersessionPath);
+    expect(endMessage()).toContain(
+      `No supersession approval sidecar exists for ${lease.runId}`
+    );
+    expect(endMessage()).not.toContain("merged-head ancestry");
+    writeFileSync(
+      supersessionPath,
+      sidecar.replace(
+        remoteBranchReconciliationDigest(rerecorded.remoteBranchReconciliation),
+        "0".repeat(64)
+      )
+    );
+    expect(endMessage()).toContain(
+      "do not match this run's recorded reconciliation receipt"
+    );
+
+    // A lease and sidecar edited together to name a commit outside the
+    // target still fail at loop end because git re-verifies there.
+    const forgedEnd = splitRemoteBranchReconciliationInput(
+      finalReceipt([outsideTarget])
+    );
+    const forgedReceipt =
+      forgedEnd.receipt as RemoteBranchReconciliationReceipt;
+    writeFileSync(
+      leasePath,
+      `${JSON.stringify(
+        {
+          ...JSON.parse(storedLease),
+          remoteBranchReconciliation: forgedReceipt,
+        },
+        null,
+        2
+      )}\n`
+    );
+    writeFileSync(
+      supersessionPath,
+      `${JSON.stringify(
+        {
+          receiptDigest: remoteBranchReconciliationDigest(forgedReceipt),
+          runId: lease.runId,
+          schemaVersion: 1,
+          supersessions: forgedEnd.supersessions,
+        },
+        null,
+        2
+      )}\n`
+    );
+    expect(endMessage()).toContain("is not contained in target");
+
+    writeFileSync(leasePath, storedLease);
+    writeFileSync(supersessionPath, sidecar);
+    expect(endLoop(fixture.root, lease.runId, "controller").ok).toBe(true);
+  });
+
+  test("refuses supersession when the target already contains the deleted head", () => {
+    const fixture = repository();
+    git(fixture.root, [
+      "remote",
+      "add",
+      "origin",
+      "git@gitlab.com:group/project.git",
+    ]);
+    writeFixture(fixture.root, "merged.txt", "already shipped\n");
+    git(fixture.root, ["add", "merged.txt"]);
+    git(fixture.root, ["commit", "-m", "Branch head"]);
+    const deletedHead = git(fixture.root, ["rev-parse", "HEAD"]);
+    writeFixture(fixture.root, "merged.txt", "later target work\n");
+    git(fixture.root, ["add", "merged.txt"]);
+    git(fixture.root, ["commit", "-m", "Later target work"]);
+    const targetRevision = git(fixture.root, ["rev-parse", "HEAD"]);
+    const mainEntry = {
+      classification: "canonical-target" as const,
+      disposition: "preserved-target" as const,
+      evidence: ["Complete GitLab inventory includes protected main."],
+      finalHeadRevision: targetRevision,
+      initialHeadRevision: targetRevision,
+      name: "main",
+      obsoleteProof: null,
+      proposals: [],
+      protected: true,
+    };
+    const branch = {
+      classification: "no-proposal" as const,
+      evidence: ["No MR ever used this branch."],
+      initialHeadRevision: deletedHead,
+      name: "build/contained",
+      obsoleteProof: null,
+      proposals: [],
+      protected: false,
+    };
+    const openingBranches = [
+      mainEntry,
+      {
+        ...branch,
+        disposition: "preserved-audited" as const,
+        finalHeadRevision: deletedHead,
+      },
+    ];
+    const opening = remoteLedger(openingBranches, "initial");
+    const lease = startLoop(fixture.root, "controller", "integrate", {
+      branches: openingBranches,
+      finalBranchCount: opening.count,
+      finalCoverage: opening.coverage,
+      finalInventoryComplete: true,
+      initialBranchCount: opening.count,
+      initialCoverage: opening.coverage,
+      initialInventoryComplete: true,
+      observedAt: new Date().toISOString(),
+      project: "group/project",
+      provider: "gitlab",
+      schemaVersion: 1,
+      targetBranch: "main",
+      targetRevision,
+    });
+    const finalBranches = [
+      mainEntry,
+      {
+        ...branch,
+        disposition: "deleted-proven-obsolete" as const,
+        finalHeadRevision: null,
+        supersession: {
+          approvedBy: "jaay",
+          initialHeadRevision: deletedHead,
+          reason: "Judged superseded.",
+          replacementRevisions: [targetRevision],
+        },
+      },
+    ];
+    const initial = remoteLedger(finalBranches, "initial");
+    const final = remoteLedger(finalBranches, "final");
+    expect(() =>
+      recordRemoteBranchReconciliation(
+        fixture.root,
+        lease.runId,
+        "controller",
+        {
+          branches: finalBranches,
+          finalBranchCount: final.count,
+          finalCoverage: final.coverage,
+          finalInventoryComplete: true,
+          initialBranchCount: initial.count,
+          initialCoverage: initial.coverage,
+          initialInventoryComplete: true,
+          observedAt: new Date().toISOString(),
+          project: "group/project",
+          provider: "gitlab",
+          schemaVersion: 1,
+          targetBranch: "main",
+          targetRevision,
+        }
+      )
+    ).toThrow("record target-contains-head proof instead");
   });
 
   test("requires a final accounted GitLab branch inventory before integration completion", () => {

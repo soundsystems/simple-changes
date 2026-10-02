@@ -1,6 +1,6 @@
 # Developer changelog
 
-## Unreleased
+## 0.22.3 - 2026-10-02
 
 - `skills/simple-changes/SKILL.md` gains a `metadata.models` frontmatter key
   (`Claude Opus 5.5, Claude Fable 5.1`). `fork create` (`FRONTMATTER_NAME`)
@@ -23,6 +23,48 @@
   step 4 is a fix-and-re-run loop. `CURRENT_GUIDANCE_VERSION` stays 24: no
   setting, default, onboarding step, or companion integration changed.
 <!-- simple-changelogs-signature agent="claude-fable-5-1" at="2026-10-02T13:39:48-05:00" -->
+- `lib/types.ts` adds `RemoteBranchSupersession` (`branch`,
+  `initialHeadRevision`, `replacementRevisions`, `approvedBy`, `reason`) and
+  `RemoteBranchSupersessionRecord` (`schemaVersion: 1`, `runId`,
+  `receiptDigest`, `supersessions`);
+  `evals/schemas/remote-branch-supersession.schema.json` joins `SCHEMA_NAMES`
+  in `lib/schema.ts`, and the README `KIND` list adds
+  `remote-branch-supersession`, `ready-work-receipt`, and `ship-holds`.
+  `lib/remote-branch-reconciliation.ts`: `splitRemoteBranchReconciliationInput`
+  now also lifts `supersession` off each receipt branch entry and returns
+  `supersessions` (values trimmed; a blank `approvedBy` or `reason` is a
+  validation error), so the lease and embedded receipt keep the 0.22.0 schema
+  that older CLIs strict-validate. `validateRemoteBranchReconciliation(value,
+  ancestryProofs, supersessions)` routes a branch with a supersession through
+  `validateSuperseded`: `deleted-proven-obsolete` with `obsoleteProof: null` at
+  the exact `initialHeadRevision`; `assertAuditedClassification` is factored
+  out of `validateAuditedBranch`, and `validateRemoteBranchSupersessionRecord`
+  re-joins the sidecar by `runId` and `receiptDigest`.
+- `lib/loop-lease.ts`: the ancestry sidecar read and write generalize into
+  `readReceiptSidecar`/`writeReceiptSidecar`, which also keep
+  `<commonGitDirectory>/simple-changes/remote-branch-supersession/<runId>.json`.
+  `assertRemoteBranchSupersession` runs against `lease.primaryCheckout` at
+  `loop reconcile-remote-branches` and again at `loop end`: it refuses a
+  shallow clone, requires the deleted head object locally with shared history
+  against `receipt.targetRevision`, says to record `target-contains-head`
+  instead when the target already contains it, and requires every replacement
+  to be in the target and not an ancestor of the deleted head.
+  `pinSupersededHeads` writes `refs/simple-changes/superseded/<runId>/<head>`
+  for each approved head on record. The loop-end missing-sidecar hint names
+  only the proof a branch needs (`needsAncestryShape`/`isSupersededShape`).
+  `references/cleanup-and-completion.md` step 5 and a new paragraph after the
+  merged-head ancestry paragraph document the recipe, and
+  `skill-contract.test.ts` pins five of its sentences.
+  `remote-branch-reconciliation.test.ts` grows from 26 to 37 tests;
+  `loop-lease.test.ts` adds two Git-backed tests (shallow clone, missing head
+  object, forged replacements, the pin, stale-sidecar removal on re-record,
+  sidecar tampering and removal at loop end, head already in the target) and
+  its ancestry test now uses a shared module-level `remoteLedger` helper.
+  Independent review by Opus 5.5 (high) found that a shallow fetch of the
+  deleted head let the branch's fork point pass as a replacement and that the
+  deleted head was never pinned; both are fixed with regression tests.
+  Guidance stays at 24; `.simple-changes.json` is unchanged.
+<!-- simple-changelogs-signature agent="Fable 5.1" at="2026-10-02T15:10:30-05:00" -->
 
 ## 0.22.2 - 2026-10-02
 

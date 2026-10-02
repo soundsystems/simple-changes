@@ -480,6 +480,8 @@ describe("turn-end guard with background subagents", () => {
     agentId?: string;
     /** Null leaves the timestamp out. */
     at: Date | null;
+    /** The shell directory the transcript records for the entry. */
+    cwd?: string;
     /** Marks the output as a failed command, as a nonzero exit does. */
     isError?: boolean;
     sidechain?: boolean;
@@ -496,6 +498,7 @@ describe("turn-end guard with background subagents", () => {
     const id = `toolu_${toolUse}`;
     const common = {
       ...(context.agentId ? { agentId: context.agentId } : {}),
+      ...(context.cwd ? { cwd: context.cwd } : {}),
       isSidechain: context.sidechain ?? context.agentId !== undefined,
       ...(context.at ? { timestamp: context.at.toISOString() } : {}),
     };
@@ -594,7 +597,16 @@ describe("turn-end guard with background subagents", () => {
         "(simple-changes loop exec --run-id run-a1 --agent-id ctl) && echo ok"
       )
     ).toEqual([{ action: "exec", agentId: "ctl", runId: "run-a1" }]);
+    // A shell expansion is not a literal ID.
+    expect(
+      ownerLoopInvocations(
+        "simple-changes loop exec --run-id $R --agent-id ctl -- git push"
+      )
+    ).toEqual([{ action: "exec", agentId: "ctl", runId: null }]);
     for (const probe of [
+      "simple-changes loop exec --run-id run-a1 --agent-id $A",
+      'simple-changes loop exec --run-id run-a1 --agent-id "$A"',
+      "simple-changes loop exec --run-id run-a1 --agent-id ctl$A",
       "simple-changes loop status --agent-id ctl --run-id run-a1",
       "simple-changes loop replan-status --agent-id ctl",
       "simple-changes loop turn-check --agent-id ctl",
@@ -666,7 +678,7 @@ describe("turn-end guard with background subagents", () => {
         "rg -n controller notes.md",
         "cat /var/controller/state.json",
         "simple-changes loop status --json",
-        "simple-changes loop guard --agent-id controller --json",
+        "simple-changes loop status --agent-id controller --json",
       ]
         .map((command) =>
           bashCall(command, `{"runId":"${lease.runId}"}`, {
@@ -726,18 +738,17 @@ describe("turn-end guard with background subagents", () => {
 
   test("failed or prose-only subagent output proves nothing", () => {
     const { lease, paths } = setup();
-    const start = (output: string, isError: boolean): string =>
+    const start = (output: string, isError: boolean, cwd?: string): string =>
       bashCall(START, output, {
         agentId: SUBAGENT,
         at: secondsAgo(2),
+        ...(cwd ? { cwd } : {}),
         isError,
       });
     for (const evidence of [
       // A refused start names the parent's run in its error.
       start(`${lease.runId} is already active for controller.`, true),
       start(`{"runId":"${lease.runId}"}`, true),
-      // A successful start whose output names the run only in prose.
-      start(`Integration-controller loop ${lease.runId} is active.`, false),
       // A failed owner command is not control.
       bashCall(exec(lease.runId), "rejected", {
         agentId: SUBAGENT,
@@ -748,6 +759,17 @@ describe("turn-end guard with background subagents", () => {
       writeFileSync(paths.subagent(SUBAGENT), evidence);
       expect(check(paths).decision).toBe("block");
     }
+    // A successful start whose output names the run only in prose counts
+    // through its owner ID, since no parent command ever used that ID, but
+    // only once it is known to have run in this run's repository.
+    const prose = `Integration-controller loop ${lease.runId} is active.`;
+    writeFileSync(paths.subagent(SUBAGENT), start(prose, false));
+    expect(check(paths).decision).toBe("block");
+    writeFileSync(
+      paths.subagent(SUBAGENT),
+      start(prose, false, lease.primaryCheckout)
+    );
+    expect(check(paths).decision).toBe("advise");
 
     // The parent's failed attempt still counts as the parent commanding it.
     driveFromSubagent(paths, SUBAGENT, lease, 10);
@@ -760,6 +782,135 @@ describe("turn-end guard with background subagents", () => {
       })
     );
     expect(check(paths).decision).toBe("block");
+  });
+
+  test("the owner ID identifies a subagent driving a run it never names", () => {
+    const { lease, paths } = setup();
+    // The patrick pattern: `loop start` output went to a file and later
+    // commands pass the run ID through a shell variable.
+    const ownerIdOnly = (
+      agentId: string,
+      owner = "controller",
+      directory = lease.primaryCheckout
+    ): string =>
+      bashCall(
+        `S=/tmp/s; cd ${directory} && sh skills/x/scripts/simple-changes-runtime.sh loop start --mode ship --agent-id ${owner} --json > $S/start.json`,
+        "",
+        { agentId, at: secondsAgo(10) }
+      ) +
+      bashCall(
+        `S=/tmp/s; R=$(cat $S/run-id); cd ${directory} && sh skills/x/scripts/simple-changes-runtime.sh loop exec --run-id $R --agent-id ${owner} -- git push`,
+        "ok",
+        { agentId, at: secondsAgo(5) }
+      );
+    writeFileSync(paths.subagent(SUBAGENT), ownerIdOnly(SUBAGENT));
+    const advised = check(paths);
+    expect(advised.decision).toBe("advise");
+    expect(advised.runs[0]?.drivenBy).toMatchObject({ agentId: SUBAGENT });
+
+    // A variable owner ID is no evidence.
+    writeFileSync(paths.subagent(SUBAGENT), ownerIdOnly(SUBAGENT, "$A"));
+    expect(check(paths).decision).toBe("block");
+    writeFileSync(paths.subagent(SUBAGENT), ownerIdOnly(SUBAGENT));
+
+    // Another running subagent using the same ID makes the driver ambiguous.
+    writeFileSync(
+      paths.subagent(OTHER_SUBAGENT),
+      bashCall("simple-changes loop status --agent-id controller", "{}", {
+        agentId: OTHER_SUBAGENT,
+        at: secondsAgo(30),
+      })
+    );
+    expect(
+      check(paths, [running(SUBAGENT), running(OTHER_SUBAGENT)]).decision
+    ).toBe("block");
+    expect(check(paths, [running(SUBAGENT)]).decision).toBe("advise");
+
+    // A lease written well after the subagent's last command blocks.
+    writeFileSync(
+      loopLeasePath(lease.commonGitDirectory),
+      `${JSON.stringify({ ...lease, updatedAt: new Date(Date.now() + 120_000).toISOString() })}\n`
+    );
+    expect(check(paths).decision).toBe("block");
+    writeFileSync(
+      loopLeasePath(lease.commonGitDirectory),
+      `${JSON.stringify(lease)}\n`
+    );
+    expect(check(paths).decision).toBe("advise");
+
+    // The commands must have run in this run's repository: another
+    // repository, or a directory the transcript cannot pin down, blocks.
+    const elsewhere = fixture();
+    for (const evidence of [
+      ownerIdOnly(SUBAGENT, "controller", elsewhere.root),
+      ownerIdOnly(SUBAGENT, "controller", "$W"),
+      ownerIdOnly(SUBAGENT, "controller", "relative/path"),
+    ]) {
+      writeFileSync(paths.subagent(SUBAGENT), evidence);
+      expect(check(paths).decision).toBe("block");
+    }
+    // Without a `cd`, the shell directory the transcript recorded counts.
+    const bare = (cwd: string): string =>
+      bashCall(
+        "R=$(cat /tmp/s/run-id); simple-changes loop exec --run-id $R --agent-id controller -- git push",
+        "ok",
+        { agentId: SUBAGENT, at: secondsAgo(5), cwd }
+      );
+    writeFileSync(paths.subagent(SUBAGENT), bare(elsewhere.root));
+    expect(check(paths).decision).toBe("block");
+    writeFileSync(paths.subagent(SUBAGENT), bare(lease.primaryCheckout));
+    expect(check(paths).decision).toBe("advise");
+
+    // A command still waiting for its output never excuses a fresh lease
+    // write here: it names no run, so it may be serving another one.
+    const [pending] = bashCall(
+      `R=$(cat /tmp/s/run-id); cd ${lease.primaryCheckout} && simple-changes loop exec --run-id $R --agent-id controller -- sleep 999`,
+      "",
+      { agentId: SUBAGENT, at: secondsAgo(600) }
+    ).split("\n");
+    writeFileSync(paths.subagent(SUBAGENT), `${pending}\n`);
+    writeFileSync(
+      loopLeasePath(lease.commonGitDirectory),
+      `${JSON.stringify({ ...lease, updatedAt: new Date().toISOString() })}\n`
+    );
+    expect(check(paths).decision).toBe("block");
+    writeFileSync(
+      loopLeasePath(lease.commonGitDirectory),
+      `${JSON.stringify(lease)}\n`
+    );
+    writeFileSync(paths.subagent(SUBAGENT), ownerIdOnly(SUBAGENT));
+
+    // The parent drives this run through a variable owner ID while the
+    // subagent uses the ID literally for its own run in another repository.
+    writeFileSync(
+      paths.subagent(SUBAGENT),
+      ownerIdOnly(SUBAGENT, "controller", elsewhere.root)
+    );
+    writeFileSync(
+      paths.parent,
+      bashCall(
+        `A=controller; cd ${lease.primaryCheckout} && simple-changes loop exec --run-id ${lease.runId} --agent-id "$A" -- git push`,
+        "ok",
+        { at: secondsAgo(1) }
+      )
+    );
+    expect(check(paths).decision).toBe("block");
+    writeFileSync(paths.parent, "");
+    writeFileSync(paths.subagent(SUBAGENT), ownerIdOnly(SUBAGENT));
+    expect(check(paths).decision).toBe("advise");
+
+    // The parent using that ID at all, even in a failed or read-only command,
+    // means the ID is shared, so it proves nothing.
+    for (const command of [
+      "simple-changes loop status --agent-id controller --json",
+      "simple-changes loop guard --run-id $R --agent-id controller",
+    ]) {
+      writeFileSync(
+        paths.parent,
+        bashCall(command, "refused", { at: secondsAgo(600), isError: true })
+      );
+      expect(check(paths).decision).toBe("block");
+    }
   });
 
   test("subagent commands without a time prove nothing", () => {
@@ -838,6 +989,7 @@ describe("turn-end guard with background subagents", () => {
     const run = {
       leaseUpdatedAt: new Date().toISOString(),
       ownerAgentId: "controller",
+      repositoryRoots: [lease.primaryCheckout],
       runId: lease.runId,
     };
     const tasks = [running(SUBAGENT)];
@@ -882,6 +1034,7 @@ describe("turn-end guard with background subagents", () => {
     }).controllerOf({
       leaseUpdatedAt: new Date().toISOString(),
       ownerAgentId: "controller",
+      repositoryRoots: [lease.primaryCheckout],
       runId: lease.runId,
     });
     const elapsed = performance.now() - started;

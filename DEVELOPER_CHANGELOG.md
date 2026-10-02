@@ -2,6 +2,34 @@
 
 ## Unreleased
 
+## 0.22.2 - 2026-10-02
+
+- `lib/subagent-control.ts`: `AGENT_FLAG` and `RUN_FLAG` now reject values
+  containing `$` and require a terminator after the value, so `--run-id "$R"`
+  parses as no run id rather than a literal. `ownerLoopInvocations` is a
+  filtered view of a new `loopInvocations(command, shellDirectory)` that also
+  keeps read-only actions (flagged `readOnly`) and resolves each invocation's
+  `directory`: a literal absolute `--repo`, else the last literal absolute
+  `cd`/`pushd` before it, else the transcript entry's `cwd`; a `cd` to anything
+  else makes it unknown. `OwnerCommand` gains `directory`, `failed`, and
+  `readOnly`; a failed subagent command is kept (so it still proves the agent
+  id was used) but never shows control.
+- `RunToAttribute` gains `repositoryRoots`, and `turn-guard.ts` fills it from
+  `lease.primaryCheckout` plus every `<common>/worktrees/*/gitdir` parent.
+  `controllerOf` computes an `ownerIdDriver`: the one running subagent whose
+  commands use the lease's `ownerAgentId` when the parent never used it. For
+  that subagent, `driverOf` adds its successful, non-read-only owner commands
+  that name no run to the named ones, but only when at least one of them ran
+  `within` `repositoryRoots` (realpath-resolved); the merged activity is
+  reported with `inFlight: false`, so a still-running command never excuses a
+  lease write past `LEASE_WRITE_TOLERANCE_MS`. The parent-since and
+  lease-write checks are unchanged.
+- `references/cleanup-and-completion.md` documents the owner-id rule and
+  `skill-contract.test.ts` pins three of its sentences; `turn-guard.test.ts`
+  grows from 34 to 35 tests. Guidance stays at 24; `.simple-changes.json` is
+  unchanged.
+<!-- simple-changelogs-signature agent="Fable 5.1" at="2026-10-02T13:46:03-05:00" -->
+
 ## 0.22.1 - 2026-10-02
 
 - `lib/types.ts` adds `RemoteBranchAncestryProof` (`branch`,

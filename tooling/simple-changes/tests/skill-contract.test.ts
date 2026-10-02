@@ -948,7 +948,13 @@ describe("Simple Changes skill contract", () => {
       "Do not use it for questions about later work."
     );
     expect(normalizedCleanup).toContain(
-      "do not finalize a run your running subagent drives. If the session also controls a run of its own, the hook still blocks and names both. Once the subagent finishes, or its run goes stale, the hook blocks the parent again until the run is finalized. Workflow agents are not excused yet, and an unreadable, oversized, or slow transcript scan blocks."
+      "do not finalize a run your running subagent drives."
+    );
+    expect(normalizedCleanup).toContain(
+      "a still-running command never excuses a later lease write. If the session also controls a run of its own, the hook still blocks and names both. Once the subagent finishes, or its run goes stale, the hook blocks the parent again until the run is finalized. Workflow agents are not excused yet, and an unreadable, oversized, or slow transcript scan blocks."
+    );
+    expect(normalizedCleanup).toContain(
+      "only if no parent command and no other running subagent ever used that ID; give each agent its own ID. At least one of them must have run in the run's checkout or one of its worktrees"
     );
     expect(normalizedSpec).toContain(
       "A live run that a still running background subagent of the same session drives only advises."

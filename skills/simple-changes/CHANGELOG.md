@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+## 0.22.2 - 2026-10-02
+
+- The turn-end guard now also lets a Claude Code session end when its
+  still-running background subagent drives a Ship run through a shell variable,
+  such as `--run-id "$R"`. 0.22.1 only credited the subagent when one of its
+  `loop` commands named the run literally or printed its id, so a subagent that
+  kept the run id in a variable still blocked the parent. Now the subagent's
+  successful Simple Changes `loop` owner commands count when they carry a
+  literal `--agent-id` equal to the run's recorded owner, this session never
+  used that agent id, no other running subagent uses it, at least one of those
+  commands ran in the run's repository (by `--repo`, a literal `cd`, or the
+  shell's own directory), and the run's record was not written after the
+  subagent's last command finished. A value that contains `$` is a variable,
+  not an id. Everything else still blocks. Give each agent its own agent id so
+  the guard can tell them apart.
+<!-- simple-changelogs-signature agent="Fable 5.1" at="2026-10-02T13:46:03-05:00" -->
+
 ## 0.22.1 - 2026-10-02
 
 - A branch that GitLab deleted after its merge request merged can now be

@@ -1,5 +1,12 @@
 # Cleanup and completion
 
+Contents:
+
+- Turn-end guard
+- Remote-branch reconciliation gate
+- Authorized recovery for inherited or broken state
+  - Replan a frozen shipment without cleanup
+
 An unmatched old branch may already be shipped through a replacement proposal.
 Run `branch audit --head <source-ref> --target <ref> --json` before classifying it
 as unfinished or attempting another merge. Follow

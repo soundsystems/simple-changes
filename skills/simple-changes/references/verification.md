@@ -7,7 +7,9 @@ Use repository-native evidence to select checks:
 2. Run the narrowest meaningful checks while iterating.
 3. Before proposal or merge, run the complete checks required by repository
    policy for the affected surfaces.
-4. Re-run checks after any code-changing fix.
+4. When a check fails, fix what it reports and re-run it; repeat until it
+   passes or the failure is proven pre-existing. Re-run checks after any
+   code-changing fix.
 
 Capture an opening failure baseline when the repository is already dirty or
 checks are known to fail. Distinguish:

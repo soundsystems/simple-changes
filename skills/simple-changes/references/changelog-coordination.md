@@ -1,5 +1,14 @@
 # Changelog coordination
 
+Contents:
+
+- Detect relevance, then negotiate capability
+- Apply the preference
+- Use a closed three-phase transaction
+- Require a handoff receipt
+- Operator-history entry handoff
+- Web production release gate
+
 Simple Changes owns integration; a compatible changelog workflow owns release
 classification, wording, policy, signatures, version alignment, and edits to
 release-note destinations.

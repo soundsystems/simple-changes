@@ -1,5 +1,13 @@
 # Database and data-system changes
 
+Contents:
+
+- Classify the change
+- Treat ORMs as discovery evidence
+- Discover every history
+- Audit read-only
+- Apply only with exact authority
+
 Use this reference whenever a focused unit changes a database schema, migration
 history, stored routine, data backfill, index, projection, search mapping,
 document validation rule, graph constraint, or generated ORM artifact.

@@ -1,5 +1,18 @@
 # Inventory and concurrency
 
+Contents:
+
+- Integration-controller lease and concurrent authors
+- New agents during an active loop
+- Parallel agents
+- Ready work blocked by another shipping controller
+- Ready-work receipts
+- Shipment holds
+- Owner claims and safe pauses
+- Exact overrides
+- Opening-worktree dispositions
+- Exact retained exclusions
+
 Capture the opening inventory before mutation:
 
 - canonical primary and current checkout;

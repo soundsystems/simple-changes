@@ -1,5 +1,12 @@
 # Setup and policy
 
+Contents:
+
+- Discovery order
+- Automatic initialization checkpoint
+- Completed-work handoff checkpoint
+- Capability status
+
 ## Discovery order
 
 1. Read the user's current request; it is the highest authority for this run.

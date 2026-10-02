@@ -1,5 +1,13 @@
 # Plain-language communication
 
+Contents:
+
+- Default message shape
+- Keep technical detail available, not dominant
+- Questions and blockers
+- Examples
+- Final responses
+
 Simple Changes may coordinate complicated Git, review, release, deployment,
 and cleanup state. The user usually needs the outcome and consequence, not the
 names of the internal mechanisms that produced them.

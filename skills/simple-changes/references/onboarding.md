@@ -1,5 +1,14 @@
 # Conversational onboarding
 
+Contents:
+
+- Explain before asking
+- Question presentation contract
+- First screen
+- Customized questions
+- Preference storage
+- Confirm, apply, and continue
+
 Use this flow when a write-capable Simple Changes request reaches a repository
 without valid repository or personal preferences. Onboarding is a checkpoint
 inside the original task, not a separate task. After confirmation, continue the

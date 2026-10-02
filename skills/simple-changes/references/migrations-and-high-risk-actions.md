@@ -1,5 +1,9 @@
 # Migrations and high-risk actions
 
+Contents:
+
+- Installed-client compatibility gate
+
 Detect migration-like changes from repository conventions, schema directories,
 database tooling, and project instructions. Audit them read-only by default:
 

@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- Every Simple Changes reference longer than a hundred lines, and `SKILL.md`
+  itself, now opens with a short contents list naming its sections, so an
+  agent that reads only the first hundred lines of a file still learns which
+  rules it holds and where to find them. `SKILL.md` also records in its
+  frontmatter that the skill is written for and run on Claude Opus 5.5 and
+  Claude Fable 5.1.
+- Ship, Integrate, and Reconcile runs now carry the core workflow as a
+  checklist in the reply: each step is ticked only once its evidence exists,
+  a failed step stays unticked while the agent fixes what the failure reports
+  and runs the step again, a fix that changed source sends the run back to
+  grouping (with a fresh scope preview in Ship), and a moved target or a
+  changed policy, controller checkout, or source worktree sends it back to the
+  target refresh. Repository checks and `loop verify` are stated as
+  fix-and-re-run loops rather than one-shot checks. Other modes keep the same
+  order without the written checklist, and no setting or default changed.
+<!-- simple-changelogs-signature agent="claude-fable-5-1" at="2026-10-02T13:39:48-05:00" -->
+
 ## 0.22.2 - 2026-10-02
 
 - The turn-end guard now also lets a Claude Code session end when its

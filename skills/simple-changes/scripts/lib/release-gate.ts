@@ -4,26 +4,35 @@ import { sha256Json } from "./hash.ts";
 import { schemaPath, validateSchema } from "./schema.ts";
 import type {
   ChangelogCapabilities,
+  ChangelogFeature,
   ChangelogReceipt,
-  ChangelogReceiptV2,
+  ChangelogReceiptV3,
   ChangelogRequest,
+  ModernChangelogReceipt,
   ReleaseReasonCode,
   ReleaseRequiredAction,
 } from "./types.ts";
+import {
+  assertReleaseSetConsistency,
+  assertReleaseSetTrains,
+  assertVersionLine,
+  type ReleaseSetConsistency,
+  sameLineState,
+} from "./version-line.ts";
 
 export interface ChangelogConsumerCapabilities {
-  features: ChangelogCapabilities["features"];
-  receiptVersions: Array<1 | 2>;
-  requestVersions: 1[];
+  features: ChangelogFeature[];
+  receiptVersions: Array<1 | 2 | 3>;
+  requestVersions: Array<1 | 2>;
   schemaDigests: NonNullable<ChangelogCapabilities["schemaDigests"]>;
 }
 
 export interface NegotiatedChangelogProtocol {
   compatible: boolean;
-  features: ChangelogCapabilities["features"];
+  features: ChangelogFeature[];
   reasonCode: "unsupported-protocol" | null;
-  receiptVersion: 1 | 2 | null;
-  requestVersion: 1 | null;
+  receiptVersion: 1 | 2 | 3 | null;
+  requestVersion: 1 | 2 | null;
   requiredAction: "upgrade-producer" | null;
   schemaDigestStatus: "match" | "differs" | "unadvertised";
 }
@@ -34,9 +43,10 @@ export const packagedChangelogProtocol = (): ChangelogConsumerCapabilities => ({
     "classify-prepare-verify",
     "multi-train-receipts",
     "guidance-update-notices",
+    "shared-version-lines",
   ],
-  receiptVersions: [1, 2],
-  requestVersions: [1],
+  receiptVersions: [1, 2, 3],
+  requestVersions: [1, 2],
   schemaDigests: {
     changelogReceipt: sha256Json(
       JSON.parse(readFileSync(schemaPath("changelog-receipt"), "utf8"))
@@ -47,12 +57,15 @@ export const packagedChangelogProtocol = (): ChangelogConsumerCapabilities => ({
   },
 });
 
+// The highest version both sides support. A producer may advertise versions
+// this consumer does not know; they never match.
 const highestOverlap = <Version extends number>(
-  left: Version[],
-  right: Version[]
+  producer: number[],
+  consumer: Version[]
 ): Version | null =>
-  left.filter((version) => right.includes(version)).sort((a, b) => b - a)[0] ??
-  null;
+  consumer
+    .filter((version) => producer.includes(version))
+    .sort((a, b) => b - a)[0] ?? null;
 
 // Advisory only: wire compatibility is decided by version overlap, and every
 // inbound request/receipt is validated against the packaged schema at use time.
@@ -102,8 +115,10 @@ export const negotiateChangelogProtocol = (
   }
   return {
     compatible: true,
-    features: producer.features.filter((feature) =>
-      consumer.features.includes(feature)
+    // Unknown producer features are ignored, so a provider can advertise a
+    // newer feature without breaking this consumer.
+    features: producer.features.filter((feature): feature is ChangelogFeature =>
+      consumer.features.includes(feature as ChangelogFeature)
     ),
     reasonCode: null,
     receiptVersion,
@@ -113,9 +128,18 @@ export const negotiateChangelogProtocol = (
   };
 };
 
+const protocolMismatchFor = (message: string): never =>
+  protocolMismatch(message);
+
+export const validateChangelogRequest = (input: unknown): ChangelogRequest => {
+  const request = validateSchema<ChangelogRequest>("changelog-request", input);
+  assertReleaseSetTrains(request, protocolMismatchFor);
+  return request;
+};
+
 export const createChangelogRequest = (
   input: ChangelogRequest
-): ChangelogRequest => validateSchema("changelog-request", input);
+): ChangelogRequest => validateChangelogRequest(input);
 
 export const changelogReceiptDigest = (receipt: unknown): string =>
   sha256Json(validateSchema<ChangelogReceipt>("changelog-receipt", receipt));
@@ -181,7 +205,7 @@ const validateLegacyTransaction = (
   return receipt;
 };
 
-const assertPublicReleaseDecision = (receipt: ChangelogReceiptV2): void => {
+const assertPublicReleaseDecision = (receipt: ModernChangelogReceipt): void => {
   const { versionDecision } = receipt;
   if (receipt.releaseImpact === "none" && receipt.status !== "not-applicable") {
     protocolMismatch(
@@ -206,7 +230,7 @@ const assertPublicReleaseDecision = (receipt: ChangelogReceiptV2): void => {
 // record; this binding is what ties it to the delegated boundary.
 const assertEntryOnlyBinding = (
   request: ChangelogRequest,
-  receipt: ChangelogReceiptV2
+  receipt: ModernChangelogReceipt
 ): void => {
   if (
     receipt.status !== "classified" &&
@@ -237,13 +261,28 @@ const assertEntryOnlyBinding = (
   }
 };
 
-const validateV2Transaction = (
+// The request must have advertised the receipt's version; v3 also echoes
+// the release set and carries the version line.
+const assertReceiptVersion = (
   request: ChangelogRequest,
-  receipt: ChangelogReceiptV2
-): ChangelogReceipt => {
-  if (!request.supportedReceiptVersions.includes(2)) {
-    protocolMismatch("The delegated request did not advertise receipt v2.");
+  receipt: ModernChangelogReceipt
+): void => {
+  if (!request.supportedReceiptVersions.includes(receipt.schemaVersion)) {
+    protocolMismatch(
+      `The delegated request did not advertise receipt v${receipt.schemaVersion}.`
+    );
   }
+  if (receipt.schemaVersion === 3) {
+    assertVersionLine(request, receipt, protocolMismatchFor);
+  }
+};
+
+// Receipts v2 and v3 share every binding below.
+const validateModernTransaction = (
+  request: ChangelogRequest,
+  receipt: ModernChangelogReceipt
+): ChangelogReceipt => {
+  assertReceiptVersion(request, receipt);
   const expectedSourceRevision =
     request.phase === "verify"
       ? request.finalizedTargetRevision
@@ -321,15 +360,34 @@ const validateV2Transaction = (
   return receipt;
 };
 
+// The decision digest must cover the version line's state: a later phase that
+// keeps the approved digest cannot carry a different state. The outcome may
+// change, because an approved direction can turn a catch-up into an advance.
+const assertDigestCoversVersionLine = (
+  prior: ChangelogReceipt,
+  receipt: ChangelogReceipt
+): void => {
+  if (
+    prior.schemaVersion === 3 &&
+    receipt.schemaVersion === 3 &&
+    prior.decisionDigest === receipt.decisionDigest &&
+    !sameLineState(
+      prior.versionDecision?.versionLine ?? null,
+      receipt.versionDecision?.versionLine ?? null
+    )
+  ) {
+    protocolMismatch(
+      "The version line's state changed while the decision digest stayed the same; the digest must cover the line state."
+    );
+  }
+};
+
 export const inspectChangelogTransaction = (
   requestInput: unknown,
   receiptInput: unknown,
   priorReceiptInput?: unknown
 ): ChangelogTransactionValidation => {
-  const request = validateSchema<ChangelogRequest>(
-    "changelog-request",
-    requestInput
-  );
+  const request = validateChangelogRequest(requestInput);
   const receipt = validateSchema<ChangelogReceipt>(
     "changelog-receipt",
     receiptInput
@@ -338,12 +396,18 @@ export const inspectChangelogTransaction = (
     request,
     priorReceiptInput
   );
+  if (priorReceiptDigestStatus === "verified") {
+    assertDigestCoversVersionLine(
+      validateSchema<ChangelogReceipt>("changelog-receipt", priorReceiptInput),
+      receipt
+    );
+  }
   return {
     priorReceiptDigestStatus,
     receipt:
       receipt.schemaVersion === 1
         ? validateLegacyTransaction(request, receipt)
-        : validateV2Transaction(request, receipt),
+        : validateModernTransaction(request, receipt),
   };
 };
 
@@ -388,7 +452,7 @@ export interface ReleaseGateDecision {
 
 const decision = (
   action: ReleaseGateAction,
-  receipt: ChangelogReceiptV2 | null,
+  receipt: ModernChangelogReceipt | null,
   reason: string,
   reasonCode: ReleaseReasonCode | null = null,
   requiredAction: ReleaseRequiredAction | null = null
@@ -416,7 +480,7 @@ const decideLegacyReceipt = (
 
 const decidePreparedReceipt = (
   context: ReleaseGateContext,
-  receipt: ChangelogReceiptV2
+  receipt: ModernChangelogReceipt
 ): ReleaseGateDecision => {
   if (context.request.boundary === "none") {
     return decision(
@@ -452,7 +516,7 @@ const decidePreparedReceipt = (
 
 const decideVerifiedReceipt = (
   context: ReleaseGateContext,
-  receipt: ChangelogReceiptV2
+  receipt: ModernChangelogReceipt
 ): ReleaseGateDecision => {
   if (context.request.boundary === "none") {
     return decision(
@@ -484,9 +548,9 @@ const decideVerifiedReceipt = (
   );
 };
 
-const decideV2Receipt = (
+const decideModernReceipt = (
   context: ReleaseGateContext,
-  receipt: ChangelogReceiptV2
+  receipt: ModernChangelogReceipt
 ): ReleaseGateDecision => {
   switch (receipt.status) {
     case "blocked":
@@ -543,7 +607,7 @@ export const decideReleaseGate = (
   if (validation.priorReceiptDigestStatus === "unverified") {
     return decision(
       "block",
-      receipt.schemaVersion === 2 ? receipt : null,
+      receipt.schemaVersion === 1 ? null : receipt,
       "The later release phase is not bound to its prior receipt. Pass the exact prior receipt before authorizing merge or deployment.",
       "malformed-request",
       "repair-request"
@@ -552,5 +616,32 @@ export const decideReleaseGate = (
   if (receipt.schemaVersion === 1) {
     return decideLegacyReceipt(receipt);
   }
-  return decideV2Receipt(context, receipt);
+  return decideModernReceipt(context, receipt);
+};
+
+/**
+ * Checks the receipts of one multi-train release set together: shared release
+ * set, input target, and train list, and one number per version line. Each
+ * receipt must be a receipt v3; a v1 or v2 receipt carries no release-set
+ * echo or version line to compare.
+ */
+export const validateChangelogReleaseSet = (
+  receiptInputs: unknown[]
+): ReleaseSetConsistency => {
+  const receipts = receiptInputs.map((input) => {
+    const receipt = validateSchema<ChangelogReceipt>(
+      "changelog-receipt",
+      input
+    );
+    if (receipt.schemaVersion !== 3) {
+      return protocolMismatch(
+        "A release-set check needs receipt v3, which echoes the release set."
+      );
+    }
+    return receipt;
+  });
+  return assertReleaseSetConsistency(
+    receipts as ChangelogReceiptV3[],
+    protocolMismatchFor
+  );
 };

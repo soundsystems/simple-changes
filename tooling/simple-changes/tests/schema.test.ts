@@ -5,7 +5,10 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { inspectInitialization } from "../../../skills/simple-changes/scripts/lib/initialization.ts";
 import { DEFAULT_POLICY } from "../../../skills/simple-changes/scripts/lib/policy.ts";
-import { validateSchema } from "../../../skills/simple-changes/scripts/lib/schema.ts";
+import {
+  validateSchema,
+  validateSchemaDocument,
+} from "../../../skills/simple-changes/scripts/lib/schema.ts";
 import type {
   ChangelogReceipt,
   LoopLease,
@@ -765,6 +768,7 @@ describe("schema keyword support", () => {
     "maxLength",
     "minItems",
     "minLength",
+    "minProperties",
     "minimum",
     "pattern",
     "properties",
@@ -788,8 +792,12 @@ describe("schema keyword support", () => {
         violations.push(`${path}/${keyword}`);
         continue;
       }
-      if (keyword === "additionalProperties" && typeof value !== "boolean") {
-        violations.push(`${path}/${keyword}`);
+      if (keyword === "additionalProperties") {
+        if (isRecord(value)) {
+          collectViolations(value, `${path}/${keyword}`, violations);
+        } else if (typeof value !== "boolean") {
+          violations.push(`${path}/${keyword}`);
+        }
         continue;
       }
       if (keyword === "properties" || keyword === "$defs") {
@@ -831,6 +839,29 @@ describe("schema keyword support", () => {
       }
     }
   };
+
+  test("enforces minProperties and a schema-valued additionalProperties", () => {
+    const schema = {
+      additionalProperties: { pattern: "^[0-9]+$", type: "string" },
+      minProperties: 2,
+      type: "object",
+    };
+    expect(() => validateSchemaDocument("map", schema, { a: "1" })).toThrow(
+      "must have at least 2 properties"
+    );
+    expect(() =>
+      validateSchemaDocument("map", schema, { a: "1", b: "x" })
+    ).toThrow("must match");
+    expect(
+      validateSchemaDocument<Record<string, string>>("map", schema, {
+        a: "1",
+        b: "2",
+      })
+    ).toEqual({
+      a: "1",
+      b: "2",
+    });
+  });
 
   test("every packaged schema uses only keywords the validator enforces", () => {
     const schemaDirectory = resolve(

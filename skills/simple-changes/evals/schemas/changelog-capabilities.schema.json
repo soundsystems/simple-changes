@@ -33,14 +33,8 @@
     "features": {
       "type": "array",
       "uniqueItems": true,
-      "items": {
-        "enum": [
-          "public-version-policy",
-          "classify-prepare-verify",
-          "multi-train-receipts",
-          "guidance-update-notices"
-        ]
-      }
+      "description": "Known values: public-version-policy, classify-prepare-verify, multi-train-receipts, guidance-update-notices, shared-version-lines. Since Simple Changes 0.23.0 an unrecognized value is ignored during negotiation, so a provider may advertise a newer feature without breaking this consumer; consumers before 0.23.0 reject any value outside the first four.",
+      "items": { "type": "string", "minLength": 1 }
     },
     "schemaDigests": {
       "type": "object",

@@ -2,7 +2,11 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://simple-changes.dev/schemas/changelog-receipt.schema.json",
   "title": "Simple Changes changelog delegation receipt",
-  "anyOf": [{ "$ref": "#/$defs/v1" }, { "$ref": "#/$defs/v2" }],
+  "anyOf": [
+    { "$ref": "#/$defs/v1" },
+    { "$ref": "#/$defs/v2" },
+    { "$ref": "#/$defs/v3" }
+  ],
   "$defs": {
     "nullableDigest": {
       "anyOf": [
@@ -636,6 +640,580 @@
           }
         }
       ]
+    },
+    "v3": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "provider",
+        "status",
+        "transactionId",
+        "releaseSetId",
+        "releaseSetTrains",
+        "phase",
+        "observedAt",
+        "sourceRevision",
+        "revisionLineage",
+        "effectivePolicyDigest",
+        "decisionDigest",
+        "paths",
+        "checks",
+        "evidence",
+        "releaseImpact",
+        "versionDecision",
+        "release",
+        "reasonCode",
+        "requiredAction",
+        "reason"
+      ],
+      "properties": {
+        "schemaVersion": { "const": 3 },
+        "provider": { "const": "simple-changelogs" },
+        "status": {
+          "enum": [
+            "decision-required",
+            "classified",
+            "prepared",
+            "verified",
+            "not-applicable",
+            "blocked"
+          ]
+        },
+        "transactionId": { "type": "string", "minLength": 1 },
+        "releaseSetId": {
+          "anyOf": [{ "type": "string", "minLength": 1 }, { "type": "null" }]
+        },
+        "releaseSetTrains": {
+          "anyOf": [
+            {
+              "type": "array",
+              "minItems": 2,
+              "uniqueItems": true,
+              "items": { "type": "string", "minLength": 1 }
+            },
+            { "type": "null" }
+          ]
+        },
+        "phase": { "enum": ["classify", "prepare", "verify"] },
+        "observedAt": { "type": "string", "format": "date-time" },
+        "sourceRevision": { "type": "string", "pattern": "^[0-9a-f]{40,64}$" },
+        "revisionLineage": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "inputTargetRevision",
+            "reconciliationHeadRevision",
+            "finalizedTargetRevision"
+          ],
+          "properties": {
+            "inputTargetRevision": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{40,64}$"
+            },
+            "reconciliationHeadRevision": {
+              "$ref": "#/$defs/nullableRevision"
+            },
+            "finalizedTargetRevision": { "$ref": "#/$defs/nullableRevision" }
+          }
+        },
+        "effectivePolicyDigest": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "decisionDigest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "paths": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/path" }
+        },
+        "checks": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "evidence": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "releaseImpact": {
+          "enum": ["none", "patch", "minor", "major", "unknown"]
+        },
+        "versionDecision": {
+          "anyOf": [{ "$ref": "#/$defs/versionDecisionV3" }, { "type": "null" }]
+        },
+        "release": {
+          "anyOf": [{ "$ref": "#/$defs/release" }, { "type": "null" }]
+        },
+        "reasonCode": {
+          "anyOf": [
+            {
+              "enum": [
+                "version-direction-required",
+                "target-moved",
+                "policy-changed",
+                "release-train-ambiguous",
+                "version-owner-ambiguous",
+                "unsupported-protocol",
+                "unsupported-consumer",
+                "schema-digest-mismatch",
+                "malformed-request",
+                "malformed-policy",
+                "invalid-version-direction",
+                "final-verification-failed"
+              ]
+            },
+            { "type": "null" }
+          ]
+        },
+        "requiredAction": {
+          "anyOf": [
+            {
+              "enum": [
+                "choose-version",
+                "refresh-and-reclassify",
+                "resolve-release-train",
+                "resolve-version-owner",
+                "upgrade-producer",
+                "upgrade-consumer",
+                "repair-integration",
+                "repair-request",
+                "repair-policy",
+                "review-finalization"
+              ]
+            },
+            { "type": "null" }
+          ]
+        },
+        "reason": {
+          "anyOf": [{ "type": "string", "minLength": 1 }, { "type": "null" }]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "status": { "const": "classified" } },
+            "required": ["status"]
+          },
+          "then": {
+            "properties": {
+              "phase": { "const": "classify" },
+              "paths": { "maxItems": 0 },
+              "releaseImpact": { "enum": ["patch", "minor", "major"] },
+              "release": { "type": "null" },
+              "versionDecision": {
+                "type": "object",
+                "properties": {
+                  "boundary": { "const": "none" },
+                  "bumpLevel": { "const": "none" },
+                  "policyAction": { "const": "not-applicable" },
+                  "resolution": { "const": "not-required" },
+                  "selectedVersion": { "type": "null" },
+                  "suggestedVersion": { "type": "null" }
+                }
+              },
+              "reasonCode": { "type": "null" },
+              "requiredAction": { "type": "null" },
+              "reason": { "type": "null" }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": { "status": { "const": "decision-required" } },
+            "required": ["status"]
+          },
+          "then": {
+            "properties": {
+              "phase": { "const": "classify" },
+              "paths": { "maxItems": 0 },
+              "versionDecision": {
+                "type": "object",
+                "properties": {
+                  "policyAction": { "const": "ask" },
+                  "resolution": { "const": "approval-required" },
+                  "selectedVersion": { "type": "null" }
+                }
+              },
+              "release": { "type": "null" },
+              "reasonCode": { "const": "version-direction-required" },
+              "requiredAction": { "const": "choose-version" }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": { "status": { "const": "prepared" } },
+            "required": ["status"]
+          },
+          "then": {
+            "properties": {
+              "phase": { "const": "prepare" },
+              "paths": { "minItems": 1 },
+              "revisionLineage": {
+                "properties": {
+                  "reconciliationHeadRevision": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{40,64}$"
+                  },
+                  "finalizedTargetRevision": { "type": "null" }
+                }
+              },
+              "release": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "targetContainedUnreleased": { "const": "prepared" }
+                    }
+                  },
+                  { "type": "null" }
+                ]
+              },
+              "reasonCode": { "type": "null" },
+              "requiredAction": { "type": "null" }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": { "status": { "const": "verified" } },
+            "required": ["status"]
+          },
+          "then": {
+            "properties": {
+              "phase": { "const": "verify" },
+              "paths": { "maxItems": 0 },
+              "revisionLineage": {
+                "properties": {
+                  "reconciliationHeadRevision": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{40,64}$"
+                  },
+                  "finalizedTargetRevision": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{40,64}$"
+                  }
+                }
+              },
+              "release": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "targetContainedUnreleased": { "const": "integrated" }
+                    }
+                  },
+                  { "type": "null" }
+                ]
+              },
+              "reasonCode": { "type": "null" },
+              "requiredAction": { "type": "null" }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": { "enum": ["prepared", "verified"] },
+              "release": { "type": "null" }
+            },
+            "required": ["status", "release"]
+          },
+          "then": {
+            "properties": {
+              "versionDecision": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "boundary": { "const": "none" },
+                      "bumpLevel": { "const": "none" },
+                      "policyAction": { "const": "not-applicable" },
+                      "resolution": { "const": "not-required" },
+                      "selectedVersion": { "type": "null" },
+                      "suggestedVersion": { "type": "null" }
+                    }
+                  },
+                  { "type": "null" }
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": { "status": { "const": "not-applicable" } },
+            "required": ["status"]
+          },
+          "then": {
+            "properties": {
+              "phase": { "const": "classify" },
+              "paths": { "maxItems": 0 },
+              "release": { "type": "null" },
+              "versionDecision": {
+                "type": "object",
+                "properties": {
+                  "boundary": { "const": "none" },
+                  "bumpLevel": { "const": "none" },
+                  "policyAction": { "const": "not-applicable" },
+                  "resolution": { "const": "not-required" },
+                  "selectedVersion": { "type": "null" },
+                  "suggestedVersion": { "type": "null" }
+                }
+              },
+              "reasonCode": { "type": "null" },
+              "requiredAction": { "type": "null" }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": { "status": { "const": "blocked" } },
+            "required": ["status"]
+          },
+          "then": {
+            "properties": {
+              "reasonCode": { "type": "string", "minLength": 1 },
+              "requiredAction": { "type": "string", "minLength": 1 },
+              "reason": { "type": "string", "minLength": 1 }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "reasonCode": { "const": "version-direction-required" }
+            },
+            "required": ["reasonCode"]
+          },
+          "then": {
+            "properties": { "requiredAction": { "const": "choose-version" } }
+          }
+        },
+        {
+          "if": {
+            "properties": { "reasonCode": { "const": "target-moved" } },
+            "required": ["reasonCode"]
+          },
+          "then": {
+            "properties": {
+              "requiredAction": { "const": "refresh-and-reclassify" }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": { "reasonCode": { "const": "policy-changed" } },
+            "required": ["reasonCode"]
+          },
+          "then": {
+            "properties": {
+              "requiredAction": { "const": "refresh-and-reclassify" }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "reasonCode": { "const": "release-train-ambiguous" }
+            },
+            "required": ["reasonCode"]
+          },
+          "then": {
+            "properties": {
+              "requiredAction": { "const": "resolve-release-train" }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "reasonCode": { "const": "version-owner-ambiguous" }
+            },
+            "required": ["reasonCode"]
+          },
+          "then": {
+            "properties": {
+              "requiredAction": { "const": "resolve-version-owner" }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": { "reasonCode": { "const": "unsupported-protocol" } },
+            "required": ["reasonCode"]
+          },
+          "then": {
+            "properties": { "requiredAction": { "const": "upgrade-producer" } }
+          }
+        },
+        {
+          "if": {
+            "properties": { "reasonCode": { "const": "unsupported-consumer" } },
+            "required": ["reasonCode"]
+          },
+          "then": {
+            "properties": { "requiredAction": { "const": "upgrade-consumer" } }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "reasonCode": { "const": "schema-digest-mismatch" }
+            },
+            "required": ["reasonCode"]
+          },
+          "then": {
+            "properties": {
+              "requiredAction": { "const": "repair-integration" }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": { "reasonCode": { "const": "malformed-request" } },
+            "required": ["reasonCode"]
+          },
+          "then": {
+            "properties": { "requiredAction": { "const": "repair-request" } }
+          }
+        },
+        {
+          "if": {
+            "properties": { "reasonCode": { "const": "malformed-policy" } },
+            "required": ["reasonCode"]
+          },
+          "then": {
+            "properties": { "requiredAction": { "const": "repair-policy" } }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "reasonCode": { "const": "invalid-version-direction" }
+            },
+            "required": ["reasonCode"]
+          },
+          "then": {
+            "properties": { "requiredAction": { "const": "choose-version" } }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "reasonCode": { "const": "final-verification-failed" }
+            },
+            "required": ["reasonCode"]
+          },
+          "then": {
+            "properties": {
+              "requiredAction": { "const": "review-finalization" }
+            }
+          }
+        }
+      ]
+    },
+    "versionDecisionV3": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "releaseTrain",
+        "boundary",
+        "currentVersion",
+        "bumpLevel",
+        "suggestedVersion",
+        "selectedVersion",
+        "policyAction",
+        "resolution",
+        "source",
+        "versionLine"
+      ],
+      "properties": {
+        "releaseTrain": { "type": "string", "minLength": 1 },
+        "boundary": {
+          "enum": [
+            "release-bearing-merge",
+            "web-production",
+            "package-publication",
+            "store-release",
+            "other-public-release",
+            "none"
+          ]
+        },
+        "currentVersion": {
+          "anyOf": [{ "type": "string", "minLength": 1 }, { "type": "null" }]
+        },
+        "bumpLevel": { "enum": ["none", "patch", "minor", "major", "unknown"] },
+        "suggestedVersion": {
+          "anyOf": [{ "type": "string", "minLength": 1 }, { "type": "null" }]
+        },
+        "selectedVersion": {
+          "anyOf": [{ "type": "string", "minLength": 1 }, { "type": "null" }]
+        },
+        "policyAction": { "enum": ["ask", "automatic", "not-applicable"] },
+        "resolution": {
+          "enum": [
+            "not-required",
+            "automatic",
+            "explicit-direction",
+            "repository-automation",
+            "approval-required",
+            "blocked"
+          ]
+        },
+        "source": {
+          "enum": [
+            "current-request",
+            "repository-policy",
+            "run-only",
+            "repository-convention"
+          ]
+        },
+        "versionLine": {
+          "anyOf": [{ "$ref": "#/$defs/versionLine" }, { "type": "null" }]
+        }
+      }
+    },
+    "stableVersion": {
+      "type": "string",
+      "pattern": "^[0-9]+(\\.[0-9]+){0,2}(\\+[0-9A-Za-z.-]+)?$"
+    },
+    "versionLine": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode",
+        "members",
+        "memberVersions",
+        "sharedVersion",
+        "sharedVersionTrains",
+        "outcome"
+      ],
+      "properties": {
+        "mode": { "enum": ["catch-up", "bump-shared"] },
+        "members": {
+          "type": "array",
+          "minItems": 2,
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "memberVersions": {
+          "type": "object",
+          "minProperties": 2,
+          "additionalProperties": {
+            "anyOf": [{ "$ref": "#/$defs/stableVersion" }, { "type": "null" }]
+          }
+        },
+        "sharedVersion": {
+          "anyOf": [{ "$ref": "#/$defs/stableVersion" }, { "type": "null" }]
+        },
+        "sharedVersionTrains": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "outcome": { "enum": ["catch-up", "advance"] }
+      }
     }
   }
 }

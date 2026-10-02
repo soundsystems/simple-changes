@@ -168,6 +168,32 @@ describe("normalized deployment contract", () => {
       transactionId: "release-01",
       version: "0.10.0",
     });
+
+    // A legacy receipt carries no lineage: refused cleanly, never a crash.
+    const legacy = {
+      checks: [],
+      evidence: [],
+      observedAt: new Date().toISOString(),
+      paths: [],
+      provider: "simple-changelogs",
+      reason: null,
+      release: null,
+      releaseImpact: "none",
+      schemaVersion: 1,
+      sourceRevision: targetRevision,
+      status: "not-applicable",
+    } as unknown as ChangelogReceiptV2;
+    const legacyBinding = {
+      receipt: legacy,
+      releaseTrain: "web",
+      version: "0.10.0",
+    };
+    expect(verifyDeploymentReceipt(deployment, legacyBinding).issues).toEqual([
+      "Web production requires a verified changelog receipt.",
+    ]);
+    expect(() =>
+      createReleaseDeliveryReceipt(legacyBinding, deployment)
+    ).toThrow("requires a changelog receipt v2 or later");
   });
 
   test("rejects a live deployment behind the latest target revision", () => {

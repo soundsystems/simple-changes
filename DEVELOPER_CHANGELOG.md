@@ -1,5 +1,55 @@
 # Developer changelog
 
+## 0.23.0 - 2026-10-03
+
+- New `lib/version-line.ts`: `parseStableVersion` and `compareStableVersions`
+  (one to three dotted numbers, zero-padded, `+build` ignored, anything else
+  null); `assertVersionLine` with `assertMembers`, `assertHead`,
+  `assertOutcome`, `assertAboveCurrentVersion`, and `candidateOf` (the
+  suggestion on `decision-required`, the selection otherwise);
+  `sameLineState`; `assertReleaseSetTrains`; and
+  `assertReleaseSetConsistency` with `assertSharedReleaseSet`,
+  `assertLineMembership`, and `lineSelections`. `lib/release-gate.ts`:
+  `validateModernTransaction` replaces the v2-only `validateV2Transaction`
+  and handles v2 and v3 receipts, `validateChangelogRequest` is exported,
+  `assertDigestCoversVersionLine` fails closed when a prior v3 receipt with
+  the same `decisionDigest` differs in `sameLineState` (`mode`, `members`,
+  `memberVersions`, `sharedVersion`; `outcome` may change), new
+  `validateChangelogReleaseSet(receipts)` returns `{ releaseSetId, receipts,
+  lines, missingTrains }` and backs the `validate-changelog-release-set`
+  command in `simple-changes.ts` (usage error below two files), and
+  `negotiateChangelogProtocol` is open: unknown versions and features are
+  ignored and the producer's order is kept. `lib/types.ts` adds
+  `ChangelogFeature`, `VersionLine`, `VersionDecisionV3`,
+  `ChangelogReceiptV3`, and `ModernChangelogReceipt`; `ChangelogCapabilities`
+  is open (`number[]` and `string[]`), and `ChangelogRequest` gains
+  `releaseSetTrains` and `schemaVersion: 1 | 2`.
+- Schemas: `changelog-request` now has `$defs.v1` and `$defs.v2` with a shared
+  `phaseRules`, dispatched by `if`/`then`/`else` on `schemaVersion` so an
+  invalid request still gets field-level errors; `changelog-receipt` adds
+  `$defs.v3`, `versionDecisionV3`, `versionLine`, and `stableVersion`, with
+  the v1 and v2 definitions byte-identical to before; `changelog-capabilities`
+  `features` is open strings. `lib/schema.ts` enforces `minProperties` and a
+  schema-valued `additionalProperties` and uses `Object.hasOwn` for
+  own-property lookups. `adapters/deployment.ts` gains a
+  `releaseBindingIssues` helper that accepts receipt v2 or v3, and it and
+  `lib/release-delivery.ts` refuse a `schemaVersion: 1` receipt with a
+  message instead of crashing. `references/changelog-coordination.md` gains a
+  "Shared version lines" section and the 0.23.0 rollout note;
+  `references/deployments.md` now says "v2 or later".
+- Tests: `release-gate.test.ts` grows from 22 to 42, `protocol-cli.test.ts`
+  from 5 to 6, `schema.test.ts` from 18 to 19, `adapters.test.ts` gains
+  legacy-receipt checks, and `skill-contract.test.ts` pins the new reference
+  sentences. Full suite: 725 tests. Independent review by Opus 5.5 (high)
+  over three rounds found release-set membership and duplicate gaps, request
+  errors collapsed into one message, blocked receipts losing their routing, a
+  bump-shared exception that let a train reuse a partner's number, an
+  over-strict digest check that refused approved overrides, and an
+  over-strict current-version check; all are fixed or reverted with
+  regression tests. Guidance stays at 24; `.simple-changes.json` is
+  unchanged.
+<!-- simple-changelogs-signature agent="Fable 5.1" at="2026-10-02T18:50:32-05:00" -->
+
 ## 0.22.5 - 2026-10-02
 
 - `lib/subagent-control.ts`: new `expandLiteralAssignments(command)`, applied

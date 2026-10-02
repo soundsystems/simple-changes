@@ -120,6 +120,7 @@ import {
   decideReleaseGate,
   inspectChangelogTransaction,
   negotiateChangelogProtocol,
+  validateChangelogReleaseSet,
 } from "./lib/release-gate.ts";
 import type { ReleaseNotes } from "./lib/release-notes.ts";
 import { extractReleaseNotes } from "./lib/release-notes.ts";
@@ -191,7 +192,7 @@ import {
   standaloneWorktreeCleanup,
 } from "./lib/worktree-maintenance.ts";
 
-const VERSION = "0.22.5";
+const VERSION = "0.23.0";
 const SCRIPT_FILE = fileURLToPath(import.meta.url);
 const PLAIN_SHELL_WORD_PATTERN = /^[\w./-]+$/u;
 const PACKAGE_ROOT = resolve(dirname(SCRIPT_FILE), "..");
@@ -356,6 +357,7 @@ Usage:
   simple-changes release-notes [--check] [--json] [--repo PATH] [--version VERSION]
   simple-changes negotiate-changelog CAPABILITIES_FILE [--json]
   simple-changes validate-changelog-transaction REQUEST_FILE RECEIPT_FILE [--prior-receipt FILE] [--json]
+  simple-changes validate-changelog-release-set RECEIPT_FILE RECEIPT_FILE... [--json]
   simple-changes release-gate --request FILE --receipt FILE [--prior-receipt FILE]
     --production ask|allow|deny [--already-live] [--production-authorized]
     [--version-authorized] [--json]
@@ -2253,6 +2255,34 @@ const runChangelogTransactionValidation = (options: CliOptions): void => {
   );
 };
 
+// Receipts v3 from one multi-train release set, each already validated against
+// its own request, checked together for one number per version line.
+const runChangelogReleaseSetValidation = (options: CliOptions): void => {
+  if (options.positional.length < 2) {
+    throw new SimpleChangesError(
+      "validate-changelog-release-set requires at least two RECEIPT_FILE arguments",
+      EXIT_CODES.usage
+    );
+  }
+  const result = validateChangelogReleaseSet(
+    options.positional.map((filename) => readJsonFile(filename))
+  );
+  writeOutput(
+    { ...result, valid: true },
+    options.json,
+    `${result.receipts} receipts agree for release set ${result.releaseSetId}${result.lines
+      .map(
+        (line) =>
+          `; ${line.members.join(", ")} at ${line.selectedVersion ?? "no selected version yet"}`
+      )
+      .join("")}${
+      result.missingTrains.length > 0
+        ? `; no receipt yet for ${result.missingTrains.join(", ")}`
+        : ""
+    }.\n`
+  );
+};
+
 const runMarkdownAudit = (options: CliOptions): void => {
   const [filename] = options.positional;
   if (!filename) {
@@ -3757,6 +3787,9 @@ const executeCommand = async (
       return EXIT_CODES.success;
     case "validate-changelog-transaction":
       runChangelogTransactionValidation(options);
+      return EXIT_CODES.success;
+    case "validate-changelog-release-set":
+      runChangelogReleaseSetValidation(options);
       return EXIT_CODES.success;
     case "release-gate":
       runReleaseGate(options);

@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "bun";
@@ -66,8 +67,8 @@ describe("changelog protocol CLI", () => {
     expect(result.exitCode).toBe(0);
     expect(JSON.parse(decoder.decode(result.stdout))).toMatchObject({
       compatible: true,
-      receiptVersion: 2,
-      requestVersion: 1,
+      receiptVersion: 3,
+      requestVersion: 2,
     });
   });
 
@@ -398,6 +399,35 @@ describe("changelog protocol CLI", () => {
       reasonCode: "deployment-revision-mismatch",
       status: "blocked",
     });
+
+    // Receipt v3 carries the same lineage, so delivery accepts it unchanged.
+    const v2 = JSON.parse(
+      readFileSync(resolve(fixture.root, "receipt.json"), "utf8")
+    );
+    writeFixture(
+      fixture.root,
+      "receipt-v3.json",
+      JSON.stringify({
+        ...v2,
+        releaseSetTrains: null,
+        schemaVersion: 3,
+        versionDecision: { ...v2.versionDecision, versionLine: null },
+      })
+    );
+    const v3Delivery = runCli(
+      fixture.root,
+      "release-delivery",
+      "--changelog-receipt",
+      "receipt-v3.json",
+      "--provider-receipt",
+      "deployment.json",
+      "--json"
+    );
+    expect(v3Delivery.exitCode).toBe(0);
+    expect(JSON.parse(decoder.decode(v3Delivery.stdout))).toMatchObject({
+      status: "complete",
+      version: "0.10.0",
+    });
   });
 
   test("builds the proposal signature block from commit trailers", () => {
@@ -439,5 +469,105 @@ describe("changelog protocol CLI", () => {
       "shipped"
     );
     expect(badRole.exitCode).not.toBe(0);
+  });
+  test("checks one release set's receipts together", () => {
+    const fixture = createTestRepository();
+    repositories.push(fixture);
+    const receiptFor = (train: string, version: string) => ({
+      checks: ["Inspected exact target."],
+      decisionDigest: "d".repeat(64),
+      effectivePolicyDigest: "e".repeat(64),
+      evidence: ["Both trains release together."],
+      observedAt: "2026-10-02T12:00:00-05:00",
+      paths: [{ digest: "f".repeat(64), path: `${train}/CHANGELOG.md` }],
+      phase: "prepare",
+      provider: "simple-changelogs",
+      reason: null,
+      reasonCode: null,
+      release: {
+        date: "2026-10-02",
+        targetContainedUnreleased: "prepared",
+        version,
+      },
+      releaseImpact: "minor",
+      releaseSetId: "set-1",
+      releaseSetTrains: ["ios", "web"],
+      requiredAction: null,
+      revisionLineage: {
+        finalizedTargetRevision: null,
+        inputTargetRevision: revision,
+        reconciliationHeadRevision: "b".repeat(40),
+      },
+      schemaVersion: 3,
+      sourceRevision: revision,
+      status: "prepared",
+      transactionId: `release-${train}`,
+      versionDecision: {
+        boundary: "store-release",
+        bumpLevel: "minor",
+        currentVersion: "0.9.0",
+        policyAction: "automatic",
+        releaseTrain: train,
+        resolution: "automatic",
+        selectedVersion: version,
+        source: "repository-policy",
+        suggestedVersion: version,
+        versionLine: {
+          members: ["ios", "web"],
+          memberVersions: { ios: "0.9.0", web: "0.9.0" },
+          mode: "bump-shared",
+          outcome: "advance",
+          sharedVersion: "0.9.0",
+          sharedVersionTrains: ["ios", "web"],
+        },
+      },
+    });
+    writeFixture(
+      fixture.root,
+      "web.json",
+      JSON.stringify(receiptFor("web", "0.10.0"))
+    );
+    writeFixture(
+      fixture.root,
+      "ios.json",
+      JSON.stringify(receiptFor("ios", "0.10.0"))
+    );
+    writeFixture(
+      fixture.root,
+      "ios-off.json",
+      JSON.stringify(receiptFor("ios", "0.11.0"))
+    );
+
+    const agreed = runCli(
+      fixture.root,
+      "validate-changelog-release-set",
+      "web.json",
+      "ios.json",
+      "--json"
+    );
+    expect(agreed.exitCode).toBe(0);
+    expect(JSON.parse(decoder.decode(agreed.stdout))).toMatchObject({
+      lines: [{ members: ["ios", "web"], selectedVersion: "0.10.0" }],
+      missingTrains: [],
+      receipts: 2,
+      releaseSetId: "set-1",
+      valid: true,
+    });
+
+    const split = runCli(
+      fixture.root,
+      "validate-changelog-release-set",
+      "web.json",
+      "ios-off.json"
+    );
+    expect(split.exitCode).toBe(3);
+    expect(decoder.decode(split.stderr)).toContain("must take one number");
+
+    const usage = runCli(
+      fixture.root,
+      "validate-changelog-release-set",
+      "web.json"
+    );
+    expect(usage.exitCode).toBe(2);
   });
 });

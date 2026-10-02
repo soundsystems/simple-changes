@@ -280,6 +280,18 @@ describe("Simple Changes skill contract", () => {
 
     const normalizedSkill = skill.replace(/\s+/g, " ");
     const normalizedCoordination = coordination.replace(/\s+/g, " ");
+    expect(normalizedCoordination).toContain(
+      "a provider must not advertise `shared-version-lines` in a repository until every Simple Changes controller there, including fork copies, is 0.23.0 or later"
+    );
+    expect(normalizedCoordination).toContain(
+      "`catch-up` takes exactly H, and only for a train below H"
+    );
+    expect(normalizedCoordination).toContain(
+      "The receipt's `decisionDigest` must cover the line state (`mode`, `members`, `memberVersions`, and `sharedVersion`)"
+    );
+    expect(normalizedCoordination).toContain(
+      "A multi-train release set stays non-atomic"
+    );
     const normalizedDeployment = deployment.replace(/\s+/g, " ");
 
     expect(normalizedSkill).toContain("read-only `verified` receipt");
@@ -302,7 +314,7 @@ describe("Simple Changes skill contract", () => {
       "Deploy only that verified finalized target"
     );
     expect(normalizedDeployment).toContain(
-      "require a v2 `verified` changelog receipt"
+      "require a v2 or later `verified` changelog receipt"
     );
     expect(normalizedDeployment).toContain(
       "composite `release-delivery-receipt`"

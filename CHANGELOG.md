@@ -1,5 +1,56 @@
 # Changelog
 
+## 0.23.0 - 2026-10-03
+
+- The changelog companion protocol can now carry a shared version line, so a
+  monorepo can keep two or more release trains (for example web, iOS, and
+  Android) on one public version number. The changelog workflow still owns the
+  policy and picks the number; Simple Changes adds a backward-compatible
+  protocol revision that carries and checks the decision, which the workflow
+  will adopt in a later release. Request v2 names every train released
+  together from one input target revision as `releaseSetTrains`, including the
+  request's own train, under one `releaseSetId`; request v1 is unchanged.
+  Receipt v3 echoes that list and adds `versionDecision.versionLine`: whether
+  the train is catching up to the line or bumping it, the line's members, each
+  member's latest stable public version, the line head and the trains holding
+  it, and the outcome. A train that skips a number releases nothing and has no
+  receipt. `validate-changelog-transaction` checks a v3 receipt beyond the
+  schema: it recomputes the head and its holders from the member versions; a
+  catch-up must take exactly the head, and only a train below it may catch up;
+  an advance must exceed the head, or the head is empty, and a shared bump
+  always advances; the proposed version (the suggestion while a decision is
+  required, the selection once one is made) must exceed the train's own
+  previous public version and must not fall below a stable current version;
+  and the decision digest must cover the line state, so a partner's release
+  invalidates an outstanding approval, a later phase whose line state changed
+  under the same digest fails closed, and a train that reclassifies after a
+  partner released must advance past it or start a new release set, while an
+  approved direction may still turn a catch-up into an advance. Versions
+  compare as one to three dotted numbers, zero-padded (1.2 equals 1.2.0),
+  with `+build` ignored, and anything else on a line fails closed. Blocked and
+  not-applicable receipts keep their usual closed-code routing. The new
+  `validate-changelog-release-set RECEIPT_FILE RECEIPT_FILE...` command then
+  checks one release set's receipts together: they must share the release
+  set, input target, and train list, in any order, with one receipt per train
+  and each train on at most one line, carried by its own receipt, and every
+  line must agree on one state and publish one identical version string.
+  Trains with no receipt yet are reported as missing, not refused, because a
+  multi-train release set stays non-atomic. The changelog coordination
+  reference describes all of this.
+- Capability negotiation is now open: Simple Changes ignores features and
+  protocol versions it does not know and keeps the provider's order, so later
+  additions no longer need a lockstep upgrade. It advertises request versions
+  1 and 2, receipt versions 1 through 3, and the new `shared-version-lines`
+  feature. Simple Changes before 0.23.0 rejects any unknown feature, so a
+  changelog provider must not advertise `shared-version-lines` in a repository
+  until every Simple Changes copy there, including fork copies, is 0.23.0 or
+  later; older providers keep working unchanged at request v1 and receipt v2.
+  Release delivery and the deployment adapter accept a v3 receipt alongside
+  v2 and refuse a legacy v1 receipt with a clear message instead of crashing,
+  and an invalid request still gets field-level errors whichever schema
+  version it claims.
+<!-- simple-changelogs-signature agent="Fable 5.1" at="2026-10-02T18:50:32-05:00" -->
+
 ## 0.22.5 - 2026-10-02
 
 - The turn-end guard now credits a Claude Code background subagent that drives

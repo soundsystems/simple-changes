@@ -175,12 +175,203 @@ const invocationDirectory = (
   return last ? literalDirectory(last[2]) : shellDirectory;
 };
 
+// A plain-token assignment that ends its statement: `R=run-1;`, `W=/repo &&`.
+const LITERAL_ASSIGNMENT =
+  /(?:^|[\s;&|(])([A-Za-z_][A-Za-z0-9_]*)=(?:"([^"]*)"|'([^']*)'|([^\s"';&|()<>`$\\]*))(?=[ \t]*(?:$|;|&&|\|\||\n))/gu;
+// Only an unconditional statement start, optionally after `export`, binds a
+// name for the rest of the command.
+const STATEMENT_START = /(?:^|[;\n])[ \t]*(?:export[ \t]+)?$/u;
+// Every other way a command can bind a name, so a second binding of any kind
+// makes it ambiguous: prefix, subshell, or chained assignments, `+=`, and
+// builtins that assign the names they are given.
+const ANY_ASSIGNMENT = /(?:^|[\s;&|(])([A-Za-z_][A-Za-z0-9_]*)\+?=/gu;
+const BINDING_BUILTIN =
+  /(?:^|[\s;&|(])(?:for|select|read|unset|local|declare|typeset|readonly|getopts|mapfile|readarray)((?:[ \t]+(?:-[^\s;&|()]*|[A-Za-z_][A-Za-z0-9_]*))+)/gu;
+const PRINTF_TARGET =
+  /(?:^|[\s;&|(])printf[ \t]+-v[ \t]+([A-Za-z_][A-Za-z0-9_]*)/gu;
+const BUILTIN_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/u;
+// Commands whose statements may not all run, or may be re-read, are never
+// resolved: `eval`, and compound `if`, `while`, `until`, `case`, or `{ … }`.
+const UNRESOLVABLE = /(?:^|[\s;&|(])(?:eval|if|while|until|case|\{)(?=\s)/u;
+const VARIABLE_USE =
+  /\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)/gu;
+// A value is spliced in only when it cannot change how the command parses:
+// no space, quote, shell operator, or leading `-` that would read as a flag.
+const SAFE_VALUE = /^[^\s"'`;&|()<>$\\-][^\s"'`;&|()<>$\\]*$/u;
+
+type QuoteState = "none" | "single" | "double";
+
+interface CharacterContext {
+  /** Open parentheses outside quotes, including `$(`. */
+  depth: number;
+  /** Inside a comment, or after a heredoc or herestring operator. */
+  inert: boolean;
+  quote: QuoteState;
+}
+
+const COMMENT_START = /^\s?$/u;
+const BLANKS = /[ \t]+/u;
+
+interface ScanState {
+  comment: boolean;
+  depth: number;
+  escaped: boolean;
+  heredoc: boolean;
+  quote: QuoteState;
+}
+
+// Advances the context over one character outside quotes.
+const stepUnquoted = (
+  state: ScanState,
+  character: string,
+  previous: string,
+  next: string
+): void => {
+  if (character === "#" && COMMENT_START.test(previous)) {
+    state.comment = true;
+  } else if (character === "<" && next === "<") {
+    state.heredoc = true;
+  } else if (character === "(") {
+    state.depth += 1;
+  } else if (character === ")") {
+    state.depth = Math.max(0, state.depth - 1);
+  }
+};
+
+const step = (
+  state: ScanState,
+  character: string,
+  previous: string,
+  next: string
+): void => {
+  if (state.escaped) {
+    state.escaped = false;
+  } else if (state.comment) {
+    state.comment = character !== "\n";
+  } else if (character === "\\" && state.quote !== "single") {
+    state.escaped = true;
+  } else if (character === "'" && state.quote !== "double") {
+    state.quote = state.quote === "single" ? "none" : "single";
+  } else if (character === '"' && state.quote !== "single") {
+    state.quote = state.quote === "double" ? "none" : "double";
+  } else if (state.quote === "none") {
+    stepUnquoted(state, character, previous, next);
+  }
+};
+
+// The shell context at each UTF-16 code unit, the offsets regular expressions
+// report. Heredoc bodies are not delimited: everything after the first `<<`
+// counts as inert, which can only make resolution miss.
+const characterContexts = (command: string): CharacterContext[] => {
+  const contexts: CharacterContext[] = [];
+  const units = command.split("");
+  const state: ScanState = {
+    comment: false,
+    depth: 0,
+    escaped: false,
+    heredoc: false,
+    quote: "none",
+  };
+  for (const [index, character] of units.entries()) {
+    contexts.push({
+      depth: state.depth,
+      inert: state.comment || state.heredoc,
+      quote: state.quote,
+    });
+    step(state, character, units[index - 1] ?? "", units[index + 1] ?? "");
+  }
+  return contexts;
+};
+
+// Every unquoted name the command binds, and how many times.
+const nameBindings = (
+  command: string,
+  contexts: CharacterContext[]
+): Map<string, number> => {
+  const bindings = new Map<string, number>();
+  const bind = (name: string, at: number): void => {
+    if (contexts[at]?.quote === "none") {
+      bindings.set(name, (bindings.get(name) ?? 0) + 1);
+    }
+  };
+  for (const pattern of [ANY_ASSIGNMENT, PRINTF_TARGET]) {
+    for (const match of command.matchAll(pattern)) {
+      const name = match[1] ?? "";
+      bind(name, (match.index ?? 0) + match[0].indexOf(name));
+    }
+  }
+  for (const match of command.matchAll(BINDING_BUILTIN)) {
+    const at = match.index ?? 0;
+    for (const token of (match[1] ?? "").trim().split(BLANKS)) {
+      if (BUILTIN_NAME.test(token)) {
+        bind(token, at);
+      }
+    }
+  }
+  return bindings;
+};
+
+/**
+ * Replaces `$NAME` and `${NAME}` with the literal the same command assigned to
+ * NAME, as in `R=run-…; simple-changes loop exec --run-id $R`. A name resolves
+ * only when the command binds it exactly once, by an assignment of a plain
+ * token (no space, quote, shell operator, or leading `-`) that starts an
+ * unconditional top-level statement outside quotes, comments, and heredocs and
+ * ends it, before an unquoted or double-quoted use. Anything else (a
+ * reassignment, a prefix, subshell, chained, or conditional assignment, `+=`,
+ * a builtin that assigns, `eval` or a compound `if`, `while`, `until`, `case`,
+ * or `{ … }` anywhere in the command, a use in a comment or heredoc, a `$(…)`
+ * or `$OTHER` value, or a value from
+ * an earlier command) stays a variable, so it never counts as an ID or a
+ * directory. It is a conservative reading, not a shell: when unsure, a value
+ * stays a variable.
+ */
+const expandLiteralAssignments = (command: string): string => {
+  if (!command.includes("$") || UNRESOLVABLE.test(command)) {
+    return command;
+  }
+  const contexts = characterContexts(command);
+  const bindings = nameBindings(command, contexts);
+  const literals = new Map<string, { at: number; value: string }>();
+  for (const match of command.matchAll(LITERAL_ASSIGNMENT)) {
+    const name = match[1] ?? "";
+    const value = match[2] ?? match[3] ?? match[4] ?? "";
+    const at = (match.index ?? 0) + match[0].indexOf(name);
+    const context = contexts[at];
+    if (
+      context?.quote === "none" &&
+      context.depth === 0 &&
+      !context.inert &&
+      STATEMENT_START.test(command.slice(0, at)) &&
+      SAFE_VALUE.test(value)
+    ) {
+      literals.set(name, { at, value });
+    }
+  }
+  return command.replace(
+    VARIABLE_USE,
+    (use, braced: string | undefined, bare: string | undefined, offset) => {
+      const name = braced ?? bare ?? "";
+      const literal = literals.get(name);
+      const context = contexts[offset];
+      return literal &&
+        bindings.get(name) === 1 &&
+        literal.at < offset &&
+        context?.quote !== "single" &&
+        !context?.inert
+        ? literal.value
+        : use;
+    }
+  );
+};
+
 // Every Simple Changes `loop` invocation naming a literal `--agent-id`,
 // read-only ones included.
 const loopInvocations = (
-  command: string,
+  rawCommand: string,
   shellDirectory: string | null = null
 ): LoopInvocation[] => {
+  const command = expandLiteralAssignments(rawCommand);
   const invocations: LoopInvocation[] = [];
   for (const match of command.matchAll(LOOP_ACTION)) {
     const start = match.index ?? 0;
@@ -440,14 +631,34 @@ export interface RunToAttribute {
 }
 
 /**
+ * Why a still-running subagent that used the run's owner ID is not credited
+ * with driving it. `mayStillDrive` is false when the evidence shows control
+ * moved away from that agent, so waiting for it would not help.
+ */
+export interface UncreditedSubagent {
+  mayStillDrive: boolean;
+  reason: string;
+}
+
+export interface SubagentAttribution {
+  control: SubagentControl | null;
+  /** Null when a subagent is credited or none used the owner ID. */
+  uncredited: UncreditedSubagent | null;
+}
+
+/**
  * Reads one Stop hook's transcripts once and answers, per run, which still
  * running background subagent of the session is driving it.
  */
 export interface SubagentControlIndex {
+  attribution: (run: RunToAttribute) => SubagentAttribution;
   controllerOf: (run: RunToAttribute) => SubagentControl | null;
 }
 
-const NOBODY: SubagentControlIndex = { controllerOf: () => null };
+const NOBODY: SubagentControlIndex = {
+  attribution: () => ({ control: null, uncredited: null }),
+  controllerOf: () => null,
+};
 
 interface SubagentTranscript {
   commands: OwnerCommand[];
@@ -512,57 +723,141 @@ export const subagentControlIndex = (
   } catch {
     return NOBODY;
   }
-  return {
-    controllerOf: ({
-      leaseUpdatedAt,
-      ownerAgentId,
-      repositoryRoots,
-      runId,
-    }) => {
-      const leaseWrittenAt = Date.parse(leaseUpdatedAt);
-      // Without a literal run ID, the owner ID alone identifies the driver,
-      // but only while exactly one running subagent and never the parent
-      // used it.
-      const users = transcripts.filter(({ commands }) =>
-        usesAgentId(commands, ownerAgentId)
-      );
-      const ownerIdDriver =
-        users.length === 1 && !usesAgentId(parent, ownerAgentId)
-          ? users[0]
-          : undefined;
-      let best: Driver | null = null;
-      for (const transcript of transcripts) {
-        const driver = driverOf(
-          transcript,
-          transcript === ownerIdDriver,
-          runId,
-          ownerAgentId,
-          repositoryRoots
-        );
-        if (
-          driver &&
-          (!best || driver.activity.lastAt > best.activity.lastAt)
-        ) {
-          best = driver;
-        }
-      }
-      const parentLastAt = runActivity(parent, runId, ownerAgentId)?.lastAt;
-      if (
-        !best ||
-        (parentLastAt !== undefined && parentLastAt >= best.activity.lastAt) ||
-        !Number.isFinite(leaseWrittenAt) ||
-        (!best.activity.inFlight &&
-          leaseWrittenAt > best.activity.lastAt + LEASE_WRITE_TOLERANCE_MS)
-      ) {
-        return null;
-      }
+  const attribute = (run: RunToAttribute): SubagentAttribution => {
+    // Without a literal run ID, the owner ID alone identifies the driver,
+    // but only while exactly one running subagent and never the parent
+    // used it.
+    const users = transcripts.filter(({ commands }) =>
+      usesAgentId(commands, run.ownerAgentId)
+    );
+    const parentUsedId = usesAgentId(parent, run.ownerAgentId);
+    const ownerIdDriver =
+      users.length === 1 && !parentUsedId ? users[0] : undefined;
+    const best = strongestDriver(transcripts, ownerIdDriver, run);
+    if (!best) {
       return {
-        agentId: best.task.id,
-        description: best.task.description,
-        lastCommandAt: new Date(best.activity.lastAt).toISOString(),
+        control: null,
+        uncredited: missingDriverReason(users, parentUsedId, run),
       };
-    },
+    }
+    const reason = rejectedDriverReason(
+      best,
+      runActivity(parent, run.runId, run.ownerAgentId)?.lastAt,
+      Date.parse(run.leaseUpdatedAt),
+      run.runId
+    );
+    return reason
+      ? { control: null, uncredited: { mayStillDrive: false, reason } }
+      : {
+          control: {
+            agentId: best.task.id,
+            description: best.task.description,
+            lastCommandAt: new Date(best.activity.lastAt).toISOString(),
+          },
+          uncredited: null,
+        };
   };
+  return {
+    attribution: attribute,
+    controllerOf: (run) => attribute(run).control,
+  };
+};
+
+// The subagent whose evidence for the run is most recent.
+const strongestDriver = (
+  transcripts: SubagentTranscript[],
+  ownerIdDriver: SubagentTranscript | undefined,
+  { ownerAgentId, repositoryRoots, runId }: RunToAttribute
+): Driver | null => {
+  let best: Driver | null = null;
+  for (const transcript of transcripts) {
+    const driver = driverOf(
+      transcript,
+      transcript === ownerIdDriver,
+      runId,
+      ownerAgentId,
+      repositoryRoots
+    );
+    if (driver && (!best || driver.activity.lastAt > best.activity.lastAt)) {
+      best = driver;
+    }
+  }
+  return best;
+};
+
+// What a lone owner-ID user's commands show about a run they never drove.
+const userEvidenceReason = (
+  { commands, task }: SubagentTranscript,
+  { ownerAgentId, runId }: RunToAttribute,
+  ownerIdUsable: boolean
+): UncreditedSubagent => {
+  const owned = commands.filter(
+    (command) => command.agentId === ownerAgentId && !command.readOnly
+  );
+  const otherRuns = [
+    ...new Set(
+      owned
+        .filter((command) => !(command.failed || command.runIds.has(runId)))
+        .flatMap((command) => [...command.runIds])
+    ),
+  ];
+  if (owned.some((command) => command.failed && command.runIds.has(runId))) {
+    return {
+      mayStillDrive: true,
+      reason: `background agent ${task.id}'s owner commands naming ${runId} failed, and a failed command shows no control`,
+    };
+  }
+  if (otherRuns.length > 0) {
+    // Its evidence points at another run, so waiting for it proves nothing.
+    return {
+      mayStillDrive: false,
+      reason: `background agent ${task.id}'s owner commands under ${ownerAgentId} named ${otherRuns.join(", ")}, not ${runId}`,
+    };
+  }
+  return {
+    mayStillDrive: true,
+    reason: ownerIdUsable
+      ? `background agent ${task.id} used ${ownerAgentId}, but none of its successful owner commands named ${runId} or ran in this run's repository; it must pass --run-id ${runId} literally, or --repo, or cd to a literal path in the repository`
+      : `background agent ${task.id} used ${ownerAgentId}, but this session also used that ID, so only a successful owner command naming ${runId} literally identifies the driver`,
+  };
+};
+
+// Why no running subagent that used the owner ID shows control of the run.
+const missingDriverReason = (
+  users: SubagentTranscript[],
+  parentUsedId: boolean,
+  run: RunToAttribute
+): UncreditedSubagent | null => {
+  const [only] = users;
+  if (users.length > 1) {
+    return {
+      mayStillDrive: true,
+      reason: `running background agents ${users.map(({ task }) => task.id).join(", ")} all used ${run.ownerAgentId}, so the owner ID cannot identify the driver; give each agent its own ID, or have the driver pass --run-id ${run.runId} literally`,
+    };
+  }
+  return only ? userEvidenceReason(only, run, !parentUsedId) : null;
+};
+
+// Why the most recent driver's evidence does not show it still drives the run.
+const rejectedDriverReason = (
+  best: Driver,
+  parentLastAt: number | undefined,
+  leaseWrittenAt: number,
+  runId: string
+): string | null => {
+  if (parentLastAt !== undefined && parentLastAt >= best.activity.lastAt) {
+    return `this session issued an owner command for ${runId} after background agent ${best.task.id} last did`;
+  }
+  if (!Number.isFinite(leaseWrittenAt)) {
+    return "the run's last write time is unreadable, so it cannot be compared with any agent's commands";
+  }
+  if (
+    !best.activity.inFlight &&
+    leaseWrittenAt > best.activity.lastAt + LEASE_WRITE_TOLERANCE_MS
+  ) {
+    return `the run was written more than ${LEASE_WRITE_TOLERANCE_MS / 1000} s after background agent ${best.task.id}'s last owner command, so something else may be driving it`;
+  }
+  return null;
 };
 
 interface Driver {

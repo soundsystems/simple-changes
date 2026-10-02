@@ -913,6 +913,254 @@ describe("turn-end guard with background subagents", () => {
     }
   });
 
+  test("resolves a variable the same command assigns once to a literal", () => {
+    const invocation = (command: string) => ownerLoopInvocations(command)[0];
+    expect(
+      invocation(
+        "R=run-abc-1; simple-changes loop exec --run-id $R --agent-id x -- git push"
+      )
+    ).toEqual({ action: "exec", agentId: "x", runId: "run-abc-1" });
+    expect(
+      invocation(
+        // biome-ignore lint/suspicious/noTemplateCurlyInString: a literal shell ${R} expansion.
+        'R=\'run-abc-2\'; A="x"; simple-changes loop guard --run-id "${R}" --agent-id $A'
+      )
+    ).toEqual({ action: "guard", agentId: "x", runId: "run-abc-2" });
+    for (const command of [
+      // Reassigned, substituted, assigned after use, or never assigned here.
+      "R=run-a; R=run-b; simple-changes loop exec --run-id $R --agent-id x",
+      "R=$(cat /tmp/run-id); simple-changes loop exec --run-id $R --agent-id x",
+      "simple-changes loop exec --run-id $R --agent-id x; R=run-late",
+      "simple-changes loop exec --run-id $R --agent-id x",
+      "R=$OTHER; simple-changes loop exec --run-id $R --agent-id x",
+      // Shell forms where the assignment does not bind the use, or binds it
+      // more than once.
+      "R=run-a simple-changes loop exec --run-id $R --agent-id x",
+      "(R=run-a); simple-changes loop exec --run-id $R --agent-id x",
+      "R=run-a | cat; simple-changes loop exec --run-id $R --agent-id x",
+      "R=run-a; R+=x; simple-changes loop exec --run-id $R --agent-id x",
+      "for R in run-a; do simple-changes loop exec --run-id $R --agent-id x; done",
+      "R=run-a; read R; simple-changes loop exec --run-id $R --agent-id x",
+      "R=run-a; unset R; simple-changes loop exec --run-id $R --agent-id x",
+      "R=run-a; simple-changes loop exec --run-id '$R' --agent-id x",
+      'echo "R=run-a"; simple-changes loop exec --run-id $R --agent-id x',
+      "(R=run-a; true); simple-changes loop exec --run-id $R --agent-id x",
+      "echo $(R=run-a; echo x); simple-changes loop exec --run-id $R --agent-id x",
+      "R=run-a S=y simple-changes loop exec --run-id $R --agent-id x",
+      "false && R=run-a; simple-changes loop exec --run-id $R --agent-id x",
+      "if false; then R=run-a; fi; simple-changes loop exec --run-id $R --agent-id x",
+      "# R=run-a\nsimple-changes loop exec --run-id $R --agent-id x",
+      "cat <<EOF\nR=run-a\nEOF\nsimple-changes loop exec --run-id $R --agent-id x",
+      "R=run-a; read -r X R; simple-changes loop exec --run-id $R --agent-id x",
+      "R=run-a; printf -v R %s other; simple-changes loop exec --run-id $R --agent-id x",
+      "eval R=run-a; simple-changes loop exec --run-id $R --agent-id x",
+      "if false; then\n  R=run-a\nfi; simple-changes loop exec --run-id $R --agent-id x",
+      "while false; do\nR=run-a\ndone; simple-changes loop exec --run-id $R --agent-id x",
+      "case b in a) :; R=run-a;; esac; simple-changes loop exec --run-id $R --agent-id x",
+      "false && { :; R=run-a; }; simple-changes loop exec --run-id $R --agent-id x",
+      "false && export R=run-a; simple-changes loop exec --run-id $R --agent-id x",
+      "true | export R=run-a; simple-changes loop exec --run-id $R --agent-id x",
+    ]) {
+      expect(invocation(command)?.runId ?? null).toBeNull();
+    }
+    // A value with a space or shell operator is never spliced in, so it can
+    // neither cut a command short nor invent a directory.
+    expect(
+      invocation(
+        'WHY="approved; ok"; simple-changes loop allow --reason "$WHY" --run-id run-x --agent-id ctl'
+      )
+    ).toEqual({ action: "allow", agentId: "ctl", runId: "run-x" });
+    for (const reason of ["ok -- approved", "a | b", "line\nbreak"]) {
+      expect(
+        invocation(
+          `WHY="${reason}"; simple-changes loop allow --reason "$WHY" --run-id run-x --agent-id ctl`
+        )
+      ).toEqual({ action: "allow", agentId: "ctl", runId: "run-x" });
+    }
+    // A value starting with `-` could read as a flag, so it is never
+    // spliced in and the literal flags still parse.
+    expect(
+      invocation(
+        "S=--; simple-changes loop exec $S --run-id run-x --agent-id ctl"
+      )
+    ).toEqual({ action: "exec", agentId: "ctl", runId: "run-x" });
+    expect(
+      invocation(
+        "F=--agent-id; simple-changes loop exec --run-id run-x $F ctl2 --agent-id ctl"
+      )?.agentId
+    ).toBe("ctl");
+    // A use in a heredoc body is not expanded by a quoted delimiter.
+    expect(
+      ownerLoopInvocations(
+        "R=run-h; cat > /tmp/x.sh <<'EOF'\nsimple-changes loop exec --run-id $R --agent-id x\nEOF"
+      )[0]?.runId ?? null
+    ).toBeNull();
+    // A quoted value that contains the name still resolves.
+    expect(
+      invocation(
+        'W="/a/W"; R=run-q; cd $W && simple-changes loop exec --run-id $R --agent-id x'
+      )?.runId
+    ).toBe("run-q");
+    // An earlier assignment of another name does not block resolution.
+    expect(
+      invocation(
+        "export W=/repo; R=run-c; cd $W && simple-changes loop exec --run-id $R --agent-id x"
+      )?.runId
+    ).toBe("run-c");
+  });
+
+  test("credits the hash pattern and names why an owner-ID user is not credited", () => {
+    const { lease, paths } = setup();
+    const elsewhere = fixture();
+    // The hash 0.22.4 pattern: the run ID and directory are shell variables
+    // assigned literally in the same command, from a shell that started in
+    // another repository.
+    const hashStyle = (assignRun: string, directory = lease.primaryCheckout) =>
+      bashCall(
+        `S=/tmp/s; W=${directory}; ${assignRun}; cd $W && sh skills/x/scripts/simple-changes-runtime.sh loop exec --run-id $R --agent-id controller -- git push`,
+        "ok",
+        { agentId: SUBAGENT, at: secondsAgo(5), cwd: elsewhere.root }
+      );
+    writeFileSync(
+      paths.subagent(SUBAGENT),
+      hashStyle(`R=${lease.runId}`, elsewhere.root)
+    );
+    expect(check(paths).runs[0]?.drivenBy).toMatchObject({
+      agentId: SUBAGENT,
+    });
+    // An unresolvable run ID still counts when the literal cd puts the owner
+    // command in this repository.
+    writeFileSync(paths.subagent(SUBAGENT), hashStyle("R=$(cat $S/run-id)"));
+    expect(check(paths).decision).toBe("advise");
+
+    // Neither the run nor the repository: blocked, and the hook says why.
+    writeFileSync(
+      paths.subagent(SUBAGENT),
+      hashStyle("R=$(cat $S/run-id)", elsewhere.root)
+    );
+    const blocked = check(paths);
+    expect(blocked.decision).toBe("block");
+    expect(blocked.runs[0]?.uncredited?.reason).toContain(
+      `background agent ${SUBAGENT} used controller, but none of its successful owner commands named ${lease.runId}`
+    );
+    expect(blocked.reason).toContain(
+      `${lease.runId} is not credited to a background agent`
+    );
+    expect(blocked.reason).toContain(
+      `it must pass --run-id ${lease.runId} literally`
+    );
+    expect(blocked.reason).toContain(
+      "If that agent is still driving it, wait for it instead of finalizing."
+    );
+
+    // A quoted directory with a space stays unknown instead of becoming a
+    // shorter path that happens to sit inside the repository.
+    writeFileSync(
+      paths.subagent(SUBAGENT),
+      bashCall(
+        `W="${lease.primaryCheckout} copy"; R=$(cat /tmp/s/run-id); cd "$W" && simple-changes loop exec --run-id $R --agent-id controller -- git push`,
+        "ok",
+        { agentId: SUBAGENT, at: secondsAgo(5), cwd: elsewhere.root }
+      )
+    );
+    expect(check(paths).decision).toBe("block");
+
+    // A parent-owned run with no subagent using its ID gets no such note.
+    writeFileSync(paths.subagent(SUBAGENT), "");
+    const parentOwned = check(paths);
+    expect(parentOwned.decision).toBe("block");
+    expect(parentOwned.runs[0]?.uncredited).toBeNull();
+    expect(parentOwned.reason).not.toContain("is not credited");
+  });
+
+  test("names the exact reason an owner-ID user is not credited", () => {
+    const { lease, paths } = setup();
+    const reasonFor = (tasks = [running(SUBAGENT)]): string | undefined =>
+      check(paths, tasks).runs[0]?.uncredited?.reason;
+
+    // It named a different run.
+    writeFileSync(
+      paths.subagent(SUBAGENT),
+      bashCall(
+        `cd ${lease.primaryCheckout} && simple-changes loop exec --run-id run-older-1 --agent-id controller -- git push`,
+        "ok",
+        { agentId: SUBAGENT, at: secondsAgo(5) }
+      )
+    );
+    expect(check(paths).runs[0]?.uncredited).toEqual({
+      mayStillDrive: false,
+      reason: `background agent ${SUBAGENT}'s owner commands under controller named run-older-1, not ${lease.runId}`,
+    });
+
+    // Its command naming this run failed.
+    writeFileSync(
+      paths.subagent(SUBAGENT),
+      bashCall(exec(lease.runId), "refused", {
+        agentId: SUBAGENT,
+        at: secondsAgo(5),
+        isError: true,
+      })
+    );
+    expect(reasonFor()).toContain(
+      `owner commands naming ${lease.runId} failed`
+    );
+
+    // Two running agents share the ID.
+    driveFromSubagent(paths, SUBAGENT, lease);
+    writeFileSync(
+      paths.subagent(OTHER_SUBAGENT),
+      bashCall("simple-changes loop exec --agent-id controller -- true", "ok", {
+        agentId: OTHER_SUBAGENT,
+        at: secondsAgo(5),
+      })
+    );
+    writeFileSync(
+      paths.subagent(SUBAGENT),
+      bashCall(
+        "R=$(cat /tmp/r); simple-changes loop exec --run-id $R --agent-id controller -- true",
+        "ok",
+        { agentId: SUBAGENT, at: secondsAgo(5) }
+      )
+    );
+    expect(reasonFor([running(SUBAGENT), running(OTHER_SUBAGENT)])).toContain(
+      "all used controller, so the owner ID cannot identify the driver"
+    );
+
+    // The parent used the same ID, so only a literal run ID would identify
+    // the driver.
+    writeFileSync(
+      paths.parent,
+      bashCall("simple-changes loop status --agent-id controller", "{}", {
+        at: secondsAgo(60),
+      })
+    );
+    expect(reasonFor()).toContain("this session also used that ID");
+
+    // Control visibly moved back to this session: no advice to wait.
+    driveFromSubagent(paths, SUBAGENT, lease, 30);
+    writeFileSync(
+      paths.parent,
+      bashCall(exec(lease.runId), "ok", { at: secondsAgo(1) })
+    );
+    const returned = check(paths);
+    expect(returned.decision).toBe("block");
+    expect(returned.runs[0]?.uncredited).toEqual({
+      mayStillDrive: false,
+      reason: `this session issued an owner command for ${lease.runId} after background agent ${SUBAGENT} last did`,
+    });
+    expect(returned.reason).not.toContain("wait for it");
+
+    // A lease written well after the agent's last command: no advice to wait.
+    writeFileSync(paths.parent, "");
+    driveFromSubagent(paths, SUBAGENT, lease, 300);
+    const stale = check(paths);
+    expect(stale.runs[0]?.uncredited?.mayStillDrive).toBe(false);
+    expect(stale.runs[0]?.uncredited?.reason).toContain(
+      `more than 60 s after background agent ${SUBAGENT}'s last owner command`
+    );
+    expect(stale.reason).not.toContain("wait for it");
+  });
+
   test("subagent commands without a time prove nothing", () => {
     const { lease, paths } = setup();
     writeFileSync(

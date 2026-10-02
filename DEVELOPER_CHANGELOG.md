@@ -1,5 +1,60 @@
 # Developer changelog
 
+## 0.22.5 - 2026-10-02
+
+- `lib/subagent-control.ts`: new `expandLiteralAssignments(command)`, applied
+  in `loopInvocations` to both parent and subagent transcripts, replaces
+  `$NAME` and `${NAME}` with the literal the same command assigned to NAME.
+  `characterContexts` marks each character's quote, comment, and heredoc
+  context; `nameBindings` counts every binding of each name, the
+  `LITERAL_ASSIGNMENT` form plus prefix, subshell, chained, conditional, and
+  `+=` assignments and assigning builtins, and a name is expanded only when
+  it has exactly one `LITERAL_ASSIGNMENT` at a `STATEMENT_START`, placed
+  before the use, whose value matches `SAFE_VALUE` (no whitespace, quote,
+  backtick, shell operator, `$`, backslash, or leading `-`). A command that
+  matches `UNRESOLVABLE` (`eval`, `if`, `while`, `until`, `case`, or `{`) is
+  left untouched, so the 0.22.2 `$` rejection in `AGENT_FLAG` and `RUN_FLAG`
+  still applies to anything unresolved. The index gains `attribution(run)`,
+  returning `{ control, uncredited }` with `uncredited: UncreditedSubagent |
+  null` (`{ mayStillDrive, reason }`), and `controllerOf` is now
+  `attribution(run).control`. `strongestDriver` picks the candidate among the
+  running subagents that used the owner id, and `missingDriverReason`,
+  `userEvidenceReason`, and `rejectedDriverReason` produce the reason: a
+  shared id, a different run named, a failed command, no command in
+  `repositoryRoots`, a later parent command, or a later lease write;
+  `mayStillDrive` is false only when the evidence shows control moved away
+  from that agent. `lib/turn-guard.ts`: `TurnCheckRun` gains `uncredited`,
+  attribution is computed once per run instead of a separate `controllerOf`
+  call, and the block message appends `<runId> is not credited to a
+  background agent: <reason>.` plus a wait-for-the-agent sentence when
+  `mayStillDrive`. `turn-guard.test.ts` grows from 35 to 38 tests; replaying
+  the real hash 0.22.4 transcript, 0.22.4 credits nobody and 0.22.5 credits
+  the subagent.
+- `lib/loop-lease.ts`: new `refreshPreservedPaths(scopedPlan, refreshedPlan)`
+  returns the paths the refreshed plan preserves in any worktree that is not
+  a scoped unit's `sourceWorktree`, and `assertShipmentScopeRecordable` no
+  longer rejects a changed path outside the first scope when it is in that
+  set. New `refreshedPreserved(priorScope, refreshedPlan, inventory)` builds
+  the merged `preserved` list that `recordShipmentScope` stores: every
+  earlier preserved path outside scoped source worktrees stays while the
+  inventory still shows it changed, whatever the refreshed preview proposes,
+  and a pathless exclusion is resolved through the scope's `openingChanges`
+  so it keeps excluding only the worktree it originally covered. Scoped
+  units and exclusions are unchanged. `loop-lease.test.ts` grows from 132 to
+  135 tests: a changing preserved worktree, a raw-preview refresh that keeps
+  primary work, and a pathless exclusion.
+  `references/inventory-and-concurrency.md` and
+  `references/cleanup-and-completion.md` document both fixes, and
+  `skill-contract.test.ts` pins four new sentences, two from each. Both
+  fixes had independent review by Opus 5.5 (high) over three rounds, which
+  found a refresh that dropped previously preserved primary work, a
+  value-splicing hole that could hide evidence, shell forms the resolver
+  misread, inaccurate reasons, and doc gaps; all are fixed with regression
+  tests, two of which were confirmed to fail on the earlier code. Full
+  suite: 703 tests. Guidance stays at 24; `.simple-changes.json` is
+  unchanged.
+<!-- simple-changelogs-signature agent="Fable 5.1" at="2026-10-02T17:59:47-05:00" -->
+
 ## 0.22.4 - 2026-10-02
 
 - `lib/loop-lease.ts`: new `assertTargetContainsDeletedHeads(repo, receipt,

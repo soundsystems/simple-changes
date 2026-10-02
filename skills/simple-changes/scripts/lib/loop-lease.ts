@@ -2880,8 +2880,12 @@ const assertShipmentScopeRecordable = (
         (change) => `${change.worktreePath}\0${change.path}`
       )
     );
+    const preservedElsewhere = refreshPreservedPaths(existingScope.plan, plan);
     const added = inventory.localChanges.find((change) => {
-      if (scoped.has(`${change.worktreePath}\0${change.path}`)) {
+      if (
+        scoped.has(`${change.worktreePath}\0${change.path}`) ||
+        preservedElsewhere.has(`${change.worktreePath}\0${change.path}`)
+      ) {
         return false;
       }
       const entry = worktreeSourceEntry(change.worktreePath, change.path);
@@ -2899,6 +2903,77 @@ const assertShipmentScopeRecordable = (
       );
     }
   }
+};
+
+/**
+ * Paths the refreshed plan preserves outside every worktree the scope ships
+ * from. Another agent's actively changing worktree keeps adding paths while a
+ * run waits on review, and those paths are never shipped, so a refresh accepts
+ * them as preserved instead of refusing them as expanded scope. A new path in a
+ * scoped source worktree still needs a new shipment run.
+ */
+const refreshPreservedPaths = (
+  scopedPlan: ChangePlan,
+  refreshedPlan: ChangePlan
+): Set<string> => {
+  const sources = new Set(scopedPlan.units.map((unit) => unit.sourceWorktree));
+  return new Set(
+    refreshedPlan.preserved
+      .filter((item) => !sources.has(item.worktreePath))
+      .flatMap((item) =>
+        item.paths.map((path) => `${item.worktreePath}\0${path}`)
+      )
+  );
+};
+
+/**
+ * The preserved list a refresh records. Entries in scoped source worktrees
+ * stay as first scoped. Elsewhere, every previously preserved path that is
+ * still changed stays preserved, and the refreshed plan's preserved paths are
+ * added, keyed by worktree; a path the first scope excluded stays excluded
+ * rather than being counted twice.
+ */
+const refreshedPreserved = (
+  { openingChanges, plan: scopedPlan }: NonNullable<LoopLease["shipmentScope"]>,
+  refreshedPlan: ChangePlan,
+  inventory: RepositoryInventory
+): ChangePlan["preserved"] => {
+  const sources = new Set(scopedPlan.units.map((unit) => unit.sourceWorktree));
+  const changed = new Set(
+    inventory.localChanges.map(
+      (change) => `${change.worktreePath}\0${change.path}`
+    )
+  );
+  // A pathless exclusion covered the one opening change with that path, so it
+  // keeps excluding only that worktree's path.
+  const excluded = new Set(
+    scopedPlan.exclusions.flatMap((exclusion) => {
+      const worktrees = exclusion.worktreePath
+        ? [exclusion.worktreePath]
+        : openingChanges
+            .filter((change) => change.path === exclusion.path)
+            .map((change) => change.worktreePath);
+      return worktrees.map((worktree) => `${worktree}\0${exclusion.path}`);
+    })
+  );
+  const merged = new Map<string, ChangePlan["preserved"][number]>();
+  for (const item of [...scopedPlan.preserved, ...refreshedPlan.preserved]) {
+    if (sources.has(item.worktreePath)) {
+      continue;
+    }
+    const prior = merged.get(item.worktreePath);
+    const paths = [...(prior?.paths ?? []), ...item.paths].filter(
+      (path, index, all) =>
+        all.indexOf(path) === index &&
+        changed.has(`${item.worktreePath}\0${path}`) &&
+        !excluded.has(`${item.worktreePath}\0${path}`)
+    );
+    merged.set(item.worktreePath, { ...item, paths });
+  }
+  return [
+    ...scopedPlan.preserved.filter((item) => sources.has(item.worktreePath)),
+    ...[...merged.values()].filter((item) => item.paths.length > 0),
+  ];
 };
 
 // The inventory a scope's opening changes came from. A refresh keeps the
@@ -2950,12 +3025,17 @@ export const recordShipmentScope = (
       assertShipmentScopeRecordable(lease, plan, inventory, refresh);
       const recordedAt = new Date().toISOString();
       const priorScope = lease.shipmentScope;
+      // A refresh keeps the scoped units and exclusions. Outside scoped
+      // source worktrees, a path stays preserved while it is still changed,
+      // whatever the refreshed preview proposes for it, and the refreshed
+      // plan may preserve new paths there.
       const activePlan =
         refresh && priorScope
           ? {
               ...priorScope.plan,
               baselineDigest: plan.baselineDigest,
               generatedAt: plan.generatedAt,
+              preserved: refreshedPreserved(priorScope, plan, inventory),
             }
           : plan;
       const openingChanges =

@@ -222,6 +222,12 @@ describe("Simple Changes skill contract", () => {
     expect(normalizedInventory).toContain(
       "marks the controller `relinquished`"
     );
+    expect(normalizedInventory).toContain(
+      "A refresh keeps the scoped units and cannot add a path to a scoped source worktree, but it accepts new paths that the refreshed plan lists in `preserved` for any other worktree"
+    );
+    expect(normalizedInventory).toContain(
+      "every path preserved earlier stays preserved while it is still changed, whatever the refreshed preview proposes for it. A refresh does not excuse the change itself"
+    );
     expect(normalizedCleanup).toContain(
       "It releases a complete lease or relinquishes an incomplete one"
     );
@@ -979,6 +985,12 @@ describe("Simple Changes skill contract", () => {
     );
     expect(normalizedCleanup).toContain(
       "only if no parent command and no other running subagent ever used that ID; give each agent its own ID. At least one of them must have run in the run's checkout or one of its worktrees"
+    );
+    expect(normalizedCleanup).toContain(
+      "A `$NAME` value counts as literal when the same command assigns NAME exactly once, as a plain token (no space, quote, shell operator, or leading `-`) that starts and ends an unconditional top-level statement, before using it"
+    );
+    expect(normalizedCleanup).toContain(
+      "the blocking message says which condition failed and, unless control visibly moved back to this session, asks the session to wait for that agent instead of finalizing"
     );
     expect(normalizedSpec).toContain(
       "A live run that a still running background subagent of the same session drives only advises."

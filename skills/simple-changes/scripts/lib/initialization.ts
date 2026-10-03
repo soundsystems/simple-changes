@@ -41,6 +41,8 @@ export interface InitializationStatus {
   policySource: PolicySource;
   policyTrust: PolicyTrust;
   preLoopActionRequired: boolean;
+  /** Effective after the trust downgrade; `release-gate --production` takes this value. */
+  productionDeploy: RepoPolicy["productionDeploy"];
   readinessConfirmed: boolean;
   reason: string;
   resolvedMode: RequestMode | null;
@@ -266,6 +268,7 @@ export const inspectInitialization = (
       onboardingRequired ||
       updateActionRequired ||
       changelogUpdateActionRequired,
+    productionDeploy: policy.value ? policy.value.productionDeploy : "ask",
     readinessConfirmed,
     reason: initializationReason(
       mode,

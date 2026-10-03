@@ -468,6 +468,10 @@
     "shippingMode": {
       "enum": ["standard", "expedited", "break-glass"]
     },
+    "productionDeploy": {
+      "description": "Effective after the repository trust downgrade; present from 0.23.1, so an absent value means an older runtime.",
+      "enum": ["ask", "allow", "deny"]
+    },
     "reason": { "type": "string", "minLength": 1 },
     "runtimeFreshness": {
       "type": "object",

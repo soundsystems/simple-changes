@@ -192,7 +192,7 @@ import {
   standaloneWorktreeCleanup,
 } from "./lib/worktree-maintenance.ts";
 
-const VERSION = "0.23.0";
+const VERSION = "0.23.1";
 const SCRIPT_FILE = fileURLToPath(import.meta.url);
 const PLAIN_SHELL_WORD_PATTERN = /^[\w./-]+$/u;
 const PACKAGE_ROOT = resolve(dirname(SCRIPT_FILE), "..");
@@ -1749,6 +1749,7 @@ const renderInitialization = (status: InitializationStatus): string => {
     `Mutation allowed: ${status.mutationAllowed ? "yes" : "no"}`,
     `Policy: ${status.policySource}`,
     `Policy trust: ${status.policyTrust}`,
+    `Production deploy: ${status.productionDeploy}`,
     `Changelog coordination: ${
       status.changelogCoordination.relevant ? "relevant" : "not detected"
     }`,

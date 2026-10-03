@@ -46,11 +46,13 @@ helper or unsupported version blocks only the release boundary; safe non-release
 integration may continue.
 
 Negotiation ignores versions and features this consumer does not know, so a
-provider may advertise newer ones without breaking it. That holds only from
-Simple Changes 0.23.0 on: earlier consumers reject any feature outside their
-closed list, so a provider must not advertise `shared-version-lines` in a
-repository until every Simple Changes controller there, including fork copies,
-is 0.23.0 or later.
+provider may advertise newer ones without breaking it. Simple Changes 0.13.0
+and later ignore unknown versions (earlier releases reject them, so
+advertising request v2 or receipt v3 needs every controller at 0.13.0 or
+later), but releases before 0.23.0 reject any feature outside their closed
+list, so a provider must not advertise `shared-version-lines` in a repository
+until every Simple Changes controller there, including fork copies, is 0.23.0
+or later.
 
 Advertised schema digests are advisory. When both sides publish them, record
 `schemaDigestStatus` as `match`, `differs`, or `unadvertised` so drift stays
@@ -167,8 +169,12 @@ that file contents are current and safe.
 A monorepo may keep two or more release trains (for example `web`, `ios`, and
 `android`) on one shared public version line. The changelog workflow owns the
 policy and the number; the protocol only carries the decision so Simple
-Changes can bind it. It needs request v2 and receipt v3, which a provider
-advertises together with the `shared-version-lines` feature.
+Changes can bind it. It needs request v2 and receipt v3, and the negotiated
+versions alone decide whether it is available. The `shared-version-lines`
+feature is optional and informational: negotiation reports it, but nothing
+gates on it. A provider may leave it out until it gates real behavior; one
+that advertises it must still wait until every controller in the repository
+is 0.23.0 or later.
 
 - **Request v2** adds `releaseSetTrains`: every train released together from
   one input target revision under one `releaseSetId`, or null. It is null
@@ -300,6 +306,30 @@ Decide each boundary with `simple-changes release-gate --request <file>
 `verify-existing-production`, `deploy`, `stop-after-integration`,
 `re-delegate`, or `block`) is the decision; do not re-derive it from the
 receipt prose.
+
+The gate takes its flags on trust and grants no authority, so no printed
+action, including `deploy`, is permission. Take each flag only from its
+source:
+
+- `--production`: start from the `productionDeploy` that `initialize --json`
+  reports, which already applies the trust rule in
+  [setup and policy](setup-and-policy.md) (a repository `allow` without its
+  local trust receipt is `ask`). Current user direction may lower it (for
+  example to `deny`) and never raises it above `ask`; a user's production
+  approval goes in `--production-authorized`.
+- `--production-authorized`: only explicit current-request production
+  authority for this exact target, under the production-authority rules in
+  this skill's [SKILL.md](../SKILL.md) and
+  [ship communication](ship-communication.md#compose-version-and-production-direction),
+  never your own inference.
+- `--version-authorized`: only an explicit user version decision bound to
+  this receipt's decision digest.
+- `--already-live`: only fresh provider evidence that the exact verified
+  finalized target is live.
+
+Route on the printed `action`, not the exit code: every decision, including
+`block`, exits 0. A nonzero exit means the inputs were rejected and nothing
+was decided, which blocks the boundary.
 
 When a prepare or verify request names `priorReceiptDigest`, pass that exact
 receipt with `--prior-receipt`; the gate blocks merge and deployment while the

@@ -410,6 +410,10 @@
   authority to deploy before review; treating break-glass policy without
   production authority as deploy permission; or marking `live-unreviewed` or
   `live-unreconciled` work complete.
+- Passing `release-gate` a flag its documented source does not support
+  (effective policy, a matching user decision, or fresh provider evidence),
+  treating its printed decision as authority, or routing on its exit code
+  instead of its `action`.
 - Applying any migration before review, applying to an unbound target, or
   treating an automatic tier as authority for a hard-excluded migration.
 - Directly authoring changelogs, release notes, version fields, or release

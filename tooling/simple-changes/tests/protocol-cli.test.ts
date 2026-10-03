@@ -361,9 +361,57 @@ describe("changelog protocol CLI", () => {
       "--production-authorized",
       "--json"
     );
+    expect(deploy.exitCode).toBe(0);
     expect(JSON.parse(decoder.decode(deploy.stdout))).toMatchObject({
       action: "deploy",
     });
+
+    // Every decision exits zero, including `block`; callers route on `action`.
+    const request = JSON.parse(
+      readFileSync(resolve(fixture.root, "request.json"), "utf8")
+    );
+    writeFixture(
+      fixture.root,
+      "unbound-request.json",
+      JSON.stringify({ ...request, priorReceiptDigest: "f".repeat(64) })
+    );
+    const blocked = runCli(
+      fixture.root,
+      "release-gate",
+      "--request",
+      "unbound-request.json",
+      "--receipt",
+      "receipt.json",
+      "--production",
+      "allow",
+      "--production-authorized",
+      "--json"
+    );
+    expect(blocked.exitCode).toBe(0);
+    expect(JSON.parse(decoder.decode(blocked.stdout))).toMatchObject({
+      action: "block",
+      reasonCode: "malformed-request",
+    });
+
+    // Rejected inputs exit nonzero and decide nothing.
+    const rejected = runCli(
+      fixture.root,
+      "release-gate",
+      "--request",
+      "unbound-request.json",
+      "--receipt",
+      "receipt.json",
+      "--prior-receipt",
+      "receipt.json",
+      "--production",
+      "allow",
+      "--json"
+    );
+    expect(rejected.exitCode).toBe(3);
+    expect(decoder.decode(rejected.stdout)).not.toContain('"action"');
+    expect(decoder.decode(rejected.stderr)).toContain(
+      "Prior receipt digest does not match"
+    );
 
     const complete = runCli(
       fixture.root,

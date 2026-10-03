@@ -16,7 +16,10 @@ repository's documented workflow and classify the delivery model:
 - self-hosted control plane.
 
 Distinguish preview, staging, and production. Production requires explicit
-current authority or committed policy that clearly grants it.
+current authority or effective policy that clearly grants it; repository
+policy is effective only with its local trust receipt, per
+[setup and policy](setup-and-policy.md). A `release-gate` decision is never
+that authority.
 
 A production deployment of a Web product is a product release. Normally, before
 invoking the provider, require a v2 or later `verified` changelog receipt for the exact

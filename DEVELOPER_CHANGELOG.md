@@ -1,5 +1,76 @@
 # Developer changelog
 
+## 0.23.1 - 2026-10-03
+
+- `lib/initialization.ts`: `inspectInitialization` now returns
+  `productionDeploy` from the loaded, trust-downgraded policy (default
+  `ask`), and `renderInitialization` in `simple-changes.ts` prints
+  "Production deploy: <value>"; `evals/schemas/initialization.schema.json`
+  gains an optional `productionDeploy` enum (`ask`, `allow`, `deny`) whose
+  description says it is effective after the repository trust downgrade and
+  present from 0.23.1, so an absent value means an older runtime and output
+  from earlier CLIs still validates. `references/setup-and-policy.md` says
+  initialization returns the effective `productionDeploy`, which is where
+  `release-gate --production` starts (see changelog coordination) instead of
+  a value read from the policy file. `references/changelog-coordination.md`
+  gains a paragraph after the release-gate decision rule: the gate takes its
+  flags on trust and grants no authority, so no printed action is
+  permission; each flag's only source (`--production` starts from the
+  `productionDeploy` that `initialize --json` reports, which already applies
+  the trust rule in setup-and-policy, a repository `allow` without its local
+  trust receipt being `ask`; current user direction may lower it, for
+  example to `deny`, and never raises it above `ask`, and a user's
+  production approval goes in `--production-authorized`;
+  `--production-authorized` is explicit current-request authority under
+  SKILL.md and the ship-communication direction section;
+  `--version-authorized` is a user decision bound to the decision digest;
+  `--already-live` is fresh provider evidence for the exact verified
+  finalized target); route on the printed `action` because every decision,
+  including `block`, exits 0, and a nonzero exit means the inputs were
+  rejected and nothing was decided, which blocks the boundary. Its "Shared
+  version lines" section now says the negotiated versions alone decide
+  availability, that the `shared-version-lines` feature is optional and
+  informational, and that a provider may leave it out until it gates real
+  behavior, replacing "advertises together with the `shared-version-lines`
+  feature"; the rollout note now says 0.13.0 and later ignore unknown
+  versions, earlier releases reject them (so advertising request v2 or
+  receipt v3 needs every controller at 0.13.0 or later), and releases before
+  0.23.0 reject unknown features. `references/deployments.md` says
+  repository policy is effective only with its local trust receipt, per
+  setup and policy, and that a `release-gate` decision is never that
+  authority. `SPEC.md` adds a forbidden practice: passing `release-gate` a
+  flag its documented source does not support (effective policy, a matching
+  user decision, or fresh provider evidence), treating its printed decision
+  as authority, or routing on its exit code instead of its `action`. The
+  runtime holds no user-authenticated authority record to check the
+  user-authority flags (`--production-authorized`, `--version-authorized`)
+  against, so a required provenance argument would be another agent-written
+  string and echoing the flags would repeat the command line; that is why
+  those stay prose.
+- Tests: `initialization.test.ts` adds "reports the effective production
+  deploy policy" (default `ask`, trusted `allow`, and `deny`); the
+  `cli.test.ts` unconfirmed-consequential-policy test now asserts
+  `productionDeploy: "ask"` in JSON and "Production deploy: ask" in text,
+  then `policyTrust: "trusted"` and `productionDeploy: "allow"` once the
+  trust receipt is written;
+  `skill-contract.test.ts` adds "release-gate flags come only from their
+  sources and features stay informational", pinning the new sentences in
+  `SPEC.md` and the three references, including the `initialize` sentences
+  in changelog-coordination and setup-and-policy, and asserting the old
+  "advertises together with" wording is gone; `protocol-cli.test.ts`
+  extends the release-gate test to assert that the `deploy` call exits 0,
+  that a request with an unverifiable `priorReceiptDigest` yields
+  `action: "block"`, `reasonCode: "malformed-request"`, and exit code 0, and
+  that a mismatched `--prior-receipt` exits 3 (validation) with no `action`
+  and "Prior receipt digest does not match" on stderr. Full suite: 727
+  tests. Independent review by Opus 5.5 (high) over five rounds: its
+  findings are addressed in prose except two kept by design, the
+  user-required "current-request" wording and "until it gates real
+  behavior"; the M1 follow-up, reporting `productionDeploy` from
+  `initialize`, is included in this release. Guidance stays at 24;
+  `.simple-changes.json` is unchanged.
+<!-- simple-changelogs-signature agent="Fable 5.1" at="2026-10-03T14:33:42-05:00" -->
+
 ## 0.23.0 - 2026-10-03
 
 - New `lib/version-line.ts`: `parseStableVersion` and `compareStableVersions`

@@ -3430,6 +3430,7 @@ while (!existsSync(process.env.SIMPLE_CHANGES_TEST_RELEASE_PATH)) {
     expect(result.exitCode).toBe(0);
     expect(JSON.parse(decoder.decode(result.stdout))).toMatchObject({
       policyTrust: "untrusted",
+      productionDeploy: "ask",
     });
 
     const rendered = spawnSync(
@@ -3448,6 +3449,32 @@ while (!existsSync(process.env.SIMPLE_CHANGES_TEST_RELEASE_PATH)) {
     expect(decoder.decode(rendered.stdout)).toContain(
       "Repository policy requests consequential authority but has not been confirmed on this clone; running with reduced authority until setup confirms it."
     );
+    expect(decoder.decode(rendered.stdout)).toContain("Production deploy: ask");
+
+    writeRepositoryPolicyTrustReceipt(
+      fixture.root,
+      resolve(fixture.root, ".git"),
+      "test-user",
+      "Authorize this exact test policy"
+    );
+    const trusted = spawnSync(
+      [
+        process.execPath,
+        cliPath,
+        "initialize",
+        "--mode",
+        "preview",
+        "--json",
+        "--repo",
+        fixture.root,
+      ],
+      { stderr: "pipe", stdout: "pipe" }
+    );
+    expect(trusted.exitCode).toBe(0);
+    expect(JSON.parse(decoder.decode(trusted.stdout))).toMatchObject({
+      policyTrust: "trusted",
+      productionDeploy: "allow",
+    });
   });
 
   test("completed-work handoff releases the author's own worktree claim", () => {

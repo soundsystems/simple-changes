@@ -218,6 +218,22 @@ describe("first-run initialization", () => {
     ).toMatchObject({ policyTrust: "not-required" });
   });
 
+  test("reports the effective production deploy policy", () => {
+    expect(
+      inspectInitialization("ship", { path: null, source: "default" })
+    ).toMatchObject({ productionDeploy: "ask" });
+    for (const productionDeploy of ["allow", "deny"] as const) {
+      expect(
+        inspectInitialization("ship", {
+          path: "/repo/.simple-changes.json",
+          source: "repository",
+          trust: productionDeploy === "allow" ? "trusted" : "not-required",
+          value: { ...DEFAULT_POLICY, productionDeploy },
+        })
+      ).toMatchObject({ productionDeploy });
+    }
+  });
+
   test("does not repeat onboarding when personal or repository policy exists", () => {
     expect(
       inspectInitialization("integrate", {

@@ -334,10 +334,11 @@ describe("Simple Changes skill contract", () => {
   });
 
   test("release-gate flags come only from their sources and features stay informational", async () => {
-    const [spec, coordination, deployment] = await Promise.all([
+    const [spec, coordination, deployment, setupPolicy] = await Promise.all([
       readFile(specPath, "utf8"),
       readFile(changelogCoordinationPath, "utf8"),
       readFile(deploymentPath, "utf8"),
+      readFile(setupAndPolicyPath, "utf8"),
     ]);
     const normalizedSpec = spec.replace(/\s+/g, " ");
     const normalizedCoordination = coordination.replace(/\s+/g, " ");
@@ -345,7 +346,7 @@ describe("Simple Changes skill contract", () => {
 
     for (const rule of [
       "The gate takes its flags on trust and grants no authority, so no printed action, including `deploy`, is permission",
-      "`--production`: only the effective `productionDeploy` as [setup and policy](setup-and-policy.md) resolves it. A repository `allow` without its local trust receipt counts as `ask`, and current user direction never raises the value above `ask`; a user's production approval goes in `--production-authorized`",
+      "`--production`: start from the `productionDeploy` that `initialize --json` reports, which already applies the trust rule in [setup and policy](setup-and-policy.md) (a repository `allow` without its local trust receipt is `ask`). Current user direction may lower it (for example to `deny`) and never raises it above `ask`; a user's production approval goes in `--production-authorized`",
       "`--production-authorized`: only explicit current-request production authority for this exact target, under the production-authority rules in this skill's [SKILL.md](../SKILL.md) and [ship communication](ship-communication.md#compose-version-and-production-direction), never your own inference",
       "`--version-authorized`: only an explicit user version decision bound to this receipt's decision digest",
       "`--already-live`: only fresh provider evidence that the exact verified finalized target is live",
@@ -356,6 +357,9 @@ describe("Simple Changes skill contract", () => {
     }
     expect(normalizedDeployment).toContain(
       "repository policy is effective only with its local trust receipt"
+    );
+    expect(setupPolicy.replace(/\s+/g, " ")).toContain(
+      "It likewise returns the effective `productionDeploy`, which is where `release-gate --production` starts (see [changelog coordination](changelog-coordination.md)) instead of a value read from the policy file"
     );
     expect(normalizedDeployment).toContain(
       "A `release-gate` decision is never that authority"

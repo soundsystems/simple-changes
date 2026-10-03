@@ -1749,6 +1749,7 @@ const renderInitialization = (status: InitializationStatus): string => {
     `Mutation allowed: ${status.mutationAllowed ? "yes" : "no"}`,
     `Policy: ${status.policySource}`,
     `Policy trust: ${status.policyTrust}`,
+    `Production deploy: ${status.productionDeploy}`,
     `Changelog coordination: ${
       status.changelogCoordination.relevant ? "relevant" : "not detected"
     }`,

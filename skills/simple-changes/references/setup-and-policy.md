@@ -126,7 +126,11 @@ request supplies both saved ordering and production authority, so do not ask
 for a redundant break-glass phrase. Rollback evidence, focused checks, later
 review, forward reconciliation, verification, and cleanup remain mandatory.
 Initialization returns the effective `shippingMode`; the agent must pass that
-closed value into emergency classification instead of re-defaulting it.
+closed value into emergency classification instead of re-defaulting it. It
+likewise returns the effective `productionDeploy`, which is where
+`release-gate --production` starts (see
+[changelog coordination](changelog-coordination.md)) instead of a value read
+from the policy file.
 
 `proposalSignatures` accepts `agent-and-version` or `none` and defaults to
 `agent-and-version`: every agent that authors, reviews, or merges a PR or MR

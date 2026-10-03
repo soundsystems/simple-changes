@@ -1,5 +1,41 @@
 # Changelog
 
+## 0.23.1 - 2026-10-03
+
+- The changelog coordination reference now names the only source of each
+  `release-gate` flag. The gate takes its flags on trust and grants no
+  authority, so no printed action, including `deploy`, is permission.
+  `--production` starts from the `productionDeploy` that
+  `simple-changes initialize --json` now reports, which already applies the
+  trust rule (a repository `allow` without its local trust receipt is
+  `ask`); current user direction may lower it, for example to `deny`, and
+  never raises it above `ask`, and a user's production approval goes in
+  `--production-authorized`, which is explicit production authority for this
+  exact target from the current request under SKILL.md's
+  production-authority rules and the ship-communication reference, never the
+  agent's own inference. `--version-authorized` is an explicit user version
+  decision bound to the receipt's decision digest, and `--already-live` is
+  fresh provider evidence that the exact verified finalized target is live.
+  Route on the printed `action`, not the exit code: every decision,
+  including `block`, exits 0, and a nonzero exit means the inputs were
+  rejected and nothing was decided, which blocks the boundary. The gate's
+  behavior is unchanged; `initialize` gains the `productionDeploy` field
+  (default `ask`; text output prints "Production deploy: <value>"), and its
+  schema adds the field as optional, so output from earlier releases still
+  validates.
+- The shared version lines guidance is corrected: request v2 and receipt v3
+  are enabled by the negotiated versions alone, and the `shared-version-lines`
+  feature is optional and informational, so nothing gates on it and a
+  changelog provider may leave it out until it gates real behavior. 0.23.0
+  said a provider advertises v2 and v3 together with the feature. Simple
+  Changes 0.13.0 and later ignore unknown protocol versions, and earlier
+  releases reject them, so advertising request v2 or receipt v3 needs every
+  controller at 0.13.0 or later; from 0.13.0 through 0.22.x only an unknown
+  feature breaks negotiation, so a provider still must not advertise
+  `shared-version-lines` in a repository until every Simple Changes copy
+  there, including fork copies, is 0.23.0 or later.
+<!-- simple-changelogs-signature agent="Fable 5.1" at="2026-10-03T14:27:10-05:00" -->
+
 ## 0.23.0 - 2026-10-03
 
 - The changelog companion protocol can now carry a shared version line, so a

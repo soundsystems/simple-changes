@@ -333,7 +333,7 @@ describe("Simple Changes skill contract", () => {
     expect(deliverySchema).toContain('"deployedRevision"');
   });
 
-  test("release-gate flags carry real authority and features stay informational", async () => {
+  test("release-gate flags come only from their sources and features stay informational", async () => {
     const [spec, coordination, deployment] = await Promise.all([
       readFile(specPath, "utf8"),
       readFile(changelogCoordinationPath, "utf8"),
@@ -344,23 +344,24 @@ describe("Simple Changes skill contract", () => {
     const normalizedDeployment = deployment.replace(/\s+/g, " ");
 
     for (const rule of [
-      "The gate computes that decision only from the flags it receives and grants no authority, so a printed `deploy` is never permission",
-      "`--production`: the effective `productionDeploy` policy",
-      "`--production-authorized`: only explicit current-request production authority for this exact target, under the production-authority rules in `SKILL.md` and [ship communication](ship-communication.md), never your own inference",
+      "The gate takes its flags on trust and grants no authority, so no printed action, including `deploy`, is permission",
+      "`--production`: only the effective `productionDeploy` as [setup and policy](setup-and-policy.md) resolves it. A repository `allow` without its local trust receipt counts as `ask`, and current user direction never raises the value above `ask`; a user's production approval goes in `--production-authorized`",
+      "`--production-authorized`: only explicit current-request production authority for this exact target, under the production-authority rules in this skill's [SKILL.md](../SKILL.md) and [ship communication](ship-communication.md#compose-version-and-production-direction), never your own inference",
       "`--version-authorized`: only an explicit user version decision bound to this receipt's decision digest",
-      "`--already-live`: only fresh provider evidence that the exact target is live",
+      "`--already-live`: only fresh provider evidence that the exact verified finalized target is live",
       "Route on the printed `action`, not the exit code: every decision, including `block`, exits 0",
+      "A nonzero exit means the inputs were rejected and nothing was decided, which blocks the boundary",
     ]) {
       expect(normalizedCoordination).toContain(rule);
     }
     expect(normalizedDeployment).toContain(
-      "committed policy is effective only with its local trust receipt"
+      "repository policy is effective only with its local trust receipt"
     );
     expect(normalizedDeployment).toContain(
       "A `release-gate` decision is never that authority"
     );
     expect(normalizedSpec).toContain(
-      "Passing `release-gate` an authority flag that no matching user decision or fresh provider evidence supports, treating its printed decision as authority, or routing on its exit code instead of its `action`"
+      "Passing `release-gate` a flag its documented source does not support (effective policy, a matching user decision, or fresh provider evidence), treating its printed decision as authority, or routing on its exit code instead of its `action`"
     );
 
     // Versions alone enable shared version lines; the feature is informational.
@@ -371,10 +372,10 @@ describe("Simple Changes skill contract", () => {
       "The `shared-version-lines` feature is optional and informational: negotiation reports it, but nothing gates on it"
     );
     expect(normalizedCoordination).toContain(
-      "A provider may hold the flag until it gates real behavior"
+      "A provider may leave it out until it gates real behavior"
     );
     expect(normalizedCoordination).toContain(
-      "Simple Changes 0.13.0 and later already ignore unknown versions, but releases before 0.23.0 reject any feature outside their closed list"
+      "Simple Changes 0.13.0 and later ignore unknown versions (earlier releases reject them, so advertising request v2 or receipt v3 needs every controller at 0.13.0 or later), but releases before 0.23.0 reject any feature outside their closed list"
     );
     expect(normalizedCoordination).not.toContain(
       "advertises together with the `shared-version-lines` feature"

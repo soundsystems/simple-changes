@@ -47,10 +47,12 @@ integration may continue.
 
 Negotiation ignores versions and features this consumer does not know, so a
 provider may advertise newer ones without breaking it. Simple Changes 0.13.0
-and later already ignore unknown versions, but releases before 0.23.0 reject
-any feature outside their closed list, so a provider must not advertise
-`shared-version-lines` in a repository until every Simple Changes controller
-there, including fork copies, is 0.23.0 or later.
+and later ignore unknown versions (earlier releases reject them, so
+advertising request v2 or receipt v3 needs every controller at 0.13.0 or
+later), but releases before 0.23.0 reject any feature outside their closed
+list, so a provider must not advertise `shared-version-lines` in a repository
+until every Simple Changes controller there, including fork copies, is 0.23.0
+or later.
 
 Advertised schema digests are advisory. When both sides publish them, record
 `schemaDigestStatus` as `match`, `differs`, or `unadvertised` so drift stays
@@ -170,7 +172,7 @@ policy and the number; the protocol only carries the decision so Simple
 Changes can bind it. It needs request v2 and receipt v3, and the negotiated
 versions alone decide whether it is available. The `shared-version-lines`
 feature is optional and informational: negotiation reports it, but nothing
-gates on it. A provider may hold the flag until it gates real behavior; one
+gates on it. A provider may leave it out until it gates real behavior; one
 that advertises it must still wait until every controller in the repository
 is 0.23.0 or later.
 
@@ -305,22 +307,28 @@ Decide each boundary with `simple-changes release-gate --request <file>
 `re-delegate`, or `block`) is the decision; do not re-derive it from the
 receipt prose.
 
-The gate computes that decision only from the flags it receives and grants no
-authority, so a printed `deploy` is never permission. Take each flag only from
-its source:
+The gate takes its flags on trust and grants no authority, so no printed
+action, including `deploy`, is permission. Take each flag only from its
+source:
 
-- `--production`: the effective `productionDeploy` policy.
+- `--production`: only the effective `productionDeploy` as
+  [setup and policy](setup-and-policy.md) resolves it. A repository `allow`
+  without its local trust receipt counts as `ask`, and current user
+  direction never raises the value above `ask`; a user's production approval
+  goes in `--production-authorized`.
 - `--production-authorized`: only explicit current-request production
   authority for this exact target, under the production-authority rules in
-  `SKILL.md` and [ship communication](ship-communication.md), never your own
-  inference.
+  this skill's [SKILL.md](../SKILL.md) and
+  [ship communication](ship-communication.md#compose-version-and-production-direction),
+  never your own inference.
 - `--version-authorized`: only an explicit user version decision bound to
   this receipt's decision digest.
-- `--already-live`: only fresh provider evidence that the exact target is
-  live.
+- `--already-live`: only fresh provider evidence that the exact verified
+  finalized target is live.
 
 Route on the printed `action`, not the exit code: every decision, including
-`block`, exits 0.
+`block`, exits 0. A nonzero exit means the inputs were rejected and nothing
+was decided, which blocks the boundary.
 
 When a prepare or verify request names `priorReceiptDigest`, pass that exact
 receipt with `--prior-receipt`; the gate blocks merge and deployment while the

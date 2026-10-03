@@ -361,6 +361,7 @@ describe("changelog protocol CLI", () => {
       "--production-authorized",
       "--json"
     );
+    expect(deploy.exitCode).toBe(0);
     expect(JSON.parse(decoder.decode(deploy.stdout))).toMatchObject({
       action: "deploy",
     });
@@ -391,6 +392,26 @@ describe("changelog protocol CLI", () => {
       action: "block",
       reasonCode: "malformed-request",
     });
+
+    // Rejected inputs exit nonzero and decide nothing.
+    const rejected = runCli(
+      fixture.root,
+      "release-gate",
+      "--request",
+      "unbound-request.json",
+      "--receipt",
+      "receipt.json",
+      "--prior-receipt",
+      "receipt.json",
+      "--production",
+      "allow",
+      "--json"
+    );
+    expect(rejected.exitCode).toBe(3);
+    expect(decoder.decode(rejected.stdout)).not.toContain('"action"');
+    expect(decoder.decode(rejected.stderr)).toContain(
+      "Prior receipt digest does not match"
+    );
 
     const complete = runCli(
       fixture.root,

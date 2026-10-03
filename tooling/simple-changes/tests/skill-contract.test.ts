@@ -333,6 +333,54 @@ describe("Simple Changes skill contract", () => {
     expect(deliverySchema).toContain('"deployedRevision"');
   });
 
+  test("release-gate flags carry real authority and features stay informational", async () => {
+    const [spec, coordination, deployment] = await Promise.all([
+      readFile(specPath, "utf8"),
+      readFile(changelogCoordinationPath, "utf8"),
+      readFile(deploymentPath, "utf8"),
+    ]);
+    const normalizedSpec = spec.replace(/\s+/g, " ");
+    const normalizedCoordination = coordination.replace(/\s+/g, " ");
+    const normalizedDeployment = deployment.replace(/\s+/g, " ");
+
+    for (const rule of [
+      "The gate computes that decision only from the flags it receives and grants no authority, so a printed `deploy` is never permission",
+      "`--production`: the effective `productionDeploy` policy",
+      "`--production-authorized`: only explicit current-request production authority for this exact target, under the production-authority rules in `SKILL.md` and [ship communication](ship-communication.md), never your own inference",
+      "`--version-authorized`: only an explicit user version decision bound to this receipt's decision digest",
+      "`--already-live`: only fresh provider evidence that the exact target is live",
+      "Route on the printed `action`, not the exit code: every decision, including `block`, exits 0",
+    ]) {
+      expect(normalizedCoordination).toContain(rule);
+    }
+    expect(normalizedDeployment).toContain(
+      "committed policy is effective only with its local trust receipt"
+    );
+    expect(normalizedDeployment).toContain(
+      "A `release-gate` decision is never that authority"
+    );
+    expect(normalizedSpec).toContain(
+      "Passing `release-gate` an authority flag that no matching user decision or fresh provider evidence supports, treating its printed decision as authority, or routing on its exit code instead of its `action`"
+    );
+
+    // Versions alone enable shared version lines; the feature is informational.
+    expect(normalizedCoordination).toContain(
+      "It needs request v2 and receipt v3, and the negotiated versions alone decide whether it is available"
+    );
+    expect(normalizedCoordination).toContain(
+      "The `shared-version-lines` feature is optional and informational: negotiation reports it, but nothing gates on it"
+    );
+    expect(normalizedCoordination).toContain(
+      "A provider may hold the flag until it gates real behavior"
+    );
+    expect(normalizedCoordination).toContain(
+      "Simple Changes 0.13.0 and later already ignore unknown versions, but releases before 0.23.0 reject any feature outside their closed list"
+    );
+    expect(normalizedCoordination).not.toContain(
+      "advertises together with the `shared-version-lines` feature"
+    );
+  });
+
   test("blocks unsafe production changes for installed clients", async () => {
     const [skill, migrationActions] = await Promise.all([
       readFile(skillPath, "utf8"),

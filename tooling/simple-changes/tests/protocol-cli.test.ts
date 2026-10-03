@@ -365,6 +365,33 @@ describe("changelog protocol CLI", () => {
       action: "deploy",
     });
 
+    // Every decision exits zero, including `block`; callers route on `action`.
+    const request = JSON.parse(
+      readFileSync(resolve(fixture.root, "request.json"), "utf8")
+    );
+    writeFixture(
+      fixture.root,
+      "unbound-request.json",
+      JSON.stringify({ ...request, priorReceiptDigest: "f".repeat(64) })
+    );
+    const blocked = runCli(
+      fixture.root,
+      "release-gate",
+      "--request",
+      "unbound-request.json",
+      "--receipt",
+      "receipt.json",
+      "--production",
+      "allow",
+      "--production-authorized",
+      "--json"
+    );
+    expect(blocked.exitCode).toBe(0);
+    expect(JSON.parse(decoder.decode(blocked.stdout))).toMatchObject({
+      action: "block",
+      reasonCode: "malformed-request",
+    });
+
     const complete = runCli(
       fixture.root,
       "release-delivery",

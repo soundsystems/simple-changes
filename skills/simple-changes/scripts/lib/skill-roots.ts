@@ -20,6 +20,7 @@ const FORK_PROVENANCE_PATTERN =
   /Forked from `simple-changes` @ `[0-9a-f]{7,40}`/u;
 const FRONTMATTER_PATTERN = /^---\r?\n([\s\S]*?)\r?\n---/u;
 const NAME_LINE_PATTERN = /^name:[ \t]*["']?([^"'\s]+)/mu;
+const SKILL_NAME_PATTERN = /^[a-z0-9][a-z0-9-]*$/u;
 
 /**
  * The user-level skill roots to search, in order. SIMPLE_CHANGES_SKILL_ROOTS,
@@ -52,29 +53,48 @@ export const skillRootOf = (script: string): string | null => {
   return null;
 };
 
+/** The SKILL.md of the skill that ships `script`, or null when unreadable. */
+const skillDocumentOf = (script: string): string | null => {
+  const root = skillRootOf(script);
+  if (!root) {
+    return null;
+  }
+  try {
+    return readFileSync(resolve(root, "SKILL.md"), "utf8");
+  } catch {
+    return null;
+  }
+};
+
+const declaredSkillName = (skill: string): string | undefined =>
+  NAME_LINE_PATTERN.exec(FRONTMATTER_PATTERN.exec(skill)?.[1] ?? "")?.[1];
+
 /**
  * Whether `script` ships inside a repository fork of Simple Changes rather
  * than Simple Changes itself: its skill carries the fork provenance line or
  * names a skill other than simple-changes.
  */
 export const isForkRuntime = (script: string): boolean => {
-  const root = skillRootOf(script);
-  if (!root) {
+  const skill = skillDocumentOf(script);
+  if (skill === null) {
     return false;
   }
-  let skill: string;
-  try {
-    skill = readFileSync(resolve(root, "SKILL.md"), "utf8");
-  } catch {
-    return false;
-  }
-  const name = NAME_LINE_PATTERN.exec(
-    FRONTMATTER_PATTERN.exec(skill)?.[1] ?? ""
-  )?.[1];
+  const name = declaredSkillName(skill);
   return (
     FORK_PROVENANCE_PATTERN.test(skill) ||
     (name !== undefined && name !== "simple-changes")
   );
+};
+
+/**
+ * The skill name `script` runs as: the `name:` its SKILL.md declares, in the
+ * plain `<skill>/scripts` layout or a fork's `<skill>/runtime/scripts`, and
+ * `simple-changes` when that name is missing or not a plain skill name.
+ */
+export const runningSkillName = (script: string): string => {
+  const skill = skillDocumentOf(script);
+  const name = skill === null ? undefined : declaredSkillName(skill);
+  return name && SKILL_NAME_PATTERN.test(name) ? name : "simple-changes";
 };
 
 /**

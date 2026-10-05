@@ -230,6 +230,11 @@ Offer:
 - **When I say it's ready:** Wait for the user to ask to put up, merge, ship,
   finish, or reconcile the completed work.
 
+The repository block names the skill that runs setup, so a repository fork's
+setup points agents at the fork by its own `SKILL.md` name; a personal block
+keeps generic wording because it spans repositories. The start and end markers
+never change, so an existing block is found and replaced in place.
+
 The confirmation summary must
 show the exact target path and proposed managed block. Apply an authorized edit
 atomically, preserve existing content and newline style, and re-read it after

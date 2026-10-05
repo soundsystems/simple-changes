@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.24.1 - 2026-10-05
+
+- The release gate now refuses a changelog receipt that pairs an ask version
+  policy with an automatic or repository-automation resolution, so an ask
+  policy can only be reported as resolved by your explicit direction. The
+  gate still takes that report from the changelog provider.
+- `update-local-forks plan` now lists each file it skips as fork-owned
+  history, such as a fork's own `CHANGELOG.md`, instead of only counting
+  them.
+<!-- simple-changelogs-signature agent="Claude Opus 5.5 xhigh" at="2026-10-05T17:17:45-05:00" -->
+
 ## 0.24.0 - 2026-10-05
 
 - Proposal descriptions now follow one body shape

@@ -19,16 +19,19 @@
 - Guidance moves to 25. The update notice needs no decision.
 - `publish-skill` now runs only when you type `/publish-skill`. It now
   removes a standalone CMS changelog install that a selected Web and CMS
-  package already covers, unless repository instructions keep both, and it
-  matches the copy that ships with Simple Changelogs.
+  package already covers once the repository's CMS policy file is in place,
+  unless repository instructions keep both, and it matches the copy that
+  ships with Simple Changelogs.
 - `simple-changes proposal audit --file <body.md> [--template <path>]` checks
   a stored proposal description and exits 3 on escaped `\n` where line breaks
-  were intended, a missing Summary, Evidence, or Merge danger section (or a
-  missing heading from the repository's own template), a Merge danger section
-  without a `**Door:**` line naming one-way, two-way, or unknown or without a
-  `**Blast radius:**` line, and a signature block that is not last. Agents
-  run it after creating or updating a proposal, before re-reading the
-  rendering. `verify-markdown` no longer counts an escaped `\n` inside code.
+  were intended, a missing Summary, Evidence, or Merge danger section (with
+  the repository's own template: a missing template heading, or a missing
+  Merge danger section, which the template never replaces), a Merge danger
+  section without a `**Door:**` line naming one-way, two-way, or unknown or
+  without a `**Blast radius:**` line, and a signature block that is not
+  last. Agents run it after creating or updating a proposal, before
+  re-reading the rendering. `verify-markdown` no longer counts an escaped
+  `\n` inside code.
 - `simple-changes skill check [--skill-dir PATH]` reports whether skill
   discovery can load a skill or a fork: strict YAML frontmatter, a name that
   matches its directory, a 1 to 1,024 character description, matching Claude
@@ -60,10 +63,11 @@
   showed before was rejected because `--reason` is required.
 <!-- simple-changelogs-signature agent="Claude Opus 5.5 xhigh" at="2026-10-05T13:48:48-05:00" -->
 - When `update-local-forks` moves a fork's pin or upstream version, it
-  now leaves the fork's own history as written. A commit or version range,
-  a Markdown heading, and anything in a history, dated, or range-named
-  section keep the old value, so a sync record such as `7ab67a1..628c66b`
-  and the test that checks it no longer change to the new pin.
+  now leaves the fork's own history as written. Its changelog files, a
+  commit or version range, a Markdown heading, and anything in a history,
+  dated, or range-named section keep the old value, so a sync record such as
+  `7ab67a1..628c66b` and the test that checks it no longer change to the new
+  pin.
 <!-- simple-changelogs-signature agent="Claude Opus 5.5 xhigh" at="2026-10-05T14:14:40-05:00" -->
 - Remote branch cleanup now judges merge requests by their final state. A
   branch whose merge request was open when the run started and merged at that

@@ -175,6 +175,30 @@
     `loop archive-recorded` recovery.
 <!-- simple-changelogs-signature agent="Claude Opus 5.5 xhigh" at="2026-10-05T15:08:28-05:00" -->
 
+- Fixes from GPT-6 Sol's exact-head review of soundsystems/simple-changes!80
+  (no blocking findings; four should-fix):
+  - `discover-local-consumers.ts` marks a standalone CMS install
+    `superseded-install` only when `.simple-changelogs-cms.json` exists,
+    which the combined package's cleanup rule requires; a new check case
+    keeps both installs without it.
+  - `references/changelog-coordination.md` no longer calls `classified`
+    entry-only; it may carry the exact selected public version.
+  - `proposal audit` with `--template` requires the template's headings and,
+    when the template has none, a `## Merge danger` section; Summary and
+    Evidence may still map to template sections.
+  - `update-local-forks` skips every `*CHANGELOG*.md` in literal rewrites,
+    and lists a fork's own root `CHANGELOG.md` once (as the `skip` entry)
+    instead of also as `keep-fork-only`; the duplicate made `apply` reject
+    the plan for any fork with a root changelog (none of the four current
+    forks has one).
+  - A focused re-review confirmed all four and found the docs behind:
+    `production-loop.md` now keeps a standalone CMS install while the
+    sidecar is missing, `change-requests.md` says a template never replaces
+    Merge danger, and the text plan counts skipped fork-owned history.
+  - Each fix has a case that fails when the fix is removed. The
+    `publish-skill` change is byte-identical in Simple Changelogs.
+<!-- simple-changelogs-signature agent="Claude Opus 5.5 xhigh" at="2026-10-05T16:23:15-05:00" -->
+
 ## 0.23.1 - 2026-10-03
 
 - `lib/initialization.ts`: `inspectInitialization` now returns

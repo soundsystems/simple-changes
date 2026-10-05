@@ -136,13 +136,17 @@ global skill roots and conventional project folders (`Developer`, `Projects`,
 `Code`, and `src`); pass `--root` for forks elsewhere. It plans one fork at a
 time against the fork's pinned upstream base and the global install, applies portable upstream
 changes, keeps every fork-specific edit and file, three-way merges files both
-sides changed, and reports conflicts and omitted references for review instead
-of overwriting them. It also advances the provenance pin only to the exact
-release commit the global install matches, and rewrites the pin, guidance
-version, and upstream version literals the fork's own checks pin. It never
-commits or pushes; the fork repository's own Simple Changes policy ships the
-update. Guidance updates therefore reach a fork's users the same way they
-reach everyone else: through the next write-capable run's one-time notice.
+sides changed, and reports conflicts for review instead of overwriting them.
+An upstream reference added or changed since the pin that the fork neither
+carries nor lists under `## Intentional omissions` in its
+`references/fork-maintenance.md` holds the pin until the fork carries or
+records it, so new guidance cannot be skipped silently. It also advances the
+provenance pin only to the exact release commit the global install matches,
+and rewrites the pin, guidance version, and upstream version literals the
+fork's own checks pin. It never commits or pushes; the fork repository's own
+Simple Changes policy ships the update. Guidance updates therefore reach a
+fork's users the same way they reach everyone else: through the next
+write-capable run's one-time notice.
 
 ```sh
 bun ~/.agents/skills/update-local-forks/scripts/update-local-forks.ts discover

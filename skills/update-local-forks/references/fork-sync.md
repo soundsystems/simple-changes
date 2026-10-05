@@ -36,9 +36,13 @@ deltas. Two layouts are recognized:
 | Changed | Unchanged | `update` (upstream version written) |
 | Changed | Edited on different lines | `merge` (three-way result written) |
 | Changed | Edited on the same lines | `conflict` (file untouched; marked merge written to `<file>.upstream-merge`) |
-| Changed | Omitted | `review` (confirm the omission still applies) |
+| Changed reference | Omitted, not recorded | `unrecorded-omission` (holds the pin) |
+| Changed reference | Omitted, recorded | `review` (confirm the recorded reason still holds) |
+| Changed, not a reference | Omitted | `review` (confirm the omission still applies) |
 | New runtime file | Absent | `add` |
-| New non-runtime file | Absent | `review` (forks omit references on purpose) |
+| New reference | Absent, not recorded | `unrecorded-omission` (holds the pin) |
+| New reference | Absent, recorded | `review` (confirm the recorded reason still holds) |
+| New file, neither runtime nor reference | Absent | `review` (decide whether the fork carries it) |
 | New | Present with other content | `conflict` |
 | Removed | Unchanged | `delete` |
 | Removed | Edited | `review` |
@@ -49,6 +53,17 @@ The plan also rewrites exact literals the fork pins in its own files outside
 the runtime: the old provenance sha, `CURRENT_GUIDANCE_VERSION = <old>`, and
 `Simple Changes <old version>`. Only those exact strings change; nothing is
 inferred.
+
+## Omitted references
+
+Forks leave out references on purpose, but an omission must be visible: a
+reference upstream added or changed since the pin is new guidance the fork
+otherwise never receives. A fork records each reference it leaves out under
+`## Intentional omissions` in its own `references/fork-maintenance.md`, which
+defines the record. A recorded omission is a `review` item quoting its
+reason. An unrecorded one is an `unrecorded-omission`: the provenance pin and
+`SKILL.md` stay on the old base, and `plan` and `apply` exit 3, until the fork
+carries the file or records it. Other updates in the plan still apply.
 
 ## Command gates
 
@@ -114,8 +129,8 @@ should say what changed for that fork so the notice can be answered quickly.
 
 1. Run the fork's own checks (`scripts/test.sh` when present) and the
    repository's native checks.
-2. Re-run `plan`; it should report no `update`, `merge`, `add`, or `delete`
-   actions and no pending literal rewrites.
+2. Re-run `plan`; it should report no `update`, `merge`, `add`, `delete`, or
+   `unrecorded-omission` actions and no pending literal rewrites.
 3. Record the sync in the fork's maintenance note.
 4. Hand the repository change to Simple Changes. This skill never commits,
    pushes, or opens proposals.

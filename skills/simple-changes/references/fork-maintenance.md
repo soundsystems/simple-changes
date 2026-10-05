@@ -52,9 +52,11 @@ checkout.
 The installable `update-local-forks` skill from the same package automates
 this loop for every fork on a machine: it plans each fork against its pinned
 base and the globally installed skill, applies portable changes, keeps fork
-deltas, three-way merges shared edits, reports conflicts and omitted
-references, and advances the pin only to the verified release commit. Prefer
-it over hand-porting. When updating by hand from upstream:
+deltas, three-way merges shared edits, reports conflicts, holds the pin while
+an upstream reference changed that the fork neither carries nor records (see
+[Intentional omissions](#intentional-omissions)), and advances the pin only to
+the verified release commit. Prefer it over hand-porting. When updating by
+hand from upstream:
 
 1. fetch and verify the canonical default branch;
 2. run the checker and review the entire canonical diff from the old pin;
@@ -89,3 +91,22 @@ tree or, when a canonical remote exists, a revision not on its default branch.
 The source repository's Simple Changelogs-derived release-note module has a
 separate provenance check under `tooling/simple-changes/`. It is
 maintainer-only and is never bundled into this installed skill.
+
+## Intentional omissions
+
+A fork may leave out an upstream reference that does not apply to it, and
+records that choice in this section of its own copy of this file. For every
+upstream reference added or changed since the fork's pin that the fork neither
+carries nor lists here, `update-local-forks` reports an `unrecorded-omission`
+and holds the provenance pin; a listed one stays a review item. Record each
+omitted file as one list item in this section: its path from the fork's root
+in backticks, a colon, and the reason the fork leaves it out.
+
+```md
+- `references/providers/radicle.md`: this project ships only through GitLab.
+```
+
+Only list items under this heading count, including its subsections; examples
+inside code fences and items in other sections never do. Delete an item when
+the fork starts carrying the file, and carry the file once its reason no
+longer holds.

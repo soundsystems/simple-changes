@@ -53,6 +53,16 @@ const SKIP_DIRECTORIES = new Set([
   "coverage",
 ]);
 const RUNTIME_PREFIXES = ["scripts/", "evals/"];
+const REFERENCE_PREFIX = "references/";
+/** The fork note whose Intentional omissions section lists omitted references. */
+const OMISSIONS_FILE = "references/fork-maintenance.md";
+const OMISSIONS_HEADING_PATTERN =
+  /^##[ \t]+Intentional omissions[ \t]*#*[ \t]*$/iu;
+const TOP_HEADING_PATTERN = /^#{1,2}[ \t]/u;
+const FENCE_OPEN_PATTERN = /^ {0,3}(`{3,}|~{3,})/u;
+const FENCE_CLOSE_PATTERN = /^ {0,3}(`{3,}|~{3,})[ \t]*$/u;
+const OMISSION_ENTRY_PATTERN = /^[-*][ \t]+`([^`\s]+)`:[ \t]+(\S.*)$/u;
+const LINE_BREAK_PATTERN = /\r?\n/u;
 /** Sidecar left beside a file whose upstream merge conflicted. */
 const MERGE_SIDECAR_SUFFIX = ".upstream-merge";
 const EXIT = { blocked: 3, failure: 4, success: 0, usage: 2 } as const;
@@ -515,7 +525,8 @@ export type PlanAction =
   | "omitted"
   | "skip"
   | "conflict"
-  | "review";
+  | "review"
+  | "unrecorded-omission";
 
 export interface PlanEntry {
   action: PlanAction;
@@ -700,14 +711,95 @@ const classifyChangedUpstream = (versions: Versions): Outcome => {
       );
 };
 
+/** The code fence open after `line`, given the fence open before it. */
+const fenceAfter = (line: string, fence: string | null): string | null => {
+  if (fence === null) {
+    return FENCE_OPEN_PATTERN.exec(line)?.[1] ?? null;
+  }
+  const closing = FENCE_CLOSE_PATTERN.exec(line)?.[1];
+  return closing && closing[0] === fence[0] && closing.length >= fence.length
+    ? null
+    : fence;
+};
+
+/**
+ * The upstream files a fork records as intentionally omitted, with the reason
+ * it gives: list items of the form `- \`<path>\`: <reason>` under the
+ * `## Intentional omissions` heading of its references/fork-maintenance.md.
+ * Items outside that section or inside a code fence are examples, not records.
+ */
+export const intentionalOmissions = (forkPath: string): Map<string, string> => {
+  const omissions = new Map<string, string>();
+  const note = readText(join(forkPath, OMISSIONS_FILE));
+  if (note === null) {
+    return omissions;
+  }
+  let inSection = false;
+  let fence: string | null = null;
+  for (const line of note.split(LINE_BREAK_PATTERN)) {
+    const wasFenced = fence !== null;
+    fence = fenceAfter(line, fence);
+    if (wasFenced || fence !== null) {
+      continue;
+    }
+    if (OMISSIONS_HEADING_PATTERN.test(line)) {
+      inSection = true;
+    } else if (TOP_HEADING_PATTERN.test(line)) {
+      inSection = false;
+    } else if (inSection) {
+      const [, path, reason] = OMISSION_ENTRY_PATTERN.exec(line) ?? [];
+      if (path && reason) {
+        omissions.set(path, reason.trim());
+      }
+    }
+  }
+  return omissions;
+};
+
+/**
+ * A reference that upstream added or changed since the pin and the fork does
+ * not carry: new guidance never reaches the fork unless it carries the file or
+ * records why it leaves it out. A recorded omission stays a review item; an
+ * unrecorded one blocks the pin.
+ */
+const classifyOmittedReference = (
+  upstreamPath: string,
+  { base, current, target }: Versions,
+  omissions: ReadonlyMap<string, string>
+): Outcome | null => {
+  if (
+    !upstreamPath.startsWith(REFERENCE_PREFIX) ||
+    current !== null ||
+    target === null ||
+    target === base
+  ) {
+    return null;
+  }
+  const change = base === null ? "New upstream" : "Changed upstream";
+  const reason = omissions.get(upstreamPath);
+  return reason === undefined
+    ? outcome(
+        "unrecorded-omission",
+        `${change}, and the fork neither carries this reference nor lists it under Intentional omissions in ${OMISSIONS_FILE}; carry the file or record why the fork omits it.`
+      )
+    : outcome(
+        "review",
+        `${change}; ${OMISSIONS_FILE} records it as an intentional omission (${reason}). Confirm the reason still holds.`
+      );
+};
+
 const classify = (
   upstreamPath: string,
   forkPath: string,
-  versions: Versions
+  versions: Versions,
+  omissions: ReadonlyMap<string, string> = new Map()
 ): PlanEntry => {
   const { base, current, target } = versions;
+  const omitted = classifyOmittedReference(upstreamPath, versions, omissions);
   let result: Outcome;
-  if (base === null && target !== null) {
+  if (omitted) {
+    result = omitted;
+  } else if (base === null && target !== null) {
     result = classifyAddedUpstream(upstreamPath, versions);
   } else if (base !== null && target === null) {
     result = classifyRemovedUpstream(versions);
@@ -788,6 +880,7 @@ const PLAN_ACTIONS: readonly PlanAction[] = [
   "skip",
   "conflict",
   "review",
+  "unrecorded-omission",
 ];
 
 const summarize = (entries: PlanEntry[]): Record<PlanAction, number> =>
@@ -848,6 +941,7 @@ const classifyForkFiles = (
   const entries: PlanEntry[] = [];
   const plannedContent = new Map<string, string>();
   const forkPathsTouched = new Set<string>();
+  const omissions = intentionalOmissions(fork.path);
   for (const upstreamPath of [...upstreamPaths].sort(byText)) {
     const forkPath = mapUpstreamPath(fork, upstreamPath);
     if (forkPath === null) {
@@ -874,11 +968,16 @@ const classifyForkFiles = (
       });
       continue;
     }
-    const entry = classify(upstreamPath, forkPath, {
-      base: treeFile(upstream, fork.pin, upstreamPath),
-      current: readText(join(fork.path, forkPath)),
-      target: readText(join(source.path, upstreamPath)),
-    });
+    const entry = classify(
+      upstreamPath,
+      forkPath,
+      {
+        base: treeFile(upstream, fork.pin, upstreamPath),
+        current: readText(join(fork.path, forkPath)),
+        target: readText(join(source.path, upstreamPath)),
+      },
+      omissions
+    );
     if (entry.action === "conflict") {
       entry.sidecarDigest = null;
     }
@@ -1064,6 +1163,48 @@ const commandParityReview = (
   return pending;
 };
 
+/**
+ * Why the provenance pin cannot advance yet, or null: new-command gate review
+ * and unrecorded reference omissions both hold it. While either is pending,
+ * SKILL.md stays on its old base; partially merging it without advancing its
+ * pin can conflict with that same upstream hunk when the next plan retries.
+ */
+const holdPin = (
+  entries: PlanEntry[],
+  plannedContent: Map<string, string>,
+  parityPending: boolean
+): string | null => {
+  const omissionsPending = entries.some(
+    (entry) => entry.action === "unrecorded-omission"
+  );
+  if (!(parityPending || omissionsPending)) {
+    return null;
+  }
+  const pending = [
+    ...(parityPending ? ["new-command gate review"] : []),
+    ...(omissionsPending ? ["every unrecorded reference omission"] : []),
+  ].join(" and ");
+  const skillEntry = entries.find((entry) => entry.forkPath === "SKILL.md");
+  if (skillEntry && skillEntry.action !== "conflict") {
+    skillEntry.action = "review";
+    skillEntry.reason = `Keep the provenance file unchanged until ${pending} is resolved.`;
+    Reflect.deleteProperty(skillEntry, "content");
+    plannedContent.delete("SKILL.md");
+  }
+  return [
+    ...(parityPending
+      ? [
+          "New upstream commands require fork-owned gate review; resolve it before advancing the pin.",
+        ]
+      : []),
+    ...(omissionsPending
+      ? [
+          `Upstream references changed that this fork neither carries nor lists under Intentional omissions in ${OMISSIONS_FILE}; carry or record each before advancing the pin.`,
+        ]
+      : []),
+  ].join(" ");
+};
+
 export const planForkUpdate = (options: {
   branch?: string;
   cache?: string;
@@ -1122,23 +1263,14 @@ export const planForkUpdate = (options: {
     upstream,
     installed
   );
-  const parityPending = parityReviewPaths.size > 0;
-  // Keep the provenance-bearing file on its old base while gate review is
-  // pending. Partially merging it without advancing its pin can conflict with
-  // that same upstream hunk when the next plan retries after review.
-  if (parityPending) {
-    const skillEntry = entries.find((entry) => entry.forkPath === "SKILL.md");
-    if (skillEntry && skillEntry.action !== "conflict") {
-      skillEntry.action = "review";
-      skillEntry.reason =
-        "Keep the provenance file unchanged until new-command gate review is resolved.";
-      Reflect.deleteProperty(skillEntry, "content");
-      plannedContent.delete("SKILL.md");
-    }
-  }
+  const heldReason = holdPin(
+    entries,
+    plannedContent,
+    parityReviewPaths.size > 0
+  );
   const pinCandidate = source.commitVerified ? source.commit : null;
   const pinReady =
-    !parityPending &&
+    heldReason === null &&
     advanceProvenance(fork, entries, plannedContent, pinCandidate);
   const ordinaryPinReason =
     pinCandidate && !pinReady
@@ -1146,9 +1278,7 @@ export const planForkUpdate = (options: {
       : located.reason;
   const pinUpdate: ForkPlan["pinUpdate"] = {
     from: fork.pin,
-    reason: parityPending
-      ? "New upstream commands require fork-owned gate review; resolve it before advancing the pin."
-      : ordinaryPinReason,
+    reason: heldReason ?? ordinaryPinReason,
     to: pinReady ? pinCandidate : null,
   };
   const literalRewrites = literalRewritesFor(
@@ -1162,7 +1292,7 @@ export const planForkUpdate = (options: {
   ).filter(
     (rewrite) =>
       !parityReviewPaths.has(rewrite.forkPath) &&
-      (!parityPending || rewrite.forkPath !== "SKILL.md")
+      (heldReason === null || rewrite.forkPath !== "SKILL.md")
   );
   return {
     entries,
@@ -1184,6 +1314,7 @@ export interface ApplyReceipt {
   literalRewrites: number;
   pin: { from: string; to: string | null };
   review: string[];
+  unrecordedOmissions: string[];
   written: string[];
 }
 
@@ -1546,6 +1677,9 @@ export const applyForkPlan = (plan: ForkPlan): ApplyReceipt => {
     review: validated.entries
       .filter((entry) => entry.action === "review")
       .map((entry) => entry.forkPath),
+    unrecordedOmissions: validated.entries
+      .filter((entry) => entry.action === "unrecorded-omission")
+      .map((entry) => entry.forkPath),
     written: written.sort(byText),
   };
 };
@@ -1571,6 +1705,11 @@ apply     Write exactly what a saved plan says: updates, merges, additions,
           conflicting file is left untouched and its marked merge is written
           beside it as <file>.upstream-merge; review items are never written.
           Fails closed if the fork changed since the plan.
+
+An upstream reference added or changed since the pin that the fork neither
+carries nor lists under "## Intentional omissions" in its
+references/fork-maintenance.md is an unrecorded omission: it holds the pin,
+and plan and apply exit 3 until the fork carries or records it.
 
 The source defaults to the first installed skill found by discover. The
 upstream defaults to a bare cache under ~/.cache/simple-changes fetched from
@@ -1651,13 +1790,19 @@ const renderPlan = (plan: ForkPlan): string => {
     `Fork ${plan.fork.name} at ${plan.fork.path}`,
     `  pinned ${plan.pinUpdate.from} -> ${plan.pinUpdate.to ?? `(pin unchanged: ${plan.pinUpdate.reason})`}`,
     `  source ${plan.source.version ?? "unknown"} (guidance ${plan.source.guidanceVersion ?? "unknown"}) at ${plan.source.path}`,
-    `  ${plan.summary.update} update, ${plan.summary.merge} merge, ${plan.summary.add} add, ${plan.summary.delete} delete, ${plan.summary["keep-fork-delta"]} fork edits kept, ${plan.summary["keep-fork-only"]} fork-only files kept, ${plan.summary.omitted} omitted, ${plan.summary.conflict} conflict, ${plan.summary.review} to review, ${plan.literalRewrites.length} literal rewrites`,
+    `  ${plan.summary.update} update, ${plan.summary.merge} merge, ${plan.summary.add} add, ${plan.summary.delete} delete, ${plan.summary["keep-fork-delta"]} fork edits kept, ${plan.summary["keep-fork-only"]} fork-only files kept, ${plan.summary.omitted} omitted, ${plan.summary.conflict} conflict, ${plan.summary.review} to review, ${plan.summary["unrecorded-omission"]} unrecorded omissions, ${plan.literalRewrites.length} literal rewrites`,
   ];
   for (const entry of plan.entries) {
     if (
-      ["update", "merge", "add", "delete", "conflict", "review"].includes(
-        entry.action
-      )
+      [
+        "update",
+        "merge",
+        "add",
+        "delete",
+        "conflict",
+        "review",
+        "unrecorded-omission",
+      ].includes(entry.action)
     ) {
       lines.push(
         `  ${entry.action.padEnd(8)} ${entry.forkPath}: ${entry.reason}`
@@ -1719,7 +1864,9 @@ const runPlan = (options: CliOptions): number => {
     ...(options.url === undefined ? {} : { url: options.url }),
   });
   emit(plan, options.json, renderPlan(plan));
-  return plan.summary.conflict > 0 ? EXIT.blocked : EXIT.success;
+  return plan.summary.conflict > 0 || plan.summary["unrecorded-omission"] > 0
+    ? EXIT.blocked
+    : EXIT.success;
 };
 
 const runApply = (options: CliOptions): number => {
@@ -1731,9 +1878,11 @@ const runApply = (options: CliOptions): number => {
   emit(
     receipt,
     options.json,
-    `Applied to ${receipt.fork}: wrote ${receipt.written.length} file(s), deleted ${receipt.deleted.length}, rewrote ${receipt.literalRewrites} literal(s), pin ${receipt.pin.from} -> ${receipt.pin.to ?? "unchanged"}; ${receipt.conflicts.length} conflict(s) and ${receipt.review.length} review item(s) left untouched.\n`
+    `Applied to ${receipt.fork}: wrote ${receipt.written.length} file(s), deleted ${receipt.deleted.length}, rewrote ${receipt.literalRewrites} literal(s), pin ${receipt.pin.from} -> ${receipt.pin.to ?? "unchanged"}; ${receipt.conflicts.length} conflict(s), ${receipt.review.length} review item(s), and ${receipt.unrecordedOmissions.length} unrecorded omission(s) left untouched.\n`
   );
-  return receipt.conflicts.length > 0 ? EXIT.blocked : EXIT.success;
+  return receipt.conflicts.length > 0 || receipt.unrecordedOmissions.length > 0
+    ? EXIT.blocked
+    : EXIT.success;
 };
 
 const COMMANDS: Record<string, (options: CliOptions) => number> = {

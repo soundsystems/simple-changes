@@ -264,6 +264,9 @@ Usage:
     [--json] [--repo PATH]
   simple-changes loop status [--json] [--repo PATH]
   simple-changes loop replan-status [--json] [--repo PATH]
+  simple-changes loop archive-recorded --run-id ID --agent-id ID
+    --manifest-digest SHA256 --status-digest SHA256
+    --approved-by ID --reason TEXT [--json] [--repo PATH]
   simple-changes loop replan --run-id ID --agent-id ID
     --manifest-digest SHA256 --status-digest SHA256
     --approved-by ID --reason TEXT [--json] [--repo PATH]
@@ -2807,8 +2810,11 @@ const runLoopRecoveryAction = (
     writeOutput(status, options.json, `${JSON.stringify(status, null, 2)}\n`);
     return true;
   }
-  if (action === "replan") {
+  if (action === "replan" || action === "archive-recorded") {
     const result = replanLoop(options.repo, {
+      ...(action === "archive-recorded"
+        ? { archiveRecordedOutcome: true as const }
+        : {}),
       agentId: requireCliOption(options.agentId, "--agent-id"),
       approvedBy: requireCliOption(options.approvedBy, "--approved-by"),
       manifestDigest: requireCliOption(
@@ -2822,7 +2828,9 @@ const runLoopRecoveryAction = (
     writeOutput(
       result,
       options.json,
-      `Replanned ${result.request.runId}; the original lease is archived, this transition did not ship or clean work. Start a fresh loop through the normal workflow.\n`
+      result.outcome === "archived-unfinished"
+        ? `Archived ${result.request.runId} (${result.outcome}); this transition did not ship or clean work. All historical receipts are preserved. Start a fresh loop through the normal workflow and reconcile current provider state.\n`
+        : `Replanned ${result.request.runId}; the original lease is archived, this transition did not ship or clean work. Start a fresh loop through the normal workflow.\n`
     );
     return true;
   }
@@ -2934,7 +2942,7 @@ const runLoopCommand = async (options: CliOptions): Promise<void> => {
   const [action] = options.positional;
   if (!action) {
     throw new SimpleChangesError(
-      "loop requires start, status, verify, record-scope, refresh-scope, record-outcome, guard, exec, recover, recover-post-cleanup, close-equivalent, replan-status, replan, takeover, rebaseline, allow, dispose-worktree, retain-worktree, retire-absent-worktree, adopt-worktree, accept-paused-change, reconcile-remote-branches, emergency, end, finalize, or turn-check",
+      "loop requires start, status, verify, record-scope, refresh-scope, record-outcome, guard, exec, recover, recover-post-cleanup, close-equivalent, replan-status, replan, archive-recorded, takeover, rebaseline, allow, dispose-worktree, retain-worktree, retire-absent-worktree, adopt-worktree, accept-paused-change, reconcile-remote-branches, emergency, end, finalize, or turn-check",
       EXIT_CODES.usage
     );
   }

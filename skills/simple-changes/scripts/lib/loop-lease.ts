@@ -8709,6 +8709,36 @@ interface LoopGuidanceContext {
   unmutatedCloseAvailable: boolean;
 }
 
+const archiveRecordedCommand = (
+  lease: LoopLease,
+  manifestDigest: string,
+  statusDigest: string
+): string =>
+  `simple-changes loop archive-recorded --run-id ${lease.runId} --agent-id ${lease.ownerAgentId} --manifest-digest ${manifestDigest} --status-digest ${statusDigest} --approved-by <user> --reason <why>`;
+
+const relinquishedGuidance = (lease: LoopLease): LoopGuidance => {
+  const guidance: LoopGuidance = {
+    headline: `Loop ${lease.runId} has released its controller. Resume it to finish its recorded work; takeover approval is unnecessary. Its existing scope and safety checks still apply.`,
+    nextCommands: [
+      "simple-changes loop start --mode resume --agent-id <you>",
+      `simple-changes loop close-equivalent --run-id ${lease.runId} --agent-id <you> --approved-by <user> --reason <why>`,
+    ],
+  };
+  // A recorded outcome disables `loop replan`; name the approved archival
+  // that remains for a run that can no longer finish.
+  if (!(lease.shipmentOutcome && effectiveShipmentScopeFrozenAt(lease))) {
+    return guidance;
+  }
+  return {
+    headline: `${guidance.headline} It already recorded a shipment outcome, so \`loop replan\` cannot archive it; if it can no longer finish, its owner may archive it with explicit user approval through \`loop replan-status\` and \`loop archive-recorded\`, which never counts as delivery.`,
+    nextCommands: [
+      ...guidance.nextCommands,
+      "simple-changes loop replan-status --json",
+      archiveRecordedCommand(lease, "<digest>", "<digest>"),
+    ],
+  };
+};
+
 const loopGuidanceFor = (
   lease: LoopLease | null,
   verification: LoopVerification,
@@ -8743,13 +8773,7 @@ const loopGuidanceFor = (
     };
   }
   if (lifecycle.status === "relinquished") {
-    return {
-      headline: `Loop ${lease.runId} has released its controller. Resume it to finish its recorded work; takeover approval is unnecessary. Its existing scope and safety checks still apply.`,
-      nextCommands: [
-        "simple-changes loop start --mode resume --agent-id <you>",
-        `simple-changes loop close-equivalent --run-id ${lease.runId} --agent-id <you> --approved-by <user> --reason <why>`,
-      ],
-    };
+    return relinquishedGuidance(lease);
   }
   if (liveness?.state === "stale") {
     return {
@@ -8900,6 +8924,12 @@ const requireReplanLease = (inventory: RepositoryInventory): LoopLease => {
 export interface LoopReplanRequest {
   agentId: string;
   approvedBy: string;
+  /**
+   * Set only by `loop archive-recorded`: archive a frozen run that already
+   * recorded a shipment outcome but cannot finish. Its record keeps the
+   * `loop-archive-recorded` kind and `archived-unfinished` outcome.
+   */
+  archiveRecordedOutcome?: true;
   manifestDigest: string;
   reason: string;
   runId: string;
@@ -8909,10 +8939,10 @@ export interface LoopReplanRequest {
 interface LoopReplanRecord {
   archivedAt: string;
   fullLeaseDigest: string;
-  kind: "loop-replan";
+  kind: "loop-replan" | "loop-archive-recorded";
   lease: LoopLease;
   observation: ReturnType<typeof replanObservation>;
-  outcome: "replanned";
+  outcome: "replanned" | "archived-unfinished";
   request: LoopReplanRequest;
   schemaVersion: 1;
 }
@@ -8943,12 +8973,19 @@ export const loopReplanStatus = (repositoryPath: string) => {
           const inventory = captureInventory(repositoryPath);
           const lease = requireReplanLease(inventory);
           const observation = replanObservation(lease, inventory);
+          const manifestDigest = loopManifestDigest(lease);
+          const statusDigest = sha256Json(observation);
+          // Only the next command differs: a recorded outcome refuses
+          // `loop replan`, leaving the approved `loop archive-recorded`.
           return {
             agentId: lease.ownerAgentId,
-            manifestDigest: loopManifestDigest(lease),
+            manifestDigest,
+            nextCommand: lease.shipmentOutcome
+              ? archiveRecordedCommand(lease, manifestDigest, statusDigest)
+              : `simple-changes loop replan --run-id ${lease.runId} --agent-id ${lease.ownerAgentId} --manifest-digest ${manifestDigest} --status-digest ${statusDigest} --approved-by <user> --reason <why>`,
             observation,
             runId: lease.runId,
-            statusDigest: sha256Json(observation),
+            statusDigest,
           };
         }
       )
@@ -9028,6 +9065,21 @@ const readReplanLeaseBytes = (path: string): string => {
   }
 };
 
+/**
+ * Validates a lease stored in a replan or archive-recorded record. Leases
+ * started by an earlier repository fork carry `openingScopeInvariantDigest`,
+ * which this runtime never writes; it is ignored for validation but kept for
+ * the manifest digest the record's approval bound.
+ */
+const archivedReplanLease = (value: LoopLease): LoopLease => {
+  const { openingScopeInvariantDigest: _legacy, ...lease } =
+    value as LoopLease & {
+      openingScopeInvariantDigest?: unknown;
+    };
+  validateSchema<LoopLease>("loop-lease", lease);
+  return value;
+};
+
 const assertReplanRecord = (
   record: LoopReplanRecord,
   request: LoopReplanRequest
@@ -9039,7 +9091,11 @@ const assertReplanRecord = (
       properties: {
         archivedAt: { format: "date-time", type: "string" },
         fullLeaseDigest: { pattern: "^[0-9a-f]{64}$", type: "string" },
-        kind: { const: "loop-replan" },
+        kind: {
+          const: request.archiveRecordedOutcome
+            ? "loop-archive-recorded"
+            : "loop-replan",
+        },
         lease: { type: "object" },
         observation: {
           additionalProperties: false,
@@ -9051,7 +9107,11 @@ const assertReplanRecord = (
           required: ["coordination", "inventoryDigest", "targetRevision"],
           type: "object",
         },
-        outcome: { const: "replanned" },
+        outcome: {
+          const: request.archiveRecordedOutcome
+            ? "archived-unfinished"
+            : "replanned",
+        },
         request: {
           additionalProperties: false,
           properties: Object.fromEntries(
@@ -9086,11 +9146,15 @@ const assertReplanRecord = (
     },
     record
   );
-  const lease = validateSchema<LoopLease>("loop-lease", record.lease);
+  const lease = archivedReplanLease(record.lease);
   if (
     record.schemaVersion !== 1 ||
-    record.kind !== "loop-replan" ||
-    record.outcome !== "replanned" ||
+    record.kind !==
+      (request.archiveRecordedOutcome
+        ? "loop-archive-recorded"
+        : "loop-replan") ||
+    record.outcome !==
+      (request.archiveRecordedOutcome ? "archived-unfinished" : "replanned") ||
     typeof record.archivedAt !== "string" ||
     !DIGEST_PATTERN.test(record.fullLeaseDigest) ||
     JSON.stringify(record.request) !== JSON.stringify(request) ||
@@ -9101,6 +9165,57 @@ const assertReplanRecord = (
   ) {
     throw new SimpleChangesError(
       "Replan archive does not match the exact approved request.",
+      EXIT_CODES.unsafe
+    );
+  }
+};
+
+/**
+ * `loop archive-recorded` archives a run whose recorded shipment outcome can no
+ * longer finish. It proves only that the recorded receipt is intact and still
+ * describes history the current target contains; it never claims delivery.
+ */
+const assertArchivableRecordedOutcome = (lease: LoopLease): void => {
+  const outcome = lease.shipmentOutcome;
+  if (!outcome) {
+    throw new SimpleChangesError(
+      "Recorded-outcome archival requires a historical receipt.",
+      EXIT_CODES.unsafe
+    );
+  }
+  const target = currentTargetRevision(lease);
+  const receipt = validateSchema<ShipmentOutcomeReceipt>(
+    "shipment-outcome",
+    outcome.receipt
+  );
+  const paths = [
+    ...receipt.units.flatMap((unit) => [
+      ...unit.finalPaths,
+      ...unit.originalPaths,
+    ]),
+    ...receipt.additionalPaths,
+  ];
+  if (
+    receipt.runId !== lease.runId ||
+    outcome.receiptDigest !== sha256Json(receipt) ||
+    paths.length === 0 ||
+    !target ||
+    !targetContainsRevision(
+      lease.primaryCheckout,
+      target,
+      receipt.targetRevision
+    ) ||
+    paths.some(
+      (item) =>
+        targetTreeEntry(
+          lease.primaryCheckout,
+          receipt.targetRevision,
+          item.path
+        ) !== item.entry
+    )
+  ) {
+    throw new SimpleChangesError(
+      "Recorded-outcome archival requires an intact historical receipt and tree contained in the current target.",
       EXIT_CODES.unsafe
     );
   }
@@ -9118,7 +9233,7 @@ const createReplanIntent = (
   if (
     lease.ownerAgentId !== request.agentId ||
     !effectiveShipmentScopeFrozenAt(lease) ||
-    lease.shipmentOutcome ||
+    (!request.archiveRecordedOutcome && lease.shipmentOutcome) ||
     lease.closeEquivalentOutcome ||
     lease.emergencyShipping ||
     verificationAgainst(lease, inventory).violations.some(
@@ -9129,6 +9244,9 @@ const createReplanIntent = (
       "Replan requires the frozen loop's exact owner, no terminal outcome, and complete preparations.",
       EXIT_CODES.unsafe
     );
+  }
+  if (request.archiveRecordedOutcome) {
+    assertArchivableRecordedOutcome(lease);
   }
   const observation = replanObservation(lease, inventory);
   if (
@@ -9150,10 +9268,14 @@ const createReplanIntent = (
   const record: LoopReplanRecord = {
     archivedAt: new Date().toISOString(),
     fullLeaseDigest: sha256(bytes),
-    kind: "loop-replan",
+    kind: request.archiveRecordedOutcome
+      ? "loop-archive-recorded"
+      : "loop-replan",
     lease,
     observation,
-    outcome: "replanned",
+    outcome: request.archiveRecordedOutcome
+      ? "archived-unfinished"
+      : "replanned",
     request,
     schemaVersion: 1,
   };
@@ -9169,7 +9291,13 @@ export const replanLoop = (
   repositoryPath: string,
   input: LoopReplanRequest
 ): LoopReplanRecord => {
+  // Key order is part of the stored record: retries compare the request by its
+  // serialized bytes, so archive-recorded records written by earlier forks
+  // must keep `archiveRecordedOutcome` first.
   const request: LoopReplanRequest = {
+    ...(input.archiveRecordedOutcome
+      ? { archiveRecordedOutcome: true as const }
+      : {}),
     agentId: requiredText(input.agentId, "agent ID"),
     approvedBy: requiredText(input.approvedBy, "approver"),
     manifestDigest: requiredText(input.manifestDigest, "manifest digest"),
@@ -9190,6 +9318,7 @@ export const replanLoop = (
   }
   const opening = locateRepository(repositoryPath);
   const common = opening.repository.commonGitDirectory;
+  const attempt = `${request.archiveRecordedOutcome ? "archive-recorded" : "replan"}-${sha256Json(request)}`;
   return withStateLock(common, "loop replan", () =>
     withWorktreeCoordinationLock(common, "loop replan", () => {
       const directory = assertNoSymlinkAncestors(
@@ -9198,7 +9327,7 @@ export const replanLoop = (
           STATE_DIRECTORY,
           RECOVERY_HISTORY_DIRECTORY,
           request.runId,
-          `replan-${sha256Json(request)}`
+          attempt
         )
       );
       const intentPath = join(directory, "replan.json");

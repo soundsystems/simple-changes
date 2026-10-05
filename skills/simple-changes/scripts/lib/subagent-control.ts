@@ -197,7 +197,7 @@ const VARIABLE_USE =
   /\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)/gu;
 // A value is spliced in only when it cannot change how the command parses:
 // no space, quote, shell operator, or leading `-` that would read as a flag.
-const SAFE_VALUE = /^[^\s"'`;&|()<>$\\-][^\s"'`;&|()<>$\\]*$/u;
+const SAFE_VALUE = /^[^-\s"'`;&|()<>$\\][^\s"'`;&|()<>$\\]*$/u;
 
 type QuoteState = "none" | "single" | "double";
 

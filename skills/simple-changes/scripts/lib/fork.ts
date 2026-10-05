@@ -309,13 +309,14 @@ const reserveDestination = (root: string, destination: string): string[] => {
 
 /** Remove what this command created, innermost first, keeping anything else. */
 const removeCreated = (created: readonly string[]): void => {
-  const [destination, ...parents] = [...created].reverse();
+  const destination = created.at(-1);
   if (destination) {
     rmSync(destination, { force: true, recursive: true });
   }
-  for (const parent of parents) {
+  // Parents were created outermost first, so walk back from the innermost.
+  for (let index = created.length - 2; index >= 0; index -= 1) {
     try {
-      rmdirSync(parent);
+      rmdirSync(created[index] as string);
     } catch {
       // Not empty or already gone: someone else's content stays.
     }

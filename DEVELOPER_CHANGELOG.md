@@ -1,6 +1,6 @@
 # Developer changelog
 
-## Unreleased
+## 0.24.0 - 2026-10-05
 
 - `references/change-requests.md` gains `## Body shape`, placed before
   `## Agent signatures` so the replacement-lineage and pagination rules keep

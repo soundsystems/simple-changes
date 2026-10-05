@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.24.0 - 2026-10-05
 
 - Proposal descriptions now follow one body shape
   (`references/change-requests.md#body-shape`). A Summary opens with the

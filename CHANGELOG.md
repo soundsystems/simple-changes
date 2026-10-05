@@ -65,6 +65,21 @@
   section keep the old value, so a sync record such as `7ab67a1..628c66b`
   and the test that checks it no longer change to the new pin.
 <!-- simple-changelogs-signature agent="Claude Opus 5.5 xhigh" at="2026-10-05T14:14:40-05:00" -->
+- Remote branch cleanup now judges merge requests by their final state. A
+  branch whose merge request was open when the run started and merged at that
+  same head is recorded as merged without an extra ancestry proof, as long as
+  the target contains that head, and one closed during the run is classified
+  as closed rather than open. A merge request still open at the end still
+  blocks deletion, a squash merge or a merge after a fast-forward is handled
+  as before, and a deletion you approve as superseded still counts every
+  merge request ever seen on the branch.
+- `loop close-equivalent` accepts a worktree the run itself removed after an
+  audited cleanup when the path is gone and the refreshed target still
+  contains its head, and an unrelated preserved checkout that changed or went
+  missing after the scope froze no longer blocks the close. The primary
+  checkout and a changed retained checkout still block, and every scoped
+  source worktree now has to be proven before the close.
+<!-- simple-changelogs-signature agent="Claude Opus 5.5 xhigh" at="2026-10-05T15:08:28-05:00" -->
 
 ## 0.23.1 - 2026-10-03
 

@@ -109,6 +109,71 @@
   asserting that heading (3 occurrences before, 0 after). One new test (15
   pass).
 <!-- simple-changelogs-signature agent="Claude Opus 5.5 xhigh" at="2026-10-05T14:14:40-05:00" -->
+- Upstreamed from the Hash (`hashi-simple-changes`) and Site Secure
+  (`thor-simple-changes`) forks, which carried these as runtime deltas from
+  pin `7ab67a1` and hand-merged them on every sync.
+  - `remote-branch-reconciliation.ts` adds `finalProposals` (records with
+    `observedFinally !== false`), which both forks wrote independently.
+    Open-branch protection, `validateDeletedMerged`, and
+    `assertAuditedClassification` judge the final snapshot; supersession
+    passes every observed state and keeps its all-record open check.
+    `needsAncestryShape` in `loop-lease.ts` follows the same rule for its
+    missing-sidecar hint, and `validateAncestryMerged` judges "another open
+    proposal" from the final snapshot too. Behavior change: a same-head merge
+    now validates without `mergedHeadAncestry` (the test that asserted the old
+    rejection is rewritten), and the fast-forward shape now fails on the
+    merged-head rule rather than the open-proposal rule. Because the sidecar
+    was also where Git checked target containment, `assertRemoteBranchAncestry`
+    now requires the target to contain the head of every `deleted-merged`
+    branch whose proposal was open at the opening inventory and that has no
+    sidecar, so a squash merge or a merge into another branch still fails
+    closed.
+  - `loop-lease.ts`: `closeEquivalentObligatedPaths` adds every
+    `shipmentScope.plan.units[].sourceWorktree`; the new exported
+    `completedRemovalProofForPath` proves a missing obligated path from a
+    completed `remove-after-audit` disposition whose `targetRevision` and
+    `headSha` the refreshed target contains; and the new exported
+    `frozenRecoveryBlockingViolations` drops only
+    `missing-preserved-worktree`, `missing-retained-worktree`, and
+    `preserved-worktree-changed` for unclaimed, unpaused, non-obligated
+    preserved or retained registrations other than the primary checkout
+    once the scope is frozen. Site Secure's version lacked the primary
+    exclusion, which `finalization-records.test.ts` caught: after an
+    interrupted primary update, a close must not absorb new primary work.
+  - `completedRemovalProofForPath` also requires the path to be gone from
+    disk, checked with `lstat` so a dangling symlink recreated there counts
+    as present. A patch-equivalent removal is not re-proven by it, so a close retry
+    after one fails closed.
+  - Tests: `remote-branch-reconciliation.test.ts` gains four cases and
+    rewrites two (the behavior changes fail on the old code);
+    `loop-lease.test.ts` adds a Git-backed same-head case that records when
+    the target contains the head and refuses the squash shape; and the new
+    `close-equivalent-recovery.test.ts` adapts Site Secure's twelve unit
+    cases and adds primary-checkout and recreated-path cases. Mutations that
+    drop the scope obligation, the containment check, or the final-snapshot
+    ancestry rule each fail a test.
+  - GPT-6 Sol (high) reviewed the port independently. Its one blocking
+    finding (the missing containment check) and its should-fix findings (path
+    presence, the ancestry-path rule, retained wording) are fixed above; the
+    patch-equivalent retry limit is kept as fail-closed. A focused re-review
+    confirmed the fixes and raised the dangling-symlink case, fixed above, and
+    noted that a branch already merged at the opening inventory is still
+    trusted from GitLab's merged state without a Git containment check; that
+    rule predates this change and is what lets squash-merged branches be
+    cleaned up, so it is unchanged.
+  - Not upstreamed. Already canonical: hashi's `release-gate.ts` and
+    receipt-schema changes (`6466606`), thor's claimed-author opening digest
+    (the scoped first-scope check ignores authors' worktrees), thor's
+    untouched-run close, and hashi's `worktree retire-missing-claim` (absent
+    claims are released at finalize, handoff, and `worktree cleanup` since
+    `91a8742`; Hash has no retirement receipts). Covered differently: thor's
+    `merged-proposal-advanced-target-contained` proof
+    (`mergedHeadAncestry`). Fork-specific: both Blacksmith merge guards and
+    thor's lint-only rewrites. Policy decisions left in the fork: thor's
+    manual `semantically-equivalent` preserved-source override (SPEC.md says
+    equivalence evidence never asserts semantic equivalence) and its
+    `loop archive-recorded` recovery.
+<!-- simple-changelogs-signature agent="Claude Opus 5.5 xhigh" at="2026-10-05T15:08:28-05:00" -->
 
 ## 0.23.1 - 2026-10-03
 

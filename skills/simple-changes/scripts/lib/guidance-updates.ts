@@ -1,6 +1,6 @@
 import type { ChangelogCoordination, RepoPolicy } from "./types.ts";
 
-export const CURRENT_GUIDANCE_VERSION = 25;
+export const CURRENT_GUIDANCE_VERSION = 26;
 
 export type GuidanceUpdateAction =
   | "review-settings"
@@ -717,6 +717,37 @@ const GUIDANCE_UPDATES: GuidanceUpdateDefinition[] = [
       },
     ],
     version: 25,
+  },
+  {
+    changelogReviewRelevant: false,
+    changes: [
+      {
+        kind: "onboarding",
+        summary:
+          "`.simple-changes.json` accepts an optional `execGuard` argv, absent by default: it runs with the command appended before every `loop exec` child, and any nonzero exit refuses the command before it starts. It is repository code that runs with the agent's permissions; personal preferences never supply one, and setup and `acknowledge-update` keep a saved guard unchanged.",
+        version: 26,
+      },
+      {
+        kind: "behavior",
+        summary:
+          "`loop archive-recorded` archives, with named user approval, a frozen run that already recorded its shipment outcome but cannot finish; its `archived-unfinished` record never counts as delivery, and `loop status` and `loop replan-status` name it where `loop replan` refuses.",
+        version: 26,
+      },
+      {
+        kind: "behavior",
+        summary:
+          "`loop record-outcome --approved-by --approval-reference` accepts a user-approved preserved-source override for a claimed author's checkout whose work shipped in an independently reviewed, equivalent form; finalization keeps that checkout only while nothing moved, and a fork's setup now names the fork in the managed instruction block.",
+        version: 26,
+      },
+    ],
+    noticeBullets: [
+      {
+        priority: 170,
+        summary:
+          "A repository can now add an `execGuard` check that must pass before `loop exec` runs a command, such as a merge before hosted CI passes, and a recorded run that cannot finish can be archived with your approval through `loop archive-recorded`.",
+      },
+    ],
+    version: 26,
   },
 ];
 

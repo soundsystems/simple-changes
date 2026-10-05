@@ -1,6 +1,6 @@
 import type { ChangelogCoordination, RepoPolicy } from "./types.ts";
 
-export const CURRENT_GUIDANCE_VERSION = 24;
+export const CURRENT_GUIDANCE_VERSION = 25;
 
 export type GuidanceUpdateAction =
   | "review-settings"
@@ -686,6 +686,31 @@ const GUIDANCE_UPDATES: GuidanceUpdateDefinition[] = [
       },
     ],
     version: 24,
+  },
+  {
+    changelogReviewRelevant: false,
+    changes: [
+      {
+        kind: "behavior",
+        summary:
+          "Proposal bodies now follow `references/change-requests.md#body-shape`: a Summary with the smallest view that makes the change clear, Evidence with a before, an after, and the checks run, and a Merge danger door and blast radius; a repository's own template is filled first and the signature stays last.",
+        version: 25,
+      },
+      {
+        kind: "behavior",
+        summary:
+          "An agent's independent review now pins exact base and head revisions and a non-empty diff, then reports two axes that are never merged or reranked: Standards cites the repository rule for each finding, and Spec quotes the issue or spec for missing, unrequested, or wrong behavior, or `no spec available`.",
+        version: 25,
+      },
+    ],
+    noticeBullets: [
+      {
+        priority: 165,
+        summary:
+          "Proposal bodies now follow one shape with a Summary, Evidence, and a Merge danger door, and agent reviews report Standards and Spec findings on separate axes; existing proposals change only when next updated.",
+      },
+    ],
+    version: 25,
   },
 ];
 

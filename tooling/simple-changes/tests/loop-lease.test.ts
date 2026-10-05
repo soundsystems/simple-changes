@@ -5685,6 +5685,141 @@ describe("active integration-loop lease", () => {
     expect(endLoop(fixture.root, lease.runId, "controller").ok).toBe(true);
   });
 
+  test("records a same-head merge without a sidecar only when the target contains the head", () => {
+    for (const squashed of [false, true]) {
+      const fixture = repository();
+      git(fixture.root, [
+        "remote",
+        "add",
+        "origin",
+        "git@gitlab.com:group/project.git",
+      ]);
+      const base = git(fixture.root, ["rev-parse", "HEAD"]);
+      writeFixture(fixture.root, "shipped.txt", "opening head\n");
+      git(fixture.root, ["add", "shipped.txt"]);
+      git(fixture.root, ["commit", "-m", "Opening MR head"]);
+      const head = git(fixture.root, ["rev-parse", "HEAD"]);
+      if (squashed) {
+        // A squash merge lands the same tree as a new commit that does not
+        // contain the source head.
+        const squash = git(fixture.root, [
+          "commit-tree",
+          git(fixture.root, ["rev-parse", "HEAD^{tree}"]),
+          "-p",
+          base,
+          "-m",
+          "Squashed MR !72",
+        ]);
+        git(fixture.root, ["reset", "-q", "--hard", squash]);
+      }
+      const targetRevision = git(fixture.root, ["rev-parse", "HEAD"]);
+      const main = {
+        classification: "canonical-target" as const,
+        disposition: "preserved-target" as const,
+        evidence: ["Complete GitLab inventory includes protected main."],
+        finalHeadRevision: targetRevision,
+        initialHeadRevision: targetRevision,
+        name: "main",
+        obsoleteProof: null,
+        proposals: [],
+        protected: true,
+      };
+      const openingBranches = [
+        main,
+        {
+          classification: "open-proposal" as const,
+          disposition: "preserved-open-proposal" as const,
+          evidence: ["MR !72 is open at the opening source head."],
+          finalHeadRevision: head,
+          initialHeadRevision: head,
+          name: "fix/same-head",
+          obsoleteProof: null,
+          proposals: [
+            { headRevision: head, objectId: "72", state: "open" as const },
+          ],
+          protected: false,
+        },
+      ];
+      const opening = remoteLedger(openingBranches, "initial");
+      const lease = startLoop(fixture.root, "controller", "integrate", {
+        branches: openingBranches,
+        finalBranchCount: opening.count,
+        finalCoverage: opening.coverage,
+        finalInventoryComplete: true,
+        initialBranchCount: opening.count,
+        initialCoverage: opening.coverage,
+        initialInventoryComplete: true,
+        observedAt: new Date().toISOString(),
+        project: "group/project",
+        provider: "gitlab",
+        schemaVersion: 1,
+        targetBranch: "main",
+        targetRevision,
+      });
+      const branches = [
+        main,
+        {
+          classification: "merged-obsolete" as const,
+          disposition: "deleted-merged" as const,
+          evidence: [
+            "MR !72 merged at its opening head and GitLab deleted the source branch.",
+          ],
+          finalHeadRevision: null,
+          initialHeadRevision: head,
+          name: "fix/same-head",
+          obsoleteProof: "merged-proposal-head" as const,
+          proposals: [
+            {
+              headRevision: head,
+              objectId: "72",
+              observedFinally: false,
+              state: "open" as const,
+            },
+            {
+              headRevision: head,
+              objectId: "72",
+              observedInitially: false,
+              state: "merged" as const,
+            },
+          ],
+          protected: false,
+        },
+      ];
+      const initial = remoteLedger(branches, "initial");
+      const final = remoteLedger(branches, "final");
+      const record = () =>
+        recordRemoteBranchReconciliation(
+          fixture.root,
+          lease.runId,
+          "controller",
+          {
+            branches,
+            finalBranchCount: final.count,
+            finalCoverage: final.coverage,
+            finalInventoryComplete: true,
+            initialBranchCount: initial.count,
+            initialCoverage: initial.coverage,
+            initialInventoryComplete: true,
+            observedAt: new Date().toISOString(),
+            project: "group/project",
+            provider: "gitlab",
+            schemaVersion: 1,
+            targetBranch: "main",
+            targetRevision,
+          }
+        );
+      if (squashed) {
+        expect(record).toThrow("is not contained in target");
+        expect(readLoopLease(fixture.root)?.remoteBranchReconciliation).toBe(
+          undefined
+        );
+      } else {
+        expect(record().remoteBranchReconciliation.branches).toHaveLength(2);
+        expect(endLoop(fixture.root, lease.runId, "controller").ok).toBe(true);
+      }
+    }
+  });
+
   test("verifies an approved supersession with git and keeps it out of the lease", () => {
     const fixture = repository();
     git(fixture.root, [

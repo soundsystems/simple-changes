@@ -724,6 +724,28 @@ describe("remote branch reconciliation", () => {
     ).toThrow("an open proposal branch cannot be deleted");
   });
 
+  test("ignores another proposal closed during the run on the ancestry path", () => {
+    const value = fastForwardReceipt();
+    shippedBranch(value).proposals.push(
+      {
+        headRevision: FAST_FORWARD.initial,
+        objectId: "73",
+        observedFinally: false,
+        state: "open",
+      },
+      {
+        headRevision: FAST_FORWARD.initial,
+        objectId: "73",
+        observedInitially: false,
+        state: "closed",
+      }
+    );
+    recomputeCoverage(value);
+    expect(
+      validateRemoteBranchReconciliation(value, [ancestryProof()])
+    ).toEqual(value);
+  });
+
   test("rejects ancestry proof when the same proposal is still open finally", () => {
     const value = fastForwardReceipt();
     const [open] = shippedBranch(value).proposals;

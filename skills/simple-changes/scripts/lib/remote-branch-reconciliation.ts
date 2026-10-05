@@ -402,12 +402,9 @@ const validateAncestryMerged = (
       "merged-head ancestry proof must bind the same proposal open at the initial head and merged at the proof head"
     );
   }
-  const [openEvidence] = initiallyOpen;
-  if (
-    branch.proposals.some(
-      (proposal) => proposal.state === "open" && proposal !== openEvidence
-    )
-  ) {
+  // The proof's own opening record is not final; any proposal still open in
+  // the final snapshot blocks deletion.
+  if (finalProposals(branch).some((proposal) => proposal.state === "open")) {
     fail(branch.name, "an open proposal branch cannot be deleted");
   }
 };

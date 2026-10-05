@@ -285,10 +285,12 @@
   close-only loop only when every obligated worktree is proven contained in
   the refreshed target, records a terminal `target-equivalent` outcome that is
   never reported as shipped, performs only proven-safe local cleanup, and
-  requires final verification plus any GitLab branch/proposal reconciliation
-  bound to the current target. For providers without that GitLab gate, it
-  records that the reconciliation was not applicable. Frozen shipment scope
-  blocks new authoring, not the target-equivalent close.
+  requires final verification (where unrelated, unclaimed preserved or
+  retained work no longer blocks once the scope is frozen) plus any GitLab
+  branch/proposal reconciliation bound to the current target. For providers
+  without that GitLab gate, it records that the reconciliation was not
+  applicable. Frozen shipment scope blocks new authoring, not the
+  target-equivalent close.
 - A lease records a heartbeat: every operation that already writes lease state
   refreshes `updatedAt` and the owner process identity. A lease is `live` while
   its recorded owner process is provably running or its heartbeat is recent,

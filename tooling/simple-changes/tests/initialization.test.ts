@@ -72,8 +72,11 @@ describe("first-run initialization", () => {
       changelogCoordination
     );
     expect(from19.changes.map((item) => item.version)).toEqual([
-      20, 20, 21, 21, 21, 22, 22, 22, 22, 23, 23, 24, 24, 24, 25, 25,
+      20, 20, 21, 21, 21, 22, 22, 22, 22, 23, 23, 24, 24, 24, 25, 25, 25,
     ]);
+    expect(from19.changes.at(-1)?.summary).toContain(
+      "`simple-changes proposal audit`"
+    );
   });
   test("propagates the saved shipping preference into emergency classification", () => {
     for (const shippingMode of ["expedited", "break-glass"] as const) {

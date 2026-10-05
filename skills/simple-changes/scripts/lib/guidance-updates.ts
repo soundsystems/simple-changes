@@ -702,6 +702,12 @@ const GUIDANCE_UPDATES: GuidanceUpdateDefinition[] = [
           "An agent's independent review now pins exact base and head revisions and a non-empty diff, then reports two axes that are never merged or reranked: Standards cites the repository rule for each finding, and Spec quotes the issue or spec for missing, unrequested, or wrong behavior, or `no spec available`.",
         version: 25,
       },
+      {
+        kind: "behavior",
+        summary:
+          "After creating or updating a proposal, agents now check the stored description with `simple-changes proposal audit` (real line breaks, the body-shape or repository-template sections, a valid Merge danger door and blast radius, and a final signature block); `fork create` now describes a new fork as its repository's replacement for the global skill, and a fork installs the turn-end guard from the global copy.",
+        version: 25,
+      },
     ],
     noticeBullets: [
       {

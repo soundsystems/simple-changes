@@ -1,5 +1,21 @@
 # Developer changelog
 
+## 0.24.1 - 2026-10-05
+
+- `release-gate.ts` adds `assertVersionResolution` (the new ask-policy
+  pairing check plus the existing selected-version check, extracted to keep
+  `validateModernTransaction` within its complexity limit); a mismatch is a
+  protocol mismatch for every receipt status. Simple Changelogs refuses to
+  emit the pairing since soundsystems/simple-changelogs!68; this is the
+  controller-side check. `release-gate.test.ts` adds both forbidden pairs
+  and the allowed ask plus explicit direction, and a mutation dropping the
+  check fails it. `references/changelog-coordination.md` states the rule.
+  GPT-6 Sol's review asked to narrow the customer note: the gate rejects the
+  two pairings but still trusts a provider's explicit-direction claim.
+- `update-local-forks` `renderPlan` lists `skip` rows; the CLI check
+  asserts the `CHANGELOG.md` row in plain-text output.
+<!-- simple-changelogs-signature agent="Claude Opus 5.5 xhigh" at="2026-10-05T17:17:45-05:00" -->
+
 ## 0.24.0 - 2026-10-05
 
 - `references/change-requests.md` gains `## Body shape`, placed before

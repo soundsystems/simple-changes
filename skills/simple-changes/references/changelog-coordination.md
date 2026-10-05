@@ -106,7 +106,9 @@ phase, revisions, and prior receipt digest alone.
    `not-applicable`, or `blocked`. `classified` proceeds directly to
    `prepare`: either the entry-only outcome, or one that carries the exact
    automatically or explicitly selected public version with `release` null
-   and no paths.
+   and no paths. An ask policy resolves only by explicit direction; the gate
+   rejects an ask policy with an automatic or repository-automation
+   resolution.
 2. `prepare` is the only phase allowed to change established release files. It
    requires the approved version and decision digest and returns a prepared
    reconciliation-head revision.

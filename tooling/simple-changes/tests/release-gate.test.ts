@@ -315,13 +315,29 @@ describe("phased release gate", () => {
         versionAuthorized: false,
       }).action
     ).toBe("re-delegate");
+    // An ask policy resolves only by explicit direction.
+    const asked = structuredClone(classified);
+    if (asked.versionDecision) {
+      asked.versionDecision.policyAction = "ask";
+      asked.versionDecision.resolution = "explicit-direction";
+    }
+    expect(validateChangelogTransaction(request(), asked).status).toBe(
+      "classified"
+    );
     for (const variant of [
       "train",
       "revision",
       "unresolved",
       "prepared",
+      "ask-automatic",
+      "ask-repository-automation",
     ] as const) {
       const changed = structuredClone(classified);
+      if (variant.startsWith("ask-") && changed.versionDecision) {
+        changed.versionDecision.policyAction = "ask";
+        changed.versionDecision.resolution =
+          variant === "ask-automatic" ? "automatic" : "repository-automation";
+      }
       if (variant === "train" && changed.versionDecision) {
         changed.versionDecision.releaseTrain = "ios";
       }

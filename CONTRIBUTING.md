@@ -3,7 +3,9 @@
 Thanks for helping make repository integration safer and easier to understand.
 
 1. Open an issue for contract changes so provider-neutral behavior can be
-   discussed before an adapter depends on it.
+   discussed before an adapter depends on it. Check `.out-of-scope/` first:
+   it records requests already declined and why, so a proposal to reverse one
+   should answer the recorded reason.
 2. Install dependencies with `bun install`.
 3. Keep normative workflow rules in one canonical reference. Link to them from
    provider notes instead of copying them.

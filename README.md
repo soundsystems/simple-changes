@@ -88,7 +88,11 @@ bun ~/.agents/skills/simple-changes/scripts/simple-changes.ts fork create \
 The command copies the complete installed skill to
 `.agents/skills/product-simple-changes`, renames its skill identity, and records
 the exact upstream commit after verifying every source file's bytes (a
-mismatch names the differing files; Finder `.DS_Store` files are ignored). It
+mismatch names the differing files; Finder `.DS_Store` files are ignored). The
+fork's description starts with its name and tells agents to use it instead of
+the global `simple-changes` skill in that repository (`product` here, taken
+from a `<project>-simple-changes` name), and its Codex metadata names and
+invokes the fork, so an agent that sees both skills loads the fork. It
 always writes inside the Git repository that contains the working directory or
 `--repo`, refuses an existing destination or a name that matches an installed
 skill, and leaves the global installation untouched. Pass

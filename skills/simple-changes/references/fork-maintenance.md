@@ -19,6 +19,13 @@ Keep that delta map small and include:
 Do not copy product-specific commands or rules into the generic core. Keep local
 rules in clearly owned references and link them from the fork's router.
 
+`fork create` writes a description that starts with the fork's name and says to
+use it instead of the global `simple-changes` skill in its repository, and
+points `agents/openai.yaml` at the fork. When you edit either, keep that
+precedence statement and keep the description under about 400 characters with
+no unquoted `: `; an agent that sees both skills otherwise has no reason to
+prefer the fork.
+
 After every edit to a fork, run `simple-changes skill check` from the fork's
 own runtime (`--skill-dir <fork>` checks another copy). It fails when skill
 discovery would skip or misread the fork: frontmatter that is not strict YAML,

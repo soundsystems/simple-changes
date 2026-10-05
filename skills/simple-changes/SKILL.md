@@ -36,9 +36,12 @@ context. For behavior that requires changing the skill, run
 `simple-changes fork create --name <project>-simple-changes --deltas "<intended custom behavior>"`
 from the owning repository. This copies the complete installed skill into
 `.agents/skills/<project>-simple-changes`, verifies and records its upstream
-commit, and refuses existing destinations. It does not change the
-global install or commit the new copy. Use `--destination` for another path
-inside the repository and `--upstream` for an offline source checkout.
+commit, and refuses existing destinations. The copy's description starts with
+its name and tells agents to use it instead of the global `simple-changes`
+skill in that repository, and its Codex metadata invokes the fork; keep both
+when customizing. It does not change the global install or commit the new
+copy. Use `--destination` for another path inside the repository and
+`--upstream` for an offline source checkout.
 Customize and verify the fork, including the fork runtime's own
 `simple-changes skill check`, then use `update-local-forks` for future updates.
 

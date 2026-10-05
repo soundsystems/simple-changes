@@ -3791,7 +3791,7 @@ const executeCommand = async (
       writeOutput(
         result,
         options.json,
-        `Created ${result.name} at ${result.destination}\nUpstream: ${result.upstreamCommit}\nCustomize SKILL.md, then verify and commit the fork in its repository.\n`
+        `Created ${result.name} at ${result.destination}\nUpstream: ${result.upstreamCommit}\nDescription: ${result.description}\nCustomize SKILL.md, keeping a description that names this fork in place of the global simple-changes skill, run the fork's own skill check, then verify and commit the fork in its repository.\n`
       );
       return EXIT_CODES.success;
     }

@@ -11,8 +11,12 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
-import { spawnSync } from "bun";
-import { createFork } from "../../../skills/simple-changes/scripts/lib/fork.ts";
+import { spawnSync, YAML } from "bun";
+import {
+  createFork,
+  forkDescription,
+} from "../../../skills/simple-changes/scripts/lib/fork.ts";
+import { checkSkill } from "../../../skills/simple-changes/scripts/lib/skill-check.ts";
 import { inspectFork } from "../../../skills/update-local-forks/scripts/update-local-forks.ts";
 import {
   createTestRepository,
@@ -65,6 +69,23 @@ afterEach(() => {
     repository.cleanup();
   }
 });
+
+const FRONTMATTER = /^---\n([\s\S]*?)\n---\n/u;
+
+const frontmatterOf = (skillDirectory: string): Record<string, unknown> =>
+  YAML.parse(
+    FRONTMATTER.exec(
+      readFileSync(join(skillDirectory, "SKILL.md"), "utf8")
+    )?.[1] ?? ""
+  ) as Record<string, unknown>;
+
+const CODEX_METADATA = [
+  "interface:",
+  '  display_name: "Simple Changes"',
+  '  short_description: "Turn ready Git work into focused, verified proposals"',
+  '  default_prompt: "Use $simple-changes to turn this repository\'s ready work into focused, verified proposals."',
+  "",
+].join("\n");
 
 describe("fork create", () => {
   test("copies the complete release with a verified pin, distinct identity, and executable permissions", () => {
@@ -211,7 +232,25 @@ describe("fork create", () => {
     expect(
       JSON.parse(new TextDecoder().decode(inventory.stdout)).repository.root
     ).toBe(options.repositoryPath);
-  });
+    // The fork checks itself: discovery can load it under its own name, and
+    // its Codex prompt invokes the fork rather than the global skill.
+    const check = spawnSync([
+      process.execPath,
+      join(created.destination, "scripts/simple-changes.ts"),
+      "skill",
+      "check",
+      "--json",
+    ]);
+    expect(check.exitCode).toBe(0);
+    expect(JSON.parse(new TextDecoder().decode(check.stdout))).toMatchObject({
+      name: options.name,
+      skillDirectory: created.destination,
+      valid: true,
+    });
+    expect(
+      readFileSync(join(created.destination, "agents/openai.yaml"), "utf8")
+    ).toContain(`Use $${options.name} to `);
+  }, 30_000);
 
   test("rejects invalid names and empty customization notes before writing", () => {
     const { options } = fixture();
@@ -336,6 +375,74 @@ describe("fork create", () => {
     expect(() =>
       createFork({ ...options, name: "update-local-forks" })
     ).toThrow("must not match an installed skill");
+  });
+
+  test("describes the fork as the repository's replacement for the global skill", () => {
+    const { options } = fixture();
+    const result = createFork(options);
+    const metadata = frontmatterOf(result.destination);
+    expect(metadata.name).toBe("product-simple-changes");
+    expect(metadata.description).toBe(result.description);
+    const description = String(metadata.description);
+    expect(description).toStartWith(
+      "product-simple-changes is the Simple Changes fork for product; use it instead of the global simple-changes skill in product when a user asks to"
+    );
+    expect(description.length).toBeLessThanOrEqual(400);
+    expect(description).not.toContain(": ");
+    expect(description).not.toContain(" #");
+    expect(
+      readFileSync(join(result.destination, "SKILL.md"), "utf8")
+    ).not.toContain("description: Fixture");
+    expect(checkSkill(result.destination).issues).toEqual([]);
+  });
+
+  test("scopes an unconventional or very long fork name to this repository", () => {
+    expect(forkDescription("acme-changes")).toStartWith(
+      "acme-changes is the Simple Changes fork for this repository; use it instead of the global simple-changes skill in this repository when"
+    );
+    const longest = `${"p".repeat(64 - "-simple-changes".length)}-simple-changes`;
+    expect(longest).toHaveLength(64);
+    const description = forkDescription(longest);
+    expect(description).toStartWith(
+      `${longest} is the Simple Changes fork for this repository;`
+    );
+    expect(description.length).toBeLessThanOrEqual(400);
+    expect(
+      YAML.parse(`description: ${description}\n`) as { description: string }
+    ).toEqual({ description });
+  });
+
+  test("replaces a folded description and points Codex metadata at the fork", () => {
+    const { options, upstream } = fixture();
+    writeFixture(
+      options.sourcePath,
+      "SKILL.md",
+      "---\nname: simple-changes\ndescription: >-\n  Use when a user asks to ship\n  ready work.\nmetadata:\n  models: Fixture\n---\n\n# Simple Changes\n\nPortable guidance.\n"
+    );
+    writeFixture(options.sourcePath, "agents/openai.yaml", CODEX_METADATA);
+    git(upstream.root, ["add", "."]);
+    git(upstream.root, ["commit", "-m", "Add Codex metadata"]);
+    const result = createFork(options);
+    const metadata = frontmatterOf(result.destination);
+    expect(metadata).toEqual({
+      description: result.description,
+      metadata: { models: "Fixture" },
+      name: "product-simple-changes",
+    });
+    const codex = YAML.parse(
+      readFileSync(join(result.destination, "agents/openai.yaml"), "utf8")
+    ) as { interface: Record<string, string> };
+    expect(codex.interface).toEqual({
+      default_prompt:
+        "Use $product-simple-changes to turn this repository's ready work into focused, verified proposals.",
+      display_name: "product-simple-changes",
+      short_description: "Simple Changes fork for product",
+    });
+    expect(checkSkill(result.destination).issues).toEqual([]);
+    // The installed source is never rewritten.
+    expect(
+      readFileSync(join(options.sourcePath, "agents/openai.yaml"), "utf8")
+    ).toBe(CODEX_METADATA);
   });
 
   test("explains Windows line endings instead of misreporting a fork", () => {

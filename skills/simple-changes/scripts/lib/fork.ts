@@ -20,8 +20,20 @@ import { runGit, runGitRemote } from "./process.ts";
 const UPSTREAM_URL = "https://gitlab.com/soundsystems/simple-changes.git";
 const SKILL_PATH = "skills/simple-changes";
 const NAME_PATTERN = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/u;
+const FRONTMATTER_BLOCK = /^---\n[\s\S]*?\n---\n/u;
 const FRONTMATTER_NAME = /^name: simple-changes\r?$/mu;
+// The description line plus any indented continuation lines of a folded value.
+const FRONTMATTER_DESCRIPTION = /^description:.*(?:\n[ \t]+.*)*$/mu;
 const TITLE = /^# Simple Changes\r?$/mu;
+const CODEX_METADATA = "agents/openai.yaml";
+const CODEX_DISPLAY_NAME = /^([ \t]*display_name:[ \t]*).*$/mu;
+const CODEX_SHORT_DESCRIPTION = /^([ \t]*short_description:[ \t]*).*$/mu;
+const CODEX_SKILL_MENTION = "$simple-changes";
+const FORK_NAME_SUFFIX = "-simple-changes";
+// Discovery reads every description at session start; a fork's stays short.
+const MAX_FORK_DESCRIPTION_LENGTH = 400;
+const MAX_CODEX_SHORT_DESCRIPTION_LENGTH = 64;
+const THIS_REPOSITORY = "this repository";
 const TREE_ENTRY = /^(100644|100755) blob ([0-9a-f]+)\t(.+)$/u;
 const WHITESPACE_RUN = /\s+/gu;
 // Finder metadata is never part of the skill and must not block verification.
@@ -48,12 +60,71 @@ export interface CreateForkOptions {
 }
 
 export interface CreatedFork {
+  description: string;
   destination: string;
   fileCount: number;
   name: string;
   source: string;
   upstreamCommit: string;
 }
+
+/**
+ * Where the fork applies: the project its conventional `<project>-simple-changes`
+ * name carries, or this repository. Either way the result is plain words.
+ */
+const forkScope = (name: string): string =>
+  name.endsWith(FORK_NAME_SUFFIX) && name.length > FORK_NAME_SUFFIX.length
+    ? name.slice(0, -FORK_NAME_SUFFIX.length)
+    : THIS_REPOSITORY;
+
+const describeFork = (name: string, where: string): string =>
+  `${name} is the Simple Changes fork for ${where}; use it instead of the global simple-changes skill in ${where} when a user asks to sync, package, queue, publish, integrate, review, merge, ship, reconcile, or clean Git changes, branches, worktrees, proposals, or deployments. Not for changelog authoring or read-only code review.`;
+
+/**
+ * The fork's frontmatter description. It starts with the fork's name and
+ * tells an agent that sees both skills to load the fork in its repository. A
+ * fork name is lowercase letters, digits, and hyphens, so the text never holds
+ * the ": " or " #" that would break or truncate an unquoted YAML value.
+ */
+export const forkDescription = (name: string): string => {
+  const scoped = describeFork(name, forkScope(name));
+  return scoped.length <= MAX_FORK_DESCRIPTION_LENGTH
+    ? scoped
+    : describeFork(name, THIS_REPOSITORY);
+};
+
+const forkSkillMarkdown = (
+  original: string,
+  name: string,
+  provenance: string
+): string => {
+  const frontmatter = FRONTMATTER_BLOCK.exec(original)?.[0] ?? "";
+  const renamed = frontmatter.replace(FRONTMATTER_NAME, () => `name: ${name}`);
+  const description = `description: ${forkDescription(name)}`;
+  const described = FRONTMATTER_DESCRIPTION.test(renamed)
+    ? renamed.replace(FRONTMATTER_DESCRIPTION, () => description)
+    : renamed.replace(`name: ${name}`, () => `name: ${name}\n${description}`);
+  return `${described}${original
+    .slice(frontmatter.length)
+    .replace(TITLE, () => provenance)}`;
+};
+
+// Codex shows the display name and runs the default prompt; both must name the
+// fork, or the prompt would invoke the global skill instead.
+const forkCodexMetadata = (original: string, name: string): string => {
+  const scoped = `Simple Changes fork for ${forkScope(name)}`;
+  const shortDescription =
+    scoped.length <= MAX_CODEX_SHORT_DESCRIPTION_LENGTH
+      ? scoped
+      : `Simple Changes fork for ${THIS_REPOSITORY}`;
+  return original
+    .replace(CODEX_DISPLAY_NAME, (_line, key: string) => `${key}"${name}"`)
+    .replace(
+      CODEX_SHORT_DESCRIPTION,
+      (_line, key: string) => `${key}"${shortDescription}"`
+    )
+    .replaceAll(CODEX_SKILL_MENTION, () => `$${name}`);
+};
 
 const unsafe = (message: string): never => {
   throw new SimpleChangesError(message, EXIT_CODES.unsafe);
@@ -321,8 +392,7 @@ export const createFork = (options: CreateForkOptions): CreatedFork => {
   if (
     !(
       skill &&
-      original.startsWith("---\n") &&
-      FRONTMATTER_NAME.test(original) &&
+      FRONTMATTER_NAME.test(FRONTMATTER_BLOCK.exec(original)?.[0] ?? "") &&
       TITLE.test(original)
     ) ||
     original.includes("Forked from `simple-changes` @")
@@ -333,14 +403,18 @@ export const createFork = (options: CreateForkOptions): CreatedFork => {
   }
   const upstreamCommit = locateSourceCommit(options, files);
   skill.content = Buffer.from(
-    original
-      .replace(FRONTMATTER_NAME, () => `name: ${options.name}`)
-      .replace(
-        TITLE,
-        () =>
-          `# ${options.name}\n\nForked from \`simple-changes\` @ \`${upstreamCommit}\`. Fork-specific deltas: ${deltas}`
-      )
+    forkSkillMarkdown(
+      original,
+      options.name,
+      `# ${options.name}\n\nForked from \`simple-changes\` @ \`${upstreamCommit}\`. Fork-specific deltas: ${deltas}`
+    )
   );
+  const codex = files.find((file) => file.path === CODEX_METADATA);
+  if (codex) {
+    codex.content = Buffer.from(
+      forkCodexMetadata(codex.content.toString("utf8"), options.name)
+    );
+  }
   const created = reserveDestination(root, destination);
   // Case-insensitive filesystems can resolve a differently cased path into the
   // source install; judge separation again on the real, created path.
@@ -362,6 +436,7 @@ export const createFork = (options: CreateForkOptions): CreatedFork => {
     throw error;
   }
   return {
+    description: forkDescription(options.name),
     destination,
     fileCount: files.length,
     name: options.name,

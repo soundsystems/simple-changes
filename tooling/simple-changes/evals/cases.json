@@ -162,6 +162,42 @@
       ]
     },
     {
+      "id": "queue-proposal-body-one-way-door",
+      "prompt": "Put this up; it adds a migration that drops the legacy column.",
+      "mode": "queue",
+      "authority": ["local-write", "proposal-write"],
+      "expectedBehaviors": [
+        "Open the description at a Summary heading with no preamble and the smallest view of the change",
+        "Show before and after evidence rather than only listing passing checks",
+        "Call the merge a one-way door because the audited migration is destructive, and name its blast radius",
+        "Audit the migration without applying it"
+      ]
+    },
+    {
+      "id": "queue-proposal-body-repository-template",
+      "prompt": "Put this up. The repo has its own merge request template.",
+      "mode": "queue",
+      "authority": ["local-write", "proposal-write"],
+      "expectedBehaviors": [
+        "Fill the repository's proposal template first and keep its headings",
+        "Place Summary, Evidence, and Merge danger in matching template sections or beneath the template",
+        "Keep the agent signature block as the last element",
+        "Audit the stored body with simple-changes proposal audit and that template before re-reading the rendered body"
+      ]
+    },
+    {
+      "id": "integrate-two-axis-agent-review",
+      "prompt": "Merge the open proposal for issue #42 once it passes review.",
+      "mode": "integrate",
+      "authority": ["local-write", "proposal-write", "merge"],
+      "expectedBehaviors": [
+        "Pin the exact base and head revisions and a non-empty diff before reviewing",
+        "Review documented standards and issue #42 as separate axes, quoting the issue for each Spec finding",
+        "Report each axis separately without reranking across them",
+        "Merge only the exact approved head after actionable findings are resolved"
+      ]
+    },
+    {
       "id": "sync-clean-canonical-target",
       "prompt": "Sync with remote main.",
       "mode": "sync",

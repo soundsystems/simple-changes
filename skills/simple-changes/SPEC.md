@@ -95,7 +95,9 @@
   running background subagent of the same session drives only advises.
   Guard, exec, and verify
   output repeat the finalize step. Initialization reports whether the hook is
-  installed and never installs it.
+  installed and never installs it. The user-level hook never runs a
+  repository fork's runtime: from a fork it is offered and installed from the
+  globally installed Simple Changes, and a hook bound to a fork is outdated.
 - When the running runtime lives inside a checkout of the repository it
   operates on and the target branch carries a newer version of the same file,
   initialization, `loop start`, and `loop status` report it as
@@ -283,10 +285,12 @@
   close-only loop only when every obligated worktree is proven contained in
   the refreshed target, records a terminal `target-equivalent` outcome that is
   never reported as shipped, performs only proven-safe local cleanup, and
-  requires final verification plus any GitLab branch/proposal reconciliation
-  bound to the current target. For providers without that GitLab gate, it
-  records that the reconciliation was not applicable. Frozen shipment scope
-  blocks new authoring, not the target-equivalent close.
+  requires final verification (where unrelated, unclaimed preserved or
+  retained work no longer blocks once the scope is frozen) plus any GitLab
+  branch/proposal reconciliation bound to the current target. For providers
+  without that GitLab gate, it records that the reconciliation was not
+  applicable. Frozen shipment scope blocks new authoring, not the
+  target-equivalent close.
 - A lease records a heartbeat: every operation that already writes lease state
   refreshes `updatedAt` and the owner process identity. A lease is `live` while
   its recorded owner process is provably running or its heartbeat is recent,

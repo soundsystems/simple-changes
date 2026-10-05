@@ -13,6 +13,31 @@ Any new commit, rebase, conflict resolution, or dependency refresh invalidates
 approval for the previous revision. Re-fetch checks and discussions as well.
 Self-review is never represented as independent review.
 
+## What an agent review examines
+
+When an agent performs the independent review, first pin the exact base and
+head revisions and confirm the diff between them is non-empty; a bad revision
+or empty diff stops the review before any reviewer is dispatched. Then review
+on two separate axes:
+
+- **Standards**: does the change follow the repository's documented
+  standards (contributing guides, coding standards, agent instructions)? Cite
+  the file and rule for each finding, and skip what tooling already enforces.
+- **Spec**: does the change do what its originating issue or spec asked?
+  Find the source from the proposal description, commit trailers such as
+  `Closes #42`, the branch name, or the issue tracker. Report requirements
+  that are missing or partial, behavior nobody asked for, and requirements
+  that look implemented but behave wrongly, quoting the spec line for each.
+  When no source exists, report `no spec available` rather than inferring
+  one from the diff.
+
+Run the axes as separate reviewers when the host can start them, so neither
+shapes the other. Report each axis under its own heading with its worst
+finding, without merging or reranking across axes: a change can follow every
+standard and still build the wrong thing. A requirement deliberately left
+out belongs in the proposal's Summary as out of scope; otherwise a Spec
+finding is actionable like any other.
+
 Emergency Ship does not weaken merge policy. `expedited` completes independent
 review before merge and initial deployment. Current-request or saved-policy
 authorized `break-glass`

@@ -1,0 +1,93 @@
+import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { homedir } from "node:os";
+import { delimiter, dirname, resolve } from "node:path";
+
+/** User-level skill roots a global installation lives under. */
+export const GLOBAL_SKILL_ROOTS = [
+  ".agents/skills",
+  ".codex/skills",
+  ".claude/skills",
+  ".cursor/skills",
+] as const;
+
+export interface SkillRootOptions {
+  environment?: Record<string, string | undefined>;
+  homeDirectory?: string;
+}
+
+const RUNTIME_PATH = ["simple-changes", "scripts", "simple-changes.ts"];
+const FORK_PROVENANCE_PATTERN =
+  /Forked from `simple-changes` @ `[0-9a-f]{7,40}`/u;
+const FRONTMATTER_PATTERN = /^---\r?\n([\s\S]*?)\r?\n---/u;
+const NAME_LINE_PATTERN = /^name:[ \t]*["']?([^"'\s]+)/mu;
+
+/**
+ * The user-level skill roots to search, in order. SIMPLE_CHANGES_SKILL_ROOTS,
+ * when set, replaces them with its own path list; set and empty means none.
+ */
+export const globalSkillRoots = (options: SkillRootOptions = {}): string[] => {
+  const environment = options.environment ?? process.env;
+  if (environment.SIMPLE_CHANGES_SKILL_ROOTS !== undefined) {
+    return environment.SIMPLE_CHANGES_SKILL_ROOTS.split(delimiter)
+      .map((path) => path.trim())
+      .filter(Boolean)
+      .map((path) => resolve(path));
+  }
+  const homeDirectory = options.homeDirectory ?? homedir();
+  return GLOBAL_SKILL_ROOTS.map((path) => resolve(homeDirectory, path));
+};
+
+/**
+ * The skill directory that ships `script`: `<root>/scripts/<file>` in place,
+ * or `<root>/runtime/scripts/<file>` in a fork that keeps the upstream runtime
+ * under `runtime/`. Null when neither directory holds a SKILL.md.
+ */
+export const skillRootOf = (script: string): string | null => {
+  const scripts = dirname(resolve(script));
+  for (const candidate of [dirname(scripts), dirname(dirname(scripts))]) {
+    if (existsSync(resolve(candidate, "SKILL.md"))) {
+      return candidate;
+    }
+  }
+  return null;
+};
+
+/**
+ * Whether `script` ships inside a repository fork of Simple Changes rather
+ * than Simple Changes itself: its skill carries the fork provenance line or
+ * names a skill other than simple-changes.
+ */
+export const isForkRuntime = (script: string): boolean => {
+  const root = skillRootOf(script);
+  if (!root) {
+    return false;
+  }
+  let skill: string;
+  try {
+    skill = readFileSync(resolve(root, "SKILL.md"), "utf8");
+  } catch {
+    return false;
+  }
+  const name = NAME_LINE_PATTERN.exec(
+    FRONTMATTER_PATTERN.exec(skill)?.[1] ?? ""
+  )?.[1];
+  return (
+    FORK_PROVENANCE_PATTERN.test(skill) ||
+    (name !== undefined && name !== "simple-changes")
+  );
+};
+
+/**
+ * Every globally installed Simple Changes runtime script as a real path, in
+ * root order, each installation once even when several roots link to it.
+ */
+export const globalRuntimeScripts = (
+  options: SkillRootOptions = {}
+): string[] => [
+  ...new Set(
+    globalSkillRoots(options)
+      .map((root) => resolve(root, ...RUNTIME_PATH))
+      .filter((candidate) => existsSync(candidate))
+      .map((candidate) => realpathSync(candidate))
+  ),
+];

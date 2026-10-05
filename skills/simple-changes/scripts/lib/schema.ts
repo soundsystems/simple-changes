@@ -33,6 +33,7 @@ export const SCHEMA_NAMES = [
   "remote-branch-supersession",
   "release-consistency",
   "release-notes",
+  "proposal-audit",
   "loop-lease",
   "loop-close-equivalent",
   "worktree-coordination",
@@ -308,11 +309,11 @@ const validateValue = (
 
   validateConditional(value, schema, rootSchema, path, errors);
 
-  if (Array.isArray(schema.anyOf)) {
-    if (!matchesAnyOf(value, schema.anyOf, rootSchema, path)) {
-      errors.push(`${path} must match one allowed schema`);
-    }
-    return;
+  if (
+    Array.isArray(schema.anyOf) &&
+    !matchesAnyOf(value, schema.anyOf, rootSchema, path)
+  ) {
+    errors.push(`${path} must match one allowed schema`);
   }
 
   if ("const" in schema && !deepEqual(value, schema.const)) {

@@ -1,9 +1,10 @@
 #!/usr/bin/env bun
 
 import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { dirname, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { extractReleaseNotes } from "../../skills/simple-changes/scripts/lib/release-notes.ts";
+import { checkSkill } from "../../skills/simple-changes/scripts/lib/skill-check.ts";
 import {
   classifyRequestMode,
   shouldTrigger,
@@ -106,6 +107,7 @@ const requiredSkillFiles = [
   "SKILL.md",
   "SPEC.md",
   "CHANGELOG.md",
+  "agents/openai.yaml",
   "scripts/simple-changes.ts",
   "evals/schemas/changelog-receipt.schema.json",
   "evals/schemas/repo-policy.schema.json",
@@ -214,15 +216,21 @@ if (toolingSkills.length !== 0) {
   );
 }
 
-const skillBody = readFileSync(resolve(skillDirectory, "SKILL.md"), "utf8");
-const relativeLinks = [
-  ...skillBody.matchAll(/\]\((?!https?:)([^)#]+)(?:#[^)]+)?\)/gu),
-]
-  .map((match) => match[1])
-  .filter((link): link is string => Boolean(link));
-for (const link of relativeLinks) {
-  if (!existsSync(resolve(skillDirectory, link))) {
-    failures.push(`SKILL.md link does not exist: ${link}`);
+// Skill discovery silently skips a SKILL.md whose frontmatter is not valid YAML
+// (an unquoted colon-space in a description is enough), so every skill in this
+// repository passes the same check forks run with `simple-changes skill
+// check`: strict frontmatter, a spec name and description, matching Claude
+// Code and Codex invocation settings, and relative links that resolve. An
+// installed copy carries only its skill directory, so links must also stay
+// inside it.
+for (const skillPath of walk(resolve(repositoryRoot, "skills")).filter((path) =>
+  path.endsWith("/SKILL.md")
+)) {
+  const skillRoot = dirname(skillPath);
+  for (const issue of checkSkill(skillRoot, { selfContained: true }).issues) {
+    failures.push(
+      `${relative(repositoryRoot, resolve(skillRoot, issue.path))}: ${issue.message}`
+    );
   }
 }
 

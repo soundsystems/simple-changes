@@ -99,6 +99,7 @@ import {
   writeRepositoryPolicyTrustReceipt,
 } from "./lib/policy.ts";
 import { runGit } from "./lib/process.ts";
+import { auditProposalBody, type ProposalAudit } from "./lib/proposal-audit.ts";
 import {
   buildProposalSignatureBlock,
   type ProposalSignatureRole,
@@ -149,6 +150,8 @@ import {
   type ShipHoldReport,
   waiveShipHold,
 } from "./lib/ship-holds.ts";
+import { checkSkill, type SkillCheckReport } from "./lib/skill-check.ts";
+import { isForkRuntime, skillRootOf } from "./lib/skill-roots.ts";
 import {
   hookInstallScript,
   parseTurnCheckHookInput,
@@ -192,7 +195,7 @@ import {
   standaloneWorktreeCleanup,
 } from "./lib/worktree-maintenance.ts";
 
-const VERSION = "0.23.1";
+const VERSION = "0.24.0";
 const SCRIPT_FILE = fileURLToPath(import.meta.url);
 const PLAIN_SHELL_WORD_PATTERN = /^[\w./-]+$/u;
 const PACKAGE_ROOT = resolve(dirname(SCRIPT_FILE), "..");
@@ -365,6 +368,8 @@ Usage:
     [--request FILE] [--json]
   simple-changes proposal-signatures --agent NAME --role authored|reviewed|merged
     [--base REF --head REF] [--changelog-receipt FILE] [--json] [--repo PATH]
+  simple-changes proposal audit --file FILE [--template FILE] [--json]
+  simple-changes skill check [--skill-dir PATH] [--json]
   simple-changes validate KIND FILE [--json]
   simple-changes verify-markdown FILE [--json]
   simple-changes help
@@ -397,6 +402,7 @@ interface CliOptions {
   disposition?: "preserve-in-place" | "detach-clean-checkout";
   dryRun: boolean;
   evidencePaths: string[];
+  filePath?: string;
   forkDeltas?: string;
   forkDestination?: string;
   forkName?: string;
@@ -450,10 +456,12 @@ interface CliOptions {
   settleMs: number;
   shippingMode?: RepoPolicy["shippingMode"];
   signatureRole?: ProposalSignatureRole;
+  skillDirectory?: string;
   staleLease: boolean;
   statePath?: string;
   statusDigest?: string;
   targetRef?: string;
+  templatePath?: string;
   uiArtifacts: boolean;
   uiArtifactVersioning?: RepoPolicy["uiArtifactVersioning"];
   untilMerged?: string;
@@ -484,6 +492,7 @@ const VALUED_OPTIONS = new Set([
   "--role",
   "--disposition",
   "--evidence",
+  "--file",
   "--finish",
   "--for",
   "--handoff",
@@ -521,9 +530,11 @@ const VALUED_OPTIONS = new Set([
   "--shipping-mode",
   "--settle-ms",
   "--severity",
+  "--skill-dir",
   "--status-digest",
   "--state",
   "--target",
+  "--template",
   "--ui-versioning",
   "--until-merged",
   "--version",
@@ -887,6 +898,7 @@ const applyLoopValuedOption = (
     "--claim-id": "claimId",
     "--deltas": "forkDeltas",
     "--destination": "forkDestination",
+    "--file": "filePath",
     "--head": "headRef",
     "--hold-id": "holdId",
     "--manifest-digest": "manifestDigest",
@@ -903,8 +915,10 @@ const applyLoopValuedOption = (
     "--remote": "remoteName",
     "--request": "requestPath",
     "--run-id": "runId",
+    "--skill-dir": "skillDirectory",
     "--state": "statePath",
     "--status-digest": "statusDigest",
+    "--template": "templatePath",
     "--until-merged": "untilMerged",
     "--upstream": "forkUpstream",
   };
@@ -2308,6 +2322,63 @@ const runMarkdownAudit = (options: CliOptions): void => {
   }
 };
 
+type ProposalAuditReport = ProposalAudit & {
+  file: string;
+  template: string | null;
+};
+
+const renderProposalAudit = (report: ProposalAuditReport): string =>
+  report.valid
+    ? `${report.file} matches the proposal body shape (door: ${report.door ?? "no Merge danger section"}; signature block: ${report.signatureBlock}).\n`
+    : `${report.file} does not match the proposal body shape:\n${report.issues
+        .map((issue) => `- ${issue}`)
+        .join("\n")}\n`;
+
+// The audit is a check: its report goes to stdout either way, and a failing
+// body exits with the validation code instead of an error message.
+const runProposalCommand = (options: CliOptions): number => {
+  if (options.positional.length !== 1 || options.positional[0] !== "audit") {
+    throw new SimpleChangesError("proposal requires audit", EXIT_CODES.usage);
+  }
+  const file = requireCliOption(options.filePath, "--file");
+  const template = options.templatePath;
+  const report = validateSchema<ProposalAuditReport>("proposal-audit", {
+    file,
+    template: template ?? null,
+    ...auditProposalBody({
+      body: readFileSync(resolve(file), "utf8"),
+      template:
+        template === undefined
+          ? undefined
+          : readFileSync(resolve(template), "utf8"),
+    }),
+  });
+  writeOutput(report, options.json, renderProposalAudit(report));
+  return report.valid ? EXIT_CODES.success : EXIT_CODES.validation;
+};
+
+const renderSkillCheck = (report: SkillCheckReport): string =>
+  report.valid
+    ? `${report.name} at ${report.skillDirectory} passes the skill check: frontmatter, invocation parity, and ${report.linksChecked} relative links.\n`
+    : `${report.skillDirectory} fails the skill check:\n${report.issues
+        .map((issue) => `- ${issue.path}: ${issue.message}`)
+        .join("\n")}\n`;
+
+// Without --skill-dir, check the skill that ships this runtime, which is how a
+// fork checks itself.
+const runSkillCommand = (options: CliOptions): number => {
+  if (options.positional.length !== 1 || options.positional[0] !== "check") {
+    throw new SimpleChangesError("skill requires check", EXIT_CODES.usage);
+  }
+  const report = checkSkill(
+    options.skillDirectory === undefined
+      ? (skillRootOf(SCRIPT_FILE) ?? PACKAGE_ROOT)
+      : resolve(options.skillDirectory)
+  );
+  writeOutput(report, options.json, renderSkillCheck(report));
+  return report.valid ? EXIT_CODES.success : EXIT_CODES.validation;
+};
+
 const requireCliOption = (
   value: string | undefined,
   option: string
@@ -3633,13 +3704,19 @@ const renderStopHookStatus = (status: StopHookStatus): string => {
     return `The Simple Changes turn-end guard is installed for ${status.harness} in ${status.path}.\n`;
   }
   if (status.installed) {
-    return `An older Simple Changes turn-end guard is installed for ${status.harness} in ${status.path}. With the user's agreement, rerun with --write to point it at this runtime.\n`;
+    return `An older Simple Changes turn-end guard is installed for ${status.harness} in ${status.path}. With the user's agreement, rerun with --write to update it to:\n  ${status.command}\n`;
   }
   return `The Simple Changes turn-end guard is not installed for ${status.harness}. With the user's agreement, run \`simple-changes harness stop-hook --harness ${status.harness} --write\` to add this Stop hook to ${status.path}:\n  ${status.command}\n`;
 };
 
 const NOT_INSTALLABLE_HERE =
   "This Simple Changes copy lives in a linked worktree with no matching primary-checkout copy that supports the turn check, so a user-level hook pointing here would break when the worktree is removed. Install the turn-end guard from the globally installed Simple Changes instead.";
+
+const NOT_INSTALLABLE_FROM_FORK =
+  "This Simple Changes copy is a repository fork, and no globally installed Simple Changes at least as new supports the turn check, so a user-level hook here would run this one repository's runtime in every session. Install or update the global Simple Changes, then install the turn-end guard from it.";
+
+const notInstallableHere = (): string =>
+  isForkRuntime(SCRIPT_FILE) ? NOT_INSTALLABLE_FROM_FORK : NOT_INSTALLABLE_HERE;
 
 const resolveHarness = (options: CliOptions): TurnGuardHarness => {
   const harness = options.harness ?? currentHarnessSession()?.harness;
@@ -3666,7 +3743,7 @@ const runHarnessCommand = (options: CliOptions): void => {
   }
   const script = hookInstallScript(SCRIPT_FILE, VERSION);
   if (!script && options.write) {
-    throw new SimpleChangesError(NOT_INSTALLABLE_HERE, EXIT_CODES.unsafe);
+    throw new SimpleChangesError(notInstallableHere(), EXIT_CODES.unsafe);
   }
   const status = stopHookStatus(
     resolveHarness(options),
@@ -3679,7 +3756,7 @@ const runHarnessCommand = (options: CliOptions): void => {
     options.json,
     script || status.current
       ? renderStopHookStatus(status)
-      : `${NOT_INSTALLABLE_HERE}\n`
+      : `${notInstallableHere()}\n`
   );
 };
 
@@ -3720,7 +3797,7 @@ const executeCommand = async (
       writeOutput(
         result,
         options.json,
-        `Created ${result.name} at ${result.destination}\nUpstream: ${result.upstreamCommit}\nCustomize SKILL.md, then verify and commit the fork in its repository.\n`
+        `Created ${result.name} at ${result.destination}\nUpstream: ${result.upstreamCommit}\nDescription: ${result.description}\nCustomize SKILL.md, keeping a description that names this fork in place of the global simple-changes skill, run the fork's own skill check, then verify and commit the fork in its repository.\n`
       );
       return EXIT_CODES.success;
     }
@@ -3801,6 +3878,10 @@ const executeCommand = async (
     case "proposal-signatures":
       runProposalSignatures(options);
       return EXIT_CODES.success;
+    case "proposal":
+      return runProposalCommand(options);
+    case "skill":
+      return runSkillCommand(options);
     case "validate":
       runValidation(options);
       return EXIT_CODES.success;

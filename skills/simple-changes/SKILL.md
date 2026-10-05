@@ -36,10 +36,14 @@ context. For behavior that requires changing the skill, run
 `simple-changes fork create --name <project>-simple-changes --deltas "<intended custom behavior>"`
 from the owning repository. This copies the complete installed skill into
 `.agents/skills/<project>-simple-changes`, verifies and records its upstream
-commit, and refuses existing destinations. It does not change the
-global install or commit the new copy. Use `--destination` for another path
-inside the repository and `--upstream` for an offline source checkout.
-Customize and verify the fork, then use `update-local-forks` for future updates.
+commit, and refuses existing destinations. The copy's description starts with
+its name and tells agents to use it instead of the global `simple-changes`
+skill in that repository, and its Codex metadata invokes the fork; keep both
+when customizing. It does not change the global install or commit the new
+copy. Use `--destination` for another path inside the repository and
+`--upstream` for an offline source checkout.
+Customize and verify the fork, including the fork runtime's own
+`simple-changes skill check`, then use `update-local-forks` for future updates.
 
 ## Classify the request
 
@@ -95,7 +99,9 @@ is unsafe.
 When initialization reports `turnEndGuard` as not installed or outdated, offer
 once to install it with its `installCommand` when it has one: a harness Stop hook that blocks
 ending a turn while this session still controls an active run. It is persistent
-harness configuration, so ask first; declining changes nothing. When it reports
+harness configuration, so ask first; declining changes nothing. When it has no
+`installCommand`, as from a fork with no current global install, tell the user
+to install the guard from the globally installed Simple Changes. When it reports
 `runtimeFreshness` as `behind-target`, you are running an older copy of this
 runtime than the target branch carries; run the target's copy, or update the
 checkout, before integrating or shipping. See
@@ -125,6 +131,11 @@ checks, proposal/merge/release/deploy path, consequential boundaries, and
 preserved work. Explain that this is an interruption window rather than a
 permission gate when existing authority already covers the run. Follow
 [ship communication](references/ship-communication.md).
+A clean Ship start automatically records a non-mutating empty opening scope
+under the existing integration and coordination locks. Its empty units do not
+prove delivery: committed-source and release-generated target changes must still
+be accounted for in the exact outcome's `additionalPaths`, including rename
+originals, removals, and tree entries. It does not retroactively repair old runs.
 When a Ship run opens with any local changes, generate one non-mutating preview
 plan from the current inventory, record it with
 `loop record-scope --receipt <change-plan.json>`, and present the returned
@@ -237,7 +248,8 @@ rule; see
 The lock records process-group evidence. If recovery is proven safe, use `loop
 recover --agent-id "$AGENT_ID"`; never delete state by hand. Before every
 terminal assistant response after a loop has started, including a blocked or
-failed handoff, run `loop finalize --json`, then `loop status --json` and verify
+failed handoff, run `loop finalize --reason "<why the turn ends>" --json`, then
+`loop status --json` and verify
 that your controller is released or relinquished. When the turn ends on a
 question the run needs answered, such as a migration, deployment, or cleanup
 approval, add `--awaiting-user "<question>"` once per question: the run pauses,
@@ -346,9 +358,11 @@ read-only work, or incomplete verification.
    supported versions and features from the provider's declared marker when
    present (inferred discovery is reported as inferred), and accept only
    current locally validated receipts.
-7. Create/update neutral proposals with real Markdown newlines, re-read stored
-   source/rendering, resolve checks/discussions/review, and merge only the exact
-   approved head. Under the default `proposalSignatures` policy, the agent
+7. Create/update neutral proposals in the summary, evidence, and merge-danger
+   body shape from [change proposals](references/change-requests.md#body-shape),
+   with real Markdown newlines; re-read stored source/rendering, resolve
+   checks/discussions/review, and merge only the exact approved head. Under the
+   default `proposalSignatures` policy, the agent
    that authors, reviews, or merges a proposal appends its model name and
    version to the proposal's signature block; see
    [change proposals](references/change-requests.md).

@@ -103,8 +103,10 @@ or keys retries on them, so transaction identity rests on the transaction ID,
 phase, revisions, and prior receipt digest alone.
 
 1. `classify` is read-only and returns `decision-required`, `classified`,
-   `not-applicable`, `blocked`, or an exact selected version. `classified` is
-   the entry-only outcome that proceeds directly to `prepare`.
+   `not-applicable`, or `blocked`. `classified` proceeds directly to
+   `prepare`: either the entry-only outcome, or one that carries the exact
+   automatically or explicitly selected public version with `release` null
+   and no paths.
 2. `prepare` is the only phase allowed to change established release files. It
    requires the approved version and decision digest and returns a prepared
    reconciliation-head revision.

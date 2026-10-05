@@ -1,5 +1,204 @@
 # Developer changelog
 
+## 0.24.0 - 2026-10-05
+
+- `references/change-requests.md` gains `## Body shape`, placed before
+  `## Agent signatures` so the replacement-lineage and pagination rules keep
+  their place: a Summary, Evidence, and Merge danger template; the menu of
+  summary views (Mermaid only where the provider renders it); a door rule
+  bound to evidence the run already collects (destructive, irreversible, or
+  unbounded migration or data change; `incompatible` or `unverified`
+  installed-client compatibility; anything leaving the repository; a removed
+  public interface; `unknown` when evidence is missing); repository proposal
+  templates first; and a rewrite of affected sections when review or a rebase
+  changes them. `SKILL.md` core-workflow step 7 now points at the section, and
+  the README gains a Credits section for Matt Pocock's `pr` and `code-review`
+  skills (v1.3.0, MIT) and Dex Horthy's `show-me`.
+- `references/review-and-merge.md` gains `## What an agent review examines`:
+  pin the exact revisions and a non-empty diff before dispatching any
+  reviewer, run Standards and Spec as separate reviewers when the host can,
+  and report them without merging or reranking.
+- Guidance 25: `CURRENT_GUIDANCE_VERSION` is 25 with one closed definition
+  (two `behavior` changes, notice-bullet priority 165,
+  `changelogReviewRelevant: false`) whose strings Claude Fable 5.1 wrote.
+  `initialization.test.ts` expects the two new versions and the new
+  top-three bullet that displaces the `proposalSignatures` one.
+- Shipped `lib/skill-check.ts` (`simple-changes skill check`) parses every
+  `SKILL.md` frontmatter as strict YAML and requires a lowercase hyphenated
+  name matching its directory (at most 64 characters), a 1 to 1,024
+  character description, matching Claude Code and Codex invocation settings,
+  and resolving relative links; `checkSkill(dir, { selfContained })` returns
+  issues with closed codes. `tooling/simple-changes/eval.ts` runs it with
+  `selfContained: true` for every skill under `skills/`, so installable links
+  must also stay inside the package; forks such as thor that link into their
+  own repository pass the shipped check. An unquoted colon-space, an empty
+  frontmatter block, and an invocation mismatch each fail.
+- `lib/proposal-audit.ts` reuses `auditMarkdown`, exports
+  `SIGNATURE_LINE_PATTERN` (built from `ROLE_LABELS`), and validates output
+  against a closed `proposal-audit` schema; `lib/markdown.ts` gains
+  `proseLines` and `withoutHtmlComments`. Five fixture bodies cover the
+  failures.
+- `lib/fork.ts` adds `forkDescription`, replaces folded descriptions too,
+  rewrites the fork's `agents/openai.yaml` (display name, short description,
+  and `$<name>` in the default prompt), and adds `CreatedFork.description`.
+- `lib/skill-roots.ts` now owns `globalSkillRoots` (moved from changelog
+  coordination, behavior unchanged) and adds `skillRootOf`, `isForkRuntime`,
+  and `globalRuntimeScripts`. `hookInstallScript` sends a fork to the first
+  qualifying global runtime, and `stopHookStatus` refuses to write a hook
+  that runs a fork's runtime; SPEC.md says the user-level hook never runs a
+  fork's runtime.
+- update-local-forks gains an `unrecorded-omission` action, an exported
+  `intentionalOmissions` parser, a `holdPin` shared with command-gate review,
+  and `ApplyReceipt.unrecordedOmissions`. Planned read-only against this
+  branch, hashi, patrick, and pulse each hold on `change-requests.md` and
+  `review-and-merge.md`, and thor on 11 files. A plan saved by the previous
+  version fails validation on apply and must be re-planned.
+- Guidance 25 gains a third behavior line for these changes; there is still
+  one definition. Tests: 754 simple-changes (27 new), 17 publish-skill, and
+  14 update-local-forks (2 new) pass.
+- `evals/cases.json` adds three journeys (42 total):
+  `queue-proposal-body-one-way-door`,
+  `queue-proposal-body-repository-template`, and
+  `integrate-two-axis-agent-review`.
+- `publish-skill` is user-invoked (`disable-model-invocation: true` paired
+  with `policy.allow_implicit_invocation: false`) and is a three-way merge
+  with the Simple Changelogs copy from their shared base (`6ae4f5c` here,
+  `7a1bf07e` there): the `superseded-install` consumer state, its
+  combined-distribution topology rule, and its tests arrive, the production
+  loop uses `update-local-forks` only when the canonical package bundles it,
+  and `discover-local-consumers.check.ts` runs every spawn with an empty
+  fixture `HOME` so real global installs cannot leak in. Skill and tooling
+  trees are byte-identical across both repositories.
+- `.out-of-scope/` records four declined requests (a general task scheduler,
+  vendor agent API calls, changelog authoring and version choice, automatic
+  rewrites of another task's worktree), each citing the plan and commit that
+  decided it; `CONTRIBUTING.md` points to it.
+<!-- simple-changelogs-signature agent="Claude Opus 5.5 xhigh" at="2026-10-05T13:11:05-05:00" -->
+- Changelog receipt schema (byte-identical to Simple Changelogs): a
+  `classified` receipt's `versionDecision` is now `anyOf` the entry-only
+  `none` decision or a resolved public decision (release-bearing boundary,
+  `ask` or `automatic` policy, `automatic`, `explicit-direction`, or
+  `repository-automation` resolution, non-empty `selectedVersion`), and
+  `revisionLineage` must be null on both revisions. `release-gate.ts`
+  rejects a classified receipt that names a release, and an entry-only
+  handoff must also leave `policyAction` `not-applicable` and
+  `suggestedVersion` null.
+- `lib/schema.ts` no longer returns early after `anyOf`: a failed branch
+  match is recorded and the node's sibling keywords (`const`, `type`,
+  properties) are still validated, which the new `anyOf` beside
+  `type: object` needs.
+- `startLoop` sets `shipmentScopeRequired` for every Ship run and, on a clean
+  start, writes `shipmentScope` from a `buildPreviewPlan` of the opening
+  inventory against itself (empty `openingChanges`, the opening baseline
+  digest, the plan and its digest) while the integration and coordination
+  locks are held. Old runs are not repaired. `replan.test.ts` fixtures follow;
+  loop-lease, release-gate, schema, and CLI tests add coverage (283 pass
+  across the five files).
+- Authored in a parallel Codex/Claude session on
+  `fix/protocol-scope-20261005` and folded into this shipment by merge.
+<!-- simple-changelogs-signature agent="Claude Opus 5.5 xhigh" at="2026-10-05T13:48:48-05:00" -->
+- `update-local-forks` literal rewrites go through an exported
+  `rewriteLiteral(forkPath, content, from, to)` at both plan and apply time, so
+  a plan lists a rewrite only when a current claim changes and apply rewrites
+  exactly those lines. Records are kept: any line matching a SHA or semver
+  range, and in Markdown (fence-aware) every heading plus every line under a
+  heading stack where some heading names a range, a `YYYY-MM-DD` date, the old
+  literal, or `history`. The plan format is unchanged. Found while
+  re-baselining thor, whose short pin `628c66b` would have rewritten its
+  `7ab67a1..628c66b` sync heading, a history bullet, and the `test.sh` line
+  asserting that heading (3 occurrences before, 0 after). One new test (15
+  pass).
+<!-- simple-changelogs-signature agent="Claude Opus 5.5 xhigh" at="2026-10-05T14:14:40-05:00" -->
+- Upstreamed from the Hash (`hashi-simple-changes`) and Site Secure
+  (`thor-simple-changes`) forks, which carried these as runtime deltas from
+  pin `7ab67a1` and hand-merged them on every sync.
+  - `remote-branch-reconciliation.ts` adds `finalProposals` (records with
+    `observedFinally !== false`), which both forks wrote independently.
+    Open-branch protection, `validateDeletedMerged`, and
+    `assertAuditedClassification` judge the final snapshot; supersession
+    passes every observed state and keeps its all-record open check.
+    `needsAncestryShape` in `loop-lease.ts` follows the same rule for its
+    missing-sidecar hint, and `validateAncestryMerged` judges "another open
+    proposal" from the final snapshot too. Behavior change: a same-head merge
+    now validates without `mergedHeadAncestry` (the test that asserted the old
+    rejection is rewritten), and the fast-forward shape now fails on the
+    merged-head rule rather than the open-proposal rule. Because the sidecar
+    was also where Git checked target containment, `assertRemoteBranchAncestry`
+    now requires the target to contain the head of every `deleted-merged`
+    branch whose proposal was open at the opening inventory and that has no
+    sidecar, so a squash merge or a merge into another branch still fails
+    closed.
+  - `loop-lease.ts`: `closeEquivalentObligatedPaths` adds every
+    `shipmentScope.plan.units[].sourceWorktree`; the new exported
+    `completedRemovalProofForPath` proves a missing obligated path from a
+    completed `remove-after-audit` disposition whose `targetRevision` and
+    `headSha` the refreshed target contains; and the new exported
+    `frozenRecoveryBlockingViolations` drops only
+    `missing-preserved-worktree`, `missing-retained-worktree`, and
+    `preserved-worktree-changed` for unclaimed, unpaused, non-obligated
+    preserved or retained registrations other than the primary checkout
+    once the scope is frozen. Site Secure's version lacked the primary
+    exclusion, which `finalization-records.test.ts` caught: after an
+    interrupted primary update, a close must not absorb new primary work.
+  - `completedRemovalProofForPath` also requires the path to be gone from
+    disk, checked with `lstat` so a dangling symlink recreated there counts
+    as present. A patch-equivalent removal is not re-proven by it, so a close retry
+    after one fails closed.
+  - Tests: `remote-branch-reconciliation.test.ts` gains four cases and
+    rewrites two (the behavior changes fail on the old code);
+    `loop-lease.test.ts` adds a Git-backed same-head case that records when
+    the target contains the head and refuses the squash shape; and the new
+    `close-equivalent-recovery.test.ts` adapts Site Secure's twelve unit
+    cases and adds primary-checkout and recreated-path cases. Mutations that
+    drop the scope obligation, the containment check, or the final-snapshot
+    ancestry rule each fail a test.
+  - GPT-6 Sol (high) reviewed the port independently. Its one blocking
+    finding (the missing containment check) and its should-fix findings (path
+    presence, the ancestry-path rule, retained wording) are fixed above; the
+    patch-equivalent retry limit is kept as fail-closed. A focused re-review
+    confirmed the fixes and raised the dangling-symlink case, fixed above, and
+    noted that a branch already merged at the opening inventory is still
+    trusted from GitLab's merged state without a Git containment check; that
+    rule predates this change and is what lets squash-merged branches be
+    cleaned up, so it is unchanged.
+  - Not upstreamed. Already canonical: hashi's `release-gate.ts` and
+    receipt-schema changes (`6466606`), thor's claimed-author opening digest
+    (the scoped first-scope check ignores authors' worktrees), thor's
+    untouched-run close, and hashi's `worktree retire-missing-claim` (absent
+    claims are released at finalize, handoff, and `worktree cleanup` since
+    `91a8742`; Hash has no retirement receipts). Covered differently: thor's
+    `merged-proposal-advanced-target-contained` proof
+    (`mergedHeadAncestry`). Fork-specific: both Blacksmith merge guards and
+    thor's lint-only rewrites. Policy decisions left in the fork: thor's
+    manual `semantically-equivalent` preserved-source override (SPEC.md says
+    equivalence evidence never asserts semantic equivalence) and its
+    `loop archive-recorded` recovery.
+<!-- simple-changelogs-signature agent="Claude Opus 5.5 xhigh" at="2026-10-05T15:08:28-05:00" -->
+
+- Fixes from GPT-6 Sol's exact-head review of soundsystems/simple-changes!80
+  (no blocking findings; four should-fix):
+  - `discover-local-consumers.ts` marks a standalone CMS install
+    `superseded-install` only when `.simple-changelogs-cms.json` exists,
+    which the combined package's cleanup rule requires; a new check case
+    keeps both installs without it.
+  - `references/changelog-coordination.md` no longer calls `classified`
+    entry-only; it may carry the exact selected public version.
+  - `proposal audit` with `--template` requires the template's headings and,
+    when the template has none, a `## Merge danger` section; Summary and
+    Evidence may still map to template sections.
+  - `update-local-forks` skips every `*CHANGELOG*.md` in literal rewrites,
+    and lists a fork's own root `CHANGELOG.md` once (as the `skip` entry)
+    instead of also as `keep-fork-only`; the duplicate made `apply` reject
+    the plan for any fork with a root changelog (none of the four current
+    forks has one).
+  - A focused re-review confirmed all four and found the docs behind:
+    `production-loop.md` now keeps a standalone CMS install while the
+    sidecar is missing, `change-requests.md` says a template never replaces
+    Merge danger, and the text plan counts skipped fork-owned history.
+  - Each fix has a case that fails when the fix is removed. The
+    `publish-skill` change is byte-identical in Simple Changelogs.
+<!-- simple-changelogs-signature agent="Claude Opus 5.5 xhigh" at="2026-10-05T16:23:15-05:00" -->
+
 ## 0.23.1 - 2026-10-03
 
 - `lib/initialization.ts`: `inspectInitialization` now returns

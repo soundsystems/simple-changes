@@ -55,14 +55,19 @@ Process forks independently so one blocked repository does not corrupt another.
 
 For each fork:
 
-1. Run the canonical fork-drift checker when one is bundled, and use the
-   packaged `update-local-forks` helper (`skills/update-local-forks/scripts/
-   update-local-forks.ts plan --fork <dir> --upstream <checkout>`) to classify
-   every fork file against the pinned base before editing anything by hand.
+1. Run the canonical fork-drift checker when one is bundled. When the canonical
+   package also bundles the `update-local-forks` helper
+   (`skills/update-local-forks/scripts/update-local-forks.ts plan --fork <dir>
+   --upstream <checkout>`), use it to classify every fork file against the
+   pinned base before editing anything by hand.
 2. Review the entire canonical diff from the old pin through the new merged pin.
 3. Apply package changes while preserving the fork's name, audience, release
    authorities, commands, surfaces, and documented local policies.
-4. Update the provenance pin only after the review is complete.
+4. Update the provenance pin only after the review is complete. When the
+   bundled fork checker offers a pin-parity mode, run it against the new pin
+   (for example `check-fork-sync.sh --pin-parity <fork SKILL.md> <upstream
+   repository>`) and require a pass, so every difference from the pinned
+   upstream is a declared delta or omission.
 5. Run package checks and repository-native changelog or release verification.
 6. If the canonical guidance version changed, follow the fork's policy to audit
    released customer notes, developer history, generated surfaces, and version
@@ -117,6 +122,19 @@ Inventory every exact-source consumer with
 unlocked installs, and lock-only records before writing. Treat paths resolving
 to the same physical package as symlinked paths, not duplicate installs.
 Do not select only one consumer for convenience.
+
+Before reinstalling, reconcile combined-distribution topology. When a valid
+`.simple-changelogs.json` selects `web-cms` and that combined package is
+present, its protected CMS workflow makes a separate
+`simple-changelogs-cms` installation redundant. The
+`.simple-changelogs-cms.json` sidecar remains required CMS policy for the
+combined package, so while it is missing the standalone install is not yet
+redundant; keep it and report the missing sidecar. Once the sidecar exists,
+treat a discovered standalone CMS package as redundant (discovery reports it
+as `superseded-install`) and remove its package plus lock entry unless
+repository instructions explicitly document both packages as independently
+maintained consumers. Never let a
+broad reinstall recreate a package already removed by this topology rule.
 
 For every confirmed consumer:
 

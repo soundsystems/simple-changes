@@ -1,5 +1,90 @@
 # Changelog
 
+## 0.24.0 - 2026-10-05
+
+- Proposal descriptions now follow one body shape
+  (`references/change-requests.md#body-shape`). A Summary opens with the
+  outcome and the smallest view that makes the change clear, Evidence shows a
+  before and an after instead of only listing passing checks, and Merge
+  danger names a one-way, two-way, or unknown door and the blast radius. The
+  door comes from the run's own migration, installed-client compatibility,
+  release, and rollback evidence rather than the size of the diff. A
+  repository's own proposal template is filled first and keeps its headings,
+  and the signature block stays last.
+- An agent's independent review now pins the exact base and head, then
+  checks two separate axes: the repository's documented standards, citing
+  the rule, and the originating issue or spec, quoting it for missing
+  requirements, unrequested behavior, and wrong implementations, or reporting
+  `no spec available`. Each axis is reported on its own.
+- Guidance moves to 25. The update notice needs no decision.
+- `publish-skill` now runs only when you type `/publish-skill`. It now
+  removes a standalone CMS changelog install that a selected Web and CMS
+  package already covers once the repository's CMS policy file is in place,
+  unless repository instructions keep both, and it matches the copy that
+  ships with Simple Changelogs.
+- `simple-changes proposal audit --file <body.md> [--template <path>]` checks
+  a stored proposal description and exits 3 on escaped `\n` where line breaks
+  were intended, a missing Summary, Evidence, or Merge danger section (with
+  the repository's own template: a missing template heading, or a missing
+  Merge danger section, which the template never replaces), a Merge danger
+  section without a `**Door:**` line naming one-way, two-way, or unknown or
+  without a `**Blast radius:**` line, and a signature block that is not
+  last. Agents run it after creating or updating a proposal, before
+  re-reading the rendering. `verify-markdown` no longer counts an escaped
+  `\n` inside code.
+- `simple-changes skill check [--skill-dir PATH]` reports whether skill
+  discovery can load a skill or a fork: strict YAML frontmatter, a name that
+  matches its directory, a 1 to 1,024 character description, matching Claude
+  Code and Codex invocation settings, and relative links that resolve.
+- Simple Changes now ships Codex metadata (`agents/openai.yaml`). `fork
+  create` gives a new fork a description that starts with its name and says to
+  use it instead of the global `simple-changes` skill in that repository, and
+  points the fork's Codex metadata at the fork.
+- From a fork, the turn-end guard is offered and installed from the globally
+  installed Simple Changes runtime, so a user-level hook never runs one
+  repository's fork. When no global copy is at least as new, initialization
+  says to install the hook from the global skill.
+- `update-local-forks` holds a fork's pin when an upstream reference added or
+  changed since the pin is neither carried by the fork nor listed under
+  `## Intentional omissions` in its `references/fork-maintenance.md`; `plan`
+  and `apply` exit 3 until the fork carries or records it.
+<!-- simple-changelogs-signature agent="Claude Opus 5.5 xhigh" at="2026-10-05T13:11:05-05:00" -->
+- Ship now accepts a Simple Changelogs classification that already names
+  the exact public version, chosen automatically or by your direction, and
+  carries it into preparation. Preparing and verifying the changelog still
+  happen as separate later steps, and a version that still needs your answer
+  is still asked about.
+- A Ship run that starts with no local changes now records that empty
+  starting point right away, so every Ship run has a fixed scope to check
+  against. Committed and release-generated changes are still listed in the
+  final outcome; an empty starting scope never counts as delivery.
+- The skill now shows the full end-of-turn command,
+  `loop finalize --reason "<why the turn ends>" --json`. The shorter form it
+  showed before was rejected because `--reason` is required.
+<!-- simple-changelogs-signature agent="Claude Opus 5.5 xhigh" at="2026-10-05T13:48:48-05:00" -->
+- When `update-local-forks` moves a fork's pin or upstream version, it
+  now leaves the fork's own history as written. Its changelog files, a
+  commit or version range, a Markdown heading, and anything in a history,
+  dated, or range-named section keep the old value, so a sync record such as
+  `7ab67a1..628c66b` and the test that checks it no longer change to the new
+  pin.
+<!-- simple-changelogs-signature agent="Claude Opus 5.5 xhigh" at="2026-10-05T14:14:40-05:00" -->
+- Remote branch cleanup now judges merge requests by their final state. A
+  branch whose merge request was open when the run started and merged at that
+  same head is recorded as merged without an extra ancestry proof, as long as
+  the target contains that head, and one closed during the run is classified
+  as closed rather than open. A merge request still open at the end still
+  blocks deletion, a squash merge or a merge after a fast-forward is handled
+  as before, and a deletion you approve as superseded still counts every
+  merge request ever seen on the branch.
+- `loop close-equivalent` accepts a worktree the run itself removed after an
+  audited cleanup when the path is gone and the refreshed target still
+  contains its head, and an unrelated preserved checkout that changed or went
+  missing after the scope froze no longer blocks the close. The primary
+  checkout and a changed retained checkout still block, and every scoped
+  source worktree now has to be proven before the close.
+<!-- simple-changelogs-signature agent="Claude Opus 5.5 xhigh" at="2026-10-05T15:08:28-05:00" -->
+
 ## 0.23.1 - 2026-10-03
 
 - The changelog coordination reference now names the only source of each

@@ -40,6 +40,8 @@ ref. Verify semantic state, not only commit ancestry:
 - each fork header names the canonical merged commit;
 - guidance or backfill policy has the expected value;
 - the consumer lock or manifest has the installed package identity;
+- combined-distribution consumers do not retain or recreate superseded
+  standalone package locks or directories;
 - stale skill directories are absent when cleanup was in scope.
 
 Record the provider URL and merge commit for every repository.

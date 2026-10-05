@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { readFile } from "node:fs/promises";
+import { YAML } from "bun";
 
 const skillPath = new URL(
   "../../../skills/simple-changes/SKILL.md",
@@ -77,6 +78,10 @@ const cleanupCompletionPath = new URL(
 );
 const gitlabProviderPath = new URL(
   "../../../skills/simple-changes/references/providers/gitlab.md",
+  import.meta.url
+);
+const codexMetadataPath = new URL(
+  "../../../skills/simple-changes/agents/openai.yaml",
   import.meta.url
 );
 const runtimeSourcePaths = [
@@ -1125,5 +1130,25 @@ describe("Simple Changes skill contract", () => {
     expect(skill.replace(/\s+/g, " ")).toContain(
       "Is this ready for Simple Changes, or do you want more changes first?"
     );
+  });
+
+  test("Codex metadata names the skill and keeps it model-invoked", async () => {
+    const [skill, metadata] = await Promise.all([
+      readFile(skillPath, "utf8"),
+      readFile(codexMetadataPath, "utf8"),
+    ]);
+    const parsed = YAML.parse(metadata) as {
+      interface?: Record<string, unknown>;
+      policy?: unknown;
+    };
+    expect(parsed.interface?.display_name).toBe("Simple Changes");
+    expect(String(parsed.interface?.short_description).length).toBeLessThan(65);
+    expect(String(parsed.interface?.default_prompt)).toStartWith(
+      "Use $simple-changes to "
+    );
+    // Model-invoked in both harnesses: no Codex policy block, and no Claude
+    // Code disable-model-invocation.
+    expect(parsed.policy).toBeUndefined();
+    expect(skill).not.toContain("disable-model-invocation");
   });
 });

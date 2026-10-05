@@ -37,12 +37,16 @@ import {
   recordControllerSession,
 } from "./harness-session.ts";
 import { sha256, sha256Json } from "./hash.ts";
-import { captureInventory, locateRepository } from "./inventory.ts";
+import {
+  captureInventory,
+  compareSnapshots,
+  locateRepository,
+} from "./inventory.ts";
 import {
   assertNoSymlinkAncestors,
   assertSafeRelativePath,
 } from "./path-safety.ts";
-import { validatePlanConservation } from "./planner.ts";
+import { buildPreviewPlan, validatePlanConservation } from "./planner.ts";
 import { primaryDeliveryProof } from "./primary-delivery-proof.ts";
 import {
   type CommandProcess,
@@ -1383,13 +1387,42 @@ const writeRemoteBranchSupersession = (
 /**
  * The receipt validator is pure, so an ancestry proof is only a claim until
  * git confirms the initial head is the merged head or its ancestor and the
- * target contains the merged head. Missing objects fail closed.
+ * target contains the merged head. A branch whose proposal was open at the
+ * opening inventory and merged at that unchanged head needs no sidecar, but
+ * git must still find the head in the target, so a squash merge or a merge
+ * into another branch fails closed exactly as with a sidecar. Missing objects
+ * fail closed.
  */
 const assertRemoteBranchAncestry = (
   repositoryPath: string,
   receipt: RemoteBranchReconciliationReceipt,
   proofs: readonly RemoteBranchAncestryProof[]
 ): void => {
+  const proven = new Set(proofs.map((proof) => proof.branch));
+  for (const branch of receipt.branches) {
+    const openedBeforeMerge =
+      branch.disposition === "deleted-merged" &&
+      branch.obsoleteProof === "merged-proposal-head" &&
+      !proven.has(branch.name) &&
+      branch.proposals.some(
+        (proposal) =>
+          proposal.state === "open" && proposal.observedFinally === false
+      );
+    if (
+      openedBeforeMerge &&
+      branch.initialHeadRevision &&
+      !targetContainsRevision(
+        repositoryPath,
+        receipt.targetRevision,
+        branch.initialHeadRevision
+      )
+    ) {
+      throw new SimpleChangesError(
+        `Merged deletion of ${branch.name} is not verified: its proposal was open at the opening inventory, and merged head ${branch.initialHeadRevision} is not contained in target ${receipt.targetRevision} (for example after a squash merge or a merge into another branch). Report the branch, head, and proposal to the user; this receipt cannot be recorded.`,
+        EXIT_CODES.unsafe
+      );
+    }
+  }
   for (const proof of proofs) {
     const reportable = `Report branch ${proof.branch}, initial head ${proof.initialHeadRevision}, and proposal ${proof.proposalObjectId} to the user; this receipt cannot be recorded.`;
     if (
@@ -1645,10 +1678,15 @@ const needsAncestryShape = (
   branch: RemoteBranchReconciliationReceipt["branches"][number]
 ): boolean =>
   branch.disposition === "deleted-merged" &&
-  (branch.proposals.some((proposal) => proposal.state === "open") ||
+  // Judged from the final snapshot, as merged deletion itself is.
+  (branch.proposals.some(
+    (proposal) =>
+      proposal.state === "open" && proposal.observedFinally !== false
+  ) ||
     !branch.proposals.some(
       (proposal) =>
         proposal.state === "merged" &&
+        proposal.observedFinally !== false &&
         proposal.headRevision === branch.initialHeadRevision
     ));
 
@@ -2492,13 +2530,30 @@ export const startLoop = (
             runId: `run-${Date.now().toString(36)}-${randomUUID().slice(0, 8)}`,
             schemaVersion: 1,
             shipmentScopeFrozenAt: null,
-            shipmentScopeRequired:
-              mode === "ship" && inventory.localChanges.length > 0,
+            shipmentScopeRequired: mode === "ship",
             targetRef: inventory.targetRef,
             targetRevision,
             updatedAt: now,
             worktrees,
           };
+          if (mode === "ship" && inventory.localChanges.length === 0) {
+            // Capture the clean opening baseline while both locks are held.
+            // Committed and generated delivery remains explicit additionalPaths
+            // in the later outcome; an empty scope proves no delivery by itself.
+            const plan = buildPreviewPlan(
+              inventory,
+              inventory,
+              compareSnapshots(inventory, inventory),
+              "Capture the clean opening shipment baseline"
+            );
+            lease.shipmentScope = {
+              openingChanges: [],
+              openingInventoryDigest: inventory.baselineDigest,
+              plan,
+              planDigest: sha256Json(plan),
+              recordedAt: now,
+            };
+          }
           const written = writeLease(lease);
           writeControllerBinding(written, {
             awaitingUser: null,
@@ -8027,8 +8082,12 @@ const equivalenceReceiptProof = (
   };
 };
 
+// Every scoped source worktree owes delivery proof, even one registered as
+// preserved, so a frozen-scope close never treats scoped work as unrelated.
 const closeEquivalentObligatedPaths = (lease: LoopLease): string[] => {
-  const obligated = new Set<string>();
+  const obligated = new Set<string>(
+    lease.shipmentScope?.plan.units.map((unit) => unit.sourceWorktree) ?? []
+  );
   for (const registered of lease.worktrees) {
     const eligible =
       registered.role === "controller" ||
@@ -8047,6 +8106,53 @@ const closeEquivalentObligatedPaths = (lease: LoopLease): string[] => {
   return [...obligated].sort((left, right) => left.localeCompare(right));
 };
 
+/**
+ * An obligated worktree this run itself removed after an audited
+ * `remove-after-audit` disposition is proven when its path is gone from disk
+ * and the refreshed target still contains both the audited target and the
+ * removed head. A patch-equivalent removal is not re-proven this way and
+ * blocks the close.
+ */
+export const completedRemovalProofForPath = (
+  lease: LoopLease,
+  path: string,
+  targetRevision: string,
+  contains: (
+    repositoryPath: string,
+    targetRevision: string,
+    revision: string
+  ) => boolean = targetContainsRevision
+): LoopCloseEquivalentWorktreeProof | null => {
+  // lstat, not existsSync: a dangling symlink recreated at the path is present.
+  if (lstatSync(path, { throwIfNoEntry: false })) {
+    return null;
+  }
+  const disposition = (lease.dispositions ?? []).find(
+    (item) =>
+      item.path === path &&
+      item.outcome === "remove-after-audit" &&
+      item.status === "completed" &&
+      item.targetRef === lease.targetRef &&
+      contains(lease.primaryCheckout, targetRevision, item.targetRevision) &&
+      contains(lease.primaryCheckout, targetRevision, item.headSha)
+  );
+  return disposition
+    ? { headSha: disposition.headSha, method: "target-ancestry", path }
+    : null;
+};
+
+const equivalenceReceiptsByPath = (
+  evidence: readonly LoopEquivalenceEvidence[]
+): Map<string, unknown> =>
+  new Map(
+    evidence.map((item) => [
+      existsSync(item.worktreePath)
+        ? realpathSync(item.worktreePath)
+        : resolve(item.worktreePath),
+      item.receipt,
+    ])
+  );
+
 const proveNothingLeftToShip = (
   lease: LoopLease,
   inventory: RepositoryInventory,
@@ -8054,13 +8160,7 @@ const proveNothingLeftToShip = (
   equivalenceEvidence: readonly LoopEquivalenceEvidence[]
 ): LoopCloseEquivalentWorktreeProof[] => {
   const schema = worktreeEquivalenceSchema();
-  const receiptsByPath = new Map<string, unknown>();
-  for (const item of equivalenceEvidence) {
-    const path = existsSync(item.worktreePath)
-      ? realpathSync(item.worktreePath)
-      : resolve(item.worktreePath);
-    receiptsByPath.set(path, item.receipt);
-  }
+  const receiptsByPath = equivalenceReceiptsByPath(equivalenceEvidence);
   const currentByPath = new Map(
     inventory.worktrees.map((worktree) => [worktree.path, worktree])
   );
@@ -8069,6 +8169,15 @@ const proveNothingLeftToShip = (
   for (const path of closeEquivalentObligatedPaths(lease)) {
     const current = currentByPath.get(path);
     if (!current) {
+      const removalProof = completedRemovalProofForPath(
+        lease,
+        path,
+        targetRevision
+      );
+      if (removalProof) {
+        proofs.push(removalProof);
+        continue;
+      }
       unproven.push(
         `${path}: the obligated worktree is missing and no exact absence/branch-containment recovery evidence exists`
       );
@@ -8169,18 +8278,55 @@ const assertTargetEquivalentRemoteReconciliation = (
   }
 };
 
+/**
+ * A frozen-scope close answers for its own shipment obligations, not for
+ * unrelated preserved or retained work: an unclaimed, unpaused checkout outside
+ * the obligations may go missing or change without blocking the close. The
+ * primary checkout is never unrelated, because finalization and cleanup act on
+ * it. Claim, authorization, and coordination violations still block, and
+ * before the scope freezes every violation does.
+ */
+export const frozenRecoveryBlockingViolations = (
+  lease: LoopLease,
+  verification: LoopVerification
+): LoopVerification["violations"] => {
+  if (!effectiveShipmentScopeFrozenAt(lease)) {
+    return verification.violations;
+  }
+  const obligated = new Set(closeEquivalentObligatedPaths(lease));
+  return verification.violations.filter((violation) => {
+    const registered = lease.worktrees.find(
+      (item) => item.path === violation.path
+    );
+    return !(
+      registered &&
+      violation.path !== lease.primaryCheckout &&
+      !obligated.has(violation.path) &&
+      !registered.claimId &&
+      !registered.pauseReceiptId &&
+      ["preserved", "retained"].includes(registered.role) &&
+      [
+        "missing-preserved-worktree",
+        "missing-retained-worktree",
+        "preserved-worktree-changed",
+      ].includes(violation.code)
+    );
+  });
+};
+
 const assertTargetEquivalentCleanupComplete = (
   lease: LoopLease,
   inventory: RepositoryInventory,
   cleanupErrors: readonly string[]
 ): void => {
   const verification = verificationAgainst(lease, inventory);
-  if (verification.ok && cleanupErrors.length === 0) {
+  const blockers = frozenRecoveryBlockingViolations(lease, verification);
+  if (blockers.length === 0 && cleanupErrors.length === 0) {
     return;
   }
   throw new SimpleChangesError(
     `Cannot close ${lease.runId} as target-equivalent because final verification or cleanup is incomplete: ${[
-      ...verification.violations.map((item) => item.message),
+      ...blockers.map((item) => item.message),
       ...cleanupErrors,
     ].join("; ")}`,
     EXIT_CODES.unsafe

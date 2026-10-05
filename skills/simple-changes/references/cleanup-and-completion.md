@@ -43,7 +43,11 @@ Every controller finalizes before it replies; see the finalize rule in
   `~/.codex/hooks.json` (`CLAUDE_CONFIG_DIR` and `CODEX_HOME` are honored)
   without touching other settings. It refuses a copy inside a linked worktree,
   which disappears when its work ships, and it leaves another copy's hook in
-  place while that copy is at least as new. The hook runs `loop turn-check
+  place while that copy is at least as new. Run from a repository fork, it
+  points the hook at the globally installed Simple Changes runtime, or refuses
+  when no global copy at least as new supports the turn check, because a
+  user-level hook runs in every repository; a hook already bound to a fork's
+  runtime reports as outdated. The hook runs `loop turn-check
   --hook` and exits quietly if its script is gone. A run started, resumed, or
   commanded by its owner in a harness session records that session in a file
   beside the lease, and a per-user pointer lets the hook find it in any
@@ -160,9 +164,13 @@ A source branch whose MR was open at the opening inventory, then merged at that
 same head or after a fast-forward, and deleted by GitLab is recorded as
 `deleted-merged` with `merged-proposal-head` proof. List that MR twice (open at
 the initial head with `observedFinally: false`, merged at the merged head with
-`observedInitially: false`) and add `mergedHeadAncestry` with the MR's
-`proposalObjectId`, `initialHeadRevision`, and `mergedHeadRevision` (equal when
-the head never moved) to that branch in the receipt file. `loop
+`observedInitially: false`). Open-branch protection, merged deletion, and
+audited classification judge the final snapshot, so the opening record no
+longer counts as open; a user-approved supersession still counts every
+observed record. When the MR merged at the unchanged initial head, the final
+merged record is the proof, and Git must still find that head in the target. When it merged after a fast-forward, add
+`mergedHeadAncestry` with the MR's `proposalObjectId`, `initialHeadRevision`,
+and `mergedHeadRevision` to that branch in the receipt file. `loop
 reconcile-remote-branches` verifies with Git that the initial head is the merged
 head or its ancestor and that the target contains the merged head, then keeps
 the proof in a sidecar beside the lease so older clients can still read the
@@ -259,10 +267,19 @@ classification and are never proof.
 close-only loop's registered work is already contained in the refreshed
 target, `loop close-equivalent --run-id <id> --approved-by <who> --reason
 <why>` closes it without the full scope, pre-ship brief, and shipped-outcome
-lifecycle. Every obligated worktree must be present and proven: a
-clean checkout whose head the target contains, or a current `contained`
-equivalence receipt for that exact path and head. Actively claimed and
-preserved/retained worktrees are excluded and untouched. On success it records
+lifecycle. Every obligated worktree, including every scoped source worktree,
+must be proven: a clean checkout whose head the target contains, a current
+`contained` equivalence receipt for that exact path and head, or, for a
+worktree this run removed itself, its completed `remove-after-audit`
+disposition when the refreshed target contains both the audited target and the
+removed head. Actively claimed and preserved/retained worktrees are excluded
+and untouched; after the scope freezes, an unrelated checkout (unclaimed,
+unpaused, not a scoped source, and not the primary checkout) no longer blocks
+final verification when it is a preserved checkout that went missing or
+changed, or a retained checkout that went missing. A changed retained
+checkout still blocks, because its owner must claim or pause it, and claim,
+authorization, and coordination violations still block. On success
+it records
 a terminal `target-equivalent` outcome (never reportable as shipped) in its
 immutable archive after the normal proven-safe local cleanup and final
 verification succeed. It then releases the lease. A failed cleanup or archive

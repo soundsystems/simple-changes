@@ -1495,6 +1495,9 @@ while (!existsSync(process.env.SIMPLE_CHANGES_TEST_RELEASE_PATH)) {
       unknown
     >;
     Reflect.deleteProperty(stored, "openingRemoteInventory");
+    // Reproduce the pre-capture ledger, rather than a new Ship ledger.
+    stored.shipmentScopeRequired = false;
+    Reflect.deleteProperty(stored, "shipmentScope");
     writeFileSync(leasePath, `${JSON.stringify(stored, null, 2)}\n`, "utf8");
 
     const ordinaryEnd = spawnSync(

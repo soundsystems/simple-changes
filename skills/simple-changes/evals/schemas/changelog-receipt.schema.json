@@ -330,13 +330,48 @@
               "release": { "type": "null" },
               "versionDecision": {
                 "type": "object",
+                "anyOf": [
+                  {
+                    "properties": {
+                      "boundary": { "const": "none" },
+                      "bumpLevel": { "const": "none" },
+                      "policyAction": { "const": "not-applicable" },
+                      "resolution": { "const": "not-required" },
+                      "selectedVersion": { "type": "null" },
+                      "suggestedVersion": { "type": "null" }
+                    }
+                  },
+                  {
+                    "properties": {
+                      "boundary": {
+                        "enum": [
+                          "release-bearing-merge",
+                          "web-production",
+                          "package-publication",
+                          "store-release",
+                          "other-public-release"
+                        ]
+                      },
+                      "bumpLevel": {
+                        "enum": ["none", "patch", "minor", "major"]
+                      },
+                      "policyAction": { "enum": ["ask", "automatic"] },
+                      "resolution": {
+                        "enum": [
+                          "automatic",
+                          "explicit-direction",
+                          "repository-automation"
+                        ]
+                      },
+                      "selectedVersion": { "type": "string", "minLength": 1 }
+                    }
+                  }
+                ]
+              },
+              "revisionLineage": {
                 "properties": {
-                  "boundary": { "const": "none" },
-                  "bumpLevel": { "const": "none" },
-                  "policyAction": { "const": "not-applicable" },
-                  "resolution": { "const": "not-required" },
-                  "selectedVersion": { "type": "null" },
-                  "suggestedVersion": { "type": "null" }
+                  "reconciliationHeadRevision": { "type": "null" },
+                  "finalizedTargetRevision": { "type": "null" }
                 }
               },
               "reasonCode": { "type": "null" },
@@ -802,13 +837,48 @@
               "release": { "type": "null" },
               "versionDecision": {
                 "type": "object",
+                "anyOf": [
+                  {
+                    "properties": {
+                      "boundary": { "const": "none" },
+                      "bumpLevel": { "const": "none" },
+                      "policyAction": { "const": "not-applicable" },
+                      "resolution": { "const": "not-required" },
+                      "selectedVersion": { "type": "null" },
+                      "suggestedVersion": { "type": "null" }
+                    }
+                  },
+                  {
+                    "properties": {
+                      "boundary": {
+                        "enum": [
+                          "release-bearing-merge",
+                          "web-production",
+                          "package-publication",
+                          "store-release",
+                          "other-public-release"
+                        ]
+                      },
+                      "bumpLevel": {
+                        "enum": ["none", "patch", "minor", "major"]
+                      },
+                      "policyAction": { "enum": ["ask", "automatic"] },
+                      "resolution": {
+                        "enum": [
+                          "automatic",
+                          "explicit-direction",
+                          "repository-automation"
+                        ]
+                      },
+                      "selectedVersion": { "type": "string", "minLength": 1 }
+                    }
+                  }
+                ]
+              },
+              "revisionLineage": {
                 "properties": {
-                  "boundary": { "const": "none" },
-                  "bumpLevel": { "const": "none" },
-                  "policyAction": { "const": "not-applicable" },
-                  "resolution": { "const": "not-required" },
-                  "selectedVersion": { "type": "null" },
-                  "suggestedVersion": { "type": "null" }
+                  "reconciliationHeadRevision": { "type": "null" },
+                  "finalizedTargetRevision": { "type": "null" }
                 }
               },
               "reasonCode": { "type": "null" },

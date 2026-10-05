@@ -72,8 +72,11 @@ describe("first-run initialization", () => {
       changelogCoordination
     );
     expect(from19.changes.map((item) => item.version)).toEqual([
-      20, 20, 21, 21, 21, 22, 22, 22, 22, 23, 23, 24, 24, 24,
+      20, 20, 21, 21, 21, 22, 22, 22, 22, 23, 23, 24, 24, 24, 25, 25, 25,
     ]);
+    expect(from19.changes.at(-1)?.summary).toContain(
+      "`simple-changes proposal audit`"
+    );
   });
   test("propagates the saved shipping preference into emergency classification", () => {
     for (const shippingMode of ["expedited", "break-glass"] as const) {
@@ -293,7 +296,7 @@ describe("first-run initialization", () => {
           available: true,
           owner: "simple-changelogs",
         },
-        currentVersion: 24,
+        currentVersion: 25,
         headline: "**Simple Changes has recently been updated.**",
         presentationOrder: [
           "required-answers",
@@ -319,7 +322,7 @@ describe("first-run initialization", () => {
       "hand off ready work and hold a shipment"
     );
     expect(status.guidanceUpdate.summaryBullets.join(" ")).toContain(
-      "`proposalSignatures` setting"
+      "Merge danger door"
     );
     expect(status.guidanceUpdate.recommendedChanges[0]).toMatchObject({
       question: "How should changelog work be handled?",

@@ -64,7 +64,13 @@ interface Consumer {
   skillPath?: string;
   source: string;
   sourceType?: string;
-  state: "installed" | "lock-only" | "multiple-installs" | "unlocked-install";
+  state:
+    | "installed"
+    | "lock-only"
+    | "multiple-installs"
+    | "superseded-install"
+    | "unlocked-install";
+  supersededBy?: string;
   symlinkPaths: string[];
 }
 
@@ -170,6 +176,9 @@ const walk = async (
 
 const stringValue = (value: unknown): string | undefined =>
   typeof value === "string" && value.length > 0 ? value : undefined;
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
 
 const normalizeSource = (value: unknown): string | undefined => {
   const source = stringValue(value)?.trim().replace(TRAILING_SLASH_PATTERN, "");
@@ -357,7 +366,7 @@ if (options.skills.size > 0) {
     );
 }
 
-const consumers: Consumer[] = [...candidates.values()]
+const discoveredConsumers: Consumer[] = [...candidates.values()]
   .map((candidate) => {
     const installPaths = [...candidate.installPaths].sort(compareText);
     const physicalInstallPaths = [...candidate.physicalInstallPaths].sort(
@@ -399,6 +408,80 @@ const consumers: Consumer[] = [...candidates.values()]
     const byRepository = compareText(left.repositoryRoot, right.repositoryRoot);
     return byRepository || compareText(left.skill, right.skill);
   });
+
+const selectedDistribution = async (
+  repositoryRoot: string
+): Promise<string | undefined> => {
+  const policyPath = join(repositoryRoot, ".simple-changelogs.json");
+  try {
+    if ((await lstat(policyPath)).isSymbolicLink()) {
+      return;
+    }
+    const policy = JSON.parse(await readFile(policyPath, "utf8")) as unknown;
+    if (
+      !isRecord(policy) ||
+      policy.schemaVersion !== 1 ||
+      policy.distribution !== "web-cms" ||
+      !isRecord(policy.guidance) ||
+      !Number.isInteger(policy.guidance.version) ||
+      (policy.guidance.version as number) < 1 ||
+      ![
+        "completed",
+        "declined",
+        "deferred",
+        "failed",
+        "not-applicable",
+        "partial",
+      ].includes(String(policy.guidance.backfillStatus)) ||
+      !["required", "optional"].includes(String(policy.developerChangelog)) ||
+      !["agent-and-timestamp", "none"].includes(String(policy.signatures)) ||
+      !["allow", "ask", "existing-only"].includes(
+        String(policy.newReleaseNoteSurfaces)
+      )
+    ) {
+      return;
+    }
+    return policy.distribution;
+  } catch {
+    // An absent or invalid optional policy cannot establish supersession.
+  }
+};
+
+const distributions = new Map<string, string | undefined>();
+const consumers: Consumer[] = await Promise.all(
+  discoveredConsumers.map(async (consumer) => {
+    if (consumer.skill !== "simple-changelogs-cms") {
+      return consumer;
+    }
+    let distribution = distributions.get(consumer.repositoryRoot);
+    if (!distributions.has(consumer.repositoryRoot)) {
+      distribution = await selectedDistribution(consumer.repositoryRoot);
+      distributions.set(consumer.repositoryRoot, distribution);
+    }
+    const combinedSkill = discoveredConsumers.find(
+      (candidate) =>
+        candidate.repositoryRoot === consumer.repositoryRoot &&
+        candidate.skill === "simple-changelogs-web-cms" &&
+        candidate.lockPath !== undefined &&
+        candidate.physicalInstallPaths.length > 0 &&
+        sourcesMatch(candidate.source, consumer.source)
+    );
+    // The combined package still needs the CMS policy sidecar; without it the
+    // standalone install is not yet redundant.
+    if (
+      distribution !== "web-cms" ||
+      !combinedSkill ||
+      !existsSync(join(consumer.repositoryRoot, ".simple-changelogs-cms.json"))
+    ) {
+      return consumer;
+    }
+    return {
+      ...consumer,
+      state: "superseded-install" as const,
+      supersededBy: combinedSkill.skill,
+    };
+  })
+);
 
 if (options.json) {
   process.stdout.write(

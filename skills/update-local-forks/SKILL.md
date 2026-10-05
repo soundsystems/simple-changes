@@ -41,10 +41,12 @@ saved plan, and it never commits, pushes, or runs a fork's scripts.
    local cache from the canonical repository.
 3. **Explain before writing.** Tell the user, in plain language, how many
    files update, merge, get added or deleted, how many fork edits and
-   fork-only files stay untouched, which files conflict, and which upstream
-   changes the fork omits and should be re-checked. Show the literal rewrites
-   (provenance pin, guidance version, upstream version) the plan will make in
-   the fork's own tests and notes. Present every fork's plan together, with
+   fork-only files stay untouched, which files conflict, which upstream
+   references the fork omits without a record (these hold the pin), and which
+   upstream changes the fork omits on record and should be re-checked. Show
+   the literal rewrites (provenance pin, guidance version, upstream version)
+   the plan will make in the fork's own tests and notes. Present every fork's
+   plan together, with
    the step 7 handoff (queue, integrate, or ship) proposed for each
    repository, so the user can approve all, none, or named forks and their
    handoffs in one reply. Wait for approval; a plan with conflicts still
@@ -56,15 +58,22 @@ saved plan, and it never commits, pushes, or runs a fork's scripts.
    `SKILL.md` or `SPEC.md`; read the `.upstream-merge` sidecar, merge the
    upstream change into the fork's prose keeping its stricter local rules,
    then delete the sidecar. Until it is deleted, every later plan reports the
-   file as unresolved. Review items are upstream files the fork
-   deliberately omits; confirm each omission still holds, or port the change.
+   file as unresolved. An `unrecorded-omission` is an upstream reference
+   added or changed since the pin that the fork neither carries nor records:
+   carry the file, or list it with its reason under `## Intentional
+   omissions` in the fork's `references/fork-maintenance.md` (that section
+   defines the record), then plan again. Until none remain, `plan` and
+   `apply` exit 3 and the pin and `SKILL.md` stay where they are. Review items
+   are upstream files the fork deliberately omits; confirm each omission still
+   holds, or port the change.
    A review item on a fork-owned script or manifest means that file gates the
    runtime behind its own list of commands and does not name one this update
    added; extend the gate, or record why the fork withholds that command.
    Follow the fork's classification rules in
    [fork sync](references/fork-sync.md).
 6. **Verify.** Run the fork's own checks (commonly `scripts/test.sh` beside
-   the fork) and the fork repository's native checks. Fix any literal the
+   the fork), its runtime's `simple-changes skill check` when the runtime has
+   that command, and the fork repository's native checks. Fix any literal the
    fork pins that the plan did not know about, then re-run `plan` and expect
    no remaining actions.
 7. **Record and hand off.** Append a short section to the fork's
@@ -109,14 +118,15 @@ host support, work through the forks one at a time.
 - Fork-only files, fork edits to unchanged upstream files, conflicts, and
   review items are never overwritten.
 - Runtime files under `scripts/` and `evals/` (or the fork's `runtime/`
-  directory) are added when new upstream; new upstream references are
-  reported for review, because forks omit references on purpose.
+  directory) are added when new upstream. An upstream reference that is new
+  or changed since the pin is never added silently: the fork carries it or
+  records why it does not, and the pin waits until it does.
 - Nothing here grants merge, push, release, or deployment authority; the
   fork repository's Simple Changes policy decides how the update ships.
 
 ## Reports
 
-Report per fork: the pin movement, counts by action, every conflict and
-review item with its reason, the literal rewrites made, and the exact next
-command. Say plainly when a fork was skipped as a linked worktree or left
+Report per fork: the pin movement, counts by action, every conflict,
+unrecorded omission, and review item with its reason, the literal rewrites
+made, and the exact next command. Say plainly when a fork was skipped as a linked worktree or left
 untouched because the plan was not applied.

@@ -88,7 +88,11 @@ bun ~/.agents/skills/simple-changes/scripts/simple-changes.ts fork create \
 The command copies the complete installed skill to
 `.agents/skills/product-simple-changes`, renames its skill identity, and records
 the exact upstream commit after verifying every source file's bytes (a
-mismatch names the differing files; Finder `.DS_Store` files are ignored). It
+mismatch names the differing files; Finder `.DS_Store` files are ignored). The
+fork's description starts with its name and tells agents to use it instead of
+the global `simple-changes` skill in that repository (`product` here, taken
+from a `<project>-simple-changes` name), and its Codex metadata names and
+invokes the fork, so an agent that sees both skills loads the fork. It
 always writes inside the Git repository that contains the working directory or
 `--repo`, refuses an existing destination or a name that matches an installed
 skill, and leaves the global installation untouched. Pass
@@ -101,11 +105,20 @@ forked with a verified pin.
 
 The new copy starts with the same behavior as upstream. Edit its `SKILL.md` and
 runtime to implement the stated deltas, verify those changes, and commit the
-fork in its owning repository. Use the fork by its distinct skill name; if you
-choose a location outside `.agents/skills`, point repository instructions to
-its `SKILL.md`. Claude Code loads project skills from `.claude/skills`, so for
-Claude Code create the fork with `--destination .claude/skills/<name>` or link
-that path to the fork. The provenance line below its title lets the updater find it:
+fork in its owning repository. The fork's own runtime checks that skill
+discovery can still load it (strict frontmatter, a name matching its
+directory, Claude Code and Codex invocation parity, and relative links that
+resolve):
+
+```sh
+bun .agents/skills/product-simple-changes/scripts/simple-changes.ts skill check
+```
+
+Use the fork by its distinct skill name; if you choose a location outside
+`.agents/skills`, point repository instructions to its `SKILL.md`. Claude Code
+loads project skills from `.claude/skills`, so for Claude Code create the fork
+with `--destination .claude/skills/<name>` or link that path to the fork. The
+provenance line below its title lets the updater find it:
 
 ```md
 Forked from `simple-changes` @ `<sha>`. Fork-specific deltas: ...
@@ -123,13 +136,17 @@ global skill roots and conventional project folders (`Developer`, `Projects`,
 `Code`, and `src`); pass `--root` for forks elsewhere. It plans one fork at a
 time against the fork's pinned upstream base and the global install, applies portable upstream
 changes, keeps every fork-specific edit and file, three-way merges files both
-sides changed, and reports conflicts and omitted references for review instead
-of overwriting them. It also advances the provenance pin only to the exact
-release commit the global install matches, and rewrites the pin, guidance
-version, and upstream version literals the fork's own checks pin. It never
-commits or pushes; the fork repository's own Simple Changes policy ships the
-update. Guidance updates therefore reach a fork's users the same way they
-reach everyone else: through the next write-capable run's one-time notice.
+sides changed, and reports conflicts for review instead of overwriting them.
+An upstream reference added or changed since the pin that the fork neither
+carries nor lists under `## Intentional omissions` in its
+`references/fork-maintenance.md` holds the pin until the fork carries or
+records it, so new guidance cannot be skipped silently. It also advances the
+provenance pin only to the exact release commit the global install matches,
+and rewrites the pin, guidance version, and upstream version literals the
+fork's own checks pin. It never commits or pushes; the fork repository's own
+Simple Changes policy ships the update. Guidance updates therefore reach a
+fork's users the same way they reach everyone else: through the next
+write-capable run's one-time notice.
 
 ```sh
 bun ~/.agents/skills/update-local-forks/scripts/update-local-forks.ts discover
@@ -190,7 +207,11 @@ tooling/simple-changes/check-fork-sync.sh \
   conservation, authority, and closed JSON schemas.
 - Classifies database and data-system changes without prescribing a provider,
   ORM, query language, or migration tool.
-- Audits proposal Markdown, including accidentally escaped newlines.
+- Audits proposal Markdown, including accidentally escaped newlines outside
+  code, and with `proposal audit` checks a stored description against the
+  Summary, Evidence, and Merge danger body shape (or a repository template's
+  headings), its one-way, two-way, or unknown door and blast radius, and a
+  signature block that ends the body.
 - Displays Simple Changes' packaged public release notes without exposing
   private HTML comments, unreleased notes, or developer history.
 - Checks that the latest public and developer release headings agree with the
@@ -335,6 +356,8 @@ simple-changes release-delivery --changelog-receipt FILE --provider-receipt FILE
   [--request FILE] [--json]
 simple-changes proposal-signatures --agent NAME --role authored|reviewed|merged
   [--base REF --head REF] [--changelog-receipt FILE] [--json] [--repo PATH]
+simple-changes proposal audit --file FILE [--template FILE] [--json]
+simple-changes skill check [--skill-dir PATH] [--json]
 simple-changes validate KIND FILE [--json]
 simple-changes verify-markdown FILE [--json]
 simple-changes help
@@ -345,8 +368,8 @@ simple-changes help
 `change-plan`, `run-state`, `permission-bundle`, `provider-receipt`,
 `release-delivery-receipt`, `remote-branch-reconciliation`,
 `remote-branch-ancestry`, `remote-branch-supersession`,
-`release-consistency`, `release-notes`, `ready-work-receipt`, `ship-holds`,
-`loop-lease`, `loop-close-equivalent`,
+`release-consistency`, `release-notes`, `proposal-audit`,
+`ready-work-receipt`, `ship-holds`, `loop-lease`, `loop-close-equivalent`,
 `migration-review`, `migration-pending`, `migration-apply-plan`,
 `post-cleanup-recovery`, `shipment-outcome`, `stale-lease-recovery`,
 `worktree-cleanup`, `worktree-coordination`, `worktree-takeover`,
@@ -587,3 +610,17 @@ they do not make any named provider, domain, branch convention, database,
 deployment command, or release channel mandatory.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for contribution guidance.
+
+## Credits
+
+The proposal [body shape](skills/simple-changes/references/change-requests.md#body-shape)
+(a smallest-view summary, before-and-after evidence, and a one-way or two-way
+door with its blast radius) adapts the `pr` skill from Matt Pocock's
+[skills](https://github.com/mattpocock/skills) (v1.3.0, MIT), whose menu of
+summary views comes from Dex Horthy's
+[`show-me`](https://github.com/humanlayer/skills/blob/main/plugins/show-me/skills/show-me/SKILL.md).
+The wording here is original, and the door is derived from this workflow's own
+migration, compatibility, and rollback evidence rather than judged from the
+diff. The separate Standards and Spec axes of an
+[agent review](skills/simple-changes/references/review-and-merge.md#what-an-agent-review-examines)
+adapt the same repository's `code-review` skill.

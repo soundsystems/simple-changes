@@ -19,6 +19,7 @@ import {
   applyForkPlan,
   discover,
   inspectFork,
+  intentionalOmissions,
   planForkUpdate,
 } from "../../../../skills/update-local-forks/scripts/update-local-forks.ts";
 
@@ -89,6 +90,16 @@ const cliSource = (commands: string[]): string => {
     "",
   ].join("\n");
 };
+
+const OMISSION_RECORD = [
+  "# Acme fork maintenance",
+  "",
+  "## Intentional omissions",
+  "",
+  "- `references/deployments.md`: Acme deploys through its own pipeline.",
+  "- `references/signatures.md`: Acme proposals carry no agent signatures.",
+  "",
+].join("\n");
 
 const PINNED_COMMANDS = ["help", "initialize", "loop", "worktree"];
 const RELEASED_COMMANDS = [...PINNED_COMMANDS, "prune"];
@@ -197,6 +208,9 @@ const createFixture = (): Fixture => {
     `#!/bin/sh\ngrep -q 'Forked from \`simple-changes\` @ \`${pin}\`' SKILL.md\ngrep -q 'CURRENT_GUIDANCE_VERSION = 1' runtime/scripts/lib/guidance-updates.ts\ngrep -q 'Simple Changes 0.1.0' notes.md\n`
   );
   write(fork, "notes.md", "Bundled Simple Changes 0.1.0.\n");
+  // The fork records why it leaves out two upstream references; without the
+  // record, a changed or new upstream reference holds the pin.
+  write(fork, "references/fork-maintenance.md", OMISSION_RECORD);
 
   // The release: prose edited on other lines, spec appended, a runtime file
   // changed, a new runtime file, a reference removed, a new reference, a
@@ -589,6 +603,151 @@ describe("update-local-forks", () => {
     });
   });
 
+  test("holds the pin on a changed or new upstream reference the fork neither carries nor records", () => {
+    const fixture = createFixture();
+    rmSync(join(fixture.fork, "references/fork-maintenance.md"));
+    // Without the SPEC.md conflict, the omissions alone block the update.
+    write(fixture.fork, "SPEC.md", "# Spec\n\n- guarantee a\n- guarantee b\n");
+    const plan = planForkUpdate({
+      fork: fixture.fork,
+      source: fixture.source,
+      upstream: fixture.upstream,
+    });
+    const entry = (path: string) =>
+      plan.entries.find((candidate) => candidate.forkPath === path);
+
+    expect(entry("references/deployments.md")).toMatchObject({
+      action: "unrecorded-omission",
+    });
+    expect(entry("references/deployments.md")?.reason).toStartWith(
+      "Changed upstream, and the fork neither carries this reference"
+    );
+    expect(entry("references/signatures.md")?.reason).toStartWith(
+      "New upstream, and the fork neither carries this reference"
+    );
+    expect(plan.summary["unrecorded-omission"]).toBe(2);
+    expect(plan.summary.conflict).toBe(0);
+    expect(plan.pinUpdate.to).toBeNull();
+    expect(plan.pinUpdate.reason).toContain(
+      "neither carries nor lists under Intentional omissions in references/fork-maintenance.md"
+    );
+    expect(entry("SKILL.md")).toMatchObject({ action: "review" });
+    expect(entry("SKILL.md")?.reason).toContain(
+      "every unrecorded reference omission"
+    );
+    // Runtime updates still apply while the pin waits.
+    expect(entry("runtime/scripts/lib/core.ts")?.action).toBe("update");
+
+    const planPath = join(fixture.base, "plan.json");
+    const planned = spawnSync(
+      [
+        process.execPath,
+        cliPath,
+        "plan",
+        "--fork",
+        fixture.fork,
+        "--source",
+        fixture.source,
+        "--upstream",
+        fixture.upstream,
+        "--json",
+      ],
+      { stderr: "pipe", stdout: "pipe" }
+    );
+    expect(planned.exitCode).toBe(3);
+    writeFileSync(planPath, decoder.decode(planned.stdout));
+    const skillBefore = readFileSync(join(fixture.fork, "SKILL.md"), "utf8");
+    const applied = spawnSync(
+      [process.execPath, cliPath, "apply", "--plan", planPath, "--json"],
+      { stderr: "pipe", stdout: "pipe" }
+    );
+    expect(applied.exitCode).toBe(3);
+    expect(JSON.parse(decoder.decode(applied.stdout))).toMatchObject({
+      pin: { from: fixture.pin, to: null },
+      unrecordedOmissions: [
+        "references/deployments.md",
+        "references/signatures.md",
+      ],
+    });
+    expect(readFileSync(join(fixture.fork, "SKILL.md"), "utf8")).toBe(
+      skillBefore
+    );
+    expect(existsSync(join(fixture.fork, "references/signatures.md"))).toBe(
+      false
+    );
+
+    // Carry one reference and record the other: the pin advances.
+    cpSync(
+      join(fixture.source, "references/signatures.md"),
+      join(fixture.fork, "references/signatures.md")
+    );
+    write(
+      fixture.fork,
+      "references/fork-maintenance.md",
+      "## Intentional omissions\n\n- `references/deployments.md`: Acme deploys through its own pipeline.\n"
+    );
+    const resolved = planForkUpdate({
+      fork: fixture.fork,
+      source: fixture.source,
+      upstream: fixture.upstream,
+    });
+    const settled = (path: string) =>
+      resolved.entries.find((candidate) => candidate.forkPath === path);
+    expect(settled("references/signatures.md")?.action).toBe("current");
+    expect(settled("references/deployments.md")).toMatchObject({
+      action: "review",
+    });
+    expect(settled("references/deployments.md")?.reason).toContain(
+      "records it as an intentional omission (Acme deploys through its own pipeline.)"
+    );
+    expect(resolved.summary["unrecorded-omission"]).toBe(0);
+    expect(resolved.pinUpdate.to).toBe(fixture.release);
+    expect(applyForkPlan(resolved)).toMatchObject({
+      pin: { from: fixture.pin, to: fixture.release },
+      unrecordedOmissions: [],
+    });
+  });
+
+  test("reads omission records only from their section, outside code", () => {
+    const fixture = createFixture();
+    write(
+      fixture.fork,
+      "references/fork-maintenance.md",
+      [
+        "# Acme fork maintenance",
+        "",
+        "- `references/sync.md`: outside the section, so not a record.",
+        "",
+        "## Intentional omissions",
+        "",
+        "Record each omitted file like this:",
+        "",
+        "```md",
+        "- `references/example.md`: an example inside a fence.",
+        "```",
+        "",
+        "- `references/deployments.md`: Acme deploys through its own pipeline.",
+        "- `references/providers/radicle.md` with no colon is not a record.",
+        "- `references/empty.md`:",
+        "",
+        "### Notes",
+        "",
+        "* `references/nested.md`: a subsection still belongs to the section.",
+        "",
+        "## Sync history",
+        "",
+        "- `references/later.md`: after the section, so not a record.",
+        "",
+      ].join("\n")
+    );
+    expect([...intentionalOmissions(fixture.fork)]).toEqual([
+      ["references/deployments.md", "Acme deploys through its own pipeline."],
+      ["references/nested.md", "a subsection still belongs to the section."],
+    ]);
+    rmSync(join(fixture.fork, "references/fork-maintenance.md"));
+    expect(intentionalOmissions(fixture.fork).size).toBe(0);
+  });
+
   test("refuses to apply a plan after the fork changed and refuses an unverified pin", () => {
     const fixture = createFixture();
     const plan = planForkUpdate({
@@ -643,6 +802,89 @@ describe("update-local-forks", () => {
     const moved = structuredClone(plan);
     moved.fork.path = join(fixture.base, "Developer", "project");
     expect(() => applyForkPlan(moved)).toThrow("fork identity changed");
+  });
+
+  test("moves current literals and leaves the fork's own records as written", () => {
+    const fixture = createFixture();
+    const { pin, release } = fixture;
+    const recordPath = join(fixture.fork, "references/fork-maintenance.md");
+    const rangeHeading = `## Sync 0.0.9 to 0.1.0 (\`aaaaaaa..${pin}\`)`;
+    writeFileSync(
+      recordPath,
+      [
+        readFileSync(recordPath, "utf8"),
+        "## Current pin",
+        "",
+        `Pinned at \`${pin}\`, bundling Simple Changes 0.1.0.`,
+        "",
+        "```sh",
+        `# History is not a heading inside a fence: ${pin}`,
+        "```",
+        "",
+        "## History",
+        "",
+        "### Upstream 0.1.0",
+        "",
+        `- Pinned to \`${pin}\` with Simple Changes 0.1.0.`,
+        "",
+        rangeHeading,
+        "",
+        `- Adopted the runtime from \`${pin}\`.`,
+        "",
+      ].join("\n")
+    );
+    // A fork changelog is history even under an undated version heading.
+    const forkChangelog =
+      "# Changelog\n\n## 0.0.9\n\n- Bundled Simple Changes 0.1.0.\n";
+    writeFileSync(join(fixture.fork, "CHANGELOG.md"), forkChangelog);
+    const testScript = join(fixture.fork, "scripts/test.sh");
+    writeFileSync(
+      testScript,
+      `${readFileSync(testScript, "utf8")}grep -Fq '${rangeHeading}' references/fork-maintenance.md\n`
+    );
+
+    const plan = planForkUpdate({
+      fork: fixture.fork,
+      source: fixture.source,
+      upstream: fixture.upstream,
+    });
+    expect(
+      plan.literalRewrites
+        .filter(
+          (rewrite) => rewrite.forkPath === "references/fork-maintenance.md"
+        )
+        .map((rewrite) => rewrite.to)
+        .sort((left, right) => left.localeCompare(right))
+    ).toEqual(
+      [release, "Simple Changes 0.2.0"].sort((left, right) =>
+        left.localeCompare(right)
+      )
+    );
+    expect(
+      plan.literalRewrites.some(
+        (rewrite) => rewrite.forkPath === "CHANGELOG.md"
+      )
+    ).toBe(false);
+    applyForkPlan(plan);
+    expect(readFileSync(join(fixture.fork, "CHANGELOG.md"), "utf8")).toBe(
+      forkChangelog
+    );
+
+    const record = readFileSync(recordPath, "utf8");
+    expect(record).toContain(
+      `Pinned at \`${release}\`, bundling Simple Changes 0.2.0.`
+    );
+    expect(record).toContain(
+      `# History is not a heading inside a fence: ${release}`
+    );
+    expect(record).toContain(
+      `- Pinned to \`${pin}\` with Simple Changes 0.1.0.`
+    );
+    expect(record).toContain(rangeHeading);
+    expect(record).toContain(`- Adopted the runtime from \`${pin}\`.`);
+    const script = readFileSync(testScript, "utf8");
+    expect(script).toContain(`grep -Fq '${rangeHeading}'`);
+    expect(script).toContain(`@ \`${release}\``);
   });
 
   test("refuses stale literal targets and conflict sidecars", () => {
@@ -817,6 +1059,8 @@ describe("update-local-forks", () => {
       "start agents only after approval",
       "work through the forks one at a time",
       "the step 7 handoff (queue, integrate, or ship) proposed for each",
+      "`unrecorded-omission`",
+      "`## Intentional",
     ]) {
       expect(skill).toContain(required);
     }
@@ -826,6 +1070,7 @@ describe("update-local-forks", () => {
       "review",
       "keep-fork-only",
       "skip",
+      "unrecorded-omission",
     ]) {
       expect(reference).toContain(action);
     }

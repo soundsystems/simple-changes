@@ -804,6 +804,77 @@ describe("update-local-forks", () => {
     expect(() => applyForkPlan(moved)).toThrow("fork identity changed");
   });
 
+  test("moves current literals and leaves the fork's own records as written", () => {
+    const fixture = createFixture();
+    const { pin, release } = fixture;
+    const recordPath = join(fixture.fork, "references/fork-maintenance.md");
+    const rangeHeading = `## Sync 0.0.9 to 0.1.0 (\`aaaaaaa..${pin}\`)`;
+    writeFileSync(
+      recordPath,
+      [
+        readFileSync(recordPath, "utf8"),
+        "## Current pin",
+        "",
+        `Pinned at \`${pin}\`, bundling Simple Changes 0.1.0.`,
+        "",
+        "```sh",
+        `# History is not a heading inside a fence: ${pin}`,
+        "```",
+        "",
+        "## History",
+        "",
+        "### Upstream 0.1.0",
+        "",
+        `- Pinned to \`${pin}\` with Simple Changes 0.1.0.`,
+        "",
+        rangeHeading,
+        "",
+        `- Adopted the runtime from \`${pin}\`.`,
+        "",
+      ].join("\n")
+    );
+    const testScript = join(fixture.fork, "scripts/test.sh");
+    writeFileSync(
+      testScript,
+      `${readFileSync(testScript, "utf8")}grep -Fq '${rangeHeading}' references/fork-maintenance.md\n`
+    );
+
+    const plan = planForkUpdate({
+      fork: fixture.fork,
+      source: fixture.source,
+      upstream: fixture.upstream,
+    });
+    expect(
+      plan.literalRewrites
+        .filter(
+          (rewrite) => rewrite.forkPath === "references/fork-maintenance.md"
+        )
+        .map((rewrite) => rewrite.to)
+        .sort((left, right) => left.localeCompare(right))
+    ).toEqual(
+      [release, "Simple Changes 0.2.0"].sort((left, right) =>
+        left.localeCompare(right)
+      )
+    );
+    applyForkPlan(plan);
+
+    const record = readFileSync(recordPath, "utf8");
+    expect(record).toContain(
+      `Pinned at \`${release}\`, bundling Simple Changes 0.2.0.`
+    );
+    expect(record).toContain(
+      `# History is not a heading inside a fence: ${release}`
+    );
+    expect(record).toContain(
+      `- Pinned to \`${pin}\` with Simple Changes 0.1.0.`
+    );
+    expect(record).toContain(rangeHeading);
+    expect(record).toContain(`- Adopted the runtime from \`${pin}\`.`);
+    const script = readFileSync(testScript, "utf8");
+    expect(script).toContain(`grep -Fq '${rangeHeading}'`);
+    expect(script).toContain(`@ \`${release}\``);
+  });
+
   test("refuses stale literal targets and conflict sidecars", () => {
     const fixture = createFixture();
     const literalPlan = planForkUpdate({

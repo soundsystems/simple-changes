@@ -818,6 +818,71 @@ const classify = (
   };
 };
 
+// A fork's own records keep the literal they were written with; a moved pin or
+// version is a current claim only outside them. Any line naming a commit or
+// version range is a record. In Markdown, so is every heading and every line
+// in a section whose heading, or an enclosing one, names a range, a date, the
+// old literal, or a history.
+const RANGE_PATTERN =
+  /\b(?:[0-9a-f]{7,40}\.{2,3}[0-9a-f]{7,40}|\d+\.\d+\.\d+\.{2,3}\d+\.\d+\.\d+)\b/u;
+const HEADING_LEVEL_PATTERN = /^ {0,3}(#{1,6})(?:\s|$)/u;
+const FENCE_PATTERN = /^ {0,3}(?:```|~~~)/u;
+const HISTORY_HEADING_PATTERN = /\d{4}-\d{2}-\d{2}|\bhistory\b/iu;
+
+const recordLines = (
+  forkPath: string,
+  lines: string[],
+  from: string
+): boolean[] => {
+  if (!forkPath.endsWith(".md")) {
+    return lines.map((line) => RANGE_PATTERN.test(line));
+  }
+  const sections: { historical: boolean; level: number }[] = [];
+  let inFence = false;
+  return lines.map((line) => {
+    if (FENCE_PATTERN.test(line)) {
+      inFence = !inFence;
+    }
+    const heading = inFence ? null : HEADING_LEVEL_PATTERN.exec(line);
+    if (heading) {
+      const level = heading[1]?.length ?? 1;
+      while ((sections.at(-1)?.level ?? 0) >= level) {
+        sections.pop();
+      }
+      sections.push({
+        historical:
+          sections.some((section) => section.historical) ||
+          RANGE_PATTERN.test(line) ||
+          HISTORY_HEADING_PATTERN.test(line) ||
+          line.includes(from),
+        level,
+      });
+      return true;
+    }
+    return RANGE_PATTERN.test(line) || (sections.at(-1)?.historical ?? false);
+  });
+};
+
+export const rewriteLiteral = (
+  forkPath: string,
+  content: string,
+  from: string,
+  to: string
+): { content: string; rewritten: number } => {
+  const lines = content.split("\n");
+  const records = recordLines(forkPath, lines, from);
+  let rewritten = 0;
+  const next = lines.map((line, index) => {
+    if (records[index] || !line.includes(from)) {
+      return line;
+    }
+    const parts = line.split(from);
+    rewritten += parts.length - 1;
+    return parts.join(to);
+  });
+  return { content: next.join("\n"), rewritten };
+};
+
 const literalRewritesFor = (
   fork: DiscoveredFork,
   plannedContent: Map<string, string>,
@@ -857,7 +922,10 @@ const literalRewritesFor = (
       continue;
     }
     for (const [from, to] of substitutions) {
-      if (from !== to && content.includes(from)) {
+      if (
+        from !== to &&
+        rewriteLiteral(forkPath, content, from, to).rewritten > 0
+      ) {
         rewrites.push({ forkDigest: sha256(content), forkPath, from, to });
       }
     }
@@ -1636,7 +1704,12 @@ const applyLiteralRewrites = (
       continue;
     }
     for (const rewrite of fileRewrites) {
-      content = content.split(rewrite.from).join(rewrite.to);
+      ({ content } = rewriteLiteral(
+        forkPath,
+        content,
+        rewrite.from,
+        rewrite.to
+      ));
       count += 1;
     }
     writeFileSync(path, content);

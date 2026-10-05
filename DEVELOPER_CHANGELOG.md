@@ -97,6 +97,18 @@
 - Authored in a parallel Codex/Claude session on
   `fix/protocol-scope-20261005` and folded into this shipment by merge.
 <!-- simple-changelogs-signature agent="Claude Opus 5.5 xhigh" at="2026-10-05T13:48:48-05:00" -->
+- `update-local-forks` literal rewrites go through an exported
+  `rewriteLiteral(forkPath, content, from, to)` at both plan and apply time, so
+  a plan lists a rewrite only when a current claim changes and apply rewrites
+  exactly those lines. Records are kept: any line matching a SHA or semver
+  range, and in Markdown (fence-aware) every heading plus every line under a
+  heading stack where some heading names a range, a `YYYY-MM-DD` date, the old
+  literal, or `history`. The plan format is unchanged. Found while
+  re-baselining thor, whose short pin `628c66b` would have rewritten its
+  `7ab67a1..628c66b` sync heading, a history bullet, and the `test.sh` line
+  asserting that heading (3 occurrences before, 0 after). One new test (15
+  pass).
+<!-- simple-changelogs-signature agent="Claude Opus 5.5 xhigh" at="2026-10-05T14:14:40-05:00" -->
 
 ## 0.23.1 - 2026-10-03
 

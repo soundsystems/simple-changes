@@ -59,6 +59,12 @@
   `loop finalize --reason "<why the turn ends>" --json`. The shorter form it
   showed before was rejected because `--reason` is required.
 <!-- simple-changelogs-signature agent="Claude Opus 5.5 xhigh" at="2026-10-05T13:48:48-05:00" -->
+- When `update-local-forks` moves a fork's pin or upstream version, it
+  now leaves the fork's own history as written. A commit or version range,
+  a Markdown heading, and anything in a history, dated, or range-named
+  section keep the old value, so a sync record such as `7ab67a1..628c66b`
+  and the test that checks it no longer change to the new pin.
+<!-- simple-changelogs-signature agent="Claude Opus 5.5 xhigh" at="2026-10-05T14:14:40-05:00" -->
 
 ## 0.23.1 - 2026-10-03
 

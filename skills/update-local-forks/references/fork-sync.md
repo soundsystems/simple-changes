@@ -52,7 +52,11 @@ deltas. Two layouts are recognized:
 The plan also rewrites exact literals the fork pins in its own files outside
 the runtime: the old provenance sha, `CURRENT_GUIDANCE_VERSION = <old>`, and
 `Simple Changes <old version>`. Only those exact strings change; nothing is
-inferred.
+inferred. The fork's own records keep the literal they were written with: a
+line naming a commit or version range (`7ab67a1..628c66b`), and in Markdown
+every heading and every line in a section whose heading, or an enclosing one,
+names a range, a date, the old literal, or a history. A test that asserts such
+a record stays matched to it.
 
 ## Omitted references
 

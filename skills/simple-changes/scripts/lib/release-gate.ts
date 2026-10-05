@@ -287,6 +287,34 @@ const assertReceiptVersion = (
   }
 };
 
+// A resolved decision names its version, and an ask policy resolves only by
+// the user's explicit direction: an automatic or repository-automation
+// resolution would skip the version decision the policy requires.
+const assertVersionResolution = (
+  versionDecision: ModernChangelogReceipt["versionDecision"]
+): void => {
+  if (
+    versionDecision?.policyAction === "ask" &&
+    (versionDecision.resolution === "automatic" ||
+      versionDecision.resolution === "repository-automation")
+  ) {
+    protocolMismatch(
+      "An ask version policy resolves only by explicit direction."
+    );
+  }
+  if (
+    versionDecision &&
+    (versionDecision.resolution === "automatic" ||
+      versionDecision.resolution === "explicit-direction" ||
+      versionDecision.resolution === "repository-automation") &&
+    !versionDecision.selectedVersion
+  ) {
+    protocolMismatch(
+      "Resolved public version direction must include the selected version."
+    );
+  }
+};
+
 // Receipts v2 and v3 share every binding below.
 const validateModernTransaction = (
   request: ChangelogRequest,
@@ -321,17 +349,7 @@ const validateModernTransaction = (
       "Receipt release train or boundary does not match the delegated request."
     );
   }
-  if (
-    versionDecision &&
-    (versionDecision.resolution === "automatic" ||
-      versionDecision.resolution === "explicit-direction" ||
-      versionDecision.resolution === "repository-automation") &&
-    !versionDecision.selectedVersion
-  ) {
-    protocolMismatch(
-      "Resolved public version direction must include the selected version."
-    );
-  }
+  assertVersionResolution(versionDecision);
   if (
     versionDecision?.bumpLevel === "unknown" &&
     versionDecision.resolution !== "blocked"

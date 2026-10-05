@@ -101,11 +101,20 @@ forked with a verified pin.
 
 The new copy starts with the same behavior as upstream. Edit its `SKILL.md` and
 runtime to implement the stated deltas, verify those changes, and commit the
-fork in its owning repository. Use the fork by its distinct skill name; if you
-choose a location outside `.agents/skills`, point repository instructions to
-its `SKILL.md`. Claude Code loads project skills from `.claude/skills`, so for
-Claude Code create the fork with `--destination .claude/skills/<name>` or link
-that path to the fork. The provenance line below its title lets the updater find it:
+fork in its owning repository. The fork's own runtime checks that skill
+discovery can still load it (strict frontmatter, a name matching its
+directory, Claude Code and Codex invocation parity, and relative links that
+resolve):
+
+```sh
+bun .agents/skills/product-simple-changes/scripts/simple-changes.ts skill check
+```
+
+Use the fork by its distinct skill name; if you choose a location outside
+`.agents/skills`, point repository instructions to its `SKILL.md`. Claude Code
+loads project skills from `.claude/skills`, so for Claude Code create the fork
+with `--destination .claude/skills/<name>` or link that path to the fork. The
+provenance line below its title lets the updater find it:
 
 ```md
 Forked from `simple-changes` @ `<sha>`. Fork-specific deltas: ...
@@ -340,6 +349,7 @@ simple-changes release-delivery --changelog-receipt FILE --provider-receipt FILE
 simple-changes proposal-signatures --agent NAME --role authored|reviewed|merged
   [--base REF --head REF] [--changelog-receipt FILE] [--json] [--repo PATH]
 simple-changes proposal audit --file FILE [--template FILE] [--json]
+simple-changes skill check [--skill-dir PATH] [--json]
 simple-changes validate KIND FILE [--json]
 simple-changes verify-markdown FILE [--json]
 simple-changes help

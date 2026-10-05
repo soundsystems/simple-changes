@@ -150,6 +150,8 @@ import {
   type ShipHoldReport,
   waiveShipHold,
 } from "./lib/ship-holds.ts";
+import { checkSkill, type SkillCheckReport } from "./lib/skill-check.ts";
+import { skillRootOf } from "./lib/skill-roots.ts";
 import {
   hookInstallScript,
   parseTurnCheckHookInput,
@@ -367,6 +369,7 @@ Usage:
   simple-changes proposal-signatures --agent NAME --role authored|reviewed|merged
     [--base REF --head REF] [--changelog-receipt FILE] [--json] [--repo PATH]
   simple-changes proposal audit --file FILE [--template FILE] [--json]
+  simple-changes skill check [--skill-dir PATH] [--json]
   simple-changes validate KIND FILE [--json]
   simple-changes verify-markdown FILE [--json]
   simple-changes help
@@ -453,6 +456,7 @@ interface CliOptions {
   settleMs: number;
   shippingMode?: RepoPolicy["shippingMode"];
   signatureRole?: ProposalSignatureRole;
+  skillDirectory?: string;
   staleLease: boolean;
   statePath?: string;
   statusDigest?: string;
@@ -526,6 +530,7 @@ const VALUED_OPTIONS = new Set([
   "--shipping-mode",
   "--settle-ms",
   "--severity",
+  "--skill-dir",
   "--status-digest",
   "--state",
   "--target",
@@ -910,6 +915,7 @@ const applyLoopValuedOption = (
     "--remote": "remoteName",
     "--request": "requestPath",
     "--run-id": "runId",
+    "--skill-dir": "skillDirectory",
     "--state": "statePath",
     "--status-digest": "statusDigest",
     "--template": "templatePath",
@@ -2348,6 +2354,28 @@ const runProposalCommand = (options: CliOptions): number => {
     }),
   });
   writeOutput(report, options.json, renderProposalAudit(report));
+  return report.valid ? EXIT_CODES.success : EXIT_CODES.validation;
+};
+
+const renderSkillCheck = (report: SkillCheckReport): string =>
+  report.valid
+    ? `${report.name} at ${report.skillDirectory} passes the skill check: frontmatter, invocation parity, and ${report.linksChecked} relative links.\n`
+    : `${report.skillDirectory} fails the skill check:\n${report.issues
+        .map((issue) => `- ${issue.path}: ${issue.message}`)
+        .join("\n")}\n`;
+
+// Without --skill-dir, check the skill that ships this runtime, which is how a
+// fork checks itself.
+const runSkillCommand = (options: CliOptions): number => {
+  if (options.positional.length !== 1 || options.positional[0] !== "check") {
+    throw new SimpleChangesError("skill requires check", EXIT_CODES.usage);
+  }
+  const report = checkSkill(
+    options.skillDirectory === undefined
+      ? (skillRootOf(SCRIPT_FILE) ?? PACKAGE_ROOT)
+      : resolve(options.skillDirectory)
+  );
+  writeOutput(report, options.json, renderSkillCheck(report));
   return report.valid ? EXIT_CODES.success : EXIT_CODES.validation;
 };
 
@@ -3846,6 +3874,8 @@ const executeCommand = async (
       return EXIT_CODES.success;
     case "proposal":
       return runProposalCommand(options);
+    case "skill":
+      return runSkillCommand(options);
     case "validate":
       runValidation(options);
       return EXIT_CODES.success;

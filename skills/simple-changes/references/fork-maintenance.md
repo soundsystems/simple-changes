@@ -19,6 +19,15 @@ Keep that delta map small and include:
 Do not copy product-specific commands or rules into the generic core. Keep local
 rules in clearly owned references and link them from the fork's router.
 
+After every edit to a fork, run `simple-changes skill check` from the fork's
+own runtime (`--skill-dir <fork>` checks another copy). It fails when skill
+discovery would skip or misread the fork: frontmatter that is not strict YAML,
+a name that is not a spec name matching the fork's directory, a description
+outside 1 to 1,024 characters, Claude Code and Codex invocation settings that
+disagree with `agents/openai.yaml`, or a relative link in `SKILL.md` or
+`references/` that does not resolve. Use it instead of a fork-local
+frontmatter or link script, and keep the fork's behavior tests.
+
 The canonical Simple Changes source repository includes a maintainer drift
 checker under `tooling/simple-changes/`. It is intentionally absent from the
 installed skill. In a source checkout, run:

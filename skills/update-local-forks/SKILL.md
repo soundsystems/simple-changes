@@ -64,7 +64,8 @@ saved plan, and it never commits, pushes, or runs a fork's scripts.
    Follow the fork's classification rules in
    [fork sync](references/fork-sync.md).
 6. **Verify.** Run the fork's own checks (commonly `scripts/test.sh` beside
-   the fork) and the fork repository's native checks. Fix any literal the
+   the fork), its runtime's `simple-changes skill check` when the runtime
+   has that command, and the fork repository's native checks. Fix any literal the
    fork pins that the plan did not know about, then re-run `plan` and expect
    no remaining actions.
 7. **Record and hand off.** Append a short section to the fork's

@@ -39,7 +39,8 @@ from the owning repository. This copies the complete installed skill into
 commit, and refuses existing destinations. It does not change the
 global install or commit the new copy. Use `--destination` for another path
 inside the repository and `--upstream` for an offline source checkout.
-Customize and verify the fork, then use `update-local-forks` for future updates.
+Customize and verify the fork, including the fork runtime's own
+`simple-changes skill check`, then use `update-local-forks` for future updates.
 
 ## Classify the request
 

@@ -587,3 +587,17 @@ they do not make any named provider, domain, branch convention, database,
 deployment command, or release channel mandatory.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for contribution guidance.
+
+## Credits
+
+The proposal [body shape](skills/simple-changes/references/change-requests.md#body-shape)
+(a smallest-view summary, before-and-after evidence, and a one-way or two-way
+door with its blast radius) adapts the `pr` skill from Matt Pocock's
+[skills](https://github.com/mattpocock/skills) (v1.3.0, MIT), whose menu of
+summary views comes from Dex Horthy's
+[`show-me`](https://github.com/humanlayer/skills/blob/main/plugins/show-me/skills/show-me/SKILL.md).
+The wording here is original, and the door is derived from this workflow's own
+migration, compatibility, and rollback evidence rather than judged from the
+diff. The separate Standards and Spec axes of an
+[agent review](skills/simple-changes/references/review-and-merge.md#what-an-agent-review-examines)
+adapt the same repository's `code-review` skill.

@@ -346,9 +346,11 @@ read-only work, or incomplete verification.
    supported versions and features from the provider's declared marker when
    present (inferred discovery is reported as inferred), and accept only
    current locally validated receipts.
-7. Create/update neutral proposals with real Markdown newlines, re-read stored
-   source/rendering, resolve checks/discussions/review, and merge only the exact
-   approved head. Under the default `proposalSignatures` policy, the agent
+7. Create/update neutral proposals in the summary, evidence, and merge-danger
+   body shape from [change proposals](references/change-requests.md#body-shape),
+   with real Markdown newlines; re-read stored source/rendering, resolve
+   checks/discussions/review, and merge only the exact approved head. Under the
+   default `proposalSignatures` policy, the agent
    that authors, reviews, or merges a proposal appends its model name and
    version to the proposal's signature block; see
    [change proposals](references/change-requests.md).

@@ -74,6 +74,29 @@
   rewrites of another task's worktree), each citing the plan and commit that
   decided it; `CONTRIBUTING.md` points to it.
 <!-- simple-changelogs-signature agent="Claude Opus 5.5 xhigh" at="2026-10-05T13:11:05-05:00" -->
+- Changelog receipt schema (byte-identical to Simple Changelogs): a
+  `classified` receipt's `versionDecision` is now `anyOf` the entry-only
+  `none` decision or a resolved public decision (release-bearing boundary,
+  `ask` or `automatic` policy, `automatic`, `explicit-direction`, or
+  `repository-automation` resolution, non-empty `selectedVersion`), and
+  `revisionLineage` must be null on both revisions. `release-gate.ts`
+  rejects a classified receipt that names a release, and an entry-only
+  handoff must also leave `policyAction` `not-applicable` and
+  `suggestedVersion` null.
+- `lib/schema.ts` no longer returns early after `anyOf`: a failed branch
+  match is recorded and the node's sibling keywords (`const`, `type`,
+  properties) are still validated, which the new `anyOf` beside
+  `type: object` needs.
+- `startLoop` sets `shipmentScopeRequired` for every Ship run and, on a clean
+  start, writes `shipmentScope` from a `buildPreviewPlan` of the opening
+  inventory against itself (empty `openingChanges`, the opening baseline
+  digest, the plan and its digest) while the integration and coordination
+  locks are held. Old runs are not repaired. `replan.test.ts` fixtures follow;
+  loop-lease, release-gate, schema, and CLI tests add coverage (283 pass
+  across the five files).
+- Authored in a parallel Codex/Claude session on
+  `fix/protocol-scope-20261005` and folded into this shipment by merge.
+<!-- simple-changelogs-signature agent="Claude Opus 5.5 xhigh" at="2026-10-05T13:48:48-05:00" -->
 
 ## 0.23.1 - 2026-10-03
 

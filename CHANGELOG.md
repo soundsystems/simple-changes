@@ -46,6 +46,19 @@
   `## Intentional omissions` in its `references/fork-maintenance.md`; `plan`
   and `apply` exit 3 until the fork carries or records it.
 <!-- simple-changelogs-signature agent="Claude Opus 5.5 xhigh" at="2026-10-05T13:11:05-05:00" -->
+- Ship now accepts a Simple Changelogs classification that already names
+  the exact public version, chosen automatically or by your direction, and
+  carries it into preparation. Preparing and verifying the changelog still
+  happen as separate later steps, and a version that still needs your answer
+  is still asked about.
+- A Ship run that starts with no local changes now records that empty
+  starting point right away, so every Ship run has a fixed scope to check
+  against. Committed and release-generated changes are still listed in the
+  final outcome; an empty starting scope never counts as delivery.
+- The skill now shows the full end-of-turn command,
+  `loop finalize --reason "<why the turn ends>" --json`. The shorter form it
+  showed before was rejected because `--reason` is required.
+<!-- simple-changelogs-signature agent="Claude Opus 5.5 xhigh" at="2026-10-05T13:48:48-05:00" -->
 
 ## 0.23.1 - 2026-10-03
 

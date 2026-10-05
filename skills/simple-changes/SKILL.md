@@ -248,7 +248,8 @@ rule; see
 The lock records process-group evidence. If recovery is proven safe, use `loop
 recover --agent-id "$AGENT_ID"`; never delete state by hand. Before every
 terminal assistant response after a loop has started, including a blocked or
-failed handoff, run `loop finalize --json`, then `loop status --json` and verify
+failed handoff, run `loop finalize --reason "<why the turn ends>" --json`, then
+`loop status --json` and verify
 that your controller is released or relinquished. When the turn ends on a
 question the run needs answered, such as a migration, deployment, or cleanup
 approval, add `--awaiting-user "<question>"` once per question: the run pauses,

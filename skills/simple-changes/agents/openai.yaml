@@ -1,0 +1,4 @@
+interface:
+  display_name: "Simple Changes"
+  short_description: "Turn ready Git work into focused, verified proposals"
+  default_prompt: "Use $simple-changes to turn this repository's ready work into focused, verified proposals. Initialize first, preserve concurrent work, run the repository's checks, and merge, release, or deploy only with the authority the user and repository policy grant."

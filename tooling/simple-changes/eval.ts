@@ -107,6 +107,7 @@ const requiredSkillFiles = [
   "SKILL.md",
   "SPEC.md",
   "CHANGELOG.md",
+  "agents/openai.yaml",
   "scripts/simple-changes.ts",
   "evals/schemas/changelog-receipt.schema.json",
   "evals/schemas/repo-policy.schema.json",

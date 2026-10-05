@@ -1,12 +1,15 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { spawn, spawnSync } from "node:child_process";
 import {
+  cpSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { hostname, tmpdir } from "node:os";
@@ -37,6 +40,7 @@ import {
 import {
   hookInstallScript,
   parseTurnCheckHookInput,
+  stopHookCommand,
   stopHookStatus,
   turnCheck,
   turnCheckHookOutput,
@@ -1635,6 +1639,221 @@ describe("stop hook installer", () => {
     } finally {
       rmSync(submodule, { force: true, recursive: true });
     }
+  });
+
+  describe("from a repository fork", () => {
+    const CANONICAL_SKILL =
+      "---\nname: simple-changes\ndescription: Fixture\n---\n\n# Simple Changes\n";
+    const FORK_SKILL =
+      "---\nname: acme-simple-changes\ndescription: Fixture fork\n---\n\n# acme-simple-changes\n\nForked from `simple-changes` @ `0123456789abcdef0123456789abcdef01234567`. Fork-specific deltas: fixture.\n";
+    let base = "";
+
+    beforeEach(() => {
+      base = realpathSync(mkdtempSync(join(tmpdir(), "fork-hook-")));
+    });
+
+    afterEach(() => {
+      rmSync(base, { force: true, recursive: true });
+    });
+
+    // A skill directory whose runtime supports the turn check.
+    const skillCopy = (
+      root: string,
+      skill: string,
+      version = RUNNING,
+      runtimeDirectory = false
+    ): string => {
+      const scripts = join(
+        root,
+        runtimeDirectory ? "runtime/scripts" : "scripts"
+      );
+      mkdirSync(scripts, { recursive: true });
+      writeFileSync(join(root, "SKILL.md"), skill);
+      const script = join(scripts, "simple-changes.ts");
+      writeFileSync(script, runtimeSource(version));
+      return script;
+    };
+
+    test("installs the global runtime's hook instead of the fork's", () => {
+      const fork = skillCopy(
+        join(base, "repo/.agents/skills/acme-simple-changes"),
+        FORK_SKILL
+      );
+      const runtimeLayoutFork = skillCopy(
+        join(base, "repo/skills/acme"),
+        FORK_SKILL,
+        RUNNING,
+        true
+      );
+      const globalRoot = join(base, "home/.agents/skills");
+      const global = skillCopy(
+        join(globalRoot, "simple-changes"),
+        CANONICAL_SKILL,
+        "0.22.0"
+      );
+      // ~/.claude/skills links to the same installation as ~/.agents/skills.
+      const linkedRoot = join(base, "home/.claude/skills");
+      mkdirSync(linkedRoot, { recursive: true });
+      symlinkSync(
+        join(globalRoot, "simple-changes"),
+        join(linkedRoot, "simple-changes")
+      );
+      const roots = (...paths: string[]) => ({
+        environment: { SIMPLE_CHANGES_SKILL_ROOTS: paths.join(":") },
+      });
+
+      expect(hookInstallScript(fork, RUNNING, roots(globalRoot))).toBe(global);
+      expect(
+        hookInstallScript(runtimeLayoutFork, RUNNING, roots(globalRoot))
+      ).toBe(global);
+      expect(hookInstallScript(fork, RUNNING, roots(linkedRoot))).toBe(global);
+      // No global install, or none at least as new as the fork: none here.
+      expect(hookInstallScript(fork, RUNNING, roots())).toBeNull();
+      expect(hookInstallScript(fork, "0.99.0", roots(globalRoot))).toBeNull();
+      // A global copy that is itself a fork never takes the hook.
+      writeFileSync(join(globalRoot, "simple-changes/SKILL.md"), FORK_SKILL);
+      expect(hookInstallScript(fork, RUNNING, roots(globalRoot))).toBeNull();
+      // Simple Changes itself still installs its own runtime.
+      writeFileSync(
+        join(globalRoot, "simple-changes/SKILL.md"),
+        CANONICAL_SKILL
+      );
+      expect(hookInstallScript(global, RUNNING, roots())).toBe(global);
+    });
+
+    test("never binds the user-level hook to a fork and repoints one that is", () => {
+      const fork = skillCopy(
+        join(base, "repo/.agents/skills/acme-simple-changes"),
+        FORK_SKILL
+      );
+      const claudeDirectory = join(base, "claude");
+      mkdirSync(claudeDirectory);
+      process.env.CLAUDE_CONFIG_DIR = claudeDirectory;
+      const settingsPath = join(claudeDirectory, "settings.json");
+
+      expect(() => stopHookStatus("claude-code", fork, RUNNING, true)).toThrow(
+        "repository fork's runtime"
+      );
+      expect(existsSync(settingsPath)).toBe(false);
+
+      // A hook an earlier version bound to the fork is outdated for every copy.
+      writeFileSync(
+        settingsPath,
+        JSON.stringify({
+          hooks: {
+            Stop: [
+              { hooks: [{ command: stopHookCommand(fork), type: "command" }] },
+            ],
+          },
+        })
+      );
+      expect(stopHookStatus("claude-code", fork, RUNNING, false)).toMatchObject(
+        { current: false, installed: true }
+      );
+      expect(
+        stopHookStatus("claude-code", installed, RUNNING, false)
+      ).toMatchObject({ current: false, installed: true });
+      stopHookStatus("claude-code", installed, RUNNING, true);
+      const stop = JSON.parse(readFileSync(settingsPath, "utf8")).hooks.Stop;
+      expect(stop).toHaveLength(1);
+      expect(stop[0].hooks[0].command).toBe(stopHookCommand(installed));
+    });
+
+    test("initialization and the CLI offer the global runtime's hook from a fork", () => {
+      const repository = fixture();
+      const packaged = resolve(
+        import.meta.dir,
+        "../../../skills/simple-changes"
+      );
+      const forkRoot = join(
+        repository.root,
+        ".agents/skills/acme-simple-changes"
+      );
+      cpSync(packaged, forkRoot, { recursive: true });
+      writeFileSync(
+        join(forkRoot, "SKILL.md"),
+        readFileSync(join(forkRoot, "SKILL.md"), "utf8")
+          .replace("name: simple-changes", "name: acme-simple-changes")
+          .replace(
+            "# Simple Changes\n",
+            "# acme-simple-changes\n\nForked from `simple-changes` @ `0123456789abcdef0123456789abcdef01234567`. Fork-specific deltas: fixture.\n"
+          )
+      );
+      const forkScript = join(forkRoot, "scripts/simple-changes.ts");
+      const globalRoot = join(base, "home/.agents/skills");
+      cpSync(packaged, join(globalRoot, "simple-changes"), { recursive: true });
+      const globalScript = join(
+        globalRoot,
+        "simple-changes/scripts/simple-changes.ts"
+      );
+      const claudeDirectory = join(base, "claude");
+      mkdirSync(claudeDirectory);
+      const run = (skillRoots: string, ...args: string[]) =>
+        spawnSync(process.execPath, [forkScript, ...args], {
+          cwd: repository.root,
+          encoding: "utf8",
+          env: {
+            ...process.env,
+            CLAUDE_CODE_SESSION_ID: SESSION,
+            CLAUDE_CONFIG_DIR: claudeDirectory,
+            SIMPLE_CHANGES_SKILL_ROOTS: skillRoots,
+          },
+        });
+
+      const offered = run(
+        globalRoot,
+        "initialize",
+        "--mode",
+        "preview",
+        "--json"
+      );
+      expect(offered.status).toBe(0);
+      const guard = JSON.parse(offered.stdout).turnEndGuard;
+      expect(guard).toMatchObject({
+        current: false,
+        harness: "claude-code",
+        installed: false,
+      });
+      expect(guard.installCommand).toContain(
+        `${globalScript} harness stop-hook --harness claude-code --write`
+      );
+      expect(guard.installCommand).not.toContain(forkRoot);
+
+      const written = run(
+        globalRoot,
+        "harness",
+        "stop-hook",
+        "--harness",
+        "claude-code",
+        "--write",
+        "--json"
+      );
+      expect(written.status).toBe(0);
+      const [handler] = JSON.parse(
+        readFileSync(join(claudeDirectory, "settings.json"), "utf8")
+      ).hooks.Stop[0].hooks;
+      expect(handler.command).toContain(`'${globalScript}' loop turn-check`);
+      expect(handler.command).not.toContain(forkRoot);
+      rmSync(join(claudeDirectory, "settings.json"));
+
+      // Without a global install, the fork reports where the guard belongs.
+      const reported = run("", "initialize", "--mode", "preview");
+      expect(reported.status).toBe(0);
+      expect(reported.stdout).toContain(
+        "Turn-end guard: not installed for claude-code; this copy cannot be installed from here, so install it from the globally installed Simple Changes"
+      );
+      const refused = run(
+        "",
+        "harness",
+        "stop-hook",
+        "--harness",
+        "claude-code",
+        "--write"
+      );
+      expect(refused.status).toBe(5);
+      expect(refused.stderr).toContain("is a repository fork");
+      expect(existsSync(join(claudeDirectory, "settings.json"))).toBe(false);
+    }, 30_000);
   });
 
   test("updates an older turn-check command in place for Codex", () => {

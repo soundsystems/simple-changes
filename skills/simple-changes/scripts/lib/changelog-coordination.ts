@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, realpathSync } from "node:fs";
-import { homedir } from "node:os";
-import { basename, delimiter, resolve } from "node:path";
+import { basename, resolve } from "node:path";
+import { globalSkillRoots } from "./skill-roots.ts";
 import type { ChangelogCoordination } from "./types.ts";
 
 const POLICY_FILENAME = ".simple-changelogs.json";
@@ -26,13 +26,6 @@ const DISTRIBUTION_BY_INSTALLATION: Record<string, string> = {
 const INSTALLATION_NAMES = Object.keys(DISTRIBUTION_BY_INSTALLATION);
 const REPOSITORY_SKILL_ROOTS = [
   "skills",
-  ".agents/skills",
-  ".codex/skills",
-  ".claude/skills",
-  ".cursor/skills",
-] as const;
-
-const GLOBAL_SKILL_ROOTS = [
   ".agents/skills",
   ".codex/skills",
   ".claude/skills",
@@ -318,18 +311,6 @@ const uniqueByRealPath = (candidates: string[]): string[] => {
   return [...seen.values()];
 };
 
-const configuredSkillRoots = (options: ChangelogDiscoveryOptions): string[] => {
-  const environment = options.environment ?? process.env;
-  if (environment.SIMPLE_CHANGES_SKILL_ROOTS !== undefined) {
-    return environment.SIMPLE_CHANGES_SKILL_ROOTS.split(delimiter)
-      .map((path) => path.trim())
-      .filter(Boolean)
-      .map((path) => resolve(path));
-  }
-  const homeDirectory = options.homeDirectory ?? homedir();
-  return GLOBAL_SKILL_ROOTS.map((path) => resolve(homeDirectory, path));
-};
-
 export const inspectChangelogCoordination = (
   repositoryRoot: string | null,
   options: ChangelogDiscoveryOptions = {}
@@ -346,7 +327,7 @@ export const inspectChangelogCoordination = (
         )
       ).filter(existsSync)
     : [];
-  const globalProviders = configuredSkillRoots(options)
+  const globalProviders = globalSkillRoots(options)
     .flatMap((root) =>
       INSTALLATION_NAMES.map((name) => resolve(root, name, "SKILL.md"))
     )

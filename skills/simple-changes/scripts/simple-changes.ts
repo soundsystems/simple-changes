@@ -151,7 +151,7 @@ import {
   waiveShipHold,
 } from "./lib/ship-holds.ts";
 import { checkSkill, type SkillCheckReport } from "./lib/skill-check.ts";
-import { skillRootOf } from "./lib/skill-roots.ts";
+import { isForkRuntime, skillRootOf } from "./lib/skill-roots.ts";
 import {
   hookInstallScript,
   parseTurnCheckHookInput,
@@ -3704,13 +3704,19 @@ const renderStopHookStatus = (status: StopHookStatus): string => {
     return `The Simple Changes turn-end guard is installed for ${status.harness} in ${status.path}.\n`;
   }
   if (status.installed) {
-    return `An older Simple Changes turn-end guard is installed for ${status.harness} in ${status.path}. With the user's agreement, rerun with --write to point it at this runtime.\n`;
+    return `An older Simple Changes turn-end guard is installed for ${status.harness} in ${status.path}. With the user's agreement, rerun with --write to update it to:\n  ${status.command}\n`;
   }
   return `The Simple Changes turn-end guard is not installed for ${status.harness}. With the user's agreement, run \`simple-changes harness stop-hook --harness ${status.harness} --write\` to add this Stop hook to ${status.path}:\n  ${status.command}\n`;
 };
 
 const NOT_INSTALLABLE_HERE =
   "This Simple Changes copy lives in a linked worktree with no matching primary-checkout copy that supports the turn check, so a user-level hook pointing here would break when the worktree is removed. Install the turn-end guard from the globally installed Simple Changes instead.";
+
+const NOT_INSTALLABLE_FROM_FORK =
+  "This Simple Changes copy is a repository fork, and no globally installed Simple Changes at least as new supports the turn check, so a user-level hook here would run this one repository's runtime in every session. Install or update the global Simple Changes, then install the turn-end guard from it.";
+
+const notInstallableHere = (): string =>
+  isForkRuntime(SCRIPT_FILE) ? NOT_INSTALLABLE_FROM_FORK : NOT_INSTALLABLE_HERE;
 
 const resolveHarness = (options: CliOptions): TurnGuardHarness => {
   const harness = options.harness ?? currentHarnessSession()?.harness;
@@ -3737,7 +3743,7 @@ const runHarnessCommand = (options: CliOptions): void => {
   }
   const script = hookInstallScript(SCRIPT_FILE, VERSION);
   if (!script && options.write) {
-    throw new SimpleChangesError(NOT_INSTALLABLE_HERE, EXIT_CODES.unsafe);
+    throw new SimpleChangesError(notInstallableHere(), EXIT_CODES.unsafe);
   }
   const status = stopHookStatus(
     resolveHarness(options),
@@ -3750,7 +3756,7 @@ const runHarnessCommand = (options: CliOptions): void => {
     options.json,
     script || status.current
       ? renderStopHookStatus(status)
-      : `${NOT_INSTALLABLE_HERE}\n`
+      : `${notInstallableHere()}\n`
   );
 };
 

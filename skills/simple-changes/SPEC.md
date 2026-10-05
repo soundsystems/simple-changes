@@ -95,7 +95,9 @@
   running background subagent of the same session drives only advises.
   Guard, exec, and verify
   output repeat the finalize step. Initialization reports whether the hook is
-  installed and never installs it.
+  installed and never installs it. The user-level hook never runs a
+  repository fork's runtime: from a fork it is offered and installed from the
+  globally installed Simple Changes, and a hook bound to a fork is outdated.
 - When the running runtime lives inside a checkout of the repository it
   operates on and the target branch carries a newer version of the same file,
   initialization, `loop start`, and `loop status` report it as

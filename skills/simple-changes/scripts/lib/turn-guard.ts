@@ -26,6 +26,11 @@ import {
 } from "./loop-lease.ts";
 import { declaredVersion, isOlderVersion } from "./runtime-freshness.ts";
 import {
+  globalRuntimeScripts,
+  isForkRuntime,
+  type SkillRootOptions,
+} from "./skill-roots.ts";
+import {
   type HookBackgroundTask,
   parseHookBackgroundTasks,
   type SubagentControl,
@@ -299,16 +304,20 @@ const hookScriptPath = (command: string): string | null => {
 
 // Another copy's hook stays in place while it has the fail-open ending and its
 // script still supports the turn check and is at least as new as this one;
-// offering to repoint it would make copies fight.
+// offering to repoint it would make copies fight. A hook bound to a fork's
+// runtime is never current: every copy offers to move it to the global one.
 const hookIsCurrent = (
   command: string,
   ourCommand: string,
   runningVersion: string
 ): boolean => {
+  const script = hookScriptPath(command);
+  if (script && isForkRuntime(script)) {
+    return false;
+  }
   if (command === ourCommand) {
     return true;
   }
-  const script = hookScriptPath(command);
   return Boolean(
     command.trimEnd().endsWith(ALLOW_ON_FAILURE) &&
       script &&
@@ -373,16 +382,35 @@ const supportsTurnCheck = (path: string, version: string): boolean => {
   }
 };
 
+// A user-level hook runs in every session of every repository, so it must
+// never run one repository's fork. The first global installation that is
+// Simple Changes itself, outside a linked worktree, and supports the turn
+// check at least as new as the fork takes its place.
+const globalHookScript = (
+  runningVersion: string,
+  options: SkillRootOptions
+): string | null =>
+  globalRuntimeScripts(options).find(
+    (candidate) =>
+      !(isForkRuntime(candidate) || insideLinkedWorktree(candidate)) &&
+      supportsTurnCheck(candidate, runningVersion)
+  ) ?? null;
+
 /**
  * The copy a user-level hook should point at when installing from `script`:
- * the script itself, or, from a linked worktree, the primary checkout's copy at
- * the same path when it exists and is at least as new. Null means no copy here
- * can be installed; install from the globally installed Simple Changes.
+ * the script itself; from a linked worktree, the primary checkout's copy at the
+ * same path when it exists and is at least as new; and from a repository fork,
+ * the global installation's runtime. Null means no copy here can be installed;
+ * install from the globally installed Simple Changes.
  */
 export const hookInstallScript = (
   script: string,
-  runningVersion: string
+  runningVersion: string,
+  options: SkillRootOptions = {}
 ): string | null => {
+  if (isForkRuntime(script)) {
+    return globalHookScript(runningVersion, options);
+  }
   const linked = linkedWorktreeOf(script);
   if (!linked) {
     return script;
@@ -530,6 +558,12 @@ export const stopHookStatus = (
   if (insideLinkedWorktree(scriptPath)) {
     throw new SimpleChangesError(
       `Refusing to point the user-level turn-end hook at ${scriptPath}: it lives in a linked Git worktree that is removed when its work ships. Install from the globally installed Simple Changes copy instead.`,
+      EXIT_CODES.unsafe
+    );
+  }
+  if (isForkRuntime(scriptPath)) {
+    throw new SimpleChangesError(
+      `Refusing to point the user-level turn-end hook at ${scriptPath}: it is a repository fork's runtime, so every session in every repository would run that one copy. Install from the globally installed Simple Changes copy instead.`,
       EXIT_CODES.unsafe
     );
   }

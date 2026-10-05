@@ -43,7 +43,11 @@ Every controller finalizes before it replies; see the finalize rule in
   `~/.codex/hooks.json` (`CLAUDE_CONFIG_DIR` and `CODEX_HOME` are honored)
   without touching other settings. It refuses a copy inside a linked worktree,
   which disappears when its work ships, and it leaves another copy's hook in
-  place while that copy is at least as new. The hook runs `loop turn-check
+  place while that copy is at least as new. Run from a repository fork, it
+  points the hook at the globally installed Simple Changes runtime, or refuses
+  when no global copy at least as new supports the turn check, because a
+  user-level hook runs in every repository; a hook already bound to a fork's
+  runtime reports as outdated. The hook runs `loop turn-check
   --hook` and exits quietly if its script is gone. A run started, resumed, or
   commanded by its owner in a harness session records that session in a file
   beside the lease, and a per-user pointer lets the hook find it in any

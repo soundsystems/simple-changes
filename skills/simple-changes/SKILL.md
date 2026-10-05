@@ -99,7 +99,9 @@ is unsafe.
 When initialization reports `turnEndGuard` as not installed or outdated, offer
 once to install it with its `installCommand` when it has one: a harness Stop hook that blocks
 ending a turn while this session still controls an active run. It is persistent
-harness configuration, so ask first; declining changes nothing. When it reports
+harness configuration, so ask first; declining changes nothing. When it has no
+`installCommand`, as from a fork with no current global install, tell the user
+to install the guard from the globally installed Simple Changes. When it reports
 `runtimeFreshness` as `behind-target`, you are running an older copy of this
 runtime than the target branch carries; run the target's copy, or update the
 checkout, before integrating or shipping. See

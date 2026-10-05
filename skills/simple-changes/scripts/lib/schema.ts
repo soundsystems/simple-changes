@@ -33,6 +33,7 @@ export const SCHEMA_NAMES = [
   "remote-branch-supersession",
   "release-consistency",
   "release-notes",
+  "proposal-audit",
   "loop-lease",
   "loop-close-equivalent",
   "worktree-coordination",

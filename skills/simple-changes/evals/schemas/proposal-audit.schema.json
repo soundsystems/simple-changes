@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://simple-changes.dev/schemas/proposal-audit.schema.json",
+  "title": "Proposal body audit",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "file",
+    "template",
+    "valid",
+    "sectionSource",
+    "requiredSections",
+    "missingSections",
+    "door",
+    "signatureBlock",
+    "markdown",
+    "issues"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "file": { "type": "string", "minLength": 1 },
+    "template": {
+      "anyOf": [{ "type": "string", "minLength": 1 }, { "type": "null" }]
+    },
+    "valid": { "type": "boolean" },
+    "sectionSource": { "enum": ["default", "template"] },
+    "requiredSections": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "missingSections": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "door": {
+      "anyOf": [
+        { "enum": ["one-way", "two-way", "unknown"] },
+        { "type": "null" }
+      ]
+    },
+    "signatureBlock": { "enum": ["absent", "last", "not-last"] },
+    "markdown": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "hasRealNewlines",
+        "issues",
+        "literalNewlineEscapes",
+        "valid"
+      ],
+      "properties": {
+        "hasRealNewlines": { "type": "boolean" },
+        "issues": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "literalNewlineEscapes": { "type": "integer", "minimum": 0 },
+        "valid": { "type": "boolean" }
+      }
+    },
+    "issues": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    }
+  }
+}

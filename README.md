@@ -190,7 +190,11 @@ tooling/simple-changes/check-fork-sync.sh \
   conservation, authority, and closed JSON schemas.
 - Classifies database and data-system changes without prescribing a provider,
   ORM, query language, or migration tool.
-- Audits proposal Markdown, including accidentally escaped newlines.
+- Audits proposal Markdown, including accidentally escaped newlines outside
+  code, and with `proposal audit` checks a stored description against the
+  Summary, Evidence, and Merge danger body shape (or a repository template's
+  headings), its one-way, two-way, or unknown door and blast radius, and a
+  signature block that ends the body.
 - Displays Simple Changes' packaged public release notes without exposing
   private HTML comments, unreleased notes, or developer history.
 - Checks that the latest public and developer release headings agree with the
@@ -335,6 +339,7 @@ simple-changes release-delivery --changelog-receipt FILE --provider-receipt FILE
   [--request FILE] [--json]
 simple-changes proposal-signatures --agent NAME --role authored|reviewed|merged
   [--base REF --head REF] [--changelog-receipt FILE] [--json] [--repo PATH]
+simple-changes proposal audit --file FILE [--template FILE] [--json]
 simple-changes validate KIND FILE [--json]
 simple-changes verify-markdown FILE [--json]
 simple-changes help
@@ -345,8 +350,8 @@ simple-changes help
 `change-plan`, `run-state`, `permission-bundle`, `provider-receipt`,
 `release-delivery-receipt`, `remote-branch-reconciliation`,
 `remote-branch-ancestry`, `remote-branch-supersession`,
-`release-consistency`, `release-notes`, `ready-work-receipt`, `ship-holds`,
-`loop-lease`, `loop-close-equivalent`,
+`release-consistency`, `release-notes`, `proposal-audit`,
+`ready-work-receipt`, `ship-holds`, `loop-lease`, `loop-close-equivalent`,
 `migration-review`, `migration-pending`, `migration-apply-plan`,
 `post-cleanup-recovery`, `shipment-outcome`, `stale-lease-recovery`,
 `worktree-cleanup`, `worktree-coordination`, `worktree-takeover`,

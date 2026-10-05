@@ -40,6 +40,12 @@ const ROLE_LABELS: Record<ProposalCreditRole, string> = {
   reviewed: "Reviewed by",
 };
 
+/** One signature line of a proposal's signature block. */
+export const SIGNATURE_LINE_PATTERN = new RegExp(
+  `^\\[\\[(?:${Object.values(ROLE_LABELS).join("|")}) \\S.*\\]\\]$`,
+  "u"
+);
+
 const EMAIL_SUFFIX = /\s*<[^>]*>\s*$/u;
 const CLAUDE_FAMILY_PREFIX = /^claude\s+/iu;
 const CHANGELOG_SIGNATURE =

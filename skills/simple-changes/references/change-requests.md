@@ -29,9 +29,24 @@ After creation or update, fetch and re-read:
 - rendered body or equivalent;
 - current state and draft status.
 
-Fail creation when the body contains escaped `\n` sequences where line breaks
-were intended, loses material sections, or renders malformed Markdown. Store a
-normalized receipt rather than provider-specific response data.
+Save the fetched source body to a file and audit it before re-reading the
+rendered body:
+
+```sh
+simple-changes proposal audit --file <body.md> [--template <template.md>] --json
+```
+
+Pass `--template` with the repository template the body filled; its headings
+then replace Summary, Evidence, and Merge danger as the required sections. The
+audit fails on escaped `\n` sequences where line breaks were intended, on a
+missing section, on a Merge danger section missing its `**Door:**` line
+(one-way, two-way, or unknown) or its `**Blast radius:**` line, and on a
+signature block that is not the last element. Fix what it reports, update the
+proposal, and audit again until it passes. Use this command for the
+description audit instead of a repository-local script, and still re-read the
+rendered body: fail creation when the rendering loses material sections or
+shows malformed Markdown. Store a normalized receipt rather than
+provider-specific response data.
 
 When the request says `all`, `every`, or otherwise names a complete proposal
 corpus, paginate every provider page and include every relevant state, not only

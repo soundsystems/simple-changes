@@ -99,6 +99,7 @@ import {
   writeRepositoryPolicyTrustReceipt,
 } from "./lib/policy.ts";
 import { runGit } from "./lib/process.ts";
+import { auditProposalBody, type ProposalAudit } from "./lib/proposal-audit.ts";
 import {
   buildProposalSignatureBlock,
   type ProposalSignatureRole,
@@ -365,6 +366,7 @@ Usage:
     [--request FILE] [--json]
   simple-changes proposal-signatures --agent NAME --role authored|reviewed|merged
     [--base REF --head REF] [--changelog-receipt FILE] [--json] [--repo PATH]
+  simple-changes proposal audit --file FILE [--template FILE] [--json]
   simple-changes validate KIND FILE [--json]
   simple-changes verify-markdown FILE [--json]
   simple-changes help
@@ -397,6 +399,7 @@ interface CliOptions {
   disposition?: "preserve-in-place" | "detach-clean-checkout";
   dryRun: boolean;
   evidencePaths: string[];
+  filePath?: string;
   forkDeltas?: string;
   forkDestination?: string;
   forkName?: string;
@@ -454,6 +457,7 @@ interface CliOptions {
   statePath?: string;
   statusDigest?: string;
   targetRef?: string;
+  templatePath?: string;
   uiArtifacts: boolean;
   uiArtifactVersioning?: RepoPolicy["uiArtifactVersioning"];
   untilMerged?: string;
@@ -484,6 +488,7 @@ const VALUED_OPTIONS = new Set([
   "--role",
   "--disposition",
   "--evidence",
+  "--file",
   "--finish",
   "--for",
   "--handoff",
@@ -524,6 +529,7 @@ const VALUED_OPTIONS = new Set([
   "--status-digest",
   "--state",
   "--target",
+  "--template",
   "--ui-versioning",
   "--until-merged",
   "--version",
@@ -887,6 +893,7 @@ const applyLoopValuedOption = (
     "--claim-id": "claimId",
     "--deltas": "forkDeltas",
     "--destination": "forkDestination",
+    "--file": "filePath",
     "--head": "headRef",
     "--hold-id": "holdId",
     "--manifest-digest": "manifestDigest",
@@ -905,6 +912,7 @@ const applyLoopValuedOption = (
     "--run-id": "runId",
     "--state": "statePath",
     "--status-digest": "statusDigest",
+    "--template": "templatePath",
     "--until-merged": "untilMerged",
     "--upstream": "forkUpstream",
   };
@@ -2306,6 +2314,41 @@ const runMarkdownAudit = (options: CliOptions): void => {
       EXIT_CODES.validation
     );
   }
+};
+
+type ProposalAuditReport = ProposalAudit & {
+  file: string;
+  template: string | null;
+};
+
+const renderProposalAudit = (report: ProposalAuditReport): string =>
+  report.valid
+    ? `${report.file} matches the proposal body shape (door: ${report.door ?? "no Merge danger section"}; signature block: ${report.signatureBlock}).\n`
+    : `${report.file} does not match the proposal body shape:\n${report.issues
+        .map((issue) => `- ${issue}`)
+        .join("\n")}\n`;
+
+// The audit is a check: its report goes to stdout either way, and a failing
+// body exits with the validation code instead of an error message.
+const runProposalCommand = (options: CliOptions): number => {
+  if (options.positional.length !== 1 || options.positional[0] !== "audit") {
+    throw new SimpleChangesError("proposal requires audit", EXIT_CODES.usage);
+  }
+  const file = requireCliOption(options.filePath, "--file");
+  const template = options.templatePath;
+  const report = validateSchema<ProposalAuditReport>("proposal-audit", {
+    file,
+    template: template ?? null,
+    ...auditProposalBody({
+      body: readFileSync(resolve(file), "utf8"),
+      template:
+        template === undefined
+          ? undefined
+          : readFileSync(resolve(template), "utf8"),
+    }),
+  });
+  writeOutput(report, options.json, renderProposalAudit(report));
+  return report.valid ? EXIT_CODES.success : EXIT_CODES.validation;
 };
 
 const requireCliOption = (
@@ -3801,6 +3844,8 @@ const executeCommand = async (
     case "proposal-signatures":
       runProposalSignatures(options);
       return EXIT_CODES.success;
+    case "proposal":
+      return runProposalCommand(options);
     case "validate":
       runValidation(options);
       return EXIT_CODES.success;

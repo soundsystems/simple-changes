@@ -181,7 +181,8 @@
       "expectedBehaviors": [
         "Fill the repository's proposal template first and keep its headings",
         "Place Summary, Evidence, and Merge danger in matching template sections or beneath the template",
-        "Keep the agent signature block as the last element"
+        "Keep the agent signature block as the last element",
+        "Audit the stored body with simple-changes proposal audit and that template before re-reading the rendered body"
       ]
     },
     {

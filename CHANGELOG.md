@@ -21,7 +21,31 @@
   removes a standalone CMS changelog install that a selected Web and CMS
   package already covers, unless repository instructions keep both, and it
   matches the copy that ships with Simple Changelogs.
-<!-- simple-changelogs-signature agent="Claude Opus 5.5 xhigh" at="2026-10-05T10:50:54-05:00" -->
+- `simple-changes proposal audit --file <body.md> [--template <path>]` checks
+  a stored proposal description and exits 3 on escaped `\n` where line breaks
+  were intended, a missing Summary, Evidence, or Merge danger section (or a
+  missing heading from the repository's own template), a Merge danger section
+  without a `**Door:**` line naming one-way, two-way, or unknown or without a
+  `**Blast radius:**` line, and a signature block that is not last. Agents
+  run it after creating or updating a proposal, before re-reading the
+  rendering. `verify-markdown` no longer counts an escaped `\n` inside code.
+- `simple-changes skill check [--skill-dir PATH]` reports whether skill
+  discovery can load a skill or a fork: strict YAML frontmatter, a name that
+  matches its directory, a 1 to 1,024 character description, matching Claude
+  Code and Codex invocation settings, and relative links that resolve.
+- Simple Changes now ships Codex metadata (`agents/openai.yaml`). `fork
+  create` gives a new fork a description that starts with its name and says to
+  use it instead of the global `simple-changes` skill in that repository, and
+  points the fork's Codex metadata at the fork.
+- From a fork, the turn-end guard is offered and installed from the globally
+  installed Simple Changes runtime, so a user-level hook never runs one
+  repository's fork. When no global copy is at least as new, initialization
+  says to install the hook from the global skill.
+- `update-local-forks` holds a fork's pin when an upstream reference added or
+  changed since the pin is neither carried by the fork nor listed under
+  `## Intentional omissions` in its `references/fork-maintenance.md`; `plan`
+  and `apply` exit 3 until the fork carries or records it.
+<!-- simple-changelogs-signature agent="Claude Opus 5.5 xhigh" at="2026-10-05T13:11:05-05:00" -->
 
 ## 0.23.1 - 2026-10-03
 

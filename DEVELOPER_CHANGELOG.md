@@ -23,12 +23,39 @@
   `changelogReviewRelevant: false`) whose strings Claude Fable 5.1 wrote.
   `initialization.test.ts` expects the two new versions and the new
   top-three bullet that displaces the `proposalSignatures` one.
-- `tooling/simple-changes/eval.ts` now parses every `SKILL.md` frontmatter as
-  strict YAML and requires a lowercase hyphenated name matching its
-  directory (at most 64 characters), a description of 1 to 1,024 characters,
-  and matching Claude and Codex invocation settings. A description with an
-  unquoted colon-space, an empty frontmatter block, and an invocation
-  mismatch each fail it.
+- Shipped `lib/skill-check.ts` (`simple-changes skill check`) parses every
+  `SKILL.md` frontmatter as strict YAML and requires a lowercase hyphenated
+  name matching its directory (at most 64 characters), a 1 to 1,024
+  character description, matching Claude Code and Codex invocation settings,
+  and resolving relative links; `checkSkill(dir, { selfContained })` returns
+  issues with closed codes. `tooling/simple-changes/eval.ts` runs it with
+  `selfContained: true` for every skill under `skills/`, so installable links
+  must also stay inside the package; forks such as thor that link into their
+  own repository pass the shipped check. An unquoted colon-space, an empty
+  frontmatter block, and an invocation mismatch each fail.
+- `lib/proposal-audit.ts` reuses `auditMarkdown`, exports
+  `SIGNATURE_LINE_PATTERN` (built from `ROLE_LABELS`), and validates output
+  against a closed `proposal-audit` schema; `lib/markdown.ts` gains
+  `proseLines` and `withoutHtmlComments`. Five fixture bodies cover the
+  failures.
+- `lib/fork.ts` adds `forkDescription`, replaces folded descriptions too,
+  rewrites the fork's `agents/openai.yaml` (display name, short description,
+  and `$<name>` in the default prompt), and adds `CreatedFork.description`.
+- `lib/skill-roots.ts` now owns `globalSkillRoots` (moved from changelog
+  coordination, behavior unchanged) and adds `skillRootOf`, `isForkRuntime`,
+  and `globalRuntimeScripts`. `hookInstallScript` sends a fork to the first
+  qualifying global runtime, and `stopHookStatus` refuses to write a hook
+  that runs a fork's runtime; SPEC.md says the user-level hook never runs a
+  fork's runtime.
+- update-local-forks gains an `unrecorded-omission` action, an exported
+  `intentionalOmissions` parser, a `holdPin` shared with command-gate review,
+  and `ApplyReceipt.unrecordedOmissions`. Planned read-only against this
+  branch, hashi, patrick, and pulse each hold on `change-requests.md` and
+  `review-and-merge.md`, and thor on 11 files. A plan saved by the previous
+  version fails validation on apply and must be re-planned.
+- Guidance 25 gains a third behavior line for these changes; there is still
+  one definition. Tests: 754 simple-changes (27 new), 17 publish-skill, and
+  14 update-local-forks (2 new) pass.
 - `evals/cases.json` adds three journeys (42 total):
   `queue-proposal-body-one-way-door`,
   `queue-proposal-body-repository-template`, and
@@ -46,7 +73,7 @@
   vendor agent API calls, changelog authoring and version choice, automatic
   rewrites of another task's worktree), each citing the plan and commit that
   decided it; `CONTRIBUTING.md` points to it.
-<!-- simple-changelogs-signature agent="Claude Opus 5.5 xhigh" at="2026-10-05T10:50:54-05:00" -->
+<!-- simple-changelogs-signature agent="Claude Opus 5.5 xhigh" at="2026-10-05T13:11:05-05:00" -->
 
 ## 0.23.1 - 2026-10-03
 

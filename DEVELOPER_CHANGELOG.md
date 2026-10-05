@@ -1,5 +1,53 @@
 # Developer changelog
 
+## Unreleased
+
+- `references/change-requests.md` gains `## Body shape`, placed before
+  `## Agent signatures` so the replacement-lineage and pagination rules keep
+  their place: a Summary, Evidence, and Merge danger template; the menu of
+  summary views (Mermaid only where the provider renders it); a door rule
+  bound to evidence the run already collects (destructive, irreversible, or
+  unbounded migration or data change; `incompatible` or `unverified`
+  installed-client compatibility; anything leaving the repository; a removed
+  public interface; `unknown` when evidence is missing); repository proposal
+  templates first; and a rewrite of affected sections when review or a rebase
+  changes them. `SKILL.md` core-workflow step 7 now points at the section, and
+  the README gains a Credits section for Matt Pocock's `pr` and `code-review`
+  skills (v1.3.0, MIT) and Dex Horthy's `show-me`.
+- `references/review-and-merge.md` gains `## What an agent review examines`:
+  pin the exact revisions and a non-empty diff before dispatching any
+  reviewer, run Standards and Spec as separate reviewers when the host can,
+  and report them without merging or reranking.
+- Guidance 25: `CURRENT_GUIDANCE_VERSION` is 25 with one closed definition
+  (two `behavior` changes, notice-bullet priority 165,
+  `changelogReviewRelevant: false`) whose strings Claude Fable 5.1 wrote.
+  `initialization.test.ts` expects the two new versions and the new
+  top-three bullet that displaces the `proposalSignatures` one.
+- `tooling/simple-changes/eval.ts` now parses every `SKILL.md` frontmatter as
+  strict YAML and requires a lowercase hyphenated name matching its
+  directory (at most 64 characters), a description of 1 to 1,024 characters,
+  and matching Claude and Codex invocation settings. A description with an
+  unquoted colon-space, an empty frontmatter block, and an invocation
+  mismatch each fail it.
+- `evals/cases.json` adds three journeys (42 total):
+  `queue-proposal-body-one-way-door`,
+  `queue-proposal-body-repository-template`, and
+  `integrate-two-axis-agent-review`.
+- `publish-skill` is user-invoked (`disable-model-invocation: true` paired
+  with `policy.allow_implicit_invocation: false`) and is a three-way merge
+  with the Simple Changelogs copy from their shared base (`6ae4f5c` here,
+  `7a1bf07e` there): the `superseded-install` consumer state, its
+  combined-distribution topology rule, and its tests arrive, the production
+  loop uses `update-local-forks` only when the canonical package bundles it,
+  and `discover-local-consumers.check.ts` runs every spawn with an empty
+  fixture `HOME` so real global installs cannot leak in. Skill and tooling
+  trees are byte-identical across both repositories.
+- `.out-of-scope/` records four declined requests (a general task scheduler,
+  vendor agent API calls, changelog authoring and version choice, automatic
+  rewrites of another task's worktree), each citing the plan and commit that
+  decided it; `CONTRIBUTING.md` points to it.
+<!-- simple-changelogs-signature agent="Claude Opus 5.5 xhigh" at="2026-10-05T10:50:54-05:00" -->
+
 ## 0.23.1 - 2026-10-03
 
 - `lib/initialization.ts`: `inspectInitialization` now returns

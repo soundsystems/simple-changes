@@ -1,5 +1,28 @@
 # Changelog
 
+## Unreleased
+
+- Proposal descriptions now follow one body shape
+  (`references/change-requests.md#body-shape`). A Summary opens with the
+  outcome and the smallest view that makes the change clear, Evidence shows a
+  before and an after instead of only listing passing checks, and Merge
+  danger names a one-way, two-way, or unknown door and the blast radius. The
+  door comes from the run's own migration, installed-client compatibility,
+  release, and rollback evidence rather than the size of the diff. A
+  repository's own proposal template is filled first and keeps its headings,
+  and the signature block stays last.
+- An agent's independent review now pins the exact base and head, then
+  checks two separate axes: the repository's documented standards, citing
+  the rule, and the originating issue or spec, quoting it for missing
+  requirements, unrequested behavior, and wrong implementations, or reporting
+  `no spec available`. Each axis is reported on its own.
+- Guidance moves to 25. The update notice needs no decision.
+- `publish-skill` now runs only when you type `/publish-skill`. It now
+  removes a standalone CMS changelog install that a selected Web and CMS
+  package already covers, unless repository instructions keep both, and it
+  matches the copy that ships with Simple Changelogs.
+<!-- simple-changelogs-signature agent="Claude Opus 5.5 xhigh" at="2026-10-05T10:50:54-05:00" -->
+
 ## 0.23.1 - 2026-10-03
 
 - The changelog coordination reference now names the only source of each

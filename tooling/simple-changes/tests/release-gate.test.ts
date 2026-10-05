@@ -296,6 +296,68 @@ describe("changelog protocol negotiation", () => {
 });
 
 describe("phased release gate", () => {
+  test("accepts resolved public classification without pretending release files were prepared", () => {
+    const classified = receipt("classified");
+    if (!classified.versionDecision) {
+      throw new Error("Expected public direction.");
+    }
+    classified.versionDecision.selectedVersion = "0.10.0";
+    expect(validateChangelogTransaction(request(), classified).status).toBe(
+      "classified"
+    );
+    expect(
+      decideReleaseGate({
+        alreadyLive: false,
+        productionAuthorized: false,
+        productionDeploy: "ask",
+        receipt: classified,
+        request: request(),
+        versionAuthorized: false,
+      }).action
+    ).toBe("re-delegate");
+    for (const variant of [
+      "train",
+      "revision",
+      "unresolved",
+      "prepared",
+    ] as const) {
+      const changed = structuredClone(classified);
+      if (variant === "train" && changed.versionDecision) {
+        changed.versionDecision.releaseTrain = "ios";
+      }
+      if (variant === "revision") {
+        changed.sourceRevision = revisionB;
+      }
+      if (variant === "unresolved" && changed.versionDecision) {
+        changed.versionDecision.selectedVersion = null;
+      }
+      if (variant === "prepared") {
+        changed.revisionLineage.reconciliationHeadRevision = revisionB;
+      }
+      expect(() => validateChangelogTransaction(request(), changed)).toThrow();
+    }
+    const prepareRequest = {
+      ...request("prepare"),
+      priorReceiptDigest: changelogReceiptDigest(classified),
+    };
+    expect(
+      inspectChangelogTransaction(
+        prepareRequest,
+        receipt("prepared"),
+        classified
+      ).priorReceiptDigestStatus
+    ).toBe("verified");
+    const changedPrior = structuredClone(classified);
+    changedPrior.evidence.push("Changed decision evidence");
+    expect(() =>
+      inspectChangelogTransaction(
+        prepareRequest,
+        receipt("prepared"),
+        changedPrior
+      )
+    ).toThrow("Prior receipt digest");
+  });
+
   test("keeps normal version direction distinct from a blocker", () => {
     const classify = createChangelogRequest(request());
     const classified = receipt();
@@ -562,6 +624,42 @@ describe("entry-only operator-history handoff", () => {
     ).toMatchObject({ status: "prepared" });
   });
 
+  test("classified entry-only receipts require a neutral decision in v2 and v3", () => {
+    const neutral: ChangelogReceiptV2 = {
+      ...entryReceipt("not-applicable"),
+      releaseImpact: "minor",
+      status: "classified",
+    };
+    const modern: ChangelogReceiptV3 = {
+      ...neutral,
+      releaseSetTrains: null,
+      schemaVersion: 3,
+      versionDecision: neutral.versionDecision
+        ? { ...neutral.versionDecision, versionLine: null }
+        : null,
+    };
+    const modernRequest: ChangelogRequest = {
+      ...entryRequest(),
+      releaseSetTrains: null,
+      schemaVersion: 2,
+      supportedReceiptVersions: [1, 2, 3],
+    };
+    for (const [classificationRequest, classified] of [
+      [entryRequest(), neutral],
+      [modernRequest, modern],
+    ] as const) {
+      expect(
+        validateChangelogTransaction(classificationRequest, classified).status
+      ).toBe("classified");
+      expect(() =>
+        validateChangelogTransaction(classificationRequest, {
+          ...classified,
+          versionDecision: null,
+        })
+      ).toThrow();
+    }
+  });
+
   test("rejects a version on the none boundary", () => {
     const versioned = entryReceipt("prepared");
     versioned.release = {
@@ -659,6 +757,25 @@ describe("shared version lines (request v2, receipt v3)", () => {
         : null,
     };
   };
+
+  test("round-trips read-only resolved shared-line classification with unchanged protocol negotiation", () => {
+    const classified = receiptV3("classified");
+    if (!classified.versionDecision) {
+      throw new Error("Expected line direction.");
+    }
+    classified.versionDecision.selectedVersion = "0.10.0";
+    expect(validateChangelogTransaction(requestV2(), classified)).toMatchObject(
+      { paths: [], release: null, schemaVersion: 3, status: "classified" }
+    );
+    const mismatch = structuredClone(classified);
+    if (mismatch.versionDecision?.versionLine) {
+      mismatch.versionDecision.versionLine.sharedVersion = "0.11.0";
+    }
+    expect(() => validateChangelogTransaction(requestV2(), mismatch)).toThrow();
+    expect(() => validateChangelogTransaction(request(), classified)).toThrow(
+      "did not advertise"
+    );
+  });
 
   const decisionOf = (value: ChangelogReceiptV3) => {
     if (!value.versionDecision) {

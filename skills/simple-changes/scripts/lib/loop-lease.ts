@@ -37,12 +37,16 @@ import {
   recordControllerSession,
 } from "./harness-session.ts";
 import { sha256, sha256Json } from "./hash.ts";
-import { captureInventory, locateRepository } from "./inventory.ts";
+import {
+  captureInventory,
+  compareSnapshots,
+  locateRepository,
+} from "./inventory.ts";
 import {
   assertNoSymlinkAncestors,
   assertSafeRelativePath,
 } from "./path-safety.ts";
-import { validatePlanConservation } from "./planner.ts";
+import { buildPreviewPlan, validatePlanConservation } from "./planner.ts";
 import { primaryDeliveryProof } from "./primary-delivery-proof.ts";
 import {
   type CommandProcess,
@@ -2492,13 +2496,30 @@ export const startLoop = (
             runId: `run-${Date.now().toString(36)}-${randomUUID().slice(0, 8)}`,
             schemaVersion: 1,
             shipmentScopeFrozenAt: null,
-            shipmentScopeRequired:
-              mode === "ship" && inventory.localChanges.length > 0,
+            shipmentScopeRequired: mode === "ship",
             targetRef: inventory.targetRef,
             targetRevision,
             updatedAt: now,
             worktrees,
           };
+          if (mode === "ship" && inventory.localChanges.length === 0) {
+            // Capture the clean opening baseline while both locks are held.
+            // Committed and generated delivery remains explicit additionalPaths
+            // in the later outcome; an empty scope proves no delivery by itself.
+            const plan = buildPreviewPlan(
+              inventory,
+              inventory,
+              compareSnapshots(inventory, inventory),
+              "Capture the clean opening shipment baseline"
+            );
+            lease.shipmentScope = {
+              openingChanges: [],
+              openingInventoryDigest: inventory.baselineDigest,
+              plan,
+              planDigest: sha256Json(plan),
+              recordedAt: now,
+            };
+          }
           const written = writeLease(lease);
           writeControllerBinding(written, {
             awaitingUser: null,

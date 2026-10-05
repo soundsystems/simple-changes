@@ -93,6 +93,13 @@ const repository = (): TestRepository => {
   return fixture;
 };
 
+// Reproduce the ledger written before opening provider and clean scope capture.
+const removeLegacyOpeningEvidence = (stored: LoopLease): void => {
+  Reflect.deleteProperty(stored, "openingRemoteInventory");
+  stored.shipmentScopeRequired = false;
+  Reflect.deleteProperty(stored, "shipmentScope");
+};
+
 const treeEntry = (
   root: string,
   revision: string,
@@ -409,7 +416,7 @@ describe("active integration-loop lease", () => {
       captureInventory(fixture.root).repository.commonGitDirectory
     );
     const stored = JSON.parse(readFileSync(leasePath, "utf8")) as LoopLease;
-    Reflect.deleteProperty(stored, "openingRemoteInventory");
+    removeLegacyOpeningEvidence(stored);
     writeFileSync(leasePath, `${JSON.stringify(stored, null, 2)}\n`, "utf8");
 
     expect(() =>
@@ -465,7 +472,7 @@ describe("active integration-loop lease", () => {
         captureInventory(fixture.root).repository.commonGitDirectory
       );
       const stored = JSON.parse(readFileSync(leasePath, "utf8")) as LoopLease;
-      Reflect.deleteProperty(stored, "openingRemoteInventory");
+      removeLegacyOpeningEvidence(stored);
       writeFileSync(leasePath, `${JSON.stringify(stored, null, 2)}\n`, "utf8");
       const refsBefore = git(fixture.root, ["show-ref"]);
       const worktreesBefore = captureInventory(fixture.root).worktrees.map(
@@ -523,7 +530,7 @@ describe("active integration-loop lease", () => {
     );
     expect(existsSync(prepared.path)).toBe(false);
     const stored = JSON.parse(readFileSync(leasePath, "utf8")) as LoopLease;
-    Reflect.deleteProperty(stored, "openingRemoteInventory");
+    removeLegacyOpeningEvidence(stored);
     writeFileSync(leasePath, `${JSON.stringify(stored, null, 2)}\n`, "utf8");
     startLoop(fixture.root, "recovery-controller", "resume");
     const refsBeforeRecovery = git(fixture.root, ["show-ref"]);
@@ -649,7 +656,7 @@ describe("active integration-loop lease", () => {
       "Remote reconciliation remains pending."
     );
     const stored = JSON.parse(readFileSync(leasePath, "utf8")) as LoopLease;
-    Reflect.deleteProperty(stored, "openingRemoteInventory");
+    removeLegacyOpeningEvidence(stored);
     writeFileSync(leasePath, `${JSON.stringify(stored, null, 2)}\n`, "utf8");
     startLoop(fixture.root, "recovery-controller", "resume");
     const claims = claimEvidence(fixture.root);
@@ -710,7 +717,7 @@ describe("active integration-loop lease", () => {
       captureInventory(fixture.root).repository.commonGitDirectory
     );
     const stored = JSON.parse(readFileSync(leasePath, "utf8")) as LoopLease;
-    Reflect.deleteProperty(stored, "openingRemoteInventory");
+    removeLegacyOpeningEvidence(stored);
     stored.worktrees = stored.worktrees.map((worktree) => {
       if (worktree.path === prepared.path) {
         return {
@@ -819,7 +826,7 @@ describe("active integration-loop lease", () => {
     git(fixture.root, ["worktree", "remove", prepared.path]);
     git(fixture.root, ["branch", "-D", "historical-paused-claim"]);
     const stored = JSON.parse(readFileSync(leasePath, "utf8")) as LoopLease;
-    Reflect.deleteProperty(stored, "openingRemoteInventory");
+    removeLegacyOpeningEvidence(stored);
     writeFileSync(leasePath, `${JSON.stringify(stored, null, 2)}\n`, "utf8");
     startLoop(fixture.root, "recovery-controller", "resume");
     const firstFinalInventory = remoteSnapshot(targetRevision);
@@ -916,7 +923,7 @@ describe("active integration-loop lease", () => {
         captureInventory(fixture.root).repository.commonGitDirectory
       );
       const stored = JSON.parse(readFileSync(leasePath, "utf8")) as LoopLease;
-      Reflect.deleteProperty(stored, "openingRemoteInventory");
+      removeLegacyOpeningEvidence(stored);
       writeFileSync(leasePath, `${JSON.stringify(stored, null, 2)}\n`, "utf8");
       const { commonGitDirectory } = captureInventory(fixture.root).repository;
       const historyDirectory = join(
@@ -1002,7 +1009,7 @@ describe("active integration-loop lease", () => {
       captureInventory(fixture.root).repository.commonGitDirectory
     );
     const stored = JSON.parse(readFileSync(leasePath, "utf8")) as LoopLease;
-    Reflect.deleteProperty(stored, "openingRemoteInventory");
+    removeLegacyOpeningEvidence(stored);
     writeFileSync(leasePath, `${JSON.stringify(stored, null, 2)}\n`, "utf8");
     finalizeLoop(
       fixture.root,
@@ -1075,7 +1082,7 @@ describe("active integration-loop lease", () => {
       captureInventory(fixture.root).repository.commonGitDirectory
     );
     const stored = JSON.parse(readFileSync(leasePath, "utf8")) as LoopLease;
-    Reflect.deleteProperty(stored, "openingRemoteInventory");
+    removeLegacyOpeningEvidence(stored);
     writeFileSync(leasePath, `${JSON.stringify(stored, null, 2)}\n`, "utf8");
     finalizeLoop(
       fixture.root,
@@ -1146,7 +1153,7 @@ describe("active integration-loop lease", () => {
       captureInventory(fixture.root).repository.commonGitDirectory
     );
     const stored = JSON.parse(readFileSync(leasePath, "utf8")) as LoopLease;
-    Reflect.deleteProperty(stored, "openingRemoteInventory");
+    removeLegacyOpeningEvidence(stored);
     writeFileSync(leasePath, `${JSON.stringify(stored, null, 2)}\n`, "utf8");
     finalizeLoop(
       fixture.root,
@@ -1206,7 +1213,7 @@ describe("active integration-loop lease", () => {
       captureInventory(fixture.root).repository.commonGitDirectory
     );
     const stored = JSON.parse(readFileSync(leasePath, "utf8")) as LoopLease;
-    Reflect.deleteProperty(stored, "openingRemoteInventory");
+    removeLegacyOpeningEvidence(stored);
     writeFileSync(leasePath, `${JSON.stringify(stored, null, 2)}\n`, "utf8");
     finalizeLoop(
       fixture.root,
@@ -4596,6 +4603,110 @@ describe("active integration-loop lease", () => {
     );
   });
 
+  test("captures a clean shipment scope before committed-source authoring and requires exact final deltas", async () => {
+    const fixture = repository();
+    const lease = startLoop(fixture.root, "controller", "ship");
+    const scope = lease.shipmentScope;
+    if (!scope) {
+      throw new Error("Clean ship start must capture its opening scope.");
+    }
+    expect(lease.shipmentScopeRequired).toBe(true);
+    expect(scope.openingInventoryDigest).toBe(lease.baselineDigest);
+    expect(scope.openingChanges).toEqual([]);
+    expect(scope.plan.units).toEqual([]);
+    expect(scope.plan.mode).toBe("preview");
+    expect(scope.plan.mutationsAllowed).toBe(false);
+    expect(scope.planDigest).toMatch(SHA256_PATTERN);
+    const prepared = prepareAgentWorktree(
+      fixture.root,
+      lease.runId,
+      "author",
+      "committed source"
+    );
+    git(prepared.path, ["mv", "README.md", "GUIDE.md"]);
+    writeFixture(prepared.path, "feature.ts", "export const ready = true;\n");
+    git(prepared.path, ["add", "feature.ts", "GUIDE.md"]);
+    git(prepared.path, ["commit", "-m", "Prepare committed source"]);
+    const merged = await executeLoopMutation(
+      fixture.root,
+      lease.runId,
+      "controller",
+      ["git", "merge", "--ff-only", prepared.branch]
+    );
+    expect(merged.result.exitCode).toBe(0);
+    const targetRevision = git(fixture.root, ["rev-parse", "main"]);
+    const outcome = shipmentOutcome(
+      fixture.root,
+      lease,
+      scope.plan,
+      targetRevision
+    );
+    expect(() =>
+      recordShipmentOutcome(fixture.root, lease.runId, "controller", outcome)
+    ).toThrow("omits final target delta");
+    outcome.additionalPaths = ["README.md", "GUIDE.md", "feature.ts"].map(
+      (path) => ({
+        classification: "external-target-change",
+        entry: treeEntry(fixture.root, targetRevision, path),
+        path,
+        reason:
+          "The independently reviewed committed-source delta landed in the target.",
+      })
+    );
+    const wrongEntry = structuredClone(outcome);
+    const [first] = wrongEntry.additionalPaths;
+    if (first) {
+      first.entry = `100644:blob:${"f".repeat(40)}`;
+    }
+    expect(() =>
+      recordShipmentOutcome(fixture.root, lease.runId, "controller", wrongEntry)
+    ).toThrow();
+    recordShipmentOutcome(fixture.root, lease.runId, "controller", outcome);
+    const finalized = finalizeLoop(
+      fixture.root,
+      lease.runId,
+      "controller",
+      "Committed source delivered with every final tree delta."
+    );
+    expect(finalized.outcome).toBe("completed");
+    expect(readLoopLease(fixture.root)).toBeNull();
+  });
+
+  test("an automatically captured empty scope does not prove an empty shipment", () => {
+    const fixture = repository();
+    git(fixture.root, ["switch", "-c", "unshipped-committed-source"]);
+    writeFixture(
+      fixture.root,
+      "feature.ts",
+      "export const unshipped = true;\n"
+    );
+    git(fixture.root, ["add", "feature.ts"]);
+    git(fixture.root, ["commit", "-m", "Unshipped committed source"]);
+    const lease = startLoop(fixture.root, "controller", "ship");
+    const plan = lease.shipmentScope?.plan;
+    if (!plan) {
+      throw new Error("Expected clean opening scope.");
+    }
+    const targetRevision = git(fixture.root, ["rev-parse", "main"]);
+    recordShipmentOutcome(
+      fixture.root,
+      lease.runId,
+      "controller",
+      shipmentOutcome(fixture.root, lease, plan, targetRevision)
+    );
+    const finalization = finalizeLoop(
+      fixture.root,
+      lease.runId,
+      "controller",
+      "An empty opening scope does not prove committed source delivery."
+    );
+    expect(finalization.receipt.deliveryStatus).toBe("unverified");
+    expect(git(fixture.root, ["rev-parse", "main"])).toBe(targetRevision);
+    expect(
+      git(fixture.root, ["rev-parse", "unshipped-committed-source"])
+    ).not.toBe(targetRevision);
+  });
+
   test("accepts only exact opening source results plus classified generated paths", () => {
     const fixture = repository();
     const sourceWorktree = join(fixture.base, "finished-feature");
@@ -6438,7 +6549,7 @@ describe("target-equivalent loop closure", () => {
     );
     expect(() =>
       recordShipmentScope(fixture.root, lease.runId, "next-controller", plan)
-    ).toThrow("close-equivalent");
+    ).toThrow("Shipment scope is already recorded");
 
     // The work turns out to already belong in the target.
     git(prepared.path, ["add", "unfinished.txt"]);

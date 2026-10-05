@@ -240,7 +240,15 @@ const assertEntryOnlyBinding = (
     return;
   }
   const entryOnly = request.boundary === "none";
-  if ((receipt.release === null) !== entryOnly) {
+  if (receipt.status === "classified" && receipt.release !== null) {
+    protocolMismatch(
+      "Classification must not name a prepared or integrated release."
+    );
+  }
+  if (
+    receipt.status !== "classified" &&
+    (receipt.release === null) !== entryOnly
+  ) {
     protocolMismatch(
       entryOnly
         ? "An entry-only handoff on the none boundary must not name a release."
@@ -253,7 +261,9 @@ const assertEntryOnlyBinding = (
     versionDecision &&
     (versionDecision.bumpLevel !== "none" ||
       versionDecision.resolution !== "not-required" ||
-      versionDecision.selectedVersion !== null)
+      versionDecision.selectedVersion !== null ||
+      versionDecision.policyAction !== "not-applicable" ||
+      versionDecision.suggestedVersion !== null)
   ) {
     protocolMismatch(
       "An entry-only handoff must not select or bump a version."

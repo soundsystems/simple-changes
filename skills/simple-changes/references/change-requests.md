@@ -37,7 +37,9 @@ simple-changes proposal audit --file <body.md> [--template <template.md>] --json
 ```
 
 Pass `--template` with the repository template the body filled; its headings
-then replace Summary, Evidence, and Merge danger as the required sections. The
+then replace Summary and Evidence as the required sections. Merge danger is
+still required, appended beneath the template when the template has no such
+section. The
 audit fails on escaped `\n` sequences where line breaks were intended, on a
 missing section, on a Merge danger section missing its `**Door:**` line
 (one-way, two-way, or unknown) or its `**Blast radius:**` line, and on a

@@ -128,9 +128,12 @@ Before reinstalling, reconcile combined-distribution topology. When a valid
 present, its protected CMS workflow makes a separate
 `simple-changelogs-cms` installation redundant. The
 `.simple-changelogs-cms.json` sidecar remains required CMS policy for the
-combined package. Treat a discovered standalone CMS package as redundant and
-remove its package plus lock entry unless repository instructions explicitly
-document both packages as independently maintained consumers. Never let a
+combined package, so while it is missing the standalone install is not yet
+redundant; keep it and report the missing sidecar. Once the sidecar exists,
+treat a discovered standalone CMS package as redundant (discovery reports it
+as `superseded-install`) and remove its package plus lock entry unless
+repository instructions explicitly document both packages as independently
+maintained consumers. Never let a
 broad reinstall recreate a package already removed by this topology rule.
 
 For every confirmed consumer:

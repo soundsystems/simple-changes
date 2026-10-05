@@ -29,6 +29,7 @@ const runCli = (...args: string[]) => {
   };
 };
 
+const MERGE_DANGER_SECTION_PATTERN = /## Merge danger\n\n[^\n]*\n[^\n]*\n\n/u;
 const SIGNED = "---\n[[Authored by Fable 5.1]]\n";
 const DOOR_LINE = /^\*\*Door:\*\*.*$/mu;
 const DOOR_LINE_WITH_BREAK = /^\*\*Door:\*\*.*\n/mu;
@@ -154,6 +155,28 @@ describe("proposal audit", () => {
     expect(vague.issues).toEqual([
       "The **Door:** line is empty; start it with one-way, two-way, or unknown.",
     ]);
+    // A template without Merge danger still requires it beneath the template.
+    const noDangerTemplate = template.replace("## Merge danger\n", "");
+    expect(
+      auditProposalBody({
+        body: fixture("templated.md"),
+        template: noDangerTemplate,
+      })
+    ).toMatchObject({
+      issues: [],
+      requiredSections: [
+        "## What does this MR do and why?",
+        "## How to test",
+        "## Merge danger",
+      ],
+      valid: true,
+    });
+    const dangerless = auditProposalBody({
+      body: fixture("templated.md").replace(MERGE_DANGER_SECTION_PATTERN, ""),
+      template: noDangerTemplate,
+    });
+    expect(dangerless.missingSections).toEqual(["## Merge danger"]);
+    expect(dangerless.valid).toBe(false);
     // A template without headings keeps the default sections.
     expect(
       auditProposalBody({

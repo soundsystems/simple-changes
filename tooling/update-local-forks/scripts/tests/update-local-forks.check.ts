@@ -833,6 +833,10 @@ describe("update-local-forks", () => {
         "",
       ].join("\n")
     );
+    // A fork changelog is history even under an undated version heading.
+    const forkChangelog =
+      "# Changelog\n\n## 0.0.9\n\n- Bundled Simple Changes 0.1.0.\n";
+    writeFileSync(join(fixture.fork, "CHANGELOG.md"), forkChangelog);
     const testScript = join(fixture.fork, "scripts/test.sh");
     writeFileSync(
       testScript,
@@ -856,7 +860,15 @@ describe("update-local-forks", () => {
         left.localeCompare(right)
       )
     );
+    expect(
+      plan.literalRewrites.some(
+        (rewrite) => rewrite.forkPath === "CHANGELOG.md"
+      )
+    ).toBe(false);
     applyForkPlan(plan);
+    expect(readFileSync(join(fixture.fork, "CHANGELOG.md"), "utf8")).toBe(
+      forkChangelog
+    );
 
     const record = readFileSync(recordPath, "utf8");
     expect(record).toContain(

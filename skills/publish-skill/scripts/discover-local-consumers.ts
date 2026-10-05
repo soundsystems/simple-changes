@@ -466,7 +466,13 @@ const consumers: Consumer[] = await Promise.all(
         candidate.physicalInstallPaths.length > 0 &&
         sourcesMatch(candidate.source, consumer.source)
     );
-    if (distribution !== "web-cms" || !combinedSkill) {
+    // The combined package still needs the CMS policy sidecar; without it the
+    // standalone install is not yet redundant.
+    if (
+      distribution !== "web-cms" ||
+      !combinedSkill ||
+      !existsSync(join(consumer.repositoryRoot, ".simple-changelogs-cms.json"))
+    ) {
       return consumer;
     }
     return {

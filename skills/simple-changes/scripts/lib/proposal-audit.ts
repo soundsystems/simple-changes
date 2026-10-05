@@ -243,7 +243,25 @@ export const auditProposalBody = (input: ProposalAuditInput): ProposalAudit => {
       ? []
       : headingsOf(readMarkdown(input.template));
   const fromTemplate = templateHeadings.length > 0;
-  const required = (fromTemplate ? templateHeadings : BODY_SHAPE).filter(
+  // A template's own sections may hold the Summary and Evidence, but nothing
+  // stands in for the door and blast radius, so Merge danger is required
+  // beneath a template that has no such section.
+  const mergeDangerHeading = BODY_SHAPE.find(
+    (heading) => normalizedTitle(heading.title) === MERGE_DANGER
+  );
+  const templateHasMergeDanger = templateHeadings.some(
+    (heading) => normalizedTitle(heading.title) === MERGE_DANGER
+  );
+  const required = (
+    fromTemplate
+      ? [
+          ...templateHeadings,
+          ...(templateHasMergeDanger || !mergeDangerHeading
+            ? []
+            : [mergeDangerHeading]),
+        ]
+      : BODY_SHAPE
+  ).filter(
     (heading, index, all) =>
       all.findIndex(
         (other) =>

@@ -823,6 +823,8 @@ const classify = (
 // version range is a record. In Markdown, so is every heading and every line
 // in a section whose heading, or an enclosing one, names a range, a date, the
 // old literal, or a history.
+// A fork's changelogs are its own history; no literal in them is a claim.
+const CHANGELOG_FILE_PATTERN = /(?:^|\/)[^/]*CHANGELOG[^/]*\.md$/iu;
 const RANGE_PATTERN =
   /\b(?:[0-9a-f]{7,40}\.{2,3}[0-9a-f]{7,40}|\d+\.\d+\.\d+\.{2,3}\d+\.\d+\.\d+)\b/u;
 const HEADING_LEVEL_PATTERN = /^ {0,3}(#{1,6})(?:\s|$)/u;
@@ -913,7 +915,8 @@ const literalRewritesFor = (
     if (
       forkPath.startsWith("runtime/") ||
       forkPath.endsWith(MERGE_SIDECAR_SUFFIX) ||
-      plannedContent.has(forkPath)
+      plannedContent.has(forkPath) ||
+      CHANGELOG_FILE_PATTERN.test(forkPath)
     ) {
       continue;
     }
@@ -1013,6 +1016,8 @@ const classifyForkFiles = (
   for (const upstreamPath of [...upstreamPaths].sort(byText)) {
     const forkPath = mapUpstreamPath(fork, upstreamPath);
     if (forkPath === null) {
+      // The fork's own file at this path is that history; list it once.
+      forkPathsTouched.add(upstreamPath);
       entries.push({
         action: "skip",
         forkDigest: null,
@@ -1863,7 +1868,7 @@ const renderPlan = (plan: ForkPlan): string => {
     `Fork ${plan.fork.name} at ${plan.fork.path}`,
     `  pinned ${plan.pinUpdate.from} -> ${plan.pinUpdate.to ?? `(pin unchanged: ${plan.pinUpdate.reason})`}`,
     `  source ${plan.source.version ?? "unknown"} (guidance ${plan.source.guidanceVersion ?? "unknown"}) at ${plan.source.path}`,
-    `  ${plan.summary.update} update, ${plan.summary.merge} merge, ${plan.summary.add} add, ${plan.summary.delete} delete, ${plan.summary["keep-fork-delta"]} fork edits kept, ${plan.summary["keep-fork-only"]} fork-only files kept, ${plan.summary.omitted} omitted, ${plan.summary.conflict} conflict, ${plan.summary.review} to review, ${plan.summary["unrecorded-omission"]} unrecorded omissions, ${plan.literalRewrites.length} literal rewrites`,
+    `  ${plan.summary.update} update, ${plan.summary.merge} merge, ${plan.summary.add} add, ${plan.summary.delete} delete, ${plan.summary["keep-fork-delta"]} fork edits kept, ${plan.summary["keep-fork-only"]} fork-only files kept, ${plan.summary.skip} skipped as fork-owned history, ${plan.summary.omitted} omitted, ${plan.summary.conflict} conflict, ${plan.summary.review} to review, ${plan.summary["unrecorded-omission"]} unrecorded omissions, ${plan.literalRewrites.length} literal rewrites`,
   ];
   for (const entry of plan.entries) {
     if (

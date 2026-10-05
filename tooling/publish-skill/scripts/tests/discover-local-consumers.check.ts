@@ -354,6 +354,39 @@ describe("discover-local-consumers", () => {
     ]);
   });
 
+  test("keeps standalone CMS while the CMS policy sidecar is missing", async () => {
+    const repository = join(fixtureRoot, "web-cms-without-sidecar");
+    await Promise.all([
+      writeJson(join(repository, ".simple-changelogs.json"), webCmsPolicy),
+      writeJson(join(repository, "skills-lock.json"), combinedLocks()),
+      install(repository, "simple-changelogs-cms"),
+      install(repository, "simple-changelogs-web-cms"),
+    ]);
+
+    const result = spawnSync(
+      bun,
+      [
+        script,
+        "--source",
+        "soundsystems/simple-changelogs",
+        "--skill",
+        "simple-changelogs-cms",
+        "--skill",
+        "simple-changelogs-web-cms",
+        "--root",
+        repository,
+        "--json",
+      ],
+      { encoding: "utf8", env: isolatedEnv }
+    );
+
+    expect(result.status).toBe(0);
+    expect(JSON.parse(result.stdout).consumers).toMatchObject([
+      { skill: "simple-changelogs-cms", state: "installed" },
+      { skill: "simple-changelogs-web-cms", state: "installed" },
+    ]);
+  });
+
   test("does not supersede CMS from invalid policy or a lock-only combined package", async () => {
     const invalidPolicy = join(fixtureRoot, "invalid-web-cms-policy");
     const lockOnlyCombined = join(fixtureRoot, "lock-only-web-cms");

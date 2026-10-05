@@ -63,7 +63,11 @@ For each fork:
 2. Review the entire canonical diff from the old pin through the new merged pin.
 3. Apply package changes while preserving the fork's name, audience, release
    authorities, commands, surfaces, and documented local policies.
-4. Update the provenance pin only after the review is complete.
+4. Update the provenance pin only after the review is complete. When the
+   bundled fork checker offers a pin-parity mode, run it against the new pin
+   (for example `check-fork-sync.sh --pin-parity <fork SKILL.md> <upstream
+   repository>`) and require a pass, so every difference from the pinned
+   upstream is a declared delta or omission.
 5. Run package checks and repository-native changelog or release verification.
 6. If the canonical guidance version changed, follow the fork's policy to audit
    released customer notes, developer history, generated surfaces, and version

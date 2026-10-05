@@ -294,10 +294,20 @@ const assertPreserved = (
   }
 };
 
+// A proposal open at the opening inventory and merged or closed during the
+// run leaves two records: the opening one (observedFinally false) and the
+// final one. Open-branch protection, merged deletion, and audited
+// classification judge the final snapshot; the opening record stays for the
+// opening digest and the merged-head ancestry proof.
+const finalProposals = (branch: RemoteBranchReconciliationEntry) =>
+  branch.proposals.filter((proposal) => proposal.observedFinally !== false);
+
+type ProposalState =
+  RemoteBranchReconciliationEntry["proposals"][number]["state"];
+
 const proposalStates = (
-  branch: RemoteBranchReconciliationEntry
-): Set<RemoteBranchReconciliationEntry["proposals"][number]["state"]> =>
-  new Set(branch.proposals.map((proposal) => proposal.state));
+  proposals: RemoteBranchReconciliationEntry["proposals"]
+): Set<ProposalState> => new Set(proposals.map((proposal) => proposal.state));
 
 const assertObserved = (branch: RemoteBranchReconciliationEntry): void => {
   if (!(branch.initialHeadRevision || branch.finalHeadRevision)) {
@@ -330,7 +340,7 @@ const validateDeletedMerged = (
   branch: RemoteBranchReconciliationEntry
 ): void => {
   validateDeletedMergedShape(branch);
-  const exactMergedProposal = branch.proposals.some(
+  const exactMergedProposal = finalProposals(branch).some(
     (proposal) =>
       proposal.state === "merged" &&
       proposal.headRevision === branch.initialHeadRevision
@@ -341,7 +351,7 @@ const validateDeletedMerged = (
       "merged deletion proof must bind a merged proposal to the exact initial branch head"
     );
   }
-  if (branch.proposals.some((proposal) => proposal.state === "open")) {
+  if (finalProposals(branch).some((proposal) => proposal.state === "open")) {
     fail(branch.name, "an open proposal branch cannot be deleted");
   }
 };
@@ -403,9 +413,9 @@ const validateAncestryMerged = (
 };
 
 const assertAuditedClassification = (
-  branch: RemoteBranchReconciliationEntry
+  branch: RemoteBranchReconciliationEntry,
+  states: ReadonlySet<ProposalState> = proposalStates(finalProposals(branch))
 ): void => {
-  const states = proposalStates(branch);
   if (branch.classification === "closed-unmerged") {
     if (
       !(states.has("closed") && !states.has("open") && !states.has("merged"))
@@ -416,7 +426,7 @@ const assertAuditedClassification = (
       );
     }
   } else if (branch.classification === "no-proposal") {
-    if (branch.proposals.length > 0) {
+    if (states.size > 0) {
       fail(
         branch.name,
         "no-proposal branches cannot include proposal evidence"
@@ -492,7 +502,7 @@ const validateBranch = (
     assertPreserved(branch, "preserved-ambiguous");
     return;
   }
-  if (branch.proposals.some((proposal) => proposal.state === "open")) {
+  if (finalProposals(branch).some((proposal) => proposal.state === "open")) {
     if (branch.classification !== "open-proposal") {
       fail(branch.name, "an open proposal branch must be classified as open");
     }
@@ -528,10 +538,12 @@ const validateSuperseded = (
   branch: RemoteBranchReconciliationEntry,
   supersession: RemoteBranchSupersession
 ): void => {
+  // A user-approved deletion keeps the stricter rule: every observed proposal
+  // counts, so one open at the opening inventory still blocks.
   if (branch.proposals.some((proposal) => proposal.state === "open")) {
     fail(branch.name, "an open proposal branch cannot be deleted");
   }
-  assertAuditedClassification(branch);
+  assertAuditedClassification(branch, proposalStates(branch.proposals));
   if (
     branch.disposition !== "deleted-proven-obsolete" ||
     branch.finalHeadRevision !== null ||

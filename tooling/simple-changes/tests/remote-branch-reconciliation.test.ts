@@ -652,6 +652,20 @@ describe("remote branch reconciliation", () => {
         ancestryProof(FAST_FORWARD.initial),
       ])
     ).toEqual(value);
+    // The opening open record is superseded by the final merged one, so the
+    // exact merged-proposal-head rule proves it without an ancestry sidecar.
+    expect(validateRemoteBranchReconciliation(value)).toEqual(value);
+  });
+
+  test("still rejects a same-head deletion while any proposal is open finally", () => {
+    const value = sameHeadReceipt();
+    shippedBranch(value).proposals.push({
+      headRevision: FAST_FORWARD.initial,
+      objectId: "72",
+      observedInitially: false,
+      state: "open",
+    });
+    recomputeCoverage(value);
     expect(() => validateRemoteBranchReconciliation(value)).toThrow(
       "an open proposal branch must be classified as open"
     );
@@ -660,7 +674,7 @@ describe("remote branch reconciliation", () => {
   test("keeps the moved-and-deleted shape unrecordable without ancestry proof", () => {
     const value = fastForwardReceipt();
     expect(() => validateRemoteBranchReconciliation(value)).toThrow(
-      "an open proposal branch must be classified as open"
+      "merged deletion proof must bind a merged proposal to the exact initial branch head"
     );
   });
 
@@ -834,6 +848,56 @@ describe("remote branch reconciliation", () => {
     expect(() => validateRemoteBranchReconciliation(value)).toThrow(
       "audited deletion requires deleted-proven-obsolete, no final ref, and target containment or an empty provider diff"
     );
+  });
+
+  test("classifies a proposal closed during the run from the final snapshot", () => {
+    const value = receipt();
+    value.branches.push({
+      classification: "closed-unmerged",
+      disposition: "preserved-audited",
+      evidence: [
+        "MR !90 was open at the opening head and closed during the run.",
+      ],
+      finalHeadRevision: SUPERSEDED.head,
+      initialHeadRevision: SUPERSEDED.head,
+      name: "feature/closed-during-run",
+      obsoleteProof: null,
+      proposals: [
+        {
+          headRevision: SUPERSEDED.head,
+          objectId: "90",
+          observedFinally: false,
+          state: "open",
+        },
+        {
+          headRevision: SUPERSEDED.head,
+          objectId: "90",
+          observedInitially: false,
+          state: "closed",
+        },
+      ],
+      protected: false,
+    });
+    recomputeCoverage(value);
+    expect(validateRemoteBranchReconciliation(value)).toEqual(value);
+  });
+
+  test("keeps every observed proposal in a supersession classification", () => {
+    const value = supersededReceipt();
+    const branch = supersededBranch(value);
+    branch.classification = "no-proposal";
+    branch.proposals = [
+      {
+        headRevision: SUPERSEDED.head,
+        objectId: "981",
+        observedFinally: false,
+        state: "closed",
+      },
+    ];
+    recomputeCoverage(value);
+    expect(() =>
+      validateRemoteBranchReconciliation(value, [], [supersession()])
+    ).toThrow("no-proposal branches cannot include proposal evidence");
   });
 
   test("accepts a no-proposal branch deleted with an approved supersession", () => {

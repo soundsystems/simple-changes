@@ -1649,10 +1649,15 @@ const needsAncestryShape = (
   branch: RemoteBranchReconciliationReceipt["branches"][number]
 ): boolean =>
   branch.disposition === "deleted-merged" &&
-  (branch.proposals.some((proposal) => proposal.state === "open") ||
+  // Judged from the final snapshot, as merged deletion itself is.
+  (branch.proposals.some(
+    (proposal) =>
+      proposal.state === "open" && proposal.observedFinally !== false
+  ) ||
     !branch.proposals.some(
       (proposal) =>
         proposal.state === "merged" &&
+        proposal.observedFinally !== false &&
         proposal.headRevision === branch.initialHeadRevision
     ));
 

@@ -522,6 +522,13 @@ ordinary claimed concurrency never requires `loop allow` or user approval.
 Set `concurrentWork` to `strict` to require repository-wide pauses. The legacy
 `preserve` value remains accepted and now follows the safe concurrent default.
 
+A committed policy may also declare `execGuard`, an argv array such as
+`["bun", "scripts/exec-guard.ts"]` that runs with the exec command appended
+before every `loop exec` child; a nonzero exit refuses the command before it
+starts. Use it, for example, to refuse a merge until hosted CI passes. It is
+repository code that runs with the agent's permissions, and personal
+preferences never supply one.
+
 The active request overrides repository policy, repository policy overrides
 personal preferences, and personal preferences override the safe defaults.
 Run-only setup writes no file. Policy stores decisions, never credentials or

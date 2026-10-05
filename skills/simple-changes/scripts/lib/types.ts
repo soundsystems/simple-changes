@@ -115,6 +115,11 @@ export interface RepoPolicy {
   changelogHandling: ChangelogHandling;
   concurrentWork: "allow-claimed" | "strict" | "preserve";
   defaultFinish: "open-change-request" | "integrate" | "ship" | "preview";
+  /**
+   * Repository-only argv run before every `loop exec` child as
+   * `[...execGuard, ...command]`; a nonzero exit refuses the command.
+   */
+  execGuard?: string[];
   gitPushAuthorization: GitPushAuthorization;
   guidance: {
     disposition: "accepted" | "reviewed" | "deferred";

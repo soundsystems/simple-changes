@@ -95,6 +95,7 @@ import { buildPreviewPlan } from "./lib/planner.ts";
 import {
   loadPersonalPolicy,
   resolvePersonalPolicyPath,
+  withSavedExecGuard,
   writePolicyFile,
   writeRepositoryPolicyTrustReceipt,
 } from "./lib/policy.ts";
@@ -1528,6 +1529,11 @@ const runSetup = async (options: CliOptions): Promise<void> => {
     );
     const path = setupPolicyPath(selection.scope, context.primaryCheckout);
     const written = selection.confirmed && path !== null;
+    // Setup never asks about `execGuard`; rewriting a policy keeps its guard.
+    const policy =
+      written && path
+        ? withSavedExecGuard(path, selection.policy)
+        : selection.policy;
     const applyWrites = (): {
       instructionPointerChanged: boolean;
       instructionPointerWritten: boolean;
@@ -1547,7 +1553,7 @@ const runSetup = async (options: CliOptions): Promise<void> => {
         instructionPointerChanged = pointerResult.changed;
       }
       if (written && path) {
-        writePolicyFile(path, selection.policy, selection.scope === "user");
+        writePolicyFile(path, policy, selection.scope === "user");
         if (selection.scope === "repository" && context.primaryCheckout) {
           writeRepositoryPolicyTrustReceipt(
             context.primaryCheckout,
@@ -1587,7 +1593,7 @@ const runSetup = async (options: CliOptions): Promise<void> => {
         written: writeResult.instructionPointerWritten,
       },
       path,
-      policy: selection.policy,
+      policy,
       scope: selection.scope,
       setupStyle: selection.setupStyle,
       summary: selection.summary,

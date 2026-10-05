@@ -31,6 +31,7 @@ import {
   deriveEmergencyShippingStatus,
 } from "./emergency-shipping.ts";
 import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
+import { assertExecGuardAllows, execGuardFor } from "./exec-guard.ts";
 import {
   currentHarnessSession,
   forgetControllerSession,
@@ -4230,12 +4231,27 @@ export const executeLoopMutation = async (
     runId,
     agentIdInput,
     "loop exec",
-    (context) => {
+    async (context) => {
+      const inventory = captureInventory(repositoryPath);
+      const checkout = inventory.repository.currentCheckout;
+      // The repository's guard runs last, after every lease check, and only
+      // restricts: a refusal leaves the child unstarted.
+      const guard = execGuardFor(inventory);
+      if (guard) {
+        context.markChildStarting();
+        await assertExecGuardAllows({
+          checkout,
+          command: commandInput,
+          guard,
+          onSpawn: context.registerProcess,
+          runId,
+        });
+      }
       context.markChildStarting();
       return runCommandInProcessGroup(
         command,
         args,
-        captureInventory(repositoryPath).repository.currentCheckout,
+        checkout,
         context.registerProcess
       );
     }

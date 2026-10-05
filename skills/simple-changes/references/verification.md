@@ -26,3 +26,8 @@ missing, skipped, stale, or incomplete jobs.
 For regression fixes, verify the original symptom. Tests, type checking,
 format/lint, build, migrations, and smoke checks prove different claims; one
 cannot stand in for another.
+
+To enforce a check at the moment of an integration command, such as a green
+hosted pipeline before a merge, a repository can declare an `execGuard` that
+runs before every `loop exec` child; see
+[setup and policy](setup-and-policy.md).

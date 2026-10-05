@@ -349,6 +349,13 @@
   controller lifecycle: an active loop protects every registered path, while
   a relinquished loop protects only adopted claim-and-pause linkages, so a
   dead run's own registrations cannot freeze stale-claim recovery.
+- A repository `execGuard` (an argv array in `.simple-changes.json`, never in
+  personal preferences) runs as `[...execGuard, ...command]` inside the lease of
+  every `loop exec`, after all other lease checks and immediately before the
+  child starts, with the run ID and checkout in its environment and its output
+  on stderr. Any nonzero exit or failure to start refuses the command before
+  its child exists. A guard only restricts: it needs no policy trust receipt,
+  grants no authority, and gates nothing run outside `loop exec`.
 - `proposalScheduling` controls only whether independent proposals are
   authored consecutively or in parallel claimed worktrees. It never shares a
   checkout, weakens controller guards or worktree isolation, changes cleanup

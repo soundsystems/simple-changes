@@ -210,11 +210,24 @@ export const gitExecutable = (): string => {
   return cachedGitExecutable;
 };
 
-export const runCommandInProcessGroup = (
+interface ProcessGroupRunOptions {
+  /** Extra environment for the child, on top of this process's own. */
+  environment: Record<string, string>;
+  /** Stream the child's output to this process's stderr instead of capturing it. */
+  streamOutputToStderr: boolean;
+}
+
+/**
+ * Runs one command in its own process group and resolves with its exit code,
+ * whatever it is. Rejects when the command cannot start or leaves a
+ * background descendant behind.
+ */
+const runInProcessGroup = (
   command: string,
   args: readonly string[],
   cwd: string,
-  onSpawn: (process: CommandProcess) => void
+  onSpawn: (process: CommandProcess) => void,
+  options: ProcessGroupRunOptions
 ): Promise<CommandResult> =>
   new Promise((resolvePromise, rejectPromise) => {
     const child = spawn(command, [...args], {
@@ -222,18 +235,20 @@ export const runCommandInProcessGroup = (
       detached: process.platform !== "win32",
       env: {
         ...process.env,
-        LC_ALL: "C",
+        ...options.environment,
       },
-      stdio: ["ignore", "pipe", "pipe"],
+      stdio: options.streamOutputToStderr
+        ? ["ignore", 2, 2]
+        : ["ignore", "pipe", "pipe"],
     });
     let stdout = "";
     let stderr = "";
-    child.stdout.setEncoding("utf8");
-    child.stderr.setEncoding("utf8");
-    child.stdout.on("data", (chunk: string) => {
+    child.stdout?.setEncoding("utf8");
+    child.stderr?.setEncoding("utf8");
+    child.stdout?.on("data", (chunk: string) => {
       stdout += chunk;
     });
-    child.stderr.on("data", (chunk: string) => {
+    child.stderr?.on("data", (chunk: string) => {
       stderr += chunk;
     });
     child.once("error", rejectPromise);
@@ -269,19 +284,48 @@ export const runCommandInProcessGroup = (
         rejectPromise(processGroupError);
         return;
       }
-      if (exitCode !== 0) {
-        const detail = redactSecrets(stderr.trim() || stdout.trim());
-        rejectPromise(
-          new SimpleChangesError(
-            `${command} ${args[0] ?? ""} failed${detail ? `: ${detail}` : ""}`,
-            EXIT_CODES.inventory
-          )
-        );
-        return;
-      }
       resolvePromise({ exitCode, stderr, stdout });
     });
   });
+
+export const runCommandInProcessGroup = async (
+  command: string,
+  args: readonly string[],
+  cwd: string,
+  onSpawn: (process: CommandProcess) => void
+): Promise<CommandResult> => {
+  const result = await runInProcessGroup(command, args, cwd, onSpawn, {
+    environment: { LC_ALL: "C" },
+    streamOutputToStderr: false,
+  });
+  if (result.exitCode !== 0) {
+    const detail = redactSecrets(result.stderr.trim() || result.stdout.trim());
+    throw new SimpleChangesError(
+      `${command} ${args[0] ?? ""} failed${detail ? `: ${detail}` : ""}`,
+      EXIT_CODES.inventory
+    );
+  }
+  return result;
+};
+
+/**
+ * Runs a policy-declared guard in its own process group with its output on
+ * this process's stderr, so `--json` stdout stays machine-readable. Resolves
+ * with the guard's exit code; the caller decides what a refusal means.
+ */
+export const runGuardInProcessGroup = async (
+  command: string,
+  args: readonly string[],
+  cwd: string,
+  onSpawn: (process: CommandProcess) => void,
+  environment: Record<string, string>
+): Promise<number> =>
+  (
+    await runInProcessGroup(command, args, cwd, onSpawn, {
+      environment,
+      streamOutputToStderr: true,
+    })
+  ).exitCode;
 
 export const runGit = (
   cwd: string,

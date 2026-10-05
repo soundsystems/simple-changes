@@ -83,6 +83,11 @@ each result:
   validation-only consumer, an intentional lock, or stale state;
 - `unlocked-install`: an installed package exists without a matching lock;
   verify its identity before changing it.
+- `superseded-install`: repository policy selects `web-cms` and the matching
+  combined package is present, so a standalone CMS package is redundant by
+  default. Keep `.simple-changelogs-cms.json`; it is the combined package's CMS
+  policy. Retain both packages only when repository instructions explicitly
+  identify them as independently maintained consumers.
 
 Do not infer source identity from a similar name. Compare the complete package
 when an unlocked install or alias lacks provenance. The standard global skill roots

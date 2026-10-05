@@ -55,10 +55,11 @@ Process forks independently so one blocked repository does not corrupt another.
 
 For each fork:
 
-1. Run the canonical fork-drift checker when one is bundled, and use the
-   packaged `update-local-forks` helper (`skills/update-local-forks/scripts/
-   update-local-forks.ts plan --fork <dir> --upstream <checkout>`) to classify
-   every fork file against the pinned base before editing anything by hand.
+1. Run the canonical fork-drift checker when one is bundled. When the canonical
+   package also bundles the `update-local-forks` helper
+   (`skills/update-local-forks/scripts/update-local-forks.ts plan --fork <dir>
+   --upstream <checkout>`), use it to classify every fork file against the
+   pinned base before editing anything by hand.
 2. Review the entire canonical diff from the old pin through the new merged pin.
 3. Apply package changes while preserving the fork's name, audience, release
    authorities, commands, surfaces, and documented local policies.
@@ -117,6 +118,16 @@ Inventory every exact-source consumer with
 unlocked installs, and lock-only records before writing. Treat paths resolving
 to the same physical package as symlinked paths, not duplicate installs.
 Do not select only one consumer for convenience.
+
+Before reinstalling, reconcile combined-distribution topology. When a valid
+`.simple-changelogs.json` selects `web-cms` and that combined package is
+present, its protected CMS workflow makes a separate
+`simple-changelogs-cms` installation redundant. The
+`.simple-changelogs-cms.json` sidecar remains required CMS policy for the
+combined package. Treat a discovered standalone CMS package as redundant and
+remove its package plus lock entry unless repository instructions explicitly
+document both packages as independently maintained consumers. Never let a
+broad reinstall recreate a package already removed by this topology rule.
 
 For every confirmed consumer:
 

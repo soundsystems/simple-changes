@@ -28,6 +28,7 @@ export const SCHEMA_NAMES = [
   "release-delivery-receipt",
   "post-cleanup-recovery",
   "shipment-outcome",
+  "preserved-source-override",
   "remote-branch-reconciliation",
   "remote-branch-ancestry",
   "remote-branch-supersession",

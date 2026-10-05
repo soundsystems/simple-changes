@@ -289,7 +289,8 @@ simple-changes loop record-scope --run-id ID --agent-id ID
 simple-changes loop refresh-scope --run-id ID --agent-id ID
   --receipt FILE [--json] [--repo PATH]
 simple-changes loop record-outcome --run-id ID --agent-id ID
-  --receipt FILE [--json] [--repo PATH]
+  --receipt FILE [--approved-by USER --approval-reference REFERENCE]
+  [--json] [--repo PATH]
 simple-changes loop exec --run-id ID --agent-id ID [--json] [--repo PATH]
   -- COMMAND [ARG ...]
 simple-changes loop recover --agent-id ID [--json] [--repo PATH]

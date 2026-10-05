@@ -47,6 +47,11 @@ import {
   assertSafeRelativePath,
 } from "./path-safety.ts";
 import { buildPreviewPlan, validatePlanConservation } from "./planner.ts";
+import {
+  preservedSourceOverrideFailure,
+  splitShipmentOutcomeInput,
+  validatePreservedSourceOverrideRecord,
+} from "./preserved-source-override.ts";
 import { primaryDeliveryProof } from "./primary-delivery-proof.ts";
 import {
   type CommandProcess,
@@ -85,6 +90,7 @@ import type {
   LoopWorktreePreparation,
   LoopWorktreeRetirement,
   PostCleanupRecoveryReceipt,
+  PreservedSourceOverrideReceipt,
   RemoteBranchAncestryProof,
   RemoteBranchAncestryRecord,
   RemoteBranchReconciliationReceipt,
@@ -120,6 +126,7 @@ const LOCK_OWNER_FILENAME = "owner.json";
 const RECOVERY_HISTORY_DIRECTORY = "history";
 const REMOTE_BRANCH_ANCESTRY_DIRECTORY = "remote-branch-ancestry";
 const REMOTE_BRANCH_SUPERSESSION_DIRECTORY = "remote-branch-supersession";
+const PRESERVED_SOURCE_OVERRIDE_DIRECTORY = "preserved-source-override";
 const STALE_LOCK_MINIMUM_AGE_MS = 5000;
 const RUN_ID_PATTERN = /^run-[a-z0-9-]+$/u;
 const DIGEST_PATTERN = /^[0-9a-f]{64}$/u;
@@ -1281,6 +1288,7 @@ const currentTargetRevision = (lease: LoopLease): string => {
 };
 
 type ReceiptSidecarDirectory =
+  | typeof PRESERVED_SOURCE_OVERRIDE_DIRECTORY
   | typeof REMOTE_BRANCH_ANCESTRY_DIRECTORY
   | typeof REMOTE_BRANCH_SUPERSESSION_DIRECTORY;
 
@@ -3374,15 +3382,89 @@ const primaryReviewedResultAllowed = (
   );
 };
 
+/**
+ * Rechecks a user-approved preserved-source override against the live claim,
+ * the frozen source checkout, and the exact target tree. Reads the claim
+ * document, so callers hold the worktree-coordination lock.
+ */
+const preservedSourceOverrideIssue = (
+  lease: LoopLease,
+  inventory: RepositoryInventory,
+  receipt: ShipmentOutcomeReceipt,
+  unit: OutcomeUnit,
+  override: PreservedSourceOverrideReceipt | undefined,
+  expected: PlannedUnit,
+  recordedAt: string
+): string | null => {
+  const { sourceWorktree } = expected;
+  const registered = lease.worktrees.find(
+    (worktree) => worktree.path === sourceWorktree
+  );
+  const { claims } = readCoordinationDocumentFromCommonDirectory(
+    lease.commonGitDirectory
+  );
+  const openingEntries = new Map(
+    (lease.shipmentScope?.openingChanges ?? [])
+      .filter((change) => change.worktreePath === sourceWorktree)
+      .map((change) => [change.path, change.sourceEntry])
+  );
+  return preservedSourceOverrideFailure(
+    {
+      claim: claims.find((item) => item.claimId === registered?.claimId),
+      controllerAgentId: lease.ownerAgentId,
+      current: inventory.worktrees.find((item) => item.path === sourceWorktree),
+      disposition: unit.disposition,
+      finalPaths: unit.finalPaths,
+      opening: lease.openingWorktrees?.find(
+        (worktree) => worktree.path === sourceWorktree
+      ),
+      openingEntries,
+      originalPaths: unit.originalPaths,
+      override,
+      registered,
+      runId: lease.runId,
+      scopePaths: expected.paths,
+      sourceEntry: (path) => worktreeSourceEntry(sourceWorktree, path),
+      sourceWorktree,
+      targetEntry: (path) =>
+        targetTreeEntry(lease.primaryCheckout, receipt.targetRevision, path),
+      targetRevision: receipt.targetRevision,
+      unitId: unit.unitId,
+    },
+    recordedAt
+  );
+};
+
 const assertDirectOutcomeMatchesSource = (
   lease: LoopLease,
   inventory: RepositoryInventory,
   receipt: ShipmentOutcomeReceipt,
   unit: OutcomeUnit,
+  override: PreservedSourceOverrideReceipt | undefined,
   expected: PlannedUnit,
-  openingChanges: OpeningShipmentChange[]
+  openingChanges: OpeningShipmentChange[],
+  recordedAt: string
 ): void => {
   let reviewedPrimaryResultAllowed: boolean | null = null;
+  let preservedSourceOverrideAllowed = false;
+  if (override) {
+    const issue = preservedSourceOverrideIssue(
+      lease,
+      inventory,
+      receipt,
+      unit,
+      override,
+      expected,
+      recordedAt
+    );
+    if (issue) {
+      throw new SimpleChangesError(
+        `Shipment outcome unit ${unit.unitId} has invalid manual preserved-source override: ${issue}.`,
+        EXIT_CODES.validation
+      );
+    }
+    preservedSourceOverrideAllowed = true;
+  }
   for (const item of unit.finalPaths) {
     const sources = openingChanges.filter(
       (change) =>
@@ -3402,6 +3484,9 @@ const assertDirectOutcomeMatchesSource = (
     if (sources.length === 1 && reviewedPrimaryResultAllowed) {
       continue;
     }
+    if (sources.length === 1 && preservedSourceOverrideAllowed) {
+      continue;
+    }
     throw new SimpleChangesError(
       `Shipment outcome unit ${unit.unitId} does not match its exact opening source result for ${item.path}.${
         expected.sourceWorktree === lease.primaryCheckout
@@ -3418,7 +3503,9 @@ const validateShipmentOutcomeUnits = (
   inventory: RepositoryInventory,
   receipt: ShipmentOutcomeReceipt,
   targetDeltaPaths: Set<string>,
-  renameOriginals: Map<string, string>
+  renameOriginals: Map<string, string>,
+  overrides: readonly PreservedSourceOverrideReceipt[],
+  recordedAt: string
 ): { accountedPaths: Set<string>; scopedPaths: Set<string> } => {
   const scope = lease.shipmentScope;
   if (!scope) {
@@ -3469,8 +3556,10 @@ const validateShipmentOutcomeUnits = (
       inventory,
       receipt,
       unit,
+      overrides.find((item) => item.unitId === unit.unitId),
       expected,
-      scope.openingChanges
+      scope.openingChanges,
+      recordedAt
     );
   }
   const missing = [...expectedUnits.keys()].filter(
@@ -3544,84 +3633,150 @@ const assertCompleteTargetDelta = (
   }
 };
 
+export interface PreservedSourceApproval {
+  approvalReference?: string | undefined;
+  approvedBy?: string | undefined;
+}
+
+/**
+ * The approval flags on `loop record-outcome` must restate every
+ * preserved-source override exactly, and are refused when no override exists.
+ */
+const assertPreservedSourceApproval = (
+  overrides: readonly PreservedSourceOverrideReceipt[],
+  approval: PreservedSourceApproval | undefined
+): void => {
+  if (overrides.length === 0) {
+    if (approval?.approvedBy || approval?.approvalReference) {
+      throw new SimpleChangesError(
+        "Manual approval flags require a preserved-source override in the outcome.",
+        EXIT_CODES.validation
+      );
+    }
+    return;
+  }
+  const approvedBy = requiredText(
+    approval?.approvedBy ?? "",
+    "manual preserved-source approver"
+  );
+  const approvalReference = requiredText(
+    approval?.approvalReference ?? "",
+    "manual preserved-source approval reference"
+  );
+  if (
+    overrides.some(
+      (item) =>
+        item.approvedBy !== approvedBy ||
+        item.approvalReference !== approvalReference
+    )
+  ) {
+    throw new SimpleChangesError(
+      "Manual preserved-source approval flags must match every exact outcome override.",
+      EXIT_CODES.validation
+    );
+  }
+};
+
 export const recordShipmentOutcome = (
   repositoryPath: string,
   runIdInput: string,
   agentIdInput: string,
-  receiptInput: unknown
+  receiptInput: unknown,
+  approval?: PreservedSourceApproval
 ): ShipmentOutcomeRecord => {
   const runId = requiredRunId(runIdInput);
   const agentId = requiredText(agentIdInput, "agent ID");
-  const receipt = validateSchema<ShipmentOutcomeReceipt>(
-    "shipment-outcome",
-    receiptInput
-  );
+  // Overrides ride on the receipt's units but are stored beside the lease.
+  const { overrides, receipt } = splitShipmentOutcomeInput(receiptInput);
+  assertPreservedSourceApproval(overrides, approval);
   const opening = locateRepository(repositoryPath);
+  // The coordination lock keeps the claim a preserved-source override binds
+  // from changing between validation and the lease write.
   return withStateLock(
     opening.repository.commonGitDirectory,
     "record shipment outcome",
-    () => {
-      const inventory = captureInventory(repositoryPath);
-      const lease = requireLease(inventory);
-      assertControllerActive(lease);
-      if (
-        lease.runId !== runId ||
-        receipt.runId !== runId ||
-        lease.ownerAgentId !== agentId
-      ) {
-        throw new SimpleChangesError(
-          `Only ${lease.ownerAgentId} may reconcile the exact outcome for ${lease.runId}.`,
-          EXIT_CODES.unsafe
-        );
-      }
-      const finalTargetRevision = currentTargetRevision(lease);
-      if (receipt.targetRevision !== finalTargetRevision) {
-        throw new SimpleChangesError(
-          `Shipment outcome must bind current target ${finalTargetRevision}.`,
-          EXIT_CODES.unsafe
-        );
-      }
-      const targetDeltaPaths = new Set(
-        targetDiffPaths(
-          lease.primaryCheckout,
-          lease.targetRevision,
-          receipt.targetRevision
-        )
-      );
-      const renameOriginals = targetRenameOriginals(
-        lease.primaryCheckout,
-        lease.targetRevision,
-        receipt.targetRevision
-      );
-      const { accountedPaths, scopedPaths } = validateShipmentOutcomeUnits(
-        lease,
-        inventory,
-        receipt,
-        targetDeltaPaths,
-        renameOriginals
-      );
-      validateAdditionalShipmentPaths(
-        lease,
-        receipt,
-        accountedPaths,
-        scopedPaths,
-        targetDeltaPaths
-      );
-      assertCompleteTargetDelta(lease, receipt, accountedPaths);
-      const recordedAt = new Date().toISOString();
-      const receiptDigest = sha256Json(receipt);
-      writeLease({
-        ...withMutationEvidence(lease, recordedAt),
-        ownerProcess: ownerProcessEvidence(recordedAt),
-        shipmentOutcome: { receipt, receiptDigest, recordedAt },
-        updatedAt: recordedAt,
-      });
-      return {
-        receiptDigest,
-        recordedAt,
-        summary: `Reviewed shipment outcome: ${receipt.units.length} scoped work item(s) and ${receipt.additionalPaths.length} additional final-target path(s) accounted at ${receipt.targetRevision}.`,
-      };
-    }
+    () =>
+      withWorktreeCoordinationLock(
+        opening.repository.commonGitDirectory,
+        "record shipment outcome",
+        () => {
+          const inventory = captureInventory(repositoryPath);
+          const lease = requireLease(inventory);
+          assertControllerActive(lease);
+          if (
+            lease.runId !== runId ||
+            receipt.runId !== runId ||
+            lease.ownerAgentId !== agentId
+          ) {
+            throw new SimpleChangesError(
+              `Only ${lease.ownerAgentId} may reconcile the exact outcome for ${lease.runId}.`,
+              EXIT_CODES.unsafe
+            );
+          }
+          const finalTargetRevision = currentTargetRevision(lease);
+          if (receipt.targetRevision !== finalTargetRevision) {
+            throw new SimpleChangesError(
+              `Shipment outcome must bind current target ${finalTargetRevision}.`,
+              EXIT_CODES.unsafe
+            );
+          }
+          const targetDeltaPaths = new Set(
+            targetDiffPaths(
+              lease.primaryCheckout,
+              lease.targetRevision,
+              receipt.targetRevision
+            )
+          );
+          const renameOriginals = targetRenameOriginals(
+            lease.primaryCheckout,
+            lease.targetRevision,
+            receipt.targetRevision
+          );
+          const recordedAt = new Date().toISOString();
+          const { accountedPaths, scopedPaths } = validateShipmentOutcomeUnits(
+            lease,
+            inventory,
+            receipt,
+            targetDeltaPaths,
+            renameOriginals,
+            overrides,
+            recordedAt
+          );
+          validateAdditionalShipmentPaths(
+            lease,
+            receipt,
+            accountedPaths,
+            scopedPaths,
+            targetDeltaPaths
+          );
+          assertCompleteTargetDelta(lease, receipt, accountedPaths);
+          const receiptDigest = sha256Json(receipt);
+          // A null record removes a sidecar left by an earlier outcome.
+          writeReceiptSidecar(
+            lease,
+            PRESERVED_SOURCE_OVERRIDE_DIRECTORY,
+            overrides.length === 0
+              ? null
+              : {
+                  overrides,
+                  receiptDigest,
+                  runId: lease.runId,
+                  schemaVersion: 1,
+                }
+          );
+          writeLease({
+            ...withMutationEvidence(lease, recordedAt),
+            ownerProcess: ownerProcessEvidence(recordedAt),
+            shipmentOutcome: { receipt, receiptDigest, recordedAt },
+            updatedAt: recordedAt,
+          });
+          return {
+            receiptDigest,
+            recordedAt,
+            summary: `Reviewed shipment outcome: ${receipt.units.length} scoped work item(s) and ${receipt.additionalPaths.length} additional final-target path(s) accounted at ${receipt.targetRevision}.`,
+          };
+        }
+      )
   );
 };
 
@@ -6741,8 +6896,51 @@ const missingShipmentScopeBlockers = (lease: LoopLease): string[] =>
       ]
     : [];
 
+/**
+ * Whether a recorded unit's final bytes could only have been accepted through
+ * a preserved-source override: a final path differs from its single opening
+ * source result, outside the reviewed-primary exception.
+ */
+const requiresPreservedSourceOverride = (
+  lease: LoopLease,
+  unit: OutcomeUnit,
+  expected: PlannedUnit,
+  openingChanges: readonly OpeningShipmentChange[]
+): boolean =>
+  !(
+    unit.disposition === "delivered" &&
+    expected.sourceWorktree === lease.primaryCheckout
+  ) &&
+  unit.finalPaths.some((item) => {
+    const sources = openingChanges.filter(
+      (change) =>
+        change.worktreePath === expected.sourceWorktree &&
+        change.path === item.path
+    );
+    return sources.length === 1 && sources[0]?.sourceEntry !== item.entry;
+  });
+
+/** The overrides recorded beside the lease for its exact shipment outcome. */
+const storedPreservedSourceOverrides = (
+  lease: LoopLease
+): PreservedSourceOverrideReceipt[] => {
+  const stored = readReceiptSidecar(
+    lease.commonGitDirectory,
+    PRESERVED_SOURCE_OVERRIDE_DIRECTORY,
+    lease.runId
+  );
+  return stored === null || !lease.shipmentOutcome
+    ? []
+    : validatePreservedSourceOverrideRecord(
+        stored,
+        lease.runId,
+        lease.shipmentOutcome.receiptDigest
+      );
+};
+
 const shipmentOutcomeCompletionBlockers = (
   lease: LoopLease,
+  inventory: RepositoryInventory,
   targetRevision: string | null
 ): string[] => {
   if (!lease.shipmentScope) {
@@ -6766,7 +6964,7 @@ const shipmentOutcomeCompletionBlockers = (
     ]),
     ...receipt.additionalPaths,
   ];
-  return paths.flatMap((item) =>
+  const targetBlockers = paths.flatMap((item) =>
     targetTreeEntry(
       lease.primaryCheckout,
       receipt.targetRevision,
@@ -6775,6 +6973,53 @@ const shipmentOutcomeCompletionBlockers = (
       ? []
       : [`Shipment outcome entry changed after review: ${item.path}`]
   );
+  let overrides: PreservedSourceOverrideReceipt[];
+  try {
+    overrides = storedPreservedSourceOverrides(lease);
+  } catch (error) {
+    return [
+      ...targetBlockers,
+      error instanceof Error ? error.message : String(error),
+    ];
+  }
+  // A preserved-source override holds only while its source, claim, and
+  // target entries stay exactly as approved. A unit that could only have been
+  // recorded through one fails closed when its sidecar is gone.
+  const { openingChanges } = lease.shipmentScope;
+  const sourceBlockers = lease.shipmentScope.plan.units.flatMap((expected) => {
+    const unit = receipt.units.find((item) => item.unitId === expected.id);
+    const override = overrides.find((item) => item.unitId === expected.id);
+    if (!unit) {
+      return [];
+    }
+    if (!override) {
+      return requiresPreservedSourceOverride(
+        lease,
+        unit,
+        expected,
+        openingChanges
+      )
+        ? [
+            `Shipment outcome unit ${unit.unitId} was recorded with a preserved-source override whose sidecar is missing; record the outcome again.`,
+          ]
+        : [];
+    }
+    const issue = preservedSourceOverrideIssue(
+      lease,
+      inventory,
+      receipt,
+      unit,
+      override,
+      expected,
+      lease.shipmentOutcome?.recordedAt ?? ""
+    );
+    return issue
+      ? [
+          `Manually approved preserved source ${expected.sourceWorktree} changed after recording: ${issue}`,
+        ]
+      : [];
+  });
+  return [...targetBlockers, ...sourceBlockers];
 };
 
 const repositoryCleanupBlockers = (
@@ -6905,7 +7150,9 @@ const loopCompletionBlockers = (
       `Refresh unresolved target ref ${lease.targetRef} before ending the loop.`
     );
   }
-  blockers.push(...shipmentOutcomeCompletionBlockers(lease, targetRevision));
+  blockers.push(
+    ...shipmentOutcomeCompletionBlockers(lease, inventory, targetRevision)
+  );
   if (!scopedCompletion) {
     blockers.push(
       ...repositoryCleanupBlockers(
@@ -7358,7 +7605,7 @@ const hasVerifiedDelivery = (
     return false;
   }
   const target = currentTargetRevision(lease);
-  if (shipmentOutcomeCompletionBlockers(lease, target).length > 0) {
+  if (shipmentOutcomeCompletionBlockers(lease, inventory, target).length > 0) {
     return false;
   }
   return scope.plan.units.every((unit) => {
@@ -7373,12 +7620,36 @@ const hasVerifiedDelivery = (
           item.targetRevision === target
       );
     }
+    if (source.isPrimary && preservesUnchangedPrimary(lease, inventory)) {
+      return true;
+    }
+    if (
+      source.changes.length === 0 &&
+      source.headSha &&
+      targetContainmentAudit(lease.primaryCheckout, target, source.headSha)
+        .method
+    ) {
+      return true;
+    }
+    // A user-approved preserved source stays dirty in its author's claimed
+    // checkout; it counts only while its override still holds exactly. The
+    // completion blockers above already proved the sidecar readable.
+    const override = storedPreservedSourceOverrides(lease).find(
+      (item) => item.unitId === unit.id
+    );
+    const recorded = outcome.units.find((item) => item.unitId === unit.id);
     return Boolean(
-      (source.isPrimary && preservesUnchangedPrimary(lease, inventory)) ||
-        (source.changes.length === 0 &&
-          source.headSha &&
-          targetContainmentAudit(lease.primaryCheckout, target, source.headSha)
-            .method)
+      override &&
+        recorded &&
+        preservedSourceOverrideIssue(
+          lease,
+          inventory,
+          outcome,
+          recorded,
+          override,
+          unit,
+          lease.shipmentOutcome?.recordedAt ?? ""
+        ) === null
     );
   });
 };
@@ -8596,38 +8867,42 @@ export const endLoop = (
   const ownerAgentId = requiredText(ownerAgentIdInput, "agent ID");
   const reason = reasonInput?.trim() || null;
   const opening = locateRepository(repositoryPath);
-  return withStateLock(
-    opening.repository.commonGitDirectory,
-    "loop end",
-    () => {
-      const { inventory, lease } = requireOwnedLease(
-        repositoryPath,
-        runId,
-        ownerAgentId,
-        "end this loop"
-      );
-      assertControllerActive(lease);
-      const verification = verificationAgainst(lease, inventory);
-      // A Ship run that never changed anything owes no shipment scope, remote
-      // reconciliation, or cleanup; those gates protect integrated work.
-      if (unmutatedCloseReady(lease, inventory, verification)) {
-        return {
-          ...verification,
-          closedWithoutMutation: closeUnmutatedRun(
-            lease,
-            verification,
-            reason,
-            "loop end"
-          ),
-        };
+  // Completion rechecks preserved-source claims, so it holds the coordination
+  // lock as finalization does.
+  return withStateLock(opening.repository.commonGitDirectory, "loop end", () =>
+    withWorktreeCoordinationLock(
+      opening.repository.commonGitDirectory,
+      "loop end",
+      () => {
+        const { inventory, lease } = requireOwnedLease(
+          repositoryPath,
+          runId,
+          ownerAgentId,
+          "end this loop"
+        );
+        assertControllerActive(lease);
+        const verification = verificationAgainst(lease, inventory);
+        // A Ship run that never changed anything owes no shipment scope, remote
+        // reconciliation, or cleanup; those gates protect integrated work.
+        if (unmutatedCloseReady(lease, inventory, verification)) {
+          return {
+            ...verification,
+            closedWithoutMutation: closeUnmutatedRun(
+              lease,
+              verification,
+              reason,
+              "loop end"
+            ),
+          };
+        }
+        const blockers = loopCompletionBlockers(lease, inventory, verification);
+        if (blockers.length > 0) {
+          throw new SimpleChangesError(blockers.join(" "), EXIT_CODES.unsafe);
+        }
+        rmSync(loopLeasePath(lease.commonGitDirectory), { force: true });
+        return verification;
       }
-      const blockers = loopCompletionBlockers(lease, inventory, verification);
-      if (blockers.length > 0) {
-        throw new SimpleChangesError(blockers.join(" "), EXIT_CODES.unsafe);
-      }
-      rmSync(loopLeasePath(lease.commonGitDirectory), { force: true });
-      return verification;
-    }
+    )
   );
 };
 

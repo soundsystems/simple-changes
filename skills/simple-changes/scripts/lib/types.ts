@@ -309,6 +309,36 @@ export interface ShipmentOutcomePath {
   path: string;
 }
 
+/**
+ * A user-approved escape hatch on a `target-equivalent` unit: the target holds
+ * an independently reviewed, semantically equivalent (not byte-identical)
+ * form of a claimed author's dirty work, and that checkout stays preserved.
+ * Historical finalization records from forks carry this exact shape.
+ */
+export interface PreservedSourceOverrideReceipt {
+  approvalReason: string;
+  approvalReference: string;
+  approvedAt: string;
+  approvedBy: string;
+  claimId: string;
+  decision: "semantically-equivalent";
+  paths: Array<{
+    path: string;
+    sourceEntry: string | null;
+    targetEntry: string | null;
+  }>;
+  reviewedAt: string;
+  reviewerAgentId: string;
+  reviewReference: string;
+  runId: string;
+  sourceBranch: string;
+  sourceChangeDigest: string;
+  sourceHeadRevision: string;
+  sourceWorktree: string;
+  targetRevision: string;
+  unitId: string;
+}
+
 export interface ShipmentOutcomeReceipt {
   additionalPaths: Array<
     ShipmentOutcomePath & {
@@ -327,6 +357,27 @@ export interface ShipmentOutcomeReceipt {
     summary: string;
     unitId: string;
   }>;
+}
+
+/**
+ * A `loop record-outcome` receipt as written: any unit may carry its
+ * `preservedSourceOverride`. The runtime stores overrides in a sidecar and
+ * keeps the lease's receipt in the original `ShipmentOutcomeReceipt` shape.
+ */
+export type ShipmentOutcomeInput = Omit<ShipmentOutcomeReceipt, "units"> & {
+  units: Array<
+    ShipmentOutcomeReceipt["units"][number] & {
+      preservedSourceOverride?: PreservedSourceOverrideReceipt;
+    }
+  >;
+};
+
+/** The sidecar beside the lease that holds one outcome's overrides. */
+export interface PreservedSourceOverrideRecord {
+  overrides: PreservedSourceOverrideReceipt[];
+  receiptDigest: string;
+  runId: string;
+  schemaVersion: 1;
 }
 
 export interface PermissionRequestInput {

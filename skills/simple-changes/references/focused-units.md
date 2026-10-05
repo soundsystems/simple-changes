@@ -61,3 +61,46 @@ reconciliation or added by external target movement as a short
 the exact entries and refuses an omitted unit, wrong blob/mode/gitlink, moved
 target, or unreported final-target delta. The controller records this receipt;
 it adds no user approval step, and existing cleanup safety remains unchanged.
+
+## Preserved-source override
+
+A second exception is a user-approved escape hatch, not a routine path. It
+covers a claimed author's dirty checkout whose work reached the target in an
+independently reviewed, semantically equivalent but not byte-identical form,
+while that checkout itself stays preserved. Use it only when an independent
+reviewer, neither the controller nor the author, has compared the source and
+target results, and the user has explicitly approved keeping that checkout.
+Never use it to skip review, to excuse different behavior, or for the primary
+checkout.
+
+Record the unit as `target-equivalent` with a `preservedSourceOverride` object
+that binds: `runId`, `unitId`, the author's `claimId`, `sourceWorktree`,
+`sourceBranch`, `sourceHeadRevision`, and `sourceChangeDigest`; the bound
+`targetRevision`; `paths` with each scoped path's opening `sourceEntry` and final
+`targetEntry`; `decision: "semantically-equivalent"`, `reviewerAgentId`,
+`reviewReference`, and `reviewedAt`; and the user's `approvedBy`,
+`approvalReference`, `approvalReason`, and `approvedAt`. Restate the approval on
+the command; the flags must match every override in the receipt and are refused
+when the receipt has none:
+
+```sh
+simple-changes loop record-outcome --run-id <run> --agent-id <controller> \
+  --receipt <file> --approved-by <user> --approval-reference <reference>
+```
+
+Recording requires a dirty, actively claimed, non-primary author checkout still
+at its frozen branch, head, and status digest, with no rename originals, whose
+claim and owner are unchanged; every scoped path covered exactly once, with
+unchanged source bytes and the exact target entries; a reviewer who is neither
+the controller nor the author; and an approval given after the review, by
+someone other than either, no more than one hour before recording.
+The runtime keeps the overrides out of the lease, in
+`<common-git-dir>/simple-changes/preserved-source-override/<run-id>.json`
+bound to the recorded receipt's digest, so older clients can still read the
+lease; that file is left in place afterward as audit evidence, and
+`evals/schemas/preserved-source-override.schema.json` defines it.
+`loop finalize` and `loop end` recheck all of it under the coordination lock.
+The run closes with that checkout and its claim untouched only while nothing
+moved: any later source, claim, or target change, or a missing or mismatched
+override file, blocks completion. The override records review and approval
+evidence; it never substitutes for them.

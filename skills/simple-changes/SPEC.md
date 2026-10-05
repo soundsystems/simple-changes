@@ -71,7 +71,14 @@
   the target, and unrelated late arrivals, may remain without holding the
   shipment open. A reviewed result for work packaged from the primary is accepted
   only while that primary matches its baseline and its HEAD is contained in the
-  bound target. Ordinary mutation verification is unchanged.
+  bound target. A claimed author's dirty checkout may also stay in place when
+  its unit records a user-approved preserved-source override: an independent
+  review found the target form semantically equivalent, the approval flags on
+  `loop record-outcome` restate it exactly, the override lives in a sidecar
+  beside the lease so the lease keeps its shape, and finalization and
+  `loop end` recheck that the source, its claim, the target entries, and that
+  sidecar have not changed.
+  Ordinary mutation verification is unchanged.
   Finalization persists a receipt reporting shipment, controller, delivery,
   cleanup, blockers, and preserved worktrees before closing the run. If an
   unexpected error prevents finalization after ownership and lock checks, it

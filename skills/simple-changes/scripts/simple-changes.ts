@@ -278,7 +278,9 @@ Usage:
   simple-changes loop refresh-scope --run-id ID --agent-id ID
     --receipt CHANGE_PLAN_FILE [--json] [--repo PATH]
   simple-changes loop record-outcome --run-id ID --agent-id ID
-    --receipt SHIPMENT_OUTCOME_FILE [--json] [--repo PATH]
+    --receipt SHIPMENT_OUTCOME_FILE
+    [--approved-by USER --approval-reference REFERENCE]
+    [--json] [--repo PATH]
   simple-changes loop exec --run-id ID --agent-id ID [--json] [--repo PATH]
     -- COMMAND [ARG ...]
   simple-changes loop recover --agent-id ID [--json] [--repo PATH]
@@ -391,6 +393,7 @@ interface CliOptions {
   agentName?: string;
   alreadyLive: boolean;
   applyPlanPath?: string;
+  approvalReference?: string;
   approvedBy?: string;
   awaitingUser: string[];
   baseRef?: string;
@@ -482,6 +485,7 @@ const VALUED_OPTIONS = new Set([
   "--adapter",
   "--apply-plan",
   "--agent-id",
+  "--approval-reference",
   "--approved-by",
   "--awaiting-user",
   "--changelog",
@@ -895,6 +899,7 @@ const applyLoopValuedOption = (
     "--agent": "agentName",
     "--agent-id": "agentId",
     "--apply-plan": "applyPlanPath",
+    "--approval-reference": "approvalReference",
     "--approved-by": "approvedBy",
     "--base": "baseRef",
     "--changelog-receipt": "changelogReceiptPath",
@@ -2983,7 +2988,11 @@ const runLoopCommand = async (options: CliOptions): Promise<void> => {
       options.repo,
       runId,
       agentId,
-      readJsonFile(requireCliOption(options.receiptPath, "--receipt"))
+      readJsonFile(requireCliOption(options.receiptPath, "--receipt")),
+      {
+        approvalReference: options.approvalReference,
+        approvedBy: options.approvedBy,
+      }
     );
     writeOutput(outcome, options.json, `${outcome.summary}\n`);
     return;

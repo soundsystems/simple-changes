@@ -1,8 +1,9 @@
 #!/usr/bin/env bun
 
 import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { basename, dirname, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { YAML } from "bun";
 import { extractReleaseNotes } from "../../skills/simple-changes/scripts/lib/release-notes.ts";
 import {
   classifyRequestMode,
@@ -52,6 +53,12 @@ interface EvalManifest {
   skillName: "simple-changes";
   triggers: TriggerCase[];
 }
+
+// Agent Skills specification limits for discoverable frontmatter.
+const FRONTMATTER_PATTERN = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/u;
+const SKILL_NAME_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/u;
+const MAX_SKILL_NAME_LENGTH = 64;
+const MAX_SKILL_DESCRIPTION_LENGTH = 1024;
 
 const moduleDirectory = dirname(fileURLToPath(import.meta.url));
 const repositoryRoot = resolve(moduleDirectory, "../..");
@@ -212,6 +219,81 @@ if (toolingSkills.length !== 0) {
   failures.push(
     `Maintainer tooling must not be discoverable as a skill; found ${toolingSkills.length} SKILL.md file(s)`
   );
+}
+
+// Skill discovery silently skips a SKILL.md whose frontmatter is not valid YAML
+// (an unquoted colon-space in a description is enough), so every skill in this
+// repository must parse and carry a spec-conformant name and description. A
+// user-invoked skill must be user-invoked in every harness: Claude Code's
+// disable-model-invocation and Codex's agents/openai.yaml policy move together.
+// Returns undefined after recording a parse failure, so a document that parses
+// to null (an empty frontmatter block) is still checked as missing fields.
+const parseYaml = (label: string, source: string): unknown => {
+  try {
+    return YAML.parse(source);
+  } catch (error) {
+    failures.push(`${label}: not valid YAML (${String(error)})`);
+    return undefined;
+  }
+};
+
+const checkSkillFrontmatter = (skillPath: string): void => {
+  const label = relative(repositoryRoot, skillPath);
+  const frontmatter = FRONTMATTER_PATTERN.exec(
+    readFileSync(skillPath, "utf8")
+  )?.[1];
+  if (frontmatter === undefined) {
+    failures.push(`${label}: missing YAML frontmatter`);
+    return;
+  }
+  const parsed = parseYaml(`${label} frontmatter`, frontmatter);
+  if (parsed === undefined) {
+    return;
+  }
+  const metadata = (
+    parsed !== null && typeof parsed === "object" ? parsed : {}
+  ) as Record<string, unknown>;
+  const { description, name } = metadata;
+  if (
+    typeof name !== "string" ||
+    name.length > MAX_SKILL_NAME_LENGTH ||
+    !SKILL_NAME_PATTERN.test(name) ||
+    name !== basename(dirname(skillPath))
+  ) {
+    failures.push(
+      `${label}: name must be a lowercase hyphenated identifier matching its directory`
+    );
+  }
+  if (
+    typeof description !== "string" ||
+    description.trim().length === 0 ||
+    description.length > MAX_SKILL_DESCRIPTION_LENGTH
+  ) {
+    failures.push(
+      `${label}: description must be a non-empty string of at most ${MAX_SKILL_DESCRIPTION_LENGTH} characters`
+    );
+  }
+  const openaiPath = resolve(dirname(skillPath), "agents/openai.yaml");
+  if (!existsSync(openaiPath)) {
+    return;
+  }
+  const openai = parseYaml(
+    relative(repositoryRoot, openaiPath),
+    readFileSync(openaiPath, "utf8")
+  ) as { policy?: { allow_implicit_invocation?: unknown } } | null | undefined;
+  const claudeUserInvoked = metadata["disable-model-invocation"] === true;
+  const codexUserInvoked = openai?.policy?.allow_implicit_invocation === false;
+  if (claudeUserInvoked !== codexUserInvoked) {
+    failures.push(
+      `${label}: disable-model-invocation and agents/openai.yaml policy.allow_implicit_invocation disagree`
+    );
+  }
+};
+
+for (const skillPath of walk(resolve(repositoryRoot, "skills")).filter((path) =>
+  path.endsWith("/SKILL.md")
+)) {
+  checkSkillFrontmatter(skillPath);
 }
 
 const skillBody = readFileSync(resolve(skillDirectory, "SKILL.md"), "utf8");

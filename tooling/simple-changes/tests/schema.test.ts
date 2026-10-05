@@ -18,6 +18,51 @@ import type {
 } from "../../../skills/simple-changes/scripts/lib/types.ts";
 
 describe("closed schemas", () => {
+  test("anyOf also enforces sibling type and object constraints", () => {
+    const schema = {
+      additionalProperties: false,
+      anyOf: [
+        { properties: { mode: { const: "neutral" } } },
+        { properties: { mode: { const: "public" } } },
+      ],
+      properties: {
+        mode: { type: "string" },
+        train: { minLength: 1, type: "string" },
+      },
+      required: ["mode", "train"],
+      type: "object",
+    };
+    for (const mode of ["neutral", "public"]) {
+      const valid = { mode, train: "web" };
+      expect(
+        validateSchemaDocument<typeof valid>("anyOf siblings", schema, valid)
+      ).toBe(valid);
+    }
+    for (const invalid of [
+      null,
+      "neutral",
+      { mode: "neutral" },
+      { mode: "neutral", train: "" },
+      { mode: "neutral", train: 3 },
+      { extra: true, mode: "neutral", train: "web" },
+      { mode: "unknown", train: "web" },
+    ]) {
+      expect(() =>
+        validateSchemaDocument("anyOf siblings", schema, invalid)
+      ).toThrow();
+    }
+    const scalarSchema = {
+      anyOf: [{ type: "string" }, { type: "number" }],
+      enum: ["allowed", 1],
+    };
+    expect(
+      validateSchemaDocument<string>("anyOf enum", scalarSchema, "allowed")
+    ).toBe("allowed");
+    expect(() =>
+      validateSchemaDocument("anyOf enum", scalarSchema, "forbidden")
+    ).toThrow("must be one of");
+  });
+
   test("accepts exact shipment outcomes and rejects unverifiable review claims", () => {
     const receipt: ShipmentOutcomeReceipt = {
       additionalPaths: [

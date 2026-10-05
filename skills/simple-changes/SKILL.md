@@ -125,6 +125,11 @@ checks, proposal/merge/release/deploy path, consequential boundaries, and
 preserved work. Explain that this is an interruption window rather than a
 permission gate when existing authority already covers the run. Follow
 [ship communication](references/ship-communication.md).
+A clean Ship start automatically records a non-mutating empty opening scope
+under the existing integration and coordination locks. Its empty units do not
+prove delivery: committed-source and release-generated target changes must still
+be accounted for in the exact outcome's `additionalPaths`, including rename
+originals, removals, and tree entries. It does not retroactively repair old runs.
 When a Ship run opens with any local changes, generate one non-mutating preview
 plan from the current inventory, record it with
 `loop record-scope --receipt <change-plan.json>`, and present the returned

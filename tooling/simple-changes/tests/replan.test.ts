@@ -9,21 +9,16 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { sha256Json } from "../../../skills/simple-changes/scripts/lib/hash.ts";
-import {
-  captureInventory,
-  compareSnapshots,
-} from "../../../skills/simple-changes/scripts/lib/inventory.ts";
+import { captureInventory } from "../../../skills/simple-changes/scripts/lib/inventory.ts";
 import {
   type LoopReplanRequest,
   loopLeasePath,
   loopLockPath,
   loopReplanStatus,
-  recordShipmentScope,
   replanLoop,
   startLoop,
   withLoopStateLock,
 } from "../../../skills/simple-changes/scripts/lib/loop-lease.ts";
-import { buildPreviewPlan } from "../../../skills/simple-changes/scripts/lib/planner.ts";
 import type { LoopLease } from "../../../skills/simple-changes/scripts/lib/types.ts";
 import {
   claimWorktree,
@@ -50,16 +45,7 @@ const frozenFixture = (active = true) => {
   fixtures.push(fixture);
   const lease = startLoop(fixture.root, "controller", "ship");
   const inventory = captureInventory(fixture.root);
-  recordShipmentScope(
-    fixture.root,
-    lease.runId,
-    "controller",
-    buildPreviewPlan(
-      inventory,
-      inventory,
-      compareSnapshots(inventory, inventory)
-    )
-  );
+  expect(lease.shipmentScope?.plan.units).toEqual([]);
   const common = inventory.repository.commonGitDirectory;
   const activePath = loopLeasePath(common);
   const stored = JSON.parse(readFileSync(activePath, "utf8")) as LoopLease;

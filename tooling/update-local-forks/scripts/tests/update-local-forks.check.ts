@@ -1021,6 +1021,24 @@ describe("update-local-forks", () => {
       { stderr: "pipe", stdout: "pipe" }
     );
     expect(planned.exitCode).toBe(3);
+    // The text plan names each skipped fork-owned history file, not just a count.
+    const text = spawnSync(
+      [
+        process.execPath,
+        cliPath,
+        "plan",
+        "--fork",
+        fixture.fork,
+        "--source",
+        fixture.source,
+        "--upstream",
+        fixture.upstream,
+      ],
+      { stderr: "pipe", stdout: "pipe" }
+    );
+    expect(decoder.decode(text.stdout)).toContain(
+      "  skip     CHANGELOG.md: The fork owns its own release history."
+    );
     const planPath = join(fixture.base, "plan.json");
     writeFileSync(planPath, decoder.decode(planned.stdout));
     const applied = spawnSync(

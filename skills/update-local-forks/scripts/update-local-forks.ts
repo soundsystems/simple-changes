@@ -1877,6 +1877,7 @@ const renderPlan = (plan: ForkPlan): string => {
         "merge",
         "add",
         "delete",
+        "skip",
         "conflict",
         "review",
         "unrecorded-omission",

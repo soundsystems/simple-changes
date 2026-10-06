@@ -1,5 +1,75 @@
 # Developer changelog
 
+## 0.25.0 - 2026-10-05
+
+- Upstreams the generic runtime deltas the Thor and Hashi forks carried, so
+  both forks can drop them:
+  - `execGuard` (repo-policy schema, `policy.ts`, new `exec-guard.ts`,
+    `process.ts` `runGuardInProcessGroup`) is an optional argv of 1 to 64
+    strings, read only from the repository `.simple-changes.json`.
+    - `loop exec` runs `[...execGuard, ...argv]` inside the exec lease after
+      every other check, in its own process group. The working directory is
+      the exec checkout, with `SIMPLE_CHANGES_RUN_ID` and
+      `SIMPLE_CHANGES_REPOSITORY` set, and output goes to stderr.
+    - A nonzero exit or a spawn failure refuses with exit 5 before the child
+      starts. A surviving guard process group keeps the lock, like an exec
+      child.
+    - `withSavedExecGuard` keeps the guard through setup and
+      `acknowledge-update`. It needs no trust receipt, because it only
+      restricts.
+    - It replaces the forks' `guardHostedCiMerge` import, which they now
+      express as `pnpm --silent <cli> ci guard-exec --`.
+  - `loop archive-recorded` (from Thor) adds `archiveRecordedOutcome`, kept
+    first in the request so retries compare byte for byte. The kind is
+    `loop-archive-recorded`, the outcome is `archived-unfinished`, and the
+    attempt directory is `archive-recorded-<sha256(request)>`.
+    - It requires the recorded receipt's run ID and digest, nonempty paths,
+      the current target containing the receipt target, and matching tree
+      entries.
+    - Archived-lease validation ignores Thor's legacy
+      `openingScopeInvariantDigest`, so Site Secure's three existing records
+      still pass the retry checks.
+    - `loop replan-status` gains `nextCommand`. `loop status` names the
+      command for a released run with a recorded outcome, whether or not it
+      is paused on a user question.
+  - Preserved-source override (from Thor's `preserved-source-override.ts`):
+    - `preservedSourceOverride` on shipment-outcome units is stored in
+      `preserved-source-override/<run-id>.json` beside the lease, bound to the
+      receipt digest, with the new `preserved-source-override.schema.json`.
+      The lease schema stays frozen at 0.22.0 for older clients.
+    - `--approved-by` and `--approval-reference` must match every override
+      and are refused without one.
+    - Finalize and `loop end` re-check the source, claim, target, and
+      sidecar. A unit that only an override could record blocks completion if
+      the sidecar is missing.
+    - `loop record-outcome` and `loop end` hold the worktree-coordination
+      lock.
+- `repository-instructions.ts` names the running skill from its `SKILL.md`
+  (`runningSkillName` in `skill-roots.ts`), in both the `scripts/` and
+  `runtime/scripts/` layouts. It falls back to `simple-changes`, keeps the
+  markers unchanged, and leaves the personal block's wording generic.
+- `fork.ts` (a reverse index loop; `toReversed()` is outside the ES2022 lib),
+  `git-worker.ts`, `subagent-control.ts`, and `turn-guard.ts` take forms both
+  Biome and oxlint accept. Site Secure's oxlint 1.83 reports nothing over
+  `scripts/`.
+- `runInProcessGroup` (shared by `loop exec` children and the guard)
+  previously killed only the leader when registering the spawned process
+  failed. It now kills the leader, waits for it to exit, and terminates the
+  whole group. A group that survives raises
+  `GuardedProcessGroupStillAliveError`, so the lock is kept.
+  `process.test.ts` covers a descendant started before the failure.
+- Guidance 26. There are 47 new tests (780 to 827), and each new guard was
+  mutation-checked.
+- Not upstreamed, because canonical already covers them:
+  - Thor's claimed-author opening digest: scoped opening invariants already
+    admit claimed authors' edits and refuse a drifted scope source.
+  - Thor's in-receipt advanced merged proof: `mergedHeadAncestry` covers it.
+- GPT-6 Sol (high) reviewed `45ed850`. Its blocking finding (a registration
+  failure could leave a guard's descendants running after the lock was
+  released) and its should-fix (the archive hint was missing for a run paused
+  with `--awaiting-user`) are fixed above.
+<!-- simple-changelogs-signature agent="Claude Opus 5.5 xhigh" at="2026-10-05T19:22:39-05:00" -->
+
 ## 0.24.1 - 2026-10-05
 
 - `release-gate.ts` adds `assertVersionResolution` (the new ask-policy

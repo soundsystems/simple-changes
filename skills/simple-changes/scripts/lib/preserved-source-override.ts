@@ -149,6 +149,11 @@ export const recordedPreservedSourceOverrides = (
   return record.overrides;
 };
 
+// Independence compares agent IDs without surrounding whitespace, so a padded
+// controller or author ID cannot pass as another reviewer or approver.
+const sameAgent = (left: string, right: string): boolean =>
+  left.trim() === right.trim();
+
 export interface PreservedSourceOverrideContext {
   claim: WorktreeClaim | undefined;
   controllerAgentId: string;
@@ -278,16 +283,16 @@ export const preservedSourceOverrideFailure = (
     !override.approvedBy.trim() ||
     !override.approvalReference.trim() ||
     !override.approvalReason.trim() ||
-    override.approvedBy === controllerAgentId ||
-    override.approvedBy === registered.agentId
+    sameAgent(override.approvedBy, controllerAgentId) ||
+    sameAgent(override.approvedBy, registered.agentId)
   ) {
     return "manual user approval is missing, stale, or predates independent review";
   }
   if (
     !(current.branch && current.headSha) ||
     override.decision !== "semantically-equivalent" ||
-    override.reviewerAgentId === controllerAgentId ||
-    override.reviewerAgentId === registered.agentId ||
+    sameAgent(override.reviewerAgentId, controllerAgentId) ||
+    sameAgent(override.reviewerAgentId, registered.agentId) ||
     !override.reviewerAgentId.trim() ||
     !override.reviewReference.trim() ||
     override.runId !== runId ||

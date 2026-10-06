@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { delimiter, dirname, resolve } from "node:path";
+import { isValidSkillName } from "./skill-check.ts";
 
 /** User-level skill roots a global installation lives under. */
 export const GLOBAL_SKILL_ROOTS = [
@@ -23,7 +24,6 @@ const NAME_LINE_PATTERN = /^name:(.*)$/mu;
 const DOUBLE_QUOTED_PATTERN = /^"([^"\\]*)"(?:[ \t]+#.*)?$/u;
 const SINGLE_QUOTED_PATTERN = /^'((?:[^']|'')*)'(?:[ \t]+#.*)?$/u;
 const PLAIN_COMMENT_PATTERN = /(?:^|[ \t])#.*$/u;
-const SKILL_NAME_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/u;
 
 /**
  * The user-level skill roots to search, in order. SIMPLE_CHANGES_SKILL_ROOTS,
@@ -115,7 +115,7 @@ export const isForkRuntime = (script: string): boolean => {
 export const runningSkillName = (script: string): string => {
   const skill = skillDocumentOf(script);
   const name = skill === null ? undefined : declaredSkillName(skill);
-  return name && SKILL_NAME_PATTERN.test(name) ? name : "simple-changes";
+  return name && isValidSkillName(name) ? name : "simple-changes";
 };
 
 /**

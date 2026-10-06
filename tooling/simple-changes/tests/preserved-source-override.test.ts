@@ -261,6 +261,12 @@ test("rejects invalid process evidence, missing paths, and an unpreserved source
   }
   expect(failure(selfReview) ?? "").toMatch(PROCESS_ERROR);
 
+  const paddedReviewer = context();
+  if (paddedReviewer.override) {
+    paddedReviewer.override.reviewerAgentId = " author ";
+  }
+  expect(failure(paddedReviewer) ?? "").toMatch(PROCESS_ERROR);
+
   const missingPath = context();
   if (missingPath.override) {
     missingPath.override.paths = [];
@@ -278,6 +284,12 @@ test("rejects missing, stale, premature, or mismatched manual approval", () => {
   const missing = context();
   missing.override = undefined;
   expect(failure(missing) ?? "").toMatch(APPROVAL_ERROR);
+
+  const paddedApprover = context();
+  if (paddedApprover.override) {
+    paddedApprover.override.approvedBy = "controller ";
+  }
+  expect(failure(paddedApprover) ?? "").toMatch(APPROVAL_ERROR);
 
   const stale = context();
   if (stale.override) {

@@ -54,6 +54,10 @@ const SKILL_FILE = "SKILL.md";
 const OPENAI_METADATA = "agents/openai.yaml";
 const FRONTMATTER_PATTERN = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/u;
 const SKILL_NAME_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/u;
+
+/** Lowercase letters, digits, and single hyphens, at most 64 characters. */
+export const isValidSkillName = (name: string): boolean =>
+  name.length <= MAX_SKILL_NAME_LENGTH && SKILL_NAME_PATTERN.test(name);
 const INLINE_LINK_PATTERN = /\]\(\s*(<[^>\n]+>|[^\s)]+)[^)\n]*\)/gu;
 const REFERENCE_DEFINITION_PATTERN =
   /^ {0,3}\[[^\]\n]+\]:[ \t]*(<[^>\n]+>|\S+)/u;
@@ -232,11 +236,7 @@ const checkIdentity = (
 ): SkillCheckIssue[] => {
   const issues: SkillCheckIssue[] = [];
   const { description, name } = metadata;
-  if (
-    typeof name !== "string" ||
-    name.length > MAX_SKILL_NAME_LENGTH ||
-    !SKILL_NAME_PATTERN.test(name)
-  ) {
+  if (!(typeof name === "string" && isValidSkillName(name))) {
     issues.push({
       code: "name-invalid",
       message: `name must be lowercase letters, digits, and single hyphens, at most ${MAX_SKILL_NAME_LENGTH} characters`,

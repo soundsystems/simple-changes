@@ -105,4 +105,7 @@ matches it. `loop finalize` and `loop end` recheck all of it under the
 coordination lock. The run closes with that checkout and its claim untouched
 only while nothing moved: any later source, claim, or target change, or an
 override file that no longer matches the recorded digest, blocks completion. The override records review and approval
-evidence; it never substitutes for them.
+evidence; it never substitutes for them. Finish, end, or archive a run that
+recorded an override only with Simple Changes 0.25.0 or later: an older runtime
+still reads its lease but ignores the override file, so it cannot enforce these
+checks.

@@ -234,6 +234,8 @@ describe("running skill name", () => {
     ['"commented-fork" # trailing comment', "commented-fork"],
     ["plain-fork # trailing comment", "plain-fork"],
     ["   padded-fork   ", "padded-fork"],
+    ["fork-", "simple-changes"],
+    ["fork--name", "simple-changes"],
   ])("reads the complete name scalar %s as %s", (declared, expected) => {
     const fixture = createTestRepository();
     repositories.push(fixture);

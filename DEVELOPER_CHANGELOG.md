@@ -84,7 +84,7 @@
     with production defaults unchanged. `process.test.ts` covers a real Unix
     descendant, surviving and unsignallable groups, the Windows branch, late
     child errors, and failing cleanups.
-- Guidance 26. There are 81 new tests (780 to 861), and each new guard was
+- Guidance 26. There are 83 new tests (780 to 863), and each new guard was
   mutation-checked.
 - Not upstreamed, because canonical already covers them:
   - Thor's claimed-author opening digest: scoped opening invariants already
@@ -114,6 +114,15 @@
   the override check, so an edited or deleted sidecar could still archive.
   It is fixed above, with crash-retry tests for intact, edited, and missing
   sidecars.
+- GPT-6.1 Sol (xhigh) re-reviewed the whole branch at `195e97a` with nothing
+  blocking. It raised two should-fixes and a nit, now fixed:
+  - Independence compared untrimmed agent IDs, so a padded controller or
+    author ID passed. Override checks now compare trimmed IDs.
+  - A 0.24.1 runtime could finish an override-bearing run without the
+    sidecar checks. `focused-units.md` now requires 0.25.0 or later to finish,
+    end, or archive such a run.
+  - `runningSkillName` accepted `fork-` and `fork--name`. It now shares
+    `isValidSkillName` with `skill check`.
 <!-- simple-changelogs-signature agent="Claude Opus 5.5 xhigh" at="2026-10-05T19:22:39-05:00" -->
 
 ## 0.24.1 - 2026-10-05

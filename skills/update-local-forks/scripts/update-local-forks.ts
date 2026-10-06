@@ -31,6 +31,12 @@ import { spawnSync } from "bun";
 const VERSION = "1.0.0";
 const DEFAULT_UPSTREAM_URL =
   "https://gitlab.com/soundsystems/simple-changes.git";
+/**
+ * How much default-branch history the cache fetches. The release search reads
+ * the release entry and every commit after it up to the tip, so the depth must
+ * reach back past recent releases; the bound keeps the cache small.
+ */
+const UPSTREAM_FETCH_DEPTH = 400;
 const UPSTREAM_SKILL_PATH = "skills/simple-changes";
 const PROVENANCE_PATTERN = /Forked from `simple-changes` @ `([0-9a-f]{7,40})`/u;
 const GUIDANCE_PATTERN = /CURRENT_GUIDANCE_VERSION = (\d+);/u;
@@ -84,10 +90,12 @@ const sha256 = (value: string | Buffer): string =>
 
 const run = (
   command: string[],
-  cwd?: string
+  cwd?: string,
+  input?: string
 ): { exitCode: number; stdout: string; stderr: string } => {
   const result = spawnSync(command, {
     ...(cwd === undefined ? {} : { cwd }),
+    ...(input === undefined ? {} : { stdin: new TextEncoder().encode(input) }),
     stderr: "pipe",
     stdout: "pipe",
   });
@@ -439,9 +447,195 @@ const treeDigest = (upstream: UpstreamHandle, sha: string): string =>
   );
 
 /**
+ * The packaged skill tree and packaged changelog blob of each commit, read in
+ * one `git cat-file` call; an entry is null where the commit lacks that path.
+ */
+const packagedObjects = (
+  upstream: UpstreamHandle,
+  commits: string[]
+): Map<string, { changelog: string | null; tree: string | null }> => {
+  const listing = run(
+    [
+      "git",
+      "-C",
+      upstream.gitDirectory,
+      "cat-file",
+      "--batch-check=%(objectname) %(objecttype)",
+    ],
+    undefined,
+    commits
+      .flatMap((commit) => [
+        `${commit}:${UPSTREAM_SKILL_PATH}`,
+        `${commit}:${UPSTREAM_SKILL_PATH}/CHANGELOG.md`,
+      ])
+      .map((line) => `${line}\n`)
+      .join("")
+  );
+  if (listing.exitCode !== 0) {
+    throw new ForkUpdateError(
+      `git cat-file --batch-check failed: ${listing.stderr.trim()}`
+    );
+  }
+  const lines = listing.stdout.split("\n");
+  const object = (line: string | undefined, type: string): string | null => {
+    const [name, kind] = (line ?? "").split(" ");
+    return kind === type && name ? name : null;
+  };
+  return new Map(
+    commits.map((commit, index) => [
+      commit,
+      {
+        changelog: object(lines[index * 2 + 1], "blob"),
+        tree: object(lines[index * 2], "tree"),
+      },
+    ])
+  );
+};
+
+/**
+ * Commits a release may have shipped from: the commit that added the release
+ * entry and its descendants on the searched branch, parents first, up to but
+ * not including the next release entry. Review fixes often land after the
+ * release-prep commit without touching the changelog, so the released tree is
+ * frequently a later commit. A commit whose packaged changelog names another
+ * top version is a release entry of its own and bounds the window, and so
+ * does everything after it. `firstParent` holds the window's commits on the
+ * branch's first-parent history: what a merge brought onto the branch, as
+ * opposed to a commit only on a merged side branch.
+ */
+const releaseWindow = (
+  upstream: UpstreamHandle,
+  entry: string,
+  ref: string,
+  version: string
+): {
+  commits: string[];
+  firstParent: Set<string>;
+  trees: Map<string, string>;
+} => {
+  const parents = new Map<string, string[]>([[entry, []]]);
+  const order = [entry];
+  for (const line of git(upstream.gitDirectory, [
+    "rev-list",
+    "--ancestry-path",
+    "--topo-order",
+    "--reverse",
+    "--parents",
+    `${entry}..${ref}`,
+  ]).split("\n")) {
+    const [commit, ...commitParents] = line.split(" ").filter(Boolean);
+    if (commit) {
+      parents.set(commit, commitParents);
+      order.push(commit);
+    }
+  }
+  const objects = packagedObjects(upstream, order);
+  const versions = new Map<string, string | null>();
+  const topVersion = (changelog: string): string | null => {
+    if (!versions.has(changelog)) {
+      versions.set(
+        changelog,
+        CHANGELOG_VERSION_PATTERN.exec(
+          git(upstream.gitDirectory, ["cat-file", "blob", changelog])
+        )?.[1] ?? null
+      );
+    }
+    return versions.get(changelog) ?? null;
+  };
+  const trees = new Map<string, string>();
+  for (const commit of order) {
+    // Parents come first, so every parent inside the walk is already decided.
+    const pastNextRelease = (parents.get(commit) ?? []).some(
+      (parent) => parents.has(parent) && !trees.has(parent)
+    );
+    const { changelog, tree } = objects.get(commit) ?? {};
+    if (
+      !pastNextRelease &&
+      changelog &&
+      tree &&
+      topVersion(changelog) === version
+    ) {
+      trees.set(commit, tree);
+    }
+  }
+  const firstParent = new Set<string>();
+  let current = git(upstream.gitDirectory, [
+    "rev-parse",
+    "--verify",
+    `${ref}^{commit}`,
+  ]).trim();
+  while (parents.has(current)) {
+    if (trees.has(current)) {
+      firstParent.add(current);
+    }
+    current = parents.get(current)?.[0] ?? "";
+  }
+  return {
+    commits: order.filter((commit) => trees.has(commit)),
+    firstParent,
+    trees,
+  };
+};
+
+/**
+ * Whether a packaged tree is byte-identical to the installed source. The path
+ * and size listing of `git ls-tree` cheaply rules out most trees; any tree it
+ * cannot rule out is proven by content digest, so equality is never assumed.
+ */
+const matchesInstalledTree = (
+  upstream: UpstreamHandle,
+  source: DiscoveredSource
+): ((commit: string, tree: string) => boolean) => {
+  const installedDigest = sourceDigest(source.path);
+  const installedSizes = new Map(
+    walkFiles(source.path).map((path) => [
+      path,
+      statSync(join(source.path, path)).size,
+    ])
+  );
+  const verdicts = new Map<string, boolean>();
+  const sameShape = (tree: string): boolean => {
+    const entries = git(upstream.gitDirectory, [
+      "ls-tree",
+      "-r",
+      "-l",
+      "-z",
+      tree,
+    ])
+      .split("\0")
+      .filter(Boolean);
+    return (
+      entries.length === installedSizes.size &&
+      entries.every((line) => {
+        const tab = line.indexOf("\t");
+        const [, type, , size] = line.slice(0, tab).split(" ").filter(Boolean);
+        const expected = installedSizes.get(line.slice(tab + 1));
+        return (
+          expected !== undefined &&
+          (type !== "blob" || Number(size) === expected)
+        );
+      })
+    );
+  };
+  return (commit, tree) => {
+    if (!verdicts.has(tree)) {
+      verdicts.set(
+        tree,
+        sameShape(tree) && treeDigest(upstream, commit) === installedDigest
+      );
+    }
+    return verdicts.get(tree) ?? false;
+  };
+};
+
+const shortSha = (sha: string): string => sha.slice(0, 12);
+
+/**
  * Find the upstream commit whose packaged skill is byte-identical to the
  * installed source. Search the fetched default branch for the release entry,
- * then prove tree equality; a provenance pin is never bumped to a guess.
+ * then prove tree equality against the entry and every commit after it before
+ * the next release entry, preferring the branch's own first-parent history so
+ * the pin stays reachable from it; a provenance pin is never bumped to a guess.
  */
 const locateSourceCommit = (
   upstream: UpstreamHandle,
@@ -449,7 +643,8 @@ const locateSourceCommit = (
   url: string,
   branch: string
 ): { commit: string | null; verified: boolean; reason: string } => {
-  if (!source.version) {
+  const { version } = source;
+  if (!version) {
     return {
       commit: null,
       reason: "The installed source names no version.",
@@ -464,7 +659,7 @@ const locateSourceCommit = (
       "fetch",
       "--quiet",
       "--depth",
-      "400",
+      String(UPSTREAM_FETCH_DEPTH),
       url,
       `+refs/heads/${branch}:refs/remotes/upstream/${branch}`,
     ]);
@@ -478,12 +673,12 @@ const locateSourceCommit = (
   }
   const ref =
     upstream.kind === "cache" ? `refs/remotes/upstream/${branch}` : branch;
-  const candidates = git(
+  const entries = git(
     upstream.gitDirectory,
     [
       "log",
       "--format=%H",
-      `-S## ${source.version} `,
+      `-S## ${version} `,
       ref,
       "--",
       `${UPSTREAM_SKILL_PATH}/CHANGELOG.md`,
@@ -492,22 +687,50 @@ const locateSourceCommit = (
   )
     .split("\n")
     .filter(Boolean);
-  const installed = sourceDigest(source.path);
-  for (const candidate of candidates) {
-    if (treeDigest(upstream, candidate) === installed) {
+  if (entries.length === 0) {
+    return {
+      commit: null,
+      reason: `No commit on ${branch} introduces release ${version}.`,
+      verified: false,
+    };
+  }
+  const matches = matchesInstalledTree(upstream, source);
+  const at = (commit: string, entry: string): string =>
+    commit === entry
+      ? `the ${version} release entry ${shortSha(entry)}`
+      : `${shortSha(commit)}, after the ${version} release entry ${shortSha(entry)}`;
+  const searched = new Set<string>();
+  let sideBranch: { commit: string; entry: string } | null = null;
+  for (const entry of entries) {
+    const window = releaseWindow(upstream, entry, ref, version);
+    const matching = window.commits.filter((commit) => {
+      searched.add(commit);
+      return matches(commit, window.trees.get(commit) ?? "");
+    });
+    const onBranch = matching.find((commit) => window.firstParent.has(commit));
+    if (onBranch) {
       return {
-        commit: candidate,
-        reason: "byte-identical tree",
+        commit: onBranch,
+        reason:
+          onBranch === entry
+            ? "byte-identical tree"
+            : `byte-identical tree at ${at(onBranch, entry)} on ${branch}`,
         verified: true,
       };
     }
+    const [first] = matching;
+    sideBranch ??= first ? { commit: first, entry } : null;
+  }
+  if (sideBranch) {
+    return {
+      commit: sideBranch.commit,
+      reason: `byte-identical tree at ${at(sideBranch.commit, sideBranch.entry)} on a branch merged into ${branch}; no first-parent commit of ${branch} carries that tree`,
+      verified: true,
+    };
   }
   return {
-    commit: candidates[0] ?? null,
-    reason:
-      candidates.length === 0
-        ? `No commit on ${branch} introduces release ${source.version}.`
-        : "The installed source is not byte-identical to any release commit; the pin will not be bumped.",
+    commit: entries[0] ?? null,
+    reason: `The installed source is not byte-identical to any of the ${searched.size} commit(s) on ${branch} from the ${version} release entry up to the next release entry; the pin will not be bumped.`,
     verified: false,
   };
 };

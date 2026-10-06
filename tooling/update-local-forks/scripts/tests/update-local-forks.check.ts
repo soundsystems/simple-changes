@@ -268,6 +268,90 @@ const createFixture = (): Fixture => {
   return { base, fork, pin, release, source, upstream };
 };
 
+const changelogThrough = (...versions: string[]): string =>
+  [
+    "# Changelog",
+    "",
+    ...versions.flatMap((version) => [
+      `## ${version} - 2026-01-01`,
+      "",
+      "- notes",
+      "",
+    ]),
+  ].join("\n");
+
+/** Commit packaged-skill files on the upstream's current branch. */
+const commitPackage = (
+  upstream: string,
+  message: string,
+  files: Record<string, string>
+): string => {
+  for (const [path, contents] of Object.entries(files)) {
+    write(upstream, `skills/simple-changes/${path}`, contents);
+  }
+  git(upstream, ["add", "-A"]);
+  git(upstream, ["commit", "-q", "-m", message]);
+  return git(upstream, ["rev-parse", "HEAD"]);
+};
+
+/** Install the upstream's current packaged tree as a separate source. */
+const installSnapshot = (fixture: Fixture, name: string): string => {
+  const destination = join(fixture.base, "installs", name, "simple-changes");
+  cpSync(join(fixture.upstream, "skills/simple-changes"), destination, {
+    recursive: true,
+  });
+  return destination;
+};
+
+/**
+ * The 0.25.0 shape: release 0.3.0 is prepared on a side branch, review fixes
+ * land after the release-prep commit without touching the changelog, main
+ * moves on outside the package, and a merge brings the fixed tree onto main.
+ */
+const releaseThroughSideBranch = (fixture: Fixture) => {
+  const { upstream } = fixture;
+  git(upstream, ["checkout", "-q", "-b", "release-0.3.0"]);
+  const entry = commitPackage(
+    upstream,
+    "chore(release): Prepare Simple Changes 0.3.0",
+    {
+      "CHANGELOG.md": changelogThrough("0.3.0", "0.2.0", "0.1.0"),
+      "scripts/lib/core.ts": "export const core = 3;\n",
+    }
+  );
+  const entrySource = installSnapshot(fixture, "entry");
+  commitPackage(upstream, "fix(core): Address the first review", {
+    "scripts/lib/core.ts": "export const core = 31;\n",
+  });
+  const sideTip = commitPackage(
+    upstream,
+    "fix(core): Address the second review",
+    {
+      "scripts/lib/core.ts": "export const core = 32;\n",
+    }
+  );
+  git(upstream, ["checkout", "-q", "main"]);
+  write(upstream, "README.md", "# Upstream\n");
+  git(upstream, ["add", "-A"]);
+  git(upstream, ["commit", "-q", "-m", "docs: Add a readme"]);
+  git(upstream, [
+    "merge",
+    "-q",
+    "--no-ff",
+    "-m",
+    "Merge branch 'release-0.3.0' into 'main'",
+    "release-0.3.0",
+  ]);
+  const merge = git(upstream, ["rev-parse", "HEAD"]);
+  return {
+    entry,
+    entrySource,
+    merge,
+    released: installSnapshot(fixture, "released"),
+    sideTip,
+  };
+};
+
 describe("update-local-forks", () => {
   test("discovers installed sources and forks, flagging linked worktrees", () => {
     const fixture = createFixture();
@@ -778,6 +862,179 @@ describe("update-local-forks", () => {
     expect(
       drifted.literalRewrites.some((rewrite) => rewrite.to === fixture.release)
     ).toBe(false);
+  });
+
+  test("pins the merge that brought review fixes after the release entry onto main", () => {
+    const fixture = createFixture();
+    const { entry, entrySource, merge, released, sideTip } =
+      releaseThroughSideBranch(fixture);
+    // The side-branch tip and the merge carry the same packaged tree; only
+    // the merge is on main's first-parent history.
+    expect(
+      git(fixture.upstream, ["rev-parse", `${sideTip}:skills/simple-changes`])
+    ).toBe(
+      git(fixture.upstream, ["rev-parse", `${merge}:skills/simple-changes`])
+    );
+
+    const plan = planForkUpdate({
+      fork: fixture.fork,
+      source: released,
+      upstream: fixture.upstream,
+    });
+    expect(plan.source).toMatchObject({
+      commit: merge,
+      commitVerified: true,
+      version: "0.3.0",
+    });
+    expect(plan.pinUpdate).toMatchObject({ from: fixture.pin, to: merge });
+    expect(plan.pinUpdate.reason).toBe(
+      `byte-identical tree at ${merge.slice(0, 12)}, after the 0.3.0 release entry ${entry.slice(0, 12)} on main`
+    );
+    expect(plan.literalRewrites.some((rewrite) => rewrite.to === merge)).toBe(
+      true
+    );
+
+    // A tree that only the side branch carries still pins, to that commit,
+    // which main reaches through the merge.
+    const atEntry = planForkUpdate({
+      fork: fixture.fork,
+      source: entrySource,
+      upstream: fixture.upstream,
+    });
+    expect(atEntry.source).toMatchObject({
+      commit: entry,
+      commitVerified: true,
+    });
+    expect(atEntry.pinUpdate.to).toBe(entry);
+    expect(atEntry.pinUpdate.reason).toContain(
+      "on a branch merged into main; no first-parent commit of main carries that tree"
+    );
+
+    expect(applyForkPlan(plan).pin).toEqual({ from: fixture.pin, to: merge });
+    expect(readFileSync(join(fixture.fork, "SKILL.md"), "utf8")).toContain(
+      `Forked from \`simple-changes\` @ \`${merge}\``
+    );
+  });
+
+  test("keeps pinning the release entry itself when the installed source matches it", () => {
+    const fixture = createFixture();
+    const entry = commitPackage(
+      fixture.upstream,
+      "chore(release): Prepare Simple Changes 0.3.0",
+      {
+        "CHANGELOG.md": changelogThrough("0.3.0", "0.2.0", "0.1.0"),
+        "scripts/lib/core.ts": "export const core = 3;\n",
+      }
+    );
+    const atEntry = installSnapshot(fixture, "entry");
+    commitPackage(fixture.upstream, "fix(core): Address review", {
+      "scripts/lib/core.ts": "export const core = 31;\n",
+    });
+
+    const plan = planForkUpdate({
+      fork: fixture.fork,
+      source: atEntry,
+      upstream: fixture.upstream,
+    });
+    expect(plan.source).toMatchObject({
+      commit: entry,
+      commitVerified: true,
+      version: "0.3.0",
+    });
+    expect(plan.pinUpdate).toEqual({
+      from: fixture.pin,
+      reason: "byte-identical tree",
+      to: entry,
+    });
+  });
+
+  test("never bumps the pin when no commit after the release entry matches", () => {
+    const fixture = createFixture();
+    const { entry, merge, released } = releaseThroughSideBranch(fixture);
+    writeFileSync(
+      join(released, "scripts/lib/core.ts"),
+      "export const core = 99;\n"
+    );
+
+    const plan = planForkUpdate({
+      fork: fixture.fork,
+      source: released,
+      upstream: fixture.upstream,
+    });
+    expect(plan.source).toMatchObject({
+      commit: entry,
+      commitVerified: false,
+      version: "0.3.0",
+    });
+    expect(plan.pinUpdate.to).toBeNull();
+    // The entry, both review fixes, and the merge; main's own readme commit
+    // does not descend from the entry.
+    expect(plan.pinUpdate.reason).toBe(
+      "The installed source is not byte-identical to any of the 4 commit(s) on main from the 0.3.0 release entry up to the next release entry; the pin will not be bumped."
+    );
+    expect(
+      plan.literalRewrites.some(
+        (rewrite) => rewrite.to === merge || rewrite.to === entry
+      )
+    ).toBe(false);
+  });
+
+  test("bounds the search at the next release entry", () => {
+    const fixture = createFixture();
+    const { upstream } = fixture;
+    const entry = commitPackage(
+      upstream,
+      "chore(release): Prepare Simple Changes 0.3.0",
+      {
+        "CHANGELOG.md": changelogThrough("0.3.0", "0.2.0", "0.1.0"),
+        "scripts/lib/core.ts": "export const core = 3;\n",
+      }
+    );
+    const fix = commitPackage(upstream, "fix(core): Address review", {
+      "scripts/lib/core.ts": "export const core = 31;\n",
+    });
+    const fixed = installSnapshot(fixture, "fixed");
+    commitPackage(upstream, "chore(release): Prepare Simple Changes 0.4.0", {
+      "CHANGELOG.md": changelogThrough("0.4.0", "0.3.0", "0.2.0", "0.1.0"),
+      "scripts/lib/core.ts": "export const core = 4;\n",
+    });
+    // Backing out the 0.4.0 entry restores the 0.3.0 changelog but keeps
+    // 0.4.0 work: a tree no 0.3.0 release ever shipped.
+    const backedOut = commitPackage(
+      upstream,
+      "revert: Back out the 0.4.0 entry",
+      { "CHANGELOG.md": changelogThrough("0.3.0", "0.2.0", "0.1.0") }
+    );
+    const hybrid = installSnapshot(fixture, "hybrid");
+
+    const beforeNext = planForkUpdate({
+      fork: fixture.fork,
+      source: fixed,
+      upstream,
+    });
+    expect(beforeNext.source).toMatchObject({
+      commit: fix,
+      commitVerified: true,
+    });
+    expect(beforeNext.pinUpdate.reason).toContain(
+      `after the 0.3.0 release entry ${entry.slice(0, 12)} on main`
+    );
+
+    const pastNext = planForkUpdate({
+      fork: fixture.fork,
+      source: hybrid,
+      upstream,
+    });
+    expect(pastNext.source).toMatchObject({
+      commit: entry,
+      commitVerified: false,
+      version: "0.3.0",
+    });
+    expect(pastNext.source.commit).not.toBe(backedOut);
+    expect(pastNext.pinUpdate.to).toBeNull();
+    expect(pastNext.pinUpdate.reason).toContain(
+      "any of the 2 commit(s) on main from the 0.3.0 release entry up to the next release entry"
+    );
   });
 
   test("rejects hostile saved paths before writing outside the fork", () => {

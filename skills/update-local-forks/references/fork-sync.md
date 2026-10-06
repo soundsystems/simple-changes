@@ -119,8 +119,13 @@ Use the same rules as the canonical fork-maintenance reference:
   canonical package; propose it there instead of letting the fork drift.
 
 Never bump a pin to an uncommitted upstream tree. The planner refuses to
-advance the pin unless the installed source is byte-identical to a commit that
-introduced that release on the canonical default branch.
+advance the pin unless the installed source is byte-identical to a commit of
+that release on the canonical default branch: the commit that added the
+release's changelog entry, or a later commit before the next release entry,
+since review fixes often land after the release-prep commit. It prefers a
+commit on the default branch's first-parent history, such as the merge that
+brought the release in, over one only on a merged side branch. When no commit
+in that range matches, the pin stays and the plan says why.
 
 ## Guidance versions
 

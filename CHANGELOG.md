@@ -20,8 +20,9 @@
 - Pin updates no longer rewrite past release entries in a fork's maintenance
   notes when their `#` headings name a commit, range, or date, or when they
   continue the history log, including notes with Windows line endings. The
-  lines under a heading that starts with "Current" are still updated.
-  Underlined (Setext) headings are not recognized.
+  lines under a heading that starts with "Current" are still updated when that
+  heading is not inside a history section. Underlined (Setext) headings are
+  not recognized.
 <!-- simple-changelogs-signature agent="Claude Opus 5.5 xhigh" at="2026-10-05T22:00:40-05:00" -->
 
 ## 0.25.0 - 2026-10-05

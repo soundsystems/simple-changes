@@ -53,6 +53,11 @@ Every write is byte for byte: an upstream version, a three-way merge, and a
 literal rewrite keep each byte as upstream or the fork has it, invalid UTF-8
 included, and a saved plan carries such content as base64.
 
+File names must be valid UTF-8. Planning refuses an installed source or a
+fork that holds a path that is not, naming the path bytes in hex, and a
+release tree that names one never verifies, so the pin never moves past a
+file the plan cannot carry. Rename the file, then plan again.
+
 The plan also rewrites exact literals the fork pins in its own files outside
 the runtime: the old provenance sha, `CURRENT_GUIDANCE_VERSION = <old>`, and
 `Simple Changes <old version>`. Only those exact strings change; nothing is

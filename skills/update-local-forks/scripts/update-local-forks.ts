@@ -522,6 +522,17 @@ const walkFileBytes = (root: Buffer, prefix?: Buffer): Buffer[] =>
     return status.isFile() ? [path] : [];
   });
 
+/**
+ * The hex bytes of each path that is not valid UTF-8. Planning reads paths as
+ * text, where such a path decodes to a replacement character and names no
+ * file, so the file would silently drop out of the plan: no such path is ever
+ * verified or planned.
+ */
+const nonUtf8Paths = (paths: Uint8Array[]): string[] =>
+  paths
+    .filter((path) => !isUtf8(path))
+    .map((path) => Buffer.from(path).toString("hex"));
+
 /** The installed source's files: byte-string paths and where to read them. */
 const installedFiles = (
   sourcePath: string
@@ -776,6 +787,8 @@ interface TreeEntry {
   type: string | undefined;
 }
 
+const shortSha = (sha: string): string => sha.slice(0, 12);
+
 /**
  * Every entry of a tree, recursively, from `git ls-tree -r -l -z` read as raw
  * bytes so each path stays a byte string.
@@ -824,8 +837,15 @@ const treeListing = (upstream: UpstreamHandle, tree: string): TreeEntry[] => {
 const matchesInstalledTree = (
   upstream: UpstreamHandle,
   source: DiscoveredSource
-): ((tree: string) => boolean) => {
+): {
+  matches: (commit: string, tree: string) => boolean;
+  refused: string[];
+} => {
   const installed = installedFiles(source.path);
+  const refused = nonUtf8Paths(
+    installed.map(({ path }) => Buffer.from(path, "latin1"))
+  ).map((hex) => `the installed source holds path bytes ${hex}`);
+  const installedUtf8 = refused.length === 0;
   const installedDigest = filesDigest(
     installed.map(({ location, path }) => ({
       bytes: readFileSync(location),
@@ -836,9 +856,19 @@ const matchesInstalledTree = (
     installed.map(({ location, path }) => [path, statSync(location).size])
   );
   const verdicts = new Map<string, boolean>();
-  const byteIdentical = (tree: string): boolean => {
+  const byteIdentical = (commit: string, tree: string): boolean => {
     const entries = treeListing(upstream, tree);
+    const invalid = nonUtf8Paths(
+      entries.map((entry) => Buffer.from(entry.path, "latin1"))
+    );
+    if (invalid.length > 0) {
+      refused.push(
+        `${shortSha(commit)} names path bytes ${invalid.join(", ")}`
+      );
+      return false;
+    }
     const sameShape =
+      installedUtf8 &&
       entries.length === installedSizes.size &&
       entries.every(
         (entry) =>
@@ -862,15 +892,16 @@ const matchesInstalledTree = (
       ) === installedDigest
     );
   };
-  return (tree) => {
-    if (!verdicts.has(tree)) {
-      verdicts.set(tree, byteIdentical(tree));
-    }
-    return verdicts.get(tree) ?? false;
+  return {
+    matches: (commit, tree) => {
+      if (!verdicts.has(tree)) {
+        verdicts.set(tree, byteIdentical(commit, tree));
+      }
+      return verdicts.get(tree) ?? false;
+    },
+    refused,
   };
 };
-
-const shortSha = (sha: string): string => sha.slice(0, 12);
 
 /**
  * Find the upstream commit whose packaged skill is byte-identical to the
@@ -936,7 +967,7 @@ const locateSourceCommit = (
       verified: false,
     };
   }
-  const matches = matchesInstalledTree(upstream, source);
+  const { matches, refused } = matchesInstalledTree(upstream, source);
   const at = (commit: string, entry: string): string =>
     commit === entry
       ? `the ${version} release entry ${shortSha(entry)}`
@@ -947,7 +978,7 @@ const locateSourceCommit = (
     const window = releaseWindow(upstream, entry, ref, version);
     const matching = window.commits.filter((commit) => {
       searched.add(commit);
-      return matches(window.trees.get(commit) ?? "");
+      return matches(commit, window.trees.get(commit) ?? "");
     });
     const onBranch = matching.find((commit) => window.firstParent.has(commit));
     if (onBranch) {
@@ -972,7 +1003,7 @@ const locateSourceCommit = (
   }
   return {
     commit: entries[0] ?? null,
-    reason: `The installed source is not byte-identical to any of the ${searched.size} commit(s) on ${branch} from the ${version} release entry up to the next release entry; the pin will not be bumped.`,
+    reason: `The installed source is not byte-identical to any of the ${searched.size} commit(s) on ${branch} from the ${version} release entry up to the next release entry; the pin will not be bumped.${refused.length > 0 ? ` A path that is not valid UTF-8 is never verified, and ${refused.join("; ")}.` : ""}`,
     verified: false,
   };
 };
@@ -1830,6 +1861,20 @@ const encodeContent = (entry: PlanEntry): void => {
   entry.contentBase64 = bytes.toString("base64");
 };
 
+/**
+ * Planning reads paths as text, so it refuses a tree that holds a path that is
+ * not valid UTF-8 instead of planning around a file it cannot name.
+ */
+const refuseNonUtf8Paths = (role: string, root: string): void => {
+  const invalid = nonUtf8Paths(walkFileBytes(Buffer.from(root)));
+  if (invalid.length > 0) {
+    throw new ForkUpdateError(
+      `The ${role} at ${root} holds path bytes that are not valid UTF-8 (hex ${invalid.join(", ")}); planning cannot carry such a file, so it refuses. Rename the file, then plan again.`,
+      EXIT.blocked
+    );
+  }
+};
+
 export const planForkUpdate = (options: {
   branch?: string;
   cache?: string;
@@ -1852,6 +1897,8 @@ export const planForkUpdate = (options: {
       EXIT.usage
     );
   }
+  refuseNonUtf8Paths("installed source", installed.path);
+  refuseNonUtf8Paths("fork", fork.path);
   const url = options.url ?? DEFAULT_UPSTREAM_URL;
   const upstream = openUpstream({
     ...(options.cache === undefined ? {} : { cache: options.cache }),

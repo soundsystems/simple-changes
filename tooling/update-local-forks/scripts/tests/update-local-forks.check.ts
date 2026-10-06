@@ -1,11 +1,21 @@
 #!/usr/bin/env bun
 
-import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
+import {
+  afterEach,
+  describe,
+  expect,
+  mock,
+  setDefaultTimeout,
+  test,
+} from "bun:test";
+// biome-ignore lint/performance/noNamespaceImport: mock.module must stand in for every node:fs export.
+import * as fs from "node:fs";
 import {
   cpSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   realpathSync,
   rmSync,
@@ -304,6 +314,85 @@ const installSnapshot = (fixture: Fixture, name: string): string => {
     recursive: true,
   });
   return destination;
+};
+
+/**
+ * Run `body` while `directory` also lists one file named by raw `name` bytes,
+ * as a filesystem that keeps any name would; APFS refuses names that are not
+ * valid UTF-8, so `node:fs` is mocked. Byte listings return the raw name, text
+ * listings decode it as Node does, and the raw path reads `contents`.
+ */
+const withRawName = <T>(
+  directory: string,
+  name: Buffer,
+  contents: string,
+  body: () => T
+): T => {
+  const real = {
+    lstatSync: fs.lstatSync,
+    readdirSync: fs.readdirSync,
+    readFileSync: fs.readFileSync,
+    statSync: fs.statSync,
+  };
+  // Kept outside every tree a plan walks.
+  const store = mkdtempSync(join(tmpdir(), "update-local-forks-raw-name-"));
+  const backing = join(store, "contents");
+  writeFileSync(backing, contents);
+  const rawPath = Buffer.concat([Buffer.from(`${directory}/`), name]);
+  const resolveRaw = (path: unknown): unknown =>
+    path instanceof Uint8Array && Buffer.from(path).equals(rawPath)
+      ? backing
+      : path;
+  const listsDirectory = (path: unknown): boolean =>
+    (path instanceof Uint8Array
+      ? Buffer.from(path).toString()
+      : String(path)) === directory;
+  const redirect =
+    (original: (...args: never[]) => unknown) =>
+    (path: unknown, ...rest: unknown[]): unknown =>
+      (original as (...args: unknown[]) => unknown)(resolveRaw(path), ...rest);
+  const listDirectory = (path: unknown, options?: unknown): unknown[] => {
+    const entries = (real.readdirSync as (...args: unknown[]) => unknown[])(
+      path,
+      options
+    );
+    if (!listsDirectory(path)) {
+      return entries;
+    }
+    const { encoding, withFileTypes } = (options ?? {}) as {
+      encoding?: string;
+      withFileTypes?: boolean;
+    };
+    const decoded = new TextDecoder().decode(name);
+    if (encoding === "buffer") {
+      return [...entries, name];
+    }
+    return [
+      ...entries,
+      withFileTypes
+        ? {
+            isDirectory: () => false,
+            isFile: () => true,
+            isSymbolicLink: () => false,
+            name: decoded,
+            parentPath: directory,
+          }
+        : decoded,
+    ];
+  };
+  mock.module("node:fs", () => ({
+    ...fs,
+    lstatSync: redirect(real.lstatSync),
+    readdirSync: listDirectory,
+    readFileSync: redirect(real.readFileSync),
+    statSync: redirect(real.statSync),
+  }));
+  try {
+    return body();
+  } finally {
+    mock.module("node:fs", () => ({ ...fs, ...real }));
+    rmSync(store, { force: true, recursive: true });
+  }
 };
 
 /**
@@ -1133,7 +1222,7 @@ describe("update-local-forks", () => {
     expect(entry("SKILL.md")?.content).toBeUndefined();
   });
 
-  test("proves byte identity on raw filename bytes, never decoded names", () => {
+  test("never verifies a release tree that names a path that is not valid UTF-8", () => {
     const fixture = createFixture();
     const { upstream } = fixture;
     const skill = "skills/simple-changes";
@@ -1143,12 +1232,20 @@ describe("update-local-forks", () => {
     git(upstream, ["commit", "-q", "-m", "fix(core): Ship a named fixture"]);
     const named = git(upstream, ["rev-parse", "HEAD"]);
     const exact = installSnapshot(fixture, "exact");
+    // The same name spelled with a combining accent is a different path.
+    const decomposed = installSnapshot(fixture, "decomposed");
+    rmSync(join(decomposed, "scripts/lib/café.txt"));
+    writeFileSync(join(decomposed, "scripts/lib/cafe\u0301.txt"), "same\n");
+    expect(
+      readdirSync(join(decomposed, "scripts/lib"), { encoding: "buffer" }).map(
+        (raw) => Buffer.from(raw).toString("hex")
+      )
+    ).toContain(Buffer.from("cafe\u0301.txt").toString("hex"));
     // Git keeps any filename bytes. F0 9F 92 is a truncated sequence that
     // decodes to the replacement character, whose own encoding EF BF BD
     // names a different file; macOS cannot create the first, so it goes
     // straight into the index.
     const truncated = Buffer.from([0xf0, 0x9f, 0x92]);
-    expect(new TextDecoder().decode(truncated)).toBe("�");
     const blob = git(upstream, [
       "hash-object",
       "-w",
@@ -1173,8 +1270,17 @@ describe("update-local-forks", () => {
       "-m",
       "fix(core): Ship a raw-named fixture",
     ]);
+    const rawNamed = git(upstream, ["rev-parse", "HEAD"]);
     const lookalike = installSnapshot(fixture, "lookalike");
-    writeFileSync(join(lookalike, "scripts/lib/�.txt"), "same\n");
+    writeFileSync(
+      join(lookalike, `scripts/lib/${new TextDecoder().decode(truncated)}.txt`),
+      "same\n"
+    );
+    const hex = Buffer.concat([
+      Buffer.from("scripts/lib/"),
+      truncated,
+      Buffer.from(".txt"),
+    ]).toString("hex");
 
     const plan = planForkUpdate({
       fork: fixture.fork,
@@ -1186,9 +1292,74 @@ describe("update-local-forks", () => {
       commitVerified: false,
     });
     expect(plan.pinUpdate.to).toBeNull();
+    expect(plan.pinUpdate.reason).toContain(
+      `A path that is not valid UTF-8 is never verified, and ${rawNamed.slice(0, 12)} names path bytes ${hex}.`
+    );
+    expect(
+      planForkUpdate({ fork: fixture.fork, source: decomposed, upstream })
+        .source.commitVerified
+    ).toBe(false);
     expect(
       planForkUpdate({ fork: fixture.fork, source: exact, upstream }).source
     ).toMatchObject({ commit: named, commitVerified: true });
+  });
+
+  test("refuses to plan a source or fork that holds a path that is not valid UTF-8", () => {
+    const fixture = createFixture();
+    const { upstream } = fixture;
+    const name = Buffer.concat([
+      Buffer.from([0xf0, 0x9f, 0x92]),
+      Buffer.from(".txt"),
+    ]);
+    const hex = Buffer.concat([Buffer.from("scripts/"), name]).toString("hex");
+    // The release ships scripts/<F0 9F 92>.txt, straight into the index.
+    const contents = join(fixture.base, "contents.txt");
+    writeFileSync(contents, "same\n");
+    const blob = git(upstream, ["hash-object", "-w", contents]);
+    const indexed = spawnSync(
+      ["git", "-C", upstream, "update-index", "--add", "-z", "--index-info"],
+      {
+        stderr: "pipe",
+        stdin: Buffer.concat([
+          Buffer.from(`100644 ${blob}\tskills/simple-changes/scripts/`),
+          name,
+          Buffer.from("\0"),
+        ]),
+        stdout: "pipe",
+      }
+    );
+    expect(indexed.exitCode).toBe(0);
+    git(upstream, ["commit", "-q", "-m", "fix(core): Ship a raw-named file"]);
+    // An exact install of that release, on a filesystem that keeps the name.
+    const exact = installSnapshot(fixture, "exact");
+    const skillBefore = readFileSync(join(fixture.fork, "SKILL.md"), "utf8");
+
+    withRawName(join(exact, "scripts"), name, "same\n", () => {
+      expect(() =>
+        planForkUpdate({ fork: fixture.fork, source: exact, upstream })
+      ).toThrow(
+        `The installed source at ${realpathSync(exact)} holds path bytes that are not valid UTF-8 (hex ${hex}); planning cannot carry such a file, so it refuses.`
+      );
+    });
+    withRawName(join(fixture.fork, "scripts"), name, "fork\n", () => {
+      expect(() =>
+        planForkUpdate({
+          fork: fixture.fork,
+          source: fixture.source,
+          upstream,
+        })
+      ).toThrow(
+        `The fork at ${realpathSync(fixture.fork)} holds path bytes that are not valid UTF-8 (hex ${hex})`
+      );
+    });
+    // No plan, so no pin moved and nothing was written or left out silently.
+    expect(readFileSync(join(fixture.fork, "SKILL.md"), "utf8")).toBe(
+      skillBefore
+    );
+    expect(
+      planForkUpdate({ fork: fixture.fork, source: fixture.source, upstream })
+        .pinUpdate.to
+    ).toBe(fixture.release);
   });
 
   test("bounds the search at the next release entry", () => {

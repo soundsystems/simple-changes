@@ -1,10 +1,22 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import type { ChildProcess } from "node:child_process";
+import { EventEmitter } from "node:events";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { sleepSync } from "bun";
 import {
   type GitExecutableProbe,
+  GuardedProcessGroupStillAliveError,
+  PROCESS_GROUP_CONTROL,
+  type ProcessGroupControl,
+  type ProcessGroupRunDependencies,
   resolveGitExecutable,
   runGit,
   runGitConcurrently,
+  runGuardInProcessGroup,
+  runInProcessGroup,
+  unregisteredCommandCleanup,
 } from "../../../skills/simple-changes/scripts/lib/process.ts";
 import { createTestRepository, git, type TestRepository } from "./helpers.ts";
 
@@ -157,6 +169,269 @@ describe("Concurrent Git reads", () => {
     expect(sequentialError).toBeInstanceOf(Error);
     expect(() => runGitConcurrently(requests)).toThrow(
       (sequentialError as Error).message
+    );
+  });
+});
+
+describe("Guarded process groups", () => {
+  const isAlive = (pid: number): boolean => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  test.skipIf(process.platform === "win32")(
+    "a failed registration terminates descendants the command already started",
+    async () => {
+      const directory = mkdtempSync(join(tmpdir(), "guarded-group-"));
+      const pidFile = join(directory, "descendant.pid");
+      const registration = new Error("lock owner write failed");
+      try {
+        const run = runGuardInProcessGroup(
+          "sh",
+          ["-c", `sleep 30 & echo $! > "${pidFile}"; wait`],
+          directory,
+          () => {
+            // Fail registration only once the descendant exists, so the
+            // whole group, not just its leader, must be terminated.
+            const deadline = Date.now() + 10_000;
+            while (!existsSync(pidFile) && Date.now() < deadline) {
+              sleepSync(10);
+            }
+            throw registration;
+          },
+          {}
+        );
+        await expect(run).rejects.toBe(registration);
+        const descendant = Number(readFileSync(pidFile, "utf8").trim());
+        expect(Number.isSafeInteger(descendant)).toBe(true);
+        expect(isAlive(descendant)).toBe(false);
+      } finally {
+        rmSync(directory, { force: true, recursive: true });
+      }
+    }
+  );
+});
+
+// Deterministic stand-ins for the process boundary: each simulates one way a
+// process group can answer, so a cleanup that releases the lock early fails.
+const CHILD_PID = 4242;
+const errno = (code: string): Error =>
+  Object.assign(new Error(`${code} (simulated)`), { code });
+
+interface RecordingControl extends ProcessGroupControl {
+  pids: number[];
+  signals: Array<NodeJS.Signals | 0>;
+  taskkills: Array<{ argv: string[]; timeoutMs: number }>;
+}
+
+const simulatedGroup = (
+  behavior: "exits-on-sigterm" | "survives" | "unsignallable",
+  overrides: Partial<ProcessGroupControl> = {}
+): RecordingControl => {
+  let alive = true;
+  const pids: number[] = [];
+  const signals: Array<NodeJS.Signals | 0> = [];
+  const taskkills: Array<{ argv: string[]; timeoutMs: number }> = [];
+  return {
+    graceMs: 0,
+    kill: (pid, signal) => {
+      pids.push(pid);
+      signals.push(signal);
+      if (behavior === "unsignallable") {
+        throw errno("EPERM");
+      }
+      if (signal === 0 && !alive) {
+        throw errno("ESRCH");
+      }
+      if (signal === "SIGTERM" && behavior === "exits-on-sigterm") {
+        alive = false;
+      }
+    },
+    pids,
+    platform: "linux",
+    runSync: (argv, timeoutMs) => {
+      taskkills.push({ argv, timeoutMs });
+    },
+    signals,
+    taskkills,
+    ...overrides,
+  };
+};
+
+describe("Unregistered command cleanup", () => {
+  test("releases the lock only once the terminated group is gone", async () => {
+    const control = simulatedGroup("exits-on-sigterm");
+    expect(
+      await unregisteredCommandCleanup("guard", CHILD_PID, control)
+    ).toBeNull();
+    expect(control.signals).toContain("SIGTERM");
+  });
+
+  test("keeps the lock when the group survives SIGTERM and SIGKILL", async () => {
+    const control = simulatedGroup("survives");
+    expect(
+      await unregisteredCommandCleanup("guard", CHILD_PID, control)
+    ).toBeInstanceOf(GuardedProcessGroupStillAliveError);
+    expect(control.signals).toContain("SIGTERM");
+    expect(control.signals).toContain("SIGKILL");
+    // Every signal targets the whole group, never only its leader.
+    expect(new Set(control.pids)).toEqual(new Set([-CHILD_PID]));
+  });
+
+  test("keeps the lock when the group cannot be signalled", async () => {
+    expect(
+      await unregisteredCommandCleanup(
+        "guard",
+        CHILD_PID,
+        simulatedGroup("unsignallable")
+      )
+    ).toBeInstanceOf(GuardedProcessGroupStillAliveError);
+  });
+
+  test("on Windows, kills the tree with a bounded taskkill and keeps the lock", async () => {
+    const control = simulatedGroup("survives", { platform: "win32" });
+    expect(
+      await unregisteredCommandCleanup("guard", CHILD_PID, control)
+    ).toBeInstanceOf(GuardedProcessGroupStillAliveError);
+    expect(control.signals).toEqual([]);
+    expect(control.taskkills).toHaveLength(1);
+    const [taskkill] = control.taskkills;
+    expect(taskkill?.argv).toEqual([
+      "taskkill",
+      "/pid",
+      String(CHILD_PID),
+      "/t",
+      "/f",
+    ]);
+    expect(taskkill?.timeoutMs).toBeGreaterThan(0);
+    expect(taskkill?.timeoutMs).toBeLessThanOrEqual(60_000);
+  });
+
+  test("on Windows, keeps the lock when taskkill cannot launch", async () => {
+    const control = simulatedGroup("survives", {
+      platform: "win32",
+      runSync: () => {
+        throw errno("ENOENT");
+      },
+    });
+    expect(
+      await unregisteredCommandCleanup("guard", CHILD_PID, control)
+    ).toBeInstanceOf(GuardedProcessGroupStillAliveError);
+  });
+
+  test("the production taskkill runner stops a command that hangs", () => {
+    const started = Date.now();
+    PROCESS_GROUP_CONTROL.runSync(
+      [process.execPath, "-e", "await Bun.sleep(15_000)"],
+      200
+    );
+    expect(Date.now() - started).toBeLessThan(5000);
+  });
+});
+
+describe("Registration failure settlement", () => {
+  // A child that never runs anything: the test decides which events it emits.
+  const fakeChild = (): EventEmitter =>
+    Object.assign(new EventEmitter(), { kill: () => true, pid: CHILD_PID });
+
+  const failingRegistration = (
+    cleanupUnregistered: ProcessGroupRunDependencies["cleanupUnregistered"]
+  ) => {
+    const child = fakeChild();
+    const registration = new Error("lock owner write failed");
+    const run = runInProcessGroup(
+      "guard",
+      [],
+      tmpdir(),
+      () => {
+        throw registration;
+      },
+      { environment: {}, streamOutputToStderr: true },
+      {
+        cleanupUnregistered,
+        platform: "linux",
+        spawn: () => child as unknown as ChildProcess,
+      }
+    );
+    return { child, registration, run };
+  };
+
+  test("a late child error cannot settle the run before cleanup", async () => {
+    let finish: (value: GuardedProcessGroupStillAliveError | null) => void =
+      () => undefined;
+    const cleanup = new Promise<GuardedProcessGroupStillAliveError | null>(
+      (resolve) => {
+        finish = resolve;
+      }
+    );
+    const { child, run } = failingRegistration(() => cleanup);
+    child.emit("error", new Error("late child error"));
+    const kept = new GuardedProcessGroupStillAliveError("guard", CHILD_PID);
+    finish(kept);
+    await expect(run).rejects.toBe(kept);
+  });
+
+  test("a group that survives cleanup keeps the lock", async () => {
+    const { run } = failingRegistration((command, pid) =>
+      unregisteredCommandCleanup(command, pid, simulatedGroup("survives"))
+    );
+    await expect(run).rejects.toBeInstanceOf(
+      GuardedProcessGroupStillAliveError
+    );
+  });
+
+  test("a group that cannot be signalled keeps the lock", async () => {
+    const { run } = failingRegistration((command, pid) =>
+      unregisteredCommandCleanup(command, pid, simulatedGroup("unsignallable"))
+    );
+    await expect(run).rejects.toBeInstanceOf(
+      GuardedProcessGroupStillAliveError
+    );
+  });
+
+  test("a cleanup that rejects keeps the lock", async () => {
+    const { run } = failingRegistration(() =>
+      Promise.reject(new Error("cleanup failed"))
+    );
+    await expect(run).rejects.toBeInstanceOf(
+      GuardedProcessGroupStillAliveError
+    );
+  });
+
+  test("a cleanup that throws synchronously keeps the lock", async () => {
+    const { run } = failingRegistration(() => {
+      throw new Error("cleanup failed");
+    });
+    await expect(run).rejects.toBeInstanceOf(
+      GuardedProcessGroupStillAliveError
+    );
+  });
+
+  test("a proven cleanup reports the registration failure itself", async () => {
+    const { registration, run } = failingRegistration((command, pid) =>
+      unregisteredCommandCleanup(
+        command,
+        pid,
+        simulatedGroup("exits-on-sigterm")
+      )
+    );
+    await expect(run).rejects.toBe(registration);
+  });
+
+  test("Windows registration failure keeps the lock", async () => {
+    const { run } = failingRegistration((command, pid) =>
+      unregisteredCommandCleanup(
+        command,
+        pid,
+        simulatedGroup("survives", { platform: "win32" })
+      )
+    );
+    await expect(run).rejects.toBeInstanceOf(
+      GuardedProcessGroupStillAliveError
     );
   });
 });

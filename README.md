@@ -289,7 +289,8 @@ simple-changes loop record-scope --run-id ID --agent-id ID
 simple-changes loop refresh-scope --run-id ID --agent-id ID
   --receipt FILE [--json] [--repo PATH]
 simple-changes loop record-outcome --run-id ID --agent-id ID
-  --receipt FILE [--json] [--repo PATH]
+  --receipt FILE [--approved-by USER --approval-reference REFERENCE]
+  [--json] [--repo PATH]
 simple-changes loop exec --run-id ID --agent-id ID [--json] [--repo PATH]
   -- COMMAND [ARG ...]
 simple-changes loop recover --agent-id ID [--json] [--repo PATH]
@@ -315,6 +316,13 @@ simple-changes loop recover-post-cleanup --run-id ID --agent-id ID
   --receipt FILE [--json] [--repo PATH]
 simple-changes loop close-equivalent --run-id ID --agent-id ID
   --approved-by ID --reason TEXT [--evidence FILE ...] [--json] [--repo PATH]
+simple-changes loop replan-status [--json] [--repo PATH]
+simple-changes loop replan --run-id ID --agent-id ID
+  --manifest-digest SHA256 --status-digest SHA256
+  --approved-by ID --reason TEXT [--json] [--repo PATH]
+simple-changes loop archive-recorded --run-id ID --agent-id ID
+  --manifest-digest SHA256 --status-digest SHA256
+  --approved-by ID --reason TEXT [--json] [--repo PATH]
 simple-changes loop end --run-id ID --agent-id ID [--reason TEXT]
   [--json] [--repo PATH]
 simple-changes loop finalize --run-id ID --agent-id ID --reason TEXT
@@ -513,6 +521,13 @@ guarded observation promotes the valid active claim to `concurrent-author`;
 ordinary claimed concurrency never requires `loop allow` or user approval.
 Set `concurrentWork` to `strict` to require repository-wide pauses. The legacy
 `preserve` value remains accepted and now follows the safe concurrent default.
+
+A committed policy may also declare `execGuard`, an argv array such as
+`["bun", "scripts/exec-guard.ts"]` that runs with the exec command appended
+before every `loop exec` child; a nonzero exit refuses the command before it
+starts. Use it, for example, to refuse a merge until hosted CI passes. It is
+repository code that runs with the agent's permissions, and personal
+preferences never supply one.
 
 The active request overrides repository policy, repository policy overrides
 personal preferences, and personal preferences override the safe defaults.

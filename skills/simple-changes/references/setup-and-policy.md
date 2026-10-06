@@ -168,6 +168,28 @@ reviews migrations first. Automatic modes require at least one exact
 saved authority applies only to matching targets and never to destructive,
 irreversible, unbounded, lock-heavy, unprotected, or target-mismatched work.
 
+`execGuard` is optional and read only from the repository's
+`.simple-changes.json`; personal preferences never supply one. It is a
+non-empty JSON array of strings, never a shell string, for example
+`["bun", "scripts/exec-guard.ts"]`. Inside the lease of every `loop exec`, after
+all other lease checks and immediately before the child starts, the runtime
+runs `[...execGuard, ...command]` from the checkout the command runs in, with
+`SIMPLE_CHANGES_RUN_ID` set to the run and `SIMPLE_CHANGES_REPOSITORY` set to
+that checkout. The guard's stdout and stderr go to stderr, so `--json` output
+stays parseable. Exit 0 lets the command start; any other exit, or a guard that
+cannot start, refuses it with an error naming the guard argv and exit code, and
+the child never starts. The guard decides which commands it gates and must exit
+0 for every other command. A guard only restricts, so it applies without the
+policy trust receipt, but it is repository code that runs with the agent's
+permissions, like repository checks: review a guard as you would any script the
+agent runs. It gates only commands run through `loop exec`, so route the
+commands it protects, such as merges, through `loop exec`. Setup and
+`acknowledge-update` keep a saved guard unchanged. Runtimes without
+`execGuard` support reject a policy that names it as an unknown field, so add it
+only after every Simple Changes copy that reads the repository, including
+repository forks, supports it. See the
+[GitLab example](providers/gitlab.md#gate-merges-on-hosted-ci).
+
 `allow-claimed` is the default. It permits independent authoring in distinct,
 actively claimed, non-primary worktrees while retaining one integration
 controller for push, proposal, merge, deployment, target movement, and cleanup.
@@ -207,6 +229,11 @@ Offer:
   implementation work immediately, subject to current authority.
 - **When I say it's ready:** Wait for the user to ask to put up, merge, ship,
   finish, or reconcile the completed work.
+
+The repository block names the skill that runs setup, so a repository fork's
+setup points agents at the fork by its own `SKILL.md` name; a personal block
+keeps generic wording because it spans repositories. The start and end markers
+never change, so an existing block is found and replaced in place.
 
 The confirmation summary must
 show the exact target path and proposed managed block. Apply an authorized edit

@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.25.0 - 2026-10-05
+
+- Your repository can now add an `execGuard` check to `.simple-changes.json`.
+  Simple Changes runs it, with the command appended, before every
+  `loop exec` command, and refuses the command when the check fails. For
+  example, it can block a merge until hosted CI has passed for that exact
+  commit; the check decides which commands it gates. Add it only once every
+  copy of Simple Changes that reads your repository, forks included, is
+  0.25.0 or later, because older copies reject the setting.
+- A run that already recorded its shipment but can no longer finish can now
+  be archived with your named approval through `loop archive-recorded`. Its
+  records are kept, it is never reported as shipped, and `loop status` and
+  `loop replan-status` point to it where `loop replan` refuses.
+- When a teammate's in-progress checkout shipped in an equivalent but not
+  identical form after an independent review, you can now approve keeping
+  that checkout as it is. `loop record-outcome` takes your approval with
+  `--approved-by` and `--approval-reference`, and the run checks again before
+  it finishes that nothing in that checkout moved.
+- Setup run from a repository's own fork of Simple Changes now names that fork
+  in the instructions it writes to `AGENTS.md` or `CLAUDE.md`, instead of the
+  general `simple-changes` skill.
+<!-- simple-changelogs-signature agent="Claude Opus 5.5 xhigh" at="2026-10-05T19:22:39-05:00" -->
+
 ## 0.24.1 - 2026-10-05
 
 - The release gate now refuses a changelog receipt that pairs an ask version

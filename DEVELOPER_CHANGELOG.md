@@ -1,5 +1,130 @@
 # Developer changelog
 
+## 0.25.0 - 2026-10-05
+
+- Upstreams the generic runtime deltas the Thor and Hashi forks carried, so
+  both forks can drop them:
+  - `execGuard` (repo-policy schema, `policy.ts`, new `exec-guard.ts`,
+    `process.ts` `runGuardInProcessGroup`) is an optional argv of 1 to 64
+    strings, read only from the repository `.simple-changes.json`.
+    - `loop exec` runs `[...execGuard, ...argv]` inside the exec lease after
+      every other check, in its own process group. The working directory is
+      the exec checkout, with `SIMPLE_CHANGES_RUN_ID` and
+      `SIMPLE_CHANGES_REPOSITORY` set, and output goes to stderr.
+    - A nonzero exit or a spawn failure refuses with exit 5 before the child
+      starts. A surviving guard process group keeps the lock, like an exec
+      child.
+    - `withSavedExecGuard` keeps the guard through setup and
+      `acknowledge-update`. It needs no trust receipt, because it only
+      restricts.
+    - It replaces the forks' `guardHostedCiMerge` import, which they now
+      express as `pnpm --silent <cli> ci guard-exec --`.
+  - `loop archive-recorded` (from Thor) adds `archiveRecordedOutcome`, kept
+    first in the request so retries compare byte for byte. The kind is
+    `loop-archive-recorded`, the outcome is `archived-unfinished`, and the
+    attempt directory is `archive-recorded-<sha256(request)>`.
+    - It requires the recorded receipt's run ID and digest, nonempty paths,
+      the current target containing the receipt target, and matching tree
+      entries.
+    - Archived-lease validation ignores Thor's legacy
+      `openingScopeInvariantDigest`, so Site Secure's three existing records
+      still pass the retry checks.
+    - `loop replan-status` gains `nextCommand`. `loop status` names the
+      command for a released run with a recorded outcome, whether or not it
+      is paused on a user question.
+  - Preserved-source override (from Thor's `preserved-source-override.ts`):
+    - `preservedSourceOverride` on shipment-outcome units is stored in
+      `preserved-source-override/<run-id>.json` beside the lease, with the new
+      `preserved-source-override.schema.json`. The lease keeps the stripped
+      receipt, because its schema stays frozen at 0.22.0 for older clients.
+    - `shipmentOutcome.receiptDigest` is the digest of the complete submitted
+      receipt, overrides included, which is also what the Thor fork recorded.
+      Without overrides it equals the stripped receipt's digest.
+    - `--approved-by` and `--approval-reference` must match every override
+      and are refused without one.
+    - Finalize, `loop end`, the verified-delivery check, and
+      `loop archive-recorded` recompose the stored receipt with the sidecar.
+      They fail closed when the result does not match that digest, so editing
+      any approval or path field after recording, or losing the sidecar,
+      blocks completion. Finalize and `loop end` also re-check the source,
+      claim, and target entries.
+    - A pending `loop archive-recorded` transition, whether a first attempt or
+      a retry after a crash between the intent and the rename, re-proves the
+      recorded outcome with its sidecar immediately before the rename. A
+      completed retry still returns without touching a successor run.
+    - Site Secure's two override-carrying finalization records match this
+      digest rule.
+    - `loop record-outcome` and `loop end` hold the worktree-coordination
+      lock.
+- `repository-instructions.ts` names the running skill from its `SKILL.md`
+  (`runningSkillName` in `skill-roots.ts`), in both the `scripts/` and
+  `runtime/scripts/` layouts.
+  - It reads the complete quoted or plain `name:` value and falls back to
+    `simple-changes` unless that value is a valid skill name.
+  - It keeps the markers unchanged and leaves the personal block's wording
+    generic.
+- `fork.ts` (a reverse index loop; `toReversed()` is outside the ES2022 lib),
+  `git-worker.ts`, `subagent-control.ts`, and `turn-guard.ts` take forms both
+  Biome and oxlint accept. Site Secure's oxlint 1.83 reports nothing over
+  `scripts/`.
+- `runInProcessGroup` (shared by `loop exec` children and the guard)
+  previously killed only the leader when registering the spawned process
+  failed, so a descendant could outlive the released lock.
+  `unregisteredCommandCleanup` now handles that case:
+  - On Unix it terminates the leader's whole process group directly, without
+    waiting on the leader. A group that survives, or that cannot be
+    signalled, raises `GuardedProcessGroupStillAliveError`, so the lock is
+    kept.
+  - A late child `error` event can no longer settle the run first.
+  - On Windows, where no process group can be proven empty, it attempts to
+    kill the process tree with `taskkill /t /f`, bounded at 10 seconds, and
+    always keeps the lock, even when `taskkill` cannot run.
+  - A cleanup that itself fails, synchronously or not, also keeps the lock.
+  - The cleanup and `runInProcessGroup` take injectable process controls,
+    with production defaults unchanged. `process.test.ts` covers a real Unix
+    descendant, surviving and unsignallable groups, the Windows branch, late
+    child errors, and failing cleanups.
+- Guidance 26. There are 83 new tests (780 to 863), and each new guard was
+  mutation-checked.
+- Not upstreamed, because canonical already covers them:
+  - Thor's claimed-author opening digest: scoped opening invariants already
+    admit claimed authors' edits and refuse a drifted scope source.
+  - Thor's in-receipt advanced merged proof: `mergedHeadAncestry` covers it.
+- GPT-6 Sol (high) reviewed `45ed850`.
+  - Its blocking finding was that a registration failure could leave a
+    guard's descendants running after the lock was released.
+  - Its should-fix was that the archive hint was missing for a run paused
+    with `--awaiting-user`.
+  - Its re-review of `d98bf0b` found three gaps in the first fix: a failed
+    leader kill could settle the run before group cleanup, Windows had no
+    cleanup, and the leader wait had no deadline.
+  - Its second re-review found that a `taskkill` that could not launch still
+    released the lock.
+  - All of these are fixed above.
+- GPT-6.1 Sol (high) reviewed the whole branch at `ebf349e`.
+  - Blocking: override approval evidence could be edited after recording
+    without detection, because the sidecar was bound only to the stripped
+    receipt.
+  - Should-fixes: the Windows `taskkill` was unbounded, and the cleanup
+    failure paths had no tests.
+  - Nit: the skill-name parser accepted a prefix of an invalid `name:`.
+  - All of these are fixed above.
+- GPT-6.1 Sol (xhigh) reviewed the whole branch at `12dd6c4`. Its one finding
+  was blocking: a pending `loop archive-recorded` retry after a crash skipped
+  the override check, so an edited or deleted sidecar could still archive.
+  It is fixed above, with crash-retry tests for intact, edited, and missing
+  sidecars.
+- GPT-6.1 Sol (xhigh) re-reviewed the whole branch at `195e97a` with nothing
+  blocking. It raised two should-fixes and a nit, now fixed:
+  - Independence compared untrimmed agent IDs, so a padded controller or
+    author ID passed. Override checks now compare trimmed IDs.
+  - A 0.24.1 runtime could finish an override-bearing run without the
+    sidecar checks. `focused-units.md` now requires 0.25.0 or later to finish,
+    end, or archive such a run.
+  - `runningSkillName` accepted `fork-` and `fork--name`. It now shares
+    `isValidSkillName` with `skill check`.
+<!-- simple-changelogs-signature agent="Claude Opus 5.5 xhigh" at="2026-10-05T19:22:39-05:00" -->
+
 ## 0.24.1 - 2026-10-05
 
 - `release-gate.ts` adds `assertVersionResolution` (the new ask-policy

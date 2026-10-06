@@ -478,4 +478,7 @@ stash, ledger, proposal, or deployment.
 For a frozen shipment whose scope cannot cover later work, use the explicitly
 approved, owner-bound [replan recovery](references/cleanup-and-completion.md#replan-a-frozen-shipment-without-cleanup).
 It archives the old run without cleanup; fresh inventory and normal authority
-checks still govern the next shipment.
+checks still govern the next shipment. A run that already recorded its shipment
+outcome but cannot finish uses the same approval through
+[`loop archive-recorded`](references/cleanup-and-completion.md#archive-a-recorded-run-that-cannot-finish),
+whose `archived-unfinished` result is never reported as shipped.

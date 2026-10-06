@@ -544,7 +544,9 @@ Do not edit the lease or widen its frozen scope by hand.
 
 Replan takes the existing state lock before the coordination lock and never
 recovers held locks. It refuses unfinished author preparations, recorded shipment
-or target-equivalent outcomes, and emergency shipping ledgers. Changed files and
+or target-equivalent outcomes, and emergency shipping ledgers; a run with a
+recorded shipment outcome has its own
+[approved archival](#archive-a-recorded-run-that-cannot-finish). Changed files and
 stale claims may be archived as observed; this does not mark verification passed
 or alter those claims. It runs no Git cleanup, reference, index, worktree, claim,
 provider, or deployment mutations.
@@ -558,6 +560,48 @@ in place. A matching retry verifies this archive and returns the receipt without
 touching a newer active loop. A crash before the move can retry the exact request;
 if work changed meanwhile, a newly approved request creates a separate attempt
 and preserves the earlier intent. Never delete or modify an intent to retry.
+
+### Archive a recorded run that cannot finish
+
+`loop replan` refuses a run that already recorded a shipment outcome. When such
+a frozen run can no longer finish, for example because its outcome no longer
+matches the current target or cleanup it depended on cannot happen, its exact
+owner may archive it with `loop archive-recorded` after explicit named user
+approval. A different agent first takes over through the supported controller
+handoff, as for replan. `loop status` names this command for a relinquished run
+with a recorded outcome, and `loop replan-status` returns it as `nextCommand`.
+
+1. Stop guarded operations and every external provider operation; a prior
+   `loop guard` holds no lock for work started outside the runtime, though the
+   state and coordination locks still exclude an active `loop exec`. Observe
+   with `simple-changes loop replan-status --repo <checkout> --json`.
+2. Review that exact inventory, coordination state, current target, and the
+   recorded outcome with the user, and record their approver identity and
+   reason. Run `simple-changes loop archive-recorded --repo <same-checkout>`
+   `--run-id <observed-run> --agent-id <observed-owner>`
+   `--manifest-digest <observed-manifest> --status-digest <observed-status>`
+   `--approved-by <user> --reason <reason>`.
+3. Keep the returned receipt and start a fresh loop through the normal
+   workflow. Reconcile current provider truth before any new mutation.
+
+It requires an intact, nonempty historical receipt: the receipt's run ID matches
+the lease, its digest matches the recorded one (together with any
+[preserved-source overrides](focused-units.md#preserved-source-override) stored
+beside the lease, which must be present and unchanged), every recorded path's entry
+matches the receipt's target tree, and the current target contains that target
+revision. It still refuses unfinished author preparations, target-equivalent
+outcomes, and emergency shipping ledgers, and binds the current inventory and
+claims to the approval exactly as replan does.
+
+The transition is replan's: the same locks, the same atomic move of every
+original lease byte, and no Git, claim, provider, or deployment mutation. Its
+attempt directory is
+`<common-git-dir>/simple-changes/history/<run-id>/archive-recorded-<request-digest>/`,
+and its record has kind `loop-archive-recorded` and outcome
+`archived-unfinished`. That outcome is never completion and never counts as a
+shipment or delivery; report it as archived bookkeeping. All historical
+receipts, refs, claims, and worktrees stay as they were, and a matching retry
+never removes a successor run.
 
 
 A ready clean branch is represented by its existing committed revision and

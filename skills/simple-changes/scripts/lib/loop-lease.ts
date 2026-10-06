@@ -31,6 +31,7 @@ import {
   deriveEmergencyShippingStatus,
 } from "./emergency-shipping.ts";
 import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
+import { assertExecGuardAllows, execGuardFor } from "./exec-guard.ts";
 import {
   currentHarnessSession,
   forgetControllerSession,
@@ -47,6 +48,11 @@ import {
   assertSafeRelativePath,
 } from "./path-safety.ts";
 import { buildPreviewPlan, validatePlanConservation } from "./planner.ts";
+import {
+  preservedSourceOverrideFailure,
+  recordedPreservedSourceOverrides,
+  splitShipmentOutcomeInput,
+} from "./preserved-source-override.ts";
 import { primaryDeliveryProof } from "./primary-delivery-proof.ts";
 import {
   type CommandProcess,
@@ -85,6 +91,7 @@ import type {
   LoopWorktreePreparation,
   LoopWorktreeRetirement,
   PostCleanupRecoveryReceipt,
+  PreservedSourceOverrideReceipt,
   RemoteBranchAncestryProof,
   RemoteBranchAncestryRecord,
   RemoteBranchReconciliationReceipt,
@@ -120,6 +127,7 @@ const LOCK_OWNER_FILENAME = "owner.json";
 const RECOVERY_HISTORY_DIRECTORY = "history";
 const REMOTE_BRANCH_ANCESTRY_DIRECTORY = "remote-branch-ancestry";
 const REMOTE_BRANCH_SUPERSESSION_DIRECTORY = "remote-branch-supersession";
+const PRESERVED_SOURCE_OVERRIDE_DIRECTORY = "preserved-source-override";
 const STALE_LOCK_MINIMUM_AGE_MS = 5000;
 const RUN_ID_PATTERN = /^run-[a-z0-9-]+$/u;
 const DIGEST_PATTERN = /^[0-9a-f]{64}$/u;
@@ -1281,6 +1289,7 @@ const currentTargetRevision = (lease: LoopLease): string => {
 };
 
 type ReceiptSidecarDirectory =
+  | typeof PRESERVED_SOURCE_OVERRIDE_DIRECTORY
   | typeof REMOTE_BRANCH_ANCESTRY_DIRECTORY
   | typeof REMOTE_BRANCH_SUPERSESSION_DIRECTORY;
 
@@ -3374,15 +3383,89 @@ const primaryReviewedResultAllowed = (
   );
 };
 
+/**
+ * Rechecks a user-approved preserved-source override against the live claim,
+ * the frozen source checkout, and the exact target tree. Reads the claim
+ * document, so callers hold the worktree-coordination lock.
+ */
+const preservedSourceOverrideIssue = (
+  lease: LoopLease,
+  inventory: RepositoryInventory,
+  receipt: ShipmentOutcomeReceipt,
+  unit: OutcomeUnit,
+  override: PreservedSourceOverrideReceipt | undefined,
+  expected: PlannedUnit,
+  recordedAt: string
+): string | null => {
+  const { sourceWorktree } = expected;
+  const registered = lease.worktrees.find(
+    (worktree) => worktree.path === sourceWorktree
+  );
+  const { claims } = readCoordinationDocumentFromCommonDirectory(
+    lease.commonGitDirectory
+  );
+  const openingEntries = new Map(
+    (lease.shipmentScope?.openingChanges ?? [])
+      .filter((change) => change.worktreePath === sourceWorktree)
+      .map((change) => [change.path, change.sourceEntry])
+  );
+  return preservedSourceOverrideFailure(
+    {
+      claim: claims.find((item) => item.claimId === registered?.claimId),
+      controllerAgentId: lease.ownerAgentId,
+      current: inventory.worktrees.find((item) => item.path === sourceWorktree),
+      disposition: unit.disposition,
+      finalPaths: unit.finalPaths,
+      opening: lease.openingWorktrees?.find(
+        (worktree) => worktree.path === sourceWorktree
+      ),
+      openingEntries,
+      originalPaths: unit.originalPaths,
+      override,
+      registered,
+      runId: lease.runId,
+      scopePaths: expected.paths,
+      sourceEntry: (path) => worktreeSourceEntry(sourceWorktree, path),
+      sourceWorktree,
+      targetEntry: (path) =>
+        targetTreeEntry(lease.primaryCheckout, receipt.targetRevision, path),
+      targetRevision: receipt.targetRevision,
+      unitId: unit.unitId,
+    },
+    recordedAt
+  );
+};
+
 const assertDirectOutcomeMatchesSource = (
   lease: LoopLease,
   inventory: RepositoryInventory,
   receipt: ShipmentOutcomeReceipt,
   unit: OutcomeUnit,
+  override: PreservedSourceOverrideReceipt | undefined,
   expected: PlannedUnit,
-  openingChanges: OpeningShipmentChange[]
+  openingChanges: OpeningShipmentChange[],
+  recordedAt: string
 ): void => {
   let reviewedPrimaryResultAllowed: boolean | null = null;
+  let preservedSourceOverrideAllowed = false;
+  if (override) {
+    const issue = preservedSourceOverrideIssue(
+      lease,
+      inventory,
+      receipt,
+      unit,
+      override,
+      expected,
+      recordedAt
+    );
+    if (issue) {
+      throw new SimpleChangesError(
+        `Shipment outcome unit ${unit.unitId} has invalid manual preserved-source override: ${issue}.`,
+        EXIT_CODES.validation
+      );
+    }
+    preservedSourceOverrideAllowed = true;
+  }
   for (const item of unit.finalPaths) {
     const sources = openingChanges.filter(
       (change) =>
@@ -3402,6 +3485,9 @@ const assertDirectOutcomeMatchesSource = (
     if (sources.length === 1 && reviewedPrimaryResultAllowed) {
       continue;
     }
+    if (sources.length === 1 && preservedSourceOverrideAllowed) {
+      continue;
+    }
     throw new SimpleChangesError(
       `Shipment outcome unit ${unit.unitId} does not match its exact opening source result for ${item.path}.${
         expected.sourceWorktree === lease.primaryCheckout
@@ -3418,7 +3504,9 @@ const validateShipmentOutcomeUnits = (
   inventory: RepositoryInventory,
   receipt: ShipmentOutcomeReceipt,
   targetDeltaPaths: Set<string>,
-  renameOriginals: Map<string, string>
+  renameOriginals: Map<string, string>,
+  overrides: readonly PreservedSourceOverrideReceipt[],
+  recordedAt: string
 ): { accountedPaths: Set<string>; scopedPaths: Set<string> } => {
   const scope = lease.shipmentScope;
   if (!scope) {
@@ -3469,8 +3557,10 @@ const validateShipmentOutcomeUnits = (
       inventory,
       receipt,
       unit,
+      overrides.find((item) => item.unitId === unit.unitId),
       expected,
-      scope.openingChanges
+      scope.openingChanges,
+      recordedAt
     );
   }
   const missing = [...expectedUnits.keys()].filter(
@@ -3544,84 +3634,151 @@ const assertCompleteTargetDelta = (
   }
 };
 
+export interface PreservedSourceApproval {
+  approvalReference?: string | undefined;
+  approvedBy?: string | undefined;
+}
+
+/**
+ * The approval flags on `loop record-outcome` must restate every
+ * preserved-source override exactly, and are refused when no override exists.
+ */
+const assertPreservedSourceApproval = (
+  overrides: readonly PreservedSourceOverrideReceipt[],
+  approval: PreservedSourceApproval | undefined
+): void => {
+  if (overrides.length === 0) {
+    if (approval?.approvedBy || approval?.approvalReference) {
+      throw new SimpleChangesError(
+        "Manual approval flags require a preserved-source override in the outcome.",
+        EXIT_CODES.validation
+      );
+    }
+    return;
+  }
+  const approvedBy = requiredText(
+    approval?.approvedBy ?? "",
+    "manual preserved-source approver"
+  );
+  const approvalReference = requiredText(
+    approval?.approvalReference ?? "",
+    "manual preserved-source approval reference"
+  );
+  if (
+    overrides.some(
+      (item) =>
+        item.approvedBy !== approvedBy ||
+        item.approvalReference !== approvalReference
+    )
+  ) {
+    throw new SimpleChangesError(
+      "Manual preserved-source approval flags must match every exact outcome override.",
+      EXIT_CODES.validation
+    );
+  }
+};
+
 export const recordShipmentOutcome = (
   repositoryPath: string,
   runIdInput: string,
   agentIdInput: string,
-  receiptInput: unknown
+  receiptInput: unknown,
+  approval?: PreservedSourceApproval
 ): ShipmentOutcomeRecord => {
   const runId = requiredRunId(runIdInput);
   const agentId = requiredText(agentIdInput, "agent ID");
-  const receipt = validateSchema<ShipmentOutcomeReceipt>(
-    "shipment-outcome",
-    receiptInput
-  );
+  // Overrides ride on the receipt's units but are stored beside the lease;
+  // the recorded digest covers the complete receipt, overrides included.
+  const { overrides, receipt, receiptDigest } =
+    splitShipmentOutcomeInput(receiptInput);
+  assertPreservedSourceApproval(overrides, approval);
   const opening = locateRepository(repositoryPath);
+  // The coordination lock keeps the claim a preserved-source override binds
+  // from changing between validation and the lease write.
   return withStateLock(
     opening.repository.commonGitDirectory,
     "record shipment outcome",
-    () => {
-      const inventory = captureInventory(repositoryPath);
-      const lease = requireLease(inventory);
-      assertControllerActive(lease);
-      if (
-        lease.runId !== runId ||
-        receipt.runId !== runId ||
-        lease.ownerAgentId !== agentId
-      ) {
-        throw new SimpleChangesError(
-          `Only ${lease.ownerAgentId} may reconcile the exact outcome for ${lease.runId}.`,
-          EXIT_CODES.unsafe
-        );
-      }
-      const finalTargetRevision = currentTargetRevision(lease);
-      if (receipt.targetRevision !== finalTargetRevision) {
-        throw new SimpleChangesError(
-          `Shipment outcome must bind current target ${finalTargetRevision}.`,
-          EXIT_CODES.unsafe
-        );
-      }
-      const targetDeltaPaths = new Set(
-        targetDiffPaths(
-          lease.primaryCheckout,
-          lease.targetRevision,
-          receipt.targetRevision
-        )
-      );
-      const renameOriginals = targetRenameOriginals(
-        lease.primaryCheckout,
-        lease.targetRevision,
-        receipt.targetRevision
-      );
-      const { accountedPaths, scopedPaths } = validateShipmentOutcomeUnits(
-        lease,
-        inventory,
-        receipt,
-        targetDeltaPaths,
-        renameOriginals
-      );
-      validateAdditionalShipmentPaths(
-        lease,
-        receipt,
-        accountedPaths,
-        scopedPaths,
-        targetDeltaPaths
-      );
-      assertCompleteTargetDelta(lease, receipt, accountedPaths);
-      const recordedAt = new Date().toISOString();
-      const receiptDigest = sha256Json(receipt);
-      writeLease({
-        ...withMutationEvidence(lease, recordedAt),
-        ownerProcess: ownerProcessEvidence(recordedAt),
-        shipmentOutcome: { receipt, receiptDigest, recordedAt },
-        updatedAt: recordedAt,
-      });
-      return {
-        receiptDigest,
-        recordedAt,
-        summary: `Reviewed shipment outcome: ${receipt.units.length} scoped work item(s) and ${receipt.additionalPaths.length} additional final-target path(s) accounted at ${receipt.targetRevision}.`,
-      };
-    }
+    () =>
+      withWorktreeCoordinationLock(
+        opening.repository.commonGitDirectory,
+        "record shipment outcome",
+        () => {
+          const inventory = captureInventory(repositoryPath);
+          const lease = requireLease(inventory);
+          assertControllerActive(lease);
+          if (
+            lease.runId !== runId ||
+            receipt.runId !== runId ||
+            lease.ownerAgentId !== agentId
+          ) {
+            throw new SimpleChangesError(
+              `Only ${lease.ownerAgentId} may reconcile the exact outcome for ${lease.runId}.`,
+              EXIT_CODES.unsafe
+            );
+          }
+          const finalTargetRevision = currentTargetRevision(lease);
+          if (receipt.targetRevision !== finalTargetRevision) {
+            throw new SimpleChangesError(
+              `Shipment outcome must bind current target ${finalTargetRevision}.`,
+              EXIT_CODES.unsafe
+            );
+          }
+          const targetDeltaPaths = new Set(
+            targetDiffPaths(
+              lease.primaryCheckout,
+              lease.targetRevision,
+              receipt.targetRevision
+            )
+          );
+          const renameOriginals = targetRenameOriginals(
+            lease.primaryCheckout,
+            lease.targetRevision,
+            receipt.targetRevision
+          );
+          const recordedAt = new Date().toISOString();
+          const { accountedPaths, scopedPaths } = validateShipmentOutcomeUnits(
+            lease,
+            inventory,
+            receipt,
+            targetDeltaPaths,
+            renameOriginals,
+            overrides,
+            recordedAt
+          );
+          validateAdditionalShipmentPaths(
+            lease,
+            receipt,
+            accountedPaths,
+            scopedPaths,
+            targetDeltaPaths
+          );
+          assertCompleteTargetDelta(lease, receipt, accountedPaths);
+          // A null record removes a sidecar left by an earlier outcome.
+          writeReceiptSidecar(
+            lease,
+            PRESERVED_SOURCE_OVERRIDE_DIRECTORY,
+            overrides.length === 0
+              ? null
+              : {
+                  overrides,
+                  receiptDigest,
+                  runId: lease.runId,
+                  schemaVersion: 1,
+                }
+          );
+          writeLease({
+            ...withMutationEvidence(lease, recordedAt),
+            ownerProcess: ownerProcessEvidence(recordedAt),
+            shipmentOutcome: { receipt, receiptDigest, recordedAt },
+            updatedAt: recordedAt,
+          });
+          return {
+            receiptDigest,
+            recordedAt,
+            summary: `Reviewed shipment outcome: ${receipt.units.length} scoped work item(s) and ${receipt.additionalPaths.length} additional final-target path(s) accounted at ${receipt.targetRevision}.`,
+          };
+        }
+      )
   );
 };
 
@@ -4075,12 +4232,27 @@ export const executeLoopMutation = async (
     runId,
     agentIdInput,
     "loop exec",
-    (context) => {
+    async (context) => {
+      const inventory = captureInventory(repositoryPath);
+      const checkout = inventory.repository.currentCheckout;
+      // The repository's guard runs last, after every lease check, and only
+      // restricts: a refusal leaves the child unstarted.
+      const guard = execGuardFor(inventory);
+      if (guard) {
+        context.markChildStarting();
+        await assertExecGuardAllows({
+          checkout,
+          command: commandInput,
+          guard,
+          onSpawn: context.registerProcess,
+          runId,
+        });
+      }
       context.markChildStarting();
       return runCommandInProcessGroup(
         command,
         args,
-        captureInventory(repositoryPath).repository.currentCheckout,
+        checkout,
         context.registerProcess
       );
     }
@@ -6741,8 +6913,42 @@ const missingShipmentScopeBlockers = (lease: LoopLease): string[] =>
       ]
     : [];
 
+/**
+ * The overrides recorded beside the lease for its exact shipment outcome.
+ * Throws when the stored receipt and its sidecar no longer recompose into the
+ * complete receipt the recorded digest names.
+ */
+const storedPreservedSourceOverrides = (
+  lease: LoopLease
+): PreservedSourceOverrideReceipt[] => {
+  const outcome = lease.shipmentOutcome;
+  if (!outcome) {
+    return [];
+  }
+  return recordedPreservedSourceOverrides(
+    readReceiptSidecar(
+      lease.commonGitDirectory,
+      PRESERVED_SOURCE_OVERRIDE_DIRECTORY,
+      lease.runId
+    ),
+    lease.runId,
+    outcome.receipt,
+    outcome.receiptDigest
+  );
+};
+
+const recordedOutcomeIntact = (lease: LoopLease): boolean => {
+  try {
+    storedPreservedSourceOverrides(lease);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
 const shipmentOutcomeCompletionBlockers = (
   lease: LoopLease,
+  inventory: RepositoryInventory,
   targetRevision: string | null
 ): string[] => {
   if (!lease.shipmentScope) {
@@ -6766,7 +6972,7 @@ const shipmentOutcomeCompletionBlockers = (
     ]),
     ...receipt.additionalPaths,
   ];
-  return paths.flatMap((item) =>
+  const targetBlockers = paths.flatMap((item) =>
     targetTreeEntry(
       lease.primaryCheckout,
       receipt.targetRevision,
@@ -6775,6 +6981,39 @@ const shipmentOutcomeCompletionBlockers = (
       ? []
       : [`Shipment outcome entry changed after review: ${item.path}`]
   );
+  let overrides: PreservedSourceOverrideReceipt[];
+  try {
+    overrides = storedPreservedSourceOverrides(lease);
+  } catch (error) {
+    return [
+      ...targetBlockers,
+      error instanceof Error ? error.message : String(error),
+    ];
+  }
+  // A preserved-source override holds only while its source, claim, and
+  // target entries stay exactly as approved.
+  const sourceBlockers = lease.shipmentScope.plan.units.flatMap((expected) => {
+    const unit = receipt.units.find((item) => item.unitId === expected.id);
+    const override = overrides.find((item) => item.unitId === expected.id);
+    if (!(unit && override)) {
+      return [];
+    }
+    const issue = preservedSourceOverrideIssue(
+      lease,
+      inventory,
+      receipt,
+      unit,
+      override,
+      expected,
+      lease.shipmentOutcome?.recordedAt ?? ""
+    );
+    return issue
+      ? [
+          `Manually approved preserved source ${expected.sourceWorktree} changed after recording: ${issue}`,
+        ]
+      : [];
+  });
+  return [...targetBlockers, ...sourceBlockers];
 };
 
 const repositoryCleanupBlockers = (
@@ -6905,7 +7144,9 @@ const loopCompletionBlockers = (
       `Refresh unresolved target ref ${lease.targetRef} before ending the loop.`
     );
   }
-  blockers.push(...shipmentOutcomeCompletionBlockers(lease, targetRevision));
+  blockers.push(
+    ...shipmentOutcomeCompletionBlockers(lease, inventory, targetRevision)
+  );
   if (!scopedCompletion) {
     blockers.push(
       ...repositoryCleanupBlockers(
@@ -7358,7 +7599,7 @@ const hasVerifiedDelivery = (
     return false;
   }
   const target = currentTargetRevision(lease);
-  if (shipmentOutcomeCompletionBlockers(lease, target).length > 0) {
+  if (shipmentOutcomeCompletionBlockers(lease, inventory, target).length > 0) {
     return false;
   }
   return scope.plan.units.every((unit) => {
@@ -7373,12 +7614,36 @@ const hasVerifiedDelivery = (
           item.targetRevision === target
       );
     }
+    if (source.isPrimary && preservesUnchangedPrimary(lease, inventory)) {
+      return true;
+    }
+    if (
+      source.changes.length === 0 &&
+      source.headSha &&
+      targetContainmentAudit(lease.primaryCheckout, target, source.headSha)
+        .method
+    ) {
+      return true;
+    }
+    // A user-approved preserved source stays dirty in its author's claimed
+    // checkout; it counts only while its override still holds exactly. The
+    // completion blockers above already proved the sidecar readable.
+    const override = storedPreservedSourceOverrides(lease).find(
+      (item) => item.unitId === unit.id
+    );
+    const recorded = outcome.units.find((item) => item.unitId === unit.id);
     return Boolean(
-      (source.isPrimary && preservesUnchangedPrimary(lease, inventory)) ||
-        (source.changes.length === 0 &&
-          source.headSha &&
-          targetContainmentAudit(lease.primaryCheckout, target, source.headSha)
-            .method)
+      override &&
+        recorded &&
+        preservedSourceOverrideIssue(
+          lease,
+          inventory,
+          outcome,
+          recorded,
+          override,
+          unit,
+          lease.shipmentOutcome?.recordedAt ?? ""
+        ) === null
     );
   });
 };
@@ -8596,38 +8861,42 @@ export const endLoop = (
   const ownerAgentId = requiredText(ownerAgentIdInput, "agent ID");
   const reason = reasonInput?.trim() || null;
   const opening = locateRepository(repositoryPath);
-  return withStateLock(
-    opening.repository.commonGitDirectory,
-    "loop end",
-    () => {
-      const { inventory, lease } = requireOwnedLease(
-        repositoryPath,
-        runId,
-        ownerAgentId,
-        "end this loop"
-      );
-      assertControllerActive(lease);
-      const verification = verificationAgainst(lease, inventory);
-      // A Ship run that never changed anything owes no shipment scope, remote
-      // reconciliation, or cleanup; those gates protect integrated work.
-      if (unmutatedCloseReady(lease, inventory, verification)) {
-        return {
-          ...verification,
-          closedWithoutMutation: closeUnmutatedRun(
-            lease,
-            verification,
-            reason,
-            "loop end"
-          ),
-        };
+  // Completion rechecks preserved-source claims, so it holds the coordination
+  // lock as finalization does.
+  return withStateLock(opening.repository.commonGitDirectory, "loop end", () =>
+    withWorktreeCoordinationLock(
+      opening.repository.commonGitDirectory,
+      "loop end",
+      () => {
+        const { inventory, lease } = requireOwnedLease(
+          repositoryPath,
+          runId,
+          ownerAgentId,
+          "end this loop"
+        );
+        assertControllerActive(lease);
+        const verification = verificationAgainst(lease, inventory);
+        // A Ship run that never changed anything owes no shipment scope, remote
+        // reconciliation, or cleanup; those gates protect integrated work.
+        if (unmutatedCloseReady(lease, inventory, verification)) {
+          return {
+            ...verification,
+            closedWithoutMutation: closeUnmutatedRun(
+              lease,
+              verification,
+              reason,
+              "loop end"
+            ),
+          };
+        }
+        const blockers = loopCompletionBlockers(lease, inventory, verification);
+        if (blockers.length > 0) {
+          throw new SimpleChangesError(blockers.join(" "), EXIT_CODES.unsafe);
+        }
+        rmSync(loopLeasePath(lease.commonGitDirectory), { force: true });
+        return verification;
       }
-      const blockers = loopCompletionBlockers(lease, inventory, verification);
-      if (blockers.length > 0) {
-        throw new SimpleChangesError(blockers.join(" "), EXIT_CODES.unsafe);
-      }
-      rmSync(loopLeasePath(lease.commonGitDirectory), { force: true });
-      return verification;
-    }
+    )
   );
 };
 
@@ -8709,6 +8978,39 @@ interface LoopGuidanceContext {
   unmutatedCloseAvailable: boolean;
 }
 
+const archiveRecordedCommand = (
+  lease: LoopLease,
+  manifestDigest: string,
+  statusDigest: string
+): string =>
+  `simple-changes loop archive-recorded --run-id ${lease.runId} --agent-id ${lease.ownerAgentId} --manifest-digest ${manifestDigest} --status-digest ${statusDigest} --approved-by <user> --reason <why>`;
+
+// A recorded outcome disables `loop replan`; name the approved archival that
+// remains for a released run, paused or not, that can no longer finish.
+const withArchiveRecordedGuidance = (
+  lease: LoopLease,
+  guidance: LoopGuidance
+): LoopGuidance =>
+  lease.shipmentOutcome && effectiveShipmentScopeFrozenAt(lease)
+    ? {
+        headline: `${guidance.headline} It already recorded a shipment outcome, so \`loop replan\` cannot archive it; if it can no longer finish, its owner may archive it with explicit user approval through \`loop replan-status\` and \`loop archive-recorded\`, which never counts as delivery.`,
+        nextCommands: [
+          ...guidance.nextCommands,
+          "simple-changes loop replan-status --json",
+          archiveRecordedCommand(lease, "<digest>", "<digest>"),
+        ],
+      }
+    : guidance;
+
+const relinquishedGuidance = (lease: LoopLease): LoopGuidance =>
+  withArchiveRecordedGuidance(lease, {
+    headline: `Loop ${lease.runId} has released its controller. Resume it to finish its recorded work; takeover approval is unnecessary. Its existing scope and safety checks still apply.`,
+    nextCommands: [
+      "simple-changes loop start --mode resume --agent-id <you>",
+      `simple-changes loop close-equivalent --run-id ${lease.runId} --agent-id <you> --approved-by <user> --reason <why>`,
+    ],
+  });
+
 const loopGuidanceFor = (
   lease: LoopLease | null,
   verification: LoopVerification,
@@ -8734,22 +9036,16 @@ const loopGuidanceFor = (
       ? readControllerBinding(lease)?.awaitingUser
       : null;
   if (awaitingUser) {
-    return {
+    return withArchiveRecordedGuidance(lease, {
       headline: `Loop ${lease.runId} is paused waiting on the user: ${awaitingUser.questions.join(" | ")}. Once they answer, resume it; takeover approval is unnecessary, and its existing scope and safety checks still apply.`,
       nextCommands: [
         "simple-changes loop start --mode resume --agent-id <you>",
         `simple-changes loop close-equivalent --run-id ${lease.runId} --agent-id <you> --approved-by <user> --reason <why>`,
       ],
-    };
+    });
   }
   if (lifecycle.status === "relinquished") {
-    return {
-      headline: `Loop ${lease.runId} has released its controller. Resume it to finish its recorded work; takeover approval is unnecessary. Its existing scope and safety checks still apply.`,
-      nextCommands: [
-        "simple-changes loop start --mode resume --agent-id <you>",
-        `simple-changes loop close-equivalent --run-id ${lease.runId} --agent-id <you> --approved-by <user> --reason <why>`,
-      ],
-    };
+    return relinquishedGuidance(lease);
   }
   if (liveness?.state === "stale") {
     return {
@@ -8900,6 +9196,12 @@ const requireReplanLease = (inventory: RepositoryInventory): LoopLease => {
 export interface LoopReplanRequest {
   agentId: string;
   approvedBy: string;
+  /**
+   * Set only by `loop archive-recorded`: archive a frozen run that already
+   * recorded a shipment outcome but cannot finish. Its record keeps the
+   * `loop-archive-recorded` kind and `archived-unfinished` outcome.
+   */
+  archiveRecordedOutcome?: true;
   manifestDigest: string;
   reason: string;
   runId: string;
@@ -8909,10 +9211,10 @@ export interface LoopReplanRequest {
 interface LoopReplanRecord {
   archivedAt: string;
   fullLeaseDigest: string;
-  kind: "loop-replan";
+  kind: "loop-replan" | "loop-archive-recorded";
   lease: LoopLease;
   observation: ReturnType<typeof replanObservation>;
-  outcome: "replanned";
+  outcome: "replanned" | "archived-unfinished";
   request: LoopReplanRequest;
   schemaVersion: 1;
 }
@@ -8943,12 +9245,19 @@ export const loopReplanStatus = (repositoryPath: string) => {
           const inventory = captureInventory(repositoryPath);
           const lease = requireReplanLease(inventory);
           const observation = replanObservation(lease, inventory);
+          const manifestDigest = loopManifestDigest(lease);
+          const statusDigest = sha256Json(observation);
+          // Only the next command differs: a recorded outcome refuses
+          // `loop replan`, leaving the approved `loop archive-recorded`.
           return {
             agentId: lease.ownerAgentId,
-            manifestDigest: loopManifestDigest(lease),
+            manifestDigest,
+            nextCommand: lease.shipmentOutcome
+              ? archiveRecordedCommand(lease, manifestDigest, statusDigest)
+              : `simple-changes loop replan --run-id ${lease.runId} --agent-id ${lease.ownerAgentId} --manifest-digest ${manifestDigest} --status-digest ${statusDigest} --approved-by <user> --reason <why>`,
             observation,
             runId: lease.runId,
-            statusDigest: sha256Json(observation),
+            statusDigest,
           };
         }
       )
@@ -9028,6 +9337,21 @@ const readReplanLeaseBytes = (path: string): string => {
   }
 };
 
+/**
+ * Validates a lease stored in a replan or archive-recorded record. Leases
+ * started by an earlier repository fork carry `openingScopeInvariantDigest`,
+ * which this runtime never writes; it is ignored for validation but kept for
+ * the manifest digest the record's approval bound.
+ */
+const archivedReplanLease = (value: LoopLease): LoopLease => {
+  const { openingScopeInvariantDigest: _legacy, ...lease } =
+    value as LoopLease & {
+      openingScopeInvariantDigest?: unknown;
+    };
+  validateSchema<LoopLease>("loop-lease", lease);
+  return value;
+};
+
 const assertReplanRecord = (
   record: LoopReplanRecord,
   request: LoopReplanRequest
@@ -9039,7 +9363,11 @@ const assertReplanRecord = (
       properties: {
         archivedAt: { format: "date-time", type: "string" },
         fullLeaseDigest: { pattern: "^[0-9a-f]{64}$", type: "string" },
-        kind: { const: "loop-replan" },
+        kind: {
+          const: request.archiveRecordedOutcome
+            ? "loop-archive-recorded"
+            : "loop-replan",
+        },
         lease: { type: "object" },
         observation: {
           additionalProperties: false,
@@ -9051,7 +9379,11 @@ const assertReplanRecord = (
           required: ["coordination", "inventoryDigest", "targetRevision"],
           type: "object",
         },
-        outcome: { const: "replanned" },
+        outcome: {
+          const: request.archiveRecordedOutcome
+            ? "archived-unfinished"
+            : "replanned",
+        },
         request: {
           additionalProperties: false,
           properties: Object.fromEntries(
@@ -9086,11 +9418,15 @@ const assertReplanRecord = (
     },
     record
   );
-  const lease = validateSchema<LoopLease>("loop-lease", record.lease);
+  const lease = archivedReplanLease(record.lease);
   if (
     record.schemaVersion !== 1 ||
-    record.kind !== "loop-replan" ||
-    record.outcome !== "replanned" ||
+    record.kind !==
+      (request.archiveRecordedOutcome
+        ? "loop-archive-recorded"
+        : "loop-replan") ||
+    record.outcome !==
+      (request.archiveRecordedOutcome ? "archived-unfinished" : "replanned") ||
     typeof record.archivedAt !== "string" ||
     !DIGEST_PATTERN.test(record.fullLeaseDigest) ||
     JSON.stringify(record.request) !== JSON.stringify(request) ||
@@ -9101,6 +9437,59 @@ const assertReplanRecord = (
   ) {
     throw new SimpleChangesError(
       "Replan archive does not match the exact approved request.",
+      EXIT_CODES.unsafe
+    );
+  }
+};
+
+/**
+ * `loop archive-recorded` archives a run whose recorded shipment outcome can no
+ * longer finish. It proves only that the recorded receipt is intact and still
+ * describes history the current target contains; it never claims delivery.
+ */
+const assertArchivableRecordedOutcome = (lease: LoopLease): void => {
+  const outcome = lease.shipmentOutcome;
+  if (!outcome) {
+    throw new SimpleChangesError(
+      "Recorded-outcome archival requires a historical receipt.",
+      EXIT_CODES.unsafe
+    );
+  }
+  const target = currentTargetRevision(lease);
+  const receipt = validateSchema<ShipmentOutcomeReceipt>(
+    "shipment-outcome",
+    outcome.receipt
+  );
+  const paths = [
+    ...receipt.units.flatMap((unit) => [
+      ...unit.finalPaths,
+      ...unit.originalPaths,
+    ]),
+    ...receipt.additionalPaths,
+  ];
+  if (
+    receipt.runId !== lease.runId ||
+    // The recorded digest covers any preserved-source overrides beside the
+    // lease, so a tampered or missing sidecar refuses archival.
+    !recordedOutcomeIntact(lease) ||
+    paths.length === 0 ||
+    !target ||
+    !targetContainsRevision(
+      lease.primaryCheckout,
+      target,
+      receipt.targetRevision
+    ) ||
+    paths.some(
+      (item) =>
+        targetTreeEntry(
+          lease.primaryCheckout,
+          receipt.targetRevision,
+          item.path
+        ) !== item.entry
+    )
+  ) {
+    throw new SimpleChangesError(
+      "Recorded-outcome archival requires an intact historical receipt and tree contained in the current target.",
       EXIT_CODES.unsafe
     );
   }
@@ -9118,7 +9507,7 @@ const createReplanIntent = (
   if (
     lease.ownerAgentId !== request.agentId ||
     !effectiveShipmentScopeFrozenAt(lease) ||
-    lease.shipmentOutcome ||
+    (!request.archiveRecordedOutcome && lease.shipmentOutcome) ||
     lease.closeEquivalentOutcome ||
     lease.emergencyShipping ||
     verificationAgainst(lease, inventory).violations.some(
@@ -9129,6 +9518,9 @@ const createReplanIntent = (
       "Replan requires the frozen loop's exact owner, no terminal outcome, and complete preparations.",
       EXIT_CODES.unsafe
     );
+  }
+  if (request.archiveRecordedOutcome) {
+    assertArchivableRecordedOutcome(lease);
   }
   const observation = replanObservation(lease, inventory);
   if (
@@ -9150,10 +9542,14 @@ const createReplanIntent = (
   const record: LoopReplanRecord = {
     archivedAt: new Date().toISOString(),
     fullLeaseDigest: sha256(bytes),
-    kind: "loop-replan",
+    kind: request.archiveRecordedOutcome
+      ? "loop-archive-recorded"
+      : "loop-replan",
     lease,
     observation,
-    outcome: "replanned",
+    outcome: request.archiveRecordedOutcome
+      ? "archived-unfinished"
+      : "replanned",
     request,
     schemaVersion: 1,
   };
@@ -9165,11 +9561,52 @@ const replanLeaseMatches = (bytes: string, record: LoopReplanRecord): boolean =>
   sha256(bytes) === record.fullLeaseDigest &&
   JSON.stringify(JSON.parse(bytes)) === JSON.stringify(record.lease);
 
+// The transition of a pending replan or archival: the active lease must still
+// be the recorded bytes and inventory, and an archival re-proves its recorded
+// outcome, first attempt or retry after a crash, so a sidecar edited or lost
+// after the intent refuses.
+const archivePendingReplan = (
+  repositoryPath: string,
+  request: LoopReplanRequest,
+  record: LoopReplanRecord,
+  activePath: string,
+  archivePath: string
+): void => {
+  const bytes = readReplanLeaseBytes(activePath);
+  const inventory = captureInventory(repositoryPath);
+  if (
+    !replanLeaseMatches(bytes, record) ||
+    sha256Json(replanObservation(record.lease, inventory)) !==
+      request.statusDigest
+  ) {
+    throw new SimpleChangesError(
+      "Replan intent no longer matches the active lease or exact inventory.",
+      EXIT_CODES.unsafe
+    );
+  }
+  if (request.archiveRecordedOutcome) {
+    assertArchivableRecordedOutcome(record.lease);
+  }
+  // Both directories are within the same common Git directory. This atomic
+  // rename is the transition: every original byte is preserved, and a crash
+  // cannot leave an unarchived cleared lease. No Git or claim cleanup occurs.
+  renameSync(activePath, archivePath);
+  syncReplanPath(archivePath);
+  syncReplanPath(dirname(archivePath));
+  syncReplanPath(dirname(activePath));
+};
+
 export const replanLoop = (
   repositoryPath: string,
   input: LoopReplanRequest
 ): LoopReplanRecord => {
+  // Key order is part of the stored record: retries compare the request by its
+  // serialized bytes, so archive-recorded records written by earlier forks
+  // must keep `archiveRecordedOutcome` first.
   const request: LoopReplanRequest = {
+    ...(input.archiveRecordedOutcome
+      ? { archiveRecordedOutcome: true as const }
+      : {}),
     agentId: requiredText(input.agentId, "agent ID"),
     approvedBy: requiredText(input.approvedBy, "approver"),
     manifestDigest: requiredText(input.manifestDigest, "manifest digest"),
@@ -9190,6 +9627,7 @@ export const replanLoop = (
   }
   const opening = locateRepository(repositoryPath);
   const common = opening.repository.commonGitDirectory;
+  const attempt = `${request.archiveRecordedOutcome ? "archive-recorded" : "replan"}-${sha256Json(request)}`;
   return withStateLock(common, "loop replan", () =>
     withWorktreeCoordinationLock(common, "loop replan", () => {
       const directory = assertNoSymlinkAncestors(
@@ -9198,7 +9636,7 @@ export const replanLoop = (
           STATE_DIRECTORY,
           RECOVERY_HISTORY_DIRECTORY,
           request.runId,
-          `replan-${sha256Json(request)}`
+          attempt
         )
       );
       const intentPath = join(directory, "replan.json");
@@ -9241,25 +9679,13 @@ export const replanLoop = (
         // A completed retry must never remove a successor, even with the same actor.
         return record;
       }
-      const bytes = readReplanLeaseBytes(activePath);
-      const inventory = captureInventory(repositoryPath);
-      if (
-        !replanLeaseMatches(bytes, record) ||
-        sha256Json(replanObservation(record.lease, inventory)) !==
-          request.statusDigest
-      ) {
-        throw new SimpleChangesError(
-          "Replan intent no longer matches the active lease or exact inventory.",
-          EXIT_CODES.unsafe
-        );
-      }
-      // Both directories are within the same common Git directory. This atomic
-      // rename is the transition: every original byte is preserved, and a crash
-      // cannot leave an unarchived cleared lease. No Git or claim cleanup occurs.
-      renameSync(activePath, archivePath);
-      syncReplanPath(archivePath);
-      syncReplanPath(directory);
-      syncReplanPath(dirname(activePath));
+      archivePendingReplan(
+        repositoryPath,
+        request,
+        record,
+        activePath,
+        archivePath
+      );
       return record;
     })
   );

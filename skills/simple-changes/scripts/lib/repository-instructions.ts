@@ -10,7 +10,9 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
+import { fileURLToPath } from "node:url";
 import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
+import { runningSkillName } from "./skill-roots.ts";
 import type { HandoffTiming } from "./types.ts";
 
 export type InstructionScope = "user" | "repository";
@@ -34,6 +36,19 @@ export interface InstructionPointerResult extends InstructionPointerPlan {
 const START_MARKER = "<!-- simple-changes:start -->";
 const END_MARKER = "<!-- simple-changes:end -->";
 const REPOSITORY_CANDIDATES = ["AGENTS.md", "CLAUDE.md"] as const;
+
+let runningSkill: string | undefined;
+
+/**
+ * The skill this runtime ships in, so a repository fork's setup points agents
+ * at the fork rather than the global `simple-changes`.
+ */
+const defaultSkillName = (): string => {
+  runningSkill ??= runningSkillName(
+    fileURLToPath(new URL("../simple-changes.ts", import.meta.url))
+  );
+  return runningSkill;
+};
 
 const assertExistingInstructionFile = (path: string): void => {
   if (!existsSync(path)) {
@@ -127,15 +142,18 @@ export const discoverInstructionTargets = (
 
 const pointerBody = (
   scope: InstructionScope,
-  timing: HandoffTiming
+  timing: HandoffTiming,
+  skillName: string
 ): string => {
   const policy =
     scope === "repository"
       ? "the current request and `.simple-changes.json`"
       : "the current request and the repository's own policy";
+  // A user-level file spans repositories, so it keeps the generic wording
+  // that lets each repository's own fork apply.
   const skill =
     scope === "repository"
-      ? "the `simple-changes` skill"
+      ? `the \`${skillName}\` skill`
       : "the applicable `simple-changes` skill";
   if (timing === "automatic") {
     return `After an agent completes and verifies assigned implementation work, use ${skill} to hand off that completed work according to ${policy}. Do not trigger this after planning, diagnosis, read-only work, blocked or incomplete implementation, work with failing checks, tasks that changed no repository files, or a Simple Changes run itself.`;
@@ -148,8 +166,10 @@ const pointerBody = (
 
 export const renderInstructionPointer = (
   scope: InstructionScope,
-  timing: HandoffTiming
-): string => [START_MARKER, pointerBody(scope, timing), END_MARKER].join("\n");
+  timing: HandoffTiming,
+  skillName: string = defaultSkillName()
+): string =>
+  [START_MARKER, pointerBody(scope, timing, skillName), END_MARKER].join("\n");
 
 const markerCount = (source: string, marker: string): number =>
   source.split(marker).length - 1;
@@ -161,7 +181,8 @@ const formatWithNewline = (source: string, value: string): string => {
 
 const planInstructionPointer = (
   target: InstructionTarget,
-  timing: HandoffTiming
+  timing: HandoffTiming,
+  skillName: string
 ): InstructionPointerPlan & { contents: string } => {
   assertExistingInstructionFile(target.path);
   const source = readFileSync(target.path, "utf8");
@@ -173,7 +194,7 @@ const planInstructionPointer = (
       EXIT_CODES.unsafe
     );
   }
-  const block = renderInstructionPointer(target.scope, timing);
+  const block = renderInstructionPointer(target.scope, timing, skillName);
   const formattedBlock = formatWithNewline(source, block);
   let contents: string;
   if (startCount === 1) {
@@ -209,9 +230,10 @@ const planInstructionPointer = (
 
 export const writeInstructionPointer = (
   target: InstructionTarget,
-  timing: HandoffTiming
+  timing: HandoffTiming,
+  skillName: string = defaultSkillName()
 ): InstructionPointerResult => {
-  const plan = planInstructionPointer(target, timing);
+  const plan = planInstructionPointer(target, timing, skillName);
   if (!plan.changed) {
     return {
       block: plan.block,

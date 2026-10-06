@@ -34,3 +34,35 @@ proven. After every bounded deletion, refresh evidence, then paginate all
 branches again and record the final remote-branch reconciliation receipt. The
 receipt's `project`, `targetBranch`, and `targetRevision` must describe the
 refreshed project target exactly.
+
+## Gate merges on hosted CI
+
+A repository can refuse a merge whose hosted pipeline has not passed by
+declaring an [`execGuard`](../setup-and-policy.md) in `.simple-changes.json` and
+running merges through `loop exec`:
+
+```json
+{ "execGuard": ["sh", "scripts/exec-guard.sh"] }
+```
+
+The guard receives the exec argv after its own and lets every command it does
+not gate pass:
+
+```sh
+#!/bin/sh
+# Gate only `glab mr merge <iid>`; every other command passes.
+if [ "$1" != glab ] || [ "$2" != mr ] || [ "$3" != merge ]; then
+  exit 0
+fi
+status=$(glab mr view "$4" -F json --jq '.head_pipeline.status')
+if [ "$status" != success ]; then
+  echo "exec guard: the head pipeline of !$4 is ${status:-missing}" >&2
+  exit 1
+fi
+```
+
+Then `simple-changes loop exec --run-id <run> --agent-id <controller> -- glab mr
+merge <iid> --sha <head>` merges only after the guard exits 0. A refusal leaves
+the merge unstarted. A real guard also binds the pipeline to the exact `--sha`
+being merged and decides how to treat skipped or manual jobs; it never replaces
+the provider's own merge checks.

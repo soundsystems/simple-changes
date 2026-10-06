@@ -239,6 +239,21 @@ export const writePolicyFile = (
   }
 };
 
+/**
+ * Setup rebuilds a policy from its answers and never asks about `execGuard`,
+ * so a rewrite keeps the guard already saved in that same file, unchanged.
+ */
+export const withSavedExecGuard = (
+  path: string,
+  policy: RepoPolicy
+): RepoPolicy => {
+  if (!existsSync(path)) {
+    return policy;
+  }
+  const { execGuard } = parsePolicyFile(path);
+  return execGuard ? { ...policy, execGuard } : policy;
+};
+
 export const loadPersonalPolicy = (
   personalPolicyPath = resolvePersonalPolicyPath()
 ): LoadedPolicy => {

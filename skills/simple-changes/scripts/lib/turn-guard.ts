@@ -497,7 +497,7 @@ const mergeTurnCheckHook = (
   command: string,
   installed: boolean
 ): HookSettings => {
-  const hooks = { ...(settings.hooks ?? {}) };
+  const hooks = { ...settings.hooks };
   const stop = Array.isArray(hooks.Stop) ? [...hooks.Stop] : [];
   if (installed) {
     for (const handler of stop.flatMap((group) => group.hooks ?? [])) {

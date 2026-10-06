@@ -23,7 +23,9 @@ interface GitWorkerResult {
 }
 
 const input = (await stdin.json()) as GitWorkerInput;
-const results: GitWorkerResult[] = new Array(input.requests.length);
+const results: GitWorkerResult[] = Array.from<GitWorkerResult>({
+  length: input.requests.length,
+});
 
 // A request that cannot start or finish reading (for example, a missing
 // directory) is reported as failed so the caller re-runs it directly and

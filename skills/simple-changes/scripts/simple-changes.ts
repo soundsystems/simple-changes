@@ -95,6 +95,7 @@ import { buildPreviewPlan } from "./lib/planner.ts";
 import {
   loadPersonalPolicy,
   resolvePersonalPolicyPath,
+  withSavedExecGuard,
   writePolicyFile,
   writeRepositoryPolicyTrustReceipt,
 } from "./lib/policy.ts";
@@ -195,7 +196,7 @@ import {
   standaloneWorktreeCleanup,
 } from "./lib/worktree-maintenance.ts";
 
-const VERSION = "0.24.1";
+const VERSION = "0.25.0";
 const SCRIPT_FILE = fileURLToPath(import.meta.url);
 const PLAIN_SHELL_WORD_PATTERN = /^[\w./-]+$/u;
 const PACKAGE_ROOT = resolve(dirname(SCRIPT_FILE), "..");
@@ -264,6 +265,9 @@ Usage:
     [--json] [--repo PATH]
   simple-changes loop status [--json] [--repo PATH]
   simple-changes loop replan-status [--json] [--repo PATH]
+  simple-changes loop archive-recorded --run-id ID --agent-id ID
+    --manifest-digest SHA256 --status-digest SHA256
+    --approved-by ID --reason TEXT [--json] [--repo PATH]
   simple-changes loop replan --run-id ID --agent-id ID
     --manifest-digest SHA256 --status-digest SHA256
     --approved-by ID --reason TEXT [--json] [--repo PATH]
@@ -275,7 +279,9 @@ Usage:
   simple-changes loop refresh-scope --run-id ID --agent-id ID
     --receipt CHANGE_PLAN_FILE [--json] [--repo PATH]
   simple-changes loop record-outcome --run-id ID --agent-id ID
-    --receipt SHIPMENT_OUTCOME_FILE [--json] [--repo PATH]
+    --receipt SHIPMENT_OUTCOME_FILE
+    [--approved-by USER --approval-reference REFERENCE]
+    [--json] [--repo PATH]
   simple-changes loop exec --run-id ID --agent-id ID [--json] [--repo PATH]
     -- COMMAND [ARG ...]
   simple-changes loop recover --agent-id ID [--json] [--repo PATH]
@@ -388,6 +394,7 @@ interface CliOptions {
   agentName?: string;
   alreadyLive: boolean;
   applyPlanPath?: string;
+  approvalReference?: string;
   approvedBy?: string;
   awaitingUser: string[];
   baseRef?: string;
@@ -479,6 +486,7 @@ const VALUED_OPTIONS = new Set([
   "--adapter",
   "--apply-plan",
   "--agent-id",
+  "--approval-reference",
   "--approved-by",
   "--awaiting-user",
   "--changelog",
@@ -892,6 +900,7 @@ const applyLoopValuedOption = (
     "--agent": "agentName",
     "--agent-id": "agentId",
     "--apply-plan": "applyPlanPath",
+    "--approval-reference": "approvalReference",
     "--approved-by": "approvedBy",
     "--base": "baseRef",
     "--changelog-receipt": "changelogReceiptPath",
@@ -1520,6 +1529,11 @@ const runSetup = async (options: CliOptions): Promise<void> => {
     );
     const path = setupPolicyPath(selection.scope, context.primaryCheckout);
     const written = selection.confirmed && path !== null;
+    // Setup never asks about `execGuard`; rewriting a policy keeps its guard.
+    const policy =
+      written && path
+        ? withSavedExecGuard(path, selection.policy)
+        : selection.policy;
     const applyWrites = (): {
       instructionPointerChanged: boolean;
       instructionPointerWritten: boolean;
@@ -1539,7 +1553,7 @@ const runSetup = async (options: CliOptions): Promise<void> => {
         instructionPointerChanged = pointerResult.changed;
       }
       if (written && path) {
-        writePolicyFile(path, selection.policy, selection.scope === "user");
+        writePolicyFile(path, policy, selection.scope === "user");
         if (selection.scope === "repository" && context.primaryCheckout) {
           writeRepositoryPolicyTrustReceipt(
             context.primaryCheckout,
@@ -1579,7 +1593,7 @@ const runSetup = async (options: CliOptions): Promise<void> => {
         written: writeResult.instructionPointerWritten,
       },
       path,
-      policy: selection.policy,
+      policy,
       scope: selection.scope,
       setupStyle: selection.setupStyle,
       summary: selection.summary,
@@ -2807,8 +2821,11 @@ const runLoopRecoveryAction = (
     writeOutput(status, options.json, `${JSON.stringify(status, null, 2)}\n`);
     return true;
   }
-  if (action === "replan") {
+  if (action === "replan" || action === "archive-recorded") {
     const result = replanLoop(options.repo, {
+      ...(action === "archive-recorded"
+        ? { archiveRecordedOutcome: true as const }
+        : {}),
       agentId: requireCliOption(options.agentId, "--agent-id"),
       approvedBy: requireCliOption(options.approvedBy, "--approved-by"),
       manifestDigest: requireCliOption(
@@ -2822,7 +2839,9 @@ const runLoopRecoveryAction = (
     writeOutput(
       result,
       options.json,
-      `Replanned ${result.request.runId}; the original lease is archived, this transition did not ship or clean work. Start a fresh loop through the normal workflow.\n`
+      result.outcome === "archived-unfinished"
+        ? `Archived ${result.request.runId} (${result.outcome}); this transition did not ship or clean work. All historical receipts are preserved. Start a fresh loop through the normal workflow and reconcile current provider state.\n`
+        : `Replanned ${result.request.runId}; the original lease is archived, this transition did not ship or clean work. Start a fresh loop through the normal workflow.\n`
     );
     return true;
   }
@@ -2934,7 +2953,7 @@ const runLoopCommand = async (options: CliOptions): Promise<void> => {
   const [action] = options.positional;
   if (!action) {
     throw new SimpleChangesError(
-      "loop requires start, status, verify, record-scope, refresh-scope, record-outcome, guard, exec, recover, recover-post-cleanup, close-equivalent, replan-status, replan, takeover, rebaseline, allow, dispose-worktree, retain-worktree, retire-absent-worktree, adopt-worktree, accept-paused-change, reconcile-remote-branches, emergency, end, finalize, or turn-check",
+      "loop requires start, status, verify, record-scope, refresh-scope, record-outcome, guard, exec, recover, recover-post-cleanup, close-equivalent, replan-status, replan, archive-recorded, takeover, rebaseline, allow, dispose-worktree, retain-worktree, retire-absent-worktree, adopt-worktree, accept-paused-change, reconcile-remote-branches, emergency, end, finalize, or turn-check",
       EXIT_CODES.usage
     );
   }
@@ -2975,7 +2994,11 @@ const runLoopCommand = async (options: CliOptions): Promise<void> => {
       options.repo,
       runId,
       agentId,
-      readJsonFile(requireCliOption(options.receiptPath, "--receipt"))
+      readJsonFile(requireCliOption(options.receiptPath, "--receipt")),
+      {
+        approvalReference: options.approvalReference,
+        approvedBy: options.approvedBy,
+      }
     );
     writeOutput(outcome, options.json, `${outcome.summary}\n`);
     return;

@@ -8,6 +8,7 @@ import { sleepSync } from "bun";
 import {
   type GitExecutableProbe,
   GuardedProcessGroupStillAliveError,
+  PROCESS_GROUP_CONTROL,
   type ProcessGroupControl,
   type ProcessGroupRunDependencies,
   resolveGitExecutable,
@@ -224,7 +225,7 @@ const errno = (code: string): Error =>
 interface RecordingControl extends ProcessGroupControl {
   pids: number[];
   signals: Array<NodeJS.Signals | 0>;
-  taskkills: string[][];
+  taskkills: Array<{ argv: string[]; timeoutMs: number }>;
 }
 
 const simulatedGroup = (
@@ -234,7 +235,7 @@ const simulatedGroup = (
   let alive = true;
   const pids: number[] = [];
   const signals: Array<NodeJS.Signals | 0> = [];
-  const taskkills: string[][] = [];
+  const taskkills: Array<{ argv: string[]; timeoutMs: number }> = [];
   return {
     graceMs: 0,
     kill: (pid, signal) => {
@@ -252,8 +253,8 @@ const simulatedGroup = (
     },
     pids,
     platform: "linux",
-    runSync: (argv) => {
-      taskkills.push(argv);
+    runSync: (argv, timeoutMs) => {
+      taskkills.push({ argv, timeoutMs });
     },
     signals,
     taskkills,
@@ -291,15 +292,23 @@ describe("Unregistered command cleanup", () => {
     ).toBeInstanceOf(GuardedProcessGroupStillAliveError);
   });
 
-  test("on Windows, kills the tree with taskkill and keeps the lock", async () => {
+  test("on Windows, kills the tree with a bounded taskkill and keeps the lock", async () => {
     const control = simulatedGroup("survives", { platform: "win32" });
     expect(
       await unregisteredCommandCleanup("guard", CHILD_PID, control)
     ).toBeInstanceOf(GuardedProcessGroupStillAliveError);
     expect(control.signals).toEqual([]);
-    expect(control.taskkills).toEqual([
-      ["taskkill", "/pid", String(CHILD_PID), "/t", "/f"],
+    expect(control.taskkills).toHaveLength(1);
+    const [taskkill] = control.taskkills;
+    expect(taskkill?.argv).toEqual([
+      "taskkill",
+      "/pid",
+      String(CHILD_PID),
+      "/t",
+      "/f",
     ]);
+    expect(taskkill?.timeoutMs).toBeGreaterThan(0);
+    expect(taskkill?.timeoutMs).toBeLessThanOrEqual(60_000);
   });
 
   test("on Windows, keeps the lock when taskkill cannot launch", async () => {
@@ -312,6 +321,15 @@ describe("Unregistered command cleanup", () => {
     expect(
       await unregisteredCommandCleanup("guard", CHILD_PID, control)
     ).toBeInstanceOf(GuardedProcessGroupStillAliveError);
+  });
+
+  test("the production taskkill runner stops a command that hangs", () => {
+    const started = Date.now();
+    PROCESS_GROUP_CONTROL.runSync(
+      [process.execPath, "-e", "await Bun.sleep(15_000)"],
+      200
+    );
+    expect(Date.now() - started).toBeLessThan(5000);
   });
 });
 

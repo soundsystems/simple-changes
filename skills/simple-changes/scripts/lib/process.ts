@@ -38,6 +38,8 @@ export class GuardedProcessGroupStillAliveError extends SimpleChangesError {
 const textDecoder = new TextDecoder();
 const PROCESS_GROUP_EXIT_GRACE_MS = 1000;
 const PROCESS_GROUP_POLL_MS = 25;
+// A taskkill that hangs must not hold the run open; the lock is kept anyway.
+const TASKKILL_TIMEOUT_MS = 10_000;
 
 /**
  * Everything process-group cleanup touches outside this process. Production
@@ -48,8 +50,8 @@ export interface ProcessGroupControl {
   graceMs: number;
   kill: (pid: number, signal: NodeJS.Signals | 0) => void;
   platform: NodeJS.Platform;
-  /** Runs a command to completion. */
-  runSync: (argv: string[]) => void;
+  /** Runs a command to completion, stopping it after `timeoutMs`. */
+  runSync: (argv: string[], timeoutMs: number) => void;
 }
 
 export const PROCESS_GROUP_CONTROL: ProcessGroupControl = {
@@ -58,8 +60,8 @@ export const PROCESS_GROUP_CONTROL: ProcessGroupControl = {
     process.kill(pid, signal);
   },
   platform: process.platform,
-  runSync: (argv) => {
-    spawnSync(argv, { stderr: "ignore", stdout: "ignore" });
+  runSync: (argv, timeoutMs) => {
+    spawnSync(argv, { stderr: "ignore", stdout: "ignore", timeout: timeoutMs });
   },
 };
 
@@ -159,8 +161,8 @@ const lingeringProcessGroupError = async (
  * Terminates a command whose registration failed, with no wait on its leader.
  * On Unix the leader's whole process group is terminated, and a group that
  * survives (or cannot be signalled) keeps the lock. Windows has no group to
- * prove empty, so it attempts to kill the process tree and always keeps the
- * lock.
+ * prove empty, so it attempts to kill the process tree, bounded by a timeout,
+ * and always keeps the lock.
  */
 export const unregisteredCommandCleanup = async (
   command: string,
@@ -169,7 +171,10 @@ export const unregisteredCommandCleanup = async (
 ): Promise<GuardedProcessGroupStillAliveError | null> => {
   if (control.platform === "win32") {
     try {
-      control.runSync(["taskkill", "/pid", String(childPid), "/t", "/f"]);
+      control.runSync(
+        ["taskkill", "/pid", String(childPid), "/t", "/f"],
+        TASKKILL_TIMEOUT_MS
+      );
     } catch {
       // The lock is kept below whether or not taskkill could run.
     }

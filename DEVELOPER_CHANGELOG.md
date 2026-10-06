@@ -54,20 +54,32 @@
   `scripts/`.
 - `runInProcessGroup` (shared by `loop exec` children and the guard)
   previously killed only the leader when registering the spawned process
-  failed. It now kills the leader, waits for it to exit, and terminates the
-  whole group. A group that survives raises
-  `GuardedProcessGroupStillAliveError`, so the lock is kept.
-  `process.test.ts` covers a descendant started before the failure.
+  failed, so a descendant could outlive the released lock.
+  `unregisteredCommandCleanup` now handles that case:
+  - On Unix it terminates the leader's whole process group directly, without
+    waiting on the leader. A group that survives, or that cannot be
+    signalled, raises `GuardedProcessGroupStillAliveError`, so the lock is
+    kept.
+  - A late child `error` event can no longer settle the run first.
+  - On Windows, where no process group can be proven empty, it kills the
+    process tree with `taskkill /t /f` and always keeps the lock.
+  - `process.test.ts` covers a Unix descendant started before the failure.
+    The failed-termination and Windows paths have no tests.
 - Guidance 26. There are 47 new tests (780 to 827), and each new guard was
   mutation-checked.
 - Not upstreamed, because canonical already covers them:
   - Thor's claimed-author opening digest: scoped opening invariants already
     admit claimed authors' edits and refuse a drifted scope source.
   - Thor's in-receipt advanced merged proof: `mergedHeadAncestry` covers it.
-- GPT-6 Sol (high) reviewed `45ed850`. Its blocking finding (a registration
-  failure could leave a guard's descendants running after the lock was
-  released) and its should-fix (the archive hint was missing for a run paused
-  with `--awaiting-user`) are fixed above.
+- GPT-6 Sol (high) reviewed `45ed850`.
+  - Its blocking finding was that a registration failure could leave a
+    guard's descendants running after the lock was released.
+  - Its should-fix was that the archive hint was missing for a run paused
+    with `--awaiting-user`.
+  - Its re-review of `d98bf0b` found three gaps in the first fix: a failed
+    leader kill could settle the run before group cleanup, Windows had no
+    cleanup, and the leader wait had no deadline.
+  - All of these are fixed above.
 <!-- simple-changelogs-signature agent="Claude Opus 5.5 xhigh" at="2026-10-05T19:22:39-05:00" -->
 
 ## 0.24.1 - 2026-10-05

@@ -114,6 +114,32 @@ const lingeringProcessGroupError = async (
     : new GuardedProcessGroupStillAliveError(command, processGroupId);
 };
 
+// Terminates a command whose registration failed, with no wait on its leader.
+// On Unix the leader's whole process group is terminated, and a group that
+// survives (or cannot be signalled) keeps the lock. Windows has no group to
+// prove empty, so the process tree is killed and the lock is always kept.
+const unregisteredCommandCleanup = async (
+  command: string,
+  childPid: number
+): Promise<GuardedProcessGroupStillAliveError | null> => {
+  if (process.platform === "win32") {
+    spawnSync(["taskkill", "/pid", String(childPid), "/t", "/f"], {
+      stderr: "ignore",
+      stdout: "ignore",
+    });
+    return new GuardedProcessGroupStillAliveError(command, childPid);
+  }
+  let terminated = false;
+  try {
+    terminated = await terminateLingeringProcessGroup(childPid);
+  } catch {
+    terminated = !processGroupIsAlive(childPid);
+  }
+  return terminated
+    ? null
+    : new GuardedProcessGroupStillAliveError(command, childPid);
+};
+
 const runCommand = (
   command: string,
   args: readonly string[],
@@ -269,22 +295,15 @@ const runInProcessGroup = (
         processGroupId: process.platform === "win32" ? null : childPid,
       });
     } catch (error) {
-      // The command may already have started descendants. Once the leader
-      // exits, terminate the whole group; a group that survives keeps the
-      // lock, exactly like one left behind by a finished command.
-      child.once("exit", async () => {
-        const processGroupError = await lingeringProcessGroupError(
-          command,
-          args[0],
-          childPid
-        );
-        rejectPromise(
-          processGroupError instanceof GuardedProcessGroupStillAliveError
-            ? processGroupError
-            : error
-        );
-      });
-      child.kill("SIGKILL");
+      // Nothing will await this unregistered command, so release the lock
+      // only once its descendants are proven gone. A late child error must
+      // not settle the run before that cleanup finishes.
+      child.removeAllListeners("error");
+      child.on("error", () => undefined);
+      unregisteredCommandCleanup(command, childPid).then(
+        (cleanupError) => rejectPromise(cleanupError ?? error),
+        rejectPromise
+      );
       return;
     }
     child.once("close", async (code) => {

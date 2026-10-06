@@ -65,8 +65,10 @@ of its parent section, so every later section beside an entry is one too,
 even when titled only by its subject. A heading that starts with "Current",
 such as `## Current upstream (0.25.0)`, marks current state outside a history
 section: its section stays a current claim and ends the log beside it. Keep
-other current notes above the history. A test that asserts such a record
-stays matched to it.
+other current notes above the history. Only `#` headings are read; an
+underlined (Setext) heading such as `History` over `=======` is plain text,
+so title history sections and entries with `#`. A test that asserts such a
+record stays matched to it.
 
 ## Omitted references
 

@@ -34,20 +34,31 @@
       is paused on a user question.
   - Preserved-source override (from Thor's `preserved-source-override.ts`):
     - `preservedSourceOverride` on shipment-outcome units is stored in
-      `preserved-source-override/<run-id>.json` beside the lease, bound to the
-      receipt digest, with the new `preserved-source-override.schema.json`.
-      The lease schema stays frozen at 0.22.0 for older clients.
+      `preserved-source-override/<run-id>.json` beside the lease, with the new
+      `preserved-source-override.schema.json`. The lease keeps the stripped
+      receipt, because its schema stays frozen at 0.22.0 for older clients.
+    - `shipmentOutcome.receiptDigest` is the digest of the complete submitted
+      receipt, overrides included, which is also what the Thor fork recorded.
+      Without overrides it equals the stripped receipt's digest.
     - `--approved-by` and `--approval-reference` must match every override
       and are refused without one.
-    - Finalize and `loop end` re-check the source, claim, target, and
-      sidecar. A unit that only an override could record blocks completion if
-      the sidecar is missing.
+    - Finalize, `loop end`, the verified-delivery check, and
+      `loop archive-recorded` recompose the stored receipt with the sidecar.
+      They fail closed when the result does not match that digest, so editing
+      any approval or path field after recording, or losing the sidecar,
+      blocks completion. Finalize and `loop end` also re-check the source,
+      claim, and target entries.
+    - Site Secure's two override-carrying finalization records match this
+      digest rule.
     - `loop record-outcome` and `loop end` hold the worktree-coordination
       lock.
 - `repository-instructions.ts` names the running skill from its `SKILL.md`
   (`runningSkillName` in `skill-roots.ts`), in both the `scripts/` and
-  `runtime/scripts/` layouts. It falls back to `simple-changes`, keeps the
-  markers unchanged, and leaves the personal block's wording generic.
+  `runtime/scripts/` layouts.
+  - It reads the complete quoted or plain `name:` value and falls back to
+    `simple-changes` unless that value is a valid skill name.
+  - It keeps the markers unchanged and leaves the personal block's wording
+    generic.
 - `fork.ts` (a reverse index loop; `toReversed()` is outside the ES2022 lib),
   `git-worker.ts`, `subagent-control.ts`, and `turn-guard.ts` take forms both
   Biome and oxlint accept. Site Secure's oxlint 1.83 reports nothing over
@@ -62,12 +73,14 @@
     kept.
   - A late child `error` event can no longer settle the run first.
   - On Windows, where no process group can be proven empty, it attempts to
-    kill the process tree with `taskkill /t /f` and always keeps the lock,
-    even when `taskkill` cannot run.
-  - A cleanup that itself fails also keeps the lock.
-  - `process.test.ts` covers a Unix descendant started before the failure.
-    The failed-termination and Windows paths have no tests.
-- Guidance 26. There are 47 new tests (780 to 827), and each new guard was
+    kill the process tree with `taskkill /t /f`, bounded at 10 seconds, and
+    always keeps the lock, even when `taskkill` cannot run.
+  - A cleanup that itself fails, synchronously or not, also keeps the lock.
+  - The cleanup and `runInProcessGroup` take injectable process controls,
+    with production defaults unchanged. `process.test.ts` covers a real Unix
+    descendant, surviving and unsignallable groups, the Windows branch, late
+    child errors, and failing cleanups.
+- Guidance 26. There are 78 new tests (780 to 858), and each new guard was
   mutation-checked.
 - Not upstreamed, because canonical already covers them:
   - Thor's claimed-author opening digest: scoped opening invariants already
@@ -83,6 +96,14 @@
     cleanup, and the leader wait had no deadline.
   - Its second re-review found that a `taskkill` that could not launch still
     released the lock.
+  - All of these are fixed above.
+- GPT-6.1 Sol (high) reviewed the whole branch at `ebf349e`.
+  - Blocking: override approval evidence could be edited after recording
+    without detection, because the sidecar was bound only to the stripped
+    receipt.
+  - Should-fixes: the Windows `taskkill` was unbounded, and the cleanup
+    failure paths had no tests.
+  - Nit: the skill-name parser accepted a prefix of an invalid `name:`.
   - All of these are fixed above.
 <!-- simple-changelogs-signature agent="Claude Opus 5.5 xhigh" at="2026-10-05T19:22:39-05:00" -->
 

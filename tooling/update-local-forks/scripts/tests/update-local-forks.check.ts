@@ -1611,6 +1611,68 @@ describe("update-local-forks", () => {
     );
   });
 
+  test("reads a CRLF note's fences and history headings and keeps its line endings", () => {
+    const fixture = createFixture();
+    const { pin, release } = fixture;
+    // [line, current]: current lines move with the pin; the rest are records.
+    const lines: [string, boolean][] = [
+      ["# Fork maintenance", false],
+      ["", false],
+      ["## Current deltas", false],
+      ["", false],
+      ["```sh", false],
+      [`echo bundles Simple Changes 0.1.0 at ${pin}`, true],
+      ["```", false],
+      ["", false],
+      ["The wrapper runs Simple Changes 0.1.0.", true],
+      ["", false],
+      ["## Intentional omissions", false],
+      ["", false],
+      [
+        "- `references/deployments.md`: Acme deploys through its own pipeline.",
+        false,
+      ],
+      [
+        "- `references/signatures.md`: Acme proposals carry no agent signatures.",
+        false,
+      ],
+      ["", false],
+      // Only a closed fence above lets this heading start a history entry.
+      ["## Upstream 0.1.0 (pin deadbee)", false],
+      ["", false],
+      [`- Re-pin to \`${pin}\` (Simple Changes 0.1.0).`, false],
+      ["", false],
+      ["## History", false],
+      ["", false],
+      ["### Upstream 0.0.9 (`628c66b..7ab67a1`)", false],
+      ["", false],
+      ["- Staged ahead of Simple Changes 0.1.0.", false],
+    ];
+    const crlf = (rows: string[]): string => `${rows.join("\r\n")}\r\n`;
+    const notePath = join(fixture.fork, "references/fork-maintenance.md");
+    writeFileSync(notePath, crlf(lines.map(([line]) => line)));
+
+    const plan = planForkUpdate({
+      fork: fixture.fork,
+      source: fixture.source,
+      upstream: fixture.upstream,
+    });
+    expect(plan.pinUpdate.to).toBe(release);
+    applyForkPlan(plan);
+
+    expect(readFileSync(notePath, "utf8")).toBe(
+      crlf(
+        lines.map(([line, current]) =>
+          current
+            ? line
+                .replaceAll(pin, release)
+                .replaceAll("Simple Changes 0.1.0", "Simple Changes 0.2.0")
+            : line
+        )
+      )
+    );
+  });
+
   test("refuses stale literal targets and conflict sidecars", () => {
     const fixture = createFixture();
     const literalPlan = planForkUpdate({

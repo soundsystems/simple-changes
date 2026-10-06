@@ -1305,7 +1305,15 @@ const openSection = (
   parent.entries = kind === "entry" || (kind !== "current" && parent.entries);
 };
 
-const recordLines = (forkPath: string, lines: string[]): boolean[] => {
+/**
+ * Which lines are records. Lines come from splitting on LF, so a CRLF file's
+ * lines keep a trailing CR; it is dropped for matching only, and the rewrite
+ * keeps every line ending as written.
+ */
+const recordLines = (forkPath: string, rawLines: string[]): boolean[] => {
+  const lines = rawLines.map((line) =>
+    line.endsWith("\r") ? line.slice(0, -1) : line
+  );
   if (!forkPath.endsWith(".md")) {
     return lines.map((line) => RANGE_PATTERN.test(line));
   }

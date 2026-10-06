@@ -51,7 +51,11 @@ deltas. Two layouts are recognized:
 
 Every write is byte for byte: an upstream version, a three-way merge, and a
 literal rewrite keep each byte as upstream or the fork has it, invalid UTF-8
-included, and a saved plan carries such content as base64.
+included, and a saved plan carries such content as base64. Apply checks each
+file it writes, deletes, or rewrites against a digest of its raw bytes taken
+at plan time. A plan saved by an earlier `update-local-forks` hashed decoded
+text instead: it still applies where those files are valid UTF-8, and apply
+refuses it as changed since the plan for a file that is not, so plan again.
 
 File names must be valid UTF-8. Planning refuses an installed source or a
 fork that holds a path that is not, naming the path bytes in hex, and a

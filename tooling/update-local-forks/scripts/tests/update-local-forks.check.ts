@@ -8,6 +8,7 @@ import {
   setDefaultTimeout,
   test,
 } from "bun:test";
+import { createHash } from "node:crypto";
 // biome-ignore lint/performance/noNamespaceImport: mock.module must stand in for every node:fs export.
 import * as fs from "node:fs";
 import {
@@ -28,6 +29,7 @@ import { spawnSync } from "bun";
 import {
   applyForkPlan,
   discover,
+  type ForkPlan,
   inspectFork,
   intentionalOmissions,
   openUpstream,
@@ -1417,6 +1419,72 @@ describe("update-local-forks", () => {
     expect(pastNext.pinUpdate.to).toBeNull();
     expect(pastNext.pinUpdate.reason).toContain(
       "any of the 2 commit(s) on main from the 0.3.0 release entry up to the next release entry"
+    );
+  });
+
+  test("applies an earlier plan's text digests to valid UTF-8 and refuses them otherwise", () => {
+    // Earlier releases hashed each fork file's decoded text, not its bytes.
+    const textDigest = (path: string): string =>
+      createHash("sha256").update(readFileSync(path, "utf8")).digest("hex");
+    const savedEarlier = (fork: string, plan: ForkPlan): ForkPlan => {
+      const saved = structuredClone(plan);
+      for (const entry of saved.entries) {
+        if (entry.forkDigest !== null) {
+          entry.forkDigest = textDigest(join(fork, entry.forkPath));
+        }
+      }
+      for (const rewrite of saved.literalRewrites) {
+        rewrite.forkDigest = textDigest(join(fork, rewrite.forkPath));
+      }
+      return saved;
+    };
+
+    // Every file valid UTF-8: the earlier digests are the same, so it applies.
+    const valid = createFixture();
+    const validPlan = planForkUpdate({
+      fork: valid.fork,
+      source: valid.source,
+      upstream: valid.upstream,
+    });
+    const earlier = savedEarlier(valid.fork, validPlan);
+    expect(earlier).toEqual(validPlan);
+    expect(applyForkPlan(earlier).pin).toEqual({
+      from: valid.pin,
+      to: valid.release,
+    });
+
+    // A fork note that is not valid UTF-8: the text digest no longer matches
+    // its bytes, so apply refuses the plan as stale instead of writing.
+    const invalid = createFixture();
+    const notePath = join(invalid.fork, "notes.md");
+    const note = Buffer.concat([
+      Buffer.from("Bundled Simple Changes 0.1.0 "),
+      Buffer.from([0xf0, 0x9f, 0x92]),
+      Buffer.from(".\n"),
+    ]);
+    writeFileSync(notePath, note);
+    const invalidPlan = planForkUpdate({
+      fork: invalid.fork,
+      source: invalid.source,
+      upstream: invalid.upstream,
+    });
+    expect(
+      invalidPlan.literalRewrites.some(
+        (rewrite) => rewrite.forkPath === "notes.md"
+      )
+    ).toBe(true);
+    expect(() =>
+      applyForkPlan(savedEarlier(invalid.fork, invalidPlan))
+    ).toThrow("notes.md changed after the plan was made; re-run plan.");
+    expect(readFileSync(notePath).toString("hex")).toBe(note.toString("hex"));
+    // Planning again gives a plan that applies.
+    applyForkPlan(invalidPlan);
+    expect(readFileSync(notePath).toString("hex")).toBe(
+      Buffer.concat([
+        Buffer.from("Bundled Simple Changes 0.2.0 "),
+        Buffer.from([0xf0, 0x9f, 0x92]),
+        Buffer.from(".\n"),
+      ]).toString("hex")
     );
   });
 

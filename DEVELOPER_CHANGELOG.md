@@ -1,5 +1,41 @@
 # Developer changelog
 
+## 0.25.1 - 2026-10-05
+
+- `update-local-forks` `locateSourceCommit` no longer checks only the commit
+  that added the release entry (`git log -S"## <version> "` on the packaged
+  CHANGELOG).
+  - It also searches that commit's descendants on the searched branch, up to
+    but not including the next release entry, which is a commit whose
+    packaged CHANGELOG has a different top version.
+  - It pins the earliest byte-identical packaged tree on the branch's
+    first-parent history (the merge commit). It falls back to a merged
+    side-branch commit, and never pins a guess.
+  - A quick check on file paths and sizes prunes most candidate trees before
+    the content digest proves a match. The cache fetch depth stays at 400.
+  - For 0.25.0 the old search returned the release-prep commit `d98bf0b`,
+    which five later review fixes made unverifiable. The new search resolves
+    0.25.0 to `eb21066`, and all four Simple Changes forks had been pinned
+    there by hand.
+- The version-literal rewrite treats more of a fork's history as records:
+  - headings titled only by a pin, a release and commit, a range, a date, or
+    the old literal, such as Hashi's ``## Fork fix: … (pin `fd16f54`)`` and
+    Thor's ``## Canonical 0.12.4 (`1b7b7e7`)``;
+  - subject-only sections that continue a history log, such as
+    `## Local Blacksmith CI bridge`;
+  - entries after a longer fence that wraps a shorter one, since fences are
+    now tracked like the omissions parser;
+  - abbreviated SHAs of any shape, including all-digit ones.
+
+  The canonical 0.25.0 rule would have rewritten "Simple Changes 0.25.0" on
+  two lines of Hashi's history at the next bump. Thor's rewritten 0.24.1 entry
+  came from the stale global install (2026-09-02), which rewrote every
+  occurrence of the literal.
+- Tests cover each search case and a fork maintenance note in each real
+  fork's heading style (Thor, Hashi, Patrick, Pulse). Every rule was
+  mutation-checked. `fork-sync.md` documents both rules.
+<!-- simple-changelogs-signature agent="Claude Opus 5.5 xhigh" at="2026-10-05T22:00:40-05:00" -->
+
 ## 0.25.0 - 2026-10-05
 
 - Upstreams the generic runtime deltas the Thor and Hashi forks carried, so

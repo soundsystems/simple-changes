@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.25.1 - 2026-10-05
+
+- `update-local-forks` now moves a fork's pin when a release received review
+  fixes after its release notes were written. It pins the commit that actually
+  shipped, instead of refusing and leaving the pin to be set by hand. It still
+  never pins a guess: if the installed skill matches no commit of that release
+  exactly, the plan keeps the pin and says how many commits it checked.
+- Pin updates no longer rewrite past release entries in a fork's maintenance
+  notes, whichever heading style the fork uses for its history.
+<!-- simple-changelogs-signature agent="Claude Opus 5.5 xhigh" at="2026-10-05T22:00:40-05:00" -->
+
 ## 0.25.0 - 2026-10-05
 
 - Your repository can now add an `execGuard` check to `.simple-changes.json`.

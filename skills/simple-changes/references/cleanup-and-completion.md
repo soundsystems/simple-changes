@@ -585,7 +585,9 @@ with a recorded outcome, and `loop replan-status` returns it as `nextCommand`.
    workflow. Reconcile current provider truth before any new mutation.
 
 It requires an intact, nonempty historical receipt: the receipt's run ID matches
-the lease, its digest matches the recorded one, every recorded path's entry
+the lease, its digest matches the recorded one (together with any
+[preserved-source overrides](focused-units.md#preserved-source-override) stored
+beside the lease, which must be present and unchanged), every recorded path's entry
 matches the receipt's target tree, and the current target contains that target
 revision. It still refuses unfinished author preparations, target-equivalent
 outcomes, and emergency shipping ledgers, and binds the current inventory and

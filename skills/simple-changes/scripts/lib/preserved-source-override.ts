@@ -6,6 +6,7 @@ import type {
   LoopWorktreeLease,
   PreservedSourceOverrideReceipt,
   PreservedSourceOverrideRecord,
+  ShipmentOutcomeInput,
   ShipmentOutcomePath,
   ShipmentOutcomeReceipt,
   WorktreeClaim,
@@ -15,27 +16,62 @@ import type {
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
+const OVERRIDES_UNBOUND =
+  "Preserved-source overrides do not match this run's recorded shipment outcome; record the outcome again.";
+
+/**
+ * The receipt exactly as `loop record-outcome` received it: each override back
+ * on the one unit it names. The recorded outcome digest is this receipt's
+ * digest, so every override field, not only the receipt the lease stores, is
+ * bound to the lease. Without overrides it is the stored receipt itself.
+ */
+export const composeShipmentOutcome = (
+  receipt: ShipmentOutcomeReceipt,
+  overrides: readonly PreservedSourceOverrideReceipt[]
+): ShipmentOutcomeInput => {
+  const byUnit = new Map(overrides.map((item) => [item.unitId, item]));
+  if (
+    byUnit.size !== overrides.length ||
+    overrides.some(
+      (item) =>
+        receipt.units.filter((unit) => unit.unitId === item.unitId).length !== 1
+    )
+  ) {
+    throw new SimpleChangesError(
+      "Invalid shipment outcome: each preservedSourceOverride must name exactly one recorded unit, at most once.",
+      EXIT_CODES.validation
+    );
+  }
+  return {
+    ...receipt,
+    units: receipt.units.map((unit) => {
+      const override = byUnit.get(unit.unitId);
+      return override ? { ...unit, preservedSourceOverride: override } : unit;
+    }),
+  };
+};
+
 /**
  * Splits a `loop record-outcome` receipt into the original receipt shape the
- * lease stores and the user-approved overrides its units carry. Older clients
- * strictly validate the lease, so overrides live in a sidecar beside it.
+ * lease stores and the user-approved overrides its units carry, and digests
+ * the complete receipt. Older clients strictly validate the lease, so
+ * overrides live in a sidecar beside it.
  */
 export const splitShipmentOutcomeInput = (
   value: unknown
 ): {
   overrides: PreservedSourceOverrideReceipt[];
   receipt: ShipmentOutcomeReceipt;
+  receiptDigest: string;
 } => {
   if (!(isRecord(value) && Array.isArray(value.units))) {
-    return {
-      overrides: [],
-      receipt: validateSchema<ShipmentOutcomeReceipt>(
-        "shipment-outcome",
-        value
-      ),
-    };
+    const receipt = validateSchema<ShipmentOutcomeReceipt>(
+      "shipment-outcome",
+      value
+    );
+    return { overrides: [], receipt, receiptDigest: sha256Json(receipt) };
   }
-  const overrides: unknown[] = [];
+  const overrides: PreservedSourceOverrideReceipt[] = [];
   const units = value.units.map((unit: unknown) => {
     if (!(isRecord(unit) && "preservedSourceOverride" in unit)) {
       return unit;
@@ -50,7 +86,10 @@ export const splitShipmentOutcomeInput = (
         EXIT_CODES.validation
       );
     }
-    overrides.push(preservedSourceOverride);
+    // Its shape is validated with the sidecar record below.
+    overrides.push(
+      preservedSourceOverride as unknown as PreservedSourceOverrideReceipt
+    );
     return entry;
   });
   const receipt = validateSchema<ShipmentOutcomeReceipt>("shipment-outcome", {
@@ -58,40 +97,54 @@ export const splitShipmentOutcomeInput = (
     units,
   });
   if (overrides.length === 0) {
-    return { overrides: [], receipt };
+    return { overrides: [], receipt, receiptDigest: sha256Json(receipt) };
   }
-  return {
-    overrides: validateSchema<PreservedSourceOverrideRecord>(
-      "preserved-source-override",
-      {
-        overrides,
-        receiptDigest: sha256Json(receipt),
-        runId: receipt.runId,
-        schemaVersion: 1,
-      }
-    ).overrides,
-    receipt,
-  };
+  const receiptDigest = sha256Json(composeShipmentOutcome(receipt, overrides));
+  const record = validateSchema<PreservedSourceOverrideRecord>(
+    "preserved-source-override",
+    { overrides, receiptDigest, runId: receipt.runId, schemaVersion: 1 }
+  );
+  return { overrides: record.overrides, receipt, receiptDigest };
 };
 
 /**
- * Re-joins an override sidecar with the exact outcome it was recorded for. A
- * sidecar for another run or receipt fails closed instead of being ignored.
+ * Re-joins the override sidecar with the exact outcome it was recorded for.
+ * The stored receipt and the sidecar's overrides must recompose into the
+ * complete receipt the recorded digest names, so editing any override field,
+ * substituting another run's sidecar, or removing the sidecar of an outcome
+ * recorded with overrides fails closed. `sidecar` is null when no file exists.
  */
-export const validatePreservedSourceOverrideRecord = (
-  value: unknown,
+export const recordedPreservedSourceOverrides = (
+  sidecar: unknown,
   runId: string,
+  receipt: ShipmentOutcomeReceipt,
   receiptDigest: string
 ): PreservedSourceOverrideReceipt[] => {
+  if (sidecar === null) {
+    if (sha256Json(receipt) !== receiptDigest) {
+      throw new SimpleChangesError(
+        `Shipment outcome for ${runId} was recorded with preserved-source overrides whose sidecar is missing; record the outcome again.`,
+        EXIT_CODES.unsafe
+      );
+    }
+    return [];
+  }
   const record = validateSchema<PreservedSourceOverrideRecord>(
     "preserved-source-override",
-    value
+    sidecar
   );
-  if (record.runId !== runId || record.receiptDigest !== receiptDigest) {
-    throw new SimpleChangesError(
-      "Preserved-source overrides do not match this run's recorded shipment outcome; record the outcome again.",
-      EXIT_CODES.unsafe
-    );
+  let recomposed: string | null = null;
+  try {
+    recomposed = sha256Json(composeShipmentOutcome(receipt, record.overrides));
+  } catch {
+    // An override that names no recorded unit cannot be this outcome's.
+  }
+  if (
+    record.runId !== runId ||
+    record.receiptDigest !== receiptDigest ||
+    recomposed !== receiptDigest
+  ) {
+    throw new SimpleChangesError(OVERRIDES_UNBOUND, EXIT_CODES.unsafe);
   }
   return record.overrides;
 };

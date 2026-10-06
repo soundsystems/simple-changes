@@ -50,8 +50,8 @@ import {
 import { buildPreviewPlan, validatePlanConservation } from "./planner.ts";
 import {
   preservedSourceOverrideFailure,
+  recordedPreservedSourceOverrides,
   splitShipmentOutcomeInput,
-  validatePreservedSourceOverrideRecord,
 } from "./preserved-source-override.ts";
 import { primaryDeliveryProof } from "./primary-delivery-proof.ts";
 import {
@@ -3687,8 +3687,10 @@ export const recordShipmentOutcome = (
 ): ShipmentOutcomeRecord => {
   const runId = requiredRunId(runIdInput);
   const agentId = requiredText(agentIdInput, "agent ID");
-  // Overrides ride on the receipt's units but are stored beside the lease.
-  const { overrides, receipt } = splitShipmentOutcomeInput(receiptInput);
+  // Overrides ride on the receipt's units but are stored beside the lease;
+  // the recorded digest covers the complete receipt, overrides included.
+  const { overrides, receipt, receiptDigest } =
+    splitShipmentOutcomeInput(receiptInput);
   assertPreservedSourceApproval(overrides, approval);
   const opening = locateRepository(repositoryPath);
   // The coordination lock keeps the claim a preserved-source override binds
@@ -3751,7 +3753,6 @@ export const recordShipmentOutcome = (
             targetDeltaPaths
           );
           assertCompleteTargetDelta(lease, receipt, accountedPaths);
-          const receiptDigest = sha256Json(receipt);
           // A null record removes a sidecar left by an earlier outcome.
           writeReceiptSidecar(
             lease,
@@ -6913,45 +6914,36 @@ const missingShipmentScopeBlockers = (lease: LoopLease): string[] =>
     : [];
 
 /**
- * Whether a recorded unit's final bytes could only have been accepted through
- * a preserved-source override: a final path differs from its single opening
- * source result, outside the reviewed-primary exception.
+ * The overrides recorded beside the lease for its exact shipment outcome.
+ * Throws when the stored receipt and its sidecar no longer recompose into the
+ * complete receipt the recorded digest names.
  */
-const requiresPreservedSourceOverride = (
-  lease: LoopLease,
-  unit: OutcomeUnit,
-  expected: PlannedUnit,
-  openingChanges: readonly OpeningShipmentChange[]
-): boolean =>
-  !(
-    unit.disposition === "delivered" &&
-    expected.sourceWorktree === lease.primaryCheckout
-  ) &&
-  unit.finalPaths.some((item) => {
-    const sources = openingChanges.filter(
-      (change) =>
-        change.worktreePath === expected.sourceWorktree &&
-        change.path === item.path
-    );
-    return sources.length === 1 && sources[0]?.sourceEntry !== item.entry;
-  });
-
-/** The overrides recorded beside the lease for its exact shipment outcome. */
 const storedPreservedSourceOverrides = (
   lease: LoopLease
 ): PreservedSourceOverrideReceipt[] => {
-  const stored = readReceiptSidecar(
-    lease.commonGitDirectory,
-    PRESERVED_SOURCE_OVERRIDE_DIRECTORY,
-    lease.runId
+  const outcome = lease.shipmentOutcome;
+  if (!outcome) {
+    return [];
+  }
+  return recordedPreservedSourceOverrides(
+    readReceiptSidecar(
+      lease.commonGitDirectory,
+      PRESERVED_SOURCE_OVERRIDE_DIRECTORY,
+      lease.runId
+    ),
+    lease.runId,
+    outcome.receipt,
+    outcome.receiptDigest
   );
-  return stored === null || !lease.shipmentOutcome
-    ? []
-    : validatePreservedSourceOverrideRecord(
-        stored,
-        lease.runId,
-        lease.shipmentOutcome.receiptDigest
-      );
+};
+
+const recordedOutcomeIntact = (lease: LoopLease): boolean => {
+  try {
+    storedPreservedSourceOverrides(lease);
+    return true;
+  } catch {
+    return false;
+  }
 };
 
 const shipmentOutcomeCompletionBlockers = (
@@ -6999,26 +6991,12 @@ const shipmentOutcomeCompletionBlockers = (
     ];
   }
   // A preserved-source override holds only while its source, claim, and
-  // target entries stay exactly as approved. A unit that could only have been
-  // recorded through one fails closed when its sidecar is gone.
-  const { openingChanges } = lease.shipmentScope;
+  // target entries stay exactly as approved.
   const sourceBlockers = lease.shipmentScope.plan.units.flatMap((expected) => {
     const unit = receipt.units.find((item) => item.unitId === expected.id);
     const override = overrides.find((item) => item.unitId === expected.id);
-    if (!unit) {
+    if (!(unit && override)) {
       return [];
-    }
-    if (!override) {
-      return requiresPreservedSourceOverride(
-        lease,
-        unit,
-        expected,
-        openingChanges
-      )
-        ? [
-            `Shipment outcome unit ${unit.unitId} was recorded with a preserved-source override whose sidecar is missing; record the outcome again.`,
-          ]
-        : [];
     }
     const issue = preservedSourceOverrideIssue(
       lease,
@@ -9491,7 +9469,9 @@ const assertArchivableRecordedOutcome = (lease: LoopLease): void => {
   ];
   if (
     receipt.runId !== lease.runId ||
-    outcome.receiptDigest !== sha256Json(receipt) ||
+    // The recorded digest covers any preserved-source overrides beside the
+    // lease, so a tampered or missing sidecar refuses archival.
+    !recordedOutcomeIntact(lease) ||
     paths.length === 0 ||
     !target ||
     !targetContainsRevision(

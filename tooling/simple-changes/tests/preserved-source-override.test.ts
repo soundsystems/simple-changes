@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { sha256Json } from "../../../skills/simple-changes/scripts/lib/hash.ts";
 import {
   captureInventory,
   compareSnapshots,
@@ -8,9 +9,12 @@ import {
 import {
   endLoop,
   finalizeLoop,
+  loopLeasePath,
+  loopReplanStatus,
   readLoopLease,
   recordShipmentOutcome,
   recordShipmentScope,
+  replanLoop,
   startLoop,
 } from "../../../skills/simple-changes/scripts/lib/loop-lease.ts";
 import { buildPreviewPlan } from "../../../skills/simple-changes/scripts/lib/planner.ts";
@@ -503,6 +507,14 @@ describe("loop record-outcome with a preserved-source override", () => {
       runId: fixture.lease.runId,
       schemaVersion: 1,
     });
+    // The recorded digest covers the complete receipt as submitted, overrides
+    // included, not only the receipt the lease stores.
+    expect(lease.shipmentOutcome?.receiptDigest).toBe(
+      sha256Json(fixture.outcome(true))
+    );
+    expect(lease.shipmentOutcome?.receiptDigest).not.toBe(
+      sha256Json(lease.shipmentOutcome?.receipt)
+    );
     expect(sidecar.overrides).toEqual(
       fixture
         .outcome(true)
@@ -540,6 +552,113 @@ describe("loop record-outcome with a preserved-source override", () => {
       expect(readFileSync(join(fixture.author, "feature.ts"), "utf8")).toBe(
         "export const value = 1;\n"
       );
+    }
+  );
+
+  const tamper = (
+    sidecarPath: string,
+    edit: (override: PreservedSourceOverrideReceipt) => void
+  ): void => {
+    const sidecar = JSON.parse(
+      readFileSync(sidecarPath, "utf8")
+    ) as PreservedSourceOverrideRecord;
+    const [override] = sidecar.overrides;
+    if (!override) {
+      throw new Error("Fixture override missing");
+    }
+    edit(override);
+    // The sidecar's own digest still names the recorded outcome.
+    writeFileSync(sidecarPath, JSON.stringify(sidecar));
+  };
+
+  test.each([
+    ["approvedBy", "another-owner"],
+    ["approvalReference", "chat:message-2"],
+    ["approvalReason", "A different reason the user never gave."],
+    ["reviewReference", "review:another-review"],
+    ["reviewerAgentId", "another-reviewer"],
+    ["path entry", `100644:blob:${"7".repeat(40)}`],
+  ] as const)(
+    "editing the recorded override's %s blocks completion",
+    (field, value) => {
+      const fixture = equivalentFixture();
+      recordShipmentOutcome(
+        fixture.root,
+        fixture.lease.runId,
+        "controller",
+        fixture.outcome(true),
+        fixture.approval
+      );
+      tamper(fixture.sidecarPath, (override) => {
+        if (field === "path entry") {
+          const [path] = override.paths;
+          if (path) {
+            path.targetEntry = value;
+          }
+        } else {
+          override[field] = value;
+        }
+      });
+      expect(() =>
+        endLoop(fixture.root, fixture.lease.runId, "controller")
+      ).toThrow("do not match this run's recorded shipment outcome");
+      const result = finalizeLoop(
+        fixture.root,
+        fixture.lease.runId,
+        "controller",
+        "Override evidence was edited."
+      );
+      expect(result.outcome).toBe("relinquished");
+      expect(result.blockers.join(" ")).toContain(
+        "do not match this run's recorded shipment outcome"
+      );
+    }
+  );
+
+  test.each(["intact", "tampered", "missing"])(
+    "archive-recorded with the override sidecar %s",
+    (condition) => {
+      const fixture = equivalentFixture();
+      recordShipmentOutcome(
+        fixture.root,
+        fixture.lease.runId,
+        "controller",
+        fixture.outcome(true),
+        fixture.approval
+      );
+      // Freeze the scope as a relinquished run that cannot finish would be.
+      const leasePath = loopLeasePath(
+        captureInventory(fixture.root).repository.commonGitDirectory
+      );
+      const stored = JSON.parse(readFileSync(leasePath, "utf8")) as LoopLease;
+      stored.shipmentScopeFrozenAt = new Date().toISOString();
+      writeFileSync(leasePath, JSON.stringify(stored));
+      if (condition === "tampered") {
+        tamper(fixture.sidecarPath, (override) => {
+          override.approvedBy = "another-owner";
+        });
+      } else if (condition === "missing") {
+        rmSync(fixture.sidecarPath);
+      }
+      const status = loopReplanStatus(fixture.root);
+      expect(status.nextCommand).toContain("loop archive-recorded");
+      const archive = () =>
+        replanLoop(fixture.root, {
+          agentId: status.agentId,
+          approvedBy: "repository-owner",
+          archiveRecordedOutcome: true,
+          manifestDigest: status.manifestDigest,
+          reason: "The approved equivalent shipment cannot finish.",
+          runId: status.runId,
+          statusDigest: status.statusDigest,
+        });
+      if (condition === "intact") {
+        expect(archive().outcome).toBe("archived-unfinished");
+        expect(readLoopLease(fixture.root)).toBeNull();
+        return;
+      }
+      expect(archive).toThrow("intact historical receipt");
+      expect(readLoopLease(fixture.root)?.runId).toBe(fixture.lease.runId);
     }
   );
 

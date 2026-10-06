@@ -74,10 +74,13 @@
   bound target. A claimed author's dirty checkout may also stay in place when
   its unit records a user-approved preserved-source override: an independent
   review found the target form semantically equivalent, the approval flags on
-  `loop record-outcome` restate it exactly, the override lives in a sidecar
-  beside the lease so the lease keeps its shape, and finalization and
-  `loop end` recheck that the source, its claim, the target entries, and that
-  sidecar have not changed.
+  `loop record-outcome` restate it exactly, and the override lives in a
+  sidecar beside the lease so the lease keeps its shape. The recorded outcome
+  digest covers the complete receipt as submitted, overrides included, so the
+  stored receipt and that sidecar must recompose into exactly that receipt.
+  Finalization, `loop end`, and `loop archive-recorded` fail closed when they
+  do not, or when the sidecar is missing; finalization and `loop end` also
+  recheck that the source, its claim, and the target entries have not moved.
   Ordinary mutation verification is unchanged.
   Finalization persists a receipt reporting shipment, controller, delivery,
   cleanup, blockers, and preserved worktrees before closing the run. If an

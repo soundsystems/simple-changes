@@ -95,12 +95,14 @@ unchanged source bytes and the exact target entries; a reviewer who is neither
 the controller nor the author; and an approval given after the review, by
 someone other than either, no more than one hour before recording.
 The runtime keeps the overrides out of the lease, in
-`<common-git-dir>/simple-changes/preserved-source-override/<run-id>.json`
-bound to the recorded receipt's digest, so older clients can still read the
-lease; that file is left in place afterward as audit evidence, and
-`evals/schemas/preserved-source-override.schema.json` defines it.
-`loop finalize` and `loop end` recheck all of it under the coordination lock.
-The run closes with that checkout and its claim untouched only while nothing
-moved: any later source, claim, or target change, or a missing or mismatched
-override file, blocks completion. The override records review and approval
+`<common-git-dir>/simple-changes/preserved-source-override/<run-id>.json`, so
+older clients can still read the lease; that file is left in place afterward
+as audit evidence, and `evals/schemas/preserved-source-override.schema.json`
+defines it. The recorded outcome digest is the digest of the complete receipt
+you submitted, overrides included, so editing any override field, such as the
+approver, reference, reviewer, or a path entry, or removing the file, no longer
+matches it. `loop finalize` and `loop end` recheck all of it under the
+coordination lock. The run closes with that checkout and its claim untouched
+only while nothing moved: any later source, claim, or target change, or an
+override file that no longer matches the recorded digest, blocks completion. The override records review and approval
 evidence; it never substitutes for them.

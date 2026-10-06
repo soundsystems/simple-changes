@@ -269,8 +269,22 @@ const runInProcessGroup = (
         processGroupId: process.platform === "win32" ? null : childPid,
       });
     } catch (error) {
-      child.kill();
-      rejectPromise(error);
+      // The command may already have started descendants. Once the leader
+      // exits, terminate the whole group; a group that survives keeps the
+      // lock, exactly like one left behind by a finished command.
+      child.once("exit", async () => {
+        const processGroupError = await lingeringProcessGroupError(
+          command,
+          args[0],
+          childPid
+        );
+        rejectPromise(
+          processGroupError instanceof GuardedProcessGroupStillAliveError
+            ? processGroupError
+            : error
+        );
+      });
+      child.kill("SIGKILL");
       return;
     }
     child.once("close", async (code) => {

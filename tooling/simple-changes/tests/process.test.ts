@@ -1,10 +1,14 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { sleepSync } from "bun";
 import {
   type GitExecutableProbe,
   resolveGitExecutable,
   runGit,
   runGitConcurrently,
+  runGuardInProcessGroup,
 } from "../../../skills/simple-changes/scripts/lib/process.ts";
 import { createTestRepository, git, type TestRepository } from "./helpers.ts";
 
@@ -159,4 +163,47 @@ describe("Concurrent Git reads", () => {
       (sequentialError as Error).message
     );
   });
+});
+
+describe("Guarded process groups", () => {
+  const isAlive = (pid: number): boolean => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  test.skipIf(process.platform === "win32")(
+    "a failed registration terminates descendants the command already started",
+    async () => {
+      const directory = mkdtempSync(join(tmpdir(), "guarded-group-"));
+      const pidFile = join(directory, "descendant.pid");
+      const registration = new Error("lock owner write failed");
+      try {
+        const run = runGuardInProcessGroup(
+          "sh",
+          ["-c", `sleep 30 & echo $! > "${pidFile}"; wait`],
+          directory,
+          () => {
+            // Fail registration only once the descendant exists, so the
+            // whole group, not just its leader, must be terminated.
+            const deadline = Date.now() + 10_000;
+            while (!existsSync(pidFile) && Date.now() < deadline) {
+              sleepSync(10);
+            }
+            throw registration;
+          },
+          {}
+        );
+        await expect(run).rejects.toBe(registration);
+        const descendant = Number(readFileSync(pidFile, "utf8").trim());
+        expect(Number.isSafeInteger(descendant)).toBe(true);
+        expect(isAlive(descendant)).toBe(false);
+      } finally {
+        rmSync(directory, { force: true, recursive: true });
+      }
+    }
+  );
 });

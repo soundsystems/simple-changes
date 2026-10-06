@@ -238,6 +238,38 @@ test("a relinquished run with a recorded outcome is pointed at archive-recorded"
   ).toBe(true);
 });
 
+test("a run paused on a user question with a recorded outcome is also pointed at archive-recorded", () => {
+  const fixture = recordedFixture(true);
+  // What `loop finalize --awaiting-user` leaves beside a relinquished lease.
+  writeFileSync(
+    join(fixture.common, "simple-changes", "active-loop-controller.json"),
+    JSON.stringify({
+      awaitingUser: {
+        questions: ["Can this run still finish?"],
+        recordedAt: new Date().toISOString(),
+      },
+      controllerAcquiredAt:
+        fixture.lease.controller?.acquiredAt ?? fixture.lease.createdAt,
+      inheritedAwaitingUser: null,
+      ownerAgentId: fixture.lease.ownerAgentId,
+      runId: fixture.lease.runId,
+      schemaVersion: 1,
+      session: null,
+      updatedAt: new Date().toISOString(),
+    })
+  );
+  const { guidance } = loopStatus(fixture.root);
+  expect(guidance.headline).toContain("paused waiting on the user");
+  expect(guidance.headline).toContain("`loop archive-recorded`");
+  expect(
+    guidance.nextCommands.some((command) =>
+      command.startsWith(
+        `simple-changes loop archive-recorded --run-id ${fixture.lease.runId} --agent-id owner`
+      )
+    )
+  ).toBe(true);
+});
+
 test("a run without a recorded outcome keeps the ordinary replan command", () => {
   const fixture = createTestRepository();
   fixtures.push(fixture);

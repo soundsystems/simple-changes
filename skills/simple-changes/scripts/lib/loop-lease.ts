@@ -9007,28 +9007,31 @@ const archiveRecordedCommand = (
 ): string =>
   `simple-changes loop archive-recorded --run-id ${lease.runId} --agent-id ${lease.ownerAgentId} --manifest-digest ${manifestDigest} --status-digest ${statusDigest} --approved-by <user> --reason <why>`;
 
-const relinquishedGuidance = (lease: LoopLease): LoopGuidance => {
-  const guidance: LoopGuidance = {
+// A recorded outcome disables `loop replan`; name the approved archival that
+// remains for a released run, paused or not, that can no longer finish.
+const withArchiveRecordedGuidance = (
+  lease: LoopLease,
+  guidance: LoopGuidance
+): LoopGuidance =>
+  lease.shipmentOutcome && effectiveShipmentScopeFrozenAt(lease)
+    ? {
+        headline: `${guidance.headline} It already recorded a shipment outcome, so \`loop replan\` cannot archive it; if it can no longer finish, its owner may archive it with explicit user approval through \`loop replan-status\` and \`loop archive-recorded\`, which never counts as delivery.`,
+        nextCommands: [
+          ...guidance.nextCommands,
+          "simple-changes loop replan-status --json",
+          archiveRecordedCommand(lease, "<digest>", "<digest>"),
+        ],
+      }
+    : guidance;
+
+const relinquishedGuidance = (lease: LoopLease): LoopGuidance =>
+  withArchiveRecordedGuidance(lease, {
     headline: `Loop ${lease.runId} has released its controller. Resume it to finish its recorded work; takeover approval is unnecessary. Its existing scope and safety checks still apply.`,
     nextCommands: [
       "simple-changes loop start --mode resume --agent-id <you>",
       `simple-changes loop close-equivalent --run-id ${lease.runId} --agent-id <you> --approved-by <user> --reason <why>`,
     ],
-  };
-  // A recorded outcome disables `loop replan`; name the approved archival
-  // that remains for a run that can no longer finish.
-  if (!(lease.shipmentOutcome && effectiveShipmentScopeFrozenAt(lease))) {
-    return guidance;
-  }
-  return {
-    headline: `${guidance.headline} It already recorded a shipment outcome, so \`loop replan\` cannot archive it; if it can no longer finish, its owner may archive it with explicit user approval through \`loop replan-status\` and \`loop archive-recorded\`, which never counts as delivery.`,
-    nextCommands: [
-      ...guidance.nextCommands,
-      "simple-changes loop replan-status --json",
-      archiveRecordedCommand(lease, "<digest>", "<digest>"),
-    ],
-  };
-};
+  });
 
 const loopGuidanceFor = (
   lease: LoopLease | null,
@@ -9055,13 +9058,13 @@ const loopGuidanceFor = (
       ? readControllerBinding(lease)?.awaitingUser
       : null;
   if (awaitingUser) {
-    return {
+    return withArchiveRecordedGuidance(lease, {
       headline: `Loop ${lease.runId} is paused waiting on the user: ${awaitingUser.questions.join(" | ")}. Once they answer, resume it; takeover approval is unnecessary, and its existing scope and safety checks still apply.`,
       nextCommands: [
         "simple-changes loop start --mode resume --agent-id <you>",
         `simple-changes loop close-equivalent --run-id ${lease.runId} --agent-id <you> --approved-by <user> --reason <why>`,
       ],
-    };
+    });
   }
   if (lifecycle.status === "relinquished") {
     return relinquishedGuidance(lease);

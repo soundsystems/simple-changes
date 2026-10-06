@@ -9561,6 +9561,41 @@ const replanLeaseMatches = (bytes: string, record: LoopReplanRecord): boolean =>
   sha256(bytes) === record.fullLeaseDigest &&
   JSON.stringify(JSON.parse(bytes)) === JSON.stringify(record.lease);
 
+// The transition of a pending replan or archival: the active lease must still
+// be the recorded bytes and inventory, and an archival re-proves its recorded
+// outcome, first attempt or retry after a crash, so a sidecar edited or lost
+// after the intent refuses.
+const archivePendingReplan = (
+  repositoryPath: string,
+  request: LoopReplanRequest,
+  record: LoopReplanRecord,
+  activePath: string,
+  archivePath: string
+): void => {
+  const bytes = readReplanLeaseBytes(activePath);
+  const inventory = captureInventory(repositoryPath);
+  if (
+    !replanLeaseMatches(bytes, record) ||
+    sha256Json(replanObservation(record.lease, inventory)) !==
+      request.statusDigest
+  ) {
+    throw new SimpleChangesError(
+      "Replan intent no longer matches the active lease or exact inventory.",
+      EXIT_CODES.unsafe
+    );
+  }
+  if (request.archiveRecordedOutcome) {
+    assertArchivableRecordedOutcome(record.lease);
+  }
+  // Both directories are within the same common Git directory. This atomic
+  // rename is the transition: every original byte is preserved, and a crash
+  // cannot leave an unarchived cleared lease. No Git or claim cleanup occurs.
+  renameSync(activePath, archivePath);
+  syncReplanPath(archivePath);
+  syncReplanPath(dirname(archivePath));
+  syncReplanPath(dirname(activePath));
+};
+
 export const replanLoop = (
   repositoryPath: string,
   input: LoopReplanRequest
@@ -9644,25 +9679,13 @@ export const replanLoop = (
         // A completed retry must never remove a successor, even with the same actor.
         return record;
       }
-      const bytes = readReplanLeaseBytes(activePath);
-      const inventory = captureInventory(repositoryPath);
-      if (
-        !replanLeaseMatches(bytes, record) ||
-        sha256Json(replanObservation(record.lease, inventory)) !==
-          request.statusDigest
-      ) {
-        throw new SimpleChangesError(
-          "Replan intent no longer matches the active lease or exact inventory.",
-          EXIT_CODES.unsafe
-        );
-      }
-      // Both directories are within the same common Git directory. This atomic
-      // rename is the transition: every original byte is preserved, and a crash
-      // cannot leave an unarchived cleared lease. No Git or claim cleanup occurs.
-      renameSync(activePath, archivePath);
-      syncReplanPath(archivePath);
-      syncReplanPath(directory);
-      syncReplanPath(dirname(activePath));
+      archivePendingReplan(
+        repositoryPath,
+        request,
+        record,
+        activePath,
+        archivePath
+      );
       return record;
     })
   );

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
-import { readFileSync, rmSync, writeFileSync } from "node:fs";
+import { readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { sha256Json } from "../../../skills/simple-changes/scripts/lib/hash.ts";
 import {
@@ -658,6 +658,70 @@ describe("loop record-outcome with a preserved-source override", () => {
         return;
       }
       expect(archive).toThrow("intact historical receipt");
+      expect(readLoopLease(fixture.root)?.runId).toBe(fixture.lease.runId);
+    }
+  );
+
+  test.each(["intact", "tampered", "missing"])(
+    "a pending archive-recorded retry re-proves the override sidecar %s",
+    (condition) => {
+      const fixture = equivalentFixture();
+      recordShipmentOutcome(
+        fixture.root,
+        fixture.lease.runId,
+        "controller",
+        fixture.outcome(true),
+        fixture.approval
+      );
+      const common = captureInventory(fixture.root).repository
+        .commonGitDirectory;
+      const leasePath = loopLeasePath(common);
+      const stored = JSON.parse(readFileSync(leasePath, "utf8")) as LoopLease;
+      stored.shipmentScopeFrozenAt = new Date().toISOString();
+      writeFileSync(leasePath, JSON.stringify(stored));
+      const status = loopReplanStatus(fixture.root);
+      const request = {
+        agentId: status.agentId,
+        approvedBy: "repository-owner",
+        archiveRecordedOutcome: true as const,
+        manifestDigest: status.manifestDigest,
+        reason: "The approved equivalent shipment cannot finish.",
+        runId: status.runId,
+        statusDigest: status.statusDigest,
+      };
+      expect(replanLoop(fixture.root, request).outcome).toBe(
+        "archived-unfinished"
+      );
+      // Simulate a crash after the intent was written but before the rename:
+      // the intent stays, and the lease is active again.
+      renameSync(
+        join(
+          common,
+          "simple-changes",
+          "history",
+          fixture.lease.runId,
+          `archive-recorded-${sha256Json(request)}`,
+          "replan-lease.json"
+        ),
+        leasePath
+      );
+      if (condition === "tampered") {
+        tamper(fixture.sidecarPath, (override) => {
+          override.approvedBy = "another-owner";
+        });
+      } else if (condition === "missing") {
+        rmSync(fixture.sidecarPath);
+      }
+      if (condition === "intact") {
+        expect(replanLoop(fixture.root, request).outcome).toBe(
+          "archived-unfinished"
+        );
+        expect(readLoopLease(fixture.root)).toBeNull();
+        return;
+      }
+      expect(() => replanLoop(fixture.root, request)).toThrow(
+        "intact historical receipt"
+      );
       expect(readLoopLease(fixture.root)?.runId).toBe(fixture.lease.runId);
     }
   );

@@ -48,6 +48,10 @@
       any approval or path field after recording, or losing the sidecar,
       blocks completion. Finalize and `loop end` also re-check the source,
       claim, and target entries.
+    - A pending `loop archive-recorded` transition, whether a first attempt or
+      a retry after a crash between the intent and the rename, re-proves the
+      recorded outcome with its sidecar immediately before the rename. A
+      completed retry still returns without touching a successor run.
     - Site Secure's two override-carrying finalization records match this
       digest rule.
     - `loop record-outcome` and `loop end` hold the worktree-coordination
@@ -80,7 +84,7 @@
     with production defaults unchanged. `process.test.ts` covers a real Unix
     descendant, surviving and unsignallable groups, the Windows branch, late
     child errors, and failing cleanups.
-- Guidance 26. There are 78 new tests (780 to 858), and each new guard was
+- Guidance 26. There are 81 new tests (780 to 861), and each new guard was
   mutation-checked.
 - Not upstreamed, because canonical already covers them:
   - Thor's claimed-author opening digest: scoped opening invariants already
@@ -105,6 +109,11 @@
     failure paths had no tests.
   - Nit: the skill-name parser accepted a prefix of an invalid `name:`.
   - All of these are fixed above.
+- GPT-6.1 Sol (xhigh) reviewed the whole branch at `12dd6c4`. Its one finding
+  was blocking: a pending `loop archive-recorded` retry after a crash skipped
+  the override check, so an edited or deleted sidecar could still archive.
+  It is fixed above, with crash-retry tests for intact, edited, and missing
+  sidecars.
 <!-- simple-changelogs-signature agent="Claude Opus 5.5 xhigh" at="2026-10-05T19:22:39-05:00" -->
 
 ## 0.24.1 - 2026-10-05

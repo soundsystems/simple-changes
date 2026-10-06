@@ -403,15 +403,21 @@ export const openUpstream = (options: {
   return { gitDirectory: cache, kind: "cache" };
 };
 
+/**
+ * The packaged paths at `sha`, NUL-delimited: a line-delimited listing quotes
+ * any name with a non-ASCII byte (core.quotePath), which would turn
+ * `scripts/lib/café.txt` into a quoted escape that names no file.
+ */
 const treeFiles = (upstream: UpstreamHandle, sha: string): string[] =>
   git(upstream.gitDirectory, [
     "ls-tree",
     "-r",
+    "-z",
     "--name-only",
     sha,
     `${UPSTREAM_SKILL_PATH}/`,
   ])
-    .split("\n")
+    .split("\0")
     .filter(Boolean)
     .map((path) => path.slice(UPSTREAM_SKILL_PATH.length + 1));
 

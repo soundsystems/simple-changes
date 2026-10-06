@@ -1488,6 +1488,58 @@ describe("update-local-forks", () => {
     );
   });
 
+  test("updates and then deletes a non-ASCII-named file after it became the pin", () => {
+    const fixture = createFixture();
+    const { upstream } = fixture;
+    const release = (version: string, files: Record<string, string>) => {
+      const commit = commitPackage(
+        upstream,
+        `chore(release): Publish Simple Changes ${version}`,
+        {
+          "CHANGELOG.md": changelogThrough(
+            ...["0.5.0", "0.4.0", "0.3.0", "0.2.0", "0.1.0"].filter(
+              (candidate) => candidate <= version
+            )
+          ),
+          ...files,
+        }
+      );
+      return { commit, source: installSnapshot(fixture, version) };
+    };
+    const updateTo = (source: string) => {
+      const plan = planForkUpdate({ fork: fixture.fork, source, upstream });
+      return { plan, receipt: applyForkPlan(JSON.parse(JSON.stringify(plan))) };
+    };
+    const named = join(fixture.fork, "runtime/scripts/lib/café.txt");
+
+    // 0.3.0 ships the file; updating to it makes 0.3.0 the pin.
+    const first = release("0.3.0", { "scripts/lib/café.txt": "one\n" });
+    expect(updateTo(first.source).receipt.pin.to).toBe(first.commit);
+    expect(readFileSync(named, "utf8")).toBe("one\n");
+
+    // Its pinned tree now names the file: 0.4.0 changes it.
+    const second = release("0.4.0", { "scripts/lib/café.txt": "two\n" });
+    const changed = updateTo(second.source);
+    expect(
+      changed.plan.entries.find(
+        (entry) => entry.upstreamPath === "scripts/lib/café.txt"
+      )
+    ).toMatchObject({
+      action: "update",
+      forkPath: "runtime/scripts/lib/café.txt",
+    });
+    expect(changed.receipt.pin.to).toBe(second.commit);
+    expect(readFileSync(named, "utf8")).toBe("two\n");
+
+    // 0.5.0 removes it, and the fork's unchanged copy goes too.
+    rmSync(join(upstream, "skills/simple-changes/scripts/lib/café.txt"));
+    const third = release("0.5.0", {});
+    const removed = updateTo(third.source);
+    expect(removed.receipt.deleted).toEqual(["runtime/scripts/lib/café.txt"]);
+    expect(removed.receipt.pin.to).toBe(third.commit);
+    expect(existsSync(named)).toBe(false);
+  });
+
   test("rejects a saved plan whose base64 content is not strict base64", () => {
     const fixture = createFixture();
     const plan = planForkUpdate({

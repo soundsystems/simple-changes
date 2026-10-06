@@ -1060,6 +1060,64 @@ describe("update-local-forks", () => {
     ).toMatchObject({ commit: fix, commitVerified: true });
   });
 
+  test("proves byte identity on raw filename bytes, never decoded names", () => {
+    const fixture = createFixture();
+    const { upstream } = fixture;
+    const skill = "skills/simple-changes";
+    // A valid non-ASCII name verifies exactly as before.
+    write(upstream, `${skill}/scripts/lib/café.txt`, "same\n");
+    git(upstream, ["add", "-A"]);
+    git(upstream, ["commit", "-q", "-m", "fix(core): Ship a named fixture"]);
+    const named = git(upstream, ["rev-parse", "HEAD"]);
+    const exact = installSnapshot(fixture, "exact");
+    // Git keeps any filename bytes. F0 9F 92 is a truncated sequence that
+    // decodes to the replacement character, whose own encoding EF BF BD
+    // names a different file; macOS cannot create the first, so it goes
+    // straight into the index.
+    const truncated = Buffer.from([0xf0, 0x9f, 0x92]);
+    expect(new TextDecoder().decode(truncated)).toBe("�");
+    const blob = git(upstream, [
+      "hash-object",
+      "-w",
+      join(upstream, skill, "scripts/lib/café.txt"),
+    ]);
+    const indexed = spawnSync(
+      ["git", "-C", upstream, "update-index", "--add", "-z", "--index-info"],
+      {
+        stderr: "pipe",
+        stdin: Buffer.concat([
+          Buffer.from(`100644 ${blob}\t${skill}/scripts/lib/`),
+          truncated,
+          Buffer.from(".txt\0"),
+        ]),
+        stdout: "pipe",
+      }
+    );
+    expect(indexed.exitCode).toBe(0);
+    git(upstream, [
+      "commit",
+      "-q",
+      "-m",
+      "fix(core): Ship a raw-named fixture",
+    ]);
+    const lookalike = installSnapshot(fixture, "lookalike");
+    writeFileSync(join(lookalike, "scripts/lib/�.txt"), "same\n");
+
+    const plan = planForkUpdate({
+      fork: fixture.fork,
+      source: lookalike,
+      upstream,
+    });
+    expect(plan.source).toMatchObject({
+      commit: fixture.release,
+      commitVerified: false,
+    });
+    expect(plan.pinUpdate.to).toBeNull();
+    expect(
+      planForkUpdate({ fork: fixture.fork, source: exact, upstream }).source
+    ).toMatchObject({ commit: named, commitVerified: true });
+  });
+
   test("bounds the search at the next release entry", () => {
     const fixture = createFixture();
     const { upstream } = fixture;

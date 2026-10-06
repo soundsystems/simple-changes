@@ -430,22 +430,59 @@ const treeFile = (
   return result.exitCode === 0 ? result.stdout : null;
 };
 
+/**
+ * A path as a byte string: one character per raw byte. Filenames are bytes,
+ * and decoding them as UTF-8 maps distinct invalid sequences to the same
+ * replacement character, so a proof compares byte strings, never decoded
+ * names.
+ */
+const byteString = (bytes: Uint8Array): string =>
+  Buffer.from(bytes).toString("latin1");
+
+const byByte = (left: string, right: string): number => {
+  if (left === right) {
+    return 0;
+  }
+  return left < right ? -1 : 1;
+};
+
 /** One digest over paths and raw file bytes, shared by both sides of a proof. */
 const filesDigest = (files: { bytes: Buffer; path: string }[]): string =>
   sha256(
     [...files]
-      .sort((left, right) => byText(left.path, right.path))
+      .sort((left, right) => byByte(left.path, right.path))
       .map(({ bytes, path }) => `${path}\0${sha256(bytes)}`)
       .join("\n")
   );
 
-const sourceDigest = (sourcePath: string): string =>
-  filesDigest(
-    walkFiles(sourcePath).map((path) => ({
-      bytes: readFileSync(join(sourcePath, path)),
-      path,
-    }))
-  );
+const SLASH = Buffer.from("/");
+
+/** Raw relative path bytes of every regular file under `root`, as walkFiles. */
+const walkFileBytes = (root: Buffer, prefix?: Buffer): Buffer[] =>
+  readdirSync(prefix ? Buffer.concat([root, SLASH, prefix]) : root, {
+    encoding: "buffer",
+  }).flatMap((raw) => {
+    const name = Buffer.from(raw);
+    const path = prefix ? Buffer.concat([prefix, SLASH, name]) : name;
+    const status = lstatSync(Buffer.concat([root, SLASH, path]));
+    if (status.isDirectory()) {
+      return SKIP_DIRECTORIES.has(byteString(name))
+        ? []
+        : walkFileBytes(root, path);
+    }
+    return status.isFile() ? [path] : [];
+  });
+
+/** The installed source's files: byte-string paths and where to read them. */
+const installedFiles = (
+  sourcePath: string
+): { location: Buffer; path: string }[] => {
+  const root = Buffer.from(sourcePath);
+  return walkFileBytes(root).map((path) => ({
+    location: Buffer.concat([root, SLASH, path]),
+    path: byteString(path),
+  }));
+};
 
 /**
  * The raw bytes of each blob, read in one `git cat-file --batch` call. Never
@@ -683,6 +720,52 @@ export const releaseWindow = (
   };
 };
 
+interface TreeEntry {
+  object: string | undefined;
+  path: string;
+  size: number;
+  type: string | undefined;
+}
+
+/**
+ * Every entry of a tree, recursively, from `git ls-tree -r -l -z` read as raw
+ * bytes so each path stays a byte string.
+ */
+const treeListing = (upstream: UpstreamHandle, tree: string): TreeEntry[] => {
+  const result = spawnSync(
+    ["git", "-C", upstream.gitDirectory, "ls-tree", "-r", "-l", "-z", tree],
+    { stderr: "pipe", stdout: "pipe" }
+  );
+  if (result.exitCode !== 0) {
+    throw new ForkUpdateError(
+      `git ls-tree ${tree} failed: ${new TextDecoder().decode(result.stderr).trim()}`
+    );
+  }
+  const output = Buffer.from(result.stdout);
+  const entries: TreeEntry[] = [];
+  for (let start = 0; start < output.length; ) {
+    const end = output.indexOf(0, start);
+    const record = output.subarray(start, end < 0 ? output.length : end);
+    start = end < 0 ? output.length : end + 1;
+    const tab = record.indexOf(0x09);
+    if (tab < 0) {
+      continue;
+    }
+    const [, type, object, size] = record
+      .subarray(0, tab)
+      .toString("latin1")
+      .split(" ")
+      .filter(Boolean);
+    entries.push({
+      object,
+      path: byteString(record.subarray(tab + 1)),
+      size: Number(size),
+      type,
+    });
+  }
+  return entries;
+};
+
 /**
  * Whether a packaged tree is byte-identical to the installed source. The path
  * and size listing of `git ls-tree` cheaply rules out most trees; any tree it
@@ -693,32 +776,19 @@ const matchesInstalledTree = (
   upstream: UpstreamHandle,
   source: DiscoveredSource
 ): ((tree: string) => boolean) => {
-  const installedDigest = sourceDigest(source.path);
-  const installedSizes = new Map(
-    walkFiles(source.path).map((path) => [
+  const installed = installedFiles(source.path);
+  const installedDigest = filesDigest(
+    installed.map(({ location, path }) => ({
+      bytes: readFileSync(location),
       path,
-      statSync(join(source.path, path)).size,
-    ])
+    }))
+  );
+  const installedSizes = new Map(
+    installed.map(({ location, path }) => [path, statSync(location).size])
   );
   const verdicts = new Map<string, boolean>();
   const byteIdentical = (tree: string): boolean => {
-    const entries = git(upstream.gitDirectory, [
-      "ls-tree",
-      "-r",
-      "-l",
-      "-z",
-      tree,
-    ])
-      .split("\0")
-      .filter(Boolean)
-      .map((line) => {
-        const tab = line.indexOf("\t");
-        const [, type, object, size] = line
-          .slice(0, tab)
-          .split(" ")
-          .filter(Boolean);
-        return { object, path: line.slice(tab + 1), size: Number(size), type };
-      });
+    const entries = treeListing(upstream, tree);
     const sameShape =
       entries.length === installedSizes.size &&
       entries.every(

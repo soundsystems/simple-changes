@@ -198,12 +198,11 @@ const assertWritablePolicyPath = (path: string): void => {
   }
 };
 
-export const writePolicyFile = (
+const replacePolicyFileText = (
   path: string,
-  policy: RepoPolicy,
-  privateFile = false
+  text: string,
+  privateFile: boolean
 ): void => {
-  const validated = validateSchema<RepoPolicy>("repo-policy", policy);
   assertWritablePolicyPath(path);
   const directory = dirname(path);
   mkdirSync(directory, {
@@ -214,7 +213,7 @@ export const writePolicyFile = (
     directory,
     `.${randomUUID()}.simple-changes.tmp`
   );
-  writeFileSync(temporaryPath, `${JSON.stringify(validated, null, 2)}\n`, {
+  writeFileSync(temporaryPath, text, {
     encoding: "utf8",
     flag: "wx",
     mode: privateFile ? 0o600 : 0o644,
@@ -227,6 +226,19 @@ export const writePolicyFile = (
     }
     throw error;
   }
+};
+
+export const writePolicyFile = (
+  path: string,
+  policy: RepoPolicy,
+  privateFile = false
+): void => {
+  const validated = validateSchema<RepoPolicy>("repo-policy", policy);
+  replacePolicyFileText(
+    path,
+    `${JSON.stringify(validated, null, 2)}\n`,
+    privateFile
+  );
   const persisted = validateSchema<RepoPolicy>(
     "repo-policy",
     JSON.parse(readFileSync(path, "utf8")) as unknown
@@ -252,6 +264,275 @@ export const withSavedExecGuard = (
   }
   const { execGuard } = parsePolicyFile(path);
   return execGuard ? { ...policy, execGuard } : policy;
+};
+
+const JSON_WHITESPACE = new Set([" ", "\t", "\n", "\r"]);
+const JSON_SCALAR_DELIMITERS = new Set([",", "}", "]", ...JSON_WHITESPACE]);
+
+interface JsonMemberSpan {
+  key: string;
+  keyEnd: number;
+  keyStart: number;
+  valueEnd: number;
+  valueStart: number;
+}
+
+interface TextEdit {
+  end: number;
+  start: number;
+  text: string;
+}
+
+const unlocatedGuidance = (): SimpleChangesError =>
+  new SimpleChangesError(
+    "Cannot locate the guidance fields in the saved policy text; nothing was written.",
+    EXIT_CODES.validation
+  );
+
+const skipJsonWhitespace = (text: string, start: number): number => {
+  let cursor = start;
+  while (JSON_WHITESPACE.has(text.charAt(cursor))) {
+    cursor += 1;
+  }
+  return cursor;
+};
+
+const jsonStringEnd = (text: string, start: number): number => {
+  if (text.charAt(start) !== '"') {
+    throw unlocatedGuidance();
+  }
+  let cursor = start + 1;
+  while (cursor < text.length) {
+    const character = text.charAt(cursor);
+    if (character === '"') {
+      return cursor + 1;
+    }
+    cursor += character === "\\" ? 2 : 1;
+  }
+  throw unlocatedGuidance();
+};
+
+const jsonContainerEnd = (text: string, start: number): number => {
+  let depth = 0;
+  let cursor = start;
+  while (cursor < text.length) {
+    const character = text.charAt(cursor);
+    if (character === '"') {
+      cursor = jsonStringEnd(text, cursor);
+      continue;
+    }
+    if (character === "{" || character === "[") {
+      depth += 1;
+    } else if (character === "}" || character === "]") {
+      depth -= 1;
+      if (depth === 0) {
+        return cursor + 1;
+      }
+    }
+    cursor += 1;
+  }
+  throw unlocatedGuidance();
+};
+
+const jsonValueEnd = (text: string, start: number): number => {
+  const opening = text.charAt(start);
+  if (opening === '"') {
+    return jsonStringEnd(text, start);
+  }
+  if (opening === "{" || opening === "[") {
+    return jsonContainerEnd(text, start);
+  }
+  let cursor = start;
+  while (
+    cursor < text.length &&
+    !JSON_SCALAR_DELIMITERS.has(text.charAt(cursor))
+  ) {
+    cursor += 1;
+  }
+  if (cursor === start) {
+    throw unlocatedGuidance();
+  }
+  return cursor;
+};
+
+/** Source spans of each member of the JSON object that opens at `start`. */
+const jsonObjectMembers = (text: string, start: number): JsonMemberSpan[] => {
+  if (text.charAt(start) !== "{") {
+    throw unlocatedGuidance();
+  }
+  const members: JsonMemberSpan[] = [];
+  let cursor = skipJsonWhitespace(text, start + 1);
+  if (text.charAt(cursor) === "}") {
+    return members;
+  }
+  while (cursor < text.length) {
+    const keyStart = cursor;
+    const keyEnd = jsonStringEnd(text, keyStart);
+    const colon = skipJsonWhitespace(text, keyEnd);
+    if (text.charAt(colon) !== ":") {
+      throw unlocatedGuidance();
+    }
+    const valueStart = skipJsonWhitespace(text, colon + 1);
+    const valueEnd = jsonValueEnd(text, valueStart);
+    members.push({
+      key: JSON.parse(text.slice(keyStart, keyEnd)) as string,
+      keyEnd,
+      keyStart,
+      valueEnd,
+      valueStart,
+    });
+    const separator = skipJsonWhitespace(text, valueEnd);
+    if (text.charAt(separator) === "}") {
+      return members;
+    }
+    if (text.charAt(separator) !== ",") {
+      throw unlocatedGuidance();
+    }
+    cursor = skipJsonWhitespace(text, separator + 1);
+  }
+  throw unlocatedGuidance();
+};
+
+// JSON.parse keeps the last duplicate, so edit the member it actually reads.
+const lastJsonMember = (
+  members: JsonMemberSpan[],
+  key: string
+): JsonMemberSpan | undefined =>
+  members.filter((member) => member.key === key).at(-1);
+
+const applyTextEdits = (text: string, edits: TextEdit[]): string =>
+  [...edits]
+    .sort((left, right) => right.start - left.start)
+    .reduce(
+      (current, edit) =>
+        `${current.slice(0, edit.start)}${edit.text}${current.slice(edit.end)}`,
+      text
+    );
+
+// A missing `disposition` goes before the first guidance member in the
+// object's own spacing: its line break and indent when it spans lines,
+// otherwise the space style of its `key: value` separator.
+const dispositionInsertion = (
+  text: string,
+  guidanceStart: number,
+  firstMember: JsonMemberSpan,
+  version: JsonMemberSpan,
+  dispositionText: string
+): TextEdit => {
+  const keySeparator = text.slice(version.keyEnd, version.valueStart);
+  const leading = text.slice(guidanceStart + 1, firstMember.keyStart);
+  const memberSeparator = leading || (keySeparator.endsWith(" ") ? " " : "");
+  return {
+    end: firstMember.keyStart,
+    start: firstMember.keyStart,
+    text: `"disposition"${keySeparator}${dispositionText},${memberSeparator}`,
+  };
+};
+
+const expectedAcknowledgedPolicy = (
+  saved: Record<string, unknown>,
+  guidance: RepoPolicy["guidance"]
+): Record<string, unknown> => {
+  const savedGuidance = saved.guidance as Record<string, unknown>;
+  return {
+    ...saved,
+    guidance: Object.hasOwn(savedGuidance, "disposition")
+      ? { ...savedGuidance, ...guidance }
+      : {
+          disposition: guidance.disposition,
+          ...savedGuidance,
+          version: guidance.version,
+        },
+  };
+};
+
+/**
+ * Returns saved policy `text` with only the `guidance` member's `disposition`
+ * and `version` values replaced, the bytes a careful hand edit would produce.
+ * Every other byte is kept, including key order, formatting, and settings an
+ * untrusted repository policy cannot exercise on this clone. It throws unless
+ * the result parses to the saved object with only those two values changed.
+ */
+export const withAcknowledgedGuidanceText = (
+  text: string,
+  guidance: RepoPolicy["guidance"]
+): string => {
+  const saved = JSON.parse(text) as Record<string, unknown>;
+  const guidanceMember = lastJsonMember(
+    jsonObjectMembers(text, skipJsonWhitespace(text, 0)),
+    "guidance"
+  );
+  if (!guidanceMember) {
+    throw unlocatedGuidance();
+  }
+  const guidanceMembers = jsonObjectMembers(text, guidanceMember.valueStart);
+  const version = lastJsonMember(guidanceMembers, "version");
+  const disposition = lastJsonMember(guidanceMembers, "disposition");
+  const [firstMember] = guidanceMembers;
+  if (!(version && firstMember)) {
+    throw unlocatedGuidance();
+  }
+  const dispositionText = JSON.stringify(guidance.disposition);
+  const edits: TextEdit[] = [
+    {
+      end: version.valueEnd,
+      start: version.valueStart,
+      text: String(guidance.version),
+    },
+    disposition
+      ? {
+          end: disposition.valueEnd,
+          start: disposition.valueStart,
+          text: dispositionText,
+        }
+      : dispositionInsertion(
+          text,
+          guidanceMember.valueStart,
+          firstMember,
+          version,
+          dispositionText
+        ),
+  ];
+  const edited = applyTextEdits(text, edits);
+  if (
+    JSON.stringify(JSON.parse(edited)) !==
+    JSON.stringify(expectedAcknowledgedPolicy(saved, guidance))
+  ) {
+    throw unlocatedGuidance();
+  }
+  return edited;
+};
+
+/**
+ * Records a guidance acknowledgement in the saved policy file itself. The
+ * loaded policy is default-filled and, for an unconfirmed repository policy,
+ * trust-reduced, so it is never written back: only the guidance values change.
+ * This neither creates nor renews a repository trust receipt; changing the
+ * bytes leaves an existing receipt unmatched, exactly as any other edit does.
+ */
+export const writeGuidanceAcknowledgement = (
+  path: string,
+  guidance: RepoPolicy["guidance"],
+  privateFile = false
+): void => {
+  assertReadablePolicyFile(path);
+  const saved = readFileSync(path);
+  const text = saved.toString("utf8");
+  if (!Buffer.from(text, "utf8").equals(saved)) {
+    throw new SimpleChangesError(
+      `Refusing to rewrite a policy that is not valid UTF-8: ${path}`,
+      EXIT_CODES.validation
+    );
+  }
+  const edited = withAcknowledgedGuidanceText(text, guidance);
+  validateSchema<StoredRepoPolicy>("repo-policy", JSON.parse(edited));
+  replacePolicyFileText(path, edited, privateFile);
+  if (readFileSync(path, "utf8") !== edited) {
+    throw new SimpleChangesError(
+      `Policy verification failed after writing: ${path}`,
+      EXIT_CODES.validation
+    );
+  }
 };
 
 export const loadPersonalPolicy = (

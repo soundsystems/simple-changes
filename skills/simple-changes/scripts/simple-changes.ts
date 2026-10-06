@@ -16,7 +16,7 @@ import {
 import { EXIT_CODES, SimpleChangesError } from "./lib/errors.ts";
 import { createFork } from "./lib/fork.ts";
 import {
-  acknowledgeGuidanceUpdate,
+  acknowledgedGuidance,
   CURRENT_GUIDANCE_VERSION,
   type GuidanceUpdateAction,
 } from "./lib/guidance-updates.ts";
@@ -96,6 +96,7 @@ import {
   loadPersonalPolicy,
   resolvePersonalPolicyPath,
   withSavedExecGuard,
+  writeGuidanceAcknowledgement,
   writePolicyFile,
   writeRepositoryPolicyTrustReceipt,
 } from "./lib/policy.ts";
@@ -1957,11 +1958,13 @@ const runAcknowledgeUpdate = async (options: CliOptions): Promise<void> => {
     );
   }
   const previousVersion = inventory.policy.value.guidance.version;
-  const policy = acknowledgeGuidanceUpdate(inventory.policy.value, disposition);
+  // Edit only the saved guidance values. The loaded policy is default-filled
+  // and, when unconfirmed, trust-reduced; writing it back changes settings.
+  const guidance = acknowledgedGuidance(disposition);
   const applyWrite = (): void => {
-    writePolicyFile(
+    writeGuidanceAcknowledgement(
       inventory.policy.path as string,
-      policy,
+      guidance,
       inventory.policy.source === "user"
     );
   };

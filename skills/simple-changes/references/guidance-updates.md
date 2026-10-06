@@ -81,6 +81,13 @@ Do not record a disposition because the notice was merely prepared or shown.
 Resume the original request after the acknowledgement succeeds. A later
 guidance version may cause one new prompt.
 
+The acknowledgement edits only the `guidance` disposition and version in the
+saved policy file. Every other byte stays as written, including consequential
+settings that run with reduced authority because this clone has not confirmed
+them. It never creates or renews a policy trust receipt, so acknowledging a
+confirmed repository policy changes the bytes its receipt is bound to, and those
+settings run with reduced authority until setup confirms them again.
+
 If the user selects `configure-harness` or says “auto push,” give the exact
 scoped-push explanation and confirmation from
 [harness-aware Git push authorization](harness-push-authorization.md) before

@@ -1397,6 +1397,86 @@ describe("update-local-forks", () => {
     }
   });
 
+  test("keeps rewriting current sections whose headings name a release or the pin", () => {
+    const fixture = createFixture();
+    const { pin, release } = fixture;
+    const short = pin.slice(0, 7);
+    // [line, current]: current lines move with the pin; the rest are records.
+    // Headings are never rewritten, so links to them keep working.
+    const lines: [string, boolean][] = [
+      ["# Fork maintenance", false],
+      ["", false],
+      ["## Current upstream (0.1.0)", false],
+      ["", false],
+      [`Pinned at \`${pin}\`, bundling Simple Changes 0.1.0.`, true],
+      ["", false],
+      ["### Current deltas", false],
+      ["", false],
+      ["- The runtime is Simple Changes 0.1.0.", true],
+      ["", false],
+      ["### Runtime", false],
+      ["", false],
+      [`- Bundled from \`${pin}\`.`, true],
+      ["", false],
+      ["## Bundled runtime (0.1.0)", false],
+      ["", false],
+      ["- The wrapper runs Simple Changes 0.1.0.", true],
+      ["", false],
+      ["## Intentional omissions", false],
+      ["", false],
+      [
+        "- `references/deployments.md`: Acme deploys through its own pipeline.",
+        false,
+      ],
+      [
+        "- `references/signatures.md`: Acme proposals carry no agent signatures.",
+        false,
+      ],
+      ["", false],
+      [`## Upstream 0.1.0 (\`7ab67a1..${short}\`)`, false],
+      ["", false],
+      [`- Re-pin to \`${pin}\` (Simple Changes 0.1.0).`, false],
+      ["", false],
+      ["## Local Blacksmith CI bridge", false],
+      ["", false],
+      ["- Guards merges for Simple Changes 0.1.0.", false],
+      ["", false],
+      // A current heading after the log ends it, even naming the pin.
+      [`## Current pin (\`${short}\`)`, false],
+      ["", false],
+      [`Pinned at \`${pin}\`; Simple Changes 0.1.0 is installed.`, true],
+      ["", false],
+      ["## Upgrade notes", false],
+      ["", false],
+      ["- Run the Simple Changes 0.1.0 checks after each bump.", true],
+      ["", false],
+      ["## Upstream 0.0.9 (`628c66b..7ab67a1`)", false],
+      ["", false],
+      ["- Staged ahead of Simple Changes 0.1.0.", false],
+      ["", false],
+    ];
+    const notePath = join(fixture.fork, "references/fork-maintenance.md");
+    writeFileSync(notePath, lines.map(([line]) => line).join("\n"));
+
+    const plan = planForkUpdate({
+      fork: fixture.fork,
+      source: fixture.source,
+      upstream: fixture.upstream,
+    });
+    expect(plan.pinUpdate.to).toBe(release);
+    applyForkPlan(plan);
+
+    expect(readFileSync(notePath, "utf8").split("\n")).toEqual(
+      lines.map(([line, current]) =>
+        current
+          ? line
+              .replaceAll(pin, release)
+              .replaceAll("Simple Changes 0.1.0", "Simple Changes 0.2.0")
+          : line
+      )
+    );
+  });
+
   test("refuses stale literal targets and conflict sidecars", () => {
     const fixture = createFixture();
     const literalPlan = planForkUpdate({

@@ -1104,38 +1104,77 @@ const classify = (
 // version is a current claim only outside them. Any line naming a commit or
 // version range is a record. In Markdown, so is every heading and every line
 // in a section that is a history entry, a history section, or inside one.
-// An entry heading names what it records: a commit, a range, a release, a
-// date, or the old literal, as in `## Upstream 0.24.1 (`628c66b..fd16f54`)`,
-// `### Fork fix: ... (pin `fd16f54`)`, or `## Canonical 0.12.4 (`1b7b7e7`)`.
-// A heading naming a history, such as `## History`, holds entries. A history
-// log runs to the end of its parent section, so every later section beside an
-// entry is an entry too, even one titled only by its subject.
+// An entry heading names what it records: a commit, a range, or a date, as in
+// `## Upstream 0.24.1 (`628c66b..fd16f54`)`, `### Fork fix: ... (pin
+// `fd16f54`)`, or `## Canonical 0.12.4 (`1b7b7e7`)`. A heading naming a
+// history, such as `## History`, holds entries. A history log runs to the end
+// of its parent section, so every later section beside an entry is an entry
+// too, even one titled only by its subject. A heading that starts with
+// "Current", such as `## Current upstream (0.25.0)`, marks current state
+// outside any history: its section stays a claim and ends the log beside it.
 // A fork's changelogs are its own history; no literal in them is a claim.
 const CHANGELOG_FILE_PATTERN = /(?:^|\/)[^/]*CHANGELOG[^/]*\.md$/iu;
 const RANGE_PATTERN =
   /\b(?:[0-9a-f]{7,40}\.{2,3}[0-9a-f]{7,40}|\d+\.\d+\.\d+\.{2,3}\d+\.\d+\.\d+)\b/u;
 const HEADING_LEVEL_PATTERN = /^ {0,3}(#{1,6})(?:\s|$)/u;
 /**
- * A commit, a release, or a date: what a history entry's heading names. A
+ * A commit or a date: what a history entry's heading names besides a range. A
  * commit is any abbreviated or full SHA in backticks, or a bare one with a
  * digit, so a word such as "defaced" never reads as one.
  */
 const ENTRY_HEADING_PATTERN =
-  /`[0-9a-f]{7,40}`|\b(?=[0-9a-f]*\d)[0-9a-f]{7,40}\b|\b\d+\.\d+\.\d+\b|\d{4}-\d{2}-\d{2}/u;
+  /`[0-9a-f]{7,40}`|\b(?=[0-9a-f]*\d)[0-9a-f]{7,40}\b|\d{4}-\d{2}-\d{2}/u;
 const HISTORY_HEADING_PATTERN = /\bhistory\b/iu;
+const CURRENT_HEADING_PATTERN = /^ {0,3}#{1,6}[ \t]+current\b/iu;
 
-const recordLines = (
-  forkPath: string,
-  lines: string[],
-  from: string
-): boolean[] => {
+/** What a heading outside any history section marks. */
+const headingKind = (
+  line: string
+): "current" | "entry" | "history" | "plain" => {
+  if (CURRENT_HEADING_PATTERN.test(line)) {
+    return "current";
+  }
+  if (RANGE_PATTERN.test(line) || ENTRY_HEADING_PATTERN.test(line)) {
+    return "entry";
+  }
+  return HISTORY_HEADING_PATTERN.test(line) ? "history" : "plain";
+};
+
+interface RecordSection {
+  /** Whether the log of entries among this section's children has begun. */
+  entries: boolean;
+  historical: boolean;
+  level: number;
+}
+
+/** Close the sections a heading ends, then open the one it starts. */
+const openSection = (
+  sections: RecordSection[],
+  document: { entries: boolean },
+  level: number,
+  line: string
+): void => {
+  while ((sections.at(-1)?.level ?? 0) >= level) {
+    sections.pop();
+  }
+  const parent = sections.at(-1) ?? document;
+  const kind = sections.some((section) => section.historical)
+    ? "history"
+    : headingKind(line);
+  sections.push({
+    entries: false,
+    historical: kind === "plain" ? parent.entries : kind !== "current",
+    level,
+  });
+  parent.entries = kind === "entry" || (kind !== "current" && parent.entries);
+};
+
+const recordLines = (forkPath: string, lines: string[]): boolean[] => {
   if (!forkPath.endsWith(".md")) {
     return lines.map((line) => RANGE_PATTERN.test(line));
   }
-  // `entries` marks a section, or the document, whose log has begun.
   const document = { entries: false };
-  const sections: { entries: boolean; historical: boolean; level: number }[] =
-    [];
+  const sections: RecordSection[] = [];
   let fence: string | null = null;
   return lines.map((line) => {
     const fenced = fence !== null;
@@ -1143,25 +1182,7 @@ const recordLines = (
     const heading =
       fenced || fence !== null ? null : HEADING_LEVEL_PATTERN.exec(line);
     if (heading) {
-      const level = heading[1]?.length ?? 1;
-      while ((sections.at(-1)?.level ?? 0) >= level) {
-        sections.pop();
-      }
-      const parent = sections.at(-1) ?? document;
-      const entry =
-        RANGE_PATTERN.test(line) ||
-        ENTRY_HEADING_PATTERN.test(line) ||
-        line.includes(from);
-      sections.push({
-        entries: false,
-        historical:
-          sections.some((section) => section.historical) ||
-          parent.entries ||
-          entry ||
-          HISTORY_HEADING_PATTERN.test(line),
-        level,
-      });
-      parent.entries ||= entry;
+      openSection(sections, document, heading[1]?.length ?? 1, line);
       return true;
     }
     return RANGE_PATTERN.test(line) || (sections.at(-1)?.historical ?? false);
@@ -1175,7 +1196,7 @@ export const rewriteLiteral = (
   to: string
 ): { content: string; rewritten: number } => {
   const lines = content.split("\n");
-  const records = recordLines(forkPath, lines, from);
+  const records = recordLines(forkPath, lines);
   let rewritten = 0;
   const next = lines.map((line, index) => {
     if (records[index] || !line.includes(from)) {

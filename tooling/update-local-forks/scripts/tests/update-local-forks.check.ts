@@ -980,6 +980,42 @@ describe("update-local-forks", () => {
     ).toBe(false);
   });
 
+  test("proves byte identity on raw bytes, never decoded text", () => {
+    const fixture = createFixture();
+    const { upstream } = fixture;
+    const path = "scripts/lib/bytes.txt";
+    // A truncated four-byte sequence is invalid UTF-8 that decodes to one
+    // replacement character, whose own encoding is just as long: the two
+    // files have the same size and decode alike, but differ byte for byte.
+    const released = Buffer.from([0x61, 0xf0, 0x9f, 0x92, 0x0a]);
+    const lookalike = Buffer.from([0x61, 0xef, 0xbf, 0xbd, 0x0a]);
+    expect(new TextDecoder().decode(released)).toBe(
+      new TextDecoder().decode(lookalike)
+    );
+    writeFileSync(join(upstream, "skills/simple-changes", path), released);
+    git(upstream, ["add", "-A"]);
+    git(upstream, ["commit", "-q", "-m", "fix(core): Ship a byte fixture"]);
+    const fix = git(upstream, ["rev-parse", "HEAD"]);
+    const exact = installSnapshot(fixture, "exact");
+    const lookalikeSource = installSnapshot(fixture, "lookalike");
+    writeFileSync(join(lookalikeSource, path), lookalike);
+
+    const plan = planForkUpdate({
+      fork: fixture.fork,
+      source: lookalikeSource,
+      upstream,
+    });
+    expect(plan.source).toMatchObject({
+      commit: fixture.release,
+      commitVerified: false,
+    });
+    expect(plan.pinUpdate.to).toBeNull();
+    // The release's own bytes, invalid UTF-8 included, still prove it.
+    expect(
+      planForkUpdate({ fork: fixture.fork, source: exact, upstream }).source
+    ).toMatchObject({ commit: fix, commitVerified: true });
+  });
+
   test("bounds the search at the next release entry", () => {
     const fixture = createFixture();
     const { upstream } = fixture;

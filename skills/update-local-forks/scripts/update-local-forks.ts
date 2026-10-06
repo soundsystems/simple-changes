@@ -430,21 +430,63 @@ const treeFile = (
   return result.exitCode === 0 ? result.stdout : null;
 };
 
-const sourceDigest = (sourcePath: string): string =>
+/** One digest over paths and raw file bytes, shared by both sides of a proof. */
+const filesDigest = (files: { bytes: Buffer; path: string }[]): string =>
   sha256(
-    walkFiles(sourcePath)
-      .sort(byText)
-      .map((path) => `${path}\0${sha256(readFileSync(join(sourcePath, path)))}`)
+    [...files]
+      .sort((left, right) => byText(left.path, right.path))
+      .map(({ bytes, path }) => `${path}\0${sha256(bytes)}`)
       .join("\n")
   );
 
-const treeDigest = (upstream: UpstreamHandle, sha: string): string =>
-  sha256(
-    treeFiles(upstream, sha)
-      .sort(byText)
-      .map((path) => `${path}\0${sha256(treeFile(upstream, sha, path) ?? "")}`)
-      .join("\n")
+const sourceDigest = (sourcePath: string): string =>
+  filesDigest(
+    walkFiles(sourcePath).map((path) => ({
+      bytes: readFileSync(join(sourcePath, path)),
+      path,
+    }))
   );
+
+/**
+ * The raw bytes of each blob, read in one `git cat-file --batch` call. Never
+ * decoded: text decoding maps distinct invalid byte sequences to the same
+ * replacement characters, so decoded content cannot prove byte identity.
+ */
+const readBlobs = (upstream: UpstreamHandle, ids: string[]): Buffer[] => {
+  const result = spawnSync(
+    ["git", "-C", upstream.gitDirectory, "cat-file", "--batch"],
+    {
+      stderr: "pipe",
+      stdin: new TextEncoder().encode(ids.map((id) => `${id}\n`).join("")),
+      stdout: "pipe",
+    }
+  );
+  if (result.exitCode !== 0) {
+    throw new ForkUpdateError(
+      `git cat-file --batch failed: ${new TextDecoder().decode(result.stderr).trim()}`
+    );
+  }
+  const output = Buffer.from(result.stdout);
+  let offset = 0;
+  return ids.map((id) => {
+    const end = output.indexOf(0x0a, offset);
+    const [name, type, size] = output
+      .subarray(offset, end < 0 ? offset : end)
+      .toString("latin1")
+      .split(" ");
+    const length = Number(size);
+    if (
+      end < 0 ||
+      name !== id ||
+      type !== "blob" ||
+      !Number.isInteger(length)
+    ) {
+      throw new ForkUpdateError(`git cat-file --batch could not read ${id}.`);
+    }
+    offset = end + 1 + length + 1;
+    return output.subarray(end + 1, end + 1 + length);
+  });
+};
 
 /**
  * The packaged skill tree and packaged changelog blob of each commit, read in
@@ -580,12 +622,13 @@ const releaseWindow = (
 /**
  * Whether a packaged tree is byte-identical to the installed source. The path
  * and size listing of `git ls-tree` cheaply rules out most trees; any tree it
- * cannot rule out is proven by content digest, so equality is never assumed.
+ * cannot rule out is proven by a digest of its raw blob bytes, so equality is
+ * never assumed. Only blobs can match the installed regular files.
  */
 const matchesInstalledTree = (
   upstream: UpstreamHandle,
   source: DiscoveredSource
-): ((commit: string, tree: string) => boolean) => {
+): ((tree: string) => boolean) => {
   const installedDigest = sourceDigest(source.path);
   const installedSizes = new Map(
     walkFiles(source.path).map((path) => [
@@ -594,7 +637,7 @@ const matchesInstalledTree = (
     ])
   );
   const verdicts = new Map<string, boolean>();
-  const sameShape = (tree: string): boolean => {
+  const byteIdentical = (tree: string): boolean => {
     const entries = git(upstream.gitDirectory, [
       "ls-tree",
       "-r",
@@ -603,26 +646,42 @@ const matchesInstalledTree = (
       tree,
     ])
       .split("\0")
-      .filter(Boolean);
-    return (
-      entries.length === installedSizes.size &&
-      entries.every((line) => {
+      .filter(Boolean)
+      .map((line) => {
         const tab = line.indexOf("\t");
-        const [, type, , size] = line.slice(0, tab).split(" ").filter(Boolean);
-        const expected = installedSizes.get(line.slice(tab + 1));
-        return (
-          expected !== undefined &&
-          (type !== "blob" || Number(size) === expected)
-        );
-      })
+        const [, type, object, size] = line
+          .slice(0, tab)
+          .split(" ")
+          .filter(Boolean);
+        return { object, path: line.slice(tab + 1), size: Number(size), type };
+      });
+    const sameShape =
+      entries.length === installedSizes.size &&
+      entries.every(
+        (entry) =>
+          entry.type === "blob" &&
+          entry.object !== undefined &&
+          installedSizes.get(entry.path) === entry.size
+      );
+    if (!sameShape) {
+      return false;
+    }
+    const blobs = readBlobs(
+      upstream,
+      entries.map((entry) => entry.object ?? "")
+    );
+    return (
+      filesDigest(
+        entries.map((entry, index) => ({
+          bytes: blobs[index] ?? Buffer.alloc(0),
+          path: entry.path,
+        }))
+      ) === installedDigest
     );
   };
-  return (commit, tree) => {
+  return (tree) => {
     if (!verdicts.has(tree)) {
-      verdicts.set(
-        tree,
-        sameShape(tree) && treeDigest(upstream, commit) === installedDigest
-      );
+      verdicts.set(tree, byteIdentical(tree));
     }
     return verdicts.get(tree) ?? false;
   };
@@ -705,7 +764,7 @@ const locateSourceCommit = (
     const window = releaseWindow(upstream, entry, ref, version);
     const matching = window.commits.filter((commit) => {
       searched.add(commit);
-      return matches(commit, window.trees.get(commit) ?? "");
+      return matches(window.trees.get(commit) ?? "");
     });
     const onBranch = matching.find((commit) => window.firstParent.has(commit));
     if (onBranch) {

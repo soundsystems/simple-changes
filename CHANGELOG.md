@@ -11,9 +11,12 @@
 - The byte-for-byte check now compares raw file contents and file names. A
   release whose file contents contain invalid UTF-8 can now verify, and a
   look-alike install whose bytes or names differ no longer does. Applying a
-  plan writes every file's contents byte for byte, including merges and
-  version rewrites. A release or install with a file name that is not valid
-  UTF-8 is refused instead of pinned.
+  plan made by this version writes every file's contents byte for byte,
+  including merges and version rewrites. Plan again instead of applying a
+  plan saved by an earlier version when any file involved holds invalid UTF-8.
+  A release or install with a file name that is not valid UTF-8 is refused
+  instead of pinned, and non-ASCII file names such as `café.txt` now update
+  and delete cleanly after they are pinned.
 - Pin updates no longer rewrite past release entries in a fork's maintenance
   notes when their `#` headings name a commit, range, or date, or when they
   continue the history log, including notes with Windows line endings. The

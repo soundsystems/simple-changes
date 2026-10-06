@@ -53,9 +53,12 @@ Every write is byte for byte: an upstream version, a three-way merge, and a
 literal rewrite keep each byte as upstream or the fork has it, invalid UTF-8
 included, and a saved plan carries such content as base64. Apply checks each
 file it writes, deletes, or rewrites against a digest of its raw bytes taken
-at plan time. A plan saved by an earlier `update-local-forks` hashed decoded
-text instead: it still applies where those files are valid UTF-8, and apply
-refuses it as changed since the plan for a file that is not, so plan again.
+at plan time. A plan saved by an earlier `update-local-forks` hashed and
+stored decoded text instead. It still applies where every incoming and fork
+file is valid UTF-8. Apply refuses it as changed since the plan when an
+existing fork file is not valid UTF-8, but it cannot detect incoming content
+that such a plan already decoded. Plan again instead of applying an earlier
+plan whenever any incoming or fork file holds invalid UTF-8.
 
 File names must be valid UTF-8. Planning refuses an installed source or a
 fork that holds a path that is not, naming the path bytes in hex, and a

@@ -46,9 +46,16 @@
     accepts only strict base64 (whole quads, correct padding, exact
     re-encoding), rejects having both, and requires ASCII literals.
   - Apply's changed-since-plan checks hash raw bytes. A plan saved by an
-    earlier `update-local-forks` still applies where every file is valid
-    UTF-8. Apply refuses it for any other file as changed since the plan, and
-    `fork-sync.md` says to re-plan.
+    earlier `update-local-forks` hashed and stored decoded text.
+    - It still applies where every incoming and fork file is valid UTF-8.
+    - Apply refuses it when an existing fork file is not valid UTF-8, but it
+      cannot detect incoming content such a plan already decoded.
+    - `fork-sync.md` says to re-plan whenever any incoming or fork file holds
+      invalid UTF-8.
+  - Pinned-tree paths (`treeFiles`) are listed with
+    `git ls-tree -r -z --name-only` and split on NUL. A non-ASCII name such
+    as `café.txt` was quoted by Git and misparsed, so the update after such a
+    release was pinned failed as an invalid plan entry.
   - Without this, a newly verifiable file containing `F0 9F 92` would have
     reached the fork as `EF BF BD`.
 - The version-literal rewrite treats a fork's history as records, while
@@ -78,8 +85,9 @@
   maintenance note in each real fork's heading style, a filename-collision
   fixture, CRLF notes, and a plan, JSON round trip, and apply of invalid
   UTF-8 through add, update, merge, and literal rewrite. They also cover
-  invalid-UTF-8 paths, malformed base64, and earlier saved plans. Every rule
-  was mutation-checked (863 + 18 + 30 tests).
+  invalid-UTF-8 paths, malformed base64, earlier saved plans, and three
+  successive updates that add, change, and delete a non-ASCII-named file.
+  Every rule was mutation-checked (863 + 18 + 31 tests).
 - GPT-6.1 Sol (high) reviewed `323d98c`.
   - Blocking: decoded-text byte identity.
   - Should-fixes: current sections treated as history, bare abbreviated SHAs
@@ -98,6 +106,10 @@
     the pin advanced;
   - should-fix: loose base64 validation;
   - should-fix: an overstated claim about earlier saved plans.
+- Its xhigh re-review of `b1ce3ac` found nothing blocking. Its two
+  should-fixes are fixed above:
+  - LF-delimited pinned-path listing broke non-ASCII names;
+  - the earlier-plan claim was still overstated.
 <!-- simple-changelogs-signature agent="Claude Opus 5.5 xhigh" at="2026-10-05T22:00:40-05:00" -->
 
 ## 0.25.0 - 2026-10-05

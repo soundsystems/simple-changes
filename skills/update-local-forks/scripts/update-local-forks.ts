@@ -534,27 +534,19 @@ const packagedObjects = (
   );
 };
 
+/** Commits whose packaged objects one `git cat-file` call looks up. */
+const WINDOW_LOOKUP_BATCH = 64;
+
 /**
- * Commits a release may have shipped from: the commit that added the release
- * entry and its descendants on the searched branch, parents first, up to but
- * not including the next release entry. Review fixes often land after the
- * release-prep commit without touching the changelog, so the released tree is
- * frequently a later commit. A commit whose packaged changelog names another
- * top version is a release entry of its own and bounds the window, and so
- * does everything after it. `firstParent` holds the window's commits on the
- * branch's first-parent history: what a merge brought onto the branch, as
- * opposed to a commit only on a merged side branch.
+ * The entry and its descendants up to `ref`, parents first, each with its
+ * parents in order; a parent outside the walk is kept so the first parent
+ * stays first.
  */
-const releaseWindow = (
+const descendantsOf = (
   upstream: UpstreamHandle,
   entry: string,
-  ref: string,
-  version: string
-): {
-  commits: string[];
-  firstParent: Set<string>;
-  trees: Map<string, string>;
-} => {
+  ref: string
+): { order: string[]; parents: Map<string, string[]> } => {
   const parents = new Map<string, string[]>([[entry, []]]);
   const order = [entry];
   for (const line of git(upstream.gitDirectory, [
@@ -571,9 +563,15 @@ const releaseWindow = (
       order.push(commit);
     }
   }
-  const objects = packagedObjects(upstream, order);
+  return { order, parents };
+};
+
+/** The top version of each packaged changelog blob, read once per blob. */
+const changelogVersions = (
+  upstream: UpstreamHandle
+): ((changelog: string) => string | null) => {
   const versions = new Map<string, string | null>();
-  const topVersion = (changelog: string): string | null => {
+  return (changelog) => {
     if (!versions.has(changelog)) {
       versions.set(
         changelog,
@@ -584,12 +582,88 @@ const releaseWindow = (
     }
     return versions.get(changelog) ?? null;
   };
-  const trees = new Map<string, string>();
+};
+
+/** The window commits on `ref`'s first-parent chain inside the walk. */
+const firstParentWithin = (
+  upstream: UpstreamHandle,
+  ref: string,
+  parents: Map<string, string[]>,
+  window: Map<string, string>
+): Set<string> => {
+  const firstParent = new Set<string>();
+  let current = git(upstream.gitDirectory, [
+    "rev-parse",
+    "--verify",
+    `${ref}^{commit}`,
+  ]).trim();
+  while (parents.has(current)) {
+    if (window.has(current)) {
+      firstParent.add(current);
+    }
+    current = parents.get(current)?.[0] ?? "";
+  }
+  return firstParent;
+};
+
+/**
+ * Commits a release may have shipped from: the commit that added the release
+ * entry and its descendants on the searched branch, parents first, up to but
+ * not including the next release entry. Review fixes often land after the
+ * release-prep commit without touching the changelog, so the released tree is
+ * frequently a later commit. A commit whose packaged changelog names another
+ * top version is a release entry of its own and bounds the window, and so
+ * does everything after it. The walk stops reading commits once no child of a
+ * window commit is left undecided, since no later commit can then join it.
+ * `firstParent` holds the window's commits on the branch's first-parent
+ * history: what a merge brought onto the branch, as opposed to a commit only
+ * on a merged side branch. `examined` counts the commits read.
+ */
+export const releaseWindow = (
+  upstream: UpstreamHandle,
+  entry: string,
+  ref: string,
+  version: string
+): {
+  commits: string[];
+  examined: number;
+  firstParent: Set<string>;
+  trees: Map<string, string>;
+} => {
+  const { order, parents } = descendantsOf(upstream, entry, ref);
+  // Only parents inside the walk can carry the window forward.
+  const walkParents = (commit: string): string[] =>
+    (parents.get(commit) ?? []).filter((parent) => parents.has(parent));
+  const children = new Map<string, number>();
   for (const commit of order) {
+    for (const parent of walkParents(commit)) {
+      children.set(parent, (children.get(parent) ?? 0) + 1);
+    }
+  }
+  const topVersion = changelogVersions(upstream);
+  const objects = new Map<
+    string,
+    { changelog: string | null; tree: string | null }
+  >();
+  const trees = new Map<string, string>();
+  // Children of window commits not yet decided.
+  let undecided = 0;
+  let examined = 0;
+  for (const [index, commit] of order.entries()) {
+    if (index > 0 && undecided === 0) {
+      break;
+    }
+    if (!objects.has(commit)) {
+      const batch = order.slice(index, index + WINDOW_LOOKUP_BATCH);
+      for (const [key, value] of packagedObjects(upstream, batch)) {
+        objects.set(key, value);
+      }
+    }
+    examined += 1;
     // Parents come first, so every parent inside the walk is already decided.
-    const pastNextRelease = (parents.get(commit) ?? []).some(
-      (parent) => parents.has(parent) && !trees.has(parent)
-    );
+    const commitParents = walkParents(commit);
+    undecided -= commitParents.filter((parent) => trees.has(parent)).length;
+    const pastNextRelease = commitParents.some((parent) => !trees.has(parent));
     const { changelog, tree } = objects.get(commit) ?? {};
     if (
       !pastNextRelease &&
@@ -598,23 +672,13 @@ const releaseWindow = (
       topVersion(changelog) === version
     ) {
       trees.set(commit, tree);
+      undecided += children.get(commit) ?? 0;
     }
-  }
-  const firstParent = new Set<string>();
-  let current = git(upstream.gitDirectory, [
-    "rev-parse",
-    "--verify",
-    `${ref}^{commit}`,
-  ]).trim();
-  while (parents.has(current)) {
-    if (trees.has(current)) {
-      firstParent.add(current);
-    }
-    current = parents.get(current)?.[0] ?? "";
   }
   return {
     commits: order.filter((commit) => trees.has(commit)),
-    firstParent,
+    examined,
+    firstParent: firstParentWithin(upstream, ref, parents, trees),
     trees,
   };
 };

@@ -20,7 +20,9 @@ import {
   discover,
   inspectFork,
   intentionalOmissions,
+  openUpstream,
   planForkUpdate,
+  releaseWindow,
   rewriteLiteral,
 } from "../../../../skills/update-local-forks/scripts/update-local-forks.ts";
 
@@ -978,6 +980,48 @@ describe("update-local-forks", () => {
         (rewrite) => rewrite.to === merge || rewrite.to === entry
       )
     ).toBe(false);
+  });
+
+  test("stops reading commits at the next release entry", () => {
+    const fixture = createFixture();
+    const { upstream } = fixture;
+    const entry = commitPackage(
+      upstream,
+      "chore(release): Prepare Simple Changes 0.3.0",
+      {
+        "CHANGELOG.md": changelogThrough("0.3.0", "0.2.0", "0.1.0"),
+        "scripts/lib/core.ts": "export const core = 3;\n",
+      }
+    );
+    const fix = commitPackage(upstream, "fix(core): Address review", {
+      "scripts/lib/core.ts": "export const core = 31;\n",
+    });
+    commitPackage(upstream, "chore(release): Prepare Simple Changes 0.4.0", {
+      "CHANGELOG.md": changelogThrough("0.4.0", "0.3.0", "0.2.0", "0.1.0"),
+    });
+    for (let index = 0; index < 20; index += 1) {
+      commitPackage(upstream, `fix(core): Follow up ${index}`, {
+        "scripts/lib/core.ts": `export const core = ${40 + index};\n`,
+      });
+    }
+    const handle = openUpstream({ upstream });
+
+    const bounded = releaseWindow(handle, entry, "main", "0.3.0");
+    expect(bounded.commits).toEqual([entry, fix]);
+    // The entry, the fix, and the 0.4.0 entry that bounds them; none of the
+    // twenty commits after it is read.
+    expect(bounded.examined).toBe(3);
+
+    // A branch cut from the window and merged after the next release entry
+    // still joins it: the walk stays open while any child is undecided.
+    git(upstream, ["checkout", "-q", "-b", "late", fix]);
+    const late = commitPackage(upstream, "fix(core): Land a late fix", {
+      "scripts/lib/late.ts": "export const late = true;\n",
+    });
+    git(upstream, ["checkout", "-q", "main"]);
+    git(upstream, ["merge", "-q", "--no-ff", "-m", "Merge late", "late"]);
+    const open = releaseWindow(handle, entry, "main", "0.3.0");
+    expect([...open.commits].sort()).toEqual([entry, fix, late].sort());
   });
 
   test("proves byte identity on raw bytes, never decoded text", () => {

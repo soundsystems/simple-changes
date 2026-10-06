@@ -21,6 +21,7 @@ import {
   inspectFork,
   intentionalOmissions,
   planForkUpdate,
+  rewriteLiteral,
 } from "../../../../skills/update-local-forks/scripts/update-local-forks.ts";
 
 const skillRoot = resolve(
@@ -1142,6 +1143,222 @@ describe("update-local-forks", () => {
     const script = readFileSync(testScript, "utf8");
     expect(script).toContain(`grep -Fq '${rangeHeading}'`);
     expect(script).toContain(`@ \`${release}\``);
+  });
+
+  test("keeps past release entries as written in every fork's history style", () => {
+    const omissions = [
+      "## Intentional omissions",
+      "",
+      "- `references/deployments.md`: Acme deploys through its own pipeline.",
+      "- `references/signatures.md`: Acme proposals carry no agent signatures.",
+      "",
+    ];
+    // Each note's `current` part states the pin and bundled release; its
+    // `history` part records past updates and must survive the bump intact.
+    const styles = (pin: string) => {
+      const short = pin.slice(0, 7);
+      return {
+        // Top-level entries after an updating guide, as in Hashi's note.
+        hashi: {
+          current: [
+            "# Fork maintenance",
+            "",
+            "## Updating this fork",
+            "",
+            `Plan against the installed Simple Changes 0.1.0 at \`${pin}\`.`,
+            "",
+            "## Current deltas",
+            "",
+            "- The wrapper bundles Simple Changes 0.1.0.",
+            "",
+            ...omissions,
+          ],
+          history: [
+            `## Upstream 0.1.0 (\`7ab67a1..${short}\`)`,
+            "",
+            `- Re-pin to \`${pin}\`, Simple Changes 0.1.0.`,
+            "",
+            `## Fork fix: drop deltas upstream now covers (pin \`${short}\`)`,
+            "",
+            "Clears deltas that no longer earn their keep before the Simple Changes 0.1.0",
+            "re-pin.",
+            "",
+            "## Fork sync: Simple Changes 0.0.9 candidate (`7ab67a1..628c66b`)",
+            "",
+            "- Staged ahead of Simple Changes 0.1.0.",
+            "",
+            "## Local Blacksmith CI bridge",
+            "",
+            "- `pnpm hashi ci guard-exec` runs the guard for Simple Changes 0.1.0's",
+            "  `execGuard` hook.",
+            "",
+          ],
+        },
+        // Third-level entries under `## History`, as in Patrick's note.
+        patrick: {
+          current: [
+            "# Fork maintenance",
+            "",
+            "## Current deltas",
+            "",
+            `- Bundles Simple Changes 0.1.0 at \`${pin}\`.`,
+            "",
+            ...omissions,
+            "## Maintaining this fork",
+            "",
+            `Plan each update from \`${pin}\`; the runtime reports Simple Changes 0.1.0.`,
+            "",
+          ],
+          history: [
+            "## History",
+            "",
+            `### Upstream 0.1.0 (\`7ab67a1..${short}\`)`,
+            "",
+            `- Re-pin to release commit \`${pin}\` (Simple Changes 0.1.0).`,
+            "",
+            `### Patrick-only: retire the bundled canonical copy (pin \`${short}\` unchanged)`,
+            "",
+            "- The copy duplicated Simple Changes 0.1.0.",
+            "",
+          ],
+        },
+        // `## History` entries after a current section quoting an MR template
+        // in a longer fence around an inner one, as in Pulse's note.
+        pulse: {
+          current: [
+            "# Fork maintenance",
+            "",
+            `This fork bundles Simple Changes 0.1.0 at \`${pin}\`.`,
+            "",
+            "## Current deltas",
+            "",
+            "- The MR template:",
+            "",
+            "````md",
+            "Shipped with Simple Changes 0.1.0.",
+            "```sh",
+            `echo pinned at ${pin}`,
+            "````",
+            "",
+            ...omissions,
+          ],
+          history: [
+            "## History",
+            "",
+            `### Upstream 0.1.0 (\`7ab67a1..${short}\`)`,
+            "",
+            `- Re-pin to release commit \`${pin}\` (Simple Changes 0.1.0).`,
+            "",
+            `### Pulse-only: use the runtime release gate (pin \`${short}\` unchanged)`,
+            "",
+            "- Simple Changes 0.1.0 decides releases.",
+            "",
+            `### Fork fix: Merge danger beneath a Pulse MR template (pin \`${short}\`)`,
+            "",
+            "- Appended under the Simple Changes 0.1.0 template.",
+            "",
+            "### Upstream 628c66b, pending 0.1.0 (`7ab67a1..628c66b`)",
+            "",
+            "- Pre-release of Simple Changes 0.1.0.",
+            "",
+          ],
+        },
+        // Top-level entries titled by a range, a lone pin, a release, a date,
+        // or only a subject, as in Thor's note.
+        thor: {
+          current: [
+            "# Fork maintenance",
+            "",
+            `Forked at \`${pin}\`; this fork bundles Simple Changes 0.1.0.`,
+            "",
+            "## Current deltas",
+            "",
+            "| Area | Delta |",
+            "| --- | --- |",
+            `| Runtime | Byte-identical to Simple Changes 0.1.0 at \`${pin}\`. |`,
+            "",
+            ...omissions,
+            "History follows, newest first.",
+            "",
+          ],
+          history: [
+            `## Fork cleanup before the next re-pin (pin \`${short}\`)`,
+            "",
+            "- Keep the bridge until the Simple Changes 0.1.0 runtime carries it.",
+            "",
+            `## Upstream 0.1.0 (\`628c66b..${short}\`)`,
+            "",
+            `- Re-pin to release commit \`${pin}\` (Simple Changes 0.1.0).`,
+            "",
+            "## Local Blacksmith CI bridge",
+            "",
+            `- Guard hosted CI for Simple Changes 0.1.0 merges at \`${pin}\`.`,
+            "",
+            "## Canonical 0.0.9 (`1b7b7e7`)",
+            "",
+            "- Superseded by Simple Changes 0.1.0.",
+            "",
+            "## Local proposal resolutions (2026-01-15)",
+            "",
+            "- Resolved under Simple Changes 0.1.0.",
+            "",
+          ],
+        },
+      };
+    };
+
+    for (const style of ["thor", "hashi", "patrick", "pulse"] as const) {
+      const fixture = createFixture();
+      const { pin, release } = fixture;
+      const { current, history } = styles(pin)[style];
+      const notePath = join(fixture.fork, "references/fork-maintenance.md");
+      writeFileSync(notePath, [...current, ...history].join("\n"));
+
+      const plan = planForkUpdate({
+        fork: fixture.fork,
+        source: fixture.source,
+        upstream: fixture.upstream,
+      });
+      expect(plan.pinUpdate.to).toBe(release);
+      expect(
+        plan.literalRewrites
+          .filter(
+            (rewrite) => rewrite.forkPath === "references/fork-maintenance.md"
+          )
+          .map((rewrite) => rewrite.to)
+          .sort((left, right) => left.localeCompare(right))
+      ).toEqual(
+        [release, "Simple Changes 0.2.0"].sort((left, right) =>
+          left.localeCompare(right)
+        )
+      );
+      applyForkPlan(plan);
+
+      const moved = current.map((line) =>
+        line
+          .replaceAll(pin, release)
+          .replaceAll("Simple Changes 0.1.0", "Simple Changes 0.2.0")
+      );
+      expect({ note: readFileSync(notePath, "utf8"), style }).toEqual({
+        note: [...moved, ...history].join("\n"),
+        style,
+      });
+    }
+
+    // A note's first entry may name an abbreviated pin of any shape, since the
+    // fixture's random pin cannot be relied on to produce each one.
+    for (const sha of ["5028750", "deadbee", "50287b0"]) {
+      const note = `# Fork maintenance\n\n## Current deltas\n\n## Fork cleanup (pin \`${sha}\`)\n\n- Keep it until Simple Changes 0.1.0.\n`;
+      expect({
+        rewritten: rewriteLiteral(
+          "references/fork-maintenance.md",
+          note,
+          "Simple Changes 0.1.0",
+          "Simple Changes 0.2.0"
+        ).rewritten,
+        sha,
+      }).toEqual({ rewritten: 0, sha });
+    }
   });
 
   test("refuses stale literal targets and conflict sidecars", () => {

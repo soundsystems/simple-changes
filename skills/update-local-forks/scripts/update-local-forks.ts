@@ -1044,15 +1044,26 @@ const classify = (
 // A fork's own records keep the literal they were written with; a moved pin or
 // version is a current claim only outside them. Any line naming a commit or
 // version range is a record. In Markdown, so is every heading and every line
-// in a section whose heading, or an enclosing one, names a range, a date, the
-// old literal, or a history.
+// in a section that is a history entry, a history section, or inside one.
+// An entry heading names what it records: a commit, a range, a release, a
+// date, or the old literal, as in `## Upstream 0.24.1 (`628c66b..fd16f54`)`,
+// `### Fork fix: ... (pin `fd16f54`)`, or `## Canonical 0.12.4 (`1b7b7e7`)`.
+// A heading naming a history, such as `## History`, holds entries. A history
+// log runs to the end of its parent section, so every later section beside an
+// entry is an entry too, even one titled only by its subject.
 // A fork's changelogs are its own history; no literal in them is a claim.
 const CHANGELOG_FILE_PATTERN = /(?:^|\/)[^/]*CHANGELOG[^/]*\.md$/iu;
 const RANGE_PATTERN =
   /\b(?:[0-9a-f]{7,40}\.{2,3}[0-9a-f]{7,40}|\d+\.\d+\.\d+\.{2,3}\d+\.\d+\.\d+)\b/u;
 const HEADING_LEVEL_PATTERN = /^ {0,3}(#{1,6})(?:\s|$)/u;
-const FENCE_PATTERN = /^ {0,3}(?:```|~~~)/u;
-const HISTORY_HEADING_PATTERN = /\d{4}-\d{2}-\d{2}|\bhistory\b/iu;
+/**
+ * A commit, a release, or a date: what a history entry's heading names. A
+ * commit is any abbreviated or full SHA in backticks, or a bare one with a
+ * digit, so a word such as "defaced" never reads as one.
+ */
+const ENTRY_HEADING_PATTERN =
+  /`[0-9a-f]{7,40}`|\b(?=[0-9a-f]*\d)[0-9a-f]{7,40}\b|\b\d+\.\d+\.\d+\b|\d{4}-\d{2}-\d{2}/u;
+const HISTORY_HEADING_PATTERN = /\bhistory\b/iu;
 
 const recordLines = (
   forkPath: string,
@@ -1062,26 +1073,36 @@ const recordLines = (
   if (!forkPath.endsWith(".md")) {
     return lines.map((line) => RANGE_PATTERN.test(line));
   }
-  const sections: { historical: boolean; level: number }[] = [];
-  let inFence = false;
+  // `entries` marks a section, or the document, whose log has begun.
+  const document = { entries: false };
+  const sections: { entries: boolean; historical: boolean; level: number }[] =
+    [];
+  let fence: string | null = null;
   return lines.map((line) => {
-    if (FENCE_PATTERN.test(line)) {
-      inFence = !inFence;
-    }
-    const heading = inFence ? null : HEADING_LEVEL_PATTERN.exec(line);
+    const fenced = fence !== null;
+    fence = fenceAfter(line, fence);
+    const heading =
+      fenced || fence !== null ? null : HEADING_LEVEL_PATTERN.exec(line);
     if (heading) {
       const level = heading[1]?.length ?? 1;
       while ((sections.at(-1)?.level ?? 0) >= level) {
         sections.pop();
       }
+      const parent = sections.at(-1) ?? document;
+      const entry =
+        RANGE_PATTERN.test(line) ||
+        ENTRY_HEADING_PATTERN.test(line) ||
+        line.includes(from);
       sections.push({
+        entries: false,
         historical:
           sections.some((section) => section.historical) ||
-          RANGE_PATTERN.test(line) ||
-          HISTORY_HEADING_PATTERN.test(line) ||
-          line.includes(from),
+          parent.entries ||
+          entry ||
+          HISTORY_HEADING_PATTERN.test(line),
         level,
       });
+      parent.entries ||= entry;
       return true;
     }
     return RANGE_PATTERN.test(line) || (sections.at(-1)?.historical ?? false);

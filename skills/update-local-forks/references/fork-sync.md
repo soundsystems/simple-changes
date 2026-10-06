@@ -54,9 +54,14 @@ the runtime: the old provenance sha, `CURRENT_GUIDANCE_VERSION = <old>`, and
 `Simple Changes <old version>`. Only those exact strings change; nothing is
 inferred. The fork's own records keep the literal they were written with: a
 line naming a commit or version range (`7ab67a1..628c66b`), and in Markdown
-every heading and every line in a section whose heading, or an enclosing one,
-names a range, a date, the old literal, or a history. A test that asserts such
-a record stays matched to it.
+every heading and every line of a history entry or a history section. An
+entry's heading names what it records: a commit or range, a release, a date,
+or the old literal, as in ``## Upstream 0.24.1 (`628c66b..fd16f54`)``,
+``### Fork fix: ... (pin `fd16f54`)``, or ``## Canonical 0.12.4 (`1b7b7e7`)``.
+A heading naming a history, such as `## History`, holds entries. A history
+log runs to the end of its parent section, so every later section beside an
+entry is one too, even when titled only by its subject; keep current notes
+above the history. A test that asserts such a record stays matched to it.
 
 ## Omitted references
 

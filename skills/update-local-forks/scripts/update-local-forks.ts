@@ -1995,7 +1995,17 @@ export interface ApplyReceipt {
 
 const WRITE_ACTIONS = new Set<PlanAction>(["update", "merge", "add"]);
 const DIGEST_PATTERN = /^[0-9a-f]{64}$/u;
-const BASE64_PATTERN = /^[A-Za-z0-9+/]*={0,2}$/u;
+const BASE64_PATTERN =
+  /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u;
+
+/**
+ * Strict base64: whole quads, correct padding, and the one encoding of its
+ * bytes, so a truncated or hand-edited value can never write fewer bytes than
+ * the plan meant.
+ */
+const isCanonicalBase64 = (value: string): boolean =>
+  BASE64_PATTERN.test(value) &&
+  Buffer.from(value, "base64").toString("base64") === value;
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
@@ -2131,7 +2141,7 @@ const validateForkPlan = (value: unknown): ForkPlan => {
       !(
         entry.contentBase64 === undefined ||
         (typeof entry.contentBase64 === "string" &&
-          BASE64_PATTERN.test(entry.contentBase64) &&
+          isCanonicalBase64(entry.contentBase64) &&
           entry.content === undefined)
       ) ||
       !(

@@ -1420,6 +1420,63 @@ describe("update-local-forks", () => {
     );
   });
 
+  test("rejects a saved plan whose base64 content is not strict base64", () => {
+    const fixture = createFixture();
+    const plan = planForkUpdate({
+      fork: fixture.fork,
+      source: fixture.source,
+      upstream: fixture.upstream,
+    });
+    const corePath = join(fixture.fork, "runtime/scripts/lib/core.ts");
+    const coreBefore = readFileSync(corePath, "utf8");
+    const withBase64 = (value: string) => {
+      const edited = structuredClone(plan);
+      const entry = edited.entries.find(
+        (candidate) => candidate.forkPath === "runtime/scripts/lib/core.ts"
+      );
+      if (!entry) {
+        throw new Error("fixture plan lost its core.ts update");
+      }
+      Reflect.deleteProperty(entry, "content");
+      entry.contentBase64 = value;
+      return edited;
+    };
+    // "A" decodes to nothing; the rest are short, misplaced, or mis-padded,
+    // or encode bytes in a form Buffer would not produce.
+    for (const value of [
+      "A",
+      "AB",
+      "ABC",
+      "AB=",
+      "A===",
+      "Zm9v=",
+      "Zm9vYg",
+      "Zm9vYg=",
+      "QR==",
+      "Zm9=",
+      "=Zm9",
+      "Zm 9v",
+      "Zm9v\n",
+    ]) {
+      expect({
+        thrown: (() => {
+          try {
+            applyForkPlan(withBase64(value));
+            return "applied";
+          } catch (error) {
+            return (error as Error).message;
+          }
+        })(),
+        value,
+      }).toEqual({ thrown: "The plan carries an invalid file entry.", value });
+    }
+    expect(readFileSync(corePath, "utf8")).toBe(coreBefore);
+
+    const exact = Buffer.from("export const core = 2;\n");
+    applyForkPlan(withBase64(exact.toString("base64")));
+    expect(readFileSync(corePath).toString("hex")).toBe(exact.toString("hex"));
+  });
+
   test("rejects hostile saved paths before writing outside the fork", () => {
     const fixture = createFixture();
     const plan = planForkUpdate({

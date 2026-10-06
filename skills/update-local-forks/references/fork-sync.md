@@ -49,6 +49,10 @@ deltas. Two layouts are recognized:
 | `CHANGELOG.md` | Any | `skip` (the fork owns its own history) |
 | Absent | Present | `keep-fork-only` |
 
+Every write is byte for byte: an upstream version, a three-way merge, and a
+literal rewrite keep each byte as upstream or the fork has it, invalid UTF-8
+included, and a saved plan carries such content as base64.
+
 The plan also rewrites exact literals the fork pins in its own files outside
 the runtime: the old provenance sha, `CURRENT_GUIDANCE_VERSION = <old>`, and
 `Simple Changes <old version>`. Only those exact strings change; nothing is

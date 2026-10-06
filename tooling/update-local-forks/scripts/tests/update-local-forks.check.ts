@@ -1060,6 +1060,79 @@ describe("update-local-forks", () => {
     ).toMatchObject({ commit: fix, commitVerified: true });
   });
 
+  test("applies invalid UTF-8 byte for byte and moves only the literal", () => {
+    const fixture = createFixture();
+    const { upstream } = fixture;
+    const skill = join(upstream, "skills/simple-changes");
+    const truncated = Buffer.from([0xf0, 0x9f, 0x92]);
+    const bytes = (...parts: (string | Buffer)[]): Buffer =>
+      Buffer.concat(
+        parts.map((part) =>
+          typeof part === "string" ? Buffer.from(part) : part
+        )
+      );
+    // A new runtime file (add), a runtime file the fork left alone (update),
+    // and a SKILL.md line the fork's own edits surround (merge).
+    const added = bytes("a", truncated, "\n");
+    const updated = bytes("export const core = 3; // ", truncated, "\n");
+    writeFileSync(join(skill, "scripts/lib/bytes.txt"), added);
+    writeFileSync(join(skill, "scripts/lib/core.ts"), updated);
+    const [before, after] = readFileSync(join(skill, "SKILL.md"), "utf8").split(
+      "Intro line, revised."
+    );
+    const revised = bytes("Intro line, revised ", truncated, ".");
+    writeFileSync(
+      join(skill, "SKILL.md"),
+      bytes(before ?? "", revised, after ?? "")
+    );
+    git(upstream, ["add", "-A"]);
+    git(upstream, ["commit", "-q", "-m", "fix(core): Ship raw bytes"]);
+    const shipped = git(upstream, ["rev-parse", "HEAD"]);
+    const source = installSnapshot(fixture, "shipped");
+    // A fork-owned note that names the old release beside invalid UTF-8.
+    writeFileSync(
+      join(fixture.fork, "notes.md"),
+      bytes("Bundled Simple Changes 0.1.0 ", truncated, ".\n")
+    );
+
+    const plan = planForkUpdate({ fork: fixture.fork, source, upstream });
+    expect(plan.pinUpdate.to).toBe(shipped);
+    // Apply a saved plan, as the CLI does.
+    applyForkPlan(JSON.parse(JSON.stringify(plan)));
+
+    const forkFile = (path: string): Buffer =>
+      readFileSync(join(fixture.fork, path));
+    expect(forkFile("runtime/scripts/lib/bytes.txt").toString("hex")).toBe(
+      added.toString("hex")
+    );
+    expect(forkFile("runtime/scripts/lib/core.ts").toString("hex")).toBe(
+      updated.toString("hex")
+    );
+    const forkSkill = forkFile("SKILL.md");
+    expect(forkSkill.includes(revised)).toBe(true);
+    expect(forkSkill.includes(Buffer.from([0xef, 0xbf, 0xbd]))).toBe(false);
+    expect(forkSkill.toString("latin1")).toContain(
+      `Forked from \`simple-changes\` @ \`${shipped}\``
+    );
+    expect(forkSkill.toString("latin1")).toContain("## Acme rules");
+    expect(forkFile("notes.md").toString("hex")).toBe(
+      bytes("Bundled Simple Changes 0.2.0 ", truncated, ".\n").toString("hex")
+    );
+    // The saved plan carries those bytes as base64, never as decoded text.
+    const entry = (path: string) =>
+      plan.entries.find((candidate) => candidate.forkPath === path);
+    expect(entry("runtime/scripts/lib/bytes.txt")).toMatchObject({
+      action: "add",
+      contentBase64: added.toString("base64"),
+    });
+    expect(entry("runtime/scripts/lib/core.ts")).toMatchObject({
+      action: "update",
+      contentBase64: updated.toString("base64"),
+    });
+    expect(entry("SKILL.md")?.action).toBe("merge");
+    expect(entry("SKILL.md")?.content).toBeUndefined();
+  });
+
   test("proves byte identity on raw filename bytes, never decoded names", () => {
     const fixture = createFixture();
     const { upstream } = fixture;

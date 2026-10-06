@@ -430,6 +430,26 @@ const treeFile = (
   return result.exitCode === 0 ? result.stdout : null;
 };
 
+/** A packaged blob at `sha` as a byte string, read raw, or null. */
+const treeBlob = (
+  upstream: UpstreamHandle,
+  sha: string,
+  path: string
+): string | null => {
+  const result = spawnSync(
+    [
+      "git",
+      "-C",
+      upstream.gitDirectory,
+      "cat-file",
+      "blob",
+      `${sha}:${UPSTREAM_SKILL_PATH}/${path}`,
+    ],
+    { stderr: "pipe", stdout: "pipe" }
+  );
+  return result.exitCode === 0 ? byteString(result.stdout) : null;
+};
+
 /**
  * A path as a byte string: one character per raw byte. Filenames are bytes,
  * and decoding them as UTF-8 maps distinct invalid sequences to the same
@@ -445,6 +465,35 @@ const byByte = (left: string, right: string): number => {
   }
   return left < right ? -1 : 1;
 };
+
+/**
+ * A file's contents as a byte string, or null when it is not a regular file.
+ * Plans compare, merge, and rewrite byte strings so every byte a fork receives
+ * is the byte upstream or the fork already had; decoding to text would turn
+ * invalid UTF-8 into replacement characters on the way back to disk.
+ */
+const readBytes = (path: string): string | null =>
+  existsSync(path) && statSync(path).isFile()
+    ? byteString(readFileSync(path))
+    : null;
+
+/** The digest of a byte string's raw bytes. */
+const bytesDigest = (bytes: string): string =>
+  sha256(Buffer.from(bytes, "latin1"));
+
+const STRICT_UTF8 = new TextDecoder("utf-8", { fatal: true });
+
+const isUtf8 = (bytes: Uint8Array): boolean => {
+  try {
+    STRICT_UTF8.decode(bytes);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+/** A literal the rewrite moves: printable ASCII, so bytes and text agree. */
+const ASCII_LITERAL_PATTERN = /^[\x20-\x7e]*$/u;
 
 /** One digest over paths and raw file bytes, shared by both sides of a proof. */
 const filesDigest = (files: { bytes: Buffer; path: string }[]): string =>
@@ -946,7 +995,10 @@ export type PlanAction =
 
 export interface PlanEntry {
   action: PlanAction;
+  /** What the entry writes, as UTF-8 text. */
   content?: string;
+  /** What the entry writes, as base64, when the bytes are not valid UTF-8. */
+  contentBase64?: string;
   forkDigest: string | null;
   forkPath: string;
   reason: string;
@@ -1009,24 +1061,30 @@ const mergeFile = (
       ours: join(scratch, "ours"),
       theirs: join(scratch, "theirs"),
     };
-    writeFileSync(paths.ours, ours);
-    writeFileSync(paths.base, base);
-    writeFileSync(paths.theirs, theirs);
-    const result = run([
-      "git",
-      "merge-file",
-      "-p",
-      "-L",
-      "fork",
-      "-L",
-      "pinned upstream",
-      "-L",
-      "installed upstream",
-      paths.ours,
-      paths.base,
-      paths.theirs,
-    ]);
-    return { conflict: result.exitCode !== 0, merged: result.stdout };
+    writeFileSync(paths.ours, Buffer.from(ours, "latin1"));
+    writeFileSync(paths.base, Buffer.from(base, "latin1"));
+    writeFileSync(paths.theirs, Buffer.from(theirs, "latin1"));
+    const result = spawnSync(
+      [
+        "git",
+        "merge-file",
+        "-p",
+        "-L",
+        "fork",
+        "-L",
+        "pinned upstream",
+        "-L",
+        "installed upstream",
+        paths.ours,
+        paths.base,
+        paths.theirs,
+      ],
+      { stderr: "pipe", stdout: "pipe" }
+    );
+    return {
+      conflict: result.exitCode !== 0,
+      merged: byteString(result.stdout),
+    };
   } finally {
     rmSync(scratch, { force: true, recursive: true });
   }
@@ -1228,7 +1286,7 @@ const classify = (
   }
   return {
     ...result,
-    forkDigest: current === null ? null : sha256(current),
+    forkDigest: current === null ? null : bytesDigest(current),
     forkPath,
     upstreamPath,
   };
@@ -1379,6 +1437,9 @@ const literalRewritesFor = (
       `Simple Changes ${source.version}`,
     ]);
   }
+  const literals = substitutions.filter(([from, to]) =>
+    [from, to].every((literal) => ASCII_LITERAL_PATTERN.test(literal))
+  );
   for (const forkPath of walkFiles(fork.path)) {
     if (
       forkPath.startsWith("runtime/") ||
@@ -1388,16 +1449,22 @@ const literalRewritesFor = (
     ) {
       continue;
     }
-    const content = readText(join(fork.path, forkPath));
+    // Byte strings: an ASCII literal moves and every other byte stays.
+    const content = readBytes(join(fork.path, forkPath));
     if (content === null) {
       continue;
     }
-    for (const [from, to] of substitutions) {
+    for (const [from, to] of literals) {
       if (
         from !== to &&
         rewriteLiteral(forkPath, content, from, to).rewritten > 0
       ) {
-        rewrites.push({ forkDigest: sha256(content), forkPath, from, to });
+        rewrites.push({
+          forkDigest: bytesDigest(content),
+          forkPath,
+          from,
+          to,
+        });
       }
     }
   }
@@ -1443,7 +1510,7 @@ const advanceProvenance = (
     return false;
   }
   const basis =
-    skillEntry.content ?? readText(join(fork.path, "SKILL.md")) ?? "";
+    skillEntry.content ?? readBytes(join(fork.path, "SKILL.md")) ?? "";
   const rewritten = basis.replace(
     PROVENANCE_PATTERN,
     `Forked from \`simple-changes\` @ \`${newPin}\``
@@ -1513,9 +1580,9 @@ const classifyForkFiles = (
       upstreamPath,
       forkPath,
       {
-        base: treeFile(upstream, fork.pin, upstreamPath),
-        current: readText(join(fork.path, forkPath)),
-        target: readText(join(source.path, upstreamPath)),
+        base: treeBlob(upstream, fork.pin, upstreamPath),
+        current: readBytes(join(fork.path, forkPath)),
+        target: readBytes(join(source.path, upstreamPath)),
       },
       omissions
     );
@@ -1746,6 +1813,23 @@ const holdPin = (
   ].join(" ");
 };
 
+/**
+ * A plan carries what it writes as UTF-8 text when the bytes are valid UTF-8,
+ * which writes back byte for byte, and as base64 otherwise.
+ */
+const encodeContent = (entry: PlanEntry): void => {
+  if (entry.content === undefined) {
+    return;
+  }
+  const bytes = Buffer.from(entry.content, "latin1");
+  if (isUtf8(bytes)) {
+    entry.content = bytes.toString("utf8");
+    return;
+  }
+  Reflect.deleteProperty(entry, "content");
+  entry.contentBase64 = bytes.toString("base64");
+};
+
 export const planForkUpdate = (options: {
   branch?: string;
   cache?: string;
@@ -1835,6 +1919,9 @@ export const planForkUpdate = (options: {
       !parityReviewPaths.has(rewrite.forkPath) &&
       (heldReason === null || rewrite.forkPath !== "SKILL.md")
   );
+  for (const entry of entries) {
+    encodeContent(entry);
+  }
   return {
     entries,
     fork,
@@ -1861,6 +1948,7 @@ export interface ApplyReceipt {
 
 const WRITE_ACTIONS = new Set<PlanAction>(["update", "merge", "add"]);
 const DIGEST_PATTERN = /^[0-9a-f]{64}$/u;
+const BASE64_PATTERN = /^[A-Za-z0-9+/]*={0,2}$/u;
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
@@ -1976,7 +2064,7 @@ const validateForkPlan = (value: unknown): ForkPlan => {
         hasExactKeys(
           entry,
           ["action", "forkDigest", "forkPath", "reason", "upstreamPath"],
-          ["content", "sidecarDigest"]
+          ["content", "contentBase64", "sidecarDigest"]
         ) &&
         PLAN_ACTIONS.includes(entry.action as PlanAction) &&
         safeForkPath(forkRoot, entry.forkPath)
@@ -1993,6 +2081,12 @@ const validateForkPlan = (value: unknown): ForkPlan => {
           DIGEST_PATTERN.test(entry.forkDigest))
       ) ||
       !(entry.content === undefined || typeof entry.content === "string") ||
+      !(
+        entry.contentBase64 === undefined ||
+        (typeof entry.contentBase64 === "string" &&
+          BASE64_PATTERN.test(entry.contentBase64) &&
+          entry.content === undefined)
+      ) ||
       !(
         entry.sidecarDigest === undefined ||
         entry.sidecarDigest === null ||
@@ -2034,7 +2128,9 @@ const validateForkPlan = (value: unknown): ForkPlan => {
       !safeForkPath(forkRoot, rewrite.forkPath) ||
       typeof rewrite.from !== "string" ||
       rewrite.from.length === 0 ||
+      !ASCII_LITERAL_PATTERN.test(rewrite.from) ||
       typeof rewrite.to !== "string" ||
+      !ASCII_LITERAL_PATTERN.test(rewrite.to) ||
       writtenEntryPaths.has(rewrite.forkPath)
     ) {
       throw new ForkUpdateError(
@@ -2085,8 +2181,8 @@ const validateForkPlan = (value: unknown): ForkPlan => {
 // plan was made; never overwrite work that arrived in between.
 const assertSidecarUnchanged = (forkRoot: string, entry: PlanEntry): void => {
   const sidecarPath = entry.forkPath + MERGE_SIDECAR_SUFFIX;
-  const sidecar = readText(join(forkRoot, sidecarPath));
-  const sidecarDigest = sidecar === null ? null : sha256(sidecar);
+  const sidecar = readBytes(join(forkRoot, sidecarPath));
+  const sidecarDigest = sidecar === null ? null : bytesDigest(sidecar);
   if (sidecarDigest !== entry.sidecarDigest) {
     throw new ForkUpdateError(
       `${sidecarPath} changed after the plan was made; re-run plan.`,
@@ -2096,8 +2192,8 @@ const assertSidecarUnchanged = (forkRoot: string, entry: PlanEntry): void => {
 };
 
 const assertFileUnchanged = (forkRoot: string, entry: PlanEntry): void => {
-  const current = readText(join(forkRoot, entry.forkPath));
-  const digest = current === null ? null : sha256(current);
+  const current = readBytes(join(forkRoot, entry.forkPath));
+  const digest = current === null ? null : bytesDigest(current);
   if (digest !== entry.forkDigest) {
     throw new ForkUpdateError(
       `${entry.forkPath} changed after the plan was made; re-run plan.`,
@@ -2123,14 +2219,24 @@ const assertForkUnchanged = (
     assertFileUnchanged(forkRoot, entry);
   }
   for (const rewrite of rewrites) {
-    const current = readText(join(forkRoot, rewrite.forkPath));
-    if (current === null || sha256(current) !== rewrite.forkDigest) {
+    const current = readBytes(join(forkRoot, rewrite.forkPath));
+    if (current === null || bytesDigest(current) !== rewrite.forkDigest) {
       throw new ForkUpdateError(
         `${rewrite.forkPath} changed after the plan was made; re-run plan.`,
         EXIT.blocked
       );
     }
   }
+};
+
+/** The exact bytes an entry writes, or undefined when it writes nothing. */
+const entryBytes = (entry: PlanEntry): Buffer | undefined => {
+  if (entry.contentBase64 !== undefined) {
+    return Buffer.from(entry.contentBase64, "base64");
+  }
+  return entry.content === undefined
+    ? undefined
+    : Buffer.from(entry.content, "utf8");
 };
 
 const applyEntries = (
@@ -2141,15 +2247,16 @@ const applyEntries = (
   const deleted: string[] = [];
   for (const entry of entries) {
     const path = join(forkRoot, entry.forkPath);
-    if (WRITE_ACTIONS.has(entry.action) && entry.content !== undefined) {
+    const bytes = entryBytes(entry);
+    if (WRITE_ACTIONS.has(entry.action) && bytes !== undefined) {
       mkdirSync(dirname(path), { recursive: true });
-      writeFileSync(path, entry.content);
+      writeFileSync(path, bytes);
       written.push(entry.forkPath);
     } else if (entry.action === "delete") {
       unlinkSync(path);
       deleted.push(entry.forkPath);
-    } else if (entry.action === "conflict" && entry.content !== undefined) {
-      writeFileSync(path + MERGE_SIDECAR_SUFFIX, entry.content);
+    } else if (entry.action === "conflict" && bytes !== undefined) {
+      writeFileSync(path + MERGE_SIDECAR_SUFFIX, bytes);
       written.push(entry.forkPath + MERGE_SIDECAR_SUFFIX);
     }
   }
@@ -2172,7 +2279,7 @@ const applyLiteralRewrites = (
   }
   for (const [forkPath, fileRewrites] of byPath) {
     const path = join(forkRoot, forkPath);
-    let content = readText(path);
+    let content = readBytes(path);
     if (content === null) {
       continue;
     }
@@ -2185,7 +2292,7 @@ const applyLiteralRewrites = (
       ));
       count += 1;
     }
-    writeFileSync(path, content);
+    writeFileSync(path, Buffer.from(content, "latin1"));
     if (!written.includes(forkPath)) {
       written.push(forkPath);
     }

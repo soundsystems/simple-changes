@@ -1,4 +1,8 @@
-import { spawn } from "node:child_process";
+import {
+  type ChildProcess,
+  type SpawnOptions,
+  spawn,
+} from "node:child_process";
 import { accessSync, constants, realpathSync } from "node:fs";
 import { isAbsolute } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -35,12 +39,39 @@ const textDecoder = new TextDecoder();
 const PROCESS_GROUP_EXIT_GRACE_MS = 1000;
 const PROCESS_GROUP_POLL_MS = 25;
 
-const processGroupIsAlive = (processGroupId: number): boolean => {
-  if (process.platform === "win32") {
+/**
+ * Everything process-group cleanup touches outside this process. Production
+ * uses `PROCESS_GROUP_CONTROL`; tests substitute failures deterministically.
+ */
+export interface ProcessGroupControl {
+  /** How long to wait for a group to exit after each signal. */
+  graceMs: number;
+  kill: (pid: number, signal: NodeJS.Signals | 0) => void;
+  platform: NodeJS.Platform;
+  /** Runs a command to completion. */
+  runSync: (argv: string[]) => void;
+}
+
+export const PROCESS_GROUP_CONTROL: ProcessGroupControl = {
+  graceMs: PROCESS_GROUP_EXIT_GRACE_MS,
+  kill: (pid, signal) => {
+    process.kill(pid, signal);
+  },
+  platform: process.platform,
+  runSync: (argv) => {
+    spawnSync(argv, { stderr: "ignore", stdout: "ignore" });
+  },
+};
+
+const processGroupIsAlive = (
+  processGroupId: number,
+  control: ProcessGroupControl
+): boolean => {
+  if (control.platform === "win32") {
     return false;
   }
   try {
-    process.kill(-processGroupId, 0);
+    control.kill(-processGroupId, 0);
     return true;
   } catch (error) {
     return (error as NodeJS.ErrnoException).code === "EPERM";
@@ -49,62 +80,72 @@ const processGroupIsAlive = (processGroupId: number): boolean => {
 
 const pollForProcessGroupExit = async (
   processGroupId: number,
-  deadline: number
+  deadline: number,
+  control: ProcessGroupControl
 ): Promise<boolean> => {
-  if (!processGroupIsAlive(processGroupId)) {
+  if (!processGroupIsAlive(processGroupId, control)) {
     return true;
   }
   if (Date.now() >= deadline) {
     return false;
   }
   await delay(PROCESS_GROUP_POLL_MS);
-  return pollForProcessGroupExit(processGroupId, deadline);
+  return pollForProcessGroupExit(processGroupId, deadline, control);
 };
 
 const waitForProcessGroupExit = (
   processGroupId: number,
-  timeoutMs: number
+  control: ProcessGroupControl
 ): Promise<boolean> =>
-  pollForProcessGroupExit(processGroupId, Date.now() + timeoutMs);
+  pollForProcessGroupExit(
+    processGroupId,
+    Date.now() + control.graceMs,
+    control
+  );
+
+const signalProcessGroup = (
+  processGroupId: number,
+  signal: NodeJS.Signals,
+  control: ProcessGroupControl
+): void => {
+  try {
+    control.kill(-processGroupId, signal);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ESRCH") {
+      throw error;
+    }
+  }
+};
 
 const terminateLingeringProcessGroup = async (
-  processGroupId: number
+  processGroupId: number,
+  control: ProcessGroupControl
 ): Promise<boolean> => {
-  try {
-    process.kill(-processGroupId, "SIGTERM");
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ESRCH") {
-      throw error;
-    }
-  }
-  if (
-    await waitForProcessGroupExit(processGroupId, PROCESS_GROUP_EXIT_GRACE_MS)
-  ) {
+  signalProcessGroup(processGroupId, "SIGTERM", control);
+  if (await waitForProcessGroupExit(processGroupId, control)) {
     return true;
   }
-  try {
-    process.kill(-processGroupId, "SIGKILL");
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ESRCH") {
-      throw error;
-    }
-  }
-  return waitForProcessGroupExit(processGroupId, PROCESS_GROUP_EXIT_GRACE_MS);
+  signalProcessGroup(processGroupId, "SIGKILL", control);
+  return waitForProcessGroupExit(processGroupId, control);
 };
 
 const lingeringProcessGroupError = async (
   command: string,
   firstArgument: string | undefined,
-  processGroupId: number
+  processGroupId: number,
+  control: ProcessGroupControl = PROCESS_GROUP_CONTROL
 ): Promise<SimpleChangesError | null> => {
-  if (process.platform === "win32" || !processGroupIsAlive(processGroupId)) {
+  if (
+    control.platform === "win32" ||
+    !processGroupIsAlive(processGroupId, control)
+  ) {
     return null;
   }
   let terminated = false;
   try {
-    terminated = await terminateLingeringProcessGroup(processGroupId);
+    terminated = await terminateLingeringProcessGroup(processGroupId, control);
   } catch {
-    terminated = !processGroupIsAlive(processGroupId);
+    terminated = !processGroupIsAlive(processGroupId, control);
   }
   return terminated
     ? new SimpleChangesError(
@@ -114,21 +155,21 @@ const lingeringProcessGroupError = async (
     : new GuardedProcessGroupStillAliveError(command, processGroupId);
 };
 
-// Terminates a command whose registration failed, with no wait on its leader.
-// On Unix the leader's whole process group is terminated, and a group that
-// survives (or cannot be signalled) keeps the lock. Windows has no group to
-// prove empty, so it attempts to kill the process tree and always keeps the
-// lock.
-const unregisteredCommandCleanup = async (
+/**
+ * Terminates a command whose registration failed, with no wait on its leader.
+ * On Unix the leader's whole process group is terminated, and a group that
+ * survives (or cannot be signalled) keeps the lock. Windows has no group to
+ * prove empty, so it attempts to kill the process tree and always keeps the
+ * lock.
+ */
+export const unregisteredCommandCleanup = async (
   command: string,
-  childPid: number
+  childPid: number,
+  control: ProcessGroupControl = PROCESS_GROUP_CONTROL
 ): Promise<GuardedProcessGroupStillAliveError | null> => {
-  if (process.platform === "win32") {
+  if (control.platform === "win32") {
     try {
-      spawnSync(["taskkill", "/pid", String(childPid), "/t", "/f"], {
-        stderr: "ignore",
-        stdout: "ignore",
-      });
+      control.runSync(["taskkill", "/pid", String(childPid), "/t", "/f"]);
     } catch {
       // The lock is kept below whether or not taskkill could run.
     }
@@ -136,9 +177,9 @@ const unregisteredCommandCleanup = async (
   }
   let terminated = false;
   try {
-    terminated = await terminateLingeringProcessGroup(childPid);
+    terminated = await terminateLingeringProcessGroup(childPid, control);
   } catch {
-    terminated = !processGroupIsAlive(childPid);
+    terminated = !processGroupIsAlive(childPid, control);
   }
   return terminated
     ? null
@@ -248,22 +289,44 @@ interface ProcessGroupRunOptions {
   streamOutputToStderr: boolean;
 }
 
+/** The process boundary `runInProcessGroup` crosses; tests substitute it. */
+export interface ProcessGroupRunDependencies {
+  cleanupUnregistered: (
+    command: string,
+    childPid: number
+  ) => Promise<GuardedProcessGroupStillAliveError | null>;
+  platform: NodeJS.Platform;
+  spawn: (
+    command: string,
+    args: string[],
+    options: SpawnOptions
+  ) => ChildProcess;
+}
+
+const PROCESS_GROUP_RUN: ProcessGroupRunDependencies = {
+  cleanupUnregistered: (command, childPid) =>
+    unregisteredCommandCleanup(command, childPid),
+  platform: process.platform,
+  spawn: (command, args, options) => spawn(command, args, options),
+};
+
 /**
  * Runs one command in its own process group and resolves with its exit code,
  * whatever it is. Rejects when the command cannot start or leaves a
  * background descendant behind.
  */
-const runInProcessGroup = (
+export const runInProcessGroup = (
   command: string,
   args: readonly string[],
   cwd: string,
   onSpawn: (process: CommandProcess) => void,
-  options: ProcessGroupRunOptions
+  options: ProcessGroupRunOptions,
+  dependencies: ProcessGroupRunDependencies = PROCESS_GROUP_RUN
 ): Promise<CommandResult> =>
   new Promise((resolvePromise, rejectPromise) => {
-    const child = spawn(command, [...args], {
+    const child = dependencies.spawn(command, [...args], {
       cwd,
-      detached: process.platform !== "win32",
+      detached: dependencies.platform !== "win32",
       env: {
         ...process.env,
         ...options.environment,
@@ -297,7 +360,7 @@ const runInProcessGroup = (
     try {
       onSpawn({
         childPid,
-        processGroupId: process.platform === "win32" ? null : childPid,
+        processGroupId: dependencies.platform === "win32" ? null : childPid,
       });
     } catch (error) {
       // Nothing will await this unregistered command, so release the lock
@@ -305,7 +368,8 @@ const runInProcessGroup = (
       // not settle the run before that cleanup finishes.
       child.removeAllListeners("error");
       child.on("error", () => undefined);
-      unregisteredCommandCleanup(command, childPid).then(
+      // A cleanup that throws, synchronously or not, proves nothing.
+      (async () => dependencies.cleanupUnregistered(command, childPid))().then(
         (cleanupError) => rejectPromise(cleanupError ?? error),
         // A cleanup that itself failed proves nothing, so keep the lock.
         () =>

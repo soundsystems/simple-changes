@@ -61,8 +61,10 @@
     signalled, raises `GuardedProcessGroupStillAliveError`, so the lock is
     kept.
   - A late child `error` event can no longer settle the run first.
-  - On Windows, where no process group can be proven empty, it kills the
-    process tree with `taskkill /t /f` and always keeps the lock.
+  - On Windows, where no process group can be proven empty, it attempts to
+    kill the process tree with `taskkill /t /f` and always keeps the lock,
+    even when `taskkill` cannot run.
+  - A cleanup that itself fails also keeps the lock.
   - `process.test.ts` covers a Unix descendant started before the failure.
     The failed-termination and Windows paths have no tests.
 - Guidance 26. There are 47 new tests (780 to 827), and each new guard was
@@ -79,6 +81,8 @@
   - Its re-review of `d98bf0b` found three gaps in the first fix: a failed
     leader kill could settle the run before group cleanup, Windows had no
     cleanup, and the leader wait had no deadline.
+  - Its second re-review found that a `taskkill` that could not launch still
+    released the lock.
   - All of these are fixed above.
 <!-- simple-changelogs-signature agent="Claude Opus 5.5 xhigh" at="2026-10-05T19:22:39-05:00" -->
 

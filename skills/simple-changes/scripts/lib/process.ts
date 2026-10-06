@@ -117,16 +117,21 @@ const lingeringProcessGroupError = async (
 // Terminates a command whose registration failed, with no wait on its leader.
 // On Unix the leader's whole process group is terminated, and a group that
 // survives (or cannot be signalled) keeps the lock. Windows has no group to
-// prove empty, so the process tree is killed and the lock is always kept.
+// prove empty, so it attempts to kill the process tree and always keeps the
+// lock.
 const unregisteredCommandCleanup = async (
   command: string,
   childPid: number
 ): Promise<GuardedProcessGroupStillAliveError | null> => {
   if (process.platform === "win32") {
-    spawnSync(["taskkill", "/pid", String(childPid), "/t", "/f"], {
-      stderr: "ignore",
-      stdout: "ignore",
-    });
+    try {
+      spawnSync(["taskkill", "/pid", String(childPid), "/t", "/f"], {
+        stderr: "ignore",
+        stdout: "ignore",
+      });
+    } catch {
+      // The lock is kept below whether or not taskkill could run.
+    }
     return new GuardedProcessGroupStillAliveError(command, childPid);
   }
   let terminated = false;
@@ -302,7 +307,11 @@ const runInProcessGroup = (
       child.on("error", () => undefined);
       unregisteredCommandCleanup(command, childPid).then(
         (cleanupError) => rejectPromise(cleanupError ?? error),
-        rejectPromise
+        // A cleanup that itself failed proves nothing, so keep the lock.
+        () =>
+          rejectPromise(
+            new GuardedProcessGroupStillAliveError(command, childPid)
+          )
       );
       return;
     }

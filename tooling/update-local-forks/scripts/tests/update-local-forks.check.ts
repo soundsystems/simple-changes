@@ -1397,6 +1397,38 @@ describe("update-local-forks", () => {
     }
   });
 
+  test("reads a bare abbreviated SHA in a heading as a commit, but not a word or a number", () => {
+    const rewritten = (heading: string) => ({
+      heading,
+      rewritten: rewriteLiteral(
+        "references/fork-maintenance.md",
+        `# Fork maintenance\n\n## Current deltas\n\n${heading}\n\n- Kept from Simple Changes 0.1.0.\n`,
+        "Simple Changes 0.1.0",
+        "Simple Changes 0.2.0"
+      ).rewritten,
+    });
+    // History entries: the body under each heading is a record.
+    for (const heading of [
+      "## Fork cleanup (pin deadbee)",
+      "## Fork cleanup (pin 5028750)",
+      "### Patrick-only: retire the copy (pin deadbee unchanged)",
+      "## Fork fix: saved break glass (pinned at 5028750)",
+      "## Retire the copy (commit deadbee)",
+      "## Canonical copy (deadbee)",
+      "## Canonical copy (5028750, retired)",
+      "## Upstream 628c66b, pending",
+    ]) {
+      expect(rewritten(heading)).toEqual({ heading, rewritten: 0 });
+    }
+    // Ordinary words and numbers name no commit; the body stays current.
+    for (const heading of [
+      "## Fix defaced badges",
+      "## Issue 1234567 workaround",
+    ]) {
+      expect(rewritten(heading)).toEqual({ heading, rewritten: 1 });
+    }
+  });
+
   test("keeps rewriting current sections whose headings name a release or the pin", () => {
     const fixture = createFixture();
     const { pin, release } = fixture;

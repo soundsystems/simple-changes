@@ -57,8 +57,10 @@ line naming a commit or version range (`7ab67a1..628c66b`), and in Markdown
 every heading and every line of a history entry or a history section. An
 entry's heading names what it records: a commit, a range, or a date, as in
 ``## Upstream 0.24.1 (`628c66b..fd16f54`)``, ``### Fork fix: ... (pin
-`fd16f54`)``, or ``## Canonical 0.12.4 (`1b7b7e7`)``. A heading naming a
-history, such as `## History`, holds entries. A history log runs to the end
+`fd16f54`)``, or ``## Canonical 0.12.4 (`1b7b7e7`)``. An abbreviated SHA
+counts in backticks, after "pin" or "commit", or in parentheses, as in
+`(pin deadbee)`; elsewhere a bare one must mix digits and letters. A heading
+naming a history, such as `## History`, holds entries. A history log runs to the end
 of its parent section, so every later section beside an entry is one too,
 even when titled only by its subject. A heading that starts with "Current",
 such as `## Current upstream (0.25.0)`, marks current state outside a history

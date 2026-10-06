@@ -1119,11 +1119,13 @@ const RANGE_PATTERN =
 const HEADING_LEVEL_PATTERN = /^ {0,3}(#{1,6})(?:\s|$)/u;
 /**
  * A commit or a date: what a history entry's heading names besides a range. A
- * commit is any abbreviated or full SHA in backticks, or a bare one with a
- * digit, so a word such as "defaced" never reads as one.
+ * commit is an abbreviated or full SHA of any shape in backticks, after "pin",
+ * "pinned at", "commit", or "sha", or alone or listed in parentheses, as in
+ * "(pin deadbee)" or "(5028750)"; elsewhere a bare one must mix digits and
+ * letters, so a word such as "defaced" or a number never reads as one.
  */
 const ENTRY_HEADING_PATTERN =
-  /`[0-9a-f]{7,40}`|\b(?=[0-9a-f]*\d)[0-9a-f]{7,40}\b|\d{4}-\d{2}-\d{2}/u;
+  /`[0-9a-f]{7,40}`|\b(?:[Pp]in(?:ned)?(?:\s+(?:at|to))?|[Cc]ommit|SHA|sha)\s+[0-9a-f]{7,40}\b|\(\s*[0-9a-f]{7,40}\s*[),]|,\s*[0-9a-f]{7,40}\s*\)|\b(?=[0-9a-f]*\d)(?=[0-9a-f]*[a-f])[0-9a-f]{7,40}\b|\d{4}-\d{2}-\d{2}/u;
 const HISTORY_HEADING_PATTERN = /\bhistory\b/iu;
 const CURRENT_HEADING_PATTERN = /^ {0,3}#{1,6}[ \t]+current\b/iu;
 

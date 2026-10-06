@@ -11,29 +11,48 @@
   - It pins the earliest byte-identical packaged tree on the branch's
     first-parent history (the merge commit). It falls back to a merged
     side-branch commit, and never pins a guess.
-  - A quick check on file paths and sizes prunes most candidate trees before
-    the content digest proves a match. The cache fetch depth stays at 400.
   - For 0.25.0 the old search returned the release-prep commit `d98bf0b`,
     which five later review fixes made unverifiable. The new search resolves
     0.25.0 to `eb21066`, and all four Simple Changes forks had been pinned
     there by hand.
-- The version-literal rewrite treats more of a fork's history as records:
-  - headings titled only by a pin, a release and commit, a range, a date, or
-    the old literal, such as Hashi's ``## Fork fix: … (pin `fd16f54`)`` and
-    Thor's ``## Canonical 0.12.4 (`1b7b7e7`)``;
-  - subject-only sections that continue a history log, such as
-    `## Local Blacksmith CI bridge`;
-  - entries after a longer fence that wraps a shorter one, since fences are
-    now tracked like the omissions parser;
-  - abbreviated SHAs of any shape, including all-digit ones.
-
-  The canonical 0.25.0 rule would have rewritten "Simple Changes 0.25.0" on
-  two lines of Hashi's history at the next bump. Thor's rewritten 0.24.1 entry
-  came from the stale global install (2026-09-02), which rewrote every
-  occurrence of the literal.
-- Tests cover each search case and a fork maintenance note in each real
-  fork's heading style (Thor, Hashi, Patrick, Pulse). Every rule was
-  mutation-checked. `fork-sync.md` documents both rules.
+  - Per-commit lookups run in batches of 64 and stop once no window commit
+    has an undecided child. One `rev-list` still lists every descendant
+    through the tip, and a merge with a window parent keeps the walk open.
+    The cache fetch depth stays at 400.
+- `treeDigest` now proves byte identity on raw blob bytes, read undecoded
+  through one `git cat-file --batch` per candidate tree. It previously hashed
+  UTF-8-decoded Git output against the installed files' raw bytes, so a
+  same-size install with different bytes (such as `EF BF BD` for `F0 9F 92`)
+  could verify, and a release containing invalid UTF-8 never could. The new
+  path and size pre-filter only prunes trees; the raw digest decides.
+- The version-literal rewrite treats a fork's history as records, while
+  current sections stay rewritable:
+  - A `#` heading is a history entry when it names a commit, range, or date.
+    A commit is a 7 to 40 character hex token in backticks, after `pin`,
+    `pinned at/to`, `commit`, or `sha`, or alone or listed in parentheses.
+    Elsewhere a bare token must mix digits and letters, so words and plain
+    numbers do not count.
+  - A release number or the old version alone no longer marks history.
+  - A heading starting with "Current", outside a history section, is
+    rewritten even when it names the pin, and it ends the history run beside
+    it.
+  - Subject-only sections that continue a history log, such as
+    `## Local Blacksmith CI bridge`, are records.
+  - Fences are tracked like the omissions parser, so a longer fence wrapping
+    a shorter one no longer hides later headings.
+  - Setext headings are out of scope, and `fork-sync.md` says so.
+  - Across the Thor, Hashi, Patrick, and Pulse forks, the only change from
+    0.25.0 is that two Hashi history lines are kept. Thor's rewritten 0.24.1
+    entry came from the stale global install (2026-09-02).
+- Tests cover each search case, raw-byte identity including invalid UTF-8,
+  current versus history sections, bare SHAs, the bounded walk, and a
+  maintenance note in each real fork's heading style. Every rule was
+  mutation-checked (863 + 18 + 24 tests).
+- GPT-6.1 Sol (high) reviewed `323d98c`.
+  - Blocking: decoded-text byte identity.
+  - Should-fixes: current sections treated as history, bare abbreviated SHAs
+    unrecognized, and overstated notes.
+  - All of these are fixed above.
 <!-- simple-changelogs-signature agent="Claude Opus 5.5 xhigh" at="2026-10-05T22:00:40-05:00" -->
 
 ## 0.25.0 - 2026-10-05

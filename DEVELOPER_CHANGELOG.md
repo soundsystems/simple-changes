@@ -31,17 +31,24 @@
     `EF BF BD` for `F0 9F 92`) or with a differently encoded filename could
     verify, and a release containing invalid UTF-8 never could.
   - The path and size pre-filter only prunes trees; the raw digest decides.
-- Plan and apply handle every file as raw bytes, so a tree accepted by raw
-  bytes is also written by raw bytes.
+- Plan and apply handle every file's contents as raw bytes, so a tree
+  accepted by raw bytes is also written by raw bytes. File names must be valid
+  UTF-8: planning refuses an installed source or fork with any other path, and
+  verification never accepts a release tree that names one. Both name the
+  path in hex, and raw filename bytes are not carried through planning, apply,
+  or the plan file.
   - Fork files, installed sources, and pinned upstream blobs are read raw,
     and `git merge-file` takes and returns raw bytes.
   - The provenance and version-literal rewrites replace only printable ASCII
     literals and leave every other byte as written.
   - A saved plan stores content as UTF-8 text when it is valid UTF-8, as
     before, and otherwise as a new `contentBase64` field. The validator
-    accepts the new field, rejects having both, and requires ASCII literals.
-  - Apply's changed-since-plan checks hash raw bytes, and older saved plans
-    stay compatible.
+    accepts only strict base64 (whole quads, correct padding, exact
+    re-encoding), rejects having both, and requires ASCII literals.
+  - Apply's changed-since-plan checks hash raw bytes. A plan saved by an
+    earlier `update-local-forks` still applies where every file is valid
+    UTF-8. Apply refuses it for any other file as changed since the plan, and
+    `fork-sync.md` says to re-plan.
   - Without this, a newly verifiable file containing `F0 9F 92` would have
     reached the fork as `EF BF BD`.
 - The version-literal rewrite treats a fork's history as records, while
@@ -70,8 +77,9 @@
   current versus history sections, bare SHAs, the bounded walk, and a
   maintenance note in each real fork's heading style, a filename-collision
   fixture, CRLF notes, and a plan, JSON round trip, and apply of invalid
-  UTF-8 through add, update, merge, and literal rewrite. Every rule was
-  mutation-checked (863 + 18 + 27 tests).
+  UTF-8 through add, update, merge, and literal rewrite. They also cover
+  invalid-UTF-8 paths, malformed base64, and earlier saved plans. Every rule
+  was mutation-checked (863 + 18 + 30 tests).
 - GPT-6.1 Sol (high) reviewed `323d98c`.
   - Blocking: decoded-text byte identity.
   - Should-fixes: current sections treated as history, bare abbreviated SHAs
@@ -85,6 +93,11 @@
 - Its xhigh re-review of `e83a4e9` was blocking because plan and apply still
   decoded and wrote text, which would corrupt a newly accepted
   invalid-UTF-8 file. Fixed above.
+- Its xhigh re-review of `a747181` raised three findings, all fixed above:
+  - blocking: a verified invalid-UTF-8 file name was silently skipped while
+    the pin advanced;
+  - should-fix: loose base64 validation;
+  - should-fix: an overstated claim about earlier saved plans.
 <!-- simple-changelogs-signature agent="Claude Opus 5.5 xhigh" at="2026-10-05T22:00:40-05:00" -->
 
 ## 0.25.0 - 2026-10-05

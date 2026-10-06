@@ -9,9 +9,11 @@
   skill matches no commit of that release byte for byte, the plan keeps the
   pin and says how many commits it checked.
 - The byte-for-byte check now compares raw file contents and file names. A
-  release whose files contain invalid UTF-8 can now verify, and a look-alike
-  install whose bytes or names differ no longer does. Applying a plan writes
-  every file byte for byte, including merges and version rewrites.
+  release whose file contents contain invalid UTF-8 can now verify, and a
+  look-alike install whose bytes or names differ no longer does. Applying a
+  plan writes every file's contents byte for byte, including merges and
+  version rewrites. A release or install with a file name that is not valid
+  UTF-8 is refused instead of pinned.
 - Pin updates no longer rewrite past release entries in a fork's maintenance
   notes when their `#` headings name a commit, range, or date, or when they
   continue the history log, including notes with Windows line endings. The

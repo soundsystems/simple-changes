@@ -224,6 +224,27 @@ describe("running skill name", () => {
     );
   });
 
+  test.each([
+    ['"thor-simple-changes extra"', "simple-changes"],
+    ["thor-simple-changes extra", "simple-changes"],
+    ['"unterminated-fork', "simple-changes"],
+    ['"escaped\\"-fork"', "simple-changes"],
+    ['"quoted-fork"', "quoted-fork"],
+    ["'single-quoted-fork'", "single-quoted-fork"],
+    ['"commented-fork" # trailing comment', "commented-fork"],
+    ["plain-fork # trailing comment", "plain-fork"],
+    ["   padded-fork   ", "padded-fork"],
+  ])("reads the complete name scalar %s as %s", (declared, expected) => {
+    const fixture = createTestRepository();
+    repositories.push(fixture);
+    const root = join(fixture.base, "declared");
+    mkdirSync(root, { recursive: true });
+    writeFileSync(join(root, "SKILL.md"), skill(declared));
+    expect(runningSkillName(join(root, "scripts", "simple-changes.ts"))).toBe(
+      expected
+    );
+  });
+
   test("falls back to simple-changes without a usable SKILL.md name", () => {
     const fixture = createTestRepository();
     repositories.push(fixture);

@@ -19,8 +19,11 @@ const RUNTIME_PATH = ["simple-changes", "scripts", "simple-changes.ts"];
 const FORK_PROVENANCE_PATTERN =
   /Forked from `simple-changes` @ `[0-9a-f]{7,40}`/u;
 const FRONTMATTER_PATTERN = /^---\r?\n([\s\S]*?)\r?\n---/u;
-const NAME_LINE_PATTERN = /^name:[ \t]*["']?([^"'\s]+)/mu;
-const SKILL_NAME_PATTERN = /^[a-z0-9][a-z0-9-]*$/u;
+const NAME_LINE_PATTERN = /^name:(.*)$/mu;
+const DOUBLE_QUOTED_PATTERN = /^"([^"\\]*)"(?:[ \t]+#.*)?$/u;
+const SINGLE_QUOTED_PATTERN = /^'((?:[^']|'')*)'(?:[ \t]+#.*)?$/u;
+const PLAIN_COMMENT_PATTERN = /(?:^|[ \t])#.*$/u;
+const SKILL_NAME_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/u;
 
 /**
  * The user-level skill roots to search, in order. SIMPLE_CHANGES_SKILL_ROOTS,
@@ -66,8 +69,26 @@ const skillDocumentOf = (script: string): string | null => {
   }
 };
 
-const declaredSkillName = (skill: string): string | undefined =>
-  NAME_LINE_PATTERN.exec(FRONTMATTER_PATTERN.exec(skill)?.[1] ?? "")?.[1];
+/**
+ * The complete `name:` scalar of a SKILL.md frontmatter, quoted or plain,
+ * trimmed and without a trailing comment; undefined when absent or when a
+ * quoted value does not close.
+ */
+const declaredSkillName = (skill: string): string | undefined => {
+  const value = NAME_LINE_PATTERN.exec(
+    FRONTMATTER_PATTERN.exec(skill)?.[1] ?? ""
+  )?.[1]?.trim();
+  if (value === undefined) {
+    return;
+  }
+  if (value.startsWith('"')) {
+    return DOUBLE_QUOTED_PATTERN.exec(value)?.[1];
+  }
+  if (value.startsWith("'")) {
+    return SINGLE_QUOTED_PATTERN.exec(value)?.[1]?.replaceAll("''", "'");
+  }
+  return value.replace(PLAIN_COMMENT_PATTERN, "").trim() || undefined;
+};
 
 /**
  * Whether `script` ships inside a repository fork of Simple Changes rather

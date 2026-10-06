@@ -8,13 +8,14 @@
   the pin to be set by hand. It still never pins a guess: if the installed
   skill matches no commit of that release byte for byte, the plan keeps the
   pin and says how many commits it checked.
-- The byte-for-byte check now compares raw file bytes. A release whose files
-  contain invalid UTF-8 can now verify, and a look-alike install with
-  different bytes no longer does.
+- The byte-for-byte check now compares raw file contents and file names. A
+  release whose files contain invalid UTF-8 can now verify, and a look-alike
+  install whose bytes or names differ no longer does.
 - Pin updates no longer rewrite past release entries in a fork's maintenance
   notes when their `#` headings name a commit, range, or date, or when they
-  continue the history log. Sections whose headings start with "Current" are
-  still updated. Underlined (Setext) headings are not recognized.
+  continue the history log, including notes with Windows line endings. The
+  lines under a heading that starts with "Current" are still updated.
+  Underlined (Setext) headings are not recognized.
 <!-- simple-changelogs-signature agent="Claude Opus 5.5 xhigh" at="2026-10-05T22:00:40-05:00" -->
 
 ## 0.25.0 - 2026-10-05

@@ -19,12 +19,18 @@
     has an undecided child. One `rev-list` still lists every descendant
     through the tip, and a merge with a window parent keeps the walk open.
     The cache fetch depth stays at 400.
-- `treeDigest` now proves byte identity on raw blob bytes, read undecoded
-  through one `git cat-file --batch` per candidate tree. It previously hashed
-  UTF-8-decoded Git output against the installed files' raw bytes, so a
-  same-size install with different bytes (such as `EF BF BD` for `F0 9F 92`)
-  could verify, and a release containing invalid UTF-8 never could. The new
-  path and size pre-filter only prunes trees; the raw digest decides.
+- `treeDigest` now proves byte identity on raw blob bytes and raw filename
+  bytes.
+  - Blobs are read undecoded through one `git cat-file --batch` per candidate
+    tree.
+  - The `ls-tree -z` listing and the installed tree's names are read as
+    bytes, compared and digested as byte strings, and sorted by byte order
+    instead of `localeCompare`.
+  - It previously hashed UTF-8-decoded Git output against the installed
+    files' raw bytes, so a same-size install with different content (such as
+    `EF BF BD` for `F0 9F 92`) or with a differently encoded filename could
+    verify, and a release containing invalid UTF-8 never could.
+  - The path and size pre-filter only prunes trees; the raw digest decides.
 - The version-literal rewrite treats a fork's history as records, while
   current sections stay rewritable:
   - A `#` heading is a history entry when it names a commit, range, or date.
@@ -33,25 +39,34 @@
     Elsewhere a bare token must mix digits and letters, so words and plain
     numbers do not count.
   - A release number or the old version alone no longer marks history.
-  - A heading starting with "Current", outside a history section, is
-    rewritten even when it names the pin, and it ends the history run beside
-    it.
+  - Under a heading starting with "Current", outside a history section, the
+    body lines are rewritten even when the heading names the pin, and that
+    heading ends the history run beside it. Headings themselves are never
+    rewritten.
   - Subject-only sections that continue a history log, such as
     `## Local Blacksmith CI bridge`, are records.
   - Fences are tracked like the omissions parser, so a longer fence wrapping
     a shorter one no longer hides later headings.
+  - A trailing `\r` is dropped for matching only, so CRLF notes classify like
+    LF notes and keep their line endings byte for byte.
   - Setext headings are out of scope, and `fork-sync.md` says so.
   - Across the Thor, Hashi, Patrick, and Pulse forks, the only change from
     0.25.0 is that two Hashi history lines are kept. Thor's rewritten 0.24.1
     entry came from the stale global install (2026-09-02).
 - Tests cover each search case, raw-byte identity including invalid UTF-8,
   current versus history sections, bare SHAs, the bounded walk, and a
-  maintenance note in each real fork's heading style. Every rule was
-  mutation-checked (863 + 18 + 24 tests).
+  maintenance note in each real fork's heading style, a filename-collision
+  fixture, and CRLF notes. Every rule was mutation-checked (863 + 18 + 26
+  tests).
 - GPT-6.1 Sol (high) reviewed `323d98c`.
   - Blocking: decoded-text byte identity.
   - Should-fixes: current sections treated as history, bare abbreviated SHAs
     unrecognized, and overstated notes.
+  - All of these are fixed above.
+- GPT-6.1 Sol (xhigh) reviewed `6b0d4ad`.
+  - Blocking: lossy filename decoding could verify a different tree.
+  - Should-fix: CRLF closing fences were not recognized.
+  - It also flagged overstated "Current" heading wording.
   - All of these are fixed above.
 <!-- simple-changelogs-signature agent="Claude Opus 5.5 xhigh" at="2026-10-05T22:00:40-05:00" -->
 

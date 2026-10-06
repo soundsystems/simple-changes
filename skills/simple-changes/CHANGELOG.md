@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.25.1 - 2026-10-05
+
+- `update-local-forks` now moves a fork's pin when a release received review
+  fixes after its release notes were written. It pins a verified commit that
+  carries exactly the installed release tree, instead of refusing and leaving
+  the pin to be set by hand. It still never pins a guess: if the installed
+  skill matches no commit of that release byte for byte, the plan keeps the
+  pin and says how many commits it checked.
+- The byte-for-byte check now compares raw file contents and file names. A
+  release whose file contents contain invalid UTF-8 can now verify, and a
+  look-alike install whose bytes or names differ no longer does. Applying a
+  plan made by this version writes every file's contents byte for byte,
+  including merges and version rewrites. Plan again instead of applying a
+  plan saved by an earlier version when any file involved holds invalid UTF-8.
+  A release or install with a file name that is not valid UTF-8 is refused
+  instead of pinned, and non-ASCII file names such as `café.txt` now update
+  and delete cleanly after they are pinned.
+- Pin updates no longer rewrite past release entries in a fork's maintenance
+  notes when their `#` headings name a commit, range, or date, or when they
+  continue the history log, including notes with Windows line endings. The
+  lines under a heading that starts with "Current" are still updated when that
+  heading is not inside a history section. Underlined (Setext) headings are
+  not recognized.
+<!-- simple-changelogs-signature agent="Claude Opus 5.5 xhigh" at="2026-10-05T22:00:40-05:00" -->
+
 ## 0.25.0 - 2026-10-05
 
 - Your repository can now add an `execGuard` check to `.simple-changes.json`.

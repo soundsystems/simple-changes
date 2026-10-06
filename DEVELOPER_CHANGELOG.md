@@ -1,5 +1,117 @@
 # Developer changelog
 
+## 0.25.1 - 2026-10-05
+
+- `update-local-forks` `locateSourceCommit` no longer checks only the commit
+  that added the release entry (`git log -S"## <version> "` on the packaged
+  CHANGELOG).
+  - It also searches that commit's descendants on the searched branch, up to
+    but not including the next release entry, which is a commit whose
+    packaged CHANGELOG has a different top version.
+  - It pins the earliest byte-identical packaged tree on the branch's
+    first-parent history (the merge commit). It falls back to a merged
+    side-branch commit, and never pins a guess.
+  - For 0.25.0 the old search returned the release-prep commit `d98bf0b`,
+    which five later review fixes made unverifiable. The new search resolves
+    0.25.0 to `eb21066`, and all four Simple Changes forks had been pinned
+    there by hand.
+  - Per-commit lookups run in batches of 64 and stop once no window commit
+    has an undecided child. One `rev-list` still lists every descendant
+    through the tip, and a merge with a window parent keeps the walk open.
+    The cache fetch depth stays at 400.
+- `treeDigest` now proves byte identity on raw blob bytes and raw filename
+  bytes.
+  - Blobs are read undecoded through one `git cat-file --batch` per candidate
+    tree.
+  - The `ls-tree -z` listing and the installed tree's names are read as
+    bytes, compared and digested as byte strings, and sorted by byte order
+    instead of `localeCompare`.
+  - It previously hashed UTF-8-decoded Git output against the installed
+    files' raw bytes, so a same-size install with different content (such as
+    `EF BF BD` for `F0 9F 92`) or with a differently encoded filename could
+    verify, and a release containing invalid UTF-8 never could.
+  - The path and size pre-filter only prunes trees; the raw digest decides.
+- Plan and apply handle every file's contents as raw bytes, so a tree
+  accepted by raw bytes is also written by raw bytes. File names must be valid
+  UTF-8: planning refuses an installed source or fork with any other path, and
+  verification never accepts a release tree that names one. Both name the
+  path in hex, and raw filename bytes are not carried through planning, apply,
+  or the plan file.
+  - Fork files, installed sources, and pinned upstream blobs are read raw,
+    and `git merge-file` takes and returns raw bytes.
+  - The provenance and version-literal rewrites replace only printable ASCII
+    literals and leave every other byte as written.
+  - A saved plan stores content as UTF-8 text when it is valid UTF-8, as
+    before, and otherwise as a new `contentBase64` field. The validator
+    accepts only strict base64 (whole quads, correct padding, exact
+    re-encoding), rejects having both, and requires ASCII literals.
+  - Apply's changed-since-plan checks hash raw bytes. A plan saved by an
+    earlier `update-local-forks` hashed and stored decoded text.
+    - It still applies where every incoming and fork file is valid UTF-8.
+    - Apply refuses it when an existing fork file is not valid UTF-8, but it
+      cannot detect incoming content such a plan already decoded.
+    - `fork-sync.md` says to re-plan whenever any incoming or fork file holds
+      invalid UTF-8.
+  - Pinned-tree paths (`treeFiles`) are listed with
+    `git ls-tree -r -z --name-only` and split on NUL. A non-ASCII name such
+    as `café.txt` was quoted by Git and misparsed, so the update after such a
+    release was pinned failed as an invalid plan entry.
+  - Without this, a newly verifiable file containing `F0 9F 92` would have
+    reached the fork as `EF BF BD`.
+- The version-literal rewrite treats a fork's history as records, while
+  current sections stay rewritable:
+  - A `#` heading is a history entry when it names a commit, range, or date.
+    A commit is a 7 to 40 character hex token in backticks, after `pin`,
+    `pinned at/to`, `commit`, or `sha`, or alone or listed in parentheses.
+    Elsewhere a bare token must mix digits and letters, so words and plain
+    numbers do not count.
+  - A release number or the old version alone no longer marks history.
+  - Under a heading starting with "Current", outside a history section, the
+    body lines are rewritten even when the heading names the pin, and that
+    heading ends the history run beside it. Headings themselves are never
+    rewritten.
+  - Subject-only sections that continue a history log, such as
+    `## Local Blacksmith CI bridge`, are records.
+  - Fences are tracked like the omissions parser, so a longer fence wrapping
+    a shorter one no longer hides later headings.
+  - A trailing `\r` is dropped for matching only, so CRLF notes classify like
+    LF notes and keep their line endings byte for byte.
+  - Setext headings are out of scope, and `fork-sync.md` says so.
+  - Across the Thor, Hashi, Patrick, and Pulse forks, the only change from
+    0.25.0 is that two Hashi history lines are kept. Thor's rewritten 0.24.1
+    entry came from the stale global install (2026-09-02).
+- Tests cover each search case, raw-byte identity including invalid UTF-8,
+  current versus history sections, bare SHAs, the bounded walk, and a
+  maintenance note in each real fork's heading style, a filename-collision
+  fixture, CRLF notes, and a plan, JSON round trip, and apply of invalid
+  UTF-8 through add, update, merge, and literal rewrite. They also cover
+  invalid-UTF-8 paths, malformed base64, earlier saved plans, and three
+  successive updates that add, change, and delete a non-ASCII-named file.
+  Every rule was mutation-checked (863 + 18 + 31 tests).
+- GPT-6.1 Sol (high) reviewed `323d98c`.
+  - Blocking: decoded-text byte identity.
+  - Should-fixes: current sections treated as history, bare abbreviated SHAs
+    unrecognized, and overstated notes.
+  - All of these are fixed above.
+- GPT-6.1 Sol (xhigh) reviewed `6b0d4ad`.
+  - Blocking: lossy filename decoding could verify a different tree.
+  - Should-fix: CRLF closing fences were not recognized.
+  - It also flagged overstated "Current" heading wording.
+  - All of these are fixed above.
+- Its xhigh re-review of `e83a4e9` was blocking because plan and apply still
+  decoded and wrote text, which would corrupt a newly accepted
+  invalid-UTF-8 file. Fixed above.
+- Its xhigh re-review of `a747181` raised three findings, all fixed above:
+  - blocking: a verified invalid-UTF-8 file name was silently skipped while
+    the pin advanced;
+  - should-fix: loose base64 validation;
+  - should-fix: an overstated claim about earlier saved plans.
+- Its xhigh re-review of `b1ce3ac` found nothing blocking. Its two
+  should-fixes are fixed above:
+  - LF-delimited pinned-path listing broke non-ASCII names;
+  - the earlier-plan claim was still overstated.
+<!-- simple-changelogs-signature agent="Claude Opus 5.5 xhigh" at="2026-10-05T22:00:40-05:00" -->
+
 ## 0.25.0 - 2026-10-05
 
 - Upstreams the generic runtime deltas the Thor and Hashi forks carried, so

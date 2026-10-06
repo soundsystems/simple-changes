@@ -31,6 +31,12 @@ import { spawnSync } from "bun";
 const VERSION = "1.0.0";
 const DEFAULT_UPSTREAM_URL =
   "https://gitlab.com/soundsystems/simple-changes.git";
+/**
+ * How much default-branch history the cache fetches. The release search reads
+ * the release entry and every commit after it up to the tip, so the depth must
+ * reach back past recent releases; the bound keeps the cache small.
+ */
+const UPSTREAM_FETCH_DEPTH = 400;
 const UPSTREAM_SKILL_PATH = "skills/simple-changes";
 const PROVENANCE_PATTERN = /Forked from `simple-changes` @ `([0-9a-f]{7,40})`/u;
 const GUIDANCE_PATTERN = /CURRENT_GUIDANCE_VERSION = (\d+);/u;
@@ -84,10 +90,12 @@ const sha256 = (value: string | Buffer): string =>
 
 const run = (
   command: string[],
-  cwd?: string
+  cwd?: string,
+  input?: string
 ): { exitCode: number; stdout: string; stderr: string } => {
   const result = spawnSync(command, {
     ...(cwd === undefined ? {} : { cwd }),
+    ...(input === undefined ? {} : { stdin: new TextEncoder().encode(input) }),
     stderr: "pipe",
     stdout: "pipe",
   });
@@ -395,15 +403,21 @@ export const openUpstream = (options: {
   return { gitDirectory: cache, kind: "cache" };
 };
 
+/**
+ * The packaged paths at `sha`, NUL-delimited: a line-delimited listing quotes
+ * any name with a non-ASCII byte (core.quotePath), which would turn
+ * `scripts/lib/café.txt` into a quoted escape that names no file.
+ */
 const treeFiles = (upstream: UpstreamHandle, sha: string): string[] =>
   git(upstream.gitDirectory, [
     "ls-tree",
     "-r",
+    "-z",
     "--name-only",
     sha,
     `${UPSTREAM_SKILL_PATH}/`,
   ])
-    .split("\n")
+    .split("\0")
     .filter(Boolean)
     .map((path) => path.slice(UPSTREAM_SKILL_PATH.length + 1));
 
@@ -422,26 +436,485 @@ const treeFile = (
   return result.exitCode === 0 ? result.stdout : null;
 };
 
-const sourceDigest = (sourcePath: string): string =>
+/** A packaged blob at `sha` as a byte string, read raw, or null. */
+const treeBlob = (
+  upstream: UpstreamHandle,
+  sha: string,
+  path: string
+): string | null => {
+  const result = spawnSync(
+    [
+      "git",
+      "-C",
+      upstream.gitDirectory,
+      "cat-file",
+      "blob",
+      `${sha}:${UPSTREAM_SKILL_PATH}/${path}`,
+    ],
+    { stderr: "pipe", stdout: "pipe" }
+  );
+  return result.exitCode === 0 ? byteString(result.stdout) : null;
+};
+
+/**
+ * A path as a byte string: one character per raw byte. Filenames are bytes,
+ * and decoding them as UTF-8 maps distinct invalid sequences to the same
+ * replacement character, so a proof compares byte strings, never decoded
+ * names.
+ */
+const byteString = (bytes: Uint8Array): string =>
+  Buffer.from(bytes).toString("latin1");
+
+const byByte = (left: string, right: string): number => {
+  if (left === right) {
+    return 0;
+  }
+  return left < right ? -1 : 1;
+};
+
+/**
+ * A file's contents as a byte string, or null when it is not a regular file.
+ * Plans compare, merge, and rewrite byte strings so every byte a fork receives
+ * is the byte upstream or the fork already had; decoding to text would turn
+ * invalid UTF-8 into replacement characters on the way back to disk.
+ */
+const readBytes = (path: string): string | null =>
+  existsSync(path) && statSync(path).isFile()
+    ? byteString(readFileSync(path))
+    : null;
+
+/** The digest of a byte string's raw bytes. */
+const bytesDigest = (bytes: string): string =>
+  sha256(Buffer.from(bytes, "latin1"));
+
+const STRICT_UTF8 = new TextDecoder("utf-8", { fatal: true });
+
+const isUtf8 = (bytes: Uint8Array): boolean => {
+  try {
+    STRICT_UTF8.decode(bytes);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+/** A literal the rewrite moves: printable ASCII, so bytes and text agree. */
+const ASCII_LITERAL_PATTERN = /^[\x20-\x7e]*$/u;
+
+/** One digest over paths and raw file bytes, shared by both sides of a proof. */
+const filesDigest = (files: { bytes: Buffer; path: string }[]): string =>
   sha256(
-    walkFiles(sourcePath)
-      .sort(byText)
-      .map((path) => `${path}\0${sha256(readFileSync(join(sourcePath, path)))}`)
+    [...files]
+      .sort((left, right) => byByte(left.path, right.path))
+      .map(({ bytes, path }) => `${path}\0${sha256(bytes)}`)
       .join("\n")
   );
 
-const treeDigest = (upstream: UpstreamHandle, sha: string): string =>
-  sha256(
-    treeFiles(upstream, sha)
-      .sort(byText)
-      .map((path) => `${path}\0${sha256(treeFile(upstream, sha, path) ?? "")}`)
-      .join("\n")
+const SLASH = Buffer.from("/");
+
+/** Raw relative path bytes of every regular file under `root`, as walkFiles. */
+const walkFileBytes = (root: Buffer, prefix?: Buffer): Buffer[] =>
+  readdirSync(prefix ? Buffer.concat([root, SLASH, prefix]) : root, {
+    encoding: "buffer",
+  }).flatMap((raw) => {
+    const name = Buffer.from(raw);
+    const path = prefix ? Buffer.concat([prefix, SLASH, name]) : name;
+    const status = lstatSync(Buffer.concat([root, SLASH, path]));
+    if (status.isDirectory()) {
+      return SKIP_DIRECTORIES.has(byteString(name))
+        ? []
+        : walkFileBytes(root, path);
+    }
+    return status.isFile() ? [path] : [];
+  });
+
+/**
+ * The hex bytes of each path that is not valid UTF-8. Planning reads paths as
+ * text, where such a path decodes to a replacement character and names no
+ * file, so the file would silently drop out of the plan: no such path is ever
+ * verified or planned.
+ */
+const nonUtf8Paths = (paths: Uint8Array[]): string[] =>
+  paths
+    .filter((path) => !isUtf8(path))
+    .map((path) => Buffer.from(path).toString("hex"));
+
+/** The installed source's files: byte-string paths and where to read them. */
+const installedFiles = (
+  sourcePath: string
+): { location: Buffer; path: string }[] => {
+  const root = Buffer.from(sourcePath);
+  return walkFileBytes(root).map((path) => ({
+    location: Buffer.concat([root, SLASH, path]),
+    path: byteString(path),
+  }));
+};
+
+/**
+ * The raw bytes of each blob, read in one `git cat-file --batch` call. Never
+ * decoded: text decoding maps distinct invalid byte sequences to the same
+ * replacement characters, so decoded content cannot prove byte identity.
+ */
+const readBlobs = (upstream: UpstreamHandle, ids: string[]): Buffer[] => {
+  const result = spawnSync(
+    ["git", "-C", upstream.gitDirectory, "cat-file", "--batch"],
+    {
+      stderr: "pipe",
+      stdin: new TextEncoder().encode(ids.map((id) => `${id}\n`).join("")),
+      stdout: "pipe",
+    }
   );
+  if (result.exitCode !== 0) {
+    throw new ForkUpdateError(
+      `git cat-file --batch failed: ${new TextDecoder().decode(result.stderr).trim()}`
+    );
+  }
+  const output = Buffer.from(result.stdout);
+  let offset = 0;
+  return ids.map((id) => {
+    const end = output.indexOf(0x0a, offset);
+    const [name, type, size] = output
+      .subarray(offset, end < 0 ? offset : end)
+      .toString("latin1")
+      .split(" ");
+    const length = Number(size);
+    if (
+      end < 0 ||
+      name !== id ||
+      type !== "blob" ||
+      !Number.isInteger(length)
+    ) {
+      throw new ForkUpdateError(`git cat-file --batch could not read ${id}.`);
+    }
+    offset = end + 1 + length + 1;
+    return output.subarray(end + 1, end + 1 + length);
+  });
+};
+
+/**
+ * The packaged skill tree and packaged changelog blob of each commit, read in
+ * one `git cat-file` call; an entry is null where the commit lacks that path.
+ */
+const packagedObjects = (
+  upstream: UpstreamHandle,
+  commits: string[]
+): Map<string, { changelog: string | null; tree: string | null }> => {
+  const listing = run(
+    [
+      "git",
+      "-C",
+      upstream.gitDirectory,
+      "cat-file",
+      "--batch-check=%(objectname) %(objecttype)",
+    ],
+    undefined,
+    commits
+      .flatMap((commit) => [
+        `${commit}:${UPSTREAM_SKILL_PATH}`,
+        `${commit}:${UPSTREAM_SKILL_PATH}/CHANGELOG.md`,
+      ])
+      .map((line) => `${line}\n`)
+      .join("")
+  );
+  if (listing.exitCode !== 0) {
+    throw new ForkUpdateError(
+      `git cat-file --batch-check failed: ${listing.stderr.trim()}`
+    );
+  }
+  const lines = listing.stdout.split("\n");
+  const object = (line: string | undefined, type: string): string | null => {
+    const [name, kind] = (line ?? "").split(" ");
+    return kind === type && name ? name : null;
+  };
+  return new Map(
+    commits.map((commit, index) => [
+      commit,
+      {
+        changelog: object(lines[index * 2 + 1], "blob"),
+        tree: object(lines[index * 2], "tree"),
+      },
+    ])
+  );
+};
+
+/** Commits whose packaged objects one `git cat-file` call looks up. */
+const WINDOW_LOOKUP_BATCH = 64;
+
+/**
+ * The entry and its descendants up to `ref`, parents first, each with its
+ * parents in order; a parent outside the walk is kept so the first parent
+ * stays first.
+ */
+const descendantsOf = (
+  upstream: UpstreamHandle,
+  entry: string,
+  ref: string
+): { order: string[]; parents: Map<string, string[]> } => {
+  const parents = new Map<string, string[]>([[entry, []]]);
+  const order = [entry];
+  for (const line of git(upstream.gitDirectory, [
+    "rev-list",
+    "--ancestry-path",
+    "--topo-order",
+    "--reverse",
+    "--parents",
+    `${entry}..${ref}`,
+  ]).split("\n")) {
+    const [commit, ...commitParents] = line.split(" ").filter(Boolean);
+    if (commit) {
+      parents.set(commit, commitParents);
+      order.push(commit);
+    }
+  }
+  return { order, parents };
+};
+
+/** The top version of each packaged changelog blob, read once per blob. */
+const changelogVersions = (
+  upstream: UpstreamHandle
+): ((changelog: string) => string | null) => {
+  const versions = new Map<string, string | null>();
+  return (changelog) => {
+    if (!versions.has(changelog)) {
+      versions.set(
+        changelog,
+        CHANGELOG_VERSION_PATTERN.exec(
+          git(upstream.gitDirectory, ["cat-file", "blob", changelog])
+        )?.[1] ?? null
+      );
+    }
+    return versions.get(changelog) ?? null;
+  };
+};
+
+/** The window commits on `ref`'s first-parent chain inside the walk. */
+const firstParentWithin = (
+  upstream: UpstreamHandle,
+  ref: string,
+  parents: Map<string, string[]>,
+  window: Map<string, string>
+): Set<string> => {
+  const firstParent = new Set<string>();
+  let current = git(upstream.gitDirectory, [
+    "rev-parse",
+    "--verify",
+    `${ref}^{commit}`,
+  ]).trim();
+  while (parents.has(current)) {
+    if (window.has(current)) {
+      firstParent.add(current);
+    }
+    current = parents.get(current)?.[0] ?? "";
+  }
+  return firstParent;
+};
+
+/**
+ * Commits a release may have shipped from: the commit that added the release
+ * entry and its descendants on the searched branch, parents first, up to but
+ * not including the next release entry. Review fixes often land after the
+ * release-prep commit without touching the changelog, so the released tree is
+ * frequently a later commit. A commit whose packaged changelog names another
+ * top version is a release entry of its own and bounds the window, and so
+ * does everything after it. The walk stops reading commits once no child of a
+ * window commit is left undecided, since no later commit can then join it.
+ * `firstParent` holds the window's commits on the branch's first-parent
+ * history: what a merge brought onto the branch, as opposed to a commit only
+ * on a merged side branch. `examined` counts the commits read.
+ */
+export const releaseWindow = (
+  upstream: UpstreamHandle,
+  entry: string,
+  ref: string,
+  version: string
+): {
+  commits: string[];
+  examined: number;
+  firstParent: Set<string>;
+  trees: Map<string, string>;
+} => {
+  const { order, parents } = descendantsOf(upstream, entry, ref);
+  // Only parents inside the walk can carry the window forward.
+  const walkParents = (commit: string): string[] =>
+    (parents.get(commit) ?? []).filter((parent) => parents.has(parent));
+  const children = new Map<string, number>();
+  for (const commit of order) {
+    for (const parent of walkParents(commit)) {
+      children.set(parent, (children.get(parent) ?? 0) + 1);
+    }
+  }
+  const topVersion = changelogVersions(upstream);
+  const objects = new Map<
+    string,
+    { changelog: string | null; tree: string | null }
+  >();
+  const trees = new Map<string, string>();
+  // Children of window commits not yet decided.
+  let undecided = 0;
+  let examined = 0;
+  for (const [index, commit] of order.entries()) {
+    if (index > 0 && undecided === 0) {
+      break;
+    }
+    if (!objects.has(commit)) {
+      const batch = order.slice(index, index + WINDOW_LOOKUP_BATCH);
+      for (const [key, value] of packagedObjects(upstream, batch)) {
+        objects.set(key, value);
+      }
+    }
+    examined += 1;
+    // Parents come first, so every parent inside the walk is already decided.
+    const commitParents = walkParents(commit);
+    undecided -= commitParents.filter((parent) => trees.has(parent)).length;
+    const pastNextRelease = commitParents.some((parent) => !trees.has(parent));
+    const { changelog, tree } = objects.get(commit) ?? {};
+    if (
+      !pastNextRelease &&
+      changelog &&
+      tree &&
+      topVersion(changelog) === version
+    ) {
+      trees.set(commit, tree);
+      undecided += children.get(commit) ?? 0;
+    }
+  }
+  return {
+    commits: order.filter((commit) => trees.has(commit)),
+    examined,
+    firstParent: firstParentWithin(upstream, ref, parents, trees),
+    trees,
+  };
+};
+
+interface TreeEntry {
+  object: string | undefined;
+  path: string;
+  size: number;
+  type: string | undefined;
+}
+
+const shortSha = (sha: string): string => sha.slice(0, 12);
+
+/**
+ * Every entry of a tree, recursively, from `git ls-tree -r -l -z` read as raw
+ * bytes so each path stays a byte string.
+ */
+const treeListing = (upstream: UpstreamHandle, tree: string): TreeEntry[] => {
+  const result = spawnSync(
+    ["git", "-C", upstream.gitDirectory, "ls-tree", "-r", "-l", "-z", tree],
+    { stderr: "pipe", stdout: "pipe" }
+  );
+  if (result.exitCode !== 0) {
+    throw new ForkUpdateError(
+      `git ls-tree ${tree} failed: ${new TextDecoder().decode(result.stderr).trim()}`
+    );
+  }
+  const output = Buffer.from(result.stdout);
+  const entries: TreeEntry[] = [];
+  for (let start = 0; start < output.length; ) {
+    const end = output.indexOf(0, start);
+    const record = output.subarray(start, end < 0 ? output.length : end);
+    start = end < 0 ? output.length : end + 1;
+    const tab = record.indexOf(0x09);
+    if (tab < 0) {
+      continue;
+    }
+    const [, type, object, size] = record
+      .subarray(0, tab)
+      .toString("latin1")
+      .split(" ")
+      .filter(Boolean);
+    entries.push({
+      object,
+      path: byteString(record.subarray(tab + 1)),
+      size: Number(size),
+      type,
+    });
+  }
+  return entries;
+};
+
+/**
+ * Whether a packaged tree is byte-identical to the installed source. The path
+ * and size listing of `git ls-tree` cheaply rules out most trees; any tree it
+ * cannot rule out is proven by a digest of its raw blob bytes, so equality is
+ * never assumed. Only blobs can match the installed regular files.
+ */
+const matchesInstalledTree = (
+  upstream: UpstreamHandle,
+  source: DiscoveredSource
+): {
+  matches: (commit: string, tree: string) => boolean;
+  refused: string[];
+} => {
+  const installed = installedFiles(source.path);
+  const refused = nonUtf8Paths(
+    installed.map(({ path }) => Buffer.from(path, "latin1"))
+  ).map((hex) => `the installed source holds path bytes ${hex}`);
+  const installedUtf8 = refused.length === 0;
+  const installedDigest = filesDigest(
+    installed.map(({ location, path }) => ({
+      bytes: readFileSync(location),
+      path,
+    }))
+  );
+  const installedSizes = new Map(
+    installed.map(({ location, path }) => [path, statSync(location).size])
+  );
+  const verdicts = new Map<string, boolean>();
+  const byteIdentical = (commit: string, tree: string): boolean => {
+    const entries = treeListing(upstream, tree);
+    const invalid = nonUtf8Paths(
+      entries.map((entry) => Buffer.from(entry.path, "latin1"))
+    );
+    if (invalid.length > 0) {
+      refused.push(
+        `${shortSha(commit)} names path bytes ${invalid.join(", ")}`
+      );
+      return false;
+    }
+    const sameShape =
+      installedUtf8 &&
+      entries.length === installedSizes.size &&
+      entries.every(
+        (entry) =>
+          entry.type === "blob" &&
+          entry.object !== undefined &&
+          installedSizes.get(entry.path) === entry.size
+      );
+    if (!sameShape) {
+      return false;
+    }
+    const blobs = readBlobs(
+      upstream,
+      entries.map((entry) => entry.object ?? "")
+    );
+    return (
+      filesDigest(
+        entries.map((entry, index) => ({
+          bytes: blobs[index] ?? Buffer.alloc(0),
+          path: entry.path,
+        }))
+      ) === installedDigest
+    );
+  };
+  return {
+    matches: (commit, tree) => {
+      if (!verdicts.has(tree)) {
+        verdicts.set(tree, byteIdentical(commit, tree));
+      }
+      return verdicts.get(tree) ?? false;
+    },
+    refused,
+  };
+};
 
 /**
  * Find the upstream commit whose packaged skill is byte-identical to the
  * installed source. Search the fetched default branch for the release entry,
- * then prove tree equality; a provenance pin is never bumped to a guess.
+ * then prove tree equality against the entry and every commit after it before
+ * the next release entry, preferring the branch's own first-parent history so
+ * the pin stays reachable from it; a provenance pin is never bumped to a guess.
  */
 const locateSourceCommit = (
   upstream: UpstreamHandle,
@@ -449,7 +922,8 @@ const locateSourceCommit = (
   url: string,
   branch: string
 ): { commit: string | null; verified: boolean; reason: string } => {
-  if (!source.version) {
+  const { version } = source;
+  if (!version) {
     return {
       commit: null,
       reason: "The installed source names no version.",
@@ -464,7 +938,7 @@ const locateSourceCommit = (
       "fetch",
       "--quiet",
       "--depth",
-      "400",
+      String(UPSTREAM_FETCH_DEPTH),
       url,
       `+refs/heads/${branch}:refs/remotes/upstream/${branch}`,
     ]);
@@ -478,12 +952,12 @@ const locateSourceCommit = (
   }
   const ref =
     upstream.kind === "cache" ? `refs/remotes/upstream/${branch}` : branch;
-  const candidates = git(
+  const entries = git(
     upstream.gitDirectory,
     [
       "log",
       "--format=%H",
-      `-S## ${source.version} `,
+      `-S## ${version} `,
       ref,
       "--",
       `${UPSTREAM_SKILL_PATH}/CHANGELOG.md`,
@@ -492,22 +966,50 @@ const locateSourceCommit = (
   )
     .split("\n")
     .filter(Boolean);
-  const installed = sourceDigest(source.path);
-  for (const candidate of candidates) {
-    if (treeDigest(upstream, candidate) === installed) {
+  if (entries.length === 0) {
+    return {
+      commit: null,
+      reason: `No commit on ${branch} introduces release ${version}.`,
+      verified: false,
+    };
+  }
+  const { matches, refused } = matchesInstalledTree(upstream, source);
+  const at = (commit: string, entry: string): string =>
+    commit === entry
+      ? `the ${version} release entry ${shortSha(entry)}`
+      : `${shortSha(commit)}, after the ${version} release entry ${shortSha(entry)}`;
+  const searched = new Set<string>();
+  let sideBranch: { commit: string; entry: string } | null = null;
+  for (const entry of entries) {
+    const window = releaseWindow(upstream, entry, ref, version);
+    const matching = window.commits.filter((commit) => {
+      searched.add(commit);
+      return matches(commit, window.trees.get(commit) ?? "");
+    });
+    const onBranch = matching.find((commit) => window.firstParent.has(commit));
+    if (onBranch) {
       return {
-        commit: candidate,
-        reason: "byte-identical tree",
+        commit: onBranch,
+        reason:
+          onBranch === entry
+            ? "byte-identical tree"
+            : `byte-identical tree at ${at(onBranch, entry)} on ${branch}`,
         verified: true,
       };
     }
+    const [first] = matching;
+    sideBranch ??= first ? { commit: first, entry } : null;
+  }
+  if (sideBranch) {
+    return {
+      commit: sideBranch.commit,
+      reason: `byte-identical tree at ${at(sideBranch.commit, sideBranch.entry)} on a branch merged into ${branch}; no first-parent commit of ${branch} carries that tree`,
+      verified: true,
+    };
   }
   return {
-    commit: candidates[0] ?? null,
-    reason:
-      candidates.length === 0
-        ? `No commit on ${branch} introduces release ${source.version}.`
-        : "The installed source is not byte-identical to any release commit; the pin will not be bumped.",
+    commit: entries[0] ?? null,
+    reason: `The installed source is not byte-identical to any of the ${searched.size} commit(s) on ${branch} from the ${version} release entry up to the next release entry; the pin will not be bumped.${refused.length > 0 ? ` A path that is not valid UTF-8 is never verified, and ${refused.join("; ")}.` : ""}`,
     verified: false,
   };
 };
@@ -530,7 +1032,10 @@ export type PlanAction =
 
 export interface PlanEntry {
   action: PlanAction;
+  /** What the entry writes, as UTF-8 text. */
   content?: string;
+  /** What the entry writes, as base64, when the bytes are not valid UTF-8. */
+  contentBase64?: string;
   forkDigest: string | null;
   forkPath: string;
   reason: string;
@@ -593,24 +1098,30 @@ const mergeFile = (
       ours: join(scratch, "ours"),
       theirs: join(scratch, "theirs"),
     };
-    writeFileSync(paths.ours, ours);
-    writeFileSync(paths.base, base);
-    writeFileSync(paths.theirs, theirs);
-    const result = run([
-      "git",
-      "merge-file",
-      "-p",
-      "-L",
-      "fork",
-      "-L",
-      "pinned upstream",
-      "-L",
-      "installed upstream",
-      paths.ours,
-      paths.base,
-      paths.theirs,
-    ]);
-    return { conflict: result.exitCode !== 0, merged: result.stdout };
+    writeFileSync(paths.ours, Buffer.from(ours, "latin1"));
+    writeFileSync(paths.base, Buffer.from(base, "latin1"));
+    writeFileSync(paths.theirs, Buffer.from(theirs, "latin1"));
+    const result = spawnSync(
+      [
+        "git",
+        "merge-file",
+        "-p",
+        "-L",
+        "fork",
+        "-L",
+        "pinned upstream",
+        "-L",
+        "installed upstream",
+        paths.ours,
+        paths.base,
+        paths.theirs,
+      ],
+      { stderr: "pipe", stdout: "pipe" }
+    );
+    return {
+      conflict: result.exitCode !== 0,
+      merged: byteString(result.stdout),
+    };
   } finally {
     rmSync(scratch, { force: true, recursive: true });
   }
@@ -812,7 +1323,7 @@ const classify = (
   }
   return {
     ...result,
-    forkDigest: current === null ? null : sha256(current),
+    forkDigest: current === null ? null : bytesDigest(current),
     forkPath,
     upstreamPath,
   };
@@ -821,44 +1332,96 @@ const classify = (
 // A fork's own records keep the literal they were written with; a moved pin or
 // version is a current claim only outside them. Any line naming a commit or
 // version range is a record. In Markdown, so is every heading and every line
-// in a section whose heading, or an enclosing one, names a range, a date, the
-// old literal, or a history.
+// in a section that is a history entry, a history section, or inside one.
+// An entry heading names what it records: a commit, a range, or a date, as in
+// `## Upstream 0.24.1 (`628c66b..fd16f54`)`, `### Fork fix: ... (pin
+// `fd16f54`)`, or `## Canonical 0.12.4 (`1b7b7e7`)`. A heading naming a
+// history, such as `## History`, holds entries. A history log runs to the end
+// of its parent section, so every later section beside an entry is an entry
+// too, even one titled only by its subject. A heading that starts with
+// "Current", such as `## Current upstream (0.25.0)`, marks current state
+// outside any history: its section stays a claim and ends the log beside it.
 // A fork's changelogs are its own history; no literal in them is a claim.
 const CHANGELOG_FILE_PATTERN = /(?:^|\/)[^/]*CHANGELOG[^/]*\.md$/iu;
 const RANGE_PATTERN =
   /\b(?:[0-9a-f]{7,40}\.{2,3}[0-9a-f]{7,40}|\d+\.\d+\.\d+\.{2,3}\d+\.\d+\.\d+)\b/u;
 const HEADING_LEVEL_PATTERN = /^ {0,3}(#{1,6})(?:\s|$)/u;
-const FENCE_PATTERN = /^ {0,3}(?:```|~~~)/u;
-const HISTORY_HEADING_PATTERN = /\d{4}-\d{2}-\d{2}|\bhistory\b/iu;
+/**
+ * A commit or a date: what a history entry's heading names besides a range. A
+ * commit is an abbreviated or full SHA of any shape in backticks, after "pin",
+ * "pinned at", "commit", or "sha", or alone or listed in parentheses, as in
+ * "(pin deadbee)" or "(5028750)"; elsewhere a bare one must mix digits and
+ * letters, so a word such as "defaced" or a number never reads as one.
+ */
+const ENTRY_HEADING_PATTERN =
+  /`[0-9a-f]{7,40}`|\b(?:[Pp]in(?:ned)?(?:\s+(?:at|to))?|[Cc]ommit|SHA|sha)\s+[0-9a-f]{7,40}\b|\(\s*[0-9a-f]{7,40}\s*[),]|,\s*[0-9a-f]{7,40}\s*\)|\b(?=[0-9a-f]*\d)(?=[0-9a-f]*[a-f])[0-9a-f]{7,40}\b|\d{4}-\d{2}-\d{2}/u;
+const HISTORY_HEADING_PATTERN = /\bhistory\b/iu;
+const CURRENT_HEADING_PATTERN = /^ {0,3}#{1,6}[ \t]+current\b/iu;
 
-const recordLines = (
-  forkPath: string,
-  lines: string[],
-  from: string
-): boolean[] => {
+/** What a heading outside any history section marks. */
+const headingKind = (
+  line: string
+): "current" | "entry" | "history" | "plain" => {
+  if (CURRENT_HEADING_PATTERN.test(line)) {
+    return "current";
+  }
+  if (RANGE_PATTERN.test(line) || ENTRY_HEADING_PATTERN.test(line)) {
+    return "entry";
+  }
+  return HISTORY_HEADING_PATTERN.test(line) ? "history" : "plain";
+};
+
+interface RecordSection {
+  /** Whether the log of entries among this section's children has begun. */
+  entries: boolean;
+  historical: boolean;
+  level: number;
+}
+
+/** Close the sections a heading ends, then open the one it starts. */
+const openSection = (
+  sections: RecordSection[],
+  document: { entries: boolean },
+  level: number,
+  line: string
+): void => {
+  while ((sections.at(-1)?.level ?? 0) >= level) {
+    sections.pop();
+  }
+  const parent = sections.at(-1) ?? document;
+  const kind = sections.some((section) => section.historical)
+    ? "history"
+    : headingKind(line);
+  sections.push({
+    entries: false,
+    historical: kind === "plain" ? parent.entries : kind !== "current",
+    level,
+  });
+  parent.entries = kind === "entry" || (kind !== "current" && parent.entries);
+};
+
+/**
+ * Which lines are records. Lines come from splitting on LF, so a CRLF file's
+ * lines keep a trailing CR; it is dropped for matching only, and the rewrite
+ * keeps every line ending as written.
+ */
+const recordLines = (forkPath: string, rawLines: string[]): boolean[] => {
+  const lines = rawLines.map((line) =>
+    line.endsWith("\r") ? line.slice(0, -1) : line
+  );
   if (!forkPath.endsWith(".md")) {
     return lines.map((line) => RANGE_PATTERN.test(line));
   }
-  const sections: { historical: boolean; level: number }[] = [];
-  let inFence = false;
+  const document = { entries: false };
+  const sections: RecordSection[] = [];
+  let fence: string | null = null;
   return lines.map((line) => {
-    if (FENCE_PATTERN.test(line)) {
-      inFence = !inFence;
-    }
-    const heading = inFence ? null : HEADING_LEVEL_PATTERN.exec(line);
+    const fenced = fence !== null;
+    fence = fenceAfter(line, fence);
+    const heading =
+      fenced || fence !== null ? null : HEADING_LEVEL_PATTERN.exec(line);
     if (heading) {
-      const level = heading[1]?.length ?? 1;
-      while ((sections.at(-1)?.level ?? 0) >= level) {
-        sections.pop();
-      }
-      sections.push({
-        historical:
-          sections.some((section) => section.historical) ||
-          RANGE_PATTERN.test(line) ||
-          HISTORY_HEADING_PATTERN.test(line) ||
-          line.includes(from),
-        level,
-      });
+      openSection(sections, document, heading[1]?.length ?? 1, line);
       return true;
     }
     return RANGE_PATTERN.test(line) || (sections.at(-1)?.historical ?? false);
@@ -872,7 +1435,7 @@ export const rewriteLiteral = (
   to: string
 ): { content: string; rewritten: number } => {
   const lines = content.split("\n");
-  const records = recordLines(forkPath, lines, from);
+  const records = recordLines(forkPath, lines);
   let rewritten = 0;
   const next = lines.map((line, index) => {
     if (records[index] || !line.includes(from)) {
@@ -911,6 +1474,9 @@ const literalRewritesFor = (
       `Simple Changes ${source.version}`,
     ]);
   }
+  const literals = substitutions.filter(([from, to]) =>
+    [from, to].every((literal) => ASCII_LITERAL_PATTERN.test(literal))
+  );
   for (const forkPath of walkFiles(fork.path)) {
     if (
       forkPath.startsWith("runtime/") ||
@@ -920,16 +1486,22 @@ const literalRewritesFor = (
     ) {
       continue;
     }
-    const content = readText(join(fork.path, forkPath));
+    // Byte strings: an ASCII literal moves and every other byte stays.
+    const content = readBytes(join(fork.path, forkPath));
     if (content === null) {
       continue;
     }
-    for (const [from, to] of substitutions) {
+    for (const [from, to] of literals) {
       if (
         from !== to &&
         rewriteLiteral(forkPath, content, from, to).rewritten > 0
       ) {
-        rewrites.push({ forkDigest: sha256(content), forkPath, from, to });
+        rewrites.push({
+          forkDigest: bytesDigest(content),
+          forkPath,
+          from,
+          to,
+        });
       }
     }
   }
@@ -975,7 +1547,7 @@ const advanceProvenance = (
     return false;
   }
   const basis =
-    skillEntry.content ?? readText(join(fork.path, "SKILL.md")) ?? "";
+    skillEntry.content ?? readBytes(join(fork.path, "SKILL.md")) ?? "";
   const rewritten = basis.replace(
     PROVENANCE_PATTERN,
     `Forked from \`simple-changes\` @ \`${newPin}\``
@@ -1045,9 +1617,9 @@ const classifyForkFiles = (
       upstreamPath,
       forkPath,
       {
-        base: treeFile(upstream, fork.pin, upstreamPath),
-        current: readText(join(fork.path, forkPath)),
-        target: readText(join(source.path, upstreamPath)),
+        base: treeBlob(upstream, fork.pin, upstreamPath),
+        current: readBytes(join(fork.path, forkPath)),
+        target: readBytes(join(source.path, upstreamPath)),
       },
       omissions
     );
@@ -1278,6 +1850,37 @@ const holdPin = (
   ].join(" ");
 };
 
+/**
+ * A plan carries what it writes as UTF-8 text when the bytes are valid UTF-8,
+ * which writes back byte for byte, and as base64 otherwise.
+ */
+const encodeContent = (entry: PlanEntry): void => {
+  if (entry.content === undefined) {
+    return;
+  }
+  const bytes = Buffer.from(entry.content, "latin1");
+  if (isUtf8(bytes)) {
+    entry.content = bytes.toString("utf8");
+    return;
+  }
+  Reflect.deleteProperty(entry, "content");
+  entry.contentBase64 = bytes.toString("base64");
+};
+
+/**
+ * Planning reads paths as text, so it refuses a tree that holds a path that is
+ * not valid UTF-8 instead of planning around a file it cannot name.
+ */
+const refuseNonUtf8Paths = (role: string, root: string): void => {
+  const invalid = nonUtf8Paths(walkFileBytes(Buffer.from(root)));
+  if (invalid.length > 0) {
+    throw new ForkUpdateError(
+      `The ${role} at ${root} holds path bytes that are not valid UTF-8 (hex ${invalid.join(", ")}); planning cannot carry such a file, so it refuses. Rename the file, then plan again.`,
+      EXIT.blocked
+    );
+  }
+};
+
 export const planForkUpdate = (options: {
   branch?: string;
   cache?: string;
@@ -1300,6 +1903,8 @@ export const planForkUpdate = (options: {
       EXIT.usage
     );
   }
+  refuseNonUtf8Paths("installed source", installed.path);
+  refuseNonUtf8Paths("fork", fork.path);
   const url = options.url ?? DEFAULT_UPSTREAM_URL;
   const upstream = openUpstream({
     ...(options.cache === undefined ? {} : { cache: options.cache }),
@@ -1367,6 +1972,9 @@ export const planForkUpdate = (options: {
       !parityReviewPaths.has(rewrite.forkPath) &&
       (heldReason === null || rewrite.forkPath !== "SKILL.md")
   );
+  for (const entry of entries) {
+    encodeContent(entry);
+  }
   return {
     entries,
     fork,
@@ -1393,6 +2001,17 @@ export interface ApplyReceipt {
 
 const WRITE_ACTIONS = new Set<PlanAction>(["update", "merge", "add"]);
 const DIGEST_PATTERN = /^[0-9a-f]{64}$/u;
+const BASE64_PATTERN =
+  /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u;
+
+/**
+ * Strict base64: whole quads, correct padding, and the one encoding of its
+ * bytes, so a truncated or hand-edited value can never write fewer bytes than
+ * the plan meant.
+ */
+const isCanonicalBase64 = (value: string): boolean =>
+  BASE64_PATTERN.test(value) &&
+  Buffer.from(value, "base64").toString("base64") === value;
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
@@ -1508,7 +2127,7 @@ const validateForkPlan = (value: unknown): ForkPlan => {
         hasExactKeys(
           entry,
           ["action", "forkDigest", "forkPath", "reason", "upstreamPath"],
-          ["content", "sidecarDigest"]
+          ["content", "contentBase64", "sidecarDigest"]
         ) &&
         PLAN_ACTIONS.includes(entry.action as PlanAction) &&
         safeForkPath(forkRoot, entry.forkPath)
@@ -1525,6 +2144,12 @@ const validateForkPlan = (value: unknown): ForkPlan => {
           DIGEST_PATTERN.test(entry.forkDigest))
       ) ||
       !(entry.content === undefined || typeof entry.content === "string") ||
+      !(
+        entry.contentBase64 === undefined ||
+        (typeof entry.contentBase64 === "string" &&
+          isCanonicalBase64(entry.contentBase64) &&
+          entry.content === undefined)
+      ) ||
       !(
         entry.sidecarDigest === undefined ||
         entry.sidecarDigest === null ||
@@ -1566,7 +2191,9 @@ const validateForkPlan = (value: unknown): ForkPlan => {
       !safeForkPath(forkRoot, rewrite.forkPath) ||
       typeof rewrite.from !== "string" ||
       rewrite.from.length === 0 ||
+      !ASCII_LITERAL_PATTERN.test(rewrite.from) ||
       typeof rewrite.to !== "string" ||
+      !ASCII_LITERAL_PATTERN.test(rewrite.to) ||
       writtenEntryPaths.has(rewrite.forkPath)
     ) {
       throw new ForkUpdateError(
@@ -1617,8 +2244,8 @@ const validateForkPlan = (value: unknown): ForkPlan => {
 // plan was made; never overwrite work that arrived in between.
 const assertSidecarUnchanged = (forkRoot: string, entry: PlanEntry): void => {
   const sidecarPath = entry.forkPath + MERGE_SIDECAR_SUFFIX;
-  const sidecar = readText(join(forkRoot, sidecarPath));
-  const sidecarDigest = sidecar === null ? null : sha256(sidecar);
+  const sidecar = readBytes(join(forkRoot, sidecarPath));
+  const sidecarDigest = sidecar === null ? null : bytesDigest(sidecar);
   if (sidecarDigest !== entry.sidecarDigest) {
     throw new ForkUpdateError(
       `${sidecarPath} changed after the plan was made; re-run plan.`,
@@ -1628,8 +2255,8 @@ const assertSidecarUnchanged = (forkRoot: string, entry: PlanEntry): void => {
 };
 
 const assertFileUnchanged = (forkRoot: string, entry: PlanEntry): void => {
-  const current = readText(join(forkRoot, entry.forkPath));
-  const digest = current === null ? null : sha256(current);
+  const current = readBytes(join(forkRoot, entry.forkPath));
+  const digest = current === null ? null : bytesDigest(current);
   if (digest !== entry.forkDigest) {
     throw new ForkUpdateError(
       `${entry.forkPath} changed after the plan was made; re-run plan.`,
@@ -1655,14 +2282,24 @@ const assertForkUnchanged = (
     assertFileUnchanged(forkRoot, entry);
   }
   for (const rewrite of rewrites) {
-    const current = readText(join(forkRoot, rewrite.forkPath));
-    if (current === null || sha256(current) !== rewrite.forkDigest) {
+    const current = readBytes(join(forkRoot, rewrite.forkPath));
+    if (current === null || bytesDigest(current) !== rewrite.forkDigest) {
       throw new ForkUpdateError(
         `${rewrite.forkPath} changed after the plan was made; re-run plan.`,
         EXIT.blocked
       );
     }
   }
+};
+
+/** The exact bytes an entry writes, or undefined when it writes nothing. */
+const entryBytes = (entry: PlanEntry): Buffer | undefined => {
+  if (entry.contentBase64 !== undefined) {
+    return Buffer.from(entry.contentBase64, "base64");
+  }
+  return entry.content === undefined
+    ? undefined
+    : Buffer.from(entry.content, "utf8");
 };
 
 const applyEntries = (
@@ -1673,15 +2310,16 @@ const applyEntries = (
   const deleted: string[] = [];
   for (const entry of entries) {
     const path = join(forkRoot, entry.forkPath);
-    if (WRITE_ACTIONS.has(entry.action) && entry.content !== undefined) {
+    const bytes = entryBytes(entry);
+    if (WRITE_ACTIONS.has(entry.action) && bytes !== undefined) {
       mkdirSync(dirname(path), { recursive: true });
-      writeFileSync(path, entry.content);
+      writeFileSync(path, bytes);
       written.push(entry.forkPath);
     } else if (entry.action === "delete") {
       unlinkSync(path);
       deleted.push(entry.forkPath);
-    } else if (entry.action === "conflict" && entry.content !== undefined) {
-      writeFileSync(path + MERGE_SIDECAR_SUFFIX, entry.content);
+    } else if (entry.action === "conflict" && bytes !== undefined) {
+      writeFileSync(path + MERGE_SIDECAR_SUFFIX, bytes);
       written.push(entry.forkPath + MERGE_SIDECAR_SUFFIX);
     }
   }
@@ -1704,7 +2342,7 @@ const applyLiteralRewrites = (
   }
   for (const [forkPath, fileRewrites] of byPath) {
     const path = join(forkRoot, forkPath);
-    let content = readText(path);
+    let content = readBytes(path);
     if (content === null) {
       continue;
     }
@@ -1717,7 +2355,7 @@ const applyLiteralRewrites = (
       ));
       count += 1;
     }
-    writeFileSync(path, content);
+    writeFileSync(path, Buffer.from(content, "latin1"));
     if (!written.includes(forkPath)) {
       written.push(forkPath);
     }

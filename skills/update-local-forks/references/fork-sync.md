@@ -49,14 +49,42 @@ deltas. Two layouts are recognized:
 | `CHANGELOG.md` | Any | `skip` (the fork owns its own history) |
 | Absent | Present | `keep-fork-only` |
 
+Every write is byte for byte: an upstream version, a three-way merge, and a
+literal rewrite keep each byte as upstream or the fork has it, invalid UTF-8
+included, and a saved plan carries such content as base64. Apply checks each
+file it writes, deletes, or rewrites against a digest of its raw bytes taken
+at plan time. A plan saved by an earlier `update-local-forks` hashed and
+stored decoded text instead. It still applies where every incoming and fork
+file is valid UTF-8. Apply refuses it as changed since the plan when an
+existing fork file is not valid UTF-8, but it cannot detect incoming content
+that such a plan already decoded. Plan again instead of applying an earlier
+plan whenever any incoming or fork file holds invalid UTF-8.
+
+File names must be valid UTF-8. Planning refuses an installed source or a
+fork that holds a path that is not, naming the path bytes in hex, and a
+release tree that names one never verifies, so the pin never moves past a
+file the plan cannot carry. Rename the file, then plan again.
+
 The plan also rewrites exact literals the fork pins in its own files outside
 the runtime: the old provenance sha, `CURRENT_GUIDANCE_VERSION = <old>`, and
 `Simple Changes <old version>`. Only those exact strings change; nothing is
 inferred. The fork's own records keep the literal they were written with: a
 line naming a commit or version range (`7ab67a1..628c66b`), and in Markdown
-every heading and every line in a section whose heading, or an enclosing one,
-names a range, a date, the old literal, or a history. A test that asserts such
-a record stays matched to it.
+every heading and every line of a history entry or a history section. An
+entry's heading names what it records: a commit, a range, or a date, as in
+``## Upstream 0.24.1 (`628c66b..fd16f54`)``, ``### Fork fix: ... (pin
+`fd16f54`)``, or ``## Canonical 0.12.4 (`1b7b7e7`)``. An abbreviated SHA
+counts in backticks, after "pin" or "commit", or in parentheses, as in
+`(pin deadbee)`; elsewhere a bare one must mix digits and letters. A heading
+naming a history, such as `## History`, holds entries. A history log runs to the end
+of its parent section, so every later section beside an entry is one too,
+even when titled only by its subject. A heading that starts with "Current",
+such as `## Current upstream (0.25.0)`, marks current state outside a history
+section: its section stays a current claim and ends the log beside it. Keep
+other current notes above the history. Only `#` headings are read; an
+underlined (Setext) heading such as `History` over `=======` is plain text,
+so title history sections and entries with `#`. A test that asserts such a
+record stays matched to it.
 
 ## Omitted references
 
@@ -119,8 +147,13 @@ Use the same rules as the canonical fork-maintenance reference:
   canonical package; propose it there instead of letting the fork drift.
 
 Never bump a pin to an uncommitted upstream tree. The planner refuses to
-advance the pin unless the installed source is byte-identical to a commit that
-introduced that release on the canonical default branch.
+advance the pin unless the installed source is byte-identical to a commit of
+that release on the canonical default branch: the commit that added the
+release's changelog entry, or a later commit before the next release entry,
+since review fixes often land after the release-prep commit. It prefers a
+commit on the default branch's first-parent history, such as the merge that
+brought the release in, over one only on a merged side branch. When no commit
+in that range matches, the pin stays and the plan says why.
 
 ## Guidance versions
 

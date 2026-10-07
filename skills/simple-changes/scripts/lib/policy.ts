@@ -670,6 +670,24 @@ export const acknowledgementCouldRestoreTrust = (
   requiresRepositoryTrust(parsePolicyText(edited)) &&
   trustReceiptMayBind(target.commonGitDirectory, edited);
 
+// Refuses rather than replace policy bytes that changed after they were read,
+// including a policy removed meanwhile, which the rename would recreate.
+const assertPolicyUnchanged = (path: string, saved: Buffer): void => {
+  let current: Buffer | null = null;
+  try {
+    assertReadablePolicyFile(path);
+    current = readFileSync(path);
+  } catch {
+    current = null;
+  }
+  if (!current?.equals(saved)) {
+    throw new SimpleChangesError(
+      `The policy changed while the guidance acknowledgement was being recorded; nothing was written: ${path}`,
+      EXIT_CODES.validation
+    );
+  }
+};
+
 /**
  * Records a guidance acknowledgement in the saved policy file itself. The
  * loaded policy is default-filled and, for an unconfirmed repository policy,
@@ -709,6 +727,7 @@ export const writeGuidanceAcknowledgement = (
       EXIT_CODES.unsafe
     );
   }
+  assertPolicyUnchanged(path, saved);
   replacePolicyFileText(path, edited, target.source === "user");
   if (readFileSync(path, "utf8") !== edited) {
     throw new SimpleChangesError(

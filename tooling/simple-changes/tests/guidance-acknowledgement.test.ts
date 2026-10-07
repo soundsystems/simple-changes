@@ -479,6 +479,46 @@ describe("acknowledge-update records guidance in the saved policy only", () => {
     });
   });
 
+  test("refuses rather than overwrite a policy changed after it was read", () => {
+    const fixture = policyFixture(ELEVATED_POLICY);
+    const path = join(fixture.root, ".simple-changes.json");
+    const concurrent = ELEVATED_POLICY.replace(
+      '"questions": "blocking-only"',
+      '"questions": "always"'
+    );
+    expect(concurrent).not.toBe(ELEVATED_POLICY);
+    const spy = changeAfterFirstRead(path, () =>
+      writeFileSync(path, concurrent)
+    );
+    try {
+      expect(() =>
+        writeGuidanceAcknowledgement(
+          path,
+          { disposition: "accepted", version: CURRENT_GUIDANCE_VERSION },
+          repositoryTarget(fixture)
+        )
+      ).toThrow("nothing was written");
+    } finally {
+      spy.mockRestore();
+    }
+    expect(savedPolicy(fixture)).toBe(concurrent);
+
+    // A policy removed meanwhile is not recreated, even with unbound bytes.
+    const removal = changeAfterFirstRead(path, () => unlinkSync(path));
+    try {
+      expect(() =>
+        writeGuidanceAcknowledgement(
+          path,
+          { disposition: "accepted", version: CURRENT_GUIDANCE_VERSION },
+          repositoryTarget(fixture)
+        )
+      ).toThrow("nothing was written");
+    } finally {
+      removal.mockRestore();
+    }
+    expect(existsSync(path)).toBe(false);
+  });
+
   test("an ordinary confirmed policy may return to its confirmed bytes", () => {
     // Setup writes a receipt for every repository policy, but one requesting
     // no consequential authority needs no trust, so restoring it raises none.

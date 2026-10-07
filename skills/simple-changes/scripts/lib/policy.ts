@@ -138,9 +138,8 @@ const assertReadablePolicyFile = (path: string): void => {
   }
 };
 
-const parsePolicyFile = (path: string): RepoPolicy => {
-  assertReadablePolicyFile(path);
-  const parsed = JSON.parse(readFileSync(path, "utf8")) as unknown;
+const parsePolicyText = (text: string): RepoPolicy => {
+  const parsed = JSON.parse(text) as unknown;
   const validated = validateSchema<StoredRepoPolicy>("repo-policy", parsed);
   return {
     ...validated,
@@ -165,6 +164,11 @@ const parsePolicyFile = (path: string): RepoPolicy => {
     uiArtifactVersioning:
       validated.uiArtifactVersioning ?? DEFAULT_POLICY.uiArtifactVersioning,
   };
+};
+
+const parsePolicyFile = (path: string): RepoPolicy => {
+  assertReadablePolicyFile(path);
+  return parsePolicyText(readFileSync(path, "utf8"));
 };
 
 export const resolvePersonalPolicyPath = (
@@ -503,38 +507,6 @@ export const withAcknowledgedGuidanceText = (
   return edited;
 };
 
-/**
- * Records a guidance acknowledgement in the saved policy file itself. The
- * loaded policy is default-filled and, for an unconfirmed repository policy,
- * trust-reduced, so it is never written back: only the guidance values change.
- * This neither creates nor renews a repository trust receipt; changing the
- * bytes leaves an existing receipt unmatched, exactly as any other edit does.
- */
-export const writeGuidanceAcknowledgement = (
-  path: string,
-  guidance: RepoPolicy["guidance"],
-  privateFile = false
-): void => {
-  assertReadablePolicyFile(path);
-  const saved = readFileSync(path);
-  const text = saved.toString("utf8");
-  if (!Buffer.from(text, "utf8").equals(saved)) {
-    throw new SimpleChangesError(
-      `Refusing to rewrite a policy that is not valid UTF-8: ${path}`,
-      EXIT_CODES.validation
-    );
-  }
-  const edited = withAcknowledgedGuidanceText(text, guidance);
-  validateSchema<StoredRepoPolicy>("repo-policy", JSON.parse(edited));
-  replacePolicyFileText(path, edited, privateFile);
-  if (readFileSync(path, "utf8") !== edited) {
-    throw new SimpleChangesError(
-      `Policy verification failed after writing: ${path}`,
-      EXIT_CODES.validation
-    );
-  }
-};
-
 export const loadPersonalPolicy = (
   personalPolicyPath = resolvePersonalPolicyPath()
 ): LoadedPolicy => {
@@ -554,10 +526,12 @@ export const loadPersonalPolicy = (
   };
 };
 
+// `policyText` checks candidate bytes for `policyPath` before they are written.
 const trustedRepositoryPolicy = (
   primaryCheckout: string,
   policyPath: string,
-  commonGitDirectory: string | undefined
+  commonGitDirectory: string | undefined,
+  policyText?: string
 ): boolean => {
   if (!commonGitDirectory) {
     return false;
@@ -580,11 +554,32 @@ const trustedRepositoryPolicy = (
       Boolean(receipt.reason.trim()) &&
       receipt.repository === realpathSync(primaryCheckout) &&
       receipt.policyPath === realpathSync(policyPath) &&
-      receipt.policyDigest === sha256(readFileSync(policyPath, "utf8"))
+      receipt.policyDigest ===
+        sha256(policyText ?? readFileSync(policyPath, "utf8"))
     );
   } catch {
     return false;
   }
+};
+
+const repositoryPolicyTrust = (
+  value: RepoPolicy,
+  primaryCheckout: string,
+  policyPath: string,
+  commonGitDirectory: string | undefined,
+  policyText?: string
+): LoadedPolicy["trust"] => {
+  if (!requiresRepositoryTrust(value)) {
+    return "not-required";
+  }
+  return trustedRepositoryPolicy(
+    primaryCheckout,
+    policyPath,
+    commonGitDirectory,
+    policyText
+  )
+    ? "trusted"
+    : "untrusted";
 };
 
 export const writeRepositoryPolicyTrustReceipt = (
@@ -647,6 +642,78 @@ export const writeRepositoryPolicyTrustReceipt = (
   return receiptPath;
 };
 
+/** Where an acknowledgement is saved, and where a repository's receipt lives. */
+export type GuidanceAcknowledgementTarget =
+  | { source: "user" }
+  | {
+      commonGitDirectory: string;
+      primaryCheckout: string;
+      source: "repository";
+    };
+
+// Only setup may lift reduced authority. A guidance edit that restores the
+// exact bytes a still-present receipt confirmed would re-enable consequential
+// settings without confirmation, so the edit is checked before it is written.
+const acknowledgementRaisesTrust = (
+  path: string,
+  text: string,
+  edited: string,
+  target: Extract<GuidanceAcknowledgementTarget, { source: "repository" }>
+): boolean => {
+  const trustOf = (policyText: string): LoadedPolicy["trust"] =>
+    repositoryPolicyTrust(
+      parsePolicyText(policyText),
+      target.primaryCheckout,
+      path,
+      target.commonGitDirectory,
+      policyText
+    );
+  return trustOf(text) !== "trusted" && trustOf(edited) === "trusted";
+};
+
+/**
+ * Records a guidance acknowledgement in the saved policy file itself. The
+ * loaded policy is default-filled and, for an unconfirmed repository policy,
+ * trust-reduced, so it is never written back: only the guidance values change.
+ * This neither creates nor renews a repository trust receipt; changing the
+ * bytes leaves an existing receipt unmatched, exactly as any other edit does.
+ * An edit that would instead make a stale receipt match again, raising an
+ * unconfirmed repository policy to trusted, is refused with nothing written.
+ */
+export const writeGuidanceAcknowledgement = (
+  path: string,
+  guidance: RepoPolicy["guidance"],
+  target: GuidanceAcknowledgementTarget
+): void => {
+  assertReadablePolicyFile(path);
+  const saved = readFileSync(path);
+  const text = saved.toString("utf8");
+  if (!Buffer.from(text, "utf8").equals(saved)) {
+    throw new SimpleChangesError(
+      `Refusing to rewrite a policy that is not valid UTF-8: ${path}`,
+      EXIT_CODES.validation
+    );
+  }
+  const edited = withAcknowledgedGuidanceText(text, guidance);
+  parsePolicyText(edited);
+  if (
+    target.source === "repository" &&
+    acknowledgementRaisesTrust(path, text, edited, target)
+  ) {
+    throw new SimpleChangesError(
+      `Refusing to acknowledge the guidance update in ${path}: the result would match the trust receipt of an earlier copy of this policy and re-enable its consequential settings without confirmation. Nothing was written. Run \`simple-changes setup\` to confirm this repository policy; setup also records the current guidance.`,
+      EXIT_CODES.unsafe
+    );
+  }
+  replacePolicyFileText(path, edited, target.source === "user");
+  if (readFileSync(path, "utf8") !== edited) {
+    throw new SimpleChangesError(
+      `Policy verification failed after writing: ${path}`,
+      EXIT_CODES.validation
+    );
+  }
+};
+
 export const loadPolicy = (
   primaryCheckout: string,
   options: LoadPolicyOptions = {}
@@ -654,23 +721,20 @@ export const loadPolicy = (
   const policyPath = resolve(primaryCheckout, ".simple-changes.json");
   if (existsSync(policyPath)) {
     const value = parsePolicyFile(policyPath);
-    const consequential = requiresRepositoryTrust(value);
-    const trusted =
-      !consequential ||
-      trustedRepositoryPolicy(
-        primaryCheckout,
-        policyPath,
-        options.commonGitDirectory
-      );
-    let trust: LoadedPolicy["trust"] = "not-required";
-    if (consequential) {
-      trust = trusted ? "trusted" : "untrusted";
-    }
+    const trust = repositoryPolicyTrust(
+      value,
+      primaryCheckout,
+      policyPath,
+      options.commonGitDirectory
+    );
     return {
       path: policyPath,
       source: "repository",
       trust,
-      value: trusted ? value : withoutUntrustedConsequentialAuthority(value),
+      value:
+        trust === "untrusted"
+          ? withoutUntrustedConsequentialAuthority(value)
+          : value,
     };
   }
   const personalPolicyPath =

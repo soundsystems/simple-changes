@@ -81,21 +81,15 @@ const policyFixture = (contents: string | Buffer): TestRepository => {
   return fixture;
 };
 
-const acknowledge = (
+const savedPolicy = (fixture: TestRepository): string =>
+  readFileSync(join(fixture.root, ".simple-changes.json"), "utf8");
+
+const runCli = (
   fixture: TestRepository,
-  disposition = "accepted"
+  args: string[]
 ): { exitCode: number; stderr: string; stdout: string } => {
   const result = spawnSync(
-    [
-      process.execPath,
-      cliPath,
-      "acknowledge-update",
-      "--guidance-decision",
-      disposition,
-      "--json",
-      "--repo",
-      fixture.root,
-    ],
+    [process.execPath, cliPath, ...args, "--json", "--repo", fixture.root],
     {
       env: {
         ...process.env,
@@ -113,8 +107,66 @@ const acknowledge = (
   };
 };
 
-const savedPolicy = (fixture: TestRepository): string =>
-  readFileSync(join(fixture.root, ".simple-changes.json"), "utf8");
+const acknowledge = (
+  fixture: TestRepository,
+  disposition = "accepted"
+): { exitCode: number; stderr: string; stdout: string } =>
+  runCli(fixture, ["acknowledge-update", "--guidance-decision", disposition]);
+
+// Setup's own serialization and receipt, as a teammate confirming the policy
+// on this clone would leave them.
+const ELEVATED_SETUP = [
+  "--finish",
+  "ship",
+  "--git-push-authorization",
+  "configure-harness",
+  "--acknowledge-push-scope",
+  "--production",
+  "allow",
+  "--shipping-mode",
+  "break-glass",
+  "--migration-handling",
+  "ask-after-review",
+];
+const ORDINARY_SETUP = [
+  "--finish",
+  "integrate",
+  "--git-push-authorization",
+  "ask",
+];
+
+const confirmWithSetup = (answers: string[]): TestRepository => {
+  const fixture = createTestRepository();
+  fixtures.push(fixture);
+  const setup = runCli(fixture, [
+    "setup",
+    ...answers,
+    "--questions",
+    "blocking-only",
+    "--scope",
+    "repository",
+    "--yes",
+  ]);
+  expect(setup.exitCode).toBe(0);
+  return fixture;
+};
+
+// Rolls only the guidance version back, as checking out an older copy of an
+// otherwise unchanged policy does; the receipt stays bound to the newer bytes.
+const rollBackGuidance = (fixture: TestRepository): string => {
+  const confirmed = savedPolicy(fixture);
+  const current = `"version": ${CURRENT_GUIDANCE_VERSION}`;
+  expect(confirmed.split(current)).toHaveLength(2);
+  writeFileSync(
+    join(fixture.root, ".simple-changes.json"),
+    confirmed.replace(current, '"version": 22')
+  );
+  return confirmed;
+};
+
+const confirmedDisposition = (confirmed: string): string =>
+  (JSON.parse(confirmed) as { guidance: { disposition: string } }).guidance
+    .disposition;
 
 const trustReceiptPath = (fixture: TestRepository): string =>
   join(fixture.root, ".git", "simple-changes", "policy-trust.json");
@@ -250,6 +302,84 @@ describe("acknowledge-update records guidance in the saved policy only", () => {
     expect(captureInventory(fixture.root).policy).toMatchObject({
       trust: "untrusted",
       value: REDUCED_AUTHORITY,
+    });
+  });
+
+  test("refuses an acknowledgement that would revive a stale trust receipt", () => {
+    const fixture = confirmWithSetup(ELEVATED_SETUP);
+    const receipt = readFileSync(trustReceiptPath(fixture), "utf8");
+    const confirmed = rollBackGuidance(fixture);
+    const stale = readFileSync(join(fixture.root, ".simple-changes.json"));
+    expect(captureInventory(fixture.root).policy).toMatchObject({
+      trust: "untrusted",
+      value: REDUCED_AUTHORITY,
+    });
+
+    // Recording the confirmed disposition would restore the receipt's bytes.
+    const disposition = confirmedDisposition(confirmed);
+    const refused = acknowledge(fixture, disposition);
+    expect(refused.exitCode).toBe(5);
+    expect(refused.stderr).toContain("Nothing was written");
+    expect(refused.stderr).toContain("simple-changes setup");
+    expect(
+      readFileSync(join(fixture.root, ".simple-changes.json")).equals(stale)
+    ).toBe(true);
+    expect(readFileSync(trustReceiptPath(fixture), "utf8")).toBe(receipt);
+    expect(captureInventory(fixture.root).policy).toMatchObject({
+      trust: "untrusted",
+      value: REDUCED_AUTHORITY,
+    });
+
+    // Any other record leaves the receipt unmatched, so it is written.
+    const other = disposition === "reviewed" ? "accepted" : "reviewed";
+    expect(acknowledge(fixture, other).exitCode).toBe(0);
+    expect(savedPolicy(fixture)).toBe(
+      confirmed.replace(
+        `"disposition": "${disposition}"`,
+        `"disposition": "${other}"`
+      )
+    );
+    expect(readFileSync(trustReceiptPath(fixture), "utf8")).toBe(receipt);
+    expect(captureInventory(fixture.root).policy).toMatchObject({
+      trust: "untrusted",
+      value: REDUCED_AUTHORITY,
+    });
+  });
+
+  test("an ordinary confirmed policy may return to its confirmed bytes", () => {
+    // Setup writes a receipt for every repository policy, but one requesting
+    // no consequential authority needs no trust, so restoring it raises none.
+    const fixture = confirmWithSetup(ORDINARY_SETUP);
+    expect(existsSync(trustReceiptPath(fixture))).toBe(true);
+    const confirmed = rollBackGuidance(fixture);
+
+    expect(acknowledge(fixture, confirmedDisposition(confirmed)).exitCode).toBe(
+      0
+    );
+    expect(savedPolicy(fixture)).toBe(confirmed);
+    expect(captureInventory(fixture.root).policy).toMatchObject({
+      trust: "not-required",
+      value: { gitPushAuthorization: "ask" },
+    });
+  });
+
+  test("re-acknowledging a trusted policy at the current guidance keeps it trusted", () => {
+    const fixture = confirmWithSetup(ELEVATED_SETUP);
+    const confirmed = savedPolicy(fixture);
+    const receipt = readFileSync(trustReceiptPath(fixture), "utf8");
+
+    expect(acknowledge(fixture, confirmedDisposition(confirmed)).exitCode).toBe(
+      0
+    );
+    expect(savedPolicy(fixture)).toBe(confirmed);
+    expect(readFileSync(trustReceiptPath(fixture), "utf8")).toBe(receipt);
+    expect(captureInventory(fixture.root).policy).toMatchObject({
+      trust: "trusted",
+      value: {
+        gitPushAuthorization: "configure-harness",
+        productionDeploy: "allow",
+        shippingMode: "break-glass",
+      },
     });
   });
 

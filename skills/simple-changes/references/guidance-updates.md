@@ -86,7 +86,10 @@ saved policy file. Every other byte stays as written, including consequential
 settings that run with reduced authority because this clone has not confirmed
 them. It never creates or renews a policy trust receipt, so acknowledging a
 confirmed repository policy changes the bytes its receipt is bound to, and those
-settings run with reduced authority until setup confirms them again.
+settings run with reduced authority until setup confirms them again. When the
+policy is unconfirmed and the edit would restore the exact bytes an earlier
+receipt confirmed, the command refuses and writes nothing rather than re-enable
+those settings; run setup to confirm the policy instead.
 
 If the user selects `configure-harness` or says “auto push,” give the exact
 scoped-push explanation and confirmation from

@@ -1965,7 +1965,13 @@ const runAcknowledgeUpdate = async (options: CliOptions): Promise<void> => {
     writeGuidanceAcknowledgement(
       inventory.policy.path as string,
       guidance,
-      inventory.policy.source === "user"
+      inventory.policy.source === "repository"
+        ? {
+            commonGitDirectory: inventory.repository.commonGitDirectory,
+            primaryCheckout: inventory.repository.primaryCheckout,
+            source: "repository",
+          }
+        : { source: "user" }
     );
   };
   const activeLoop = readLoopLease(options.repo);

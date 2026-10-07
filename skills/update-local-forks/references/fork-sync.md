@@ -68,7 +68,9 @@ file the plan cannot carry. Rename the file, then plan again.
 The plan also moves the old provenance sha where the fork's own files outside
 the runtime name it, as the exact string; nothing is inferred.
 It never rewrites a version literal, `CURRENT_GUIDANCE_VERSION = <old>` or
-`Simple Changes <old version>`: whether a line states the fork's current
+`Simple Changes <old version>` (the old version is the pinned tree's
+`SKILL.md` `metadata.version`, or its `CHANGELOG.md` top release when it
+states none): whether a line states the fork's current
 version, a minimum, or a past release is a maintainer's call. Instead, every
 fork-owned line that names one becomes a `review` item giving the line, its
 text, and a suggested replacement; change by hand each one that states the
@@ -171,7 +173,9 @@ brought the release in, over one only on a merged side branch. When no commit
 in that range matches, the pin stays and the plan says why.
 
 Before that search, the planner tries the release tag `v<version>` (the
-version read from the installed `CHANGELOG.md`) as a shortcut. With
+version the installed `SKILL.md` states in frontmatter `metadata.version`,
+or, for a release before 0.27.0 that states none, the top release of its
+`CHANGELOG.md`) as a shortcut. With
 `--upstream`, it reads the checkout's own tag and never fetches into it;
 otherwise it fetches only that tag into the cache's private
 `refs/upstream-tags/` namespace at the branch fetch's depth, and both cache

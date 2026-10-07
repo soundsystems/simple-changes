@@ -42,6 +42,8 @@ const PROVENANCE_PATTERN = /Forked from `simple-changes` @ `([0-9a-f]{7,40})`/u;
 const GUIDANCE_PATTERN = /CURRENT_GUIDANCE_VERSION = (\d+);/u;
 const CHANGELOG_VERSION_PATTERN = /^## (\d+\.\d+\.\d+)\b/mu;
 const SKILL_NAME_PATTERN = /^name:\s*(\S+)\s*$/mu;
+const FRONTMATTER_PATTERN = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/u;
+const RELEASE_VERSION_PATTERN = /^\d+\.\d+\.\d+$/u;
 const GLOBAL_SKILL_ROOTS = [
   ".agents/skills",
   ".codex/skills",
@@ -168,6 +170,49 @@ export interface DiscoveredSource {
 const skillNameOf = (skillMarkdown: string): string | null =>
   SKILL_NAME_PATTERN.exec(skillMarkdown)?.[1] ?? null;
 
+interface YamlParser {
+  parse: (source: string) => unknown;
+}
+
+/**
+ * The release a SKILL.md states in frontmatter `metadata.version`, or null
+ * when it states none (releases before 0.27.0) or the frontmatter is not
+ * readable YAML with a plain `X.Y.Z` version there.
+ */
+const metadataVersionOf = (skillMarkdown: string | null): string | null => {
+  const frontmatter = skillMarkdown
+    ? FRONTMATTER_PATTERN.exec(skillMarkdown)?.[1]
+    : undefined;
+  const yaml = (globalThis as { Bun?: { YAML?: YamlParser } }).Bun?.YAML;
+  if (frontmatter === undefined || !yaml) {
+    return null;
+  }
+  let parsed: unknown;
+  try {
+    parsed = yaml.parse(frontmatter);
+  } catch {
+    return null;
+  }
+  const metadata = (parsed as { metadata?: unknown } | null)?.metadata;
+  const version = (metadata as { version?: unknown } | null | undefined)
+    ?.version;
+  return typeof version === "string" && RELEASE_VERSION_PATTERN.test(version)
+    ? version
+    : null;
+};
+
+/**
+ * A packaged skill's release: SKILL.md `metadata.version` first, then the top
+ * release heading of its CHANGELOG.md, as every release before 0.27.0 has.
+ */
+const releaseVersionOf = (
+  skillMarkdown: string | null,
+  changelog: string | null
+): string | null =>
+  metadataVersionOf(skillMarkdown) ??
+  CHANGELOG_VERSION_PATTERN.exec(changelog ?? "")?.[1] ??
+  null;
+
 const runtimeLayoutOf = (forkPath: string): DiscoveredFork["runtimeLayout"] =>
   existsSync(join(forkPath, "runtime", "scripts")) ||
   existsSync(join(forkPath, "runtime", "evals"))
@@ -229,14 +274,14 @@ export const inspectSource = (sourcePath: string): DiscoveredSource | null => {
   if (PROVENANCE_PATTERN.test(skill)) {
     return null;
   }
-  const changelog = readText(join(sourcePath, "CHANGELOG.md")) ?? "";
+  const changelog = readText(join(sourcePath, "CHANGELOG.md"));
   const guidance =
     readText(join(sourcePath, "scripts", "lib", "guidance-updates.ts")) ?? "";
   const guidanceVersion = GUIDANCE_PATTERN.exec(guidance)?.[1];
   return {
     guidanceVersion: guidanceVersion ? Number(guidanceVersion) : null,
     path: realpathSync(sourcePath),
-    version: CHANGELOG_VERSION_PATTERN.exec(changelog)?.[1] ?? null,
+    version: releaseVersionOf(skill, changelog),
   };
 };
 
@@ -2148,9 +2193,10 @@ export const planForkUpdate = (options: {
   const pinnedGuidance = GUIDANCE_PATTERN.exec(
     treeFile(upstream, fork.pin, "scripts/lib/guidance-updates.ts") ?? ""
   )?.[1];
-  const pinnedVersion = CHANGELOG_VERSION_PATTERN.exec(
-    treeFile(upstream, fork.pin, "CHANGELOG.md") ?? ""
-  )?.[1];
+  const pinnedVersion = releaseVersionOf(
+    treeFile(upstream, fork.pin, "SKILL.md"),
+    treeFile(upstream, fork.pin, "CHANGELOG.md")
+  );
 
   const classified = classifyForkFiles(fork, upstream, installed);
   const { entries, plannedContent } = classified;

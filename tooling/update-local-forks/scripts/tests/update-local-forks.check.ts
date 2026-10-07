@@ -31,6 +31,7 @@ import {
   discover,
   type ForkPlan,
   inspectFork,
+  inspectSource,
   intentionalOmissions,
   openUpstream,
   type PlanEntry,
@@ -2709,6 +2710,123 @@ describe("update-local-forks", () => {
     expect(reference).toContain("--skill update-local-forks");
     expect(reference).toContain("never rewrites a version literal");
     expect(skill).toContain("change by hand");
+  });
+});
+
+describe("update-local-forks version identity", () => {
+  const withMetadataVersion = (skill: string, version: string): string =>
+    skill.replace(
+      "name: simple-changes\n",
+      `name: simple-changes\nmetadata:\n  version: "${version}"\n`
+    );
+
+  test("reads the installed version from SKILL.md metadata.version first", () => {
+    const fixture = createFixture();
+    const skillPath = join(fixture.source, "SKILL.md");
+    // Without the field, the packaged changelog's top release is the version.
+    expect(inspectSource(fixture.source)?.version).toBe("0.2.0");
+    writeFileSync(
+      skillPath,
+      withMetadataVersion(readFileSync(skillPath, "utf8"), "0.3.0")
+    );
+    expect(inspectSource(fixture.source)?.version).toBe("0.3.0");
+    // A field that is not a plain release version falls back too.
+    writeFileSync(
+      skillPath,
+      withMetadataVersion(
+        readFileSync(
+          join(fixture.upstream, "skills/simple-changes/SKILL.md"),
+          "utf8"
+        ),
+        "next"
+      )
+    );
+    expect(inspectSource(fixture.source)?.version).toBe("0.2.0");
+  });
+
+  test("plans a source that states metadata.version exactly as one that does not", () => {
+    const fixture = createFixture();
+    const released = commitPackage(
+      fixture.upstream,
+      "chore(release): Publish Simple Changes 0.3.0",
+      {
+        "CHANGELOG.md": changelogThrough("0.3.0", "0.2.0", "0.1.0"),
+        "SKILL.md": withMetadataVersion(
+          readFileSync(
+            join(fixture.upstream, "skills/simple-changes/SKILL.md"),
+            "utf8"
+          ),
+          "0.3.0"
+        ),
+      }
+    );
+    const plan = planForkUpdate({
+      fork: fixture.fork,
+      source: installSnapshot(fixture, "with-metadata"),
+      upstream: fixture.upstream,
+    });
+    expect(plan.source).toMatchObject({
+      commit: released,
+      commitVerified: true,
+      version: "0.3.0",
+    });
+  });
+
+  // The fork's notes name the pinned release, so the plan lists that literal
+  // only when it knows the pinned version.
+  const notesReason = (plan: ForkPlan): string | undefined =>
+    plan.entries.find((entry) => entry.forkPath === "notes.md")?.reason;
+
+  test("an old pin without metadata.version reads its changelog", () => {
+    const fixture = createFixture();
+    const plan = planForkUpdate({
+      fork: fixture.fork,
+      source: fixture.source,
+      upstream: fixture.upstream,
+    });
+    expect(notesReason(plan)).toContain(
+      "`Bundled Simple Changes 0.1.0.` -> `Bundled Simple Changes 0.2.0.`"
+    );
+  });
+
+  test("a new pin reads metadata.version before its changelog", () => {
+    const fixture = createFixture();
+    // A pin whose SKILL.md states 0.1.0 while its changelog's top heading
+    // says otherwise: only metadata.version names the fork's 0.1.0 literal.
+    git(fixture.upstream, [
+      "checkout",
+      "-q",
+      "-b",
+      "metadata-pin",
+      fixture.pin,
+    ]);
+    const pinned = commitPackage(fixture.upstream, "chore: State the version", {
+      "CHANGELOG.md": changelogThrough("0.0.9"),
+      "SKILL.md": withMetadataVersion(
+        readFileSync(
+          join(fixture.upstream, "skills/simple-changes/SKILL.md"),
+          "utf8"
+        ),
+        "0.1.0"
+      ),
+    });
+    git(fixture.upstream, ["checkout", "-q", "main"]);
+    for (const path of ["SKILL.md", "scripts/test.sh"]) {
+      const location = join(fixture.fork, path);
+      writeFileSync(
+        location,
+        readFileSync(location, "utf8").replaceAll(fixture.pin, pinned)
+      );
+    }
+    const plan = planForkUpdate({
+      fork: fixture.fork,
+      source: fixture.source,
+      upstream: fixture.upstream,
+    });
+    expect(plan.pinUpdate.from).toBe(pinned);
+    expect(notesReason(plan)).toContain(
+      "`Bundled Simple Changes 0.1.0.` -> `Bundled Simple Changes 0.2.0.`"
+    );
   });
 });
 

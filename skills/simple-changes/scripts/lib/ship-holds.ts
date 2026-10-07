@@ -358,6 +358,9 @@ const listRemoteHoldRefs = (
     .map(([sha, ref]) => ({ ref, sha }));
 };
 
+// Keeps a partial clone from fetching a missing object on demand.
+const NO_LAZY_FETCH = { GIT_NO_LAZY_FETCH: "1" };
+
 // Without fetching, a published hold whose objects are not here is unreadable.
 const missingHoldObjects = (
   root: string,
@@ -366,7 +369,8 @@ const missingHoldObjects = (
   const check = runGitWithInput(
     root,
     ["cat-file", "--batch-check"],
-    `${refs.map((item) => item.sha).join("\n")}\n`
+    `${refs.map((item) => item.sha).join("\n")}\n`,
+    NO_LAZY_FETCH
   );
   const missing = refs.filter((_item, index) =>
     check.stdout.split("\n")[index]?.endsWith("missing")
@@ -475,11 +479,15 @@ const readRemoteHolds = (
   }
   const holds: ShipHold[] = [];
   for (const item of refs) {
-    // A partial clone may fetch the blob lazily, so read it without prompts.
-    const shown = runGitRemote(root, [
-      "show",
-      `${item.sha}:${HOLD_PAYLOAD_PATH}`,
-    ]);
+    // A partial clone may fetch the blob lazily, so read it without prompts;
+    // a caller that fetches nothing on its own also forbids that lazy fetch,
+    // and a payload that is not here leaves the hold unreadable.
+    const shown = runGitRemote(
+      root,
+      ["show", `${item.sha}:${HOLD_PAYLOAD_PATH}`],
+      undefined,
+      fetchMissing ? {} : NO_LAZY_FETCH
+    );
     try {
       holds.push(
         remoteHold(

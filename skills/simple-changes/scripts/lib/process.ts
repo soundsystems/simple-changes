@@ -582,11 +582,13 @@ export const nonInteractiveGitEnvironment = (
 export const runGitRemote = (
   cwd: string,
   args: readonly string[],
-  timeoutMs = REMOTE_GIT_TIMEOUT_MS
+  timeoutMs = REMOTE_GIT_TIMEOUT_MS,
+  environment: Record<string, string> = {}
 ): CommandResult => {
   const env: Record<string, string | undefined> = {
     ...process.env,
     ...nonInteractiveGitEnvironment(cwd),
+    ...environment,
     LC_ALL: "C",
   };
   const result = spawnSync([gitExecutable(), "-C", cwd, ...args], {

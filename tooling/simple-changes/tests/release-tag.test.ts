@@ -1125,6 +1125,59 @@ describe("release-tag holds and the guarded executor", () => {
     expect(remoteTags(fixture.bare)).toEqual({});
   });
 
+  test("a partial clone never fetches a missing hold payload on demand", async () => {
+    const fixture = releaseFixture({ execGuard: true });
+    git(fixture.bare, ["config", "uploadpack.allowFilter", "true"]);
+    git(fixture.bare, ["config", "uploadpack.allowAnySHA1InWant", "true"]);
+    const holdObject = publishRemoteHold(fixture);
+    // The controller is a blob-less partial clone holding the published
+    // hold's commit and tree, but not its hold.json blob.
+    const partial = join(fixture.base, "partial");
+    git(fixture.base, [
+      "clone",
+      "--quiet",
+      "--filter=blob:none",
+      `file://${fixture.bare}`,
+      partial,
+    ]);
+    git(partial, ["config", "user.name", "Simple Changes Tests"]);
+    git(partial, ["config", "user.email", "tests@simple-changes.invalid"]);
+    const holdRef = git(fixture.bare, [
+      "for-each-ref",
+      "--format=%(refname)",
+      "refs/simple-changes/holds/",
+    ]);
+    git(partial, ["fetch", "--quiet", "origin", `${holdRef}:${holdRef}`]);
+    const payload = git(partial, ["rev-parse", `${holdObject}:hold.json`]);
+    const present = (object: string): boolean =>
+      spawnSync(["git", "-C", partial, "cat-file", "-e", object], {
+        env: { ...process.env, GIT_NO_LAZY_FETCH: "1" },
+        stderr: "pipe",
+      }).exitCode === 0;
+    expect(present(holdObject)).toBe(true);
+    expect(present(payload)).toBe(false);
+    const lease = startLoop(partial, CONTROLLER, "ship");
+    const receipt = await runReleaseTag({
+      agentId: CONTROLLER,
+      alreadyLive: false,
+      dryRun: false,
+      productionAuthorized: true,
+      productionDeploy: "ask",
+      repositoryPath: partial,
+      runId: lease.runId,
+      tagAutomationAuthorized: true,
+      ...verified(fixture),
+    });
+    expect(receipt).toMatchObject({
+      reasonCode: "shipment-hold",
+      status: "blocked",
+    });
+    expect(receipt.reason).toContain("unreadable holds on origin");
+    expect(fixture.guardRecords()).toEqual([]);
+    expect(present(payload)).toBe(false);
+    expect(remoteTags(fixture.bare)).toEqual({});
+  });
+
   test("refuses under gitPushAuthorization never before reading published holds", async () => {
     const fixture = releaseFixture({
       execGuard: true,

@@ -909,12 +909,93 @@ const matchesInstalledTree = (
   };
 };
 
+/** Where a release tag's commit is read from, or null when it is unavailable. */
+const releaseTagRef = (
+  upstream: UpstreamHandle,
+  url: string,
+  tag: string
+): string | null => {
+  if (upstream.kind === "checkout") {
+    // A source checkout is read as it is and never fetched into.
+    return `refs/tags/${tag}`;
+  }
+  const local = `refs/upstream-tags/${tag}`;
+  const fetched = run([
+    "git",
+    "-C",
+    upstream.gitDirectory,
+    "fetch",
+    "--quiet",
+    "--no-tags",
+    "--depth",
+    String(UPSTREAM_FETCH_DEPTH),
+    url,
+    `+refs/tags/${tag}:${local}`,
+  ]);
+  return fetched.exitCode === 0 ? local : null;
+};
+
+/**
+ * The release tag `v<version>` as a shortcut to the released commit. The name
+ * proves nothing: the tagged commit must be on the searched branch's
+ * first-parent history and its packaged tree must be byte-identical to the
+ * installed source. A missing or unfetchable tag returns null silently; a tag
+ * that fails a check returns why, and the search runs either way.
+ */
+const verifyReleaseTag = (
+  upstream: UpstreamHandle,
+  url: string,
+  ref: string,
+  version: string,
+  matches: (commit: string, tree: string) => boolean
+): { commit: string; reason: string } | { failure: string } | null => {
+  const tag = `v${version}`;
+  const tagRef = releaseTagRef(upstream, url, tag);
+  const commit = tagRef
+    ? git(
+        upstream.gitDirectory,
+        ["rev-parse", "--verify", "--quiet", `${tagRef}^{commit}`],
+        true
+      ).trim()
+    : "";
+  if (!commit) {
+    return null;
+  }
+  const onFirstParent = git(
+    upstream.gitDirectory,
+    ["rev-list", "--first-parent", ref],
+    true
+  )
+    .split("\n")
+    .includes(commit);
+  if (!onFirstParent) {
+    return {
+      failure: `tag ${tag} (${shortSha(commit)}) is not on the first-parent history of the searched branch`,
+    };
+  }
+  const tree = git(
+    upstream.gitDirectory,
+    ["rev-parse", "--verify", "--quiet", `${commit}:${UPSTREAM_SKILL_PATH}`],
+    true
+  ).trim();
+  if (!(tree && matches(commit, tree))) {
+    return {
+      failure: `the packaged tree at tag ${tag} (${shortSha(commit)}) is not byte-identical to the installed source`,
+    };
+  }
+  return {
+    commit,
+    reason: `byte-identical tree at tag ${tag} (${shortSha(commit)})`,
+  };
+};
+
 /**
  * Find the upstream commit whose packaged skill is byte-identical to the
- * installed source. Search the fetched default branch for the release entry,
- * then prove tree equality against the entry and every commit after it before
- * the next release entry, preferring the branch's own first-parent history so
- * the pin stays reachable from it; a provenance pin is never bumped to a guess.
+ * installed source. Try the release tag first; otherwise search the fetched
+ * default branch for the release entry, then prove tree equality against the
+ * entry and every commit after it before the next release entry, preferring
+ * the branch's own first-parent history so the pin stays reachable from it; a
+ * provenance pin is never bumped to a guess.
  */
 const locateSourceCommit = (
   upstream: UpstreamHandle,
@@ -937,6 +1018,7 @@ const locateSourceCommit = (
       upstream.gitDirectory,
       "fetch",
       "--quiet",
+      "--no-tags",
       "--depth",
       String(UPSTREAM_FETCH_DEPTH),
       url,
@@ -952,6 +1034,41 @@ const locateSourceCommit = (
   }
   const ref =
     upstream.kind === "cache" ? `refs/remotes/upstream/${branch}` : branch;
+  const { matches, refused } = matchesInstalledTree(upstream, source);
+  const tagged = verifyReleaseTag(upstream, url, ref, version, matches);
+  if (tagged && "commit" in tagged) {
+    return { commit: tagged.commit, reason: tagged.reason, verified: true };
+  }
+  const searched = searchSourceCommit(upstream, {
+    branch,
+    matches,
+    ref,
+    refused,
+    version,
+  });
+  return tagged
+    ? {
+        ...searched,
+        reason: `${searched.reason} (${tagged.failure}, so the release history was searched instead)`,
+      }
+    : searched;
+};
+
+/**
+ * Search the branch for the release entry and its window, as described on
+ * locateSourceCommit.
+ */
+const searchSourceCommit = (
+  upstream: UpstreamHandle,
+  search: {
+    branch: string;
+    matches: (commit: string, tree: string) => boolean;
+    ref: string;
+    refused: string[];
+    version: string;
+  }
+): { commit: string | null; verified: boolean; reason: string } => {
+  const { branch, matches, ref, refused, version } = search;
   const entries = git(
     upstream.gitDirectory,
     [
@@ -973,7 +1090,6 @@ const locateSourceCommit = (
       verified: false,
     };
   }
-  const { matches, refused } = matchesInstalledTree(upstream, source);
   const at = (commit: string, entry: string): string =>
     commit === entry
       ? `the ${version} release entry ${shortSha(entry)}`

@@ -170,6 +170,19 @@ commit on the default branch's first-parent history, such as the merge that
 brought the release in, over one only on a merged side branch. When no commit
 in that range matches, the pin stays and the plan says why.
 
+Before that search, the planner tries the release tag `v<version>` (the
+version read from the installed `CHANGELOG.md`) as a shortcut. With
+`--upstream`, it reads the checkout's own tag and never fetches into it;
+otherwise it fetches only that tag into the cache's private
+`refs/upstream-tags/` namespace at the branch fetch's depth, and both cache
+fetches pass `--no-tags`, so the cache never collects other tags. The tag's
+name proves nothing: its commit must be on the searched branch's first-parent
+history and its packaged tree must pass the same byte-identity proof, and the
+reason then reads `byte-identical tree at tag v<version> (<commit>)`. A
+missing or unfetchable tag falls back to the search silently; a tag that fails
+either check falls back too, and the reason says why it did not verify. The
+pin still moves only to a verified commit.
+
 ## Guidance versions
 
 The installed source's `CURRENT_GUIDANCE_VERSION` is the value forks pin in

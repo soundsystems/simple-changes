@@ -2711,3 +2711,151 @@ describe("update-local-forks", () => {
     expect(skill).toContain("change by hand");
   });
 });
+
+describe("update-local-forks release-tag shortcut", () => {
+  test("pins the tagged commit when its tree is byte-identical", () => {
+    const fixture = createFixture();
+    const { merge, released } = releaseThroughSideBranch(fixture);
+    git(fixture.upstream, [
+      "tag",
+      "-a",
+      "v0.3.0",
+      "-m",
+      "Simple Changes 0.3.0",
+      merge,
+    ]);
+    const plan = planForkUpdate({
+      fork: fixture.fork,
+      source: released,
+      upstream: fixture.upstream,
+    });
+    expect(plan.source).toMatchObject({ commit: merge, commitVerified: true });
+    expect(plan.pinUpdate).toEqual({
+      from: fixture.pin,
+      reason: `byte-identical tree at tag v0.3.0 (${merge.slice(0, 12)})`,
+      to: merge,
+    });
+  });
+
+  test("accepts a lightweight tag only on the same proof", () => {
+    const fixture = createFixture();
+    const { merge, released } = releaseThroughSideBranch(fixture);
+    git(fixture.upstream, ["tag", "v0.3.0", merge]);
+    const plan = planForkUpdate({
+      fork: fixture.fork,
+      source: released,
+      upstream: fixture.upstream,
+    });
+    expect(plan.pinUpdate.reason).toBe(
+      `byte-identical tree at tag v0.3.0 (${merge.slice(0, 12)})`
+    );
+  });
+
+  test("falls back to the search when the tag names another tree", () => {
+    const fixture = createFixture();
+    const { entry, merge, released } = releaseThroughSideBranch(fixture);
+    // main's own commit before the merge is first-parent history but still
+    // carries the 0.2.0 tree.
+    const before = git(fixture.upstream, ["rev-parse", `${merge}^1`]);
+    git(fixture.upstream, ["tag", "-a", "v0.3.0", "-m", "Wrong tree", before]);
+    const plan = planForkUpdate({
+      fork: fixture.fork,
+      source: released,
+      upstream: fixture.upstream,
+    });
+    expect(plan.source).toMatchObject({ commit: merge, commitVerified: true });
+    expect(plan.pinUpdate.to).toBe(merge);
+    expect(plan.pinUpdate.reason).toBe(
+      `byte-identical tree at ${merge.slice(0, 12)}, after the 0.3.0 release entry ${entry.slice(0, 12)} on main (the packaged tree at tag v0.3.0 (${before.slice(0, 12)}) is not byte-identical to the installed source, so the release history was searched instead)`
+    );
+  });
+
+  test("falls back to the search when the tag is off the branch's first-parent history", () => {
+    const fixture = createFixture();
+    const { entry, merge, released, sideTip } =
+      releaseThroughSideBranch(fixture);
+    // The side-branch tip carries the released tree but only reaches main
+    // through the merge.
+    git(fixture.upstream, ["tag", "-a", "v0.3.0", "-m", "Side tip", sideTip]);
+    const plan = planForkUpdate({
+      fork: fixture.fork,
+      source: released,
+      upstream: fixture.upstream,
+    });
+    expect(plan.pinUpdate.to).toBe(merge);
+    expect(plan.pinUpdate.reason).toBe(
+      `byte-identical tree at ${merge.slice(0, 12)}, after the 0.3.0 release entry ${entry.slice(0, 12)} on main (tag v0.3.0 (${sideTip.slice(0, 12)}) is not on the first-parent history of the searched branch, so the release history was searched instead)`
+    );
+  });
+
+  test("never pins an unverified tagged commit when the search finds nothing", () => {
+    const fixture = createFixture();
+    const { merge, released } = releaseThroughSideBranch(fixture);
+    git(fixture.upstream, ["tag", "-a", "v0.3.0", "-m", "Release", merge]);
+    writeFileSync(
+      join(released, "scripts/lib/core.ts"),
+      "export const core = 99;\n"
+    );
+    const plan = planForkUpdate({
+      fork: fixture.fork,
+      source: released,
+      upstream: fixture.upstream,
+    });
+    expect(plan.source.commitVerified).toBe(false);
+    expect(plan.pinUpdate.to).toBeNull();
+    expect(plan.pinUpdate.reason).toContain(
+      "the pin will not be bumped. (the packaged tree at tag v0.3.0"
+    );
+  });
+
+  test("fetches only the release tag into the cache, never other tags", () => {
+    const fixture = createFixture();
+    const { merge, released } = releaseThroughSideBranch(fixture);
+    git(fixture.upstream, ["tag", "-a", "v0.3.0", "-m", "Release", merge]);
+    git(fixture.upstream, [
+      "tag",
+      "-a",
+      "v0.2.0",
+      "-m",
+      "Older",
+      fixture.release,
+    ]);
+    git(fixture.upstream, ["tag", "unrelated", fixture.pin]);
+    const cache = join(fixture.base, "cache", "upstream.git");
+    const plan = planForkUpdate({
+      cache,
+      fork: fixture.fork,
+      source: released,
+      url: fixture.upstream,
+    });
+    expect(plan.pinUpdate).toMatchObject({
+      reason: `byte-identical tree at tag v0.3.0 (${merge.slice(0, 12)})`,
+      to: merge,
+    });
+    expect(
+      git(cache, ["for-each-ref", "--format=%(refname)", "refs/tags"])
+    ).toBe("");
+    expect(
+      git(cache, ["for-each-ref", "--format=%(refname)", "refs/upstream-tags"])
+    ).toBe("refs/upstream-tags/v0.3.0");
+  });
+
+  test("falls back silently when the cache cannot fetch the tag", () => {
+    const fixture = createFixture();
+    const { entry, merge, released } = releaseThroughSideBranch(fixture);
+    const cache = join(fixture.base, "cache", "upstream.git");
+    const plan = planForkUpdate({
+      cache,
+      fork: fixture.fork,
+      source: released,
+      url: fixture.upstream,
+    });
+    expect(plan.pinUpdate).toMatchObject({
+      reason: `byte-identical tree at ${merge.slice(0, 12)}, after the 0.3.0 release entry ${entry.slice(0, 12)} on main`,
+      to: merge,
+    });
+    expect(
+      git(cache, ["for-each-ref", "--format=%(refname)", "refs/tags"])
+    ).toBe("");
+  });
+});

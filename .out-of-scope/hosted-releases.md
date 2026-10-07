@@ -15,4 +15,4 @@
 
 ## Decided in
 
-The release-tags design for Simple Changes 0.26.0 and Simple Changelogs 0.2.0 (section 8, 2026-10-07).
+The release-tags design (section 8, 2026-10-07), shipped in Simple Changes 0.27.0 and Simple Changelogs 0.25.0.

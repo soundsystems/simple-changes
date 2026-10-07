@@ -250,6 +250,11 @@ release gate decides when it may be published; `release-tag` creates,
 pushes, and verifies it. Simple Changes never reads the tag setting and never
 chooses a name.
 
+Simple Changes 0.27.0 and later understand request v3 and receipt v4.
+Controllers from 0.13.0 to 0.26 ignore those versions and negotiate exactly
+as before, so Simple Changelogs 0.25.0 and later may advertise them; a
+release is tagged only when the controller running it is 0.27.0 or later.
+
 - **Request v3** is request v2 whose `supportedReceiptVersions` may include 4.
 - **Receipt v4** is receipt v3 whose `release` record adds the required
   `tag`: null, or `{ "name", "message" }`. The schema limits `name` to Git's

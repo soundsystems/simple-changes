@@ -1422,7 +1422,8 @@ describe("release tags (request v3, receipt v4)", () => {
       );
       return [result.requestVersion, result.receiptVersion];
     };
-    // Simple Changes 0.26.0 against each Simple Changelogs peer.
+    // Simple Changes 0.27.0 against each Simple Changelogs 0.25.0 peer, then
+    // against Simple Changelogs 0.1.0 and its forks at guidance 24.
     expect(negotiated([1, 2, 3], [1, 2, 3, 4])).toEqual([3, 4]);
     expect(negotiated([1, 3], [1, 2, 4])).toEqual([3, 4]);
     expect(negotiated([1], [2])).toEqual([1, 2]);

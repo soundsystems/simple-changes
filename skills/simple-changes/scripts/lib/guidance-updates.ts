@@ -755,7 +755,7 @@ const GUIDANCE_UPDATES: GuidanceUpdateDefinition[] = [
       {
         kind: "integration",
         summary:
-          "Changelog negotiation adds request v3 and receipt v4, whose release record names the release's Git tag, and now pairs each request version only with receipts it may advertise, so request v1 never meets receipt v3; Simple Changelogs before 0.2.0 negotiates exactly as before and names no tag.",
+          "Changelog negotiation adds request v3 and receipt v4, whose release record names the release's Git tag, and now pairs each request version only with receipts it may advertise, so request v1 never meets receipt v3; Simple Changelogs before 0.25.0 negotiates exactly as before and names no tag.",
         version: 27,
       },
       {

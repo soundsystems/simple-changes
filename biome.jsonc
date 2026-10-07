@@ -6,7 +6,11 @@
       "!**/node_modules",
       "!**/coverage",
       "!**/dist",
-      "!.claude/worktrees"
+      "!.claude/worktrees",
+      // Vendored byte-identically by Simple Changelogs, so shipped minified:
+      // JSON.stringify(JSON.parse(text)) + "\n".
+      "!skills/simple-changes/evals/schemas/changelog-request.schema.json",
+      "!skills/simple-changes/evals/schemas/changelog-receipt.schema.json"
     ]
   }
 }

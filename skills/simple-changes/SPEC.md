@@ -53,7 +53,9 @@
 - For public releases, negotiated changelog protocol evidence (shared
   request/receipt versions plus advisory `schemaDigestStatus`), phased
   classification/preparation/verification receipts, and a composite delivery
-  receipt binding version identity to the deployed revision.
+  receipt binding version identity to the deployed revision; when a receipt v4
+  names a release tag, `release-tag-receipt` records for the pre-merge dry
+  run, the publication, and final verification.
 - For Emergency Ship, a run-only urgency classification, revision-bound
   incomplete-state ledger, known rollback capability for break-glass, and a
   conditional final deployment decision based on canonical revision or proven
@@ -379,6 +381,11 @@
   Provider identity prefers the machine-readable `changelog-provider.json`
   marker; marker-less discovery is reported as `providerEvidence: "inferred"`,
   never presented as a declaration.
+- A release tag is published only by `release-tag`: the name the verified
+  receipt carries, on its finalized target, after the release gate allows
+  publication and tag automation is reviewed, to the run's single-URL target
+  remote, read back before any local tag ref exists. It never moves, replaces,
+  or deletes a tag.
 - Public-version preferences remain exclusively owned by Simple Changelogs.
   Version direction is distinct from a blocker, approvals are digest- and
   revision-bound, and final deployment requires the verified reconciliation
@@ -435,6 +442,9 @@
   (effective policy, a matching user decision, or fresh provider evidence),
   treating its printed decision as authority, or routing on its exit code
   instead of its `action`.
+- Creating, pushing, moving, or deleting a Git tag outside `release-tag`,
+  pushing a tag to any destination but the run's single-URL target remote, or
+  tagging from Sync or a delegated author.
 - Applying any migration before review, applying to an unbound target, or
   treating an automatic tier as authority for a hard-excluded migration.
 - Directly authoring changelogs, release notes, version fields, or release

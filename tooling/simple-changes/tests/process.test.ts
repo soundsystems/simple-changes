@@ -435,3 +435,45 @@ describe("Registration failure settlement", () => {
     );
   });
 });
+
+describe("guarded process input", () => {
+  test("writes in-memory stdin to the child and still reports its exit code", async () => {
+    const echoed = await runInProcessGroup(
+      process.execPath,
+      ["-e", "process.stdout.write(await Bun.stdin.text())"],
+      tmpdir(),
+      () => undefined,
+      {
+        environment: {},
+        stdin: "object abc\n\nmessage\n",
+        streamOutputToStderr: false,
+      }
+    );
+    expect(echoed).toMatchObject({
+      exitCode: 0,
+      stdout: "object abc\n\nmessage\n",
+    });
+    // A child that never reads its input exits on its own terms.
+    const ignored = await runInProcessGroup(
+      process.execPath,
+      ["-e", "process.exit(3)"],
+      tmpdir(),
+      () => undefined,
+      {
+        environment: {},
+        stdin: "x".repeat(1_048_576),
+        streamOutputToStderr: false,
+      }
+    );
+    expect(ignored.exitCode).toBe(3);
+    // Without input, stdin stays closed to the child.
+    const closed = await runInProcessGroup(
+      process.execPath,
+      ["-e", "process.stdout.write(String((await Bun.stdin.text()).length))"],
+      tmpdir(),
+      () => undefined,
+      { environment: {}, streamOutputToStderr: false }
+    );
+    expect(closed.stdout).toBe("0");
+  });
+});

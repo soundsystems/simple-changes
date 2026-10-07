@@ -16,6 +16,13 @@ saved intent to the current harness and the verified repository remote.
 - `never`: do not push and do not request or write push permission. Stop with
   local work ready.
 
+`release-tag` pushes one release tag from inside its own command, so it is a
+push boundary too: under `ask`, get the same approval as for a branch push
+before applying it; a `configure-harness` rule for `git push` does not match
+it, so the harness may still prompt for the `release-tag` command; and under
+`never` it refuses before any write and prints the exact commands for the
+user.
+
 Never translate `configure-harness` into blanket shell access, permission for
 every remote, credential storage, or authority to force-push. Resolve the exact
 remote name and URL from current Git configuration first. Repository ownership,

@@ -287,9 +287,14 @@ export const gitExecutable = (): string => {
   return cachedGitExecutable;
 };
 
-interface ProcessGroupRunOptions {
+export interface ProcessGroupRunOptions {
   /** Extra environment for the child, on top of this process's own. */
   environment: Record<string, string>;
+  /**
+   * In-memory input written to the child's stdin, which is then closed.
+   * Without it the child's stdin is ignored.
+   */
+  stdin?: string;
   /** Stream the child's output to this process's stderr instead of capturing it. */
   streamOutputToStderr: boolean;
 }
@@ -336,10 +341,19 @@ export const runInProcessGroup = (
         ...process.env,
         ...options.environment,
       },
-      stdio: options.streamOutputToStderr
-        ? ["ignore", 2, 2]
-        : ["ignore", "pipe", "pipe"],
+      stdio: [
+        options.stdin === undefined ? "ignore" : "pipe",
+        ...(options.streamOutputToStderr
+          ? ([2, 2] as const)
+          : (["pipe", "pipe"] as const)),
+      ],
     });
+    if (options.stdin !== undefined) {
+      // A child that exits without reading its input must not crash this
+      // process with EPIPE; its exit code still decides the result.
+      child.stdin?.on("error", () => undefined);
+      child.stdin?.end(options.stdin);
+    }
     let stdout = "";
     let stderr = "";
     child.stdout?.setEncoding("utf8");
@@ -403,12 +417,23 @@ export const runCommandInProcessGroup = async (
   command: string,
   args: readonly string[],
   cwd: string,
-  onSpawn: (process: CommandProcess) => void
+  onSpawn: (process: CommandProcess) => void,
+  input?: { environment?: Record<string, string>; stdin?: string }
 ): Promise<CommandResult> => {
   const result = await runInProcessGroup(command, args, cwd, onSpawn, {
-    environment: { LC_ALL: "C" },
+    environment: { ...input?.environment, LC_ALL: "C" },
+    ...(input?.stdin === undefined ? {} : { stdin: input.stdin }),
     streamOutputToStderr: false,
   });
+  return assertCommandSucceeded(command, args, result);
+};
+
+/** The result of a guarded command, or the error a nonzero exit raises. */
+export const assertCommandSucceeded = (
+  command: string,
+  args: readonly string[],
+  result: CommandResult
+): CommandResult => {
   if (result.exitCode !== 0) {
     const detail = redactSecrets(result.stderr.trim() || result.stdout.trim());
     throw new SimpleChangesError(
@@ -535,6 +560,25 @@ const REMOTE_GIT_TIMEOUT_MS = 30_000;
  * batch mode unless the user configured their own SSH command, and the
  * command is killed after a bounded time. Failures are returned, not thrown.
  */
+/**
+ * The environment that keeps a network Git command from waiting for a person:
+ * no terminal credential prompts, and SSH in batch mode unless the user
+ * configured their own SSH command.
+ */
+export const nonInteractiveGitEnvironment = (
+  cwd: string
+): Record<string, string> => {
+  const customSsh =
+    process.env.GIT_SSH_COMMAND ||
+    process.env.GIT_SSH ||
+    runGit(cwd, ["config", "--get", "core.sshCommand"], true).stdout.trim();
+  return {
+    GCM_INTERACTIVE: "never",
+    GIT_TERMINAL_PROMPT: "0",
+    ...(customSsh ? {} : { GIT_SSH_COMMAND: "ssh -o BatchMode=yes" }),
+  };
+};
+
 export const runGitRemote = (
   cwd: string,
   args: readonly string[],
@@ -542,17 +586,9 @@ export const runGitRemote = (
 ): CommandResult => {
   const env: Record<string, string | undefined> = {
     ...process.env,
-    GCM_INTERACTIVE: "never",
-    GIT_TERMINAL_PROMPT: "0",
+    ...nonInteractiveGitEnvironment(cwd),
     LC_ALL: "C",
   };
-  const customSsh =
-    process.env.GIT_SSH_COMMAND ||
-    process.env.GIT_SSH ||
-    runGit(cwd, ["config", "--get", "core.sshCommand"], true).stdout.trim();
-  if (!customSsh) {
-    env.GIT_SSH_COMMAND = "ssh -o BatchMode=yes";
-  }
   const result = spawnSync([gitExecutable(), "-C", cwd, ...args], {
     cwd,
     env,

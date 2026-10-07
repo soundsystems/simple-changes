@@ -105,6 +105,11 @@ provider evidence. For a Web production deployment, the run report also binds
 that receipt to the verified product release version and release-reconciliation
 evidence from the same intended revision.
 
+When the verified receipt names a release tag, `release-tag` must finish
+`created` or `already-present` before the deployment call; a blocked tag stops
+the deployment. See
+[release tags](changelog-coordination.md#release-tags).
+
 For Ship and resumed Ship loops, resolve the canonical remote target branch
 (normally `main`) again after the final merge. Its exact head is the deployment
 receipt's intended revision. Do not copy the revision from a deployment record
@@ -122,7 +127,11 @@ Verification requires all of:
 4. the deployment reached its provider-specific ready state;
 5. every configured canonical endpoint is observed exactly once and resolves to
    that deployment;
-6. focused smoke checks exercise the changed user journey.
+6. focused smoke checks exercise the changed user journey;
+7. when the verified receipt names a release tag, `release-tag --dry-run`
+   reports `already-present`. Repositories with no deployment, such as skill
+   repositories and libraries consumed from `main`, still run this check; for
+   them it is the release's final verification.
 
 After observation, build the composite `release-delivery-receipt` with
 `simple-changes release-delivery --changelog-receipt <verified.json>

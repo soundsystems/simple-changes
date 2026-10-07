@@ -362,6 +362,10 @@ simple-changes release-gate --request FILE --receipt FILE [--prior-receipt FILE]
   [--version-authorized] [--json]
 simple-changes release-delivery --changelog-receipt FILE --provider-receipt FILE
   [--request FILE] [--json]
+simple-changes release-tag --run-id ID --agent-id ID --request FILE
+  --receipt FILE [--prior-receipt FILE] --production ask|allow|deny
+  [--production-authorized] [--already-live] [--tag-automation-authorized]
+  [--dry-run] [--json] [--repo PATH]
 simple-changes proposal-signatures --agent NAME --role authored|reviewed|merged
   [--base REF --head REF] [--changelog-receipt FILE] [--json] [--repo PATH]
 simple-changes proposal audit --file FILE [--template FILE] [--json]
@@ -374,7 +378,8 @@ simple-changes help
 `KIND` is one of `repo-policy`, `changelog-capabilities`, `changelog-request`,
 `changelog-receipt`, `emergency-shipping`, `initialization`, `inventory`,
 `change-plan`, `run-state`, `permission-bundle`, `provider-receipt`,
-`release-delivery-receipt`, `remote-branch-reconciliation`,
+`release-delivery-receipt`, `release-tag-receipt`,
+`remote-branch-reconciliation`,
 `remote-branch-ancestry`, `remote-branch-supersession`,
 `release-consistency`, `release-notes`, `proposal-audit`,
 `ready-work-receipt`, `ship-holds`, `loop-lease`, `loop-close-equivalent`,

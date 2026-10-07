@@ -26,6 +26,7 @@ export const SCHEMA_NAMES = [
   "run-state",
   "provider-receipt",
   "release-delivery-receipt",
+  "release-tag-receipt",
   "post-cleanup-recovery",
   "shipment-outcome",
   "preserved-source-override",

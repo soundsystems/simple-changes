@@ -7,6 +7,7 @@ Contents:
 - Use a closed three-phase transaction
 - Require a handoff receipt
 - Shared version lines
+- Release tags
 - Operator-history entry handoff
 - Web production release gate
 
@@ -39,7 +40,10 @@ Keep these states distinct:
 
 Availability is not compatibility. Before delegation, obtain the provider's
 read-only `changelog-capabilities` record and negotiate the highest shared
-request and receipt versions. Compatibility is decided by that version overlap;
+request version, then the highest shared receipt version that request may
+advertise: request v1 allows receipts 1 and 2, request v2 adds 3, and request
+v3 adds 4, so request v1 never pairs with receipt v3 or v4. Compatibility is
+decided by that version overlap;
 every request and receipt is then validated against the packaged schema at the
 moment it is used, which is what actually enforces the contract. A missing
 helper or unsupported version blocks only the release boundary; safe non-release
@@ -238,6 +242,123 @@ Trains with no receipt yet are reported as `missingTrains`, not refused. That no
 number outside one release set is the changelog workflow's `verify`
 invariant; Simple Changes cannot see other trains' released sections.
 
+## Release tags
+
+Every public release gets an annotated Git tag on its exact released commit
+unless the repository opts out. The changelog workflow names the tag; the
+release gate decides when it may be published; `release-tag` creates,
+pushes, and verifies it. Simple Changes never reads the tag setting and never
+chooses a name.
+
+- **Request v3** is request v2 whose `supportedReceiptVersions` may include 4.
+- **Receipt v4** is receipt v3 whose `release` record adds the required
+  `tag`: null, or `{ "name", "message" }`. The schema limits `name` to Git's
+  ref characters and `message` to one line of 1 to 200 characters.
+  `validate-changelog-transaction` also refuses a name that Git's
+  `check-ref-format` would (`..`, `@{`, `//`, a component starting with `.`
+  or ending in `.lock`, a leading or trailing `/`, or a trailing `.`), one
+  that starts with `-`, and one not bound to the version: the name must equal
+  `release.version` or end with it after a character other than a digit or
+  `.`, so `v11.2.0` never passes for `1.2.0`.
+- When the prior receipt is a v4 release, every later receipt that carries
+  the release names exactly the same tag, or no tag when the prior named
+  none; a dropped, added, or changed tag fails closed, including a v3 receipt
+  after a tagged v4 prepare.
+- `validate-changelog-release-set` accepts v3 and v4 receipts together and
+  refuses two trains that name one tag.
+
+The tag is the verified receipt's
+`revisionLineage.finalizedTargetRevision`, never a new field. Only `prepared`
+and `verified` receipts drive tag work; an older receipt, a null tag, or the
+`none` boundary is `not-applicable` and the release continues under the
+existing gate.
+
+Run it at three points, with the same request, receipt, prior receipt, and
+gate flags as `release-gate`:
+
+```sh
+simple-changes release-tag --run-id <id> --agent-id <you> \
+  --request <request.json> --receipt <receipt.json> \
+  --prior-receipt <prior.json> --production ask|allow|deny \
+  [--production-authorized] [--already-live] \
+  [--tag-automation-authorized] [--dry-run] --json
+```
+
+1. **Before the release merge**, `--dry-run` with the `prepared` receipt.
+   `blocked` stops the merge: `tag-exists-elsewhere` there means the version
+   is taken, so reclassify.
+2. **After `verified`**, when `release-gate` answers `deploy` or
+   `verify-existing-production`, run it without `--dry-run`. When the receipt
+   names a tag it must finish `created` or `already-present` before any
+   deployment call. For a release-bearing merge, such as a skill repository,
+   that is right after the merge under the merge's own approval; for Web,
+   package, and store releases it follows production approval.
+3. **Final verification**, `--dry-run` with the `verified` receipt, must
+   report `already-present`. Repositories with no deployment still run it.
+
+Resume re-runs it with the saved files; it is idempotent.
+
+Only the active run's own controller may run it: it needs the run and agent
+IDs of an active controller lease, so Sync and delegated authors never tag.
+Apply re-runs the release gate with the same inputs and proceeds only on
+`deploy` or `verify-existing-production`. Before applying, list every CI
+workflow or job a push of this exact tag name can start, with its effects;
+pass `--tag-automation-authorized` only when every effect is authorized,
+including when no CI runs on tags. The dry run lists the CI configuration
+files it sees at the target as a reminder, and decides nothing from them. A
+blocking `ship`, `deploy`, or `migrations` hold stops it unless waived through
+`hold waive`, and effective `gitPushAuthorization: "never"` refuses and prints
+the two exact commands for the user.
+
+It pushes only to the run's target remote, and only when that remote has
+exactly one URL, the same for fetch and push, matching the URL the run is
+bound to. It checks remote tags with `git ls-remote` and local tags, treating
+an exact name, a parent name (`release` blocks `release/1.2.0`), or a child
+name (`v1.2.0/build45` blocks `v1.2.0`) as taken. Apply then confirms the
+target is still current: contained in the refreshed branch for a
+release-bearing merge or a release already live, or equal to the fresh branch
+head for any other deployment. It builds the unsigned annotated tag with `git
+mktag`, with no ref; pushes that one object with `git push --no-follow-tags
+<remote> <object>:refs/tags/<name>`; reads it back; and only then installs the
+local ref, create-only. Every write runs through the guarded executor, so the
+repository's `execGuard` sees each exact command. No local tag exists until
+the remote has it, so a failed or interrupted run leaves nothing a later
+follow-tags push could publish. It never moves, replaces, deletes, or
+force-pushes a tag; a tag already on the target, even a lightweight one or one
+with another message, is reported `already-present` and left alone.
+
+Its `release-tag-receipt` reports `ready`, `created`, `already-present`, or
+`not-applicable` with exit 0, and `blocked` with exit 5. Route on these closed
+pairs:
+
+| `reasonCode` | `requiredAction` | Meaning |
+| --- | --- | --- |
+| `release-not-crossed` | `await-release-authority` | The gate does not allow publication yet |
+| `tag-automation-unreviewed` | `review-tag-automation` | Inventory what a tag push starts first |
+| `shipment-hold` | `resolve-hold` | A ship, deploy, or migrations hold blocks it |
+| `remote-not-single-url` | `push-manually` | The remote is not one bound URL |
+| `push-not-authorized` | `push-manually` | Policy never lets agents push |
+| `tag-exists-elsewhere` | `resolve-tag-conflict` | The name, or a parent or child name, is taken |
+| `local-tag-conflict` | `resolve-tag-conflict` | Only a local tag holds the name |
+| `target-not-contained` | `refresh-and-reverify` | The branch no longer contains the target |
+| `target-moved` | `refresh-and-reclassify` | The deployment must use a newer head |
+| `tag-create-failed` | `retry-after-fix` | The tag object could not be built |
+| `push-rejected` | `retry-after-fix` | The remote refused the push |
+| `readback-failed` | `retry-after-fix` | The remote does not show the pushed tag |
+
+A blocked tag stops that release's deployment. Before the merge,
+`tag-exists-elsewhere` means the version is taken; after it, someone tagged in
+between, so stop and ask. A rejected push is never retried another way:
+report Git's own message, then the user pushes with sufficient rights,
+adjusts your Git host's tag protection or tag rules, or sets the repository
+to stop tagging. Where the host supports it, protect the release tag pattern
+(for example `v*`). A deployment that fails after the push keeps the tag: an
+exact retry reuses the version, and new code gets a new version and tag. A
+tag found wrong later is never deleted or moved automatically; that needs the
+user's explicit authority, and a new version is preferred. Only the run's own
+remote is pushed; when consumers install from a mirror, confirm the tag
+reached it too. Hosted releases are out of scope.
+
 ## Operator-history entry handoff
 
 The `simple-changelogs-cms` distribution owns a version-less operator history
@@ -293,14 +414,18 @@ After the final feature merge and before production:
    Its checks and evidence must identify the inspected target and account for
    any item that remains pending as absent from that target or assigned to a
    different unshipped train.
-4. Package and merge the release reconciliation. Refresh the canonical target
-   again and request final read-only verification. Require `verified`,
+4. Before the merge, run `release-tag --dry-run` with the prepared receipt
+   (see [release tags](#release-tags)); `blocked` stops the merge. Package and
+   merge the release reconciliation. Refresh the canonical target again and
+   request final read-only verification. Require `verified`,
    `targetContainedUnreleased: "integrated"`, the same decision digest and
    version, and proof that the finalized target contains the reconciliation
    head.
-5. Deploy only that verified finalized target and bind the verified changelog
-   receipt to the provider receipt with `simple-changes release-delivery`,
-   which composes the `release-delivery-receipt` from both sources.
+5. When the verified receipt names a tag, `release-tag` must finish `created`
+   or `already-present` first. Deploy only that verified finalized target and
+   bind the verified changelog receipt to the provider receipt with
+   `simple-changes release-delivery`, which composes the
+   `release-delivery-receipt` from both sources.
 
 Decide each boundary with `simple-changes release-gate --request <file>
 --receipt <file> [--prior-receipt <file>] --production ask|allow|deny [--already-live]

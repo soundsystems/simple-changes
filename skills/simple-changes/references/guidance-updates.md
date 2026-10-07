@@ -89,7 +89,9 @@ confirmed repository policy changes the bytes its receipt is bound to, and those
 settings run with reduced authority until setup confirms them again. When the
 policy is unconfirmed and its receipt names the exact bytes the edit would
 produce, or cannot be read, the command refuses and writes nothing rather than
-risk re-enabling those settings; run setup to confirm the policy instead.
+risk re-enabling those settings; run setup to confirm the policy instead. The
+acknowledgement and setup save under the same short repository lock; if either
+reports that state is busy, retry it after the other finishes.
 
 If the user selects `configure-harness` or says “auto push,” give the exact
 scoped-push explanation and confirmation from

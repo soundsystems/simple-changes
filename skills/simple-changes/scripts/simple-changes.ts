@@ -65,6 +65,7 @@ import {
   turnEndReminder,
   verifyLoop,
   withLoopMutationLease,
+  withLoopStateLock,
 } from "./lib/loop-lease.ts";
 import { auditMarkdown } from "./lib/markdown.ts";
 import {
@@ -1570,20 +1571,31 @@ const runSetup = async (options: CliOptions): Promise<void> => {
     const activeLoop = context.primaryCheckout
       ? readLoopLease(options.repo)
       : null;
-    const writeResult = activeLoop
-      ? (
-          await withLoopMutationLease(
-            options.repo,
-            activeLoop.runId,
-            requireCliOption(
-              options.agentId,
-              "--agent-id while an integration loop is active"
-            ),
-            "setup write",
-            applyWrites
-          )
-        ).result
-      : applyWrites();
+    let writeResult: ReturnType<typeof applyWrites>;
+    if (activeLoop) {
+      writeResult = (
+        await withLoopMutationLease(
+          options.repo,
+          activeLoop.runId,
+          requireCliOption(
+            options.agentId,
+            "--agent-id while an integration loop is active"
+          ),
+          "setup write",
+          applyWrites
+        )
+      ).result;
+    } else if (context.primaryCheckout) {
+      // The loop's state lock, which the mutation lease also holds: a policy
+      // and its trust receipt never land inside an acknowledgement's checks.
+      writeResult = withLoopStateLock(
+        locateRepository(context.primaryCheckout).repository.commonGitDirectory,
+        "setup write",
+        applyWrites
+      );
+    } else {
+      writeResult = applyWrites();
+    }
     const result = {
       changelogCoordination: context.changelog,
       changelogInstall: selection.changelogInstall,
@@ -1987,7 +1999,13 @@ const runAcknowledgeUpdate = async (options: CliOptions): Promise<void> => {
       applyWrite
     );
   } else {
-    applyWrite();
+    // Setup saves a policy and its receipt under this same lock, so neither
+    // can land between this acknowledgement's checks and its write.
+    withLoopStateLock(
+      inventory.repository.commonGitDirectory,
+      "guidance update acknowledgement",
+      applyWrite
+    );
   }
   const result = {
     currentVersion: CURRENT_GUIDANCE_VERSION,

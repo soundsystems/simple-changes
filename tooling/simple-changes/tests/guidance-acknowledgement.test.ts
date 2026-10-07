@@ -20,6 +20,7 @@ import { fileURLToPath } from "node:url";
 import { spawnSync } from "bun";
 import { CURRENT_GUIDANCE_VERSION } from "../../../skills/simple-changes/scripts/lib/guidance-updates.ts";
 import { captureInventory } from "../../../skills/simple-changes/scripts/lib/inventory.ts";
+import { withLoopStateLock } from "../../../skills/simple-changes/scripts/lib/loop-lease.ts";
 import {
   acknowledgementCouldRestoreTrust,
   withAcknowledgedGuidanceText,
@@ -517,6 +518,82 @@ describe("acknowledge-update records guidance in the saved policy only", () => {
       removal.mockRestore();
     }
     expect(existsSync(path)).toBe(false);
+  });
+
+  test("acknowledge-update and setup write only under the repository state lock", () => {
+    const fixture = policyFixture(ELEVATED_POLICY);
+    const [acknowledged, confirmed] = withLoopStateLock(
+      join(fixture.root, ".git"),
+      "test holder",
+      () => [
+        acknowledge(fixture),
+        runCli(fixture, [
+          "setup",
+          ...ELEVATED_SETUP,
+          "--questions",
+          "blocking-only",
+          "--scope",
+          "repository",
+          "--yes",
+        ]),
+      ]
+    );
+    for (const result of [acknowledged, confirmed]) {
+      expect(result.exitCode).toBe(5);
+      expect(result.stderr).toContain("busy");
+    }
+    expect(savedPolicy(fixture)).toBe(ELEVATED_POLICY);
+    expect(existsSync(trustReceiptPath(fixture))).toBe(false);
+  });
+
+  test("setup cannot publish a receipt inside an acknowledgement's checks", () => {
+    // The acknowledgement reads A with no matching receipt. Meanwhile setup
+    // confirms B, the acknowledged form of A, and a checkout restores A before
+    // the rename; without the shared lock the rename would publish B under
+    // setup's fresh receipt.
+    const fixture = confirmWithSetup(ELEVATED_SETUP);
+    const confirmed = rollBackGuidance(fixture);
+    unlinkSync(trustReceiptPath(fixture));
+    const path = join(fixture.root, ".simple-changes.json");
+    const stale = savedPolicy(fixture);
+    let concurrentSetup = { exitCode: 0, stderr: "", stdout: "" };
+    const spy = changeAfterFirstRead(path, () => {
+      concurrentSetup = runCli(fixture, [
+        "setup",
+        ...ELEVATED_SETUP,
+        "--questions",
+        "blocking-only",
+        "--scope",
+        "repository",
+        "--yes",
+      ]);
+      writeFileSync(path, stale);
+    });
+    try {
+      withLoopStateLock(
+        join(fixture.root, ".git"),
+        "guidance update acknowledgement",
+        () =>
+          writeGuidanceAcknowledgement(
+            path,
+            {
+              disposition: confirmedDisposition(confirmed),
+              version: CURRENT_GUIDANCE_VERSION,
+            },
+            repositoryTarget(fixture)
+          )
+      );
+    } finally {
+      spy.mockRestore();
+    }
+    expect(concurrentSetup.exitCode).toBe(5);
+    expect(concurrentSetup.stderr).toContain("busy");
+    expect(savedPolicy(fixture)).toBe(confirmed);
+    expect(existsSync(trustReceiptPath(fixture))).toBe(false);
+    expect(captureInventory(fixture.root).policy).toMatchObject({
+      trust: "untrusted",
+      value: REDUCED_AUTHORITY,
+    });
   });
 
   test("an ordinary confirmed policy may return to its confirmed bytes", () => {

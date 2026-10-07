@@ -196,12 +196,14 @@ const runCommand = (
   args: readonly string[],
   cwd: string,
   allowFailure = false,
-  displayName = command
+  displayName = command,
+  environment: Record<string, string> = {}
 ): CommandResult => {
   const result = spawnSync([command, ...args], {
     cwd,
     env: {
       ...process.env,
+      ...environment,
       LC_ALL: "C",
     },
     stderr: "pipe",
@@ -466,9 +468,17 @@ export const runGuardInProcessGroup = async (
 export const runGit = (
   cwd: string,
   args: readonly string[],
-  allowFailure = false
+  allowFailure = false,
+  environment: Record<string, string> = {}
 ): CommandResult =>
-  runCommand(gitExecutable(), ["-C", cwd, ...args], cwd, allowFailure, "git");
+  runCommand(
+    gitExecutable(),
+    ["-C", cwd, ...args],
+    cwd,
+    allowFailure,
+    "git",
+    environment
+  );
 
 export interface GitRequest {
   args: readonly string[];

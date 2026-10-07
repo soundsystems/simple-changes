@@ -1125,13 +1125,11 @@ describe("release-tag holds and the guarded executor", () => {
     expect(remoteTags(fixture.bare)).toEqual({});
   });
 
-  test("a partial clone never fetches a missing hold payload on demand", async () => {
-    const fixture = releaseFixture({ execGuard: true });
+  // A blob-less partial clone of the fixture's remote to act as the
+  // controller checkout, and a probe that never fetches on demand.
+  const partialController = (fixture: Fixture) => {
     git(fixture.bare, ["config", "uploadpack.allowFilter", "true"]);
     git(fixture.bare, ["config", "uploadpack.allowAnySHA1InWant", "true"]);
-    const holdObject = publishRemoteHold(fixture);
-    // The controller is a blob-less partial clone holding the published
-    // hold's commit and tree, but not its hold.json blob.
     const partial = join(fixture.base, "partial");
     git(fixture.base, [
       "clone",
@@ -1142,6 +1140,37 @@ describe("release-tag holds and the guarded executor", () => {
     ]);
     git(partial, ["config", "user.name", "Simple Changes Tests"]);
     git(partial, ["config", "user.email", "tests@simple-changes.invalid"]);
+    const present = (object: string): boolean =>
+      spawnSync(["git", "-C", partial, "cat-file", "-e", object], {
+        env: { ...process.env, GIT_NO_LAZY_FETCH: "1" },
+        stderr: "pipe",
+      }).exitCode === 0;
+    const lease = (): string => startLoop(partial, CONTROLLER, "ship").runId;
+    const run = (
+      runId: string,
+      phase: Phase,
+      overrides: Partial<ReleaseTagInput> = {}
+    ) =>
+      runReleaseTag({
+        agentId: CONTROLLER,
+        alreadyLive: false,
+        dryRun: false,
+        productionAuthorized: true,
+        productionDeploy: "ask",
+        repositoryPath: partial,
+        runId,
+        tagAutomationAuthorized: true,
+        ...phase,
+        ...overrides,
+      });
+    return { lease, partial, present, run };
+  };
+
+  test("a partial clone never fetches a missing hold payload on demand", async () => {
+    const fixture = releaseFixture({ execGuard: true });
+    const holdObject = publishRemoteHold(fixture);
+    const { lease, partial, present, run } = partialController(fixture);
+    // The clone holds the published hold's commit and tree, not its blob.
     const holdRef = git(fixture.bare, [
       "for-each-ref",
       "--format=%(refname)",
@@ -1149,25 +1178,9 @@ describe("release-tag holds and the guarded executor", () => {
     ]);
     git(partial, ["fetch", "--quiet", "origin", `${holdRef}:${holdRef}`]);
     const payload = git(partial, ["rev-parse", `${holdObject}:hold.json`]);
-    const present = (object: string): boolean =>
-      spawnSync(["git", "-C", partial, "cat-file", "-e", object], {
-        env: { ...process.env, GIT_NO_LAZY_FETCH: "1" },
-        stderr: "pipe",
-      }).exitCode === 0;
     expect(present(holdObject)).toBe(true);
     expect(present(payload)).toBe(false);
-    const lease = startLoop(partial, CONTROLLER, "ship");
-    const receipt = await runReleaseTag({
-      agentId: CONTROLLER,
-      alreadyLive: false,
-      dryRun: false,
-      productionAuthorized: true,
-      productionDeploy: "ask",
-      repositoryPath: partial,
-      runId: lease.runId,
-      tagAutomationAuthorized: true,
-      ...verified(fixture),
-    });
+    const receipt = await run(lease(), verified(fixture));
     expect(receipt).toMatchObject({
       reasonCode: "shipment-hold",
       status: "blocked",
@@ -1176,6 +1189,50 @@ describe("release-tag holds and the guarded executor", () => {
     expect(fixture.guardRecords()).toEqual([]);
     expect(present(payload)).toBe(false);
     expect(remoteTags(fixture.bare)).toEqual({});
+  });
+
+  test("a partial clone fetches an unseen hold only through the guard", async () => {
+    const fixture = releaseFixture({ execGuard: true });
+    const holdObject = publishRemoteHold(fixture);
+    const { lease, present, run } = partialController(fixture);
+    expect(present(holdObject)).toBe(false);
+    setEnvironment("RELEASE_TAG_GUARD_REFUSE", "--no-write-fetch-head");
+    const receipt = await run(lease(), verified(fixture));
+    expect(receipt).toMatchObject({
+      reasonCode: "shipment-hold",
+      status: "blocked",
+    });
+    expect(receipt.reason).toContain("could not be read");
+    expect(fixture.guardRecords().map((argv) => argv[1])).toEqual(["fetch"]);
+    expect(present(holdObject)).toBe(false);
+  });
+
+  test("a partial clone never fetches a moved branch head before the push-policy refusal", async () => {
+    const fixture = releaseFixture({
+      execGuard: true,
+      policy: { gitPushAuthorization: "never" },
+    });
+    const { lease, present, run } = partialController(fixture);
+    const runId = lease();
+    const clone = join(fixture.base, "mover");
+    git(fixture.base, ["clone", "--quiet", fixture.bare, clone]);
+    git(clone, ["config", "user.name", "Mover"]);
+    git(clone, ["config", "user.email", "mover@simple-changes.invalid"]);
+    writeFixture(clone, "later.txt", "later\n");
+    git(clone, ["add", "."]);
+    git(clone, ["commit", "-m", "Later work"]);
+    git(clone, ["push", "--quiet", "origin", "main"]);
+    const later = git(clone, ["rev-parse", "HEAD"]);
+    const receipt = await run(
+      runId,
+      verified(fixture, "release-bearing-merge"),
+      {
+        productionDeploy: "allow",
+      }
+    );
+    expect(receipt.reasonCode).toBe("push-not-authorized");
+    expect(fixture.guardRecords()).toEqual([]);
+    expect(present(later)).toBe(false);
   });
 
   test("refuses under gitPushAuthorization never before reading published holds", async () => {

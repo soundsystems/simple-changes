@@ -94,6 +94,13 @@ const CI_CONFIGURATION_PATHS = [
 ] as const;
 
 const OBJECT_ID_PATTERN = /^[0-9a-f]{40,64}$/u;
+// Every object read here is local only: a partial clone must never fetch a
+// missing object on demand, since every fetch goes through the guarded
+// executor and only after every refusal.
+const NO_LAZY_FETCH = { GIT_NO_LAZY_FETCH: "1" };
+
+const readLocal = (root: string, args: readonly string[]) =>
+  runGit(root, args, true, NO_LAZY_FETCH);
 const PEELED_SUFFIX = "^{}";
 const TAG_REF_PREFIX = "refs/tags/";
 const PLAIN_SHELL_WORD_PATTERN = /^[\w./@+-]+$/u;
@@ -346,7 +353,7 @@ const describeExisting = (
   if (existing.object === existing.peeled) {
     return " as a lightweight tag";
   }
-  const body = runGit(root, ["cat-file", "tag", existing.object], true);
+  const body = readLocal(root, ["cat-file", "tag", existing.object]);
   if (body.exitCode !== 0) {
     return "";
   }
@@ -414,26 +421,22 @@ const ciConfigurationFiles = (
   if (revision === null) {
     return [];
   }
-  const listing = runGit(
-    root,
-    [
-      "ls-tree",
-      "-r",
-      "--name-only",
-      "-z",
-      revision,
-      "--",
-      ...CI_CONFIGURATION_PATHS,
-    ],
-    true
-  );
+  const listing = readLocal(root, [
+    "ls-tree",
+    "-r",
+    "--name-only",
+    "-z",
+    revision,
+    "--",
+    ...CI_CONFIGURATION_PATHS,
+  ]);
   return listing.exitCode === 0
     ? listing.stdout.split("\0").filter(Boolean).sort()
     : [];
 };
 
 const commitIsLocal = (root: string, revision: string): boolean =>
-  runGit(root, ["cat-file", "-e", `${revision}^{commit}`], true).exitCode === 0;
+  readLocal(root, ["cat-file", "-e", `${revision}^{commit}`]).exitCode === 0;
 
 const remoteBranchHead = (
   root: string,
@@ -531,8 +534,8 @@ const containment = (
   revision: string,
   head: string
 ): TargetCheck =>
-  runGit(root, ["merge-base", "--is-ancestor", revision, head], true)
-    .exitCode === 0
+  readLocal(root, ["merge-base", "--is-ancestor", revision, head]).exitCode ===
+  0
     ? { kind: "current" }
     : {
         kind: "blocked",
@@ -591,7 +594,7 @@ const prefetchHoldObjects = async (
       ([object, ref]) =>
         object &&
         ref?.startsWith(HOLD_REF_PREFIX) &&
-        runGit(root, ["cat-file", "-e", object], true).exitCode !== 0
+        readLocal(root, ["cat-file", "-e", object]).exitCode !== 0
     )
     .map(([, ref]) => ref as string);
   if (missing.length === 0) {

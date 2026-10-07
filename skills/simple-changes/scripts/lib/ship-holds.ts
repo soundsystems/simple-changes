@@ -358,6 +358,24 @@ const listRemoteHoldRefs = (
     .map(([sha, ref]) => ({ ref, sha }));
 };
 
+// Without fetching, a published hold whose objects are not here is unreadable.
+const missingHoldObjects = (
+  root: string,
+  refs: Array<{ ref: string; sha: string }>
+): string | null => {
+  const check = runGitWithInput(
+    root,
+    ["cat-file", "--batch-check"],
+    `${refs.map((item) => item.sha).join("\n")}\n`
+  );
+  const missing = refs.filter((_item, index) =>
+    check.stdout.split("\n")[index]?.endsWith("missing")
+  );
+  return missing.length === 0
+    ? null
+    : `Published holds ${missing.map((item) => item.ref).join(", ")} are not available locally and were not fetched.`;
+};
+
 const fetchMissingHoldObjects = (
   root: string,
   remote: string,
@@ -439,7 +457,8 @@ const remoteHold = (
  */
 const readRemoteHolds = (
   inventory: RepositoryInventory,
-  remote: string
+  remote: string,
+  fetchMissing: boolean
 ): RemoteHoldListing => {
   const root = inventory.repository.primaryCheckout;
   const refs = listRemoteHoldRefs(root, remote);
@@ -447,7 +466,9 @@ const readRemoteHolds = (
     return unavailable(remote, refs);
   }
   if (refs.length > 0) {
-    const fetchError = fetchMissingHoldObjects(root, remote, refs);
+    const fetchError = fetchMissing
+      ? fetchMissingHoldObjects(root, remote, refs)
+      : missingHoldObjects(root, refs);
     if (fetchError) {
       return unavailable(remote, fetchError);
     }
@@ -539,7 +560,9 @@ const remoteListing = (
         };
   }
   return combineRemoteReads(
-    remotes.map((remote) => readRemoteHolds(inventory, remote))
+    remotes.map((remote) =>
+      readRemoteHolds(inventory, remote, options.fetchMissing ?? true)
+    )
   );
 };
 
@@ -572,6 +595,12 @@ export interface ShipHoldReport {
 
 export interface ShipHoldReadOptions {
   action?: ShipHoldAction | undefined;
+  /**
+   * Fetch published hold objects this clone lacks (the default). A caller
+   * that must route every fetch through its own guard passes false, and a
+   * missing object then makes the published holds unreadable.
+   */
+  fetchMissing?: boolean | undefined;
   localOnly?: boolean | undefined;
   remote?: string | undefined;
   /** When given, must name the active controller run; it never selects one. */

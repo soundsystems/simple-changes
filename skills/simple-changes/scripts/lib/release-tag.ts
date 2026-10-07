@@ -567,9 +567,9 @@ const fetchAndCheckContainment = async (
 
 /**
  * Published holds whose objects are not here yet are fetched through the
- * guarded executor, after every refusal that needs no write, so the hold
- * check that follows reads them locally instead of fetching on its own.
- * A listing that fails is left to the hold check, which reports it.
+ * guarded executor, after every refusal that needs no write. The hold check
+ * that follows never fetches: a listing that fails here, or a hold published
+ * after this read, leaves it unreadable, which blocks the tag.
  */
 const prefetchHoldObjects = async (
   root: string,
@@ -792,7 +792,11 @@ const preWriteProblem = async (
   }
   const holds = holdProblem(
     (["deploy", "migrations"] as const).map((action) =>
-      checkShipHolds(root, { action, runId: input.runId })
+      checkShipHolds(root, {
+        action,
+        fetchMissing: false,
+        runId: input.runId,
+      })
     )
   );
   if (holds) {

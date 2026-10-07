@@ -1098,6 +1098,33 @@ describe("release-tag holds and the guarded executor", () => {
     expect(remoteTags(fixture.bare)).toEqual({});
   });
 
+  test("the hold check never fetches on its own when the guarded hold read missed", async () => {
+    const fixture = releaseFixture({ execGuard: true });
+    const holdObject = publishRemoteHold(fixture);
+    const run = withRun(fixture);
+    // Every listing and fetch from origin runs this wrapper; the third one,
+    // the guarded hold read's listing, fails as a transient transport error,
+    // so the hold check's own listing is the first to see the hold.
+    const wrapper = join(fixture.base, "upload-pack.sh");
+    const calls = join(fixture.base, "upload-pack-calls");
+    writeFileSync(
+      wrapper,
+      `#!/bin/sh\nn=$(cat '${calls}' 2>/dev/null || echo 0); n=$((n+1)); echo $n > '${calls}'\n[ "$n" = 3 ] && { echo "simulated transport failure" >&2; exit 1; }\nexec git-upload-pack "$@"\n`
+    );
+    chmodSync(wrapper, 0o755);
+    git(fixture.root, ["config", "remote.origin.uploadpack", wrapper]);
+    const receipt = await run(verified(fixture));
+    expect(receipt).toMatchObject({
+      reasonCode: "shipment-hold",
+      status: "blocked",
+    });
+    expect(receipt.reason).toContain("unreadable holds on origin");
+    expect(readFileSync(calls, "utf8").trim()).toBe("5");
+    expect(fixture.guardRecords()).toEqual([]);
+    expect(objectIsLocal(fixture.root, holdObject)).toBe(false);
+    expect(remoteTags(fixture.bare)).toEqual({});
+  });
+
   test("refuses under gitPushAuthorization never before reading published holds", async () => {
     const fixture = releaseFixture({
       execGuard: true,

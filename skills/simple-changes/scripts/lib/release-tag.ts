@@ -159,6 +159,11 @@ const manualCommandsFor = (
 
 const short = (revision: string): string => revision.slice(0, 12);
 
+// A push through a remote with several URLs reaches every one of them, so no
+// runnable push command is offered until the remote has one destination.
+const SINGLE_URL_ADVICE =
+  "Give the remote one URL for fetch and push and re-run release-tag, or publish the tag yourself to the one intended destination.";
+
 const URL_CREDENTIALS_PATTERN = /(\b[a-z][a-z0-9+.-]*:\/\/)[^/@\s]+@/giu;
 
 // Git's own words for the user, without secrets or URL credentials.
@@ -459,72 +464,100 @@ const guardedStep = async (
   }
 };
 
+type TargetCheck =
+  | { kind: "current" }
+  | { kind: "blocked"; outcome: Outcome }
+  | { head: string; kind: "needs-fetch" };
+
 /**
- * The target is still current for its boundary. A release-bearing merge, or a
- * release already live, crossed its public boundary at the target, so the
- * target only has to be contained in the refreshed branch. Any other deploy
- * is not public yet and must deploy the freshly resolved head, so the target
- * must equal it.
+ * The target is still current for its boundary, read without writing. A
+ * release-bearing merge, or a release already live, crossed its public
+ * boundary at the target, so the target only has to be contained in the
+ * refreshed branch. Any other deploy is not public yet and must deploy the
+ * freshly resolved head, so the target must equal it. A containment check
+ * whose branch head is not local yet needs one fetch, which waits until every
+ * refusal has passed.
  */
-const targetCurrentProblem = async (
+const readTargetCheck = (
+  root: string,
+  target: { branch: string; remote: string },
+  revision: string,
+  containmentSuffices: boolean
+): TargetCheck => {
+  const head = remoteBranchHead(root, target.remote, target.branch);
+  if (head !== null && typeof head === "object") {
+    return {
+      kind: "blocked",
+      outcome: blocked(
+        "target-not-contained",
+        `Could not read ${target.remote} ${target.branch}: ${head.error}`
+      ),
+    };
+  }
+  if (head === null) {
+    return {
+      kind: "blocked",
+      outcome: blocked(
+        "target-not-contained",
+        `${target.remote} has no branch ${target.branch} to contain ${short(revision)}.`
+      ),
+    };
+  }
+  if (head === revision) {
+    return { kind: "current" };
+  }
+  if (!containmentSuffices) {
+    return {
+      kind: "blocked",
+      outcome: blocked(
+        "target-moved",
+        `${target.remote}/${target.branch} moved to ${short(head)} after verification of ${short(revision)}; the deployment must use the fresh head, so reclassify.`
+      ),
+    };
+  }
+  return commitIsLocal(root, head)
+    ? containment(root, target, revision, head)
+    : { head, kind: "needs-fetch" };
+};
+
+const containment = (
+  root: string,
+  target: { branch: string; remote: string },
+  revision: string,
+  head: string
+): TargetCheck =>
+  runGit(root, ["merge-base", "--is-ancestor", revision, head], true)
+    .exitCode === 0
+    ? { kind: "current" }
+    : {
+        kind: "blocked",
+        outcome: blocked(
+          "target-not-contained",
+          `The verified target ${short(revision)} is not contained in ${target.remote}/${target.branch} at ${short(head)}.`
+        ),
+      };
+
+// Fetch only the target branch, with no tags, then prove containment.
+const fetchAndCheckContainment = async (
   root: string,
   runGuarded: GuardedLoopCommand,
   target: { branch: string; remote: string },
   revision: string,
-  containmentSuffices: boolean
+  head: string
 ): Promise<Outcome | null> => {
-  const head = remoteBranchHead(root, target.remote, target.branch);
-  if (head !== null && typeof head === "object") {
+  const fetched = await guardedStep(
+    runGuarded,
+    ["git", "fetch", "--no-tags", target.remote, `refs/heads/${target.branch}`],
+    { environment: nonInteractiveGitEnvironment(root) }
+  );
+  if (fetched.exitCode !== 0 || !commitIsLocal(root, head)) {
     return blocked(
       "target-not-contained",
-      `Could not read ${target.remote} ${target.branch}: ${head.error}`
+      `Could not refresh ${target.remote}/${target.branch} at ${short(head)}: ${gitDetail(fetched)}`
     );
   }
-  if (head === null) {
-    return blocked(
-      "target-not-contained",
-      `${target.remote} has no branch ${target.branch} to contain ${short(revision)}.`
-    );
-  }
-  if (!containmentSuffices) {
-    return head === revision
-      ? null
-      : blocked(
-          "target-moved",
-          `${target.remote}/${target.branch} moved to ${short(head)} after verification of ${short(revision)}; the deployment must use the fresh head, so reclassify.`
-        );
-  }
-  if (head === revision) {
-    return null;
-  }
-  if (!commitIsLocal(root, head)) {
-    const fetched = await guardedStep(
-      runGuarded,
-      [
-        "git",
-        "fetch",
-        "--no-tags",
-        target.remote,
-        `refs/heads/${target.branch}`,
-      ],
-      { environment: nonInteractiveGitEnvironment(root) }
-    );
-    if (fetched.exitCode !== 0 || !commitIsLocal(root, head)) {
-      return blocked(
-        "target-not-contained",
-        `Could not refresh ${target.remote}/${target.branch} at ${short(head)}: ${gitDetail(fetched)}`
-      );
-    }
-  }
-  const contained =
-    runGit(root, ["merge-base", "--is-ancestor", revision, head], true)
-      .exitCode === 0;
-  return contained
-    ? null
-    : blocked(
-        "target-not-contained",
-        `The verified target ${short(revision)} is not contained in ${target.remote}/${target.branch} at ${short(head)}.`
-      );
+  const checked = containment(root, target, revision, head);
+  return checked.kind === "blocked" ? checked.outcome : null;
 };
 
 const holdProblem = (reports: ShipHoldReport[]): Outcome | null => {
@@ -621,17 +654,16 @@ const publishTag = async (
     ],
     { environment: nonInteractiveGitEnvironment(root) }
   );
-  // Read back whatever the push reported: a writer that won the race with a
-  // tag on this same commit still leaves the release tagged, and a push that
-  // failed after the remote took this object still published it.
-  const readback = readbackOutcome(root, remote, tag, target, objectId);
-  if (pushed.exitCode !== 0 && !readback) {
+  // Any nonzero push is blocked with Git's own words, whatever the remote
+  // shows now; a re-run reads the remote again and reports what is there.
+  if (pushed.exitCode !== 0) {
     return blocked(
       "push-rejected",
       `${remote} rejected ${tag.name}; nothing local was installed. Git said: ${gitDetail(pushed)}`,
       manualCommandsFor(tag, remote)
     );
   }
+  const readback = readbackOutcome(root, remote, tag, target, objectId);
   if (!readback) {
     return blocked(
       "readback-failed",
@@ -675,16 +707,15 @@ const preWriteProblem = async (
   const { gate, input, request, tag } = context;
   const crossed =
     gate.action === "deploy" || gate.action === "verify-existing-production";
-  const moved = await targetCurrentProblem(
+  const current = readTargetCheck(
     root,
-    runGuarded,
     target,
     revision,
     request.boundary === "release-bearing-merge" ||
       gate.action === "verify-existing-production"
   );
-  if (moved) {
-    return moved;
+  if (current.kind === "blocked") {
+    return current.outcome;
   }
   if (!crossed) {
     return blocked(
@@ -713,7 +744,16 @@ const preWriteProblem = async (
       manualCommandsFor(tag, target.remote)
     );
   }
-  return null;
+  // The only write before the tag itself, after every refusal.
+  return current.kind === "needs-fetch"
+    ? await fetchAndCheckContainment(
+        root,
+        runGuarded,
+        target,
+        revision,
+        current.head
+      )
+    : null;
 };
 
 const applyTag = async (
@@ -735,8 +775,7 @@ const applyTag = async (
         return {
           outcome: blocked(
             "remote-not-single-url",
-            urlProblem ?? "No target remote.",
-            manualCommandsFor(tag, remote)
+            `${urlProblem ?? "No target remote."} ${SINGLE_URL_ADVICE}`
           ),
           remote,
         };
@@ -803,8 +842,7 @@ const dryRunTag = (
     return {
       outcome: blocked(
         "remote-not-single-url",
-        urlProblem ?? "No target remote.",
-        manualCommandsFor(tag, remote)
+        `${urlProblem ?? "No target remote."} ${SINGLE_URL_ADVICE}`
       ),
       remote,
     };

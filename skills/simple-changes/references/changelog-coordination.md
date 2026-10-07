@@ -317,7 +317,9 @@ an exact name, a parent name (`release` blocks `release/1.2.0`), or a child
 name (`v1.2.0/build45` blocks `v1.2.0`) as taken. Apply then confirms the
 target is still current: contained in the refreshed branch for a
 release-bearing merge or a release already live, or equal to the fresh branch
-head for any other deployment. It builds the unsigned annotated tag with `git
+head for any other deployment. When proving containment needs the branch's
+new head, it fetches only that branch, with no tags, after every other
+refusal has passed. It builds the unsigned annotated tag with `git
 mktag`, with no ref; pushes that one object with `git push --no-follow-tags
 <remote> <object>:refs/tags/<name>`; reads it back; and only then installs the
 local ref, create-only. Every write runs through the guarded executor, so the
@@ -348,10 +350,15 @@ pairs:
 
 A blocked tag stops that release's deployment. Before the merge,
 `tag-exists-elsewhere` means the version is taken; after it, someone tagged in
-between, so stop and ask. A rejected push is never retried another way:
+between, so stop and ask. Any nonzero tag push is `push-rejected`, even when
+another writer published the same tag on the same commit first; a re-run then
+reports `already-present`. A rejected push is never retried another way:
 report Git's own message, then the user pushes with sufficient rights,
 adjusts your Git host's tag protection or tag rules, or sets the repository
-to stop tagging. Where the host supports it, protect the release tag pattern
+to stop tagging. For `remote-not-single-url` no push command is printed,
+since a push through that remote would reach every one of its URLs: give the
+remote one URL and re-run, or publish the tag to the one intended
+destination by hand. Where the host supports it, protect the release tag pattern
 (for example `v*`). A deployment that fails after the push keeps the tag: an
 exact retry reuses the version, and new code gets a new version and tag. A
 tag found wrong later is never deleted or moved automatically; that needs the

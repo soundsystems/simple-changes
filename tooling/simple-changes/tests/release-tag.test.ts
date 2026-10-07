@@ -794,10 +794,9 @@ describe("release-tag destinations", () => {
         requiredAction: "push-manually",
         status: "blocked",
       });
-      expect(receipt.manualCommands).toEqual([
-        `git tag -a v1.4.0 -m 'Acme Web 1.4.0' ${fixture.target}`,
-        "git push --no-follow-tags origin refs/tags/v1.4.0",
-      ]);
+      // A push through this remote would reach both URLs, so none is offered.
+      expect(receipt.manualCommands).toEqual([]);
+      expect(receipt.reason).toContain("Give the remote one URL");
     };
     expectRefused(await run(verified(fixture), { dryRun: true }));
     expectRefused(await run(verified(fixture)));
@@ -924,6 +923,41 @@ describe("release-tag destinations", () => {
     expect(remoteTags(fixture.bare)).toEqual({});
   });
 
+  test("refuses before fetching a moved branch when policy never lets agents push", async () => {
+    const fixture = releaseFixture({
+      execGuard: true,
+      policy: { gitPushAuthorization: "never" },
+    });
+    const run = withRun(fixture);
+    const clone = join(fixture.base, "mover");
+    git(fixture.base, ["clone", "--quiet", fixture.bare, clone]);
+    git(clone, ["config", "user.name", "Mover"]);
+    git(clone, ["config", "user.email", "mover@simple-changes.invalid"]);
+    writeFixture(clone, "later.txt", "later\n");
+    git(clone, ["add", "."]);
+    git(clone, ["commit", "-m", "Later work"]);
+    git(clone, ["push", "--quiet", "origin", "main"]);
+    const later = git(clone, ["rev-parse", "HEAD"]);
+    const trackingBefore = git(fixture.root, [
+      "rev-parse",
+      "refs/remotes/origin/main",
+    ]);
+    const receipt = await run(verified(fixture, "release-bearing-merge"), {
+      productionDeploy: "allow",
+    });
+    expect(receipt.reasonCode).toBe("push-not-authorized");
+    expect(fixture.guardRecords()).toEqual([]);
+    expect(git(fixture.root, ["rev-parse", "refs/remotes/origin/main"])).toBe(
+      trackingBefore
+    );
+    const missing = spawnSync(
+      ["git", "-C", fixture.root, "cat-file", "-e", `${later}^{commit}`],
+      { stderr: "pipe" }
+    );
+    expect(missing.exitCode).not.toBe(0);
+    expect(remoteTags(fixture.bare)).toEqual({});
+  });
+
   test("refuses before any write when policy never lets agents push", async () => {
     const fixture = releaseFixture({
       policy: { gitPushAuthorization: "never" },
@@ -1027,7 +1061,7 @@ describe("release-tag holds and the guarded executor", () => {
     expect(localTagRef(push.root, "v1.4.0")).toBeNull();
   });
 
-  test("a lost race reports already-present and installs no local ref", async () => {
+  test("a lost race blocks with Git's own words, installs no local ref, and a re-run reports already-present", async () => {
     const fixture = releaseFixture({ execGuard: true });
     // The other writer publishes the same tag name on the same commit while
     // this run sits between its checks and its push.
@@ -1043,11 +1077,50 @@ describe("release-tag holds and the guarded executor", () => {
     const receipt = await run(verified(fixture));
     const published = remoteTags(fixture.bare)["v1.4.0"];
     expect(receipt).toMatchObject({
+      reasonCode: "push-rejected",
+      status: "blocked",
+    });
+    expect(receipt.reason).toContain("already exists");
+    expect(localTagRef(fixture.root, "v1.4.0")).toBeNull();
+    expect(peel(fixture.bare, "v1.4.0")).toBe(fixture.target);
+    setEnvironment("RELEASE_TAG_GUARD_BEFORE_PUSH", "");
+    expect(await run(verified(fixture))).toMatchObject({
       status: "already-present",
       tagObject: published as string,
     });
     expect(localTagRef(fixture.root, "v1.4.0")).toBeNull();
-    expect(peel(fixture.bare, "v1.4.0")).toBe(fixture.target);
+    expect(remoteTags(fixture.bare)).toEqual({ "v1.4.0": published as string });
+  });
+
+  test("a tag another writer put on the same commit after the push is already-present, with no local ref", async () => {
+    const fixture = releaseFixture();
+    // The remote accepts this run's tag, then another writer replaces it with
+    // their own tag object on the same commit before the readback.
+    installHook(
+      fixture,
+      "post-receive",
+      `while read old new ref; do
+  case "$ref" in
+    refs/tags/*)
+      target=$(git rev-parse "$new^{commit}")
+      other=$(printf 'object %s\\ntype commit\\ntag %s\\ntagger Other <other@simple-changes.invalid> 0 +0000\\n\\nOther writer\\n' "$target" "\${ref#refs/tags/}" | git mktag)
+      git update-ref "$ref" "$other"
+      ;;
+  esac
+done`
+    );
+    const run = withRun(fixture);
+    const receipt = await run(verified(fixture));
+    const published = remoteTags(fixture.bare)["v1.4.0"] as string;
+    expect(receipt).toMatchObject({
+      status: "already-present",
+      tagObject: published,
+    });
+    expect(receipt.reason).toContain("Another writer published v1.4.0");
+    expect(git(fixture.bare, ["cat-file", "tag", published])).toContain(
+      "Other writer"
+    );
+    expect(localTagRef(fixture.root, "v1.4.0")).toBeNull();
   });
 
   test("a run killed between build and push leaves nothing a follow-tags push publishes", () => {

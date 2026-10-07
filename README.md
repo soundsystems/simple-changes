@@ -629,6 +629,11 @@ Provider references translate those contracts into discoverable capabilities;
 they do not make any named provider, domain, branch convention, database,
 deployment command, or release channel mandatory.
 
+Releases are numbered `0.<guidance>.<patch>`. A release that advances the
+guidance checkpoint takes it as the minor version (0.27.0 introduces guidance
+27), a fix that leaves guidance unchanged is a patch release, and each release
+is tagged `v<version>` on its merge commit.
+
 See [CONTRIBUTING.md](CONTRIBUTING.md) for contribution guidance.
 
 ## Credits

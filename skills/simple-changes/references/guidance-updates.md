@@ -84,12 +84,14 @@ guidance version may cause one new prompt.
 The acknowledgement edits only the `guidance` disposition and version in the
 saved policy file. Every other byte stays as written, including consequential
 settings that run with reduced authority because this clone has not confirmed
-them. It never creates or renews a policy trust receipt, so acknowledging a
-confirmed repository policy changes the bytes its receipt is bound to, and those
-settings run with reduced authority until setup confirms them again. When the
-policy is unconfirmed and its receipt names the exact bytes the edit would
-produce, or cannot be read, the command refuses and writes nothing rather than
-risk re-enabling those settings; run setup to confirm the policy instead. The
+them. It never creates or renews a policy trust receipt. Repeating the decision
+already recorded writes nothing, so a confirmed policy stays confirmed. A new
+decision changes the bytes the receipt is bound to, so consequential settings
+then run with reduced authority until setup confirms them again. When a policy
+with consequential settings is unconfirmed and its receipt names the exact
+bytes the edit would produce, or cannot be read, the command refuses and writes
+nothing rather than risk re-enabling those settings; run setup to confirm the
+policy instead. The
 acknowledgement and setup save under the same short repository lock; if either
 reports that state is busy, retry it after the other finishes.
 

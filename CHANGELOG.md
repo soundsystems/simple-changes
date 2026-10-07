@@ -8,13 +8,14 @@
   and line endings. It used to save the settings in effect for that run, so a
   policy this clone had not confirmed lost its elevated settings (push
   `configure-harness` was saved as `ask`) and gained default fields such as
-  `proposalScheduling`. Acknowledging still grants no authority: an
-  unconfirmed policy stays unconfirmed, and a confirmed one needs setup to
-  confirm it again, because its trust receipt covers the file's exact bytes.
-  An acknowledgement that would turn the file back into bytes an earlier
-  receipt confirmed is refused, with nothing written; run setup to confirm the
-  policy instead. Setup and `acknowledge-update` now take the repository lock
-  outside a loop too, so either can fail as busy while the other runs.
+  `proposalScheduling`. Acknowledging still grants no authority. Repeating
+  the decision already recorded writes nothing, so a confirmed policy stays
+  confirmed. For a policy with elevated settings, a new decision changes the
+  bytes its trust receipt covers, so setup must confirm it again, and one that
+  would turn an unconfirmed file back into bytes an earlier receipt confirmed
+  is refused, with nothing written; run setup to confirm the policy instead.
+  Setup and `acknowledge-update` now take the repository lock outside a loop
+  too, so either can fail as busy while the other runs.
 - `update-local-forks` no longer rewrites version text in a fork. Each
   fork-owned line that names the previous Simple Changes release, or the
   previous `CURRENT_GUIDANCE_VERSION`, is listed in the plan with its line

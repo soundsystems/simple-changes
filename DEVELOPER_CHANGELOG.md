@@ -28,9 +28,12 @@
   - Preserving bytes made a new escalation possible: changing only the
     guidance version of a confirmed policy left it untrusted with its receipt
     in place, and acknowledging could write those confirmed bytes back and
-    restore its authority without setup. The writer now refuses, exiting 5
-    and writing nothing, whenever the receipt's digest could match the bytes
-    it would write. An acknowledgement that changes nothing writes nothing,
+    restore its authority without setup. For a repository policy with
+    elevated settings, the writer now refuses, exiting 5 and writing nothing,
+    whenever the receipt's digest could match the bytes it would write; an
+    ordinary policy may still return to its confirmed bytes. An
+    acknowledgement that changes nothing writes nothing and reports
+    `written: false`,
     the policy is re-read just before the atomic replace and refused if it
     changed or was removed, and outside a loop setup and `acknowledge-update`
     take the repository lock the loop already uses, so a concurrent setup

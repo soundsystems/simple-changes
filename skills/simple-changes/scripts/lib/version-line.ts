@@ -1,6 +1,6 @@
 import type {
-  ChangelogReceiptV3,
   ChangelogRequest,
+  LineCarryingChangelogReceipt,
   VersionLine,
 } from "./types.ts";
 
@@ -201,7 +201,7 @@ const assertAboveCurrentVersion = (
 // The version a receipt proposes: the suggestion while approval is pending,
 // the selection once one is made, and none for a blocked or not-applicable
 // receipt, which keeps its closed-code routing.
-const candidateOf = (receipt: ChangelogReceiptV3): string | null => {
+const candidateOf = (receipt: LineCarryingChangelogReceipt): string | null => {
   const decision = receipt.versionDecision;
   if (!decision) {
     return null;
@@ -223,7 +223,7 @@ const candidateOf = (receipt: ChangelogReceiptV3): string | null => {
  */
 export const assertVersionLine = (
   request: ChangelogRequest,
-  receipt: ChangelogReceiptV3,
+  receipt: LineCarryingChangelogReceipt,
   fail: (message: string) => never
 ): void => {
   if (
@@ -302,14 +302,14 @@ export interface ReleaseSetConsistency {
 
 // A receipt without a version decision (for example one blocked on an
 // ambiguous version owner) names no train, so it skips the per-train checks.
-const trainOf = (receipt: ChangelogReceiptV3): string | null =>
+const trainOf = (receipt: LineCarryingChangelogReceipt): string | null =>
   receipt.versionDecision?.releaseTrain ?? null;
 
 // Every receipt names the same release set, input target, and train list (in
 // any order), once per train, and its own train is in that list.
 const assertSharedReleaseSet = (
-  receipts: ChangelogReceiptV3[],
-  first: ChangelogReceiptV3,
+  receipts: LineCarryingChangelogReceipt[],
+  first: LineCarryingChangelogReceipt,
   fail: (message: string) => never
 ): string[] => {
   const trains = sorted(first.releaseSetTrains ?? []);
@@ -348,7 +348,7 @@ const assertSharedReleaseSet = (
 // Each train belongs to at most one line: every line that lists a train must
 // be the same line, and that train's own receipt must carry it.
 const assertLineMembership = (
-  receipts: ChangelogReceiptV3[],
+  receipts: LineCarryingChangelogReceipt[],
   fail: (message: string) => never
 ): void => {
   const claims = new Map<string, string>();
@@ -389,7 +389,7 @@ const assertLineMembership = (
 // Within one release set, each version line has one state and one published
 // version string.
 const lineSelections = (
-  receipts: ChangelogReceiptV3[],
+  receipts: LineCarryingChangelogReceipt[],
   fail: (message: string) => never
 ): Map<string, { line: VersionLine; selectedVersion: string | null }> => {
   const lines = new Map<
@@ -436,7 +436,7 @@ const lineSelections = (
  * receipt yet are reported, not refused: the set is non-atomic.
  */
 export const assertReleaseSetConsistency = (
-  receipts: ChangelogReceiptV3[],
+  receipts: LineCarryingChangelogReceipt[],
   fail: (message: string) => never
 ): ReleaseSetConsistency => {
   const [first] = receipts;

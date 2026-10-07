@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { buildReleaseDeliveryReceipt } from "../../../skills/simple-changes/scripts/lib/release-delivery.ts";
 import type {
   ChangelogReceiptV2,
+  ChangelogReceiptV4,
   ChangelogRequest,
   ProviderReceipt,
 } from "../../../skills/simple-changes/scripts/lib/types.ts";
@@ -104,6 +105,46 @@ const request = (): ChangelogRequest => ({
 });
 
 describe("release delivery receipt", () => {
+  test("composes a tagged receipt v4 exactly as before", () => {
+    const base = verifiedReceipt();
+    const tagged: ChangelogReceiptV4 = {
+      ...base,
+      release: {
+        date: "2026-09-02",
+        tag: { message: "Acme Web 0.10.0", name: "v0.10.0" },
+        targetContainedUnreleased: "integrated",
+        version: "0.10.0",
+      },
+      releaseSetTrains: null,
+      schemaVersion: 4,
+      versionDecision: {
+        ...(base.versionDecision as NonNullable<
+          ChangelogReceiptV2["versionDecision"]
+        >),
+        versionLine: null,
+      },
+    };
+    const v4Request: ChangelogRequest = {
+      ...request(),
+      releaseSetTrains: null,
+      schemaVersion: 3,
+      supportedReceiptVersions: [1, 2, 3, 4],
+    };
+    expect(
+      buildReleaseDeliveryReceipt({
+        changelogReceipt: tagged,
+        providerReceipt: deployment(),
+        request: v4Request,
+      })
+    ).toEqual(
+      buildReleaseDeliveryReceipt({
+        changelogReceipt: verifiedReceipt(),
+        providerReceipt: deployment(),
+        request: request(),
+      })
+    );
+  });
+
   test("derives every identity field from the verified receipt and deployment", () => {
     const receipt = buildReleaseDeliveryReceipt({
       changelogReceipt: verifiedReceipt(),

@@ -651,25 +651,54 @@ export type GuidanceAcknowledgementTarget =
       source: "repository";
     };
 
-// Only setup may lift reduced authority. A guidance edit that restores the
-// exact bytes a still-present receipt confirmed would re-enable consequential
-// settings without confirmation, so the edit is checked before it is written.
-const acknowledgementRaisesTrust = (
+/** A repository acknowledgement target, which carries its receipt location. */
+export type RepositoryAcknowledgementTarget = Extract<
+  GuidanceAcknowledgementTarget,
+  { source: "repository" }
+>;
+
+const isMissingFile = (error: unknown): boolean =>
+  error instanceof Error && "code" in error && error.code === "ENOENT";
+
+// Whether the receipt names these exact bytes. It reads only the receipt, so
+// nothing that happens to the policy path can hide a match, and a receipt that
+// exists but cannot be read counts as a match: a failure only ever refuses.
+const trustReceiptMayBind = (
+  commonGitDirectory: string,
+  policyText: string
+): boolean => {
+  const receiptPath = repositoryPolicyTrustPath(commonGitDirectory);
+  try {
+    const receipt = JSON.parse(readFileSync(receiptPath, "utf8")) as {
+      policyDigest?: unknown;
+    };
+    return receipt.policyDigest === sha256(policyText);
+  } catch (error) {
+    return !isMissingFile(error);
+  }
+};
+
+/**
+ * Only setup may lift reduced authority. Writing `edited` would raise trust
+ * when it requests consequential authority, the receipt may bind exactly those
+ * bytes, and the bytes being replaced are not verifiably trusted now. Any
+ * check that cannot complete counts against the write, never for it.
+ */
+export const acknowledgementRaisesTrust = (
   path: string,
   text: string,
   edited: string,
-  target: Extract<GuidanceAcknowledgementTarget, { source: "repository" }>
-): boolean => {
-  const trustOf = (policyText: string): LoadedPolicy["trust"] =>
-    repositoryPolicyTrust(
-      parsePolicyText(policyText),
-      target.primaryCheckout,
-      path,
-      target.commonGitDirectory,
-      policyText
-    );
-  return trustOf(text) !== "trusted" && trustOf(edited) === "trusted";
-};
+  target: RepositoryAcknowledgementTarget
+): boolean =>
+  requiresRepositoryTrust(parsePolicyText(edited)) &&
+  trustReceiptMayBind(target.commonGitDirectory, edited) &&
+  repositoryPolicyTrust(
+    parsePolicyText(text),
+    target.primaryCheckout,
+    path,
+    target.commonGitDirectory,
+    text
+  ) !== "trusted";
 
 /**
  * Records a guidance acknowledgement in the saved policy file itself. The
@@ -701,7 +730,7 @@ export const writeGuidanceAcknowledgement = (
     acknowledgementRaisesTrust(path, text, edited, target)
   ) {
     throw new SimpleChangesError(
-      `Refusing to acknowledge the guidance update in ${path}: the result would match the trust receipt of an earlier copy of this policy and re-enable its consequential settings without confirmation. Nothing was written. Run \`simple-changes setup\` to confirm this repository policy; setup also records the current guidance.`,
+      `Refusing to acknowledge the guidance update in ${path}: the trust receipt for an earlier copy of this policy matches the result or cannot be read, so writing it could re-enable consequential settings without confirmation. Nothing was written. Run \`simple-changes setup\` to confirm this repository policy; setup also records the current guidance.`,
       EXIT_CODES.unsafe
     );
   }

@@ -1,11 +1,18 @@
 import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
-import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  readFileSync,
+  statSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "bun";
 import { CURRENT_GUIDANCE_VERSION } from "../../../skills/simple-changes/scripts/lib/guidance-updates.ts";
 import { captureInventory } from "../../../skills/simple-changes/scripts/lib/inventory.ts";
 import {
+  acknowledgementRaisesTrust,
   withAcknowledgedGuidanceText,
   writeRepositoryPolicyTrustReceipt,
 } from "../../../skills/simple-changes/scripts/lib/policy.ts";
@@ -344,6 +351,54 @@ describe("acknowledge-update records guidance in the saved policy only", () => {
       trust: "untrusted",
       value: REDUCED_AUTHORITY,
     });
+  });
+
+  test("the stale-receipt check ignores the policy path and fails closed", () => {
+    const fixture = confirmWithSetup(ELEVATED_SETUP);
+    const confirmed = rollBackGuidance(fixture);
+    const path = join(fixture.root, ".simple-changes.json");
+    const stale = savedPolicy(fixture);
+    const disposition = confirmedDisposition(confirmed) as
+      | "accepted"
+      | "reviewed";
+    const restoring = withAcknowledgedGuidanceText(stale, {
+      disposition,
+      version: CURRENT_GUIDANCE_VERSION,
+    });
+    const other = withAcknowledgedGuidanceText(stale, {
+      disposition: disposition === "reviewed" ? "accepted" : "reviewed",
+      version: CURRENT_GUIDANCE_VERSION,
+    });
+    const target = {
+      commonGitDirectory: join(fixture.root, ".git"),
+      primaryCheckout: fixture.root,
+      source: "repository",
+    } as const;
+    expect(restoring).toBe(confirmed);
+    expect(acknowledgementRaisesTrust(path, stale, restoring, target)).toBe(
+      true
+    );
+    expect(acknowledgementRaisesTrust(path, stale, other, target)).toBe(false);
+
+    // The policy vanishing mid-check must not turn the refusal into a write.
+    unlinkSync(path);
+    expect(acknowledgementRaisesTrust(path, stale, restoring, target)).toBe(
+      true
+    );
+    writeFileSync(path, stale);
+
+    // A receipt that cannot be read might bind anything, so it refuses.
+    const receiptPath = trustReceiptPath(fixture);
+    const receipt = readFileSync(receiptPath, "utf8");
+    writeFileSync(receiptPath, "{not json");
+    expect(acknowledgementRaisesTrust(path, stale, other, target)).toBe(true);
+    writeFileSync(receiptPath, receipt);
+
+    // With no receipt at all, nothing the write produces can be trusted.
+    unlinkSync(receiptPath);
+    expect(acknowledgementRaisesTrust(path, stale, restoring, target)).toBe(
+      false
+    );
   });
 
   test("an ordinary confirmed policy may return to its confirmed bytes", () => {

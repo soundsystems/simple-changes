@@ -319,7 +319,11 @@ the two exact commands for the user.
 It pushes only to the run's target remote, and only when exactly one bound
 remote names the run's target, it is the remote holds and readback follow,
 and it has exactly one URL, the same for fetch and push, matching the URL the
-run is bound to. It checks remote tags with `git ls-remote` and local tags, treating
+run is bound to. That URL must not depend on the directory Git runs in, since
+holds are read from the primary checkout and the tag is pushed from the
+controller's: a local path must be absolute (`../origin.git`, `./origin.git`,
+`origin.git`, and `~/origin.git` are refused), and a `file://` URL must be
+`file:///<absolute path>`. It checks remote tags with `git ls-remote` and local tags, treating
 an exact name, a parent name (`release` blocks `release/1.2.0`), or a child
 name (`v1.2.0/build45` blocks `v1.2.0`) as taken. Apply then confirms the
 target is still current: contained in the refreshed branch for a
@@ -345,7 +349,7 @@ pairs:
 | `release-not-crossed` | `await-release-authority` | The gate does not allow publication yet |
 | `tag-automation-unreviewed` | `review-tag-automation` | Inventory what a tag push starts first |
 | `shipment-hold` | `resolve-hold` | A ship, deploy, or migrations hold blocks it |
-| `remote-not-single-url` | `push-manually` | The remote is not one bound URL |
+| `remote-not-single-url` | `push-manually` | The remote is not one bound, absolute URL |
 | `push-not-authorized` | `push-manually` | Policy never lets agents push |
 | `tag-exists-elsewhere` | `resolve-tag-conflict` | The name, or a parent or child name, is taken |
 | `local-tag-conflict` | `resolve-tag-conflict` | Only a local tag holds the name |
@@ -363,8 +367,9 @@ reports `already-present`. A rejected push is never retried another way:
 report Git's own message, then the user pushes with sufficient rights,
 adjusts your Git host's tag protection or tag rules, or sets the repository
 to stop tagging. For `remote-not-single-url` no push command is printed,
-since a push through that remote would reach every one of its URLs: give the
-remote one URL and re-run, or publish the tag to the one intended
+since a push through that remote could reach every one of its URLs, or
+another repository from another checkout: give the remote one absolute URL
+and re-run, or publish the tag to the one intended
 destination by hand. Where the host supports it, protect the release tag pattern
 (for example `v*`). A deployment that fails after the push keeps the tag: an
 exact retry reuses the version, and new code gets a new version and tag. A

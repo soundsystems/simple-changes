@@ -170,10 +170,73 @@ const manualCommandsFor = (
 
 const short = (revision: string): string => revision.slice(0, 12);
 
-// A push through a remote with several URLs reaches every one of them, so no
-// runnable push command is offered until the remote has one destination.
+// A push through a remote with several URLs reaches every one of them, and a
+// relative local URL reaches a different repository from each checkout, so
+// no runnable push command is offered until the remote has one destination.
 const SINGLE_URL_ADVICE =
-  "Give the remote one URL for fetch and push and re-run release-tag, or publish the tag yourself to the one intended destination.";
+  "Give the remote one absolute URL for fetch and push and re-run release-tag, or publish the tag yourself to the one intended destination.";
+
+const URL_HELPER_PATTERN = /^[A-Za-z][A-Za-z0-9+.-]*::/u;
+const URL_SCHEME_PATTERN = /^[A-Za-z][A-Za-z0-9+.-]*:\/\//u;
+const FILE_URL_PATTERN = /^file:\/\//iu;
+const FILE_URL_ABSOLUTE_PATTERN = /^file:\/\/(?:localhost)?\//iu;
+const WINDOWS_DRIVE_PATTERN = /^[A-Za-z]:/u;
+const WINDOWS_ABSOLUTE_PATTERN = /^(?:[A-Za-z]:[\\/]|[\\/]{2})/u;
+
+/**
+ * Why a remote URL could reach a different repository depending on where
+ * Git runs, or null when every checkout resolves it alike. The tag is pushed
+ * and read back from the controller's checkout while published holds are
+ * read from the primary checkout, so a destination must not depend on the
+ * working directory. Classified as Git classifies it:
+ *
+ * - `<helper>::<address>` hands the address to `git remote-<helper>`, which
+ *   runs from the same directory, so the address is checked the same way;
+ * - `file://` uses only what follows the next `/` as an absolute path,
+ *   silently dropping a relative-looking `file://../repo.git`, so only
+ *   `file:///path` and `file://localhost/path` are accepted;
+ * - other `<scheme>://` URLs name a network destination;
+ * - with no `://`, a URL without a `:`, or with a `/` before its first `:`
+ *   (or, on Windows, a drive letter), is a local path and must be absolute:
+ *   `../repo.git`, `./repo.git`, `repo.git`, `dir/x:y`, and `~/repo.git`
+ *   are refused; anything else is scp-like `host:path`, resolved on the
+ *   remote host.
+ */
+export const workingDirectoryDependentUrl = (
+  remoteUrl: string,
+  platform: NodeJS.Platform = process.platform
+): string | null => {
+  const url = credentialFreeRemoteUrl(remoteUrl);
+  const helper = URL_HELPER_PATTERN.exec(url);
+  if (helper) {
+    return workingDirectoryDependentUrl(url.slice(helper[0].length), platform);
+  }
+  const windows = platform === "win32";
+  if (FILE_URL_PATTERN.test(url)) {
+    // Git for Windows also reads file://C:/repo as a drive path.
+    return FILE_URL_ABSOLUTE_PATTERN.test(url) ||
+      (windows && WINDOWS_ABSOLUTE_PATTERN.test(url.slice("file://".length)))
+      ? null
+      : `${url} is a file URL without an absolute path right after file://, so Git would use a path other than the one written`;
+  }
+  if (URL_SCHEME_PATTERN.test(url)) {
+    return null;
+  }
+  const colon = url.indexOf(":");
+  const slash = url.indexOf("/");
+  const local =
+    colon < 0 ||
+    (slash >= 0 && slash < colon) ||
+    (windows && WINDOWS_DRIVE_PATTERN.test(url));
+  if (!local) {
+    return null;
+  }
+  const absolute =
+    url.startsWith("/") || (windows && WINDOWS_ABSOLUTE_PATTERN.test(url));
+  return absolute
+    ? null
+    : `${url} is not an absolute local path, so each checkout could resolve it to a different repository`;
+};
 
 const URL_CREDENTIALS_PATTERN = /(\b[a-z][a-z0-9+.-]*:\/\/)[^/@\s]+@/giu;
 
@@ -287,6 +350,10 @@ const singleUrlProblem = (
     pushUrls[0] !== fetchUrl
   ) {
     return `Remote ${target.remote} must have exactly one URL, the same for fetch and push; it has ${fetchUrls.length} fetch and ${pushUrls.length} push URL(s).`;
+  }
+  const dependent = workingDirectoryDependentUrl(fetchUrl);
+  if (dependent) {
+    return `Remote ${target.remote} uses ${dependent}: holds are read from the primary checkout while the tag is pushed and read back from this one.`;
   }
   const binding = lease.remoteBindings?.find(
     (candidate) => candidate.name === target.remote

@@ -15,6 +15,7 @@ import { changelogReceiptDigest } from "../../../skills/simple-changes/scripts/l
 import {
   type ReleaseTagInput,
   runReleaseTag,
+  workingDirectoryDependentUrl,
 } from "../../../skills/simple-changes/scripts/lib/release-tag.ts";
 import {
   addShipHold,
@@ -814,7 +815,7 @@ describe("release-tag destinations", () => {
       });
       // A push through this remote would reach both URLs, so none is offered.
       expect(receipt.manualCommands).toEqual([]);
-      expect(receipt.reason).toContain("Give the remote one URL");
+      expect(receipt.reason).toContain("Give the remote one absolute URL");
     };
     expectRefused(await run(verified(fixture), { dryRun: true }));
     expectRefused(await run(verified(fixture)));
@@ -879,6 +880,148 @@ describe("release-tag destinations", () => {
       "remote-destination-changed"
     );
     expect(remoteTags(other)).toEqual({});
+  });
+
+  test("classifies remote URLs as Git resolves them", () => {
+    const dependent = (url: string, platform: NodeJS.Platform = "darwin") =>
+      workingDirectoryDependentUrl(url, platform) !== null;
+    // Local paths Git resolves from the working directory.
+    for (const url of [
+      "../origin.git",
+      "./origin.git",
+      "./../origin.git",
+      "origin.git",
+      "repos/origin.git",
+      "./x:y/origin.git",
+      "dir/x:y",
+      "~/origin.git",
+      "file://../origin.git",
+      "file://./origin.git",
+      "file://origin.git",
+      "file://server/srv/git/origin.git",
+      "gcrypt::../origin.git",
+    ]) {
+      expect({ dependent: dependent(url), url }).toEqual({
+        dependent: true,
+        url,
+      });
+    }
+    // Absolute local paths and destinations named by a host.
+    for (const url of [
+      "/srv/git/origin.git",
+      "file:///srv/git/origin.git",
+      "file://localhost/srv/git/origin.git",
+      "git@git.example.com:group/project.git",
+      "host:../origin.git",
+      "C:relative",
+      "ssh://git.example.com/group/project.git",
+      "https://user:secret@git.example.com/group/project.git",
+      "git://git.example.com/project.git",
+      "codecommit::us-east-1://project",
+    ]) {
+      expect({ dependent: dependent(url), url }).toEqual({
+        dependent: false,
+        url,
+      });
+    }
+    // Git for Windows reads a drive letter as a local path.
+    for (const url of ["C:relative", "origin.git", "..\\origin.git"]) {
+      expect(dependent(url, "win32")).toBe(true);
+    }
+    for (const url of [
+      "C:\\repos\\origin.git",
+      "C:/repos/origin.git",
+      "\\\\server\\share\\origin.git",
+      "file://C:/repos/origin.git",
+      "file:///C:/repos/origin.git",
+    ]) {
+      expect(dependent(url, "win32")).toBe(false);
+    }
+  });
+
+  test("refuses a relative remote URL that a linked controller worktree resolves to another repository", async () => {
+    // The primary checkout is base/repo and the controller works in the
+    // linked worktree base/ship/repo, so origin = ../origin.git reaches
+    // base/origin.git from the primary and base/ship/origin.git from the
+    // controller. Both hold the verified commit; only the controller's
+    // destination carries a deploy hold, and holds are read from the
+    // primary checkout.
+    const fixture = releaseFixture();
+    const ship = join(fixture.base, "ship");
+    mkdirSync(ship);
+    const shipBare = join(ship, "origin.git");
+    git(fixture.base, ["clone", "--quiet", "--bare", fixture.bare, shipBare]);
+    git(fixture.root, ["remote", "set-url", "origin", "../origin.git"]);
+    const controller = join(ship, "repo");
+    git(fixture.root, [
+      "worktree",
+      "add",
+      "--quiet",
+      "-b",
+      "controller",
+      controller,
+      "main",
+    ]);
+    const holder = join(fixture.base, "holder");
+    git(fixture.base, ["clone", "--quiet", shipBare, holder]);
+    git(holder, ["config", "user.name", "Holder"]);
+    git(holder, ["config", "user.email", "holder@simple-changes.invalid"]);
+    const hold = addShipHold(holder, {
+      adapter: "codex",
+      agentId: "holder",
+      reason: "Hold deploys on the controller's destination",
+      scope: "deploy",
+      severity: "delay",
+    });
+    publishShipHold(holder, { agentId: "holder", holdId: hold.holdId });
+    const holdRefs = (checkout: string) =>
+      git(checkout, ["ls-remote", "origin", "refs/simple-changes/holds/*"]);
+    expect(holdRefs(fixture.root)).toBe("");
+    expect(holdRefs(controller)).toContain(hold.holdId);
+
+    const lease = startLoop(controller, CONTROLLER, "ship");
+    expect(lease.targetRef).toBe("origin/main");
+    const run = (overrides: Partial<ReleaseTagInput> = {}) =>
+      runReleaseTag({
+        agentId: CONTROLLER,
+        alreadyLive: false,
+        dryRun: false,
+        productionAuthorized: true,
+        productionDeploy: "ask",
+        repositoryPath: controller,
+        runId: lease.runId,
+        tagAutomationAuthorized: true,
+        ...verified(fixture),
+        ...overrides,
+      });
+    const expectRefused = (receipt: Awaited<ReturnType<typeof run>>) => {
+      expect(receipt).toMatchObject({
+        manualCommands: [],
+        reasonCode: "remote-not-single-url",
+        requiredAction: "push-manually",
+        status: "blocked",
+      });
+      expect(receipt.reason).toContain(
+        "../origin.git is not an absolute local path"
+      );
+    };
+    expectRefused(await run({ dryRun: true }));
+    expectRefused(await run());
+    expect(remoteTags(fixture.bare)).toEqual({});
+    expect(remoteTags(shipBare)).toEqual({});
+    expect(localTagRef(controller, "v1.4.0")).toBeNull();
+  });
+
+  test("refuses a relative remote URL from the primary checkout too", async () => {
+    const fixture = releaseFixture();
+    git(fixture.root, ["remote", "set-url", "origin", "../origin.git"]);
+    const run = withRun(fixture);
+    const receipt = await run(prepared(fixture), { dryRun: true });
+    expect(receipt).toMatchObject({
+      reasonCode: "remote-not-single-url",
+      status: "blocked",
+    });
+    expect(receipt.reason).toContain("is not an absolute local path");
   });
 
   test("refuses a target ref that two bound remotes could name", async () => {

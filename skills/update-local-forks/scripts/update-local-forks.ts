@@ -951,15 +951,18 @@ const verifyReleaseTag = (
 ): { commit: string; reason: string } | { failure: string } | null => {
   const tag = `v${version}`;
   const tagRef = releaseTagRef(upstream, url, tag);
-  const commit = tagRef
-    ? git(
-        upstream.gitDirectory,
-        ["rev-parse", "--verify", "--quiet", `${tagRef}^{commit}`],
-        true
-      ).trim()
-    : "";
-  if (!commit) {
+  const revision = (spec: string): string =>
+    git(
+      upstream.gitDirectory,
+      ["rev-parse", "--verify", "--quiet", spec],
+      true
+    ).trim();
+  if (!(tagRef && revision(tagRef))) {
     return null;
+  }
+  const commit = revision(`${tagRef}^{commit}`);
+  if (!commit) {
+    return { failure: `tag ${tag} does not point to a commit` };
   }
   const onFirstParent = git(
     upstream.gitDirectory,

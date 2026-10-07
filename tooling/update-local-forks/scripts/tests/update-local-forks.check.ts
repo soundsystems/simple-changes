@@ -2788,6 +2788,22 @@ describe("update-local-forks release-tag shortcut", () => {
     );
   });
 
+  test("says why a tag that names no commit was not used", () => {
+    const fixture = createFixture();
+    const { entry, merge, released } = releaseThroughSideBranch(fixture);
+    const tree = git(fixture.upstream, ["rev-parse", `${merge}^{tree}`]);
+    git(fixture.upstream, ["tag", "v0.3.0", tree]);
+    const plan = planForkUpdate({
+      fork: fixture.fork,
+      source: released,
+      upstream: fixture.upstream,
+    });
+    expect(plan.pinUpdate.to).toBe(merge);
+    expect(plan.pinUpdate.reason).toBe(
+      `byte-identical tree at ${merge.slice(0, 12)}, after the 0.3.0 release entry ${entry.slice(0, 12)} on main (tag v0.3.0 does not point to a commit, so the release history was searched instead)`
+    );
+  });
+
   test("never pins an unverified tagged commit when the search finds nothing", () => {
     const fixture = createFixture();
     const { merge, released } = releaseThroughSideBranch(fixture);

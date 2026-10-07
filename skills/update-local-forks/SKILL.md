@@ -44,9 +44,10 @@ saved plan, and it never commits, pushes, or runs a fork's scripts.
    fork-only files stay untouched, which files conflict, which upstream
    references the fork omits without a record (these hold the pin), and which
    upstream changes the fork omits on record and should be re-checked. Show
-   the literal rewrites (provenance pin, guidance version, upstream version)
-   the plan will make in the fork's own tests and notes. Present every fork's
-   plan together, with
+   where the plan moves the provenance pin in the fork's own tests and notes,
+   and the version literals it lists for the user to change by hand: each
+   fork-owned line naming the old guidance version or upstream version, with
+   a suggested replacement. Present every fork's plan together, with
    the step 7 handoff (queue, integrate, or ship) proposed for each
    repository, so the user can approve all, none, or named forks and their
    handoffs in one reply. Wait for approval; a plan with conflicts still
@@ -63,12 +64,15 @@ saved plan, and it never commits, pushes, or runs a fork's scripts.
    carry the file, or list it with its reason under `## Intentional
    omissions` in the fork's `references/fork-maintenance.md` (that section
    defines the record), then plan again. Until none remain, `plan` and
-   `apply` exit 3 and the pin and `SKILL.md` stay where they are. Review items
-   are upstream files the fork deliberately omits; confirm each omission still
-   holds, or port the change.
-   A review item on a fork-owned script or manifest means that file gates the
-   runtime behind its own list of commands and does not name one this update
-   added; extend the gate, or record why the fork withholds that command.
+   `apply` exit 3 and the pin and `SKILL.md` stay where they are. A review
+   item on an upstream file the fork deliberately omits asks you to confirm
+   the omission still holds, or port the change.
+   A review item that names a command this update added means a fork-owned
+   script or manifest gates the runtime behind its own list of commands;
+   extend the gate, or record why the fork withholds that command.
+   A review item listing version literals names lines that still say the old
+   guidance or upstream version; change by hand each one that states the
+   fork's current version, and keep a minimum or a past release as written.
    Follow the fork's classification rules in
    [fork sync](references/fork-sync.md).
 6. **Verify.** Run the fork's own checks (commonly `scripts/test.sh` beside
@@ -127,6 +131,6 @@ host support, work through the forks one at a time.
 ## Reports
 
 Report per fork: the pin movement, counts by action, every conflict,
-unrecorded omission, and review item with its reason, the literal rewrites
-made, and the exact next command. Say plainly when a fork was skipped as a linked worktree or left
+unrecorded omission, and review item with its reason, the pin rewrites
+made, the version literals left to change by hand, and the exact next command. Say plainly when a fork was skipped as a linked worktree or left
 untouched because the plan was not applied.

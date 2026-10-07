@@ -1,5 +1,97 @@
 # Developer changelog
 
+## 0.25.2 - 2026-10-06
+
+- `acknowledge-update` writes through a new `writeGuidanceAcknowledgement` in
+  `policy.ts`, which edits only `guidance.disposition` and `guidance.version`
+  in the file's own text. It used to serialize the loaded policy through
+  `writePolicyFile`.
+  - Loading fills in defaults for missing keys and, without a matching trust
+    receipt, reduces elevated settings: push `configure-harness` to `ask`,
+    automatic migration to `ask-after-review` with its targets cleared,
+    production `allow` to `ask`, and shipping to `standard`. The old path
+    saved those reduced values, and it appended the defaults even to trusted
+    policies.
+  - The editor scans the JSON so it edits the key `JSON.parse` reads (the last
+    duplicate) and inserts a missing `disposition` before the first guidance
+    key in that object's own spacing. It writes nothing unless the edited text
+    parses to the saved object with only those two values changed and passes
+    the schema. A file that is not valid UTF-8 is refused unchanged.
+  - `acknowledgeGuidanceUpdate(policy, …)` is replaced by
+    `acknowledgedGuidance(disposition)`, which returns only the guidance
+    record. The trust receipt is not renewed, as before, and the file mode is
+    still reset to `0644` (`0600` for personal preferences).
+  - Against Pulse's file from before its acknowledgement, the command now
+    produces the bytes of the hand edit in `8f3d332`, for both a trusted and an
+    untrusted copy. Downstream forks recorded guidance 26 by hand because of
+    this defect.
+  - Preserving bytes made a new escalation possible: changing only the
+    guidance version of a confirmed policy left it untrusted with its receipt
+    in place, and acknowledging could write those confirmed bytes back and
+    restore its authority without setup. For a repository policy with
+    elevated settings, the writer now refuses, exiting 5 and writing nothing,
+    whenever the receipt's digest could match the bytes it would write; an
+    ordinary policy may still return to its confirmed bytes. An
+    acknowledgement that changes nothing writes nothing and reports
+    `written: false`,
+    the policy is re-read just before the atomic replace and refused if it
+    changed or was removed, and outside a loop setup and `acknowledge-update`
+    take the repository lock the loop already uses, so a concurrent setup
+    cannot publish a receipt mid-write. A receipt that cannot be read blocks
+    an acknowledgement that requests elevated authority until setup rewrites
+    it. No receipt is ever created, renewed, or removed by an
+    acknowledgement, and `loadPolicy` keeps its 0.25.1 receipt check.
+- `update-local-forks` drops automatic version-literal rewrites.
+  - Each fork-owned line holding `Simple Changes <old>` or
+    `CURRENT_GUIDANCE_VERSION = <old>` is listed with its line number, the line
+    as written, and a suggested replacement. A file listed only for these
+    becomes a `review` entry. A merge, update, or conflict entry keeps its
+    action and carries the list in its reason, and a conflict reads the live
+    file. The plan format and schema are unchanged.
+  - Carried files, byte-identical to upstream at the pin or in the installed
+    release, keep upstream's bytes and are never listed, including with a
+    pending `.upstream-merge` sidecar. A line in a fork-edited file that
+    repeats upstream's text is not listed either.
+  - The pin rewrite matches 0.25.1 except that it skips carried files, and
+    record detection is unchanged.
+  - Apply refuses, before writing anything, a saved plan that rewrites a
+    version literal or a file the plan marks `current`.
+  - Re-pinning Patrick and Pulse from 0.25.0 to 0.25.1 had proposed changing
+    the carried `references/focused-units.md` line "Simple Changes 0.25.0 or
+    later". An attempt to recognize minimum-version wording was replaced by
+    this listing after xhigh reviews kept finding new forms. A simulated
+    0.25.1 to 0.25.2 plan lists one line each for Hash, Patrick, and Pulse,
+    and two for Site Secure, which is still pinned at 0.23.1.
+- Tests:
+  - `tooling/simple-changes/tests/guidance-acknowledgement.test.ts` (19
+    tests) covers:
+    - untrusted elevated settings surviving byte for byte;
+    - the stale-receipt refusal built with a real setup, and the receipt
+      check refusing an unreadable receipt;
+    - a deleted, edited, or concurrently replaced policy, the no-op path, and
+      the lock against a real concurrent setup;
+    - unchanged run authority;
+    - formatting cases: tabs, CRLF, missing trailing newlines, key order,
+      compact objects, duplicate keys, and look-alike strings;
+    - trusted receipts;
+    - personal preferences;
+    - UTF-8 refusal.
+  - The 36 `update-local-forks` checks cover:
+    - carried files;
+    - every listed form: CRLF, invalid UTF-8, indentation, merged content,
+      conflicts, and raw-line records;
+    - sidecars;
+    - the old pin in a carried file;
+    - saved-plan refusals;
+    - the pin still moving.
+  - Mutation runs killed every mutant of the new logic.
+- Reviews (GPT-6.1 Sol):
+  - The acknowledgement fix passed its high review with no findings. The
+    release review then found the stale-receipt escalation, and four xhigh
+    rounds narrowed it to the final design, approved with no findings.
+  - The final xhigh review of the listing design found nothing.
+<!-- simple-changelogs-signature agent="Claude Opus 5.5 xhigh" at="2026-10-06T19:45:00-05:00" -->
+
 ## 0.25.1 - 2026-10-05
 
 - `update-local-forks` `locateSourceCommit` no longer checks only the commit

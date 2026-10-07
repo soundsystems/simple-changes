@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.25.2 - 2026-10-06
+
+- `acknowledge-update` now records a guidance decision by changing only the
+  `guidance` disposition and version in `.simple-changes.json`. Every other
+  saved byte stays as written, including your settings, key order, spacing,
+  and line endings. It used to save the settings in effect for that run, so a
+  policy this clone had not confirmed lost its elevated settings (push
+  `configure-harness` was saved as `ask`) and gained default fields such as
+  `proposalScheduling`. Acknowledging still grants no authority. Repeating
+  the decision already recorded writes nothing, so a confirmed policy stays
+  confirmed. For a policy with elevated settings, a new decision changes the
+  bytes its trust receipt covers, so setup must confirm it again, and one that
+  would turn an unconfirmed file back into bytes an earlier receipt confirmed
+  is refused, with nothing written; run setup to confirm the policy instead.
+  Setup and `acknowledge-update` now take the repository lock outside a loop
+  too, so either can fail as busy while the other runs.
+- `update-local-forks` no longer rewrites version text in a fork. Each
+  fork-owned line that names the previous Simple Changes release, or the
+  previous `CURRENT_GUIDANCE_VERSION`, is listed in the plan with its line
+  number and a suggested replacement, and you change it by hand. Most forks
+  have one such line, in a test that checks the bundled version. Files the
+  fork carries unchanged from upstream take upstream's new bytes and are never
+  listed, so a carried line such as "Simple Changes 0.25.0 or later" keeps its
+  meaning. Plan again instead of applying a plan saved by 0.25.1 that rewrites
+  version text or a file it marks current; apply refuses it.
+<!-- simple-changelogs-signature agent="Claude Opus 5.5 xhigh" at="2026-10-06T19:45:00-05:00" -->
+
 ## 0.25.1 - 2026-10-05
 
 - `update-local-forks` now moves a fork's pin when a release received review

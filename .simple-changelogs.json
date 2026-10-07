@@ -2,8 +2,8 @@
   "schemaVersion": 1,
   "distribution": "skill-repository",
   "guidance": {
-    "backfillStatus": "completed",
-    "version": 13
+    "backfillStatus": "not-applicable",
+    "version": 15
   },
   "developerChangelog": "required",
   "signatures": "agent-and-timestamp",

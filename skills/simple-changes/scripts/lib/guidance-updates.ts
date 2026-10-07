@@ -921,13 +921,13 @@ export const inspectGuidanceUpdate = (
   };
 };
 
-export const acknowledgeGuidanceUpdate = (
-  policy: RepoPolicy,
+/**
+ * The guidance record an acknowledgement saves. Only these two values change
+ * in the saved policy; see `writeGuidanceAcknowledgement`.
+ */
+export const acknowledgedGuidance = (
   disposition: RepoPolicy["guidance"]["disposition"]
-): RepoPolicy => ({
-  ...policy,
-  guidance: {
-    disposition,
-    version: CURRENT_GUIDANCE_VERSION,
-  },
+): RepoPolicy["guidance"] => ({
+  disposition,
+  version: CURRENT_GUIDANCE_VERSION,
 });

@@ -33,6 +33,7 @@ import {
   inspectFork,
   intentionalOmissions,
   openUpstream,
+  type PlanEntry,
   planForkUpdate,
   releaseWindow,
   rewriteLiteral,
@@ -446,6 +447,79 @@ const releaseThroughSideBranch = (fixture: Fixture) => {
   };
 };
 
+const CARRIED_FILES = {
+  "references/focused-units.md": [
+    "# Focused units",
+    "",
+    "Finish, end, or archive a run that",
+    "recorded an override only with Simple Changes 0.2.0 or later: an older runtime",
+    "still reads its lease but ignores the override file.",
+    "",
+  ].join("\n"),
+  "references/lease.md": [
+    "# Lease",
+    "",
+    "Simple Changes 0.2.0 reads the override file before the lease.",
+    "",
+  ].join("\n"),
+  "scripts/lib/release.ts": 'export const RELEASE = "Simple Changes 0.2.0";\n',
+};
+
+/**
+ * The 0.25.0 to 0.25.1 re-pin: an in-place fork cut from a 0.2.0 commit that
+ * adds the carried references, and a 0.3.0 release that changes only the
+ * runtime, so the fork carries those references across the update unchanged.
+ */
+const repinFixture = (
+  forkFiles: (pin: string) => Record<string, string>
+): Fixture => {
+  const fixture = createFixture();
+  const pin = commitPackage(
+    fixture.upstream,
+    "docs: Add the override notes",
+    CARRIED_FILES
+  );
+  const fork = join(
+    fixture.base,
+    "Developer",
+    "repin",
+    "skills",
+    "acme-simple-changes"
+  );
+  cpSync(join(fixture.upstream, "skills/simple-changes"), fork, {
+    recursive: true,
+  });
+  write(
+    fork,
+    "SKILL.md",
+    `---\nname: acme-simple-changes\n---\n\n# Acme Simple Changes\n\nForked from \`simple-changes\` @ \`${pin}\`. Acme-specific deltas: none.\n\nIntro line, revised.\n\n## Rules\n\nRule one.\n`
+  );
+  for (const [path, contents] of Object.entries(forkFiles(pin))) {
+    write(fork, path, contents);
+  }
+  const release = commitPackage(
+    fixture.upstream,
+    "chore(release): Publish Simple Changes 0.3.0",
+    {
+      "CHANGELOG.md": changelogThrough("0.3.0", "0.2.0", "0.1.0"),
+      "scripts/lib/core.ts": "export const core = 3;\n",
+    }
+  );
+  return {
+    ...fixture,
+    fork,
+    pin,
+    release,
+    source: installSnapshot(fixture, "repin"),
+  };
+};
+
+/** The line numbers an entry lists as version literals to change by hand. */
+const listedLines = (entry: PlanEntry | undefined): number[] =>
+  [...(entry?.reason ?? "").matchAll(/\bline (\d+): /gu)].map((match) =>
+    Number(match[1])
+  );
+
 describe("update-local-forks", () => {
   test("discovers installed sources and forks, flagging linked worktrees", () => {
     const fixture = createFixture();
@@ -595,11 +669,13 @@ describe("update-local-forks", () => {
       upstream: fixture.upstream,
     });
     expect(resolved.pinUpdate.to).toBe(fixture.release);
-    expect(
-      resolved.entries.find(
-        (entry) => entry.forkPath === "scripts/simple-changes-runtime.sh"
-      )?.action
-    ).toBe("keep-fork-only");
+    // Only its version comment remains, listed for a maintainer.
+    const resolvedGate = resolved.entries.find(
+      (entry) => entry.forkPath === "scripts/simple-changes-runtime.sh"
+    );
+    expect(resolvedGate?.action).toBe("review");
+    expect(resolvedGate?.reason).not.toContain("prune");
+    expect(listedLines(resolvedGate)).toEqual([2]);
     applyForkPlan(resolved);
     expect(
       planForkUpdate({
@@ -642,7 +718,8 @@ describe("update-local-forks", () => {
     // The stock wrapper execs the runtime without enumerating any command, so
     // it gates nothing and the new upstream command is not its problem.
     expect(byPath["scripts/simple-changes-runtime.sh"]).toBe("keep-fork-only");
-    expect(byPath["notes.md"]).toBe("keep-fork-only");
+    // The note is listed only for its version literal, never as a gate.
+    expect(byPath["notes.md"]).toBe("review");
   });
 
   test("plans and applies an update that keeps every fork delta", () => {
@@ -666,7 +743,7 @@ describe("update-local-forks", () => {
       to: fixture.release,
     });
     expect(byPath).toMatchObject({
-      "notes.md": "keep-fork-only",
+      "notes.md": "review",
       "references/deployments.md": "review",
       "references/obsolete.md": "delete",
       "references/signatures.md": "review",
@@ -678,23 +755,38 @@ describe("update-local-forks", () => {
       "SKILL.md": "merge",
       "SPEC.md": "conflict",
       "scripts/simple-changes-runtime.sh": "keep-fork-only",
+      "scripts/test.sh": "review",
     });
     expect(
       plan.entries.find((entry) => entry.upstreamPath === "CHANGELOG.md")
         ?.action
     ).toBe("skip");
-    expect(plan.literalRewrites).toHaveLength(4);
-    expect(
-      plan.literalRewrites.some((rewrite) => rewrite.to === fixture.release)
-    ).toBe(true);
+    // Only the pin moves; each version literal is listed with a suggestion.
+    expect(plan.literalRewrites).toEqual([
+      expect.objectContaining({
+        forkPath: "scripts/test.sh",
+        from: fixture.pin,
+        to: fixture.release,
+      }),
+    ]);
+    const entryAt = (path: string) =>
+      plan.entries.find((candidate) => candidate.forkPath === path);
+    expect(entryAt("scripts/test.sh")?.reason).toBe(
+      "Update by hand each version literal that states the fork's current version, and keep a minimum or a past release as written: line 3: `grep -q 'CURRENT_GUIDANCE_VERSION = 1' runtime/scripts/lib/guidance-updates.ts` -> `grep -q 'CURRENT_GUIDANCE_VERSION = 2' runtime/scripts/lib/guidance-updates.ts`; line 4: `grep -q 'Simple Changes 0.1.0' notes.md` -> `grep -q 'Simple Changes 0.2.0' notes.md`. The plan still moves the pin in this file."
+    );
+    expect(entryAt("notes.md")?.reason).toBe(
+      "Update by hand each version literal that states the fork's current version, and keep a minimum or a past release as written: line 1: `Bundled Simple Changes 0.1.0.` -> `Bundled Simple Changes 0.2.0.`."
+    );
 
     const receipt = applyForkPlan(plan);
 
     expect(receipt.conflicts).toEqual(["SPEC.md"]);
     expect(receipt.deleted).toEqual(["references/obsolete.md"]);
     expect([...receipt.review].sort((a, b) => a.localeCompare(b))).toEqual([
+      "notes.md",
       "references/deployments.md",
       "references/signatures.md",
+      "scripts/test.sh",
     ]);
     const skill = readFileSync(join(fixture.fork, "SKILL.md"), "utf8");
     expect(skill).toContain(
@@ -729,9 +821,10 @@ describe("update-local-forks", () => {
     );
     expect(testScript).toContain(fixture.release);
     expect(testScript).not.toContain(fixture.pin);
-    expect(testScript).toContain("CURRENT_GUIDANCE_VERSION = 2");
+    expect(testScript).toContain("CURRENT_GUIDANCE_VERSION = 1");
+    expect(testScript).toContain("'Simple Changes 0.1.0'");
     expect(readFileSync(join(fixture.fork, "notes.md"), "utf8")).toBe(
-      "Bundled Simple Changes 0.2.0.\n"
+      "Bundled Simple Changes 0.1.0.\n"
     );
 
     // Until the sidecar is merged and deleted, the file stays a review item;
@@ -1151,7 +1244,7 @@ describe("update-local-forks", () => {
     ).toMatchObject({ commit: fix, commitVerified: true });
   });
 
-  test("applies invalid UTF-8 byte for byte and moves only the literal", () => {
+  test("applies invalid UTF-8 byte for byte and moves only the pin", () => {
     const fixture = createFixture();
     const { upstream } = fixture;
     const skill = join(upstream, "skills/simple-changes");
@@ -1180,11 +1273,16 @@ describe("update-local-forks", () => {
     git(upstream, ["commit", "-q", "-m", "fix(core): Ship raw bytes"]);
     const shipped = git(upstream, ["rev-parse", "HEAD"]);
     const source = installSnapshot(fixture, "shipped");
-    // A fork-owned note that names the old release beside invalid UTF-8.
-    writeFileSync(
-      join(fixture.fork, "notes.md"),
-      bytes("Bundled Simple Changes 0.1.0 ", truncated, ".\n")
-    );
+    // A fork-owned note that names the old pin and release beside invalid UTF-8.
+    const note = (pinned: string): Buffer =>
+      bytes(
+        `Built on ${pinned} `,
+        truncated,
+        ".\nBundled Simple Changes 0.1.0 ",
+        truncated,
+        ".\n"
+      );
+    writeFileSync(join(fixture.fork, "notes.md"), note(fixture.pin));
 
     const plan = planForkUpdate({ fork: fixture.fork, source, upstream });
     expect(plan.pinUpdate.to).toBe(shipped);
@@ -1207,7 +1305,7 @@ describe("update-local-forks", () => {
     );
     expect(forkSkill.toString("latin1")).toContain("## Acme rules");
     expect(forkFile("notes.md").toString("hex")).toBe(
-      bytes("Bundled Simple Changes 0.2.0 ", truncated, ".\n").toString("hex")
+      note(shipped).toString("hex")
     );
     // The saved plan carries those bytes as base64, never as decoded text.
     const entry = (path: string) =>
@@ -1222,6 +1320,10 @@ describe("update-local-forks", () => {
     });
     expect(entry("SKILL.md")?.action).toBe("merge");
     expect(entry("SKILL.md")?.content).toBeUndefined();
+    // The listed line shows the text those bytes hold.
+    expect(entry("notes.md")?.reason).toContain(
+      "line 2: `Bundled Simple Changes 0.1.0 \uFFFD.` -> `Bundled Simple Changes 0.2.0 \uFFFD.`"
+    );
   });
 
   test("never verifies a release tree that names a path that is not valid UTF-8", () => {
@@ -1458,7 +1560,7 @@ describe("update-local-forks", () => {
     const invalid = createFixture();
     const notePath = join(invalid.fork, "notes.md");
     const note = Buffer.concat([
-      Buffer.from("Bundled Simple Changes 0.1.0 "),
+      Buffer.from(`Built on ${invalid.pin} `),
       Buffer.from([0xf0, 0x9f, 0x92]),
       Buffer.from(".\n"),
     ]);
@@ -1481,7 +1583,7 @@ describe("update-local-forks", () => {
     applyForkPlan(invalidPlan);
     expect(readFileSync(notePath).toString("hex")).toBe(
       Buffer.concat([
-        Buffer.from("Bundled Simple Changes 0.2.0 "),
+        Buffer.from(`Built on ${invalid.release} `),
         Buffer.from([0xf0, 0x9f, 0x92]),
         Buffer.from(".\n"),
       ]).toString("hex")
@@ -1621,7 +1723,7 @@ describe("update-local-forks", () => {
     expect(() => applyForkPlan(moved)).toThrow("fork identity changed");
   });
 
-  test("moves current literals and leaves the fork's own records as written", () => {
+  test("moves the pin and lists the release outside the fork's own records", () => {
     const fixture = createFixture();
     const { pin, release } = fixture;
     const recordPath = join(fixture.fork, "references/fork-maintenance.md");
@@ -1671,17 +1773,30 @@ describe("update-local-forks", () => {
           (rewrite) => rewrite.forkPath === "references/fork-maintenance.md"
         )
         .map((rewrite) => rewrite.to)
-        .sort((left, right) => left.localeCompare(right))
-    ).toEqual(
-      [release, "Simple Changes 0.2.0"].sort((left, right) =>
-        left.localeCompare(right)
-      )
-    );
+    ).toEqual([release]);
     expect(
       plan.literalRewrites.some(
         (rewrite) => rewrite.forkPath === "CHANGELOG.md"
       )
     ).toBe(false);
+    // Only the current line is listed; the history and changelog are not.
+    const noteLines = readFileSync(recordPath, "utf8").split("\n");
+    expect(
+      listedLines(
+        plan.entries.find(
+          (entry) => entry.forkPath === "references/fork-maintenance.md"
+        )
+      )
+    ).toEqual([
+      noteLines.indexOf(
+        `Pinned at \`${pin}\`, bundling Simple Changes 0.1.0.`
+      ) + 1,
+    ]);
+    expect(
+      listedLines(
+        plan.entries.find((entry) => entry.forkPath === "CHANGELOG.md")
+      )
+    ).toEqual([]);
     applyForkPlan(plan);
     expect(readFileSync(join(fixture.fork, "CHANGELOG.md"), "utf8")).toBe(
       forkChangelog
@@ -1689,7 +1804,7 @@ describe("update-local-forks", () => {
 
     const record = readFileSync(recordPath, "utf8");
     expect(record).toContain(
-      `Pinned at \`${release}\`, bundling Simple Changes 0.2.0.`
+      `Pinned at \`${release}\`, bundling Simple Changes 0.1.0.`
     );
     expect(record).toContain(
       `# History is not a heading inside a fence: ${release}`
@@ -1885,19 +2000,23 @@ describe("update-local-forks", () => {
             (rewrite) => rewrite.forkPath === "references/fork-maintenance.md"
           )
           .map((rewrite) => rewrite.to)
-          .sort((left, right) => left.localeCompare(right))
-      ).toEqual(
-        [release, "Simple Changes 0.2.0"].sort((left, right) =>
-          left.localeCompare(right)
-        )
-      );
+      ).toEqual([release]);
+      expect({
+        listed: listedLines(
+          plan.entries.find(
+            (entry) => entry.forkPath === "references/fork-maintenance.md"
+          )
+        ),
+        style,
+      }).toEqual({
+        listed: current.flatMap((line, index) =>
+          line.includes("Simple Changes 0.1.0") ? [index + 1] : []
+        ),
+        style,
+      });
       applyForkPlan(plan);
 
-      const moved = current.map((line) =>
-        line
-          .replaceAll(pin, release)
-          .replaceAll("Simple Changes 0.1.0", "Simple Changes 0.2.0")
-      );
+      const moved = current.map((line) => line.replaceAll(pin, release));
       expect({ note: readFileSync(notePath, "utf8"), style }).toEqual({
         note: [...moved, ...history].join("\n"),
         style,
@@ -1952,7 +2071,7 @@ describe("update-local-forks", () => {
     }
   });
 
-  test("keeps rewriting current sections whose headings name a release or the pin", () => {
+  test("reads current sections whose headings name a release or the pin as current", () => {
     const fixture = createFixture();
     const { pin, release } = fixture;
     const short = pin.slice(0, 7);
@@ -2019,15 +2138,22 @@ describe("update-local-forks", () => {
       upstream: fixture.upstream,
     });
     expect(plan.pinUpdate.to).toBe(release);
+    expect(
+      listedLines(
+        plan.entries.find(
+          (entry) => entry.forkPath === "references/fork-maintenance.md"
+        )
+      )
+    ).toEqual(
+      lines.flatMap(([line, current], index) =>
+        current && line.includes("Simple Changes 0.1.0") ? [index + 1] : []
+      )
+    );
     applyForkPlan(plan);
 
     expect(readFileSync(notePath, "utf8").split("\n")).toEqual(
       lines.map(([line, current]) =>
-        current
-          ? line
-              .replaceAll(pin, release)
-              .replaceAll("Simple Changes 0.1.0", "Simple Changes 0.2.0")
-          : line
+        current ? line.replaceAll(pin, release) : line
       )
     );
   });
@@ -2079,18 +2205,299 @@ describe("update-local-forks", () => {
       upstream: fixture.upstream,
     });
     expect(plan.pinUpdate.to).toBe(release);
+    const note = plan.entries.find(
+      (entry) => entry.forkPath === "references/fork-maintenance.md"
+    );
+    expect(listedLines(note)).toEqual(
+      lines.flatMap(([line, current], index) =>
+        current && line.includes("Simple Changes 0.1.0") ? [index + 1] : []
+      )
+    );
+    expect(note?.reason).not.toContain("\r");
     applyForkPlan(plan);
 
     expect(readFileSync(notePath, "utf8")).toBe(
       crlf(
         lines.map(([line, current]) =>
-          current
-            ? line
-                .replaceAll(pin, release)
-                .replaceAll("Simple Changes 0.1.0", "Simple Changes 0.2.0")
-            : line
+          current ? line.replaceAll(pin, release) : line
         )
       )
+    );
+  });
+
+  test("leaves carried files as upstream wrote them and lists each fork-owned version literal", () => {
+    const floor = [
+      "# Runtime floor",
+      "",
+      "This fork bundles Simple Changes 0.2.0.",
+      "",
+      "Every Acme controller needs at least Simple Changes 0.2.0, and a lease it",
+      "writes is read only by Simple Changes 0.2.0 or later.",
+      "",
+    ].join("\n");
+    // As in the real forks' test.sh: the pin moves, and every version check,
+    // current or a carried minimum, is the maintainer's to change.
+    const script = (forkPin: string) =>
+      [
+        "#!/bin/sh",
+        "set -eu",
+        `pin='${forkPin}'`,
+        'grep -qF "$pin" SKILL.md',
+        "version='Simple Changes 0.2.0'",
+        "grep -qF 'recorded an override only with Simple Changes 0.2.0 or later' references/focused-units.md",
+        "",
+      ].join("\n");
+    const fixture = repinFixture((forkPin) => ({
+      "references/runtime-floor.md": floor,
+      "scripts/test.sh": script(forkPin),
+    }));
+    const { fork, pin, release } = fixture;
+    const plan = planForkUpdate({
+      fork,
+      source: fixture.source,
+      upstream: fixture.upstream,
+    });
+    expect(plan.pinUpdate).toMatchObject({ from: pin, to: release });
+    const entry = (path: string) =>
+      plan.entries.find((candidate) => candidate.forkPath === path);
+
+    // Carried files stay current and are never listed.
+    for (const path of Object.keys(CARRIED_FILES)) {
+      expect({ entry: entry(path), path }).toMatchObject({
+        entry: {
+          action: "current",
+          reason: "Unchanged upstream and in the fork.",
+        },
+        path,
+      });
+    }
+    // Every fork-owned use is listed with a suggestion, whatever it states.
+    expect(entry("references/runtime-floor.md")).toMatchObject({
+      action: "review",
+    });
+    expect(listedLines(entry("references/runtime-floor.md"))).toEqual([
+      3, 5, 6,
+    ]);
+    expect(entry("scripts/test.sh")).toMatchObject({
+      action: "review",
+      reason:
+        "Update by hand each version literal that states the fork's current version, and keep a minimum or a past release as written: line 5: `version='Simple Changes 0.2.0'` -> `version='Simple Changes 0.3.0'`; line 6: `grep -qF 'recorded an override only with Simple Changes 0.2.0 or later' references/focused-units.md` -> `grep -qF 'recorded an override only with Simple Changes 0.3.0 or later' references/focused-units.md`. The plan still moves the pin in this file.",
+    });
+    expect(plan.literalRewrites).toEqual([
+      expect.objectContaining({
+        forkPath: "scripts/test.sh",
+        from: pin,
+        to: release,
+      }),
+    ]);
+
+    const receipt = applyForkPlan(plan);
+    expect(receipt.review).toEqual([
+      "references/runtime-floor.md",
+      "scripts/test.sh",
+    ]);
+    for (const path of Object.keys(CARRIED_FILES)) {
+      expect({ bytes: readFileSync(join(fork, path), "utf8"), path }).toEqual({
+        bytes: CARRIED_FILES[path as keyof typeof CARRIED_FILES],
+        path,
+      });
+    }
+    expect(
+      readFileSync(join(fork, "references/runtime-floor.md"), "utf8")
+    ).toBe(floor);
+    // Only the pin moved.
+    expect(readFileSync(join(fork, "scripts/test.sh"), "utf8")).toBe(
+      script(release)
+    );
+  });
+
+  test("lists only the fork's own lines in a file it edited, merges, or conflicts on", () => {
+    // In a file the fork edited, upstream's lines are upstream's.
+    const lease = CARRIED_FILES["references/lease.md"];
+    const edited = repinFixture(() => ({
+      "references/lease.md": `${lease}\n## Acme\n\nThis fork bundles Simple Changes 0.2.0.\n`,
+    }));
+    const editedPlan = planForkUpdate({
+      fork: edited.fork,
+      source: edited.source,
+      upstream: edited.upstream,
+    });
+    const leaseEntry = editedPlan.entries.find(
+      (candidate) => candidate.forkPath === "references/lease.md"
+    );
+    expect(leaseEntry?.action).toBe("review");
+    expect(listedLines(leaseEntry)).toEqual([7]);
+
+    // In content the plan merges, the fork's line is listed on the merge, at
+    // its line in the merged content; on a conflict, the live file's line,
+    // since that file stays as it is.
+    const fixture = createFixture();
+    const fixed = commitPackage(fixture.upstream, "docs: Add an intro line", {
+      "SKILL.md":
+        "---\nname: simple-changes\n---\n\n# Simple Changes\n\nIntro line, revised.\n\nSecond intro line.\n\n## Rules\n\nRule one.\n",
+    });
+    const source = installSnapshot(fixture, "second-intro");
+    write(
+      fixture.fork,
+      "SPEC.md",
+      "# Spec\n\n- guarantee a\n- guarantee b\n- acme guarantee for Simple Changes 0.1.0\n"
+    );
+    const skillPath = join(fixture.fork, "SKILL.md");
+    writeFileSync(
+      skillPath,
+      `${readFileSync(skillPath, "utf8")}\nBundled Simple Changes 0.1.0.\n`
+    );
+    // A line is shown as written, its bytes decoded whole, and records read
+    // the raw lines, as 0.25.1 does.
+    write(
+      fixture.fork,
+      "references/acme.md",
+      "# Acme\n\n  Bundled Simple Changes 0.1.0 \u00e0\n"
+    );
+    write(
+      fixture.fork,
+      "references/odd.md",
+      "```\ncode\n```\r\r\n## History\nSimple Changes 0.1.0\n"
+    );
+    const plan = planForkUpdate({
+      fork: fixture.fork,
+      source,
+      upstream: fixture.upstream,
+    });
+    const skill = plan.entries.find(
+      (candidate) => candidate.forkPath === "SKILL.md"
+    );
+    expect(skill?.action).toBe("merge");
+    expect(skill?.reason).toContain(
+      "line 21: `Bundled Simple Changes 0.1.0.` -> `Bundled Simple Changes 0.2.0.`"
+    );
+    expect(
+      plan.entries.find(
+        (candidate) => candidate.forkPath === "references/acme.md"
+      )?.reason
+    ).toBe(
+      "Update by hand each version literal that states the fork's current version, and keep a minimum or a past release as written: line 3: `  Bundled Simple Changes 0.1.0 \u00e0` -> `  Bundled Simple Changes 0.2.0 \u00e0`."
+    );
+    expect(
+      listedLines(
+        plan.entries.find(
+          (candidate) => candidate.forkPath === "references/odd.md"
+        )
+      )
+    ).toEqual([5]);
+    const spec = plan.entries.find(
+      (candidate) => candidate.forkPath === "SPEC.md"
+    );
+    expect(spec?.action).toBe("conflict");
+    expect(spec?.reason).toContain(
+      "line 5: `- acme guarantee for Simple Changes 0.1.0` -> `- acme guarantee for Simple Changes 0.2.0`"
+    );
+    applyForkPlan(plan);
+    const merged = readFileSync(skillPath, "utf8");
+    expect(merged).toContain("Bundled Simple Changes 0.1.0.");
+    expect(merged).toContain(`Forked from \`simple-changes\` @ \`${fixed}\``);
+  });
+
+  test("never moves the pin in a file the fork carries from the installed release", () => {
+    // A review fix after the release adds a note that names the old pin and
+    // release; the fork already carries the installed copy byte for byte.
+    const fixture = createFixture();
+    const note = `# Pin note\n\nCut after ${fixture.pin}, with Simple Changes 0.1.0.\n`;
+    const fixed = commitPackage(fixture.upstream, "docs: Note the old pin", {
+      "references/pin-note.md": note,
+    });
+    write(fixture.fork, "references/pin-note.md", note);
+    const plan = planForkUpdate({
+      fork: fixture.fork,
+      source: installSnapshot(fixture, "pin-note"),
+      upstream: fixture.upstream,
+    });
+    expect(plan.pinUpdate).toMatchObject({ from: fixture.pin, to: fixed });
+    expect(
+      plan.entries.find(
+        (candidate) => candidate.forkPath === "references/pin-note.md"
+      )
+    ).toMatchObject({
+      action: "current",
+      upstreamPath: "references/pin-note.md",
+    });
+    expect(plan.literalRewrites.map((rewrite) => rewrite.forkPath)).toEqual([
+      "scripts/test.sh",
+    ]);
+    applyForkPlan(plan);
+    expect(
+      readFileSync(join(fixture.fork, "references/pin-note.md"), "utf8")
+    ).toBe(note);
+  });
+
+  test("keeps a carried file that waits on its sidecar off the list", () => {
+    const fixture = repinFixture(() => ({
+      "references/lease.md.upstream-merge": "pending\n",
+    }));
+    const plan = planForkUpdate({
+      fork: fixture.fork,
+      source: fixture.source,
+      upstream: fixture.upstream,
+    });
+    expect(
+      plan.entries.find(
+        (candidate) => candidate.forkPath === "references/lease.md"
+      )
+    ).toMatchObject({
+      action: "review",
+      reason:
+        "An earlier upstream merge conflicted; merge references/lease.md.upstream-merge into this file by hand, then delete the sidecar.",
+    });
+    expect(
+      plan.literalRewrites.some(
+        (rewrite) => rewrite.forkPath === "references/lease.md"
+      )
+    ).toBe(false);
+  });
+
+  test("refuses a saved plan that rewrites a version literal or a carried file", () => {
+    const fixture = repinFixture((forkPin) => ({
+      "scripts/test.sh": `pin='${forkPin}'\nversion='Simple Changes 0.2.0'\n`,
+    }));
+    const { fork, pin, release } = fixture;
+    const plan = planForkUpdate({
+      fork,
+      source: fixture.source,
+      upstream: fixture.upstream,
+    });
+    const digest = (path: string) =>
+      createHash("sha256")
+        .update(readFileSync(join(fork, path)))
+        .digest("hex");
+    // A plan saved by 0.25.1 rewrote the release; this version only lists it.
+    const withVersion = structuredClone(plan);
+    withVersion.literalRewrites.push({
+      forkDigest: digest("scripts/test.sh"),
+      forkPath: "scripts/test.sh",
+      from: "Simple Changes 0.2.0",
+      to: "Simple Changes 0.3.0",
+    });
+    expect(() => applyForkPlan(withVersion)).toThrow(
+      "The plan rewrites `Simple Changes 0.2.0` in scripts/test.sh; version literals are now listed for review and changed by hand, so plan again with this version."
+    );
+    // Nor does a saved rewrite reach a file the plan carries from upstream.
+    const withCarried = structuredClone(plan);
+    withCarried.literalRewrites.push({
+      forkDigest: digest("references/lease.md"),
+      forkPath: "references/lease.md",
+      from: pin,
+      to: release,
+    });
+    expect(() => applyForkPlan(withCarried)).toThrow(
+      "references/lease.md is carried unchanged from upstream, so no literal in it moves; plan again with this version."
+    );
+    // Neither refusal wrote anything; the plan itself applies.
+    expect(readFileSync(join(fork, "scripts/test.sh"), "utf8")).toBe(
+      `pin='${pin}'\nversion='Simple Changes 0.2.0'\n`
+    );
+    applyForkPlan(plan);
+    expect(readFileSync(join(fork, "scripts/test.sh"), "utf8")).toBe(
+      `pin='${release}'\nversion='Simple Changes 0.2.0'\n`
     );
   });
 
@@ -2101,9 +2508,9 @@ describe("update-local-forks", () => {
       source: fixture.source,
       upstream: fixture.upstream,
     });
-    writeFileSync(join(fixture.fork, "notes.md"), "concurrent edit\n");
+    writeFileSync(join(fixture.fork, "scripts/test.sh"), "concurrent edit\n");
     expect(() => applyForkPlan(literalPlan)).toThrow(
-      "notes.md changed after the plan was made"
+      "scripts/test.sh changed after the plan was made"
     );
 
     const fresh = createFixture();
@@ -2300,5 +2707,7 @@ describe("update-local-forks", () => {
       expect(reference).toContain(action);
     }
     expect(reference).toContain("--skill update-local-forks");
+    expect(reference).toContain("never rewrites a version literal");
+    expect(skill).toContain("change by hand");
   });
 });

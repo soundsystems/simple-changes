@@ -1400,15 +1400,17 @@ const openSection = (
   parent.entries = kind === "entry" || (kind !== "current" && parent.entries);
 };
 
+/** A line split on LF, without the CR a CRLF file keeps on it. */
+const withoutCr = (line: string): string =>
+  line.endsWith("\r") ? line.slice(0, -1) : line;
+
 /**
  * Which lines are records. Lines come from splitting on LF, so a CRLF file's
  * lines keep a trailing CR; it is dropped for matching only, and the rewrite
  * keeps every line ending as written.
  */
 const recordLines = (forkPath: string, rawLines: string[]): boolean[] => {
-  const lines = rawLines.map((line) =>
-    line.endsWith("\r") ? line.slice(0, -1) : line
-  );
+  const lines = rawLines.map(withoutCr);
   if (!forkPath.endsWith(".md")) {
     return lines.map((line) => RANGE_PATTERN.test(line));
   }
@@ -1448,55 +1450,123 @@ export const rewriteLiteral = (
   return { content: next.join("\n"), rewritten };
 };
 
-const literalRewritesFor = (
-  fork: DiscoveredFork,
-  plannedContent: Map<string, string>,
+/** What the plan does with the literals a fork pins in its own files. */
+interface LiteralPlan {
+  /** Each fork-owned file's version literals, listed for a maintainer. */
+  review: Map<string, string[]>;
+  /** The pin's rewrites, which apply moves. */
+  rewrites: LiteralRewrite[];
+}
+
+/** Bytes read one per character, shown as the UTF-8 text they hold. */
+const shown = (bytes: string): string =>
+  Buffer.from(bytes, "latin1").toString("utf8");
+
+/**
+ * Each fork-owned line outside the records that holds `from`, as written,
+ * with every occurrence replaced as the suggestion; a longer value such as
+ * `0.25.10` is listed too, and the maintainer judges it. A line that repeats
+ * upstream's text is upstream's. Records are read from the raw lines, as the
+ * pin rewrite reads them.
+ */
+const versionLiteralLines = (
+  forkPath: string,
+  content: string,
+  upstreamLines: Set<string>,
+  [from, to]: [string, string]
+): string[] => {
+  const rawLines = content.split("\n");
+  const records = recordLines(forkPath, rawLines);
+  return rawLines.flatMap((rawLine, index) => {
+    const line = withoutCr(rawLine);
+    const suggested = line.split(from).join(to);
+    if (records[index] || suggested === line || upstreamLines.has(line)) {
+      return [];
+    }
+    return [`line ${index + 1}: \`${shown(line)}\` -> \`${shown(suggested)}\``];
+  });
+};
+
+/** A literal pair that moves something: changed, and printable ASCII. */
+const literalPair = (from: string, to: string): [string, string][] =>
+  from !== to && [from, to].every((value) => ASCII_LITERAL_PATTERN.test(value))
+    ? [[from, to]]
+    : [];
+
+/** The version literals a fork pins: the guidance constant and the release. */
+const versionLiterals = (
   source: ForkPlan["source"],
-  oldPin: string,
-  newPin: string | null,
   oldGuidance: number | null,
   oldVersion: string | null
-): LiteralRewrite[] => {
-  const rewrites: LiteralRewrite[] = [];
-  const substitutions: [string, string][] = [];
-  if (newPin) {
-    substitutions.push([oldPin, newPin]);
-  }
-  if (oldGuidance !== null && source.guidanceVersion !== null) {
-    substitutions.push([
-      `CURRENT_GUIDANCE_VERSION = ${oldGuidance}`,
-      `CURRENT_GUIDANCE_VERSION = ${source.guidanceVersion}`,
-    ]);
-  }
-  if (oldVersion && source.version) {
-    substitutions.push([
-      `Simple Changes ${oldVersion}`,
-      `Simple Changes ${source.version}`,
-    ]);
-  }
-  const literals = substitutions.filter(([from, to]) =>
-    [from, to].every((literal) => ASCII_LITERAL_PATTERN.test(literal))
+): [string, string][] => [
+  ...(oldGuidance !== null && source.guidanceVersion !== null
+    ? literalPair(
+        `CURRENT_GUIDANCE_VERSION = ${oldGuidance}`,
+        `CURRENT_GUIDANCE_VERSION = ${source.guidanceVersion}`
+      )
+    : []),
+  ...(oldVersion && source.version
+    ? literalPair(
+        `Simple Changes ${oldVersion}`,
+        `Simple Changes ${source.version}`
+      )
+    : []),
+];
+
+/**
+ * The pin moves where the fork names it, as before. A version literal, the
+ * release or the guidance constant, is never moved: whether a line states the
+ * current version, a minimum, or history is a maintainer's call, so each
+ * fork-owned use is listed with a suggested replacement. A file the fork
+ * carries byte for byte from upstream, at the pin or in the installed release,
+ * keeps upstream's bytes and is never listed.
+ */
+const literalPlanFor = (
+  fork: DiscoveredFork,
+  classified: ClassifiedFork,
+  newPin: string | null,
+  versions: [string, string][]
+): LiteralPlan => {
+  const plan: LiteralPlan = { review: new Map(), rewrites: [] };
+  const pin = newPin ? literalPair(fork.pin, newPin) : [];
+  const conflicted = new Set(
+    classified.entries
+      .filter((entry) => entry.action === "conflict")
+      .map((entry) => entry.forkPath)
   );
   for (const forkPath of walkFiles(fork.path)) {
     if (
-      forkPath.startsWith("runtime/") ||
       forkPath.endsWith(MERGE_SIDECAR_SUFFIX) ||
-      plannedContent.has(forkPath) ||
       CHANGELOG_FILE_PATTERN.test(forkPath)
     ) {
       continue;
     }
-    // Byte strings: an ASCII literal moves and every other byte stays.
-    const content = readBytes(join(fork.path, forkPath));
-    if (content === null) {
+    // Byte strings: an ASCII literal moves and every other byte stays. A
+    // conflicting file stays as it is, so its own lines are the ones listed.
+    const planned = classified.plannedContent.get(forkPath);
+    const content =
+      (conflicted.has(forkPath) ? undefined : planned) ??
+      readBytes(join(fork.path, forkPath));
+    const copies = classified.upstreamCopies.get(forkPath) ?? [];
+    if (content === null || copies.includes(content)) {
       continue;
     }
-    for (const [from, to] of literals) {
+    const upstreamLines = new Set(
+      copies.flatMap((copy) => copy.split("\n").map(withoutCr))
+    );
+    const lines = versions.flatMap((version) =>
+      versionLiteralLines(forkPath, content, upstreamLines, version)
+    );
+    if (lines.length > 0) {
+      plan.review.set(forkPath, lines);
+    }
+    for (const [from, to] of pin) {
       if (
-        from !== to &&
+        planned === undefined &&
+        !forkPath.startsWith("runtime/") &&
         rewriteLiteral(forkPath, content, from, to).rewritten > 0
       ) {
-        rewrites.push({
+        plan.rewrites.push({
           forkDigest: bytesDigest(content),
           forkPath,
           from,
@@ -1505,10 +1575,39 @@ const literalRewritesFor = (
       }
     }
   }
-  return rewrites.sort(
-    (left, right) =>
-      byText(left.forkPath, right.forkPath) || byText(left.from, right.from)
-  );
+  plan.rewrites.sort((left, right) => byText(left.forkPath, right.forkPath));
+  return plan;
+};
+
+/**
+ * List each file's version literals on its entry; apply never moves them, and
+ * a file listed only for them is a review item.
+ */
+const listVersionLiterals = (
+  entries: PlanEntry[],
+  review: Map<string, string[]>,
+  rewrites: LiteralRewrite[]
+): void => {
+  const pinned = new Set(rewrites.map((rewrite) => rewrite.forkPath));
+  for (const entry of entries) {
+    const lines = review.get(entry.forkPath);
+    if (lines === undefined) {
+      continue;
+    }
+    const pin = pinned.has(entry.forkPath)
+      ? " The plan still moves the pin in this file."
+      : "";
+    const note = `Update by hand each version literal that states the fork's current version, and keep a minimum or a past release as written: ${lines.join("; ")}.${pin}`;
+    if (
+      entry.action === "keep-fork-delta" ||
+      entry.action === "keep-fork-only"
+    ) {
+      entry.action = "review";
+      entry.reason = note;
+    } else {
+      entry.reason = `${entry.reason} ${note}`;
+    }
+  }
 };
 
 const PLAN_ACTIONS: readonly PlanAction[] = [
@@ -1570,6 +1669,8 @@ const advanceProvenance = (
 interface ClassifiedFork {
   entries: PlanEntry[];
   plannedContent: Map<string, string>;
+  /** Upstream's bytes for each mapped fork path, at the pin and installed. */
+  upstreamCopies: Map<string, string[]>;
 }
 
 const classifyForkFiles = (
@@ -1583,6 +1684,7 @@ const classifyForkFiles = (
   ]);
   const entries: PlanEntry[] = [];
   const plannedContent = new Map<string, string>();
+  const upstreamCopies = new Map<string, string[]>();
   const forkPathsTouched = new Set<string>();
   const omissions = intentionalOmissions(fork.path);
   for (const upstreamPath of [...upstreamPaths].sort(byText)) {
@@ -1602,6 +1704,16 @@ const classifyForkFiles = (
     forkPathsTouched.add(forkPath);
     assertNoSymlinkPath(fork.path, forkPath);
     assertNoSymlinkPath(fork.path, forkPath + MERGE_SIDECAR_SUFFIX);
+    const versions = {
+      base: treeBlob(upstream, fork.pin, upstreamPath),
+      current: readBytes(join(fork.path, forkPath)),
+      target: readBytes(join(source.path, upstreamPath)),
+    };
+    // Recorded first, so a file waiting on its sidecar still reads as carried.
+    upstreamCopies.set(
+      forkPath,
+      [versions.base, versions.target].filter((copy) => copy !== null)
+    );
     if (existsSync(join(fork.path, forkPath + MERGE_SIDECAR_SUFFIX))) {
       forkPathsTouched.add(forkPath + MERGE_SIDECAR_SUFFIX);
       entries.push({
@@ -1613,16 +1725,7 @@ const classifyForkFiles = (
       });
       continue;
     }
-    const entry = classify(
-      upstreamPath,
-      forkPath,
-      {
-        base: treeBlob(upstream, fork.pin, upstreamPath),
-        current: readBytes(join(fork.path, forkPath)),
-        target: readBytes(join(source.path, upstreamPath)),
-      },
-      omissions
-    );
+    const entry = classify(upstreamPath, forkPath, versions, omissions);
     if (entry.action === "conflict") {
       entry.sidecarDigest = null;
     }
@@ -1646,7 +1749,7 @@ const classifyForkFiles = (
       });
     }
   }
-  return { entries, plannedContent };
+  return { entries, plannedContent, upstreamCopies };
 };
 
 // ----------------------------------------------------------- command parity
@@ -1930,11 +2033,8 @@ export const planForkUpdate = (options: {
     treeFile(upstream, fork.pin, "CHANGELOG.md") ?? ""
   )?.[1];
 
-  const { entries, plannedContent } = classifyForkFiles(
-    fork,
-    upstream,
-    installed
-  );
+  const classified = classifyForkFiles(fork, upstream, installed);
+  const { entries, plannedContent } = classified;
   const parityReviewPaths = commandParityReview(
     fork,
     entries,
@@ -1959,19 +2059,22 @@ export const planForkUpdate = (options: {
     reason: heldReason ?? ordinaryPinReason,
     to: pinReady ? pinCandidate : null,
   };
-  const literalRewrites = literalRewritesFor(
+  const literals = literalPlanFor(
     fork,
-    plannedContent,
-    source,
-    fork.pin,
+    classified,
     pinUpdate.to,
-    pinnedGuidance ? Number(pinnedGuidance) : null,
-    pinnedVersion ?? null
-  ).filter(
+    versionLiterals(
+      source,
+      pinnedGuidance ? Number(pinnedGuidance) : null,
+      pinnedVersion ?? null
+    )
+  );
+  const literalRewrites = literals.rewrites.filter(
     (rewrite) =>
       !parityReviewPaths.has(rewrite.forkPath) &&
       (heldReason === null || rewrite.forkPath !== "SKILL.md")
   );
+  listVersionLiterals(entries, literals.review, literalRewrites);
   for (const entry of entries) {
     encodeContent(entry);
   }
@@ -2120,6 +2223,7 @@ const validateForkPlan = (value: unknown): ForkPlan => {
   const forkRoot = canonicalFork.path;
   const entryPaths = new Set<string>();
   const writtenEntryPaths = new Set<string>();
+  const carriedEntryPaths = new Set<string>();
   for (const entry of value.entries) {
     if (
       !(
@@ -2169,6 +2273,9 @@ const validateForkPlan = (value: unknown): ForkPlan => {
       entry.action === "delete"
     ) {
       writtenEntryPaths.add(entry.forkPath);
+    }
+    if (entry.action === "current" && entry.upstreamPath !== null) {
+      carriedEntryPaths.add(entry.forkPath);
     }
     if (
       (entry.action === "conflict") !==
@@ -2236,6 +2343,26 @@ const validateForkPlan = (value: unknown): ForkPlan => {
     )
   ) {
     throw new ForkUpdateError("The plan metadata is invalid.", EXIT.usage);
+  }
+  // An earlier plan may rewrite a version literal, which this version only
+  // lists, or a literal in a file the plan carries from upstream; refuse it
+  // before any write.
+  for (const rewrite of value.literalRewrites as LiteralRewrite[]) {
+    if (
+      rewrite.from !== value.pinUpdate.from ||
+      rewrite.to !== value.pinUpdate.to
+    ) {
+      throw new ForkUpdateError(
+        `The plan rewrites \`${rewrite.from}\` in ${rewrite.forkPath}; version literals are now listed for review and changed by hand, so plan again with this version.`,
+        EXIT.blocked
+      );
+    }
+    if (carriedEntryPaths.has(rewrite.forkPath)) {
+      throw new ForkUpdateError(
+        `${rewrite.forkPath} is carried unchanged from upstream, so no literal in it moves; plan again with this version.`,
+        EXIT.blocked
+      );
+    }
   }
   return value as unknown as ForkPlan;
 };
@@ -2416,11 +2543,16 @@ discover  Find forks (SKILL.md with a provenance pin) and installed sources
           --root, without writing.
 plan      Classify every file of one fork against its pinned base and the
           installed source; print the plan. Save it with --json > plan.json.
+          Each use of the old release or guidance version in a fork-owned
+          file is a review item with a suggested replacement; change it by
+          hand where it states the fork's current version.
 apply     Write exactly what a saved plan says: updates, merges, additions,
-          deletions, the provenance pin, and exact literal rewrites. A
-          conflicting file is left untouched and its marked merge is written
-          beside it as <file>.upstream-merge; review items are never written.
-          Fails closed if the fork changed since the plan.
+          deletions, the provenance pin, and the old pin where the fork's own
+          files name it. Version literals are never rewritten, and a plan
+          that rewrites one is refused. A conflicting file is left untouched
+          and its marked merge is written beside it as <file>.upstream-merge;
+          a review item is never written, but for the pin. Fails closed if
+          the fork changed since the plan.
 
 An upstream reference added or changed since the pin that the fork neither
 carries nor lists under "## Intentional omissions" in its
@@ -2506,7 +2638,7 @@ const renderPlan = (plan: ForkPlan): string => {
     `Fork ${plan.fork.name} at ${plan.fork.path}`,
     `  pinned ${plan.pinUpdate.from} -> ${plan.pinUpdate.to ?? `(pin unchanged: ${plan.pinUpdate.reason})`}`,
     `  source ${plan.source.version ?? "unknown"} (guidance ${plan.source.guidanceVersion ?? "unknown"}) at ${plan.source.path}`,
-    `  ${plan.summary.update} update, ${plan.summary.merge} merge, ${plan.summary.add} add, ${plan.summary.delete} delete, ${plan.summary["keep-fork-delta"]} fork edits kept, ${plan.summary["keep-fork-only"]} fork-only files kept, ${plan.summary.skip} skipped as fork-owned history, ${plan.summary.omitted} omitted, ${plan.summary.conflict} conflict, ${plan.summary.review} to review, ${plan.summary["unrecorded-omission"]} unrecorded omissions, ${plan.literalRewrites.length} literal rewrites`,
+    `  ${plan.summary.update} update, ${plan.summary.merge} merge, ${plan.summary.add} add, ${plan.summary.delete} delete, ${plan.summary["keep-fork-delta"]} fork edits kept, ${plan.summary["keep-fork-only"]} fork-only files kept, ${plan.summary.skip} skipped as fork-owned history, ${plan.summary.omitted} omitted, ${plan.summary.conflict} conflict, ${plan.summary.review} to review, ${plan.summary["unrecorded-omission"]} unrecorded omissions, ${plan.literalRewrites.length} pin rewrites`,
   ];
   for (const entry of plan.entries) {
     if (
@@ -2595,7 +2727,7 @@ const runApply = (options: CliOptions): number => {
   emit(
     receipt,
     options.json,
-    `Applied to ${receipt.fork}: wrote ${receipt.written.length} file(s), deleted ${receipt.deleted.length}, rewrote ${receipt.literalRewrites} literal(s), pin ${receipt.pin.from} -> ${receipt.pin.to ?? "unchanged"}; ${receipt.conflicts.length} conflict(s), ${receipt.review.length} review item(s), and ${receipt.unrecordedOmissions.length} unrecorded omission(s) left untouched.\n`
+    `Applied to ${receipt.fork}: wrote ${receipt.written.length} file(s), deleted ${receipt.deleted.length}, rewrote the pin in ${receipt.literalRewrites} file(s), pin ${receipt.pin.from} -> ${receipt.pin.to ?? "unchanged"}; ${receipt.conflicts.length} conflict(s) and ${receipt.unrecordedOmissions.length} unrecorded omission(s) left untouched, and ${receipt.review.length} review item(s) to resolve by hand.\n`
   );
   return receipt.conflicts.length > 0 || receipt.unrecordedOmissions.length > 0
     ? EXIT.blocked

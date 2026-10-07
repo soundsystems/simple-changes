@@ -16,7 +16,7 @@ import {
 import { EXIT_CODES, SimpleChangesError } from "./lib/errors.ts";
 import { createFork } from "./lib/fork.ts";
 import {
-  acknowledgeGuidanceUpdate,
+  acknowledgedGuidance,
   CURRENT_GUIDANCE_VERSION,
   type GuidanceUpdateAction,
 } from "./lib/guidance-updates.ts";
@@ -65,6 +65,7 @@ import {
   turnEndReminder,
   verifyLoop,
   withLoopMutationLease,
+  withLoopStateLock,
 } from "./lib/loop-lease.ts";
 import { auditMarkdown } from "./lib/markdown.ts";
 import {
@@ -96,6 +97,7 @@ import {
   loadPersonalPolicy,
   resolvePersonalPolicyPath,
   withSavedExecGuard,
+  writeGuidanceAcknowledgement,
   writePolicyFile,
   writeRepositoryPolicyTrustReceipt,
 } from "./lib/policy.ts";
@@ -196,7 +198,7 @@ import {
   standaloneWorktreeCleanup,
 } from "./lib/worktree-maintenance.ts";
 
-const VERSION = "0.25.1";
+const VERSION = "0.25.2";
 const SCRIPT_FILE = fileURLToPath(import.meta.url);
 const PLAIN_SHELL_WORD_PATTERN = /^[\w./-]+$/u;
 const PACKAGE_ROOT = resolve(dirname(SCRIPT_FILE), "..");
@@ -1569,20 +1571,31 @@ const runSetup = async (options: CliOptions): Promise<void> => {
     const activeLoop = context.primaryCheckout
       ? readLoopLease(options.repo)
       : null;
-    const writeResult = activeLoop
-      ? (
-          await withLoopMutationLease(
-            options.repo,
-            activeLoop.runId,
-            requireCliOption(
-              options.agentId,
-              "--agent-id while an integration loop is active"
-            ),
-            "setup write",
-            applyWrites
-          )
-        ).result
-      : applyWrites();
+    let writeResult: ReturnType<typeof applyWrites>;
+    if (activeLoop) {
+      writeResult = (
+        await withLoopMutationLease(
+          options.repo,
+          activeLoop.runId,
+          requireCliOption(
+            options.agentId,
+            "--agent-id while an integration loop is active"
+          ),
+          "setup write",
+          applyWrites
+        )
+      ).result;
+    } else if (context.primaryCheckout) {
+      // The loop's state lock, which the mutation lease also holds: a policy
+      // and its trust receipt never land inside an acknowledgement's checks.
+      writeResult = withLoopStateLock(
+        locateRepository(context.primaryCheckout).repository.commonGitDirectory,
+        "setup write",
+        applyWrites
+      );
+    } else {
+      writeResult = applyWrites();
+    }
     const result = {
       changelogCoordination: context.changelog,
       changelogInstall: selection.changelogInstall,
@@ -1957,12 +1970,21 @@ const runAcknowledgeUpdate = async (options: CliOptions): Promise<void> => {
     );
   }
   const previousVersion = inventory.policy.value.guidance.version;
-  const policy = acknowledgeGuidanceUpdate(inventory.policy.value, disposition);
+  // Edit only the saved guidance values. The loaded policy is default-filled
+  // and, when unconfirmed, trust-reduced; writing it back changes settings.
+  const guidance = acknowledgedGuidance(disposition);
+  let written = false;
   const applyWrite = (): void => {
-    writePolicyFile(
+    written = writeGuidanceAcknowledgement(
       inventory.policy.path as string,
-      policy,
-      inventory.policy.source === "user"
+      guidance,
+      inventory.policy.source === "repository"
+        ? {
+            commonGitDirectory: inventory.repository.commonGitDirectory,
+            primaryCheckout: inventory.repository.primaryCheckout,
+            source: "repository",
+          }
+        : { source: "user" }
     );
   };
   const activeLoop = readLoopLease(options.repo);
@@ -1978,7 +2000,13 @@ const runAcknowledgeUpdate = async (options: CliOptions): Promise<void> => {
       applyWrite
     );
   } else {
-    applyWrite();
+    // Setup saves a policy and its receipt under this same lock, so neither
+    // can land between this acknowledgement's checks and its write.
+    withLoopStateLock(
+      inventory.repository.commonGitDirectory,
+      "guidance update acknowledgement",
+      applyWrite
+    );
   }
   const result = {
     currentVersion: CURRENT_GUIDANCE_VERSION,
@@ -1986,12 +2014,14 @@ const runAcknowledgeUpdate = async (options: CliOptions): Promise<void> => {
     path: inventory.policy.path,
     previousVersion,
     source: inventory.policy.source,
-    written: true,
+    written,
   };
   writeOutput(
     result,
     options.json,
-    `Recorded Simple Changes guidance ${CURRENT_GUIDANCE_VERSION} as ${disposition} in ${inventory.policy.path}.\n`
+    written
+      ? `Recorded Simple Changes guidance ${CURRENT_GUIDANCE_VERSION} as ${disposition} in ${inventory.policy.path}.\n`
+      : `Simple Changes guidance ${CURRENT_GUIDANCE_VERSION} is already recorded as ${disposition} in ${inventory.policy.path}; nothing was written.\n`
   );
 };
 

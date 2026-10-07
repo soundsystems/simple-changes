@@ -429,8 +429,9 @@ Changes `CHANGELOG.md` and omits pending `Unreleased` content and HTML comments.
 Use `--version VERSION` for an older published release or `--json` for
 automation. An explicit `--repo PATH` may read another checkout without writing
 it. The source-maintainer-only `--check` mode requires `--repo PATH` and
-validates the latest public changelog, developer changelog, and root package
-version without changing them.
+validates the latest public changelog, developer changelog, root package
+version, and the packaged `SKILL.md` `metadata.version` without changing
+them.
 
 ## Policy
 

@@ -14,13 +14,18 @@
 - Pushing a tag uses the release's existing approval. Before the push, the
   agent lists what CI a push of that tag can start, and the push waits for
   that review. Deploy and migration holds also block it, Sync never tags, and
-  a repository whose push setting is `never` is refused. Protecting your
-  release tag pattern, such as `v*`, with your Git host's tag protection is
-  recommended.
+  a repository whose push setting is `never` is refused. A remote whose URL
+  depends on the folder Git runs in, such as a relative local path, is
+  refused before anything is written; use an absolute path or a network URL.
+  Protecting your release tag pattern, such as `v*`, with your Git host's tag
+  protection is recommended.
 - `update-local-forks` now looks for the release's `v<version>` tag first
   when finding the commit a fork should pin. It still proves the tagged tree
   is byte-identical to the installed release and on the branch's history
   before using it, and otherwise searches history as before.
+- The installed `SKILL.md` now states its release version, so a fork update
+  reads the installed and pinned releases directly. Copies installed before
+  0.27.0 are still read from their changelog.
 - Simple Changes versions now follow its guidance number: 0.27.0 introduces
   guidance 27, and a fix that leaves guidance unchanged is a patch release
   such as 0.27.1. Until Simple Changelogs 0.25.0 is installed, nothing about

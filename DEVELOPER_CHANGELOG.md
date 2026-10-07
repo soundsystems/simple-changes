@@ -39,10 +39,28 @@
   - The target remote must be the only bound remote that matches the run's
     target ref and the remote that holds and read-back follow. A multi-URL
     remote is refused and prints no push command.
+  - A target remote whose URL depends on Git's working directory is refused
+    with `remote-not-single-url` before any write, in the dry run and apply:
+    a relative or `~` local path, a `file://` URL without an absolute path, a
+    Windows path without its drive, or an `ext::` or `fd::` helper. Shipment
+    holds are read from the primary checkout while the tag is pushed from the
+    controller's, so such a URL could name two repositories. Helper names
+    follow Git's grammar, and the refusal names only the helper so a command
+    line is never echoed.
 - `update-local-forks` tries the `v<version>` tag first. It uses the tag only
   when its tree is byte-identical to the installed release and its commit is
   on the branch's first-parent history, fetches with `--no-tags`, and
   otherwise falls back to the history search with the reason.
+- `SKILL.md` frontmatter states the release in `metadata.version`.
+  `release-notes --check` requires it to match the packaged changelog's top
+  release and `package.json`, and `update-local-forks` reads the installed
+  and pinned versions from it before falling back to the changelog. Both
+  readers use a small strict line reader instead of `Bun.YAML`, which older
+  supported Bun versions lack.
+- The changelog request and receipt schemas ship minified
+  (`JSON.stringify(JSON.parse(text))` plus a newline) so Simple Changelogs
+  can vendor them byte for byte; Biome skips both files, a contract test
+  keeps them minified, and their advertised digests are unchanged.
 - Guidance 27 has no required answers. `SKILL.md`, `SPEC.md`, the README, and
   the changelog-coordination, deployments, ship-communication, sync, and
   push-authorization references describe the tag step in host-agnostic terms.
@@ -53,18 +71,29 @@
   (host-agnostic), the both-ways tag-unchanged rule, and listing CI files at
   the reconciliation head during a dry run.
 - Tests:
-  - `release-tag.test.ts` has 39 real-Git tests on temporary repositories and
+  - `release-tag.test.ts` has 42 real-Git tests on temporary repositories and
     bare remotes. They cover a protected-tag rejection simulated with a
     `pre-receive` hook, a lost race, holds and waivers, Sync, older receipts,
     multi-URL and rebound remotes, a killed run, `push.followTags`, partial
-    clones, and a lightweight tag already on the target.
+    clones, a lightweight tag already on the target, the URL classifier, and
+    a linked worktree whose relative remote would have bypassed a hold.
   - Protocol tests show an older fork negotiating as before.
-  - `update-local-forks` adds eight tests for the tag-first lookup.
-  - Mutation runs killed all 49 mutants of the new guards.
+  - `update-local-forks` adds tests for the tag-first lookup and
+    `metadata.version` reads, and `release-consistency.test.ts` covers the
+    `--check` version match.
+  - Mutation runs killed all 72 mutants of the new guards.
 - Reviews (GPT-6.1 Sol):
   - Round 1 at high effort found two blocking and two should-fix issues.
   - Five xhigh rounds followed, and the last found only a nit, now covered by
     a test.
+  - The first release review, at xhigh, found the relative-remote hold
+    bypass (blocking). Four more xhigh rounds fixed it and the later
+    findings: helper-name grammar, Windows drive-relative paths, a refusal
+    that could echo an `ext::` command, and a dependence on `Bun.YAML`. The
+    last round found no blocking or should-fix issue. Its two nits, in the
+    `metadata.version` reader, affect only unusual YAML: a comment-only line
+    can shift the detected `metadata` indentation, and `0.27.0#preview` reads
+    as `0.27.0`.
 <!-- simple-changelogs-signature agent="Claude Opus 5.5 xhigh" at="2026-10-07T14:50:00-05:00" -->
 
 ## 0.25.2 - 2026-10-06

@@ -18,6 +18,7 @@ import {
 } from "../../../skills/simple-changes/scripts/lib/release-tag.ts";
 import {
   addShipHold,
+  publishShipHold,
   waiveShipHold,
 } from "../../../skills/simple-changes/scripts/lib/ship-holds.ts";
 import type {
@@ -863,6 +864,37 @@ describe("release-tag destinations", () => {
     expect(remoteTags(other)).toEqual({});
   });
 
+  test("refuses a target ref that two bound remotes could name", async () => {
+    const fixture = releaseFixture();
+    git(fixture.root, ["push", "--quiet", "origin", "main:release/next"]);
+    git(fixture.root, ["fetch", "--quiet", "origin"]);
+    git(fixture.root, [
+      "symbolic-ref",
+      "refs/remotes/origin/HEAD",
+      "refs/remotes/origin/release/next",
+    ]);
+    const auxiliary = join(fixture.base, "auxiliary.git");
+    git(fixture.base, ["clone", "--quiet", "--bare", fixture.bare, auxiliary]);
+    git(auxiliary, ["branch", "--quiet", "next", "main"]);
+    git(fixture.root, ["remote", "add", "origin/release", auxiliary]);
+    const lease = startController(fixture);
+    expect(lease.targetRef).toBe("origin/release/next");
+    const check = (receipt: Awaited<ReturnType<typeof releaseTag>>) => {
+      expect(receipt).toMatchObject({
+        reasonCode: "remote-not-single-url",
+        remote: null,
+        status: "blocked",
+      });
+      expect(receipt.reason).toContain("names no single bound remote");
+    };
+    const phase = verified(fixture, "release-bearing-merge");
+    const options = { productionDeploy: "allow" as const, runId: lease.runId };
+    check(await releaseTag(fixture, phase, { ...options, dryRun: true }));
+    check(await releaseTag(fixture, phase, options));
+    expect(remoteTags(fixture.bare)).toEqual({});
+    expect(remoteTags(auxiliary)).toEqual({});
+  });
+
   test("blocks a protected tag push, surfaces Git's error, and leaves no local ref", async () => {
     const fixture = releaseFixture();
     installHook(fixture, "pre-receive", REJECT_TAGS_HOOK);
@@ -1011,6 +1043,74 @@ describe("release-tag holds and the guarded executor", () => {
     });
     expect(waived.status).toBe("created");
   };
+
+  // Another clone publishes a deploy hold whose object this clone lacks.
+  const publishRemoteHold = (fixture: Fixture): string => {
+    const clone = join(fixture.base, "holder");
+    git(fixture.base, ["clone", "--quiet", fixture.bare, clone]);
+    git(clone, ["config", "user.name", "Holder"]);
+    git(clone, ["config", "user.email", "holder@simple-changes.invalid"]);
+    // The holder's own clone may push holds even where this repository's
+    // committed policy never lets agents push.
+    writeFixture(
+      clone,
+      ".simple-changes.json",
+      `${JSON.stringify(DEFAULT_POLICY, null, 2)}\n`
+    );
+    const hold = addShipHold(clone, {
+      adapter: "codex",
+      agentId: "holder",
+      reason: "Hold the deploy from another clone",
+      scope: "deploy",
+      severity: "delay",
+    });
+    publishShipHold(clone, { agentId: "holder", holdId: hold.holdId });
+    return git(fixture.bare, [
+      "rev-parse",
+      `refs/simple-changes/holds/${hold.holdId}`,
+    ]);
+  };
+
+  const objectIsLocal = (root: string, object: string): boolean =>
+    spawnSync(["git", "-C", root, "cat-file", "-e", object], {
+      stderr: "pipe",
+    }).exitCode === 0;
+
+  test("reads an unseen published hold only through the guarded executor", async () => {
+    const fixture = releaseFixture({ execGuard: true });
+    const holdObject = publishRemoteHold(fixture);
+    setEnvironment("RELEASE_TAG_GUARD_REFUSE", "--no-write-fetch-head");
+    const run = withRun(fixture);
+    const receipt = await run(verified(fixture));
+    expect(receipt).toMatchObject({
+      reasonCode: "shipment-hold",
+      status: "blocked",
+    });
+    expect(receipt.reason).toContain("could not be read");
+    expect(fixture.guardRecords().map((argv) => argv[1])).toEqual(["fetch"]);
+    expect(objectIsLocal(fixture.root, holdObject)).toBe(false);
+    expect(remoteTags(fixture.bare)).toEqual({});
+
+    setEnvironment("RELEASE_TAG_GUARD_REFUSE", "");
+    const held = await run(verified(fixture));
+    expect(held.reasonCode).toBe("shipment-hold");
+    expect(objectIsLocal(fixture.root, holdObject)).toBe(true);
+    expect(remoteTags(fixture.bare)).toEqual({});
+  });
+
+  test("refuses under gitPushAuthorization never before reading published holds", async () => {
+    const fixture = releaseFixture({
+      execGuard: true,
+      policy: { gitPushAuthorization: "never" },
+    });
+    const holdObject = publishRemoteHold(fixture);
+    const run = withRun(fixture);
+    const receipt = await run(verified(fixture));
+    expect(receipt.reasonCode).toBe("push-not-authorized");
+    expect(receipt.reason).toContain("hold check --for deploy");
+    expect(fixture.guardRecords()).toEqual([]);
+    expect(objectIsLocal(fixture.root, holdObject)).toBe(false);
+  });
 
   test("a deploy hold blocks the tag, and a waived hold passes", async () => {
     await holdThenWaive("deploy");

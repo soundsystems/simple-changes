@@ -19,7 +19,11 @@ import {
   type ReleaseGateDecision,
 } from "./release-gate.ts";
 import { validateSchema } from "./schema.ts";
-import { checkShipHolds, type ShipHoldReport } from "./ship-holds.ts";
+import {
+  checkShipHolds,
+  HOLD_REF_PREFIX,
+  type ShipHoldReport,
+} from "./ship-holds.ts";
 import type {
   ChangelogReceipt,
   ChangelogRequest,
@@ -222,16 +226,17 @@ const applicableTag = (
 };
 
 // The lease's target remote and branch, from the lease's own target ref and
-// remote bindings; the longest bound remote name that prefixes the ref wins.
+// remote bindings. Exactly one bound remote may prefix the ref: with remotes
+// `origin` and `origin/release`, `origin/release/next` could name either, so
+// there is no single destination and nothing is pushed.
 const leaseTarget = (
   lease: LoopLease
 ): { branch: string; remote: string } | null => {
   const names = (lease.remoteBindings ?? [])
     .map((binding) => binding.name)
-    .filter((name) => lease.targetRef.startsWith(`${name}/`))
-    .sort((left, right) => right.length - left.length);
+    .filter((name) => lease.targetRef.startsWith(`${name}/`));
   const [remote] = names;
-  if (!remote) {
+  if (!remote || names.length !== 1) {
     return null;
   }
   const branch = lease.targetRef.slice(remote.length + 1);
@@ -263,7 +268,7 @@ const singleUrlProblem = (
   target: { remote: string } | null
 ): string | null => {
   if (!target) {
-    return `The run's target ${lease.targetRef} names no bound remote, so there is no single destination to push the tag to.`;
+    return `The run's target ${lease.targetRef} names no single bound remote, so there is no single destination to push the tag to.`;
   }
   const fetchUrls = liveRemoteUrls(root, target.remote, false);
   const pushUrls = liveRemoteUrls(root, target.remote, true);
@@ -560,6 +565,51 @@ const fetchAndCheckContainment = async (
   return checked.kind === "blocked" ? checked.outcome : null;
 };
 
+/**
+ * Published holds whose objects are not here yet are fetched through the
+ * guarded executor, after every refusal that needs no write, so the hold
+ * check that follows reads them locally instead of fetching on its own.
+ * A listing that fails is left to the hold check, which reports it.
+ */
+const prefetchHoldObjects = async (
+  root: string,
+  runGuarded: GuardedLoopCommand,
+  remote: string
+): Promise<Outcome | null> => {
+  const listing = runGitRemote(root, [
+    "ls-remote",
+    remote,
+    `${HOLD_REF_PREFIX}*`,
+  ]);
+  if (listing.exitCode !== 0) {
+    return null;
+  }
+  const missing = listing.stdout
+    .split("\n")
+    .map((line) => line.split("\t"))
+    .filter(
+      ([object, ref]) =>
+        object &&
+        ref?.startsWith(HOLD_REF_PREFIX) &&
+        runGit(root, ["cat-file", "-e", object], true).exitCode !== 0
+    )
+    .map(([, ref]) => ref as string);
+  if (missing.length === 0) {
+    return null;
+  }
+  const fetched = await guardedStep(
+    runGuarded,
+    ["git", "fetch", "--no-tags", "--no-write-fetch-head", remote, ...missing],
+    { environment: nonInteractiveGitEnvironment(root) }
+  );
+  return fetched.exitCode === 0
+    ? null
+    : blocked(
+        "shipment-hold",
+        `Published shipment holds on ${remote} could not be read, so they block the tag: ${gitDetail(fetched)}`
+      );
+};
+
 const holdProblem = (reports: ShipHoldReport[]): Outcome | null => {
   const held = reports.filter((report) => !report.clear);
   if (held.length === 0) {
@@ -729,6 +779,17 @@ const preWriteProblem = async (
       `Pass --tag-automation-authorized only after listing every CI job a push of ${tag.name} can start and confirming each effect is authorized.`
     );
   }
+  if (inventory.policy.value.gitPushAuthorization === "never") {
+    return blocked(
+      "push-not-authorized",
+      `This repository's policy never lets agents push, so publish ${tag.name} yourself with the commands below. Shipment holds were not read, since reading published holds can fetch; run \`simple-changes hold check --for deploy\` and \`--for migrations\` first.`,
+      manualCommandsFor(tag, target.remote)
+    );
+  }
+  const unreadable = await prefetchHoldObjects(root, runGuarded, target.remote);
+  if (unreadable) {
+    return unreadable;
+  }
   const holds = holdProblem(
     (["deploy", "migrations"] as const).map((action) =>
       checkShipHolds(root, { action, runId: input.runId })
@@ -737,14 +798,7 @@ const preWriteProblem = async (
   if (holds) {
     return holds;
   }
-  if (inventory.policy.value.gitPushAuthorization === "never") {
-    return blocked(
-      "push-not-authorized",
-      `This repository's policy never lets agents push, so publish ${tag.name} yourself with the commands below.`,
-      manualCommandsFor(tag, target.remote)
-    );
-  }
-  // The only write before the tag itself, after every refusal.
+  // The last write before the tag itself, after every refusal.
   return current.kind === "needs-fetch"
     ? await fetchAndCheckContainment(
         root,
@@ -770,7 +824,10 @@ const applyTag = async (
       const root = inventory.repository.currentCheckout;
       const target = leaseTarget(lease);
       const remote = target?.remote ?? null;
-      const urlProblem = singleUrlProblem(root, lease, target);
+      const urlProblem =
+        target && target.remote !== inventory.repository.targetRemote
+          ? `The run's target ${lease.targetRef} resolves to ${target.remote}, but holds and readback here follow ${inventory.repository.targetRemote ?? "no remote"}.`
+          : singleUrlProblem(root, lease, target);
       if (urlProblem || !target) {
         return {
           outcome: blocked(

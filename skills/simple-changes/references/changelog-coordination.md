@@ -307,12 +307,14 @@ pass `--tag-automation-authorized` only when every effect is authorized,
 including when no CI runs on tags. The dry run lists the CI configuration
 files it sees at the target as a reminder, and decides nothing from them. A
 blocking `ship`, `deploy`, or `migrations` hold stops it unless waived through
-`hold waive`, and effective `gitPushAuthorization: "never"` refuses and prints
+`hold waive`, and effective `gitPushAuthorization: "never"` refuses before
+any write (including reading published holds, which can fetch) and prints
 the two exact commands for the user.
 
-It pushes only to the run's target remote, and only when that remote has
-exactly one URL, the same for fetch and push, matching the URL the run is
-bound to. It checks remote tags with `git ls-remote` and local tags, treating
+It pushes only to the run's target remote, and only when exactly one bound
+remote names the run's target, it is the remote holds and readback follow,
+and it has exactly one URL, the same for fetch and push, matching the URL the
+run is bound to. It checks remote tags with `git ls-remote` and local tags, treating
 an exact name, a parent name (`release` blocks `release/1.2.0`), or a child
 name (`v1.2.0/build45` blocks `v1.2.0`) as taken. Apply then confirms the
 target is still current: contained in the refreshed branch for a

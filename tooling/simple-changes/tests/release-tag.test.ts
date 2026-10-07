@@ -900,6 +900,14 @@ describe("release-tag destinations", () => {
       "file://origin.git",
       "file://server/srv/git/origin.git",
       "gcrypt::../origin.git",
+      // Git's helper names may start with a digit.
+      "1helper::../origin.git",
+      // A helper named file still receives the relative address.
+      "file::../origin.git",
+      // Command and file-descriptor helpers name no repository at all.
+      "ext::/usr/bin/git %s ../origin.git",
+      "ext::ssh git@git.example.com %S /srv/git/origin.git",
+      "fd::3,4",
     ]) {
       expect({ dependent: dependent(url), url }).toEqual({
         dependent: true,
@@ -918,6 +926,8 @@ describe("release-tag destinations", () => {
       "https://user:secret@git.example.com/group/project.git",
       "git://git.example.com/project.git",
       "codecommit::us-east-1://project",
+      "gcrypt::rsync://git.example.com/origin.git",
+      "1helper::/srv/git/origin.git",
     ]) {
       expect({ dependent: dependent(url), url }).toEqual({
         dependent: false,

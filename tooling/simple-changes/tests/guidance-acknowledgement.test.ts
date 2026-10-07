@@ -619,9 +619,9 @@ describe("acknowledge-update records guidance in the saved policy only", () => {
     const receipt = readFileSync(trustReceiptPath(fixture), "utf8");
     const file = statSync(join(fixture.root, ".simple-changes.json"));
 
-    expect(acknowledge(fixture, confirmedDisposition(confirmed)).exitCode).toBe(
-      0
-    );
+    const repeated = acknowledge(fixture, confirmedDisposition(confirmed));
+    expect(repeated.exitCode).toBe(0);
+    expect(JSON.parse(repeated.stdout)).toMatchObject({ written: false });
     expect(savedPolicy(fixture)).toBe(confirmed);
     // Already recorded, so the file is not replaced at all.
     expect(statSync(join(fixture.root, ".simple-changes.json")).ino).toBe(

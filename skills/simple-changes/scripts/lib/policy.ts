@@ -702,7 +702,7 @@ export const writeGuidanceAcknowledgement = (
   path: string,
   guidance: RepoPolicy["guidance"],
   target: GuidanceAcknowledgementTarget
-): void => {
+): boolean => {
   assertReadablePolicyFile(path);
   const saved = readFileSync(path);
   const text = saved.toString("utf8");
@@ -716,7 +716,7 @@ export const writeGuidanceAcknowledgement = (
   parsePolicyText(edited);
   // Already recorded: replacing the file could only undo a concurrent edit.
   if (edited === text) {
-    return;
+    return false;
   }
   if (
     target.source === "repository" &&
@@ -735,6 +735,7 @@ export const writeGuidanceAcknowledgement = (
       EXIT_CODES.validation
     );
   }
+  return true;
 };
 
 export const loadPolicy = (

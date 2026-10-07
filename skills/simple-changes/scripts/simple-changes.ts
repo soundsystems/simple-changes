@@ -1973,8 +1973,9 @@ const runAcknowledgeUpdate = async (options: CliOptions): Promise<void> => {
   // Edit only the saved guidance values. The loaded policy is default-filled
   // and, when unconfirmed, trust-reduced; writing it back changes settings.
   const guidance = acknowledgedGuidance(disposition);
+  let written = false;
   const applyWrite = (): void => {
-    writeGuidanceAcknowledgement(
+    written = writeGuidanceAcknowledgement(
       inventory.policy.path as string,
       guidance,
       inventory.policy.source === "repository"
@@ -2013,12 +2014,14 @@ const runAcknowledgeUpdate = async (options: CliOptions): Promise<void> => {
     path: inventory.policy.path,
     previousVersion,
     source: inventory.policy.source,
-    written: true,
+    written,
   };
   writeOutput(
     result,
     options.json,
-    `Recorded Simple Changes guidance ${CURRENT_GUIDANCE_VERSION} as ${disposition} in ${inventory.policy.path}.\n`
+    written
+      ? `Recorded Simple Changes guidance ${CURRENT_GUIDANCE_VERSION} as ${disposition} in ${inventory.policy.path}.\n`
+      : `Simple Changes guidance ${CURRENT_GUIDANCE_VERSION} is already recorded as ${disposition} in ${inventory.policy.path}; nothing was written.\n`
   );
 };
 

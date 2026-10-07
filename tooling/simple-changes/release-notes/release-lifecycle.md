@@ -117,5 +117,7 @@ bun skills/simple-changes/scripts/simple-changes.ts release-notes \
   --check --repo .
 ```
 
-The check must fail when the latest public release, developer release, and root
-package version disagree or when an empty pending section exists.
+The check must fail when the latest public release, developer release, root
+package version, packaged `skills/simple-changes/CHANGELOG.md` release, and
+`skills/simple-changes/SKILL.md` frontmatter `metadata.version` disagree, or
+when an empty pending section exists.

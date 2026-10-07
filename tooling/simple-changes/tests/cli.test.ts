@@ -3315,6 +3315,43 @@ while (!existsSync(process.env.SIMPLE_CHANGES_TEST_RELEASE_PATH)) {
     );
   });
 
+  test("fails the release check when SKILL.md metadata.version disagrees with the packaged changelog", () => {
+    const fixture = createTestRepository();
+    repositories.push(fixture);
+    const history = "# Changelog\n\n## 0.27.0 - 2026-10-07\n\n- Notes.\n";
+    writeFixture(fixture.root, "CHANGELOG.md", history);
+    writeFixture(fixture.root, "DEVELOPER_CHANGELOG.md", history);
+    writeFixture(fixture.root, "skills/simple-changes/CHANGELOG.md", history);
+    writeFixture(
+      fixture.root,
+      "package.json",
+      '{ "name": "simple-changes", "version": "0.27.0" }\n'
+    );
+    writeFixture(
+      fixture.root,
+      "skills/simple-changes/SKILL.md",
+      '---\nname: simple-changes\ndescription: Ships changes.\nmetadata:\n  version: "0.26.0"\n---\n'
+    );
+    const result = spawnSync(
+      [
+        process.execPath,
+        cliPath,
+        "release-notes",
+        "--check",
+        "--json",
+        "--repo",
+        fixture.root,
+      ],
+      { stderr: "pipe", stdout: "pipe" }
+    );
+    expect(result.exitCode).toBe(3);
+    expect(
+      (JSON.parse(decoder.decode(result.stdout)) as { issues: string[] }).issues
+    ).toContain(
+      "skills/simple-changes/SKILL.md metadata.version 0.26.0 does not match the packaged CHANGELOG.md release 0.27.0."
+    );
+  });
+
   test("rejects conflicting release-note selectors", () => {
     const result = spawnSync(
       [

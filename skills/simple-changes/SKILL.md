@@ -3,6 +3,7 @@ name: simple-changes
 description: Use when a user asks to sync with remote main, package, queue, publish, integrate, review, merge, ship, reconcile, or clean local Git changes, branches, worktrees, proposals, or deployments. Preserve concurrent work, create focused proposals, satisfy checks and review, merge current approved heads, verify authorized deployment, and reconcile proven cleanup. Do not use to author changelogs or release notes directly, for non-Git synchronization, or for read-only code review.
 metadata:
   models: Claude Opus 5.5, Claude Fable 5.1
+  version: "0.27.0"
 ---
 
 # Simple Changes

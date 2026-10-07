@@ -230,6 +230,16 @@ const readFrontmatter = (skill: string): Frontmatter => {
   return { issues: [], metadata: asRecord(parsed.value) };
 };
 
+/**
+ * The release a SKILL.md names in its frontmatter `metadata.version`, or null
+ * when the frontmatter is unreadable or carries no string version.
+ */
+export const skillMetadataVersion = (skill: string): string | null => {
+  const { metadata } = readFrontmatter(skill);
+  const { version } = asRecord(metadata?.metadata);
+  return typeof version === "string" && version.length > 0 ? version : null;
+};
+
 const checkIdentity = (
   metadata: Record<string, unknown>,
   directoryName: string

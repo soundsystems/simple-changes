@@ -16,7 +16,13 @@
         "required": ["role", "path", "version", "date"],
         "properties": {
           "role": {
-            "enum": ["customer-history", "developer-history", "package"]
+            "enum": [
+              "customer-history",
+              "developer-history",
+              "package",
+              "packaged-history",
+              "skill-metadata"
+            ]
           },
           "path": { "type": "string", "minLength": 1 },
           "version": { "type": "string", "minLength": 1 },

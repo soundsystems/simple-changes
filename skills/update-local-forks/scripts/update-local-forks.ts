@@ -170,35 +170,49 @@ export interface DiscoveredSource {
 const skillNameOf = (skillMarkdown: string): string | null =>
   SKILL_NAME_PATTERN.exec(skillMarkdown)?.[1] ?? null;
 
-interface YamlParser {
-  parse: (source: string) => unknown;
-}
+const METADATA_KEY_PATTERN = /^metadata:[ \t]*$/u;
+const LEADING_SPACE_PATTERN = /^[ \t]*/u;
+const METADATA_VERSION_PATTERN =
+  /^version:[ \t]*(?:"([^"\\]*)"|'([^']*)'|([^\s"'#][^#]*?))[ \t]*(?:#.*)?$/u;
 
 /**
  * The release a SKILL.md states in frontmatter `metadata.version`, or null
- * when it states none (releases before 0.27.0) or the frontmatter is not
- * readable YAML with a plain `X.Y.Z` version there.
+ * when it states none (releases before 0.27.0) or not as a plain `X.Y.Z`.
+ * Read without a YAML parser, so it works on every supported Bun: the
+ * `metadata:` block mapping's direct `version:` entry, as a plain, single-,
+ * or double-quoted scalar. Any other shape reads as no version.
  */
+const statedVersionOf = (skill: string): string | null => {
+  const frontmatter = FRONTMATTER_PATTERN.exec(skill)?.[1];
+  if (frontmatter === undefined) {
+    return null;
+  }
+  const lines = frontmatter.split(LINE_BREAK_PATTERN);
+  const start = lines.findIndex((line) => METADATA_KEY_PATTERN.test(line));
+  let indent: string | null = null;
+  for (const line of start < 0 ? [] : lines.slice(start + 1)) {
+    if (line.trim() === "") {
+      continue;
+    }
+    const lead = LEADING_SPACE_PATTERN.exec(line)?.[0] ?? "";
+    if (lead === "") {
+      break;
+    }
+    indent ??= lead;
+    const entry =
+      lead === indent
+        ? METADATA_VERSION_PATTERN.exec(line.slice(lead.length))
+        : null;
+    if (entry) {
+      return entry[1] ?? entry[2] ?? entry[3] ?? null;
+    }
+  }
+  return null;
+};
+
 const metadataVersionOf = (skillMarkdown: string | null): string | null => {
-  const frontmatter = skillMarkdown
-    ? FRONTMATTER_PATTERN.exec(skillMarkdown)?.[1]
-    : undefined;
-  const yaml = (globalThis as { Bun?: { YAML?: YamlParser } }).Bun?.YAML;
-  if (frontmatter === undefined || !yaml) {
-    return null;
-  }
-  let parsed: unknown;
-  try {
-    parsed = yaml.parse(frontmatter);
-  } catch {
-    return null;
-  }
-  const metadata = (parsed as { metadata?: unknown } | null)?.metadata;
-  const version = (metadata as { version?: unknown } | null | undefined)
-    ?.version;
-  return typeof version === "string" && RELEASE_VERSION_PATTERN.test(version)
-    ? version
-    : null;
+  const version = skillMarkdown ? statedVersionOf(skillMarkdown) : null;
+  return version && RELEASE_VERSION_PATTERN.test(version) ? version : null;
 };
 
 /**

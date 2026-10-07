@@ -3,6 +3,7 @@ import {
   checkReleaseConsistency,
   renderReleaseConsistency,
 } from "../../../skills/simple-changes/scripts/lib/release-consistency.ts";
+import { skillMetadataVersion } from "../../../skills/simple-changes/scripts/lib/skill-check.ts";
 import { createTestRepository, writeFixture } from "./helpers.ts";
 
 describe("release consistency", () => {
@@ -241,6 +242,53 @@ describe("packaged skill version identity", () => {
       packaged.cleanup();
       packageOnly.cleanup();
     }
+  });
+
+  test("reads metadata.version without a YAML parser", () => {
+    const fixture = packagedRepository();
+    const runtime = (globalThis as unknown as { Bun: { YAML?: unknown } }).Bun;
+    const parser = runtime.YAML;
+    try {
+      runtime.YAML = undefined;
+      expect(checkReleaseConsistency(fixture.root)).toMatchObject({
+        issues: [],
+        valid: true,
+      });
+    } finally {
+      runtime.YAML = parser;
+      fixture.cleanup();
+    }
+  });
+
+  test("reads only the metadata mapping's own version entry", () => {
+    const skill = (body: string) =>
+      `---\nname: simple-changes\ndescription: Ships.\n${body}---\n\n# Simple Changes\n`;
+    for (const value of [
+      "0.27.0",
+      "'0.27.0'",
+      '"0.27.0"',
+      "0.27.0 # release",
+    ]) {
+      expect(
+        skillMetadataVersion(skill(`metadata:\n  version: ${value}\n`))
+      ).toBe("0.27.0");
+    }
+    expect(
+      skillMetadataVersion(
+        skill(
+          'metadata:\n  models: Claude Opus 5.5\n  nested:\n    version: "9.9.9"\n  version: "0.27.0"\n'
+        )
+      )
+    ).toBe("0.27.0");
+    for (const body of [
+      'version: "0.27.0"\n',
+      "metadata: { version: 0.27.0 }\n",
+      'metadata:\n  nested:\n    version: "9.9.9"\n',
+      'metadata:\n  models: x\nversion: "0.27.0"\n',
+    ]) {
+      expect(skillMetadataVersion(skill(body))).toBeNull();
+    }
+    expect(skillMetadataVersion("# No frontmatter\n")).toBeNull();
   });
 
   test("requires metadata.version once the skill is packaged", () => {

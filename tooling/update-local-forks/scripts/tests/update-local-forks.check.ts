@@ -2730,6 +2730,27 @@ describe("update-local-forks version identity", () => {
       withMetadataVersion(readFileSync(skillPath, "utf8"), "0.3.0")
     );
     expect(inspectSource(fixture.source)?.version).toBe("0.3.0");
+    // No YAML parser is needed to read it.
+    const runtime = (globalThis as unknown as { Bun: { YAML?: unknown } }).Bun;
+    const parser = runtime.YAML;
+    try {
+      runtime.YAML = undefined;
+      expect(inspectSource(fixture.source)?.version).toBe("0.3.0");
+    } finally {
+      runtime.YAML = parser;
+    }
+    // Only the metadata mapping's own entry counts, not a nested one.
+    writeFileSync(
+      skillPath,
+      readFileSync(
+        join(fixture.upstream, "skills/simple-changes/SKILL.md"),
+        "utf8"
+      ).replace(
+        "name: simple-changes\n",
+        'name: simple-changes\nmetadata:\n  release:\n    version: "9.9.9"\n'
+      )
+    );
+    expect(inspectSource(fixture.source)?.version).toBe("0.2.0");
     // A field that is not a plain release version falls back too.
     writeFileSync(
       skillPath,

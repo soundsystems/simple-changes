@@ -230,14 +230,44 @@ const readFrontmatter = (skill: string): Frontmatter => {
   return { issues: [], metadata: asRecord(parsed.value) };
 };
 
+const LINE_BREAK_PATTERN = /\r?\n/u;
+const METADATA_KEY_PATTERN = /^metadata:[ \t]*$/u;
+const LEADING_SPACE_PATTERN = /^[ \t]*/u;
+const METADATA_VERSION_PATTERN =
+  /^version:[ \t]*(?:"([^"\\]*)"|'([^']*)'|([^\s"'#][^#]*?))[ \t]*(?:#.*)?$/u;
+
 /**
- * The release a SKILL.md names in its frontmatter `metadata.version`, or null
- * when the frontmatter is unreadable or carries no string version.
+ * The release a SKILL.md states in frontmatter `metadata.version`, or null.
+ * Read without a YAML parser, so it works on every supported Bun: the
+ * `metadata:` block mapping's direct `version:` entry, as a plain, single-,
+ * or double-quoted scalar. Any other shape reads as no version.
  */
 export const skillMetadataVersion = (skill: string): string | null => {
-  const { metadata } = readFrontmatter(skill);
-  const { version } = asRecord(metadata?.metadata);
-  return typeof version === "string" && version.length > 0 ? version : null;
+  const frontmatter = FRONTMATTER_PATTERN.exec(skill)?.[1];
+  if (frontmatter === undefined) {
+    return null;
+  }
+  const lines = frontmatter.split(LINE_BREAK_PATTERN);
+  const start = lines.findIndex((line) => METADATA_KEY_PATTERN.test(line));
+  let indent: string | null = null;
+  for (const line of start < 0 ? [] : lines.slice(start + 1)) {
+    if (line.trim() === "") {
+      continue;
+    }
+    const lead = LEADING_SPACE_PATTERN.exec(line)?.[0] ?? "";
+    if (lead === "") {
+      break;
+    }
+    indent ??= lead;
+    const entry =
+      lead === indent
+        ? METADATA_VERSION_PATTERN.exec(line.slice(lead.length))
+        : null;
+    if (entry) {
+      return entry[1] ?? entry[2] ?? entry[3] ?? null;
+    }
+  }
+  return null;
 };
 
 const checkIdentity = (

@@ -1,4 +1,13 @@
-import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
+import {
+  afterEach,
+  describe,
+  expect,
+  setDefaultTimeout,
+  spyOn,
+  test,
+} from "bun:test";
+// biome-ignore lint/performance/noNamespaceImport: spyOn must patch the namespace the policy writer's named imports read.
+import * as fs from "node:fs";
 import {
   existsSync,
   readFileSync,
@@ -12,8 +21,9 @@ import { spawnSync } from "bun";
 import { CURRENT_GUIDANCE_VERSION } from "../../../skills/simple-changes/scripts/lib/guidance-updates.ts";
 import { captureInventory } from "../../../skills/simple-changes/scripts/lib/inventory.ts";
 import {
-  acknowledgementRaisesTrust,
+  acknowledgementCouldRestoreTrust,
   withAcknowledgedGuidanceText,
+  writeGuidanceAcknowledgement,
   writeRepositoryPolicyTrustReceipt,
 } from "../../../skills/simple-changes/scripts/lib/policy.ts";
 import {
@@ -171,9 +181,39 @@ const rollBackGuidance = (fixture: TestRepository): string => {
   return confirmed;
 };
 
-const confirmedDisposition = (confirmed: string): string =>
-  (JSON.parse(confirmed) as { guidance: { disposition: string } }).guidance
-    .disposition;
+const confirmedDisposition = (confirmed: string): "accepted" | "reviewed" =>
+  (
+    JSON.parse(confirmed) as {
+      guidance: { disposition: "accepted" | "reviewed" };
+    }
+  ).guidance.disposition;
+
+const repositoryTarget = (fixture: TestRepository) =>
+  ({
+    commonGitDirectory: join(fixture.root, ".git"),
+    primaryCheckout: fixture.root,
+    source: "repository",
+  }) as const;
+
+const realReadFileSync = fs.readFileSync;
+
+// Runs `change` right after the first read of `path`, standing in for another
+// process editing the policy while an acknowledgement is between its read and
+// its write. Restore the returned spy when done.
+const changeAfterFirstRead = (path: string, change: () => void) => {
+  let pending = true;
+  return spyOn(fs, "readFileSync").mockImplementation(((
+    file: fs.PathOrFileDescriptor,
+    options?: Parameters<typeof fs.readFileSync>[1]
+  ) => {
+    const contents = realReadFileSync(file, options);
+    if (pending && file === path) {
+      pending = false;
+      change();
+    }
+    return contents;
+  }) as typeof fs.readFileSync);
+};
 
 const trustReceiptPath = (fixture: TestRepository): string =>
   join(fixture.root, ".git", "simple-changes", "policy-trust.json");
@@ -353,14 +393,11 @@ describe("acknowledge-update records guidance in the saved policy only", () => {
     });
   });
 
-  test("the stale-receipt check ignores the policy path and fails closed", () => {
+  test("the stale-receipt check reads only the receipt and fails closed", () => {
     const fixture = confirmWithSetup(ELEVATED_SETUP);
     const confirmed = rollBackGuidance(fixture);
-    const path = join(fixture.root, ".simple-changes.json");
     const stale = savedPolicy(fixture);
-    const disposition = confirmedDisposition(confirmed) as
-      | "accepted"
-      | "reviewed";
+    const disposition = confirmedDisposition(confirmed);
     const restoring = withAcknowledgedGuidanceText(stale, {
       disposition,
       version: CURRENT_GUIDANCE_VERSION,
@@ -369,36 +406,77 @@ describe("acknowledge-update records guidance in the saved policy only", () => {
       disposition: disposition === "reviewed" ? "accepted" : "reviewed",
       version: CURRENT_GUIDANCE_VERSION,
     });
-    const target = {
-      commonGitDirectory: join(fixture.root, ".git"),
-      primaryCheckout: fixture.root,
-      source: "repository",
-    } as const;
+    const target = repositoryTarget(fixture);
     expect(restoring).toBe(confirmed);
-    expect(acknowledgementRaisesTrust(path, stale, restoring, target)).toBe(
-      true
-    );
-    expect(acknowledgementRaisesTrust(path, stale, other, target)).toBe(false);
-
-    // The policy vanishing mid-check must not turn the refusal into a write.
-    unlinkSync(path);
-    expect(acknowledgementRaisesTrust(path, stale, restoring, target)).toBe(
-      true
-    );
-    writeFileSync(path, stale);
+    expect(acknowledgementCouldRestoreTrust(restoring, target)).toBe(true);
+    expect(acknowledgementCouldRestoreTrust(other, target)).toBe(false);
 
     // A receipt that cannot be read might bind anything, so it refuses.
     const receiptPath = trustReceiptPath(fixture);
     const receipt = readFileSync(receiptPath, "utf8");
     writeFileSync(receiptPath, "{not json");
-    expect(acknowledgementRaisesTrust(path, stale, other, target)).toBe(true);
+    expect(acknowledgementCouldRestoreTrust(other, target)).toBe(true);
     writeFileSync(receiptPath, receipt);
 
     // With no receipt at all, nothing the write produces can be trusted.
     unlinkSync(receiptPath);
-    expect(acknowledgementRaisesTrust(path, stale, restoring, target)).toBe(
-      false
+    expect(acknowledgementCouldRestoreTrust(restoring, target)).toBe(false);
+  });
+
+  test("a policy removed mid-acknowledgement is not recreated as receipt-bound bytes", () => {
+    const fixture = confirmWithSetup(ELEVATED_SETUP);
+    const confirmed = rollBackGuidance(fixture);
+    const path = join(fixture.root, ".simple-changes.json");
+    const spy = changeAfterFirstRead(path, () => unlinkSync(path));
+    try {
+      expect(() =>
+        writeGuidanceAcknowledgement(
+          path,
+          {
+            disposition: confirmedDisposition(confirmed),
+            version: CURRENT_GUIDANCE_VERSION,
+          },
+          repositoryTarget(fixture)
+        )
+      ).toThrow("Nothing was written");
+    } finally {
+      spy.mockRestore();
+    }
+    expect(existsSync(path)).toBe(false);
+  });
+
+  test("a no-op acknowledgement never overwrites a concurrent edit", () => {
+    // The trusted bytes are read, another process replaces them with
+    // unconfirmed bytes, and the acknowledgement changes nothing: writing the
+    // read bytes back would restore the receipt's match without setup.
+    const fixture = confirmWithSetup(ELEVATED_SETUP);
+    const confirmed = savedPolicy(fixture);
+    const path = join(fixture.root, ".simple-changes.json");
+    const concurrent = confirmed.replace(
+      `"version": ${CURRENT_GUIDANCE_VERSION}`,
+      '"version": 22'
     );
+    expect(concurrent).not.toBe(confirmed);
+    const spy = changeAfterFirstRead(path, () =>
+      writeFileSync(path, concurrent)
+    );
+    try {
+      writeGuidanceAcknowledgement(
+        path,
+        {
+          disposition: confirmedDisposition(confirmed),
+          version: CURRENT_GUIDANCE_VERSION,
+        },
+        repositoryTarget(fixture)
+      );
+    } finally {
+      spy.mockRestore();
+    }
+    expect(savedPolicy(fixture)).toBe(concurrent);
+    expect(captureInventory(fixture.root).policy).toMatchObject({
+      trust: "untrusted",
+      value: REDUCED_AUTHORITY,
+    });
   });
 
   test("an ordinary confirmed policy may return to its confirmed bytes", () => {
@@ -422,11 +500,16 @@ describe("acknowledge-update records guidance in the saved policy only", () => {
     const fixture = confirmWithSetup(ELEVATED_SETUP);
     const confirmed = savedPolicy(fixture);
     const receipt = readFileSync(trustReceiptPath(fixture), "utf8");
+    const file = statSync(join(fixture.root, ".simple-changes.json"));
 
     expect(acknowledge(fixture, confirmedDisposition(confirmed)).exitCode).toBe(
       0
     );
     expect(savedPolicy(fixture)).toBe(confirmed);
+    // Already recorded, so the file is not replaced at all.
+    expect(statSync(join(fixture.root, ".simple-changes.json")).ino).toBe(
+      file.ino
+    );
     expect(readFileSync(trustReceiptPath(fixture), "utf8")).toBe(receipt);
     expect(captureInventory(fixture.root).policy).toMatchObject({
       trust: "trusted",

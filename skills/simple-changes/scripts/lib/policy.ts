@@ -526,12 +526,10 @@ export const loadPersonalPolicy = (
   };
 };
 
-// `policyText` checks candidate bytes for `policyPath` before they are written.
 const trustedRepositoryPolicy = (
   primaryCheckout: string,
   policyPath: string,
-  commonGitDirectory: string | undefined,
-  policyText?: string
+  commonGitDirectory: string | undefined
 ): boolean => {
   if (!commonGitDirectory) {
     return false;
@@ -554,32 +552,11 @@ const trustedRepositoryPolicy = (
       Boolean(receipt.reason.trim()) &&
       receipt.repository === realpathSync(primaryCheckout) &&
       receipt.policyPath === realpathSync(policyPath) &&
-      receipt.policyDigest ===
-        sha256(policyText ?? readFileSync(policyPath, "utf8"))
+      receipt.policyDigest === sha256(readFileSync(policyPath, "utf8"))
     );
   } catch {
     return false;
   }
-};
-
-const repositoryPolicyTrust = (
-  value: RepoPolicy,
-  primaryCheckout: string,
-  policyPath: string,
-  commonGitDirectory: string | undefined,
-  policyText?: string
-): LoadedPolicy["trust"] => {
-  if (!requiresRepositoryTrust(value)) {
-    return "not-required";
-  }
-  return trustedRepositoryPolicy(
-    primaryCheckout,
-    policyPath,
-    commonGitDirectory,
-    policyText
-  )
-    ? "trusted"
-    : "untrusted";
 };
 
 export const writeRepositoryPolicyTrustReceipt = (
@@ -679,26 +656,19 @@ const trustReceiptMayBind = (
 };
 
 /**
- * Only setup may lift reduced authority. Writing `edited` would raise trust
- * when it requests consequential authority, the receipt may bind exactly those
- * bytes, and the bytes being replaced are not verifiably trusted now. Any
- * check that cannot complete counts against the write, never for it.
+ * Whether writing `edited` could leave the repository policy trusted: it
+ * requests consequential authority and the receipt may bind exactly those
+ * bytes. Only setup may lift reduced authority, so the writer never writes
+ * such bytes. That holds whatever the write replaces, including bytes changed
+ * concurrently since they were read, and a check that cannot complete counts
+ * against the write, never for it.
  */
-export const acknowledgementRaisesTrust = (
-  path: string,
-  text: string,
+export const acknowledgementCouldRestoreTrust = (
   edited: string,
   target: RepositoryAcknowledgementTarget
 ): boolean =>
   requiresRepositoryTrust(parsePolicyText(edited)) &&
-  trustReceiptMayBind(target.commonGitDirectory, edited) &&
-  repositoryPolicyTrust(
-    parsePolicyText(text),
-    target.primaryCheckout,
-    path,
-    target.commonGitDirectory,
-    text
-  ) !== "trusted";
+  trustReceiptMayBind(target.commonGitDirectory, edited);
 
 /**
  * Records a guidance acknowledgement in the saved policy file itself. The
@@ -707,7 +677,8 @@ export const acknowledgementRaisesTrust = (
  * This neither creates nor renews a repository trust receipt; changing the
  * bytes leaves an existing receipt unmatched, exactly as any other edit does.
  * An edit that would instead make a stale receipt match again, raising an
- * unconfirmed repository policy to trusted, is refused with nothing written.
+ * unconfirmed repository policy to trusted, is refused with nothing written,
+ * and an acknowledgement already recorded writes nothing at all.
  */
 export const writeGuidanceAcknowledgement = (
   path: string,
@@ -725,9 +696,13 @@ export const writeGuidanceAcknowledgement = (
   }
   const edited = withAcknowledgedGuidanceText(text, guidance);
   parsePolicyText(edited);
+  // Already recorded: replacing the file could only undo a concurrent edit.
+  if (edited === text) {
+    return;
+  }
   if (
     target.source === "repository" &&
-    acknowledgementRaisesTrust(path, text, edited, target)
+    acknowledgementCouldRestoreTrust(edited, target)
   ) {
     throw new SimpleChangesError(
       `Refusing to acknowledge the guidance update in ${path}: the trust receipt for an earlier copy of this policy matches the result or cannot be read, so writing it could re-enable consequential settings without confirmation. Nothing was written. Run \`simple-changes setup\` to confirm this repository policy; setup also records the current guidance.`,
@@ -750,20 +725,23 @@ export const loadPolicy = (
   const policyPath = resolve(primaryCheckout, ".simple-changes.json");
   if (existsSync(policyPath)) {
     const value = parsePolicyFile(policyPath);
-    const trust = repositoryPolicyTrust(
-      value,
-      primaryCheckout,
-      policyPath,
-      options.commonGitDirectory
-    );
+    const consequential = requiresRepositoryTrust(value);
+    const trusted =
+      !consequential ||
+      trustedRepositoryPolicy(
+        primaryCheckout,
+        policyPath,
+        options.commonGitDirectory
+      );
+    let trust: LoadedPolicy["trust"] = "not-required";
+    if (consequential) {
+      trust = trusted ? "trusted" : "untrusted";
+    }
     return {
       path: policyPath,
       source: "repository",
       trust,
-      value:
-        trust === "untrusted"
-          ? withoutUntrustedConsequentialAuthority(value)
-          : value,
+      value: trusted ? value : withoutUntrustedConsequentialAuthority(value),
     };
   }
   const personalPolicyPath =

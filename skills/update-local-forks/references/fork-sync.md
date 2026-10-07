@@ -65,13 +65,28 @@ fork that holds a path that is not, naming the path bytes in hex, and a
 release tree that names one never verifies, so the pin never moves past a
 file the plan cannot carry. Rename the file, then plan again.
 
-The plan also rewrites exact literals the fork pins in its own files outside
-the runtime: the old provenance sha, `CURRENT_GUIDANCE_VERSION = <old>`, and
-`Simple Changes <old version>`. Only those exact strings change; nothing is
-inferred. The fork's own records keep the literal they were written with: a
-line naming a commit or version range (`7ab67a1..628c66b`), and in Markdown
-every heading and every line of a history entry or a history section. An
-entry's heading names what it records: a commit, a range, or a date, as in
+The plan also moves the old provenance sha where the fork's own files outside
+the runtime name it, as the exact string; nothing is inferred.
+It never rewrites a version literal, `CURRENT_GUIDANCE_VERSION = <old>` or
+`Simple Changes <old version>`: whether a line states the fork's current
+version, a minimum, or a past release is a maintainer's call. Instead, every
+fork-owned line that names one becomes a `review` item giving the line, its
+text, and a suggested replacement; change by hand each one that states the
+current version. The suggestion replaces each occurrence of the old literal, so
+a longer value that holds it, such as `0.25.10`, is listed too; leave it as
+written. In practice the list is a version check or two in the fork's
+`scripts/test.sh`. A file the plan writes, such as a merged `SKILL.md`, carries
+the same list in its entry, and so does a conflicting file, for the lines it
+keeps. A file the fork carries byte for byte from upstream, at the pin or in
+the installed release, keeps upstream's bytes and is never listed, and neither
+is a line of a fork-edited file that repeats upstream's text. Apply refuses a
+plan saved by an earlier version that rewrites a version literal, or any
+literal in a file that plan marks `current` from upstream, before writing
+anything; plan again. The fork's own records keep the literal they were written
+with, and are neither moved nor listed: a line naming a commit or version range
+(`7ab67a1..628c66b`), and in Markdown every heading and every line of a history
+entry or a history section.
+An entry's heading names what it records: a commit, a range, or a date, as in
 ``## Upstream 0.24.1 (`628c66b..fd16f54`)``, ``### Fork fix: ... (pin
 `fd16f54`)``, or ``## Canonical 0.12.4 (`1b7b7e7`)``. An abbreviated SHA
 counts in backticks, after "pin" or "commit", or in parentheses, as in
@@ -167,7 +182,10 @@ should say what changed for that fork so the notice can be answered quickly.
 1. Run the fork's own checks (`scripts/test.sh` when present) and the
    repository's native checks.
 2. Re-run `plan`; it should report no `update`, `merge`, `add`, `delete`, or
-   `unrecorded-omission` actions and no pending literal rewrites.
+   `unrecorded-omission` actions and no pending pin rewrites. Change the
+   listed version literals in the same update: once the pin moves, the old
+   version is no longer the pinned one, so a later plan stops listing a line
+   left as written.
 3. Record the sync in the fork's maintenance note.
 4. Hand the repository change to Simple Changes. This skill never commits,
    pushes, or opens proposals.

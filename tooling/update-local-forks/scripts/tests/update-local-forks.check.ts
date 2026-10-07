@@ -2707,5 +2707,7 @@ describe("update-local-forks", () => {
       expect(reference).toContain(action);
     }
     expect(reference).toContain("--skill update-local-forks");
+    expect(reference).toContain("never rewrites a version literal");
+    expect(skill).toContain("change by hand");
   });
 });

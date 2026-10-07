@@ -73,10 +73,10 @@ describe("first-run initialization", () => {
     );
     expect(from19.changes.map((item) => item.version)).toEqual([
       20, 20, 21, 21, 21, 22, 22, 22, 22, 23, 23, 24, 24, 24, 25, 25, 25, 26,
-      26, 26,
+      26, 26, 27, 27, 27,
     ]);
     expect(from19.changes.at(-1)?.summary).toContain(
-      "`loop record-outcome --approved-by --approval-reference`"
+      "`update-local-forks` tries the `v<version>` tag first"
     );
   });
   test("propagates the saved shipping preference into emergency classification", () => {
@@ -297,7 +297,7 @@ describe("first-run initialization", () => {
           available: true,
           owner: "simple-changelogs",
         },
-        currentVersion: 26,
+        currentVersion: 27,
         headline: "**Simple Changes has recently been updated.**",
         presentationOrder: [
           "required-answers",
@@ -317,7 +317,7 @@ describe("first-run initialization", () => {
     });
     expect(status.guidanceUpdate.summaryBullets).toHaveLength(3);
     expect(status.guidanceUpdate.summaryBullets.join(" ")).toContain(
-      "`loop finalize --awaiting-user`"
+      "Releases can now get a Git tag"
     );
     expect(status.guidanceUpdate.summaryBullets.join(" ")).toContain(
       "Merge danger door"

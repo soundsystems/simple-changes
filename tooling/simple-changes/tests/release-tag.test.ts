@@ -537,6 +537,23 @@ describe("release-tag apply", () => {
     expect(receipt.status).toBe("already-present");
     expect(receipt.reason).toContain("with another message (Hand-made notes)");
     expect(remoteTags(fixture.bare)).toEqual(before);
+
+    // A lightweight tag lists no peeled line; it still names the target.
+    const light = releaseFixture();
+    git(light.bare, ["update-ref", "refs/tags/v1.4.0", light.target]);
+    const lightRun = withRun(light);
+    expect(await lightRun(verified(light), { dryRun: true })).toMatchObject({
+      status: "already-present",
+      tagObject: light.target,
+    });
+    const lightReceipt = await lightRun(verified(light));
+    expect(lightReceipt).toMatchObject({
+      status: "already-present",
+      tagObject: light.target,
+    });
+    expect(lightReceipt.reason).toContain("as a lightweight tag");
+    expect(remoteTags(light.bare)).toEqual({ "v1.4.0": light.target });
+    expect(localTagRef(light.root, "v1.4.0")).toBeNull();
   });
 
   test("never moves a tag that names another commit", async () => {

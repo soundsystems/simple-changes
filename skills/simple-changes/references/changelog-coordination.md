@@ -322,8 +322,8 @@ and it has exactly one URL, the same for fetch and push, matching the URL the
 run is bound to. That URL must not depend on the directory Git runs in, since
 holds are read from the primary checkout and the tag is pushed from the
 controller's: a local path must be absolute (`../origin.git`, `./origin.git`,
-`origin.git`, and `~/origin.git` are refused), a `file://` URL must be
-`file:///<absolute path>`, a remote helper's address follows the same rules,
+`origin.git`, and `~/origin.git` are refused; on Windows it must name its
+drive or be a UNC path), a `file://` URL must be `file:///<absolute path>`, a remote helper's address follows the same rules,
 and the `ext::` and `fd::` helpers, which name no repository, are refused. It
 checks remote tags with `git ls-remote` and local tags, treating
 an exact name, a parent name (`release` blocks `release/1.2.0`), or a child

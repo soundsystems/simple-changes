@@ -191,7 +191,10 @@ const COMMAND_HELPERS = new Set(["ext", "fd"]);
 const FILE_URL_PATTERN = /^file:\/\//iu;
 const FILE_URL_ABSOLUTE_PATTERN = /^file:\/\/(?:localhost)?\//iu;
 const WINDOWS_DRIVE_PATTERN = /^[A-Za-z]:/u;
+// A drive-qualified or UNC path; on Windows a path rooted only on the
+// current drive (`/repo.git`) differs between checkouts on different drives.
 const WINDOWS_ABSOLUTE_PATTERN = /^(?:[A-Za-z]:[\\/]|[\\/]{2})/u;
+const FILE_URL_LOCALHOST_PATTERN = /^localhost(?=\/)/iu;
 
 /**
  * Why a remote URL could reach a different repository depending on where
@@ -207,6 +210,8 @@ const WINDOWS_ABSOLUTE_PATTERN = /^(?:[A-Za-z]:[\\/]|[\\/]{2})/u;
  * - `file://` uses only what follows the next `/` as an absolute path,
  *   silently dropping a relative-looking `file://../repo.git`, so only
  *   `file:///path` and `file://localhost/path` are accepted;
+ * - on Windows a local path, including a file URL's, must name its drive or
+ *   be a UNC path, since `/repo.git` resolves on each checkout's own drive;
  * - other `<scheme>://` URLs name a network destination;
  * - with no `://`, a URL without a `:`, or with a `/` before its first `:`
  *   (or, on Windows, a drive letter), is a local path and must be absolute:
@@ -214,6 +219,22 @@ const WINDOWS_ABSOLUTE_PATTERN = /^(?:[A-Za-z]:[\\/]|[\\/]{2})/u;
  *   are refused; anything else is scp-like `host:path`, resolved on the
  *   remote host.
  */
+// `file:///path` or `file://localhost/path`; on Windows the path must also
+// name its drive (`file:///C:/repo`, which Git also reads as
+// `file://C:/repo`) or be UNC (`file:////server/share/repo`).
+const fileUrlAbsolute = (url: string, windows: boolean): boolean => {
+  if (!windows) {
+    return FILE_URL_ABSOLUTE_PATTERN.test(url);
+  }
+  const path = url
+    .slice("file://".length)
+    .replace(FILE_URL_LOCALHOST_PATTERN, "");
+  return (
+    WINDOWS_ABSOLUTE_PATTERN.test(path) ||
+    (path.startsWith("/") && WINDOWS_ABSOLUTE_PATTERN.test(path.slice(1)))
+  );
+};
+
 export const workingDirectoryDependentUrl = (
   url: string,
   platform: NodeJS.Platform = process.platform
@@ -221,17 +242,16 @@ export const workingDirectoryDependentUrl = (
   const shown = redacted(url);
   const helper = URL_HELPER_PATTERN.exec(url);
   if (helper) {
+    // A command line can carry secrets, so only the helper is named.
     return COMMAND_HELPERS.has(helper[1] ?? "")
-      ? `${shown} runs a command or reads file descriptors instead of naming a repository, so release-tag cannot prove one destination`
+      ? `the ${helper[1]}:: helper, which runs a command or reads file descriptors instead of naming a repository, so release-tag cannot prove one destination`
       : workingDirectoryDependentUrl(url.slice(helper[0].length), platform);
   }
   const windows = platform === "win32";
   if (FILE_URL_PATTERN.test(url)) {
-    // Git for Windows also reads file://C:/repo as a drive path.
-    return FILE_URL_ABSOLUTE_PATTERN.test(url) ||
-      (windows && WINDOWS_ABSOLUTE_PATTERN.test(url.slice("file://".length)))
+    return fileUrlAbsolute(url, windows)
       ? null
-      : `${shown} is a file URL without an absolute path right after file://, so Git would use a path other than the one written`;
+      : `${shown} is a file URL without ${windows ? "a drive-qualified or UNC" : "an absolute"} path right after file://, so Git would use a path other than the one written, or resolve it per checkout`;
   }
   if (URL_SCHEME_PATTERN.test(url)) {
     return null;
@@ -245,8 +265,9 @@ export const workingDirectoryDependentUrl = (
   if (!local) {
     return null;
   }
-  const absolute =
-    url.startsWith("/") || (windows && WINDOWS_ABSOLUTE_PATTERN.test(url));
+  const absolute = windows
+    ? WINDOWS_ABSOLUTE_PATTERN.test(url)
+    : url.startsWith("/");
   return absolute
     ? null
     : `${shown} is not an absolute local path, so each checkout could resolve it to a different repository`;

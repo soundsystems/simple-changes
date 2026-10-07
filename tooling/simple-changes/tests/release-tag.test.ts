@@ -934,19 +934,50 @@ describe("release-tag destinations", () => {
         url,
       });
     }
-    // Git for Windows reads a drive letter as a local path.
-    for (const url of ["C:relative", "origin.git", "..\\origin.git"]) {
-      expect(dependent(url, "win32")).toBe(true);
+    // Git for Windows reads a drive letter as a local path, and a path
+    // rooted only on the current drive resolves per checkout drive.
+    for (const url of [
+      "C:relative",
+      "origin.git",
+      "..\\origin.git",
+      "/origin.git",
+      "\\origin.git",
+      "file:///origin.git",
+      "file://localhost/origin.git",
+      "file://../origin.git",
+    ]) {
+      expect({ dependent: dependent(url, "win32"), url }).toEqual({
+        dependent: true,
+        url,
+      });
     }
     for (const url of [
       "C:\\repos\\origin.git",
       "C:/repos/origin.git",
       "\\\\server\\share\\origin.git",
+      "//server/share/origin.git",
       "file://C:/repos/origin.git",
       "file:///C:/repos/origin.git",
+      "file://localhost/C:/repos/origin.git",
+      "file:////server/share/origin.git",
+      "git@git.example.com:group/project.git",
     ]) {
-      expect(dependent(url, "win32")).toBe(false);
+      expect({ dependent: dependent(url, "win32"), url }).toEqual({
+        dependent: false,
+        url,
+      });
     }
+    // A command line can carry secrets, so a refusal never repeats it.
+    const commandRefusal = workingDirectoryDependentUrl(
+      "ext::sshpass -p hunter2 ssh git@git.example.com %S /srv/origin.git"
+    );
+    expect(commandRefusal).toContain("the ext:: helper");
+    expect(commandRefusal).not.toContain("hunter2");
+    expect(
+      workingDirectoryDependentUrl(
+        "file://user:hunter2@server/srv/git/origin.git"
+      )
+    ).not.toContain("hunter2");
   });
 
   test("refuses a relative remote URL that a linked controller worktree resolves to another repository", async () => {

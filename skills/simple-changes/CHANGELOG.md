@@ -11,6 +11,10 @@
   `proposalScheduling`. Acknowledging still grants no authority: an
   unconfirmed policy stays unconfirmed, and a confirmed one needs setup to
   confirm it again, because its trust receipt covers the file's exact bytes.
+  An acknowledgement that would turn the file back into bytes an earlier
+  receipt confirmed is refused, with nothing written; run setup to confirm the
+  policy instead. Setup and `acknowledge-update` now take the repository lock
+  outside a loop too, so either can fail as busy while the other runs.
 - `update-local-forks` no longer rewrites version text in a fork. Each
   fork-owned line that names the previous Simple Changes release, or the
   previous `CURRENT_GUIDANCE_VERSION`, is listed in the plan with its line

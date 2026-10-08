@@ -23,6 +23,18 @@ import { receiptPath } from "../merge-gate.ts";
 
 setDefaultTimeout(60_000);
 
+// `bun run check:receipt` runs the whole check with GIT_NO_REPLACE_OBJECTS and
+// GIT_GRAFT_FILE set, so the check reads real history. These tests build
+// replacement refs and grafts on purpose, so every process they start gets
+// this environment without those settings; the guard and receipt code set
+// them on their own Git calls. Bun passes its startup environment to a spawn
+// that names none, so each spawn names this one.
+const {
+  GIT_GRAFT_FILE: _graftFile,
+  GIT_NO_REPLACE_OBJECTS: _noReplaceObjects,
+  ...fixtureEnvironment
+} = process.env;
+
 const here = dirname(fileURLToPath(import.meta.url));
 const GUARD_PATH = resolve(here, "../exec-guard.ts");
 const CHECK_RECEIPT_PATH = resolve(here, "../check-receipt.ts");
@@ -40,7 +52,7 @@ afterEach(() => {
 const run = (cwd: string, argv: string[], allowFailure = false) => {
   const result = spawnSync(argv, {
     cwd,
-    env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
+    env: { ...fixtureEnvironment, GIT_TERMINAL_PROMPT: "0" },
     stderr: "pipe",
     stdout: "pipe",
   });
@@ -417,15 +429,10 @@ describe("merge gate exec guard", () => {
     // as a parent for plain Git, but not for what a merge transfers.
     const published = git(root, ["rev-parse", "refs/remotes/origin/main"]);
     const contains = () =>
-      spawnSync([
-        "git",
-        "-C",
-        root,
-        "merge-base",
-        "--is-ancestor",
-        published,
-        orphan,
-      ]).exitCode;
+      spawnSync(
+        ["git", "-C", root, "merge-base", "--is-ancestor", published, orphan],
+        { env: fixtureEnvironment }
+      ).exitCode;
     git(root, ["replace", "--graft", orphan, published]);
     expect(contains()).toBe(0);
     expect(decide(root, merge).reason).toContain(
@@ -871,6 +878,7 @@ describe("bun run check:receipt", () => {
   const runCheckReceipt = (root: string) => {
     const result = spawnSync([process.execPath, CHECK_RECEIPT_PATH], {
       cwd: root,
+      env: fixtureEnvironment,
       stderr: "pipe",
       stdout: "pipe",
     });
@@ -1030,8 +1038,10 @@ describe("bun run check:receipt", () => {
       }
       // Plain Git now shows HEAD with no parent; the tree is unchanged.
       expect(
-        spawnSync(["git", "-C", root, "rev-parse", "--verify", "-q", "HEAD~1"])
-          .exitCode
+        spawnSync(
+          ["git", "-C", root, "rev-parse", "--verify", "-q", "HEAD~1"],
+          { env: fixtureEnvironment }
+        ).exitCode
       ).not.toBe(0);
       const result = runCheckReceipt(root);
       expect({ exitCode: result.exitCode, rewrite }).toEqual({

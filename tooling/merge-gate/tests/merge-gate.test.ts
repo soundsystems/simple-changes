@@ -335,6 +335,8 @@ describe("merge gate exec guard", () => {
       { runtime: " " },
       { reviewer: "someone" },
       { startedAt: "October 8, 2026" },
+      { schemaVersion: 2 },
+      { kind: "test-receipt" },
     ]) {
       writeReceipt(feature, overrides);
       expect(decide(root, command).reason).toContain(

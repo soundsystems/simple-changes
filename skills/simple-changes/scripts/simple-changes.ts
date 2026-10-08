@@ -4,12 +4,13 @@ import { createHash } from "node:crypto";
 import {
   lstatSync,
   readFileSync,
+  realpathSync,
   type Stats,
   statSync,
   writeFileSync,
   writeSync,
 } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { fileURLToPath } from "node:url";
 import { sleep, stdin } from "bun";
@@ -49,6 +50,7 @@ import {
   grantLoopOverride,
   guardLoopMutation,
   type LoopEquivalenceEvidence,
+  loopLeasePath,
   loopManifestDigest,
   loopReplanStatus,
   loopStatus,
@@ -3262,7 +3264,12 @@ const runLoopDraftOutcome = (options: CliOptions, runId: string): void => {
       warnings: outcome.warnings,
     },
     `${text}\n`,
-    [options.changelogReceiptPath]
+    [
+      options.changelogReceiptPath,
+      loopLeasePath(
+        locateRepository(options.repo).repository.commonGitDirectory
+      ),
+    ]
   );
 };
 
@@ -4011,31 +4018,62 @@ const runPrune = (options: CliOptions): void => {
  * inputs under any name: not a symbolic link, and not the same file (device
  * and inode) as an input reached through a hard link or an aliased directory.
  */
+/**
+ * The Git common directory of the repository the command runs in, where
+ * Simple Changes keeps its state, or null outside a repository.
+ */
+const stateDirectoryFor = (repository: string): string | null => {
+  try {
+    return realpathSync(
+      locateRepository(repository).repository.commonGitDirectory
+    );
+  } catch {
+    return null;
+  }
+};
+
 const assertOutputIsNotInput = (
   output: string,
-  inputs: readonly (string | undefined)[]
+  inputs: readonly (string | undefined)[],
+  stateDirectory: string | null
 ): void => {
-  let existing: Stats;
-  try {
-    existing = lstatSync(output);
-  } catch {
-    return;
-  }
   const refuseOutput = (why: string): never => {
     throw new SimpleChangesError(
       `--output ${output} ${why}; name a new file.`,
       EXIT_CODES.usage
     );
   };
+  if (stateDirectory) {
+    let parent: string | null = null;
+    try {
+      parent = realpathSync(dirname(output));
+    } catch {
+      parent = null;
+    }
+    const inside = parent === null ? null : relative(stateDirectory, parent);
+    if (inside !== null && !(inside.startsWith("..") || isAbsolute(inside))) {
+      refuseOutput(
+        "is inside the Git common directory, where Simple Changes keeps its state"
+      );
+    }
+  }
+  let existing: Stats;
+  try {
+    existing = lstatSync(output);
+  } catch {
+    return;
+  }
   if (!existing.isFile()) {
     refuseOutput("is not a regular file");
   }
   for (const input of inputs) {
-    if (!input) {
-      continue;
+    let source: Stats | null = null;
+    try {
+      source = input ? statSync(resolve(input)) : null;
+    } catch {
+      source = null;
     }
-    const source = statSync(resolve(input));
-    if (source.dev === existing.dev && source.ino === existing.ino) {
+    if (source && source.dev === existing.dev && source.ino === existing.ino) {
       refuseOutput("is one of this command's input files");
     }
   }
@@ -4057,7 +4095,7 @@ const emitDocument = (
     return;
   }
   const output = resolve(options.outputPath);
-  assertOutputIsNotInput(output, inputs);
+  assertOutputIsNotInput(output, inputs, stateDirectoryFor(options.repo));
   writeFileSync(output, body, "utf8");
   writeOutput(
     { ...summary, output },

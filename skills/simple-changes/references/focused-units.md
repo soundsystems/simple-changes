@@ -69,7 +69,9 @@ simple-changes loop draft-outcome --run-id <run> \
   [--changelog-receipt prepared.json] --output outcome.json
 ```
 
-It only reads the lease and Git, with no lock and no write besides `--output`.
+It only reads the lease and Git, with no lock and no write besides `--output`,
+which refuses an input under any name and any path inside the Git common
+directory, where the lease lives.
 It binds the current target, lists every path changed on the target since loop
 start with its exact `ls-tree` entry (`null` for a deleted or moved-away path),
 pre-fills each scoped unit's final paths and rename originals, and adds the

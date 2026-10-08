@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { linkSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "bun";
@@ -9,6 +9,7 @@ import {
 } from "../../../skills/simple-changes/scripts/lib/inventory.ts";
 import {
   endLoop,
+  loopLeasePath,
   OUTCOME_DRAFT_MARKER,
   recordShipmentOutcome,
   recordShipmentScope,
@@ -429,6 +430,45 @@ describe("loop draft-outcome", () => {
         ],
       })
     ).toThrow("draft placeholder");
+  });
+
+  test("--output never replaces the lease or writes into the state directory", () => {
+    const fixture = repository();
+    const { root } = fixture;
+    const lease = startLoop(root, "controller", "ship");
+    const leaseFile = loopLeasePath(join(root, ".git"));
+    const before = readFileSync(leaseFile, "utf8");
+    const hardLink = join(fixture.base, "lease-link.json");
+    linkSync(leaseFile, hardLink);
+    for (const output of [
+      leaseFile,
+      hardLink,
+      join(root, ".git", "simple-changes", "draft.json"),
+    ]) {
+      const result = spawnSync(
+        [
+          process.execPath,
+          cliPath,
+          "loop",
+          "draft-outcome",
+          "--run-id",
+          lease.runId,
+          "--output",
+          output,
+        ],
+        {
+          cwd: root,
+          env: { ...process.env, SIMPLE_CHANGES_SKILL_ROOTS: "" },
+          stderr: "pipe",
+          stdout: "pipe",
+        }
+      );
+      expect({ exitCode: result.exitCode, output }).toEqual({
+        exitCode: 2,
+        output,
+      });
+    }
+    expect(readFileSync(leaseFile, "utf8")).toBe(before);
   });
 
   test("reads release paths only from a changelog receipt's paths list", () => {

@@ -167,7 +167,9 @@ calls a provider: a fetcher behind the provider boundary writes one complete
 snapshot as normalized pages (for GitLab, the
 [reference fetcher](providers/gitlab.md#remote-inventory-fetcher)), and the
 builder computes cursors, accounted `itemCount`s, and ledger digests exactly as
-the receipt validator checks them, then validates its own result:
+the receipt validator checks them, then validates its own result. `--output`
+never overwrites an input under any name or writes inside the Git common
+directory:
 
 ```sh
 simple-changes remote-inventory build --pages opening-pages.json --output opening.json

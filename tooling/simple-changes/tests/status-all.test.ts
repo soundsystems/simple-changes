@@ -46,6 +46,8 @@ import { git, writeFixture } from "./helpers.ts";
 
 setDefaultTimeout(60_000);
 
+const COMMITTER_LINE = /^(committer .*)$/mu;
+
 let homes: string[] = [];
 afterEach(() => {
   for (const home of homes) {
@@ -316,14 +318,12 @@ describe("simple-changes status --all", () => {
     writeFixture(repository, ".simple-changes.json", policy(27));
     const traces = join(home, "traces");
     mkdirSync(join(traces, "events"), { recursive: true });
-    const globalConfig = join(home, "global.gitconfig");
     writeFileSync(
-      globalConfig,
-      `[trace2]\n\teventTarget = ${join(traces, "events")}\n\tnormalTarget = ${join(traces, "normal.log")}\n`
+      join(home, ".gitconfig"),
+      `[trace2]\n\teventTarget = ${join(traces, "events")}\n\tnormalTarget = ${join(traces, "normal.log")}\n\tperfTarget = ${join(traces, "perf.log")}\n`
     );
     const env = {
       ...process.env,
-      GIT_CONFIG_GLOBAL: globalConfig,
       GIT_TRACE: join(traces, "trace.log"),
       HOME: home,
       SIMPLE_CHANGES_SKILL_ROOTS: "",
@@ -337,6 +337,7 @@ describe("simple-changes status --all", () => {
     expect(readdirSync(traces).sort()).toEqual([
       "events",
       "normal.log",
+      "perf.log",
       "trace.log",
     ]);
     expect(readdirSync(join(traces, "events")).length).toBe(1);
@@ -358,6 +359,77 @@ describe("simple-changes status --all", () => {
       expect(result.exitCode).toBe(0);
     }
     expect(written()).toEqual([]);
+  });
+
+  test("inherited Git variables never pick another Git or turn signature checks on", () => {
+    const home = temporaryHome();
+    const repository = initRepository(join(home, "Developer", "stashed"));
+    writeFixture(repository, ".simple-changes.json", policy(27));
+    writeFixture(repository, "README.md", "# Stashed edit\n");
+    git(repository, ["stash", "-q"]);
+    // Sign the newest stash entry and point the verifier at a stand-in.
+    const signed = git(repository, [
+      "cat-file",
+      "commit",
+      "refs/stash",
+    ]).replace(
+      COMMITTER_LINE,
+      "$1\ngpgsig -----BEGIN PGP SIGNATURE-----\n \n c2lnbmF0dXJl\n -----END PGP SIGNATURE-----"
+    );
+    const commitFile = join(home, "signed-stash.txt");
+    writeFileSync(commitFile, `${signed}\n`);
+    git(repository, [
+      "update-ref",
+      "-m",
+      "signed stash",
+      "refs/stash",
+      git(repository, ["hash-object", "-t", "commit", "-w", commitFile]),
+    ]);
+    const stub = (name: string): { marker: string; path: string } => {
+      const marker = join(home, `${name}-ran`);
+      const path = join(home, name);
+      writeFileSync(path, `#!/bin/sh\ntouch '${marker}'\nexit 1\n`);
+      chmodSync(path, 0o755);
+      return { marker, path };
+    };
+    const verifier = stub("fake-gpg");
+    git(repository, ["config", "gpg.program", verifier.path]);
+    const execPath = join(home, "exec-path");
+    mkdirSync(execPath);
+    const internalGit = stub("exec-path/git");
+    const env = {
+      ...process.env,
+      GIT_CONFIG_PARAMETERS: "'log.showSignature=true'",
+      GIT_EXEC_PATH: execPath,
+      HOME: home,
+      SIMPLE_CHANGES_SKILL_ROOTS: "",
+    };
+    // Git itself runs both stand-ins for a stash listing in this environment.
+    spawnSync(["git", "-C", repository, "stash", "list"], { env });
+    expect(existsSync(internalGit.marker)).toBe(true);
+    spawnSync(["git", "-C", repository, "stash", "list"], {
+      env: { ...env, GIT_EXEC_PATH: undefined },
+    });
+    expect(existsSync(verifier.marker)).toBe(true);
+    rmSync(internalGit.marker);
+    rmSync(verifier.marker);
+    const cliPath = fileURLToPath(
+      new URL(
+        "../../../skills/simple-changes/scripts/simple-changes.ts",
+        import.meta.url
+      )
+    );
+    for (const args of [["status"], ["status", "--all"]]) {
+      const result = spawnSync([process.execPath, cliPath, ...args], {
+        cwd: repository,
+        env,
+        stderr: "pipe",
+        stdout: "pipe",
+      });
+      expect(result.exitCode).toBe(0);
+    }
+    expect(existsSync(internalGit.marker)).toBe(false);
+    expect(existsSync(verifier.marker)).toBe(false);
   });
 
   test("never runs git status, so no clean filter runs", () => {

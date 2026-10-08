@@ -474,8 +474,9 @@ installed Simple Changes source, as `behind`, `current`, `ahead`, or `unknown`.
 It is read-only. It never writes, fetches, or takes a lock: it never runs
 `git status` (so no filter, filesystem monitor, or index refresh runs, and
 checkout contents are never compared), other Git reads run with optional
-locks, lazy fetches, signature verification, and trace output off, holds are
-read from this clone only, and state files are read without their locks. On macOS, Git runs
+locks, lazy fetches, signature verification, and trace output off and with
+every inherited `GIT_*` environment variable dropped (each repository is
+read by path), holds are read from this clone only, and state files are read without their locks. On macOS, Git runs
 directly from the developer directory (`DEVELOPER_DIR`, the `xcode-select`
 link, or the Command Line Tools), never through `xcrun` or the `/usr/bin/git`
 shim, which write a lookup cache (a developer Git that resolves to the shim

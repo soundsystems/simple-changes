@@ -310,6 +310,30 @@ describe("simple-changes status --all", () => {
     expect(existsSync(marker)).toBe(false);
   });
 
+  test("never runs git status, so no clean filter runs", () => {
+    const home = temporaryHome();
+    const repository = initRepository(join(home, "Developer", "filtered"));
+    writeFixture(repository, ".simple-changes.json", policy(27));
+    const marker = join(home, "filter-ran");
+    writeFixture(repository, ".gitattributes", "*.md filter=marker\n");
+    git(repository, [
+      "config",
+      "filter.marker.clean",
+      `sh -c 'echo ran >> "${marker}"; cat'`,
+    ]);
+    const readme = join(repository, "README.md");
+    // Git itself runs the filter when status re-hashes a stat-dirty file.
+    utimesSync(readme, new Date(), new Date(Date.now() + 5000));
+    git(repository, ["status", "--porcelain"]);
+    expect(existsSync(marker)).toBe(true);
+    rmSync(marker);
+    utimesSync(readme, new Date(), new Date(Date.now() + 10_000));
+
+    statusAll({ home, runtime: { skillDirectory: home, version: "0.27.1" } });
+
+    expect(existsSync(marker)).toBe(false);
+  });
+
   test("reports absent checkouts, unreadable claims, and unreadable bindings", () => {
     const home = temporaryHome();
     const repository = initRepository(join(home, "Developer", "absent"));

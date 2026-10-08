@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "harnesses": {
+    "claude-code": {
+      "name": "Claude Code",
+      "homeRoots": [".claude"],
+      "sessionEnv": ["CLAUDE_CODE_SESSION_ID"]
+    },
+    "codex": {
+      "name": "Codex",
+      "homeRoots": [".codex"],
+      "sessionEnv": ["CODEX_THREAD_ID"]
+    },
+    "cursor": { "name": "Cursor", "homeRoots": [".cursor"], "sessionEnv": [] },
+    "hermes": { "name": "Hermes", "homeRoots": [".hermes"], "sessionEnv": [] },
+    "grok": { "name": "Grok", "homeRoots": [".grok"], "sessionEnv": [] }
+  }
+}

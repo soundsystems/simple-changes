@@ -114,6 +114,55 @@ describe("skill check", () => {
     }
   });
 
+  test("keeps authoring and review preference files and sections free of harness names", () => {
+    const root = createSkill();
+    writeFixture(
+      root,
+      "agents/harnesses.json",
+      `${JSON.stringify({
+        harnesses: {
+          "gamma-agent": {
+            homeRoots: [".g"],
+            name: "Gamma Agent",
+            sessionEnv: [],
+          },
+        },
+        schemaVersion: 1,
+      })}\n`
+    );
+    writeFixture(root, "scripts/lib/authoring.ts", "export const ok = 1;\n");
+    writeFixture(
+      root,
+      "references/onboarding.md",
+      "# Onboarding\n\nGamma Agent may appear outside the new section.\n\n## Agents, models, and reviews\n\nAsk about each agent.\n\n## Preference storage\n\nGamma Agent again.\n"
+    );
+    expect(codes(root)).toEqual([]);
+    writeFixture(
+      root,
+      "references/onboarding.md",
+      "# Onboarding\n\n## Agents, models, and reviews\n\nAsk whether Gamma Agent reviews.\n"
+    );
+    writeFixture(
+      root,
+      "scripts/lib/authoring.ts",
+      `export const running = "${["clau", "de-code"].join("")}";\n`
+    );
+    writeFixture(
+      root,
+      "references/ship-communication.md",
+      "# Ship\n\n- **Reviewer:** gamma-agent by default.\n- other\n"
+    );
+    expect(
+      checkSkill(root)
+        .issues.filter((issue) => issue.code === "vendor-assumption")
+        .map((issue) => issue.path)
+    ).toEqual([
+      "scripts/lib/authoring.ts",
+      "references/onboarding.md",
+      "references/ship-communication.md",
+    ]);
+  });
+
   test("reports a directory without SKILL.md", () => {
     const root = createSkill();
     rmSync(join(root, "SKILL.md"));

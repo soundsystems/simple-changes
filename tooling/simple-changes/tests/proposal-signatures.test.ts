@@ -5,6 +5,13 @@ import {
   signatureLine,
 } from "../../../skills/simple-changes/scripts/lib/proposal-signatures.ts";
 import {
+  emptyReviewLedger,
+  evaluateReviewAcceptance,
+  headCoverage,
+  reviewDisclosure,
+  reviewSignatureAgent,
+} from "../../../skills/simple-changes/scripts/lib/review-ledger.ts";
+import {
   createTestRepository,
   git,
   type TestRepository,
@@ -112,5 +119,75 @@ describe("proposal signatures", () => {
         repositoryPath: fixture.root,
       })
     ).toThrow("Unsafe repository path");
+  });
+
+  test("signs a review with the reviewer the delegation result reported, and discloses and gates a mismatch", () => {
+    const commit = "a".repeat(40);
+    const ledger = emptyReviewLedger();
+    ledger.attestations[commit] = [
+      {
+        agent: "Fable 5.1",
+        harness: "claude-code",
+        instance: "author-instance",
+        logicalId: "author",
+        recordedAt: "2026-10-08T12:00:00.000Z",
+        session: "author-session",
+      },
+    ];
+    ledger.proposals["group/project!1"] = {
+      attempts: [],
+      heads: {
+        [commit]: {
+          authorsDigest: headCoverage(ledger, [commit]).authorsDigest,
+          base: "b".repeat(40),
+          commits: [commit],
+          copyAuthors: [],
+          gaps: {},
+          unattributed: [],
+          waivers: [],
+        },
+      },
+    };
+    // The setting asked for another agent; the delegate reported the
+    // author's own model and harness from a separate session.
+    const attempt = {
+      requested: {
+        effort: "xhigh" as const,
+        harness: "codex",
+        model: "gpt-6.1-sol",
+      },
+      verified: {
+        agent: "Fable 5.1",
+        harness: "claude-code",
+        instance: "delegate-instance",
+        session: "delegate-session",
+      },
+    };
+    const agent = reviewSignatureAgent(attempt);
+    expect(agent).toBe("Fable 5.1");
+    expect(
+      buildProposalSignatureBlock({
+        repositoryPath: process.cwd(),
+        self: { agent: agent ?? "", role: "reviewed" },
+      }).block
+    ).toBe("[[Reviewed by Fable 5.1]]");
+    expect(reviewDisclosure(attempt)).toMatchObject({
+      fields: ["harness", "model"],
+      mismatch: true,
+    });
+    expect(
+      evaluateReviewAcceptance({
+        adversarial: true,
+        attempt: {
+          headRevision: commit,
+          verdict: "clean",
+          verified: attempt.verified,
+        },
+        currentHead: commit,
+        ledger,
+        proposalId: "group/project!1",
+        repairRequired: false,
+      }).acceptanceReason
+    ).toBe("reviewer-not-distinct");
   });
 });

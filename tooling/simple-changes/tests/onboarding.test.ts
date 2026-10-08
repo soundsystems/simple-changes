@@ -2,6 +2,20 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, readFileSync, symlinkSync } from "node:fs";
 import { resolve } from "node:path";
 import {
+  AUTHORING_QUESTIONS,
+  agentListChoices,
+  asksReviewQuestions,
+  authoringReviewNoticeQuestion,
+  collectAuthoringAnswers,
+  effortChoices,
+  REVIEW_QUESTION_WAITS,
+  recommendedAuthoringAnswer,
+  renderAuthoringSummary,
+  reviewAgentCandidates,
+  reviewerChoices,
+  reviewModelProblem,
+} from "../../../skills/simple-changes/scripts/lib/authoring-onboarding.ts";
+import {
   CHANGELOG_INSTALL_CHOICES,
   CHANGELOG_INSTALL_TIMING_CHOICES,
   collectOnboardingSelection,
@@ -1196,5 +1210,551 @@ describe("onboarding conversation", () => {
     expect(questions).not.toContain(ONBOARDING_QUESTIONS.handoff);
     expect(selection.policy.handoffTiming).toBe("confirm-ready");
     expect(selection.instructionPointer.action).toBe("leave");
+  });
+});
+
+describe("authoring and review questions", () => {
+  const definitions = [
+    {
+      homeRoots: [".a"],
+      id: "alpha-agent",
+      name: "Alpha Agent",
+      sessionEnv: ["A_ID"],
+    },
+    {
+      homeRoots: [".b"],
+      id: "beta-agent",
+      name: "Beta Agent",
+      sessionEnv: ["B_ID"],
+    },
+    { homeRoots: [".g"], id: "gamma", name: "Gamma", sessionEnv: [] },
+  ];
+  const detected = (...ids: string[]) =>
+    ids.map((id) => ({
+      evidence: ["harness root"],
+      id,
+      name: definitions.find((definition) => definition.id === id)?.name ?? id,
+    }));
+
+  // Answers questions in order, recording each question and its choices.
+  const scripted = (answers: string[], inputs: string[] = []) => {
+    const asked: { choices: string[]; question: string }[] = [];
+    const prompter = {
+      choose: (
+        question: string,
+        choices: readonly { label: string; value: string }[]
+      ) => {
+        asked.push({
+          choices: choices.map((choice) => choice.value),
+          question,
+        });
+        return Promise.resolve(answers.shift() ?? choices[0]?.value ?? "");
+      },
+      confirm: () => Promise.resolve(true),
+      input: () => Promise.resolve(inputs.shift() ?? ""),
+      present: () => undefined,
+    };
+    return { asked, prompter };
+  };
+
+  test("asks the review questions in every style with two detected harnesses, even after choosing only the running agent", async () => {
+    const runStyle = async (
+      setupStyle: "recommended" | "run" | "customize" | "walkthrough"
+    ) => {
+      const { asked, prompter } = scripted(
+        setupStyle === "customize" || setupStyle === "walkthrough"
+          ? ["running", "most-capable", "any"]
+          : ["any"]
+      );
+      const answer = await collectAuthoringAnswers(
+        {
+          definitions,
+          detected: detected("alpha-agent", "beta-agent"),
+          prefill: null,
+          runningHarness: "alpha-agent",
+          setupStyle,
+        },
+        prompter
+      );
+      return { answer, asked };
+    };
+    const runs = await Promise.all(
+      (["recommended", "run", "customize", "walkthrough"] as const).map(
+        runStyle
+      )
+    );
+    for (const { answer, asked } of runs) {
+      expect(asked.map(({ question }) => question)).toContain(
+        AUTHORING_QUESTIONS.reviewer
+      );
+      expect(answer.roles.review).toEqual({
+        adversarial: false,
+        harness: "running",
+      });
+    }
+    // "Only the agent running now" records one harness, so option 1 is gone.
+    expect(runs[2]?.answer.harnesses).toEqual({
+      "alpha-agent": { effort: "xhigh", model: "most-capable" },
+    });
+    expect(runs[2]?.asked.at(-1)?.choices).toEqual(["different-model", "any"]);
+  });
+
+  test("asks the review questions with one harness only in Customize and the walkthrough", async () => {
+    const run = async (
+      setupStyle: "recommended" | "run" | "customize" | "walkthrough"
+    ) => {
+      const { asked, prompter } = scripted(["found", "most-capable", "any"]);
+      await collectAuthoringAnswers(
+        {
+          definitions,
+          detected: detected("alpha-agent"),
+          prefill: null,
+          runningHarness: "alpha-agent",
+          setupStyle,
+        },
+        prompter
+      );
+      return asked.some(
+        ({ question }) => question === AUTHORING_QUESTIONS.reviewer
+      );
+    };
+    expect(await run("recommended")).toBe(false);
+    expect(await run("run")).toBe(false);
+    expect(await run("customize")).toBe(true);
+    expect(await run("walkthrough")).toBe(true);
+    expect(
+      asksReviewQuestions({
+        answers: {
+          harnesses: { "alpha-agent": { model: "one" } },
+          roles: { proposals: { harness: "alpha-agent", model: "two" } },
+        },
+        detectedCount: 1,
+        setupStyle: "recommended",
+      })
+    ).toBe(true);
+  });
+
+  test("skips R1 when it would have one option, records nothing, and says the question waits", async () => {
+    // Fewer than two recorded agents and no identified running agent leave
+    // only "Any independent reviewer", and recording it would silence the
+    // question for good in the one state where an adversarial setup cannot be
+    // expressed (design 5.1.3): nothing is asked, nothing is recorded, review
+    // stays pending, and the explanation names both ways out.
+    // With nothing detected, Question A offers only "Edit the list", and an
+    // empty edit records no agent.
+    const cases = [
+      [[], ["edit", "any"]],
+      [["alpha-agent"], ["found", "most-capable", "any"]],
+    ] as const;
+    await Promise.all(
+      cases.map(async ([recordedAgents, answers]) => {
+        const presented: string[] = [];
+        const { asked, prompter } = scripted([...answers], [""]);
+        const answer = await collectAuthoringAnswers(
+          {
+            definitions,
+            detected: detected(...recordedAgents),
+            prefill: null,
+            runningHarness: null,
+            setupStyle: "customize",
+          },
+          {
+            ...prompter,
+            present: (text: string) => {
+              presented.push(text);
+            },
+          }
+        );
+        expect(asked.map(({ question }) => question)).not.toContain(
+          AUTHORING_QUESTIONS.reviewer
+        );
+        expect(Object.keys(answer.harnesses)).toEqual([...recordedAgents]);
+        expect(answer.roles.review).toBeUndefined();
+        // The wording is checked on its own terms, not against the exported
+        // constant, so a regression in the constant fails here.
+        const waits = presented.filter((text) =>
+          text.includes("review question waits")
+        );
+        expect(waits).toHaveLength(1);
+        expect(waits[0]).toStartWith("Fewer than two agents are recorded");
+        expect(waits[0]).toContain("the running agent is not identified");
+        expect(waits[0]).toContain("until another agent is recorded");
+        expect(waits[0]).toContain("or the running agent is identified");
+        expect(waits[0]).toBe(REVIEW_QUESTION_WAITS);
+      })
+    );
+    // Once the running agent is identified, R1 has two options and is asked.
+    const identified = scripted(["found", "most-capable", "any"]);
+    const recorded = await collectAuthoringAnswers(
+      {
+        definitions,
+        detected: detected("alpha-agent"),
+        prefill: null,
+        runningHarness: "alpha-agent",
+        setupStyle: "customize",
+      },
+      identified.prompter
+    );
+    expect(
+      identified.asked.find(
+        ({ question }) => question === AUTHORING_QUESTIONS.reviewer
+      )?.choices
+    ).toEqual(["different-model", "any"]);
+    expect(recorded.roles.review).toEqual({
+      adversarial: false,
+      harness: "running",
+    });
+  });
+
+  test("offers Question A choices from detection and the Simple Changelogs pre-fill", async () => {
+    expect(
+      agentListChoices({
+        definitions,
+        detected: detected("alpha-agent", "gamma"),
+        runningHarness: "alpha-agent",
+      }).map(({ value }) => value)
+    ).toEqual(["found", "edit", "running"]);
+    expect(
+      agentListChoices({
+        definitions,
+        detected: detected("alpha-agent"),
+        runningHarness: "alpha-agent",
+      }).map(({ label }) => label)
+    ).toEqual(["The ones I found: Alpha Agent", "Edit the list"]);
+    expect(
+      agentListChoices({ definitions, detected: [], runningHarness: null }).map(
+        ({ value }) => value
+      )
+    ).toEqual(["edit"]);
+    const { asked, prompter } = scripted(["yes", "most-capable", "none"]);
+    const answer = await collectAuthoringAnswers(
+      {
+        definitions,
+        detected: detected("alpha-agent"),
+        prefill: {
+          harnesses: ["gamma", "alpha-agent"],
+          path: "/cl/authoring.json",
+        },
+        runningHarness: "alpha-agent",
+        setupStyle: "customize",
+      },
+      prompter
+    );
+    expect(asked[0]?.question).toBe(
+      AUTHORING_QUESTIONS.prefill("Gamma, Alpha Agent")
+    );
+    expect(Object.keys(answer.harnesses)).toEqual(["alpha-agent", "gamma"]);
+    expect(answer.harnesses.gamma).toBeNull();
+  });
+
+  test("offers R1 options only when they can apply", () => {
+    expect(
+      reviewerChoices({
+        recordedHarnesses: ["alpha-agent", "beta-agent"],
+        runningHarness: "alpha-agent",
+      }).map(({ recommended, value }) => [value, recommended])
+    ).toEqual([
+      ["different-agent", true],
+      ["different-model", false],
+      ["any", false],
+    ]);
+    expect(
+      reviewerChoices({
+        recordedHarnesses: ["alpha-agent"],
+        runningHarness: "alpha-agent",
+      }).map(({ recommended, value }) => [value, recommended])
+    ).toEqual([
+      ["different-model", true],
+      ["any", false],
+    ]);
+    expect(
+      reviewerChoices({
+        recordedHarnesses: ["alpha-agent", "beta-agent"],
+        runningHarness: null,
+      }).map(({ value }) => value)
+    ).toEqual(["different-agent", "any"]);
+  });
+
+  test("orders R2 candidates, labels unknown ids, and excludes only a known author", async () => {
+    expect(
+      reviewAgentCandidates({
+        authorHarness: "alpha-agent",
+        definitions,
+        recordedHarnesses: [
+          "zeta-local",
+          "gamma",
+          "alpha-agent",
+          "beta-agent",
+          "house-agent",
+        ],
+      }).map(({ label, recommended }) => [label, recommended])
+    ).toEqual([
+      ["Beta Agent", true],
+      ["Gamma", false],
+      ["house-agent", false],
+      ["zeta-local", false],
+    ]);
+    expect(
+      reviewAgentCandidates({
+        authorHarness: null,
+        definitions,
+        recordedHarnesses: ["beta-agent", "alpha-agent"],
+      }).map(({ value }) => value)
+    ).toEqual(["alpha-agent", "beta-agent"]);
+    // One candidate skips R2; three recorded harnesses ask it.
+    const single = scripted(["different-agent", "xhigh"]);
+    const skipped = await collectAuthoringAnswers(
+      {
+        definitions,
+        detected: detected("alpha-agent", "beta-agent"),
+        prefill: null,
+        runningHarness: "alpha-agent",
+        setupStyle: "recommended",
+      },
+      single.prompter
+    );
+    expect(single.asked.map(({ question }) => question)).toEqual([
+      AUTHORING_QUESTIONS.reviewer,
+      AUTHORING_QUESTIONS.escalation,
+    ]);
+    expect(skipped.roles.review).toEqual({
+      adversarial: true,
+      escalateOnFindings: "xhigh",
+      harness: "beta-agent",
+    });
+    const three = scripted(["different-agent", "gamma", "same"]);
+    const chosen = await collectAuthoringAnswers(
+      {
+        definitions,
+        detected: detected("alpha-agent", "beta-agent", "gamma"),
+        prefill: null,
+        runningHarness: "alpha-agent",
+        setupStyle: "recommended",
+      },
+      three.prompter
+    );
+    expect(three.asked[1]).toEqual({
+      choices: ["beta-agent", "gamma"],
+      question: AUTHORING_QUESTIONS.reviewAgent,
+    });
+    expect(chosen.roles.review).toEqual({
+      adversarial: true,
+      escalateOnFindings: null,
+      harness: "gamma",
+    });
+  });
+
+  test("R3' binds the running harness and rejects the author's own model", async () => {
+    expect(
+      reviewModelProblem("author-model", { model: "author-model" })
+    ).toContain("review its own work");
+    expect(reviewModelProblem("most-capable", undefined)).toContain(
+      "review its own work"
+    );
+    expect(
+      reviewModelProblem("reviewer-model", { model: "author-model" })
+    ).toBeNull();
+    for (const variant of [
+      "AUTHOR-MODEL",
+      "author_model",
+      "Author Model",
+      "vendor/author-model",
+    ]) {
+      expect(reviewModelProblem(variant, { model: "author-model" })).toContain(
+        "review its own work"
+      );
+    }
+    const { asked, prompter } = scripted(
+      ["found", "specific", "high", "different-model", "max", "xhigh"],
+      ["author-model", "author-model", "reviewer-model"]
+    );
+    const answer = await collectAuthoringAnswers(
+      {
+        definitions,
+        detected: detected("alpha-agent"),
+        prefill: null,
+        runningHarness: "alpha-agent",
+        setupStyle: "walkthrough",
+      },
+      prompter
+    );
+    expect(answer.harnesses["alpha-agent"]).toEqual({
+      effort: "high",
+      model: "author-model",
+    });
+    expect(answer.roles.review).toEqual({
+      adversarial: true,
+      effort: "max",
+      escalateOnFindings: "xhigh",
+      harness: "alpha-agent",
+      model: "reviewer-model",
+    });
+    // max is offered, never recommended.
+    const effortQuestion = asked.find(({ question }) =>
+      question.startsWith("Which effort")
+    );
+    expect(effortQuestion?.choices).toContain("max");
+    expect(effortChoices().find(({ recommended }) => recommended)?.value).toBe(
+      "xhigh"
+    );
+  });
+
+  test("a different-model choice without an acceptable name asks R1 again, never recording any reviewer silently", async () => {
+    const retried = scripted(
+      ["found", "most-capable", "different-model", "any"],
+      ["most-capable", "most-capable", "most-capable"]
+    );
+    const answer = await collectAuthoringAnswers(
+      {
+        definitions,
+        detected: detected("alpha-agent"),
+        prefill: null,
+        runningHarness: "alpha-agent",
+        setupStyle: "customize",
+      },
+      retried.prompter
+    );
+    expect(
+      retried.asked.filter(
+        ({ question }) => question === AUTHORING_QUESTIONS.reviewer
+      )
+    ).toHaveLength(2);
+    expect(answer.roles.review).toEqual({
+      adversarial: false,
+      harness: "running",
+    });
+    const exhausted = scripted(
+      [
+        "found",
+        "most-capable",
+        "different-model",
+        "different-model",
+        "different-model",
+      ],
+      []
+    );
+    const unanswered = await collectAuthoringAnswers(
+      {
+        definitions,
+        detected: detected("alpha-agent"),
+        prefill: null,
+        runningHarness: "alpha-agent",
+        setupStyle: "customize",
+      },
+      exhausted.prompter
+    );
+    expect(Object.hasOwn(unanswered.roles, "review")).toBe(false);
+  });
+
+  test("reusing personal defaults still asks the review question with two detected harnesses", async () => {
+    const { asked, prompter } = scripted(["use", "any"]);
+    const selection = await collectOnboardingSelection(
+      configuredPolicy(),
+      {},
+      prompter,
+      undefined,
+      null,
+      false,
+      {
+        authoring: {
+          definitions,
+          detected: detected("alpha-agent", "beta-agent"),
+          prefill: null,
+          runningHarness: "alpha-agent",
+        },
+        existingPersonalDefaults: configuredPolicy({
+          defaultFinish: "integrate",
+        }),
+        showFirstScreen: true,
+      }
+    );
+    expect(selection.scope).toBe("run");
+    expect(asked.map(({ question }) => question)).toContain(
+      AUTHORING_QUESTIONS.reviewer
+    );
+    expect(selection.authoring?.roles.review).toEqual({
+      adversarial: false,
+      harness: "running",
+    });
+  });
+
+  test("records the recommended default without asking the model questions", async () => {
+    const { asked, prompter } = scripted([]);
+    const answer = await collectAuthoringAnswers(
+      {
+        definitions,
+        detected: detected("gamma"),
+        prefill: { harnesses: ["alpha-agent"], path: "/x" },
+        runningHarness: null,
+        setupStyle: "recommended",
+      },
+      prompter
+    );
+    expect(asked).toEqual([]);
+    expect(answer).toEqual(recommendedAuthoringAnswer(["gamma"]));
+    expect(answer.roles).toEqual({ proposals: { harness: "running" } });
+  });
+
+  test("the update-notice question offers a different agent only for recorded agents", () => {
+    const notice = (
+      recordedHarnesses: string[],
+      runningHarness: string | null = "alpha-agent",
+      modelsPending = false
+    ) =>
+      authoringReviewNoticeQuestion({
+        definitions,
+        detected: detected("alpha-agent", "beta-agent"),
+        modelsPending,
+        recordedHarnesses,
+        runningHarness,
+      });
+    const values = (question: ReturnType<typeof notice>) =>
+      question?.choices.map(({ value }) => value) ?? null;
+    // A second agent detected after a single-agent setup asks the question,
+    // but only a recorded agent can be the different reviewer.
+    expect(values(notice(["alpha-agent"]))).toEqual(["different-model", "any"]);
+    expect(values(notice(["alpha-agent", "beta-agent"]))).toEqual([
+      "different-agent",
+      "different-model",
+      "any",
+    ]);
+    // With one possible answer there is nothing to ask yet.
+    expect(notice(["alpha-agent"], null)).toBeNull();
+    // While the models question is pending it is asked first, and its
+    // recommended answer records every detected agent.
+    expect(values(notice([], null, true))).toEqual(["different-agent", "any"]);
+    expect(notice(["alpha-agent"])?.reason).toContain(
+      "Alpha Agent, Beta Agent"
+    );
+  });
+
+  test("the receipt names the reviewer's chosen effort", () => {
+    const answer = (review: Record<string, unknown>) => ({
+      harnesses: { "alpha-agent": { model: "author-model" } },
+      roles: { review },
+      schemaVersion: 1 as const,
+    });
+    const reviewLine = (review: Record<string, unknown>) =>
+      renderAuthoringSummary(
+        answer(review) as unknown as Parameters<
+          typeof renderAuthoringSummary
+        >[0],
+        definitions
+      )
+        .split("\n")
+        .find((line) => line.startsWith("Independent reviews:"));
+    expect(
+      reviewLine({
+        adversarial: true,
+        effort: "high",
+        harness: "alpha-agent",
+        model: "review-model",
+      })
+    ).toBe(
+      "Independent reviews: review-model at high in Alpha Agent, never the author's model."
+    );
+    expect(reviewLine({ adversarial: true, harness: "beta-agent" })).toBe(
+      "Independent reviews: Beta Agent, an agent other than the author's."
+    );
   });
 });

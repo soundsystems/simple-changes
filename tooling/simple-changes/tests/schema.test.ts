@@ -817,6 +817,7 @@ describe("schema keyword support", () => {
     "minimum",
     "pattern",
     "properties",
+    "propertyNames",
     "required",
     "then",
     "title",
@@ -877,13 +878,44 @@ describe("schema keyword support", () => {
         (keyword === "items" ||
           keyword === "if" ||
           keyword === "then" ||
-          keyword === "else") &&
+          keyword === "else" ||
+          keyword === "propertyNames") &&
         isRecord(value)
       ) {
         collectViolations(value, `${path}/${keyword}`, violations);
       }
     }
   };
+
+  test("counts string lengths in Unicode characters", () => {
+    const schema = { maxLength: 3, minLength: 3, type: "string" };
+    expect(
+      validateSchemaDocument<string>(
+        "text",
+        schema,
+        "\u{1F600}\u{1F600}\u{1F600}"
+      )
+    ).toBe("\u{1F600}\u{1F600}\u{1F600}");
+    expect(() => validateSchemaDocument("text", schema, "ab")).toThrow(
+      "at least 3 characters"
+    );
+  });
+
+  test("enforces propertyNames on every key of a map", () => {
+    const schema = {
+      additionalProperties: { type: "string" },
+      propertyNames: { pattern: "^[a-z0-9][a-z0-9-]{0,39}$", type: "string" },
+      type: "object",
+    };
+    expect(
+      validateSchemaDocument<Record<string, string>>("map", schema, {
+        "alpha-agent": "x",
+      })
+    ).toEqual({ "alpha-agent": "x" });
+    expect(() =>
+      validateSchemaDocument("map", schema, { "Bad Id": "x" })
+    ).toThrow("must match");
+  });
 
   test("enforces minProperties and a schema-valued additionalProperties", () => {
     const schema = {

@@ -339,8 +339,9 @@ mutation checks or cleanup protection.
 
 Every finalization writes a durable receipt before releasing or relinquishing
 the controller. It reports `shipmentStatus`, `controllerStatus`,
-`deliveryStatus`, `cleanupStatus`, `blocksNextShipment`, blockers, and preserved
-worktrees. A closed shipment with pending cleanup does not block the next
+`deliveryStatus`, `cleanupStatus`, `blocksNextShipment`, blockers, preserved
+worktrees, and, when `review-ledger.json` exists, the review attempts recorded
+during the run per proposal (`reviewAttempts`). A closed shipment with pending cleanup does not block the next
 shipment; run guarded `prune` separately when safe. Incomplete finalization
 relinquishes durable state and exits nonzero. The exception is an untouched Ship
 run, with no recorded scope and no mutation evidence: finalization closes it
@@ -350,7 +351,11 @@ closes it the same way. A fresh `loop start` on an unchanged repository takes
 the same baseline, so nothing is lost.
 An authorized agent resumes a relinquished run with `loop start --mode resume
 --agent-id <you>` without takeover approval; its existing frozen scope and
-safety checks remain in force. Dirty non-primary worktrees, untracked or
+safety checks remain in force. Under the same lock, beside the lease it
+transfers, resume loads the review ledger and reports as `reviewLedger` each
+accepted review that no longer counts (a stale head or a changed authors
+digest) and each recorded finding that keeps an escalation floor; a stale
+review needs a fresh one. Dirty non-primary worktrees, untracked or
 divergent primary paths, unique staged state, conflicts, late arrivals,
 retained exclusions, active claims, and branches with unique commits remain
 preserved.

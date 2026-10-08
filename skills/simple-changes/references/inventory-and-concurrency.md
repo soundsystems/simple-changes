@@ -310,7 +310,10 @@ branch onto the updated target through `loop exec`.
    delegated agent runs no `initialize` or `loop` command, push, provider call,
    merge, release, deployment, or cleanup, and never touches another worktree,
    branch, stash, or tag. The runtime still lets any run-prepared author use
-   the guarded executor, so this boundary lives in the brief.
+   the guarded executor, so this boundary lives in the brief. Required in
+   every brief: after every commit, run the `author attest` command
+   `prepare-agent` printed as `afterEveryCommit`, beside `worktree claim` for
+   a claimed checkout ([review ledger steps](change-requests.md#review-ledger-steps)).
 3. Each agent returns its final commit, the checks it ran with their results,
    and any open question, leaving its worktree clean. Before treating the unit
    as ready, the controller confirms that the registered branch head equals the
@@ -320,7 +323,11 @@ branch onto the updated target through `loop exec`.
    unit through the ordinary serialized path, refreshing and re-verifying
    downstream units after every target move. It changes a delegated worktree,
    including a refresh onto the new target, only after every agent using that
-   worktree, whether author or check runner, has returned.
+   worktree, whether author or check runner, has returned. After `loop exec`
+   returns from a refresh, it attests each rewritten commit with `author
+   attest --replays <old sha> --worktree <path>` (plus `--contribution
+   implementation` if it changed the implementation), and it runs `proposal
+   record-authors` after every proposal creation or head update.
 
 Never let the host create an agent's checkout, including through its own
 worktree isolation. A worktree that appears after loop start without run

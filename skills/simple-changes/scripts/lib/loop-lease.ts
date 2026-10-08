@@ -19,6 +19,7 @@ import {
 import { hostname } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { AuthoringSidecar } from "./authoring.ts";
 import {
   deleteTargetContainedBranches,
   PATCH_EQUIVALENCE_MAX_COMMITS,
@@ -72,6 +73,13 @@ import {
   validateRemoteBranchReconciliation,
   validateRemoteBranchSupersessionRecord,
 } from "./remote-branch-reconciliation.ts";
+import {
+  heldLoopLock,
+  loadReviewLedgerForResume,
+  type ReviewAttemptsReport,
+  type ReviewLedgerResumeState,
+  reviewAttemptsForFinalization,
+} from "./review-ledger.ts";
 import { validateSchema, validateSchemaDocument } from "./schema.ts";
 import type {
   ChangePlan,
@@ -2630,11 +2638,22 @@ const scopeInvariantDigest = (inventory: RepositoryInventory): string =>
     targetRemote: inventory.repository.targetRemote,
   });
 
+export interface LoopStartOptions {
+  /** Receives the review ledger a resume loads under the held loop lock. */
+  onReviewLedger?: (state: ReviewLedgerResumeState) => void;
+  /**
+   * The run's `--authoring-request` (resume only): revalidation uses it
+   * combined with the saved settings, so the run has one review gate.
+   */
+  request?: AuthoringSidecar;
+}
+
 export const startLoop = (
   repositoryPath: string,
   agentIdInput: string,
   mode: RequestMode,
-  openingRemoteInventoryInput?: unknown
+  openingRemoteInventoryInput?: unknown,
+  options: LoopStartOptions = {}
 ): LoopLease => {
   const agentId = requiredText(agentIdInput, "agent ID");
   if (!LOOP_MODES.has(mode)) {
@@ -2644,6 +2663,9 @@ export const startLoop = (
     );
   }
   const opening = locateRepository(repositoryPath);
+  // The run's request layer, when one is passed, reaches resume revalidation.
+  const resumeOptions =
+    options.request === undefined ? {} : { request: options.request };
   return withStateLock(
     opening.repository.commonGitDirectory,
     "loop start",
@@ -2664,6 +2686,18 @@ export const startLoop = (
           );
           if (resumed) {
             refreshControllerSession(resumed);
+            if (mode === "resume") {
+              // Beside the lease it transfers, under the loop lock it holds.
+              const reviewLedger = loadReviewLedgerForResume(
+                heldLoopLock(
+                  inventory.repository.commonGitDirectory,
+                  "loop start"
+                ),
+                resumed.primaryCheckout,
+                resumeOptions
+              );
+              options.onReviewLedger?.(reviewLedger);
+            }
             return resumed;
           }
           const now = new Date().toISOString();
@@ -7581,11 +7615,23 @@ export interface LoopFinalizationReceipt {
   leaseDigest: string;
   preservedWorktrees: string[];
   reason: string;
+  /** Review attempts recorded during the run, per proposal, when a ledger exists. */
+  reviewAttempts?: ReviewAttemptsReport;
   runId: string;
   schemaVersion: 1;
   shipmentStatus: "closed" | "open" | "unstarted";
   targetRevision: string | null;
 }
+
+const reviewAttemptsField = (
+  lease: LoopLease
+): Pick<LoopFinalizationReceipt, "reviewAttempts"> => {
+  const report = reviewAttemptsForFinalization(
+    lease.commonGitDirectory,
+    lease.createdAt
+  );
+  return report ? { reviewAttempts: report } : {};
+};
 
 export interface PostCleanupRecoveryResult {
   active: false;
@@ -8225,6 +8271,7 @@ const finalizationDecision = (
       .map((worktree) => worktree.path)
       .sort((left, right) => left.localeCompare(right)),
     reason,
+    ...reviewAttemptsField(lease),
     runId: lease.runId,
     schemaVersion: 1,
     targetRevision: verifiedDelivery
@@ -8307,6 +8354,7 @@ const finalizeUnmutatedRun = (
       .map((worktree) => worktree.path)
       .sort((left, right) => left.localeCompare(right)),
     reason,
+    ...reviewAttemptsField(lease),
     runId: lease.runId,
     schemaVersion: 1,
     shipmentStatus: "unstarted",

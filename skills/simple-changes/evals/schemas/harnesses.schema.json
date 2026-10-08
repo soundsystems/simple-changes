@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Harness detection data",
+  "description": "agents/harnesses.json: per harness id, a display name and read-only detection evidence (home-directory roots checked for existence only, and session environment variable names).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "harnesses"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "harnesses": {
+      "type": "object",
+      "propertyNames": {
+        "type": "string",
+        "pattern": "^[a-z0-9][a-z0-9-]{0,39}$"
+      },
+      "additionalProperties": { "$ref": "#/$defs/harness" }
+    }
+  },
+  "$defs": {
+    "harness": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "homeRoots", "sessionEnv"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 60,
+          "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]+$"
+        },
+        "homeRoots": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^(?![/\\\\])(?![A-Za-z]:)(?!(?:.*[/\\\\])?\\.\\.(?:[/\\\\]|$)).+$"
+          }
+        },
+        "sessionEnv": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "pattern": "^[A-Z_][A-Z0-9_]*$" }
+        }
+      }
+    }
+  }
+}

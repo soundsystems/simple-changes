@@ -6,6 +6,7 @@ Contents:
 - Automatic initialization checkpoint
 - Completed-work handoff checkpoint
 - Capability status
+- Authoring preferences
 
 ## Discovery order
 
@@ -311,3 +312,65 @@ Represent each capability as one of:
 
 Never translate any non-supported status into success. Provider-specific
 commands belong only in the matching provider reference or adapter.
+
+## Authoring preferences
+
+An optional sidecar records which agent and model write proposal text
+(`proposals`) and perform reviews (`review`):
+`<primary-checkout>/.simple-changes-authoring.json` for the repository, or
+`authoring.json` beside the personal `preferences.json`. It is committed shared
+configuration like `.simple-changes.json`; until committed it is ordinary
+untracked work. It never joins the policy file, whose closed schema older
+copies enforce, so they ignore it and write with the running model. Repository
+scope writes the repository file, personal scope the personal file, run-only
+nothing; `setup --authoring <json-or-@path> --scope <repository|personal>
+--confirm` records an answer without touching the policy. A write holds
+`<sidecar>.lock` beside the file and refuses while another write holds it,
+naming its process; if that process has exited, the owner removes the lock.
+A sidecar that changes while an answer is being written is never replaced.
+
+```json
+{
+  "schemaVersion": 1,
+  "roles": {
+    "proposals": { "harness": "running" },
+    "review": { "harness": "<agent id>", "adversarial": true, "escalateOnFindings": "xhigh" }
+  },
+  "harnesses": { "<agent id>": { "model": "most-capable", "effort": "xhigh" } }
+}
+```
+
+Precedence, highest first: the current request, the repository sidecar, the
+personal sidecar, then the running agent's most capable model at `xhigh`.
+The current request reaches the CLI as `--authoring-request <json-or-@path>`
+(a complete sidecar object) on `initialize`, `proposal record-review`, and
+`loop start --mode resume`: validated like a file, applied to that invocation,
+never written, never an answer. It replaces roles and agent entries like any
+layer, except that `review.adversarial` and `review.escalateOnFindings`
+combine with the saved result by the stricter value, so a request tightens
+the review gate and never loosens it; pass the same request to every one of
+those commands in a run. Roles and agent entries replace whole; an empty
+sidecar answers the models question and defines nothing; a role-level
+`model` needs an agent id, never `running`; `null` means "do not guide this
+agent". `initialize` reports `authoring.effective` with each field's layer
+(`request`, `repository`, `personal`, or `default`) in `authoring.source`,
+and the `reviewer` it resolves. A reviewer `model` of `most-capable` is resolved from
+what the target agent reports before dispatch; if that is impossible, treat
+the reviewer as unresolved and ask the owner. `max` effort comes only from an explicit owner choice
+and is never reached by a default, `most-capable`, or escalation.
+
+Before writing, resolve the role; `most-capable` is the most capable model the
+target agent itself reports, never ranked from memory. Use the nearest effort
+the target offers, never above the configured level. Write directly when the
+target agent and model are the running ones and the effort matches or cannot
+be changed; otherwise delegate only through a mechanism the running agent
+already has, asking before the first launch of another tool in a session.
+Keep the requested target and the identity the delegate reports apart; a
+mismatch is disclosed and signed with the reported identity, and for a review
+goes through the post-return gate in `references/review-and-merge.md`. When the target is
+`unknown` or `null`, the model cannot be resolved, or nothing can delegate,
+write with the running model and say which role was configured, what wrote
+instead, and why. Signatures always name the writer the runtime reported. The
+sidecar is a preference, never authority or identity: it grants no merge,
+push, deployment, migration, publication, release, or credential authority and
+stores no credentials or launch commands.

@@ -128,10 +128,12 @@ const validateString = (
   path: string,
   errors: string[]
 ): void => {
-  if (typeof schema.minLength === "number" && value.length < schema.minLength) {
+  // JSON Schema lengths count Unicode characters (code points).
+  const characters = [...value].length;
+  if (typeof schema.minLength === "number" && characters < schema.minLength) {
     errors.push(`${path} must have at least ${schema.minLength} characters`);
   }
-  if (typeof schema.maxLength === "number" && value.length > schema.maxLength) {
+  if (typeof schema.maxLength === "number" && characters > schema.maxLength) {
     errors.push(`${path} must have at most ${schema.maxLength} characters`);
   }
   if (
@@ -177,6 +179,28 @@ const validateArray = (
   }
 };
 
+// Every property name must satisfy `propertyNames`, for maps keyed by ids.
+const validatePropertyNames = (
+  value: Record<string, unknown>,
+  schema: JsonSchema,
+  rootSchema: JsonSchema,
+  path: string,
+  errors: string[]
+): void => {
+  if (!isRecord(schema.propertyNames)) {
+    return;
+  }
+  for (const key of Object.keys(value)) {
+    validateValue(
+      key,
+      schema.propertyNames,
+      rootSchema,
+      `${path}/${key} (name)`,
+      errors
+    );
+  }
+};
+
 const validateObject = (
   value: Record<string, unknown>,
   schema: JsonSchema,
@@ -200,6 +224,7 @@ const validateObject = (
       `${path} must have at least ${schema.minProperties} properties`
     );
   }
+  validatePropertyNames(value, schema, rootSchema, path, errors);
   const properties = isRecord(schema.properties) ? schema.properties : {};
   const additional = schema.additionalProperties;
   for (const key of Object.keys(value)) {

@@ -1,0 +1,357 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://simple-changes.dev/schemas/review-ledger.schema.json",
+  "title": "Simple Changes review ledger",
+  "description": "The proposal-scoped review ledger at <common git dir>/simple-changes/review-ledger.json. The runtime validates it by hand (scripts/lib/review-ledger.ts) with the same rules. Map keys are constrained here with propertyNames (full commit SHAs, proposal ids). What a JSON schema cannot express is checked by hand only: identities are unique per commit, a replay never names its own destination and its own gaps name only its sources, range-scoped lists name only commits in the range, attempt ids are unique across proposals, and replay links are acyclic.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["attestations", "proposals", "replays", "schemaVersion"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "attestations": {
+      "type": "object",
+      "propertyNames": { "$ref": "#/$defs/sha" },
+      "additionalProperties": {
+        "type": "array",
+        "minItems": 1,
+        "items": { "$ref": "#/$defs/attestation" }
+      }
+    },
+    "replays": {
+      "type": "object",
+      "propertyNames": { "$ref": "#/$defs/sha" },
+      "additionalProperties": { "$ref": "#/$defs/replay" }
+    },
+    "proposals": {
+      "type": "object",
+      "propertyNames": { "$ref": "#/$defs/proposalId" },
+      "additionalProperties": { "$ref": "#/$defs/proposal" }
+    }
+  },
+  "$defs": {
+    "sha": {
+      "type": "string",
+      "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+    },
+    "shaList": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/sha" }
+    },
+    "proposalId": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/#!@+-]{0,199}$"
+    },
+    "digest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "uuid": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    },
+    "timestamp": { "type": "string", "format": "date-time" },
+    "effort": { "enum": ["low", "medium", "high", "xhigh", "max"] },
+    "harnessId": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,39}$" },
+    "modelName": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 120,
+      "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]+$"
+    },
+    "token": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:@/+-]{0,127}$"
+    },
+    "text": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?=.*\\S)[^\\u0000-\\u001f\\u007f-\\u009f]+$"
+    },
+    "nullableToken": {
+      "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/token" }]
+    },
+    "nullableHarness": {
+      "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/harnessId" }]
+    },
+    "nullableModel": {
+      "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/modelName" }]
+    },
+    "identity": {
+      "description": "A runtime identity as the executing harness reported it; null where it reported nothing.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["agent", "harness", "instance", "session"],
+      "properties": {
+        "agent": { "$ref": "#/$defs/nullableModel" },
+        "harness": { "$ref": "#/$defs/nullableHarness" },
+        "instance": { "$ref": "#/$defs/nullableToken" },
+        "session": { "$ref": "#/$defs/nullableToken" }
+      }
+    },
+    "attestation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "agent",
+        "harness",
+        "instance",
+        "logicalId",
+        "recordedAt",
+        "session"
+      ],
+      "properties": {
+        "agent": { "$ref": "#/$defs/nullableModel" },
+        "harness": { "$ref": "#/$defs/nullableHarness" },
+        "instance": { "$ref": "#/$defs/nullableToken" },
+        "session": { "$ref": "#/$defs/nullableToken" },
+        "logicalId": {
+          "anyOf": [
+            { "type": "null" },
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^(?!\\s)(?!.*\\s$)[^\\u0000-\\u001f\\u007f-\\u009f]+$"
+            }
+          ]
+        },
+        "recordedAt": { "$ref": "#/$defs/timestamp" }
+      }
+    },
+    "gaps": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["uncoveredEdits", "unresolvedSources"],
+      "properties": {
+        "uncoveredEdits": { "$ref": "#/$defs/shaList" },
+        "unresolvedSources": { "$ref": "#/$defs/shaList" }
+      }
+    },
+    "gapMap": {
+      "type": "object",
+      "propertyNames": { "$ref": "#/$defs/sha" },
+      "additionalProperties": { "$ref": "#/$defs/gaps" }
+    },
+    "replay": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "inheritedGaps",
+        "ownGaps",
+        "recordedAt",
+        "sources",
+        "verification"
+      ],
+      "properties": {
+        "sources": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/sha" }
+        },
+        "verification": { "enum": ["verified", "inconclusive"] },
+        "ownGaps": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["uncoveredEdit", "unresolvedSources"],
+          "properties": {
+            "uncoveredEdit": { "type": "boolean" },
+            "unresolvedSources": { "$ref": "#/$defs/shaList" }
+          }
+        },
+        "inheritedGaps": { "$ref": "#/$defs/gaps" },
+        "recordedAt": { "$ref": "#/$defs/timestamp" }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": ["verification"],
+            "properties": { "verification": { "const": "verified" } }
+          },
+          "then": {
+            "properties": {
+              "ownGaps": {
+                "properties": { "uncoveredEdit": { "const": false } }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "copyAuthor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "agent",
+        "harness",
+        "instance",
+        "recordedAt",
+        "session",
+        "source"
+      ],
+      "properties": {
+        "agent": { "$ref": "#/$defs/nullableModel" },
+        "harness": { "$ref": "#/$defs/nullableHarness" },
+        "instance": { "$ref": "#/$defs/nullableToken" },
+        "session": { "$ref": "#/$defs/nullableToken" },
+        "source": { "enum": ["direct", "delegated"] },
+        "recordedAt": { "$ref": "#/$defs/timestamp" }
+      }
+    },
+    "waiver": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "approvedBy",
+        "authorsDigest",
+        "gaps",
+        "reason",
+        "recordedAt",
+        "unattributed",
+        "waiverId"
+      ],
+      "properties": {
+        "waiverId": { "$ref": "#/$defs/uuid" },
+        "authorsDigest": { "$ref": "#/$defs/digest" },
+        "unattributed": { "$ref": "#/$defs/shaList" },
+        "gaps": { "$ref": "#/$defs/gapMap" },
+        "approvedBy": {
+          "allOf": [{ "$ref": "#/$defs/text" }, { "maxLength": 128 }]
+        },
+        "reason": {
+          "allOf": [{ "$ref": "#/$defs/text" }, { "maxLength": 1000 }]
+        },
+        "recordedAt": { "$ref": "#/$defs/timestamp" }
+      }
+    },
+    "head": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "authorsDigest",
+        "base",
+        "commits",
+        "copyAuthors",
+        "gaps",
+        "unattributed",
+        "waivers"
+      ],
+      "properties": {
+        "base": { "$ref": "#/$defs/sha" },
+        "commits": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/sha" }
+        },
+        "unattributed": { "$ref": "#/$defs/shaList" },
+        "gaps": { "$ref": "#/$defs/gapMap" },
+        "copyAuthors": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/copyAuthor" }
+        },
+        "waivers": { "type": "array", "items": { "$ref": "#/$defs/waiver" } },
+        "authorsDigest": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "attempt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "acceptanceReason",
+        "accepted",
+        "attemptId",
+        "authorsDigest",
+        "coverageWaiverId",
+        "effort",
+        "effortSource",
+        "findingsCount",
+        "headRevision",
+        "recordedAt",
+        "requested",
+        "verdict",
+        "verified"
+      ],
+      "properties": {
+        "attemptId": { "$ref": "#/$defs/uuid" },
+        "headRevision": { "$ref": "#/$defs/sha" },
+        "authorsDigest": { "$ref": "#/$defs/digest" },
+        "requested": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["effort", "harness", "model"],
+          "properties": {
+            "effort": { "$ref": "#/$defs/effort" },
+            "harness": { "$ref": "#/$defs/harnessId" },
+            "model": { "$ref": "#/$defs/modelName" }
+          }
+        },
+        "verified": { "$ref": "#/$defs/identity" },
+        "effort": { "$ref": "#/$defs/effort" },
+        "effortSource": { "enum": ["configured", "escalation", "request"] },
+        "verdict": { "enum": ["findings", "clean", "failed"] },
+        "findingsCount": { "type": "integer", "minimum": 0 },
+        "accepted": { "type": "boolean" },
+        "acceptanceReason": {
+          "anyOf": [
+            { "type": "null" },
+            { "type": "string", "pattern": "^[a-z][a-z0-9-]{0,63}$" }
+          ]
+        },
+        "coverageWaiverId": {
+          "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/uuid" }]
+        },
+        "recordedAt": { "$ref": "#/$defs/timestamp" }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": ["verdict"],
+            "properties": { "verdict": { "const": "clean" } }
+          },
+          "then": { "properties": { "findingsCount": { "const": 0 } } }
+        },
+        {
+          "if": {
+            "required": ["verdict"],
+            "properties": { "verdict": { "const": "findings" } }
+          },
+          "then": { "properties": { "findingsCount": { "minimum": 1 } } }
+        },
+        {
+          "if": {
+            "required": ["accepted"],
+            "properties": { "accepted": { "const": true } }
+          },
+          "then": {
+            "properties": { "acceptanceReason": { "type": "null" } }
+          },
+          "else": {
+            "properties": { "acceptanceReason": { "type": "string" } }
+          }
+        },
+        {
+          "if": {
+            "required": ["effortSource"],
+            "properties": { "effortSource": { "const": "escalation" } }
+          },
+          "then": { "properties": { "effort": { "enum": ["high", "xhigh"] } } }
+        }
+      ]
+    },
+    "proposal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["attempts", "heads"],
+      "properties": {
+        "heads": {
+          "type": "object",
+          "propertyNames": { "$ref": "#/$defs/sha" },
+          "additionalProperties": { "$ref": "#/$defs/head" }
+        },
+        "attempts": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/attempt" }
+        }
+      }
+    }
+  }
+}

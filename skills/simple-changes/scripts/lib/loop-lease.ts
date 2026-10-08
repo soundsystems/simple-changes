@@ -2385,7 +2385,14 @@ const assertPinnedHeads = (
   const facts = gitFactsFor(invocation.checkout, lease.commonGitDirectory);
   const analysis = analyzePinnedCommand(argv, {
     checkout: invocation.checkout,
+    commonGitDirectory: lease.commonGitDirectory,
     facts,
+    ownCheckouts: lease.worktrees
+      .filter(
+        (worktree) =>
+          worktree.role === "controller" || worktree.role === "author"
+      )
+      .map((worktree) => worktree.path),
     pins,
     worktreePaths: inventory.worktrees.map((worktree) => worktree.path),
   });

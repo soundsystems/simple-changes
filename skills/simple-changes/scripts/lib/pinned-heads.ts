@@ -1,5 +1,6 @@
-import { existsSync, realpathSync } from "node:fs";
-import { basename, isAbsolute, join, resolve, sep } from "node:path";
+import { existsSync, readdirSync, realpathSync } from "node:fs";
+import { homedir, hostname, networkInterfaces } from "node:os";
+import { basename, join, resolve, sep } from "node:path";
 import { runGit } from "./process.ts";
 
 /*
@@ -25,10 +26,15 @@ import { runGit } from "./process.ts";
  * refs, message search, and every-branch options. Configuration that could
  * stand in for a name (an upstream, a matching push, a remote or URL rewrite
  * that points into a pinned checkout, an alias, a replace ref, or a graft) is
- * refused the same way. Git run through a shell or other command runner is
- * refused outright while units are pinned, because the runner hides what Git
- * will read; any other program is opaque. Refusing a legitimate command is
- * accepted, because the form that names the recorded commit always works.
+ * refused the same way. A fetch or pull resolves each repository the way Git
+ * does (remote configuration, legacy remote files, URL rewrites, `file://`
+ * URLs) and is refused when one reaches a pinned checkout, even an absent
+ * one, any other worktree of this repository, or a linked worktree's Git
+ * directory; so is a command that runs in a checkout the run does not author.
+ * Git run through a shell or other command runner is refused outright while
+ * units are pinned, because the runner hides what Git will read; any other
+ * program is opaque. Refusing a legitimate command is accepted, because the
+ * form that names the recorded commit always works.
  * The run's controller and its own prepared authors are not pinned.
  */
 
@@ -82,6 +88,10 @@ export interface PinnedGitFacts {
   grafted: () => boolean;
   hasAlias: (globals: readonly string[], name: string) => boolean;
   refs: (globals: readonly string[]) => GitRefRecord[];
+  /** Every remote name, from configuration and the legacy remote files. */
+  remoteNames: (globals: readonly string[]) => string[];
+  /** The URL Git fetches from for a remote name or URL, after rewrites. */
+  remoteUrl: (globals: readonly string[], name: string) => string | null;
   resolveRef: (
     globals: readonly string[],
     token: string
@@ -96,7 +106,14 @@ export interface PinnedGitFacts {
 export interface PinnedCommandContext {
   /** The checkout the command runs in. */
   checkout: string;
+  /** Linked worktrees keep their own Git directories under this one. */
+  commonGitDirectory: string;
   facts: PinnedGitFacts;
+  /**
+   * Checkouts the run moves itself (its controller and prepared authors), in
+   * which a command may run; any other checkout's HEAD can move under it.
+   */
+  ownCheckouts: readonly string[];
   pins: readonly PinnedUnit[];
   /** Every checkout Git lists, so each path is attributed to its own one. */
   worktreePaths: readonly string[];
@@ -787,26 +804,187 @@ const canonicalPath = (path: string): string => {
   }
 };
 
-const pinnedCheckoutFor = (
-  candidate: string,
+interface PinnedLocation {
+  /** What the path reaches, for the refusal. */
+  description: string;
+  unit: PinnedUnit | null;
+}
+
+/**
+ * Whether a local path reaches a pinned checkout: it lies in one, including
+ * one whose checkout is absent now but could be restored while the command
+ * waits, or Git would open it as one (Git also tries `<path>.git`), or it is
+ * a linked worktree's own Git directory, whose HEAD is that worktree's.
+ */
+const pinnedLocation = (
+  path: string,
+  context: PinnedCommandContext
+): PinnedLocation | null => {
+  const worktreeGitDirectories = join(
+    canonicalPath(context.commonGitDirectory),
+    "worktrees"
+  );
+  const candidates = [
+    ...context.worktreePaths,
+    ...context.pins.map((unit) => unit.path),
+  ];
+  for (const variant of [path, `${path}.git`]) {
+    const canonical = canonicalPath(variant);
+    if (
+      canonical === worktreeGitDirectories ||
+      canonical.startsWith(`${worktreeGitDirectories}${sep}`)
+    ) {
+      return {
+        description: `a linked worktree's Git directory under ${worktreeGitDirectories}`,
+        unit: null,
+      };
+    }
+    const owner = owningCheckout(canonical, candidates);
+    const unit = context.pins.find((item) => item.path === owner);
+    if (unit) {
+      return { description: `the pinned checkout ${unit.path}`, unit };
+    }
+  }
+  return null;
+};
+
+type RepositoryLocation =
+  | { kind: "local"; path: string }
+  | { kind: "network" }
+  | { kind: "unclassifiable" };
+
+const URL_PATTERN = /^([a-z][a-z0-9+.-]*):\/\/([^/]*)(.*)$/iu;
+// `<transport>::<address>` runs a remote helper this check cannot follow.
+const TRANSPORT_HELPER_PATTERN = /^[a-z][a-z0-9+.-]*::/iu;
+const SCP_PATTERN = /^((?:[^@/:]*@)?(?:\[[^\]/]*\]|[^/:]*)):(.*)$/u;
+const USER_PREFIX = /^[^@]*@/u;
+const PORT_SUFFIX = /:\d*$/u;
+
+const BRACKETS = /^\[|\]$/gu;
+
+// Every name this machine answers to over SSH without a network hop.
+const localHostNames = (): Set<string> => {
+  const machine = hostname().toLowerCase();
+  const addresses = Object.values(networkInterfaces()).flatMap((entries) =>
+    (entries ?? []).map((entry) => entry.address.toLowerCase())
+  );
+  return new Set([
+    "",
+    "localhost",
+    "0.0.0.0",
+    "::",
+    "::1",
+    machine,
+    `${machine}.local`,
+    machine.split(".")[0] ?? machine,
+    ...addresses,
+  ]);
+};
+
+const isLocalHost = (hostInput: string): boolean => {
+  const host = hostInput
+    .toLowerCase()
+    .replace(USER_PREFIX, "")
+    .replace(BRACKETS, "");
+  return (
+    localHostNames().has(host) ||
+    host.endsWith(".localhost") ||
+    host.startsWith("127.") ||
+    host.startsWith("::ffff:127.")
+  );
+};
+
+// `~` and `~/...` are the home directory; another user's home is unknown.
+const homePath = (path: string): string | null => {
+  if (path === "~" || path.startsWith("~/")) {
+    return join(homedir(), path.slice(1));
+  }
+  return path.startsWith("~") ? null : path;
+};
+
+const localLocation = (
+  path: string | null,
+  base: string
+): RepositoryLocation =>
+  path === null
+    ? { kind: "unclassifiable" }
+    : { kind: "local", path: resolve(base, path) };
+
+/**
+ * Where Git would read a repository `url` from, without talking to it: a
+ * local path (a plain or `~` path, a `file://` URL with any host and percent
+ * encoding, or an SSH-style URL for this machine), a network repository, or
+ * a form this check does not classify, such as a transport helper.
+ */
+export const repositoryLocation = (
+  url: string,
+  directory: string
+): RepositoryLocation => {
+  if (TRANSPORT_HELPER_PATTERN.test(url)) {
+    return { kind: "unclassifiable" };
+  }
+  const match = URL_PATTERN.exec(url);
+  if (match) {
+    const [, scheme = "", authority = "", rest = ""] = match;
+    if (
+      scheme.toLowerCase() !== "file" &&
+      !isLocalHost(authority.replace(PORT_SUFFIX, ""))
+    ) {
+      return { kind: "network" };
+    }
+    let path: string;
+    try {
+      path = decodeURIComponent(rest);
+    } catch {
+      return { kind: "unclassifiable" };
+    }
+    return localLocation(
+      homePath(path.startsWith("/~") ? path.slice(1) : path),
+      homedir()
+    );
+  }
+  const scp = SCP_PATTERN.exec(url);
+  if (scp) {
+    const [, host = "", path = ""] = scp;
+    return isLocalHost(host)
+      ? localLocation(homePath(path), homedir())
+      : { kind: "network" };
+  }
+  return localLocation(homePath(url), directory);
+};
+
+/**
+ * A checkout other than `allowed` that holds `path`: Git run there, or
+ * fetching from there, reads a HEAD this command does not control, whether
+ * or not that checkout is pinned (a pinned checkout may have been moved).
+ */
+const foreignCheckout = (
+  path: string,
+  context: PinnedCommandContext,
+  allowed: readonly string[]
+): PinnedLocation | null => {
+  const owner = owningCheckout(path, [
+    ...context.worktreePaths,
+    ...context.pins.map((unit) => unit.path),
+  ]);
+  return owner && !allowed.includes(owner)
+    ? {
+        description: `the checkout ${owner}, whose HEAD this command does not control`,
+        unit: context.pins.find((unit) => unit.path === owner) ?? null,
+      }
+    : null;
+};
+
+// A token that may name a repository or a checkout path reaches a pinned one.
+const pinnedLocationFor = (
+  token: string,
   directory: string,
   context: PinnedCommandContext
-): PinnedUnit | null => {
-  const text = candidate.startsWith("file://")
-    ? candidate.slice("file://".length)
-    : candidate;
-  if (
-    !text ||
-    text.includes("://") ||
-    (!isAbsolute(text) && text.includes(":"))
-  ) {
-    return null;
-  }
-  const owner = owningCheckout(
-    canonicalPath(resolve(directory, text)),
-    context.worktreePaths
-  );
-  return context.pins.find((unit) => unit.path === owner) ?? null;
+): PinnedLocation | null => {
+  const location = repositoryLocation(token, directory);
+  return location.kind === "local"
+    ? pinnedLocation(location.path, context)
+    : null;
 };
 
 const refusal = (
@@ -872,16 +1050,16 @@ const tokenRefusals = (
       )
     );
   }
-  const unit = item.path
-    ? pinnedCheckoutFor(item.token, directory, context)
+  const reached = item.path
+    ? pinnedLocationFor(item.token, directory, context)
     : null;
-  if (unit) {
+  if (reached) {
     found.push(
       refusal(
         "checkout",
-        `${item.token} points into the pinned checkout ${unit.path}`,
+        `${item.token} points into ${reached.description}`,
         item.token,
-        unit
+        reached.unit
       )
     );
   }
@@ -931,6 +1109,9 @@ const configuredRefusals = (
   ) {
     found.push(...remoteConfigRefusals(invocation, mentionsPin, context));
   }
+  if (subcommand === "fetch" || subcommand === "pull") {
+    found.push(...repositoryRefusals(invocation, context));
+  }
   return found;
 };
 
@@ -942,32 +1123,14 @@ const remoteConfigRefusals = (
   const found: PinnedRefusal[] = [];
   const entries = context.facts.config(
     invocation.globals,
-    "^(push\\.default|remote\\..*\\.(url|pushurl|fetch|push)|url\\..*\\.(insteadof|pushinsteadof))$"
+    "^(push\\.default|remote\\..*\\.(fetch|push))$"
   );
   const implicitPush =
     invocation.subcommand === "push" &&
     !hasExplicitRefspec(invocation.arguments);
   for (const [key, value] of entries) {
     const lowered = key.toLowerCase();
-    const location = repositoryLocation(key, value);
-    if (location !== null) {
-      const unit = pinnedCheckoutFor(location, invocation.directory, context);
-      if (unit) {
-        found.push(
-          refusal(
-            "configured",
-            `remote setting ${key} points into the pinned checkout ${unit.path}`,
-            null,
-            unit
-          )
-        );
-      }
-      continue;
-    }
-    const unit =
-      lowered.endsWith(".fetch") || lowered.endsWith(".push")
-        ? mentionsPin(value)
-        : null;
+    const unit = lowered.startsWith("remote.") ? mentionsPin(value) : null;
     if (unit) {
       found.push(
         refusal(
@@ -989,20 +1152,53 @@ const remoteConfigRefusals = (
   return found;
 };
 
-const URL_REWRITE_SUFFIXES = [".insteadof", ".pushinsteadof"];
-
-// The repository location a remote or URL-rewrite setting names: a remote's
-// URL, or the base `url.<base>.insteadOf` rewrites other URLs to, which may
-// stand for any remote whatever it is called.
-const repositoryLocation = (key: string, value: string): string | null => {
-  const lowered = key.toLowerCase();
-  if (lowered.endsWith(".url") || lowered.endsWith(".pushurl")) {
-    return value;
+// A fetch or pull reads every ref and HEAD of the repository it names, so
+// each candidate repository is resolved the way Git resolves it (remote
+// configuration, legacy remote files, and URL rewrites) and refused when it
+// reaches a pinned checkout or cannot be classified. Every remote counts,
+// whether or not the command names it, and every argument is tried as a
+// repository, because a fetch may name several or default to one.
+const repositoryRefusals = (
+  invocation: GitInvocation,
+  context: PinnedCommandContext
+): PinnedRefusal[] => {
+  const { arguments: args, directory, globals } = invocation;
+  // Only the checkout the command runs in may be fetched from by path.
+  const ownCheckout =
+    owningCheckout(canonicalPath(directory), context.worktreePaths) ?? "";
+  const candidates = new Set([
+    ...args.filter((token) => !token.startsWith("-")),
+    ...context.facts.remoteNames(globals),
+  ]);
+  const found: PinnedRefusal[] = [];
+  for (const name of candidates) {
+    const url = context.facts.remoteUrl(globals, name) ?? name;
+    const location = repositoryLocation(url, directory);
+    if (location.kind === "unclassifiable") {
+      found.push(
+        refusal(
+          "configured",
+          `repository ${name} resolves to ${url}, which loop exec cannot classify`,
+          name
+        )
+      );
+    } else if (location.kind === "local") {
+      const reached =
+        pinnedLocation(location.path, context) ??
+        foreignCheckout(canonicalPath(location.path), context, [ownCheckout]);
+      if (reached) {
+        found.push(
+          refusal(
+            "checkout",
+            `repository ${name} resolves to ${url}, which reaches ${reached.description}`,
+            name,
+            reached.unit
+          )
+        );
+      }
+    }
   }
-  const suffix = URL_REWRITE_SUFFIXES.find((item) => lowered.endsWith(item));
-  return lowered.startsWith("url.") && suffix
-    ? key.slice("url.".length, key.length - suffix.length)
-    : null;
+  return found;
 };
 
 const pushesEveryBranch = (key: string, value: string): boolean =>
@@ -1098,18 +1294,17 @@ const gitRefusals = (
       )
     );
   }
-  const directoryUnit = pinnedCheckoutFor(
-    invocation.directory,
-    context.checkout,
-    context
-  );
+  const directory = canonicalPath(invocation.directory);
+  const directoryUnit =
+    pinnedLocation(directory, context) ??
+    foreignCheckout(directory, context, context.ownCheckouts);
   if (directoryUnit) {
     found.push(
       refusal(
         "checkout",
-        `it runs in the pinned checkout ${directoryUnit.path}, where HEAD is that unit's moving branch`,
+        `it runs in ${directoryUnit.description}, where HEAD is that unit's moving branch`,
         null,
-        directoryUnit
+        directoryUnit.unit
       )
     );
   }
@@ -1150,7 +1345,21 @@ const gitRefusals = (
     );
   }
   found.push(...configuredRefusals(invocation, names, context));
-  return found;
+  return distinct(found);
+};
+
+// One refusal per kind, argument, and unit: a fetch's repository argument is
+// both a path and a repository.
+const distinct = (refusals: readonly PinnedRefusal[]): PinnedRefusal[] => {
+  const seen = new Set<string>();
+  return refusals.filter((item) => {
+    const key = [item.kind, item.token ?? "", item.unit?.path ?? ""].join("\0");
+    if (seen.has(key)) {
+      return false;
+    }
+    seen.add(key);
+    return true;
+  });
 };
 
 // Programs that run another command from their arguments: shells, command
@@ -1474,6 +1683,17 @@ const parseConfigEntries = (output: string): [string, string][] =>
         : [entry.slice(0, separator), entry.slice(separator + 1)];
     });
 
+// Remotes defined by files under `remotes/` and `branches/`, which Git still
+// reads but `git remote` does not list.
+const legacyRemoteNames = (commonGitDirectory: string): string[] =>
+  ["remotes", "branches"].flatMap((directory) => {
+    try {
+      return readdirSync(join(commonGitDirectory, directory));
+    } catch {
+      return [];
+    }
+  });
+
 /** Facts read with the Git that runs the repository's own commands. */
 export const gitFactsFor = (
   checkout: string,
@@ -1511,6 +1731,25 @@ export const gitFactsFor = (
             return { name, object, symref };
           })
       ),
+    remoteNames: (globals) =>
+      memo(`remotes\0${globals.join("\0")}`, () => [
+        ...new Set([
+          ...parseConfigEntries(
+            git(globals, [
+              "config",
+              "--null",
+              "--get-regexp",
+              "^remote\\..*\\.url$",
+            ]).stdout
+          ).map(([key]) => key.slice("remote.".length, -".url".length)),
+          ...legacyRemoteNames(commonGitDirectory),
+        ]),
+      ]),
+    remoteUrl: (globals, name) => {
+      const result = git(globals, ["ls-remote", "--get-url", name]);
+      const url = result.stdout.trim();
+      return result.exitCode === 0 && url ? url : null;
+    },
     resolveRef: (globals, token) => {
       const name = git(globals, ["rev-parse", "--symbolic-full-name", token]);
       const commit = git(globals, [

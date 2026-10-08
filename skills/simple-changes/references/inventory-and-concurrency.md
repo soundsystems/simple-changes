@@ -123,9 +123,12 @@ subcommand that is not read-only is refused when an argument names a pinned
 branch in any spelling or letter case, points into a pinned checkout, or uses
 a stand-in that could resolve to one (`@{...}`, `-`, `FETCH_HEAD`, another
 worktree's refs, `:/` searches, every-branch options or refspecs, an alias, an
-upstream, remote, or URL-rewrite setting, a replace ref). Git run through a
-shell or other command runner, such as `sh -c` or `env`, is refused outright
-while units are pinned; run Git directly. Name the recorded commit instead, as
+upstream, remote, or URL-rewrite setting, a replace ref). A fetch or pull is
+also refused when any repository it could read, resolved the way Git resolves
+it, is another checkout of this repository or a linked worktree's Git
+directory, and any merge-like command is refused in a checkout the run does
+not author. Git run through a shell or other command runner, such as `sh -c`
+or `env`, is refused outright while units are pinned; run Git directly. Name the recorded commit instead, as
 in `git merge --ff-only <head>` or `git push <remote>
 <head>:refs/heads/<branch>`. The refusal prints that command when it is
 certainly equivalent, or says the branch moved and prints the claim, pause,

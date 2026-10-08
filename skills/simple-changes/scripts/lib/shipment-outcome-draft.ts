@@ -113,7 +113,9 @@ const finalTreeEntry = (
 ): string | null => {
   const result = runGit(
     repositoryPath,
-    ["ls-tree", targetRevision, "--", path],
+    // A literal pathspec, so a file named like pathspec magic (`:README.md`)
+    // reads its own entry, as the recorder does.
+    ["--literal-pathspecs", "ls-tree", targetRevision, "--", path],
     true
   );
   if (result.exitCode !== 0) {

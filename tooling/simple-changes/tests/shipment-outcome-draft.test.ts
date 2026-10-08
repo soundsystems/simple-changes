@@ -280,6 +280,33 @@ describe("loop draft-outcome", () => {
     expect(endLoop(root, lease.runId, "controller").ok).toBe(true);
   });
 
+  test("reads a file named like pathspec magic as that file, in the draft and the recorder", () => {
+    const fixture = repository();
+    const { root } = fixture;
+    writeFixture(root, "README.md", "plain\n");
+    writeFixture(root, "notes.md", "notes\n");
+    writeFixture(root, ":notes.md", "colon notes\n");
+    commitAll(root, "Base fixture");
+    const lease = startLoop(root, "controller", "ship");
+    // `:README.md` arrives beside an unchanged `README.md`, and `:notes.md`
+    // is deleted while `notes.md` stays. Read as pathspecs, both names would
+    // resolve to the plain file's entry.
+    writeFixture(root, ":README.md", "colon readme\n");
+    rmSync(join(root, ":notes.md"));
+    commitAll(root, "External change");
+
+    const { draft } = draftShipmentOutcome(root, lease.runId);
+    const entries = Object.fromEntries(
+      draft.additionalPaths.map(({ entry, path }) => [path, entry])
+    );
+    expect(entries).toEqual({
+      ":notes.md": null,
+      ":README.md": `100644:blob:${git(root, ["rev-parse", "HEAD::README.md"])}`,
+    });
+    recordShipmentOutcome(root, lease.runId, "controller", reviewed(draft));
+    expect(endLoop(root, lease.runId, "controller").ok).toBe(true);
+  });
+
   test("an empty draft still needs its review marker deleted", () => {
     const fixture = repository();
     const { root } = fixture;

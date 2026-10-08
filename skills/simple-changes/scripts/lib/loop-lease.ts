@@ -7219,7 +7219,10 @@ export const targetTreeEntry = (
   path: string
 ): string | null => {
   try {
+    // A literal pathspec, so a file named like pathspec magic (`:README.md`)
+    // reads its own entry rather than another file's.
     const output = runGit(repositoryPath, [
+      "--literal-pathspecs",
       "ls-tree",
       targetRevision,
       "--",

@@ -1,4 +1,13 @@
-import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
+import {
+  afterEach,
+  describe,
+  expect,
+  setDefaultTimeout,
+  spyOn,
+  test,
+} from "bun:test";
+// biome-ignore lint/performance/noNamespaceImport: spyOn must patch the namespace the sidecar writer's named imports read.
+import * as fs from "node:fs";
 import {
   chmodSync,
   cpSync,
@@ -12,7 +21,7 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
+import { hostname, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "bun";
 import {
@@ -722,6 +731,47 @@ describe("sidecar files", () => {
     expect(
       readdirSync(directory).filter((name) => name.endsWith(".tmp"))
     ).toEqual([]);
+  });
+
+  test("refuses to replace a target that changed during staging, and serializes writers by target", () => {
+    const directory = temporary("staging");
+    const path = join(directory, "authoring.json");
+    const kept = sidecar({ gamma: { model: "kept" } });
+    writeAuthoringSidecar(path, kept, true);
+    // Another writer (any process) leaves a malformed file mid-write.
+    const chmod = spyOn(fs, "chmodSync").mockImplementationOnce(((
+      target: fs.PathLike,
+      mode: fs.Mode
+    ) => {
+      writeFileSync(path, "{ not json");
+      chmod.mockRestore();
+      fs.chmodSync(target, mode);
+    }) as typeof fs.chmodSync);
+    try {
+      expect(() => writeAuthoringSidecar(path, EMPTY, true)).toThrow(
+        "changed while this answer was being written"
+      );
+    } finally {
+      chmod.mockRestore();
+    }
+    expect(readFileSync(path, "utf8")).toBe("{ not json");
+    expect(readdirSync(directory).sort()).toEqual(["authoring.json"]);
+    rmSync(path);
+    // A live writer's lock refuses; one left by an exited process is
+    // recovered.
+    const lockPath = `${path}.lock`;
+    const owner = (pid: number) =>
+      `${JSON.stringify({ hostname: hostname(), pid, token: "other" })}\n`;
+    writeFileSync(lockPath, owner(process.pid));
+    expect(() => writeAuthoringSidecar(path, EMPTY, true)).toThrow(
+      "Another authoring write holds"
+    );
+    expect(existsSync(path)).toBe(false);
+    expect(readFileSync(lockPath, "utf8")).toBe(owner(process.pid));
+    const exited = spawnSync(["true"]).pid;
+    writeFileSync(lockPath, owner(exited));
+    expect(writeAuthoringSidecar(path, EMPTY, true).written).toBe(true);
+    expect(readdirSync(directory).sort()).toEqual(["authoring.json"]);
   });
 
   test("resolves the Simple Changelogs personal sidecar with that skill's rules", () => {

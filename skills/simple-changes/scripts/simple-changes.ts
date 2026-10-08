@@ -1870,7 +1870,11 @@ const runSetup = async (options: CliOptions): Promise<void> => {
       writeResult = applyWrites();
     }
     const result = {
+      // `authoring` is the persistence receipt (null for run-only, which
+      // writes nothing); `authoringAnswer` is the confirmed answer itself,
+      // which a run-only setup applies to the current request only.
       authoring: authoringWrite,
+      authoringAnswer: selection.confirmed ? selection.authoring : null,
       changelogCoordination: context.changelog,
       changelogInstall: selection.changelogInstall,
       confirmed: selection.confirmed,
@@ -2303,6 +2307,16 @@ const runInitialize = async (options: CliOptions): Promise<void> => {
       readinessConfirmed: options.ready,
     }
   );
+  // Resolved before anything changes: an invalid --proposal or --head is a
+  // usage error that must leave the handoff claim where it was.
+  const reviewer = resolveReviewer({
+    authoring: authoring.resolution,
+    repositoryRoot: inventory.repository.primaryCheckout,
+    ...(options.proposalId === undefined
+      ? {}
+      : { proposalId: options.proposalId }),
+    ...(options.headRef === undefined ? {} : { head: options.headRef }),
+  });
   // A proceeding handoff declares the current checkout finished: release the
   // author's own claim there so the work becomes an ordinary stable unit that
   // any controller may ship, instead of a concurrent-author exclusion.
@@ -2317,14 +2331,7 @@ const runInitialize = async (options: CliOptions): Promise<void> => {
     handoffClaimRelease: handoffClaimRelease
       ? { claimId: handoffClaimRelease.claimId, path: handoffClaimRelease.path }
       : null,
-    reviewer: resolveReviewer({
-      authoring: authoring.resolution,
-      repositoryRoot: inventory.repository.primaryCheckout,
-      ...(options.proposalId === undefined
-        ? {}
-        : { proposalId: options.proposalId }),
-      ...(options.headRef === undefined ? {} : { head: options.headRef }),
-    }),
+    reviewer,
     runtimeFreshness: runtimeFreshness(
       {
         targetRef: inventory.targetRef,

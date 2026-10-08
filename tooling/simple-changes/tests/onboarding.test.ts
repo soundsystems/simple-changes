@@ -8,6 +8,7 @@ import {
   collectAuthoringAnswers,
   effortChoices,
   recommendedAuthoringAnswer,
+  renderAuthoringSummary,
   reviewAgentCandidates,
   reviewerChoices,
   reviewModelProblem,
@@ -1618,5 +1619,35 @@ describe("authoring and review questions", () => {
     expect(asked).toEqual([]);
     expect(answer).toEqual(recommendedAuthoringAnswer(["gamma"]));
     expect(answer.roles).toEqual({ proposals: { harness: "running" } });
+  });
+
+  test("the receipt names the reviewer's chosen effort", () => {
+    const answer = (review: Record<string, unknown>) => ({
+      harnesses: { "alpha-agent": { model: "author-model" } },
+      roles: { review },
+      schemaVersion: 1 as const,
+    });
+    const reviewLine = (review: Record<string, unknown>) =>
+      renderAuthoringSummary(
+        answer(review) as unknown as Parameters<
+          typeof renderAuthoringSummary
+        >[0],
+        definitions
+      )
+        .split("\n")
+        .find((line) => line.startsWith("Independent reviews:"));
+    expect(
+      reviewLine({
+        adversarial: true,
+        effort: "high",
+        harness: "alpha-agent",
+        model: "review-model",
+      })
+    ).toBe(
+      "Independent reviews: review-model at high in Alpha Agent, never the author's model."
+    );
+    expect(reviewLine({ adversarial: true, harness: "beta-agent" })).toBe(
+      "Independent reviews: Beta Agent, an agent other than the author's."
+    );
   });
 });

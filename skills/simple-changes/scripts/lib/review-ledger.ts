@@ -753,25 +753,42 @@ const checkProposals = (checker: Checker, value: unknown): void => {
   }
 };
 
+// Every commit resolution follows from a replay record: its sources, and the
+// stored inherited unresolved sources it re-resolves to see whether they
+// closed. Inherited gaps are always transitive sources, so a ledger built by
+// these commands never gains a cycle from them.
+const replayDependencies = (record: ReplayRecord | undefined): string[] =>
+  record ? [...record.sources, ...record.inheritedGaps.unresolvedSources] : [];
+
+interface CycleFrame {
+  dependencies: string[];
+  next: number;
+  node: string;
+}
+
 /**
  * A commit reachable from itself through replay links, or null. Replay links
  * form a directed acyclic graph by construction, so a cycle can only come
- * from external editing; it makes the whole ledger malformed.
+ * from external editing; it makes the whole ledger malformed. The walk
+ * follows every dependency resolution follows, so a ledger that validates
+ * always resolves.
  */
 const replayCycle = (replays: Record<string, ReplayRecord>): string | null => {
   const state = new Map<string, "visiting" | "done">();
+  const frameFor = (node: string): CycleFrame => ({
+    dependencies: replayDependencies(ownValue(replays, node)),
+    next: 0,
+    node,
+  });
   for (const start of Object.keys(replays)) {
     if (state.has(start)) {
       continue;
     }
     state.set(start, "visiting");
-    const stack: Array<{ next: number; node: string }> = [
-      { next: 0, node: start },
-    ];
+    const stack: CycleFrame[] = [frameFor(start)];
     while (stack.length > 0) {
-      const frame = stack.at(-1) as { next: number; node: string };
-      const sources = ownValue(replays, frame.node)?.sources ?? [];
-      const source = sources[frame.next];
+      const frame = stack.at(-1) as CycleFrame;
+      const source = frame.dependencies[frame.next];
       if (source === undefined) {
         state.set(frame.node, "done");
         stack.pop();
@@ -784,7 +801,7 @@ const replayCycle = (replays: Record<string, ReplayRecord>): string | null => {
       }
       if (!seen) {
         state.set(source, "visiting");
-        stack.push({ next: 0, node: source });
+        stack.push(frameFor(source));
       }
     }
   }
@@ -3180,14 +3197,19 @@ export const recordReviewAttempt = (
   const cwd = input.repositoryPath;
   const { commonGitDirectory } = locateRepository(cwd).repository;
   const ledgerPath = reviewLedgerPath(commonGitDirectory);
-  const settings = authoringSettings(
-    input.authoring ? cwd : primaryCheckoutOf(cwd),
-    input.authoring
-  );
   return withLedgerTransaction(
     commonGitDirectory,
     "proposal record-review",
     (ledger) => {
+      // Read under the loop lock that setup's preference writes also hold,
+      // so a setup that finished first is always seen. A personal sidecar
+      // written from another repository is replaced by an atomic rename, so
+      // this read is where acceptance is ordered against it; a retry and a
+      // resume revalidate against the settings current then.
+      const settings = authoringSettings(
+        input.authoring ? cwd : primaryCheckoutOf(cwd),
+        input.authoring
+      );
       const head = resolveCommit(cwd, input.head, "--head");
       const prior = findAttempt(ledger, attemptId);
       if (prior) {

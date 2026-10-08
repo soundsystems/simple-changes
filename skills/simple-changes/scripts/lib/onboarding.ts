@@ -60,8 +60,9 @@ export interface OnboardingInputs {
 }
 
 export interface OnboardingSelection {
-  // The authoring sidecar to save with the policy (none for run-only scope),
-  // or null when the authoring questions did not run.
+  // The authoring answer: saved beside the policy for a repository or
+  // personal scope, and applied to the current request only for run-only
+  // scope. Null when the authoring questions did not run.
   authoring: AuthoringSidecar | null;
   changelogInstall: ChangelogInstallOffer;
   confirmed: boolean;

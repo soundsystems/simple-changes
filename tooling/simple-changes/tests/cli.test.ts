@@ -3590,6 +3590,47 @@ while (!existsSync(process.env.SIMPLE_CHANGES_TEST_RELEASE_PATH)) {
       lease: { runId: string };
     };
 
+    // Invalid reviewer inputs are a usage error that leaves the claim held.
+    const invalid = spawnSync(
+      [
+        process.execPath,
+        cliPath,
+        "initialize",
+        "--mode",
+        "handoff",
+        "--ready",
+        "--agent-id",
+        "feature-author",
+        "--head",
+        git(worktree, ["rev-parse", "HEAD"]),
+        "--json",
+        "--repo",
+        worktree,
+      ],
+      { stderr: "pipe", stdout: "pipe" }
+    );
+    expect(invalid.exitCode).toBe(2);
+    expect(decoder.decode(invalid.stderr)).toContain("given together");
+    const held = spawnSync(
+      [
+        process.execPath,
+        cliPath,
+        "worktree",
+        "status",
+        "--json",
+        "--repo",
+        fixture.root,
+      ],
+      { stderr: "pipe", stdout: "pipe" }
+    );
+    expect(
+      (
+        JSON.parse(decoder.decode(held.stdout)) as {
+          claims: Array<{ releaseReason?: unknown; state: string }>;
+        }
+      ).claims.map(({ state }) => state)
+    ).not.toContain("released");
+
     const handoff = spawnSync(
       [
         process.execPath,

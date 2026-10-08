@@ -654,11 +654,12 @@ export const renderAuthoringSummary = (
   ];
   const { review } = answer.roles;
   if (review) {
-    let reviewer = "any independent reviewer, as today";
+    const effort = review.effort ? ` at ${review.effort}` : "";
+    let reviewer = `any independent reviewer${effort}, as today`;
     if (review.adversarial && review.model) {
-      reviewer = `${review.model} in ${harnessLabel(review.harness, definitions)}, never the author's model`;
+      reviewer = `${review.model}${effort} in ${harnessLabel(review.harness, definitions)}, never the author's model`;
     } else if (review.adversarial) {
-      reviewer = `${harnessLabel(review.harness, definitions)}, an agent other than the author's`;
+      reviewer = `${harnessLabel(review.harness, definitions)}${effort}, an agent other than the author's`;
     }
     const floor = review.escalateOnFindings
       ? ` After findings, later reviews run at least at ${review.escalateOnFindings}.`

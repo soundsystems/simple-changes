@@ -376,9 +376,12 @@ launching another tool for the first time, and every proposal and review is
 signed by the model that actually wrote it." Save the answer with the chosen
 storage (`references/setup-and-policy.md`, "Authoring preferences"); run-only
 asks but writes nothing, so a pending question returns next time. Terminal
-setup saves it with the policy; otherwise, and for an existing repository,
-record it with `simple-changes setup --authoring '<json>' --scope
-<repository|personal> --confirm`, a transaction that writes only the sidecar.
+setup saves it with the policy and reports the confirmed answer as
+`authoringAnswer` and the file written, if any, as `authoring`; after
+run-only, apply `authoringAnswer` to the current request only. Otherwise, and
+for an existing repository, record it with `simple-changes setup --authoring
+'<json>' --scope <repository|personal> --confirm`, a transaction that writes
+only the sidecar.
 
 ## Preference storage
 

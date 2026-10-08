@@ -1,5 +1,14 @@
-import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
+import {
+  afterEach,
+  describe,
+  expect,
+  setDefaultTimeout,
+  spyOn,
+  test,
+} from "bun:test";
 import { randomUUID } from "node:crypto";
+// biome-ignore lint/performance/noNamespaceImport: spyOn must patch the namespace the loop lock's named imports read.
+import * as fs from "node:fs";
 import {
   chmodSync,
   existsSync,
@@ -972,6 +981,29 @@ describe("effective authors and gaps", () => {
     ledger.replays[S] = record([T]);
     ledger.replays[T] = record([S]);
     expect(validateReviewLedger(ledger).reason).toBe("ledger-cycle");
+    // Resolution also re-resolves stored inherited sources, so a loop through
+    // them is a cycle too, reported at validation instead of thrown later.
+    const inherited = (sources: string[], unresolvedSources: string[]) => ({
+      ...record(sources),
+      inheritedGaps: { uncoveredEdits: [], unresolvedSources },
+    });
+    const looped = emptyReviewLedger();
+    looped.replays[S] = inherited([T], [S]);
+    expect(validateReviewLedger(looped)).toMatchObject({
+      errors: [`replays contain a cycle through ${S}`],
+      reason: "ledger-cycle",
+    });
+    looped.replays[S] = inherited([T], []);
+    looped.replays[T] = inherited([fakeSha(76)], [S]);
+    expect(validateReviewLedger(looped).reason).toBe("ledger-cycle");
+    const open = emptyReviewLedger();
+    const missing = fakeSha(77);
+    open.replays[S] = inherited([T], [missing]);
+    expect(validateReviewLedger(open).reason).toBeNull();
+    expect(headCoverage(open, [S]).gaps[S]).toEqual({
+      uncoveredEdits: [],
+      unresolvedSources: [T, missing].sort(),
+    });
   });
 });
 
@@ -1519,6 +1551,63 @@ describe("proposal ledger commands", () => {
     });
     expect(updated.commits).toEqual([attested, imported, next]);
     expect(updated.authorsDigest).not.toBe(second.authorsDigest);
+  });
+
+  test("record-review reads the review preferences only once it holds the loop lock", () => {
+    const run = preparedRun();
+    const head = commitFile(run.author, "a.txt", "a\n");
+    attestAsA(run.author, [head]);
+    recordProposalAuthors({
+      agent: "model-alpha",
+      base: run.base,
+      environment: ENV_A,
+      head,
+      proposalId: PROPOSAL,
+      repositoryPath: run.author,
+    });
+    const lockPath = loopLockPath(commonDirectory(run.root));
+    const sidecarPath = join(run.root, ".simple-changes-authoring.json");
+    // Setup turns adversarial review on and finishes just before this
+    // command takes the loop lock.
+    const realMkdir = fs.mkdirSync;
+    const mkdir = spyOn(fs, "mkdirSync").mockImplementation(((
+      path: fs.PathLike,
+      options?: fs.MakeDirectoryOptions
+    ) => {
+      if (String(path) === lockPath && !existsSync(sidecarPath)) {
+        writeFileSync(
+          sidecarPath,
+          `${JSON.stringify({
+            harnesses: {},
+            roles: { review: { adversarial: true, harness: "running" } },
+            schemaVersion: 1,
+          })}\n`
+        );
+      }
+      return realMkdir(path, options);
+    }) as typeof fs.mkdirSync);
+    let result: ReturnType<typeof recordReviewAttempt>;
+    try {
+      result = recordReviewAttempt({
+        attemptId: randomUUID(),
+        head,
+        proposalId: PROPOSAL,
+        receipt: reviewReceipt({
+          agent: "model-alpha",
+          harness: "claude-code",
+          instance: "reviewer-z",
+          session: "session-z",
+        }),
+        repositoryPath: run.author,
+      });
+    } finally {
+      mkdir.mockRestore();
+    }
+    expect(existsSync(sidecarPath)).toBe(true);
+    expect(result.attempt).toMatchObject({
+      acceptanceReason: "reviewer-not-distinct",
+      accepted: false,
+    });
   });
 
   test("the ledger commands accept constructor and toString as proposal ids, and verified resolution treats a sentinel author as missing", () => {

@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import {
   chmodSync,
   existsSync,
+  linkSync,
   lstatSync,
   mkdirSync,
   readFileSync,
@@ -9,7 +10,7 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { homedir } from "node:os";
+import { homedir, hostname } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
@@ -907,24 +908,123 @@ export const resolveRepositoryAuthoring = (
   };
 };
 
+// What a sidecar path holds right now, compared before the rename so a change
+// made after the writer looked (by any process) is refused, never replaced.
+const sidecarSnapshot = (path: string): string => {
+  try {
+    const status = lstatSync(path);
+    return status.isFile()
+      ? `file:${readFileSync(path, "utf8")}`
+      : `other:${status.mode}`;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return "absent";
+    }
+    throw error;
+  }
+};
+
+interface SidecarLockOwner {
+  hostname?: unknown;
+  pid?: unknown;
+  token?: unknown;
+}
+
+const sidecarLockOwner = (lockPath: string): SidecarLockOwner | null => {
+  try {
+    return JSON.parse(readFileSync(lockPath, "utf8")) as SidecarLockOwner;
+  } catch {
+    return null;
+  }
+};
+
+// A lock left by a writer on this host whose process has exited.
+const staleSidecarLock = (owner: SidecarLockOwner | null): boolean => {
+  if (owner?.hostname !== hostname() || typeof owner.pid !== "number") {
+    return false;
+  }
+  try {
+    process.kill(owner.pid, 0);
+    return false;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "ESRCH";
+  }
+};
+
+const createSidecarLock = (lockPath: string, body: string): boolean => {
+  try {
+    writeFileSync(lockPath, body, {
+      encoding: "utf8",
+      flag: "wx",
+      mode: 0o600,
+    });
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+      return false;
+    }
+    throw error;
+  }
+};
+
+// Moves a stale lock aside and keeps it only if it is still the one judged
+// stale; a live lock taken in between is put back untouched.
+const recoverStaleSidecarLock = (lockPath: string): boolean => {
+  const owner = sidecarLockOwner(lockPath);
+  if (!staleSidecarLock(owner)) {
+    return false;
+  }
+  const recoveryPath = `${lockPath}.recovery-${randomUUID()}`;
+  try {
+    renameSync(lockPath, recoveryPath);
+  } catch {
+    return false;
+  }
+  if (sidecarLockOwner(recoveryPath)?.token === owner?.token) {
+    rmSync(recoveryPath, { force: true });
+    return true;
+  }
+  try {
+    linkSync(recoveryPath, lockPath);
+  } finally {
+    rmSync(recoveryPath, { force: true });
+  }
+  return false;
+};
+
 /**
- * Writes one sidecar as a standalone transaction: validated first, never over
- * a malformed file (the owner repairs or removes it), never through a symlink,
- * through a temporary file renamed into place and re-read afterwards. A failed
- * write leaves the existing file untouched.
+ * Serializes writers of one sidecar path, whichever repository or scope they
+ * write from: a personal sidecar is shared by every repository, so the
+ * repository locks callers hold do not order its writers.
  */
-export const writeAuthoringSidecar = (
-  path: string,
-  value: unknown,
-  privateFile: boolean
-): { path: string; written: boolean } => {
-  const validation = validateAuthoringSidecar(value);
-  if (!validation.value) {
+const acquireSidecarLock = (path: string): (() => void) => {
+  const lockPath = `${path}.lock`;
+  const token = randomUUID();
+  const body = `${JSON.stringify({ hostname: hostname(), pid: process.pid, token })}\n`;
+  if (
+    !(
+      createSidecarLock(lockPath, body) ||
+      (recoverStaleSidecarLock(lockPath) && createSidecarLock(lockPath, body))
+    )
+  ) {
     throw new SimpleChangesError(
-      `The authoring answer is invalid: ${validation.errors.join("; ")}`,
-      EXIT_CODES.validation
+      `Another authoring write holds ${lockPath}. Retry after it finishes, or remove that file if no write is running.`,
+      EXIT_CODES.unsafe
     );
   }
+  return () => {
+    if (sidecarLockOwner(lockPath)?.token === token) {
+      rmSync(lockPath, { force: true });
+    }
+  };
+};
+
+const writeLockedSidecar = (
+  path: string,
+  text: string,
+  privateFile: boolean
+): { path: string; written: boolean } => {
+  const snapshot = sidecarSnapshot(path);
   const current = readAuthoringFile(path);
   if (current.state === "malformed") {
     throw new SimpleChangesError(
@@ -932,14 +1032,11 @@ export const writeAuthoringSidecar = (
       EXIT_CODES.unsafe
     );
   }
-  const text = `${JSON.stringify(validation.value, null, 2)}\n`;
-  if (current.state === "valid" && readFileSync(path, "utf8") === text) {
+  if (current.state === "valid" && snapshot === `file:${text}`) {
     return { path, written: false };
   }
-  const directory = dirname(path);
-  mkdirSync(directory, { mode: privateFile ? 0o700 : 0o755, recursive: true });
   const temporaryPath = resolve(
-    directory,
+    dirname(path),
     `.${randomUUID()}.simple-changes-authoring.tmp`
   );
   // Everything fallible happens on the staged file; the rename is the last
@@ -957,6 +1054,15 @@ export const writeAuthoringSidecar = (
         EXIT_CODES.validation
       );
     }
+    // Cooperating writers hold the lock; this compare also refuses any other
+    // edit that lands before the rename, short of the instant between the
+    // compare and the rename itself, which no rename-based write can close.
+    if (sidecarSnapshot(path) !== snapshot) {
+      throw new SimpleChangesError(
+        `${path} changed while this answer was being written; nothing was replaced. Inspect it and retry.`,
+        EXIT_CODES.unsafe
+      );
+    }
     if (existsSync(path) && lstatSync(path).isSymbolicLink()) {
       throw new SimpleChangesError(
         `Refusing to replace a symlink: ${path}`,
@@ -969,6 +1075,38 @@ export const writeAuthoringSidecar = (
     throw error;
   }
   return { path, written: true };
+};
+
+/**
+ * Writes one sidecar as a standalone transaction: validated first, never over
+ * a malformed file (the owner repairs or removes it), never through a symlink,
+ * through a temporary file renamed into place, and never over a file that
+ * changed after the writer read it. Writers of one path are serialized by a
+ * lock beside it. A failed write leaves the existing file untouched.
+ */
+export const writeAuthoringSidecar = (
+  path: string,
+  value: unknown,
+  privateFile: boolean
+): { path: string; written: boolean } => {
+  const validation = validateAuthoringSidecar(value);
+  if (!validation.value) {
+    throw new SimpleChangesError(
+      `The authoring answer is invalid: ${validation.errors.join("; ")}`,
+      EXIT_CODES.validation
+    );
+  }
+  const text = `${JSON.stringify(validation.value, null, 2)}\n`;
+  mkdirSync(dirname(path), {
+    mode: privateFile ? 0o700 : 0o755,
+    recursive: true,
+  });
+  const release = acquireSidecarLock(path);
+  try {
+    return writeLockedSidecar(path, text, privateFile);
+  } finally {
+    release();
+  }
 };
 
 // The guidance checkpoint that introduced authoring preferences; Simple

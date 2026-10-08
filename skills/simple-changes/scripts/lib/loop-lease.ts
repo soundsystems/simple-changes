@@ -2016,7 +2016,8 @@ export const staleClaimRecoveryCommands = (
  * claim gets a new ID). In every other case the live claim's owner, or the
  * registered owner when nothing holds the checkout, claims and pauses its exact
  * current state, and the controller accepts that pause receipt, which works
- * from any state.
+ * from any state. A checkout whose directory is gone cannot be paused, so it
+ * gets no steps until it is restored.
  */
 const staleClaimRecovery = (
   lease: Pick<LoopLease, "ownerAgentId" | "runId">,
@@ -2024,6 +2025,12 @@ const staleClaimRecovery = (
   worktree: WorktreeInventory,
   { linkedClaim, liveClaim }: WorktreeClaimContext
 ): StaleClaimRecovery => {
+  if (worktree.prunable) {
+    return {
+      commands: [],
+      text: `Its checkout directory no longer exists, so it cannot be paused: restore the checkout at ${worktree.path}${worktree.branch ? ` on branch ${worktree.branch}` : ""}, then re-run \`${LOOP_VERIFY} --run-id ${lease.runId}\` for its exact recovery steps.`,
+    };
+  }
   const owner = liveClaim?.owner ?? linkedClaim?.owner;
   const ownerId = owner?.agentId ?? registered.agentId;
   const agent = ownerId ? commandWord(ownerId) : "<owner>";
@@ -9304,6 +9311,13 @@ const violationGuidanceCommands = (
   }
   // Keep every step: two checkouts each need their own accepted receipt.
   commands.push(...staleClaimRecoveryCommands(violations));
+  for (const violation of violations) {
+    if (violation.nextCommands?.length === 0) {
+      add(
+        `Restore the missing checkout at ${violation.path}, then re-run \`${LOOP_VERIFY} --run-id ${lease.runId}\` for its exact recovery steps.`
+      );
+    }
+  }
   if (
     codes.has("remote-destination-changed") ||
     codes.has("remote-destination-rebind-required")

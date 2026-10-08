@@ -3892,6 +3892,53 @@ describe("active integration-loop lease", () => {
     expect(staleAt(removedPath)).toHaveLength(1);
   });
 
+  test("asks for a missing checkout to be restored before printing pause steps", () => {
+    const fixture = repository();
+    const missing = join(fixture.base, "missing-author");
+    git(fixture.root, ["worktree", "add", "-b", "missing-author", missing]);
+    const claim = claimWorktree(
+      fixture.root,
+      "missing-owner",
+      missing,
+      "codex",
+      "task-missing"
+    );
+    const lease = startLoop(fixture.root, "controller", "integrate");
+    rmSync(missing, { force: true, recursive: true });
+    releaseWorktreeClaim(fixture.root, "missing-owner", claim.claimId);
+
+    const stale = verifyLoop(fixture.root).violations.find(
+      (violation) =>
+        violation.code === "coordination-claim-stale" &&
+        violation.path === missing
+    );
+    expect(stale?.nextCommands).toEqual([]);
+    expect(stale?.message).toContain(
+      `Its checkout directory no longer exists, so it cannot be paused: restore the checkout at ${missing} on branch missing-author`
+    );
+    const restore = `Restore the missing checkout at ${missing}, then re-run \`simple-changes loop verify --run-id ${lease.runId}\` for its exact recovery steps.`;
+    expect(loopStatus(fixture.root).guidance.nextCommands).toEqual([restore]);
+    expect(
+      runCli(fixture.root, ["loop", "verify", "--run-id", lease.runId]).stdout
+    ).not.toContain("Next:");
+
+    // Once restored, the exact claim, pause, and accept steps complete.
+    git(fixture.root, ["worktree", "add", "-f", missing, "missing-author"]);
+    const printed = staleClaimRecoveryCommands(
+      verifyLoop(fixture.root).violations
+    );
+    expect(printed.map((command) => command.split(" ")[2])).toEqual([
+      "claim",
+      "pause",
+      "accept-paused-change",
+    ]);
+    runPrintedSteps(fixture.root, printed);
+    expect(verifyLoop(fixture.root)).toMatchObject({
+      ok: true,
+      violations: [],
+    });
+  }, 60_000);
+
   test("tells an author whose own claim went inactive to refresh it in place", () => {
     const fixture = repository();
     const authorPath = join(fixture.base, "inactive-author");

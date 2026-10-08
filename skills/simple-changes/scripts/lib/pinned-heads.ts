@@ -183,7 +183,6 @@ const READ_ONLY_SUBCOMMANDS: ReadonlySet<string> = new Set([
   "check-ref-format",
   "cherry",
   "clean",
-  "clone",
   "column",
   "commit",
   "commit-graph",
@@ -1694,20 +1693,78 @@ const STRATEGY_SUBCOMMANDS: ReadonlySet<string> = new Set([
 ]);
 
 // The merge strategies a command names, attached or in the next argument.
-const strategies = (args: readonly string[]): string[] =>
+// Short options whose value is the rest of the token or the next argument,
+// per subcommand; any other letter in a cluster such as `-qx` is a flag.
+const SHORT_VALUE_LETTERS: Readonly<Record<string, string>> = {
+  "cherry-pick": "mXS",
+  merge: "mFsXS",
+  rebase: "xsXCS",
+  revert: "mXS",
+};
+
+// The short options a single-dash cluster spells, each with its value when
+// it takes one: `-qx cmd` is `-q` and `-x cmd`, `-sours` is `-s ours`.
+const shortOptions = (
+  subcommand: string,
+  token: string,
+  next: string
+): { letter: string; value: string | null }[] => {
+  if (!token.startsWith("-") || token.startsWith("--")) {
+    return [];
+  }
+  const valued = SHORT_VALUE_LETTERS[subcommand] ?? "";
+  const options: { letter: string; value: string | null }[] = [];
+  for (let index = 1; index < token.length; index += 1) {
+    const letter = token[index] as string;
+    if (valued.includes(letter)) {
+      const rest = token.slice(index + 1);
+      // `-S` takes its key only when attached.
+      options.push({ letter, value: rest || (letter === "S" ? "" : next) });
+      break;
+    }
+    options.push({ letter, value: null });
+  }
+  return options;
+};
+
+// The merge strategies a command names, in any spelling.
+const strategies = (subcommand: string, args: readonly string[]): string[] =>
   args.flatMap((token, index) => {
     const next = args[index + 1] ?? "";
-    if (token === "-s") {
-      return [next];
-    }
     if (spelledOption(token, ["--strategy"])) {
       const separator = token.indexOf("=");
       return [separator === -1 ? next : token.slice(separator + 1)];
     }
-    return token.startsWith("-s") && !token.startsWith("--")
-      ? [token.slice(2)]
+    // cherry-pick and revert spell signoff `-s`; they take only `--strategy`.
+    return subcommand === "merge" || subcommand === "rebase"
+      ? shortOptions(subcommand, token, next)
+          .filter((option) => option.letter === "s")
+          .map((option) => option.value ?? "")
       : [];
   });
+
+// Short option letters that run a command, per subcommand, in any cluster.
+const EXECUTING_LETTERS: Readonly<Record<string, string>> = {
+  clone: "u",
+  grep: "O",
+  "ls-remote": "u",
+  rebase: "ix",
+};
+
+const executesByLetter = (subcommand: string, token: string): boolean => {
+  const letters = EXECUTING_LETTERS[subcommand];
+  if (!(letters && token.startsWith("-")) || token.startsWith("--")) {
+    return false;
+  }
+  if (SHORT_VALUE_LETTERS[subcommand]) {
+    return shortOptions(subcommand, token, "").some((option) =>
+      letters.includes(option.letter)
+    );
+  }
+  // Without a table of this subcommand's value letters, any occurrence
+  // counts, even inside a value.
+  return [...token.slice(1)].some((letter) => letters.includes(letter));
+};
 
 const executes = (subcommand: string, args: readonly string[]): boolean => {
   if (EXECUTING_SUBCOMMANDS.has(subcommand)) {
@@ -1715,12 +1772,7 @@ const executes = (subcommand: string, args: readonly string[]): boolean => {
   }
   if (
     STRATEGY_SUBCOMMANDS.has(subcommand) &&
-    // cherry-pick and revert spell signoff `-s`; they take only `--strategy`.
-    strategies(
-      subcommand === "cherry-pick" || subcommand === "revert"
-        ? args.filter((token) => token !== "-s")
-        : args
-    ).some((name) => !BUILTIN_STRATEGIES.has(name))
+    strategies(subcommand, args).some((name) => !BUILTIN_STRATEGIES.has(name))
   ) {
     return true;
   }
@@ -1729,14 +1781,10 @@ const executes = (subcommand: string, args: readonly string[]): boolean => {
   return args.some(
     (token) =>
       option(token, EXECUTION_OPTIONS) ||
+      executesByLetter(subcommand, token) ||
       (subcommand === "rebase" &&
-        (option(token, ["--interactive", "--edit-todo"]) ||
-          token === "-i" ||
-          (token.startsWith("-x") && !token.startsWith("--")))) ||
-      (subcommand === "grep" &&
-        (option(token, ["--open-files-in-pager"]) || token.startsWith("-O"))) ||
-      ((subcommand === "ls-remote" || subcommand === "clone") &&
-        token === "-u") ||
+        option(token, ["--interactive", "--edit-todo"])) ||
+      (subcommand === "grep" && option(token, ["--open-files-in-pager"])) ||
       (subcommand === "bisect" && token === "run") ||
       (subcommand === "submodule" && token === "foreach")
   );
@@ -1748,13 +1796,17 @@ const writesConfiguration = (
   subcommand: string,
   args: readonly string[]
 ): boolean =>
-  subcommand === "init" ||
-  (subcommand === "config" &&
-    !(
-      args.some((token) => CONFIG_READ_OPTIONS.has(token)) ||
-      args[0] === "get" ||
-      args[0] === "list"
-    ));
+  subcommand === "init" || (subcommand === "config" && !isConfigRead(args));
+
+// A `git config` read: its first argument is a read action. Anything else,
+// including a read option after other options, whose values this does not
+// parse, counts as a write.
+const isConfigRead = (args: readonly string[]): boolean => {
+  const [action = ""] = args;
+  return (
+    CONFIG_READ_OPTIONS.has(action) || action === "get" || action === "list"
+  );
+};
 
 // Rules that hold for every Git command, read-only ones included: `-c` can
 // make Git run a command (`core.fsmonitor`, `core.pager`) or read a name this

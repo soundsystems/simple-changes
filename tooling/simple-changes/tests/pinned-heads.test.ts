@@ -770,6 +770,14 @@ describe("pinned-head command analysis", () => {
       ["git", "rebase", "--ex=make", "main"],
       ["git", "rebase", "-xmake", "main"],
       ["git", "rebase", "-i", "main"],
+      ["git", "rebase", "-qx", "make", "main"],
+      ["git", "rebase", "-qi", "main"],
+      ["git", "merge", "-ns", "custom", head],
+      ["git", "merge", "-nscustom", head],
+      ["git", "grep", "-nO", "x"],
+      ["git", "ls-remote", "-qu", "x", "origin"],
+      ["git", "config", "set", "--comment", "--get", "core.fsmonitor", "x"],
+      ["git", "config", "--global", "--get", "user.name"],
       ["git", "bisect", "run", "make"],
       ["git", "submodule", "foreach", "git pull"],
       ["git", "grep", "-Ogit merge", "x"],
@@ -807,6 +815,9 @@ describe("pinned-head command analysis", () => {
     }
     for (const argv of [
       ["git", "config", "--get", "user.name"],
+      ["git", "merge", "-n", "-s", "ort", head],
+      ["git", "merge", "-nsort", head],
+      ["git", "rebase", "-q", head],
       ["git", "config", "get", "user.name"],
       ["git", "config", "--list"],
       ["git", "stash"],
@@ -832,6 +843,7 @@ describe("pinned-head command analysis", () => {
       ["git", "notes", "add", "-m", "x", head],
       ["git", "pull", ".", "feat/x"],
       ["git", "remote", "add", "u", unitPath],
+      ["git", "clone", unitPath, "/tmp/unit-copy"],
     ]) {
       expect({ argv, kinds: kinds(argv) }).toEqual({
         argv,

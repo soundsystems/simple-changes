@@ -45,6 +45,7 @@ import {
   recoverPostCleanupLoop,
   retainExcludedWorktree,
   retireAbsentWorktree,
+  staleClaimRecoveryCommands,
   startLoop,
   takeoverLoop,
   verifyLoop,
@@ -3838,6 +3839,141 @@ describe("active integration-loop lease", () => {
       `simple-changes worktree claim --agent-id returning-agent --worktree ${authorPath} --adapter codex --owner-ref task-return`,
       `simple-changes worktree pause --agent-id returning-agent --worktree ${authorPath} --run-id ${lease.runId} --disposition preserve-in-place --reason <why>`,
       `simple-changes loop accept-paused-change --run-id ${lease.runId} --agent-id controller --pause-receipt <pause-receipt-id>`,
+    ]);
+  });
+
+  for (const concurrentWork of ["allow-claimed", "strict"] as const) {
+    test(`accepts several changed adopted checkouts through the printed steps (${concurrentWork})`, () => {
+      const fixture = repository();
+      if (concurrentWork === "strict") {
+        writeFixture(
+          fixture.root,
+          ".simple-changes.json",
+          `${JSON.stringify({ ...DEFAULT_POLICY, concurrentWork })}\n`
+        );
+      }
+      const paths = ["adopted-first", "adopted-second"].map((name) => {
+        const path = join(fixture.base, name);
+        git(fixture.root, ["worktree", "add", "-b", `${name}-work`, path]);
+        return path;
+      });
+      const lease = startLoop(fixture.root, "controller", "integrate");
+      expect(lease.concurrentWork).toBe(concurrentWork);
+      for (const [index, path] of paths.entries()) {
+        claimWorktree(fixture.root, `owner-${index}`, path, "codex");
+        const receipt = pauseClaimedWorktree(
+          fixture.root,
+          `owner-${index}`,
+          path,
+          lease.runId,
+          "preserve-in-place",
+          "Pause for adoption."
+        );
+        acceptPausedWorktreeChange(
+          fixture.root,
+          lease.runId,
+          "controller",
+          receipt.receiptId
+        );
+      }
+      expect(verifyLoop(fixture.root).ok).toBe(true);
+
+      // Both owners keep editing after their receipts were accepted.
+      for (const path of paths) {
+        writeFixture(path, "changed.ts", "export const changed = true;\n");
+      }
+      const verification = verifyLoop(fixture.root);
+      for (const path of paths) {
+        for (const code of [
+          "coordination-claim-stale",
+          "preserved-worktree-changed",
+        ]) {
+          expect(verification.violations).toContainEqual(
+            expect.objectContaining({ code, path })
+          );
+        }
+      }
+      const printed = staleClaimRecoveryCommands(verification.violations);
+      expect(printed.map((command) => command.split(" ")[2])).toEqual([
+        "claim",
+        "pause",
+        "claim",
+        "pause",
+        "accept-paused-change",
+        "accept-paused-change",
+      ]);
+      expect(loopStatus(fixture.root).guidance.nextCommands).toEqual(
+        expect.arrayContaining(printed)
+      );
+      expect(
+        runCli(fixture.root, ["loop", "verify", "--run-id", lease.runId]).stdout
+      ).toContain(printed.map((command) => `  Next: ${command}\n`).join(""));
+
+      // Run them in the printed order; each acceptance names its own receipt.
+      const receipts: string[] = [];
+      const fill = (word: string): string => {
+        if (word === "<why>") {
+          return "Hand-the-changed-checkout-back";
+        }
+        return word === "<pause-receipt-id>"
+          ? (receipts.shift() ?? word)
+          : word;
+      };
+      for (const command of printed) {
+        const args = command.split(" ").slice(1).map(fill);
+        const result = runCli(fixture.root, [...args, "--json"]);
+        expect(result.stderr).toBe("");
+        expect(result.exitCode).toBe(0);
+        if (args[1] === "pause") {
+          receipts.push(
+            (JSON.parse(result.stdout) as { receiptId: string }).receiptId
+          );
+        }
+      }
+      expect(verifyLoop(fixture.root)).toMatchObject({
+        ok: true,
+        violations: [],
+      });
+    }, 120_000);
+  }
+
+  test("orders every printed recovery so it runs as printed", () => {
+    const stale = (nextCommands: string[]) => ({
+      changeDigest: null,
+      code: "coordination-claim-stale" as const,
+      headSha: null,
+      message: "",
+      nextCommands,
+      path: "/checkout",
+    });
+    const verify = "simple-changes loop verify --run-id run-a";
+    const accept = (receipt: string) =>
+      `simple-changes loop accept-paused-change --run-id run-a --agent-id controller --pause-receipt ${receipt}`;
+
+    expect(
+      staleClaimRecoveryCommands([
+        stale(["claim a", verify]),
+        stale(["claim b", "pause b", accept("b")]),
+        {
+          changeDigest: null,
+          code: "preserved-worktree-changed",
+          headSha: null,
+          message: "",
+          path: "/other",
+        },
+        stale(["claim c", "pause c", accept("c")]),
+        stale(["claim d", verify]),
+      ])
+    ).toEqual([
+      "claim a",
+      "claim b",
+      "pause b",
+      "claim c",
+      "pause c",
+      "claim d",
+      accept("b"),
+      accept("c"),
+      verify,
     ]);
   });
 

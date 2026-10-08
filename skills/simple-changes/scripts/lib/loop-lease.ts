@@ -1968,6 +1968,36 @@ interface StaleClaimRecovery {
   text: string;
 }
 
+const ACCEPT_PAUSED_CHANGE = "simple-changes loop accept-paused-change";
+const LOOP_VERIFY = "simple-changes loop verify";
+
+/**
+ * Every stale link's recovery commands, ordered to run as printed: owners
+ * claim and pause every checkout before the controller accepts any receipt,
+ * because an acceptance refuses while a changed sibling still lacks its own
+ * current receipt, and verification runs once at the end. Each acceptance is
+ * bound to its path by the receipt it names.
+ */
+export const staleClaimRecoveryCommands = (
+  violations: readonly LoopViolation[]
+): string[] => {
+  const ownerSteps: string[] = [];
+  const accepts: string[] = [];
+  const verifies = new Set<string>();
+  for (const command of violations.flatMap(
+    (violation) => violation.nextCommands ?? []
+  )) {
+    if (command.startsWith(`${ACCEPT_PAUSED_CHANGE} `)) {
+      accepts.push(command);
+    } else if (command.startsWith(`${LOOP_VERIFY} `)) {
+      verifies.add(command);
+    } else {
+      ownerSteps.push(command);
+    }
+  }
+  return [...ownerSteps, ...accepts, ...verifies];
+};
+
 /**
  * The exact recovery for one stale coordination link. `worktree claim`
  * refreshes a live claim in place under its existing ID, which restores a
@@ -2001,7 +2031,7 @@ const staleClaimRecovery = (
     liveClaim.claimId === registered.claimId &&
     liveClaim.owner.agentId === registered.agentId
   ) {
-    const verify = `simple-changes loop verify --run-id ${lease.runId}`;
+    const verify = `${LOOP_VERIFY} --run-id ${lease.runId}`;
     return {
       commands: [claim, verify],
       text: `Owner ${agent} refreshes claim ${liveClaim.claimId} in place with \`${claim}\`; then re-run \`${verify}\`.`,
@@ -2009,7 +2039,7 @@ const staleClaimRecovery = (
   }
   const controller = commandWord(lease.ownerAgentId);
   const pause = `simple-changes worktree pause --agent-id ${agent} --worktree ${path} --run-id ${lease.runId} --disposition preserve-in-place --reason <why>`;
-  const accept = `simple-changes loop accept-paused-change --run-id ${lease.runId} --agent-id ${controller} --pause-receipt <pause-receipt-id>`;
+  const accept = `${ACCEPT_PAUSED_CHANGE} --run-id ${lease.runId} --agent-id ${controller} --pause-receipt <pause-receipt-id>`;
   return {
     commands: [claim, pause, accept],
     text: `Owner ${agent} runs \`${claim}\`, then \`${pause}\`; controller ${controller} then runs \`${accept}\` with the receipt ID the pause prints.`,
@@ -5340,12 +5370,22 @@ const exactPausedEvidence = (
   return { claimId: claim.claimId, current, pauseReceiptId };
 };
 
+// A sibling that is unregistered, or registered preserved and changed, but
+// holds its own valid current pause receipt for this run is waiting for its
+// own adoption or acceptance; it does not block another path's, so several
+// receipted checkouts can be accepted one at a time in any order. Its own
+// entry keeps failing verification until it is accepted too.
+const RECEIPTED_SIBLING_CODES: ReadonlySet<LoopViolation["code"]> = new Set([
+  "preserved-worktree-changed",
+  "unregistered-worktree",
+]);
+
 const isAdoptablePausedWorktreeViolation = (
   lease: LoopLease,
   inventory: RepositoryInventory,
   violation: LoopViolation
 ): boolean => {
-  if (violation.code !== "unregistered-worktree") {
+  if (!RECEIPTED_SIBLING_CODES.has(violation.code)) {
     return false;
   }
   const current = inventory.worktrees.find(
@@ -9186,11 +9226,8 @@ const violationGuidanceCommands = (
       `Ask the exact worktree owner to claim it as an active concurrent author or pause it at a stable boundary, then re-run \`simple-changes loop verify --run-id ${lease.runId}\`.`
     );
   }
-  // A stale coordination link names its own exact recovery. Keep every step:
-  // two checkouts each need their own accepted pause receipt.
-  for (const violation of violations) {
-    commands.push(...(violation.nextCommands ?? []));
-  }
+  // Keep every step: two checkouts each need their own accepted receipt.
+  commands.push(...staleClaimRecoveryCommands(violations));
   if (
     codes.has("remote-destination-changed") ||
     codes.has("remote-destination-rebind-required")

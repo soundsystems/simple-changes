@@ -503,10 +503,11 @@ Use `loop accept-paused-change` for an opening preserved worktree whose owner
 changed it before pausing. Both commands require the receipt's run, repository,
 path, branch, HEAD, digest, claim owner, and current state to match, register the
 worktree as preserved with `mutationAllowed: false`, and reject the update when
-any unrelated manifest violation remains. A sibling unregistered worktree that
-holds its own valid current pause receipt does not count as a blocking
-violation, so several receipted stragglers can be adopted one at a time in any
-order instead of deadlocking against each other. `loop allow` remains the separate
+any unrelated manifest violation remains. A sibling worktree that is
+unregistered, or preserved and changed, but holds its own valid current pause
+receipt does not count as a blocking violation, so several receipted
+checkouts can be adopted or accepted one at a time in any order instead of
+deadlocking against each other. `loop allow` remains the separate
 exceptional user-approved override path.
 
 Harness support is not uniform. The host orchestration layer must probe exact

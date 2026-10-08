@@ -60,6 +60,7 @@ import {
   replanLoop,
   retainExcludedWorktree,
   retireAbsentWorktree,
+  staleClaimRecoveryCommands,
   startLoop,
   takeoverLoop,
   turnEndReminder,
@@ -2518,8 +2519,7 @@ const renderLoopVerification = (
 const renderViolationNextCommands = (
   result: ReturnType<typeof verifyLoop>
 ): string =>
-  result.violations
-    .flatMap((violation) => violation.nextCommands ?? [])
+  staleClaimRecoveryCommands(result.violations)
     .map((command) => `  Next: ${command}\n`)
     .join("");
 

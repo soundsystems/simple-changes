@@ -61,6 +61,19 @@ const STRICT_OUTPUT_SCHEMA_KEYWORDS = new Set([
   "type",
 ]);
 
+// The string formats strict mode documents as supported.
+const STRICT_OUTPUT_FORMATS = new Set([
+  "date",
+  "date-time",
+  "duration",
+  "email",
+  "hostname",
+  "ipv4",
+  "ipv6",
+  "time",
+  "uuid",
+]);
+
 const strictOutputSchemaProblems = (
   schema: Record<string, unknown>,
   path = "#"
@@ -68,6 +81,12 @@ const strictOutputSchemaProblems = (
   const problems = Object.keys(schema)
     .filter((keyword) => !STRICT_OUTPUT_SCHEMA_KEYWORDS.has(keyword))
     .map((keyword) => `${path}/${keyword} is not allowed in strict mode`);
+  if (path === "#" && (schema.type !== "object" || "anyOf" in schema)) {
+    problems.push("# must be an object schema, not anyOf");
+  }
+  if ("format" in schema && !STRICT_OUTPUT_FORMATS.has(String(schema.format))) {
+    problems.push(`${path}/format ${String(schema.format)} is not supported`);
+  }
   const properties = (schema.properties ?? {}) as Record<
     string,
     Record<string, unknown>
@@ -197,6 +216,17 @@ describe("model behavior evaluation", () => {
       "#/properties/nested must set additionalProperties: false",
       "#/properties/nested/properties/value must be required",
     ]);
+    expect(strictOutputSchemaProblems({ anyOf: [schema] })).toEqual([
+      "# must be an object schema, not anyOf",
+    ]);
+    expect(
+      strictOutputSchemaProblems({
+        additionalProperties: false,
+        properties: { report: { format: "uri", type: "string" } },
+        required: ["report"],
+        type: "object",
+      })
+    ).toEqual(["#/properties/report/format uri is not supported"]);
   });
 
   test("builds a sandboxed Claude Code command", () => {

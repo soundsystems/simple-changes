@@ -1292,6 +1292,11 @@ const writeOutput = (value: unknown, json: boolean, text: string): void => {
 const STATUS_READ_ONLY_NOTE =
   "Read-only: nothing was fetched, locked, or written, and local checkouts may be behind their remotes; state that could not be read shows as unknown.";
 
+const READY_CHECKOUT_NOTES: Record<string, string> = {
+  false: " (checkout absent)",
+  null: " (checkout unknown)",
+};
+
 const short = (sha: string | null): string => sha?.slice(0, 8) ?? "(none)";
 
 const renderStatusLease = (lease: StatusRepository["lease"]): string[] => {
@@ -1353,7 +1358,7 @@ const renderStatusRepository = (status: StatusRepository): string[] => {
       "Ready work",
       status.readyWork,
       (item) =>
-        `Ready work ${item.freshness}${item.checkoutPresent ? "" : " (checkout absent)"}: ${item.branch} at ${short(item.headSha)} by ${item.owner}; ${item.detail}`
+        `Ready work ${item.freshness}${READY_CHECKOUT_NOTES[String(item.checkoutPresent)] ?? ""}: ${item.branch} at ${short(item.headSha)} by ${item.owner}; ${item.detail}`
     ),
     ...renderStatusGuidance(status.guidance),
   ];

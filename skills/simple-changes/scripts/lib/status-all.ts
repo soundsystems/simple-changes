@@ -1,6 +1,7 @@
 import {
   type Dirent,
   existsSync,
+  lstatSync,
   readdirSync,
   readFileSync,
   realpathSync,
@@ -119,8 +120,8 @@ export interface StatusRepository {
   readyWork:
     | Array<{
         branch: string;
-        /** Whether the receipted checkout still exists on disk. */
-        checkoutPresent: boolean;
+        /** Whether the receipted checkout exists; null when unknowable. */
+        checkoutPresent: boolean | null;
         detail: string;
         freshness: string;
         headSha: string;
@@ -420,6 +421,20 @@ const leaseStatus = (commonGitDirectory: string): StatusLease | null => {
   };
 };
 
+/**
+ * Whether `path` exists: false only when the filesystem says it does not
+ * (ENOENT or ENOTDIR), null when it cannot tell, such as without permission.
+ */
+const pathPresence = (path: string): boolean | null => {
+  try {
+    lstatSync(path);
+    return true;
+  } catch (error) {
+    const { code } = error as NodeJS.ErrnoException;
+    return code === "ENOENT" || code === "ENOTDIR" ? false : null;
+  }
+};
+
 const claimStatus = (
   inventory: RepositoryInventory
 ): { claims: StatusClaim[]; released: number } => {
@@ -434,10 +449,11 @@ const claimStatus = (
       );
       // A deleted checkout can keep prunable Git metadata whose digest is not
       // observed content, so absence is checked on disk first.
+      const present = pathPresence(claim.path);
       let checkout: StatusClaim["checkout"] = "matches";
-      if (!existsSync(claim.path)) {
+      if (present === false) {
         checkout = "absent";
-      } else if (!worktree) {
+      } else if (present === null || !worktree) {
         checkout = "unknown";
       } else if (worktree.headSha !== claim.headSha) {
         checkout = "moved";
@@ -521,7 +537,7 @@ const repositoryStatus = (
     readyWork: section(() =>
       readyWorkStatus(inventory).map((item) => ({
         branch: item.receipt.branch,
-        checkoutPresent: existsSync(item.receipt.path),
+        checkoutPresent: pathPresence(item.receipt.path),
         detail: item.detail,
         freshness: item.freshness,
         headSha: item.receipt.headSha,

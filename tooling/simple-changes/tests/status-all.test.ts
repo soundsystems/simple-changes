@@ -19,10 +19,12 @@ import { fileURLToPath } from "node:url";
 import { spawnSync } from "bun";
 import {
   controllerBindingPath,
+  finalizeLoop,
   startLoop,
 } from "../../../skills/simple-changes/scripts/lib/loop-lease.ts";
 import { runGit } from "../../../skills/simple-changes/scripts/lib/process.ts";
 import { withReadOnlyGit } from "../../../skills/simple-changes/scripts/lib/read-only-git.ts";
+import { recordReadyWork } from "../../../skills/simple-changes/scripts/lib/ready-work.ts";
 import { addShipHold } from "../../../skills/simple-changes/scripts/lib/ship-holds.ts";
 import {
   GLOBAL_SKILL_ROOTS,
@@ -336,6 +338,75 @@ describe("simple-changes status --all", () => {
     }).repositories;
     expect(isUnknown(unreadable?.claims)).toBe(true);
     expect(unreadable?.releasedClaims).toBeNull();
+  });
+
+  test("reports ready receipts, their checkouts, and awaited questions", () => {
+    const home = temporaryHome();
+    const repository = initRepository(join(home, "Developer", "ready"));
+    writeFixture(repository, ".simple-changes.json", policy(27));
+    git(repository, ["add", ".simple-changes.json"]);
+    git(repository, ["commit", "-q", "-m", "Add policy"]);
+    const ready = (name: string): string => {
+      const path = join(home, "Developer", name);
+      git(repository, ["worktree", "add", "-q", "-b", name, path]);
+      const claim = claimWorktree(path, `${name}-agent`, path, "codex");
+      writeFixture(path, `${name}.txt`, "finished\n");
+      git(path, ["add", `${name}.txt`]);
+      git(path, ["commit", "-q", "-m", `Finish ${name}`]);
+      recordReadyWork(path, `${name}-agent`, claim.claimId, {
+        checks: [{ command: "bun run check", note: null, result: "passed" }],
+        deploymentConstraints: [],
+        migrations: [],
+        releaseImpact: "patch",
+        scope: `Finish ${name}.`,
+        unresolvedAuthority: [],
+      });
+      return path;
+    };
+    ready("kept");
+    rmSync(ready("removed"), { force: true, recursive: true });
+    const lease = startLoop(repository, "controller", "ship");
+    finalizeLoop(
+      repository,
+      lease.runId,
+      "controller",
+      "Waiting on the user.",
+      {
+        awaitingUser: ["Ship the kept work now?"],
+      }
+    );
+
+    const [status] = statusAll({
+      home,
+      runtime: { skillDirectory: home, version: "0.27.1" },
+    }).repositories;
+
+    const readyWork = (status?.readyWork ?? []) as Array<{
+      branch: string;
+      checkoutPresent: unknown;
+    }>;
+    const byBranch = Object.fromEntries(
+      readyWork.map((item) => [item.branch, item.checkoutPresent])
+    );
+    expect(byBranch).toEqual({ kept: true, removed: false });
+    expect(status?.lease).toMatchObject({
+      awaitingUser: ["Ship the kept work now?"],
+    });
+
+    // A binding from another controller tenure awaits nothing.
+    const common = join(repository, ".git");
+    const binding = JSON.parse(
+      readFileSync(controllerBindingPath(common), "utf8")
+    ) as Record<string, unknown>;
+    writeFileSync(
+      controllerBindingPath(common),
+      JSON.stringify({ ...binding, runId: "run-another-tenure" })
+    );
+    const [later] = statusAll({
+      home,
+      runtime: { skillDirectory: home, version: "0.27.1" },
+    }).repositories;
+    expect(later?.lease).toMatchObject({ awaitingUser: null });
   });
 
   test("shows unreadable state as unknown and keeps going", () => {

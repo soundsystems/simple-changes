@@ -763,6 +763,7 @@ describe("pinned-head command analysis", () => {
       ["git", "difftool"],
       ["git", "config", "core.hooksPath", "/tmp/hooks"],
       ["git", "config", "set", "alias.m", "merge"],
+      ["git", "init", "--template=/tmp/template"],
     ]) {
       expect({ argv, kinds: kinds(argv) }).toEqual({
         argv,

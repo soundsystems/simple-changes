@@ -1660,16 +1660,19 @@ const executes = (subcommand: string, args: readonly string[]): boolean => {
   );
 };
 
+// A configuration write, or `git init`, which reinitializes this repository
+// and can install hooks from a template.
 const writesConfiguration = (
   subcommand: string,
   args: readonly string[]
 ): boolean =>
-  subcommand === "config" &&
-  !(
-    args.some((token) => CONFIG_READ_OPTIONS.has(token)) ||
-    args[0] === "get" ||
-    args[0] === "list"
-  );
+  subcommand === "init" ||
+  (subcommand === "config" &&
+    !(
+      args.some((token) => CONFIG_READ_OPTIONS.has(token)) ||
+      args[0] === "get" ||
+      args[0] === "list"
+    ));
 
 // Rules that hold for every Git command, read-only ones included: `-c` can
 // make Git run a command (`core.fsmonitor`, `core.pager`) or read a name this
@@ -1697,7 +1700,7 @@ const commandRefusals = (invocation: GitInvocation): PinnedRefusal[] => {
     found.push(
       refusal(
         "unclassified",
-        "git config would write configuration that later commands follow; set it before the run"
+        `git ${subcommand} would write configuration that later commands follow; set it before the run`
       )
     );
   }

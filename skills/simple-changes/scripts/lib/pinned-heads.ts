@@ -1017,59 +1017,15 @@ const tokensFor = (invocation: GitInvocation): ScannedToken[] => [
   ...ownTokens(invocation.subcommand ?? "", invocation.arguments),
 ];
 
-const SHORT_REF_PREFIXES = [
-  "refs/heads/",
-  "refs/remotes/",
-  "refs/tags/",
-  "refs/",
-];
-
-// The name a command would use for a ref; the matcher also finds it inside
-// every longer spelling.
-const shortRefName = (name: string): string => {
-  const prefix = SHORT_REF_PREFIXES.find((item) => name.startsWith(item));
-  return prefix ? name.slice(prefix.length) : name;
-};
-
-// Names that resolve to a pinned branch: the branch itself and every
-// symbolic ref whose target chain reaches its local or remote-tracking ref.
-const pinnedNames = (
-  pins: readonly PinnedUnit[],
-  refs: readonly GitRefRecord[]
-): Map<PinnedUnit, string[]> => {
-  const names = new Map<PinnedUnit, string[]>();
-  for (const unit of pins) {
-    if (!unit.branch) {
-      continue;
-    }
-    const aliases = new Set([unit.branch]);
-    let grew = true;
-    while (grew) {
-      grew = false;
-      for (const ref of refs) {
-        if (
-          ref.symref &&
-          !aliases.has(shortRefName(ref.name)) &&
-          [...aliases].some((alias) => mentionsName(ref.symref, alias))
-        ) {
-          aliases.add(shortRefName(ref.name));
-          // `<remote>` alone resolves to `refs/remotes/<remote>/HEAD`.
-          if (
-            ref.name.startsWith("refs/remotes/") &&
-            ref.name.endsWith("/HEAD")
-          ) {
-            aliases.add(
-              ref.name.slice("refs/remotes/".length, -"/HEAD".length)
-            );
-          }
-          grew = true;
-        }
-      }
-    }
-    names.set(unit, [...aliases]);
-  }
-  return names;
-};
+// The branch name of each pinned unit that has one. Symbolic refs and other
+// spellings that reach it are found by resolving each revision
+// (`resolutionRefusals`).
+const pinnedNames = (pins: readonly PinnedUnit[]): Map<PinnedUnit, string[]> =>
+  new Map(
+    pins.flatMap((unit): [PinnedUnit, string[]][] =>
+      unit.branch ? [[unit, [unit.branch]]] : []
+    )
+  );
 
 // Paths compare without letter case or Unicode normalization differences,
 // which a case-insensitive file system ignores.
@@ -1351,9 +1307,12 @@ const movedUnits = (
 // or ancestry suffix, since the commit it starts from is what must not
 // contain a moved commit.
 const revisionCandidates = (text: string): string[] =>
-  revisionParts(text)
-    .map((part) => part.split(REVISION_SUFFIX, 1)[0] ?? "")
-    .filter((part) => part && !part.startsWith("-"));
+  revisionParts(text).filter((part) => !part.startsWith("-"));
+
+// The name a revision starts from, without its peel, path, or ancestry
+// suffix: `PINNED_HEAD~2` starts from `PINNED_HEAD`.
+const revisionBase = (revision: string): string =>
+  revision.split(REVISION_SUFFIX, 1)[0] ?? revision;
 
 // What each revision a merge-like command names resolves to now. A name that
 // is a symbolic ref anywhere, including outside `refs/` (`PINNED_HEAD`), is
@@ -1369,19 +1328,22 @@ const resolutionRefusals = (
     .filter((item) => item.revision)
     .flatMap((item) =>
       revisionCandidates(item.text).flatMap((revision): PinnedRefusal[] => {
+        const base = revisionBase(revision);
         if (
-          HEX_ABBREVIATION.test(revision) &&
-          !facts.objectType(invocation.globals, revision)
+          HEX_ABBREVIATION.test(base) &&
+          !facts.objectType(invocation.globals, base)
         ) {
           return [
             refusal(
               "indirect",
-              `${revision} is an abbreviated object ID that names nothing yet, so it could name a commit made while the command waits`,
+              `${base} is an abbreviated object ID that names nothing yet, so it could name a commit made while the command waits`,
               item.token
             ),
           ];
         }
-        const reached = facts.symbolicName(invocation.globals, revision);
+        const reached = base
+          ? facts.symbolicName(invocation.globals, base)
+          : null;
         return [...names]
           .filter(
             ([, aliases]) =>
@@ -1763,8 +1725,24 @@ const executesByLetter = (subcommand: string, token: string): boolean => {
   return [...token.slice(1)].some((letter) => letters.includes(letter));
 };
 
+// Subcommands whose `--continue` or `--skip` resumes saved instructions (a
+// rebase todo list can hold `exec` and `merge <branch>` lines) that this
+// check never saw.
+const SEQUENCER_SUBCOMMANDS: ReadonlySet<string> = new Set([
+  "am",
+  "cherry-pick",
+  "rebase",
+  "revert",
+]);
+
 const executes = (subcommand: string, args: readonly string[]): boolean => {
   if (EXECUTING_SUBCOMMANDS.has(subcommand)) {
+    return true;
+  }
+  if (
+    SEQUENCER_SUBCOMMANDS.has(subcommand) &&
+    args.some((token) => spelledOption(token, ["--continue", "--skip"]))
+  ) {
     return true;
   }
   if (
@@ -1826,7 +1804,7 @@ const commandRefusals = (
     found.push(
       refusal(
         "unclassified",
-        `git ${subcommand} would run another command, which could run Git out of sight`
+        `git ${subcommand} would run another command or resume saved instructions, which could run Git out of sight`
       )
     );
   }
@@ -2229,7 +2207,7 @@ const gitRefusals = (
       )
     );
   }
-  const names = pinnedNames(context.pins, refs);
+  const names = pinnedNames(context.pins);
   const items = tokensFor(invocation);
   const inPinnedCheckout = found.some((item) => item.kind === "checkout");
   for (const item of items) {

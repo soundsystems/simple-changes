@@ -278,6 +278,7 @@ describe("pinned-head command analysis", () => {
       ["git", "merge", "feat/x~0"],
       ["git", "merge", "FEAT/X"],
       ["git", "merge", "al"],
+      ["git", "merge", "--ff-only", "al~0"],
       ["git", "cherry-pick", "main..feat/x"],
       ["git", "rebase", "--onto=feat/x", "main"],
       ["git", "rebase", "-x", "git merge feat/x", "main"],
@@ -349,6 +350,9 @@ describe("pinned-head command analysis", () => {
     // A symbolic ref outside refs/ is followed to the ref it reaches.
     git(root, ["symbolic-ref", "PINNED_HEAD", "refs/heads/feat/x"]);
     expect(kinds(["git", "merge", "--ff-only", "PINNED_HEAD"])).toEqual([
+      "named",
+    ]);
+    expect(kinds(["git", "merge", "--ff-only", "PINNED_HEAD~0"])).toEqual([
       "named",
     ]);
     // An abbreviated object ID that names nothing yet could name a commit
@@ -490,6 +494,16 @@ describe("pinned-head command analysis", () => {
     expect(
       absentKinds(["git", "-C", absent.path, "merge", "--ff-only"])
     ).toEqual(["checkout"]);
+    // An absent path cannot be resolved on disk, so its letter case is
+    // compared without regard to case.
+    expect(
+      absentKinds([
+        "git",
+        "fetch",
+        absent.path.toUpperCase(),
+        "HEAD:refs/remotes/u/head",
+      ])
+    ).toEqual(["checkout"]);
 
     // Git run in any checkout the run does not author reads a HEAD that can
     // move, for example a pinned checkout moved to a new path.
@@ -567,6 +581,9 @@ describe("pinned-head command analysis", () => {
       "moved",
     ]);
     expect(detachedKinds(["git", "merge", "--ff-only", head])).toEqual([]);
+    // A branch that moved while its checkout did not still counts.
+    git(unitPath, ["switch", "--detach", head]);
+    expect(kinds(["git", "merge", "--ff-only", "copy"])).toEqual(["moved"]);
 
     // Commits that cannot be listed, or too many to list, refuse every
     // revision instead of being checked one by one.
@@ -835,6 +852,9 @@ describe("pinned-head command analysis", () => {
       ["git", "config", "core.hooksPath", "/tmp/hooks"],
       ["git", "config", "set", "alias.m", "merge"],
       ["git", "init", "--template=/tmp/template"],
+      ["git", "rebase", "--continue"],
+      ["git", "cherry-pick", "--cont"],
+      ["git", "am", "--skip"],
       ["git", "merge", "-s", "custom", head],
       ["git", "merge", "--strategy=custom", head],
       ["git", "rebase", "-scustom", "main"],

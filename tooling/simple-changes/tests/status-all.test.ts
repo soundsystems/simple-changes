@@ -457,6 +457,69 @@ describe("simple-changes status --all", () => {
     expect(later?.lease).toMatchObject({ awaitingUser: null });
   });
 
+  test("lists a fresh repository whose policy cannot be looked up", () => {
+    const home = temporaryHome();
+    const repository = initRepository(join(home, "Developer", "fresh"));
+    const policyPath = join(repository, ".simple-changes.json");
+    symlinkSync(policyPath, policyPath);
+
+    const report = statusAll({
+      home,
+      runtime: { skillDirectory: home, version: "0.27.1" },
+    });
+
+    const status = statusOf(report.repositories, repository);
+    expect(isUnknown(status.guidance)).toBe(true);
+  });
+
+  test("reports an unresolvable claimed HEAD as unknown", () => {
+    const home = temporaryHome();
+    const repository = initRepository(join(home, "Developer", "heads"));
+    writeFixture(repository, ".simple-changes.json", policy(27));
+    const author = join(home, "Developer", "heads-author");
+    git(repository, ["worktree", "add", "-q", "-b", "author", author]);
+    claimWorktree(author, "author-agent", author, "codex");
+    writeFileSync(
+      join(repository, ".git", "worktrees", "heads-author", "HEAD"),
+      "ref: refs/heads/never-created\n"
+    );
+
+    const [status] = statusAll({
+      home,
+      runtime: { skillDirectory: home, version: "0.27.1" },
+    }).repositories;
+
+    expect(status?.claims).toEqual([
+      expect.objectContaining({ checkout: "unknown", path: author }),
+    ]);
+  });
+
+  test("reports a malformed awaited record in this controller's binding as unknown", () => {
+    const home = temporaryHome();
+    const repository = initRepository(join(home, "Developer", "awaiting"));
+    writeFixture(repository, ".simple-changes.json", policy(27));
+    git(repository, ["add", ".simple-changes.json"]);
+    git(repository, ["commit", "-q", "-m", "Add policy"]);
+    const lease = startLoop(repository, "controller", "ship");
+    finalizeLoop(repository, lease.runId, "controller", "Waiting.", {
+      awaitingUser: ["Proceed?"],
+    });
+    const bindingPath = controllerBindingPath(join(repository, ".git"));
+    const binding = JSON.parse(readFileSync(bindingPath, "utf8")) as {
+      awaitingUser: { questions: unknown[] };
+    };
+    binding.awaitingUser.questions = [123];
+    writeFileSync(bindingPath, JSON.stringify(binding));
+
+    const [status] = statusAll({
+      home,
+      runtime: { skillDirectory: home, version: "0.27.1" },
+    }).repositories;
+
+    const awaited = status?.lease as { awaitingUser: unknown } | undefined;
+    expect(isUnknown(awaited?.awaitingUser)).toBe(true);
+  });
+
   test("reports unreadable policy and receipted commits as unknown", () => {
     const home = temporaryHome();
     const repository = initRepository(join(home, "Developer", "opaque"));
@@ -493,6 +556,10 @@ describe("simple-changes status --all", () => {
       scope: "Finish.",
       unresolvedAuthority: [],
     });
+    // The branch moves on to a readable commit; only the receipted one goes.
+    writeFixture(path, "later.txt", "later\n");
+    git(path, ["add", "later.txt"]);
+    git(path, ["commit", "-q", "-m", "Later"]);
     rmSync(
       join(repository, ".git", "objects", head.slice(0, 2), head.slice(2))
     );
@@ -503,6 +570,7 @@ describe("simple-changes status --all", () => {
     }).repositories;
 
     const readyWork = status?.readyWork;
+    expect(isUnknown(readyWork)).toBe(false);
     if (!isUnknown(readyWork)) {
       expect(readyWork?.map((item) => item.freshness)).toEqual(["unknown"]);
     }

@@ -425,8 +425,32 @@ const awaitingUserStatus = (
     return probed === "absent" ? null : probed;
   }
   return section(() => {
-    JSON.parse(readFileSync(path, "utf8"));
-    return readControllerBinding(lease)?.awaitingUser?.questions ?? null;
+    const raw = JSON.parse(readFileSync(path, "utf8")) as Record<
+      string,
+      unknown
+    > | null;
+    const questions = readControllerBinding(lease)?.awaitingUser?.questions;
+    if (questions) {
+      return questions;
+    }
+    // The advisory reader drops a malformed awaiting-user record; for this
+    // controller's own binding that is unreadable, not "nothing awaited".
+    const sameTenure =
+      raw?.schemaVersion === 1 &&
+      raw.runId === lease.runId &&
+      raw.ownerAgentId === lease.ownerAgentId &&
+      raw.controllerAcquiredAt ===
+        (lease.controller?.acquiredAt ?? lease.createdAt);
+    if (
+      sameTenure &&
+      raw.awaitingUser !== null &&
+      raw.awaitingUser !== undefined
+    ) {
+      throw new Error(
+        "the controller binding's awaiting-user record is malformed"
+      );
+    }
+    return null;
   });
 };
 
@@ -480,7 +504,7 @@ const claimStatus = (
       let checkout: StatusClaim["checkout"] = "at-claimed-head";
       if (present === false) {
         checkout = "absent";
-      } else if (present === null || !worktree || worktree.prunable) {
+      } else if (present === null || !worktree?.headSha || worktree.prunable) {
         checkout = "unknown";
       } else if (worktree.headSha !== claim.headSha) {
         checkout = "moved";
@@ -698,10 +722,17 @@ const repositoryStatus = (
   };
 };
 
+/**
+ * A repository is listed unless every Simple Changes marker is confirmed
+ * absent; one that cannot be looked up is listed, so its state shows as
+ * unknown instead of the repository disappearing.
+ */
 const usesSimpleChanges = (directory: string, common: string): boolean =>
-  existsSync(join(common, "simple-changes")) ||
-  existsSync(join(directory, ".simple-changes.json")) ||
-  existsSync(join(dirname(common), ".simple-changes.json"));
+  [
+    join(common, "simple-changes"),
+    join(directory, ".simple-changes.json"),
+    join(dirname(common), ".simple-changes.json"),
+  ].some((path) => probeFile(path) !== "absent");
 
 /** One repository's status, for `simple-changes status` without `--all`. */
 export const repositoryStatusFor = (directory: string): StatusRepository =>

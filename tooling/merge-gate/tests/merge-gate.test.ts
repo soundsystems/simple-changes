@@ -6,6 +6,7 @@ import {
   readFileSync,
   realpathSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -353,6 +354,40 @@ describe("merge gate exec guard", () => {
     }
   });
 
+  test("follows -C through symlinks the way git does", () => {
+    const receipted = repository();
+    const other = repository();
+    git(receipted.root, ["switch", "-q", "feat/x"]);
+    receipted.writeReceipt(receipted.feature);
+    git(other.root, ["switch", "-q", "feat/x"]);
+    const unreceipted = commit(other.root, "other.txt", "other\n");
+    mkdirSync(join(other.root, "nested"));
+    // receipted/link -> other/nested, so `-C link -C ..` lands in other.
+    symlinkSync(join(other.root, "nested"), join(receipted.root, "link"));
+    const push = ["push", "origin", "HEAD:refs/heads/main"];
+    expect(
+      decide(receipted.base, ["git", "-C", receipted.root, ...push]).allow
+    ).toBe(true);
+    const traversed = decide(receipted.base, [
+      "git",
+      "-C",
+      join(receipted.root, "link"),
+      "-C",
+      "..",
+      ...push,
+    ]);
+    expect(traversed.allow).toBe(false);
+    expect(traversed.reason).toContain(unreceipted);
+    expect(
+      decide(receipted.base, [
+        "git",
+        "-C",
+        join(receipted.base, "missing"),
+        ...push,
+      ]).reason
+    ).toContain("cannot resolve");
+  });
+
   test("gates every git push that moves main", () => {
     const { feature, published, root, writeReceipt } = repository();
     git(root, ["merge", "-q", "--ff-only", "feat/x"]);
@@ -683,6 +718,58 @@ describe("bun run check:receipt", () => {
       decide(root, ["glab", "mr", "merge", "1", "--sha", head, "-R", "a/b"])
         .allow
     ).toBe(true);
+  });
+
+  test("counts submodule changes that ignore settings or index flags hide", () => {
+    for (const change of ["moved", "edited", "hidden"] as const) {
+      const fixture = checkRepository("true");
+      const library = join(fixture.base, "library");
+      run(fixture.base, ["git", "init", "-q", "-b", "main", library]);
+      git(library, ["config", "user.name", "Merge Gate Tests"]);
+      git(library, ["config", "user.email", "gate@simple-changes.invalid"]);
+      commit(library, "lib.txt", "library\n");
+      git(fixture.root, [
+        "-c",
+        "protocol.file.allow=always",
+        "submodule",
+        "add",
+        "-q",
+        library,
+        "lib",
+      ]);
+      git(fixture.root, ["commit", "-q", "-m", "Add the library"]);
+      git(fixture.root, ["config", "submodule.lib.ignore", "all"]);
+      const head = git(fixture.root, ["rev-parse", "HEAD"]);
+      const module = join(fixture.root, "lib");
+      if (change === "moved") {
+        git(module, [
+          "-c",
+          "user.name=Merge Gate Tests",
+          "-c",
+          "user.email=gate@simple-changes.invalid",
+          "commit",
+          "-q",
+          "--allow-empty",
+          "-m",
+          "Move the module",
+        ]);
+      } else {
+        if (change === "hidden") {
+          git(module, ["update-index", "--assume-unchanged", "lib.txt"]);
+        }
+        writeFileSync(join(module, "lib.txt"), "edited\n");
+      }
+      expect(git(fixture.root, ["status", "--porcelain"])).toBe("");
+      const result = runCheckReceipt(fixture.root);
+      expect({ change, exitCode: result.exitCode }).toEqual({
+        change,
+        exitCode: 1,
+      });
+      expect(result.stderr).toContain("the checkout is not clean");
+      expect(existsSync(receiptPath(join(fixture.root, ".git"), head))).toBe(
+        false
+      );
+    }
   });
 
   test("records nothing for a failing check, a dirty checkout, or a check that edits files", () => {

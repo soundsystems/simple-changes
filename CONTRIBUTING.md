@@ -28,7 +28,8 @@ for merges the Simple Changes controller runs.
 
 1. Commit the change, then run `bun run check:receipt` on a clean checkout of
    that commit: no changed or untracked path, and no tracked path marked
-   assume-unchanged or skip-worktree, whose edits `git status` hides. It runs
+   assume-unchanged or skip-worktree, whose edits `git status` hides, in the
+   repository or any submodule, whatever the submodule ignore settings. It runs
    `bun run check` and, only when it exits 0 and leaves the checkout clean at
    the same commit, writes a receipt for that HEAD.
 2. Fetch, then run every merge through `simple-changes loop exec`, for

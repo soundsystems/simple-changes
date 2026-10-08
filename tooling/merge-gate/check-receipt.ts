@@ -34,15 +34,18 @@ const fail = (message: string): never => {
 
 /**
  * Changed and untracked paths, plus tracked paths marked assume-unchanged or
- * skip-worktree, whose edits `git status` would hide. A failed read refuses.
+ * skip-worktree, whose edits `git status` would hide, in this repository and
+ * its submodules. Submodule ignore settings are overridden, so a module at
+ * another commit or with changed files counts. A failed read refuses.
  */
 const dirtyPaths = (root: string): string[] => {
   const status = git(root, [
     "status",
     "--porcelain=v1",
     "--untracked-files=all",
+    "--ignore-submodules=none",
   ]);
-  const listed = git(root, ["ls-files", "-v"]);
+  const listed = git(root, ["ls-files", "-v", "--recurse-submodules"]);
   for (const [name, result] of [
     ["git status", status],
     ["git ls-files", listed],

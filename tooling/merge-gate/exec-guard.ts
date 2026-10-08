@@ -26,6 +26,7 @@
  * boundary.
  */
 
+import { realpathSync } from "node:fs";
 import { basename, resolve } from "node:path";
 import { git, receiptProblem, resolveCommit } from "./merge-gate.ts";
 
@@ -303,17 +304,39 @@ const GIT_SAFE_SUBCOMMANDS = new Set([
   "write-tree",
 ]);
 
+/**
+ * Where `-C` leaves Git: it changes directory one step at a time through the
+ * filesystem, so after a symlink `..` names the link target's parent, not the
+ * link's. Null when the directory cannot be resolved.
+ */
+const changeDirectory = (from: string, to: string): string | null => {
+  try {
+    return realpathSync(resolve(from, to));
+  } catch {
+    return null;
+  }
+};
+
+const UNRESOLVED_DIRECTORY =
+  "git would run in a directory the guard cannot resolve, so it cannot tell which repository it changes; run it from an existing directory";
+
 /** Parses `git [-C dir] [safe global flags] <subcommand> <args>`. */
 const parseGit = (
   argv: readonly string[],
   cwd: string
 ): GitInvocation | GuardDecision => {
-  let directory = cwd;
+  let directory = changeDirectory(cwd, "");
+  if (!directory) {
+    return refuse(UNRESOLVED_DIRECTORY);
+  }
   let index = 1;
   while ((argv[index] ?? "").startsWith("-")) {
     const argument = argv[index] ?? "";
     if (argument === "-C") {
-      directory = resolve(directory, argv[index + 1] ?? "");
+      directory = changeDirectory(directory, argv[index + 1] ?? "");
+      if (!directory) {
+        return refuse(UNRESOLVED_DIRECTORY);
+      }
       index += 2;
     } else if (GIT_GLOBAL_FLAGS.has(argument)) {
       index += 1;

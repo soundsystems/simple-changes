@@ -240,6 +240,7 @@ describe("pinned-head command analysis", () => {
         "push",
       ],
       ["git", "replay", "--onto", "main", "feat/x"],
+      ["git", "stash", "store", "-m", "copy", "feat/x"],
     ]) {
       expect({ argv, kinds: kinds(argv) }).toEqual({
         argv,
@@ -267,6 +268,8 @@ describe("pinned-head command analysis", () => {
       ["git", "push", "origin", ":"],
       ["git", "push", "origin", "refs/heads/*:refs/heads/*"],
       ["git", "fetch", ".", "refs/heads/*:refs/heads/*"],
+      ["git", "pull", ".", "refs/heads/feat/*"],
+      ["git", "stash", "apply", "stash@{0}"],
     ]) {
       expect({ argv, kinds: kinds(argv) }).toEqual({
         argv,
@@ -392,18 +395,54 @@ describe("pinned-head command analysis", () => {
     expect(
       kinds(["git", "-c", `remote.u.url=${unitPath}`, "fetch", "u"])
     ).toEqual(["configured"]);
+    // A URL rewrite can turn any name into a pinned checkout.
+    expect(
+      kinds([
+        "git",
+        "-c",
+        `url.${unitPath}/.insteadOf=unit:`,
+        "pull",
+        "--ff-only",
+        "unit:",
+        "HEAD",
+      ])
+    ).toEqual(["configured"]);
+    expect(
+      kinds([
+        "git",
+        "-c",
+        `url.file://${unitPath}.pushInsteadOf=elsewhere:`,
+        "push",
+        "elsewhere:",
+        `${head}:refs/heads/main`,
+      ])
+    ).toEqual(["configured"]);
+    // Every merge value counts, not only the first upstream.
+    git(root, ["config", "branch.main.remote", "."]);
+    git(root, ["config", "branch.main.merge", "refs/heads/other"]);
+    expect(kinds(["git", "merge"])).toEqual([]);
+    git(root, ["config", "--add", "branch.main.merge", "refs/heads/feat/x"]);
+    expect(kinds(["git", "merge"])).toEqual(["configured"]);
+    expect(kinds(["git", "pull", "--ff-only"])).toEqual(["configured"]);
+    git(root, ["config", "--unset-all", "branch.main.merge"]);
+    git(root, ["config", "--unset", "branch.main.remote"]);
 
     git(root, ["replace", head, "HEAD"]);
     expect(kinds(["git", "merge", "--ff-only", head])).toEqual(["replaced"]);
     git(root, ["replace", "-d", head]);
     expect(kinds(["git", "merge", "--ff-only", head])).toEqual([]);
 
+    // Git run through another program hides what it will read, so it is
+    // refused whatever it names.
     for (const argv of [
       ["sh", "-c", "git merge feat/x"],
       ["env", "LC_ALL=C", "git", "merge", "feat/x"],
-      ["sh", "-c", `cd ${unitPath} && git push origin HEAD:main`],
-      ["sh", "-c", "git merge FETCH_HEAD"],
-      ["xargs", "git", "merge", "al"],
+      ["env", "git", "merge", "--ff-only"],
+      ["/bin/sh", "-c", `cd ${unitPath} && git push origin HEAD:main`],
+      ["sh", "-c", "git status"],
+      ["xargs", "git", "merge"],
+      ["bun", "-e", "Bun.spawnSync(['git', 'merge'])"],
+      ["sudo", "/usr/bin/git", "merge", head],
     ]) {
       expect({ argv, kinds: kinds(argv) }).toEqual({
         argv,
@@ -439,6 +478,7 @@ describe("pinned-head command analysis", () => {
         `${head}:refs/heads/feat/x`,
       ],
       ["git", "push", "origin", "--delete", "feat/x"],
+      ["git", "push", "-o", "ci.skip", "--delete", "origin", "feat/x"],
       ["git", "push", "origin", ":refs/heads/feat/x"],
       ["git", "fetch", "origin", "feat/x"],
       ["git", "fetch", "--all"],
@@ -448,7 +488,8 @@ describe("pinned-head command analysis", () => {
       ["git", "worktree", "remove", unitPath],
       ["git", "mktag"],
       ["bun", "-e", "console.log('feat/x')"],
-      ["sh", "-c", "git status"],
+      ["glab", "mr", "create", "--title", "Fix git hooks on feat/x"],
+      ["bash", "scripts/git-cleanup.sh"],
     ]) {
       expect({ argv, kinds: kinds(argv) }).toEqual({ argv, kinds: [] });
     }
@@ -492,6 +533,13 @@ describe("pinned-head command analysis", () => {
     expect(equivalent(["git", "reset", "--hard", "refs/heads/feat/x"])).toEqual(
       ["git", "reset", "--hard", head]
     );
+    expect(equivalent(["git", "cherry-pick", "-m", "1", "feat/x"])).toEqual([
+      "git",
+      "cherry-pick",
+      "-m",
+      "1",
+      head,
+    ]);
     for (const argv of [
       ["git", "merge", "feat/x"],
       ["git", "merge", "--no-ff", "feat/x"],
@@ -505,12 +553,21 @@ describe("pinned-head command analysis", () => {
       ["git", "-c", "x.y=feat/x", "merge", "--ff-only", head],
       ["git", "merge", "--ff-only", "feat/x", "FETCH_HEAD"],
       ["git", "-C", unitPath, "merge", "--ff-only", "feat/x"],
+      // Only revision arguments are replaced: a pathspec, an option's value,
+      // or an operand whose role is uncertain is not.
+      ["git", "reset", "HEAD", "--", "feat/x"],
+      ["git", "reset", "feat/x", "feat/x"],
+      ["git", "merge", "--ff-only", "--into-name", "feat/x", head],
+      ["git", "cherry-pick", "--unknown", "feat/x"],
     ]) {
       expect({ argv, equivalent: equivalent(argv) }).toEqual({
         argv,
         equivalent: null,
       });
     }
+    // A file of the same name could make a reset read the name as a path.
+    writeFixture(root, "feat/x", "a file named like the branch\n");
+    expect(equivalent(["git", "reset", "--hard", "feat/x"])).toBeNull();
     // A remote-tracking branch is replaced only while it holds the
     // recorded head itself.
     expect(equivalent(["git", "merge", "--ff-only", "origin/feat/x"])).toEqual([

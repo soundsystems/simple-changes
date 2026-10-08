@@ -85,7 +85,11 @@ export interface PinnedGitFacts {
     globals: readonly string[],
     token: string
   ) => { commit: string; name: string } | null;
-  upstream: (globals: readonly string[]) => string | null;
+  /**
+   * The current branch's configured upstream and every `merge` value, which
+   * `git merge` and `git pull` read when no revision is named.
+   */
+  upstreams: (globals: readonly string[]) => string[];
 }
 
 export interface PinnedCommandContext {
@@ -167,7 +171,6 @@ const READ_ONLY_SUBCOMMANDS: ReadonlySet<string> = new Set([
   "show-branch",
   "show-ref",
   "sparse-checkout",
-  "stash",
   "status",
   "stripspace",
   "var",
@@ -211,6 +214,7 @@ const MERGE_LIKE_BUILTINS: ReadonlySet<string> = new Set([
   "restore",
   "revert",
   "send-pack",
+  "stash",
   "submodule",
   "switch",
   "symbolic-ref",
@@ -221,6 +225,7 @@ const MERGE_LIKE_BUILTINS: ReadonlySet<string> = new Set([
 ]);
 
 const GIT_EXECUTABLES: ReadonlySet<string> = new Set(["git", "git.exe"]);
+const EXE_SUFFIX = /\.exe$/u;
 const NAME_CHARACTER = /[\p{L}\p{N}_-]/u;
 const MESSAGE_SEARCH_PATTERN = /(?:^|\.\.|[\^:=+]):\//u;
 const OTHER_WORKTREE_PATTERN =
@@ -682,6 +687,13 @@ const ownTokens = (subcommand: string, args: readonly string[]) => {
   if (subcommand === "merge") {
     return mergeTokens(args);
   }
+  if (subcommand === "pull") {
+    return args.map((token) =>
+      scanned(token, {
+        everyBranch: !token.startsWith("-") && token.includes("*"),
+      })
+    );
+  }
   if (subcommand === "push") {
     return pushTokens(args);
   }
@@ -897,17 +909,18 @@ const configuredRefusals = (
     !args.some((token) => CONTINUATION_OPTIONS.has(token)) &&
     !hasExplicitRevision(subcommand, args)
   ) {
-    const upstream = context.facts.upstream(globals);
-    const unit = upstream ? mentionsPin(upstream) : null;
-    if (unit) {
-      found.push(
-        refusal(
-          "configured",
-          `the current branch's upstream ${upstream} is ${describeUnit(unit)}, which git ${subcommand} uses when no revision is named`,
-          null,
-          unit
-        )
-      );
+    for (const upstream of context.facts.upstreams(globals)) {
+      const unit = mentionsPin(upstream);
+      if (unit) {
+        found.push(
+          refusal(
+            "configured",
+            `the current branch's upstream ${upstream} is ${describeUnit(unit)}, which git ${subcommand} uses when no revision is named`,
+            null,
+            unit
+          )
+        );
+      }
     }
   }
   if (
@@ -928,15 +941,16 @@ const remoteConfigRefusals = (
   const found: PinnedRefusal[] = [];
   const entries = context.facts.config(
     invocation.globals,
-    "^(push\\.default|remote\\..*\\.(url|pushurl|fetch|push))$"
+    "^(push\\.default|remote\\..*\\.(url|pushurl|fetch|push)|url\\..*\\.(insteadof|pushinsteadof))$"
   );
   const implicitPush =
     invocation.subcommand === "push" &&
     !hasExplicitRefspec(invocation.arguments);
   for (const [key, value] of entries) {
     const lowered = key.toLowerCase();
-    if (lowered.endsWith(".url") || lowered.endsWith(".pushurl")) {
-      const unit = pinnedCheckoutFor(value, invocation.directory, context);
+    const location = repositoryLocation(key, value);
+    if (location !== null) {
+      const unit = pinnedCheckoutFor(location, invocation.directory, context);
       if (unit) {
         found.push(
           refusal(
@@ -972,6 +986,22 @@ const remoteConfigRefusals = (
     }
   }
   return found;
+};
+
+const URL_REWRITE_SUFFIXES = [".insteadof", ".pushinsteadof"];
+
+// The repository location a remote or URL-rewrite setting names: a remote's
+// URL, or the base `url.<base>.insteadOf` rewrites other URLs to, which may
+// stand for any remote whatever it is called.
+const repositoryLocation = (key: string, value: string): string | null => {
+  const lowered = key.toLowerCase();
+  if (lowered.endsWith(".url") || lowered.endsWith(".pushurl")) {
+    return value;
+  }
+  const suffix = URL_REWRITE_SUFFIXES.find((item) => lowered.endsWith(item));
+  return lowered.startsWith("url.") && suffix
+    ? key.slice("url.".length, key.length - suffix.length)
+    : null;
 };
 
 const pushesEveryBranch = (key: string, value: string): boolean =>
@@ -1122,37 +1152,85 @@ const gitRefusals = (
   return found;
 };
 
-const wrappedRefusals = (
-  argv: readonly string[],
-  context: PinnedCommandContext
-): PinnedRefusal[] => {
-  const args = argv.slice(1);
-  const words = args.flatMap((arg) =>
-    arg.split(WRAPPER_WORD_SEPARATOR).filter(Boolean)
-  );
-  if (
-    !words.some((word) => GIT_EXECUTABLES.has(basename(word).toLowerCase()))
-  ) {
+// Programs that run another command from their arguments: shells, command
+// prefixes, and script interpreters. Git run through one of them cannot be
+// classified (its subcommand, upstream, and configuration are hidden), so
+// while units are pinned it is refused whatever it names; run Git directly.
+const COMMAND_RUNNERS: ReadonlySet<string> = new Set([
+  "arch",
+  "bash",
+  "bun",
+  "bunx",
+  "busybox",
+  "caffeinate",
+  "chroot",
+  "cmd",
+  "command",
+  "csh",
+  "dash",
+  "deno",
+  "doas",
+  "env",
+  "eval",
+  "exec",
+  "fish",
+  "flock",
+  "gtimeout",
+  "ionice",
+  "ksh",
+  "mksh",
+  "nice",
+  "node",
+  "nohup",
+  "npx",
+  "osascript",
+  "parallel",
+  "perl",
+  "php",
+  "pnpx",
+  "powershell",
+  "pwsh",
+  "python",
+  "python3",
+  "ruby",
+  "runuser",
+  "script",
+  "setsid",
+  "sh",
+  "stdbuf",
+  "su",
+  "sudo",
+  "taskset",
+  "tcsh",
+  "time",
+  "timeout",
+  "unbuffer",
+  "watch",
+  "xargs",
+  "yash",
+  "zsh",
+]);
+
+const programName = (path: string): string =>
+  basename(path).toLowerCase().replace(EXE_SUFFIX, "");
+
+const wrappedRefusals = (argv: readonly string[]): PinnedRefusal[] => {
+  const [command = ""] = argv;
+  if (!COMMAND_RUNNERS.has(programName(command))) {
     return [];
   }
-  const names = pinnedNames(context.pins, context.facts.refs([]));
-  const found: PinnedRefusal[] = [];
-  for (const word of new Set([...args, ...words])) {
-    for (const item of tokenRefusals(
-      scanned(word, { path: true }),
-      names,
-      context.checkout,
-      context,
-      true
-    )) {
-      found.push({
-        ...item,
-        detail: `it runs Git through ${argv[0]}, whose arguments cannot be classified: ${item.detail}`,
-        kind: "wrapped",
-      });
-    }
-  }
-  return found;
+  const runsGit = argv
+    .slice(1)
+    .flatMap((arg) => arg.split(WRAPPER_WORD_SEPARATOR))
+    .some((word) => programName(word) === "git");
+  return runsGit
+    ? [
+        refusal(
+          "wrapped",
+          `it runs Git through ${command}, which hides the subcommand, upstream, and configuration Git will use; run Git directly`
+        ),
+      ]
+    : [];
 };
 
 const FAST_FORWARD_MODES: ReadonlySet<string> = new Set([
@@ -1194,43 +1272,143 @@ const isFastForwardOnlyMerge = (args: readonly string[]): boolean => {
   return mode === "--ff-only";
 };
 
-const EQUIVALENT_SUBCOMMANDS: ReadonlySet<string> = new Set([
-  "cherry-pick",
-  "merge",
-  "reset",
+const CHERRY_PICK_FLAGS: ReadonlySet<string> = new Set([
+  "-e",
+  "-n",
+  "-s",
+  "-x",
+  "--allow-empty",
+  "--allow-empty-message",
+  "--commit",
+  "--edit",
+  "--ff",
+  "--keep-redundant-commits",
+  "--no-commit",
+  "--no-edit",
+  "--no-ff",
+  "--no-gpg-sign",
+  "--no-rerere-autoupdate",
+  "--no-signoff",
+  "--rerere-autoupdate",
+  "--signoff",
 ]);
+const CHERRY_PICK_VALUE_OPTIONS: ReadonlySet<string> = new Set([
+  "-X",
+  "-m",
+  "--cleanup",
+  "--empty",
+  "--mainline",
+  "--strategy",
+  "--strategy-option",
+]);
+const RESET_FLAGS: ReadonlySet<string> = new Set([
+  "-q",
+  "--hard",
+  "--keep",
+  "--merge",
+  "--mixed",
+  "--no-refresh",
+  "--quiet",
+  "--refresh",
+  "--soft",
+]);
+
+interface OptionGrammar {
+  flags: ReadonlySet<string>;
+  /** Options that carry a value, attached or in the next argument. */
+  values: ReadonlySet<string>;
+}
+
+const OPTION_GRAMMARS: Readonly<Record<string, OptionGrammar>> = {
+  "cherry-pick": {
+    flags: CHERRY_PICK_FLAGS,
+    values: CHERRY_PICK_VALUE_OPTIONS,
+  },
+  merge: {
+    flags: MERGE_FLAGS,
+    values: new Set([...MERGE_VALUE_OPTIONS, "-m", "--message"]),
+  },
+  reset: { flags: RESET_FLAGS, values: new Set() },
+};
+
+const isAttachedValue = (token: string, grammar: OptionGrammar): boolean =>
+  [...grammar.values].some((option) =>
+    option.startsWith("--")
+      ? token.startsWith(`${option}=`)
+      : token.startsWith(option) && token.length > option.length
+  ) ||
+  token.startsWith("-S") ||
+  token.startsWith("--gpg-sign");
+
+// The indexes of a fast-forward-only merge's, a cherry-pick's, or a reset's
+// revision arguments, or null when any argument's role is uncertain: an
+// option this table does not know, `--`, or a reset with more than one
+// operand, which may be a pathspec.
+const revisionIndexes = (
+  subcommand: string,
+  args: readonly string[]
+): Set<number> | null => {
+  const grammar = OPTION_GRAMMARS[subcommand];
+  if (!grammar) {
+    return null;
+  }
+  const indexes = new Set<number>();
+  let index = 0;
+  while (index < args.length) {
+    const token = args[index] as string;
+    if (token === "--") {
+      return null;
+    }
+    if (grammar.values.has(token)) {
+      index += 2;
+      continue;
+    }
+    if (!token.startsWith("-")) {
+      indexes.add(index);
+    } else if (!(grammar.flags.has(token) || isAttachedValue(token, grammar))) {
+      return null;
+    }
+    index += 1;
+  }
+  return subcommand === "reset" && indexes.size !== 1 ? null : indexes;
+};
 
 // The same command with each named branch replaced by its recorded commit,
 // only when the replacement cannot change what it does: a fast-forward-only
-// merge, a cherry-pick, or a reset, where each refused argument is a whole
-// branch name that resolves now to exactly a recorded head.
+// merge, a cherry-pick, or a reset, where each refused argument is a revision
+// argument and a whole branch name that resolves now to exactly a recorded
+// head, and no file of that name could make a reset read it as a path.
 const equivalentCommand = (
   argv: readonly string[],
   invocation: GitInvocation,
   refusals: readonly PinnedRefusal[],
   facts: PinnedGitFacts
 ): string[] | null => {
-  const { subcommand } = invocation;
-  if (
+  const { arguments: args, subcommand } = invocation;
+  const revisions =
     subcommand === null ||
     invocation.redirected ||
-    !EQUIVALENT_SUBCOMMANDS.has(subcommand) ||
-    (subcommand === "merge" && !isFastForwardOnlyMerge(invocation.arguments)) ||
+    (subcommand === "merge" && !isFastForwardOnlyMerge(args)) ||
     refusals.some((item) => item.kind !== "named" || !item.unit)
-  ) {
+      ? null
+      : revisionIndexes(subcommand, args);
+  if (!revisions) {
     return null;
   }
-  const replacements = new Map<string, string>();
+  const replacements = new Map<number, string>();
   for (const item of refusals) {
     const token = item.token ?? "";
-    if (
-      !(WHOLE_REF_TOKEN.test(token) && invocation.arguments.includes(token)) ||
-      token.includes("..")
-    ) {
-      return null;
-    }
+    const positions = args.flatMap((value, index) =>
+      value === token ? [index] : []
+    );
     const resolved = facts.resolveRef(invocation.globals, token);
     if (
+      positions.length === 0 ||
+      positions.some((index) => !revisions.has(index)) ||
+      !WHOLE_REF_TOKEN.test(token) ||
+      token.includes("..") ||
+      (subcommand === "reset" &&
+        existsSync(resolve(invocation.directory, token))) ||
       !(
         resolved &&
         (resolved.name.startsWith("refs/heads/") ||
@@ -1240,15 +1418,13 @@ const equivalentCommand = (
     ) {
       return null;
     }
-    const previous = replacements.get(token);
-    if (previous !== undefined && previous !== resolved.commit) {
-      return null;
+    for (const index of positions) {
+      replacements.set(index, resolved.commit);
     }
-    replacements.set(token, resolved.commit);
   }
-  const prefixLength = argv.length - invocation.arguments.length;
-  return argv.map((token, index) =>
-    index >= prefixLength ? (replacements.get(token) ?? token) : token
+  const prefixLength = argv.length - args.length;
+  return argv.map(
+    (token, index) => replacements.get(index - prefixLength) ?? token
   );
 };
 
@@ -1267,7 +1443,7 @@ export const analyzePinnedCommand = (
   if (!GIT_EXECUTABLES.has(basename(command).toLowerCase())) {
     return {
       equivalent: null,
-      refusals: wrappedRefusals(argv, context),
+      refusals: wrappedRefusals(argv),
       subcommand: null,
     };
   }
@@ -1352,14 +1528,27 @@ export const gitFactsFor = (
         ? { commit: objectId, name: fullName }
         : null;
     },
-    upstream: (globals) => {
-      const result = git(globals, [
+    upstreams: (globals) => {
+      const upstream = git(globals, [
         "rev-parse",
         "--symbolic-full-name",
         "@{upstream}",
       ]);
-      const name = result.stdout.trim();
-      return result.exitCode === 0 && name ? name : null;
+      const head = git(globals, ["symbolic-ref", "--quiet", "HEAD"]);
+      const branch = head.stdout.trim();
+      const merges = branch.startsWith("refs/heads/")
+        ? git(globals, [
+            "config",
+            "--get-all",
+            `branch.${branch.slice("refs/heads/".length)}.merge`,
+          ]).stdout
+        : "";
+      return [
+        ...(upstream.exitCode === 0 ? [upstream.stdout] : []),
+        ...merges.split("\n"),
+      ]
+        .map((name) => name.trim())
+        .filter(Boolean);
     },
   };
 };

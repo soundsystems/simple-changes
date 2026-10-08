@@ -21,7 +21,8 @@
 - `SPEC.md` moved to `tooling/simple-changes/SPEC.md`; the eval requires it
   there and refuses it inside the package. Forks receive the removal as a
   delete, or as a review item where they edited it. The installed skill went
-  from 1,780,152 to 1,765,824 bytes and from 124 to 123 files.
+  from 1,780,152 to 1,766,868 bytes and from 124 to 123 files, packaged notes
+  included.
 - Released-author admission: an owner release admits the checkout like a
   handoff only when the release recorded the exact state (owner, path, branch,
   head, and digest) and no unreleased claim holds the path; ownership is
@@ -30,23 +31,26 @@
   the claim record is closed to fields older clients would reject. Releases
   from older clients, or with the checkout gone, recover through pause and
   accept.
-- Cleanup follows owner releases and refuses any checkout an unreleased claim
-  holds; before, only active claims counted, so a paused holder's checkout
-  could be removed.
+- Cleanup follows owner releases and refuses any checkout that another
+  holder's unreleased claim holds; before, only active claims counted, so a
+  paused holder's checkout could be removed. A checkout whose claim this run
+  adopted can still be cleaned once it is unchanged and contained in the
+  target.
 - Stale-author violations carry `LoopViolation.nextCommands` (optional) with
   the claim, pause, and accept steps, including `--repo`, and `loop verify`
   and `loop status` print them; guard and exec refusals point to `loop
-  status`. A shared `pauseBlocker` prints the unblocking step first when a
-  pause cannot run yet (missing checkout, Git operation in progress,
-  conflicts, a relinquished controller, or a primary checkout held by another
-  agent). Accept and adopt treat a sibling's per-checkout violation that its
+  status`. A shared `pauseBlocker` detects checkout states that block a pause
+  (missing checkout, Git operation in progress, conflicts), and the recovery
+  printer, `staleClaimRecovery`, prints the unblocking step first, including
+  for a relinquished controller or a primary checkout held by another agent. Accept and adopt treat a sibling's per-checkout violation that its
   own receipt covers as non-blocking.
 - Known limit, shared with handoff admission and unclaimed stable worktrees:
   a third party that claims a released checkout and commits while a guarded
   `loop exec` merge of its branch runs can have that commit merged, and
   closing verification reports it only afterwards.
 - Tests rose from 1,012 to 1,043, including the 0.27.0 deadlock reproduced end
-  to end through the CLI; about 75 targeted mutants were killed. Reviews
+  to end through the CLI; the ship records log 69 targeted mutant runs, 60 of
+  them killed. Reviews
   (GPT-6.1 Sol): round 1 at high and 13 xhigh rounds; the last found nothing.
 <!-- simple-changelogs-signature agent="Claude Opus 5.5 xhigh" at="2026-10-08T03:40:00-05:00" -->
 

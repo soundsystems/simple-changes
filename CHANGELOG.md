@@ -13,9 +13,10 @@
   and `loop status` now print the exact claim, pause, and accept commands that
   recover it, with the owner, path, and run filled in, instead of advice to
   refresh a claim that can no longer be refreshed.
-- Final cleanup never removes a worktree that an unreleased claim still holds.
+- Final cleanup never removes a worktree that another agent's unreleased claim
+  still holds.
 - Each skill now states its license and requirements and no longer names
-  models, and the installed skill is about 14 KB smaller.
+  models, and the installed skill is about 13 KB smaller.
 <!-- simple-changelogs-signature agent="Claude Opus 5.5 xhigh" at="2026-10-08T03:40:00-05:00" -->
 
 ## 0.27.0 - 2026-10-07

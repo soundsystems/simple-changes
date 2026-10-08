@@ -707,6 +707,13 @@ describe("pinned-head command analysis", () => {
       ["git", "commit", "-am", "Update"],
       ["git", "commit", "-m", "Update", "--", ".worktrees"],
       ["git", "stash"],
+      // Only options known to stage just the named paths are classified:
+      // these stage tracked paths, the nested gitlink included.
+      ["git", "add", "--no-ignore-removal"],
+      ["git", "add", "--renormalize"],
+      ["git", "add", "--no-ign"],
+      ["git", "add", "-nA"],
+      ["git", "commit", "--unknown", "-m", "Update"],
     ]) {
       expect({ argv, kinds: kinds(argv) }).toEqual({
         argv,
@@ -717,6 +724,9 @@ describe("pinned-head command analysis", () => {
       ["git", "add", "README.md"],
       ["git", "commit", "-m", "Mentions .worktrees/nested"],
       ["git", "commit", "--amend", "--no-edit"],
+      ["git", "add", "-N", "--chmod=+x", "README.md"],
+      ["git", "commit", "-q", "--message=Update", "README.md"],
+      ["git", "commit", "-mUpdate", "--author=A <a@example.com>"],
       ["git", "stash", "list"],
     ]) {
       expect({ argv, kinds: kinds(argv) }).toEqual({ argv, kinds: [] });

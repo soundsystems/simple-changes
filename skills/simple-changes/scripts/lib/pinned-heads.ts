@@ -45,7 +45,9 @@ import { runGit } from "./process.ts";
  * pinned when it uses `-c`, an option or subcommand that runs another command
  * (`rebase --exec`, `bisect run`, `--upload-pack`, ...), writes configuration
  * that later commands would follow, or stages paths that could record a
- * nested checkout's moving HEAD as a gitlink (`add`, `commit -a`, `stash`).
+ * nested checkout's moving HEAD as a gitlink (`add`, `commit -a`, `stash`);
+ * while such a checkout exists, a staging option not known to stage only the
+ * named paths counts as staging more.
  *
  * While units are pinned, the program allowlist is the boundary: `loop exec`
  * runs only `git`, checked as above, and documented provider merges that
@@ -309,8 +311,6 @@ const ALLOWED_WHILE_PINNED: ReadonlySet<string> = new Set([
 const GIT_EXECUTABLES: ReadonlySet<string> = new Set(["git", "git.exe"]);
 const EXE_SUFFIX = /\.exe$/u;
 const PATHSPEC_GLOB = /[*?[]/u;
-const COMMIT_WIDE_CLUSTER = /^-[a-z]*[aiop]/iu;
-const ADD_WIDE_CLUSTER = /^-[a-z]*[Aeipu]/u;
 const NAME_CHARACTER = /[\p{L}\p{N}_-]/u;
 const OTHER_WORKTREE_PATTERN =
   /(?:^|\.\.|[\^:=+])(?:main-worktree|worktrees\/[^/]+)\//u;
@@ -1942,16 +1942,64 @@ const COMMIT_VALUE_OPTIONS: ReadonlySet<string> = new Set([
   "--template",
   "--trailer",
 ]);
-const WIDE_STAGING_OPTIONS = [
-  "--all",
-  "--edit",
-  "--include",
-  "--interactive",
-  "--only",
-  "--patch",
-  "--pathspec-from-file",
-  "--update",
-];
+// Options that stage only the paths a command names, and that start no
+// editor or signing program. Any other option, cluster, or abbreviation
+// counts as staging more (`add -A`, `--no-ignore-removal`, `--renormalize`,
+// `commit -a`, `--include`, `--pathspec-from-file`, ...).
+const NARROW_STAGING_FLAGS: Readonly<Record<string, ReadonlySet<string>>> = {
+  add: new Set([
+    "--dry-run",
+    "--force",
+    "--ignore-errors",
+    "--ignore-missing",
+    "--intent-to-add",
+    "--no-warn-embedded-repo",
+    "--refresh",
+    "--sparse",
+    "--verbose",
+    "-N",
+    "-f",
+    "-n",
+    "-v",
+  ]),
+  commit: new Set([
+    "--allow-empty",
+    "--allow-empty-message",
+    "--amend",
+    "--dry-run",
+    "--no-edit",
+    "--no-post-rewrite",
+    "--no-signoff",
+    "--no-verify",
+    "--quiet",
+    "--reset-author",
+    "--signoff",
+    "--verbose",
+    "--verify",
+    "-n",
+    "-q",
+    "-s",
+    "-v",
+  ]),
+};
+// Spellings that carry their value in the same token.
+const NARROW_STAGING_ATTACHED: Readonly<Record<string, readonly string[]>> = {
+  add: ["--chmod="],
+  commit: [
+    "--author=",
+    "--cleanup=",
+    "--date=",
+    "--file=",
+    "--fixup=",
+    "--message=",
+    "--reedit-message=",
+    "--reuse-message=",
+    "--squash=",
+    "--template=",
+    "--trailer=",
+  ],
+};
+const COMMIT_ATTACHED_SHORT = ["-C", "-F", "-c", "-m", "-t"];
 
 // Checkouts nested inside the one a command runs in, other than the run's
 // own: staging there records the nested checkout's current HEAD as a gitlink,
@@ -1988,15 +2036,19 @@ const reachesNested = (
   );
 };
 
-// A staging option that reaches beyond the paths a command names.
-const stagesWidely = (subcommand: string, token: string): boolean =>
-  spelledOption(token, WIDE_STAGING_OPTIONS) !== null ||
-  (isShortOption(token) &&
-    (subcommand === "commit"
-      ? COMMIT_WIDE_CLUSTER.test(token)
-      : ADD_WIDE_CLUSTER.test(token)));
+// A staging option known to stage only the paths the command names.
+const stagesNarrowly = (subcommand: string, token: string): boolean =>
+  (NARROW_STAGING_FLAGS[subcommand]?.has(token) ?? false) ||
+  (NARROW_STAGING_ATTACHED[subcommand] ?? []).some((prefix) =>
+    token.startsWith(prefix)
+  ) ||
+  (subcommand === "commit" &&
+    COMMIT_ATTACHED_SHORT.some(
+      (prefix) => token.length > prefix.length && token.startsWith(prefix)
+    ));
 
-// The paths a `git add` or `git commit` names, or null when it stages more.
+// The paths a `git add` or `git commit` names, or null when it stages more
+// or uses an option this does not know.
 const stagedPathspecs = (
   subcommand: string,
   args: readonly string[]
@@ -2013,7 +2065,7 @@ const stagedPathspecs = (
       index += 1;
     } else if (!token.startsWith("-")) {
       pathspecs.push(token);
-    } else if (stagesWidely(subcommand, token)) {
+    } else if (!stagesNarrowly(subcommand, token)) {
       return null;
     }
   }
@@ -2054,7 +2106,9 @@ const stagingRefusals = (
   }
   const pathspecs = stagedPathspecs(subcommand, args);
   if (pathspecs === null) {
-    return refuse("stages more than the paths it names");
+    return refuse(
+      "may stage more than the paths it names (only known narrow options are classified)"
+    );
   }
   const reaching = pathspecs.find((pathspec) =>
     reachesNested(pathspec, invocation.directory, nested)

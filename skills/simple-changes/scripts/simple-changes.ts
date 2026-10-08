@@ -1301,11 +1301,14 @@ const renderStatusLease = (lease: StatusRepository["lease"]): string[] => {
   if (!lease) {
     return [];
   }
+  const { awaitingUser } = lease;
   return [
     `  Lease: ${lease.runId} (${lease.mode}) by ${lease.ownerAgentId}, controller ${lease.controllerStatus}, liveness ${lease.liveness.state} (last activity ${lease.liveness.lastUpdatedAt})`,
-    ...(lease.awaitingUser ?? []).map(
-      (question) => `    Awaiting the user: ${question}`
-    ),
+    ...(isUnknown(awaitingUser)
+      ? [`    Awaiting the user: unknown (${awaitingUser.error})`]
+      : (awaitingUser ?? []).map(
+          (question) => `    Awaiting the user: ${question}`
+        )),
   ];
 };
 
@@ -1350,7 +1353,7 @@ const renderStatusRepository = (status: StatusRepository): string[] => {
       "Ready work",
       status.readyWork,
       (item) =>
-        `Ready work ${item.freshness}: ${item.branch} at ${short(item.headSha)} by ${item.owner}; ${item.detail}`
+        `Ready work ${item.freshness}${item.checkoutPresent ? "" : " (checkout absent)"}: ${item.branch} at ${short(item.headSha)} by ${item.owner}; ${item.detail}`
     ),
     ...renderStatusGuidance(status.guidance),
   ];

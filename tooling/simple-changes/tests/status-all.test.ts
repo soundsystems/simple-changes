@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { createHash } from "node:crypto";
 import {
+  chmodSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
@@ -15,7 +17,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "bun";
-import { startLoop } from "../../../skills/simple-changes/scripts/lib/loop-lease.ts";
+import {
+  controllerBindingPath,
+  startLoop,
+} from "../../../skills/simple-changes/scripts/lib/loop-lease.ts";
 import { runGit } from "../../../skills/simple-changes/scripts/lib/process.ts";
 import { withReadOnlyGit } from "../../../skills/simple-changes/scripts/lib/read-only-git.ts";
 import { addShipHold } from "../../../skills/simple-changes/scripts/lib/ship-holds.ts";
@@ -31,6 +36,7 @@ import {
 import {
   claimWorktree,
   releaseWorktreeClaim,
+  worktreeCoordinationPath,
 } from "../../../skills/simple-changes/scripts/lib/worktree-coordination.ts";
 import { discover } from "../../../skills/update-local-forks/scripts/update-local-forks.ts";
 import { git, writeFixture } from "./helpers.ts";
@@ -279,6 +285,57 @@ describe("simple-changes status --all", () => {
 
     expect(read.exitCode).not.toBe(0);
     expect(present()).toBe(false);
+  });
+
+  test("never starts a filesystem monitor", () => {
+    const home = temporaryHome();
+    const repository = initRepository(join(home, "Developer", "monitored"));
+    writeFixture(repository, ".simple-changes.json", policy(27));
+    const marker = join(home, "fsmonitor-ran");
+    const hook = join(home, "fsmonitor-hook");
+    writeFileSync(hook, `#!/bin/sh\necho ran >> '${marker}'\nexit 1\n`);
+    chmodSync(hook, 0o755);
+    git(repository, ["config", "core.fsmonitor", hook]);
+    // Git itself runs the hook for a status outside the read-only settings.
+    git(repository, ["status", "--porcelain"]);
+    expect(existsSync(marker)).toBe(true);
+    rmSync(marker);
+
+    statusAll({ home, runtime: { skillDirectory: home, version: "0.27.1" } });
+
+    expect(existsSync(marker)).toBe(false);
+  });
+
+  test("reports absent checkouts, unreadable claims, and unreadable bindings", () => {
+    const home = temporaryHome();
+    const repository = initRepository(join(home, "Developer", "absent"));
+    writeFixture(repository, ".simple-changes.json", policy(27));
+    const gone = join(home, "Developer", "absent-author");
+    git(repository, ["worktree", "add", "-q", "-b", "gone", gone]);
+    claimWorktree(gone, "gone-agent", gone, "codex");
+    rmSync(gone, { force: true, recursive: true });
+    startLoop(repository, "controller", "ship");
+    const common = join(repository, ".git");
+    writeFileSync(controllerBindingPath(common), "{ not json");
+
+    const [status] = statusAll({
+      home,
+      runtime: { skillDirectory: home, version: "0.27.1" },
+    }).repositories;
+
+    expect(status?.claims).toEqual([
+      expect.objectContaining({ checkout: "absent", path: gone }),
+    ]);
+    const lease = status?.lease as { awaitingUser: unknown } | undefined;
+    expect(isUnknown(lease?.awaitingUser)).toBe(true);
+
+    writeFileSync(worktreeCoordinationPath(common), "{ not json");
+    const [unreadable] = statusAll({
+      home,
+      runtime: { skillDirectory: home, version: "0.27.1" },
+    }).repositories;
+    expect(isUnknown(unreadable?.claims)).toBe(true);
+    expect(unreadable?.releasedClaims).toBeNull();
   });
 
   test("shows unreadable state as unknown and keeps going", () => {

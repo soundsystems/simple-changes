@@ -11,6 +11,7 @@ import { dirname, join, resolve } from "node:path";
 import { CURRENT_GUIDANCE_VERSION } from "./guidance-updates.ts";
 import { captureInventory, locateRepository } from "./inventory.ts";
 import {
+  controllerBindingPath,
   type LeaseLiveness,
   leaseLiveness,
   readControllerBinding,
@@ -69,7 +70,8 @@ export const isUnknown = (value: unknown): value is Unknown =>
   typeof (value as { error?: unknown }).error === "string";
 
 export interface StatusLease {
-  awaitingUser: string[] | null;
+  /** Questions the run paused on; unknown when the binding is unreadable. */
+  awaitingUser: string[] | null | Unknown;
   controllerStatus: "active" | "relinquished";
   liveness: Pick<LeaseLiveness, "ageMs" | "lastUpdatedAt" | "state">;
   mode: string;
@@ -117,6 +119,8 @@ export interface StatusRepository {
   readyWork:
     | Array<{
         branch: string;
+        /** Whether the receipted checkout still exists on disk. */
+        checkoutPresent: boolean;
         detail: string;
         freshness: string;
         headSha: string;
@@ -375,6 +379,26 @@ const section = <T>(read: () => T): T | Unknown => {
   }
 };
 
+/**
+ * The binding is advisory: a missing one, or one for another controller
+ * tenure, means nothing is awaited, but one that cannot be parsed is unknown.
+ */
+const awaitingUserStatus = (
+  lease: Parameters<typeof readControllerBinding>[0]
+): StatusLease["awaitingUser"] => {
+  const questions = readControllerBinding(lease)?.awaitingUser?.questions;
+  if (questions) {
+    return questions;
+  }
+  const path = controllerBindingPath(lease.commonGitDirectory);
+  return section(() => {
+    if (existsSync(path)) {
+      JSON.parse(readFileSync(path, "utf8"));
+    }
+    return null;
+  });
+};
+
 const leaseStatus = (commonGitDirectory: string): StatusLease | null => {
   const lease = readLeaseFromCommonDirectory(commonGitDirectory);
   if (!lease) {
@@ -382,7 +406,7 @@ const leaseStatus = (commonGitDirectory: string): StatusLease | null => {
   }
   const liveness = leaseLiveness(lease);
   return {
-    awaitingUser: readControllerBinding(lease)?.awaitingUser?.questions ?? null,
+    awaitingUser: awaitingUserStatus(lease),
     controllerStatus: lease.controller?.status ?? "active",
     liveness: {
       ageMs: liveness.ageMs,
@@ -408,9 +432,13 @@ const claimStatus = (
       const worktree = inventory.worktrees.find(
         (item) => item.path === claim.path
       );
+      // A deleted checkout can keep prunable Git metadata whose digest is not
+      // observed content, so absence is checked on disk first.
       let checkout: StatusClaim["checkout"] = "matches";
-      if (!worktree) {
-        checkout = existsSync(claim.path) ? "unknown" : "absent";
+      if (!existsSync(claim.path)) {
+        checkout = "absent";
+      } else if (!worktree) {
+        checkout = "unknown";
       } else if (worktree.headSha !== claim.headSha) {
         checkout = "moved";
       } else if (worktree.changeDigest !== claim.changeDigest) {
@@ -493,6 +521,7 @@ const repositoryStatus = (
     readyWork: section(() =>
       readyWorkStatus(inventory).map((item) => ({
         branch: item.receipt.branch,
+        checkoutPresent: existsSync(item.receipt.path),
         detail: item.detail,
         freshness: item.freshness,
         headSha: item.receipt.headSha,

@@ -460,8 +460,9 @@ incomplete run.
 Changes repository under the roots `update-local-forks discover` scans (global
 skill roots, `~/Developer`, `~/Projects`, `~/Code`, `~/src`, and each
 `--root`): the lease with its controller state and liveness (`live`, `stale`,
-or `unknown`), unreleased worktree claims and whether each checkout still
-matches its claim, recorded holds, ready-work receipts with their freshness,
+or `unknown`), unreleased worktree claims and whether each checkout is absent
+or still matches its claim, recorded holds, ready-work receipts with their
+freshness and whether their checkout still exists,
 and a pending guidance notice when the repository's acknowledged guidance is
 older than the guidance of the runtime running `status`; a repository that
 runs a fork sees that notice once its fork reaches the same guidance. It then lists every fork, compared with the newest

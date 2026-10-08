@@ -512,7 +512,7 @@ const controllerLifecycle = (lease: LoopLease): LoopControllerLifecycle =>
 
 const CONTROLLER_BINDING_FILENAME = "active-loop-controller.json";
 
-const controllerBindingPath = (commonGitDirectory: string): string =>
+export const controllerBindingPath = (commonGitDirectory: string): string =>
   resolve(stateDirectory(commonGitDirectory), CONTROLLER_BINDING_FILENAME);
 
 const isControllerSession = (

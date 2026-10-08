@@ -1183,28 +1183,34 @@ export const releaseWorktreeClaim = (
 ): WorktreeClaim => {
   const agentId = requiredText(agentIdInput, "agent ID", 128);
   const claimId = requiredText(claimIdInput, "claim ID", 128);
-  const inventory = captureInventory(repositoryPath);
-  const document = readCoordinationDocumentFromCommonDirectory(
-    inventory.repository.commonGitDirectory
-  );
-  const claim = document.claims.find((item) => item.claimId === claimId);
-  if (!claim || claim.owner.agentId !== agentId) {
-    throw new SimpleChangesError(
-      "Only the exact claim owner may release this worktree claim.",
-      EXIT_CODES.unsafe
+  const { commonGitDirectory } = locateRepository(repositoryPath).repository;
+  // Check the owner and capture the released state under the same lock as
+  // the release, so a takeover cannot reassign the claim in between.
+  return withCoordinationLock(commonGitDirectory, "worktree released", () => {
+    const inventory = captureInventory(repositoryPath);
+    const document =
+      readCoordinationDocumentFromCommonDirectory(commonGitDirectory);
+    const claim = document.claims.find((item) => item.claimId === claimId);
+    if (!claim || claim.owner.agentId !== agentId) {
+      throw new SimpleChangesError(
+        "Only the exact claim owner may release this worktree claim.",
+        EXIT_CODES.unsafe
+      );
+    }
+    if (!LIVE_STATES.has(claim.state)) {
+      throw new SimpleChangesError(
+        `Claim ${claimId} cannot transition from ${claim.state} to released.`,
+        EXIT_CODES.unsafe
+      );
+    }
+    return releaseClaimUnderLock(
+      commonGitDirectory,
+      claimId,
+      agentId,
+      "owner-release",
+      releasedEvidence(inventory, claim.path)
     );
-  }
-  return transitionClaim(
-    inventory.repository.commonGitDirectory,
-    claimId,
-    agentId,
-    "released",
-    {
-      ...releasedEvidence(inventory, claim.path),
-      releaseReason: "owner-release",
-    },
-    [...LIVE_STATES]
-  );
+  });
 };
 
 const releasedClaim = (
@@ -1336,7 +1342,7 @@ export const releaseHandoffWorktreeClaim = (
       claim.claimId,
       agentId,
       "handoff",
-      releasedEvidence(opening, claim.path)
+      releasedEvidence(captureInventory(repositoryPath), claim.path)
     );
   });
 };

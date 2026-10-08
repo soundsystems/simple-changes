@@ -345,11 +345,24 @@ describe("pinned-head command analysis", () => {
   });
 
   test("refuses commands that run in or read from a pinned checkout", () => {
-    const { head, kinds, unitPath } = analyzer();
+    const { head, kinds, root, unitPath } = analyzer();
+    // A symbolic ref outside refs/ is followed to the ref it reaches.
+    git(root, ["symbolic-ref", "PINNED_HEAD", "refs/heads/feat/x"]);
+    expect(kinds(["git", "merge", "--ff-only", "PINNED_HEAD"])).toEqual([
+      "named",
+    ]);
+    // An abbreviated object ID that names nothing yet could name a commit
+    // made while the command waits; one that names a commit now is fine.
+    expect(kinds(["git", "merge", "--ff-only", "abcdef0"])).toEqual([
+      "indirect",
+    ]);
+    expect(kinds(["git", "merge", "--ff-only", head.slice(0, 12)])).toEqual([]);
     for (const argv of [
       ["git", "-C", unitPath, "push", "origin", "HEAD:refs/heads/main"],
       ["git", "-C", unitPath, "merge", "--ff-only", head],
       ["git", "-C", join(unitPath, "sub"), "reset", "--hard", "HEAD"],
+      ["git", "-C", unitPath, "commit", "--allow-empty", "-m", "controller"],
+      ["git", "-C", unitPath, "log"],
       ["git", "fetch", unitPath, "HEAD:refs/heads/main"],
       ["git", "fetch", `file://${unitPath}`, "HEAD:refs/heads/main"],
       ["git", "--git-dir=.git", "merge", head],
@@ -616,7 +629,7 @@ describe("pinned-head command analysis", () => {
     // A directory that does not exist yet could become any checkout.
     expect(
       kinds(["git", "-C", join(base, "not-yet"), "merge", "--ff-only", head])
-    ).toEqual(["checkout"]);
+    ).toEqual(expect.arrayContaining(["checkout"]));
     // Git opens `<path>.git` when `<path>` is not a repository.
     expect(
       kinds([

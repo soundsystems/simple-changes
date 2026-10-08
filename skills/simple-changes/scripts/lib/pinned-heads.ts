@@ -131,6 +131,8 @@ export interface PinnedGitFacts {
     globals: readonly string[],
     token: string
   ) => { commit: string; name: string } | null;
+  /** The full ref name a revision resolves to now, following symbolic refs. */
+  symbolicName: (globals: readonly string[], revision: string) => string | null;
   /**
    * Commits reachable from `tip` but from none of `recorded`, with their
    * parents, at most `limit + 1` of them; null when Git cannot list them.
@@ -325,6 +327,7 @@ const FETCH_HEAD_PATTERN =
 const WHOLE_REF_TOKEN = /^[^\s~^:?*[\\@{}]+$/u;
 const OBJECT_ID = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/u;
 const RANGE_SEPARATOR = /\.{2,3}/u;
+const HEX_ABBREVIATION = /^[0-9a-f]{4,63}$/iu;
 const REVISION_SUFFIX = /[~^:]/u;
 const URL_SCHEME = /^[a-z][a-z0-9+.-]*:\/\//iu;
 const SCP_HOST = /^[^/]*:/u;
@@ -1354,6 +1357,50 @@ const revisionCandidates = (text: string): string[] =>
     .map((part) => part.split(REVISION_SUFFIX, 1)[0] ?? "")
     .filter((part) => part && !part.startsWith("-"));
 
+// What each revision a merge-like command names resolves to now. A name that
+// is a symbolic ref anywhere, including outside `refs/` (`PINNED_HEAD`), is
+// checked at the ref it reaches; an abbreviated object ID that names nothing
+// yet could name a commit created while the command waits.
+const resolutionRefusals = (
+  invocation: GitInvocation,
+  items: readonly ScannedToken[],
+  names: Map<PinnedUnit, string[]>,
+  facts: PinnedGitFacts
+): PinnedRefusal[] =>
+  items
+    .filter((item) => item.revision)
+    .flatMap((item) =>
+      revisionCandidates(item.text).flatMap((revision): PinnedRefusal[] => {
+        if (
+          HEX_ABBREVIATION.test(revision) &&
+          !facts.objectType(invocation.globals, revision)
+        ) {
+          return [
+            refusal(
+              "indirect",
+              `${revision} is an abbreviated object ID that names nothing yet, so it could name a commit made while the command waits`,
+              item.token
+            ),
+          ];
+        }
+        const reached = facts.symbolicName(invocation.globals, revision);
+        return [...names]
+          .filter(
+            ([, aliases]) =>
+              reached !== null &&
+              aliases.some((alias) => mentionsName(reached, alias))
+          )
+          .map(([unit]) =>
+            refusal(
+              "named",
+              `${item.token} resolves to ${reached}, ${describeUnit(unit)}`,
+              item.token,
+              unit
+            )
+          );
+      })
+    );
+
 // Each revision a merge-like command may integrate: its arguments, and the
 // upstream a merge or rebase reads when it names none.
 const integratedRevisions = (
@@ -2123,7 +2170,12 @@ const gitRefusals = (
       ),
     ];
   }
-  const always = commandRefusals(invocation, context);
+  // Where a command runs matters for every command: even a commit made in a
+  // pinned checkout builds on that checkout's moving HEAD.
+  const always = [
+    ...commandRefusals(invocation, context),
+    ...locationRefusals(invocation, context),
+  ];
   if (
     (READ_ONLY_SUBCOMMANDS.has(subcommand) &&
       !writesOutputFile(invocation.arguments)) ||
@@ -2154,7 +2206,6 @@ const gitRefusals = (
   }
   const found = [
     ...always,
-    ...locationRefusals(invocation, context),
     ...transferRefusals(invocation, context.facts.refs(invocation.globals)),
     ...stashRefusals(invocation),
   ];
@@ -2186,6 +2237,7 @@ const gitRefusals = (
   }
   found.push(
     ...configuredRefusals(invocation, names, context),
+    ...resolutionRefusals(invocation, items, names, context.facts),
     ...containmentRefusals(
       invocation,
       items,
@@ -2586,6 +2638,18 @@ export const gitFactsFor = (
         ? { commit: objectId, name: fullName }
         : null;
     },
+    symbolicName: (globals, revision) =>
+      memo(`name\0${globals.join("\0")}\0${revision}`, () => {
+        const result = git(globals, [
+          "rev-parse",
+          "--symbolic-full-name",
+          revision,
+        ]);
+        const name = result.stdout.trim();
+        return result.exitCode === 0 && name && !name.includes("\n")
+          ? name
+          : null;
+      }),
     unrecordedCommits: (globals, tip, recorded, limit) => {
       const result = git(globals, [
         "rev-list",

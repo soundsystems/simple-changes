@@ -672,12 +672,19 @@ export const renderAuthoringSummary = (
 
 /**
  * Question R1 as an update-notice required answer, for existing
- * repositories whose review question is pending. The options follow the same
- * rules as onboarding; the answer is recorded with `setup --authoring`.
+ * repositories whose review question is pending. Detection triggers it; its
+ * options follow the onboarding rules for the agents recorded when it is
+ * answered: those in the sidecars once the models question is answered, or,
+ * while that is pending and asked first, the recommended answer to it (every
+ * detected agent). Null when fewer than two answers are possible here (one
+ * recorded agent and no identified running agent): there is nothing to
+ * choose until the owner records another agent. The answer is recorded with
+ * `setup --authoring`.
  */
 export const authoringReviewNoticeQuestion = (input: {
   definitions: readonly HarnessDefinition[];
   detected: readonly DetectedHarness[];
+  modelsPending: boolean;
   recordedHarnesses: readonly string[];
   runningHarness: string | null;
 }): {
@@ -686,22 +693,27 @@ export const authoringReviewNoticeQuestion = (input: {
   question: string;
   reason: string;
   setting: string;
-} => ({
-  choices: reviewerChoices({
-    recordedHarnesses: [
-      ...input.detected.map((harness) => harness.id),
-      ...input.recordedHarnesses,
-    ],
+} | null => {
+  const choices = reviewerChoices({
+    recordedHarnesses: input.modelsPending
+      ? input.detected.map((harness) => harness.id)
+      : input.recordedHarnesses,
     runningHarness: input.runningHarness,
-  }),
-  id: "authoring-review",
-  question: AUTHORING_QUESTIONS.reviewer,
-  reason: `More than one coding agent was detected (${namesOf(
-    orderHarnessIds(
-      input.detected.map((harness) => harness.id),
+  });
+  if (choices.length < 2) {
+    return null;
+  }
+  return {
+    choices,
+    id: "authoring-review",
+    question: AUTHORING_QUESTIONS.reviewer,
+    reason: `More than one coding agent was detected (${namesOf(
+      orderHarnessIds(
+        input.detected.map((harness) => harness.id),
+        input.definitions
+      ),
       input.definitions
-    ),
-    input.definitions
-  )}), so reviews can come from a different agent than the one that wrote the change. A review from a different agent catches what the author's own model tends to miss.`,
-  setting: "roles.review in the authoring sidecar (setup --authoring)",
-});
+    )}), so reviews can come from a different agent than the one that wrote the change. A review from a different agent catches what the author's own model tends to miss.`,
+    setting: "roles.review in the authoring sidecar (setup --authoring)",
+  };
+};

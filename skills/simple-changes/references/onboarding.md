@@ -368,7 +368,12 @@ change run?** with **At xhigh effort (Recommended)** (`escalateOnFindings:
 While `authoringQuestion.review` is `pending`, `initialize` also prints the
 question itself as `authoringReviewQuestion`; ask it once in each write-capable
 run before mutation, whatever the guidance version, because acknowledging an
-update never answers it. If no different reviewer model is named, ask R1 again
+update never answers it. Its choices follow the agents recorded when it is
+answered: while the models question is pending, ask that first (the printed
+choices assume its recommended answer, so drop **A different agent** if fewer
+than two agents end up recorded). It is null while only one answer is possible,
+one recorded agent and an unidentified running agent; the question stays
+pending until the owner records another agent. If no different reviewer model is named, ask R1 again
 rather than recording **Any independent reviewer**.
 
 Say: "This is a preference, not a permission. The agent still asks before

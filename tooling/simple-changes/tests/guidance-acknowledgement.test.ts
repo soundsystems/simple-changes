@@ -932,7 +932,7 @@ describe("authoring review question in the update notice", () => {
         schemaVersion: 1,
       })}\n`
     );
-    const initialize = () =>
+    const initialize = (session: Record<string, string> = {}) =>
       JSON.parse(
         decoder.decode(
           spawnSync(
@@ -946,7 +946,7 @@ describe("authoring review question in the update notice", () => {
               fixture.root,
               "--json",
             ],
-            { env, stderr: "pipe", stdout: "pipe" }
+            { env: { ...env, ...session }, stderr: "pipe", stdout: "pipe" }
           ).stdout
         )
       ) as Record<string, any>;
@@ -963,5 +963,15 @@ describe("authoring review question in the update notice", () => {
       models: "answered",
       review: "pending",
     });
+    // One recorded agent: "A different agent" waits until another is
+    // recorded, and with the running agent unidentified nothing else can be
+    // chosen, so no question is printed.
+    expect(second.authoringReviewQuestion).toBeNull();
+    const identified = initialize({ CLAUDE_CODE_SESSION_ID: "session-a" });
+    expect(
+      identified.authoringReviewQuestion.choices.map(
+        (choice: { value: string }) => choice.value
+      )
+    ).toEqual(["different-model", "any"]);
   });
 });

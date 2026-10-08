@@ -5,6 +5,7 @@ import {
   AUTHORING_QUESTIONS,
   agentListChoices,
   asksReviewQuestions,
+  authoringReviewNoticeQuestion,
   collectAuthoringAnswers,
   effortChoices,
   recommendedAuthoringAnswer,
@@ -1619,6 +1620,39 @@ describe("authoring and review questions", () => {
     expect(asked).toEqual([]);
     expect(answer).toEqual(recommendedAuthoringAnswer(["gamma"]));
     expect(answer.roles).toEqual({ proposals: { harness: "running" } });
+  });
+
+  test("the update-notice question offers a different agent only for recorded agents", () => {
+    const notice = (
+      recordedHarnesses: string[],
+      runningHarness: string | null = "alpha-agent",
+      modelsPending = false
+    ) =>
+      authoringReviewNoticeQuestion({
+        definitions,
+        detected: detected("alpha-agent", "beta-agent"),
+        modelsPending,
+        recordedHarnesses,
+        runningHarness,
+      });
+    const values = (question: ReturnType<typeof notice>) =>
+      question?.choices.map(({ value }) => value) ?? null;
+    // A second agent detected after a single-agent setup asks the question,
+    // but only a recorded agent can be the different reviewer.
+    expect(values(notice(["alpha-agent"]))).toEqual(["different-model", "any"]);
+    expect(values(notice(["alpha-agent", "beta-agent"]))).toEqual([
+      "different-agent",
+      "different-model",
+      "any",
+    ]);
+    // With one possible answer there is nothing to ask yet.
+    expect(notice(["alpha-agent"], null)).toBeNull();
+    // While the models question is pending it is asked first, and its
+    // recommended answer records every detected agent.
+    expect(values(notice([], null, true))).toEqual(["different-agent", "any"]);
+    expect(notice(["alpha-agent"])?.reason).toContain(
+      "Alpha Agent, Beta Agent"
+    );
   });
 
   test("the receipt names the reviewer's chosen effort", () => {

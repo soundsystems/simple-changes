@@ -2233,15 +2233,19 @@ const initializationAuthoring = (
   const questions: GuidanceUpdateContext["questions"] = {};
   if (resolution.authoringQuestion.review === "pending") {
     try {
-      questions["authoring-review"] = authoringReviewNoticeQuestion({
+      const question = authoringReviewNoticeQuestion({
         definitions: loadHarnessDefinitions(),
         detected: resolution.detectedHarnesses,
+        modelsPending: resolution.authoringQuestion.models === "pending",
         recordedHarnesses: [
           resolution.authoringFiles.repository,
           resolution.authoringFiles.personal,
         ].flatMap((file) => Object.keys(file.value?.harnesses ?? {})),
         runningHarness: resolution.runningHarness,
       });
+      if (question) {
+        questions["authoring-review"] = question;
+      }
     } catch {
       // A broken harness data file leaves the notice without the question.
     }

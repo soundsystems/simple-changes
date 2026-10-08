@@ -12,13 +12,15 @@
  *   `sha=<sha>`, or `gh pr merge --match-head-commit <sha>`; a merge that
  *   names no exact SHA is refused;
  * - a `git push` whose destination is a target branch;
- * - a `git merge` or `git pull` while a target branch is checked out, except
- *   a pure sync with commits the remote target already contains.
+ * - a `git merge` or `git pull` while a target branch is checked out, which
+ *   must be `--ff-only` to a published or receipted commit.
  *
- * It sees only the argv `loop exec` runs. A shell `-c` script that mentions
- * a merge-like command is refused so the merge runs as a plain argv; a merge
- * run outside `loop exec` is not gated at all. It is a convenience gate for
- * this repository's own controller, not a security boundary.
+ * It accepts a narrow grammar and refuses what it cannot check: repository,
+ * ref, alias, or remote overrides, merge aliases, raw transports, matching or
+ * pattern refspecs, and shell `-c` scripts that mention a merge. It sees only
+ * the argv `loop exec` runs; a merge run outside `loop exec` is not gated at
+ * all. It is a convenience gate for this repository's own controller, not a
+ * security boundary.
  */
 
 import { readFileSync } from "node:fs";
@@ -45,7 +47,8 @@ const SHELLS = new Set(["sh", "bash", "zsh", "dash", "ksh", "fish"]);
 const MERGE_TEXT_PATTERN =
   /\b(?:git\b[^\n;&|]*\b(?:push|merge|pull)\b|glab\b[^\n;&|]*\b(?:merge|accept)\b|gh\b[^\n;&|]*\bmerge\b)/u;
 const ALIAS_MERGE_PATTERN = /\b(?:push|merge|pull)\b/u;
-const ROUTING_CONFIG_PATTERN = /^(?:push|remote|branch|alias)\./iu;
+const ROUTING_CONFIG_PATTERN = /^(?:push|remote|branch|alias|url)\./iu;
+const WHITESPACE_PATTERN = /\s+/u;
 const ENV_ASSIGNMENT_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*=/u;
 const SHELL_COMMAND_FLAG_PATTERN = /^-[A-Za-z]*c[A-Za-z]*$/u;
 const LEADING_SLASHES_PATTERN = /^\/+/u;
@@ -56,6 +59,69 @@ const GRAPHQL_MERGE_PATTERN =
 const SHA_PATTERN = /^[0-9a-f]{7,64}$/u;
 const PUSH_FLAG_CLUSTER_PATTERN = /^-[fuqvnd46]+$/u;
 const GLOB_SPECIAL_PATTERN = /[.+?^${}()|[\]\\]/gu;
+
+/**
+ * The published copy of `branch`: exactly `refs/remotes/<remote>/<branch>`
+ * for the remote `branch` tracks (origin by default), never another remote's
+ * branch of the same name or a remote branch such as `feature/main`.
+ */
+const publishedRef = (cwd: string, branch: string): string | null => {
+  const remote =
+    git(cwd, ["config", "--get", `branch.${branch}.remote`]).stdout || "origin";
+  const ref = `refs/remotes/${remote}/${branch}`;
+  return git(cwd, ["show-ref", "--verify", "--quiet", ref]).exitCode === 0
+    ? ref
+    : null;
+};
+
+const publishedContains = (
+  cwd: string,
+  branch: string,
+  commit: string
+): boolean => {
+  const ref = publishedRef(cwd, branch);
+  return (
+    ref !== null &&
+    git(cwd, ["merge-base", "--is-ancestor", commit, ref]).exitCode === 0
+  );
+};
+
+/**
+ * A provider merge ships the merge of `sha` into the target. That result is
+ * exactly the checked tree only when `sha` already contains every fetched
+ * copy of the target, so require that as well as the receipt. The provider
+ * can still merge onto a target that moved after the last fetch; fetch right
+ * before merging.
+ */
+const requireProviderMerge = (
+  context: GuardContext,
+  sha: string,
+  what: string
+): GuardDecision => {
+  const checked = requireReceipt(context, sha, what);
+  const commit = resolveCommit(context.cwd, sha);
+  if (!(checked.allow && commit)) {
+    return checked;
+  }
+  const refs = context.targets.map((target) =>
+    publishedRef(context.cwd, target)
+  );
+  if (refs.some((ref) => ref === null)) {
+    return refuse(
+      `${what}: no fetched remote copy of ${context.targets.join(" or ")} exists, so the guard cannot prove the merge ships exactly ${sha}; fetch the target first`
+    );
+  }
+  const missing = (refs as string[]).filter(
+    (ref) =>
+      git(context.cwd, ["merge-base", "--is-ancestor", ref, commit])
+        .exitCode !== 0
+  );
+  return missing.length > 0
+    ? refuse(
+        `${what}: ${sha} does not contain ${missing.join(", ")}, so the merge would ship a tree no receipt covers; update the branch from the target, check it again, then merge`
+      )
+    : checked;
+};
 
 /** Gate one exact commit on its check receipt. */
 const requireReceipt = (
@@ -124,10 +190,12 @@ const hasOption = (scanned: Scanned, names: readonly string[]): boolean =>
 
 interface GitInvocation {
   args: string[];
-  /** `-c` overrides that change where a push or merge goes. */
-  configOverrides: string[];
   cwd: string;
-  prefix: string[];
+  /**
+   * Global options that change which repository, refs, aliases, or remotes
+   * git uses, so the guard's own reads would not see what git does.
+   */
+  overrides: string[];
   subcommand: string;
 }
 
@@ -139,7 +207,16 @@ const GIT_VALUED_GLOBALS = [
   "--namespace",
   "--exec-path",
   "--config-env",
+  "--super-prefix",
 ];
+const GIT_REPOSITORY_OVERRIDES = new Set([
+  "--git-dir",
+  "--work-tree",
+  "--namespace",
+  "--exec-path",
+  "--super-prefix",
+  "--bare",
+]);
 
 const applyGitGlobal = (
   invocation: GitInvocation,
@@ -148,13 +225,13 @@ const applyGitGlobal = (
 ): void => {
   if (name === "-C") {
     invocation.cwd = resolve(invocation.cwd, value);
+  } else if (GIT_REPOSITORY_OVERRIDES.has(name)) {
+    invocation.overrides.push(name);
   } else if (
     (name === "-c" || name === "--config-env") &&
     ROUTING_CONFIG_PATTERN.test(value)
   ) {
-    invocation.configOverrides.push(value);
-  } else if (name === "--git-dir" || name === "--work-tree") {
-    invocation.prefix.push(`${name}=${value}`);
+    invocation.overrides.push(`${name} ${value}`);
   }
 };
 
@@ -164,9 +241,8 @@ const parseGit = (
 ): GitInvocation | null => {
   const invocation: GitInvocation = {
     args: [],
-    configOverrides: [],
     cwd,
-    prefix: [],
+    overrides: [],
     subcommand: "",
   };
   let index = 1;
@@ -184,6 +260,7 @@ const parseGit = (
       applyGitGlobal(invocation, argument, argv[index + 1] ?? "");
       index += 2;
     } else {
+      applyGitGlobal(invocation, argument, "");
       index += 1;
     }
   }
@@ -197,7 +274,7 @@ const parseGit = (
 };
 
 const gitIn = (invocation: GitInvocation, args: readonly string[]) =>
-  git(invocation.cwd, [...invocation.prefix, ...args]);
+  git(invocation.cwd, args);
 
 const gitConfig = (invocation: GitInvocation, key: string): string =>
   gitIn(invocation, ["config", "--get", key]).stdout;
@@ -274,6 +351,11 @@ const pushRefspec = (
     return null;
   }
   const { destination, source } = parts;
+  if (!(destination || source)) {
+    return refuse(
+      `the refspec ${spec} pushes every matching branch, which can move a target branch; push one exact refspec instead`
+    );
+  }
   if (destination.includes("*")) {
     const reachesTarget = context.targets.some(
       (target) =>
@@ -403,6 +485,9 @@ const gitPush = (
   const deleting = hasOption(scanned, ["--delete"]) || clusters.includes("d");
   const positional = [...scanned.positional];
   const remote = lastValue(scanned, ["--repo"]) ?? positional.shift() ?? null;
+  if (positional.length === 0 && hasOption(scanned, ["--tags"])) {
+    return allow("git push --tags without refspecs pushes only tags");
+  }
   return positional.length === 0
     ? defaultPushDecision(invocation, context, remote)
     : pushRefspecs(invocation, context, positional, deleting);
@@ -421,60 +506,47 @@ const MERGE_VALUED = [
 ];
 const CONCLUDING_FLAGS = ["--abort", "--quit", "--continue"];
 
-const remoteTargetRefs = (
-  invocation: GitInvocation,
-  branch: string
-): string[] =>
-  gitIn(invocation, [
-    "for-each-ref",
-    "--format=%(refname)",
-    `refs/remotes/*/${branch}`,
-  ])
-    .stdout.split("\n")
-    .filter(Boolean);
+const FAST_FORWARD_ONLY = ["--ff-only"];
 
-const publishedTargetContains = (
-  invocation: GitInvocation,
-  branch: string,
-  commit: string
-): boolean =>
-  remoteTargetRefs(invocation, branch).some(
-    (ref) =>
-      gitIn(invocation, ["merge-base", "--is-ancestor", commit, ref])
-        .exitCode === 0
-  );
-
-/** `git pull` on a target branch: only a sync with its published remote. */
+/**
+ * `git pull --ff-only` on a target branch from its own upstream: the result
+ * is the published target, which every merge into it already passed.
+ */
 const gitPullOnTarget = (
   invocation: GitInvocation,
   branch: string,
-  positional: readonly string[]
+  scanned: Scanned
 ): GuardDecision => {
-  const [, ...sources] = positional;
-  if (
-    sources.length === 1 &&
-    (sources[0] === branch || sources[0] === `refs/heads/${branch}`)
-  ) {
-    return allow(`git pull syncs ${branch} with the published ${branch}`);
-  }
-  if (positional.length > 1) {
+  if (!hasOption(scanned, FAST_FORWARD_ONLY)) {
     return refuse(
-      `git pull with explicit sources on ${branch} merges commits the guard cannot see yet; fetch, then merge one checked commit with --ff-only`
+      `git pull on ${branch} can create a merge commit no receipt covers; use git pull --ff-only`
     );
   }
+  const upstreamRemote =
+    gitConfig(invocation, `branch.${branch}.remote`) || "origin";
+  const [remote, ...sources] = scanned.positional;
+  const fromUpstream =
+    remote === undefined ||
+    (remote === upstreamRemote &&
+      (sources.length === 0 ||
+        (sources.length === 1 &&
+          (sources[0] === branch || sources[0] === `refs/heads/${branch}`))));
   const upstream = gitIn(invocation, [
     "rev-parse",
     "--symbolic-full-name",
     `${branch}@{upstream}`,
   ]).stdout;
-  return remoteTargetRefs(invocation, branch).includes(upstream)
-    ? allow(`git pull syncs ${branch} with its published remote`)
+  return fromUpstream && upstream === publishedRef(invocation.cwd, branch)
+    ? allow(`git pull --ff-only syncs ${branch} with its published remote`)
     : refuse(
-        `git pull on ${branch} would merge ${upstream || "an unknown upstream"}, not the published ${branch}`
+        `git pull on ${branch} would bring in something other than the published ${branch}; fetch, then merge one checked commit with --ff-only`
       );
 };
 
-/** `git merge` on a target branch: a published sync or one checked commit. */
+/**
+ * `git merge --ff-only` on a target branch: to a commit the published target
+ * already contains, or to one commit a receipt covers.
+ */
 const gitMergeOnTarget = (
   invocation: GitInvocation,
   context: GuardContext,
@@ -488,24 +560,17 @@ const gitMergeOnTarget = (
   const commits = sources.map((source) =>
     resolveCommit(invocation.cwd, source)
   );
-  if (commits.some((commit) => commit === null)) {
-    return refuse("git merge names a revision that is not a local commit");
-  }
-  const resolved = commits as string[];
+  const [only] = commits;
   if (
-    resolved.every((commit) =>
-      publishedTargetContains(invocation, branch, commit)
-    )
+    !(only && commits.length === 1 && hasOption(scanned, FAST_FORWARD_ONLY))
   ) {
-    return allow(`git merge only syncs ${branch} with its published remote`);
-  }
-  const [only] = resolved;
-  if (!(only && resolved.length === 1 && hasOption(scanned, ["--ff-only"]))) {
     return refuse(
-      `git merge into ${branch} must fast-forward (--ff-only) to one checked commit, so the result is the exact commit a receipt covers`
+      `git merge into ${branch} must fast-forward (--ff-only) to one local commit, so the result is exactly a published or checked commit`
     );
   }
-  return requireReceipt(context, only, `git merge into ${branch}`);
+  return publishedContains(invocation.cwd, branch, only)
+    ? allow(`git merge only syncs ${branch} with its published remote`)
+    : requireReceipt(context, only, `git merge into ${branch}`);
 };
 
 const gitMerge = (
@@ -522,8 +587,36 @@ const gitMerge = (
     return allow("concluding a merge adds no new commit");
   }
   return pulling
-    ? gitPullOnTarget(invocation, branch, scanned.positional)
+    ? gitPullOnTarget(invocation, branch, scanned)
     : gitMergeOnTarget(invocation, context, branch, scanned);
+};
+
+const GIT_TRANSPORTS = new Set(["send-pack", "http-push"]);
+const ALIAS_DEPTH_LIMIT = 10;
+
+/** Refuses a git alias that expands, directly or through others, to a merge. */
+const aliasDecision = (invocation: GitInvocation): GuardDecision => {
+  const seen = new Set<string>();
+  let name = invocation.subcommand;
+  while (!seen.has(name) && seen.size < ALIAS_DEPTH_LIMIT) {
+    seen.add(name);
+    const alias = gitConfig(invocation, `alias.${name}`);
+    if (!alias) {
+      return allow();
+    }
+    if (ALIAS_MERGE_PATTERN.test(alias)) {
+      return refuse(
+        `git ${invocation.subcommand} is an alias for "${alias}"; run the expanded command so the guard can check it`
+      );
+    }
+    if (alias.startsWith("!")) {
+      return allow();
+    }
+    name = alias.trim().split(WHITESPACE_PATTERN)[0] ?? "";
+  }
+  return refuse(
+    `git ${invocation.subcommand} is an alias chain the guard cannot resolve; run the expanded command`
+  );
 };
 
 const analyzeGit = (
@@ -534,26 +627,28 @@ const analyzeGit = (
   if (!invocation) {
     return allow();
   }
-  const scoped = { ...context, cwd: invocation.cwd };
   const { subcommand } = invocation;
-  const routing = ["push", "merge", "pull"].includes(subcommand);
-  if (routing && invocation.configOverrides.length > 0) {
+  if (invocation.overrides.length > 0) {
     return refuse(
-      `git -c ${invocation.configOverrides.join(", ")} changes where git ${subcommand} goes; run it without the override`
+      `git ${invocation.overrides.join(", ")} changes which repository, refs, aliases, or remotes git uses, so the guard cannot check what it does; run git without it`
     );
   }
+  if (
+    GIT_TRANSPORTS.has(subcommand) ||
+    (subcommand === "subtree" && invocation.args.includes("push"))
+  ) {
+    return refuse(
+      `git ${subcommand} can update remote refs outside git push; use git push with one exact refspec`
+    );
+  }
+  const scoped = { ...context, cwd: invocation.cwd };
   if (subcommand === "push") {
     return gitPush(invocation, scoped);
   }
-  if (routing) {
+  if (subcommand === "merge" || subcommand === "pull") {
     return gitMerge(invocation, scoped, subcommand === "pull");
   }
-  const alias = gitConfig(invocation, `alias.${subcommand}`);
-  return alias && ALIAS_MERGE_PATTERN.test(alias)
-    ? refuse(
-        `git ${subcommand} is an alias for "${alias}"; run the expanded command so the guard can check it`
-      )
-    : allow();
+  return aliasDecision(invocation);
 };
 
 // ------------------------------------------------------- provider merges
@@ -639,7 +734,7 @@ const apiMerge = (
     return sha;
   }
   return sha && SHA_PATTERN.test(sha)
-    ? requireReceipt(context, sha, `${tool} api merge of ${path}`)
+    ? requireProviderMerge(context, sha, `${tool} api merge of ${path}`)
     : refuse(
         `${tool} api merge of ${path} names no exact sha; pass sha=<exact head> so the merge is bound to a checked commit`
       );
@@ -671,7 +766,7 @@ const analyzeGlab = (
     );
   }
   return SHA_PATTERN.test(sha)
-    ? requireReceipt(context, sha, "glab mr merge")
+    ? requireProviderMerge(context, sha, "glab mr merge")
     : refuse(`glab mr merge --sha ${sha} is not a commit SHA`);
 };
 
@@ -703,7 +798,7 @@ const analyzeGh = (
     "--match-head-commit",
   ]);
   return sha
-    ? requireReceipt(context, sha, "gh pr merge")
+    ? requireProviderMerge(context, sha, "gh pr merge")
     : refuse(
         "gh pr merge names no --match-head-commit; pass the exact head so the merge is bound to a checked commit"
       );
@@ -712,6 +807,40 @@ const analyzeGh = (
 // ---------------------------------------------------------------- entry
 
 const ENV_VALUED = ["-u", "--unset", "-C", "--chdir"];
+
+/**
+ * One `env` argument: how many arguments it uses and any new directory, or
+ * null at the command it wraps.
+ */
+const envArgument = (
+  argv: readonly string[],
+  index: number,
+  cwd: string
+): { cwd: string; used: number } | GuardDecision | null => {
+  const argument = argv[index] ?? "";
+  if (argument === "-S" || argument.startsWith("--split-string")) {
+    return refuse(
+      "env -S hides the command line from the guard; run the command as a plain argv"
+    );
+  }
+  if (argument.startsWith("GIT_") && argument.includes("=")) {
+    return refuse(
+      `env ${argument.slice(0, argument.indexOf("="))}=... changes what git does, so the guard cannot check it; run the command without it`
+    );
+  }
+  if (argument === "-C" || argument === "--chdir") {
+    return { cwd: resolve(cwd, argv[index + 1] ?? ""), used: 2 };
+  }
+  if (argument.startsWith("--chdir=")) {
+    return { cwd: resolve(cwd, argument.slice("--chdir=".length)), used: 1 };
+  }
+  if (ENV_VALUED.includes(argument)) {
+    return { cwd, used: 2 };
+  }
+  return ENV_ASSIGNMENT_PATTERN.test(argument) || argument.startsWith("-")
+    ? { cwd, used: 1 }
+    : null;
+};
 
 /** Skips one `env` invocation's options and assignments. */
 const skipEnv = (
@@ -722,31 +851,18 @@ const skipEnv = (
   let index = start;
   let directory = cwd;
   while (index < argv.length) {
-    const argument = argv[index] ?? "";
-    if (argument === "-S" || argument.startsWith("--split-string")) {
-      return refuse(
-        "env -S hides the command line from the guard; run the command as a plain argv"
-      );
-    }
-    if (argument === "--") {
+    if (argv[index] === "--") {
       return { cwd: directory, index: index + 1 };
     }
-    if (ENV_VALUED.includes(argument)) {
-      if (argument === "-C" || argument === "--chdir") {
-        directory = resolve(directory, argv[index + 1] ?? "");
-      }
-      index += 2;
-    } else if (argument.startsWith("--chdir=")) {
-      directory = resolve(directory, argument.slice("--chdir=".length));
-      index += 1;
-    } else if (
-      ENV_ASSIGNMENT_PATTERN.test(argument) ||
-      argument.startsWith("-")
-    ) {
-      index += 1;
-    } else {
+    const step = envArgument(argv, index, directory);
+    if (step === null) {
       break;
     }
+    if ("allow" in step) {
+      return step;
+    }
+    directory = step.cwd;
+    index += step.used;
   }
   return { cwd: directory, index };
 };

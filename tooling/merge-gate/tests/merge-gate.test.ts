@@ -84,18 +84,19 @@ const repository = () => {
     overrides: Record<string, unknown> = {}
   ) => {
     const path = receiptPath(common, sha);
+    const now = new Date().toISOString();
     mkdirSync(dirname(path), { recursive: true });
     writeFileSync(
       path,
       JSON.stringify({
         command: ["bun", "run", "check"],
         exitCode: 0,
-        finishedAt: new Date().toISOString(),
+        finishedAt: now,
         headSha: sha,
         kind: "check-receipt",
         runtime: "bun test",
         schemaVersion: 1,
-        startedAt: new Date().toISOString(),
+        startedAt: now,
         treeSha: git(root, ["rev-parse", `${sha}^{tree}`]),
         ...overrides,
       })
@@ -118,7 +119,9 @@ describe("merge gate exec guard", () => {
       ["git", "push", "origin", "v1.0.0"],
       ["git", "push", "origin", "--delete", "feat/x"],
       ["git", "push", "--dry-run", "origin", "main"],
-      ["git", "merge"],
+      ["git", "push", "origin", "--tags"],
+      ["git", "push", "--tags"],
+      ["git", "merge", "--ff-only"],
       ["glab", "mr", "view", "5"],
       ["glab", "api", "projects/1/merge_requests/5"],
       [
@@ -222,6 +225,23 @@ describe("merge gate exec guard", () => {
     }
   });
 
+  test("refuses a provider merge whose head does not contain the published target", () => {
+    const { root, writeReceipt } = repository();
+    const orphan = git(root, [
+      "commit-tree",
+      git(root, ["rev-parse", "feat/x^{tree}"]),
+      "-m",
+      "Detached from main",
+    ]);
+    writeReceipt(orphan);
+    const merge = ["glab", "mr", "merge", "86", "--sha", orphan];
+    expect(decide(root, merge).reason).toContain(
+      "does not contain refs/remotes/origin/main"
+    );
+    git(root, ["remote", "remove", "origin"]);
+    expect(decide(root, merge).reason).toContain("no fetched remote copy");
+  });
+
   test("refuses a receipt that does not record a passing check of that tree", () => {
     const { feature, root, writeReceipt } = repository();
     const command = ["glab", "mr", "merge", "86", "--sha", feature];
@@ -230,6 +250,10 @@ describe("merge gate exec guard", () => {
       { treeSha: "0".repeat(40) },
       { command: ["bun", "test"] },
       { headSha: "1".repeat(40) },
+      { startedAt: "not a time" },
+      { finishedAt: "2000-01-01T00:00:00.000Z" },
+      { runtime: " " },
+      { reviewer: "someone" },
     ]) {
       writeReceipt(feature, overrides);
       expect(decide(root, command).reason).toContain(
@@ -241,6 +265,9 @@ describe("merge gate exec guard", () => {
   test("gates every git push that moves main", () => {
     const { feature, published, root, writeReceipt } = repository();
     git(root, ["merge", "-q", "--ff-only", "feat/x"]);
+    // An alias chain that ends in push is still a push.
+    git(root, ["config", "alias.ship", "deliver"]);
+    git(root, ["config", "alias.deliver", "push"]);
     const pushes = [
       ["git", "push", "origin", "main"],
       ["git", "push", "origin", "HEAD:main"],
@@ -267,6 +294,16 @@ describe("merge gate exec guard", () => {
       ["git", "push", "origin", "--delete", "main"],
       ["git", "push", "--all", "origin"],
       ["git", "push", "--mirror", "origin"],
+      ["git", "push", "origin", ":"],
+      ["git", "push", "origin", "+:"],
+      ["git", "-c", "alias.ship=push", "ship", "origin", "main"],
+      ["git", "--git-dir=/elsewhere/.git", "push", "origin", "HEAD:main"],
+      ["git", "--work-tree", "/elsewhere", "merge", "--ff-only", "feat/x"],
+      ["git", "--bare", "push", "origin", "main"],
+      ["env", "GIT_DIR=/elsewhere/.git", "git", "push", "origin", "main"],
+      ["git", "send-pack", "origin", "main"],
+      ["git", "subtree", "push", "--prefix=lib", "origin", "main"],
+      ["git", "ship", "origin", "main"],
       ["git", "push", "origin", "refs/heads/*:refs/heads/*"],
       ["git", "-c", "push.default=matching", "push"],
       ["sh", "-c", "git push origin main"],
@@ -286,7 +323,7 @@ describe("merge gate exec guard", () => {
     for (const command of [
       ["git", "merge", "--ff-only", "origin/main"],
       ["git", "pull", "--ff-only"],
-      ["git", "pull", "origin", "main"],
+      ["git", "pull", "--ff-only", "origin", "main"],
       ["git", "merge", "--abort"],
     ]) {
       expect({ allow: decide(root, command).allow, command }).toEqual({
@@ -297,7 +334,11 @@ describe("merge gate exec guard", () => {
     for (const command of [
       ["git", "merge", "feat/x"],
       ["git", "merge", "--ff-only", "feat/x"],
-      ["git", "pull", "origin", "feat/x"],
+      ["git", "merge", "origin/main"],
+      ["git", "pull", "origin", "main"],
+      ["git", "pull", "--rebase"],
+      ["git", "pull", "--ff-only", "origin", "feat/x"],
+      ["git", "pull", "--ff-only", "mirror", "main"],
     ]) {
       expect({ allow: decide(root, command).allow, command }).toEqual({
         allow: false,

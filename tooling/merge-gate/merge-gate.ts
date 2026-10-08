@@ -75,6 +75,45 @@ export const resolveCommit = (cwd: string, revision: string): string | null => {
     : null;
 };
 
+const RECEIPT_KEYS = [
+  "command",
+  "exitCode",
+  "finishedAt",
+  "headSha",
+  "kind",
+  "runtime",
+  "schemaVersion",
+  "startedAt",
+  "treeSha",
+].join(",");
+
+const timestamp = (value: unknown): number =>
+  typeof value === "string" ? Date.parse(value) : Number.NaN;
+
+/** The complete receipt shape, bound to exactly this commit and tree. */
+const isPassingReceipt = (
+  receipt: Partial<CheckReceipt>,
+  sha: string,
+  tree: string
+): boolean => {
+  const started = timestamp(receipt.startedAt);
+  const finished = timestamp(receipt.finishedAt);
+  return (
+    Object.keys(receipt).sort().join(",") === RECEIPT_KEYS &&
+    receipt.schemaVersion === 1 &&
+    receipt.kind === "check-receipt" &&
+    JSON.stringify(receipt.command) === JSON.stringify(CHECK_COMMAND) &&
+    receipt.exitCode === 0 &&
+    receipt.headSha === sha &&
+    receipt.treeSha === tree &&
+    Number.isFinite(started) &&
+    Number.isFinite(finished) &&
+    started <= finished &&
+    typeof receipt.runtime === "string" &&
+    receipt.runtime.trim() !== ""
+  );
+};
+
 /**
  * Null when `cwd`'s repository holds a passing receipt for exactly
  * `revision`; otherwise why not, phrased for the person who must fix it.
@@ -92,21 +131,18 @@ export const receiptProblem = (
     return "the Git common directory could not be found.";
   }
   const path = receiptPath(common, sha);
-  let receipt: Partial<CheckReceipt>;
+  let parsed: unknown;
   try {
-    receipt = JSON.parse(readFileSync(path, "utf8")) as Partial<CheckReceipt>;
+    parsed = JSON.parse(readFileSync(path, "utf8"));
   } catch {
     return `no passing \`bun run check\` receipt exists for ${sha}. Check out that exact commit cleanly and run \`bun run check:receipt\`, then retry.`;
   }
   const tree = git(cwd, ["rev-parse", "--verify", `${sha}^{tree}`]).stdout;
-  if (
-    receipt.schemaVersion !== 1 ||
-    receipt.kind !== "check-receipt" ||
-    receipt.exitCode !== 0 ||
-    receipt.headSha !== sha ||
-    receipt.treeSha !== tree ||
-    JSON.stringify(receipt.command) !== JSON.stringify(CHECK_COMMAND)
-  ) {
+  const receipt =
+    typeof parsed === "object" && parsed !== null
+      ? (parsed as Partial<CheckReceipt>)
+      : {};
+  if (!isPassingReceipt(receipt, sha, tree)) {
     return `the check receipt at ${path} does not record a passing \`bun run check\` for ${sha}; run \`bun run check:receipt\` on that commit again.`;
   }
   return null;

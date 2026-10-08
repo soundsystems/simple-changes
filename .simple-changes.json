@@ -6,6 +6,13 @@
   },
   "changelogHandling": "delegate-if-available",
   "defaultFinish": "integrate",
+  "execGuard": [
+    "bun",
+    "tooling/merge-gate/exec-guard.ts",
+    "--target-branch",
+    "main",
+    "--"
+  ],
   "gitPushAuthorization": "ask",
   "questions": "blocking-only",
   "review": "repository-policy",

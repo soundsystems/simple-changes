@@ -1155,7 +1155,8 @@ const unionAuthors = (
  * Effective authors and gaps for the whole ledger, resolved at read time
  * through the replay links in one iterative post-order traversal shared by
  * every query. Each commit is evaluated at most once per resolver, after its
- * sources, so coverage over many commits never re-walks a shared ancestry.
+ * sources and stored inherited sources, so coverage over many commits never
+ * re-walks a shared ancestry.
  * A commit reached again while still on the traversal stack is a cycle,
  * reported as `ledger-cycle`.
  */
@@ -1187,11 +1188,18 @@ const createResolver = (ledger: ReviewLedger): LedgerResolver => {
       throw cycle(start);
     }
     onStack.add(start);
-    const stack: { next: number; node: string }[] = [{ next: 0, node: start }];
+    // Every dependency evaluation reads, stored inherited sources included,
+    // is resolved here before its dependent, so evaluation never recurses
+    // and depth is bounded by memory, not the call stack.
+    const frameFor = (node: string): CycleFrame => ({
+      dependencies: replayDependencies(ownValue(ledger.replays, node)),
+      next: 0,
+      node,
+    });
+    const stack: CycleFrame[] = [frameFor(start)];
     while (stack.length > 0) {
-      const frame = stack.at(-1) as { next: number; node: string };
-      const sources = ownValue(ledger.replays, frame.node)?.sources ?? [];
-      const source = sources[frame.next];
+      const frame = stack.at(-1) as CycleFrame;
+      const source = frame.dependencies[frame.next];
       if (source !== undefined) {
         frame.next += 1;
         if (memo.has(source)) {
@@ -1201,7 +1209,7 @@ const createResolver = (ledger: ReviewLedger): LedgerResolver => {
           throw cycle(source);
         }
         onStack.add(source);
-        stack.push({ next: 0, node: source });
+        stack.push(frameFor(source));
         continue;
       }
       stack.pop();
@@ -1238,7 +1246,7 @@ const createResolver = (ledger: ReviewLedger): LedgerResolver => {
     // Stored inherited gaps stay until closed: a source attested since, or an
     // edit attested since. They are resolved through the same memo.
     const inheritedUnresolved = record.inheritedGaps.unresolvedSources.filter(
-      (sha) => resolveNode(sha).authors.size === 0
+      (sha) => (memo.get(sha) as ResolvedNode).authors.size === 0
     );
     const inheritedUncovered =
       record.inheritedGaps.uncoveredEdits.filter(editOpen);
@@ -1896,8 +1904,18 @@ export const resolveReviewer = (input: {
       EXIT_CODES.usage
     );
   }
+  // Every input is validated before any status is returned, so a caller
+  // that changes state after resolving (a handoff releasing its claim)
+  // never does so on a usage error.
+  const target =
+    input.proposalId === undefined || input.head === undefined
+      ? null
+      : {
+          head: resolveCommit(input.repositoryRoot, input.head, "--head"),
+          proposalId: requireProposalId(input.proposalId),
+        };
   const { review } = input.authoring.effective;
-  const mode = input.proposalId === undefined ? "provisional" : "verified";
+  const mode = target === null ? "provisional" : "verified";
   const resolution: ReviewerResolution = {
     adversarial: review.adversarial,
     effort: null,
@@ -1913,11 +1931,11 @@ export const resolveReviewer = (input: {
     return { ...resolution, reason: "authoring-repair", status: "unresolved" };
   }
   let verified: ReturnType<typeof verifiedEvidence> | null = null;
-  if (input.proposalId !== undefined && input.head !== undefined) {
+  if (target) {
     verified = verifiedEvidence(
       input.repositoryRoot,
-      requireProposalId(input.proposalId),
-      input.head,
+      target.proposalId,
+      target.head,
       review.adversarial,
       input.authoring.repairRequired
     );

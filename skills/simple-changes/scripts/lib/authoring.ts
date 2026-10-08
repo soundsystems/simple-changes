@@ -2,7 +2,6 @@ import { randomUUID } from "node:crypto";
 import {
   chmodSync,
   existsSync,
-  linkSync,
   lstatSync,
   mkdirSync,
   readFileSync,
@@ -938,19 +937,6 @@ const sidecarLockOwner = (lockPath: string): SidecarLockOwner | null => {
   }
 };
 
-// A lock left by a writer on this host whose process has exited.
-const staleSidecarLock = (owner: SidecarLockOwner | null): boolean => {
-  if (owner?.hostname !== hostname() || typeof owner.pid !== "number") {
-    return false;
-  }
-  try {
-    process.kill(owner.pid, 0);
-    return false;
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code === "ESRCH";
-  }
-};
-
 const createSidecarLock = (lockPath: string, body: string): boolean => {
   try {
     writeFileSync(lockPath, body, {
@@ -967,48 +953,25 @@ const createSidecarLock = (lockPath: string, body: string): boolean => {
   }
 };
 
-// Moves a stale lock aside and keeps it only if it is still the one judged
-// stale; a live lock taken in between is put back untouched.
-const recoverStaleSidecarLock = (lockPath: string): boolean => {
-  const owner = sidecarLockOwner(lockPath);
-  if (!staleSidecarLock(owner)) {
-    return false;
-  }
-  const recoveryPath = `${lockPath}.recovery-${randomUUID()}`;
-  try {
-    renameSync(lockPath, recoveryPath);
-  } catch {
-    return false;
-  }
-  if (sidecarLockOwner(recoveryPath)?.token === owner?.token) {
-    rmSync(recoveryPath, { force: true });
-    return true;
-  }
-  try {
-    linkSync(recoveryPath, lockPath);
-  } finally {
-    rmSync(recoveryPath, { force: true });
-  }
-  return false;
-};
+const describeLockOwner = (owner: SidecarLockOwner | null): string =>
+  typeof owner?.pid === "number" && typeof owner.hostname === "string"
+    ? ` (PID ${owner.pid} on ${owner.hostname})`
+    : "";
 
 /**
  * Serializes writers of one sidecar path, whichever repository or scope they
  * write from: a personal sidecar is shared by every repository, so the
- * repository locks callers hold do not order its writers.
+ * repository locks callers hold do not order its writers. A lock is never
+ * recovered automatically: no check of its owner can be made atomic with
+ * taking it over, so a lock left by an exited writer is removed by the owner.
  */
 const acquireSidecarLock = (path: string): (() => void) => {
   const lockPath = `${path}.lock`;
   const token = randomUUID();
   const body = `${JSON.stringify({ hostname: hostname(), pid: process.pid, token })}\n`;
-  if (
-    !(
-      createSidecarLock(lockPath, body) ||
-      (recoverStaleSidecarLock(lockPath) && createSidecarLock(lockPath, body))
-    )
-  ) {
+  if (!createSidecarLock(lockPath, body)) {
     throw new SimpleChangesError(
-      `Another authoring write holds ${lockPath}. Retry after it finishes, or remove that file if no write is running.`,
+      `Another authoring write holds ${lockPath}${describeLockOwner(sidecarLockOwner(lockPath))}. Retry after it finishes; if that process has exited, remove the file and retry.`,
       EXIT_CODES.unsafe
     );
   }

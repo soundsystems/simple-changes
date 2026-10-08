@@ -733,7 +733,7 @@ describe("sidecar files", () => {
     ).toEqual([]);
   });
 
-  test("refuses to replace a target that changed during staging, and serializes writers by target", () => {
+  test("refuses to replace a target that changed during staging, and serializes writers by target without takeover", () => {
     const directory = temporary("staging");
     const path = join(directory, "authoring.json");
     const kept = sidecar({ gamma: { model: "kept" } });
@@ -757,19 +757,20 @@ describe("sidecar files", () => {
     expect(readFileSync(path, "utf8")).toBe("{ not json");
     expect(readdirSync(directory).sort()).toEqual(["authoring.json"]);
     rmSync(path);
-    // A live writer's lock refuses; one left by an exited process is
-    // recovered.
+    // Another writer's lock refuses, even one left by an exited process:
+    // no owner check is atomic with a takeover, so the owner removes it.
     const lockPath = `${path}.lock`;
-    const owner = (pid: number) =>
-      `${JSON.stringify({ hostname: hostname(), pid, token: "other" })}\n`;
-    writeFileSync(lockPath, owner(process.pid));
-    expect(() => writeAuthoringSidecar(path, EMPTY, true)).toThrow(
-      "Another authoring write holds"
-    );
-    expect(existsSync(path)).toBe(false);
-    expect(readFileSync(lockPath, "utf8")).toBe(owner(process.pid));
     const exited = spawnSync(["true"]).pid;
-    writeFileSync(lockPath, owner(exited));
+    for (const pid of [process.pid, exited]) {
+      const owner = `${JSON.stringify({ hostname: hostname(), pid, token: "other" })}\n`;
+      writeFileSync(lockPath, owner);
+      expect(() => writeAuthoringSidecar(path, EMPTY, true)).toThrow(
+        `Another authoring write holds ${lockPath} (PID ${pid} on ${hostname()})`
+      );
+      expect(existsSync(path)).toBe(false);
+      expect(readFileSync(lockPath, "utf8")).toBe(owner);
+    }
+    rmSync(lockPath);
     expect(writeAuthoringSidecar(path, EMPTY, true).written).toBe(true);
     expect(readdirSync(directory).sort()).toEqual(["authoring.json"]);
   });

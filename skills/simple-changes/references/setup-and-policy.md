@@ -319,7 +319,10 @@ untracked work. It never joins the policy file, whose closed schema older
 copies enforce, so they ignore it and write with the running model. Repository
 scope writes the repository file, personal scope the personal file, run-only
 nothing; `setup --authoring <json-or-@path> --scope <repository|personal>
---confirm` records an answer without touching the policy.
+--confirm` records an answer without touching the policy. A write holds
+`<sidecar>.lock` beside the file and refuses while another write holds it,
+naming its process; if that process has exited, the owner removes the lock.
+A sidecar that changes while an answer is being written is never replaced.
 
 ```json
 {

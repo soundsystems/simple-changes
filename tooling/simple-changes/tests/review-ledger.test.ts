@@ -969,6 +969,41 @@ describe("effective authors and gaps", () => {
     ]);
   });
 
+  test("a deep acyclic chain of stored inherited sources validates and resolves without recursion", () => {
+    const depth = 20_000;
+    const base = fakeSha(500_000);
+    const chain = Array.from({ length: depth }, (_, index) =>
+      fakeSha(500_001 + index)
+    );
+    const ledger = emptyReviewLedger();
+    attestInMemory(ledger, base, alpha);
+    for (const [index, commit] of chain.entries()) {
+      // Each record's only source is attested, but its stored inherited gap
+      // names the previous record, which resolution re-checks.
+      ledger.replays[commit] = {
+        inheritedGaps: {
+          uncoveredEdits: [],
+          unresolvedSources: index === 0 ? [] : [chain[index - 1] as string],
+        },
+        ownGaps: { uncoveredEdit: false, unresolvedSources: [] },
+        recordedAt: STAMP,
+        sources: [base],
+        verification: "verified",
+      };
+    }
+    expect(validateReviewLedger(ledger).reason).toBeNull();
+    const top = chain.at(-1) as string;
+    expect(
+      resolveEffectiveAuthors(ledger, top).authors.map(
+        (entry) => entry.logicalId
+      )
+    ).toEqual(["agent-alpha"]);
+    expect(headCoverage(ledger, [top])).toMatchObject({
+      fullyCovered: true,
+      gaps: {},
+    });
+  });
+
   test("reports a cycle in a loaded ledger as ledger-cycle", () => {
     const ledger = emptyReviewLedger();
     const record = (sources: string[]) => ({
@@ -1417,6 +1452,24 @@ describe("reviewer resolution before dispatch", () => {
         repositoryRoot: process.cwd(),
       })
     ).toThrow("given together");
+    // Inputs are validated before any status, a repair included.
+    const repairing = stubAuthoring({}, {}, true);
+    expect(() =>
+      resolveReviewer({
+        authoring: repairing,
+        head: "not-a-sha",
+        proposalId: PROPOSAL,
+        repositoryRoot: process.cwd(),
+      })
+    ).toThrow("--head must be a commit SHA");
+    expect(() =>
+      resolveReviewer({
+        authoring: repairing,
+        head: git(process.cwd(), ["rev-parse", "HEAD"]),
+        proposalId: "has space",
+        repositoryRoot: process.cwd(),
+      })
+    ).toThrow("--proposal must be");
   });
 });
 

@@ -105,8 +105,10 @@ const repository = () => {
   return { base, feature, published, root, writeReceipt };
 };
 
+const PROJECTS = ["84768068", "1", "a/b", "o/r"];
+
 const decide = (cwd: string, command: string[]) =>
-  evaluateCommand(command, { cwd, targets: ["main"] });
+  evaluateCommand(command, { cwd, projects: PROJECTS, targets: ["main"] });
 
 describe("merge gate exec guard", () => {
   test("lets every ungated command through", () => {
@@ -114,9 +116,9 @@ describe("merge gate exec guard", () => {
     for (const command of [
       ["bun", "run", "check"],
       ["git", "status"],
-      ["git", "push", "-u", "origin", "feat/x"],
+      ["git", "push", "-u", "origin", "feat/x:feat/x"],
       ["git", "push", "origin", "HEAD:refs/heads/feat/y"],
-      ["git", "push", "origin", "v1.0.0"],
+      ["git", "push", "origin", "refs/tags/v1.0.0:refs/tags/v1.0.0"],
       ["git", "push", "origin", "--delete", "feat/x"],
       ["git", "push", "--dry-run", "origin", "main"],
       ["git", "push", "origin", "--tags"],
@@ -128,13 +130,18 @@ describe("merge gate exec guard", () => {
       ["git", "merge", "--abort"],
       ["glab", "mr", "view", "5"],
       ["glab", "api", "projects/1/merge_requests/5"],
+      ["glab", "api", "projects/1/merge_requests", "--input", "payload.json"],
+      ["glab", "api", "-X", "PUT", "projects/1/merge_requests/5", "-f", "x=y"],
+      ["glab", "api", "-X", "POST", "projects/1/merge_requests/5/notes"],
       [
         "glab",
         "api",
-        "projects/1/merge_requests/5/cancel_merge_when_pipeline_succeeds",
         "-X",
-        "POST",
+        "DELETE",
+        "projects/1/repository/branches/feat%2Fx",
       ],
+      ["gh", "api", "-X", "PATCH", "repos/o/r/pulls/7", "-f", "body=x"],
+      ["gh", "api", "-X", "DELETE", "repos/o/r/git/refs/heads/feat/x"],
       ["sh", "-c", "echo shipped"],
       ["simple-changes", "loop", "status"],
     ]) {
@@ -147,6 +154,8 @@ describe("merge gate exec guard", () => {
 
   test("binds provider merges to a passing receipt for the exact SHA", () => {
     const { feature, root, writeReceipt } = repository();
+    // `glab mr merge` without -R merges in the origin project.
+    git(root, ["remote", "set-url", "origin", "git@gitlab.com:a/b.git"]);
     const merges = [
       [
         "glab",
@@ -164,8 +173,8 @@ describe("merge gate exec guard", () => {
         "--method=PUT",
       ],
       ["glab", "mr", "merge", "86", "--sha", feature],
-      ["glab", "mr", "accept", "86", `--sha=${feature}`],
-      ["gh", "pr", "merge", "7", "--match-head-commit", feature],
+      ["glab", "mr", "accept", "86", `--sha=${feature}`, "-R", "a/b"],
+      ["gh", "pr", "merge", "7", "--match-head-commit", feature, "-R", "o/r"],
       [
         "gh",
         "api",
@@ -174,16 +183,6 @@ describe("merge gate exec guard", () => {
         "PUT",
         "-f",
         `sha=${feature}`,
-      ],
-      [
-        "env",
-        "GITLAB_HOST=gitlab.com",
-        "glab",
-        "mr",
-        "merge",
-        "86",
-        "--sha",
-        feature,
       ],
     ];
     for (const command of merges) {
@@ -203,6 +202,58 @@ describe("merge gate exec guard", () => {
     }
     for (const command of [
       ["glab", "mr", "merge", "86"],
+      ["glab", "mr", "merge", "86", "--sha", feature, "-R", "other/project"],
+      [
+        "env",
+        "GITLAB_HOST=example.com",
+        "glab",
+        "mr",
+        "merge",
+        "86",
+        "--sha",
+        feature,
+      ],
+      ["env", "HOME=/elsewhere", "git", "push", "origin", "HEAD:feat/x"],
+      ["gh", "repo", "sync"],
+      ["gh", "api", "-X", "POST", "repos/o/r/pulls/7/merge-async"],
+      ["glab", "api", "-X", "POST", "graphql", "--input", "query.json"],
+      [
+        "glab",
+        "api",
+        "-X",
+        "POST",
+        "projects/1/merge_requests/5/cancel_merge_when_pipeline_succeeds",
+      ],
+      [
+        "glab",
+        "api",
+        "-X",
+        "POST",
+        "projects/1/repository/commits",
+        "-f",
+        "branch=main",
+      ],
+      ["glab", "api", "-X", "DELETE", "projects/1/repository/branches/main"],
+      [
+        "glab",
+        "api",
+        "projects/1/merge_requests/86/merge",
+        "-X",
+        "PUT",
+        "-f",
+        `sha=${feature}`,
+        "-f",
+        "sha=0000000",
+      ],
+      [
+        "glab",
+        "api",
+        "projects/1/merge_requests/86/merge",
+        "-X",
+        "PUT",
+        "--input",
+        "body.json",
+      ],
       ["glab", "api", "projects/1/merge_requests/86/merge", "-X", "PUT"],
       ["gh", "pr", "merge", "7"],
       [
@@ -238,7 +289,7 @@ describe("merge gate exec guard", () => {
       "Detached from main",
     ]);
     writeReceipt(orphan);
-    const merge = ["glab", "mr", "merge", "86", "--sha", orphan];
+    const merge = ["glab", "mr", "merge", "86", "--sha", orphan, "-R", "a/b"];
     expect(decide(root, merge).reason).toContain(
       "does not contain refs/remotes/origin/main"
     );
@@ -248,7 +299,16 @@ describe("merge gate exec guard", () => {
 
   test("refuses a receipt that does not record a passing check of that tree", () => {
     const { feature, root, writeReceipt } = repository();
-    const command = ["glab", "mr", "merge", "86", "--sha", feature];
+    const command = [
+      "glab",
+      "mr",
+      "merge",
+      "86",
+      "--sha",
+      feature,
+      "-R",
+      "a/b",
+    ];
     for (const overrides of [
       { exitCode: 1 },
       { treeSha: "0".repeat(40) },
@@ -274,7 +334,7 @@ describe("merge gate exec guard", () => {
     git(root, ["config", "alias.ship", "deliver"]);
     git(root, ["config", "alias.deliver", "push"]);
     const pushes = [
-      ["git", "push", "origin", "main"],
+      ["git", "push", "origin", "main:main"],
       ["git", "push", "origin", "HEAD:main"],
       ["git", "push", "origin", "HEAD:heads/main"],
       [
@@ -294,9 +354,9 @@ describe("merge gate exec guard", () => {
         "PUT",
       ],
       ["git", "push", "origin", "+feat/x:refs/heads/main"],
-      ["git", "push", "-f", "origin", "main"],
-      ["git", "push", "-fu", "origin", "main"],
-      ["git", "-C", root, "push", "origin", "main"],
+      ["git", "push", "-f", "origin", "main:main"],
+      ["git", "push", "-fu", "origin", "main:refs/heads/main"],
+      ["git", "-C", root, "push", "origin", "HEAD:main"],
     ];
     for (const command of pushes) {
       expect({ allow: decide(root, command).allow, command }).toEqual({
@@ -337,6 +397,8 @@ describe("merge gate exec guard", () => {
       ["git", "push", "--dry-run", "--no-dry-run", "origin", "HEAD:main"],
       ["git", "push", "origin", "--tags", "--no-tags"],
       ["git", "push", "--repo=origin", "main"],
+      ["git", "push", "origin", "main"],
+      ["git", "push", "origin", "HEAD"],
       ["git", "-c", "include.path=/elsewhere/config", "status"],
       ["git", "--exec-path=/elsewhere", "status"],
       ["bash", "-c", 'exec git "$@"', "--", "push", "origin", "HEAD:main"],
@@ -372,8 +434,15 @@ describe("merge gate exec guard", () => {
       decide(root, ["git", "push", "origin", "feat/x:refs/heads/feat/x"]).allow
     ).toBe(true);
     git(root, ["config", "--unset", "remote.origin.push"]);
-    git(root, ["config", "remote.origin.mirror", "true"]);
+    // push.default=upstream sends a colonless branch to its upstream.
+    git(root, ["config", "push.default", "upstream"]);
+    git(root, ["config", "branch.feat/x.merge", "refs/heads/main"]);
+    git(root, ["config", "branch.feat/x.remote", "origin"]);
     expect(decide(root, ["git", "push", "origin", "feat/x"]).allow).toBe(false);
+    git(root, ["config", "remote.origin.mirror", "true"]);
+    expect(
+      decide(root, ["git", "push", "origin", "feat/x:refs/heads/feat/x"]).allow
+    ).toBe(false);
   });
 
   test("allows syncing main with its published remote and gates real merges", () => {
@@ -419,7 +488,10 @@ describe("merge gate exec guard", () => {
   test("reads its own arguments only up to --", () => {
     expect(
       parseGuardArguments(["--target-branch", "main", "--", "git", "push"])
-    ).toEqual({ command: ["git", "push"], targets: ["main"] });
+    ).toEqual({ command: ["git", "push"], projects: [], targets: ["main"] });
+    expect(
+      parseGuardArguments(["--project", "84768068", "--", "glab"]).projects
+    ).toEqual(["84768068"]);
     expect(parseGuardArguments(["--", "ls"]).targets).toEqual(["main"]);
     expect(() => parseGuardArguments(["git", "push"])).toThrow(
       "end the guard's own arguments with --"
@@ -449,7 +521,7 @@ describe("merge gate exec guard", () => {
     git(root, ["commit", "-q", "-m", "Add the merge gate policy"]);
     const lease = startLoop(root, "controller", "ship");
     const marker = join(root, "..", "merged.txt");
-    const merge = ["glab", "mr", "merge", "86", "--sha", feature];
+    const merge = ["glab", "mr", "merge", "86", "--sha", feature, "-R", "a/b"];
     await expect(
       executeLoopMutation(root, lease.runId, "controller", merge)
     ).rejects.toThrow("exited 1");
@@ -505,7 +577,8 @@ describe("bun run check:receipt", () => {
       treeSha: git(root, ["rev-parse", "HEAD^{tree}"]),
     });
     expect(
-      decide(root, ["glab", "mr", "merge", "1", "--sha", head]).allow
+      decide(root, ["glab", "mr", "merge", "1", "--sha", head, "-R", "a/b"])
+        .allow
     ).toBe(true);
   });
 

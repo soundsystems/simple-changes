@@ -24,7 +24,6 @@
  * not a security boundary.
  */
 
-import { readFileSync } from "node:fs";
 import { basename, resolve } from "node:path";
 import { git, receiptProblem, resolveCommit } from "./merge-gate.ts";
 
@@ -35,6 +34,8 @@ export interface GuardDecision {
 
 interface GuardContext {
   cwd: string;
+  /** Provider projects (path or ID) whose merges the guard may allow. */
+  projects: readonly string[];
   targets: readonly string[];
 }
 
@@ -50,13 +51,10 @@ const SHELL_COMMAND_FLAG_PATTERN = /^-[A-Za-z]*c[A-Za-z]*$/u;
 const ENV_ASSIGNMENT_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*=/u;
 const SHORT_CLUSTER_PATTERN = /^-[A-Za-z]{2,}$/u;
 const LEADING_SLASHES_PATTERN = /^\/+/u;
-const MERGE_ENDPOINT_PATTERN =
-  /(?:^|\/)(?:merge_requests|pulls)\/[^/]+\/merge(?:_when_pipeline_succeeds)?$/u;
-const GRAPHQL_MERGE_PATTERN =
-  /\b(?:mergeRequestAccept|mergeRequestSetAutoMerge|mergePullRequest|enablePullRequestAutoMerge)\b/u;
 const SHA_PATTERN = /^[0-9a-f]{7,64}$/u;
 const REBASE_EXEC_SHORT_PATTERN = /^-[A-Za-z]*x/u;
-const TRAILING_SLASHES_PATTERN = /\/+$/u;
+const SCP_REMOTE_PATTERN = /^[^/:]+@[^:]+:(.+)$/u;
+const DOT_GIT_PATTERN = /\.git$/u;
 
 // ------------------------------------------------------------- evidence
 
@@ -108,8 +106,14 @@ const publishedContains = (
 const requireProviderMerge = (
   context: GuardContext,
   sha: string,
-  what: string
+  what: string,
+  project: string | null
 ): GuardDecision => {
+  if (!(project && context.projects.includes(project))) {
+    return refuse(
+      `${what}: project ${project ?? "(unknown)"} is not one the guard is configured for (--project), so it cannot tell which target the merge moves`
+    );
+  }
   const checked = requireReceipt(context, sha, what);
   const commit = resolveCommit(context.cwd, sha);
   if (!(checked.allow && commit)) {
@@ -366,9 +370,6 @@ const targetOf = (
   );
 };
 
-const refExists = (invocation: GitInvocation, ref: string): boolean =>
-  gitIn(invocation, ["show-ref", "--verify", "--quiet", ref]).exitCode === 0;
-
 /** A git subcommand form that runs other programs the guard cannot see. */
 const runsOtherCommands = (invocation: GitInvocation): boolean => {
   const { args, subcommand } = invocation;
@@ -409,35 +410,12 @@ const PUSH_FLAGS = new Set([
   "--push-option",
 ]);
 
-/** Source and destination of one push refspec, or null for a tag push. */
-const refspecParts = (
-  invocation: GitInvocation,
-  refspec: string
-): { destination: string; source: string } | null => {
-  const separator = refspec.indexOf(":");
-  if (separator !== -1) {
-    return {
-      destination: refspec.slice(separator + 1),
-      source: refspec.slice(0, separator),
-    };
-  }
-  if (refspec === "HEAD") {
-    return { destination: currentBranch(invocation) ?? "HEAD", source: "HEAD" };
-  }
-  const tagOnly =
-    !(
-      refspec.startsWith("refs/") ||
-      refExists(invocation, `refs/heads/${refspec}`)
-    ) && refExists(invocation, `refs/tags/${refspec}`);
-  return tagOnly ? null : { destination: refspec, source: refspec };
-};
-
 /** One refspec's verdict, or null when it cannot move a target branch. */
 const pushRefspec = (
   invocation: GitInvocation,
   context: GuardContext,
   spec: string,
-  options: { deleting: boolean; mapped: boolean }
+  deleting: boolean
 ): GuardDecision | null => {
   const refspec = spec.startsWith("+") ? spec.slice(1) : spec;
   if (refspec.includes("*")) {
@@ -445,22 +423,20 @@ const pushRefspec = (
       `the pattern refspec ${spec} can push many branches; push one exact refspec instead`
     );
   }
-  if (options.deleting) {
+  if (deleting) {
     const branch = targetOf(refspec, context.targets);
     return branch
       ? refuse(`git push would delete target branch ${branch}`)
       : null;
   }
-  if (options.mapped && !refspec.includes(":")) {
+  const separator = refspec.indexOf(":");
+  if (separator === -1) {
     return refuse(
-      `this remote maps pushed refs through remote.<name>.push, so ${spec} may update another branch; write it as <source>:<destination>`
+      `the refspec ${spec} lets configuration (push.default, upstreams, remote push mappings) choose its destination; write it as <source>:<destination>`
     );
   }
-  const parts = refspecParts(invocation, refspec);
-  if (!parts) {
-    return null;
-  }
-  const { destination, source } = parts;
+  const source = refspec.slice(0, separator);
+  const destination = refspec.slice(separator + 1);
   if (!(destination || source)) {
     return refuse(
       `the refspec ${spec} pushes every matching branch; push one exact refspec instead`
@@ -518,14 +494,9 @@ const gitPush = (
           "git push without refspecs pushes whatever configuration says; name each refspec"
         );
   }
-  const options = {
-    deleting: flags.includes("-d") || flags.includes("--delete"),
-    mapped:
-      gitIn(invocation, ["config", "--get-all", `remote.${remote}.push`])
-        .stdout !== "",
-  };
+  const deleting = flags.includes("-d") || flags.includes("--delete");
   for (const spec of refspecs) {
-    const decision = pushRefspec(invocation, context, spec, options);
+    const decision = pushRefspec(invocation, context, spec, deleting);
     if (decision && !decision.allow) {
       return decision;
     }
@@ -705,42 +676,36 @@ const API_FLAGS = new Set([
   "--slurp",
   "--verbose",
 ]);
+const URL_PREFIX_PATTERN = /^[a-z]+:\/\/[^/]+\//iu;
+const API_VERSION_PATTERN = /^api\/v\d+\//u;
 
-/** The SHA a merge call binds, from its fields, query, or JSON body. */
-const apiMergeSha = (
-  scanned: Scanned,
-  query: string,
-  cwd: string
-): string | GuardDecision | null => {
-  const field = valuesOf(scanned, FIELD_OPTIONS).find((value) =>
-    value.startsWith("sha=")
-  );
-  const sha =
-    field?.slice("sha=".length) ?? new URLSearchParams(query).get("sha");
-  const input = lastValue(scanned, ["--input"]);
-  if (sha || input === null) {
-    return sha;
-  }
-  if (input === "-") {
-    return refuse(
-      "the merge call reads its body from stdin, which the guard cannot see; pass sha=<exact head> as a field"
-    );
-  }
+interface ApiCall {
+  method: string;
+  /** The endpoint path split into percent-decoded segments. */
+  segments: string[];
+  /** Every `sha` the call carries, from fields and the query string. */
+  shas: string[];
+}
+
+/** The decoded endpoint path segments, or null for invalid encoding. */
+const endpointSegments = (path: string): string[] | null => {
   try {
-    const body = JSON.parse(readFileSync(resolve(cwd, input), "utf8")) as {
-      sha?: unknown;
-    };
-    return typeof body.sha === "string" ? body.sha : null;
+    return path
+      .replace(URL_PREFIX_PATTERN, "")
+      .replace(LEADING_SLASHES_PATTERN, "")
+      .replace(API_VERSION_PATTERN, "")
+      .split("/")
+      .filter(Boolean)
+      .map((segment) => decodeURIComponent(segment));
   } catch {
-    return refuse("the merge call's --input body could not be read");
+    return null;
   }
 };
 
-const apiMerge = (
+const parseApiCall = (
   args: readonly string[],
-  context: GuardContext,
   tool: string
-): GuardDecision => {
+): ApiCall | GuardDecision => {
   const scanned = scan(args, API_VALUED);
   const unsupported = scanned.options.find(
     ({ name }) => !(API_VALUED.includes(name) || API_FLAGS.has(name))
@@ -750,48 +715,181 @@ const apiMerge = (
       `${tool} api ${unsupported.name} is not a form the merge gate supports; pass each option and its value separately, such as -X PUT`
     );
   }
-  const [endpoint] = scanned.positional;
-  if (!endpoint) {
-    return allow();
+  const [endpoint = ""] = scanned.positional;
+  const [path = "", query = ""] = endpoint.split("?");
+  const segments = endpointSegments(path);
+  if (!segments) {
+    return refuse(`${tool} api endpoint ${path} is not valid percent-encoding`);
   }
   const fields = valuesOf(scanned, FIELD_OPTIONS);
-  if (
-    endpoint.replace(LEADING_SLASHES_PATTERN, "") === "graphql" &&
-    fields.some((field) => GRAPHQL_MERGE_PATTERN.test(field))
-  ) {
+  const input = hasOption(scanned, ["--input"]);
+  return {
+    method:
+      lastValue(scanned, ["-X", "--method"])?.toUpperCase() ??
+      (fields.length > 0 || input ? "POST" : "GET"),
+    segments,
+    shas: [
+      ...fields
+        .filter((field) => field.startsWith("sha="))
+        .map((field) => field.slice("sha=".length)),
+      ...new URLSearchParams(query).getAll("sha"),
+      // A body read from a file or stdin can carry a sha the guard never sees.
+      ...(input ? ["(--input body)"] : []),
+    ],
+  };
+};
+
+type ApiRoute = "allow" | "merge" | `delete:${string}`;
+
+/**
+ * The provider mutations the controller needs, by method and path after the
+ * project: proposal create, update, and comments; the exact merge endpoint;
+ * and branch deletion. Every other mutation, including GraphQL, is refused.
+ */
+const API_ROUTES: ReadonlyArray<{
+  method: string;
+  route: (rest: readonly string[]) => ApiRoute | null;
+}> = [
+  // GitLab: projects/<project>/...
+  {
+    method: "POST",
+    route: (rest) =>
+      rest.length === 1 && rest[0] === "merge_requests" ? "allow" : null,
+  },
+  {
+    method: "PUT",
+    route: (rest) =>
+      rest.length === 2 && rest[0] === "merge_requests" ? "allow" : null,
+  },
+  {
+    method: "POST",
+    route: (rest) =>
+      rest.length === 3 && rest[0] === "merge_requests" && rest[2] === "notes"
+        ? "allow"
+        : null,
+  },
+  {
+    method: "PUT",
+    route: (rest) =>
+      rest.length === 3 &&
+      (rest[0] === "merge_requests" || rest[0] === "pulls") &&
+      rest[2] === "merge"
+        ? "merge"
+        : null,
+  },
+  {
+    method: "DELETE",
+    route: (rest) =>
+      rest[0] === "repository" && rest[1] === "branches" && rest.length > 2
+        ? `delete:${rest.slice(2).join("/")}`
+        : null,
+  },
+  // GitHub: repos/<owner>/<repo>/...
+  {
+    method: "POST",
+    route: (rest) =>
+      rest.length === 1 && rest[0] === "pulls" ? "allow" : null,
+  },
+  {
+    method: "PATCH",
+    route: (rest) =>
+      rest.length === 2 && rest[0] === "pulls" ? "allow" : null,
+  },
+  {
+    method: "POST",
+    route: (rest) =>
+      rest.length === 3 && rest[0] === "issues" && rest[2] === "comments"
+        ? "allow"
+        : null,
+  },
+  {
+    method: "DELETE",
+    route: (rest) =>
+      rest[0] === "git" && rest[1] === "refs" && rest[2] === "heads"
+        ? `delete:${rest.slice(3).join("/")}`
+        : null,
+  },
+];
+
+/** The project a provider path names and the path after it. */
+const projectOf = (
+  segments: readonly string[]
+): { project: string; rest: string[] } | null => {
+  if (segments[0] === "projects" && segments[1]) {
+    return { project: segments[1], rest: segments.slice(2) };
+  }
+  if (segments[0] === "repos" && segments[1] && segments[2]) {
+    return {
+      project: `${segments[1]}/${segments[2]}`,
+      rest: segments.slice(3),
+    };
+  }
+  return null;
+};
+
+const apiMerge = (
+  args: readonly string[],
+  context: GuardContext,
+  tool: string
+): GuardDecision => {
+  const call = parseApiCall(args, tool);
+  if ("allow" in call) {
+    return call;
+  }
+  if (call.method === "GET") {
+    return allow(`${tool} api GET reads only`);
+  }
+  const what = `${tool} api ${call.method} ${call.segments.join("/")}`;
+  const scoped = projectOf(call.segments);
+  const route = scoped
+    ? API_ROUTES.filter((item) => item.method === call.method)
+        .map((item) => item.route(scoped.rest))
+        .find((found) => found !== null)
+    : undefined;
+  if (!(scoped && route)) {
     return refuse(
-      `${tool} api graphql merge mutations are not bound to a checked commit here; use the REST merge endpoint with sha=<exact head>`
+      `${what} is not a provider mutation the merge gate supports; it could move a target branch the guard cannot check`
     );
   }
-  const [rawPath = "", query = ""] = endpoint.split("?");
-  let path: string;
-  try {
-    path = decodeURIComponent(rawPath).replace(TRAILING_SLASHES_PATTERN, "");
-  } catch {
+  if (route.startsWith("delete:")) {
+    const branch = route.slice("delete:".length);
+    return context.targets.includes(branch)
+      ? refuse(`${what} would delete target branch ${branch}`)
+      : allow(`${what} deletes a non-target branch`);
+  }
+  if (route === "allow") {
+    return allow(`${what} does not merge`);
+  }
+  const [sha] = call.shas;
+  if (call.shas.length !== 1 || !sha || !SHA_PATTERN.test(sha)) {
     return refuse(
-      `${tool} api endpoint ${rawPath} is not valid percent-encoding`
+      `${what} must name exactly one sha=<exact head> field, with no --input body, so the merge is bound to one checked commit`
     );
   }
-  const method =
-    lastValue(scanned, ["-X", "--method"])?.toUpperCase() ??
-    (fields.length > 0 || hasOption(scanned, ["--input"]) ? "POST" : "GET");
-  if (!MERGE_ENDPOINT_PATTERN.test(path) || method === "GET") {
-    return allow();
+  return requireProviderMerge(context, sha, what, scoped.project);
+};
+
+/** The provider project an origin URL names, such as `group/project`. */
+const originProject = (cwd: string): string | null => {
+  const url = git(cwd, ["config", "--get", "remote.origin.url"]).stdout;
+  const scpLike = SCP_REMOTE_PATTERN.exec(url)?.[1];
+  let path = scpLike ?? "";
+  if (!scpLike) {
+    try {
+      path = new URL(url).pathname;
+    } catch {
+      return null;
+    }
   }
-  const sha = apiMergeSha(scanned, query, context.cwd);
-  if (sha !== null && typeof sha === "object") {
-    return sha;
-  }
-  return sha && SHA_PATTERN.test(sha)
-    ? requireProviderMerge(context, sha, `${tool} api merge of ${path}`)
-    : refuse(
-        `${tool} api merge of ${path} names no exact sha; pass sha=<exact head> so the merge is bound to a checked commit`
-      );
+  return (
+    path.replace(LEADING_SLASHES_PATTERN, "").replace(DOT_GIT_PATTERN, "") ||
+    null
+  );
 };
 
 /**
  * A provider CLI merge, wherever its global flags put the subcommand words,
- * bound to the head named by `shaFlag`.
+ * bound to the head named by `shaFlag` and to its `-R` project or origin.
  */
 const cliMerge = (
   argv: readonly string[],
@@ -799,15 +897,19 @@ const cliMerge = (
   what: string,
   shaFlag: string
 ): GuardDecision => {
-  const sha = lastValue(scan(argv.slice(1), [shaFlag]), [shaFlag]);
+  const scanned = scan(argv.slice(1), [shaFlag, "-R", "--repo"]);
+  const sha = lastValue(scanned, [shaFlag]);
   if (!sha) {
     return refuse(
       `${what} names no ${shaFlag}; pass the exact head so the merge is bound to a checked commit`
     );
   }
-  return SHA_PATTERN.test(sha)
-    ? requireProviderMerge(context, sha, what)
-    : refuse(`${what} ${shaFlag} ${sha} is not a commit SHA`);
+  if (!SHA_PATTERN.test(sha)) {
+    return refuse(`${what} ${shaFlag} ${sha} is not a commit SHA`);
+  }
+  const project =
+    lastValue(scanned, ["-R", "--repo"]) ?? originProject(context.cwd);
+  return requireProviderMerge(context, sha, what, project);
 };
 
 const analyzeProvider = (
@@ -825,6 +927,11 @@ const analyzeProvider = (
   }
   if (tool === "gh" && words.has("pr") && words.has("merge")) {
     return cliMerge(argv, context, "gh pr merge", "--match-head-commit");
+  }
+  if (tool === "gh" && words.has("repo") && words.has("sync")) {
+    return refuse(
+      "gh repo sync can move a branch from another repository; the merge gate does not support it"
+    );
   }
   const api = argv.indexOf("api");
   return api > 0 ? apiMerge(argv.slice(api + 1), context, tool) : allow();
@@ -893,13 +1000,19 @@ const skipEnv = (
   return { cwd: directory, index };
 };
 
-/** Strips `env`, `command`, and `nohup` wrappers, tracking `env -C`. */
+/**
+ * Strips `env`, `command`, and `nohup` wrappers, tracking `env -C`, and
+ * whether an `env` changed the environment the wrapped command sees.
+ */
 const unwrap = (
   argv: readonly string[],
   cwd: string
-): { argv: string[]; cwd: string } | GuardDecision => {
+):
+  | { argv: string[]; cwd: string; environmentChanged: boolean }
+  | GuardDecision => {
   let index = 0;
   let directory = cwd;
+  let environmentChanged = false;
   for (;;) {
     const executable = basename(argv[index] ?? "");
     if (executable === "command" || executable === "nohup") {
@@ -909,9 +1022,10 @@ const unwrap = (
       if ("allow" in skipped) {
         return skipped;
       }
+      environmentChanged ||= skipped.index > index + 1;
       ({ cwd: directory, index } = skipped);
     } else {
-      return { argv: argv.slice(index), cwd: directory };
+      return { argv: argv.slice(index), cwd: directory, environmentChanged };
     }
   }
 };
@@ -936,8 +1050,13 @@ export const evaluateCommand = (
   if ("allow" in unwrapped) {
     return unwrapped;
   }
-  const { argv, cwd } = unwrapped;
+  const { argv, cwd, environmentChanged } = unwrapped;
   const executable = basename(argv[0] ?? "");
+  if (environmentChanged && ["git", "glab", "gh"].includes(executable)) {
+    return refuse(
+      `env changes the environment ${executable} reads its configuration from (HOME, XDG_CONFIG_HOME, host variables), which the guard cannot check; run ${executable} without env`
+    );
+  }
   if (SHELLS.has(executable)) {
     const script = shellScript(argv);
     return script !== null && SHELL_RISK_PATTERN.test(script)
@@ -956,12 +1075,19 @@ export const evaluateCommand = (
 
 export const parseGuardArguments = (
   args: readonly string[]
-): { command: string[]; targets: string[] } => {
+): { command: string[]; projects: string[]; targets: string[] } => {
   const targets: string[] = [];
+  const projects: string[] = [];
   let index = 0;
   while (index < args.length && args[index] !== "--") {
-    if (args[index] === "--target-branch" && args[index + 1]) {
-      targets.push(args[index + 1] as string);
+    const value = args[index + 1];
+    if (args[index] === "--target-branch" && value) {
+      targets.push(value);
+      index += 2;
+      continue;
+    }
+    if (args[index] === "--project" && value) {
+      projects.push(value);
       index += 2;
       continue;
     }
@@ -971,15 +1097,19 @@ export const parseGuardArguments = (
   }
   return {
     command: args.slice(index + 1),
+    projects,
     targets: targets.length > 0 ? targets : ["main"],
   };
 };
 
 if (import.meta.main) {
   try {
-    const { command, targets } = parseGuardArguments(process.argv.slice(2));
+    const { command, projects, targets } = parseGuardArguments(
+      process.argv.slice(2)
+    );
     const decision = evaluateCommand(command, {
       cwd: process.env.SIMPLE_CHANGES_REPOSITORY ?? process.cwd(),
+      projects,
       targets,
     });
     if (!decision.allow) {

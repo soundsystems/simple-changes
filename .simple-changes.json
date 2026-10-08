@@ -11,6 +11,10 @@
     "tooling/merge-gate/exec-guard.ts",
     "--target-branch",
     "main",
+    "--project",
+    "84768068",
+    "--project",
+    "soundsystems/simple-changes",
     "--"
   ],
   "gitPushAuthorization": "ask",

@@ -1,6 +1,8 @@
 ---
 name: update-local-forks
 description: Use when a user asks to update, sync, or refresh their repository-specific forks of Simple Changes from the globally installed skill, apply upstream guidance updates to a fork, bump a fork's provenance pin, or check which local forks are behind. Preserves every fork's own behavior; never commits, pushes, or runs fork code on its own. Do not use to publish the canonical Simple Changes package or to edit the global install.
+license: Apache-2.0
+compatibility: Requires Git and Bun 1.2 or later
 ---
 
 # Update Local Forks

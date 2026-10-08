@@ -3,6 +3,8 @@ name: publish-skill
 metadata:
   internal: true
 description: Publish a canonical skill update through every maintained fork and discovered local install, then prove each change reached its default branch.
+license: Apache-2.0
+compatibility: Requires Git, Bun 1.2 or later with bunx to run the Skills CLI, a POSIX shell, network access to the canonical, fork, and consumer remotes, and the forge CLI each repository uses (such as glab or gh) to open and merge proposals
 disable-model-invocation: true
 ---
 

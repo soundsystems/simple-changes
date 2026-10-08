@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { readFile } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
 import { YAML } from "bun";
 
 const skillPath = new URL(
@@ -95,6 +95,56 @@ const runtimeSourcePaths = [
       import.meta.url
     )
 );
+
+const skillsDirectory = new URL("../../../skills/", import.meta.url);
+const FRONTMATTER_PATTERN = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/u;
+// Agent Skills specification limit for the `compatibility` field.
+const MAX_COMPATIBILITY_LENGTH = 500;
+
+describe("packaged skill frontmatter", () => {
+  test("every skill states its license and requirements and names no model", async () => {
+    const names = (await readdir(skillsDirectory, { withFileTypes: true }))
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => entry.name);
+    expect(names).toEqual(
+      expect.arrayContaining([
+        "publish-skill",
+        "simple-changes",
+        "update-local-forks",
+      ])
+    );
+    const skills = await Promise.all(
+      names.map(async (name) => ({
+        name,
+        skill: await readFile(
+          new URL(`${name}/SKILL.md`, skillsDirectory),
+          "utf8"
+        ),
+      }))
+    );
+    for (const { name, skill } of skills) {
+      const frontmatter = YAML.parse(
+        FRONTMATTER_PATTERN.exec(skill)?.[1] ?? ""
+      ) as Record<string, unknown>;
+      expect(frontmatter.license).toBe("Apache-2.0");
+      expect(typeof frontmatter.compatibility).toBe("string");
+      expect(String(frontmatter.compatibility).length).toBeGreaterThan(0);
+      expect(String(frontmatter.compatibility).length).toBeLessThanOrEqual(
+        MAX_COMPATIBILITY_LENGTH
+      );
+      if (name !== "publish-skill") {
+        expect(frontmatter.compatibility).toBe(
+          "Requires Git and Bun 1.2 or later"
+        );
+      }
+      // Skills stay model-agnostic: no Claude Code-only model or effort keys,
+      // and no metadata.models list.
+      expect(frontmatter).not.toHaveProperty("model");
+      expect(frontmatter).not.toHaveProperty("effort");
+      expect(frontmatter.metadata ?? {}).not.toHaveProperty("models");
+    }
+  });
+});
 
 describe("Simple Changes skill contract", () => {
   test("keeps the primary skill as a compact router", async () => {

@@ -568,6 +568,14 @@ const readyContainment = (
   if (ancestry.exitCode !== 1) {
     return unknown(new Error("the target's history could not be read"));
   }
+  // A shallow clone cuts history, so "not an ancestor" may only mean the
+  // connecting commits were never fetched.
+  const shallow = runGit(root, ["rev-parse", "--is-shallow-repository"], true);
+  if (shallow.exitCode !== 0 || shallow.stdout.trim() !== "false") {
+    return unknown(
+      new Error("this clone is shallow, so the target's history is incomplete")
+    );
+  }
   const unmatched = runGit(
     root,
     [

@@ -622,6 +622,56 @@ describe("simple-changes status --all", () => {
     }
   });
 
+  test("never calls a deleted ready branch stale from a shallow clone", () => {
+    const home = temporaryHome();
+    const origin = join(home, "origin.git");
+    git(home, ["init", "-q", "--bare", "-b", "main", origin]);
+    const seed = initRepository(join(home, "seed"));
+    writeFixture(seed, ".simple-changes.json", policy(27));
+    git(seed, ["add", ".simple-changes.json"]);
+    git(seed, ["commit", "-q", "-m", "Add policy"]);
+    git(seed, ["push", "-q", origin, "HEAD:refs/heads/main"]);
+    const shallow = join(home, "Developer", "shallow");
+    git(home, ["clone", "-q", "--depth=1", `file://${origin}`, shallow]);
+    git(shallow, ["config", "user.name", "Status Tests"]);
+    git(shallow, ["config", "user.email", "status@simple-changes.invalid"]);
+    const path = join(home, "Developer", "shallow-ready");
+    git(shallow, ["worktree", "add", "-q", "-b", "ready", path]);
+    const claim = claimWorktree(path, "ready-agent", path, "codex");
+    writeFixture(path, "ready.txt", "finished\n");
+    git(path, ["add", "ready.txt"]);
+    git(path, ["commit", "-q", "-m", "Finish"]);
+    recordReadyWork(path, "ready-agent", claim.claimId, {
+      checks: [{ command: "bun run check", note: null, result: "passed" }],
+      deploymentConstraints: [],
+      migrations: [],
+      releaseImpact: "patch",
+      scope: "Finish.",
+      unresolvedAuthority: [],
+    });
+    // The target ships the receipted commit, then moves on, upstream.
+    git(path, ["push", "-q", "origin", "ready:refs/heads/main"]);
+    git(seed, ["pull", "-q", "--ff-only", origin, "main"]);
+    writeFixture(seed, "after.txt", "after\n");
+    git(seed, ["add", "after.txt"]);
+    git(seed, ["commit", "-q", "-m", "After"]);
+    git(seed, ["push", "-q", origin, "HEAD:refs/heads/main"]);
+    git(shallow, ["fetch", "-q", "--depth=1", "origin", "main"]);
+    git(shallow, ["worktree", "remove", "--force", path]);
+    git(shallow, ["branch", "-D", "ready"]);
+
+    const [status] = statusAll({
+      home,
+      runtime: { skillDirectory: home, version: "0.27.1" },
+    }).repositories.filter((item) => item.repository === shallow);
+
+    const readyWork = status?.readyWork;
+    expect(isUnknown(readyWork)).toBe(false);
+    if (!isUnknown(readyWork)) {
+      expect(readyWork?.map((item) => item.freshness)).toEqual(["unknown"]);
+    }
+  });
+
   test("shows unreadable state as unknown and keeps going", () => {
     const home = temporaryHome();
     const broken = initRepository(join(home, "Developer", "broken"));

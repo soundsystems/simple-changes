@@ -462,7 +462,9 @@ skill roots, `~/Developer`, `~/Projects`, `~/Code`, `~/src`, and each
 `--root`): the lease with its controller state and liveness (`live`, `stale`,
 or `unknown`), unreleased worktree claims and whether each checkout is absent,
 moved, or still at its claimed head, recorded holds, ready-work receipts with
-their freshness from refs and whether their checkout still exists,
+their freshness from refs (unknown when a ref or the target's history cannot
+be read, including in a shallow clone) and whether their checkout still
+exists,
 and a pending guidance notice when the repository's acknowledged guidance is
 older than the guidance of the runtime running `status`; a repository that
 runs a fork sees that notice once its fork reaches the same guidance. It then lists every fork, compared with the newest

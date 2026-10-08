@@ -120,8 +120,12 @@ describe("merge gate exec guard", () => {
       ["git", "push", "origin", "--delete", "feat/x"],
       ["git", "push", "--dry-run", "origin", "main"],
       ["git", "push", "origin", "--tags"],
-      ["git", "push", "--tags"],
+      ["git", "push", "--no-follow-tags", "origin", "abc123:refs/tags/v1.1.0"],
+      ["git", "fetch", "--no-tags", "origin", "refs/heads/main"],
+      ["git", "mktag"],
+      ["git", "update-ref", "refs/tags/v1.1.0", "abc123", ""],
       ["git", "merge", "--ff-only"],
+      ["git", "merge", "--abort"],
       ["glab", "mr", "view", "5"],
       ["glab", "api", "projects/1/merge_requests/5"],
       [
@@ -239,7 +243,7 @@ describe("merge gate exec guard", () => {
       "does not contain refs/remotes/origin/main"
     );
     git(root, ["remote", "remove", "origin"]);
-    expect(decide(root, merge).reason).toContain("no fetched remote copy");
+    expect(decide(root, merge).reason).toContain("no fetched upstream copy");
   });
 
   test("refuses a receipt that does not record a passing check of that tree", () => {
@@ -254,6 +258,7 @@ describe("merge gate exec guard", () => {
       { finishedAt: "2000-01-01T00:00:00.000Z" },
       { runtime: " " },
       { reviewer: "someone" },
+      { startedAt: "October 8, 2026" },
     ]) {
       writeReceipt(feature, overrides);
       expect(decide(root, command).reason).toContain(
@@ -273,7 +278,7 @@ describe("merge gate exec guard", () => {
       ["git", "push", "origin", "HEAD:main"],
       ["git", "push", "origin", "+feat/x:refs/heads/main"],
       ["git", "push", "-f", "origin", "main"],
-      ["git", "push"],
+      ["git", "push", "-fu", "origin", "main"],
       ["git", "-C", root, "push", "origin", "main"],
     ];
     for (const command of pushes) {
@@ -309,6 +314,20 @@ describe("merge gate exec guard", () => {
       ["sh", "-c", "git push origin main"],
       ["bash", "-lc", "glab mr merge 5"],
       ["env", "-S", "git push origin main"],
+      ["git", "push"],
+      ["git", "push", "origin"],
+      ["git", "push", "--tags"],
+      ["git", "push", "--dry-run", "--no-dry-run", "origin", "HEAD:main"],
+      ["git", "push", "origin", "--tags", "--no-tags"],
+      ["git", "push", "--repo=origin", "main"],
+      ["git", "-c", "include.path=/elsewhere/config", "status"],
+      ["git", "--exec-path=/elsewhere", "status"],
+      ["bash", "-c", 'exec git "$@"', "--", "push", "origin", "HEAD:main"],
+      ["sh", "-c", 'exec "$0" "$@"', "git", "push", "origin", "HEAD:main"],
+      ["gh", "-R", "group/repo", "pr", "merge", "7"],
+      ["glab", "-R", "group/repo", "mr", "merge", "7"],
+      ["git", "rebase", "--exec", "git push origin HEAD:main", "main"],
+      ["git", "submodule", "foreach", "git push origin HEAD:main"],
     ]) {
       expect({ allow: decide(root, command).allow, command }).toEqual({
         allow: false,
@@ -316,6 +335,22 @@ describe("merge gate exec guard", () => {
       });
     }
     expect(published).not.toBe(feature);
+  });
+
+  test("refuses pushes that configuration can redirect", () => {
+    const { root } = repository();
+    git(root, [
+      "config",
+      "remote.origin.push",
+      "refs/heads/feat/x:refs/heads/main",
+    ]);
+    expect(decide(root, ["git", "push", "origin", "feat/x"]).allow).toBe(false);
+    expect(
+      decide(root, ["git", "push", "origin", "feat/x:refs/heads/feat/x"]).allow
+    ).toBe(true);
+    git(root, ["config", "--unset", "remote.origin.push"]);
+    git(root, ["config", "remote.origin.mirror", "true"]);
+    expect(decide(root, ["git", "push", "origin", "feat/x"]).allow).toBe(false);
   });
 
   test("allows syncing main with its published remote and gates real merges", () => {
@@ -335,6 +370,8 @@ describe("merge gate exec guard", () => {
       ["git", "merge", "feat/x"],
       ["git", "merge", "--ff-only", "feat/x"],
       ["git", "merge", "origin/main"],
+      ["git", "merge", "--ff-only", "--no-ff", "origin/main"],
+      ["git", "merge", "--continue"],
       ["git", "pull", "origin", "main"],
       ["git", "pull", "--rebase"],
       ["git", "pull", "--ff-only", "origin", "feat/x"],
@@ -466,6 +503,15 @@ describe("bun run check:receipt", () => {
     expect(existsSync(receiptPath(join(dirty.root, ".git"), dirty.head))).toBe(
       false
     );
+
+    const unreadable = checkRepository("true");
+    writeFileSync(join(unreadable.root, ".git", "index"), "not an index");
+    const corrupt = runCheckReceipt(unreadable.root);
+    expect(corrupt.exitCode).toBe(1);
+    expect(corrupt.stderr).toContain("git status failed");
+    expect(
+      existsSync(receiptPath(join(unreadable.root, ".git"), unreadable.head))
+    ).toBe(false);
 
     const editing = checkRepository("echo changed >> README.md");
     const edited = runCheckReceipt(editing.root);

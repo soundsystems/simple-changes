@@ -26,10 +26,19 @@ const fail = (message: string): never => {
   throw new CheckReceiptRefusal(message);
 };
 
-const dirtyPaths = (root: string): string[] =>
-  git(root, ["status", "--porcelain=v1", "--untracked-files=all"])
-    .stdout.split("\n")
-    .filter(Boolean);
+const dirtyPaths = (root: string): string[] => {
+  const status = git(root, [
+    "status",
+    "--porcelain=v1",
+    "--untracked-files=all",
+  ]);
+  if (status.exitCode !== 0) {
+    return fail(
+      `git status failed (exit ${status.exitCode}), so the checkout cannot be shown clean; no receipt was recorded.`
+    );
+  }
+  return status.stdout.split("\n").filter(Boolean);
+};
 
 const assertClean = (root: string, when: string): void => {
   const dirty = dirtyPaths(root);
@@ -48,7 +57,11 @@ export const runCheckReceipt = (cwd: string): number => {
   const root = top.stdout;
   const common = commonGitDirectory(root) ?? fail("no Git common directory.");
   const head = resolveCommit(root, "HEAD") ?? fail("HEAD is not a commit.");
-  const tree = git(root, ["rev-parse", "--verify", `${head}^{tree}`]).stdout;
+  const treeRead = git(root, ["rev-parse", "--verify", `${head}^{tree}`]);
+  const tree =
+    treeRead.exitCode === 0 && treeRead.stdout
+      ? treeRead.stdout
+      : fail(`the tree of ${head} could not be read.`);
   assertClean(root, "before the check");
   const startedAt = new Date().toISOString();
   const check = spawnSync([...CHECK_COMMAND], {

@@ -87,8 +87,12 @@ const RECEIPT_KEYS = [
   "treeSha",
 ].join(",");
 
+const ISO_TIME_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/u;
+
 const timestamp = (value: unknown): number =>
-  typeof value === "string" ? Date.parse(value) : Number.NaN;
+  typeof value === "string" && ISO_TIME_PATTERN.test(value)
+    ? Date.parse(value)
+    : Number.NaN;
 
 /** The complete receipt shape, bound to exactly this commit and tree. */
 const isPassingReceipt = (

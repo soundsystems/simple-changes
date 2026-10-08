@@ -36,28 +36,36 @@ for merges the Simple Changes controller runs.
    `tooling/merge-gate/exec-guard.ts` first and refuses a merge-like command
    unless a receipt exists for the exact commit it would ship.
 
-The guard gates a non-GET `glab api` or `gh api` call to a merge request or
-pull request `merge` endpoint (it needs `sha=<head>`), `glab mr merge --sha
-<head>`, `gh pr merge --match-head-commit <head>`, a `git push` whose
-destination is `main`, and a `git merge` or `git pull` while `main` is checked
-out. A provider merge also needs the merged head to contain the fetched
-`origin/main`, so the merge result is exactly the checked tree; fetch right
-before merging, because the provider can still merge onto a `main` that moved
-after the fetch. On `main`, `git merge` and `git pull` need `--ff-only`: to a
-commit `origin/main` already contains (a sync), to one receipted commit, or,
-for `git pull`, from `main`'s own upstream. A push of tags only passes.
+The guard reads `git`, `glab`, and `gh` argv with a closed grammar. It gates
+a non-GET `glab api` or `gh api` call to a merge request or pull request
+`merge` endpoint (it needs `sha=<head>`), `glab mr merge --sha <head>`, `gh pr
+merge --match-head-commit <head>`, `git push <remote> <refspec>...` to `main`,
+and `git merge` or `git pull` while `main` is checked out. A provider merge
+also needs the merged head to contain the fetched `origin/main`, so the merge
+result is exactly the checked tree; fetch right before merging, because the
+provider can still merge onto a `main` that moved after the fetch. On `main`,
+`git merge` and `git pull` need `--ff-only`: to a commit `origin/main` already
+contains (a sync), to one receipted commit, or, for `git pull`, from `main`'s
+own upstream; `git merge --abort` and `--quit` pass.
 
-The guard accepts a narrow grammar and refuses what it cannot check: a merge
-that names no exact SHA; a matching (`:`) or pattern refspec that reaches
-`main`; `git push --all`, `--branches`, `--mirror`, or `--prune`; git options
-or `GIT_*` environment assignments that change the repository, refs, aliases,
-or remotes (`--git-dir`, `--work-tree`, `--namespace`, `--bare`, `-c` for
-`alias.*`, `branch.*`, `push.*`, `remote.*`, or `url.*`); an alias whose
-expansion pushes, merges, or pulls; `git send-pack`, `git http-push`, and `git
-subtree push`; and a shell `-c` script that mentions a merge-like command. Run
-merges as plain argv. Every other command passes. The guard sees only `loop
-exec` commands: a merge run any other way is not gated, so it is a convenience
-gate for this repository's controller, not a security boundary.
+Anything outside the supported forms is refused rather than guessed at: a
+merge that names no exact SHA; `git push` without a remote and refspecs (a
+tags-only `git push <remote> --tags` passes), to a mirroring remote, with an
+unsupported option, with a pattern or matching (`:`) refspec, or with a
+colonless refspec when `remote.<name>.push` maps refs; git global options
+other than `-C`, paging, and `--no-optional-locks` (so no `-c`, `--git-dir`,
+`--work-tree`, or `--exec-path`); `GIT_*` environment assignments; a git
+subcommand that is not a known built-in (aliases, `git-*` programs, `send-pack`,
+`http-push`, `subtree`); `git rebase --exec`, `git submodule foreach`, and `git
+bisect run`; `git merge` or `git pull` options outside the supported set on
+`main`, including `--continue`; and a shell `-c` script that runs git, glab, gh,
+or its own arguments. Every other command passes.
+
+The enforcement boundary is `loop exec` with these plain argv forms: run every
+merge that way. The guard sees only the argv `loop exec` runs, so a merge run
+any other way, or by a program that runs other programs (an interpreter, a
+build tool, `xargs`), is not gated. It is a convenience gate for this
+repository's controller, not a security boundary.
 
 A receipt is `<git common dir>/check-receipts/<head SHA>.json`:
 

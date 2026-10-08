@@ -8,10 +8,7 @@ const skillPath = new URL(
 );
 const MODE_TABLE_PATTERN = /\| Intent \| Mode \| Boundary \|[\s\S]*?\n\n/u;
 const MODE_ROW_PATTERN = /^\| [^|]+ \| ([A-Za-z]+) \|/gmu;
-const specPath = new URL(
-  "../../../skills/simple-changes/SPEC.md",
-  import.meta.url
-);
+const specPath = new URL("../SPEC.md", import.meta.url);
 const changelogCoordinationPath = new URL(
   "../../../skills/simple-changes/references/changelog-coordination.md",
   import.meta.url

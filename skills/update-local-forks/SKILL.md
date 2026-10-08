@@ -62,7 +62,7 @@ saved plan, and it never commits, pushes, or runs a fork's scripts.
 4. **Apply.** Run `update-local-forks apply --plan <plan.json>`. It fails
    closed if any file it would write changed after the plan was made.
 5. **Resolve the rest by hand.** Conflicts are usually the fork's rewritten
-   `SKILL.md` or `SPEC.md`; read the `.upstream-merge` sidecar, merge the
+   `SKILL.md`; read the `.upstream-merge` sidecar, merge the
    upstream change into the fork's prose keeping its stricter local rules,
    then delete the sidecar. Until it is deleted, every later plan reports the
    file as unresolved. An `unrecorded-omission` is an upstream reference

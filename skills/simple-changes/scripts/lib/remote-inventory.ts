@@ -292,8 +292,28 @@ const preservedClassification = (
 const inputEvidence = (snapshot: Snapshot): string[] =>
   snapshot.input.evidence ?? [];
 
+/**
+ * An open proposal names a branch the ledger must preserve, so one whose
+ * source branch is missing from the ledger cannot be accounted and refuses.
+ * Merged and closed proposals of long-deleted branches are history.
+ */
+const assertOpenProposalsAccounted = (
+  snapshot: Snapshot,
+  ledger: ReadonlySet<string>
+): void => {
+  for (const [branch, proposals] of snapshot.proposalsByBranch) {
+    const open = proposals.find((proposal) => proposal.state === "open");
+    if (open && !ledger.has(branch)) {
+      fail(
+        `proposal ${open.objectId} is open on ${branch}, which no inventory lists; restore or close it, or report it, then fetch again`
+      );
+    }
+  }
+};
+
 const buildOpening = (snapshot: Snapshot): RemoteInventoryBuild => {
   const names = [...snapshot.branches.keys()].sort(byName);
+  assertOpenProposalsAccounted(snapshot, new Set(names));
   const branches: RemoteInventoryBranchEntry[] = names.map((name) => {
     const branch = snapshot.branches.get(name) as RemoteInventoryBranchItem;
     const proposals = snapshot.proposalsByBranch.get(name) ?? [];
@@ -662,6 +682,7 @@ const buildFinal = (
     branch.evidence.push(...inputEvidence(snapshot));
   }
   const ledgerNames = new Set(branches.map((branch) => branch.name));
+  assertOpenProposalsAccounted(snapshot, ledgerNames);
   const draft: RemoteBranchReconciliationReceipt = {
     branches,
     finalBranchCount: snapshot.branches.size,

@@ -465,10 +465,35 @@ describe("remote-inventory build", () => {
       "only the first page starts and only the last page ends"
     );
 
-    const elsewhere = finalPages();
-    elsewhere.project = "group/other";
-    expect(() => buildRemoteInventory(elsewhere, { opening })).toThrow(
-      "the opening inventory describes gitlab group/project main"
+    for (const change of [
+      { project: "group/other" },
+      { provider: "github" },
+      { targetBranch: "release/1" },
+    ]) {
+      expect(() =>
+        buildRemoteInventory({ ...finalPages(), ...change }, { opening })
+      ).toThrow("the opening inventory describes gitlab group/project main");
+    }
+
+    const orphanedOpen = openingPages();
+    orphanedOpen.proposalPages[0]?.proposals.push({
+      headRevision: SHA.gone,
+      objectId: "9",
+      sourceBranch: "vanished",
+      state: "open",
+    });
+    expect(() => buildRemoteInventory(orphanedOpen)).toThrow(
+      "proposal 9 is open on vanished, which no inventory lists"
+    );
+    const orphanedFinal = finalPages();
+    orphanedFinal.proposalPages[0]?.proposals.push({
+      headRevision: SHA.gone,
+      objectId: "9",
+      sourceBranch: "vanished",
+      state: "open",
+    });
+    expect(() => buildRemoteInventory(orphanedFinal, { opening })).toThrow(
+      "proposal 9 is open on vanished, which no inventory lists"
     );
 
     const reprotected = finalPages();

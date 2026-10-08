@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.27.1 - 2026-10-08
+
+- Install Simple Changes from its GitHub mirror,
+  `https://github.com/soundsystems/simple-changes`, so `skills update` can
+  refresh it in place. The README and the update-local-forks guide now use the
+  mirror.
+- A Ship run no longer stalls when an author releases its worktree with
+  `worktree release` from Simple Changes 0.27.1 or later and leaves it exactly
+  as released: the work ships and is cleaned up like a handoff.
+- When a released or changed author worktree does block a run, `loop verify`
+  and `loop status` now print the exact claim, pause, and accept commands that
+  recover it, with the owner, path, and run filled in, instead of advice to
+  refresh a claim that can no longer be refreshed.
+- Final cleanup never removes a worktree that an unreleased claim still holds.
+- Each skill now states its license and requirements and no longer names
+  models, and the installed skill is about 14 KB smaller.
+<!-- simple-changelogs-signature agent="Claude Opus 5.5 xhigh" at="2026-10-08T03:40:00-05:00" -->
+
 ## 0.27.0 - 2026-10-07
 
 - Releases can now get a Git tag on their exact commit. When Simple

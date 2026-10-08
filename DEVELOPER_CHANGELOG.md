@@ -1,5 +1,55 @@
 # Developer changelog
 
+## 0.27.1 - 2026-10-08
+
+- Toolchain pinned exactly to TypeScript 7.0.2, Biome 2.5.10, and Ultracite
+  7.9.4, matching Simple Changelogs. TypeScript 7 type-checks all 344 files
+  with no errors and still reports a deliberate type error.
+- Install docs use the GitHub mirror. Skills CLI 1.7.0 records `sourceUrl`,
+  so the GitLab update problem now affects older CLI releases and lock
+  entries without a recorded URL.
+- Codex eval adapter: `runner-response.schema.json` has no `uniqueItems`. A
+  live probe (Codex CLI 0.160.1 on gpt-6.1-sol) accepted it, and the same
+  schema with `uniqueItems` got HTTP 400 in strict mode. A guard test keeps
+  the schema to probed keywords, closed and fully required objects, an object
+  root, and supported formats.
+- Every SKILL.md carries `license: Apache-2.0` and `compatibility`; a contract
+  test enforces both and forbids `model`, `effort`, and `metadata.models`, and
+  another keeps publish-skill's `metadata.internal` a YAML boolean.
+  publish-skill's compatibility line is identical to the Simple Changelogs
+  copy, adding Node.js 22.20 or later for the Skills CLI.
+- `SPEC.md` moved to `tooling/simple-changes/SPEC.md`; the eval requires it
+  there and refuses it inside the package. Forks receive the removal as a
+  delete, or as a review item where they edited it. The installed skill went
+  from 1,780,152 to 1,765,824 bytes and from 124 to 123 files.
+- Released-author admission: an owner release admits the checkout like a
+  handoff only when the release recorded the exact state (owner, path, branch,
+  head, and digest) and no unreleased claim holds the path; ownership is
+  checked under the coordination lock. `worktree release` and `initialize
+  --mode handoff` record that state, marked in the release event ID because
+  the claim record is closed to fields older clients would reject. Releases
+  from older clients, or with the checkout gone, recover through pause and
+  accept.
+- Cleanup follows owner releases and refuses any checkout an unreleased claim
+  holds; before, only active claims counted, so a paused holder's checkout
+  could be removed.
+- Stale-author violations carry `LoopViolation.nextCommands` (optional) with
+  the claim, pause, and accept steps, including `--repo`, and `loop verify`
+  and `loop status` print them; guard and exec refusals point to `loop
+  status`. A shared `pauseBlocker` prints the unblocking step first when a
+  pause cannot run yet (missing checkout, Git operation in progress,
+  conflicts, a relinquished controller, or a primary checkout held by another
+  agent). Accept and adopt treat a sibling's per-checkout violation that its
+  own receipt covers as non-blocking.
+- Known limit, shared with handoff admission and unclaimed stable worktrees:
+  a third party that claims a released checkout and commits while a guarded
+  `loop exec` merge of its branch runs can have that commit merged, and
+  closing verification reports it only afterwards.
+- Tests rose from 1,012 to 1,043, including the 0.27.0 deadlock reproduced end
+  to end through the CLI; about 75 targeted mutants were killed. Reviews
+  (GPT-6.1 Sol): round 1 at high and 13 xhigh rounds; the last found nothing.
+<!-- simple-changelogs-signature agent="Claude Opus 5.5 xhigh" at="2026-10-08T03:40:00-05:00" -->
+
 ## 0.27.0 - 2026-10-07
 
 - Changelog negotiation adds request v3 and receipt v4.

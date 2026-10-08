@@ -2009,18 +2009,16 @@ export const staleClaimRecoveryCommands = (
 };
 
 /**
- * The exact recovery for one stale coordination link. `worktree claim`
- * refreshes a live claim in place under its existing ID, which restores a
- * concurrent author whose own registered claim only went inactive or recorded
- * another branch, as long as the checkout is still on its registered branch:
- * the lease pins the author there. A released claim is never refreshed (a new
- * claim gets a new ID). In every other case the live claim's owner, or the
- * registered owner when nothing holds the checkout, claims and pauses its exact
- * current state, and the controller accepts that pause receipt, which works
- * from any state. While the checkout itself stops `worktree pause` (it is
- * missing, mid Git operation, or conflicted), or the controller that must
- * accept has been relinquished, the only steps are the ones that unblock it;
- * verification then prints the commands.
+ * The exact recovery for one stale coordination link or changed retained
+ * checkout. A released claim is never refreshed (a new claim gets a new ID),
+ * so the live claim's owner, or the registered owner when nothing holds the
+ * checkout, claims and pauses its exact current state, and the controller
+ * accepts that pause receipt; this works from any claim state, and an author
+ * who wants to keep working simply claims the checkout again afterwards.
+ * While the checkout itself stops `worktree pause` (it is missing, mid Git
+ * operation, or conflicted), or the controller that must accept has been
+ * relinquished, the only steps are the ones that unblock it; verification
+ * then prints the commands.
  */
 const staleClaimRecovery = (
   lease: LoopLease,
@@ -2029,8 +2027,13 @@ const staleClaimRecovery = (
   { linkedClaim, liveClaim }: WorktreeClaimContext
 ): StaleClaimRecovery => {
   if (controllerLifecycle(lease).status !== "active") {
-    const resume = "simple-changes loop start --mode resume --agent-id <you>";
-    const verify = `${LOOP_VERIFY} --run-id ${lease.runId}`;
+    // Resume from the controller checkout: `loop start` makes the checkout it
+    // runs in the controller.
+    const repo = commandWord(
+      registeredController(lease)?.path ?? lease.primaryCheckout
+    );
+    const resume = `simple-changes loop start --mode resume --agent-id <you> --repo ${repo}`;
+    const verify = `${LOOP_VERIFY} --run-id ${lease.runId} --repo ${repo}`;
     return {
       commands: [resume, verify],
       text: `Its controller has been relinquished, so nothing can accept a pause yet: resume the run with \`${resume}\`, then re-run \`${verify}\` for its exact recovery steps.`,
@@ -2058,19 +2061,6 @@ const staleClaimRecovery = (
     `--adapter ${owner ? commandWord(owner.adapter) : "<adapter>"}`,
     ...(owner?.ownerRef ? [`--owner-ref ${commandWord(owner.ownerRef)}`] : []),
   ].join(" ");
-  if (
-    registered.role === "concurrent-author" &&
-    registered.branch === worktree.branch &&
-    liveClaim !== undefined &&
-    liveClaim.claimId === registered.claimId &&
-    liveClaim.owner.agentId === registered.agentId
-  ) {
-    const verify = `${LOOP_VERIFY} --run-id ${lease.runId}`;
-    return {
-      commands: [claim, verify],
-      text: `Owner ${agent} refreshes claim ${liveClaim.claimId} in place with \`${claim}\`; then re-run \`${verify}\`.`,
-    };
-  }
   const controller = commandWord(lease.ownerAgentId);
   const pause = `simple-changes worktree pause --agent-id ${agent} --worktree ${path} --run-id ${lease.runId} --disposition preserve-in-place --reason <why>`;
   const accept = `${ACCEPT_PAUSED_CHANGE} --run-id ${lease.runId} --agent-id ${controller} --pause-receipt <pause-receipt-id>`;

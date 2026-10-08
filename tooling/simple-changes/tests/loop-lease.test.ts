@@ -4070,13 +4070,14 @@ describe("active integration-loop lease", () => {
     ).toBe("relinquished");
 
     const resume = [
-      "simple-changes loop start --mode resume --agent-id <you>",
-      `simple-changes loop verify --run-id ${lease.runId}`,
+      `simple-changes loop start --mode resume --agent-id <you> --repo ${fixture.root}`,
+      `simple-changes loop verify --run-id ${lease.runId} --repo ${fixture.root}`,
     ];
     const printed = () =>
       staleClaimRecoveryCommands(verifyLoop(fixture.root).violations);
     expect(printed()).toEqual(resume);
-    const verifyText = runCli(fixture.root, [
+    // Every step runs from the author's checkout, as an agent there would.
+    const verifyText = runCli(author, [
       "loop",
       "verify",
       "--run-id",
@@ -4086,23 +4087,24 @@ describe("active integration-loop lease", () => {
       expect(verifyText).toContain(`  Next: ${step}\n`);
     }
 
-    runPrintedSteps(fixture.root, resume.slice(0, 1), {
-      "<you>": "controller",
-    });
+    runPrintedSteps(author, resume.slice(0, 1), { "<you>": "controller" });
+    expect(readLoopLease(fixture.root)?.worktrees).toContainEqual(
+      expect.objectContaining({ path: fixture.root, role: "controller" })
+    );
     const steps = printed();
     expect(steps.map((command) => command.split(" ")[2])).toEqual([
       "claim",
       "pause",
       "accept-paused-change",
     ]);
-    runPrintedSteps(fixture.root, steps);
+    runPrintedSteps(author, steps);
     expect(verifyLoop(fixture.root)).toMatchObject({
       ok: true,
       violations: [],
     });
   }, 120_000);
 
-  test("tells an author whose own claim went inactive to refresh it in place", () => {
+  test("pauses and accepts an author whose own claim went inactive, who may then claim again", () => {
     const fixture = repository();
     const authorPath = join(fixture.base, "inactive-author");
     git(fixture.root, [
@@ -4129,31 +4131,21 @@ describe("active integration-loop lease", () => {
       "preserve-in-place",
       "Paused without being accepted."
     );
-    const claimCommand = (agent: string) =>
-      `simple-changes worktree claim --agent-id ${agent} --worktree ${authorPath} --adapter codex --owner-ref 'Ann'\\''s task'`;
-    const refresh = [
-      claimCommand("inactive-agent"),
-      `simple-changes loop verify --run-id ${lease.runId}`,
-    ];
-    const pauseAndAccept = (agent: string) => [
-      claimCommand(agent),
-      `simple-changes worktree pause --agent-id ${agent} --worktree ${authorPath} --run-id ${lease.runId} --disposition preserve-in-place --reason <why>`,
+    const printed = staleClaimRecoveryCommands(
+      verifyLoop(fixture.root).violations
+    );
+    expect(printed).toEqual([
+      `simple-changes worktree claim --agent-id inactive-agent --worktree ${authorPath} --adapter codex --owner-ref 'Ann'\\''s task'`,
+      `simple-changes worktree pause --agent-id inactive-agent --worktree ${authorPath} --run-id ${lease.runId} --disposition preserve-in-place --reason <why>`,
       `simple-changes loop accept-paused-change --run-id ${lease.runId} --agent-id controller --pause-receipt <pause-receipt-id>`,
-    ];
-    const staleCommands = () =>
-      verifyLoop(fixture.root).violations.find(
-        (violation) =>
-          violation.code === "coordination-claim-stale" &&
-          violation.path === authorPath
-      )?.nextCommands;
+    ]);
 
-    expect(staleCommands()).toEqual(refresh);
-    // The printed command runs as written in a POSIX shell and keeps the ID.
+    // The printed claim runs as written in a POSIX shell and keeps the ID.
     const shell = spawnSync(
       [
         "sh",
         "-c",
-        `${refresh[0]?.replace("simple-changes ", `'${process.execPath}' '${cliPath}' `)} --json`,
+        `${printed[0]?.replace("simple-changes ", `'${process.execPath}' '${cliPath}' `)} --json`,
       ],
       {
         cwd: fixture.root,
@@ -4170,76 +4162,31 @@ describe("active integration-loop lease", () => {
         }
       ).claim
     ).toMatchObject({ claimId: claim.claimId, owner: { ownerRef } });
-    expect(verifyLoop(fixture.root).ok).toBe(true);
-
-    // Only the registered owner can refresh the registered claim.
-    const coordinationPath = worktreeCoordinationPath(
-      captureInventory(fixture.root).repository.commonGitDirectory
-    );
-    const original = readFileSync(coordinationPath, "utf8");
-    const document = JSON.parse(original) as {
-      claims: { claimId: string; owner: { agentId: string } }[];
-    };
-    for (const item of document.claims) {
-      if (item.claimId === claim.claimId) {
-        item.owner.agentId = "other-agent";
-      }
-    }
-    writeFileSync(coordinationPath, `${JSON.stringify(document)}\n`);
-    expect(staleCommands()).toEqual(pauseAndAccept("other-agent"));
-    writeFileSync(coordinationPath, original);
-
-    // A live claim that recorded another branch is refreshed the same way
-    // while the checkout stays on its registered branch.
-    const moved = JSON.parse(original) as {
-      claims: { branch: string | null; claimId: string }[];
-    };
-    for (const item of moved.claims) {
-      if (item.claimId === claim.claimId) {
-        item.branch = "inactive-author-elsewhere";
-      }
-    }
-    writeFileSync(coordinationPath, `${JSON.stringify(moved)}\n`);
-    expect(staleCommands()).toEqual(refresh);
-    claimWorktree(
-      fixture.root,
-      "inactive-agent",
-      authorPath,
-      "codex",
-      ownerRef
-    );
-    expect(verifyLoop(fixture.root).ok).toBe(true);
-
-    // The lease pins the author to its registered branch, so after a branch
-    // switch only the exact pause and accept steps restore verification.
-    git(authorPath, ["checkout", "-b", "inactive-author-renamed"]);
-    expect(staleCommands()).toEqual(pauseAndAccept("inactive-agent"));
-    claimWorktree(
-      fixture.root,
-      "inactive-agent",
-      authorPath,
-      "codex",
-      ownerRef
-    );
-    const receipt = pauseClaimedWorktree(
-      fixture.root,
-      "inactive-agent",
-      authorPath,
-      lease.runId,
-      "preserve-in-place",
-      "Hand the renamed branch to the controller."
-    );
-    acceptPausedWorktreeChange(
-      fixture.root,
-      lease.runId,
-      "controller",
-      receipt.receiptId
-    );
+    runPrintedSteps(fixture.root, printed.slice(1));
     expect(verifyLoop(fixture.root)).toMatchObject({
       ok: true,
       violations: [],
     });
-  });
+
+    // Claiming the accepted checkout again makes it a concurrent author once
+    // more, so the author can keep working.
+    claimWorktree(
+      fixture.root,
+      "inactive-agent",
+      authorPath,
+      "codex",
+      ownerRef
+    );
+    writeFixture(authorPath, "more.ts", "export const more = true;\n");
+    expect(verifyLoop(fixture.root).ok).toBe(true);
+    expect(readLoopLease(fixture.root)?.worktrees).toContainEqual(
+      expect.objectContaining({
+        claimId: claim.claimId,
+        path: authorPath,
+        role: "concurrent-author",
+      })
+    );
+  }, 120_000);
 
   test("asks an owner who claimed again after releasing to pause, not refresh", () => {
     const fixture = repository();

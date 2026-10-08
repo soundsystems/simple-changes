@@ -225,7 +225,6 @@ const READ_ONLY_SUBCOMMANDS: ReadonlySet<string> = new Set([
   "patch-id",
   "prune",
   "range-diff",
-  "reflog",
   "repack",
   "rerere",
   "rev-list",
@@ -981,6 +980,9 @@ const integratesNothing = (
 ): boolean => {
   if (subcommand === "worktree") {
     return args[0] !== "add";
+  }
+  if (subcommand === "reflog") {
+    return REFLOG_READERS.has(args[0] ?? "show");
   }
   if (subcommand === "remote") {
     return REMOTE_READERS.has(args[0] ?? "-v");
@@ -1994,6 +1996,9 @@ const STASH_WRITERS: ReadonlySet<string> = new Set([
   "save",
   "store",
 ]);
+// Reflog actions that only read; `write`, `delete`, `expire`, and `drop` can
+// move a ref (`--updateref`) or rewrite history this check reads.
+const REFLOG_READERS: ReadonlySet<string> = new Set(["exists", "list", "show"]);
 const REMOTE_READERS: ReadonlySet<string> = new Set([
   "-v",
   "--verbose",
@@ -2251,6 +2256,19 @@ const gitRefusals = (
 const programName = (path: string): string =>
   basename(path).toLowerCase().replace(EXE_SUFFIX, "");
 
+// `glab mr merge` options that take no value.
+const GLAB_MERGE_FLAGS: ReadonlySet<string> = new Set([
+  "-d",
+  "-r",
+  "-s",
+  "-y",
+  "--auto-merge",
+  "--rebase",
+  "--remove-source-branch",
+  "--squash",
+  "--yes",
+]);
+
 // A documented provider merge that names the exact commit it merges, so the
 // provider refuses any other head: `glab mr merge <iid> --sha <commit>`.
 const pinnedProviderMergeSha = (argv: readonly string[]): string | null => {
@@ -2262,14 +2280,29 @@ const pinnedProviderMergeSha = (argv: readonly string[]): string | null => {
   ) {
     return null;
   }
-  const shas = args.flatMap((token, index) => {
+  // Exactly one merge request, one `--sha`, and only flags that take no
+  // value, so no other option can consume the `--sha` argument.
+  const shas: string[] = [];
+  const requests: string[] = [];
+  let index = 2;
+  while (index < args.length) {
+    const token = args[index] as string;
+    index += 1;
     if (token === "--sha") {
-      return [args[index + 1] ?? ""];
+      shas.push(args[index] ?? "");
+      index += 1;
+    } else if (token.startsWith("--sha=")) {
+      shas.push(token.slice("--sha=".length));
+    } else if (!token.startsWith("-")) {
+      requests.push(token);
+    } else if (!GLAB_MERGE_FLAGS.has(token)) {
+      return null;
     }
-    return token.startsWith("--sha=") ? [token.slice("--sha=".length)] : [];
-  });
+  }
   const [sha = ""] = shas;
-  return shas.length === 1 && isObjectId(sha) ? sha : null;
+  return shas.length === 1 && requests.length === 1 && isObjectId(sha)
+    ? sha
+    : null;
 };
 
 // While units are pinned, loop exec runs Git, whose arguments this module

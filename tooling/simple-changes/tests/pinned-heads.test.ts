@@ -790,6 +790,9 @@ describe("pinned-head command analysis", () => {
       ["glab", "mr", "merge", "12"],
       ["glab", "mr", "merge", "12", "--sha", "feat/x"],
       ["glab", "mr", "merge", "12", "--sha", head, `--sha=${head}`],
+      ["glab", "mr", "merge", "12", "--yes", "--message", `--sha=${head}`],
+      ["glab", "mr", "merge", "12", "13", "--sha", head],
+      ["glab", "mr", "merge", "12", "--repo", "x/y", "--sha", head],
     ]) {
       expect({ argv, kinds: kinds(argv) }).toEqual({
         argv,
@@ -885,6 +888,9 @@ describe("pinned-head command analysis", () => {
       ["git", "notes", "add", "-m", "x", head],
       ["git", "pull", ".", "feat/x"],
       ["git", "remote", "add", "u", unitPath],
+      ["git", "reflog", "write", "refs/heads/main", head, head, "copy"],
+      ["git", "reflog", "delete", "--updateref", "refs/heads/main@{0}"],
+      ["git", "reflog", "expire", "--all"],
       ["git", "clone", unitPath, "/tmp/unit-copy"],
     ]) {
       expect({ argv, kinds: kinds(argv) }).toEqual({
@@ -916,6 +922,8 @@ describe("pinned-head command analysis", () => {
     expect(kinds(["git", "fetch", "origin"])).toEqual([]);
     expect(kinds(["git", "remote", "-v"])).toEqual([]);
     expect(kinds(["git", "stash", "list"])).toEqual([]);
+    expect(kinds(["git", "reflog"])).toEqual([]);
+    expect(kinds(["git", "reflog", "show", "main"])).toEqual([]);
   });
 
   test("lets every other command through, including the recorded-commit form", () => {

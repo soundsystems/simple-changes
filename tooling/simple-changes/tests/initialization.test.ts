@@ -73,10 +73,10 @@ describe("first-run initialization", () => {
     );
     expect(from19.changes.map((item) => item.version)).toEqual([
       20, 20, 21, 21, 21, 22, 22, 22, 22, 23, 23, 24, 24, 24, 25, 25, 25, 26,
-      26, 26, 27, 27, 27,
+      26, 26, 27, 27, 27, 28, 28,
     ]);
     expect(from19.changes.at(-1)?.summary).toContain(
-      "`update-local-forks` tries the `v<version>` tag first"
+      "`release-notes --version` for an older release prints its link"
     );
   });
   test("propagates the saved shipping preference into emergency classification", () => {
@@ -297,7 +297,7 @@ describe("first-run initialization", () => {
           available: true,
           owner: "simple-changelogs",
         },
-        currentVersion: 27,
+        currentVersion: 28,
         headline: "**Simple Changes has recently been updated.**",
         presentationOrder: [
           "required-answers",
@@ -317,10 +317,10 @@ describe("first-run initialization", () => {
     });
     expect(status.guidanceUpdate.summaryBullets).toHaveLength(3);
     expect(status.guidanceUpdate.summaryBullets.join(" ")).toContain(
-      "Releases can now get a Git tag"
+      "reads its recovery steps only when a run reports trouble"
     );
     expect(status.guidanceUpdate.summaryBullets.join(" ")).toContain(
-      "Merge danger door"
+      "Releases can now get a Git tag"
     );
     expect(status.guidanceUpdate.summaryBullets.join(" ")).toContain(
       "`execGuard` check"

@@ -120,21 +120,22 @@ preserved, adopted, or retained checkout's baseline or approved override. No
 merge-like `loop exec` command can integrate a commit other than a registered
 unit's recorded head. Before the child or `execGuard` starts, any Git
 subcommand that is not read-only is refused when an argument names a pinned
-branch in any spelling or letter case, points into a pinned checkout, or uses
-a stand-in that could resolve to one (`@{...}`, `-`, `FETCH_HEAD`, another
-worktree's refs, `:/` searches, every-branch options or refspecs, an alias, an
-upstream, remote, or URL-rewrite setting, a replace ref). A fetch or pull is
-also refused when any repository it could read, resolved the way Git resolves
-it, is another checkout of this repository or a linked worktree's Git
-directory, and any merge-like command is refused in a checkout the run does
-not author. Git run through a shell or other command runner, such as `sh -c`
-or `env`, is refused outright while units are pinned; run Git directly. Name the recorded commit instead, as
+branch in any spelling or letter case, points into a pinned checkout, uses a
+stand-in that could resolve to one (`@{...}`, `-`, `FETCH_HEAD`, another
+worktree's refs, `:/` searches, every-branch or stdin options and their
+abbreviations, an alias, an upstream or fetch or push mapping, a replace ref),
+or resolves to a commit containing one a pinned unit gained after its
+recorded head. It is also refused in a checkout the run does not author;
+`git pull` is refused outright, a fetch may write only remote-tracking refs,
+and a push or fetch may use only options loop exec knows. Git run through a
+shell or other command runner, such as `sh -c` or `env`, is refused outright
+while units are pinned; run Git directly. Name the recorded commit instead, as
 in `git merge --ff-only <head>` or `git push <remote>
 <head>:refs/heads/<branch>`. The refusal prints that command when it is
-certainly equivalent, or says the branch moved and prints the claim, pause,
-and accept steps. `loop verify --for merge` also fails while such a unit's
-branch has left its recorded head. The controller and its prepared authors
-are not pinned.
+certainly equivalent, or says the unit moved and prints the claim, pause, and
+accept steps. `loop verify --for merge` also fails while such a unit's branch
+has left its recorded head. The controller and its prepared authors are not
+pinned.
 
 For a Ship lease whose opening inventory contains local changes, first record
 the conserved preview plan with `loop record-scope --receipt <file>`. The plan

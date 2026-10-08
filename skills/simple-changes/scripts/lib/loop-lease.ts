@@ -2128,8 +2128,8 @@ const pinnedUnitsFor = (
     registrationPins(lease, registered, coordination)
   )) {
     if (
-      unit.branch !== primaryBranch &&
-      unit.branch !== targetBranch &&
+      (unit.branch === null ||
+        (unit.branch !== primaryBranch && unit.branch !== targetBranch)) &&
       !units.some(
         (existing) =>
           existing.branch === unit.branch && existing.path === unit.path
@@ -2143,7 +2143,8 @@ const pinnedUnitsFor = (
 
 // One registration's pins. A concurrent author whose release recorded its
 // exact state is pinned to that state; its registered branch, when it
-// differs, and an author still holding its claim have no recorded head.
+// differs, and an author still holding its claim have no recorded head. A
+// detached checkout is pinned by its path and head alone.
 const registrationPins = (
   lease: LoopLease,
   registered: LoopWorktreeLease,
@@ -2155,7 +2156,8 @@ const registrationPins = (
       (item) => item.claimId === registered.claimId
     );
     const pins: PinnedUnit[] = [];
-    if (recordedRelease(registered, claim, coordination) && claim.branch) {
+    const released = recordedRelease(registered, claim, coordination);
+    if (released) {
       pins.push({
         branch: claim.branch,
         owner: claim.owner.agentId,
@@ -2164,7 +2166,7 @@ const registrationPins = (
         state: claim.releaseReason === "handoff" ? "handed-off" : "released",
       });
     }
-    if (branch) {
+    if (!released || (branch && branch !== claim.branch)) {
       pins.push({
         branch,
         owner: claim?.owner.agentId ?? registered.agentId,
@@ -2175,12 +2177,7 @@ const registrationPins = (
     }
     return pins;
   }
-  if (
-    !(
-      branch &&
-      (registered.role === "preserved" || registered.role === "retained")
-    )
-  ) {
+  if (!(registered.role === "preserved" || registered.role === "retained")) {
     return [];
   }
   return [
@@ -2301,7 +2298,7 @@ const pinnedUnitGuidance = (
   const notes = [
     `- ${describePinnedUnit(unit)}: replace the branch name with its recorded head ${recorded}.`,
   ];
-  if (subcommand === "push") {
+  if (subcommand === "push" && unit.branch) {
     notes.push(
       `  A push names the destination in full: ${recorded}:refs/heads/${unit.branch}.`
     );
@@ -2346,13 +2343,21 @@ const pinnedRefusalMessage = (
     ),
   ];
   for (const unit of named) {
+    // Where the unit is now: its branch, or its checkout when that moved.
+    const current = [
+      unit.branch ? heads.get(`refs/heads/${unit.branch}`) : undefined,
+      inventory.worktrees.find((worktree) => worktree.path === unit.path)
+        ?.headSha,
+    ].filter((head): head is string => Boolean(head));
     lines.push(
       ...pinnedUnitGuidance(
         lease,
         inventory,
         coordination,
         unit,
-        heads.get(`refs/heads/${unit.branch}`) ?? null,
+        current.find((head) => !unit.recordedHeads.includes(head)) ??
+          current[0] ??
+          null,
         analysis.subcommand
       )
     );
@@ -2385,6 +2390,9 @@ const assertPinnedHeads = (
   const facts = gitFactsFor(invocation.checkout, lease.commonGitDirectory);
   const analysis = analyzePinnedCommand(argv, {
     checkout: invocation.checkout,
+    checkoutHeads: new Map(
+      inventory.worktrees.map((worktree) => [worktree.path, worktree.headSha])
+    ),
     commonGitDirectory: lease.commonGitDirectory,
     facts,
     ownCheckouts: lease.worktrees
@@ -2440,7 +2448,7 @@ const registeredBranchViolations = (
   const heads = localBranchHeads(lease.primaryCheckout);
   const violations: LoopViolation[] = [];
   for (const unit of pinnedUnitsFor(lease, inventory, coordination)) {
-    const head = heads.get(unit.branch);
+    const head = unit.branch ? heads.get(unit.branch) : undefined;
     const recorded = unit.recordedHeads.at(-1);
     if (
       !(head && recorded && MERGE_VERIFIED_STATES.has(unit.state)) ||

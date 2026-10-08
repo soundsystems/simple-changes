@@ -368,17 +368,17 @@
   override. No merge-like `loop exec` command can integrate a commit other
   than a registered unit's recorded head. Before the guard, a Git subcommand
   that is not read-only is refused when an argument names a pinned branch in
-  any spelling or letter case, points into a pinned checkout, or uses an
-  indirect name, alias, upstream, remote or URL-rewrite setting, or replace
-  ref that could stand for one. A fetch or pull whose repository, resolved as
-  Git resolves it, is another checkout of this repository or a linked
-  worktree's Git directory is refused, as is a merge-like command run in a
-  checkout the run does not author, and Git run through a shell or other
-  command runner is refused outright while units are pinned. The refusal
-  prints the commit-ID form when it is certainly equivalent, or the claim,
-  pause, and accept steps when the branch already moved. `loop verify --for
-  merge` fails while a released, handed-off, preserved, or adopted unit's
-  branch has left its recorded head.
+  any spelling or letter case, points into a pinned checkout, uses an
+  indirect name, alias, upstream, fetch or push mapping, or replace ref that
+  could stand for one, or resolves to a commit containing one a pinned unit
+  gained after its recorded head; it is also refused in a checkout the run
+  does not author. `git pull` is refused, a fetch may write only
+  remote-tracking refs, a push or fetch may use only known options, and Git
+  run through a shell or other command runner is refused outright while units
+  are pinned. The refusal prints the commit-ID form when it is certainly
+  equivalent, or the claim, pause, and accept steps when the unit already
+  moved. `loop verify --for merge` fails while a released, handed-off,
+  preserved, or adopted unit's branch has left its recorded head.
 - `proposalScheduling` controls only whether independent proposals are
   authored consecutively or in parallel claimed worktrees. It never shares a
   checkout, weakens controller guards or worktree isolation, changes cleanup

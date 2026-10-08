@@ -137,6 +137,23 @@ const RUN_ID_PATTERN = /^run-/u;
 const commitOnTop = (root: string, parent: string, message: string): string =>
   git(root, ["commit-tree", `${parent}^{tree}`, "-p", parent, "-m", message]);
 
+// Like loop exec, read the worktree list and heads fresh for every command.
+const contextFor = (root: string, pins: PinnedUnit[]): PinnedCommandContext => {
+  const inventory = captureInventory(root);
+  const { commonGitDirectory } = inventory.repository;
+  return {
+    checkout: root,
+    checkoutHeads: new Map(
+      inventory.worktrees.map((worktree) => [worktree.path, worktree.headSha])
+    ),
+    commonGitDirectory,
+    facts: gitFactsFor(root, commonGitDirectory),
+    ownCheckouts: [root],
+    pins,
+    worktreePaths: inventory.worktrees.map((worktree) => worktree.path),
+  };
+};
+
 describe("pinned-head command analysis", () => {
   const analyzer = () => {
     const fixture = repository();
@@ -159,17 +176,8 @@ describe("pinned-head command analysis", () => {
       state: "released",
     };
     const { commonGitDirectory } = captureInventory(root).repository;
-    // Like loop exec, read the worktree list fresh for every command.
-    const context = (pins: PinnedUnit[] = [unit]): PinnedCommandContext => ({
-      checkout: root,
-      commonGitDirectory,
-      facts: gitFactsFor(root, commonGitDirectory),
-      ownCheckouts: [root],
-      pins,
-      worktreePaths: captureInventory(root).worktrees.map(
-        (worktree) => worktree.path
-      ),
-    });
+    const context = (pins: PinnedUnit[] = [unit]): PinnedCommandContext =>
+      contextFor(root, pins);
     const analyze = (argv: string[], pins?: PinnedUnit[]) =>
       analyzePinnedCommand(argv, context(pins));
     const kinds = (argv: string[]) =>
@@ -279,10 +287,12 @@ describe("pinned-head command analysis", () => {
       ["git", "fetch", "--stdin"],
       ["git", "push", "--all", "origin"],
       ["git", "push", "--mirror", "origin"],
+      ["git", "push", "--al", "origin"],
+      ["git", "push", "--mir", "origin"],
+      ["git", "fetch", "--refm=+refs/heads/*:refs/heads/x/*", ".", "feat/y"],
       ["git", "push", "origin", ":"],
       ["git", "push", "origin", "refs/heads/*:refs/heads/*"],
       ["git", "fetch", ".", "refs/heads/*:refs/heads/*"],
-      ["git", "pull", ".", "refs/heads/feat/*"],
       ["git", "stash", "apply", "stash@{0}"],
     ]) {
       expect({ argv, kinds: kinds(argv) }).toEqual({
@@ -311,8 +321,87 @@ describe("pinned-head command analysis", () => {
     }
   });
 
-  test("resolves a fetch or pull repository the way Git does", () => {
+  test("refuses pull, and fetches that write local refs or read unclassified options", () => {
     const { commonGitDirectory, head, kinds, root, unitPath } = analyzer();
+    // A pull resolves its repository, refspecs, and upstream when it runs.
+    for (const argv of [
+      ["git", "pull"],
+      ["git", "pull", "--ff-only", "origin", "main"],
+      ["git", "pull", "--ff-only", `file://localhost${unitPath}`, "HEAD"],
+      ["git", "pull", "--ff-only", "git://localhost/released", "HEAD"],
+    ]) {
+      expect({ argv, kinds: kinds(argv) }).toEqual({
+        argv,
+        kinds: expect.arrayContaining(["unclassified"]),
+      });
+    }
+    // A fetch may write remote-tracking refs and FETCH_HEAD only.
+    for (const argv of [
+      ["git", "fetch", ".", "HEAD:refs/heads/copy"],
+      ["git", "fetch", "origin", "+main:copy"],
+      ["git", "fetch", "origin", "main:refs/tags/copy"],
+      ["git", "fetch", "--refmap=+refs/heads/*:refs/heads/x/*", "origin"],
+      ["git", "fetch", "--unknown-option", "origin"],
+    ]) {
+      expect({ argv, kinds: kinds(argv) }).toEqual({
+        argv,
+        kinds: expect.arrayContaining(["unclassified"]),
+      });
+    }
+    for (const argv of [
+      ["git", "fetch", "origin"],
+      ["git", "fetch", "origin", "main:refs/remotes/origin/main"],
+      ["git", "fetch", "--all", "--prune"],
+      ["git", "fetch", "--multiple", "origin", "https://example.invalid/x"],
+      ["git", "fetch", "git@example.invalid:org/repo.git", "main"],
+    ]) {
+      expect({ argv, kinds: kinds(argv) }).toEqual({ argv, kinds: [] });
+    }
+    // Configuration and legacy remote files can map a fetch into a local
+    // branch under any name.
+    expect(
+      kinds([
+        "git",
+        "-c",
+        "remote.origin.fetch=+refs/heads/*:refs/heads/stage/*",
+        "fetch",
+        "origin",
+      ])
+    ).toEqual(["configured"]);
+    expect(
+      kinds([
+        "git",
+        "-c",
+        "remote.origin.fetch=+refs/*:refs/*",
+        "remote",
+        "update",
+      ])
+    ).toEqual(["configured"]);
+    writeFixture(commonGitDirectory, "branches/legacy", `${unitPath}\n`);
+    expect(kinds(["git", "fetch", "origin"])).toEqual(["configured"]);
+    rmSync(join(commonGitDirectory, "branches"), {
+      force: true,
+      recursive: true,
+    });
+    // A mirror or matching push carries every branch when no refspec is named.
+    expect(
+      kinds(["git", "-c", "remote.origin.mirror=true", "push", "origin"])
+    ).toEqual(["configured"]);
+    expect(
+      kinds([
+        "git",
+        "-c",
+        "remote.origin.mirror=true",
+        "push",
+        "origin",
+        `${head}:refs/heads/x`,
+      ])
+    ).toEqual([]);
+
+    // Paths that reach a pinned checkout: file URLs with a host or percent
+    // encoding, its `.git`, a linked worktree's Git directory, and a pinned
+    // checkout that is absent now but could be restored while the command
+    // waits.
     const gitDirectory = git(unitPath, [
       "rev-parse",
       "--path-format=absolute",
@@ -321,71 +410,19 @@ describe("pinned-head command analysis", () => {
     const encoded = `${unitPath.slice(0, -1)}%${unitPath
       .charCodeAt(unitPath.length - 1)
       .toString(16)}`;
-    for (const argv of [
-      ["git", "pull", "--ff-only", `file://localhost${unitPath}`, "HEAD"],
-      ["git", "pull", "--ff-only", `file://${encoded}`, "HEAD"],
-      ["git", "pull", "--ff-only", `ssh://localhost${unitPath}`, "HEAD"],
-      ["git", "pull", "--ff-only", `localhost:${unitPath}`, "HEAD"],
-      ["git", "pull", "--ff-only", join(unitPath, ".git"), "HEAD"],
-      ["git", "pull", "--ff-only", gitDirectory, "HEAD"],
-      ["git", "fetch", join(commonGitDirectory, "worktrees"), "HEAD:x"],
+    for (const location of [
+      `file://localhost${unitPath}`,
+      `file://${encoded}`,
+      join(unitPath, ".git"),
+      gitDirectory,
+      unitPath.toUpperCase(),
     ]) {
+      const argv = ["git", "fetch", location, "HEAD:refs/remotes/u/head"];
       expect({ argv, kinds: kinds(argv) }).toEqual({
         argv,
         kinds: ["checkout"],
       });
     }
-    expect(
-      kinds(["git", "fetch", "ext::git %s /elsewhere", "HEAD:refs/heads/x"])
-    ).toEqual(["configured"]);
-
-    // Legacy remote files define remotes that configuration never lists,
-    // and every remote counts for every fetch.
-    writeFixture(
-      commonGitDirectory,
-      "remotes/unit-source",
-      `URL: ${unitPath}\n`
-    );
-    expect(kinds(["git", "pull", "--ff-only", "unit-source", "HEAD"])).toEqual([
-      "checkout",
-    ]);
-    expect(kinds(["git", "fetch", "origin"])).toEqual(["checkout"]);
-    rmSync(join(commonGitDirectory, "remotes"), {
-      force: true,
-      recursive: true,
-    });
-    writeFixture(commonGitDirectory, "branches/unit-branch", `${unitPath}\n`);
-    expect(kinds(["git", "pull", "--ff-only", "unit-branch"])).toEqual([
-      "checkout",
-    ]);
-    rmSync(join(commonGitDirectory, "branches"), {
-      force: true,
-      recursive: true,
-    });
-    expect(kinds(["git", "fetch", "origin"])).toEqual([]);
-
-    // Any other checkout's HEAD can move under the command, pinned or not,
-    // for example a pinned checkout moved to a new path.
-    const strayPath = join(dirname(root), "stray");
-    git(root, ["worktree", "add", "--detach", strayPath, head]);
-    for (const argv of [
-      ["git", "pull", "--ff-only", strayPath, "HEAD"],
-      ["git", "fetch", `file://${strayPath}`, "HEAD:refs/heads/x"],
-      ["git", "-C", strayPath, "push", "origin", "HEAD:refs/heads/main"],
-    ]) {
-      expect({ argv, kinds: kinds(argv) }).toEqual({
-        argv,
-        kinds: ["checkout"],
-      });
-    }
-    expect(kinds(["git", "fetch", root, `${head}:refs/heads/x`])).toEqual([]);
-    expect(kinds(["git", "fetch", "[::1]:/elsewhere", "HEAD:x"])).toEqual([]);
-    expect(
-      kinds(["git", "pull", "--ff-only", `[::1]:${unitPath}`, "HEAD"])
-    ).toEqual(["checkout"]);
-
-    // A pinned checkout that is absent now could be restored while the
-    // command waits, so its path stays pinned.
     const absent: PinnedUnit = {
       branch: "feat/absent",
       owner: null,
@@ -393,22 +430,64 @@ describe("pinned-head command analysis", () => {
       recordedHeads: [head],
       state: "released",
     };
-    const inventory = captureInventory(root);
     const absentKinds = (argv: string[]) =>
-      analyzePinnedCommand(argv, {
-        checkout: root,
-        commonGitDirectory,
-        facts: gitFactsFor(root, commonGitDirectory),
-        ownCheckouts: [root],
-        pins: [absent],
-        worktreePaths: inventory.worktrees.map((worktree) => worktree.path),
-      }).refusals.map((item) => item.kind);
+      analyzePinnedCommand(argv, contextFor(root, [absent])).refusals.map(
+        (item) => item.kind
+      );
     expect(
-      absentKinds(["git", "pull", "--ff-only", absent.path, "HEAD"])
+      absentKinds(["git", "fetch", absent.path, "HEAD:refs/remotes/u/head"])
     ).toEqual(["checkout"]);
     expect(
       absentKinds(["git", "-C", absent.path, "merge", "--ff-only"])
     ).toEqual(["checkout"]);
+
+    // Git run in any checkout the run does not author reads a HEAD that can
+    // move, for example a pinned checkout moved to a new path.
+    const strayPath = join(dirname(root), "stray");
+    git(root, ["worktree", "add", "--detach", strayPath, head]);
+    expect(
+      kinds(["git", "-C", strayPath, "push", "origin", "HEAD:refs/heads/main"])
+    ).toEqual(["checkout"]);
+    expect(kinds(["git", "-C", root, "merge", "--ff-only", head])).toEqual([]);
+  });
+
+  test("refuses a revision that contains a commit a pinned unit gained later", () => {
+    const { head, kinds, root, unit, unitPath } = analyzer();
+    // The unit's branch moves past its recorded head, and a copy of it is
+    // made under another name.
+    const late = commitFixture(unitPath, "late.ts", "export const late = 1;\n");
+    git(root, ["branch", "copy", late]);
+    for (const argv of [
+      ["git", "merge", "--ff-only", "copy"],
+      ["git", "merge", "--ff-only", late],
+      ["git", "cherry-pick", `${head}..copy`],
+      ["git", "reset", "--hard", "copy~0"],
+      ["git", "push", "origin", `${late}:refs/heads/main`],
+      ["git", "rebase", "--onto=copy", "main"],
+    ]) {
+      expect({ argv, kinds: kinds(argv) }).toEqual({
+        argv,
+        kinds: ["moved"],
+      });
+    }
+    expect(kinds(["git", "merge", "--ff-only", head])).toEqual([]);
+    expect(kinds(["git", "merge", "--ff-only", "other"])).toEqual([]);
+    // A detached checkout is pinned by its path and head alone.
+    const detached: PinnedUnit = { ...unit, branch: null, state: "preserved" };
+    const detachedKinds = (argv: string[]) =>
+      analyzePinnedCommand(argv, contextFor(root, [detached])).refusals.map(
+        (item) => item.kind
+      );
+    expect(detachedKinds(["git", "merge", "--ff-only", late])).toEqual([
+      "moved",
+    ]);
+    expect(
+      detachedKinds(["git", "fetch", unitPath, "HEAD:refs/remotes/u/head"])
+    ).toEqual(["checkout"]);
+    expect(detachedKinds(["git", "merge", "--ff-only", "feat/x"])).toEqual([
+      "moved",
+    ]);
+    expect(detachedKinds(["git", "merge", "--ff-only", head])).toEqual([]);
   });
 
   test("attributes a path to the deepest checkout that contains it", () => {
@@ -422,23 +501,17 @@ describe("pinned-head command analysis", () => {
       recordedHeads: [git(root, ["rev-parse", "feat/nested"])],
       state: "preserved",
     };
-    const inventory = captureInventory(root);
     const kinds = (argv: string[]) =>
-      analyzePinnedCommand(argv, {
-        checkout: root,
-        commonGitDirectory: inventory.repository.commonGitDirectory,
-        facts: gitFactsFor(root, inventory.repository.commonGitDirectory),
-        ownCheckouts: [root],
-        pins: [nested],
-        worktreePaths: inventory.worktrees.map((worktree) => worktree.path),
-      }).refusals.map((item) => item.kind);
-    expect(kinds(["git", "fetch", ".worktrees/nested", "HEAD:main"])).toEqual([
-      "checkout",
-    ]);
+      analyzePinnedCommand(argv, contextFor(root, [nested])).refusals.map(
+        (item) => item.kind
+      );
+    expect(
+      kinds(["git", "fetch", ".worktrees/nested", "HEAD:refs/remotes/n/head"])
+    ).toEqual(["checkout"]);
     expect(
       kinds(["git", "-C", ".worktrees/nested", "merge", "--ff-only", head])
     ).toEqual(["checkout"]);
-    expect(kinds(["git", "fetch", ".", "HEAD:refs/heads/elsewhere"])).toEqual(
+    expect(kinds(["git", "fetch", ".", "HEAD:refs/remotes/self/head"])).toEqual(
       []
     );
     expect(kinds(["git", "-C", root, "merge", "--ff-only", head])).toEqual([]);
@@ -462,8 +535,6 @@ describe("pinned-head command analysis", () => {
       ["git", "merge", "--ff-only"],
       ["git", "merge", "--ff-only", "-m", head],
       ["git", "merge", "--unknown", head],
-      ["git", "pull"],
-      ["git", "pull", "--ff-only", "."],
       ["git", "rebase"],
       ["git", "rebase", head],
     ]) {
@@ -480,21 +551,17 @@ describe("pinned-head command analysis", () => {
     expect(kinds(["git", "-c", "push.default=matching", "push"])).toEqual([
       "configured",
     ]);
-    expect(
-      kinds(["git", "-c", "push.default=matching", "push", "--unknown", "x"])
-    ).toEqual(["configured"]);
-    // An option it does not know may take the next argument as its value.
+    // An option it does not know is refused: it may be an abbreviation, or
+    // take the next argument as its value.
     expect(
       kinds([
         "git",
-        "-c",
-        "push.default=matching",
         "push",
         "--unknown",
         "origin",
         `${head}:refs/heads/elsewhere`,
       ])
-    ).toEqual(["configured"]);
+    ).toEqual(["unclassified"]);
     expect(
       kinds([
         "git",
@@ -508,22 +575,12 @@ describe("pinned-head command analysis", () => {
     expect(
       kinds(["git", "-c", "remote.origin.push=refs/heads/*:refs/for/*", "push"])
     ).toEqual(["configured"]);
+    // A fetch from a pinned checkout through a remote writes only
+    // FETCH_HEAD and remote-tracking refs, which later commands are checked
+    // against; a push only writes to the repository it names.
     expect(
       kinds(["git", "-c", `remote.u.url=${unitPath}`, "fetch", "u"])
-    ).toEqual(["checkout"]);
-    // A URL rewrite can turn any name into a pinned checkout. A push only
-    // writes to the repository it names, so where that is does not matter.
-    expect(
-      kinds([
-        "git",
-        "-c",
-        `url.${unitPath}/.insteadOf=unit:`,
-        "pull",
-        "--ff-only",
-        "unit:",
-        "HEAD",
-      ])
-    ).toEqual(["checkout"]);
+    ).toEqual([]);
     expect(
       kinds([
         "git",
@@ -540,7 +597,6 @@ describe("pinned-head command analysis", () => {
     expect(kinds(["git", "merge"])).toEqual([]);
     git(root, ["config", "--add", "branch.main.merge", "refs/heads/feat/x"]);
     expect(kinds(["git", "merge"])).toEqual(["configured"]);
-    expect(kinds(["git", "pull", "--ff-only"])).toEqual(["configured"]);
     git(root, ["config", "--unset-all", "branch.main.merge"]);
     git(root, ["config", "--unset", "branch.main.remote"]);
 

@@ -3,7 +3,7 @@ import {
   type SpawnOptions,
   spawn,
 } from "node:child_process";
-import { accessSync, constants, realpathSync } from "node:fs";
+import { accessSync, constants, readlinkSync, realpathSync } from "node:fs";
 import { isAbsolute } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
@@ -225,6 +225,12 @@ const runCommand = (
 const XCRUN_GIT_SHIM = "/usr/bin/git";
 
 export interface GitExecutableProbe {
+  /**
+   * The developer Git the shim would run, found from DEVELOPER_DIR, the
+   * xcode-select link, or the Command Line Tools without running xcrun,
+   * whose lookup cache is a write.
+   */
+  developerGit?: () => string | null;
   platform: NodeJS.Platform;
   realpath: (path: string) => string;
   which: (command: string) => string | null;
@@ -252,12 +258,52 @@ export const resolveGitExecutable = (probe: GitExecutableProbe): string => {
   if (resolvedOnPath !== XCRUN_GIT_SHIM) {
     return "git";
   }
-  const developerGit = probe.xcrunFind();
+  const developerGit = probe.developerGit?.() ?? probe.xcrunFind();
   return developerGit &&
     isAbsolute(developerGit) &&
     developerGit !== XCRUN_GIT_SHIM
     ? developerGit
     : "git";
+};
+
+const XCODE_SELECT_LINK = "/var/db/xcode_select_link";
+const COMMAND_LINE_TOOLS = "/Library/Developer/CommandLineTools";
+
+const executableOrNull = (path: string): string | null => {
+  try {
+    accessSync(path, constants.X_OK);
+    return path;
+  } catch {
+    return null;
+  }
+};
+
+/** The developer Git xcrun would pick, in xcrun's own order, without xcrun. */
+const selectedDeveloperGit = (): string | null => {
+  const configured = process.env.DEVELOPER_DIR?.trim();
+  let selected: string | null = null;
+  try {
+    selected = readlinkSync(XCODE_SELECT_LINK);
+  } catch {
+    selected = null;
+  }
+  for (const directory of [configured, selected, COMMAND_LINE_TOOLS]) {
+    if (!directory) {
+      continue;
+    }
+    const developer = directory.endsWith(".app")
+      ? `${directory}/Contents/Developer`
+      : directory;
+    const git = executableOrNull(`${developer}/usr/bin/git`);
+    if (git) {
+      return git;
+    }
+    // xcrun stops at the first configured directory it is given.
+    if (directory === configured) {
+      return null;
+    }
+  }
+  return null;
 };
 
 const xcrunFindGit = (): string | null => {
@@ -281,6 +327,7 @@ let cachedGitExecutable: string | undefined;
 
 export const gitExecutable = (): string => {
   cachedGitExecutable ??= resolveGitExecutable({
+    developerGit: selectedDeveloperGit,
     platform: process.platform,
     realpath: realpathSync,
     which: (command) => which(command),

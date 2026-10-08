@@ -61,6 +61,25 @@ describe("Git executable resolution", () => {
     ).toBe("git");
   });
 
+  test("finds the developer Git without running xcrun when it can", () => {
+    let xcrunRan = false;
+    const xcrunFind = () => {
+      xcrunRan = true;
+      return DEVELOPER_GIT;
+    };
+    const commandLineGit = "/Library/Developer/CommandLineTools/usr/bin/git";
+    expect(
+      resolveGitExecutable(
+        probe({ developerGit: () => commandLineGit, xcrunFind })
+      )
+    ).toBe(commandLineGit);
+    expect(xcrunRan).toBe(false);
+    expect(
+      resolveGitExecutable(probe({ developerGit: () => null, xcrunFind }))
+    ).toBe(DEVELOPER_GIT);
+    expect(xcrunRan).toBe(true);
+  });
+
   test("follows a PATH link that resolves to the shim", () => {
     expect(
       resolveGitExecutable(

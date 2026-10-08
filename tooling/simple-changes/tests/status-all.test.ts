@@ -576,6 +576,52 @@ describe("simple-changes status --all", () => {
     }
   });
 
+  test("never calls a deleted ready branch stale when target history cannot be read", () => {
+    const home = temporaryHome();
+    const repository = initRepository(join(home, "Developer", "history"));
+    writeFixture(repository, ".simple-changes.json", policy(27));
+    git(repository, ["add", ".simple-changes.json"]);
+    git(repository, ["commit", "-q", "-m", "Add policy"]);
+    const path = join(home, "Developer", "history-ready");
+    git(repository, ["worktree", "add", "-q", "-b", "ready", path]);
+    const claim = claimWorktree(path, "ready-agent", path, "codex");
+    writeFixture(path, "ready.txt", "finished\n");
+    git(path, ["add", "ready.txt"]);
+    git(path, ["commit", "-q", "-m", "Finish"]);
+    recordReadyWork(path, "ready-agent", claim.claimId, {
+      checks: [{ command: "bun run check", note: null, result: "passed" }],
+      deploymentConstraints: [],
+      migrations: [],
+      releaseImpact: "patch",
+      scope: "Finish.",
+      unresolvedAuthority: [],
+    });
+    git(repository, ["merge", "-q", "--ff-only", "ready"]);
+    writeFixture(repository, "middle.txt", "middle\n");
+    git(repository, ["add", "middle.txt"]);
+    git(repository, ["commit", "-q", "-m", "Middle"]);
+    const middle = git(repository, ["rev-parse", "HEAD"]);
+    writeFixture(repository, "tip.txt", "tip\n");
+    git(repository, ["add", "tip.txt"]);
+    git(repository, ["commit", "-q", "-m", "Tip"]);
+    git(repository, ["worktree", "remove", "--force", path]);
+    git(repository, ["branch", "-D", "ready"]);
+    rmSync(
+      join(repository, ".git", "objects", middle.slice(0, 2), middle.slice(2))
+    );
+
+    const [status] = statusAll({
+      home,
+      runtime: { skillDirectory: home, version: "0.27.1" },
+    }).repositories;
+
+    const readyWork = status?.readyWork;
+    expect(isUnknown(readyWork)).toBe(false);
+    if (!isUnknown(readyWork)) {
+      expect(readyWork?.map((item) => item.freshness)).toEqual(["unknown"]);
+    }
+  });
+
   test("shows unreadable state as unknown and keeps going", () => {
     const home = temporaryHome();
     const broken = initRepository(join(home, "Developer", "broken"));

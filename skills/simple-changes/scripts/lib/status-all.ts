@@ -8,7 +8,6 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { revisionContainmentMethod } from "./cleanup-core.ts";
 import { CURRENT_GUIDANCE_VERSION } from "./guidance-updates.ts";
 import { captureInventory, locateRepository } from "./inventory.ts";
 import {
@@ -549,6 +548,44 @@ const refPresence = (root: string, ref: string): boolean | null => {
 type ReadyFreshness = "current" | "shipped" | "stale" | "unknown";
 
 /**
+ * Whether the target contains `head`, by exact ancestry or patch
+ * equivalence, as `revisionContainmentMethod` decides it, but with a failed
+ * history read kept distinct from "not contained".
+ */
+const readyContainment = (
+  root: string,
+  target: string,
+  head: string
+): "patch-equivalent" | "target-contained" | null | Unknown => {
+  const ancestry = runGit(
+    root,
+    ["merge-base", "--is-ancestor", `${head}^{commit}`, `${target}^{commit}`],
+    true
+  );
+  if (ancestry.exitCode === 0) {
+    return "target-contained";
+  }
+  if (ancestry.exitCode !== 1) {
+    return unknown(new Error("the target's history could not be read"));
+  }
+  const unmatched = runGit(
+    root,
+    [
+      "rev-list",
+      "--cherry-pick",
+      "--right-only",
+      "--count",
+      `${target}...${head}`,
+    ],
+    true
+  );
+  if (unmatched.exitCode !== 0) {
+    return unknown(new Error("the target's history could not be read"));
+  }
+  return unmatched.stdout.trim() === "0" ? "patch-equivalent" : null;
+};
+
+/**
  * Ready-work freshness from refs alone: shipped once the target contains the
  * receipted head, stale once the branch moved or no longer exists, current
  * at the receipted head (contents not compared), and unknown whenever a ref
@@ -571,7 +608,13 @@ const readyFreshness = (
       freshness: "unknown",
     };
   }
-  const method = revisionContainmentMethod(root, target, head);
+  const method = readyContainment(root, target, head);
+  if (isUnknown(method)) {
+    return {
+      detail: `Whether ${targetRef} contains ${head} cannot be read here: ${method.error}.`,
+      freshness: "unknown",
+    };
+  }
   if (method) {
     return {
       detail: `${targetRef} already contains ${head} (${method}).`,

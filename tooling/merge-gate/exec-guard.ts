@@ -189,20 +189,22 @@ const lastValue = (scanned: Scanned, names: readonly string[]): string | null =>
 const hasOption = (scanned: Scanned, names: readonly string[]): boolean =>
   scanned.options.some((option) => names.includes(option.name));
 
-/** Option names with short clusters such as `-fu` split into `-f`, `-u`. */
+/**
+ * Option names exactly as written. Short options are never split as a
+ * cluster: Git and the provider CLIs read `-on` as `-o` with the value `n`,
+ * so a cluster or an attached short value is unsupported and refused.
+ */
 const flagNames = (scanned: Scanned): string[] =>
-  scanned.options.flatMap(({ name }) =>
-    SHORT_CLUSTER_PATTERN.test(name)
-      ? [...name.slice(1)].map((letter) => `-${letter}`)
-      : [name]
-  );
+  scanned.options.map(({ name }) => name);
 
 /** The first option outside `supported`, which the guard refuses. */
 const unsupportedFlag = (
   scanned: Scanned,
   supported: ReadonlySet<string>
 ): string | undefined =>
-  flagNames(scanned).find((name) => !supported.has(name));
+  flagNames(scanned).find(
+    (name) => SHORT_CLUSTER_PATTERN.test(name) || !supported.has(name)
+  );
 
 // ------------------------------------------------------------------- git
 
@@ -979,29 +981,69 @@ const cliMerge = (
   return requireProviderMerge(context, sha, what, project);
 };
 
+const PROVIDER_GLOBAL_VALUED = ["-R", "--repo"];
+
+/**
+ * The command group and action words of a gh or glab command and the index
+ * after the group, skipping only the global `-R` option and its value. Any
+ * other option before the action could hide where the words are, so it is
+ * refused.
+ */
+const providerWords = (
+  argv: readonly string[]
+):
+  | { action: string | null; after: number; group: string | null }
+  | GuardDecision => {
+  const words: string[] = [];
+  let after = argv.length;
+  for (let index = 1; index < argv.length && words.length < 2; index += 1) {
+    const argument = argv[index] ?? "";
+    if (PROVIDER_GLOBAL_VALUED.includes(argument)) {
+      index += 1;
+    } else if (argument.startsWith("-")) {
+      return refuse(
+        `${basename(argv[0] ?? "")} ${argument} before the command's action is not a form the merge gate supports`
+      );
+    } else {
+      words.push(argument);
+      if (words.length === 1) {
+        after = index + 1;
+      }
+      // `api` takes its own options and endpoint, read by the API grammar.
+      if (argument === "api" && words.length === 1) {
+        break;
+      }
+    }
+  }
+  return { action: words[1] ?? null, after, group: words[0] ?? null };
+};
+
 const analyzeProvider = (
   argv: readonly string[],
   context: GuardContext
 ): GuardDecision => {
   const tool = basename(argv[0] ?? "");
-  const words = new Set(argv.slice(1));
+  const parsed = providerWords(argv);
+  if ("allow" in parsed) {
+    return parsed;
+  }
+  const { action, after, group } = parsed;
   if (
     tool === "glab" &&
-    words.has("mr") &&
-    (words.has("merge") || words.has("accept"))
+    group === "mr" &&
+    (action === "merge" || action === "accept")
   ) {
     return cliMerge(argv, context, GLAB_MERGE);
   }
-  if (tool === "gh" && words.has("pr") && words.has("merge")) {
+  if (tool === "gh" && group === "pr" && action === "merge") {
     return cliMerge(argv, context, GH_MERGE);
   }
-  if (tool === "gh" && words.has("repo") && words.has("sync")) {
+  if (tool === "gh" && group === "repo" && action === "sync") {
     return refuse(
       "gh repo sync can move a branch from another repository; the merge gate does not support it"
     );
   }
-  const api = argv.indexOf("api");
-  return api > 0 ? apiMerge(argv.slice(api + 1), context, tool) : allow();
+  return group === "api" ? apiMerge(argv.slice(after), context, tool) : allow();
 };
 
 // ---------------------------------------------------------------- entry

@@ -66,7 +66,9 @@ as `-sd`; `git
 push` without a remote, with a colonless refspec (configuration such as
 `push.default`, upstreams, or `remote.<name>.push` would choose its
 destination), to a mirroring remote, with an unsupported option, or with a
-pattern or matching (`:`) refspec, except `git push <remote> --tags`; git global
+pattern or matching (`:`) refspec, except `git push <remote> --tags`; a short
+option cluster or attached short value anywhere (Git reads `-on` as `-o n`),
+so write each option on its own; git global
 options other than `-C`, paging, and `--no-optional-locks` (so no `-c`,
 `--git-dir`, `--work-tree`, or `--exec-path`); an `env` wrapper that changes the
 environment of git, glab, or gh; a git subcommand that is not a known built-in

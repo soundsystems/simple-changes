@@ -368,7 +368,7 @@
   override. No merge-like `loop exec` command can integrate a commit other
   than a registered unit's recorded head. While units are pinned it runs only
   Git and provider merges that name their commit (`glab mr merge <iid> --sha
-  <head>`), refusing every other program before it starts, and only an
+  <head>`, optionally with `-R <project>`), refusing every other program before it starts, and only an
   allowlist of merge-like Git subcommands. One is refused when an argument
   names a pinned branch in any spelling or letter case, points into a pinned
   checkout, uses an indirect name, fetch or push mapping, or replace ref

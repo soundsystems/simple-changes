@@ -57,7 +57,8 @@ import { runGit } from "./process.ts";
  *
  * While units are pinned, the program allowlist is the boundary: `loop exec`
  * runs only `git`, checked as above, and documented provider merges that
- * name the commit they merge (`glab mr merge <iid> --sha <commit>`). Every
+ * name the commit they merge (`glab mr merge <iid> [-R <project>] --sha
+ * <commit>`). Every
  * other program, including shells, interpreters, runners, and scripts, is
  * refused before it starts, because what it runs cannot be classified.
  * Refusing a legitimate command is accepted: the form that names the
@@ -2640,8 +2641,38 @@ const GLAB_MERGE_FLAGS: ReadonlySet<string> = new Set([
   "--yes",
 ]);
 
+// One `glab mr merge` argument: how many arguments it uses, or null when it
+// is not one the pinned grammar accepts. A `-R`/`--repo` project value must
+// not start with a dash, so no option can consume the `--sha` argument.
+const glabMergeArgument = (
+  args: readonly string[],
+  index: number,
+  shas: string[],
+  requests: string[]
+): number | null => {
+  const token = args[index] as string;
+  const next = args[index + 1] ?? "";
+  if (token === "-R" || token === "--repo") {
+    return next === "" || next.startsWith("-") ? null : 2;
+  }
+  if (token === "--sha") {
+    shas.push(next);
+    return 2;
+  }
+  if (token.startsWith("--sha=")) {
+    shas.push(token.slice("--sha=".length));
+    return 1;
+  }
+  if (!token.startsWith("-")) {
+    requests.push(token);
+    return 1;
+  }
+  return GLAB_MERGE_FLAGS.has(token) ? 1 : null;
+};
+
 // A documented provider merge that names the exact commit it merges, so the
-// provider refuses any other head: `glab mr merge <iid> --sha <commit>`.
+// provider refuses any other head: `glab mr merge <iid> [-R <project>] --sha
+// <commit>`. `-R` only chooses the project; it cannot change the commit.
 const pinnedProviderMergeSha = (argv: readonly string[]): string | null => {
   const [command = "", ...args] = argv;
   if (
@@ -2651,24 +2682,17 @@ const pinnedProviderMergeSha = (argv: readonly string[]): string | null => {
   ) {
     return null;
   }
-  // Exactly one merge request, one `--sha`, and only flags that take no
-  // value, so no other option can consume the `--sha` argument.
+  // Exactly one merge request, one `--sha`, and otherwise only flags that
+  // take no value or a separate `-R`/`--repo` project.
   const shas: string[] = [];
   const requests: string[] = [];
   let index = 2;
   while (index < args.length) {
-    const token = args[index] as string;
-    index += 1;
-    if (token === "--sha") {
-      shas.push(args[index] ?? "");
-      index += 1;
-    } else if (token.startsWith("--sha=")) {
-      shas.push(token.slice("--sha=".length));
-    } else if (!token.startsWith("-")) {
-      requests.push(token);
-    } else if (!GLAB_MERGE_FLAGS.has(token)) {
+    const used = glabMergeArgument(args, index, shas, requests);
+    if (used === null) {
       return null;
     }
+    index += used;
   }
   const [sha = ""] = shas;
   return shas.length === 1 && requests.length === 1 && isObjectId(sha)
@@ -2689,7 +2713,7 @@ const programRefusals = (
     return [
       refusal(
         "program",
-        `while units are pinned, loop exec runs only git and provider merges that name the commit (glab mr merge <iid> --sha <commit>); run ${command} outside loop exec, or finish integrating the pinned units first`,
+        `while units are pinned, loop exec runs only git and provider merges that name the commit (glab mr merge <iid> [-R <project>] --sha <commit>); run ${command} outside loop exec, or finish integrating the pinned units first`,
         command
       ),
     ];

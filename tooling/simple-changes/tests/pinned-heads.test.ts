@@ -905,7 +905,10 @@ describe("pinned-head command analysis", () => {
       ["glab", "mr", "merge", "12", "--sha", head, `--sha=${head}`],
       ["glab", "mr", "merge", "12", "--yes", "--message", `--sha=${head}`],
       ["glab", "mr", "merge", "12", "13", "--sha", head],
-      ["glab", "mr", "merge", "12", "--repo", "x/y", "--sha", head],
+      // A project value that starts with a dash would consume `--sha`.
+      ["glab", "mr", "merge", "12", "--repo", "--sha", head],
+      ["glab", "mr", "merge", "12", "--sha", head, "-R"],
+      ["glab", "mr", "merge", "12", "-Rx/y", "--sha", head],
     ]) {
       expect({ argv, kinds: kinds(argv) }).toEqual({
         argv,
@@ -914,6 +917,13 @@ describe("pinned-head command analysis", () => {
     }
     expect(kinds(["glab", "mr", "merge", "12", "--sha", head])).toEqual([]);
     expect(kinds(["glab", "mr", "merge", "12", `--sha=${head}`])).toEqual([]);
+    // `-R` chooses the project only, so a separate project value is allowed.
+    expect(
+      kinds(["glab", "mr", "merge", "12", "-R", "x/y", "--sha", head])
+    ).toEqual([]);
+    expect(
+      kinds(["glab", "mr", "merge", "12", "--sha", head, "--repo", "x/y"])
+    ).toEqual([]);
     expect(kinds(["git", "--exec-path=/tmp", "merge", head])).toEqual([
       "unclassified",
     ]);

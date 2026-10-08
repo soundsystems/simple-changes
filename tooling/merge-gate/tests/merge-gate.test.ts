@@ -215,6 +215,18 @@ describe("merge gate exec guard", () => {
       ],
       ["env", "HOME=/elsewhere", "git", "push", "origin", "HEAD:feat/x"],
       ["gh", "repo", "sync"],
+      [
+        "gh",
+        "pr",
+        "merge",
+        "7",
+        "--match-head-commit",
+        feature,
+        "-Rother/project",
+      ],
+      ["gh", "pr", "merge", "7", "--match-head-commit", feature, "-sd"],
+      ["glab", "mr", "merge", "86", "--sha", feature, "-Rother/project"],
+      ["glab", "mr", "merge", "86", "--sha", feature, "--unknown-flag"],
       ["gh", "api", "-X", "POST", "repos/o/r/pulls/7/merge-async"],
       ["glab", "api", "-X", "POST", "graphql", "--input", "query.json"],
       [

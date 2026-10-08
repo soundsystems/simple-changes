@@ -891,13 +891,80 @@ const originProject = (cwd: string): string | null => {
  * A provider CLI merge, wherever its global flags put the subcommand words,
  * bound to the head named by `shaFlag` and to its `-R` project or origin.
  */
+interface CliMergeGrammar {
+  flags: ReadonlySet<string>;
+  shaFlag: string;
+  valued: readonly string[];
+  what: string;
+}
+
+/**
+ * The options each CLI merge accepts, each written on its own: an attached
+ * short value such as `-Rother/project` or a cluster such as `-sd` is
+ * refused, so the guard reads the same project and head the CLI would.
+ */
+const GLAB_MERGE: CliMergeGrammar = {
+  flags: new Set([
+    "-s",
+    "--squash",
+    "-d",
+    "--remove-source-branch",
+    "-r",
+    "--rebase",
+    "-y",
+    "--yes",
+    "--auto-merge",
+  ]),
+  shaFlag: "--sha",
+  valued: ["--sha", "-R", "--repo", "-m", "--message", "--squash-message"],
+  what: "glab mr merge",
+};
+const GH_MERGE: CliMergeGrammar = {
+  flags: new Set([
+    "-m",
+    "--merge",
+    "-s",
+    "--squash",
+    "-r",
+    "--rebase",
+    "-d",
+    "--delete-branch",
+    "--auto",
+    "--disable-auto",
+    "--admin",
+  ]),
+  shaFlag: "--match-head-commit",
+  valued: [
+    "--match-head-commit",
+    "-R",
+    "--repo",
+    "-b",
+    "--body",
+    "-F",
+    "--body-file",
+    "-t",
+    "--subject",
+    "-A",
+    "--author-email",
+  ],
+  what: "gh pr merge",
+};
+
 const cliMerge = (
   argv: readonly string[],
   context: GuardContext,
-  what: string,
-  shaFlag: string
+  grammar: CliMergeGrammar
 ): GuardDecision => {
-  const scanned = scan(argv.slice(1), [shaFlag, "-R", "--repo"]);
+  const { shaFlag, what } = grammar;
+  const scanned = scan(argv.slice(1), grammar.valued);
+  const unsupported = scanned.options.find(
+    ({ name }) => !(grammar.valued.includes(name) || grammar.flags.has(name))
+  );
+  if (unsupported) {
+    return refuse(
+      `${what} ${unsupported.name} is not a form the merge gate supports; write each option on its own, with its value separate`
+    );
+  }
   const sha = lastValue(scanned, [shaFlag]);
   if (!sha) {
     return refuse(
@@ -923,10 +990,10 @@ const analyzeProvider = (
     words.has("mr") &&
     (words.has("merge") || words.has("accept"))
   ) {
-    return cliMerge(argv, context, "glab mr merge", "--sha");
+    return cliMerge(argv, context, GLAB_MERGE);
   }
   if (tool === "gh" && words.has("pr") && words.has("merge")) {
-    return cliMerge(argv, context, "gh pr merge", "--match-head-commit");
+    return cliMerge(argv, context, GH_MERGE);
   }
   if (tool === "gh" && words.has("repo") && words.has("sync")) {
     return refuse(

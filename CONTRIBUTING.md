@@ -60,7 +60,9 @@ Everything else that could move `main` is refused: a merge that names no
 exact SHA or names another project; any other `gh api` or `glab api` mutation
 except creating, updating, or commenting on a proposal and deleting a
 non-target branch (so no GraphQL mutation, no `merge-async`, no repository
-commit API); a provider option with an attached value such as `-XPUT`; `git
+commit API); a provider option outside the supported set, or with an
+attached value such as `-XPUT` or `-Rother/project`, or a short cluster such
+as `-sd`; `git
 push` without a remote, with a colonless refspec (configuration such as
 `push.default`, upstreams, or `remote.<name>.push` would choose its
 destination), to a mirroring remote, with an unsupported option, or with a

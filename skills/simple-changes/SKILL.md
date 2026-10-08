@@ -80,8 +80,9 @@ or delete a tag, and never tag from Sync or as a delegated author.
 - **Finishing:** [cleanup and completion](references/cleanup-and-completion.md).
 - **Recovery:** when `loop status`, `loop verify`, or finalization reports a
   blocker, a stale, relinquished, or frozen run, a released or orphaned claim,
-  or a missing, late, or changed worktree, or merged work has no loop to clean
-  it up, read [recovery](references/recovery.md) before acting.
+  or a missing, late, or changed worktree; when merged work or orphaned
+  worktrees have no loop to clean them up; or when an editor's worktree list is
+  stale, read [recovery](references/recovery.md) before acting.
 - **Forks:** for behavior that requires changing the skill, follow
   [fork maintenance](references/fork-maintenance.md).
 - **Providers, only after provider discovery:** [GitHub](references/providers/github.md),
@@ -172,14 +173,14 @@ exec`. Use `loop guard` only for
 external provider calls and verify immediately afterward. Before merge,
 deployment, cleanup, and completion, run `loop verify`; immediately before a
 merge, deployment, or migration, add `--for merge`, `--for deploy`, or `--for
-migrations` so [shipment holds](#shipment-holds) gate that step. When it
-fails, resolve exactly what it reports and run it again; proceed only on a
-passing result. After review and integration settle, record one exact
+migrations` so [shipment holds](#shipment-holds) gate that step. Proceed
+only on a passing result. After review and integration settle, record one exact
 `loop record-outcome --receipt <shipment-outcome.json>` receipt before
 completion. A busy lock blocks only the named short integration operation,
 never unrelated authors.
 
-To delegate independent units, follow
+When scheduling allows parallel authoring and the host can start isolated
+agents, delegate independent units per
 [parallel agents](references/inventory-and-concurrency.md#parallel-agents):
 the controller prepares every agent's worktree with `prepare-agent`, and the
 controller alone pushes, merges, and finalizes.

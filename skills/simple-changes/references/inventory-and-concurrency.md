@@ -117,7 +117,8 @@ caller's agent ID owns the exact registered controller or run-author worktree on
 its recorded branch. It rejects any new unclaimed worktree, branch switch,
 incomplete preparation, missing baseline worktree, or head/content change in a
 preserved worktree. Run `loop verify` before merge, deployment, cleanup, and
-completion even when every earlier operation passed.
+completion even when every earlier operation passed. When it fails, resolve
+exactly what it reports and run it again; proceed only on a passing result.
 
 For a Ship lease whose opening inventory contains local changes, first record
 the conserved preview plan with `loop record-scope --receipt <file>`. The plan
@@ -282,6 +283,11 @@ independent unit to its own agent instead of authoring the units one after
 another. Delegation changes who edits a unit, not what the agents share. When
 the host cannot start agents or report their completion, author the units
 consecutively; that is a harness limit, not a policy change.
+When scheduling allows parallel authoring and the host can start isolated
+agents, delegate independent units instead of authoring them one after
+another: the controller prepares every agent's worktree with `prepare-agent`
+under a new agent ID, each agent edits and checks only inside its own, and the
+controller alone pushes, merges, and finalizes.
 
 `consecutive` delegates only for necessary isolation, `balanced` delegates
 when the time saved is meaningful, and `parallel` delegates every independent

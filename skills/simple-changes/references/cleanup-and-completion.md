@@ -355,9 +355,20 @@ divergent primary paths, unique staged state, conflicts, late arrivals,
 retained exclusions, active claims, and branches with unique commits remain
 preserved.
 
-Finalization persists each removal intent before the destructive Git operation;
-when a process dies afterward, [recovery](recovery.md#locks-and-stale-leases)
-describes how `loop recover` and the next attempt account for it.
+For every automatic opening-worktree removal or stale-metadata prune,
+finalization persists the exact freshly revalidated removal intent before the
+destructive Git operation. If the process dies afterward, `loop recover` may
+clear only stale loop and coordination locks owned by that same dead local PID;
+the persisted intent then permits the next finalization attempt to account for
+that exact absence, mark the disposition completed, and continue. Both
+run-created and opening worktree removals remain in the historical audit.
+Because Git prunes stale registrations together, finalization defers all
+metadata pruning if any missing checkout is outside the freshly audited set.
+Unique work, retained checkouts, and active claims keep their registrations.
+Before synchronizing a clean preserved primary, finalization records its old
+baseline and exact expected result. A retry can reconcile that intent only when
+the primary is clean at the same target branch and commit; unrelated edits
+still block completion. Dirty or claimed preserved primaries stay untouched.
 
 Temporary detach is not disposal. `worktree detach` is owner-controlled and
 requires an exact `detach-clean-checkout` receipt, a clean non-primary checkout,

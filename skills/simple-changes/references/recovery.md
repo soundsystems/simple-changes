@@ -15,8 +15,9 @@ Contents:
 
 Read this reference when `loop status`, `loop verify`, or finalization reports
 a blocker, a stale, relinquished, or frozen run, a released or orphaned claim,
-or a missing, late, or changed worktree, and when merged work has no loop to
-clean it up. Every path here preserves uncertain work. None replaces the normal
+or a missing, late, or changed worktree; when merged work or orphaned worktrees
+have no loop to clean them up; and when an editor's or desktop app's worktree
+list is stale after cleanup. Every path here preserves uncertain work. None replaces the normal
 lifecycle in `SKILL.md`: initialize, hold one lease, mutate through `loop exec`,
 verify, and finalize before every terminal response.
 
@@ -67,20 +68,11 @@ mismatched coordination owner fails closed. A live, remote-host, young,
 ownerless, malformed, unresolved, or still-running process-group lock remains a
 blocker.
 
-For every automatic opening-worktree removal or stale-metadata prune,
-finalization persists the exact freshly revalidated removal intent before the
-destructive Git operation. If the process dies afterward, `loop recover` may
-clear only stale loop and coordination locks owned by that same dead local PID;
-the persisted intent then permits the next finalization attempt to account for
-that exact absence, mark the disposition completed, and continue. Both
-run-created and opening worktree removals remain in the historical audit.
-Because Git prunes stale registrations together, finalization defers all
-metadata pruning if any missing checkout is outside the freshly audited set.
-Unique work, retained checkouts, and active claims keep their registrations.
-Before synchronizing a clean preserved primary, finalization records its old
-baseline and exact expected result. A retry can reconcile that intent only when
-the primary is clean at the same target branch and commit; unrelated edits
-still block completion. Dirty or claimed preserved primaries stay untouched.
+Finalization persists each automatic removal intent before the destructive
+Git operation, and records a preserved primary's baseline before synchronizing
+it; [cleanup and completion](cleanup-and-completion.md#complete-and-finalize)
+describes how `loop recover` and the next finalization attempt account for
+either after a process dies.
 
 When a lease
 itself is stale, `loop recover --stale-lease --run-id "$RUN_ID" --agent-id

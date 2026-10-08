@@ -355,6 +355,13 @@ describe("pinned-head command analysis", () => {
     expect(kinds(["git", "merge", "--ff-only", "PINNED_HEAD~0"])).toEqual([
       "named",
     ]);
+    // A symbolic ref to the shared stash is an indirect name too.
+    writeFixture(root, "README.md", "# Stashed change\n");
+    git(root, ["stash"]);
+    git(root, ["symbolic-ref", "STASH_HEAD", "refs/stash"]);
+    expect(kinds(["git", "merge", "--ff-only", "STASH_HEAD"])).toEqual([
+      "indirect",
+    ]);
     // An abbreviated object ID that names nothing yet could name a commit
     // made while the command waits; one that names a commit now is fine.
     expect(kinds(["git", "merge", "--ff-only", "abcdef0"])).toEqual([

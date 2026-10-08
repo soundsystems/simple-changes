@@ -1344,6 +1344,16 @@ const resolutionRefusals = (
         const reached = base
           ? facts.symbolicName(invocation.globals, base)
           : null;
+        const indirect = reached ? indirectRevision(reached) : null;
+        if (indirect) {
+          return [
+            refusal(
+              "indirect",
+              `${item.token} resolves to ${reached}, ${indirect}, which can name a pinned branch`,
+              item.token
+            ),
+          ];
+        }
         return [...names]
           .filter(
             ([, aliases]) =>

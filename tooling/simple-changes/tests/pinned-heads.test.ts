@@ -26,6 +26,7 @@ import {
   gitFactsFor,
   mentionsName,
   type PinnedCommandContext,
+  type PinnedRefusalKind,
   type PinnedUnit,
 } from "../../../skills/simple-changes/scripts/lib/pinned-heads.ts";
 import { DEFAULT_POLICY } from "../../../skills/simple-changes/scripts/lib/policy.ts";
@@ -498,9 +499,9 @@ describe("pinned-head command analysis", () => {
     expect(
       absentKinds(["git", "fetch", absent.path, "HEAD:refs/remotes/u/head"])
     ).toEqual(["checkout"]);
-    expect(
-      absentKinds(["git", "-C", absent.path, "merge", "--ff-only"])
-    ).toEqual(["checkout"]);
+    expect(absentKinds(["git", "-C", absent.path, "merge", "--abort"])).toEqual(
+      ["checkout"]
+    );
     // An absent path cannot be resolved on disk, so its letter case is
     // compared without regard to case.
     expect(
@@ -562,9 +563,10 @@ describe("pinned-head command analysis", () => {
         kinds: ["moved"],
       });
     }
-    // The upstream a merge reads when it names no revision is checked too.
+    // A merge that names no revision would read the upstream when it runs,
+    // so it is refused rather than checked.
     git(root, ["branch", "--set-upstream-to=copy", "main"]);
-    expect(kinds(["git", "merge"])).toEqual(["moved"]);
+    expect(kinds(["git", "merge"])).toEqual(["configured"]);
     git(root, ["branch", "--unset-upstream", "main"]);
     // A read-only command that writes a file is refused while units are
     // pinned, since the file could carry a moved commit to `git apply`.
@@ -733,24 +735,44 @@ describe("pinned-head command analysis", () => {
     git(root, ["config", "alias.merge", "merge feat/x"]);
     expect(kinds(["git", "merge", "--ff-only", head])).toEqual([]);
 
-    git(root, ["branch", "--set-upstream-to=feat/x", "main"]);
-    for (const argv of [
+    // A merge or rebase that names no revision, or uses an option this does
+    // not know, is refused whatever the upstream is now: Git resolves it, and
+    // with remote `.` a merge value can be any revision, when it runs.
+    const operandless = [
       ["git", "merge"],
       ["git", "merge", "--ff-only"],
       ["git", "merge", "--ff-only", "-m", head],
       ["git", "merge", "--unknown", head],
       ["git", "rebase"],
+      ["git", "rebase", "--onto", head],
+      ["git", "rebase", "--keep-base"],
+      ["git", "rebase", "--ont", head, head],
+      ["git", "rebase", "-qf", head],
+    ];
+    const named = [
+      ["git", "merge", "--ff-only", head],
+      ["git", "merge", "--abort"],
       ["git", "rebase", head],
-    ]) {
-      expect({ argv, kinds: kinds(argv) }).toEqual({
-        argv,
-        kinds: ["configured"],
-      });
-    }
-    expect(kinds(["git", "merge", "--ff-only", head])).toEqual([]);
-    expect(kinds(["git", "merge", "--abort"])).toEqual([]);
+      ["git", "rebase", "--onto", head, head],
+      ["git", "rebase", "-q", "--strategy-option=theirs", head],
+      ["git", "rebase", "-Xtheirs", "-C", "3", head],
+      ["git", "rebase", "--root"],
+      ["git", "rebase", "--", head],
+    ];
+    const expectKinds = (argvs: string[][], expected: PinnedRefusalKind[]) => {
+      for (const argv of argvs) {
+        expect({ argv, kinds: kinds(argv) }).toEqual({
+          argv,
+          kinds: expected,
+        });
+      }
+    };
+    git(root, ["branch", "--set-upstream-to=feat/x", "main"]);
+    expectKinds(operandless, ["configured"]);
+    expectKinds(named, []);
     git(root, ["branch", "--unset-upstream", "main"]);
-    expect(kinds(["git", "merge"])).toEqual([]);
+    expectKinds(operandless, ["configured"]);
+    expectKinds(named, []);
 
     withConfig(root, [["push.default", "matching"]], () => {
       expect(kinds(["git", "push"])).toEqual(["configured"]);
@@ -788,12 +810,12 @@ describe("pinned-head command analysis", () => {
         ).toEqual([]);
       }
     );
-    // Every merge value counts, not only the first upstream.
+    // A merge value read through remote `.` can name the shared stash,
+    // which another agent can move while the command waits to start.
     git(root, ["config", "branch.main.remote", "."]);
-    git(root, ["config", "branch.main.merge", "refs/heads/other"]);
-    expect(kinds(["git", "merge"])).toEqual([]);
-    git(root, ["config", "--add", "branch.main.merge", "refs/heads/feat/x"]);
-    expect(kinds(["git", "merge"])).toEqual(["configured"]);
+    git(root, ["config", "branch.main.merge", "refs/stash"]);
+    expect(kinds(["git", "merge", "--ff-only"])).toEqual(["configured"]);
+    expect(kinds(["git", "merge", "--ff-only", head])).toEqual([]);
     git(root, ["config", "--unset-all", "branch.main.merge"]);
     git(root, ["config", "--unset", "branch.main.remote"]);
 
@@ -888,7 +910,6 @@ describe("pinned-head command analysis", () => {
     for (const argv of [
       ["git", "config", "--get", "user.name"],
       ["git", "merge", "-n", "-s", "ort", head],
-      ["git", "merge", "-nsort", head],
       ["git", "rebase", "-q", head],
       ["git", "config", "get", "user.name"],
       ["git", "config", "--list"],
@@ -902,6 +923,9 @@ describe("pinned-head command analysis", () => {
     ]) {
       expect({ argv, kinds: kinds(argv) }).toEqual({ argv, kinds: [] });
     }
+    // A builtin strategy in a short cluster runs nothing, but the cluster is
+    // not split, so the merge names no revision this check understands.
+    expect(kinds(["git", "merge", "-nsort", head])).toEqual(["configured"]);
   });
 
   test("runs only known merge-like subcommands, and finds indirect names inside arguments", () => {

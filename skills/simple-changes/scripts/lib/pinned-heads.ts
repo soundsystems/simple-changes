@@ -28,9 +28,12 @@ import { runGit } from "./process.ts";
  *   `FETCH_HEAD`, another worktree's refs, message search, and every-branch
  *   or stdin options, including their abbreviations;
  * - it runs in a checkout the run does not author, whose HEAD can move;
- * - configuration could stand in for a name: an alias, an upstream naming a
- *   unit, a push or fetch mapping, a mirror or matching push, a legacy remote
- *   file, a replace ref, or a graft;
+ * - configuration could stand in for a name: an alias, a push or fetch
+ *   mapping, a mirror or matching push, a legacy remote file, a replace ref,
+ *   or a graft;
+ * - it is a merge or rebase that names no revision (or uses an option this
+ *   parser does not know), which Git resolves from the current branch's
+ *   upstream when it runs, whatever that configuration says then;
  * - an argument resolves to a commit that contains a commit a pinned unit
  *   gained after its recorded head (a copy of a moved branch, or its ID);
  * - it is `git pull`, which resolves its repository, refspecs, and upstream
@@ -143,11 +146,6 @@ export interface PinnedGitFacts {
     recorded: readonly string[],
     limit: number
   ) => UnrecordedCommit[] | null;
-  /**
-   * The current branch's configured upstream and every `merge` value, which
-   * `git merge` and `git rebase` read when no revision is named.
-   */
-  upstreams: (globals: readonly string[]) => string[];
 }
 
 export interface PinnedCommandContext {
@@ -1371,14 +1369,12 @@ const resolutionRefusals = (
       })
     );
 
-// Each revision a merge-like command may integrate: its arguments, and the
-// upstream a merge or rebase reads when it names none.
+// Each revision a merge-like command may integrate. A merge or rebase that
+// would read its upstream instead is refused outright (`configuredRefusals`).
 const integratedRevisions = (
-  invocation: GitInvocation,
-  items: readonly ScannedToken[],
-  facts: PinnedGitFacts
-): { revision: string; token: string }[] => {
-  const revisions = items
+  items: readonly ScannedToken[]
+): { revision: string; token: string }[] =>
+  items
     .filter((item) => item.revision)
     .flatMap((item) =>
       revisionCandidates(item.text).map((revision) => ({
@@ -1386,16 +1382,6 @@ const integratedRevisions = (
         token: item.token,
       }))
     );
-  if (
-    (invocation.subcommand === "merge" || invocation.subcommand === "rebase") &&
-    !hasExplicitRevision(invocation.subcommand, invocation.arguments)
-  ) {
-    for (const upstream of facts.upstreams(invocation.globals)) {
-      revisions.push({ revision: upstream, token: upstream });
-    }
-  }
-  return revisions;
-};
 
 // Why one revision would integrate a moved unit's later commit, or null.
 const revisionContainment = (
@@ -1457,15 +1443,14 @@ const containmentRefusals = (
 ): PinnedRefusal[] =>
   moved.length === 0
     ? []
-    : integratedRevisions(invocation, items, context.facts).flatMap(
-        ({ revision, token }) =>
-          revisionContainment(
-            revision,
-            token,
-            moved,
-            invocation.globals,
-            context.facts
-          )
+    : integratedRevisions(items).flatMap(({ revision, token }) =>
+        revisionContainment(
+          revision,
+          token,
+          moved,
+          invocation.globals,
+          context.facts
+        )
       );
 
 const configuredRefusals = (
@@ -1473,7 +1458,7 @@ const configuredRefusals = (
   names: Map<PinnedUnit, string[]>,
   context: PinnedCommandContext
 ): PinnedRefusal[] => {
-  const { arguments: args, globals, subcommand } = invocation;
+  const { arguments: args, subcommand } = invocation;
   const found: PinnedRefusal[] = [];
   const mentionsPin = (value: string): PinnedUnit | null => {
     for (const [unit, aliases] of names) {
@@ -1483,24 +1468,20 @@ const configuredRefusals = (
     }
     return null;
   };
+  // Git resolves the upstream, and with remote `.` a configured merge value
+  // can be any revision, only when the command runs, so a merge or rebase
+  // that names nothing is refused whatever the configuration says now.
   if (
     (subcommand === "merge" || subcommand === "rebase") &&
     !args.some((token) => CONTINUATION_OPTIONS.has(token)) &&
     !hasExplicitRevision(subcommand, args)
   ) {
-    for (const upstream of context.facts.upstreams(globals)) {
-      const unit = mentionsPin(upstream);
-      if (unit) {
-        found.push(
-          refusal(
-            "configured",
-            `the current branch's upstream ${upstream} is ${describeUnit(unit)}, which git ${subcommand} uses when no revision is named`,
-            null,
-            unit
-          )
-        );
-      }
-    }
+    found.push(
+      refusal(
+        "configured",
+        `git ${subcommand} names no revision this check understands, so Git would integrate whatever the current branch's upstream resolves to when it runs; name the commit to integrate`
+      )
+    );
   }
   if (
     subcommand === "fetch" ||
@@ -1584,16 +1565,119 @@ const pushesEveryBranch = (key: string, value: string): boolean => {
   );
 };
 
-// Whether a merge or rebase names what it integrates, so no upstream stands
-// in for it. Only a fully understood merge counts; a rebase always reads its
-// upstream.
-const hasExplicitRevision = (
-  subcommand: string,
-  args: readonly string[]
-): boolean => {
-  if (subcommand !== "merge") {
-    return false;
+// Rebase options this check understands: flags, options whose value is the
+// next argument, and spellings that carry their value in the same token.
+const REBASE_FLAGS: ReadonlySet<string> = new Set([
+  "--allow-empty-message",
+  "--apply",
+  "--autosquash",
+  "--autostash",
+  "--committer-date-is-author-date",
+  "--fork-point",
+  "--force-rebase",
+  "--gpg-sign",
+  "--ignore-date",
+  "--ignore-whitespace",
+  "--keep-base",
+  "--keep-empty",
+  "--merge",
+  "--no-autosquash",
+  "--no-autostash",
+  "--no-ff",
+  "--no-fork-point",
+  "--no-gpg-sign",
+  "--no-keep-empty",
+  "--no-reapply-cherry-picks",
+  "--no-rebase-merges",
+  "--no-rerere-autoupdate",
+  "--no-reschedule-failed-exec",
+  "--no-stat",
+  "--no-update-refs",
+  "--no-verify",
+  "--quiet",
+  "--reapply-cherry-picks",
+  "--rebase-merges",
+  "--rerere-autoupdate",
+  "--reschedule-failed-exec",
+  "--reset-author-date",
+  "--signoff",
+  "--stat",
+  "--update-refs",
+  "--verbose",
+  "--verify",
+  "-S",
+  "-f",
+  "-m",
+  "-n",
+  "-q",
+  "-v",
+]);
+const REBASE_VALUE_OPTIONS: ReadonlySet<string> = new Set([
+  "--empty",
+  "--onto",
+  "--strategy",
+  "--strategy-option",
+  "--trailer",
+  "--whitespace",
+  "-C",
+  "-X",
+  "-s",
+]);
+const REBASE_ATTACHED_PREFIXES = [
+  "--empty=",
+  "--gpg-sign=",
+  "--onto=",
+  "--rebase-merges=",
+  "--strategy-option=",
+  "--strategy=",
+  "--trailer=",
+  "--whitespace=",
+];
+const REBASE_ATTACHED_SHORT = ["-C", "-S", "-X", "-s"];
+
+const rebaseOptionWithValue = (token: string): boolean =>
+  REBASE_ATTACHED_PREFIXES.some((prefix) => token.startsWith(prefix)) ||
+  REBASE_ATTACHED_SHORT.some(
+    (prefix) => token.length > prefix.length && token.startsWith(prefix)
+  );
+
+// Whether a rebase names its upstream, or starts from the root, so Git does
+// not read the configured upstream. `--onto` alone still reads it.
+const rebaseNamesUpstream = (args: readonly string[]): boolean => {
+  let root = false;
+  let index = 0;
+  while (index < args.length) {
+    const token = args[index] as string;
+    index += 1;
+    if (token === "--") {
+      return index < args.length;
+    }
+    if (!token.startsWith("-")) {
+      return true;
+    }
+    if (REBASE_VALUE_OPTIONS.has(token)) {
+      index += 1;
+    } else if (token === "--root") {
+      root = true;
+    } else if (!(REBASE_FLAGS.has(token) || rebaseOptionWithValue(token))) {
+      return false;
+    }
   }
+  return root;
+};
+
+// Whether a merge or rebase names what it integrates, so no upstream stands
+// in for it. Only a fully understood command counts: an option this does not
+// know may be an abbreviation, or take the next argument as its value.
+const hasExplicitRevision = (
+  subcommand: "merge" | "rebase",
+  args: readonly string[]
+): boolean =>
+  subcommand === "rebase"
+    ? rebaseNamesUpstream(args)
+    : mergeNamesRevision(args);
+
+const mergeNamesRevision = (args: readonly string[]): boolean => {
   let index = 0;
   while (index < args.length) {
     const token = args[index] as string;
@@ -2694,28 +2778,6 @@ export const gitFactsFor = (
               return { commit, parents };
             })
         : null;
-    },
-    upstreams: (globals) => {
-      const upstream = git(globals, [
-        "rev-parse",
-        "--symbolic-full-name",
-        "@{upstream}",
-      ]);
-      const head = git(globals, ["symbolic-ref", "--quiet", "HEAD"]);
-      const branch = head.stdout.trim();
-      const merges = branch.startsWith("refs/heads/")
-        ? git(globals, [
-            "config",
-            "--get-all",
-            `branch.${branch.slice("refs/heads/".length)}.merge`,
-          ]).stdout
-        : "";
-      return [
-        ...(upstream.exitCode === 0 ? [upstream.stdout] : []),
-        ...merges.split("\n"),
-      ]
-        .map((name) => name.trim())
-        .filter(Boolean);
     },
   };
 };

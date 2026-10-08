@@ -371,9 +371,10 @@
   <head>`), refusing every other program before it starts, and only an
   allowlist of merge-like Git subcommands. One is refused when an argument
   names a pinned branch in any spelling or letter case, points into a pinned
-  checkout, uses an indirect name, upstream, fetch or push mapping, or
-  replace ref that could stand for one, or resolves to a commit containing
-  one a pinned unit gained after its recorded head. `-c`, Git options that
+  checkout, uses an indirect name, fetch or push mapping, or replace ref
+  that could stand for one, resolves to a commit containing one a pinned
+  unit gained after its recorded head, or is a merge or rebase that names no
+  revision, which Git would resolve from the upstream when it runs. `-c`, Git options that
   run commands, configuration writes, and staging that could record a nested
   checkout's HEAD are refused; a fetch may write only remote-tracking refs, a
   push or fetch may use only known options, and nothing may run in a

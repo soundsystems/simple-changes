@@ -128,9 +128,10 @@ integrated. The only merge-like Git subcommands it runs are `merge`,
 `apply`, and one is refused when it could resolve a unit's moving name: an
 argument naming a pinned branch in any spelling, a path into a pinned
 checkout, an indirect name (`@{...}`, `-`, `FETCH_HEAD`, the stash, another
-worktree's refs, `:/` searches, every-branch or stdin options), an upstream or
-fetch or push mapping, or a revision containing a commit a unit gained after
-its recorded head. `-c`, Git options that run commands, configuration writes,
+worktree's refs, `:/` searches, every-branch or stdin options), a fetch or
+push mapping, a merge or rebase that names no revision (Git would read the
+upstream), or a revision containing a commit a unit gained after its recorded
+head. `-c`, Git options that run commands, configuration writes,
 and staging that could record a nested checkout's HEAD are refused for every
 Git command; a fetch may write only remote-tracking refs, a push or fetch may
 use only known options, and nothing may run in a checkout the run does not

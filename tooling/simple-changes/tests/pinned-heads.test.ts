@@ -837,6 +837,8 @@ describe("pinned-head command analysis", () => {
         ["git", "worktree", "add", "-b", "fresh", aliasPath],
         ["git", "worktree", "add", "--guess-remote", aliasPath],
         ["git", "worktree", "add", "--unknown", aliasPath, head],
+        // An option it does not know may take the next argument as its value.
+        ["git", "worktree", "add", "--unknown", "-b", "fresh", aliasPath, head],
         ["git", "worktree", "add", join(dirname(root), "copy"), "alias"],
         ["git", "worktree", "add", "--", aliasPath, head],
         ["git", "worktree", "add", "--reason", "-b", aliasPath, head],

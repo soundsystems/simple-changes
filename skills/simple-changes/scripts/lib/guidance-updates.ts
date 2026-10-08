@@ -782,6 +782,20 @@ const GUIDANCE_UPDATES: GuidanceUpdateDefinition[] = [
   },
 ];
 
+/**
+ * The practical notice for one guidance version: its notice bullets, or its
+ * change summaries when it has none; empty for a version with no definition.
+ */
+export const guidanceNotice = (version: number): string[] => {
+  const update = GUIDANCE_UPDATES.find((entry) => entry.version === version);
+  if (!update) {
+    return [];
+  }
+  return update.noticeBullets && update.noticeBullets.length > 0
+    ? update.noticeBullets.map((bullet) => bullet.summary)
+    : update.changes.map((change) => change.summary);
+};
+
 const recommendedActionFor = (
   requiredAnswers: GuidanceUpdateQuestion[],
   recommendedChanges: GuidanceUpdateQuestion[]

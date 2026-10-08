@@ -80,8 +80,11 @@ structurally valid but stale pending section.
 ## Destination scope
 
 The Simple Changes product publishes release notes through its CLI. The
-installed CLI reads `skills/simple-changes/CHANGELOG.md`, a public mirror of the
-canonical root `CHANGELOG.md`.
+installed CLI reads `skills/simple-changes/CHANGELOG.md`, a verbatim prefix of
+the canonical root `CHANGELOG.md` covering the releases of the last six
+guidance versions. Regenerate it, and the release history beside the runtime,
+with `bun tooling/simple-changes/package-changelog.ts` once the release heading
+is in the root changelog.
 
 This maintainer fork operates only in the Simple Changes source repository. Do
 not use it to discover or update destinations in an end user's repository.
@@ -100,7 +103,7 @@ audience.
 Build a concrete map before finalization:
 
 - customer changelog version and date;
-- installed-skill changelog mirror;
+- installed-skill changelog window;
 - developer changelog version and date;
 - published root package or CLI version;
 - affected application or package versions;

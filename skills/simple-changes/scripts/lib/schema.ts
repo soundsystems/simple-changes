@@ -35,6 +35,7 @@ export const SCHEMA_NAMES = [
   "remote-branch-supersession",
   "release-consistency",
   "release-notes",
+  "release-notes-pointer",
   "proposal-audit",
   "loop-lease",
   "loop-close-equivalent",

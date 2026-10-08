@@ -58,7 +58,12 @@ Offer these multiple-choice actions:
 - **Expanded walkthrough:** Explain every intervening behavior, setting,
   example, consequence, and safety boundary only when the user asks for it.
 - **View detailed Simple Changes release notes:** Run the advertised read-only
-  release-notes command and show the requested released section.
+  release-notes command and show the requested released section. The
+  installed notes cover the releases of the last six guidance versions. For an
+  older release, `simple-changes release-notes --version <version>` exits `6`
+  instead of printing notes: show its link to that release in the full
+  changelog and the notice bullets of each guidance version that release
+  introduced. Exit `6` is not a failure.
 - **Decide later:** Leave the update unresolved so it appears again next time.
   When `requiredAnswers` is empty and the user chooses this a second time for
   the same version, record `deferred` instead so the notice stops repeating;

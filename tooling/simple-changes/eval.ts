@@ -3,8 +3,17 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { extractReleaseNotes } from "../../skills/simple-changes/scripts/lib/release-notes.ts";
-import { checkSkill } from "../../skills/simple-changes/scripts/lib/skill-check.ts";
+import { CURRENT_GUIDANCE_VERSION } from "../../skills/simple-changes/scripts/lib/guidance-updates.ts";
+import {
+  packagedChangelog,
+  parseReleaseHistory,
+  releaseHistoryIssues,
+} from "../../skills/simple-changes/scripts/lib/release-history.ts";
+import { releaseSections } from "../../skills/simple-changes/scripts/lib/release-notes.ts";
+import {
+  checkSkill,
+  skillMetadataVersion,
+} from "../../skills/simple-changes/scripts/lib/skill-check.ts";
 import {
   classifyRequestMode,
   shouldTrigger,
@@ -117,6 +126,8 @@ const requiredSkillFiles = [
   "evals/schemas/provider-receipt.schema.json",
   "evals/schemas/release-consistency.schema.json",
   "evals/schemas/release-notes.schema.json",
+  "evals/schemas/release-notes-pointer.schema.json",
+  "scripts/lib/release-history.json",
   "references/changelog-coordination.md",
   "references/ship-communication.md",
   "references/sync.md",
@@ -235,20 +246,52 @@ for (const skillPath of walk(resolve(repositoryRoot, "skills")).filter((path) =>
   }
 }
 
-const canonicalNotes = extractReleaseNotes(
-  readFileSync(resolve(repositoryRoot, "CHANGELOG.md"), "utf8"),
-  "CHANGELOG.md"
+// The installed skill carries a window of the public history: a verbatim
+// prefix of the root CHANGELOG.md covering the newest release's guidance
+// version and the five before it, generated at release by
+// tooling/simple-changes/package-changelog.ts from the release history, whose
+// newest release SKILL.md metadata.version names.
+const rootChangelog = readFileSync(
+  resolve(repositoryRoot, "CHANGELOG.md"),
+  "utf8"
 );
-const packagedNotes = extractReleaseNotes(
-  readFileSync(resolve(skillDirectory, "CHANGELOG.md"), "utf8"),
-  "skills/simple-changes/CHANGELOG.md"
+const packagedNotes = readFileSync(
+  resolve(skillDirectory, "CHANGELOG.md"),
+  "utf8"
 );
-if (
-  canonicalNotes.version !== packagedNotes.version ||
-  canonicalNotes.markdown !== packagedNotes.markdown
-) {
+try {
+  const history = parseReleaseHistory(
+    readFileSync(
+      resolve(skillDirectory, "scripts/lib/release-history.json"),
+      "utf8"
+    ),
+    "release-history.json"
+  );
+  for (const issue of releaseHistoryIssues(rootChangelog, history)) {
+    failures.push(`Release history: ${issue}`);
+  }
+  if ((history[0]?.guidance ?? 0) > CURRENT_GUIDANCE_VERSION) {
+    failures.push(
+      "Release history names a guidance version newer than CURRENT_GUIDANCE_VERSION"
+    );
+  }
+  if (packagedNotes !== packagedChangelog(rootChangelog, history)) {
+    failures.push(
+      "Packaged CHANGELOG.md is not the release-note window of the root CHANGELOG.md; run bun tooling/simple-changes/package-changelog.ts"
+    );
+  }
+} catch (error) {
   failures.push(
-    "Packaged release-note history does not match the canonical root CHANGELOG.md"
+    `Release history is unreadable: ${error instanceof Error ? error.message : String(error)}`
+  );
+}
+const packagedNewest = releaseSections(packagedNotes)[0]?.version;
+const metadataVersion = skillMetadataVersion(
+  readFileSync(resolve(skillDirectory, "SKILL.md"), "utf8")
+);
+if (packagedNewest !== metadataVersion) {
+  failures.push(
+    `Packaged CHANGELOG.md opens with ${packagedNewest ?? "no release"}, but SKILL.md metadata.version is ${metadataVersion ?? "missing"}`
   );
 }
 
@@ -261,6 +304,6 @@ if (failures.length > 0) {
   process.exitCode = 1;
 } else {
   process.stdout.write(
-    `Simple Changes eval passed: ${manifest.triggers.length} trigger cases, ${manifest.journeys.length} integration journeys, ${manifest.releaseCases.length} maintainer release behavior cases, closed manifest, lean one-skill package, and isolated maintainer tooling.\n`
+    `Simple Changes eval passed: ${manifest.triggers.length} trigger cases, ${manifest.journeys.length} integration journeys, ${manifest.releaseCases.length} maintainer release behavior cases, closed manifest, lean one-skill package, packaged release-note window, and isolated maintainer tooling.\n`
   );
 }

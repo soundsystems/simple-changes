@@ -127,6 +127,11 @@ import {
   negotiateChangelogProtocol,
   validateChangelogReleaseSet,
 } from "./lib/release-gate.ts";
+import type { ReleaseNotesPointer } from "./lib/release-history.ts";
+import {
+  releaseNotesPointer,
+  renderReleaseNotesPointer,
+} from "./lib/release-history.ts";
 import type { ReleaseNotes } from "./lib/release-notes.ts";
 import { extractReleaseNotes } from "./lib/release-notes.ts";
 import { runReleaseTag } from "./lib/release-tag.ts";
@@ -393,7 +398,8 @@ Schema kinds:
 ${schemaKindLines}
 
 Exit codes:
-  0 success, 2 usage, 3 invalid contract, 4 inventory failure, 5 unsafe state
+  0 success, 2 usage, 3 invalid contract, 4 inventory failure, 5 unsafe state,
+  6 release notes older than the packaged window (printed a link instead)
 `;
 
 interface CliOptions {
@@ -3808,13 +3814,24 @@ const runReleaseNotes = (options: CliOptions): number => {
   }
   const releaseRoot = options.repoProvided ? options.repo : PACKAGE_ROOT;
   const changelogPath = resolve(releaseRoot, "CHANGELOG.md");
+  const changelog = readFileSync(changelogPath, "utf8");
+  // The packaged notes cover recent guidance versions only; an older
+  // published release gets a pointer to the canonical changelog instead.
+  const pointer =
+    !options.repoProvided && options.releaseVersion
+      ? releaseNotesPointer(changelog, options.releaseVersion)
+      : null;
+  if (pointer) {
+    writeOutput(
+      validateSchema<ReleaseNotesPointer>("release-notes-pointer", pointer),
+      options.json,
+      renderReleaseNotesPointer(pointer)
+    );
+    return EXIT_CODES.outsideWindow;
+  }
   const notes = validateSchema<ReleaseNotes>(
     "release-notes",
-    extractReleaseNotes(
-      readFileSync(changelogPath, "utf8"),
-      changelogPath,
-      options.releaseVersion
-    )
+    extractReleaseNotes(changelog, changelogPath, options.releaseVersion)
   );
   writeOutput(notes, options.json, notes.markdown);
   return EXIT_CODES.success;

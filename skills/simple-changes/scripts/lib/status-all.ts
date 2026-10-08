@@ -19,6 +19,7 @@ import {
   readControllerBinding,
   readLeaseFromCommonDirectory,
 } from "./loop-lease.ts";
+import { resolvePersonalPolicyPath } from "./policy.ts";
 import { runGit } from "./process.ts";
 import { withReadOnlyGit } from "./read-only-git.ts";
 import { readReadyReceipts, readyReceiptsPath } from "./ready-work.ts";
@@ -132,7 +133,7 @@ export interface StatusRepository {
         /** Whether the receipted checkout exists; null when unknowable. */
         checkoutPresent: boolean | null;
         detail: string;
-        freshness: string;
+        freshness: "current" | "shipped" | "stale" | "unknown";
         headSha: string;
         owner: string;
         path: string;
@@ -508,44 +509,117 @@ const commitOf = (root: string, ref: string): string | null => {
   return result.exitCode === 0 ? result.stdout.trim() : null;
 };
 
+/** Whether a ref exists: show-ref exits 1 only when it does not. */
+const refPresence = (root: string, ref: string): boolean | null => {
+  const { exitCode } = runGit(
+    root,
+    ["show-ref", "--verify", "--quiet", ref],
+    true
+  );
+  if (exitCode === 0) {
+    return true;
+  }
+  return exitCode === 1 ? false : null;
+};
+
+type ReadyFreshness = "current" | "shipped" | "stale" | "unknown";
+
 /**
  * Ready-work freshness from refs alone: shipped once the target contains the
- * receipted head, stale once the branch moved or is gone, otherwise current
- * at the receipted head (contents not compared).
+ * receipted head, stale once the branch moved or no longer exists, current
+ * at the receipted head (contents not compared), and unknown whenever a ref
+ * or commit cannot be read rather than shown absent.
  */
+const readyFreshness = (
+  root: string,
+  target: string | null,
+  targetRef: string,
+  branch: string,
+  head: string
+): { detail: string; freshness: ReadyFreshness } => {
+  const headPresent =
+    runGit(root, ["cat-file", "-e", `${head}^{commit}`], true).exitCode === 0;
+  if (!(target && headPresent)) {
+    return {
+      detail: target
+        ? `The receipted commit ${head} cannot be read here.`
+        : `The target ${targetRef} cannot be resolved here.`,
+      freshness: "unknown",
+    };
+  }
+  const method = revisionContainmentMethod(root, target, head);
+  if (method) {
+    return {
+      detail: `${targetRef} already contains ${head} (${method}).`,
+      freshness: "shipped",
+    };
+  }
+  const exists = refPresence(root, `refs/heads/${branch}`);
+  if (exists === false) {
+    return {
+      detail: `Branch ${branch} no longer exists locally.`,
+      freshness: "stale",
+    };
+  }
+  const branchHead = exists ? commitOf(root, `refs/heads/${branch}`) : null;
+  if (!branchHead) {
+    return {
+      detail: `Branch ${branch} cannot be read here.`,
+      freshness: "unknown",
+    };
+  }
+  return branchHead === head
+    ? {
+        detail: `Branch ${branch} is still at the receipted commit; contents were not compared.`,
+        freshness: "current",
+      }
+    : {
+        detail: `Branch ${branch} moved to ${branchHead} after the receipt.`,
+        freshness: "stale",
+      };
+};
+
 const readyStatus = (
   inventory: RepositoryInventory
 ): Exclude<StatusRepository["readyWork"], Unknown> => {
   const root = inventory.repository.primaryCheckout;
   const target = commitOf(root, inventory.targetRef);
   return readReadyReceipts(inventory.repository.commonGitDirectory).map(
-    (receipt) => {
-      const method = target
-        ? revisionContainmentMethod(root, target, receipt.headSha)
-        : null;
-      const branchHead = commitOf(root, `refs/heads/${receipt.branch}`);
-      let freshness: "current" | "shipped" | "stale" = "current";
-      let detail = `Branch ${receipt.branch} is still at the receipted commit; contents were not compared.`;
-      if (method) {
-        freshness = "shipped";
-        detail = `${inventory.targetRef} already contains ${receipt.headSha} (${method}).`;
-      } else if (branchHead !== receipt.headSha) {
-        freshness = "stale";
-        detail = branchHead
-          ? `Branch ${receipt.branch} moved to ${branchHead} after the receipt.`
-          : `Branch ${receipt.branch} no longer exists locally.`;
-      }
-      return {
-        branch: receipt.branch,
-        checkoutPresent: pathPresence(receipt.path),
-        detail,
-        freshness,
-        headSha: receipt.headSha,
-        owner: receipt.owner.agentId,
-        path: receipt.path,
-      };
-    }
+    (receipt) => ({
+      ...readyFreshness(
+        root,
+        target,
+        inventory.targetRef,
+        receipt.branch,
+        receipt.headSha
+      ),
+      branch: receipt.branch,
+      checkoutPresent: pathPresence(receipt.path),
+      headSha: receipt.headSha,
+      owner: receipt.owner.agentId,
+      path: receipt.path,
+    })
   );
+};
+
+/**
+ * The policy that decides guidance is the repository's file, else the
+ * personal one; a lookup failure on either is unknown, never a fallback.
+ */
+const policyProbe = (primaryCheckout: string): Unknown | null => {
+  for (const path of [
+    resolve(primaryCheckout, ".simple-changes.json"),
+    resolvePersonalPolicyPath(),
+  ]) {
+    const probed = probeFile(path);
+    if (isUnknown(probed)) {
+      return probed;
+    }
+    if (probed === "present") {
+      return null;
+    }
+  }
+  return null;
 };
 
 const guidanceStatus = (
@@ -601,7 +675,9 @@ const repositoryStatus = (
   return {
     claims: isUnknown(claims) ? claims : claims.claims,
     commonGitDirectory,
-    guidance: section(() => guidanceStatus(inventory)),
+    guidance:
+      policyProbe(inventory.repository.primaryCheckout) ??
+      section(() => guidanceStatus(inventory)),
     holds: stateSection(shipHoldsPath(commonGitDirectory), () =>
       evaluateShipHolds(inventory, { localOnly: true }).holds.map((item) => ({
         holdId: item.hold.holdId,

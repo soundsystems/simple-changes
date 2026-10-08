@@ -457,6 +457,57 @@ describe("simple-changes status --all", () => {
     expect(later?.lease).toMatchObject({ awaitingUser: null });
   });
 
+  test("reports unreadable policy and receipted commits as unknown", () => {
+    const home = temporaryHome();
+    const repository = initRepository(join(home, "Developer", "opaque"));
+    mkdirSync(join(repository, ".git", "simple-changes"), { recursive: true });
+    const policyPath = join(repository, ".simple-changes.json");
+    symlinkSync(policyPath, policyPath);
+
+    const [status] = statusAll({
+      home,
+      runtime: { skillDirectory: home, version: "0.27.1" },
+    }).repositories;
+
+    expect(isUnknown(status?.guidance)).toBe(true);
+  });
+
+  test("never calls a ready branch stale when its commit cannot be read", () => {
+    const home = temporaryHome();
+    const repository = initRepository(join(home, "Developer", "missing"));
+    writeFixture(repository, ".simple-changes.json", policy(27));
+    git(repository, ["add", ".simple-changes.json"]);
+    git(repository, ["commit", "-q", "-m", "Add policy"]);
+    const path = join(home, "Developer", "missing-ready");
+    git(repository, ["worktree", "add", "-q", "-b", "ready", path]);
+    const claim = claimWorktree(path, "ready-agent", path, "codex");
+    writeFixture(path, "ready.txt", "finished\n");
+    git(path, ["add", "ready.txt"]);
+    git(path, ["commit", "-q", "-m", "Finish"]);
+    const head = git(path, ["rev-parse", "HEAD"]);
+    recordReadyWork(path, "ready-agent", claim.claimId, {
+      checks: [{ command: "bun run check", note: null, result: "passed" }],
+      deploymentConstraints: [],
+      migrations: [],
+      releaseImpact: "patch",
+      scope: "Finish.",
+      unresolvedAuthority: [],
+    });
+    rmSync(
+      join(repository, ".git", "objects", head.slice(0, 2), head.slice(2))
+    );
+
+    const [status] = statusAll({
+      home,
+      runtime: { skillDirectory: home, version: "0.27.1" },
+    }).repositories;
+
+    const readyWork = status?.readyWork;
+    if (!isUnknown(readyWork)) {
+      expect(readyWork?.map((item) => item.freshness)).toEqual(["unknown"]);
+    }
+  });
+
   test("shows unreadable state as unknown and keeps going", () => {
     const home = temporaryHome();
     const broken = initRepository(join(home, "Developer", "broken"));

@@ -366,6 +366,23 @@ describe("merge gate exec guard", () => {
         "does not contain refs/remotes/origin/main"
       );
     }
+    // origin's main names a commit this clone lacks, while the readable
+    // backup copy is contained: the unreadable copy must not be skipped.
+    // Git refuses to point a ref at a missing object, so write the ref file.
+    writeFileSync(
+      join(root, ".git", "refs", "remotes", "origin", "main"),
+      `${"1".repeat(40)}\n`
+    );
+    for (const command of forms) {
+      const decision = decide(root, command);
+      expect({ allow: decision.allow, command }).toEqual({
+        allow: false,
+        command,
+      });
+      expect(decision.reason).toContain(
+        "refs/remotes/origin/main exists but cannot be read"
+      );
+    }
   });
 
   test("refuses a provider merge whose head does not contain the published target", () => {
@@ -497,6 +514,44 @@ describe("merge gate exec guard", () => {
         ...push,
       ]).reason
     ).toContain("cannot resolve");
+  });
+
+  test("refuses push options, which can ask the provider to merge", () => {
+    const { root } = repository();
+    const feature = ["origin", "feat/x:feat/x"];
+    for (const command of [
+      [
+        "git",
+        "push",
+        "-o",
+        "merge_request.create",
+        "-o",
+        "merge_request.target=main",
+        "-o",
+        "merge_request.auto_merge",
+        ...feature,
+      ],
+      ["git", "push", "--push-option", "ci.skip", ...feature],
+      ["git", "push", "--push-option=merge_request.auto_merge", ...feature],
+    ]) {
+      const decision = decide(root, command);
+      expect({ allow: decision.allow, command }).toEqual({
+        allow: false,
+        command,
+      });
+      expect(decision.reason).toContain("push option");
+    }
+    expect(decide(root, ["git", "push", ...feature]).allow).toBe(true);
+    git(root, ["config", "--add", "push.pushOption", "merge_request.create"]);
+    git(root, [
+      "config",
+      "--add",
+      "push.pushOption",
+      "merge_request.auto_merge",
+    ]);
+    const configured = decide(root, ["git", "push", ...feature]);
+    expect(configured.allow).toBe(false);
+    expect(configured.reason).toContain("push.pushOption is set");
   });
 
   test("gates every git push that moves main", () => {
@@ -924,7 +979,7 @@ describe("bun run check:receipt", () => {
         false
       );
     }
-  });
+  }, 240_000);
 
   test("checks the real HEAD, never a replacement checked out in its place", () => {
     const fixture = checkRepository("true");

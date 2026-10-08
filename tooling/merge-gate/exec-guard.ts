@@ -123,13 +123,24 @@ const requireProviderMerge = (
     return checked;
   }
   for (const target of context.targets) {
-    const refs = fetchedCopies(context.cwd, target);
-    if (refs.length === 0) {
+    const copies = fetchedCopies(context.cwd, target);
+    if (!copies) {
+      return refuse(
+        `${what}: the remotes could not be listed, so the guard cannot find every fetched copy of ${target}`
+      );
+    }
+    const [unreadable] = copies.unreadable;
+    if (unreadable) {
+      return refuse(
+        `${what}: ${unreadable} exists but cannot be read as a commit, so the guard cannot prove the merge ships exactly ${sha}; fetch the target again`
+      );
+    }
+    if (copies.readable.length === 0) {
       return refuse(
         `${what}: no fetched upstream copy of ${target} exists, so the guard cannot prove the merge ships exactly ${sha}; fetch the target first`
       );
     }
-    for (const ref of refs) {
+    for (const ref of copies.readable) {
       if (
         git(context.cwd, ["merge-base", "--is-ancestor", ref, commit])
           .exitCode !== 0
@@ -147,18 +158,40 @@ const requireProviderMerge = (
  * Every fetched copy of `target`, one per remote. The guard cannot tell which
  * remote is the merge's project (a project can be named by number), so a
  * provider merge must contain all of them; a stale or divergent copy refuses
- * rather than letting the guard check the wrong one.
+ * rather than letting the guard check the wrong one. A copy that exists but
+ * cannot be read as a commit is listed as unreadable, never skipped. Null
+ * when the remotes cannot be listed.
  */
-const fetchedCopies = (cwd: string, target: string): string[] => {
+const fetchedCopies = (
+  cwd: string,
+  target: string
+): { readable: string[]; unreadable: string[] } | null => {
   const remotes = git(cwd, ["remote"]);
   if (remotes.exitCode !== 0) {
-    return [];
+    return null;
   }
-  return remotes.stdout
-    .split("\n")
-    .filter(Boolean)
-    .map((remote) => `refs/remotes/${remote}/${target}`)
-    .filter((ref) => resolveCommit(cwd, ref) !== null);
+  const readable: string[] = [];
+  const unreadable: string[] = [];
+  for (const remote of remotes.stdout.split("\n").filter(Boolean)) {
+    const ref = `refs/remotes/${remote}/${target}`;
+    // Exit 1 with no output is the only answer that means "no such ref".
+    const raw = git(cwd, [
+      "rev-parse",
+      "--verify",
+      "--quiet",
+      "--end-of-options",
+      ref,
+    ]);
+    if (raw.exitCode === 1 && raw.stdout === "") {
+      continue;
+    }
+    if (raw.exitCode === 0 && resolveCommit(cwd, ref) !== null) {
+      readable.push(ref);
+    } else {
+      unreadable.push(ref);
+    }
+  }
+  return { readable, unreadable };
 };
 
 // ------------------------------------------------------- argument scanning
@@ -466,9 +499,11 @@ const PUSH_FLAGS = new Set([
   "--delete",
   "-n",
   "--dry-run",
-  "-o",
-  "--push-option",
 ]);
+
+const PUSH_OPTION_FLAGS = ["-o", "--push-option"];
+const PUSH_OPTIONS_REFUSAL =
+  "can ask the provider to act after the push (GitLab's merge_request.auto_merge schedules a merge), which the guard cannot check";
 
 /** One refspec's verdict, or null when it cannot move a target branch. */
 const pushRefspec = (
@@ -525,7 +560,12 @@ const gitPush = (
   invocation: GitInvocation,
   context: GuardContext
 ): GuardDecision => {
-  const scanned = scan(invocation.args, ["-o", "--push-option"]);
+  const scanned = scan(invocation.args, PUSH_OPTION_FLAGS);
+  if (scanned.options.some(({ name }) => PUSH_OPTION_FLAGS.includes(name))) {
+    return refuse(
+      `git push with a push option ${PUSH_OPTIONS_REFUSAL}; push without -o`
+    );
+  }
   const unsupported = unsupportedFlag(scanned, PUSH_FLAGS);
   if (unsupported) {
     return refuse(
@@ -535,6 +575,19 @@ const gitPush = (
   const flags = flagNames(scanned);
   if (flags.includes("-n") || flags.includes("--dry-run")) {
     return allow("git push --dry-run moves nothing");
+  }
+  const configured = gitIn(invocation, [
+    "config",
+    "--get-all",
+    "push.pushOption",
+  ]);
+  const noConfiguredOptions =
+    configured.exitCode === 1 ||
+    (configured.exitCode === 0 && configured.stdout.trim() === "");
+  if (!noConfiguredOptions) {
+    return refuse(
+      `push.pushOption is set (or unreadable), and a configured push option ${PUSH_OPTIONS_REFUSAL}; unset push.pushOption, then push`
+    );
   }
   const [remote, ...refspecs] = scanned.positional;
   if (!remote) {

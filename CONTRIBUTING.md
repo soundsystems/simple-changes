@@ -53,7 +53,8 @@ any form it does not support rather than guessing what it does. It gates:
   project when `-R` is absent; the proposal is named by number only, never
   by URL or branch). The merged head must also contain every fetched copy
   of `main` (`refs/remotes/<remote>/main` for each remote, since the guard
-  cannot tell which remote a project number means), so the merge result is
+  cannot tell which remote a project number means; a copy that exists but
+  cannot be read refuses), so the merge result is
   exactly the checked tree; fetch right before merging, because the provider can still merge onto a `main` that
   moved after the fetch. The guard and `check:receipt` read real history:
   replacement refs and graft files, which can show a commit with another
@@ -72,7 +73,9 @@ non-target branch (so no GraphQL mutation, no `merge-async`, no repository
 commit API); a provider mutation that names its own host with `--hostname` or a
 full URL; a provider option outside the supported set, or with an
 attached value such as `-XPUT` or `-Rother/project`, or a short cluster such
-as `-sd`; `git
+as `-sd`; any `git push` with a push option (`-o`, `--push-option`) or with
+`push.pushOption` configured, since GitLab push options such as
+`merge_request.auto_merge` can schedule a merge the guard cannot check; `git
 push` without a remote, with a colonless refspec (configuration such as
 `push.default`, upstreams, or `remote.<name>.push` would choose its
 destination), to a remote whose mirroring is not confirmed off, with an

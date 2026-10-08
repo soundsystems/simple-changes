@@ -8,14 +8,15 @@
  * before a merge-like `loop exec` command. See CONTRIBUTING.md.
  */
 
-import { mkdirSync, renameSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { existsSync, mkdirSync, renameSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { spawnSync } from "bun";
 import {
   CHECK_COMMAND,
   type CheckReceipt,
   commonGitDirectory,
   git,
+  REAL_HISTORY_ENVIRONMENT,
   RECEIPT_COMMAND,
   receiptPath,
   receiptTime,
@@ -32,35 +33,53 @@ const fail = (message: string): never => {
   throw new CheckReceiptRefusal(message);
 };
 
+// A `git ls-files --stage -z` entry for a submodule (a gitlink).
+const GITLINK_ENTRY = /^160000 [0-9a-f]+ \d\t(.+)$/su;
+
+const read = (root: string, args: readonly string[]): string => {
+  const result = git(root, args);
+  if (result.exitCode !== 0) {
+    return fail(
+      `git ${args[0]} failed in ${root} (exit ${result.exitCode}), so the checkout cannot be shown clean; no receipt was recorded.`
+    );
+  }
+  return result.stdout;
+};
+
 /**
  * Changed and untracked paths, plus tracked paths marked assume-unchanged or
- * skip-worktree, whose edits `git status` would hide, in this repository and
- * its submodules. Submodule ignore settings are overridden, so a module at
- * another commit or with changed files counts. A failed read refuses.
+ * skip-worktree, whose edits `git status` would hide. Every initialized
+ * submodule, at any depth, is checked the same way on its own, so neither an
+ * ignore setting nor a module's own status configuration hides a change; a
+ * module at another commit shows in its parent. A failed read refuses.
  */
-const dirtyPaths = (root: string): string[] => {
-  const status = git(root, [
+const dirtyPaths = (root: string, where = ""): string[] => {
+  const status = read(root, [
     "status",
     "--porcelain=v1",
     "--untracked-files=all",
     "--ignore-submodules=none",
   ]);
-  const listed = git(root, ["ls-files", "-v", "--recurse-submodules"]);
-  for (const [name, result] of [
-    ["git status", status],
-    ["git ls-files", listed],
-  ] as const) {
-    if (result.exitCode !== 0) {
-      return fail(
-        `${name} failed (exit ${result.exitCode}), so the checkout cannot be shown clean; no receipt was recorded.`
-      );
-    }
-  }
-  const hidden = listed.stdout
+  const listed = read(root, ["ls-files", "-v"]);
+  const modules = read(root, ["ls-files", "--stage", "-z"])
+    .split("\0")
+    .map((entry) => GITLINK_ENTRY.exec(entry)?.[1])
+    .filter((path): path is string => path !== undefined)
+    .filter((path) => existsSync(join(root, path, ".git")));
+  const hidden = listed
     .split("\n")
     .filter((line) => HIDDEN_TAG.test(line))
-    .map((line) => `hidden from git status: ${line.slice(2)}`);
-  return [...status.stdout.split("\n").filter(Boolean), ...hidden];
+    .map((line) => `${where}${line.slice(2)} (hidden from git status)`);
+  return [
+    ...status
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => `${where}${line}`),
+    ...hidden,
+    ...modules.flatMap((path) =>
+      dirtyPaths(join(root, path), `${where}${path}/: `)
+    ),
+  ];
 };
 
 const assertClean = (root: string, when: string): void => {
@@ -83,6 +102,7 @@ export const runCheckReceipt = (cwd: string): number => {
   assertClean(root, "before the check");
   const check = spawnSync([...CHECK_COMMAND], {
     cwd: root,
+    env: { ...process.env, ...REAL_HISTORY_ENVIRONMENT },
     stderr: "inherit",
     stdin: "inherit",
     stdout: "inherit",

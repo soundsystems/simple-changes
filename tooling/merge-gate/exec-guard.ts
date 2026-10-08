@@ -27,7 +27,7 @@
  */
 
 import { realpathSync } from "node:fs";
-import { basename, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join } from "node:path";
 import { git, receiptProblem, resolveCommit } from "./merge-gate.ts";
 
 export interface GuardDecision {
@@ -53,6 +53,7 @@ const SHELL_RISK_PATTERN = /\b(?:git|glab|gh)\b|\$(?:[@*0-9]|\{)/u;
 const SHELL_COMMAND_FLAG_PATTERN = /^-[A-Za-z]*c[A-Za-z]*$/u;
 const SHORT_CLUSTER_PATTERN = /^-[A-Za-z]{2,}$/u;
 const LEADING_SLASHES_PATTERN = /^\/+/u;
+const PROPOSAL_NUMBER_PATTERN = /^[1-9]\d*$/u;
 const SHA_PATTERN = /^[0-9a-f]{7,64}$/u;
 const REBASE_EXEC_SHORT_PATTERN = /^-[A-Za-z]*x/u;
 const SCP_REMOTE_PATTERN = /^[^/:]+@[^:]+:(.+)$/u;
@@ -305,13 +306,24 @@ const GIT_SAFE_SUBCOMMANDS = new Set([
 ]);
 
 /**
- * Where `-C` leaves Git: it changes directory one step at a time through the
- * filesystem, so after a symlink `..` names the link target's parent, not the
- * link's. Null when the directory cannot be resolved.
+ * Where `-C` leaves Git: the filesystem resolves the path one component at a
+ * time, so after a symlink `..` names the link target's parent, not the
+ * link's, whether it comes in the same operand (`link/..`) or a later `-C`.
+ * Each component is resolved from the physical directory before it. Null
+ * when a component cannot be resolved.
  */
 const changeDirectory = (from: string, to: string): string | null => {
   try {
-    return realpathSync(resolve(from, to));
+    let current = realpathSync(isAbsolute(to) ? "/" : from);
+    for (const component of to.split("/")) {
+      if (component === "" || component === ".") {
+        continue;
+      }
+      current = realpathSync(
+        component === ".." ? dirname(current) : join(current, component)
+      );
+    }
+    return current;
   } catch {
     return null;
   }
@@ -1011,6 +1023,18 @@ const cliMerge = (
   if (unsupported) {
     return refuse(
       `${what} ${unsupported.name} is not a form the merge gate supports; write each option on its own, with its value separate`
+    );
+  }
+  // After the group and action words, only a proposal number: a URL or a
+  // branch can name a proposal in another project than the one checked.
+  const selectors = scanned.positional.slice(2);
+  if (
+    !(
+      selectors.length === 1 && PROPOSAL_NUMBER_PATTERN.test(selectors[0] ?? "")
+    )
+  ) {
+    return refuse(
+      `${what} must name exactly one proposal by number (not a URL or branch), so the guard checks the project the CLI merges in`
     );
   }
   const sha = lastValue(scanned, [shaFlag]);

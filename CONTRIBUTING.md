@@ -29,7 +29,9 @@ for merges the Simple Changes controller runs.
 1. Commit the change, then run `bun run check:receipt` on a clean checkout of
    that commit: no changed or untracked path, and no tracked path marked
    assume-unchanged or skip-worktree, whose edits `git status` hides, in the
-   repository or any submodule, whatever the submodule ignore settings. It runs
+   repository or any initialized submodule at any depth, each checked on its
+   own so neither ignore settings nor a module's status settings hide a
+   change. It runs
    `bun run check` and, only when it exits 0 and leaves the checkout clean at
    the same commit, writes a receipt for that HEAD.
 2. Fetch, then run every merge through `simple-changes loop exec`, for
@@ -48,10 +50,13 @@ any form it does not support rather than guessing what it does. It gates:
   GitHub `repos/<owner>/<repo>/pulls/<n>/merge` equivalent) with exactly one
   `sha` and no `--input` body, `glab mr merge <iid> --sha <head>`, or `gh pr
   merge <n> --match-head-commit <head>` (in the `-R` project, or the origin
-  project when `-R` is absent). The merged head must also contain the fetched
+  project when `-R` is absent; the proposal is named by number only, never
+  by URL or branch). The merged head must also contain the fetched
   `origin/main`, so the merge result is exactly the checked tree; fetch right
   before merging, because the provider can still merge onto a `main` that
-  moved after the fetch.
+  moved after the fetch. The guard and `check:receipt` read real history:
+  replacement refs and graft files, which can show a commit with another
+  tree or other parents than a push or merge transfers, are ignored.
 - `git push <remote> <source>:<destination>...` whose destination is `main`
   (abbreviations such as `heads/main` count).
 - `git merge --ff-only` and `git pull --ff-only` while `main` is checked out:
@@ -75,7 +80,9 @@ pattern or matching (`:`) refspec, except `git push <remote> --tags`; a short
 option cluster or attached short value anywhere (Git reads `-on` as `-o n`),
 so write each option on its own; git global
 options other than `-C`, paging, and `--no-optional-locks` (so no `-c`,
-`--git-dir`, `--work-tree`, or `--exec-path`); any other program that receives
+`--git-dir`, `--work-tree`, or `--exec-path`), and a `-C` directory the guard
+cannot resolve (it follows each `-C` through the filesystem as Git does, so
+`link/..` is the link target's parent); any other program that receives
 git, glab, gh, or a shell as an argument (`env`, `nohup`, `xargs`, `sudo`,
 `timeout`, and the rest), since it could run them with arguments the guard
 cannot read; `env -S`; a git subcommand that is not a known built-in

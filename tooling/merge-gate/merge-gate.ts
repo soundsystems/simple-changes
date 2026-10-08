@@ -33,12 +33,27 @@ export interface CheckReceipt {
   schemaVersion: 1;
 }
 
+/**
+ * Git sees real objects and history only: no replacement refs and no legacy
+ * graft file, either of which can show a commit with another tree or other
+ * parents than the ones a push or a provider merge actually transfers.
+ */
+export const REAL_HISTORY_ENVIRONMENT = {
+  GIT_GRAFT_FILE: "/dev/null/no-grafts",
+  GIT_NO_REPLACE_OBJECTS: "1",
+} as const;
+
 export const git = (
   cwd: string,
   args: readonly string[]
 ): { exitCode: number; stdout: string } => {
   const result = spawnSync(["git", "-C", cwd, ...args], {
-    env: { ...process.env, GIT_OPTIONAL_LOCKS: "0", LC_ALL: "C" },
+    env: {
+      ...process.env,
+      ...REAL_HISTORY_ENVIRONMENT,
+      GIT_OPTIONAL_LOCKS: "0",
+      LC_ALL: "C",
+    },
     stderr: "pipe",
     stdout: "pipe",
   });
@@ -86,11 +101,25 @@ const RECEIPT_KEYS = [
 const ISO_TIME_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/u;
 const MILLISECONDS_PATTERN = /\.\d{3}Z$/u;
 
-/** A UTC ISO 8601 time, as `Date#toISOString` writes it, with or without milliseconds. */
-const isUtcTime = (value: unknown): boolean =>
-  typeof value === "string" &&
-  ISO_TIME_PATTERN.test(value) &&
-  Number.isFinite(Date.parse(value));
+/**
+ * A real UTC ISO 8601 time, as `Date#toISOString` writes it, with or without
+ * milliseconds. Parsing normalizes an impossible date such as February 30,
+ * so the input must equal the canonical form of the time it parses to.
+ */
+const isUtcTime = (value: unknown): boolean => {
+  if (typeof value !== "string" || !ISO_TIME_PATTERN.test(value)) {
+    return false;
+  }
+  const time = Date.parse(value);
+  if (!Number.isFinite(time)) {
+    return false;
+  }
+  const canonical = new Date(time).toISOString();
+  return (
+    value === canonical ||
+    value === canonical.replace(MILLISECONDS_PATTERN, "Z")
+  );
+};
 
 /** The receipt's finish time: UTC ISO 8601 at seconds precision. */
 export const receiptTime = (date: Date): string =>

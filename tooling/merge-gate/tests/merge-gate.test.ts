@@ -231,6 +231,21 @@ describe("merge gate exec guard", () => {
       ["gh", "pr", "merge", "7", "--match-head-commit", feature, "-sd"],
       ["glab", "mr", "merge", "86", "--sha", feature, "-Rother/project"],
       ["glab", "mr", "merge", "86", "--sha", feature, "--unknown-flag"],
+      // A URL or branch selector can name a proposal in another project.
+      [
+        "gh",
+        "pr",
+        "merge",
+        "https://github.com/other/repo/pull/7",
+        "-R",
+        "o/r",
+        "--merge",
+        "--match-head-commit",
+        feature,
+      ],
+      ["glab", "mr", "merge", "feat/x", "--sha", feature, "-R", "a/b"],
+      ["glab", "mr", "merge", "--sha", feature, "-R", "a/b"],
+      ["gh", "pr", "merge", "7", "8", "--match-head-commit", feature],
       ["gh", "api", "-X", "POST", "repos/o/r/pulls/7/merge-async"],
       ["glab", "api", "-X", "POST", "graphql", "--input", "query.json"],
       [
@@ -309,6 +324,34 @@ describe("merge gate exec guard", () => {
     expect(decide(root, merge).reason).toContain(
       "does not contain refs/remotes/origin/main"
     );
+    // Replacement refs and grafts can give the orphan the published target
+    // as a parent for plain Git, but not for what a merge transfers.
+    const published = git(root, ["rev-parse", "refs/remotes/origin/main"]);
+    const contains = () =>
+      spawnSync([
+        "git",
+        "-C",
+        root,
+        "merge-base",
+        "--is-ancestor",
+        published,
+        orphan,
+      ]).exitCode;
+    git(root, ["replace", "--graft", orphan, published]);
+    expect(contains()).toBe(0);
+    expect(decide(root, merge).reason).toContain(
+      "does not contain refs/remotes/origin/main"
+    );
+    git(root, ["replace", "-d", orphan]);
+    writeFileSync(
+      join(root, ".git", "info", "grafts"),
+      `${orphan} ${published}\n`
+    );
+    expect(contains()).toBe(0);
+    expect(decide(root, merge).reason).toContain(
+      "does not contain refs/remotes/origin/main"
+    );
+    rmSync(join(root, ".git", "info", "grafts"));
     git(root, ["remote", "remove", "origin"]);
     expect(decide(root, merge).reason).toContain("no fetched upstream copy");
   });
@@ -335,6 +378,8 @@ describe("merge gate exec guard", () => {
       { finishedAt: "not a time" },
       { finishedAt: "October 8, 2026" },
       { finishedAt: "2026-10-08T19:04:05+02:00" },
+      { finishedAt: "2026-02-30T17:04:05Z" },
+      { finishedAt: "2026-10-08T24:04:05.000Z" },
       { reviewer: "someone" },
       { treeSha: "0".repeat(40) },
       { schemaVersion: 2 },
@@ -378,6 +423,15 @@ describe("merge gate exec guard", () => {
     ]);
     expect(traversed.allow).toBe(false);
     expect(traversed.reason).toContain(unreceipted);
+    // The same in one operand, which lexical normalization would erase.
+    const single = decide(receipted.base, [
+      "git",
+      "-C",
+      `${receipted.root}/link/..`,
+      ...push,
+    ]);
+    expect(single.allow).toBe(false);
+    expect(single.reason).toContain(unreceipted);
     expect(
       decide(receipted.base, [
         "git",
@@ -720,22 +774,43 @@ describe("bun run check:receipt", () => {
     ).toBe(true);
   });
 
-  test("counts submodule changes that ignore settings or index flags hide", () => {
-    for (const change of ["moved", "edited", "hidden"] as const) {
+  test("counts submodule changes that ignore settings, module settings, or index flags hide", () => {
+    const identity = [
+      "-c",
+      "user.name=Merge Gate Tests",
+      "-c",
+      "user.email=gate@simple-changes.invalid",
+    ];
+    const allowFile = ["-c", "protocol.file.allow=always"];
+    const library = (base: string, name: string, path: string): string => {
+      const root = join(base, name);
+      run(base, ["git", "init", "-q", "-b", "main", root]);
+      git(root, ["config", "user.name", "Merge Gate Tests"]);
+      git(root, ["config", "user.email", "gate@simple-changes.invalid"]);
+      commit(root, path, `${name}\n`);
+      return root;
+    };
+    for (const change of [
+      "moved",
+      "edited",
+      "hidden",
+      "nested",
+      "untracked",
+    ] as const) {
       const fixture = checkRepository("true");
-      const library = join(fixture.base, "library");
-      run(fixture.base, ["git", "init", "-q", "-b", "main", library]);
-      git(library, ["config", "user.name", "Merge Gate Tests"]);
-      git(library, ["config", "user.email", "gate@simple-changes.invalid"]);
-      commit(library, "lib.txt", "library\n");
+      // lib is a module of the checkout, and deep is a module of lib.
+      const deep = library(fixture.base, "deep-source", "deep.txt");
+      const lib = library(fixture.base, "lib-source", "lib.txt");
+      git(lib, [...allowFile, "submodule", "add", "-q", deep, "deep"]);
+      git(lib, ["commit", "-q", "-m", "Add deep"]);
+      git(fixture.root, [...allowFile, "submodule", "add", "-q", lib, "lib"]);
       git(fixture.root, [
-        "-c",
-        "protocol.file.allow=always",
+        ...allowFile,
         "submodule",
-        "add",
+        "update",
         "-q",
-        library,
-        "lib",
+        "--init",
+        "--recursive",
       ]);
       git(fixture.root, ["commit", "-q", "-m", "Add the library"]);
       git(fixture.root, ["config", "submodule.lib.ignore", "all"]);
@@ -743,23 +818,45 @@ describe("bun run check:receipt", () => {
       const module = join(fixture.root, "lib");
       if (change === "moved") {
         git(module, [
-          "-c",
-          "user.name=Merge Gate Tests",
-          "-c",
-          "user.email=gate@simple-changes.invalid",
+          ...identity,
           "commit",
           "-q",
           "--allow-empty",
           "-m",
           "Move the module",
         ]);
-      } else {
+      } else if (change === "edited" || change === "hidden") {
         if (change === "hidden") {
           git(module, ["update-index", "--assume-unchanged", "lib.txt"]);
         }
         writeFileSync(join(module, "lib.txt"), "edited\n");
+      } else if (change === "nested") {
+        // lib ignores deep, so lib's own status hides deep's new commit.
+        git(module, ["config", "submodule.deep.ignore", "all"]);
+        git(join(module, "deep"), [
+          ...identity,
+          "commit",
+          "-q",
+          "--allow-empty",
+          "-m",
+          "Move the nested module",
+        ]);
+      } else {
+        git(module, ["config", "status.showUntrackedFiles", "no"]);
+        writeFileSync(join(module, "untracked.txt"), "stray\n");
       }
       expect(git(fixture.root, ["status", "--porcelain"])).toBe("");
+      if (change === "nested" || change === "untracked") {
+        // The checkout's own flags do not reach a module's internal status.
+        expect(
+          git(fixture.root, [
+            "status",
+            "--porcelain",
+            "--untracked-files=all",
+            "--ignore-submodules=none",
+          ])
+        ).toBe("");
+      }
       const result = runCheckReceipt(fixture.root);
       expect({ change, exitCode: result.exitCode }).toEqual({
         change,
@@ -770,6 +867,27 @@ describe("bun run check:receipt", () => {
         false
       );
     }
+  });
+
+  test("checks the real HEAD, never a replacement checked out in its place", () => {
+    const fixture = checkRepository("true");
+    const { head, root } = fixture;
+    git(root, ["switch", "-q", "-c", "replacement"]);
+    writeFileSync(join(root, "README.md"), "# Replaced contents\n");
+    git(root, ["commit", "-q", "-am", "Replacement"]);
+    const replacement = git(root, ["rev-parse", "HEAD"]);
+    git(root, ["switch", "-q", "main"]);
+    git(root, ["replace", head, replacement]);
+    git(root, ["reset", "-q", "--hard"]);
+    // Plain Git now shows the replacement's contents as a clean HEAD.
+    expect(readFileSync(join(root, "README.md"), "utf8")).toBe(
+      "# Replaced contents\n"
+    );
+    expect(git(root, ["status", "--porcelain"])).toBe("");
+    const result = runCheckReceipt(root);
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("the checkout is not clean");
+    expect(existsSync(receiptPath(join(root, ".git"), head))).toBe(false);
   });
 
   test("records nothing for a failing check, a dirty checkout, or a check that edits files", () => {
@@ -794,7 +912,7 @@ describe("bun run check:receipt", () => {
     writeFileSync(join(unreadable.root, ".git", "index"), "not an index");
     const corrupt = runCheckReceipt(unreadable.root);
     expect(corrupt.exitCode).toBe(1);
-    expect(corrupt.stderr).toContain("git status failed");
+    expect(corrupt.stderr).toContain("git status failed in");
     expect(
       existsSync(receiptPath(join(unreadable.root, ".git"), unreadable.head))
     ).toBe(false);
@@ -806,7 +924,7 @@ describe("bun run check:receipt", () => {
       expect(git(hidden.root, ["status", "--porcelain"])).toBe("");
       const result = runCheckReceipt(hidden.root);
       expect(result.exitCode).toBe(1);
-      expect(result.stderr).toContain("hidden from git status: README.md");
+      expect(result.stderr).toContain("README.md (hidden from git status)");
       expect(
         existsSync(receiptPath(join(hidden.root, ".git"), hidden.head))
       ).toBe(false);

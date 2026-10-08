@@ -703,8 +703,11 @@ const policyProbe = (primaryCheckout: string): Unknown | null => {
 
 /**
  * A hold waiting for a branch to merge reads active whenever merge evidence
- * is missing. When the branch and target tips resolve but their history
- * cannot be read (or the clone is shallow), that is unknown, not active.
+ * is missing, and satisfied when the branch looks contained. When the branch
+ * and target tips resolve but their history cannot be read, or the clone is
+ * shallow (where cut history can make distinct tips with identical trees look
+ * patch-equivalent), either reading is unknown. A satisfied hold that the
+ * history-aware check cannot confirm is unknown too.
  */
 const holdStatus = (
   inventory: RepositoryInventory,
@@ -712,8 +715,11 @@ const holdStatus = (
 ): string => {
   const { evidence } = item;
   if (
-    item.status !== "active" ||
-    !(evidence?.branchHead && evidence.targetRevision)
+    !(
+      (item.status === "active" || item.status === "satisfied") &&
+      evidence?.branchHead &&
+      evidence.targetRevision
+    )
   ) {
     return item.status;
   }
@@ -722,7 +728,12 @@ const holdStatus = (
     evidence.targetRevision,
     evidence.branchHead
   );
-  return isUnknown(contained) ? "unknown" : item.status;
+  if (isUnknown(contained)) {
+    return "unknown";
+  }
+  return item.status === "satisfied" && contained === null
+    ? "unknown"
+    : item.status;
 };
 
 const guidanceStatus = (

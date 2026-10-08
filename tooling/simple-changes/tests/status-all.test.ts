@@ -18,6 +18,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "bun";
+import { captureInventory } from "../../../skills/simple-changes/scripts/lib/inventory.ts";
 import {
   controllerBindingPath,
   finalizeLoop,
@@ -26,7 +27,10 @@ import {
 import { runGit } from "../../../skills/simple-changes/scripts/lib/process.ts";
 import { withReadOnlyGit } from "../../../skills/simple-changes/scripts/lib/read-only-git.ts";
 import { recordReadyWork } from "../../../skills/simple-changes/scripts/lib/ready-work.ts";
-import { addShipHold } from "../../../skills/simple-changes/scripts/lib/ship-holds.ts";
+import {
+  addShipHold,
+  evaluateShipHolds,
+} from "../../../skills/simple-changes/scripts/lib/ship-holds.ts";
 import {
   GLOBAL_SKILL_ROOTS,
   PROJECT_ROOTS,
@@ -828,6 +832,68 @@ describe("simple-changes status --all", () => {
     rmSync(
       join(repository, ".git", "objects", middle.slice(0, 2), middle.slice(2))
     );
+
+    const [status] = statusAll({
+      home,
+      runtime: { skillDirectory: home, version: "0.27.1" },
+    }).repositories;
+
+    expect(status?.holds).toEqual([
+      expect.objectContaining({ status: "unknown", untilMerged: "companion" }),
+    ]);
+  });
+
+  test("never calls a merge-conditioned hold satisfied from a shallow clone", () => {
+    const home = temporaryHome();
+    const origin = join(home, "origin.git");
+    git(home, ["init", "-q", "--bare", "-b", "main", origin]);
+    const seed = initRepository(join(home, "seed"));
+    writeFixture(seed, ".simple-changes.json", policy(27));
+    git(seed, ["add", ".simple-changes.json"]);
+    git(seed, ["commit", "-q", "-m", "Add policy"]);
+    git(seed, ["push", "-q", origin, "HEAD:refs/heads/main"]);
+    // The companion branch ends on the same tree the target reaches, but its
+    // first commit never reached the target, so it is not merged.
+    git(seed, ["switch", "-q", "-c", "companion"]);
+    writeFixture(seed, "draft.txt", "never merged\n");
+    git(seed, ["add", "draft.txt"]);
+    git(seed, ["commit", "-q", "-m", "Draft"]);
+    git(seed, ["rm", "-q", "draft.txt"]);
+    writeFixture(seed, "companion.txt", "companion\n");
+    git(seed, ["add", "companion.txt"]);
+    git(seed, ["commit", "-q", "-m", "Companion"]);
+    git(seed, ["push", "-q", origin, "companion"]);
+    const shallow = join(home, "Developer", "shallow-held");
+    git(home, [
+      "clone",
+      "-q",
+      "--depth=1",
+      "--no-single-branch",
+      `file://${origin}`,
+      shallow,
+    ]);
+    git(shallow, ["config", "user.name", "Status Tests"]);
+    git(shallow, ["config", "user.email", "status@simple-changes.invalid"]);
+    addShipHold(shallow, {
+      adapter: "codex",
+      agentId: "companion-agent",
+      reason: "Wait for the companion change.",
+      scope: "ship",
+      severity: "delay",
+      untilMerged: "companion",
+    });
+    // The target then reaches the same tree through other history.
+    git(seed, ["switch", "-q", "main"]);
+    writeFixture(seed, "companion.txt", "companion\n");
+    git(seed, ["add", "companion.txt"]);
+    git(seed, ["commit", "-q", "-m", "Same tree, other history"]);
+    git(seed, ["push", "-q", origin, "HEAD:refs/heads/main"]);
+    git(shallow, ["fetch", "-q", "--depth=1", "origin", "main"]);
+    // Cut to one commit each, the tips look patch-equivalent to the
+    // ordinary evaluation.
+    expect(
+      evaluateShipHolds(captureInventory(shallow), { localOnly: true }).holds
+    ).toEqual([expect.objectContaining({ status: "satisfied" })]);
 
     const [status] = statusAll({
       home,

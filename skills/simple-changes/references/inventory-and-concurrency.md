@@ -461,7 +461,9 @@ Changes repository under the roots `update-local-forks discover` scans (global
 skill roots, `~/Developer`, `~/Projects`, `~/Code`, `~/src`, and each
 `--root`): the lease with its controller state and liveness (`live`, `stale`,
 or `unknown`), unreleased worktree claims and whether each checkout is absent,
-moved, or still at its claimed head, recorded holds, ready-work receipts with
+moved, or still at its claimed head, recorded holds (a hold until a branch
+merges reads `unknown`, not active or satisfied, when the target's history
+cannot confirm it, including in a shallow clone), ready-work receipts with
 their freshness from refs (unknown when a ref or the target's history cannot
 be read, including in a shallow clone) and whether their checkout still
 exists,

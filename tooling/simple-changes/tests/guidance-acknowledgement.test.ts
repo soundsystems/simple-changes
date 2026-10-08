@@ -10,19 +10,26 @@ import {
 import * as fs from "node:fs";
 import {
   existsSync,
+  mkdtempSync,
   readFileSync,
   statSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "bun";
-import { CURRENT_GUIDANCE_VERSION } from "../../../skills/simple-changes/scripts/lib/guidance-updates.ts";
+import { inspectChangelogCoordination } from "../../../skills/simple-changes/scripts/lib/changelog-coordination.ts";
+import {
+  CURRENT_GUIDANCE_VERSION,
+  inspectGuidanceUpdate,
+} from "../../../skills/simple-changes/scripts/lib/guidance-updates.ts";
 import { captureInventory } from "../../../skills/simple-changes/scripts/lib/inventory.ts";
 import { withLoopStateLock } from "../../../skills/simple-changes/scripts/lib/loop-lease.ts";
 import {
   acknowledgementCouldRestoreTrust,
+  DEFAULT_POLICY,
   withAcknowledgedGuidanceText,
   writeGuidanceAcknowledgement,
   writeRepositoryPolicyTrustReceipt,
@@ -757,5 +764,200 @@ describe("withAcknowledgedGuidanceText", () => {
         "Cannot locate the guidance fields"
       );
     }
+  });
+});
+
+describe("authoring review question in the update notice", () => {
+  const coordination = inspectChangelogCoordination(null);
+  const question = {
+    choices: [
+      {
+        description: "Reviews come from another agent.",
+        label: "A different agent",
+        recommended: true,
+        value: "different-agent",
+      },
+    ],
+    id: "authoring-review",
+    question: "Who should perform independent reviews? Choose one:",
+    reason: "More than one coding agent was detected.",
+    setting: "roles.review in the authoring sidecar (setup --authoring)",
+  };
+  const policyAt = (version: number) => ({
+    ...DEFAULT_POLICY,
+    guidance: { disposition: "accepted" as const, version },
+  });
+
+  test("asks the required question only while the review question is pending", () => {
+    const notice = (
+      review: "pending" | "answered" | "not-applicable" | "repair"
+    ) =>
+      inspectGuidanceUpdate(
+        policyAt(CURRENT_GUIDANCE_VERSION - 1),
+        coordination,
+        {
+          authoringQuestion: { models: "answered", review },
+          questions: { "authoring-review": question },
+        }
+      );
+    expect(notice("pending").requiredAnswers).toEqual([question]);
+    expect(notice("pending").recommendedAction).toBeNull();
+    for (const review of ["answered", "not-applicable", "repair"] as const) {
+      expect(notice(review).requiredAnswers).toEqual([]);
+      expect(notice(review).status).toBe("update-available");
+    }
+    // Without the context the notice lists the capability without a question.
+    expect(
+      inspectGuidanceUpdate(
+        policyAt(CURRENT_GUIDANCE_VERSION - 1),
+        coordination
+      ).requiredAnswers
+    ).toEqual([]);
+  });
+
+  test("acknowledging records only the disposition; the question stays pending until setup --authoring answers it", () => {
+    const fixture = createTestRepository();
+    fixtures.push(fixture);
+    const roots = mkdtempSync(join(tmpdir(), "guidance-roots-"));
+    fs.mkdirSync(join(roots, ".claude"));
+    fs.mkdirSync(join(roots, ".codex"));
+    const env = {
+      ...process.env,
+      SIMPLE_CHANGES_CONFIG_DIR: mkdtempSync(
+        join(tmpdir(), "guidance-config-")
+      ),
+      SIMPLE_CHANGES_HARNESS_ROOTS: roots,
+    };
+    writeFixture(
+      fixture.root,
+      ".simple-changes.json",
+      `${JSON.stringify(
+        {
+          ...DEFAULT_POLICY,
+          guidance: {
+            disposition: "accepted",
+            version: CURRENT_GUIDANCE_VERSION - 1,
+          },
+        },
+        null,
+        2
+      )}\n`
+    );
+    const run = (args: string[]) => {
+      const result = spawnSync(
+        [process.execPath, cliPath, ...args, "--repo", fixture.root, "--json"],
+        {
+          env,
+          stderr: "pipe",
+          stdout: "pipe",
+        }
+      );
+      expect(decoder.decode(result.stderr)).toBe("");
+      return JSON.parse(decoder.decode(result.stdout)) as Record<string, any>;
+    };
+    const before = run(["initialize", "--mode", "queue"]);
+    expect(before.authoringQuestion).toEqual({
+      models: "pending",
+      review: "pending",
+    });
+    expect(
+      before.guidanceUpdate.requiredAnswers.map(
+        (answer: { id: string }) => answer.id
+      )
+    ).toEqual(["authoring-review"]);
+    run(["acknowledge-update", "--guidance-decision", "accepted"]);
+    const policy = JSON.parse(
+      readFileSync(join(fixture.root, ".simple-changes.json"), "utf8")
+    );
+    expect(policy.guidance.version).toBe(CURRENT_GUIDANCE_VERSION);
+    expect(
+      existsSync(join(fixture.root, ".simple-changes-authoring.json"))
+    ).toBe(false);
+    const acknowledged = run(["initialize", "--mode", "queue"]);
+    expect(acknowledged.guidanceUpdate.status).toBe("current");
+    expect(acknowledged.authoringQuestion).toEqual({
+      models: "pending",
+      review: "pending",
+    });
+    run([
+      "setup",
+      "--authoring",
+      JSON.stringify({
+        harnesses: {
+          "claude-code": { model: "most-capable" },
+          codex: { model: "most-capable" },
+        },
+        roles: { review: { adversarial: true, harness: "codex" } },
+        schemaVersion: 1,
+      }),
+      "--scope",
+      "repository",
+      "--confirm",
+    ]);
+    expect(run(["initialize", "--mode", "queue"]).authoringQuestion).toEqual({
+      models: "answered",
+      review: "answered",
+    });
+  });
+
+  test("a second harness detected later makes review pending again at the current guidance", () => {
+    const fixture = createTestRepository();
+    fixtures.push(fixture);
+    const roots = mkdtempSync(join(tmpdir(), "guidance-roots-"));
+    fs.mkdirSync(join(roots, ".claude"));
+    const env = {
+      ...process.env,
+      SIMPLE_CHANGES_CONFIG_DIR: mkdtempSync(
+        join(tmpdir(), "guidance-config-")
+      ),
+      SIMPLE_CHANGES_HARNESS_ROOTS: roots,
+    };
+    writeFixture(
+      fixture.root,
+      ".simple-changes.json",
+      `${JSON.stringify({ ...DEFAULT_POLICY }, null, 2)}\n`
+    );
+    writeFixture(
+      fixture.root,
+      ".simple-changes-authoring.json",
+      `${JSON.stringify({
+        harnesses: {
+          "claude-code": { effort: "xhigh", model: "most-capable" },
+        },
+        roles: { proposals: { harness: "running" } },
+        schemaVersion: 1,
+      })}\n`
+    );
+    const initialize = () =>
+      JSON.parse(
+        decoder.decode(
+          spawnSync(
+            [
+              process.execPath,
+              cliPath,
+              "initialize",
+              "--mode",
+              "queue",
+              "--repo",
+              fixture.root,
+              "--json",
+            ],
+            { env, stderr: "pipe", stdout: "pipe" }
+          ).stdout
+        )
+      ) as Record<string, any>;
+    const single = initialize();
+    expect(single.guidanceUpdate.status).toBe("current");
+    expect(single.authoringQuestion).toEqual({
+      models: "answered",
+      review: "not-applicable",
+    });
+    fs.mkdirSync(join(roots, ".codex"));
+    const second = initialize();
+    expect(second.guidanceUpdate.status).toBe("current");
+    expect(second.authoringQuestion).toEqual({
+      models: "answered",
+      review: "pending",
+    });
   });
 });

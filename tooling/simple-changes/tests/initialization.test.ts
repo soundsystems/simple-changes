@@ -73,11 +73,11 @@ describe("first-run initialization", () => {
     );
     expect(from19.changes.map((item) => item.version)).toEqual([
       20, 20, 21, 21, 21, 22, 22, 22, 22, 23, 23, 24, 24, 24, 25, 25, 25, 26,
-      26, 26, 27, 27, 27,
+      26, 26, 27, 27, 27, 28, 28, 28,
     ]);
-    expect(from19.changes.at(-1)?.summary).toContain(
-      "`update-local-forks` tries the `v<version>` tag first"
-    );
+    expect(
+      from19.changes.filter((item) => item.version === 27).at(-1)?.summary
+    ).toContain("`update-local-forks` tries the `v<version>` tag first");
   });
   test("propagates the saved shipping preference into emergency classification", () => {
     for (const shippingMode of ["expedited", "break-glass"] as const) {
@@ -297,7 +297,7 @@ describe("first-run initialization", () => {
           available: true,
           owner: "simple-changelogs",
         },
-        currentVersion: 27,
+        currentVersion: 28,
         headline: "**Simple Changes has recently been updated.**",
         presentationOrder: [
           "required-answers",
@@ -320,7 +320,7 @@ describe("first-run initialization", () => {
       "Releases can now get a Git tag"
     );
     expect(status.guidanceUpdate.summaryBullets.join(" ")).toContain(
-      "Merge danger door"
+      "choose which model writes proposals and who reviews them"
     );
     expect(status.guidanceUpdate.summaryBullets.join(" ")).toContain(
       "`execGuard` check"

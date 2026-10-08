@@ -1,7 +1,7 @@
 import type { AuthoringQuestionState, DetectedHarness } from "./authoring.ts";
 import type { ChangelogCoordination, RepoPolicy } from "./types.ts";
 
-export const CURRENT_GUIDANCE_VERSION = 27;
+export const CURRENT_GUIDANCE_VERSION = 28;
 
 export type GuidanceUpdateAction =
   | "review-settings"
@@ -809,6 +809,40 @@ const GUIDANCE_UPDATES: GuidanceUpdateDefinition[] = [
       },
     ],
     version: 27,
+  },
+  {
+    changelogReviewRelevant: false,
+    changes: [
+      {
+        kind: "onboarding",
+        summary:
+          "An optional authoring sidecar, `.simple-changes-authoring.json` or a personal `authoring.json`, records which model writes proposal descriptions and merge messages and who performs independent reviews in each coding agent the owner uses; it is a preference only, so it grants no authority and never changes who signs. Setup asks **Which coding agents do you use?**, one model question per agent, and, with two or more agents detected, **Who should perform independent reviews?**; `setup --authoring <json-or-@path> --scope <repository|personal> --confirm` records an answer without touching the policy.",
+        version: 28,
+      },
+      {
+        kind: "behavior",
+        summary:
+          "Agents attest every commit with `author attest` (with `--replays` after a rebase, cherry-pick, or squash) and run `proposal record-authors` after creating or updating a proposal. `proposal record-review` accepts a returned review only when the head's commits are attributed or waived with `proposal waive-coverage`, the reviewer is a separate agent or session from every author, and, for an adversarial review, a different agent or model; after findings, later reviews run at least at the recorded escalation effort.",
+        version: 28,
+      },
+      {
+        kind: "integration",
+        summary:
+          "`initialize` reports detected agents, both authoring files, the per-question state, the effective roles with each field's source, and the resolved reviewer, which `--proposal <id> --head <sha>` checks against that head's recorded authors; the pre-ship brief names the reviewer and its source.",
+        version: 28,
+      },
+    ],
+    noticeBullets: [
+      {
+        priority: 180,
+        summary:
+          "You can now choose which model writes proposals and who reviews them in each coding agent you use, and a review from a different agent or model is checked against the recorded author of every commit. When two or more agents are detected, this update asks who should perform independent reviews.",
+      },
+    ],
+    requiredAnswers: [
+      { id: "authoring-review", when: "authoring-question-pending" },
+    ],
+    version: 28,
   },
 ];
 

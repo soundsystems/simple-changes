@@ -35,14 +35,14 @@ afterEach(() => {
   bases = [];
 });
 
-const run = (cwd: string, argv: string[]) => {
+const run = (cwd: string, argv: string[], allowFailure = false) => {
   const result = spawnSync(argv, {
     cwd,
     env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
     stderr: "pipe",
     stdout: "pipe",
   });
-  if (result.exitCode !== 0) {
+  if (result.exitCode !== 0 && !allowFailure) {
     throw new Error(
       `${argv.join(" ")} failed: ${decoder.decode(result.stderr)}`
     );
@@ -50,8 +50,8 @@ const run = (cwd: string, argv: string[]) => {
   return decoder.decode(result.stdout).trim();
 };
 
-const git = (cwd: string, args: string[]) =>
-  run(cwd, ["git", "-C", cwd, ...args]);
+const git = (cwd: string, args: string[], allowFailure = false) =>
+  run(cwd, ["git", "-C", cwd, ...args], allowFailure);
 
 const commit = (root: string, path: string, contents: string): string => {
   mkdirSync(dirname(join(root, path)), { recursive: true });
@@ -462,6 +462,60 @@ describe("merge gate exec guard", () => {
     expect(
       decide(root, ["git", "push", "origin", "feat/x:refs/heads/feat/x"]).allow
     ).toBe(false);
+  });
+
+  test("treats every true spelling of remote mirroring as mirroring", () => {
+    const { root } = repository();
+    for (const value of ["yes", "on", "1", null]) {
+      git(root, ["config", "--unset-all", "remote.origin.mirror"], true);
+      if (value === null) {
+        writeFileSync(
+          join(root, ".git", "config"),
+          `${readFileSync(join(root, ".git", "config"), "utf8")}[remote "origin"]\n\tmirror\n`
+        );
+      } else {
+        git(root, ["config", "remote.origin.mirror", value]);
+      }
+      expect({
+        allow: decide(root, ["git", "push", "origin", "--tags"]).allow,
+        value,
+      }).toEqual({ allow: false, value });
+    }
+    git(root, ["config", "--unset-all", "remote.origin.mirror"]);
+    git(root, ["config", "remote.origin.mirror", "no"]);
+    expect(decide(root, ["git", "push", "origin", "--tags"]).allow).toBe(true);
+  });
+
+  test("refuses a provider mutation that names its own host", () => {
+    const { feature, root, writeReceipt } = repository();
+    writeReceipt(feature);
+    for (const command of [
+      [
+        "glab",
+        "api",
+        "--hostname",
+        "other.example",
+        "projects/84768068/merge_requests/7/merge",
+        "-X",
+        "PUT",
+        "-f",
+        `sha=${feature}`,
+      ],
+      [
+        "glab",
+        "api",
+        "https://other.example/api/v4/projects/1/merge_requests/2/merge",
+        "-X",
+        "PUT",
+        "-f",
+        `sha=${feature}`,
+      ],
+    ]) {
+      expect({ allow: decide(root, command).allow, command }).toEqual({
+        allow: false,
+        command,
+      });
+    }
   });
 
   test("allows syncing main with its published remote and gates real merges", () => {

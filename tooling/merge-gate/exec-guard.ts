@@ -484,7 +484,18 @@ const gitPush = (
       "git push without a remote goes wherever configuration says; name the remote and each refspec"
     );
   }
-  if (gitConfig(invocation, `remote.${remote}.mirror`) === "true") {
+  // Git reads yes, on, 1, and a bare key as true; only a confirmed false or
+  // an absent key (exit 1) is safe.
+  const mirror = gitIn(invocation, [
+    "config",
+    "--bool",
+    "--get",
+    `remote.${remote}.mirror`,
+  ]);
+  const mirrorOff =
+    mirror.exitCode === 1 ||
+    (mirror.exitCode === 0 && mirror.stdout === "false");
+  if (!mirrorOff) {
     return refuse(
       `remote ${remote} mirrors every ref, so any push to it can move a target branch`
     );
@@ -682,6 +693,8 @@ const URL_PREFIX_PATTERN = /^[a-z]+:\/\/[^/]+\//iu;
 const API_VERSION_PATTERN = /^api\/v\d+\//u;
 
 interface ApiCall {
+  /** Whether the call names its own host (`--hostname` or a full URL). */
+  hostOverride: boolean;
   method: string;
   /** The endpoint path split into percent-decoded segments. */
   segments: string[];
@@ -726,6 +739,8 @@ const parseApiCall = (
   const fields = valuesOf(scanned, FIELD_OPTIONS);
   const input = hasOption(scanned, ["--input"]);
   return {
+    hostOverride:
+      hasOption(scanned, ["--hostname"]) || URL_PREFIX_PATTERN.test(path),
     method:
       lastValue(scanned, ["-X", "--method"])?.toUpperCase() ??
       (fields.length > 0 || input ? "POST" : "GET"),
@@ -840,6 +855,11 @@ const apiMerge = (
   }
   if (call.method === "GET") {
     return allow(`${tool} api GET reads only`);
+  }
+  if (call.hostOverride) {
+    return refuse(
+      `${tool} api ${call.method} names its own host (--hostname or a full URL), so the guard cannot tie its project to this repository; run it against the configured host`
+    );
   }
   const what = `${tool} api ${call.method} ${call.segments.join("/")}`;
   const scoped = projectOf(call.segments);

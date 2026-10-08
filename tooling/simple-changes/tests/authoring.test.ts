@@ -1002,6 +1002,36 @@ describe("sidecar files", () => {
     expect(readFileSync(path, "utf8")).toBe("{ not json");
     expect(readdirSync(directory).sort()).toEqual(["authoring.json"]);
     rmSync(path);
+    // Different bytes that decode to the same text (a literal U+FFFD turned
+    // into one invalid byte) are still a change: raw bytes are compared.
+    writeAuthoringSidecar(path, sidecar({ gamma: { model: "kept�" } }), true);
+    const bytes = readFileSync(path);
+    const at = bytes.indexOf(Buffer.from("�", "utf8"));
+    expect(at).toBeGreaterThan(0);
+    const invalid = Buffer.concat([
+      bytes.subarray(0, at),
+      Buffer.from([0x80]),
+      bytes.subarray(at + 3),
+    ]);
+    expect(invalid.toString("utf8")).toBe(bytes.toString("utf8"));
+    const corrupt = spyOn(fs, "chmodSync").mockImplementationOnce(((
+      target: fs.PathLike,
+      mode: fs.Mode
+    ) => {
+      writeFileSync(path, invalid);
+      corrupt.mockRestore();
+      fs.chmodSync(target, mode);
+    }) as typeof fs.chmodSync);
+    try {
+      expect(() => writeAuthoringSidecar(path, EMPTY, true)).toThrow(
+        "changed while this answer was being written"
+      );
+    } finally {
+      corrupt.mockRestore();
+    }
+    expect(readFileSync(path).equals(invalid)).toBe(true);
+    expect(readdirSync(directory).sort()).toEqual(["authoring.json"]);
+    rmSync(path);
     // Another writer's lock refuses, even one left by an exited process:
     // no owner check is atomic with a takeover, so the owner removes it.
     const lockPath = `${path}.lock`;

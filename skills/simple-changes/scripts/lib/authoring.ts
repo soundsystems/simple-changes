@@ -1013,11 +1013,14 @@ export const resolveRepositoryAuthoring = (
 
 // What a sidecar path holds right now, compared before the rename so a change
 // made after the writer looked (by any process) is refused, never replaced.
+// The file's exact bytes (base64, never decoded text: invalid UTF-8 decodes
+// to the same replacement character as a literal one, and the comparison
+// must see that difference).
 const sidecarSnapshot = (path: string): string => {
   try {
     const status = lstatSync(path);
     return status.isFile()
-      ? `file:${readFileSync(path, "utf8")}`
+      ? `file:${readFileSync(path).toString("base64")}`
       : `other:${status.mode}`;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") {
@@ -1099,7 +1102,10 @@ const writeLockedSidecar = (
       EXIT_CODES.unsafe
     );
   }
-  if (current.state === "valid" && snapshot === `file:${text}`) {
+  if (
+    current.state === "valid" &&
+    snapshot === `file:${Buffer.from(text, "utf8").toString("base64")}`
+  ) {
     return { path, written: false };
   }
   const temporaryPath = resolve(

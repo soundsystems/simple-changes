@@ -310,6 +310,56 @@ describe("simple-changes status --all", () => {
     expect(existsSync(marker)).toBe(false);
   });
 
+  test("never writes a Git trace, from the environment or global Trace2 settings", () => {
+    const home = temporaryHome();
+    const repository = initRepository(join(home, "Developer", "traced"));
+    writeFixture(repository, ".simple-changes.json", policy(27));
+    const traces = join(home, "traces");
+    mkdirSync(join(traces, "events"), { recursive: true });
+    const globalConfig = join(home, "global.gitconfig");
+    writeFileSync(
+      globalConfig,
+      `[trace2]\n\teventTarget = ${join(traces, "events")}\n\tnormalTarget = ${join(traces, "normal.log")}\n`
+    );
+    const env = {
+      ...process.env,
+      GIT_CONFIG_GLOBAL: globalConfig,
+      GIT_TRACE: join(traces, "trace.log"),
+      HOME: home,
+      SIMPLE_CHANGES_SKILL_ROOTS: "",
+    };
+    const written = () => [
+      ...readdirSync(traces).filter((name) => name !== "events"),
+      ...readdirSync(join(traces, "events")),
+    ];
+    // Git itself writes every one of these traces outside read-only mode.
+    spawnSync(["git", "-C", repository, "rev-parse", "HEAD"], { env });
+    expect(readdirSync(traces).sort()).toEqual([
+      "events",
+      "normal.log",
+      "trace.log",
+    ]);
+    expect(readdirSync(join(traces, "events")).length).toBe(1);
+    rmSync(traces, { recursive: true });
+    mkdirSync(join(traces, "events"), { recursive: true });
+    const cliPath = fileURLToPath(
+      new URL(
+        "../../../skills/simple-changes/scripts/simple-changes.ts",
+        import.meta.url
+      )
+    );
+    for (const args of [["status"], ["status", "--all"]]) {
+      const result = spawnSync([process.execPath, cliPath, ...args], {
+        cwd: repository,
+        env,
+        stderr: "pipe",
+        stdout: "pipe",
+      });
+      expect(result.exitCode).toBe(0);
+    }
+    expect(written()).toEqual([]);
+  });
+
   test("never runs git status, so no clean filter runs", () => {
     const home = temporaryHome();
     const repository = initRepository(join(home, "Developer", "filtered"));

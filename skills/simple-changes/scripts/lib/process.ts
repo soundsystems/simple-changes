@@ -246,6 +246,17 @@ interface GitResolution {
   shim: boolean;
 }
 
+const canonicalPath = (
+  probe: GitExecutableProbe,
+  path: string
+): string | null => {
+  try {
+    return probe.realpath(path);
+  } catch {
+    return null;
+  }
+};
+
 // On macOS `/usr/bin/git` is an xcrun shim that locates the active developer
 // directory before every exec, which costs far more than most read-only Git
 // commands themselves. Resolve the binary it would run once per process and
@@ -280,13 +291,12 @@ const resolveGit = (
   if (resolvedOnPath !== XCRUN_GIT_SHIM) {
     return plain;
   }
-  const developerGit =
+  const candidate =
     probe.developerGit?.() ?? (directOnly ? null : probe.xcrunFind());
-  if (
-    developerGit &&
-    isAbsolute(developerGit) &&
-    developerGit !== XCRUN_GIT_SHIM
-  ) {
+  const developerGit =
+    candidate && isAbsolute(candidate) ? canonicalPath(probe, candidate) : null;
+  // Compare the real file: `//usr/bin/git` or a link to the shim is the shim.
+  if (developerGit && developerGit !== XCRUN_GIT_SHIM) {
     return { executable: developerGit, shim: false };
   }
   if (directOnly) {

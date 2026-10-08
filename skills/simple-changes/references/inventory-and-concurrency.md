@@ -463,7 +463,8 @@ skill roots, `~/Developer`, `~/Projects`, `~/Code`, `~/src`, and each
 or `unknown`), unreleased worktree claims and whether each checkout still
 matches its claim, recorded holds, ready-work receipts with their freshness,
 and a pending guidance notice when the repository's acknowledged guidance is
-older than this runtime's. It then lists every fork, compared with the newest
+older than the guidance of the runtime running `status`; a repository that
+runs a fork sees that notice once its fork reaches the same guidance. It then lists every fork, compared with the newest
 installed Simple Changes source, as `behind`, `current`, `ahead`, or `unknown`.
 `simple-changes status` without `--all` shows the current repository only.
 

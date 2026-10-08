@@ -16,6 +16,7 @@ import {
   readControllerBinding,
   readLeaseFromCommonDirectory,
 } from "./loop-lease.ts";
+import { withReadOnlyGit } from "./read-only-git.ts";
 import { readyWorkStatus } from "./ready-work.ts";
 import { evaluateShipHolds } from "./ship-holds.ts";
 import { GLOBAL_SKILL_ROOTS, PROJECT_ROOTS } from "./skill-roots.ts";
@@ -25,10 +26,11 @@ import { readCoordinationDocumentFromCommonDirectory } from "./worktree-coordina
 /**
  * A read-only view of Simple Changes state across every repository and fork
  * under the roots `update-local-forks discover` scans. It never writes,
- * fetches, or takes a lock: Git runs with `GIT_OPTIONAL_LOCKS=0`, holds are
- * read locally only, and state files are read without their locks, so a
- * section another process is rewriting may read as unknown. Anything that
- * cannot be read is reported as unknown with the reason, never guessed.
+ * fetches, or takes a lock: Git runs with optional locks, lazy fetches, and
+ * the filesystem monitor off, holds are read locally only, and state files
+ * are read without their locks, so a section another process is rewriting
+ * may read as unknown. Anything that cannot be read is reported as unknown
+ * with the reason, never guessed.
  */
 
 const MAX_DEPTH = 6;
@@ -122,7 +124,8 @@ export interface StatusRepository {
         path: string;
       }>
     | Unknown;
-  releasedClaims: number;
+  /** Released claims kept as history; null when the claims are unreadable. */
+  releasedClaims: number | null;
   repository: string;
 }
 
@@ -465,7 +468,7 @@ const repositoryStatus = (
       holds: captured,
       lease,
       readyWork: captured,
-      releasedClaims: 0,
+      releasedClaims: null,
       repository: directory,
     };
   }
@@ -497,7 +500,7 @@ const repositoryStatus = (
         path: item.receipt.path,
       }))
     ),
-    releasedClaims: isUnknown(claims) ? 0 : claims.released,
+    releasedClaims: isUnknown(claims) ? null : claims.released,
     repository: inventory.repository.primaryCheckout,
   };
 };
@@ -507,24 +510,9 @@ const usesSimpleChanges = (directory: string, common: string): boolean =>
   existsSync(join(directory, ".simple-changes.json")) ||
   existsSync(join(dirname(common), ".simple-changes.json"));
 
-/** Runs `read` with Git's optional locks off, restoring the setting after. */
-const withoutOptionalLocks = <T>(read: () => T): T => {
-  const previous = process.env.GIT_OPTIONAL_LOCKS;
-  process.env.GIT_OPTIONAL_LOCKS = "0";
-  try {
-    return read();
-  } finally {
-    if (previous === undefined) {
-      Reflect.deleteProperty(process.env, "GIT_OPTIONAL_LOCKS");
-    } else {
-      process.env.GIT_OPTIONAL_LOCKS = previous;
-    }
-  }
-};
-
 /** One repository's status, for `simple-changes status` without `--all`. */
 export const repositoryStatusFor = (directory: string): StatusRepository =>
-  withoutOptionalLocks(() => {
+  withReadOnlyGit(() => {
     const located = section(
       () => locateRepository(directory).repository.commonGitDirectory
     );
@@ -535,7 +523,7 @@ export const repositoryStatusFor = (directory: string): StatusRepository =>
   });
 
 export const statusAll = (options: StatusOptions): StatusReport =>
-  withoutOptionalLocks(() => {
+  withReadOnlyGit(() => {
     const home = options.home ?? homedir();
     const roots = [
       ...GLOBAL_SKILL_ROOTS.map((root) => join(home, root)),

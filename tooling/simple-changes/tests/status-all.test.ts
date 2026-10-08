@@ -16,6 +16,8 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "bun";
 import { startLoop } from "../../../skills/simple-changes/scripts/lib/loop-lease.ts";
+import { runGit } from "../../../skills/simple-changes/scripts/lib/process.ts";
+import { withReadOnlyGit } from "../../../skills/simple-changes/scripts/lib/read-only-git.ts";
 import { addShipHold } from "../../../skills/simple-changes/scripts/lib/ship-holds.ts";
 import {
   GLOBAL_SKILL_ROOTS,
@@ -249,6 +251,34 @@ describe("simple-changes status --all", () => {
         state: "behind",
       }),
     ]);
+  });
+
+  test("read-only Git never lazily fetches a missing object", () => {
+    const home = temporaryHome();
+    const source = initRepository(join(home, "source"));
+    git(source, ["config", "uploadpack.allowFilter", "true"]);
+    const blob = git(source, ["rev-parse", "HEAD:README.md"]);
+    const clone = join(home, "partial");
+    git(home, [
+      "clone",
+      "-q",
+      "--no-checkout",
+      "--filter=blob:none",
+      `file://${source}`,
+      clone,
+    ]);
+    const present = () =>
+      runGit(clone, ["cat-file", "-e", blob], true, {
+        GIT_NO_LAZY_FETCH: "1",
+      }).exitCode === 0;
+    expect(present()).toBe(false);
+
+    const read = withReadOnlyGit(() =>
+      runGit(clone, ["cat-file", "-p", blob], true)
+    );
+
+    expect(read.exitCode).not.toBe(0);
+    expect(present()).toBe(false);
   });
 
   test("shows unreadable state as unknown and keeps going", () => {

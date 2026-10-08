@@ -276,6 +276,23 @@ describe("merge gate exec guard", () => {
     const pushes = [
       ["git", "push", "origin", "main"],
       ["git", "push", "origin", "HEAD:main"],
+      ["git", "push", "origin", "HEAD:heads/main"],
+      [
+        "glab",
+        "api",
+        "projects/1/merge_requests/2/merge/",
+        "-X",
+        "put",
+        "-f",
+        `sha=${feature}`,
+      ],
+      [
+        "glab",
+        "api",
+        `projects/a%2Fb/merge_requests/2/%6Derge?sha=${feature}`,
+        "--method",
+        "PUT",
+      ],
       ["git", "push", "origin", "+feat/x:refs/heads/main"],
       ["git", "push", "-f", "origin", "main"],
       ["git", "push", "-fu", "origin", "main"],
@@ -328,6 +345,12 @@ describe("merge gate exec guard", () => {
       ["glab", "-R", "group/repo", "mr", "merge", "7"],
       ["git", "rebase", "--exec", "git push origin HEAD:main", "main"],
       ["git", "submodule", "foreach", "git push origin HEAD:main"],
+      ["git", "rebase", "-xgit push origin HEAD:main", "main"],
+      ["git", "rebase", "-ix", "git push origin HEAD:main", "main"],
+      ["git", "push", "origin", ":heads/main"],
+      ["git", "push", "origin", "--delete", "heads/main"],
+      ["gh", "api", "repos/o/r/pulls/7/merge", "-XPUT"],
+      ["glab", "api", "projects/1/merge_requests/2/merge", "-fsha=abc1234"],
     ]) {
       expect({ allow: decide(root, command).allow, command }).toEqual({
         allow: false,
@@ -511,6 +534,14 @@ describe("bun run check:receipt", () => {
     expect(corrupt.stderr).toContain("git status failed");
     expect(
       existsSync(receiptPath(join(unreadable.root, ".git"), unreadable.head))
+    ).toBe(false);
+
+    const moving = checkRepository("git commit -q --allow-empty -m moved");
+    const moved = runCheckReceipt(moving.root);
+    expect(moved.exitCode).toBe(1);
+    expect(moved.stderr).toContain("HEAD moved");
+    expect(
+      existsSync(receiptPath(join(moving.root, ".git"), moving.head))
     ).toBe(false);
 
     const editing = checkRepository("echo changed >> README.md");

@@ -52,12 +52,14 @@ Anything outside the supported forms is refused rather than guessed at: a
 merge that names no exact SHA; `git push` without a remote and refspecs (a
 tags-only `git push <remote> --tags` passes), to a mirroring remote, with an
 unsupported option, with a pattern or matching (`:`) refspec, or with a
-colonless refspec when `remote.<name>.push` maps refs; git global options
+colonless refspec when `remote.<name>.push` maps refs (an abbreviated
+destination such as `heads/main` counts as `main`); a `gh api` or `glab api`
+option outside the supported set or with an attached value such as `-XPUT`; git global options
 other than `-C`, paging, and `--no-optional-locks` (so no `-c`, `--git-dir`,
 `--work-tree`, or `--exec-path`); `GIT_*` environment assignments; a git
 subcommand that is not a known built-in (aliases, `git-*` programs, `send-pack`,
-`http-push`, `subtree`); `git rebase --exec`, `git submodule foreach`, and `git
-bisect run`; `git merge` or `git pull` options outside the supported set on
+`http-push`, `subtree`); `git rebase --exec` or `-x` in any form, `git
+submodule foreach`, and `git bisect run`; `git merge` or `git pull` options outside the supported set on
 `main`, including `--continue`; and a shell `-c` script that runs git, glab, gh,
 or its own arguments. Every other command passes.
 

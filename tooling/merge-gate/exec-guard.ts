@@ -51,10 +51,12 @@ const ENV_ASSIGNMENT_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*=/u;
 const SHORT_CLUSTER_PATTERN = /^-[A-Za-z]{2,}$/u;
 const LEADING_SLASHES_PATTERN = /^\/+/u;
 const MERGE_ENDPOINT_PATTERN =
-  /(?:^|\/)(?:merge_requests|pulls)\/\d+\/merge(?:_when_pipeline_succeeds)?$/u;
+  /(?:^|\/)(?:merge_requests|pulls)\/[^/]+\/merge(?:_when_pipeline_succeeds)?$/u;
 const GRAPHQL_MERGE_PATTERN =
   /\b(?:mergeRequestAccept|mergeRequestSetAutoMerge|mergePullRequest|enablePullRequestAutoMerge)\b/u;
 const SHA_PATTERN = /^[0-9a-f]{7,64}$/u;
+const REBASE_EXEC_SHORT_PATTERN = /^-[A-Za-z]*x/u;
+const TRAILING_SLASHES_PATTERN = /\/+$/u;
 
 // ------------------------------------------------------------- evidence
 
@@ -336,11 +338,32 @@ const currentBranch = (invocation: GitInvocation): string | null => {
   return result.exitCode === 0 && result.stdout ? result.stdout : null;
 };
 
-const branchName = (ref: string): string | null => {
-  if (ref.startsWith("refs/heads/")) {
-    return ref.slice("refs/heads/".length);
-  }
-  return ref.startsWith("refs/") ? null : ref;
+/** Git's rules for completing an abbreviated push destination. */
+const DESTINATION_RULES = [
+  "%s",
+  "refs/%s",
+  "refs/tags/%s",
+  "refs/heads/%s",
+  "refs/remotes/%s",
+  "refs/remotes/%s/HEAD",
+];
+
+/**
+ * The target branch a push destination can update. An abbreviated
+ * destination such as `main` or `heads/main` counts when any of Git's
+ * completion rules turns it into the target's full ref.
+ */
+const targetOf = (
+  destination: string,
+  targets: readonly string[]
+): string | null => {
+  const candidates = destination.startsWith("refs/")
+    ? [destination]
+    : DESTINATION_RULES.map((rule) => rule.replace("%s", destination));
+  return (
+    targets.find((target) => candidates.includes(`refs/heads/${target}`)) ??
+    null
+  );
 };
 
 const refExists = (invocation: GitInvocation, ref: string): boolean =>
@@ -351,7 +374,9 @@ const runsOtherCommands = (invocation: GitInvocation): boolean => {
   const { args, subcommand } = invocation;
   return (
     (subcommand === "rebase" &&
-      args.some((arg) => arg === "-x" || arg.startsWith("--exec"))) ||
+      args.some(
+        (arg) => REBASE_EXEC_SHORT_PATTERN.test(arg) || arg.startsWith("--exec")
+      )) ||
     (subcommand === "submodule" && args.includes("foreach")) ||
     (subcommand === "bisect" && args.includes("run"))
   );
@@ -421,8 +446,8 @@ const pushRefspec = (
     );
   }
   if (options.deleting) {
-    const branch = branchName(refspec);
-    return branch && context.targets.includes(branch)
+    const branch = targetOf(refspec, context.targets);
+    return branch
       ? refuse(`git push would delete target branch ${branch}`)
       : null;
   }
@@ -441,8 +466,8 @@ const pushRefspec = (
       `the refspec ${spec} pushes every matching branch; push one exact refspec instead`
     );
   }
-  const branch = branchName(destination);
-  if (!(branch && context.targets.includes(branch))) {
+  const branch = targetOf(destination, context.targets);
+  if (!branch) {
     return null;
   }
   if (!source) {
@@ -672,6 +697,14 @@ const API_VALUED = [
   "--template",
 ];
 const FIELD_OPTIONS = ["-f", "--raw-field", "-F", "--field"];
+const API_FLAGS = new Set([
+  "-i",
+  "--include",
+  "--paginate",
+  "--silent",
+  "--slurp",
+  "--verbose",
+]);
 
 /** The SHA a merge call binds, from its fields, query, or JSON body. */
 const apiMergeSha = (
@@ -709,6 +742,14 @@ const apiMerge = (
   tool: string
 ): GuardDecision => {
   const scanned = scan(args, API_VALUED);
+  const unsupported = scanned.options.find(
+    ({ name }) => !(API_VALUED.includes(name) || API_FLAGS.has(name))
+  );
+  if (unsupported) {
+    return refuse(
+      `${tool} api ${unsupported.name} is not a form the merge gate supports; pass each option and its value separately, such as -X PUT`
+    );
+  }
   const [endpoint] = scanned.positional;
   if (!endpoint) {
     return allow();
@@ -722,7 +763,15 @@ const apiMerge = (
       `${tool} api graphql merge mutations are not bound to a checked commit here; use the REST merge endpoint with sha=<exact head>`
     );
   }
-  const [path = "", query = ""] = endpoint.split("?");
+  const [rawPath = "", query = ""] = endpoint.split("?");
+  let path: string;
+  try {
+    path = decodeURIComponent(rawPath).replace(TRAILING_SLASHES_PATTERN, "");
+  } catch {
+    return refuse(
+      `${tool} api endpoint ${rawPath} is not valid percent-encoding`
+    );
+  }
   const method =
     lastValue(scanned, ["-X", "--method"])?.toUpperCase() ??
     (fields.length > 0 || hasOption(scanned, ["--input"]) ? "POST" : "GET");

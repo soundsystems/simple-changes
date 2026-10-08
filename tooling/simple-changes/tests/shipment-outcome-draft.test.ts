@@ -320,6 +320,60 @@ describe("loop draft-outcome", () => {
     expect(endLoop(root, lease.runId, "controller").ok).toBe(true);
   });
 
+  test("suggests target-equivalent for a scoped unit the target did not change", () => {
+    const fixture = repository();
+    const { root } = fixture;
+    writeFixture(root, "notes.md", "draft\n");
+    commitAll(root, "Base fixture");
+    writeFixture(root, "notes.md", "draft, revised\n");
+    const lease = startLoop(root, "controller", "ship");
+    recordCurrentScope(root, lease.runId);
+
+    const { draft } = draftShipmentOutcome(root, lease.runId);
+
+    expect(draft.units.map((unit) => unit.disposition)).toEqual([
+      "target-equivalent",
+    ]);
+    expect(draft.additionalPaths).toEqual([]);
+  });
+
+  test("never fetches a missing object to draft from a partial clone", () => {
+    const fixture = repository();
+    const source = fixture.root;
+    git(source, ["config", "uploadpack.allowFilter", "true"]);
+    writeFixture(source, "SPEC.md", `${"Specification line.\n".repeat(40)}`);
+    commitAll(source, "Base fixture");
+    const clone = join(fixture.base, "partial");
+    git(fixture.base, [
+      "clone",
+      "-q",
+      "--filter=blob:none",
+      `file://${source}`,
+      clone,
+    ]);
+    git(clone, ["config", "user.name", "Draft Tests"]);
+    git(clone, ["config", "user.email", "draft@simple-changes.invalid"]);
+    const lease = startLoop(clone, "controller", "ship");
+    git(source, ["mv", "SPEC.md", "docs-SPEC.md"]);
+    writeFixture(
+      source,
+      "docs-SPEC.md",
+      `${"Specification line.\n".repeat(39)}Moved.\n`
+    );
+    const moved = commitAll(source, "Move the spec");
+    git(clone, ["fetch", "-q", "origin"]);
+    const blob = git(source, ["rev-parse", `${moved}:docs-SPEC.md`]);
+    const present = () =>
+      spawnSync(["git", "-C", clone, "cat-file", "-e", blob], {
+        env: { ...process.env, GIT_NO_LAZY_FETCH: "1" },
+        stderr: "pipe",
+      }).exitCode === 0;
+    expect(present()).toBe(false);
+
+    expect(() => draftShipmentOutcome(clone, lease.runId)).toThrow();
+    expect(present()).toBe(false);
+  });
+
   test("reads release paths only from a changelog receipt's paths list", () => {
     expect(
       releasePathsFromChangelogReceipt({

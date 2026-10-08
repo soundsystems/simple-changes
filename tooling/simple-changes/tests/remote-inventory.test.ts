@@ -1,6 +1,13 @@
 import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  linkSync,
+  mkdirSync,
+  readFileSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "bun";
@@ -756,6 +763,31 @@ describe("remote inventory through the CLI and a loop", () => {
     expect(reconciled.exitCode).toBe(0);
   }, 60_000);
 
+  test("--output never overwrites an input under another name", () => {
+    const fixture = createTestRepository();
+    repositories.push(fixture);
+    const pages = join(fixture.base, "pages.json");
+    writeFileSync(pages, JSON.stringify(openingPages()));
+    const original = readFileSync(pages, "utf8");
+    const hardLink = join(fixture.base, "hard.json");
+    linkSync(pages, hardLink);
+    const softLink = join(fixture.base, "soft.json");
+    symlinkSync(pages, softLink);
+    for (const output of [pages, hardLink, softLink]) {
+      const result = runCli(fixture.root, [
+        "remote-inventory",
+        "build",
+        "--pages",
+        pages,
+        "--output",
+        output,
+      ]);
+      expect(result.exitCode).toBe(2);
+      expect(result.stderr).toContain("--output");
+    }
+    expect(readFileSync(pages, "utf8")).toBe(original);
+  });
+
   test("the GitLab fetcher pages read-only API calls into valid pages", () => {
     const fixture = createTestRepository();
     repositories.push(fixture);
@@ -786,6 +818,21 @@ describe("remote inventory through the CLI and a loop", () => {
           source_branch: "branch-001",
           source_project_id: 7,
           state: "locked",
+          target_project_id: 7,
+        },
+        {
+          iid: 8,
+          sha: null,
+          source_branch: "branch-002",
+          source_project_id: 7,
+          state: "closed",
+          target_project_id: 7,
+        },
+        {
+          iid: 9,
+          source_branch: "branch-003",
+          source_project_id: 7,
+          state: "merged",
           target_project_id: 7,
         },
         {
@@ -829,10 +876,23 @@ describe("remote inventory through the CLI and a loop", () => {
         sourceBranch: "branch-001",
         state: "open",
       },
+      // A null or missing sha stays null rather than becoming a guess.
+      {
+        headRevision: null,
+        objectId: "8",
+        sourceBranch: "branch-002",
+        state: "closed",
+      },
+      {
+        headRevision: null,
+        objectId: "9",
+        sourceBranch: "branch-003",
+        state: "merged",
+      },
     ]);
     expect(buildRemoteInventory(pages).summary).toMatchObject({
       branches: 101,
-      proposals: 1,
+      proposals: 3,
     });
     const log = readFileSync(calls, "utf8").trim().split("\n");
     // Two full reads that normalize identically.

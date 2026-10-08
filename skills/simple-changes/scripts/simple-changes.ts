@@ -1,7 +1,14 @@
 #!/usr/bin/env bun
 
 import { createHash } from "node:crypto";
-import { readFileSync, writeFileSync, writeSync } from "node:fs";
+import {
+  lstatSync,
+  readFileSync,
+  type Stats,
+  statSync,
+  writeFileSync,
+  writeSync,
+} from "node:fs";
 import { dirname, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { fileURLToPath } from "node:url";
@@ -3999,6 +4006,41 @@ const runPrune = (options: CliOptions): void => {
  * without `--output`, prints the document itself on stdout so it can be
  * redirected, with the summary on stderr in text mode.
  */
+/**
+ * An existing `--output` must be a regular file that is not one of the
+ * inputs under any name: not a symbolic link, and not the same file (device
+ * and inode) as an input reached through a hard link or an aliased directory.
+ */
+const assertOutputIsNotInput = (
+  output: string,
+  inputs: readonly (string | undefined)[]
+): void => {
+  let existing: Stats;
+  try {
+    existing = lstatSync(output);
+  } catch {
+    return;
+  }
+  const refuseOutput = (why: string): never => {
+    throw new SimpleChangesError(
+      `--output ${output} ${why}; name a new file.`,
+      EXIT_CODES.usage
+    );
+  };
+  if (!existing.isFile()) {
+    refuseOutput("is not a regular file");
+  }
+  for (const input of inputs) {
+    if (!input) {
+      continue;
+    }
+    const source = statSync(resolve(input));
+    if (source.dev === existing.dev && source.ino === existing.ino) {
+      refuseOutput("is one of this command's input files");
+    }
+  }
+};
+
 const emitDocument = (
   options: CliOptions,
   document: unknown,
@@ -4015,12 +4057,7 @@ const emitDocument = (
     return;
   }
   const output = resolve(options.outputPath);
-  if (inputs.some((input) => input && resolve(input) === output)) {
-    throw new SimpleChangesError(
-      "--output must not overwrite one of this command's input files.",
-      EXIT_CODES.usage
-    );
-  }
+  assertOutputIsNotInput(output, inputs);
   writeFileSync(output, body, "utf8");
   writeOutput(
     { ...summary, output },

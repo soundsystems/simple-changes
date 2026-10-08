@@ -2004,7 +2004,7 @@ const staleClaimRecovery = (
     const verify = `simple-changes loop verify --run-id ${lease.runId}`;
     return {
       commands: [claim, verify],
-      text: `Owner ${agent} refreshes claim ${liveClaim.claimId} in place with \`${claim}\`, then re-run \`${verify}\`.`,
+      text: `Owner ${agent} refreshes claim ${liveClaim.claimId} in place with \`${claim}\`; then re-run \`${verify}\`.`,
     };
   }
   const controller = commandWord(lease.ownerAgentId);
@@ -9196,7 +9196,7 @@ const violationGuidanceCommands = (
   }
   if (codes.has("retained-worktree-changed")) {
     add(
-      "Ask the exact worktree owner to claim it as an active concurrent author or pause it at a stable boundary, then re-run `simple-changes loop verify`."
+      `Ask the exact worktree owner to claim it as an active concurrent author or pause it at a stable boundary, then re-run \`simple-changes loop verify --run-id ${lease.runId}\`.`
     );
   }
   // A stale coordination link names its own exact recovery. Keep every step:

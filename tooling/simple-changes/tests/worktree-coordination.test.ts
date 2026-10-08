@@ -737,6 +737,43 @@ describe("worktree claim takeover", () => {
     });
   });
 
+  test("records the released state, never evidence from a missing checkout", () => {
+    const fixture = repository();
+    const worktree = join(fixture.base, "release-evidence");
+    git(fixture.root, ["worktree", "add", "-b", "release-evidence", worktree]);
+    const claim = claimWorktree(fixture.root, "owner", worktree, "codex");
+    writeFixture(worktree, "released.ts", "export const released = true;\n");
+    const current = captureInventory(fixture.root).worktrees.find(
+      (item) => item.path === worktree
+    );
+
+    expect(
+      releaseWorktreeClaim(fixture.root, "owner", claim.claimId)
+    ).toMatchObject({
+      branch: current?.branch,
+      changeDigest: current?.changeDigest,
+      headSha: current?.headSha,
+    });
+
+    // A removed checkout still lists its branch head and an empty status
+    // digest; neither is a state its owner released.
+    const gone = join(fixture.base, "release-gone");
+    git(fixture.root, ["worktree", "add", "-b", "release-gone", gone]);
+    const goneClaim = claimWorktree(fixture.root, "owner", gone, "codex");
+    writeFixture(gone, "gone.ts", "export const gone = true;\n");
+    git(gone, ["add", "gone.ts"]);
+    git(gone, ["commit", "-m", "Commit before removal"]);
+    rmSync(gone, { force: true, recursive: true });
+    expect(
+      releaseWorktreeClaim(fixture.root, "owner", goneClaim.claimId)
+    ).toMatchObject({
+      branch: goneClaim.branch,
+      changeDigest: goneClaim.changeDigest,
+      headSha: goneClaim.headSha,
+      releaseReason: "owner-release",
+    });
+  });
+
   test("releases only live non-detached claims whose worktree is gone", () => {
     const fixture = repository();
     const absent = join(fixture.base, "absent-unit");

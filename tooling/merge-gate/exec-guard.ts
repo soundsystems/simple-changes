@@ -334,14 +334,16 @@ const gitIn = (invocation: GitInvocation, args: readonly string[]) =>
 const gitConfig = (invocation: GitInvocation, key: string): string =>
   gitIn(invocation, ["config", "--get", key]).stdout;
 
+/**
+ * The checked-out branch from the full symbolic ref: `--short` can print
+ * `heads/main` when a tag named `main` also exists, which would hide the
+ * target branch.
+ */
 const currentBranch = (invocation: GitInvocation): string | null => {
-  const result = gitIn(invocation, [
-    "symbolic-ref",
-    "--quiet",
-    "--short",
-    "HEAD",
-  ]);
-  return result.exitCode === 0 && result.stdout ? result.stdout : null;
+  const result = gitIn(invocation, ["symbolic-ref", "--quiet", "HEAD"]);
+  return result.exitCode === 0 && result.stdout.startsWith("refs/heads/")
+    ? result.stdout.slice("refs/heads/".length)
+    : null;
 };
 
 /** Git's rules for completing an abbreviated push destination. */

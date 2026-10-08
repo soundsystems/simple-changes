@@ -488,6 +488,20 @@ describe("merge gate exec guard", () => {
     expect(decide(root, ["git", "push", "origin", "--tags"]).allow).toBe(true);
   });
 
+  test("finds main even when a tag is also named main", () => {
+    const { root } = repository();
+    git(root, ["tag", "main"]);
+    for (const command of [
+      ["git", "merge", "--ff-only", "feat/x"],
+      ["git", "pull", "--ff-only", "origin", "feat/x"],
+    ]) {
+      expect({ allow: decide(root, command).allow, command }).toEqual({
+        allow: false,
+        command,
+      });
+    }
+  });
+
   test("refuses a provider mutation that names its own host", () => {
     const { feature, root, writeReceipt } = repository();
     writeReceipt(feature);

@@ -1335,34 +1335,54 @@ describe("authoring and review questions", () => {
   });
 
   test("skips R1 when it would have one option, records nothing, and says the question waits", async () => {
-    // One recorded agent and no identified running agent leave only "Any
-    // independent reviewer", and recording it would silence the question for
-    // good in the one state where an adversarial setup cannot be expressed
-    // (design 5.1.3): nothing is asked, nothing is recorded, review stays
-    // pending.
-    const presented: string[] = [];
-    const { asked, prompter } = scripted(["found", "most-capable", "any"]);
-    const answer = await collectAuthoringAnswers(
-      {
-        definitions,
-        detected: detected("alpha-agent"),
-        prefill: null,
-        runningHarness: null,
-        setupStyle: "customize",
-      },
-      {
-        ...prompter,
-        present: (text: string) => {
-          presented.push(text);
-        },
-      }
+    // Fewer than two recorded agents and no identified running agent leave
+    // only "Any independent reviewer", and recording it would silence the
+    // question for good in the one state where an adversarial setup cannot be
+    // expressed (design 5.1.3): nothing is asked, nothing is recorded, review
+    // stays pending, and the explanation names both ways out.
+    // With nothing detected, Question A offers only "Edit the list", and an
+    // empty edit records no agent.
+    const cases = [
+      [[], ["edit", "any"]],
+      [["alpha-agent"], ["found", "most-capable", "any"]],
+    ] as const;
+    await Promise.all(
+      cases.map(async ([recordedAgents, answers]) => {
+        const presented: string[] = [];
+        const { asked, prompter } = scripted([...answers], [""]);
+        const answer = await collectAuthoringAnswers(
+          {
+            definitions,
+            detected: detected(...recordedAgents),
+            prefill: null,
+            runningHarness: null,
+            setupStyle: "customize",
+          },
+          {
+            ...prompter,
+            present: (text: string) => {
+              presented.push(text);
+            },
+          }
+        );
+        expect(asked.map(({ question }) => question)).not.toContain(
+          AUTHORING_QUESTIONS.reviewer
+        );
+        expect(Object.keys(answer.harnesses)).toEqual([...recordedAgents]);
+        expect(answer.roles.review).toBeUndefined();
+        // The wording is checked on its own terms, not against the exported
+        // constant, so a regression in the constant fails here.
+        const waits = presented.filter((text) =>
+          text.includes("review question waits")
+        );
+        expect(waits).toHaveLength(1);
+        expect(waits[0]).toStartWith("Fewer than two agents are recorded");
+        expect(waits[0]).toContain("the running agent is not identified");
+        expect(waits[0]).toContain("until another agent is recorded");
+        expect(waits[0]).toContain("or the running agent is identified");
+        expect(waits[0]).toBe(REVIEW_QUESTION_WAITS);
+      })
     );
-    expect(asked.map(({ question }) => question)).not.toContain(
-      AUTHORING_QUESTIONS.reviewer
-    );
-    expect(Object.keys(answer.harnesses)).toEqual(["alpha-agent"]);
-    expect(answer.roles.review).toBeUndefined();
-    expect(presented).toContain(REVIEW_QUESTION_WAITS);
     // Once the running agent is identified, R1 has two options and is asked.
     const identified = scripted(["found", "most-capable", "any"]);
     const recorded = await collectAuthoringAnswers(

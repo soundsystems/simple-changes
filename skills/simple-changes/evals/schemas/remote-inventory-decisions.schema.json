@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://simple-changes.dev/schemas/remote-inventory-decisions.schema.json",
+  "title": "Simple Changes remote inventory deletion decisions",
+  "description": "Judgments `simple-changes remote-inventory build` cannot make from provider data alone: for each opening branch deleted during the run with no merged-proposal proof, either a containment proof that `loop reconcile-remote-branches` checks (`target-contains-head` with Git; `provider-diff-empty` only from the provider's own compare result) or a user-approved supersession.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "deletedBranches"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "deletedBranches": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "evidence"],
+        "properties": {
+          "name": { "type": "string", "minLength": 1 },
+          "obsoleteProof": {
+            "enum": ["target-contains-head", "provider-diff-empty"]
+          },
+          "supersession": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "initialHeadRevision",
+              "replacementRevisions",
+              "approvedBy",
+              "reason"
+            ],
+            "properties": {
+              "initialHeadRevision": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{40,64}$"
+              },
+              "replacementRevisions": {
+                "type": "array",
+                "minItems": 1,
+                "items": { "type": "string", "pattern": "^[0-9a-f]{40,64}$" }
+              },
+              "approvedBy": { "type": "string", "minLength": 1 },
+              "reason": { "type": "string", "minLength": 1 }
+            }
+          },
+          "evidence": {
+            "type": "array",
+            "minItems": 1,
+            "items": { "type": "string", "minLength": 1 }
+          }
+        }
+      }
+    }
+  }
+}

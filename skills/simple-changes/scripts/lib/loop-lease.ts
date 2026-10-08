@@ -146,7 +146,7 @@ const DIGEST_PATTERN = /^[0-9a-f]{64}$/u;
 const PERMISSION_DENIED_CODES = new Set(["EACCES", "EPERM", "EROFS"]);
 const SCP_REMOTE_URL_PATTERN = /^[^@/\s]+@([^:/\s]+):(.+)$/u;
 const REMOTE_PROJECT_PATH_PATTERN = /^\/+|\.git\/?$/gu;
-const LS_TREE_ENTRY_PATTERN = /^(\d+)\s+(blob|commit)\s+([0-9a-f]+)\t/u;
+export const LS_TREE_ENTRY_PATTERN = /^(\d+)\s+(blob|commit)\s+([0-9a-f]+)\t/u;
 const LOOP_MODES = new Set<RequestMode>([
   "queue",
   "sweep",
@@ -520,7 +520,7 @@ const controllerLifecycle = (lease: LoopLease): LoopControllerLifecycle =>
 
 const CONTROLLER_BINDING_FILENAME = "active-loop-controller.json";
 
-const controllerBindingPath = (commonGitDirectory: string): string =>
+export const controllerBindingPath = (commonGitDirectory: string): string =>
   resolve(stateDirectory(commonGitDirectory), CONTROLLER_BINDING_FILENAME);
 
 const isControllerSession = (
@@ -1082,14 +1082,47 @@ const matchingOverride = (
       override.changeDigest === worktree.changeDigest
   );
 
-const resolvedCurrentTargetRevision = (lease: LoopLease): string | null => {
-  const result = runGit(
-    lease.primaryCheckout,
-    ["rev-parse", "--verify", `${lease.targetRef}^{commit}`],
-    true
-  );
-  const revision = result.stdout.trim();
-  return result.exitCode === 0 && revision ? revision : null;
+/**
+ * The full refs a lease's short target name may mean, most specific first.
+ * Git resolves a short name to a same-named tag before a branch, so reading
+ * the target only through refs/remotes or refs/heads keeps a tag named
+ * `main` or `origin/main` from standing in for it. A target under a bound
+ * remote is that remote-tracking ref; a lease without bindings tries the
+ * remote-tracking ref before the local branch.
+ */
+const targetFullRefs = (
+  lease: Pick<LoopLease, "remoteBindings" | "targetRef">
+): string[] => {
+  const { targetRef } = lease;
+  if (targetRef.startsWith("refs/")) {
+    return [targetRef];
+  }
+  const bindings = lease.remoteBindings;
+  if (bindings && bindings.length > 0) {
+    return bindings.some((binding) => targetRef.startsWith(`${binding.name}/`))
+      ? [`refs/remotes/${targetRef}`]
+      : [`refs/heads/${targetRef}`];
+  }
+  return targetRef.includes("/")
+    ? [`refs/remotes/${targetRef}`, `refs/heads/${targetRef}`]
+    : [`refs/heads/${targetRef}`];
+};
+
+export const resolvedCurrentTargetRevision = (
+  lease: LoopLease
+): string | null => {
+  for (const ref of targetFullRefs(lease)) {
+    const result = runGit(
+      lease.primaryCheckout,
+      ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`],
+      true
+    );
+    const revision = result.stdout.trim();
+    if (result.exitCode === 0 && revision) {
+      return revision;
+    }
+  }
+  return null;
 };
 
 const matchingRemovalDisposition = (
@@ -3437,7 +3470,7 @@ export interface ShipmentOutcomeRecord {
   summary: string;
 }
 
-const targetDiffPaths = (
+export const targetDiffPaths = (
   repositoryPath: string,
   openingRevision: string,
   finalRevision: string
@@ -3447,6 +3480,9 @@ const targetDiffPaths = (
     "--no-renames",
     "--name-only",
     "-z",
+    // A changed gitlink is a final-target change even where configuration
+    // or .gitmodules says to ignore submodules.
+    "--ignore-submodules=none",
     openingRevision,
     finalRevision,
     "--",
@@ -3455,7 +3491,7 @@ const targetDiffPaths = (
     .filter(Boolean)
     .sort((left, right) => left.localeCompare(right));
 
-const targetRenameOriginals = (
+export const targetRenameOriginals = (
   repositoryPath: string,
   openingRevision: string,
   finalRevision: string
@@ -3465,6 +3501,7 @@ const targetRenameOriginals = (
     "--name-status",
     "-z",
     "-M",
+    "--ignore-submodules=none",
     openingRevision,
     finalRevision,
     "--",
@@ -3938,6 +3975,84 @@ const assertPreservedSourceApproval = (
   }
 };
 
+/**
+ * Every placeholder `loop draft-outcome` writes starts with this marker, and
+ * `loop record-outcome` refuses any receipt text that still contains it, so
+ * a draft cannot be recorded until each placeholder has been replaced.
+ */
+export const OUTCOME_DRAFT_MARKER = "SIMPLE-CHANGES-DRAFT:";
+
+/**
+ * The `draftReview` field every draft carries. No shipment-outcome schema
+ * accepts it, so a draft is unrecordable, even by an older runtime, until a
+ * reviewer deletes it.
+ */
+export const OUTCOME_DRAFT_REVIEW = `${OUTCOME_DRAFT_MARKER} review every entry, replace each placeholder, then delete this draftReview field before loop record-outcome.`;
+
+type DraftTextPath = Array<number | string>;
+const LEADING_DOT_PATTERN = /^\./u;
+
+/** Every location in the raw receipt whose text carries the draft marker. */
+const draftTextPaths = (
+  value: unknown,
+  path: DraftTextPath = []
+): DraftTextPath[] => {
+  if (typeof value === "string") {
+    return value.includes(OUTCOME_DRAFT_MARKER) ? [path] : [];
+  }
+  if (Array.isArray(value)) {
+    return value.flatMap((item, index) =>
+      draftTextPaths(item, [...path, index])
+    );
+  }
+  if (typeof value === "object" && value !== null) {
+    return Object.entries(value).flatMap(([key, item]) =>
+      draftTextPaths(item, [...path, key])
+    );
+  }
+  return [];
+};
+
+const fieldOf = (value: unknown, path: DraftTextPath): unknown =>
+  path.reduce<unknown>(
+    (current, key) =>
+      typeof current === "object" && current !== null
+        ? (current as Record<number | string, unknown>)[key]
+        : undefined,
+    value
+  );
+
+/** A reader's name for a draft text location, such as "reason for SPEC.md". */
+const draftTextLabel = (receipt: unknown, path: DraftTextPath): string => {
+  const [list, index, field] = path;
+  if (list === "units" && (field === "summary" || field === "evidence")) {
+    return `${field} of unit ${String(fieldOf(receipt, ["units", index ?? 0, "unitId"]))}`;
+  }
+  if (list === "additionalPaths" && field === "reason") {
+    return `reason for ${String(fieldOf(receipt, ["additionalPaths", index ?? 0, "path"]))}`;
+  }
+  return path
+    .map((key) => (typeof key === "number" ? `[${key}]` : `.${key}`))
+    .join("")
+    .replace(LEADING_DOT_PATTERN, "");
+};
+
+/**
+ * Reads the raw input, every string anywhere in it including any
+ * preserved-source override, so a placeholder is refused even in a receipt
+ * the schema would reject for another reason.
+ */
+const assertNoOutcomeDraftPlaceholders = (receipt: unknown): void => {
+  const drafts = draftTextPaths(receipt);
+  const [first] = drafts;
+  if (first) {
+    throw new SimpleChangesError(
+      `Shipment outcome still carries ${drafts.length} draft placeholder(s), starting with the ${draftTextLabel(receipt, first)}. Replace every ${OUTCOME_DRAFT_MARKER} placeholder with the reviewed text, check each classification and disposition, then record it again.`,
+      EXIT_CODES.validation
+    );
+  }
+};
+
 export const recordShipmentOutcome = (
   repositoryPath: string,
   runIdInput: string,
@@ -3947,6 +4062,19 @@ export const recordShipmentOutcome = (
 ): ShipmentOutcomeRecord => {
   const runId = requiredRunId(runIdInput);
   const agentId = requiredText(agentIdInput, "agent ID");
+  if (
+    typeof receiptInput === "object" &&
+    receiptInput !== null &&
+    "draftReview" in receiptInput
+  ) {
+    throw new SimpleChangesError(
+      "This shipment outcome is still an unreviewed loop draft-outcome draft. Review every entry, replace each placeholder, delete the draftReview field, then record it.",
+      EXIT_CODES.validation
+    );
+  }
+  // Placeholders are refused before anything else reads the receipt, with
+  // or without preserved-source overrides.
+  assertNoOutcomeDraftPlaceholders(receiptInput);
   // Overrides ride on the receipt's units but are stored beside the lease;
   // the recorded digest covers the complete receipt, overrides included.
   const { overrides, receipt, receiptDigest } =
@@ -7150,13 +7278,16 @@ const automaticFinalizationCleanup = (
   return { cleanup, lease };
 };
 
-const targetTreeEntry = (
+export const targetTreeEntry = (
   repositoryPath: string,
   targetRevision: string,
   path: string
 ): string | null => {
   try {
+    // A literal pathspec, so a file named like pathspec magic (`:README.md`)
+    // reads its own entry rather than another file's.
     const output = runGit(repositoryPath, [
+      "--literal-pathspecs",
       "ls-tree",
       targetRevision,
       "--",

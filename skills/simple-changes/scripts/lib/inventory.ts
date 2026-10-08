@@ -313,12 +313,15 @@ const inventoryWorktree = (
 const inventoryWorktrees = (
   rawWorktrees: readonly RawWorktree[],
   primaryPath: string,
-  currentPath: string
+  currentPath: string,
+  skipStatus = false
 ): WorktreeInventory[] => {
-  const readable = rawWorktrees.filter(
-    (worktree) =>
-      !(worktree.bare || worktree.prunable) && existsSync(worktree.path)
-  );
+  const readable = skipStatus
+    ? []
+    : rawWorktrees.filter(
+        (worktree) =>
+          !(worktree.bare || worktree.prunable) && existsSync(worktree.path)
+      );
   const statuses = runGitConcurrently(
     readable.map((worktree) => ({
       args: WORKTREE_STATUS_ARGS,
@@ -502,6 +505,12 @@ const inventoryRemoteBindings = (
 export interface CaptureInventoryOptions {
   changelogEnvironment?: Record<string, string | undefined>;
   changelogHomeDirectory?: string;
+  /**
+   * Skip `git status` in every worktree, so no filter, filesystem monitor, or
+   * index refresh runs. Worktree changes then read as empty with a synthetic
+   * digest, which callers must not treat as observed content.
+   */
+  skipWorktreeStatus?: boolean;
 }
 
 const discoverCapabilities = (
@@ -809,7 +818,8 @@ export const captureInventory = (
   const worktrees = inventoryWorktrees(
     rawWorktrees,
     primaryCheckout,
-    currentCheckout
+    currentCheckout,
+    options.skipWorktreeStatus
   );
   const headResult = runGit(root, ["rev-parse", "--verify", "HEAD"], true);
   const branchResult = runGit(

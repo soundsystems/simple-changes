@@ -32,12 +32,13 @@
   ],
   "scripts": {
     "check": "bun run typecheck && bun run lint && bun run test && bun run eval",
+    "check:receipt": "bun tooling/merge-gate/check-receipt.ts",
     "behavior": "bun tooling/simple-changes/behavior-eval.ts",
     "eval": "bun tooling/simple-changes/eval.ts",
     "format": "ultracite fix",
     "lint": "ultracite check",
     "simple-changes": "bun skills/simple-changes/scripts/simple-changes.ts",
-    "test": "bun test tooling/simple-changes/tests && bun tooling/publish-skill/scripts/test.ts && bun tooling/update-local-forks/scripts/test.ts",
+    "test": "bun test tooling/simple-changes/tests tooling/merge-gate/tests && bun tooling/publish-skill/scripts/test.ts && bun tooling/update-local-forks/scripts/test.ts",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {

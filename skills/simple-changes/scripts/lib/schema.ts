@@ -33,6 +33,8 @@ export const SCHEMA_NAMES = [
   "remote-branch-reconciliation",
   "remote-branch-ancestry",
   "remote-branch-supersession",
+  "remote-inventory-pages",
+  "remote-inventory-decisions",
   "release-consistency",
   "release-notes",
   "release-notes-pointer",

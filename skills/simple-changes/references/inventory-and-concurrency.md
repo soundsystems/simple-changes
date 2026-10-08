@@ -8,6 +8,7 @@ Contents:
 - Ready work blocked by another shipping controller
 - Ready-work receipts
 - Shipment holds
+- Status across repositories
 - Owner claims and safe pauses
 - Exact overrides
 - Opening-worktree dispositions
@@ -493,6 +494,41 @@ carries into the next shipment. Only that run's active controller records one,
 and it applies only while that controller holds control. Work a hold does not cover may continue. Holds never block `loop
 finalize`: a halted run relinquishes with its blockers recorded like any other
 incomplete run.
+
+## Status across repositories
+
+`simple-changes status --all [--root DIR ...] [--json]` shows, for every Simple
+Changes repository under the roots `update-local-forks discover` scans (global
+skill roots, `~/Developer`, `~/Projects`, `~/Code`, `~/src`, and each
+`--root`): the lease with its controller state and liveness (`live`, `stale`,
+or `unknown`), unreleased worktree claims and whether each checkout is absent,
+moved, or still at its claimed head, recorded holds (a hold until a branch
+merges reads `unknown`, not active or satisfied, when the target's history
+cannot confirm it, including in a shallow clone), ready-work receipts with
+their freshness from refs (unknown when a ref or the target's history cannot
+be read, including in a shallow clone) and whether their checkout still
+exists,
+and a pending guidance notice when the repository's acknowledged guidance is
+older than the guidance of the runtime running `status`; a repository that
+runs a fork sees that notice once its fork reaches the same guidance. It then lists every fork, compared with the newest
+installed Simple Changes source, as `behind`, `current`, `ahead`, or `unknown`.
+`simple-changes status` without `--all` shows the current repository only.
+
+It is read-only. It never writes, fetches, or takes a lock: it never runs
+`git status` (so no filter, filesystem monitor, or index refresh runs, and
+checkout contents are never compared), other Git reads run with optional
+locks, lazy fetches, signature verification, and trace output off and with
+every inherited `GIT_*` environment variable dropped (each repository is
+read by path), the target is read through its full ref so a same-named tag
+cannot stand in for it, holds are read from this clone only, and state files are read without their locks. On macOS, Git runs
+directly from the developer directory (`DEVELOPER_DIR`, the `xcode-select`
+link, or the Command Line Tools), never through `xcrun` or the `/usr/bin/git`
+shim, which write a lookup cache (a developer Git that resolves to the shim
+counts as the shim); when no such Git exists, `status` and `loop
+draft-outcome` refuse and say how to set one. A section it cannot read shows as `unknown` with the
+reason rather than a guess, and a local checkout may be behind its remote, so
+confirm a fork's state on its remote branch before acting on it. It reports;
+it never authorizes recovery, cleanup, or shipping.
 
 ## Owner claims and safe pauses
 

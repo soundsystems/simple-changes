@@ -295,7 +295,10 @@ simple-changes setup [--finish review|integrate|ship]
 simple-changes acknowledge-update --guidance-decision accepted|reviewed|deferred
   [--agent-id ID] [--json] [--repo PATH]
 simple-changes inventory [--json] [--repo PATH]
+simple-changes status [--all [--root DIR ...]] [--json] [--repo PATH]
 simple-changes preview [--json] [--repo PATH] [--settle-ms N]
+simple-changes remote-inventory build --pages PAGES_FILE
+  [--opening-remote-inventory FILE [--decisions FILE]] [--output FILE] [--json]
 simple-changes loop start --mode MODE --agent-id ID [--changelog-required]
   [--opening-remote-inventory FILE] [--json] [--repo PATH]
 simple-changes loop status [--json] [--repo PATH]
@@ -305,6 +308,8 @@ simple-changes loop record-scope --run-id ID --agent-id ID
   --receipt FILE [--json] [--repo PATH]
 simple-changes loop refresh-scope --run-id ID --agent-id ID
   --receipt FILE [--json] [--repo PATH]
+simple-changes loop draft-outcome --run-id ID [--changelog-receipt FILE]
+  [--output FILE] [--json] [--repo PATH]
 simple-changes loop record-outcome --run-id ID --agent-id ID
   --receipt FILE [--approved-by USER --approval-reference REFERENCE]
   [--json] [--repo PATH]
@@ -398,6 +403,7 @@ simple-changes help
 `release-delivery-receipt`, `release-tag-receipt`,
 `remote-branch-reconciliation`,
 `remote-branch-ancestry`, `remote-branch-supersession`,
+`remote-inventory-pages`, `remote-inventory-decisions`,
 `release-consistency`, `release-notes`, `release-notes-pointer`,
 `proposal-audit`,
 `ready-work-receipt`, `ship-holds`, `loop-lease`, `loop-close-equivalent`,

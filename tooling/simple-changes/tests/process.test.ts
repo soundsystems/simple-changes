@@ -1,10 +1,19 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import type { ChildProcess } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { sleepSync } from "bun";
+import { fileURLToPath } from "node:url";
+import { sleepSync, spawnSync } from "bun";
 import {
   type GitExecutableProbe,
   GuardedProcessGroupStillAliveError,
@@ -21,6 +30,8 @@ import {
 import { createTestRepository, git, type TestRepository } from "./helpers.ts";
 
 const DEVELOPER_GIT = "/Applications/Xcode.app/Contents/Developer/usr/bin/git";
+// Tests that start a fresh Bun process, which is slow on a loaded machine.
+const FRESH_PROCESS_TIMEOUT_MS = 60_000;
 
 const probe = (overrides: Partial<GitExecutableProbe>): GitExecutableProbe => ({
   platform: "darwin",
@@ -61,11 +72,254 @@ describe("Git executable resolution", () => {
     ).toBe("git");
   });
 
+  test("finds the developer Git without running xcrun when it can", () => {
+    let xcrunRan = false;
+    const xcrunFind = () => {
+      xcrunRan = true;
+      return DEVELOPER_GIT;
+    };
+    const commandLineGit = "/Library/Developer/CommandLineTools/usr/bin/git";
+    expect(
+      resolveGitExecutable(
+        probe({ developerGit: () => commandLineGit, xcrunFind })
+      )
+    ).toBe(commandLineGit);
+    expect(xcrunRan).toBe(false);
+    expect(
+      resolveGitExecutable(probe({ developerGit: () => null, xcrunFind }))
+    ).toBe(DEVELOPER_GIT);
+    expect(xcrunRan).toBe(true);
+  });
+
+  test("read-only resolution never runs xcrun and refuses the shim", () => {
+    let xcrunRan = false;
+    const xcrunFind = () => {
+      xcrunRan = true;
+      return DEVELOPER_GIT;
+    };
+    const directOnly = { directOnly: true };
+    const linkedGit = "/opt/developer/usr/bin/git";
+    // The shim under another name: `DEVELOPER_DIR=/` or a link to it.
+    const shimAliases = (path: string) =>
+      path === "//usr/bin/git" || path === linkedGit ? "/usr/bin/git" : path;
+    for (const overrides of [
+      { developerGit: () => null },
+      {},
+      {
+        realpath: () => {
+          throw new Error("dangling link");
+        },
+      },
+      { developerGit: () => "//usr/bin/git", realpath: shimAliases },
+      { developerGit: () => linkedGit, realpath: shimAliases },
+      {
+        developerGit: () => linkedGit,
+        realpath: (path: string) => {
+          if (path === linkedGit) {
+            throw new Error("dangling link");
+          }
+          return path;
+        },
+      },
+    ]) {
+      expect(() =>
+        resolveGitExecutable(probe({ ...overrides, xcrunFind }), directOnly)
+      ).toThrow("never through xcrun");
+    }
+    expect(
+      resolveGitExecutable(
+        probe({ developerGit: () => "//usr/bin/git", realpath: shimAliases })
+      )
+    ).toBe("git");
+    const commandLineGit = "/Library/Developer/CommandLineTools/usr/bin/git";
+    expect(
+      resolveGitExecutable(
+        probe({ developerGit: () => commandLineGit, xcrunFind }),
+        directOnly
+      )
+    ).toBe(commandLineGit);
+    expect(
+      resolveGitExecutable(probe({ platform: "linux", xcrunFind }), directOnly)
+    ).toBe("git");
+    expect(
+      resolveGitExecutable(
+        probe({ which: () => "/opt/homebrew/bin/git", xcrunFind }),
+        directOnly
+      )
+    ).toBe("git");
+    expect(xcrunRan).toBe(false);
+  });
+
+  test(
+    "read-only commands refuse rather than run xcrun or the shim",
+    () => {
+      if (process.platform !== "darwin") {
+        return;
+      }
+      const fixture = createTestRepository();
+      repositories.push(fixture);
+      const fakeBin = join(fixture.base, "bin");
+      mkdirSync(fakeBin);
+      const marker = join(fixture.base, "xcrun-ran");
+      writeFileSync(
+        join(fakeBin, "xcrun"),
+        `#!/bin/sh\necho ran > '${marker}'\necho /usr/bin/git\n`
+      );
+      chmodSync(join(fakeBin, "xcrun"), 0o755);
+      const cliPath = fileURLToPath(
+        new URL(
+          "../../../skills/simple-changes/scripts/simple-changes.ts",
+          import.meta.url
+        )
+      );
+      // A configured developer directory with no Git, where xcrun would stop,
+      // and `/`, whose usr/bin/git is the shim itself: only xcrun or the shim
+      // could still find a Git.
+      for (const [developerDirectory, args] of [
+        join(fixture.base, "NoDeveloper"),
+        "/",
+      ].flatMap((directory) =>
+        [
+          ["status", "--json", "--repo", fixture.root],
+          ["status", "--all", "--root", fixture.base, "--json"],
+          [
+            "loop",
+            "draft-outcome",
+            "--run-id",
+            "run-x",
+            "--repo",
+            fixture.root,
+          ],
+        ].map((command) => [directory, command] as const)
+      )) {
+        const result = spawnSync([process.execPath, cliPath, ...args], {
+          cwd: fixture.root,
+          env: {
+            ...process.env,
+            DEVELOPER_DIR: developerDirectory,
+            HOME: fixture.base,
+            PATH: `${fakeBin}:/usr/bin:/bin`,
+          },
+          stderr: "pipe",
+          stdout: "pipe",
+        });
+        const output = `${new TextDecoder().decode(result.stdout)}${new TextDecoder().decode(result.stderr)}`;
+        expect({ args, developerDirectory, exitCode: result.exitCode }).toEqual(
+          {
+            args,
+            developerDirectory,
+            exitCode: 5,
+          }
+        );
+        expect(output).toContain("never through xcrun");
+        expect(existsSync(marker)).toBe(false);
+      }
+    },
+    FRESH_PROCESS_TIMEOUT_MS
+  );
+
+  test(
+    "a read-only read refuses a shim resolved earlier in the process",
+    () => {
+      if (process.platform !== "darwin") {
+        return;
+      }
+      const fixture = createTestRepository();
+      repositories.push(fixture);
+      const fakeBin = join(fixture.base, "bin");
+      mkdirSync(fakeBin);
+      writeFileSync(join(fakeBin, "xcrun"), "#!/bin/sh\necho /usr/bin/git\n");
+      chmodSync(join(fakeBin, "xcrun"), 0o755);
+      const lib = (name: string) =>
+        JSON.stringify(
+          fileURLToPath(
+            new URL(
+              `../../../skills/simple-changes/scripts/lib/${name}`,
+              import.meta.url
+            )
+          )
+        );
+      const script = [
+        `const { gitExecutable } = await import(${lib("process.ts")});`,
+        `const { withReadOnlyGit } = await import(${lib("read-only-git.ts")});`,
+        // An ordinary command resolves first and keeps the shim.
+        "console.log(gitExecutable());",
+        "try { withReadOnlyGit(() => console.log('read')); }",
+        "catch (error) { console.log('refused: ' + error.message); }",
+      ].join("\n");
+      const result = spawnSync([process.execPath, "-e", script], {
+        env: {
+          ...process.env,
+          DEVELOPER_DIR: join(fixture.base, "NoDeveloper"),
+          PATH: `${fakeBin}:/usr/bin:/bin`,
+        },
+        stderr: "pipe",
+        stdout: "pipe",
+      });
+      const lines = new TextDecoder().decode(result.stdout).trim().split("\n");
+      expect(lines[0]).toBe("git");
+      expect(lines[1]).toStartWith("refused: ");
+      expect(lines[1]).toContain("never through xcrun");
+      expect(lines).not.toContain("read");
+    },
+    FRESH_PROCESS_TIMEOUT_MS
+  );
+
+  test(
+    "the runtime finds the developer Git without running xcrun",
+    () => {
+      if (process.platform !== "darwin") {
+        return;
+      }
+      const fixture = createTestRepository();
+      repositories.push(fixture);
+      const developer = join(fixture.base, "Developer");
+      const fakeBin = join(fixture.base, "bin");
+      mkdirSync(join(developer, "usr", "bin"), { recursive: true });
+      mkdirSync(fakeBin);
+      const developerGit = join(developer, "usr", "bin", "git");
+      writeFileSync(developerGit, "#!/bin/sh\nexit 0\n");
+      chmodSync(developerGit, 0o755);
+      const marker = join(fixture.base, "xcrun-ran");
+      writeFileSync(
+        join(fakeBin, "xcrun"),
+        `#!/bin/sh\necho ran > '${marker}'\necho /usr/bin/git\n`
+      );
+      chmodSync(join(fakeBin, "xcrun"), 0o755);
+      const processModule = fileURLToPath(
+        new URL(
+          "../../../skills/simple-changes/scripts/lib/process.ts",
+          import.meta.url
+        )
+      );
+      const result = spawnSync(
+        [
+          process.execPath,
+          "-e",
+          `const { gitExecutable } = await import(${JSON.stringify(processModule)}); console.log(gitExecutable());`,
+        ],
+        {
+          env: {
+            ...process.env,
+            DEVELOPER_DIR: developer,
+            PATH: `${fakeBin}:/usr/bin:/bin`,
+          },
+          stderr: "pipe",
+          stdout: "pipe",
+        }
+      );
+      expect(new TextDecoder().decode(result.stdout).trim()).toBe(developerGit);
+      expect(existsSync(marker)).toBe(false);
+    },
+    FRESH_PROCESS_TIMEOUT_MS
+  );
+
   test("follows a PATH link that resolves to the shim", () => {
     expect(
       resolveGitExecutable(
         probe({
-          realpath: () => "/usr/bin/git",
+          realpath: (path) =>
+            path === "/usr/local/bin/git" ? "/usr/bin/git" : path,
           which: () => "/usr/local/bin/git",
         })
       )

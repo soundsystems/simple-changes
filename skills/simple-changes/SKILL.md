@@ -160,7 +160,8 @@ loop before the first integration mutation and retain its run ID. A second
 controller is rejected; independent authors use distinct claimed worktrees.
 When the target is GitLab, first paginate the complete opening remote inventory
 (every branch and every open, merged, and closed proposal), then pass that
-unchanged receipt through `loop start --opening-remote-inventory <file>`.
+unchanged receipt, built by `remote-inventory build`, through `loop start
+--opening-remote-inventory <file>`.
 
 When an active loop assigns a new author into that same integration unit, run
 `simple-changes prepare-agent` before edits. Independent agents create an
@@ -176,9 +177,9 @@ deployment, cleanup, and completion, run `loop verify`; immediately before a
 merge, deployment, or migration, add `--for merge`, `--for deploy`, or `--for
 migrations` so [shipment holds](#shipment-holds) gate that step. Proceed
 only on a passing result. After review and integration settle, record one exact
-`loop record-outcome --receipt <shipment-outcome.json>` receipt before
-completion. A busy lock blocks only the named short integration operation,
-never unrelated authors.
+`loop record-outcome --receipt <shipment-outcome.json>` receipt, drafted by
+`loop draft-outcome`, before completion. A busy lock blocks only the named
+short integration operation, never unrelated authors.
 
 When scheduling allows parallel authoring and the host can start isolated
 agents, delegate independent units per

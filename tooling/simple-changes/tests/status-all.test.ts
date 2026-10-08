@@ -1,0 +1,1108 @@
+import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
+import { createHash } from "node:crypto";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  utimesSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { spawnSync } from "bun";
+import { CURRENT_GUIDANCE_VERSION } from "../../../skills/simple-changes/scripts/lib/guidance-updates.ts";
+import { captureInventory } from "../../../skills/simple-changes/scripts/lib/inventory.ts";
+import {
+  controllerBindingPath,
+  finalizeLoop,
+  startLoop,
+} from "../../../skills/simple-changes/scripts/lib/loop-lease.ts";
+import { runGit } from "../../../skills/simple-changes/scripts/lib/process.ts";
+import { withReadOnlyGit } from "../../../skills/simple-changes/scripts/lib/read-only-git.ts";
+import { recordReadyWork } from "../../../skills/simple-changes/scripts/lib/ready-work.ts";
+import {
+  addShipHold,
+  evaluateShipHolds,
+} from "../../../skills/simple-changes/scripts/lib/ship-holds.ts";
+import {
+  GLOBAL_SKILL_ROOTS,
+  PROJECT_ROOTS,
+} from "../../../skills/simple-changes/scripts/lib/skill-roots.ts";
+import {
+  isUnknown,
+  type StatusRepository,
+  statusAll,
+} from "../../../skills/simple-changes/scripts/lib/status-all.ts";
+import {
+  claimWorktree,
+  releaseWorktreeClaim,
+  worktreeCoordinationPath,
+} from "../../../skills/simple-changes/scripts/lib/worktree-coordination.ts";
+import { discover } from "../../../skills/update-local-forks/scripts/update-local-forks.ts";
+import { git, writeFixture } from "./helpers.ts";
+
+setDefaultTimeout(60_000);
+
+const COMMITTER_LINE = /^(committer .*)$/mu;
+
+let homes: string[] = [];
+afterEach(() => {
+  for (const home of homes) {
+    rmSync(home, { force: true, recursive: true });
+  }
+  homes = [];
+});
+
+const temporaryHome = (): string => {
+  const home = realpathSync(
+    mkdtempSync(join(tmpdir(), "simple-changes-status-"))
+  );
+  homes.push(home);
+  return home;
+};
+
+const initRepository = (path: string): string => {
+  mkdirSync(path, { recursive: true });
+  git(path, ["init", "-q", "-b", "main"]);
+  git(path, ["config", "user.name", "Status Tests"]);
+  git(path, ["config", "user.email", "status@simple-changes.invalid"]);
+  writeFixture(path, "README.md", "# Fixture\n");
+  git(path, ["add", "README.md"]);
+  git(path, ["commit", "-q", "-m", "Initial fixture"]);
+  return path;
+};
+
+const policy = (version: number): string =>
+  `${JSON.stringify({
+    changelogHandling: "preserve-and-report",
+    concurrentWork: "allow-claimed",
+    defaultFinish: "open-change-request",
+    gitPushAuthorization: "ask",
+    guidance: { disposition: "accepted", version },
+    handoffTiming: "confirm-ready",
+    migrationHandling: "ask-after-review",
+    migrationTargets: [],
+    productionDeploy: "ask",
+    proposalScheduling: "balanced",
+    proposalSignatures: "agent-and-version",
+    questions: "blocking-only",
+    review: "repository-policy",
+    schemaVersion: 1,
+    shippingMode: "standard",
+    uiArtifactVersioning: "repository-convention",
+  })}\n`;
+
+const writeSkill = (
+  directory: string,
+  frontmatter: string,
+  body: string,
+  runtime: { guidance: number; version: string }
+): void => {
+  mkdirSync(directory, { recursive: true });
+  writeFixture(directory, "SKILL.md", `---\n${frontmatter}\n---\n\n${body}\n`);
+  writeFixture(
+    directory,
+    "scripts/simple-changes.ts",
+    `const VERSION = "${runtime.version}";\n`
+  );
+  writeFixture(
+    directory,
+    "scripts/lib/guidance-updates.ts",
+    `export const CURRENT_GUIDANCE_VERSION = ${runtime.guidance};\n`
+  );
+};
+
+/** Every file under `root` with its size, mode, mtime, and content digest. */
+const snapshot = (root: string): Map<string, string> => {
+  const files = new Map<string, string>();
+  const visit = (directory: string) => {
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      const path = join(directory, entry.name);
+      if (entry.isDirectory()) {
+        files.set(`${path}/`, "directory");
+        visit(path);
+      } else if (entry.isFile()) {
+        const stats = statSync(path);
+        files.set(
+          path,
+          `${stats.size}:${stats.mode}:${stats.mtimeMs}:${createHash("sha256")
+            .update(readFileSync(path))
+            .digest("hex")}`
+        );
+      }
+    }
+  };
+  visit(root);
+  return files;
+};
+
+const statusOf = (
+  repositories: readonly StatusRepository[],
+  path: string
+): StatusRepository => {
+  const status = repositories.find((item) => item.repository === path);
+  if (!status) {
+    throw new Error(`missing status for ${path}`);
+  }
+  return status;
+};
+
+describe("simple-changes status --all", () => {
+  test("scans the roots update-local-forks scans", () => {
+    const home = temporaryHome();
+    for (const root of [...GLOBAL_SKILL_ROOTS, ...PROJECT_ROOTS]) {
+      mkdirSync(join(home, root), { recursive: true });
+    }
+    expect(
+      statusAll({
+        home,
+        runtime: { skillDirectory: home, version: "0.0.0" },
+      }).roots
+    ).toEqual(discover({ home, roots: [] }).roots);
+  });
+
+  test("reports leases, claims, holds, guidance, and forks without writing anything", () => {
+    const home = temporaryHome();
+    const shipping = initRepository(join(home, "Developer", "shipping"));
+    writeFixture(shipping, ".simple-changes.json", policy(26));
+    git(shipping, ["add", ".simple-changes.json"]);
+    git(shipping, ["commit", "-q", "-m", "Add policy"]);
+    const authorPath = join(home, "Developer", "shipping-author");
+    git(shipping, ["worktree", "add", "-q", "-b", "author", authorPath]);
+    claimWorktree(authorPath, "author-agent", authorPath, "codex");
+    writeFixture(authorPath, "draft.txt", "in progress\n");
+    const finishedPath = join(home, "Developer", "shipping-finished");
+    git(shipping, ["worktree", "add", "-q", "-b", "finished", finishedPath]);
+    const finished = claimWorktree(
+      finishedPath,
+      "finished-agent",
+      finishedPath,
+      "codex"
+    );
+    releaseWorktreeClaim(finishedPath, "finished-agent", finished.claimId);
+    const lease = startLoop(shipping, "controller", "ship");
+    addShipHold(shipping, {
+      adapter: "claude-code",
+      agentId: "migration-agent",
+      reason: "A migration is mid-flight.",
+      scope: "deploy",
+      severity: "delay",
+    });
+    initRepository(join(home, "Developer", "unrelated"));
+    writeSkill(
+      join(home, ".agents", "skills", "simple-changes"),
+      'name: simple-changes\nmetadata:\n  version: "0.27.1"',
+      "# Simple Changes",
+      { guidance: 27, version: "0.27.1" }
+    );
+    const forkPath = join(
+      home,
+      "Developer",
+      "shipping",
+      "skills",
+      "shipping-simple-changes"
+    );
+    writeSkill(
+      forkPath,
+      "name: shipping-simple-changes",
+      `Forked from \`simple-changes\` @ \`${"a".repeat(40)}\`.`,
+      { guidance: 26, version: "0.25.1" }
+    );
+    // Make the index stat-dirty, so a Git status that may write would.
+    const readme = join(shipping, "README.md");
+    utimesSync(readme, new Date(), new Date(Date.now() + 5000));
+    const before = snapshot(home);
+
+    const report = statusAll({
+      home,
+      runtime: { skillDirectory: join(home, "missing"), version: "0.27.1" },
+    });
+
+    expect(snapshot(home)).toEqual(before);
+    expect(report.repositories.map((item) => item.repository)).toEqual([
+      shipping,
+    ]);
+    const status = statusOf(report.repositories, shipping);
+    expect(status.lease).toMatchObject({
+      controllerStatus: "active",
+      mode: "ship",
+      ownerAgentId: "controller",
+      runId: lease.runId,
+    });
+    expect(status.claims).toEqual([
+      expect.objectContaining({
+        agentId: "author-agent",
+        // Status compares HEAD only; it never runs git status.
+        checkout: "at-claimed-head",
+        path: authorPath,
+        state: "active",
+      }),
+    ]);
+    expect(status.releasedClaims).toBe(1);
+    expect(status.holds).toEqual([
+      expect.objectContaining({
+        owner: "migration-agent",
+        scope: "deploy",
+        status: "active",
+      }),
+    ]);
+    expect(status.readyWork).toEqual([]);
+    expect(status.guidance).toMatchObject({
+      state: "update-available",
+      storedVersion: 26,
+    });
+    expect(report.upstream).toMatchObject({ version: "0.27.1" });
+    expect(report.forks).toEqual([
+      expect.objectContaining({
+        guidanceVersion: 26,
+        name: "shipping-simple-changes",
+        runtimeVersion: "0.25.1",
+        state: "behind",
+      }),
+    ]);
+  });
+
+  test("read-only Git never lazily fetches a missing object", () => {
+    const home = temporaryHome();
+    const source = initRepository(join(home, "source"));
+    git(source, ["config", "uploadpack.allowFilter", "true"]);
+    const blob = git(source, ["rev-parse", "HEAD:README.md"]);
+    const clone = join(home, "partial");
+    git(home, [
+      "clone",
+      "-q",
+      "--no-checkout",
+      "--filter=blob:none",
+      `file://${source}`,
+      clone,
+    ]);
+    const present = () =>
+      runGit(clone, ["cat-file", "-e", blob], true, {
+        GIT_NO_LAZY_FETCH: "1",
+      }).exitCode === 0;
+    expect(present()).toBe(false);
+
+    const read = withReadOnlyGit(() =>
+      runGit(clone, ["cat-file", "-p", blob], true)
+    );
+
+    expect(read.exitCode).not.toBe(0);
+    expect(present()).toBe(false);
+  });
+
+  test("never starts a filesystem monitor", () => {
+    const home = temporaryHome();
+    const repository = initRepository(join(home, "Developer", "monitored"));
+    writeFixture(
+      repository,
+      ".simple-changes.json",
+      policy(CURRENT_GUIDANCE_VERSION)
+    );
+    const marker = join(home, "fsmonitor-ran");
+    const hook = join(home, "fsmonitor-hook");
+    writeFileSync(hook, `#!/bin/sh\necho ran >> '${marker}'\nexit 1\n`);
+    chmodSync(hook, 0o755);
+    git(repository, ["config", "core.fsmonitor", hook]);
+    // Git itself runs the hook for a status outside the read-only settings.
+    git(repository, ["status", "--porcelain"]);
+    expect(existsSync(marker)).toBe(true);
+    rmSync(marker);
+
+    statusAll({ home, runtime: { skillDirectory: home, version: "0.27.1" } });
+
+    expect(existsSync(marker)).toBe(false);
+  });
+
+  test("never writes a Git trace, from the environment or global Trace2 settings", () => {
+    const home = temporaryHome();
+    const repository = initRepository(join(home, "Developer", "traced"));
+    writeFixture(
+      repository,
+      ".simple-changes.json",
+      policy(CURRENT_GUIDANCE_VERSION)
+    );
+    const traces = join(home, "traces");
+    mkdirSync(join(traces, "events"), { recursive: true });
+    writeFileSync(
+      join(home, ".gitconfig"),
+      `[trace2]\n\teventTarget = ${join(traces, "events")}\n\tnormalTarget = ${join(traces, "normal.log")}\n\tperfTarget = ${join(traces, "perf.log")}\n`
+    );
+    const env = {
+      ...process.env,
+      GIT_TRACE: join(traces, "trace.log"),
+      HOME: home,
+      SIMPLE_CHANGES_SKILL_ROOTS: "",
+    };
+    const written = () => [
+      ...readdirSync(traces).filter((name) => name !== "events"),
+      ...readdirSync(join(traces, "events")),
+    ];
+    // Git itself writes every one of these traces outside read-only mode.
+    spawnSync(["git", "-C", repository, "rev-parse", "HEAD"], { env });
+    expect(readdirSync(traces).sort()).toEqual([
+      "events",
+      "normal.log",
+      "perf.log",
+      "trace.log",
+    ]);
+    expect(readdirSync(join(traces, "events")).length).toBe(1);
+    rmSync(traces, { recursive: true });
+    mkdirSync(join(traces, "events"), { recursive: true });
+    const cliPath = fileURLToPath(
+      new URL(
+        "../../../skills/simple-changes/scripts/simple-changes.ts",
+        import.meta.url
+      )
+    );
+    for (const args of [["status"], ["status", "--all"]]) {
+      const result = spawnSync([process.execPath, cliPath, ...args], {
+        cwd: repository,
+        env,
+        stderr: "pipe",
+        stdout: "pipe",
+      });
+      expect(result.exitCode).toBe(0);
+    }
+    expect(written()).toEqual([]);
+  });
+
+  test("inherited Git variables never pick another Git or turn signature checks on", () => {
+    const home = temporaryHome();
+    const repository = initRepository(join(home, "Developer", "stashed"));
+    writeFixture(
+      repository,
+      ".simple-changes.json",
+      policy(CURRENT_GUIDANCE_VERSION)
+    );
+    writeFixture(repository, "README.md", "# Stashed edit\n");
+    git(repository, ["stash", "-q"]);
+    // Sign the newest stash entry and point the verifier at a stand-in.
+    const signed = git(repository, [
+      "cat-file",
+      "commit",
+      "refs/stash",
+    ]).replace(
+      COMMITTER_LINE,
+      "$1\ngpgsig -----BEGIN PGP SIGNATURE-----\n \n c2lnbmF0dXJl\n -----END PGP SIGNATURE-----"
+    );
+    const commitFile = join(home, "signed-stash.txt");
+    writeFileSync(commitFile, `${signed}\n`);
+    git(repository, [
+      "update-ref",
+      "-m",
+      "signed stash",
+      "refs/stash",
+      git(repository, ["hash-object", "-t", "commit", "-w", commitFile]),
+    ]);
+    const stub = (name: string): { marker: string; path: string } => {
+      const marker = join(home, `${name}-ran`);
+      const path = join(home, name);
+      writeFileSync(path, `#!/bin/sh\ntouch '${marker}'\nexit 1\n`);
+      chmodSync(path, 0o755);
+      return { marker, path };
+    };
+    const verifier = stub("fake-gpg");
+    git(repository, ["config", "gpg.program", verifier.path]);
+    const execPath = join(home, "exec-path");
+    mkdirSync(execPath);
+    const internalGit = stub("exec-path/git");
+    const env = {
+      ...process.env,
+      GIT_CONFIG_PARAMETERS: "'log.showSignature=true'",
+      GIT_EXEC_PATH: execPath,
+      HOME: home,
+      SIMPLE_CHANGES_SKILL_ROOTS: "",
+    };
+    // Git itself runs both stand-ins for a stash listing in this environment.
+    spawnSync(["git", "-C", repository, "stash", "list"], { env });
+    expect(existsSync(internalGit.marker)).toBe(true);
+    spawnSync(["git", "-C", repository, "stash", "list"], {
+      env: { ...env, GIT_EXEC_PATH: undefined },
+    });
+    expect(existsSync(verifier.marker)).toBe(true);
+    rmSync(internalGit.marker);
+    rmSync(verifier.marker);
+    const cliPath = fileURLToPath(
+      new URL(
+        "../../../skills/simple-changes/scripts/simple-changes.ts",
+        import.meta.url
+      )
+    );
+    for (const args of [["status"], ["status", "--all"]]) {
+      const result = spawnSync([process.execPath, cliPath, ...args], {
+        cwd: repository,
+        env,
+        stderr: "pipe",
+        stdout: "pipe",
+      });
+      expect(result.exitCode).toBe(0);
+    }
+    expect(existsSync(internalGit.marker)).toBe(false);
+    expect(existsSync(verifier.marker)).toBe(false);
+  });
+
+  test("never runs git status, so no clean filter runs", () => {
+    const home = temporaryHome();
+    const repository = initRepository(join(home, "Developer", "filtered"));
+    writeFixture(
+      repository,
+      ".simple-changes.json",
+      policy(CURRENT_GUIDANCE_VERSION)
+    );
+    const marker = join(home, "filter-ran");
+    writeFixture(repository, ".gitattributes", "*.md filter=marker\n");
+    git(repository, [
+      "config",
+      "filter.marker.clean",
+      `sh -c 'echo ran >> "${marker}"; cat'`,
+    ]);
+    const readme = join(repository, "README.md");
+    // Git itself runs the filter when status re-hashes a stat-dirty file.
+    utimesSync(readme, new Date(), new Date(Date.now() + 5000));
+    git(repository, ["status", "--porcelain"]);
+    expect(existsSync(marker)).toBe(true);
+    rmSync(marker);
+    utimesSync(readme, new Date(), new Date(Date.now() + 10_000));
+
+    statusAll({ home, runtime: { skillDirectory: home, version: "0.27.1" } });
+
+    expect(existsSync(marker)).toBe(false);
+  });
+
+  test("reports absent checkouts, unreadable claims, and unreadable bindings", () => {
+    const home = temporaryHome();
+    const repository = initRepository(join(home, "Developer", "absent"));
+    writeFixture(
+      repository,
+      ".simple-changes.json",
+      policy(CURRENT_GUIDANCE_VERSION)
+    );
+    const gone = join(home, "Developer", "absent-author");
+    git(repository, ["worktree", "add", "-q", "-b", "gone", gone]);
+    claimWorktree(gone, "gone-agent", gone, "codex");
+    rmSync(gone, { force: true, recursive: true });
+    startLoop(repository, "controller", "ship");
+    const common = join(repository, ".git");
+    writeFileSync(controllerBindingPath(common), "{ not json");
+
+    const [status] = statusAll({
+      home,
+      runtime: { skillDirectory: home, version: "0.27.1" },
+    }).repositories;
+
+    expect(status?.claims).toEqual([
+      expect.objectContaining({ checkout: "absent", path: gone }),
+    ]);
+    const lease = status?.lease as { awaitingUser: unknown } | undefined;
+    expect(isUnknown(lease?.awaitingUser)).toBe(true);
+
+    // A checkout replaced by a symlink loop cannot be observed.
+    symlinkSync(gone, gone);
+    const [looped] = statusAll({
+      home,
+      runtime: { skillDirectory: home, version: "0.27.1" },
+    }).repositories;
+    expect(looped?.claims).toEqual([
+      expect.objectContaining({ checkout: "unknown", path: gone }),
+    ]);
+
+    writeFileSync(worktreeCoordinationPath(common), "{ not json");
+    const [unreadable] = statusAll({
+      home,
+      runtime: { skillDirectory: home, version: "0.27.1" },
+    }).repositories;
+    expect(isUnknown(unreadable?.claims)).toBe(true);
+    expect(unreadable?.releasedClaims).toBeNull();
+
+    // A state file that cannot be looked up is unknown, never empty.
+    rmSync(worktreeCoordinationPath(common));
+    symlinkSync(
+      worktreeCoordinationPath(common),
+      worktreeCoordinationPath(common)
+    );
+    const [lookup] = statusAll({
+      home,
+      runtime: { skillDirectory: home, version: "0.27.1" },
+    }).repositories;
+    expect(isUnknown(lookup?.claims)).toBe(true);
+  });
+
+  test("reports ready receipts, their checkouts, and awaited questions", () => {
+    const home = temporaryHome();
+    const repository = initRepository(join(home, "Developer", "ready"));
+    writeFixture(
+      repository,
+      ".simple-changes.json",
+      policy(CURRENT_GUIDANCE_VERSION)
+    );
+    git(repository, ["add", ".simple-changes.json"]);
+    git(repository, ["commit", "-q", "-m", "Add policy"]);
+    const ready = (name: string): string => {
+      const path = join(home, "Developer", name);
+      git(repository, ["worktree", "add", "-q", "-b", name, path]);
+      const claim = claimWorktree(path, `${name}-agent`, path, "codex");
+      writeFixture(path, `${name}.txt`, "finished\n");
+      git(path, ["add", `${name}.txt`]);
+      git(path, ["commit", "-q", "-m", `Finish ${name}`]);
+      recordReadyWork(path, `${name}-agent`, claim.claimId, {
+        checks: [{ command: "bun run check", note: null, result: "passed" }],
+        deploymentConstraints: [],
+        migrations: [],
+        releaseImpact: "patch",
+        scope: `Finish ${name}.`,
+        unresolvedAuthority: [],
+      });
+      return path;
+    };
+    ready("kept");
+    rmSync(ready("removed"), { force: true, recursive: true });
+    const lease = startLoop(repository, "controller", "ship");
+    finalizeLoop(
+      repository,
+      lease.runId,
+      "controller",
+      "Waiting on the user.",
+      {
+        awaitingUser: ["Ship the kept work now?"],
+      }
+    );
+
+    const [status] = statusAll({
+      home,
+      runtime: { skillDirectory: home, version: "0.27.1" },
+    }).repositories;
+
+    const readyWork = (status?.readyWork ?? []) as Array<{
+      branch: string;
+      checkoutPresent: unknown;
+    }>;
+    const byBranch = Object.fromEntries(
+      readyWork.map((item) => [item.branch, item.checkoutPresent])
+    );
+    expect(byBranch).toEqual({ kept: true, removed: false });
+    expect(status?.lease).toMatchObject({
+      awaitingUser: ["Ship the kept work now?"],
+    });
+
+    // A binding from another controller tenure awaits nothing.
+    const common = join(repository, ".git");
+    const binding = JSON.parse(
+      readFileSync(controllerBindingPath(common), "utf8")
+    ) as Record<string, unknown>;
+    writeFileSync(
+      controllerBindingPath(common),
+      JSON.stringify({ ...binding, runId: "run-another-tenure" })
+    );
+    const [later] = statusAll({
+      home,
+      runtime: { skillDirectory: home, version: "0.27.1" },
+    }).repositories;
+    expect(later?.lease).toMatchObject({ awaitingUser: null });
+  });
+
+  test("lists a fresh repository whose policy cannot be looked up", () => {
+    const home = temporaryHome();
+    const repository = initRepository(join(home, "Developer", "fresh"));
+    const policyPath = join(repository, ".simple-changes.json");
+    symlinkSync(policyPath, policyPath);
+
+    const report = statusAll({
+      home,
+      runtime: { skillDirectory: home, version: "0.27.1" },
+    });
+
+    const status = statusOf(report.repositories, repository);
+    expect(isUnknown(status.guidance)).toBe(true);
+  });
+
+  test("reports an unresolvable claimed HEAD as unknown", () => {
+    const home = temporaryHome();
+    const repository = initRepository(join(home, "Developer", "heads"));
+    writeFixture(
+      repository,
+      ".simple-changes.json",
+      policy(CURRENT_GUIDANCE_VERSION)
+    );
+    const author = join(home, "Developer", "heads-author");
+    git(repository, ["worktree", "add", "-q", "-b", "author", author]);
+    claimWorktree(author, "author-agent", author, "codex");
+    writeFileSync(
+      join(repository, ".git", "worktrees", "heads-author", "HEAD"),
+      "ref: refs/heads/never-created\n"
+    );
+
+    const [status] = statusAll({
+      home,
+      runtime: { skillDirectory: home, version: "0.27.1" },
+    }).repositories;
+
+    expect(status?.claims).toEqual([
+      expect.objectContaining({ checkout: "unknown", path: author }),
+    ]);
+  });
+
+  test("reports a malformed awaited record in this controller's binding as unknown", () => {
+    const home = temporaryHome();
+    const repository = initRepository(join(home, "Developer", "awaiting"));
+    writeFixture(
+      repository,
+      ".simple-changes.json",
+      policy(CURRENT_GUIDANCE_VERSION)
+    );
+    git(repository, ["add", ".simple-changes.json"]);
+    git(repository, ["commit", "-q", "-m", "Add policy"]);
+    const lease = startLoop(repository, "controller", "ship");
+    finalizeLoop(repository, lease.runId, "controller", "Waiting.", {
+      awaitingUser: ["Proceed?"],
+    });
+    const bindingPath = controllerBindingPath(join(repository, ".git"));
+    const binding = JSON.parse(readFileSync(bindingPath, "utf8")) as {
+      awaitingUser: { questions: unknown[] };
+    };
+    binding.awaitingUser.questions = [123];
+    writeFileSync(bindingPath, JSON.stringify(binding));
+
+    const [status] = statusAll({
+      home,
+      runtime: { skillDirectory: home, version: "0.27.1" },
+    }).repositories;
+
+    const awaited = status?.lease as { awaitingUser: unknown } | undefined;
+    expect(isUnknown(awaited?.awaitingUser)).toBe(true);
+  });
+
+  test("reports unreadable policy and receipted commits as unknown", () => {
+    const home = temporaryHome();
+    const repository = initRepository(join(home, "Developer", "opaque"));
+    mkdirSync(join(repository, ".git", "simple-changes"), { recursive: true });
+    const policyPath = join(repository, ".simple-changes.json");
+    symlinkSync(policyPath, policyPath);
+
+    const [status] = statusAll({
+      home,
+      runtime: { skillDirectory: home, version: "0.27.1" },
+    }).repositories;
+
+    expect(isUnknown(status?.guidance)).toBe(true);
+  });
+
+  test("never calls a ready branch stale when its commit cannot be read", () => {
+    const home = temporaryHome();
+    const repository = initRepository(join(home, "Developer", "missing"));
+    writeFixture(
+      repository,
+      ".simple-changes.json",
+      policy(CURRENT_GUIDANCE_VERSION)
+    );
+    git(repository, ["add", ".simple-changes.json"]);
+    git(repository, ["commit", "-q", "-m", "Add policy"]);
+    const path = join(home, "Developer", "missing-ready");
+    git(repository, ["worktree", "add", "-q", "-b", "ready", path]);
+    const claim = claimWorktree(path, "ready-agent", path, "codex");
+    writeFixture(path, "ready.txt", "finished\n");
+    git(path, ["add", "ready.txt"]);
+    git(path, ["commit", "-q", "-m", "Finish"]);
+    const head = git(path, ["rev-parse", "HEAD"]);
+    recordReadyWork(path, "ready-agent", claim.claimId, {
+      checks: [{ command: "bun run check", note: null, result: "passed" }],
+      deploymentConstraints: [],
+      migrations: [],
+      releaseImpact: "patch",
+      scope: "Finish.",
+      unresolvedAuthority: [],
+    });
+    // The branch moves on to a readable commit; only the receipted one goes.
+    writeFixture(path, "later.txt", "later\n");
+    git(path, ["add", "later.txt"]);
+    git(path, ["commit", "-q", "-m", "Later"]);
+    rmSync(
+      join(repository, ".git", "objects", head.slice(0, 2), head.slice(2))
+    );
+
+    const [status] = statusAll({
+      home,
+      runtime: { skillDirectory: home, version: "0.27.1" },
+    }).repositories;
+
+    const readyWork = status?.readyWork;
+    expect(isUnknown(readyWork)).toBe(false);
+    if (!isUnknown(readyWork)) {
+      expect(readyWork?.map((item) => item.freshness)).toEqual(["unknown"]);
+    }
+  });
+
+  test("never calls a deleted ready branch stale when target history cannot be read", () => {
+    const home = temporaryHome();
+    const repository = initRepository(join(home, "Developer", "history"));
+    writeFixture(
+      repository,
+      ".simple-changes.json",
+      policy(CURRENT_GUIDANCE_VERSION)
+    );
+    git(repository, ["add", ".simple-changes.json"]);
+    git(repository, ["commit", "-q", "-m", "Add policy"]);
+    const path = join(home, "Developer", "history-ready");
+    git(repository, ["worktree", "add", "-q", "-b", "ready", path]);
+    const claim = claimWorktree(path, "ready-agent", path, "codex");
+    writeFixture(path, "ready.txt", "finished\n");
+    git(path, ["add", "ready.txt"]);
+    git(path, ["commit", "-q", "-m", "Finish"]);
+    recordReadyWork(path, "ready-agent", claim.claimId, {
+      checks: [{ command: "bun run check", note: null, result: "passed" }],
+      deploymentConstraints: [],
+      migrations: [],
+      releaseImpact: "patch",
+      scope: "Finish.",
+      unresolvedAuthority: [],
+    });
+    git(repository, ["merge", "-q", "--ff-only", "ready"]);
+    writeFixture(repository, "middle.txt", "middle\n");
+    git(repository, ["add", "middle.txt"]);
+    git(repository, ["commit", "-q", "-m", "Middle"]);
+    const middle = git(repository, ["rev-parse", "HEAD"]);
+    writeFixture(repository, "tip.txt", "tip\n");
+    git(repository, ["add", "tip.txt"]);
+    git(repository, ["commit", "-q", "-m", "Tip"]);
+    git(repository, ["worktree", "remove", "--force", path]);
+    git(repository, ["branch", "-D", "ready"]);
+    rmSync(
+      join(repository, ".git", "objects", middle.slice(0, 2), middle.slice(2))
+    );
+
+    const [status] = statusAll({
+      home,
+      runtime: { skillDirectory: home, version: "0.27.1" },
+    }).repositories;
+
+    const readyWork = status?.readyWork;
+    expect(isUnknown(readyWork)).toBe(false);
+    if (!isUnknown(readyWork)) {
+      expect(readyWork?.map((item) => item.freshness)).toEqual(["unknown"]);
+    }
+  });
+
+  test("never calls a deleted ready branch stale from a shallow clone", () => {
+    const home = temporaryHome();
+    const origin = join(home, "origin.git");
+    git(home, ["init", "-q", "--bare", "-b", "main", origin]);
+    const seed = initRepository(join(home, "seed"));
+    writeFixture(
+      seed,
+      ".simple-changes.json",
+      policy(CURRENT_GUIDANCE_VERSION)
+    );
+    git(seed, ["add", ".simple-changes.json"]);
+    git(seed, ["commit", "-q", "-m", "Add policy"]);
+    git(seed, ["push", "-q", origin, "HEAD:refs/heads/main"]);
+    const shallow = join(home, "Developer", "shallow");
+    git(home, ["clone", "-q", "--depth=1", `file://${origin}`, shallow]);
+    git(shallow, ["config", "user.name", "Status Tests"]);
+    git(shallow, ["config", "user.email", "status@simple-changes.invalid"]);
+    const path = join(home, "Developer", "shallow-ready");
+    git(shallow, ["worktree", "add", "-q", "-b", "ready", path]);
+    const claim = claimWorktree(path, "ready-agent", path, "codex");
+    writeFixture(path, "ready.txt", "finished\n");
+    git(path, ["add", "ready.txt"]);
+    git(path, ["commit", "-q", "-m", "Finish"]);
+    recordReadyWork(path, "ready-agent", claim.claimId, {
+      checks: [{ command: "bun run check", note: null, result: "passed" }],
+      deploymentConstraints: [],
+      migrations: [],
+      releaseImpact: "patch",
+      scope: "Finish.",
+      unresolvedAuthority: [],
+    });
+    // The target ships the receipted commit, then moves on, upstream.
+    git(path, ["push", "-q", "origin", "ready:refs/heads/main"]);
+    git(seed, ["pull", "-q", "--ff-only", origin, "main"]);
+    writeFixture(seed, "after.txt", "after\n");
+    git(seed, ["add", "after.txt"]);
+    git(seed, ["commit", "-q", "-m", "After"]);
+    git(seed, ["push", "-q", origin, "HEAD:refs/heads/main"]);
+    git(shallow, ["fetch", "-q", "--depth=1", "origin", "main"]);
+    git(shallow, ["worktree", "remove", "--force", path]);
+    git(shallow, ["branch", "-D", "ready"]);
+
+    const [status] = statusAll({
+      home,
+      runtime: { skillDirectory: home, version: "0.27.1" },
+    }).repositories.filter((item) => item.repository === shallow);
+
+    const readyWork = status?.readyWork;
+    expect(isUnknown(readyWork)).toBe(false);
+    if (!isUnknown(readyWork)) {
+      expect(readyWork?.map((item) => item.freshness)).toEqual(["unknown"]);
+    }
+  });
+
+  test("reports a merge-conditioned hold as unknown when history cannot be read", () => {
+    const home = temporaryHome();
+    const repository = initRepository(join(home, "Developer", "held"));
+    writeFixture(
+      repository,
+      ".simple-changes.json",
+      policy(CURRENT_GUIDANCE_VERSION)
+    );
+    git(repository, ["add", ".simple-changes.json"]);
+    git(repository, ["commit", "-q", "-m", "Add policy"]);
+    git(repository, ["switch", "-q", "-c", "companion"]);
+    writeFixture(repository, "companion.txt", "companion\n");
+    git(repository, ["add", "companion.txt"]);
+    git(repository, ["commit", "-q", "-m", "Companion"]);
+    git(repository, ["switch", "-q", "main"]);
+    addShipHold(repository, {
+      adapter: "codex",
+      agentId: "companion-agent",
+      reason: "Wait for the companion change.",
+      scope: "ship",
+      severity: "delay",
+      untilMerged: "companion",
+    });
+    writeFixture(repository, "middle.txt", "middle\n");
+    git(repository, ["add", "middle.txt"]);
+    git(repository, ["commit", "-q", "-m", "Middle"]);
+    const middle = git(repository, ["rev-parse", "HEAD"]);
+    git(repository, [
+      "merge",
+      "-q",
+      "--no-ff",
+      "-m",
+      "Merge companion",
+      "companion",
+    ]);
+    rmSync(
+      join(repository, ".git", "objects", middle.slice(0, 2), middle.slice(2))
+    );
+
+    const [status] = statusAll({
+      home,
+      runtime: { skillDirectory: home, version: "0.27.1" },
+    }).repositories;
+
+    expect(status?.holds).toEqual([
+      expect.objectContaining({ status: "unknown", untilMerged: "companion" }),
+    ]);
+  });
+
+  test("never calls a merge-conditioned hold satisfied from a shallow clone", () => {
+    const home = temporaryHome();
+    const origin = join(home, "origin.git");
+    git(home, ["init", "-q", "--bare", "-b", "main", origin]);
+    const seed = initRepository(join(home, "seed"));
+    writeFixture(
+      seed,
+      ".simple-changes.json",
+      policy(CURRENT_GUIDANCE_VERSION)
+    );
+    git(seed, ["add", ".simple-changes.json"]);
+    git(seed, ["commit", "-q", "-m", "Add policy"]);
+    git(seed, ["push", "-q", origin, "HEAD:refs/heads/main"]);
+    // The companion branch ends on the same tree the target reaches, but its
+    // first commit never reached the target, so it is not merged.
+    git(seed, ["switch", "-q", "-c", "companion"]);
+    writeFixture(seed, "draft.txt", "never merged\n");
+    git(seed, ["add", "draft.txt"]);
+    git(seed, ["commit", "-q", "-m", "Draft"]);
+    git(seed, ["rm", "-q", "draft.txt"]);
+    writeFixture(seed, "companion.txt", "companion\n");
+    git(seed, ["add", "companion.txt"]);
+    git(seed, ["commit", "-q", "-m", "Companion"]);
+    git(seed, ["push", "-q", origin, "companion"]);
+    const shallow = join(home, "Developer", "shallow-held");
+    git(home, [
+      "clone",
+      "-q",
+      "--depth=1",
+      "--no-single-branch",
+      `file://${origin}`,
+      shallow,
+    ]);
+    git(shallow, ["config", "user.name", "Status Tests"]);
+    git(shallow, ["config", "user.email", "status@simple-changes.invalid"]);
+    addShipHold(shallow, {
+      adapter: "codex",
+      agentId: "companion-agent",
+      reason: "Wait for the companion change.",
+      scope: "ship",
+      severity: "delay",
+      untilMerged: "companion",
+    });
+    // The target then reaches the same tree through other history.
+    git(seed, ["switch", "-q", "main"]);
+    writeFixture(seed, "companion.txt", "companion\n");
+    git(seed, ["add", "companion.txt"]);
+    git(seed, ["commit", "-q", "-m", "Same tree, other history"]);
+    git(seed, ["push", "-q", origin, "HEAD:refs/heads/main"]);
+    git(shallow, ["fetch", "-q", "--depth=1", "origin", "main"]);
+    // Cut to one commit each, the tips look patch-equivalent to the
+    // ordinary evaluation.
+    expect(
+      evaluateShipHolds(captureInventory(shallow), { localOnly: true }).holds
+    ).toEqual([expect.objectContaining({ status: "satisfied" })]);
+
+    const [status] = statusAll({
+      home,
+      runtime: { skillDirectory: home, version: "0.27.1" },
+    }).repositories;
+
+    expect(status?.holds).toEqual([
+      expect.objectContaining({ status: "unknown", untilMerged: "companion" }),
+    ]);
+  });
+
+  test("never lets a tag named like the target stand in for it", () => {
+    const home = temporaryHome();
+    const repository = initRepository(join(home, "Developer", "tagged"));
+    writeFixture(
+      repository,
+      ".simple-changes.json",
+      policy(CURRENT_GUIDANCE_VERSION)
+    );
+    git(repository, ["add", ".simple-changes.json"]);
+    git(repository, ["commit", "-q", "-m", "Add policy"]);
+    const path = join(home, "Developer", "tagged-ready");
+    git(repository, ["worktree", "add", "-q", "-b", "ready", path]);
+    const claim = claimWorktree(path, "ready-agent", path, "codex");
+    writeFixture(path, "ready.txt", "finished\n");
+    git(path, ["add", "ready.txt"]);
+    git(path, ["commit", "-q", "-m", "Finish"]);
+    recordReadyWork(path, "ready-agent", claim.claimId, {
+      checks: [{ command: "bun run check", note: null, result: "passed" }],
+      deploymentConstraints: [],
+      migrations: [],
+      releaseImpact: "patch",
+      scope: "Finish.",
+      unresolvedAuthority: [],
+    });
+    addShipHold(repository, {
+      adapter: "codex",
+      agentId: "ready-agent",
+      reason: "Wait for the ready change.",
+      scope: "ship",
+      severity: "delay",
+      untilMerged: "ready",
+    });
+    // A tag named main at the unmerged ready head: `main` alone now names it.
+    const head = git(path, ["rev-parse", "HEAD"]);
+    git(repository, ["tag", "main", head]);
+    expect(
+      evaluateShipHolds(captureInventory(repository), { localOnly: true }).holds
+    ).toEqual([expect.objectContaining({ status: "satisfied" })]);
+
+    const [status] = statusAll({
+      home,
+      runtime: { skillDirectory: home, version: "0.27.1" },
+    }).repositories;
+
+    expect(status?.readyWork).toEqual([
+      expect.objectContaining({ branch: "ready", freshness: "current" }),
+    ]);
+    expect(status?.holds).toEqual([
+      expect.objectContaining({ status: "active", untilMerged: "ready" }),
+    ]);
+
+    // A malformed branch ref is unreadable, not a deleted branch.
+    writeFileSync(
+      join(repository, ".git", "refs", "heads", "ready"),
+      "not an object name\n"
+    );
+    const [malformed] = statusAll({
+      home,
+      runtime: { skillDirectory: home, version: "0.27.1" },
+    }).repositories;
+    expect(malformed?.readyWork).toEqual([
+      expect.objectContaining({ branch: "ready", freshness: "unknown" }),
+    ]);
+    // The hold waiting on that branch is unknown too, not still active.
+    expect(malformed?.holds).toEqual([
+      expect.objectContaining({ status: "unknown", untilMerged: "ready" }),
+    ]);
+
+    // With a target remote, the ordinary evaluation falls back from the
+    // unreadable local branch to a remote copy the target contains and says
+    // satisfied; status must not.
+    git(repository, ["tag", "-d", "main"]);
+    git(repository, ["remote", "add", "origin", repository]);
+    git(repository, ["update-ref", "refs/remotes/origin/main", "main"]);
+    git(repository, ["update-ref", "refs/remotes/origin/ready", "main"]);
+    expect(
+      evaluateShipHolds(captureInventory(repository), { localOnly: true }).holds
+    ).toEqual([expect.objectContaining({ status: "satisfied" })]);
+    const [fallback] = statusAll({
+      home,
+      runtime: { skillDirectory: home, version: "0.27.1" },
+    }).repositories;
+    expect(fallback?.holds).toEqual([
+      expect.objectContaining({ status: "unknown", untilMerged: "ready" }),
+    ]);
+  });
+
+  test("shows unreadable state as unknown and keeps going", () => {
+    const home = temporaryHome();
+    const broken = initRepository(join(home, "Developer", "broken"));
+    mkdirSync(join(broken, ".git", "simple-changes"), { recursive: true });
+    writeFileSync(
+      join(broken, ".git", "simple-changes", "active-loop.json"),
+      "{ not json"
+    );
+
+    const report = statusAll({
+      home,
+      runtime: { skillDirectory: home, version: "0.27.1" },
+    });
+
+    const status = statusOf(report.repositories, broken);
+    expect(isUnknown(status.lease)).toBe(true);
+    expect(status.claims).toEqual([]);
+    expect(status.guidance).toMatchObject({ state: "not-configured" });
+  });
+
+  test("the CLI prints the same view for the home it runs under", () => {
+    const home = temporaryHome();
+    const repository = initRepository(join(home, "Developer", "solo"));
+    writeFixture(
+      repository,
+      ".simple-changes.json",
+      policy(CURRENT_GUIDANCE_VERSION)
+    );
+    const cliPath = fileURLToPath(
+      new URL(
+        "../../../skills/simple-changes/scripts/simple-changes.ts",
+        import.meta.url
+      )
+    );
+    const run = (args: string[]) => {
+      const result = spawnSync([process.execPath, cliPath, ...args], {
+        cwd: repository,
+        env: { ...process.env, HOME: home, SIMPLE_CHANGES_SKILL_ROOTS: "" },
+        stderr: "pipe",
+        stdout: "pipe",
+      });
+      return {
+        exitCode: result.exitCode,
+        stderr: new TextDecoder().decode(result.stderr),
+        stdout: new TextDecoder().decode(result.stdout),
+      };
+    };
+    const all = run(["status", "--all", "--json"]);
+    expect(all.stderr).toBe("");
+    expect(all.exitCode).toBe(0);
+    expect(
+      (JSON.parse(all.stdout) as { repositories: StatusRepository[] })
+        .repositories
+    ).toEqual([expect.objectContaining({ lease: null, repository })]);
+    const single = run(["status"]);
+    expect(single.exitCode).toBe(0);
+    expect(single.stdout).toContain(`${repository}\n  Nothing in flight.`);
+    expect(single.stdout).toContain("Read-only: nothing was fetched");
+    expect(run(["status", "--root", home]).exitCode).toBe(2);
+  });
+});

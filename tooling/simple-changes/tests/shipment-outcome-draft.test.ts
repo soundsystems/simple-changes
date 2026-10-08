@@ -408,28 +408,48 @@ describe("loop draft-outcome", () => {
     recordShipmentOutcome(root, lease.runId, "controller", reviewed(draft));
   });
 
-  test("refuses placeholders before reading a preserved-source override", () => {
+  test("refuses placeholders anywhere, before reading a preserved-source override", () => {
     const fixture = repository();
     const lease = startLoop(fixture.root, "controller", "ship");
+    const receipt = (override: Record<string, string>, summary: string) => ({
+      additionalPaths: [],
+      runId: lease.runId,
+      schemaVersion: 1,
+      targetRevision: lease.targetRevision,
+      units: [
+        {
+          disposition: "target-equivalent",
+          evidence: ["Reviewed."],
+          finalPaths: [],
+          originalPaths: [],
+          preservedSourceOverride: override,
+          summary,
+          unitId: "unit-1",
+        },
+      ],
+    });
     expect(() =>
-      recordShipmentOutcome(fixture.root, lease.runId, "controller", {
-        additionalPaths: [],
-        runId: lease.runId,
-        schemaVersion: 1,
-        targetRevision: lease.targetRevision,
-        units: [
-          {
-            disposition: "target-equivalent",
-            evidence: ["Reviewed."],
-            finalPaths: [],
-            originalPaths: [],
-            preservedSourceOverride: {},
-            summary: `${OUTCOME_DRAFT_MARKER} unreviewed`,
-            unitId: "unit-1",
-          },
-        ],
-      })
-    ).toThrow("draft placeholder");
+      recordShipmentOutcome(
+        fixture.root,
+        lease.runId,
+        "controller",
+        receipt({}, `${OUTCOME_DRAFT_MARKER} unreviewed`)
+      )
+    ).toThrow("summary of unit unit-1");
+    for (const field of [
+      "approvalReason",
+      "approvalReference",
+      "reviewReference",
+    ]) {
+      expect(() =>
+        recordShipmentOutcome(
+          fixture.root,
+          lease.runId,
+          "controller",
+          receipt({ [field]: `${OUTCOME_DRAFT_MARKER} unreviewed` }, "Done.")
+        )
+      ).toThrow(`units[0].preservedSourceOverride.${field}`);
+    }
   });
 
   test("--output never replaces the lease or writes into the state directory", () => {
@@ -440,10 +460,12 @@ describe("loop draft-outcome", () => {
     const before = readFileSync(leaseFile, "utf8");
     const hardLink = join(fixture.base, "lease-link.json");
     linkSync(leaseFile, hardLink);
+    mkdirSync(join(root, ".git", "..drafts"));
     for (const output of [
       leaseFile,
       hardLink,
       join(root, ".git", "simple-changes", "draft.json"),
+      join(root, ".git", "..drafts", "draft.json"),
     ]) {
       const result = spawnSync(
         [

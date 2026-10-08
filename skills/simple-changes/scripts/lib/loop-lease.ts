@@ -3924,44 +3924,65 @@ export const OUTCOME_DRAFT_MARKER = "SIMPLE-CHANGES-DRAFT:";
  */
 export const OUTCOME_DRAFT_REVIEW = `${OUTCOME_DRAFT_MARKER} review every entry, replace each placeholder, then delete this draftReview field before loop record-outcome.`;
 
-const listOf = (value: unknown): unknown[] =>
-  Array.isArray(value) ? value : [];
+type DraftTextPath = Array<number | string>;
+const LEADING_DOT_PATTERN = /^\./u;
 
-const fieldOf = (value: unknown, key: string): unknown =>
-  typeof value === "object" && value !== null
-    ? (value as Record<string, unknown>)[key]
-    : undefined;
+/** Every location in the raw receipt whose text carries the draft marker. */
+const draftTextPaths = (
+  value: unknown,
+  path: DraftTextPath = []
+): DraftTextPath[] => {
+  if (typeof value === "string") {
+    return value.includes(OUTCOME_DRAFT_MARKER) ? [path] : [];
+  }
+  if (Array.isArray(value)) {
+    return value.flatMap((item, index) =>
+      draftTextPaths(item, [...path, index])
+    );
+  }
+  if (typeof value === "object" && value !== null) {
+    return Object.entries(value).flatMap(([key, item]) =>
+      draftTextPaths(item, [...path, key])
+    );
+  }
+  return [];
+};
+
+const fieldOf = (value: unknown, path: DraftTextPath): unknown =>
+  path.reduce<unknown>(
+    (current, key) =>
+      typeof current === "object" && current !== null
+        ? (current as Record<number | string, unknown>)[key]
+        : undefined,
+    value
+  );
+
+/** A reader's name for a draft text location, such as "reason for SPEC.md". */
+const draftTextLabel = (receipt: unknown, path: DraftTextPath): string => {
+  const [list, index, field] = path;
+  if (list === "units" && (field === "summary" || field === "evidence")) {
+    return `${field} of unit ${String(fieldOf(receipt, ["units", index ?? 0, "unitId"]))}`;
+  }
+  if (list === "additionalPaths" && field === "reason") {
+    return `reason for ${String(fieldOf(receipt, ["additionalPaths", index ?? 0, "path"]))}`;
+  }
+  return path
+    .map((key) => (typeof key === "number" ? `[${key}]` : `.${key}`))
+    .join("")
+    .replace(LEADING_DOT_PATTERN, "");
+};
 
 /**
- * Reads the raw input defensively, so placeholders are refused even in a
- * receipt the schema would reject for another reason.
+ * Reads the raw input, every string anywhere in it including any
+ * preserved-source override, so a placeholder is refused even in a receipt
+ * the schema would reject for another reason.
  */
 const assertNoOutcomeDraftPlaceholders = (receipt: unknown): void => {
-  const texts: Array<readonly [string, unknown]> = [
-    ...listOf(fieldOf(receipt, "units")).flatMap((unit) => {
-      const unitId = String(fieldOf(unit, "unitId"));
-      return [
-        [`summary of unit ${unitId}`, fieldOf(unit, "summary")] as const,
-        ...listOf(fieldOf(unit, "evidence")).map(
-          (item) => [`evidence of unit ${unitId}`, item] as const
-        ),
-      ];
-    }),
-    ...listOf(fieldOf(receipt, "additionalPaths")).map(
-      (item) =>
-        [
-          `reason for ${String(fieldOf(item, "path"))}`,
-          fieldOf(item, "reason"),
-        ] as const
-    ),
-  ];
-  const drafts = texts.filter(
-    ([, text]) =>
-      typeof text === "string" && text.includes(OUTCOME_DRAFT_MARKER)
-  );
-  if (drafts.length > 0) {
+  const drafts = draftTextPaths(receipt);
+  const [first] = drafts;
+  if (first) {
     throw new SimpleChangesError(
-      `Shipment outcome still carries ${drafts.length} draft placeholder(s), starting with the ${drafts[0]?.[0]}. Replace every ${OUTCOME_DRAFT_MARKER} placeholder with the reviewed text, check each classification and disposition, then record it again.`,
+      `Shipment outcome still carries ${drafts.length} draft placeholder(s), starting with the ${draftTextLabel(receipt, first)}. Replace every ${OUTCOME_DRAFT_MARKER} placeholder with the reviewed text, check each classification and disposition, then record it again.`,
       EXIT_CODES.validation
     );
   }

@@ -10,7 +10,7 @@ import {
   writeFileSync,
   writeSync,
 } from "node:fs";
-import { dirname, isAbsolute, relative, resolve } from "node:path";
+import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { fileURLToPath } from "node:url";
 import { sleep, stdin } from "bun";
@@ -4051,7 +4051,11 @@ const assertOutputIsNotInput = (
       parent = null;
     }
     const inside = parent === null ? null : relative(stateDirectory, parent);
-    if (inside !== null && !(inside.startsWith("..") || isAbsolute(inside))) {
+    // `..drafts` is a child named with two dots, not a parent.
+    if (
+      inside !== null &&
+      !(inside === ".." || inside.startsWith(`..${sep}`) || isAbsolute(inside))
+    ) {
       refuseOutput(
         "is inside the Git common directory, where Simple Changes keeps its state"
       );

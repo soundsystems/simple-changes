@@ -102,6 +102,7 @@ import type {
   RequestMode,
   ShipmentOutcomeReceipt,
   WorktreeClaim,
+  WorktreeClaimReleaseReason,
   WorktreeCoordinationDocument,
   WorktreeInventory,
 } from "./types.ts";
@@ -1908,37 +1909,158 @@ const withConcurrentAuthorAdmissions = (
   };
 };
 
-const concurrentClaimViolations = (
+// An author's own finished release, through `initialize --mode handoff`, a
+// ready-work receipt, or a plain `worktree release`, makes its checkout
+// ordinary stable work. Each records the exact state it released, so the
+// release admits only that state, and only while no newer live claim holds the
+// checkout. Callers find the claim by the registration's own claim ID.
+const COMPLETED_RELEASE_REASONS: ReadonlySet<WorktreeClaimReleaseReason> =
+  new Set(["handoff", "owner-release"]);
+
+const completedReleaseMatches = (
   registered: LoopWorktreeLease,
-  concurrentClaim: WorktreeClaim | undefined,
-  linkedClaim: WorktreeClaim | undefined,
+  claim: WorktreeClaim | undefined,
+  worktree: WorktreeInventory,
+  liveClaim: WorktreeClaim | undefined
+): boolean =>
+  claim?.state === "released" &&
+  claim.releaseReason !== undefined &&
+  COMPLETED_RELEASE_REASONS.has(claim.releaseReason) &&
+  claim.owner.agentId === registered.agentId &&
+  claim.path === worktree.path &&
+  claim.branch === worktree.branch &&
+  claim.headSha === worktree.headSha &&
+  claim.changeDigest === worktree.changeDigest &&
+  liveClaim === undefined;
+
+/** The claim that holds a checkout now: the one it has not released. */
+const liveClaimFor = (
+  document: WorktreeCoordinationDocument,
+  commonGitDirectory: string,
+  path: string
+): WorktreeClaim | undefined =>
+  document.claims.find(
+    (claim) =>
+      claim.commonGitDirectory === commonGitDirectory &&
+      claim.path === path &&
+      claim.state !== "released"
+  );
+
+interface WorktreeClaimContext {
+  /** The active claim that admits a concurrent author on this checkout. */
+  concurrentClaim: WorktreeClaim | undefined;
+  /** The claim the registration names, in any state. */
+  linkedClaim: WorktreeClaim | undefined;
+  /** The unreleased claim that holds the checkout now, if any. */
+  liveClaim: WorktreeClaim | undefined;
+  /** Re-running `worktree claim` on the live claim would admit the author. */
+  refreshable: boolean;
+}
+
+const SAFE_COMMAND_WORD_PATTERN = /^[A-Za-z0-9._:/@%+=,-]+$/u;
+
+// Quote a value only when a POSIX shell would split or expand it.
+const commandWord = (value: string): string =>
+  SAFE_COMMAND_WORD_PATTERN.test(value)
+    ? value
+    : `'${value.replaceAll("'", "'\\''")}'`;
+
+interface StaleClaimRecovery {
+  commands: string[];
+  text: string;
+}
+
+/**
+ * The exact recovery for one stale coordination link. `worktree claim`
+ * refreshes a live claim in place under its existing ID, which restores a
+ * concurrent author whose own claim only went inactive or recorded another
+ * branch. A released claim is never refreshed (a new claim gets a new ID), so
+ * otherwise the live claim's owner, or the registered owner when nothing holds
+ * the checkout, claims and pauses its exact current state, and the controller
+ * accepts that pause receipt.
+ */
+const staleClaimRecovery = (
+  lease: Pick<LoopLease, "ownerAgentId" | "runId">,
+  registered: LoopWorktreeLease,
+  worktree: WorktreeInventory,
+  { linkedClaim, liveClaim, refreshable }: WorktreeClaimContext
+): StaleClaimRecovery => {
+  const owner = liveClaim?.owner ?? linkedClaim?.owner;
+  const ownerId = owner?.agentId ?? registered.agentId;
+  const agent = ownerId ? commandWord(ownerId) : "<owner>";
+  const path = commandWord(worktree.path);
+  const claim = [
+    `simple-changes worktree claim --agent-id ${agent} --worktree ${path}`,
+    `--adapter ${owner ? commandWord(owner.adapter) : "<adapter>"}`,
+    ...(owner?.ownerRef ? [`--owner-ref ${commandWord(owner.ownerRef)}`] : []),
+  ].join(" ");
+  if (
+    refreshable &&
+    registered.role === "concurrent-author" &&
+    liveClaim !== undefined &&
+    liveClaim.claimId === registered.claimId &&
+    liveClaim.owner.agentId === registered.agentId
+  ) {
+    const verify = `simple-changes loop verify --run-id ${lease.runId}`;
+    return {
+      commands: [claim, verify],
+      text: `Owner ${agent} refreshes claim ${liveClaim.claimId} in place with \`${claim}\`, then re-run \`${verify}\`.`,
+    };
+  }
+  const controller = commandWord(lease.ownerAgentId);
+  const pause = `simple-changes worktree pause --agent-id ${agent} --worktree ${path} --run-id ${lease.runId} --disposition preserve-in-place --reason <why>`;
+  const accept = `simple-changes loop accept-paused-change --run-id ${lease.runId} --agent-id ${controller} --pause-receipt <pause-receipt-id>`;
+  return {
+    commands: [claim, pause, accept],
+    text: `Owner ${agent} runs \`${claim}\`, then \`${pause}\`; controller ${controller} then runs \`${accept}\` with the receipt ID the pause prints.`,
+  };
+};
+
+const staleConcurrentClaimCause = (
+  registered: LoopWorktreeLease,
+  { linkedClaim, liveClaim }: WorktreeClaimContext
+): string => {
+  const claimId = registered.claimId ?? "(none)";
+  if (liveClaim && liveClaim.claimId !== registered.claimId) {
+    return `This concurrent author worktree is now held by claim ${liveClaim.claimId} of ${liveClaim.owner.agentId}, not by its registered claim ${claimId}.`;
+  }
+  if (linkedClaim?.state === "released") {
+    const reason = linkedClaim.releaseReason ?? "unrecorded";
+    return linkedClaim.releaseReason &&
+      COMPLETED_RELEASE_REASONS.has(linkedClaim.releaseReason)
+      ? `This concurrent author worktree no longer matches the exact state ${linkedClaim.owner.agentId} released under claim ${claimId} (${reason}). A released claim is never refreshed; a new claim gets a new ID.`
+      : `The registered claim ${claimId} of this concurrent author worktree was released (${reason}), which does not hand its work off. A released claim is never refreshed; a new claim gets a new ID.`;
+  }
+  if (linkedClaim) {
+    return `The registered claim ${claimId} of this concurrent author worktree is ${linkedClaim.state} or records another branch.`;
+  }
+  return `The registered claim ${claimId} of this concurrent author worktree no longer exists.`;
+};
+
+const concurrentClaimViolations = (
+  lease: Pick<LoopLease, "ownerAgentId" | "runId">,
+  registered: LoopWorktreeLease,
+  claims: WorktreeClaimContext,
   worktree: WorktreeInventory
 ): LoopViolation[] => {
-  const completedHandoffMatches =
-    linkedClaim?.state === "released" &&
-    linkedClaim.releaseReason === "handoff" &&
-    linkedClaim.claimId === registered.claimId &&
-    linkedClaim.owner.agentId === registered.agentId &&
-    linkedClaim.path === worktree.path &&
-    linkedClaim.branch === worktree.branch &&
-    linkedClaim.headSha === worktree.headSha &&
-    linkedClaim.changeDigest === worktree.changeDigest;
+  const { concurrentClaim, linkedClaim, liveClaim } = claims;
   if (
     registered.role !== "concurrent-author" ||
-    completedHandoffMatches ||
+    completedReleaseMatches(registered, linkedClaim, worktree, liveClaim) ||
     (concurrentClaim &&
       concurrentClaim.claimId === registered.claimId &&
       concurrentClaim.owner.agentId === registered.agentId)
   ) {
     return [];
   }
+  const recovery = staleClaimRecovery(lease, registered, worktree, claims);
   return [
     {
       changeDigest: worktree.changeDigest,
       code: "coordination-claim-stale",
       headSha: worktree.headSha,
-      message:
-        "A concurrent author worktree lost or changed its active ownership claim. Refresh the original claim or use strict paused-worktree coordination before integration continues.",
+      message: `${staleConcurrentClaimCause(registered, claims)} ${recovery.text}`,
+      nextCommands: recovery.commands,
       path: worktree.path,
     },
   ];
@@ -2011,21 +2133,20 @@ const currentWorktreeViolations = (
   worktree: WorktreeInventory,
   registered: LoopWorktreeLease | undefined,
   preparation: LoopWorktreePreparation | undefined,
-  concurrentClaim: WorktreeClaim | undefined,
-  linkedClaim: WorktreeClaim | undefined
+  claims: WorktreeClaimContext
 ): LoopViolation[] => {
   if (!registered) {
     return unregisteredWorktreeViolations(
       lease,
       worktree,
       preparation,
-      concurrentClaim
+      claims.concurrentClaim
     );
   }
   const violations = concurrentClaimViolations(
+    lease,
     registered,
-    concurrentClaim,
-    linkedClaim,
+    claims,
     worktree
   );
   violations.push(...retainedWorktreeViolations(registered, worktree));
@@ -2056,12 +2177,13 @@ const currentWorktreeViolations = (
       worktree
     )
   ) {
+    const recovery = staleClaimRecovery(lease, registered, worktree, claims);
     violations.push({
       changeDigest: worktree.changeDigest,
       code: "coordination-claim-stale",
       headSha: worktree.headSha,
-      message:
-        "The adopted worktree claim or pause receipt no longer matches current coordination and Git evidence.",
+      message: `The adopted worktree claim or pause receipt no longer matches current coordination and Git evidence. ${recovery.text}`,
+      nextCommands: recovery.commands,
       path: worktree.path,
     });
   }
@@ -2070,11 +2192,13 @@ const currentWorktreeViolations = (
     ((registered.claimId && !registered.pauseReceiptId) ||
       (!registered.claimId && registered.pauseReceiptId))
   ) {
+    const recovery = staleClaimRecovery(lease, registered, worktree, claims);
     violations.push({
       changeDigest: worktree.changeDigest,
       code: "coordination-claim-stale",
       headSha: worktree.headSha,
-      message: "The worktree lease has an incomplete coordination linkage.",
+      message: `The worktree lease has an incomplete coordination linkage. ${recovery.text}`,
+      nextCommands: recovery.commands,
       path: worktree.path,
     });
   }
@@ -2161,14 +2285,31 @@ const verificationAgainst = (
           (claim) => claim.claimId === registered.claimId
         )
       : undefined;
+    const liveClaim = liveClaimFor(
+      coordination,
+      lease.commonGitDirectory,
+      worktree.path
+    );
+    // `worktree claim` refreshes a live claim to active on the current branch.
+    const refreshable =
+      liveClaim !== undefined &&
+      concurrentClaimFor(
+        lease,
+        worktree,
+        {
+          ...coordination,
+          claims: [{ ...liveClaim, branch: worktree.branch, state: "active" }],
+        },
+        primaryBranch,
+        targetBranch
+      ) !== undefined;
     violations.push(
       ...currentWorktreeViolations(
         lease,
         worktree,
         registered,
         preparationByPath.get(worktree.path),
-        concurrentClaim,
-        linkedClaim
+        { concurrentClaim, linkedClaim, liveClaim, refreshable }
       )
     );
   }
@@ -3907,7 +4048,9 @@ export const guardLoopMutation = (
         throw new SimpleChangesError(
           `Loop guard rejected mutation: ${verification.violations
             .map((violation) => `${violation.code}:${violation.path}`)
-            .join(", ")}`,
+            .join(
+              ", "
+            )}. Run \`simple-changes loop status\` for the exact next commands.`,
           EXIT_CODES.unsafe
         );
       }
@@ -3963,7 +4106,9 @@ export const withLoopMutationLease = <T>(
         throw new SimpleChangesError(
           `Loop operation rejected mutation: ${openingVerification.violations
             .map((violation) => `${violation.code}:${violation.path}`)
-            .join(", ")}`,
+            .join(
+              ", "
+            )}. Run \`simple-changes loop status\` for the exact next commands.`,
           EXIT_CODES.unsafe
         );
       }
@@ -5697,18 +5842,13 @@ const emptyFinalizationCleanup = (): FinalizationCleanupResult => ({
 const completedHandoffContainment = (
   registered: LoopWorktreeLease,
   claim: WorktreeClaim,
+  liveClaim: WorktreeClaim | undefined,
   worktree: WorktreeInventory,
   repositoryPath: string,
   targetRevision: string
 ): TargetContainmentMethod | null => {
   if (
-    claim.state !== "released" ||
-    claim.releaseReason !== "handoff" ||
-    claim.owner.agentId !== registered.agentId ||
-    claim.path !== worktree.path ||
-    claim.branch !== worktree.branch ||
-    claim.headSha !== worktree.headSha ||
-    claim.changeDigest !== worktree.changeDigest ||
+    !completedReleaseMatches(registered, claim, worktree, liveClaim) ||
     worktree.changes.length > 0
   ) {
     return null;
@@ -5763,6 +5903,7 @@ const reconcileConcurrentAuthorClaims = (
     const handoffContainment = completedHandoffContainment(
       registered,
       claim,
+      liveClaimFor(coordination, lease.commonGitDirectory, registered.path),
       worktree,
       repositoryPath,
       targetRevision
@@ -9053,13 +9194,15 @@ const violationGuidanceCommands = (
       `simple-changes prepare-agent --run-id ${lease.runId} --agent-id <agent> --purpose <purpose>`
     );
   }
-  if (
-    codes.has("retained-worktree-changed") ||
-    codes.has("coordination-claim-stale")
-  ) {
+  if (codes.has("retained-worktree-changed")) {
     add(
-      "Ask the exact worktree owner to refresh its claim or pause receipt, then re-run `simple-changes loop verify`."
+      "Ask the exact worktree owner to claim it as an active concurrent author or pause it at a stable boundary, then re-run `simple-changes loop verify`."
     );
+  }
+  // A stale coordination link names its own exact recovery. Keep every step:
+  // two checkouts each need their own accepted pause receipt.
+  for (const violation of violations) {
+    commands.push(...(violation.nextCommands ?? []));
   }
   if (
     codes.has("remote-destination-changed") ||

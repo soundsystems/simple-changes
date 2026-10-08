@@ -1471,6 +1471,8 @@ export interface LoopViolation {
     | "unregistered-worktree";
   headSha: string | null;
   message: string;
+  /** Exact recovery commands, in order, when this violation has one. */
+  nextCommands?: string[];
   path: string;
 }
 

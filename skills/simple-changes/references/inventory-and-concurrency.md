@@ -181,8 +181,11 @@ when arriving later. The next guarded observation promotes a qualifying opening
 `preserved` entry and binds its exact claim ID and owner. Head and content-digest
 drift are expected for that role. The controller excludes it from the current
 integration and cleanup. Verification still fails closed if the claim is
-absent, released, reassigned, or branch-mismatched, or if the worktree is
-primary or on the primary target branch. Use `concurrentWork: "strict"` for the
+absent, reassigned, or branch-mismatched, if the worktree changed after its
+owner released the claim, or if the worktree is primary or on the primary
+target branch. A released claim is never refreshed, so `loop verify` and `loop
+status` then print the exact recovery: the owner claims and pauses the checkout
+with `preserve-in-place`, and the controller runs `loop accept-paused-change`. Use `concurrentWork: "strict"` for the
 older repository-wide serialized behavior. Legacy `preserve` policy values
 follow `allow-claimed`.
 

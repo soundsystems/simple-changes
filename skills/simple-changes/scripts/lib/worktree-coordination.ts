@@ -1154,6 +1154,28 @@ export const attachClaimedWorktree = (
   );
 };
 
+/**
+ * The checkout's exact branch, head, and content digest when its owner
+ * releases it, or undefined when the claimed directory is gone. A released
+ * claim is never refreshed, so recording the released state lets an active
+ * loop admit exactly that state and fail closed on any later change.
+ */
+const releasedEvidence = (
+  inventory: RepositoryInventory,
+  path: string
+): Pick<WorktreeClaim, "branch" | "changeDigest" | "headSha"> | undefined => {
+  const current = inventory.worktrees.find(
+    (worktree) => worktree.path === path && !worktree.prunable
+  );
+  return current
+    ? {
+        branch: current.branch,
+        changeDigest: current.changeDigest,
+        headSha: current.headSha,
+      }
+    : undefined;
+};
+
 export const releaseWorktreeClaim = (
   repositoryPath: string,
   agentIdInput: string,
@@ -1177,7 +1199,10 @@ export const releaseWorktreeClaim = (
     claimId,
     agentId,
     "released",
-    { releaseReason: "owner-release" },
+    {
+      ...releasedEvidence(inventory, claim.path),
+      releaseReason: "owner-release",
+    },
     [...LIVE_STATES]
   );
 };
@@ -1310,7 +1335,8 @@ export const releaseHandoffWorktreeClaim = (
       commonGitDirectory,
       claim.claimId,
       agentId,
-      "handoff"
+      "handoff",
+      releasedEvidence(opening, claim.path)
     );
   });
 };

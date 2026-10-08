@@ -179,8 +179,9 @@
 - A worktree owner can persist an opaque local claim. Under the default
   `allow-claimed` policy, its distinct non-primary branch may continue changing
   while integration proceeds; the controller must exclude it from packaging,
-  merge, and cleanup. Branch switches, claim release, ownership changes, and
-  target/primary collisions re-block integration. Under `strict`, an owner may
+  merge, and cleanup. Branch switches, any change after its owner releases
+  the claim, ownership changes, and target/primary collisions re-block
+  integration; a release records and admits only the exact state released. Under `strict`, an owner may
   acknowledge a pause only for its exact path, branch, HEAD, and content digest,
   and the controller adopts that state only as mutation-forbidden preserved
   work. A claim is released by its owner, by a proceeding completed-work

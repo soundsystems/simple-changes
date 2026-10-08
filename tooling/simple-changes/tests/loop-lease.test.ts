@@ -73,6 +73,7 @@ import {
   releaseHandoffWorktreeClaim,
   releaseWorktreeClaim,
   withWorktreeCoordinationLock,
+  worktreeCoordinationPath,
 } from "../../../skills/simple-changes/scripts/lib/worktree-coordination.ts";
 import { auditWorktreeEquivalence } from "../../../skills/simple-changes/scripts/lib/worktree-equivalence.ts";
 import {
@@ -91,6 +92,41 @@ const repository = (): TestRepository => {
   const fixture = createTestRepository();
   repositories.push(fixture);
   return fixture;
+};
+
+const commitFixture = (
+  root: string,
+  relativePath: string,
+  contents: string
+): void => {
+  writeFixture(root, relativePath, contents);
+  git(root, ["add", relativePath]);
+  git(root, ["commit", "-m", `Update ${relativePath}`]);
+};
+
+const cliPath = fileURLToPath(
+  new URL(
+    "../../../skills/simple-changes/scripts/simple-changes.ts",
+    import.meta.url
+  )
+);
+const cliDecoder = new TextDecoder();
+
+const runCli = (
+  cwd: string,
+  args: string[]
+): { exitCode: number | null; stderr: string; stdout: string } => {
+  const result = spawnSync([process.execPath, cliPath, ...args], {
+    cwd,
+    env: { ...process.env, SIMPLE_CHANGES_SKILL_ROOTS: "" },
+    stderr: "pipe",
+    stdout: "pipe",
+  });
+  return {
+    exitCode: result.exitCode,
+    stderr: cliDecoder.decode(result.stderr),
+    stdout: cliDecoder.decode(result.stdout),
+  };
 };
 
 // Reproduce the ledger written before opening provider and clean scope capture.
@@ -2220,6 +2256,44 @@ describe("active integration-loop lease", () => {
     expect(existsSync(handedOff)).toBe(false);
   }, 60_000);
 
+  test("removes a target-contained checkout its owner released at finalization", () => {
+    const fixture = repository();
+    const released = join(fixture.base, "owner-release-ancestry");
+    git(fixture.root, [
+      "worktree",
+      "add",
+      "-b",
+      "owner-release-ancestry",
+      released,
+    ]);
+    const claim = claimWorktree(
+      fixture.root,
+      "release-author",
+      released,
+      "codex",
+      "task-release-ancestry"
+    );
+    const lease = startLoop(fixture.root, "controller", "integrate");
+
+    expect(
+      releaseWorktreeClaim(released, "release-author", claim.claimId)
+    ).toMatchObject({ releaseReason: "owner-release", state: "released" });
+    const finalized = finalizeLoop(
+      fixture.root,
+      lease.runId,
+      "controller",
+      "The released work is already an ancestor of the target."
+    );
+
+    expect(finalized).toMatchObject({ blockers: [], outcome: "completed" });
+    expect(finalized.cleanup.removedWorktrees).toContain(released);
+    expect(finalized.cleanup.removedBranches).toContainEqual({
+      branch: "owner-release-ancestry",
+      method: "target-contained",
+    });
+    expect(existsSync(released)).toBe(false);
+  }, 60_000);
+
   test("keeps another owner's claim on a clean target-contained checkout at finalization", () => {
     const fixture = repository();
     const claimed = join(fixture.base, "other-owner-clean");
@@ -3318,13 +3392,454 @@ describe("active integration-loop lease", () => {
     writeFixture(authorPath, "feature.ts", "export const feature = 2;\n");
     expect(verifyLoop(fixture.root).ok).toBe(true);
 
+    // The release records the exact state it released, dirty or not, and
+    // admits only that state.
     releaseWorktreeClaim(fixture.root, "feature-agent", claim.claimId);
+    expect(verifyLoop(fixture.root).ok).toBe(true);
+    writeFixture(authorPath, "feature.ts", "export const feature = 3;\n");
     expect(verifyLoop(fixture.root).violations).toContainEqual(
       expect.objectContaining({
         code: "coordination-claim-stale",
         path: authorPath,
       })
     );
+  });
+
+  test("recovers an author changed after its owner released it through the printed steps", async () => {
+    const fixture = repository();
+    const authorPath = join(fixture.base, "released-author");
+    git(fixture.root, [
+      "worktree",
+      "add",
+      "-b",
+      "released-author-work",
+      authorPath,
+    ]);
+    const claim = claimWorktree(
+      fixture.root,
+      "subagent",
+      authorPath,
+      "claude-code",
+      "task-subagent"
+    );
+    const lease = startLoop(fixture.root, "controller", "ship");
+    expect(lease.worktrees).toContainEqual(
+      expect.objectContaining({
+        claimId: claim.claimId,
+        path: authorPath,
+        role: "concurrent-author",
+      })
+    );
+    commitFixture(authorPath, "feature.ts", "export const feature = 1;\n");
+    releaseWorktreeClaim(authorPath, "subagent", claim.claimId);
+    expect(verifyLoop(fixture.root).ok).toBe(true);
+
+    // The 0.27.0 deadlock: a commit lands after the owner released its claim.
+    commitFixture(authorPath, "feature.ts", "export const feature = 2;\n");
+    const stale = verifyLoop(fixture.root).violations.find(
+      (violation) =>
+        violation.code === "coordination-claim-stale" &&
+        violation.path === authorPath
+    );
+    const sequence = [
+      `simple-changes worktree claim --agent-id subagent --worktree ${authorPath} --adapter claude-code --owner-ref task-subagent`,
+      `simple-changes worktree pause --agent-id subagent --worktree ${authorPath} --run-id ${lease.runId} --disposition preserve-in-place --reason <why>`,
+      `simple-changes loop accept-paused-change --run-id ${lease.runId} --agent-id controller --pause-receipt <pause-receipt-id>`,
+    ];
+    expect(stale?.nextCommands).toEqual(sequence);
+    for (const command of sequence) {
+      expect(stale?.message).toContain(`\`${command}\``);
+    }
+    expect(stale?.message).toContain(
+      `no longer matches the exact state subagent released under claim ${claim.claimId} (owner-release)`
+    );
+    expect(stale?.message).not.toContain("Refresh the original claim");
+    expect(loopStatus(fixture.root).guidance.nextCommands).toEqual(sequence);
+    expect(() =>
+      guardLoopMutation(fixture.root, lease.runId, "controller")
+    ).toThrow("Run `simple-changes loop status` for the exact next commands.");
+    await expect(
+      withLoopMutationLease(
+        fixture.root,
+        lease.runId,
+        "controller",
+        "probe",
+        () => undefined
+      )
+    ).rejects.toThrow(
+      "Run `simple-changes loop status` for the exact next commands."
+    );
+    const verifyText = runCli(fixture.root, [
+      "loop",
+      "verify",
+      "--run-id",
+      lease.runId,
+    ]);
+    expect(verifyText.exitCode).not.toBe(0);
+    for (const command of sequence) {
+      expect(verifyText.stdout).toContain(`  Next: ${command}\n`);
+    }
+
+    // Run the printed steps as written, filling in only the placeholders.
+    let receiptId = "";
+    for (const command of sequence) {
+      const args = command
+        .split(" ")
+        .slice(1)
+        .map((word) =>
+          word === "<why>"
+            ? "Recover-the-released-author"
+            : word.replace("<pause-receipt-id>", receiptId)
+        );
+      const result = runCli(fixture.root, [...args, "--json"]);
+      expect(result.stderr).toBe("");
+      expect(result.exitCode).toBe(0);
+      if (args[1] === "pause") {
+        ({ receiptId } = JSON.parse(result.stdout) as { receiptId: string });
+      }
+    }
+    expect(receiptId).toStartWith("pause-");
+    expect(verifyLoop(fixture.root).ok).toBe(true);
+    expect(readLoopLease(fixture.root)?.worktrees).toContainEqual(
+      expect.objectContaining({
+        path: authorPath,
+        pauseReceiptId: receiptId,
+        role: "preserved",
+      })
+    );
+  });
+
+  test("admits an author released at its exact current state by owner release or handoff", () => {
+    const fixture = repository();
+    const releasedPath = join(fixture.base, "owner-released");
+    const handedOffPath = join(fixture.base, "handed-off");
+    git(fixture.root, [
+      "worktree",
+      "add",
+      "-b",
+      "owner-released-work",
+      releasedPath,
+    ]);
+    git(fixture.root, [
+      "worktree",
+      "add",
+      "-b",
+      "handed-off-work",
+      handedOffPath,
+    ]);
+    const activePath = join(fixture.base, "still-active");
+    git(fixture.root, [
+      "worktree",
+      "add",
+      "-b",
+      "still-active-work",
+      activePath,
+    ]);
+    const released = claimWorktree(
+      fixture.root,
+      "release-agent",
+      releasedPath,
+      "codex"
+    );
+    claimWorktree(fixture.root, "handoff-agent", handedOffPath, "codex");
+    // A live claim on another checkout does not hold these released ones.
+    claimWorktree(fixture.root, "active-agent", activePath, "codex");
+    startLoop(fixture.root, "controller", "ship");
+    // Both owners commit after claiming, so only the release itself can
+    // record the state the loop admits.
+    commitFixture(releasedPath, "released.ts", "export const done = 1;\n");
+    commitFixture(handedOffPath, "handoff.ts", "export const done = 1;\n");
+
+    const releasedClaim = releaseWorktreeClaim(
+      releasedPath,
+      "release-agent",
+      released.claimId
+    );
+    const handedOffClaim = releaseHandoffWorktreeClaim(
+      handedOffPath,
+      "handoff-agent"
+    );
+    const current = (path: string) =>
+      captureInventory(fixture.root).worktrees.find(
+        (worktree) => worktree.path === path
+      );
+    for (const [claim, path, reason] of [
+      [releasedClaim, releasedPath, "owner-release"],
+      [handedOffClaim, handedOffPath, "handoff"],
+    ] as const) {
+      expect(claim).toMatchObject({
+        branch: current(path)?.branch,
+        changeDigest: current(path)?.changeDigest,
+        headSha: current(path)?.headSha,
+        releaseReason: reason,
+        state: "released",
+      });
+    }
+    expect(verifyLoop(fixture.root).ok).toBe(true);
+  });
+
+  test("admits a released author only while every recorded fact still matches", () => {
+    const fixture = repository();
+    const authorPath = join(fixture.base, "released-facts");
+    git(fixture.root, [
+      "worktree",
+      "add",
+      "-b",
+      "released-facts-work",
+      authorPath,
+    ]);
+    const claim = claimWorktree(
+      fixture.root,
+      "fact-agent",
+      authorPath,
+      "codex"
+    );
+    startLoop(fixture.root, "controller", "ship");
+    commitFixture(authorPath, "facts.ts", "export const facts = 1;\n");
+    const released = releaseWorktreeClaim(
+      authorPath,
+      "fact-agent",
+      claim.claimId
+    );
+    const coordinationPath = worktreeCoordinationPath(
+      captureInventory(fixture.root).repository.commonGitDirectory
+    );
+    const original = readFileSync(coordinationPath, "utf8");
+    const withClaim = (patch: Record<string, unknown>): void => {
+      const document = JSON.parse(original) as {
+        claims: Record<string, unknown>[];
+      };
+      document.claims = document.claims.map((item) =>
+        item.claimId === claim.claimId ? { ...item, ...patch } : item
+      );
+      writeFileSync(coordinationPath, `${JSON.stringify(document)}\n`);
+    };
+    const staleFor = () =>
+      verifyLoop(fixture.root).violations.filter(
+        (violation) =>
+          violation.code === "coordination-claim-stale" &&
+          violation.path === authorPath
+      );
+
+    expect(verifyLoop(fixture.root).ok).toBe(true);
+    withClaim({ releaseReason: "handoff" });
+    expect(verifyLoop(fixture.root).ok).toBe(true);
+    const changedState = `no longer matches the exact state fact-agent released under claim ${claim.claimId} (owner-release)`;
+    for (const [patch, cause] of [
+      [
+        { releaseReason: "shipped" },
+        `claim ${claim.claimId} of this concurrent author worktree was released (shipped), which does not hand its work off`,
+      ],
+      [
+        { releaseReason: "takeover" },
+        "was released (takeover), which does not hand its work off",
+      ],
+      [
+        { owner: { ...released.owner, agentId: "another-agent" } },
+        "no longer matches the exact state another-agent released",
+      ],
+      [{ path: join(fixture.base, "elsewhere") }, changedState],
+      [{ branch: "another-branch" }, changedState],
+      [{ headSha: "0".repeat(40) }, changedState],
+      [{ changeDigest: "f".repeat(64) }, changedState],
+      [
+        { state: "stale" },
+        `claim ${claim.claimId} of this concurrent author worktree is stale or records another branch`,
+      ],
+    ] as const) {
+      withClaim(patch);
+      const stale = staleFor();
+      expect({ patch, stale: stale.length }).toEqual({ patch, stale: 1 });
+      expect(stale[0]?.message).toContain(cause);
+    }
+    writeFileSync(coordinationPath, original);
+    expect(verifyLoop(fixture.root).ok).toBe(true);
+    writeFixture(authorPath, "facts.ts", "export const facts = 2;\n");
+    expect(staleFor()).toHaveLength(1);
+  });
+
+  test("tells an author whose own claim went inactive to refresh it in place", () => {
+    const fixture = repository();
+    const authorPath = join(fixture.base, "inactive-author");
+    git(fixture.root, [
+      "worktree",
+      "add",
+      "-b",
+      "inactive-author-work",
+      authorPath,
+    ]);
+    const ownerRef = "Ann's task";
+    const claim = claimWorktree(
+      fixture.root,
+      "inactive-agent",
+      authorPath,
+      "codex",
+      ownerRef
+    );
+    const lease = startLoop(fixture.root, "controller", "ship");
+    pauseClaimedWorktree(
+      authorPath,
+      "inactive-agent",
+      authorPath,
+      lease.runId,
+      "preserve-in-place",
+      "Paused without being accepted."
+    );
+    const claimCommand = (agent: string) =>
+      `simple-changes worktree claim --agent-id ${agent} --worktree ${authorPath} --adapter codex --owner-ref 'Ann'\\''s task'`;
+    const refresh = [
+      claimCommand("inactive-agent"),
+      `simple-changes loop verify --run-id ${lease.runId}`,
+    ];
+    const pauseAndAccept = (agent: string) => [
+      claimCommand(agent),
+      `simple-changes worktree pause --agent-id ${agent} --worktree ${authorPath} --run-id ${lease.runId} --disposition preserve-in-place --reason <why>`,
+      `simple-changes loop accept-paused-change --run-id ${lease.runId} --agent-id controller --pause-receipt <pause-receipt-id>`,
+    ];
+    const staleCommands = () =>
+      verifyLoop(fixture.root).violations.find(
+        (violation) =>
+          violation.code === "coordination-claim-stale" &&
+          violation.path === authorPath
+      )?.nextCommands;
+
+    expect(staleCommands()).toEqual(refresh);
+    // The printed command runs as written in a POSIX shell and keeps the ID.
+    const shell = spawnSync(
+      [
+        "sh",
+        "-c",
+        `${refresh[0]?.replace("simple-changes ", `'${process.execPath}' '${cliPath}' `)} --json`,
+      ],
+      {
+        cwd: fixture.root,
+        env: { ...process.env, SIMPLE_CHANGES_SKILL_ROOTS: "" },
+        stderr: "pipe",
+        stdout: "pipe",
+      }
+    );
+    expect(cliDecoder.decode(shell.stderr)).toBe("");
+    expect(
+      (
+        JSON.parse(cliDecoder.decode(shell.stdout)) as {
+          claim: { claimId: string; owner: { ownerRef: string } };
+        }
+      ).claim
+    ).toMatchObject({ claimId: claim.claimId, owner: { ownerRef } });
+    expect(verifyLoop(fixture.root).ok).toBe(true);
+
+    // Only the registered owner can refresh the registered claim.
+    const coordinationPath = worktreeCoordinationPath(
+      captureInventory(fixture.root).repository.commonGitDirectory
+    );
+    const original = readFileSync(coordinationPath, "utf8");
+    const document = JSON.parse(original) as {
+      claims: { claimId: string; owner: { agentId: string } }[];
+    };
+    for (const item of document.claims) {
+      if (item.claimId === claim.claimId) {
+        item.owner.agentId = "other-agent";
+      }
+    }
+    writeFileSync(coordinationPath, `${JSON.stringify(document)}\n`);
+    expect(staleCommands()).toEqual(pauseAndAccept("other-agent"));
+    writeFileSync(coordinationPath, original);
+
+    // A claim recording another branch is refreshed the same way.
+    git(authorPath, ["checkout", "-b", "inactive-author-renamed"]);
+    expect(staleCommands()).toEqual(refresh);
+    claimWorktree(
+      fixture.root,
+      "inactive-agent",
+      authorPath,
+      "codex",
+      ownerRef
+    );
+    expect(staleCommands()).toBeUndefined();
+
+    // A detached checkout cannot be admitted by any refresh, so the exact
+    // pause and accept steps are printed instead.
+    git(authorPath, ["checkout", "--detach"]);
+    expect(staleCommands()).toEqual(pauseAndAccept("inactive-agent"));
+  });
+
+  test("asks an owner who claimed again after releasing to pause, not refresh", () => {
+    const fixture = repository();
+    const authorPath = join(fixture.base, "returning-author");
+    git(fixture.root, [
+      "worktree",
+      "add",
+      "-b",
+      "returning-author-work",
+      authorPath,
+    ]);
+    const first = claimWorktree(
+      fixture.root,
+      "returning-agent",
+      authorPath,
+      "codex",
+      "task-return"
+    );
+    const lease = startLoop(fixture.root, "controller", "ship");
+    releaseWorktreeClaim(authorPath, "returning-agent", first.claimId);
+    expect(verifyLoop(fixture.root).ok).toBe(true);
+    const second = claimWorktree(
+      fixture.root,
+      "returning-agent",
+      authorPath,
+      "codex",
+      "task-return"
+    );
+    expect(second.claimId).not.toBe(first.claimId);
+
+    const stale = verifyLoop(fixture.root).violations.find(
+      (violation) =>
+        violation.code === "coordination-claim-stale" &&
+        violation.path === authorPath
+    );
+    expect(stale?.message).toContain(
+      `now held by claim ${second.claimId} of returning-agent, not by its registered claim ${first.claimId}`
+    );
+    expect(stale?.nextCommands).toEqual([
+      `simple-changes worktree claim --agent-id returning-agent --worktree ${authorPath} --adapter codex --owner-ref task-return`,
+      `simple-changes worktree pause --agent-id returning-agent --worktree ${authorPath} --run-id ${lease.runId} --disposition preserve-in-place --reason <why>`,
+      `simple-changes loop accept-paused-change --run-id ${lease.runId} --agent-id controller --pause-receipt <pause-receipt-id>`,
+    ]);
+  });
+
+  test("prints placeholders for a link whose owner is unknown", () => {
+    const fixture = repository();
+    const preservedPath = join(fixture.base, "unlinked-preserved");
+    git(fixture.root, [
+      "worktree",
+      "add",
+      "-b",
+      "unlinked-preserved-work",
+      preservedPath,
+    ]);
+    const lease = startLoop(fixture.root, "controller", "integrate");
+    const leasePath = loopLeasePath(lease.commonGitDirectory);
+    const stored = JSON.parse(readFileSync(leasePath, "utf8")) as LoopLease;
+    stored.worktrees = stored.worktrees.map((worktree) =>
+      worktree.path === preservedPath
+        ? { ...worktree, claimId: "claim-missing" }
+        : worktree
+    );
+    writeFileSync(leasePath, `${JSON.stringify(stored, null, 2)}\n`, "utf8");
+
+    const stale = verifyLoop(fixture.root).violations.find(
+      (violation) =>
+        violation.code === "coordination-claim-stale" &&
+        violation.path === preservedPath
+    );
+    expect(stale?.message).toStartWith(
+      "The worktree lease has an incomplete coordination linkage. Owner <owner> runs"
+    );
+    expect(stale?.nextCommands).toEqual([
+      `simple-changes worktree claim --agent-id <owner> --worktree ${preservedPath} --adapter <adapter>`,
+      `simple-changes worktree pause --agent-id <owner> --worktree ${preservedPath} --run-id ${lease.runId} --disposition preserve-in-place --reason <why>`,
+      `simple-changes loop accept-paused-change --run-id ${lease.runId} --agent-id controller --pause-receipt <pause-receipt-id>`,
+    ]);
   });
 
   test("promotes an opening preserved worktree after its owner claims it", () => {
@@ -3474,19 +3989,29 @@ describe("active integration-loop lease", () => {
     ).toThrow("not allowed to run guarded integration mutations");
 
     releaseWorktreeClaim(fixture.root, "first-agent", firstClaim.claimId);
-    claimWorktree(
+    // The release alone admits the unchanged checkout; a newer live claim
+    // by anyone does not.
+    expect(verifyLoop(fixture.root).ok).toBe(true);
+    const secondClaim = claimWorktree(
       fixture.root,
       "second-agent",
       authorPath,
       "codex",
       "task-second"
     );
-    expect(verifyLoop(fixture.root).violations).toContainEqual(
-      expect.objectContaining({
-        code: "coordination-claim-stale",
-        path: authorPath,
-      })
+    const stale = verifyLoop(fixture.root).violations.find(
+      (violation) =>
+        violation.code === "coordination-claim-stale" &&
+        violation.path === authorPath
     );
+    expect(stale?.message).toContain(
+      `now held by claim ${secondClaim.claimId} of second-agent, not by its registered claim ${firstClaim.claimId}`
+    );
+    expect(stale?.nextCommands).toEqual([
+      `simple-changes worktree claim --agent-id second-agent --worktree ${authorPath} --adapter codex --owner-ref task-second`,
+      `simple-changes worktree pause --agent-id second-agent --worktree ${authorPath} --run-id ${lease.runId} --disposition preserve-in-place --reason <why>`,
+      `simple-changes loop accept-paused-change --run-id ${lease.runId} --agent-id controller --pause-receipt <pause-receipt-id>`,
+    ]);
   });
 
   test("strict concurrent-work policy preserves repository-wide serialization", () => {

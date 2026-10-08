@@ -2514,6 +2514,15 @@ const renderLoopVerification = (
   return `${lines.join("\n")}\n`;
 };
 
+// `loop status` lists the same commands in its guidance.
+const renderViolationNextCommands = (
+  result: ReturnType<typeof verifyLoop>
+): string =>
+  result.violations
+    .flatMap((violation) => violation.nextCommands ?? [])
+    .map((command) => `  Next: ${command}\n`)
+    .join("");
+
 const runLoopRecovery = (options: CliOptions): void => {
   if (options.staleLease) {
     const receipt = recoverStaleLoopLease(
@@ -2984,7 +2993,7 @@ const runLoopVerifyAction = (
   writeOutput(
     { ...verification, ...(holds ? { holds } : {}), turnEnd },
     options.json,
-    `${renderLoopVerification(verification)}${holds ? renderHoldReport(holds) : ""}${turnEnd}\n`
+    `${renderLoopVerification(verification)}${renderViolationNextCommands(verification)}${holds ? renderHoldReport(holds) : ""}${turnEnd}\n`
   );
   if (!verification.ok) {
     throw new SimpleChangesError(

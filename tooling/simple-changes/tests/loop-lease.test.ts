@@ -1921,6 +1921,68 @@ describe("active integration-loop lease", () => {
     );
   }, 30_000);
 
+  for (const reclaimed of [false, true]) {
+    test(`removes a disposed adopted checkout only while its adopted claim holds it (${reclaimed ? "re-claimed" : "adopted"})`, () => {
+      const fixture = repository();
+      writeFixture(
+        fixture.root,
+        ".simple-changes.json",
+        `${JSON.stringify({ ...DEFAULT_POLICY, concurrentWork: "strict" })}\n`
+      );
+      const lease = startLoop(fixture.root, "controller", "integrate");
+      const straggler = join(fixture.base, "disposed-straggler");
+      git(fixture.root, [
+        "worktree",
+        "add",
+        "-b",
+        "disposed-straggler",
+        straggler,
+      ]);
+      claimWorktree(straggler, "straggler-author", straggler, "codex");
+      adoptPausedWorktree(
+        fixture.root,
+        lease.runId,
+        "controller",
+        pauseClaimedWorktree(
+          straggler,
+          "straggler-author",
+          straggler,
+          lease.runId,
+          "preserve-in-place",
+          "Pause the target-contained straggler."
+        ).receiptId
+      );
+      const current = captureInventory(fixture.root).worktrees.find(
+        (worktree) => worktree.path === straggler
+      );
+      authorizeWorktreeRemoval(
+        fixture.root,
+        lease.runId,
+        "controller",
+        straggler,
+        current?.changeDigest ?? "",
+        "user",
+        "The straggler holds nothing the target lacks."
+      );
+      if (reclaimed) {
+        // Its owner takes the unchanged checkout back before finalization.
+        claimWorktree(straggler, "straggler-author", straggler, "codex");
+      }
+
+      const finalized = finalizeLoop(
+        fixture.root,
+        lease.runId,
+        "controller",
+        "Finish the disposed straggler."
+      );
+
+      expect(existsSync(straggler)).toBe(reclaimed);
+      expect(finalized.cleanup.removedWorktrees.includes(straggler)).toBe(
+        !reclaimed
+      );
+    }, 60_000);
+  }
+
   test("still refuses disposal of a dirty or truly-unique adopted worktree", () => {
     const fixture = repository();
     const lease = startLoop(fixture.root, "controller", "integrate");
@@ -2316,6 +2378,77 @@ describe("active integration-loop lease", () => {
       method: "target-contained",
     });
     expect(existsSync(released)).toBe(false);
+  }, 60_000);
+
+  test("never removes a target-contained checkout that a paused claim holds", () => {
+    const fixture = repository();
+    const paused = join(fixture.base, "paused-holder");
+    git(fixture.root, ["worktree", "add", "-b", "paused-holder", paused]);
+    const lease = startLoop(fixture.root, "controller", "integrate");
+    claimWorktree(fixture.root, "pausing-owner", paused, "codex");
+    pauseClaimedWorktree(
+      fixture.root,
+      "pausing-owner",
+      paused,
+      lease.runId,
+      "preserve-in-place",
+      "Hold this checkout."
+    );
+
+    const finalized = finalizeLoop(
+      fixture.root,
+      lease.runId,
+      "controller",
+      "A paused owner still holds this checkout."
+    );
+
+    expect(finalized.cleanup.removedWorktrees).not.toContain(paused);
+    expect(existsSync(paused)).toBe(true);
+  });
+
+  test("never removes a released checkout another owner holds after a failed removal", () => {
+    const fixture = repository();
+    const released = join(fixture.base, "retried-release");
+    git(fixture.root, ["worktree", "add", "-b", "retried-release", released]);
+    const claim = claimWorktree(
+      fixture.root,
+      "release-author",
+      released,
+      "codex"
+    );
+    const lease = startLoop(fixture.root, "controller", "integrate");
+    releaseWorktreeClaim(released, "release-author", claim.claimId);
+    git(fixture.root, ["worktree", "lock", released]);
+
+    const first = finalizeLoop(
+      fixture.root,
+      lease.runId,
+      "controller",
+      "The locked checkout cannot be removed yet."
+    );
+    expect(first.outcome).toBe("relinquished");
+    expect(existsSync(released)).toBe(true);
+
+    git(fixture.root, ["worktree", "unlock", released]);
+    claimWorktree(fixture.root, "next-owner", released, "codex");
+    pauseClaimedWorktree(
+      fixture.root,
+      "next-owner",
+      released,
+      lease.runId,
+      "preserve-in-place",
+      "Hold the unchanged checkout."
+    );
+    startLoop(fixture.root, "controller", "resume");
+    const second = finalizeLoop(
+      fixture.root,
+      lease.runId,
+      "controller",
+      "Another owner now holds the checkout."
+    );
+
+    expect(second.cleanup.removedWorktrees).not.toContain(released);
+    expect(existsSync(released)).toBe(true);
   }, 60_000);
 
   test("keeps another owner's claim on a clean target-contained checkout at finalization", () => {
@@ -3680,6 +3813,76 @@ describe("active integration-loop lease", () => {
     expect(verifyLoop(fixture.root).ok).toBe(true);
     writeFixture(authorPath, "facts.ts", "export const facts = 2;\n");
     expect(staleFor()).toHaveLength(1);
+  });
+
+  test("admits only a release that recorded the checkout's state at release", () => {
+    const fixture = repository();
+    const legacyPath = join(fixture.base, "legacy-release");
+    const removedPath = join(fixture.base, "removed-release");
+    git(fixture.root, ["worktree", "add", "-b", "legacy-release", legacyPath]);
+    git(fixture.root, [
+      "worktree",
+      "add",
+      "-b",
+      "removed-release",
+      removedPath,
+    ]);
+    const legacy = claimWorktree(
+      fixture.root,
+      "legacy-owner",
+      legacyPath,
+      "codex"
+    );
+    const removed = claimWorktree(
+      fixture.root,
+      "removed-owner",
+      removedPath,
+      "codex"
+    );
+    startLoop(fixture.root, "controller", "ship");
+    const staleAt = (path: string) =>
+      verifyLoop(fixture.root).violations.filter(
+        (violation) =>
+          violation.code === "coordination-claim-stale" &&
+          violation.path === path
+      );
+
+    // An older client's release keeps the claim's earlier evidence and writes
+    // a plain release event; even when that evidence matches the checkout,
+    // nothing shows the owner released this state.
+    releaseWorktreeClaim(legacyPath, "legacy-owner", legacy.claimId);
+    expect(staleAt(legacyPath)).toEqual([]);
+    const coordinationPath = worktreeCoordinationPath(
+      captureInventory(fixture.root).repository.commonGitDirectory
+    );
+    const document = JSON.parse(readFileSync(coordinationPath, "utf8")) as {
+      events: { claimId: string; eventId: string; state: string }[];
+    };
+    for (const event of document.events) {
+      if (event.claimId === legacy.claimId && event.state === "released") {
+        event.eventId = "event-legacy-release";
+      }
+    }
+    writeFileSync(coordinationPath, `${JSON.stringify(document)}\n`);
+    const [legacyStale] = staleAt(legacyPath);
+    expect(legacyStale?.message).toContain(
+      `was released (owner-release) without recording the checkout's state at release`
+    );
+
+    // A release whose checkout was already gone records nothing, so the same
+    // checkout recreated at its claimed state is not admitted either.
+    rmSync(removedPath, { force: true, recursive: true });
+    releaseWorktreeClaim(fixture.root, "removed-owner", removed.claimId);
+    git(fixture.root, ["worktree", "prune"]);
+    git(fixture.root, ["worktree", "add", removedPath, "removed-release"]);
+    const current = captureInventory(fixture.root).worktrees.find(
+      (worktree) => worktree.path === removedPath
+    );
+    expect(current).toMatchObject({
+      changeDigest: removed.changeDigest,
+      headSha: removed.headSha,
+    });
+    expect(staleAt(removedPath)).toHaveLength(1);
   });
 
   test("tells an author whose own claim went inactive to refresh it in place", () => {

@@ -1306,11 +1306,35 @@ export const releaseClaimUnderLock = (
     claimId,
     actorAgentId,
     "released",
-    now
+    now,
+    currentEvidence
+      ? `${RELEASED_STATE_EVENT_PREFIX}${randomUUID()}`
+      : `event-${randomUUID()}`
   );
   writeCoordinationDocument(commonGitDirectory, document);
   return updated;
 };
+
+// The claim record is closed to new fields, so older clients that share the
+// coordination file can still read it; a release that recorded the
+// checkout's exact state at release time is marked in its event ID instead.
+const RELEASED_STATE_EVENT_PREFIX = "event-released-state-";
+
+/**
+ * Whether a released claim's branch, head, and digest are the state its
+ * release recorded from the present checkout, rather than evidence left from
+ * an earlier claim or refresh (a release by an older client, or one whose
+ * checkout was already gone).
+ */
+export const releaseRecordedState = (
+  document: WorktreeCoordinationDocument,
+  claimId: string
+): boolean =>
+  document.events.some(
+    (event) =>
+      event.claimId === claimId &&
+      event.eventId.startsWith(RELEASED_STATE_EVENT_PREFIX)
+  );
 
 /**
  * Completed-work handoff: the author declares the checkout it is running in

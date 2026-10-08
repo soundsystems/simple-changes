@@ -117,6 +117,7 @@ import {
   recoverStaleWorktreeCoordinationLock,
   releaseAbsentWorktreeClaimsUnderLock,
   releaseClaimUnderLock,
+  releaseRecordedState,
   retireAbsentWorktreeClaimsUnderLock,
   withWorktreeCoordinationLock,
   worktreeClaimDocumentDigest,
@@ -1912,8 +1913,10 @@ const withConcurrentAuthorAdmissions = (
 // An author's own finished release, through `initialize --mode handoff`, a
 // ready-work receipt, or a plain `worktree release`, makes its checkout
 // ordinary stable work. Each records the exact state it released, so the
-// release admits only that state, and only while no newer live claim holds the
-// checkout. Callers find the claim by the registration's own claim ID.
+// release admits only that state, only when the release itself recorded it
+// from the present checkout, and only while no newer live claim holds the
+// checkout. Any other release goes through pause and accept. Callers find
+// the claim by the registration's own claim ID.
 const COMPLETED_RELEASE_REASONS: ReadonlySet<WorktreeClaimReleaseReason> =
   new Set(["handoff", "owner-release"]);
 
@@ -1921,17 +1924,25 @@ const completedReleaseMatches = (
   registered: LoopWorktreeLease,
   claim: WorktreeClaim | undefined,
   worktree: WorktreeInventory,
-  liveClaim: WorktreeClaim | undefined
+  { liveClaim, releaseRecorded }: ReleaseContext
 ): boolean =>
   claim?.state === "released" &&
   claim.releaseReason !== undefined &&
   COMPLETED_RELEASE_REASONS.has(claim.releaseReason) &&
+  releaseRecorded &&
   claim.owner.agentId === registered.agentId &&
   claim.path === worktree.path &&
   claim.branch === worktree.branch &&
   claim.headSha === worktree.headSha &&
   claim.changeDigest === worktree.changeDigest &&
   liveClaim === undefined;
+
+interface ReleaseContext {
+  /** The unreleased claim that holds the checkout now, if any. */
+  liveClaim: WorktreeClaim | undefined;
+  /** The linked claim's release recorded the state from the present checkout. */
+  releaseRecorded: boolean;
+}
 
 /** The claim that holds a checkout now: the one it has not released. */
 const liveClaimFor = (
@@ -1946,13 +1957,11 @@ const liveClaimFor = (
       claim.state !== "released"
   );
 
-interface WorktreeClaimContext {
+interface WorktreeClaimContext extends ReleaseContext {
   /** The active claim that admits a concurrent author on this checkout. */
   concurrentClaim: WorktreeClaim | undefined;
   /** The claim the registration names, in any state. */
   linkedClaim: WorktreeClaim | undefined;
-  /** The unreleased claim that holds the checkout now, if any. */
-  liveClaim: WorktreeClaim | undefined;
 }
 
 const SAFE_COMMAND_WORD_PATTERN = /^[A-Za-z0-9._:/@%+=,-]+$/u;
@@ -2048,7 +2057,7 @@ const staleClaimRecovery = (
 
 const staleConcurrentClaimCause = (
   registered: LoopWorktreeLease,
-  { linkedClaim, liveClaim }: WorktreeClaimContext
+  { linkedClaim, liveClaim, releaseRecorded }: WorktreeClaimContext
 ): string => {
   const claimId = registered.claimId ?? "(none)";
   if (liveClaim && liveClaim.claimId !== registered.claimId) {
@@ -2056,10 +2065,19 @@ const staleConcurrentClaimCause = (
   }
   if (linkedClaim?.state === "released") {
     const reason = linkedClaim.releaseReason ?? "unrecorded";
-    return linkedClaim.releaseReason &&
-      COMPLETED_RELEASE_REASONS.has(linkedClaim.releaseReason)
-      ? `This concurrent author worktree no longer matches the exact state ${linkedClaim.owner.agentId} released under claim ${claimId} (${reason}). A released claim is never refreshed; a new claim gets a new ID.`
-      : `The registered claim ${claimId} of this concurrent author worktree was released (${reason}), which does not hand its work off. A released claim is never refreshed; a new claim gets a new ID.`;
+    const never =
+      "A released claim is never refreshed; a new claim gets a new ID.";
+    if (
+      !(
+        linkedClaim.releaseReason &&
+        COMPLETED_RELEASE_REASONS.has(linkedClaim.releaseReason)
+      )
+    ) {
+      return `The registered claim ${claimId} of this concurrent author worktree was released (${reason}), which does not hand its work off. ${never}`;
+    }
+    return releaseRecorded
+      ? `This concurrent author worktree no longer matches the exact state ${linkedClaim.owner.agentId} released under claim ${claimId} (${reason}). ${never}`
+      : `The registered claim ${claimId} of this concurrent author worktree was released (${reason}) without recording the checkout's state at release, so no state is admitted. ${never}`;
   }
   if (linkedClaim) {
     return `The registered claim ${claimId} of this concurrent author worktree is ${linkedClaim.state} or records another branch.`;
@@ -2073,10 +2091,10 @@ const concurrentClaimViolations = (
   claims: WorktreeClaimContext,
   worktree: WorktreeInventory
 ): LoopViolation[] => {
-  const { concurrentClaim, linkedClaim, liveClaim } = claims;
+  const { concurrentClaim, linkedClaim } = claims;
   if (
     registered.role !== "concurrent-author" ||
-    completedReleaseMatches(registered, linkedClaim, worktree, liveClaim) ||
+    completedReleaseMatches(registered, linkedClaim, worktree, claims) ||
     (concurrentClaim &&
       concurrentClaim.claimId === registered.claimId &&
       concurrentClaim.owner.agentId === registered.agentId)
@@ -2326,7 +2344,14 @@ const verificationAgainst = (
         worktree,
         registered,
         preparationByPath.get(worktree.path),
-        { concurrentClaim, linkedClaim, liveClaim }
+        {
+          concurrentClaim,
+          linkedClaim,
+          liveClaim,
+          releaseRecorded:
+            linkedClaim !== undefined &&
+            releaseRecordedState(coordination, linkedClaim.claimId),
+        }
       )
     );
   }
@@ -5890,13 +5915,13 @@ const emptyFinalizationCleanup = (): FinalizationCleanupResult => ({
 const completedHandoffContainment = (
   registered: LoopWorktreeLease,
   claim: WorktreeClaim,
-  liveClaim: WorktreeClaim | undefined,
+  release: ReleaseContext,
   worktree: WorktreeInventory,
   repositoryPath: string,
   targetRevision: string
 ): TargetContainmentMethod | null => {
   if (
-    !completedReleaseMatches(registered, claim, worktree, liveClaim) ||
+    !completedReleaseMatches(registered, claim, worktree, release) ||
     worktree.changes.length > 0
   ) {
     return null;
@@ -5951,7 +5976,14 @@ const reconcileConcurrentAuthorClaims = (
     const handoffContainment = completedHandoffContainment(
       registered,
       claim,
-      liveClaimFor(coordination, lease.commonGitDirectory, registered.path),
+      {
+        liveClaim: liveClaimFor(
+          coordination,
+          lease.commonGitDirectory,
+          registered.path
+        ),
+        releaseRecorded: releaseRecordedState(coordination, claim.claimId),
+      },
       worktree,
       repositoryPath,
       targetRevision
@@ -6067,7 +6099,6 @@ type AutomaticCleanupCandidate = WorktreeInventory & { headSha: string };
 const automaticCleanupCandidates = (
   lease: LoopLease,
   inventory: RepositoryInventory,
-  targetBranch: string,
   targetRevision: string
 ): AutomaticCleanupCandidate[] => {
   const registeredByPath = new Map(
@@ -6076,10 +6107,6 @@ const automaticCleanupCandidates = (
   const coordination = readCoordinationDocumentFromCommonDirectory(
     lease.commonGitDirectory
   );
-  const primaryBranch =
-    inventory.worktrees.find(
-      (worktree) => worktree.path === lease.primaryCheckout
-    )?.branch ?? null;
   return inventory.worktrees.filter((worktree) => {
     const registered = registeredByPath.get(worktree.path);
     const removalDisposition = matchingRemovalDisposition(lease, worktree);
@@ -6108,15 +6135,23 @@ const automaticCleanupCandidates = (
     if (!(basicCandidate && registered)) {
       return false;
     }
-    const activelyClaimed = concurrentClaimFor(
-      lease,
-      worktree,
+    // Any claim not yet released holds the checkout, whatever its state or
+    // the policy, except the claim this run adopted through the
+    // registration's own pause receipt.
+    const holder = liveClaimFor(
       coordination,
-      primaryBranch,
-      targetBranch
+      lease.commonGitDirectory,
+      worktree.path
     );
+    const held =
+      holder !== undefined &&
+      !(
+        holder.state === "adopted-preserved" &&
+        holder.claimId === registered.claimId &&
+        registered.pauseReceiptId !== undefined
+      );
     return Boolean(
-      !activelyClaimed &&
+      !held &&
         (registered.createdByRun ||
           (registered.role === "preserved" &&
             registered.baselineHeadSha === worktree.headSha &&
@@ -6307,7 +6342,6 @@ const crashAfterAutomaticWorktreeRemovalForTest = (path: string): void => {
 const removeAutomaticWorktrees = (
   lease: LoopLease,
   repositoryPath: string,
-  targetBranch: string,
   targetRevision: string,
   candidates: AutomaticCleanupCandidate[],
   cleanup: FinalizationCleanupResult
@@ -6321,7 +6355,6 @@ const removeAutomaticWorktrees = (
     const fresh = automaticCleanupCandidates(
       lease,
       freshInventory,
-      targetBranch,
       targetRevision
     ).find(
       (candidate) =>
@@ -6366,7 +6399,6 @@ const pruneAutomaticWorktreeMetadata = (
   lease: LoopLease,
   repositoryPath: string,
   candidates: AutomaticCleanupCandidate[],
-  targetBranch: string,
   targetRevision: string,
   cleanup: FinalizationCleanupResult
 ): AutomaticRemovalResult => {
@@ -6382,7 +6414,6 @@ const pruneAutomaticWorktreeMetadata = (
   const freshCandidates = automaticCleanupCandidates(
     currentLease,
     freshInventory,
-    targetBranch,
     targetRevision
   );
   const freshPrunable = freshInventory.worktrees.filter(
@@ -6929,13 +6960,11 @@ const automaticFinalizationCleanup = (
   const candidates = automaticCleanupCandidates(
     lease,
     inventoryInput,
-    targetBranch,
     targetRevision
   );
   const liveRemoval = removeAutomaticWorktrees(
     lease,
     repositoryPath,
-    targetBranch,
     targetRevision,
     candidates,
     cleanup
@@ -6945,7 +6974,6 @@ const automaticFinalizationCleanup = (
     lease,
     repositoryPath,
     candidates,
-    targetBranch,
     targetRevision,
     cleanup
   );

@@ -852,6 +852,27 @@ describe("pinned-head command analysis", () => {
       ],
       []
     );
+    // `git checkout <name>` falls back the same way unless guessing is off.
+    expectKinds(
+      [
+        ["git", "checkout", "alias"],
+        ["git", "checkout", "alias", "--"],
+        ["git", "checkout", "-q", "alias"],
+        ["git", "checkout", "--detach", "alias"],
+        ["git", "checkout", "--conflict", "--no-guess", "alias"],
+      ],
+      ["configured"]
+    );
+    expectKinds(
+      [
+        ["git", "checkout", "--no-guess", "alias"],
+        ["git", "checkout", "-q", "-b", "fresh", head],
+        ["git", "checkout", "-bfresh", head],
+        ["git", "checkout", head, "--", "README.md"],
+        ["git", "checkout", "--", "README.md"],
+      ],
+      []
+    );
     git(root, ["update-ref", "-d", "--no-deref", "refs/heads/unit-alias"]);
     git(root, ["update-ref", "-d", "--no-deref", "refs/remotes/origin/alias"]);
     // A merge value read through remote `.` can name the shared stash,
@@ -1600,6 +1621,28 @@ describe("pinned heads in loop exec", () => {
 });
 
 describe("the merge gate's scope", () => {
+  test("pins a checkout detached at loop start by its path", async () => {
+    const fixture = repository();
+    const path = join(fixture.base, "detached");
+    git(fixture.root, ["worktree", "add", "--detach", path]);
+    commitFixture(path, "detached.ts", "export const detached = 1;\n");
+    const { runId } = startLoop(fixture.root, "controller", "integrate");
+    // A fetch from the checkout reads whatever its HEAD is when Git runs.
+    const refused = await rejection(
+      executeLoopMutation(fixture.root, runId, "controller", [
+        "git",
+        "fetch",
+        path,
+        "HEAD:refs/remotes/detached/head",
+      ])
+    );
+    expect(refused).toContain(path);
+    expect(refused).toContain("(preserved)");
+    expect(git(fixture.root, ["for-each-ref", "refs/remotes/detached/"])).toBe(
+      ""
+    );
+  });
+
   test("an approved override records the newer head of a preserved checkout", async () => {
     const fixture = repository();
     const path = join(fixture.base, "approved");

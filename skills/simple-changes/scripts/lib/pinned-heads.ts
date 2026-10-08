@@ -34,9 +34,10 @@ import { runGit } from "./process.ts";
  * - it is a merge or rebase that names no revision (or uses an option this
  *   parser does not know), which Git resolves from the current branch's
  *   upstream when it runs, whatever that configuration says then, or a
- *   `worktree add` without a start commit and `-b`, `-B`, or `--detach`, for
- *   which Git picks a branch named after the path or the name it is given,
- *   falling back to a remote-tracking branch;
+ *   `worktree add` without a start commit and `-b`, `-B`, or `--detach`, or a
+ *   `checkout <name>` without `--no-guess`, for which Git picks a branch
+ *   named after the path or the name it is given, falling back to a
+ *   remote-tracking branch;
  * - an argument resolves to a commit that contains a commit a pinned unit
  *   gained after its recorded head (a copy of a moved branch, or its ID);
  * - it is `git pull`, which resolves its repository, refspecs, and upstream
@@ -1488,21 +1489,6 @@ const configuredRefusals = (
       )
     );
   }
-  // Without a start commit, Git picks a branch named after the path (which
-  // can be a symbolic ref to a pinned branch) or a remote-tracking branch
-  // when it runs.
-  if (
-    subcommand === "worktree" &&
-    args[0] === "add" &&
-    !worktreeAddNamesCommit(args.slice(1))
-  ) {
-    found.push(
-      refusal(
-        "configured",
-        "git worktree add names no start commit with -b, -B, or --detach in a form this check understands, so Git could pick a branch from the path's name or a remote-tracking branch when it runs; name the commit and use -b, -B, or --detach"
-      )
-    );
-  }
   if (
     subcommand === "fetch" ||
     subcommand === "push" ||
@@ -1583,6 +1569,89 @@ const pushesEveryBranch = (key: string, value: string): boolean => {
     key.endsWith(".push") &&
     (value === ":" || value === "+:" || value.includes("*"))
   );
+};
+
+// `git checkout` options that take no value and leave guessing as it is.
+const CHECKOUT_FLAGS: ReadonlySet<string> = new Set([
+  "--force",
+  "--ignore-other-worktrees",
+  "--ignore-skip-worktree-bits",
+  "--merge",
+  "--no-overlay",
+  "--no-progress",
+  "--ours",
+  "--overlay",
+  "--progress",
+  "--quiet",
+  "--theirs",
+  "-f",
+  "-m",
+  "-q",
+]);
+// Options that turn guessing off; all but `--no-guess` take a branch name.
+const CHECKOUT_NO_GUESS: ReadonlySet<string> = new Set([
+  "--no-guess",
+  "--orphan",
+  "-B",
+  "-b",
+]);
+
+// Whether `git checkout` could fall back to a remote-tracking branch named
+// like its argument (which can be a symbolic ref to a pinned branch) when the
+// name does not resolve as it runs. Git guesses only for `checkout <name>`
+// and `checkout <name> --`; an option this does not know could take the
+// next argument, so it counts as guessing.
+const checkoutMayGuess = (args: readonly string[]): boolean => {
+  const end = args.indexOf("--");
+  const before = end === -1 ? args : args.slice(0, end);
+  const paths = end === -1 ? 0 : args.length - end - 1;
+  let noGuess = false;
+  let operands = 0;
+  let index = 0;
+  while (index < before.length) {
+    const token = before[index] as string;
+    index += 1;
+    if (CHECKOUT_NO_GUESS.has(token)) {
+      noGuess = true;
+      index += token === "--no-guess" ? 0 : 1;
+    } else if (attachedNewBranch(token) || token.startsWith("--orphan=")) {
+      noGuess = true;
+    } else if (!token.startsWith("-")) {
+      operands += 1;
+    } else if (!CHECKOUT_FLAGS.has(token)) {
+      return true;
+    }
+  }
+  return !noGuess && operands > 0 && paths === 0;
+};
+
+// Commands for which Git picks a branch by name only when it runs:
+// `worktree add` without a start commit takes the branch named after the
+// path, and `worktree add` or `checkout` of a name that does not resolve
+// falls back to a remote-tracking branch of that name.
+const guessRefusals = (invocation: GitInvocation): PinnedRefusal[] => {
+  const { arguments: args, subcommand } = invocation;
+  if (
+    subcommand === "worktree" &&
+    args[0] === "add" &&
+    !worktreeAddNamesCommit(args.slice(1))
+  ) {
+    return [
+      refusal(
+        "configured",
+        "git worktree add names no start commit with -b, -B, or --detach in a form this check understands, so Git could pick a branch from the path's name or a remote-tracking branch when it runs; name the commit and use -b, -B, or --detach"
+      ),
+    ];
+  }
+  if (subcommand === "checkout" && checkoutMayGuess(args)) {
+    return [
+      refusal(
+        "configured",
+        "git checkout <name> can fall back to a remote-tracking branch of that name when the name does not resolve as it runs; add --no-guess, create the branch with -b or -B, or name paths after --"
+      ),
+    ];
+  }
+  return [];
 };
 
 // `git cherry-pick` and `git revert` options this check understands. Both
@@ -2543,6 +2612,7 @@ const gitRefusals = (
   }
   found.push(
     ...configuredRefusals(invocation, names, context),
+    ...guessRefusals(invocation),
     ...resolutionRefusals(invocation, items, names, context.facts),
     ...containmentRefusals(
       invocation,

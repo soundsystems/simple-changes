@@ -374,13 +374,14 @@
   checkout, uses an indirect name, fetch or push mapping, or replace ref
   that could stand for one, resolves to a commit containing one a pinned
   unit gained after its recorded head, or is a merge or rebase that names no
-  revision or a `worktree add` without a start commit and `-b`, `-B`, or
-  `--detach`, which Git would resolve from configuration or the path when it
-  runs. `-c`, Git options that run commands, configuration writes, and
-  staging that could record a nested checkout's HEAD are refused; a fetch
-  may write only remote-tracking refs, a push, fetch, cherry-pick, or revert
-  may use only known options, and nothing may run in a checkout the run does
-  not author. The refusal prints the commit-ID form
+  revision, a `worktree add` without a start commit and `-b`, `-B`, or
+  `--detach`, or a `checkout <name>` without `--no-guess`, for which Git
+  would pick a revision from configuration, the path, or a remote-tracking
+  branch when it runs. `-c`, Git options that run commands, configuration
+  writes, and staging that could record a nested checkout's HEAD are
+  refused; a fetch may write only remote-tracking refs, a push, fetch,
+  cherry-pick, or revert may use only known options, and nothing may run in
+  a checkout the run does not author. The refusal prints the commit-ID form
   when it is certainly equivalent, or the claim, pause, and accept steps when
   the unit already moved. `loop verify --for merge` fails while a released,
   handed-off, preserved, or adopted unit's branch has left its recorded

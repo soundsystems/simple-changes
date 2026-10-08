@@ -672,6 +672,51 @@ describe("simple-changes status --all", () => {
     }
   });
 
+  test("reports a merge-conditioned hold as unknown when history cannot be read", () => {
+    const home = temporaryHome();
+    const repository = initRepository(join(home, "Developer", "held"));
+    writeFixture(repository, ".simple-changes.json", policy(27));
+    git(repository, ["add", ".simple-changes.json"]);
+    git(repository, ["commit", "-q", "-m", "Add policy"]);
+    git(repository, ["switch", "-q", "-c", "companion"]);
+    writeFixture(repository, "companion.txt", "companion\n");
+    git(repository, ["add", "companion.txt"]);
+    git(repository, ["commit", "-q", "-m", "Companion"]);
+    git(repository, ["switch", "-q", "main"]);
+    addShipHold(repository, {
+      adapter: "codex",
+      agentId: "companion-agent",
+      reason: "Wait for the companion change.",
+      scope: "ship",
+      severity: "delay",
+      untilMerged: "companion",
+    });
+    writeFixture(repository, "middle.txt", "middle\n");
+    git(repository, ["add", "middle.txt"]);
+    git(repository, ["commit", "-q", "-m", "Middle"]);
+    const middle = git(repository, ["rev-parse", "HEAD"]);
+    git(repository, [
+      "merge",
+      "-q",
+      "--no-ff",
+      "-m",
+      "Merge companion",
+      "companion",
+    ]);
+    rmSync(
+      join(repository, ".git", "objects", middle.slice(0, 2), middle.slice(2))
+    );
+
+    const [status] = statusAll({
+      home,
+      runtime: { skillDirectory: home, version: "0.27.1" },
+    }).repositories;
+
+    expect(status?.holds).toEqual([
+      expect.objectContaining({ status: "unknown", untilMerged: "companion" }),
+    ]);
+  });
+
   test("shows unreadable state as unknown and keeps going", () => {
     const home = temporaryHome();
     const broken = initRepository(join(home, "Developer", "broken"));

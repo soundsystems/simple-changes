@@ -1,10 +1,19 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import type { ChildProcess } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { sleepSync } from "bun";
+import { fileURLToPath } from "node:url";
+import { sleepSync, spawnSync } from "bun";
 import {
   type GitExecutableProbe,
   GuardedProcessGroupStillAliveError,
@@ -78,6 +87,51 @@ describe("Git executable resolution", () => {
       resolveGitExecutable(probe({ developerGit: () => null, xcrunFind }))
     ).toBe(DEVELOPER_GIT);
     expect(xcrunRan).toBe(true);
+  });
+
+  test("the runtime finds the developer Git without running xcrun", () => {
+    if (process.platform !== "darwin") {
+      return;
+    }
+    const fixture = createTestRepository();
+    repositories.push(fixture);
+    const developer = join(fixture.base, "Developer");
+    const fakeBin = join(fixture.base, "bin");
+    mkdirSync(join(developer, "usr", "bin"), { recursive: true });
+    mkdirSync(fakeBin);
+    const developerGit = join(developer, "usr", "bin", "git");
+    writeFileSync(developerGit, "#!/bin/sh\nexit 0\n");
+    chmodSync(developerGit, 0o755);
+    const marker = join(fixture.base, "xcrun-ran");
+    writeFileSync(
+      join(fakeBin, "xcrun"),
+      `#!/bin/sh\necho ran > '${marker}'\necho /usr/bin/git\n`
+    );
+    chmodSync(join(fakeBin, "xcrun"), 0o755);
+    const processModule = fileURLToPath(
+      new URL(
+        "../../../skills/simple-changes/scripts/lib/process.ts",
+        import.meta.url
+      )
+    );
+    const result = spawnSync(
+      [
+        process.execPath,
+        "-e",
+        `const { gitExecutable } = await import(${JSON.stringify(processModule)}); console.log(gitExecutable());`,
+      ],
+      {
+        env: {
+          ...process.env,
+          DEVELOPER_DIR: developer,
+          PATH: `${fakeBin}:/usr/bin:/bin`,
+        },
+        stderr: "pipe",
+        stdout: "pipe",
+      }
+    );
+    expect(new TextDecoder().decode(result.stdout).trim()).toBe(developerGit);
+    expect(existsSync(marker)).toBe(false);
   });
 
   test("follows a PATH link that resolves to the shim", () => {

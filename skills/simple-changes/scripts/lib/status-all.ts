@@ -22,7 +22,11 @@ import { resolvePersonalPolicyPath } from "./policy.ts";
 import { runGit } from "./process.ts";
 import { withReadOnlyGit } from "./read-only-git.ts";
 import { readReadyReceipts, readyReceiptsPath } from "./ready-work.ts";
-import { evaluateShipHolds, shipHoldsPath } from "./ship-holds.ts";
+import {
+  evaluateShipHolds,
+  type ShipHoldEvaluation,
+  shipHoldsPath,
+} from "./ship-holds.ts";
 import { GLOBAL_SKILL_ROOTS, PROJECT_ROOTS } from "./skill-roots.ts";
 import type { RepositoryInventory } from "./types.ts";
 import {
@@ -697,6 +701,30 @@ const policyProbe = (primaryCheckout: string): Unknown | null => {
   return null;
 };
 
+/**
+ * A hold waiting for a branch to merge reads active whenever merge evidence
+ * is missing. When the branch and target tips resolve but their history
+ * cannot be read (or the clone is shallow), that is unknown, not active.
+ */
+const holdStatus = (
+  inventory: RepositoryInventory,
+  item: ShipHoldEvaluation
+): string => {
+  const { evidence } = item;
+  if (
+    item.status !== "active" ||
+    !(evidence?.branchHead && evidence.targetRevision)
+  ) {
+    return item.status;
+  }
+  const contained = readyContainment(
+    inventory.repository.primaryCheckout,
+    evidence.targetRevision,
+    evidence.branchHead
+  );
+  return isUnknown(contained) ? "unknown" : item.status;
+};
+
 const guidanceStatus = (
   inventory: RepositoryInventory
 ): Exclude<StatusRepository["guidance"], Unknown> => {
@@ -760,7 +788,7 @@ const repositoryStatus = (
         reason: item.hold.reason,
         scope: item.hold.scope,
         severity: item.hold.severity,
-        status: item.status,
+        status: holdStatus(inventory, item),
         untilMerged: item.hold.untilMerged,
       }))
     ),

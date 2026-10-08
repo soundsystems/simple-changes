@@ -360,6 +360,18 @@ describe("Simple Changes skill contract", () => {
     expect(normalizedSkill).toContain(
       "read [recovery](references/recovery.md) before acting"
     );
+    // Every trigger, including the ones no loop reports.
+    for (const trigger of [
+      "when `loop status`, `loop verify`, or finalization reports a blocker",
+      "a released or orphaned claim",
+      "when merged work or orphaned worktrees have no loop to clean them up",
+      "when an editor's or desktop app's worktree list is stale",
+    ]) {
+      expect(normalizedSkill).toContain(trigger);
+    }
+    expect(normalizedRecovery).toContain(
+      "when an editor's or desktop app's worktree list is stale after cleanup"
+    );
     for (const command of [
       'loop recover --agent-id "$AGENT_ID"',
       "loop recover --stale-lease",

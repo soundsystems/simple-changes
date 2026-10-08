@@ -84,7 +84,9 @@ installed CLI reads `skills/simple-changes/CHANGELOG.md`, a verbatim prefix of
 the canonical root `CHANGELOG.md` covering the releases of the last six
 guidance versions. Regenerate it, and the release history beside the runtime,
 with `bun tooling/simple-changes/package-changelog.ts` once the release heading
-is in the root changelog.
+is in the root changelog; the new release takes the current
+`CURRENT_GUIDANCE_VERSION`, so bump guidance first when the release ships a new
+guidance version.
 
 This maintainer fork operates only in the Simple Changes source repository. Do
 not use it to discover or update destinations in an end user's repository.

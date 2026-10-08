@@ -81,8 +81,8 @@ or delete a tag, and never tag from Sync or as a delegated author.
 - **Recovery:** when `loop status`, `loop verify`, or finalization reports a
   blocker, a stale, relinquished, or frozen run, a released or orphaned claim,
   or a missing, late, or changed worktree; when merged work or orphaned
-  worktrees have no loop to clean them up; or when an editor's worktree list is
-  stale, read [recovery](references/recovery.md) before acting.
+  worktrees have no loop to clean them up; or when an editor's or desktop app's
+  worktree list is stale, read [recovery](references/recovery.md) before acting.
 - **Forks:** for behavior that requires changing the skill, follow
   [fork maintenance](references/fork-maintenance.md).
 - **Providers, only after provider discovery:** [GitHub](references/providers/github.md),

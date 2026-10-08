@@ -40,8 +40,9 @@ import { runGit } from "./process.ts";
  *
  * Every Git command, read-only ones included, is refused while units are
  * pinned when it uses `-c`, an option or subcommand that runs another command
- * (`rebase --exec`, `bisect run`, `--upload-pack`, ...), or writes
- * configuration that later commands would follow.
+ * (`rebase --exec`, `bisect run`, `--upload-pack`, ...), writes configuration
+ * that later commands would follow, or stages paths that could record a
+ * nested checkout's moving HEAD as a gitlink (`add`, `commit -a`, `stash`).
  *
  * While units are pinned, a command runner (`env`, `xargs`, `sudo`, ...), a
  * shell or interpreter doing anything but running an existing script file
@@ -378,6 +379,10 @@ const ALLOWED_WHILE_PINNED: ReadonlySet<string> = new Set([
 const GIT_EXECUTABLES: ReadonlySet<string> = new Set(["git", "git.exe"]);
 const EXE_SUFFIX = /\.exe$/u;
 const VERSION_SUFFIX = /-?[\d.]+$/u;
+const PATH_SEPARATOR = /[/\\]/u;
+const PATHSPEC_GLOB = /[*?[]/u;
+const COMMIT_WIDE_CLUSTER = /^-[a-z]*[aio]/iu;
+const ADD_WIDE_CLUSTER = /^-[a-z]*[Au]/u;
 const DASHED_GIT_PROGRAM = /^git-([a-z][a-z0-9-]*)$/u;
 const NAME_CHARACTER = /[\p{L}\p{N}_-]/u;
 const OTHER_WORKTREE_PATTERN =
@@ -1822,9 +1827,12 @@ const isConfigRead = (args: readonly string[]): boolean => {
 // Rules that hold for every Git command, read-only ones included: `-c` can
 // make Git run a command (`core.fsmonitor`, `core.pager`) or read a name this
 // check cannot see, and so can the execution forms above.
-const commandRefusals = (invocation: GitInvocation): PinnedRefusal[] => {
+const commandRefusals = (
+  invocation: GitInvocation,
+  context: PinnedCommandContext
+): PinnedRefusal[] => {
   const { arguments: args, subcommand } = invocation;
-  const found: PinnedRefusal[] = [];
+  const found: PinnedRefusal[] = [...stagingRefusals(invocation, context)];
   if (invocation.globals.includes("-c")) {
     found.push(
       refusal(
@@ -1850,6 +1858,142 @@ const commandRefusals = (invocation: GitInvocation): PinnedRefusal[] => {
     );
   }
   return found;
+};
+
+// Options of `git commit` that take a value in the next argument.
+const COMMIT_VALUE_OPTIONS: ReadonlySet<string> = new Set([
+  "-C",
+  "-F",
+  "-c",
+  "-m",
+  "-t",
+  "--author",
+  "--cleanup",
+  "--date",
+  "--file",
+  "--fixup",
+  "--message",
+  "--reedit-message",
+  "--reuse-message",
+  "--squash",
+  "--template",
+  "--trailer",
+]);
+const WIDE_STAGING_OPTIONS = [
+  "--all",
+  "--include",
+  "--only",
+  "--pathspec-from-file",
+  "--update",
+];
+
+// Checkouts nested inside the one a command runs in, other than the run's
+// own: staging there records the nested checkout's current HEAD as a gitlink,
+// which can move while the command waits.
+const nestedCheckouts = (
+  directory: string,
+  context: PinnedCommandContext
+): string[] => {
+  const candidates = checkoutCandidates(context);
+  const owner = owningCheckout(directory, candidates);
+  return owner
+    ? candidates.filter(
+        (path) =>
+          !samePath(path, owner) &&
+          isWithin(path, owner) &&
+          !context.ownCheckouts.some((checkout) => samePath(checkout, path))
+      )
+    : [];
+};
+
+// Whether staging `pathspec` could reach a nested checkout: a glob or magic
+// pathspec, or a path that contains one or lies in one.
+const reachesNested = (
+  pathspec: string,
+  directory: string,
+  nested: readonly string[]
+): boolean => {
+  if (PATHSPEC_GLOB.test(pathspec) || pathspec.startsWith(":")) {
+    return true;
+  }
+  const path = canonicalPath(resolve(directory, pathspec));
+  return nested.some(
+    (checkout) => isWithin(checkout, path) || isWithin(path, checkout)
+  );
+};
+
+// A staging option that reaches beyond the paths a command names.
+const stagesWidely = (subcommand: string, token: string): boolean =>
+  spelledOption(token, WIDE_STAGING_OPTIONS) !== null ||
+  (isShortOption(token) &&
+    (subcommand === "commit"
+      ? COMMIT_WIDE_CLUSTER.test(token)
+      : ADD_WIDE_CLUSTER.test(token)));
+
+// The paths a `git add` or `git commit` names, or null when it stages more.
+const stagedPathspecs = (
+  subcommand: string,
+  args: readonly string[]
+): string[] | null => {
+  const pathspecs: string[] = [];
+  let index = 0;
+  while (index < args.length) {
+    const token = args[index] as string;
+    index += 1;
+    if (token === "--") {
+      return [...pathspecs, ...args.slice(index)];
+    }
+    if (subcommand === "commit" && COMMIT_VALUE_OPTIONS.has(token)) {
+      index += 1;
+    } else if (!token.startsWith("-")) {
+      pathspecs.push(token);
+    } else if (stagesWidely(subcommand, token)) {
+      return null;
+    }
+  }
+  return pathspecs;
+};
+
+// `git add`, `git commit`, and `git stash` that could record a nested
+// checkout's moving HEAD: every named path is checked, and a form that stages
+// more (`add -A`, `commit -a`, a whole-tree `stash`) is refused while any such
+// checkout exists.
+const stagingRefusals = (
+  invocation: GitInvocation,
+  context: PinnedCommandContext
+): PinnedRefusal[] => {
+  const { arguments: args, subcommand } = invocation;
+  if (
+    subcommand !== "add" &&
+    subcommand !== "commit" &&
+    subcommand !== "stash"
+  ) {
+    return [];
+  }
+  const nested = nestedCheckouts(canonicalPath(invocation.directory), context);
+  if (nested.length === 0) {
+    return [];
+  }
+  const refuse = (reason: string): PinnedRefusal[] => [
+    refusal(
+      "checkout",
+      `git ${subcommand} ${reason}, which could record the moving HEAD of the nested checkout ${nested.join(", ")}`
+    ),
+  ];
+  if (subcommand === "stash") {
+    const [action = ""] = args;
+    return STASH_LISTERS.has(action) || STASH_READERS.has(action)
+      ? []
+      : refuse("records the whole working tree");
+  }
+  const pathspecs = stagedPathspecs(subcommand, args);
+  if (pathspecs === null) {
+    return refuse("stages more than the paths it names");
+  }
+  const reaching = pathspecs.find((pathspec) =>
+    reachesNested(pathspec, invocation.directory, nested)
+  );
+  return reaching ? refuse(`stages ${reaching}`) : [];
 };
 
 const STASH_READERS: ReadonlySet<string> = new Set(["apply", "branch", "pop"]);
@@ -2040,7 +2184,7 @@ const gitRefusals = (
       ),
     ];
   }
-  const always = commandRefusals(invocation);
+  const always = commandRefusals(invocation, context);
   if (
     (READ_ONLY_SUBCOMMANDS.has(subcommand) &&
       !writesOutputFile(invocation.arguments)) ||
@@ -2137,14 +2281,15 @@ const isFile = (path: string): boolean => {
 };
 
 // A shell or interpreter runs an existing script file named as its first
-// argument, with no option before it.
+// argument, with no option before it, spelled as a path (`./eval`, not
+// `eval`) so it can never be one of the interpreter's own subcommands.
 const runsScriptFile = (
   args: readonly string[],
   directory: string
 ): boolean => {
   const [script = ""] = args;
   return (
-    script !== "" &&
+    PATH_SEPARATOR.test(script) &&
     !script.startsWith("-") &&
     isFile(resolve(directory, script))
   );

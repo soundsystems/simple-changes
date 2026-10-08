@@ -374,7 +374,8 @@
   commit containing one a pinned unit gained after its recorded head. `-c`,
   Git options that run commands, configuration writes, command runners, and
   shells or interpreters doing anything but running an existing script file
-  are refused; a fetch may write
+  named by path, and staging that could record a nested checkout's HEAD are
+  refused; a fetch may write
   only remote-tracking refs, a push or fetch may use only known options, and
   nothing may run in a checkout the run does not author. The refusal prints
   the commit-ID form when it is certainly equivalent, or the claim, pause,

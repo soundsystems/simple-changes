@@ -650,6 +650,30 @@ describe("pinned-head command analysis", () => {
     );
     expect(kinds(["git", "-C", root, "merge", "--ff-only", head])).toEqual([]);
     expect(analyze(["git", "merge", "--ff-only", head]).refusals).toEqual([]);
+    // Staging in the outer checkout could record the nested one's moving
+    // HEAD as a gitlink.
+    for (const argv of [
+      ["git", "add", "-f", ".worktrees/nested"],
+      ["git", "add", "."],
+      ["git", "add", "-A"],
+      ["git", "add", "--", "*.ts"],
+      ["git", "commit", "-am", "Update"],
+      ["git", "commit", "-m", "Update", "--", ".worktrees"],
+      ["git", "stash"],
+    ]) {
+      expect({ argv, kinds: kinds(argv) }).toEqual({
+        argv,
+        kinds: ["checkout"],
+      });
+    }
+    for (const argv of [
+      ["git", "add", "README.md"],
+      ["git", "commit", "-m", "Mentions .worktrees/nested"],
+      ["git", "commit", "--amend", "--no-edit"],
+      ["git", "stash", "list"],
+    ]) {
+      expect({ argv, kinds: kinds(argv) }).toEqual({ argv, kinds: [] });
+    }
   });
 
   test("refuses aliases, configured stand-ins, replace refs, and wrapped Git", () => {
@@ -734,7 +758,10 @@ describe("pinned-head command analysis", () => {
     expect(kinds(["git", "merge", "--ff-only", head])).toEqual([]);
 
     // Git run through another program hides what it will read, so it is
-    // refused whatever it names.
+    // refused whatever it names. An interpreter may run only a script file
+    // spelled as a path, even where a file is named like its subcommand.
+    writeFixture(root, "eval", "\n");
+    writeFixture(root, "check.py", "\n");
     for (const argv of [
       ["sh", "-c", "git merge feat/x"],
       ["env", "LC_ALL=C", "git", "merge", "feat/x"],
@@ -766,6 +793,7 @@ describe("pinned-head command analysis", () => {
       ["python3.14t", "-c", "1"],
       ["deno", "--quiet", "eval", "1"],
       ["bun", "run", "check"],
+      ["python3", "check.py"],
       ["python3", "missing-script.py"],
       ["my-wrapper", "sh", "script.sh"],
       ["bun", "-e", "console.log('feat/x')"],
@@ -941,10 +969,10 @@ describe("pinned-head command analysis", () => {
       ["git", "branch", "-D", "-r", "origin/feat/x"],
       ["git", "worktree", "remove", unitPath],
       ["git", "mktag"],
-      ["bun", "scripts/release.ts", "feat/x"],
+      ["bun", "./scripts/release.ts", "feat/x"],
       ["glab", "mr", "create", "--title", "Fix git hooks on feat/x"],
-      ["bash", "scripts/git-cleanup.sh"],
-      ["python3.14", "scripts/check.py"],
+      ["bash", "./scripts/git-cleanup.sh"],
+      ["python3.14", "./scripts/check.py"],
     ]) {
       expect({ argv, kinds: kinds(argv) }).toEqual({ argv, kinds: [] });
     }

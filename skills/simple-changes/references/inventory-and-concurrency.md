@@ -129,8 +129,9 @@ refs, `:/` searches, every-branch or stdin options), an upstream or fetch or
 push mapping, or a revision containing a commit a unit gained after its
 recorded head. `-c`, Git options that run commands, and configuration writes
 are refused for every Git command, as are command runners (`env`, `xargs`,
-`sudo`, ...) and shells or interpreters doing anything but running an
-existing script file (`sh -c`, `python -c`); a
+`sudo`, ...), shells or interpreters doing anything but running an existing
+script file named by path (`sh -c`, `python -c`), and staging that could
+record a nested checkout's HEAD; a
 fetch may write only remote-tracking refs, a push or fetch may use only known
 options, and nothing may run in a checkout the run does not author. Name the
 recorded commit instead, as in `git merge --ff-only <head>`; the refusal

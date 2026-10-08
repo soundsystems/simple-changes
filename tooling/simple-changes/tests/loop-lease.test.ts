@@ -3745,8 +3745,17 @@ describe("active integration-loop lease", () => {
     expect(staleCommands()).toEqual(pauseAndAccept("other-agent"));
     writeFileSync(coordinationPath, original);
 
-    // A claim recording another branch is refreshed the same way.
-    git(authorPath, ["checkout", "-b", "inactive-author-renamed"]);
+    // A live claim that recorded another branch is refreshed the same way
+    // while the checkout stays on its registered branch.
+    const moved = JSON.parse(original) as {
+      claims: { branch: string | null; claimId: string }[];
+    };
+    for (const item of moved.claims) {
+      if (item.claimId === claim.claimId) {
+        item.branch = "inactive-author-elsewhere";
+      }
+    }
+    writeFileSync(coordinationPath, `${JSON.stringify(moved)}\n`);
     expect(staleCommands()).toEqual(refresh);
     claimWorktree(
       fixture.root,
@@ -3755,12 +3764,37 @@ describe("active integration-loop lease", () => {
       "codex",
       ownerRef
     );
-    expect(staleCommands()).toBeUndefined();
+    expect(verifyLoop(fixture.root).ok).toBe(true);
 
-    // A detached checkout cannot be admitted by any refresh, so the exact
-    // pause and accept steps are printed instead.
-    git(authorPath, ["checkout", "--detach"]);
+    // The lease pins the author to its registered branch, so after a branch
+    // switch only the exact pause and accept steps restore verification.
+    git(authorPath, ["checkout", "-b", "inactive-author-renamed"]);
     expect(staleCommands()).toEqual(pauseAndAccept("inactive-agent"));
+    claimWorktree(
+      fixture.root,
+      "inactive-agent",
+      authorPath,
+      "codex",
+      ownerRef
+    );
+    const receipt = pauseClaimedWorktree(
+      fixture.root,
+      "inactive-agent",
+      authorPath,
+      lease.runId,
+      "preserve-in-place",
+      "Hand the renamed branch to the controller."
+    );
+    acceptPausedWorktreeChange(
+      fixture.root,
+      lease.runId,
+      "controller",
+      receipt.receiptId
+    );
+    expect(verifyLoop(fixture.root)).toMatchObject({
+      ok: true,
+      violations: [],
+    });
   });
 
   test("asks an owner who claimed again after releasing to pause, not refresh", () => {

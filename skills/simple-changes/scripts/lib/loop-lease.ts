@@ -1953,8 +1953,6 @@ interface WorktreeClaimContext {
   linkedClaim: WorktreeClaim | undefined;
   /** The unreleased claim that holds the checkout now, if any. */
   liveClaim: WorktreeClaim | undefined;
-  /** Re-running `worktree claim` on the live claim would admit the author. */
-  refreshable: boolean;
 }
 
 const SAFE_COMMAND_WORD_PATTERN = /^[A-Za-z0-9._:/@%+=,-]+$/u;
@@ -1973,17 +1971,19 @@ interface StaleClaimRecovery {
 /**
  * The exact recovery for one stale coordination link. `worktree claim`
  * refreshes a live claim in place under its existing ID, which restores a
- * concurrent author whose own claim only went inactive or recorded another
- * branch. A released claim is never refreshed (a new claim gets a new ID), so
- * otherwise the live claim's owner, or the registered owner when nothing holds
- * the checkout, claims and pauses its exact current state, and the controller
- * accepts that pause receipt.
+ * concurrent author whose own registered claim only went inactive or recorded
+ * another branch, as long as the checkout is still on its registered branch:
+ * the lease pins the author there. A released claim is never refreshed (a new
+ * claim gets a new ID). In every other case the live claim's owner, or the
+ * registered owner when nothing holds the checkout, claims and pauses its exact
+ * current state, and the controller accepts that pause receipt, which works
+ * from any state.
  */
 const staleClaimRecovery = (
   lease: Pick<LoopLease, "ownerAgentId" | "runId">,
   registered: LoopWorktreeLease,
   worktree: WorktreeInventory,
-  { linkedClaim, liveClaim, refreshable }: WorktreeClaimContext
+  { linkedClaim, liveClaim }: WorktreeClaimContext
 ): StaleClaimRecovery => {
   const owner = liveClaim?.owner ?? linkedClaim?.owner;
   const ownerId = owner?.agentId ?? registered.agentId;
@@ -1995,8 +1995,8 @@ const staleClaimRecovery = (
     ...(owner?.ownerRef ? [`--owner-ref ${commandWord(owner.ownerRef)}`] : []),
   ].join(" ");
   if (
-    refreshable &&
     registered.role === "concurrent-author" &&
+    registered.branch === worktree.branch &&
     liveClaim !== undefined &&
     liveClaim.claimId === registered.claimId &&
     liveClaim.owner.agentId === registered.agentId
@@ -2290,26 +2290,13 @@ const verificationAgainst = (
       lease.commonGitDirectory,
       worktree.path
     );
-    // `worktree claim` refreshes a live claim to active on the current branch.
-    const refreshable =
-      liveClaim !== undefined &&
-      concurrentClaimFor(
-        lease,
-        worktree,
-        {
-          ...coordination,
-          claims: [{ ...liveClaim, branch: worktree.branch, state: "active" }],
-        },
-        primaryBranch,
-        targetBranch
-      ) !== undefined;
     violations.push(
       ...currentWorktreeViolations(
         lease,
         worktree,
         registered,
         preparationByPath.get(worktree.path),
-        { concurrentClaim, linkedClaim, liveClaim, refreshable }
+        { concurrentClaim, linkedClaim, liveClaim }
       )
     );
   }

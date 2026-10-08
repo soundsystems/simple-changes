@@ -26,6 +26,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const GUARD_PATH = resolve(here, "../exec-guard.ts");
 const CHECK_RECEIPT_PATH = resolve(here, "../check-receipt.ts");
 const decoder = new TextDecoder();
+const SECONDS_UTC_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/u;
 
 let bases: string[] = [];
 afterEach(() => {
@@ -84,20 +85,16 @@ const repository = () => {
     overrides: Record<string, unknown> = {}
   ) => {
     const path = receiptPath(common, sha);
-    const now = new Date().toISOString();
     mkdirSync(dirname(path), { recursive: true });
+    // The shared Simple Changes and Simple Changelogs receipt format.
     writeFileSync(
       path,
       JSON.stringify({
-        command: ["bun", "run", "check"],
+        command: "bun run check",
         exitCode: 0,
-        finishedAt: now,
-        headSha: sha,
-        kind: "check-receipt",
-        runtime: "bun test",
+        finishedAt: "2026-10-08T17:04:05Z",
+        head: sha,
         schemaVersion: 1,
-        startedAt: now,
-        treeSha: git(root, ["rev-parse", `${sha}^{tree}`]),
         ...overrides,
       })
     );
@@ -315,7 +312,7 @@ describe("merge gate exec guard", () => {
     expect(decide(root, merge).reason).toContain("no fetched upstream copy");
   });
 
-  test("refuses a receipt that does not record a passing check of that tree", () => {
+  test("refuses a receipt that does not record a passing check of that commit", () => {
     const { feature, root, writeReceipt } = repository();
     const command = [
       "glab",
@@ -329,21 +326,30 @@ describe("merge gate exec guard", () => {
     ];
     for (const overrides of [
       { exitCode: 1 },
-      { treeSha: "0".repeat(40) },
-      { command: ["bun", "test"] },
-      { headSha: "1".repeat(40) },
-      { startedAt: "not a time" },
-      { finishedAt: "2000-01-01T00:00:00.000Z" },
-      { runtime: " " },
+      { command: ["bun", "run", "check"] },
+      { command: "bun test" },
+      { head: "1".repeat(40) },
+      { head: undefined },
+      { finishedAt: undefined },
+      { finishedAt: "not a time" },
+      { finishedAt: "October 8, 2026" },
+      { finishedAt: "2026-10-08T19:04:05+02:00" },
       { reviewer: "someone" },
-      { startedAt: "October 8, 2026" },
+      { treeSha: "0".repeat(40) },
       { schemaVersion: 2 },
-      { kind: "test-receipt" },
     ]) {
       writeReceipt(feature, overrides);
       expect(decide(root, command).reason).toContain(
         "does not record a passing"
       );
+    }
+    // Both writers' finish times: seconds, and Date#toISOString milliseconds.
+    for (const finishedAt of [
+      "2026-10-08T17:04:05Z",
+      "2026-10-08T17:04:05.123Z",
+    ]) {
+      writeReceipt(feature, { finishedAt });
+      expect(decide(root, command).allow).toBe(true);
     }
   });
 
@@ -666,13 +672,12 @@ describe("bun run check:receipt", () => {
     const receipt = JSON.parse(
       readFileSync(receiptPath(join(root, ".git"), head), "utf8")
     ) as Record<string, unknown>;
-    expect(receipt).toMatchObject({
-      command: ["bun", "run", "check"],
+    expect(receipt).toEqual({
+      command: "bun run check",
       exitCode: 0,
-      headSha: head,
-      kind: "check-receipt",
+      finishedAt: expect.stringMatching(SECONDS_UTC_PATTERN),
+      head,
       schemaVersion: 1,
-      treeSha: git(root, ["rev-parse", "HEAD^{tree}"]),
     });
     expect(
       decide(root, ["glab", "mr", "merge", "1", "--sha", head, "-R", "a/b"])
@@ -706,6 +711,19 @@ describe("bun run check:receipt", () => {
     expect(
       existsSync(receiptPath(join(unreadable.root, ".git"), unreadable.head))
     ).toBe(false);
+
+    for (const flag of ["--assume-unchanged", "--skip-worktree"]) {
+      const hidden = checkRepository("true");
+      git(hidden.root, ["update-index", flag, "README.md"]);
+      writeFileSync(join(hidden.root, "README.md"), "edited out of sight\n");
+      expect(git(hidden.root, ["status", "--porcelain"])).toBe("");
+      const result = runCheckReceipt(hidden.root);
+      expect(result.exitCode).toBe(1);
+      expect(result.stderr).toContain("hidden from git status: README.md");
+      expect(
+        existsSync(receiptPath(join(hidden.root, ".git"), hidden.head))
+      ).toBe(false);
+    }
 
     const moving = checkRepository("git commit -q --allow-empty -m moved");
     const moved = runCheckReceipt(moving.root);

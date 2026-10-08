@@ -9,28 +9,28 @@ import { spawnSync } from "bun";
  * refuses a merge-like `loop exec` command unless a receipt exists for the
  * exact commit it would ship. See CONTRIBUTING.md.
  *
- * Receipt (schemaVersion 1), one per commit, written only for exit 0:
- *   <git common dir>/check-receipts/<40-hex head SHA>.json
- *   { schemaVersion: 1, kind: "check-receipt", command: ["bun", "run",
- *     "check"], exitCode: 0, headSha, treeSha, startedAt, finishedAt,
- *     runtime }
+ * Receipt (schemaVersion 1), one per commit, written only for exit 0, in the
+ * same format as Simple Changelogs' merge gate so both repositories read it
+ * alike:
+ *   <git common dir>/check-receipts/<40-hex HEAD>.json
+ *   { "command": "bun run check", "exitCode": 0,
+ *     "finishedAt": "<UTC ISO 8601>", "head": "<40-hex HEAD>",
+ *     "schemaVersion": 1 }
+ * A commit names exactly one tree, so `head` pins the checked contents.
  */
 
 export const CHECK_COMMAND = ["bun", "run", "check"] as const;
+export const RECEIPT_COMMAND = "bun run check";
 export const RECEIPT_DIRECTORY = "check-receipts";
 const FULL_SHA_PATTERN = /^[0-9a-f]{40}$/u;
 const decoder = new TextDecoder();
 
 export interface CheckReceipt {
-  command: string[];
+  command: typeof RECEIPT_COMMAND;
   exitCode: 0;
   finishedAt: string;
-  headSha: string;
-  kind: "check-receipt";
-  runtime: string;
+  head: string;
   schemaVersion: 1;
-  startedAt: string;
-  treeSha: string;
 }
 
 export const git = (
@@ -59,8 +59,8 @@ export const commonGitDirectory = (cwd: string): string | null => {
     : null;
 };
 
-export const receiptPath = (common: string, headSha: string): string =>
-  join(common, RECEIPT_DIRECTORY, `${headSha}.json`);
+export const receiptPath = (common: string, head: string): string =>
+  join(common, RECEIPT_DIRECTORY, `${head}.json`);
 
 export const resolveCommit = (cwd: string, revision: string): string | null => {
   const result = git(cwd, [
@@ -79,44 +79,34 @@ const RECEIPT_KEYS = [
   "command",
   "exitCode",
   "finishedAt",
-  "headSha",
-  "kind",
-  "runtime",
+  "head",
   "schemaVersion",
-  "startedAt",
-  "treeSha",
 ].join(",");
 
-const ISO_TIME_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/u;
+const ISO_TIME_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/u;
+const MILLISECONDS_PATTERN = /\.\d{3}Z$/u;
 
-const timestamp = (value: unknown): number =>
-  typeof value === "string" && ISO_TIME_PATTERN.test(value)
-    ? Date.parse(value)
-    : Number.NaN;
+/** A UTC ISO 8601 time, as `Date#toISOString` writes it, with or without milliseconds. */
+const isUtcTime = (value: unknown): boolean =>
+  typeof value === "string" &&
+  ISO_TIME_PATTERN.test(value) &&
+  Number.isFinite(Date.parse(value));
 
-/** The complete receipt shape, bound to exactly this commit and tree. */
+/** The receipt's finish time: UTC ISO 8601 at seconds precision. */
+export const receiptTime = (date: Date): string =>
+  date.toISOString().replace(MILLISECONDS_PATTERN, "Z");
+
+/** The complete receipt shape, bound to exactly this commit. */
 const isPassingReceipt = (
   receipt: Partial<CheckReceipt>,
-  sha: string,
-  tree: string
-): boolean => {
-  const started = timestamp(receipt.startedAt);
-  const finished = timestamp(receipt.finishedAt);
-  return (
-    Object.keys(receipt).sort().join(",") === RECEIPT_KEYS &&
-    receipt.schemaVersion === 1 &&
-    receipt.kind === "check-receipt" &&
-    JSON.stringify(receipt.command) === JSON.stringify(CHECK_COMMAND) &&
-    receipt.exitCode === 0 &&
-    receipt.headSha === sha &&
-    receipt.treeSha === tree &&
-    Number.isFinite(started) &&
-    Number.isFinite(finished) &&
-    started <= finished &&
-    typeof receipt.runtime === "string" &&
-    receipt.runtime.trim() !== ""
-  );
-};
+  sha: string
+): boolean =>
+  Object.keys(receipt).sort().join(",") === RECEIPT_KEYS &&
+  receipt.schemaVersion === 1 &&
+  receipt.command === RECEIPT_COMMAND &&
+  receipt.exitCode === 0 &&
+  receipt.head === sha &&
+  isUtcTime(receipt.finishedAt);
 
 /**
  * Null when `cwd`'s repository holds a passing receipt for exactly
@@ -141,12 +131,11 @@ export const receiptProblem = (
   } catch {
     return `no passing \`bun run check\` receipt exists for ${sha}. Check out that exact commit cleanly and run \`bun run check:receipt\`, then retry.`;
   }
-  const tree = git(cwd, ["rev-parse", "--verify", `${sha}^{tree}`]).stdout;
   const receipt =
     typeof parsed === "object" && parsed !== null
       ? (parsed as Partial<CheckReceipt>)
       : {};
-  if (!isPassingReceipt(receipt, sha, tree)) {
+  if (!isPassingReceipt(receipt, sha)) {
     return `the check receipt at ${path} does not record a passing \`bun run check\` for ${sha}; run \`bun run check:receipt\` on that commit again.`;
   }
   return null;

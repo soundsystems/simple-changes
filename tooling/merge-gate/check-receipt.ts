@@ -16,9 +16,15 @@ import {
   type CheckReceipt,
   commonGitDirectory,
   git,
+  RECEIPT_COMMAND,
   receiptPath,
+  receiptTime,
   resolveCommit,
 } from "./merge-gate.ts";
+
+// A `git ls-files -v` tag for a tracked path marked assume-unchanged
+// (lowercase) or skip-worktree (`S`), whose edits `git status` never shows.
+const HIDDEN_TAG = /^(?:[a-z]|S) /u;
 
 class CheckReceiptRefusal extends Error {}
 
@@ -26,18 +32,32 @@ const fail = (message: string): never => {
   throw new CheckReceiptRefusal(message);
 };
 
+/**
+ * Changed and untracked paths, plus tracked paths marked assume-unchanged or
+ * skip-worktree, whose edits `git status` would hide. A failed read refuses.
+ */
 const dirtyPaths = (root: string): string[] => {
   const status = git(root, [
     "status",
     "--porcelain=v1",
     "--untracked-files=all",
   ]);
-  if (status.exitCode !== 0) {
-    return fail(
-      `git status failed (exit ${status.exitCode}), so the checkout cannot be shown clean; no receipt was recorded.`
-    );
+  const listed = git(root, ["ls-files", "-v"]);
+  for (const [name, result] of [
+    ["git status", status],
+    ["git ls-files", listed],
+  ] as const) {
+    if (result.exitCode !== 0) {
+      return fail(
+        `${name} failed (exit ${result.exitCode}), so the checkout cannot be shown clean; no receipt was recorded.`
+      );
+    }
   }
-  return status.stdout.split("\n").filter(Boolean);
+  const hidden = listed.stdout
+    .split("\n")
+    .filter((line) => HIDDEN_TAG.test(line))
+    .map((line) => `hidden from git status: ${line.slice(2)}`);
+  return [...status.stdout.split("\n").filter(Boolean), ...hidden];
 };
 
 const assertClean = (root: string, when: string): void => {
@@ -57,13 +77,7 @@ export const runCheckReceipt = (cwd: string): number => {
   const root = top.stdout;
   const common = commonGitDirectory(root) ?? fail("no Git common directory.");
   const head = resolveCommit(root, "HEAD") ?? fail("HEAD is not a commit.");
-  const treeRead = git(root, ["rev-parse", "--verify", `${head}^{tree}`]);
-  const tree =
-    treeRead.exitCode === 0 && treeRead.stdout
-      ? treeRead.stdout
-      : fail(`the tree of ${head} could not be read.`);
   assertClean(root, "before the check");
-  const startedAt = new Date().toISOString();
   const check = spawnSync([...CHECK_COMMAND], {
     cwd: root,
     stderr: "inherit",
@@ -84,15 +98,11 @@ export const runCheckReceipt = (cwd: string): number => {
   }
   assertClean(root, "after the check");
   const receipt: CheckReceipt = {
-    command: [...CHECK_COMMAND],
+    command: RECEIPT_COMMAND,
     exitCode: 0,
-    finishedAt: new Date().toISOString(),
-    headSha: head,
-    kind: "check-receipt",
-    runtime: `bun ${process.versions.bun}`,
+    finishedAt: receiptTime(new Date()),
+    head,
     schemaVersion: 1,
-    startedAt,
-    treeSha: tree,
   };
   const path = receiptPath(common, head);
   mkdirSync(dirname(path), { mode: 0o700, recursive: true });

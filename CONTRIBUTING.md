@@ -27,8 +27,10 @@ exact commit being merged is the merge evidence, and a local gate enforces it
 for merges the Simple Changes controller runs.
 
 1. Commit the change, then run `bun run check:receipt` on a clean checkout of
-   that commit. It runs `bun run check` and, only when it exits 0 and leaves the
-   checkout clean at the same commit, writes a receipt for that HEAD.
+   that commit: no changed or untracked path, and no tracked path marked
+   assume-unchanged or skip-worktree, whose edits `git status` hides. It runs
+   `bun run check` and, only when it exits 0 and leaves the checkout clean at
+   the same commit, writes a receipt for that HEAD.
 2. Fetch, then run every merge through `simple-changes loop exec`, for
    example `loop exec --run-id <run> --agent-id <controller> -- glab api
    projects/84768068/merge_requests/<iid>/merge -X PUT -f sha=<head>`. The
@@ -90,24 +92,23 @@ any other way, or by a program that runs other programs (an interpreter, a
 build tool, `xargs`), is not gated. It is a convenience gate for this
 repository's controller, not a security boundary.
 
-A receipt is `<git common dir>/check-receipts/<head SHA>.json`:
+A receipt is `<git common dir>/check-receipts/<40-hex HEAD>.json`, shared by
+every worktree and never tracked. Simple Changelogs' merge gate writes and
+reads the same format:
 
 ```json
 {
-  "schemaVersion": 1,
-  "kind": "check-receipt",
-  "command": ["bun", "run", "check"],
+  "command": "bun run check",
   "exitCode": 0,
-  "headSha": "<40-hex commit>",
-  "treeSha": "<40-hex tree of that commit>",
-  "startedAt": "<ISO time>",
-  "finishedAt": "<ISO time>",
-  "runtime": "bun <version>"
+  "finishedAt": "<UTC ISO 8601, such as 2026-10-08T17:04:05Z>",
+  "head": "<40-hex commit>",
+  "schemaVersion": 1
 }
 ```
 
 The guard accepts it only when it has exactly these fields and every one
-matches: schema version 1, kind `check-receipt`, the exact `bun run check`
-command, exit code 0, the head and tree of the commit being merged, ISO start
-and finish times in order, and a nonblank runtime. Receipts are never written for a failing
+matches: the `bun run check` command, exit code 0, a UTC ISO 8601 finish time
+(with or without milliseconds), `head` equal to the commit being merged and to
+the file name, and schema version 1. A commit names exactly one tree, so
+`head` pins the checked contents. Receipts are never written for a failing
 check, so a missing file means no passing run is recorded for that commit.

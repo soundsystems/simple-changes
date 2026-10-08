@@ -3913,6 +3913,13 @@ const assertPreservedSourceApproval = (
  */
 export const OUTCOME_DRAFT_MARKER = "SIMPLE-CHANGES-DRAFT:";
 
+/**
+ * The `draftReview` field every draft carries. No shipment-outcome schema
+ * accepts it, so a draft is unrecordable, even by an older runtime, until a
+ * reviewer deletes it.
+ */
+export const OUTCOME_DRAFT_REVIEW = `${OUTCOME_DRAFT_MARKER} review every entry, replace each placeholder, then delete this draftReview field before loop record-outcome.`;
+
 const assertNoOutcomeDraftPlaceholders = (
   receipt: ShipmentOutcomeReceipt
 ): void => {
@@ -3947,6 +3954,16 @@ export const recordShipmentOutcome = (
 ): ShipmentOutcomeRecord => {
   const runId = requiredRunId(runIdInput);
   const agentId = requiredText(agentIdInput, "agent ID");
+  if (
+    typeof receiptInput === "object" &&
+    receiptInput !== null &&
+    "draftReview" in receiptInput
+  ) {
+    throw new SimpleChangesError(
+      "This shipment outcome is still an unreviewed loop draft-outcome draft. Review every entry, replace each placeholder, delete the draftReview field, then record it.",
+      EXIT_CODES.validation
+    );
+  }
   // Overrides ride on the receipt's units but are stored beside the lease;
   // the recorded digest covers the complete receipt, overrides included.
   const { overrides, receipt, receiptDigest } =

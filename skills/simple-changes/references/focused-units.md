@@ -78,11 +78,14 @@ rest as `additionalPaths`: `release-generated` when the changelog receipt's
 suggested as `delivered` when a scoped path changed on the target during the
 run and `target-equivalent` when none did. Every reason, unit summary, and
 evidence item is a `SIMPLE-CHANGES-DRAFT:` placeholder that names the commits
-that touched the path. These are drafts, not findings: review each
-classification and disposition, replace every placeholder with the reviewed
-reason, then run `loop record-outcome`, which refuses a receipt that still
-contains the placeholder marker and rechecks every entry. Record with Simple
-Changes 0.28.0 or later; an older runtime does not refuse the marker.
+that touched the path, and the draft carries a `draftReview` field. These are
+drafts, not findings: review each classification and disposition, replace
+every placeholder with the reviewed reason, delete `draftReview`, then run
+`loop record-outcome`, which refuses a receipt that still has `draftReview` or
+any placeholder marker and rechecks every entry. No runtime's schema accepts
+`draftReview`, so even an empty draft (no scoped units and no target change)
+and an older runtime refuse the draft until it is reviewed; only 0.28.0 and
+later also refuse a leftover marker.
 
 ## Preserved-source override
 

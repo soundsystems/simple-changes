@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
-import { readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "bun";
@@ -18,6 +18,7 @@ import { buildPreviewPlan } from "../../../skills/simple-changes/scripts/lib/pla
 import {
   draftShipmentOutcome,
   releasePathsFromChangelogReceipt,
+  type ShipmentOutcomeDraftReceipt,
 } from "../../../skills/simple-changes/scripts/lib/shipment-outcome-draft.ts";
 import type { ShipmentOutcomeReceipt } from "../../../skills/simple-changes/scripts/lib/types.ts";
 import {
@@ -65,7 +66,11 @@ const recordCurrentScope = (root: string, runId: string): void => {
 };
 
 // Replaces every draft placeholder, as a reviewing agent would.
-const reviewed = (draft: ShipmentOutcomeReceipt): ShipmentOutcomeReceipt => ({
+// Deletes draftReview and replaces every placeholder, as a reviewer would.
+const reviewed = ({
+  draftReview: _draftReview,
+  ...draft
+}: ShipmentOutcomeDraftReceipt): ShipmentOutcomeReceipt => ({
   ...draft,
   additionalPaths: draft.additionalPaths.map((item) => ({
     ...item,
@@ -140,14 +145,14 @@ describe("loop draft-outcome", () => {
       recordCommand: string;
       summary: { deletedPaths: string[] };
     };
-    expect(report.placeholders).toBe(5);
+    expect(report.placeholders).toBe(6);
     expect(report.summary.deletedPaths).toEqual(["obsolete.txt", "SPEC.md"]);
     expect(report.recordCommand).toContain(
       `loop record-outcome --run-id ${lease.runId} --agent-id controller`
     );
     const draft = JSON.parse(
       readFileSync(join(fixture.base, "draft.json"), "utf8")
-    ) as ShipmentOutcomeReceipt;
+    ) as ShipmentOutcomeDraftReceipt;
     expect(draft.targetRevision).toBe(target);
     expect(draft.units).toEqual([]);
     expect(
@@ -190,6 +195,10 @@ describe("loop draft-outcome", () => {
 
     expect(() =>
       recordShipmentOutcome(root, lease.runId, "controller", draft)
+    ).toThrow("still an unreviewed loop draft-outcome draft");
+    const { draftReview: _draftReview, ...undeclared } = draft;
+    expect(() =>
+      recordShipmentOutcome(root, lease.runId, "controller", undeclared)
     ).toThrow("draft placeholder");
     const partly = reviewed(draft);
     const last = partly.additionalPaths.at(-1);
@@ -221,7 +230,7 @@ describe("loop draft-outcome", () => {
     );
 
     expect(summary).toMatchObject({ additionalPaths: 1, units: 1 });
-    expect(placeholders).toBe(3);
+    expect(placeholders).toBe(4);
     const [unit] = draft.units;
     expect(unit?.disposition).toBe("delivered");
     expect(unit?.finalPaths).toEqual([
@@ -234,9 +243,79 @@ describe("loop draft-outcome", () => {
     expect(draft.additionalPaths.map((item) => item.path)).toEqual([
       "unrelated.md",
     ]);
+    // Each placeholder is refused on its own, not only the first one.
+    const summaryOnly = reviewed(draft);
+    const [summaryUnit] = summaryOnly.units;
+    if (summaryUnit) {
+      summaryUnit.summary = `${OUTCOME_DRAFT_MARKER} unreviewed`;
+    }
+    expect(() =>
+      recordShipmentOutcome(root, lease.runId, "controller", summaryOnly)
+    ).toThrow(`summary of unit ${unit?.unitId}`);
+    const evidenceOnly = reviewed(draft);
+    const [evidenceUnit] = evidenceOnly.units;
+    if (evidenceUnit) {
+      evidenceUnit.evidence = [
+        "Checked.",
+        `${OUTCOME_DRAFT_MARKER} unreviewed`,
+      ];
+    }
+    expect(() =>
+      recordShipmentOutcome(root, lease.runId, "controller", evidenceOnly)
+    ).toThrow(`evidence of unit ${unit?.unitId}`);
+    recordShipmentOutcome(root, lease.runId, "controller", reviewed(draft));
+    expect(endLoop(root, lease.runId, "controller").ok).toBe(true);
+  });
+
+  test("an empty draft still needs its review marker deleted", () => {
+    const fixture = repository();
+    const { root } = fixture;
+    const lease = startLoop(root, "controller", "ship");
+
+    const { draft, placeholders } = draftShipmentOutcome(root, lease.runId);
+
+    expect(draft).toMatchObject({ additionalPaths: [], units: [] });
+    expect(placeholders).toBe(1);
     expect(() =>
       recordShipmentOutcome(root, lease.runId, "controller", draft)
-    ).toThrow(`summary of unit ${unit?.unitId}`);
+    ).toThrow("still an unreviewed loop draft-outcome draft");
+    recordShipmentOutcome(root, lease.runId, "controller", reviewed(draft));
+  });
+
+  test("records scoped rename originals and gitlinks exactly", () => {
+    const fixture = repository();
+    const { root } = fixture;
+    writeFixture(root, "old-name.ts", "export const name = 'kept';\n");
+    commitAll(root, "Base fixture");
+    git(root, ["mv", "old-name.ts", "new-name.ts"]);
+    const lease = startLoop(root, "controller", "ship");
+    recordCurrentScope(root, lease.runId);
+    commitAll(root, "Ship the rename");
+    const submodule = git(root, ["rev-parse", "HEAD"]);
+    git(root, [
+      "update-index",
+      "--add",
+      "--cacheinfo",
+      `160000,${submodule},vendor/module`,
+    ]);
+    git(root, ["commit", "-m", "Pin a module"]);
+    // An unpopulated submodule is an empty directory.
+    mkdirSync(join(root, "vendor", "module"), { recursive: true });
+
+    const { draft } = draftShipmentOutcome(root, lease.runId);
+
+    const paths = [
+      ...draft.units.flatMap((item) => [
+        ...item.finalPaths,
+        ...item.originalPaths,
+      ]),
+      ...draft.additionalPaths,
+    ].map(({ entry, path }) => ({ entry, path }));
+    expect(paths).toContainEqual({ entry: null, path: "old-name.ts" });
+    expect(paths).toContainEqual({
+      entry: `160000:commit:${submodule}`,
+      path: "vendor/module",
+    });
     recordShipmentOutcome(root, lease.runId, "controller", reviewed(draft));
     expect(endLoop(root, lease.runId, "controller").ok).toBe(true);
   });

@@ -1,6 +1,7 @@
 import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
 import {
   OUTCOME_DRAFT_MARKER,
+  OUTCOME_DRAFT_REVIEW,
   readLoopLease,
   resolvedCurrentTargetRevision,
   targetDiffPaths,
@@ -8,6 +9,7 @@ import {
   targetTreeEntry,
 } from "./loop-lease.ts";
 import { runGit } from "./process.ts";
+import { withReadOnlyGit } from "./read-only-git.ts";
 import type { ShipmentOutcomeReceipt } from "./types.ts";
 
 /**
@@ -21,8 +23,17 @@ import type { ShipmentOutcomeReceipt } from "./types.ts";
 
 const COMMIT_CONTEXT_LIMIT = 6;
 
+/**
+ * A draft receipt: the outcome plus a `draftReview` field that no runtime's
+ * shipment-outcome schema accepts, so even a draft with nothing else to
+ * replace cannot be recorded until a reviewer deletes it.
+ */
+export type ShipmentOutcomeDraftReceipt = {
+  draftReview: string;
+} & ShipmentOutcomeReceipt;
+
 export interface ShipmentOutcomeDraft {
-  draft: ShipmentOutcomeReceipt;
+  draft: ShipmentOutcomeDraftReceipt;
   placeholders: number;
   recordCommand: string;
   summary: {
@@ -112,6 +123,13 @@ export const draftShipmentOutcome = (
   repositoryPath: string,
   runId: string,
   options: { releasePaths?: readonly string[] } = {}
+): ShipmentOutcomeDraft =>
+  withReadOnlyGit(() => buildDraft(repositoryPath, runId, options));
+
+const buildDraft = (
+  repositoryPath: string,
+  runId: string,
+  options: { releasePaths?: readonly string[] }
 ): ShipmentOutcomeDraft => {
   const lease = readLoopLease(repositoryPath);
   if (!lease || lease.runId !== runId) {
@@ -201,8 +219,9 @@ export const draftShipmentOutcome = (
         } (${context([path])}).`.slice(0, 500),
       };
     });
-  const draft: ShipmentOutcomeReceipt = {
+  const draft: ShipmentOutcomeDraftReceipt = {
     additionalPaths,
+    draftReview: OUTCOME_DRAFT_REVIEW,
     runId: lease.runId,
     schemaVersion: 1,
     targetRevision,
@@ -213,7 +232,7 @@ export const draftShipmentOutcome = (
   ).length;
   return {
     draft,
-    placeholders: units.length * 2 + additionalPaths.length,
+    placeholders: 1 + units.length * 2 + additionalPaths.length,
     recordCommand: `simple-changes loop record-outcome --run-id ${lease.runId} --agent-id ${lease.ownerAgentId} --receipt <reviewed file>`,
     summary: {
       additionalPaths: additionalPaths.length,

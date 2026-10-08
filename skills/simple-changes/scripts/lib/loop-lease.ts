@@ -1074,7 +1074,9 @@ const matchingOverride = (
       override.changeDigest === worktree.changeDigest
   );
 
-const resolvedCurrentTargetRevision = (lease: LoopLease): string | null => {
+export const resolvedCurrentTargetRevision = (
+  lease: LoopLease
+): string | null => {
   const result = runGit(
     lease.primaryCheckout,
     ["rev-parse", "--verify", `${lease.targetRef}^{commit}`],
@@ -3403,7 +3405,7 @@ export interface ShipmentOutcomeRecord {
   summary: string;
 }
 
-const targetDiffPaths = (
+export const targetDiffPaths = (
   repositoryPath: string,
   openingRevision: string,
   finalRevision: string
@@ -3421,7 +3423,7 @@ const targetDiffPaths = (
     .filter(Boolean)
     .sort((left, right) => left.localeCompare(right));
 
-const targetRenameOriginals = (
+export const targetRenameOriginals = (
   repositoryPath: string,
   openingRevision: string,
   finalRevision: string
@@ -3904,6 +3906,38 @@ const assertPreservedSourceApproval = (
   }
 };
 
+/**
+ * Every placeholder `loop draft-outcome` writes starts with this marker, and
+ * `loop record-outcome` refuses any receipt text that still contains it, so
+ * a draft cannot be recorded until each placeholder has been replaced.
+ */
+export const OUTCOME_DRAFT_MARKER = "SIMPLE-CHANGES-DRAFT:";
+
+const assertNoOutcomeDraftPlaceholders = (
+  receipt: ShipmentOutcomeReceipt
+): void => {
+  const texts = [
+    ...receipt.units.flatMap((unit) => [
+      [`summary of unit ${unit.unitId}`, unit.summary] as const,
+      ...unit.evidence.map(
+        (item) => [`evidence of unit ${unit.unitId}`, item] as const
+      ),
+    ]),
+    ...receipt.additionalPaths.map(
+      (item) => [`reason for ${item.path}`, item.reason] as const
+    ),
+  ];
+  const drafts = texts.filter(([, text]) =>
+    text.includes(OUTCOME_DRAFT_MARKER)
+  );
+  if (drafts.length > 0) {
+    throw new SimpleChangesError(
+      `Shipment outcome still carries ${drafts.length} draft placeholder(s), starting with the ${drafts[0]?.[0]}. Replace every ${OUTCOME_DRAFT_MARKER} placeholder with the reviewed text, check each classification and disposition, then record it again.`,
+      EXIT_CODES.validation
+    );
+  }
+};
+
 export const recordShipmentOutcome = (
   repositoryPath: string,
   runIdInput: string,
@@ -3917,6 +3951,7 @@ export const recordShipmentOutcome = (
   // the recorded digest covers the complete receipt, overrides included.
   const { overrides, receipt, receiptDigest } =
     splitShipmentOutcomeInput(receiptInput);
+  assertNoOutcomeDraftPlaceholders(receipt);
   assertPreservedSourceApproval(overrides, approval);
   const opening = locateRepository(repositoryPath);
   // The coordination lock keeps the claim a preserved-source override binds
@@ -7116,7 +7151,7 @@ const automaticFinalizationCleanup = (
   return { cleanup, lease };
 };
 
-const targetTreeEntry = (
+export const targetTreeEntry = (
   repositoryPath: string,
   targetRevision: string,
   path: string

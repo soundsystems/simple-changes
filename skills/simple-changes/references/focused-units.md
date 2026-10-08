@@ -62,6 +62,28 @@ the exact entries and refuses an omitted unit, wrong blob/mode/gitlink, moved
 target, or unreported final-target delta. The controller records this receipt;
 it adds no user approval step, and existing cleanup safety remains unchanged.
 
+Start from a draft instead of writing the receipt by hand:
+
+```sh
+simple-changes loop draft-outcome --run-id <run> \
+  [--changelog-receipt prepared.json] --output outcome.json
+```
+
+It only reads the lease and Git, with no lock and no write besides `--output`.
+It binds the current target, lists every path changed on the target since loop
+start with its exact `ls-tree` entry (`null` for a deleted or moved-away path),
+pre-fills each scoped unit's final paths and rename originals, and adds the
+rest as `additionalPaths`: `release-generated` when the changelog receipt's
+`paths` names the path, otherwise `external-target-change`. A unit is
+suggested as `delivered` when a scoped path changed on the target during the
+run and `target-equivalent` when none did. Every reason, unit summary, and
+evidence item is a `SIMPLE-CHANGES-DRAFT:` placeholder that names the commits
+that touched the path. These are drafts, not findings: review each
+classification and disposition, replace every placeholder with the reviewed
+reason, then run `loop record-outcome`, which refuses a receipt that still
+contains the placeholder marker and rechecks every entry. Record with Simple
+Changes 0.28.0 or later; an older runtime does not refuse the marker.
+
 ## Preserved-source override
 
 A second exception is a user-approved escape hatch, not a routine path. It

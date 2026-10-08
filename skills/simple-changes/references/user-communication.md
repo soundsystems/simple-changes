@@ -32,6 +32,14 @@ target-contained, relinquished, mutation boundary, or guarded execution. These
 terms describe implementation and audit evidence; they are rarely the user's
 main concern.
 
+Do not lead with internal terms such as controller, lease, ledger, digest,
+relinquished, target-contained, or mutation path. Translate them into ordinary
+language first. Include exact revisions, paths, commands, provider identities,
+or durable state names when they affect safety, authority, verification, or the
+user's next decision, but place them after the simple explanation. Expand into
+full technical detail when the user asks. Never expose raw machine output or
+internal bookkeeping as the explanation itself.
+
 Mention technical detail when it is needed to:
 
 - identify the exact repository, branch, revision, path, environment, or
@@ -155,3 +163,9 @@ section when no public release was finalized or reconciled, or when the work was
 internal-only or `release:none`. Never use release-note prose to imply that a
 preserved, blocked, preview-only, or unmerged unit shipped. If useful, offer the
 full version-bound notes after the concise summary.
+
+When Ship finalizes or reconciles a public release, end with concise **Latest
+customer notes** sourced from that exact version's public release notes; omit
+them for preview-only, internal-only, or `release:none` work. For Ship, compare
+the pre-ship brief with the result and report review-driven changes or
+explicitly state none.

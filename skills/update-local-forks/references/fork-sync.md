@@ -1,5 +1,15 @@
 # Fork sync
 
+Contents:
+
+- Install once, fork per repository
+- How every file is classified
+- Omitted references
+- Command gates
+- Classify what you port by hand
+- Guidance versions
+- After applying
+
 ## Install once, fork per repository
 
 Install Simple Changes globally so every repository and every fork updates

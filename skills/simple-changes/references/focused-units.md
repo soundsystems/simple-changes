@@ -1,5 +1,12 @@
 # Focused units
 
+Contents:
+
+- Group work into units
+- Preserved-source override
+
+## Group work into units
+
 A focused unit describes one user-visible outcome. Group by behavior,
 dependency, data boundary, ownership, and independently verifiable value, not by
 file count, directory convenience, or commit count.
@@ -61,6 +68,7 @@ reconciliation or added by external target movement as a short
 the exact entries and refuses an omitted unit, wrong blob/mode/gitlink, moved
 target, or unreported final-target delta. The controller records this receipt;
 it adds no user approval step, and existing cleanup safety remains unchanged.
+This controller audit step is not another user decision.
 
 ## Preserved-source override
 

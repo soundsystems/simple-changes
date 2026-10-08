@@ -7,6 +7,14 @@ nor an absent MR for the original branch proves that work remains to ship.
 
 ## Audit before reapplying
 
+Before creating a worktree, rebasing, cherry-picking, or merging an old local
+branch, run `simple-changes branch audit --head <branch> --target <ref> --json`
+against the refreshed target. A unique SHA or a missing MR on that branch name
+does not establish unshipped work. Resolve replacement candidates against merged
+proposals and independent review first. Record original SHAs
+in replacement commits when moving work to a different branch. Discovery hints
+never permit deletion or waive the existing cleanup proofs.
+
 Run this read-only check from the primary checkout before creating a worktree
 or merging, rebasing, or cherry-picking an old source:
 

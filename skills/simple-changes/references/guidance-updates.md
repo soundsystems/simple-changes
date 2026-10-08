@@ -142,7 +142,8 @@ default.
 
 ## Resolve required changelog updates before a loop
 
-When the request requires changelog work, call initialization with
+Resolve installed update choices before acquiring a loop. When the request
+requires changelog work, call initialization with
 `--changelog-required`. If the companion update is available, initialization
 returns `preLoopActionRequired: true` and `mutationAllowed: false`.
 

@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, realpathSync, statSync } from "node:fs";
+import { existsSync, readdirSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve, sep } from "node:path";
 import { runGit } from "./process.ts";
@@ -44,13 +44,15 @@ import { runGit } from "./process.ts";
  * that later commands would follow, or stages paths that could record a
  * nested checkout's moving HEAD as a gitlink (`add`, `commit -a`, `stash`).
  *
- * While units are pinned, a command runner (`env`, `xargs`, `sudo`, ...), a
- * shell or interpreter doing anything but running an existing script file
- * (`sh -c`, `python -c`), and any program given Git or a runner as a whole
- * argument are refused outright, because they hide what Git will run; any
- * other program, including a script file run by an interpreter, is opaque. Refusing a legitimate command is accepted, because the
- * form that names the recorded commit always works. The run's controller and
- * its own prepared authors are not pinned.
+ * While units are pinned, the program allowlist is the boundary: `loop exec`
+ * runs only `git`, checked as above, and documented provider merges that
+ * name the commit they merge (`glab mr merge <iid> --sha <commit>`). Every
+ * other program, including shells, interpreters, runners, and scripts, is
+ * refused before it starts, because what it runs cannot be classified.
+ * Refusing a legitimate command is accepted: the form that names the
+ * recorded commit always works, and anything else can run outside
+ * `loop exec` or after the pinned units are integrated. The run's
+ * controller and its own prepared authors are not pinned.
  */
 
 export type PinnedUnitState =
@@ -82,7 +84,7 @@ export type PinnedRefusalKind =
   | "named"
   | "replaced"
   | "unclassified"
-  | "wrapped";
+  | "program";
 
 export interface PinnedRefusal {
   detail: string;
@@ -286,73 +288,6 @@ const MERGE_LIKE_BUILTINS: ReadonlySet<string> = new Set([
   "worktree",
 ]);
 
-// Programs that run the rest of their arguments as another command. While
-// units are pinned they are refused outright: whatever they run is hidden.
-const PREFIX_RUNNERS: ReadonlySet<string> = new Set([
-  "arch",
-  "asdf",
-  "bunx",
-  "caffeinate",
-  "chroot",
-  "command",
-  "conda",
-  "direnv",
-  "doas",
-  "dtruss",
-  "entr",
-  "env",
-  "exec",
-  "find",
-  "flock",
-  "gdb",
-  "gtimeout",
-  "hyperfine",
-  "ionice",
-  "lldb",
-  "ltrace",
-  "mise",
-  "nice",
-  "nix",
-  "nix-shell",
-  "nohup",
-  "npm",
-  "npx",
-  "parallel",
-  "pipenv",
-  "pnpm",
-  "pnpx",
-  "poetry",
-  "runuser",
-  "script",
-  "setsid",
-  "ssh",
-  "stdbuf",
-  "strace",
-  "su",
-  "sudo",
-  "taskset",
-  "time",
-  "timeout",
-  "unbuffer",
-  "uv",
-  "uvx",
-  "valgrind",
-  "watch",
-  "xargs",
-  "xcrun",
-  "yarn",
-]);
-
-// Shells and interpreters, whatever version or build suffix their program
-// name carries (`python3.14t`, `node22`, `bash5`). While units are pinned one
-// may only run an existing script file, which is opaque like any other
-// program; inline code (`sh -c`, `python -c...`, `deno eval`) and any other
-// form are refused, since they can run Git in forms this check cannot see.
-// Text processors whose program is always inline are refused outright.
-const SCRIPT_RUNNER_PATTERN =
-  /^(?:ash|bash|bun|busybox|cmd|csh|dash|deno|fish|julia|ksh|lua|luajit|mksh|node|nodejs|osascript|perl|php|powershell|pwsh|pypy|python|pythonw|r|rscript|ruby|sh|tclsh|tcsh|wish|yash|zsh)(?:[^a-z].*)?$/u;
-const TEXT_RUNNER_PATTERN = /^(?:awk|gawk|gsed|mawk|nawk|sed)(?:[^a-z].*)?$/u;
-
 // The only merge-like subcommands loop exec runs while units are pinned, each
 // with every argument checked. Any other one (`send-pack`, `submodule`,
 // plumbing, `bisect`, `notes`, ...) is refused: its arguments and side
@@ -378,12 +313,9 @@ const ALLOWED_WHILE_PINNED: ReadonlySet<string> = new Set([
 
 const GIT_EXECUTABLES: ReadonlySet<string> = new Set(["git", "git.exe"]);
 const EXE_SUFFIX = /\.exe$/u;
-const VERSION_SUFFIX = /-?[\d.]+$/u;
-const PATH_SEPARATOR = /[/\\]/u;
 const PATHSPEC_GLOB = /[*?[]/u;
-const COMMIT_WIDE_CLUSTER = /^-[a-z]*[aio]/iu;
-const ADD_WIDE_CLUSTER = /^-[a-z]*[Au]/u;
-const DASHED_GIT_PROGRAM = /^git-([a-z][a-z0-9-]*)$/u;
+const COMMIT_WIDE_CLUSTER = /^-[a-z]*[aiop]/iu;
+const ADD_WIDE_CLUSTER = /^-[a-z]*[Aeipu]/u;
 const NAME_CHARACTER = /[\p{L}\p{N}_-]/u;
 const OTHER_WORKTREE_PATTERN =
   /(?:^|\.\.|[\^:=+])(?:main-worktree|worktrees\/[^/]+)\//u;
@@ -1453,10 +1385,10 @@ const revisionContainment = (
   revision: string,
   token: string,
   moved: readonly MovedUnit[],
-  invocation: GitInvocation,
+  globals: readonly string[],
   facts: PinnedGitFacts
 ): PinnedRefusal[] => {
-  const type = facts.objectType(invocation.globals, revision);
+  const type = facts.objectType(globals, revision);
   if (type === "tree" || type === "blob") {
     return [
       refusal(
@@ -1466,9 +1398,7 @@ const revisionContainment = (
       ),
     ];
   }
-  const commit = type
-    ? facts.resolveCommit(invocation.globals, revision)
-    : null;
+  const commit = type ? facts.resolveCommit(globals, revision) : null;
   if (!commit) {
     return [];
   }
@@ -1484,7 +1414,7 @@ const revisionContainment = (
       ];
     }
     const reached = entry.firstCommits.find((first) =>
-      facts.isAncestor(invocation.globals, first, commit)
+      facts.isAncestor(globals, first, commit)
     );
     return reached
       ? [
@@ -1512,7 +1442,13 @@ const containmentRefusals = (
     ? []
     : integratedRevisions(invocation, items, context.facts).flatMap(
         ({ revision, token }) =>
-          revisionContainment(revision, token, moved, invocation, context.facts)
+          revisionContainment(
+            revision,
+            token,
+            moved,
+            invocation.globals,
+            context.facts
+          )
       );
 
 const configuredRefusals = (
@@ -1881,8 +1817,11 @@ const COMMIT_VALUE_OPTIONS: ReadonlySet<string> = new Set([
 ]);
 const WIDE_STAGING_OPTIONS = [
   "--all",
+  "--edit",
   "--include",
+  "--interactive",
   "--only",
+  "--patch",
   "--pathspec-from-file",
   "--update",
 ];
@@ -2260,85 +2199,58 @@ const gitRefusals = (
 const programName = (path: string): string =>
   basename(path).toLowerCase().replace(EXE_SUFFIX, "");
 
-// A program's name without a version suffix: `python3.14`, `node22`,
-// `perl5.36`, and `python-3.12` are python, node, perl, and python.
-const programFamily = (path: string): string =>
-  programName(path).replace(VERSION_SUFFIX, "");
-
-// Git run by another program: a command runner whose arguments mention Git
-// anywhere (a shell script, an interpreter's code), or any program given Git
-// as a whole argument (`xcrun git`, `mise exec -- git`).
-// `git`, or a dashed Git program such as `git-merge`.
-const isGitProgram = (word: string): boolean =>
-  programName(word) === "git" || DASHED_GIT_PROGRAM.test(programName(word));
-
-const isFile = (path: string): boolean => {
-  try {
-    return statSync(path).isFile();
-  } catch {
-    return false;
+// A documented provider merge that names the exact commit it merges, so the
+// provider refuses any other head: `glab mr merge <iid> --sha <commit>`.
+const pinnedProviderMergeSha = (argv: readonly string[]): string | null => {
+  const [command = "", ...args] = argv;
+  if (
+    programName(command) !== "glab" ||
+    args[0] !== "mr" ||
+    args[1] !== "merge"
+  ) {
+    return null;
   }
+  const shas = args.flatMap((token, index) => {
+    if (token === "--sha") {
+      return [args[index + 1] ?? ""];
+    }
+    return token.startsWith("--sha=") ? [token.slice("--sha=".length)] : [];
+  });
+  const [sha = ""] = shas;
+  return shas.length === 1 && isObjectId(sha) ? sha : null;
 };
 
-// A shell or interpreter runs an existing script file named as its first
-// argument, with no option before it, spelled as a path (`./eval`, not
-// `eval`) so it can never be one of the interpreter's own subcommands.
-const runsScriptFile = (
-  args: readonly string[],
-  directory: string
-): boolean => {
-  const [script = ""] = args;
-  return (
-    PATH_SEPARATOR.test(script) &&
-    !script.startsWith("-") &&
-    isFile(resolve(directory, script))
-  );
-};
-
-// Git, or a program that could run it, given as a whole argument to another
-// program, which may run it.
-const runsProgram = (arg: string): boolean => {
-  const name = programName(arg);
-  return (
-    isGitProgram(arg) ||
-    PREFIX_RUNNERS.has(programFamily(arg)) ||
-    SCRIPT_RUNNER_PATTERN.test(name) ||
-    TEXT_RUNNER_PATTERN.test(name)
-  );
-};
-
-// A program other than Git that could run Git while units are pinned: a
-// prefix runner, a shell or interpreter that does not just run a script
-// file, a text processor, or any program given Git or a runner as a whole
-// argument.
-const wrappedRefusals = (
+// While units are pinned, loop exec runs Git, whose arguments this module
+// classifies, and documented provider merges that pin a commit. Any other
+// program is refused before it starts: what it runs cannot be classified.
+const programRefusals = (
   argv: readonly string[],
-  directory: string
+  context: PinnedCommandContext
 ): PinnedRefusal[] => {
   const [command = ""] = argv;
-  const args = argv.slice(1);
-  const name = programName(command);
-  let reason: string | null = null;
-  if (PREFIX_RUNNERS.has(programFamily(command))) {
-    reason = `${command} runs another command`;
-  } else if (TEXT_RUNNER_PATTERN.test(name)) {
-    reason = `${command} runs an inline program`;
-  } else if (
-    SCRIPT_RUNNER_PATTERN.test(name) &&
-    !runsScriptFile(args, directory)
-  ) {
-    reason = `${command} runs inline code or something other than a script file`;
-  } else if (args.some((arg) => runsProgram(arg))) {
-    reason = `${command} is given Git or another runner to run`;
+  const sha = pinnedProviderMergeSha(argv);
+  if (sha === null) {
+    return [
+      refusal(
+        "program",
+        `while units are pinned, loop exec runs only git and provider merges that name the commit (glab mr merge <iid> --sha <commit>); run ${command} outside loop exec, or finish integrating the pinned units first`,
+        command
+      ),
+    ];
   }
-  return reason
-    ? [
-        refusal(
-          "wrapped",
-          `${reason}, which could run Git out of this check's sight; run Git directly, or a script file`
-        ),
-      ]
-    : [];
+  if (!context.facts.resolveCommit([], sha)) {
+    return [
+      refusal(
+        "moved",
+        `${sha} is not a commit in this repository, so loop exec cannot check it against the pinned units`,
+        sha
+      ),
+    ];
+  }
+  const moved = movedUnits(context, context.facts.refs([]), []);
+  return moved.length === 0
+    ? []
+    : revisionContainment(sha, sha, moved, [], context.facts);
 };
 
 const FAST_FORWARD_MODES: ReadonlySet<string> = new Set([
@@ -2548,18 +2460,10 @@ export const analyzePinnedCommand = (
   if (!command || context.pins.length === 0) {
     return { equivalent: null, refusals: [], subcommand: null };
   }
-  // A dashed Git program (`git-merge`) runs that subcommand.
-  const dashed = DASHED_GIT_PROGRAM.exec(programName(command));
-  if (dashed) {
-    return analyzePinnedCommand(
-      ["git", dashed[1] as string, ...argv.slice(1)],
-      context
-    );
-  }
   if (!GIT_EXECUTABLES.has(basename(command).toLowerCase())) {
     return {
       equivalent: null,
-      refusals: wrappedRefusals(argv, context.checkout),
+      refusals: programRefusals(argv, context),
       subcommand: null,
     };
   }

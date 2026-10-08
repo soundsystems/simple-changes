@@ -509,6 +509,10 @@ describe("pinned-head command analysis", () => {
     }
     expect(kinds(["git", "merge", "--ff-only", head])).toEqual([]);
     expect(kinds(["git", "merge", "--ff-only", "other"])).toEqual([]);
+    // A provider merge of a commit containing a moved one is refused too.
+    expect(kinds(["glab", "mr", "merge", "12", "--sha", late])).toEqual([
+      "moved",
+    ]);
     // A tree or blob cannot be traced to its commit; a peel or path suffix
     // is checked at the commit it starts from.
     const lateTree = git(root, ["rev-parse", `${late}^{tree}`]);
@@ -656,6 +660,10 @@ describe("pinned-head command analysis", () => {
       ["git", "add", "-f", ".worktrees/nested"],
       ["git", "add", "."],
       ["git", "add", "-A"],
+      ["git", "add", "-e"],
+      ["git", "add", "--edit"],
+      ["git", "add", "-p"],
+      ["git", "commit", "--interactive"],
       ["git", "add", "--", "*.ts"],
       ["git", "commit", "-am", "Update"],
       ["git", "commit", "-m", "Update", "--", ".worktrees"],
@@ -757,60 +765,29 @@ describe("pinned-head command analysis", () => {
     git(root, ["replace", "-d", head]);
     expect(kinds(["git", "merge", "--ff-only", head])).toEqual([]);
 
-    // Git run through another program hides what it will read, so it is
-    // refused whatever it names. An interpreter may run only a script file
-    // spelled as a path, even where a file is named like its subcommand.
-    writeFixture(root, "eval", "\n");
-    writeFixture(root, "check.py", "\n");
+    // While units are pinned, only Git and provider merges that name the
+    // commit run; every other program is refused, whatever it would run.
     for (const argv of [
       ["sh", "-c", "git merge feat/x"],
-      ["env", "LC_ALL=C", "git", "merge", "feat/x"],
       ["env", "git", "merge", "--ff-only"],
-      ["/bin/sh", "-c", `cd ${unitPath} && git push origin HEAD:main`],
-      ["sh", "-c", "git status"],
-      ["xargs", "git", "merge"],
-      ["bun", "-e", "Bun.spawnSync(['git', 'merge'])"],
-      ["sudo", "/usr/bin/git", "merge", head],
-      ["mise", "exec", "--", "git", "merge", head],
-      ["/usr/bin/xcrun", "git", "merge", "feat/x"],
-      ["env", "/usr/libexec/git-core/git-merge", "--ff-only", "feat/x"],
-      ["sh", "-c", "git-merge --ff-only feat/x"],
-      [
-        "/opt/homebrew/bin/python3.14",
-        "-c",
-        "import os; os.execvp('git', ['git', 'merge', '--ff-only', 'feat/x'])",
-      ],
-      ["sh", "-c", `exec "$${"{"}GIT:-git}" merge --ff-only feat/x`],
-      ["bash", "-lc", "make integrate"],
-      ["node", "-pe", "1"],
-      ["deno", "eval", "1"],
-      ["awk", 'BEGIN { system("true") }'],
-      ["uv", "run", "python", "-c", "1"],
-      [
-        "python3.14",
-        "-c__import__('subprocess').run(['git','merge','feat/x'])",
-      ],
-      ["python3.14t", "-c", "1"],
-      ["deno", "--quiet", "eval", "1"],
-      ["bun", "run", "check"],
-      ["python3", "check.py"],
-      ["python3", "missing-script.py"],
-      ["my-wrapper", "sh", "script.sh"],
-      ["bun", "-e", "console.log('feat/x')"],
+      ["python3", "-c", "print(1)"],
+      ["bun", "./scripts/release.ts"],
+      ["/usr/libexec/git-core/git-merge", "--ff-only", head],
+      ["glab", "mr", "create", "--title", "Ship"],
+      ["glab", "mr", "merge", "12"],
+      ["glab", "mr", "merge", "12", "--sha", "feat/x"],
+      ["glab", "mr", "merge", "12", "--sha", head, `--sha=${head}`],
     ]) {
       expect({ argv, kinds: kinds(argv) }).toEqual({
         argv,
-        kinds: ["wrapped"],
+        kinds: ["program"],
       });
     }
+    expect(kinds(["glab", "mr", "merge", "12", "--sha", head])).toEqual([]);
+    expect(kinds(["glab", "mr", "merge", "12", `--sha=${head}`])).toEqual([]);
     expect(kinds(["git", "--exec-path=/tmp", "merge", head])).toEqual([
       "unclassified",
     ]);
-    // A dashed Git program runs that subcommand.
-    expect(kinds(["/usr/libexec/git-core/git-merge", "feat/x"])).toEqual([
-      "named",
-    ]);
-    expect(kinds(["git-merge", "--ff-only", head])).toEqual([]);
   });
 
   test("refuses -c, commands that run other commands, configuration writes, and implicit stash entries", () => {
@@ -930,14 +907,6 @@ describe("pinned-head command analysis", () => {
 
   test("lets every other command through, including the recorded-commit form", () => {
     const { analyze, head, kinds, root, unitPath } = analyzer();
-    // Interpreters may run existing script files.
-    for (const script of [
-      "scripts/release.ts",
-      "scripts/git-cleanup.sh",
-      "scripts/check.py",
-    ]) {
-      writeFixture(root, script, "\n");
-    }
     for (const argv of [
       ["git", "merge", "--ff-only", head],
       ["git", "merge", "--no-ff", "-m", "Merge branch 'feat/x'", head],
@@ -969,15 +938,13 @@ describe("pinned-head command analysis", () => {
       ["git", "branch", "-D", "-r", "origin/feat/x"],
       ["git", "worktree", "remove", unitPath],
       ["git", "mktag"],
-      ["bun", "./scripts/release.ts", "feat/x"],
-      ["glab", "mr", "create", "--title", "Fix git hooks on feat/x"],
-      ["bash", "./scripts/git-cleanup.sh"],
-      ["python3.14", "./scripts/check.py"],
+      ["glab", "mr", "merge", "12", "--sha", head, "--squash"],
     ]) {
       expect({ argv, kinds: kinds(argv) }).toEqual({ argv, kinds: [] });
     }
     // Nothing is pinned: nothing is refused.
     expect(analyze(["git", "merge", "feat/x"], []).refusals).toEqual([]);
+    expect(analyze(["sh", "-c", "git merge feat/x"], []).refusals).toEqual([]);
   });
 
   test("prints a replacement only when it is certainly equivalent", () => {
@@ -1335,7 +1302,6 @@ describe("pinned heads in loop exec", () => {
         ["git", "status"],
         ["git", "log", "--oneline", "feat/pinned"],
         ["git", "commit", "--allow-empty", "-m", "Mentions feat/pinned"],
-        ["/bin/echo", "feat/pinned"],
         ["git", "merge", "--no-ff", "-m", "Merge branch 'feat/pinned'", head],
       ],
       async (argv) => ({
@@ -1348,6 +1314,17 @@ describe("pinned heads in loop exec", () => {
     for (const result of results) {
       expect(result).toEqual({ argv: result.argv, exitCode: 0 });
     }
+    // Any program other than Git is refused before it starts while units
+    // are pinned.
+    expect(
+      await rejection(
+        executeLoopMutation(fixture.root, runId, "controller", [
+          process.execPath,
+          "-e",
+          "1",
+        ])
+      )
+    ).toContain("while units are pinned, loop exec runs only git");
     expect(
       spawnSync([
         "git",

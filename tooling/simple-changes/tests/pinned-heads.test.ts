@@ -292,6 +292,7 @@ describe("pinned-head command analysis", () => {
       ["git", "push", "origin", "feat/x"],
       ["git", "push", "origin", "feat/x:refs/heads/main"],
       ["git", "push", "-o", "-d", "origin", "feat/x"],
+      ["git", "push", "--unknown", "-d", "origin", "feat/x"],
       ["git", "fetch", ".", "feat/x:main"],
       ["git", "merge", "-X", "-m", "feat/x"],
       ["git", "merge", "--strat", "ours", "-m", "feat/x"],

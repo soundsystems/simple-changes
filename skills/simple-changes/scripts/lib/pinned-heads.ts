@@ -1,6 +1,6 @@
 import { existsSync, readdirSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, join, resolve, sep } from "node:path";
+import { basename, dirname, join, resolve, sep } from "node:path";
 import { runGit } from "./process.ts";
 
 /*
@@ -34,7 +34,13 @@ import { runGit } from "./process.ts";
  *   gained after its recorded head (a copy of a moved branch, or its ID);
  * - it is `git pull`, which resolves its repository, refspecs, and upstream
  *   when it runs, or a push or fetch with an option this parser does not
- *   know, or a fetch that writes a local ref other than a remote-tracking one.
+ *   know, or a fetch that writes a local ref other than a remote-tracking one;
+ * - it implicitly reads the shared stash.
+ *
+ * Every Git command, read-only ones included, is refused while units are
+ * pinned when it uses `-c`, an option or subcommand that runs another command
+ * (`rebase --exec`, `bisect run`, `--upload-pack`, ...), or writes
+ * configuration that later commands would follow.
  *
  * Git run through a shell or other command runner is refused outright while
  * units are pinned, because the runner hides what Git will read; any other
@@ -107,6 +113,8 @@ export interface PinnedGitFacts {
   ) => boolean;
   /** Remotes defined by files under `remotes/` or `branches/`. */
   legacyRemotes: () => string[];
+  /** The type of the object a revision names now, or null. */
+  objectType: (globals: readonly string[], revision: string) => string | null;
   refs: (globals: readonly string[]) => GitRefRecord[];
   /** The commit a revision names now, or null. */
   resolveCommit: (
@@ -342,12 +350,14 @@ const NAME_CHARACTER = /[\p{L}\p{N}_-]/u;
 const MESSAGE_SEARCH_PATTERN = /(?:^|\.\.|[\^:=+]):\//u;
 const OTHER_WORKTREE_PATTERN =
   /(?:^|\.\.|[\^:=+])(?:main-worktree|worktrees\/[^/]+)\//u;
+const STASH_REF_PATTERN = /^(?:refs\/)?stash(?:$|[~^:@])/u;
 const FETCH_HEAD_PATTERN =
   /(?:^|[^\p{L}\p{N}_-])fetch_head(?:$|[^\p{L}\p{N}_-])/u;
 const WRAPPER_WORD_SEPARATOR = /[\s;&|()<>'"`$\\=]+/u;
 const WHOLE_REF_TOKEN = /^[^\s~^:?*[\\@{}]+$/u;
 const OBJECT_ID = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/u;
 const RANGE_SEPARATOR = /\.{2,3}/u;
+const REVISION_SUFFIX = /[~^:]/u;
 const URL_SCHEME = /^[a-z][a-z0-9+.-]*:\/\//iu;
 const SCP_HOST = /^[^/]*:/u;
 const PERCENT_ESCAPE = /%[0-9a-f]{2}/iu;
@@ -688,6 +698,9 @@ export const indirectForm = (
   }
   if (FETCH_HEAD_PATTERN.test(folded)) {
     return "`FETCH_HEAD`, which can hold any fetched branch";
+  }
+  if (STASH_REF_PATTERN.test(folded)) {
+    return "the stash, which every checkout shares";
   }
   if (OTHER_WORKTREE_PATTERN.test(folded)) {
     return "another worktree's refs";
@@ -1083,11 +1096,23 @@ const owningCheckout = (
   return owner;
 };
 
+// The real path of `path`, resolving symbolic links in its deepest existing
+// ancestor when the path itself does not exist yet.
 const canonicalPath = (path: string): string => {
+  const missing: string[] = [];
+  let existing = resolve(path);
+  while (!existsSync(existing)) {
+    const parent = dirname(existing);
+    if (parent === existing) {
+      return resolve(path);
+    }
+    missing.unshift(basename(existing));
+    existing = parent;
+  }
   try {
-    return existsSync(path) ? realpathSync(path) : path;
+    return join(realpathSync(existing), ...missing);
   } catch {
-    return path;
+    return resolve(path);
   }
 };
 
@@ -1334,23 +1359,23 @@ const revisionCandidates = (text: string): string[] => {
   } else if (text.startsWith("-")) {
     value = text.slice(2);
   }
+  // Each side of a range, without its peel, path, or ancestry suffix: the
+  // commit it starts from is what must not contain a moved commit.
   return [value, ...value.split(RANGE_SEPARATOR)]
     .map((part) => (part.startsWith("^") ? part.slice(1) : part))
+    .map((part) => part.split(REVISION_SUFFIX, 1)[0] ?? "")
     .filter((part) => part && !part.startsWith("-"));
 };
 
 // A revision that contains a commit a pinned unit gained after its recorded
 // head would integrate that commit, whatever name or ID reached it.
-const containmentRefusals = (
+// Each revision a merge-like command may integrate: its arguments, and the
+// upstream a merge or rebase reads when it names none.
+const integratedRevisions = (
   invocation: GitInvocation,
   items: readonly ScannedToken[],
-  moved: readonly MovedUnit[],
-  context: PinnedCommandContext
-): PinnedRefusal[] => {
-  if (moved.length === 0) {
-    return [];
-  }
-  const { facts } = context;
+  facts: PinnedGitFacts
+): { revision: string; token: string }[] => {
   const revisions = items
     .filter((item) => item.revision)
     .flatMap((item) =>
@@ -1367,29 +1392,75 @@ const containmentRefusals = (
       revisions.push({ revision: upstream, token: upstream });
     }
   }
-  const found: PinnedRefusal[] = [];
-  for (const { revision, token } of revisions) {
-    const commit = facts.resolveCommit(invocation.globals, revision);
-    for (const entry of commit ? moved : []) {
-      const reached = entry.firstCommits.find((first) =>
-        facts.isAncestor(invocation.globals, first, commit as string)
-      );
-      if (entry.unbounded || reached) {
-        found.push(
+  return revisions;
+};
+
+// Why one revision would integrate a moved unit's later commit, or null.
+const revisionContainment = (
+  revision: string,
+  token: string,
+  moved: readonly MovedUnit[],
+  invocation: GitInvocation,
+  facts: PinnedGitFacts
+): PinnedRefusal[] => {
+  const type = facts.objectType(invocation.globals, revision);
+  if (type === "tree" || type === "blob") {
+    return [
+      refusal(
+        "moved",
+        `${token} names a ${type}, which loop exec cannot prove does not come from a commit a pinned unit gained after its recorded head`,
+        token
+      ),
+    ];
+  }
+  const commit = type
+    ? facts.resolveCommit(invocation.globals, revision)
+    : null;
+  if (!commit) {
+    return [];
+  }
+  return moved.flatMap((entry) => {
+    if (entry.unbounded) {
+      return [
+        refusal(
+          "moved",
+          `${describeUnit(entry.unit)} carries more than ${UNRECORDED_COMMIT_LIMIT} commits after its recorded head, too many to check ${token} against`,
+          token,
+          entry.unit
+        ),
+      ];
+    }
+    const reached = entry.firstCommits.find((first) =>
+      facts.isAncestor(invocation.globals, first, commit)
+    );
+    return reached
+      ? [
           refusal(
             "moved",
-            entry.unbounded
-              ? `${describeUnit(entry.unit)} carries more than ${UNRECORDED_COMMIT_LIMIT} commits after its recorded head, too many to check ${token} against`
-              : `${token} contains ${reached}, which ${describeUnit(entry.unit)} gained after its recorded head`,
+            `${token} contains ${reached}, which ${describeUnit(entry.unit)} gained after its recorded head`,
             token,
             entry.unit
-          )
-        );
-      }
-    }
-  }
-  return found;
+          ),
+        ]
+      : [];
+  });
 };
+
+// A revision that contains a commit a pinned unit gained after its recorded
+// head would integrate that commit, whatever name or ID reached it; so would a
+// tree or blob, whose commit cannot be traced.
+const containmentRefusals = (
+  invocation: GitInvocation,
+  items: readonly ScannedToken[],
+  moved: readonly MovedUnit[],
+  context: PinnedCommandContext
+): PinnedRefusal[] =>
+  moved.length === 0
+    ? []
+    : integratedRevisions(invocation, items, context.facts).flatMap(
+        ({ revision, token }) =>
+          revisionContainment(revision, token, moved, invocation, context.facts)
+      );
 
 const configuredRefusals = (
   invocation: GitInvocation,
@@ -1471,6 +1542,9 @@ const remoteConfigRefusals = (
       reason = "writes a local ref other than a remote-tracking one";
     } else if (implicitPush && pushesEveryBranch(lowered, value)) {
       reason = "can push every branch when a push names no refspec";
+    } else if (implicitPush && lowered.endsWith(".push")) {
+      reason =
+        "chooses what a push that names no refspec sends; name the refspec";
     }
     if (reason) {
       found.push(
@@ -1540,6 +1614,116 @@ const hasExplicitRevision = (
     }
   }
   return false;
+};
+
+// Git subcommands and options that run another command, which could run Git
+// out of this check's sight, or that write configuration later commands
+// would follow.
+const EXECUTING_SUBCOMMANDS: ReadonlySet<string> = new Set([
+  "difftool",
+  "filter-branch",
+  "instaweb",
+  "mergetool",
+  "web--browse",
+]);
+const EXECUTION_OPTIONS = ["--exec", "--receive-pack", "--upload-pack"];
+const CONFIG_READ_OPTIONS: ReadonlySet<string> = new Set([
+  "--get",
+  "--get-all",
+  "--get-color",
+  "--get-colorbool",
+  "--get-regexp",
+  "--get-urlmatch",
+  "--list",
+  "-l",
+]);
+
+const executes = (subcommand: string, args: readonly string[]): boolean => {
+  if (EXECUTING_SUBCOMMANDS.has(subcommand)) {
+    return true;
+  }
+  const option = (token: string, options: readonly string[]) =>
+    spelledOption(token, options) !== null;
+  return args.some(
+    (token) =>
+      option(token, EXECUTION_OPTIONS) ||
+      (subcommand === "rebase" &&
+        (option(token, ["--interactive", "--edit-todo"]) ||
+          token === "-i" ||
+          (token.startsWith("-x") && !token.startsWith("--")))) ||
+      (subcommand === "grep" &&
+        (option(token, ["--open-files-in-pager"]) || token.startsWith("-O"))) ||
+      ((subcommand === "ls-remote" || subcommand === "clone") &&
+        token === "-u") ||
+      (subcommand === "bisect" && token === "run") ||
+      (subcommand === "submodule" && token === "foreach")
+  );
+};
+
+const writesConfiguration = (
+  subcommand: string,
+  args: readonly string[]
+): boolean =>
+  subcommand === "config" &&
+  !(
+    args.some((token) => CONFIG_READ_OPTIONS.has(token)) ||
+    args[0] === "get" ||
+    args[0] === "list"
+  );
+
+// Rules that hold for every Git command, read-only ones included: `-c` can
+// make Git run a command (`core.fsmonitor`, `core.pager`) or read a name this
+// check cannot see, and so can the execution forms above.
+const commandRefusals = (invocation: GitInvocation): PinnedRefusal[] => {
+  const { arguments: args, subcommand } = invocation;
+  const found: PinnedRefusal[] = [];
+  if (invocation.globals.includes("-c")) {
+    found.push(
+      refusal(
+        "unclassified",
+        "-c can make Git run a command or read a name loop exec cannot see; set configuration before the run"
+      )
+    );
+  }
+  if (subcommand && executes(subcommand, args)) {
+    found.push(
+      refusal(
+        "unclassified",
+        `git ${subcommand} would run another command, which could run Git out of sight`
+      )
+    );
+  }
+  if (subcommand && writesConfiguration(subcommand, args)) {
+    found.push(
+      refusal(
+        "unclassified",
+        "git config would write configuration that later commands follow; set it before the run"
+      )
+    );
+  }
+  return found;
+};
+
+const STASH_READERS: ReadonlySet<string> = new Set(["apply", "branch", "pop"]);
+
+// The stash is shared by every checkout, so another checkout's `git stash`
+// moves the entry an implicit or numbered stash names. Only a full commit ID
+// pins one.
+const stashRefusals = (invocation: GitInvocation): PinnedRefusal[] => {
+  const [action = "", ...rest] = invocation.arguments;
+  if (invocation.subcommand !== "stash" || !STASH_READERS.has(action)) {
+    return [];
+  }
+  const operands = rest.filter((token) => !token.startsWith("-"));
+  const entry = operands.at(action === "branch" ? 1 : 0);
+  return entry && isObjectId(entry)
+    ? []
+    : [
+        refusal(
+          "indirect",
+          `git stash ${action} reads a stash entry that another checkout's git stash can replace; name the entry's full commit ID`
+        ),
+      ];
 };
 
 // Push and fetch rules that do not depend on any one argument's text.
@@ -1631,6 +1815,13 @@ const locationRefusals = (
         reached.unit
       )
     );
+  } else if (!existsSync(invocation.directory)) {
+    found.push(
+      refusal(
+        "checkout",
+        `it runs in ${invocation.directory}, which does not exist yet and could become any checkout while the command waits`
+      )
+    );
   }
   return found;
 };
@@ -1648,16 +1839,19 @@ const gitRefusals = (
       ),
     ];
   }
+  const always = commandRefusals(invocation);
   if (
     (READ_ONLY_SUBCOMMANDS.has(subcommand) &&
       !writesOutputFile(invocation.arguments)) ||
     integratesNothing(subcommand, invocation.arguments)
   ) {
-    return [];
+    return always;
   }
   const found = [
+    ...always,
     ...locationRefusals(invocation, context),
     ...transferRefusals(invocation),
+    ...stashRefusals(invocation),
   ];
   if (
     !MERGE_LIKE_BUILTINS.has(subcommand) &&
@@ -2027,6 +2221,12 @@ export const gitFactsFor = (
             .exitCode === 0
       ),
     legacyRemotes: () => legacyRemoteNames(commonGitDirectory),
+    objectType: (globals, revision) =>
+      memo(`type\0${globals.join("\0")}\0${revision}`, () => {
+        const result = git(globals, ["cat-file", "-t", revision]);
+        const type = result.stdout.trim();
+        return result.exitCode === 0 && type ? type : null;
+      }),
     refs: (globals) =>
       memo(`refs\0${globals.join("\0")}`, () =>
         git(globals, [

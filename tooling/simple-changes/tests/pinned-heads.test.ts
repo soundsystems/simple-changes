@@ -472,6 +472,11 @@ describe("pinned-head command analysis", () => {
     }
     expect(kinds(["git", "merge", "--ff-only", head])).toEqual([]);
     expect(kinds(["git", "merge", "--ff-only", "other"])).toEqual([]);
+    // A read-only command that writes a file is checked too.
+    expect(kinds(["git", "diff", "--output=late.diff", "main..copy"])).toEqual([
+      "moved",
+    ]);
+    expect(kinds(["git", "diff", "main..copy"])).toEqual([]);
     // A detached checkout is pinned by its path and head alone.
     const detached: PinnedUnit = { ...unit, branch: null, state: "preserved" };
     const detachedKinds = (argv: string[]) =>
@@ -616,6 +621,8 @@ describe("pinned-head command analysis", () => {
       ["xargs", "git", "merge"],
       ["bun", "-e", "Bun.spawnSync(['git', 'merge'])"],
       ["sudo", "/usr/bin/git", "merge", head],
+      ["mise", "exec", "--", "git", "merge", head],
+      ["/usr/bin/xcrun", "git", "merge", "feat/x"],
     ]) {
       expect({ argv, kinds: kinds(argv) }).toEqual({
         argv,
@@ -625,6 +632,11 @@ describe("pinned-head command analysis", () => {
     expect(kinds(["git", "--exec-path=/tmp", "merge", head])).toEqual([
       "unclassified",
     ]);
+    // A dashed Git program runs that subcommand.
+    expect(kinds(["/usr/libexec/git-core/git-merge", "feat/x"])).toEqual([
+      "named",
+    ]);
+    expect(kinds(["git-merge", "--ff-only", head])).toEqual([]);
   });
 
   test("lets every other command through, including the recorded-commit form", () => {

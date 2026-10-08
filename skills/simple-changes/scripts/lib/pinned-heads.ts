@@ -330,12 +330,14 @@ const COMMAND_RUNNERS: ReadonlySet<string> = new Set([
   "unbuffer",
   "watch",
   "xargs",
+  "xcrun",
   "yash",
   "zsh",
 ]);
 
 const GIT_EXECUTABLES: ReadonlySet<string> = new Set(["git", "git.exe"]);
 const EXE_SUFFIX = /\.exe$/u;
+const DASHED_GIT_PROGRAM = /^git-([a-z][a-z0-9-]*)$/u;
 const NAME_CHARACTER = /[\p{L}\p{N}_-]/u;
 const MESSAGE_SEARCH_PATTERN = /(?:^|\.\.|[\^:=+]):\//u;
 const OTHER_WORKTREE_PATTERN =
@@ -952,6 +954,12 @@ const operandsAndFlags = (
   }
   return { flags, operands };
 };
+
+// A read-only command that writes a file (`git diff --output=<file>`) can
+// carry a moved commit's content to a later `git apply`, so it is checked
+// like a merge-like command.
+const writesOutputFile = (args: readonly string[]): boolean =>
+  args.some((token) => spelledOption(token, ["--output"]) !== null);
 
 /** Forms of a merge-like subcommand that integrate nothing. */
 const integratesNothing = (
@@ -1641,7 +1649,8 @@ const gitRefusals = (
     ];
   }
   if (
-    READ_ONLY_SUBCOMMANDS.has(subcommand) ||
+    (READ_ONLY_SUBCOMMANDS.has(subcommand) &&
+      !writesOutputFile(invocation.arguments)) ||
     integratesNothing(subcommand, invocation.arguments)
   ) {
     return [];
@@ -1703,15 +1712,18 @@ const gitRefusals = (
 const programName = (path: string): string =>
   basename(path).toLowerCase().replace(EXE_SUFFIX, "");
 
+// Git run by another program: a command runner whose arguments mention Git
+// anywhere (a shell script, an interpreter's code), or any program given Git
+// as a whole argument (`xcrun git`, `mise exec -- git`).
 const wrappedRefusals = (argv: readonly string[]): PinnedRefusal[] => {
   const [command = ""] = argv;
-  if (!COMMAND_RUNNERS.has(programName(command))) {
-    return [];
-  }
-  const runsGit = argv
-    .slice(1)
-    .flatMap((arg) => arg.split(WRAPPER_WORD_SEPARATOR))
-    .some((word) => programName(word) === "git");
+  const args = argv.slice(1);
+  const runsGit =
+    args.some((arg) => programName(arg) === "git") ||
+    (COMMAND_RUNNERS.has(programName(command)) &&
+      args
+        .flatMap((arg) => arg.split(WRAPPER_WORD_SEPARATOR))
+        .some((word) => programName(word) === "git"));
   return runsGit
     ? [
         refusal(
@@ -1928,6 +1940,14 @@ export const analyzePinnedCommand = (
   const [command] = argv;
   if (!command || context.pins.length === 0) {
     return { equivalent: null, refusals: [], subcommand: null };
+  }
+  // A dashed Git program (`git-merge`) runs that subcommand.
+  const dashed = DASHED_GIT_PROGRAM.exec(programName(command));
+  if (dashed) {
+    return analyzePinnedCommand(
+      ["git", dashed[1] as string, ...argv.slice(1)],
+      context
+    );
   }
   if (!GIT_EXECUTABLES.has(basename(command).toLowerCase())) {
     return {

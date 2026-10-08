@@ -307,6 +307,45 @@ describe("loop draft-outcome", () => {
     expect(endLoop(root, lease.runId, "controller").ok).toBe(true);
   });
 
+  test("binds the target branch, never a tag named like it, in the draft and the recorder", () => {
+    // A local target (`main`) and a remote-tracking target (`origin/main`):
+    // Git resolves a short name to a same-named tag before the branch, so a
+    // tag at the old head must not hide the target's later change.
+    for (const remote of [false, true]) {
+      const fixture = repository();
+      const { base, root } = fixture;
+      const before = git(root, ["rev-parse", "HEAD"]);
+      if (remote) {
+        const bare = join(base, "origin.git");
+        git(base, ["clone", "-q", "--bare", root, bare]);
+        git(root, ["remote", "add", "origin", bare]);
+        git(root, ["fetch", "-q", "origin"]);
+        git(root, ["branch", "-q", "-u", "origin/main", "main"]);
+      }
+      const lease = startLoop(root, "controller", "ship");
+      const targetRef = remote ? "origin/main" : "main";
+      expect(lease.targetRef).toBe(targetRef);
+      writeFixture(root, "arrived.txt", "after loop start\n");
+      const after = commitAll(root, "Target change");
+      if (remote) {
+        git(root, ["push", "-q", "origin", "main"]);
+        git(root, ["fetch", "-q", "origin"]);
+      }
+      git(root, ["tag", targetRef, before]);
+
+      const { draft } = draftShipmentOutcome(root, lease.runId);
+      expect(draft.targetRevision).toBe(after);
+      expect(draft.additionalPaths.map((item) => item.path)).toEqual([
+        "arrived.txt",
+      ]);
+      recordShipmentOutcome(root, lease.runId, "controller", reviewed(draft));
+      // Ending the run still checks the local branch by its short name, which
+      // the tag answers, so it refuses rather than pass; drop the tag first.
+      git(root, ["tag", "-d", targetRef]);
+      expect(endLoop(root, lease.runId, "controller").ok).toBe(true);
+    }
+  });
+
   test("an empty draft still needs its review marker deleted", () => {
     const fixture = repository();
     const { root } = fixture;

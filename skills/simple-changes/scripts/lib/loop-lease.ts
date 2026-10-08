@@ -1074,16 +1074,47 @@ const matchingOverride = (
       override.changeDigest === worktree.changeDigest
   );
 
+/**
+ * The full refs a lease's short target name may mean, most specific first.
+ * Git resolves a short name to a same-named tag before a branch, so reading
+ * the target only through refs/remotes or refs/heads keeps a tag named
+ * `main` or `origin/main` from standing in for it. A target under a bound
+ * remote is that remote-tracking ref; a lease without bindings tries the
+ * remote-tracking ref before the local branch.
+ */
+const targetFullRefs = (
+  lease: Pick<LoopLease, "remoteBindings" | "targetRef">
+): string[] => {
+  const { targetRef } = lease;
+  if (targetRef.startsWith("refs/")) {
+    return [targetRef];
+  }
+  const bindings = lease.remoteBindings;
+  if (bindings && bindings.length > 0) {
+    return bindings.some((binding) => targetRef.startsWith(`${binding.name}/`))
+      ? [`refs/remotes/${targetRef}`]
+      : [`refs/heads/${targetRef}`];
+  }
+  return targetRef.includes("/")
+    ? [`refs/remotes/${targetRef}`, `refs/heads/${targetRef}`]
+    : [`refs/heads/${targetRef}`];
+};
+
 export const resolvedCurrentTargetRevision = (
   lease: LoopLease
 ): string | null => {
-  const result = runGit(
-    lease.primaryCheckout,
-    ["rev-parse", "--verify", `${lease.targetRef}^{commit}`],
-    true
-  );
-  const revision = result.stdout.trim();
-  return result.exitCode === 0 && revision ? revision : null;
+  for (const ref of targetFullRefs(lease)) {
+    const result = runGit(
+      lease.primaryCheckout,
+      ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`],
+      true
+    );
+    const revision = result.stdout.trim();
+    if (result.exitCode === 0 && revision) {
+      return revision;
+    }
+  }
+  return null;
 };
 
 const matchingRemovalDisposition = (

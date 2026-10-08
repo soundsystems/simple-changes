@@ -362,6 +362,19 @@
   on stderr. Any nonzero exit or failure to start refuses the command before
   its child exists. A guard only restricts: it needs no policy trust receipt,
   grants no authority, and gates nothing run outside `loop exec`.
+- `loop exec` pins every registered unit the run does not author itself:
+  released or handed-off authors at the state their release recorded, and
+  preserved, adopted, and retained checkouts at their baseline or approved
+  override. No merge-like `loop exec` command can integrate a commit other
+  than a registered unit's recorded head. Before the guard, a Git subcommand
+  that is not read-only, or a wrapper whose arguments run Git, is refused when
+  an argument names a pinned branch in any spelling or letter case, points
+  into a pinned checkout, or uses an indirect name, alias, upstream, remote
+  setting, or replace ref that could stand for one. The refusal prints the
+  commit-ID form when it is certainly equivalent, or the claim, pause, and
+  accept steps when the branch already moved. `loop verify --for merge` fails
+  while a released, handed-off, preserved, or adopted unit's branch has left
+  its recorded head.
 - `proposalScheduling` controls only whether independent proposals are
   authored consecutively or in parallel claimed worktrees. It never shares a
   checkout, weakens controller guards or worktree isolation, changes cleanup

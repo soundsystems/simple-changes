@@ -114,6 +114,24 @@ incomplete preparation, missing baseline worktree, or head/content change in a
 preserved worktree. Run `loop verify` before merge, deployment, cleanup, and
 completion even when every earlier operation passed.
 
+`loop exec` pins every registered unit the run does not author itself to its
+recorded head: a released or handed-off author's recorded state, and a
+preserved, adopted, or retained checkout's baseline or approved override. No merge-like
+`loop exec` command can integrate a commit other than a registered unit's
+recorded head. Before the child or `execGuard` starts, any Git subcommand that
+is not read-only is refused when an argument names a pinned branch in any
+spelling or letter case, points into a pinned checkout, or uses a stand-in
+that could resolve to one (`@{...}`, `-`, `FETCH_HEAD`, another worktree's
+refs, `:/` searches, every-branch options or refspecs, an alias, an upstream or
+remote setting, a replace ref); so is a wrapper such as `sh -c` whose
+arguments run Git and mention one. Name the recorded commit instead, as in
+`git merge --ff-only <head>` or `git push <remote>
+<head>:refs/heads/<branch>`. The refusal prints that command when it is
+certainly equivalent, or says the branch moved and prints the claim, pause,
+and accept steps. `loop verify --for merge` also fails while such a unit's
+branch has left its recorded head. The controller and its prepared authors
+are not pinned.
+
 For a Ship lease whose opening inventory contains local changes, first record
 the conserved preview plan with `loop record-scope --receipt <file>`. The plan
 must come from the exact current inventory and account for every changed path

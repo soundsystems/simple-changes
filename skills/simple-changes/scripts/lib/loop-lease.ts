@@ -47,6 +47,15 @@ import {
   assertNoSymlinkAncestors,
   assertSafeRelativePath,
 } from "./path-safety.ts";
+import {
+  analyzePinnedCommand,
+  describePinnedUnit,
+  gitFactsFor,
+  type PinnedCommandAnalysis,
+  type PinnedGitFacts,
+  type PinnedUnit,
+  type PinnedUnitState,
+} from "./pinned-heads.ts";
 import { buildPreviewPlan, validatePlanConservation } from "./planner.ts";
 import {
   preservedSourceOverrideFailure,
@@ -2084,6 +2093,374 @@ const staleClaimRecovery = (
   };
 };
 
+// A completed release that recorded its checkout's exact state: that state
+// is the unit's recorded head, whoever holds the checkout now.
+const recordedRelease = (
+  registered: LoopWorktreeLease,
+  claim: WorktreeClaim | undefined,
+  coordination: WorktreeCoordinationDocument
+): claim is WorktreeClaim =>
+  claim?.state === "released" &&
+  claim.releaseReason !== undefined &&
+  COMPLETED_RELEASE_REASONS.has(claim.releaseReason) &&
+  releaseRecordedState(coordination, claim.claimId) &&
+  claim.owner.agentId === registered.agentId &&
+  claim.path === registered.path;
+
+/**
+ * Every registered unit whose branch the run does not move itself, with the
+ * heads the run recorded for it: the state its owner released or handed off,
+ * or a preserved, adopted, or retained baseline plus any exact approved
+ * override. The controller and its own prepared authors are not pinned, nor
+ * is the primary or target branch. See `pinned-heads.ts` for the boundary.
+ */
+const pinnedUnitsFor = (
+  lease: LoopLease,
+  inventory: RepositoryInventory,
+  coordination: WorktreeCoordinationDocument
+): PinnedUnit[] => {
+  const { primaryBranch, targetBranch } = resolvePrimaryAndTargetBranches(
+    lease,
+    inventory
+  );
+  const units: PinnedUnit[] = [];
+  for (const unit of lease.worktrees.flatMap((registered) =>
+    registrationPins(lease, registered, coordination)
+  )) {
+    if (
+      unit.branch !== primaryBranch &&
+      unit.branch !== targetBranch &&
+      !units.some(
+        (existing) =>
+          existing.branch === unit.branch && existing.path === unit.path
+      )
+    ) {
+      units.push(unit);
+    }
+  }
+  return units;
+};
+
+// One registration's pins. A concurrent author whose release recorded its
+// exact state is pinned to that state; its registered branch, when it
+// differs, and an author still holding its claim have no recorded head.
+const registrationPins = (
+  lease: LoopLease,
+  registered: LoopWorktreeLease,
+  coordination: WorktreeCoordinationDocument
+): PinnedUnit[] => {
+  const { branch, path } = registered;
+  if (registered.role === "concurrent-author") {
+    const claim = coordination.claims.find(
+      (item) => item.claimId === registered.claimId
+    );
+    const pins: PinnedUnit[] = [];
+    if (recordedRelease(registered, claim, coordination) && claim.branch) {
+      pins.push({
+        branch: claim.branch,
+        owner: claim.owner.agentId,
+        path,
+        recordedHeads: claim.headSha ? [claim.headSha] : [],
+        state: claim.releaseReason === "handoff" ? "handed-off" : "released",
+      });
+    }
+    if (branch) {
+      pins.push({
+        branch,
+        owner: claim?.owner.agentId ?? registered.agentId,
+        path,
+        recordedHeads: [],
+        state: claim && claim.state !== "released" ? "claimed" : "unrecorded",
+      });
+    }
+    return pins;
+  }
+  if (
+    !(
+      branch &&
+      (registered.role === "preserved" || registered.role === "retained")
+    )
+  ) {
+    return [];
+  }
+  return [
+    {
+      branch,
+      owner: registered.agentId,
+      path,
+      recordedHeads: [
+        registered.baselineHeadSha,
+        ...lease.overrides
+          .filter((override) => override.path === path)
+          .map((override) => override.headSha),
+      ].filter((head): head is string => Boolean(head)),
+      state: pinnedBaselineState(registered),
+    },
+  ];
+};
+
+const pinnedBaselineState = (
+  registered: LoopWorktreeLease
+): PinnedUnitState => {
+  if (registered.role === "retained") {
+    return "retained";
+  }
+  return registered.claimId && registered.pauseReceiptId
+    ? "adopted"
+    : "preserved";
+};
+
+const absentWorktree = (registered: LoopWorktreeLease): WorktreeInventory => ({
+  bare: false,
+  branch: registered.branch,
+  changeDigest: registered.baselineChangeDigest,
+  changes: [],
+  detached: false,
+  headSha: null,
+  isCurrent: false,
+  isPrimary: false,
+  locked: false,
+  path: registered.path,
+  prunable: true,
+});
+
+// The claim, pause, and accept steps that record a pinned unit's current
+// state, exactly as a stale coordination link prints them.
+const pinnedUnitRecovery = (
+  lease: LoopLease,
+  inventory: RepositoryInventory,
+  coordination: WorktreeCoordinationDocument,
+  unit: PinnedUnit
+): StaleClaimRecovery | null => {
+  const registered = lease.worktrees.find((item) => item.path === unit.path);
+  if (!registered) {
+    return null;
+  }
+  const current =
+    inventory.worktrees.find((item) => item.path === unit.path) ??
+    absentWorktree(registered);
+  return staleClaimRecovery(lease, registered, current, {
+    concurrentClaim: undefined,
+    linkedClaim: coordination.claims.find(
+      (claim) => claim.claimId === registered.claimId
+    ),
+    liveClaim: liveClaimFor(coordination, lease.commonGitDirectory, unit.path),
+    releaseRecorded: false,
+  });
+};
+
+const localBranchHeads = (repositoryPath: string): Map<string, string> =>
+  new Map(
+    runGit(
+      repositoryPath,
+      ["for-each-ref", "--format=%(refname)%00%(objectname)", "refs/heads/"],
+      true
+    )
+      .stdout.split("\n")
+      .filter(Boolean)
+      .map((line): [string, string] => {
+        const [name = "", head = ""] = line.split("\0");
+        return [name.slice("refs/heads/".length), head];
+      })
+  );
+
+const PINNED_BOUNDARY =
+  "No merge-like `loop exec` command can integrate a commit other than a registered unit's recorded head, and a branch name can move while the command waits.";
+
+// What to do about one pinned unit a refused command named: the commit to
+// name instead, whether its branch has already moved, or why there is none.
+const pinnedUnitGuidance = (
+  lease: LoopLease,
+  inventory: RepositoryInventory,
+  coordination: WorktreeCoordinationDocument,
+  unit: PinnedUnit,
+  current: string | null,
+  subcommand: string | null
+): string[] => {
+  const recorded = unit.recordedHeads.at(-1);
+  const recovery = pinnedUnitRecovery(lease, inventory, coordination, unit);
+  const recoverySteps = (recovery?.commands ?? []).map(
+    (command) => `  Next: ${command}`
+  );
+  if (!recorded) {
+    return unit.state === "claimed"
+      ? [
+          `- ${describePinnedUnit(unit)} has no recorded head: the run integrates it only after its owner releases or hands it off, which records the exact commit.`,
+        ]
+      : [
+          `- ${describePinnedUnit(unit)} has no recorded head. Record its current state first:`,
+          ...recoverySteps,
+        ];
+  }
+  if (current && !unit.recordedHeads.includes(current)) {
+    return [
+      `- ${describePinnedUnit(unit)} has moved from its recorded head ${recorded} to ${current}. Name ${recorded} to integrate the recorded commit, or record the newer one first:`,
+      ...recoverySteps,
+    ];
+  }
+  const notes = [
+    `- ${describePinnedUnit(unit)}: replace the branch name with its recorded head ${recorded}.`,
+  ];
+  if (subcommand === "push") {
+    notes.push(
+      `  A push names the destination in full: ${recorded}:refs/heads/${unit.branch}.`
+    );
+  }
+  if (subcommand === "merge") {
+    notes.push(
+      "  A merge commit then names the commit ID instead of the branch; pass -m to keep a branch-named title."
+    );
+  }
+  return notes;
+};
+
+const pinnedRefusalMessage = (
+  lease: LoopLease,
+  inventory: RepositoryInventory,
+  coordination: WorktreeCoordinationDocument,
+  argv: readonly string[],
+  analysis: PinnedCommandAnalysis,
+  facts: PinnedGitFacts,
+  invocation: { agentId: string; checkout: string; runId: string }
+): string => {
+  const heads = new Map(
+    facts.refs([]).map((ref) => [ref.name, ref.object] as const)
+  );
+  const lines = [
+    `loop exec refused ${JSON.stringify(argv)} before starting it. ${PINNED_BOUNDARY}`,
+  ];
+  for (const item of analysis.refusals) {
+    lines.push(`- ${item.detail}.`);
+  }
+  const loopExec = `simple-changes loop exec --run-id ${invocation.runId} --agent-id ${commandWord(invocation.agentId)} --repo ${commandWord(invocation.checkout)} --`;
+  if (analysis.equivalent) {
+    lines.push(
+      "Run the equivalent command, which names the recorded commit instead:",
+      `  Next: ${loopExec} ${analysis.equivalent.map(commandWord).join(" ")}`
+    );
+    return lines.join("\n");
+  }
+  const named = [
+    ...new Set(
+      analysis.refusals.flatMap((item) => (item.unit ? [item.unit] : []))
+    ),
+  ];
+  for (const unit of named) {
+    lines.push(
+      ...pinnedUnitGuidance(
+        lease,
+        inventory,
+        coordination,
+        unit,
+        heads.get(`refs/heads/${unit.branch}`) ?? null,
+        analysis.subcommand
+      )
+    );
+  }
+  if (named.length === 0) {
+    lines.push(
+      "Name each unit by its recorded commit ID instead; run the underlying Git subcommand directly, without an alias, wrapper, or indirect name."
+    );
+  }
+  return lines.join("\n");
+};
+
+/**
+ * Refuses a guarded command before it starts when it could integrate a
+ * pinned unit's branch by name instead of by its recorded head.
+ */
+const assertPinnedHeads = (
+  lease: LoopLease,
+  inventory: RepositoryInventory,
+  argv: readonly string[],
+  invocation: { agentId: string; checkout: string; runId: string }
+): void => {
+  const coordination = readCoordinationDocumentFromCommonDirectory(
+    lease.commonGitDirectory
+  );
+  const pins = pinnedUnitsFor(lease, inventory, coordination);
+  if (pins.length === 0) {
+    return;
+  }
+  const facts = gitFactsFor(invocation.checkout, lease.commonGitDirectory);
+  const analysis = analyzePinnedCommand(argv, {
+    checkout: invocation.checkout,
+    facts,
+    pins,
+    worktreePaths: inventory.worktrees.map((worktree) => worktree.path),
+  });
+  if (analysis.refusals.length > 0) {
+    throw new SimpleChangesError(
+      pinnedRefusalMessage(
+        lease,
+        inventory,
+        coordination,
+        argv,
+        analysis,
+        facts,
+        invocation
+      ),
+      EXIT_CODES.unsafe
+    );
+  }
+};
+
+// States whose recorded head `loop verify --for merge` holds the branch to.
+const MERGE_VERIFIED_STATES: ReadonlySet<PinnedUnitState> = new Set([
+  "adopted",
+  "handed-off",
+  "preserved",
+  "released",
+]);
+
+/**
+ * Before a merge, each released, handed-off, preserved, or adopted unit's
+ * local branch must still point at a head the run recorded. A checkout that
+ * is still present and on its branch already fails verification when it
+ * moves; this also covers a branch that moved without its checkout, such as
+ * after the checkout was removed or switched to another branch.
+ */
+const registeredBranchViolations = (
+  lease: LoopLease,
+  inventory: RepositoryInventory,
+  existing: readonly LoopViolation[]
+): LoopViolation[] => {
+  const coordination = readCoordinationDocumentFromCommonDirectory(
+    lease.commonGitDirectory
+  );
+  const flagged = new Set(existing.map((violation) => violation.path));
+  const retired = retiredAbsentPaths(lease, inventory);
+  const heads = localBranchHeads(lease.primaryCheckout);
+  const violations: LoopViolation[] = [];
+  for (const unit of pinnedUnitsFor(lease, inventory, coordination)) {
+    const head = heads.get(unit.branch);
+    const recorded = unit.recordedHeads.at(-1);
+    if (
+      !(head && recorded && MERGE_VERIFIED_STATES.has(unit.state)) ||
+      unit.recordedHeads.includes(head) ||
+      flagged.has(unit.path) ||
+      retired.has(unit.path) ||
+      removalDispositionForPath(lease, unit.path)
+    ) {
+      continue;
+    }
+    const recovery = pinnedUnitRecovery(lease, inventory, coordination, unit);
+    violations.push({
+      changeDigest:
+        inventory.worktrees.find((worktree) => worktree.path === unit.path)
+          ?.changeDigest ?? null,
+      code: "registered-branch-moved",
+      headSha: head,
+      message:
+        `Branch ${describePinnedUnit(unit)} moved from its recorded head ${recorded} to ${head}, so a merge that names it would integrate a commit this run never recorded. ${recovery?.text ?? ""}`.trim(),
+      ...(recovery ? { nextCommands: recovery.commands } : {}),
+      path: unit.path,
+    });
+    flagged.add(unit.path);
+  }
+  return violations;
+};
+
 const staleConcurrentClaimCause = (
   registered: LoopWorktreeLease,
   { linkedClaim, liveClaim, releaseRecorded }: WorktreeClaimContext
@@ -4082,7 +4459,18 @@ const emptyVerification = (
   violations: [],
 });
 
-export const verifyLoop = (repositoryPath: string): LoopVerification => {
+export interface LoopVerifyOptions {
+  /**
+   * Also hold each released, handed-off, preserved, or adopted unit's branch
+   * to its recorded head, as `loop verify --for merge` does.
+   */
+  forMerge?: boolean;
+}
+
+export const verifyLoop = (
+  repositoryPath: string,
+  options: LoopVerifyOptions = {}
+): LoopVerification => {
   const opening = locateRepository(repositoryPath);
   return withStateLock(
     opening.repository.commonGitDirectory,
@@ -4104,7 +4492,19 @@ export const verifyLoop = (repositoryPath: string): LoopVerification => {
               updatedAt: new Date().toISOString(),
             })
           : projected;
-      return verificationAgainst(lease, inventory);
+      const verification = verificationAgainst(lease, inventory);
+      if (!options.forMerge) {
+        return verification;
+      }
+      const violations = [
+        ...verification.violations,
+        ...registeredBranchViolations(
+          lease,
+          inventory,
+          verification.violations
+        ),
+      ];
+      return { ...verification, ok: violations.length === 0, violations };
     }
   );
 };
@@ -4534,6 +4934,12 @@ export const withGuardedLoopCommands = <T>(
             EXIT_CODES.usage
           );
         }
+        // Pinned heads are a lease check, so they refuse before the guard.
+        assertPinnedHeads(requireLease(inventory), inventory, argv, {
+          agentId: agentIdInput,
+          checkout,
+          runId,
+        });
         if (guard) {
           context.markChildStarting();
           await assertExecGuardAllows({

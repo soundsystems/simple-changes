@@ -390,6 +390,17 @@ describe("remote-inventory build", () => {
     });
     expect(() => buildRemoteInventory(shifted)).toThrow("appears on two pages");
 
+    const repeated = openingPages();
+    repeated.proposalPages[1]?.proposals.push({
+      headRevision: SHA.feature,
+      objectId: "1",
+      sourceBranch: "feat/open",
+      state: "open",
+    });
+    expect(() => buildRemoteInventory(repeated)).toThrow(
+      "proposal 1 appears twice"
+    );
+
     const broken = openingPages();
     const [, second] = broken.branchPages;
     if (second) {
@@ -425,6 +436,80 @@ describe("remote-inventory build", () => {
     expect(() => buildRemoteInventory(reprotected, { opening })).toThrow(
       "changed protection"
     );
+  });
+});
+
+describe("GitLab fetcher listing stability", () => {
+  const encoder = new TextEncoder();
+  const listing =
+    (reads: () => { branches: unknown[]; requests: unknown[] }) =>
+    (endpoint: string): Uint8Array => {
+      const { branches, requests } = reads();
+      return encoder.encode(
+        JSON.stringify(
+          endpoint.includes("repository/branches") ? branches : requests
+        )
+      );
+    };
+  const main = { commit: { id: SHA.target }, name: "main", protected: true };
+  const options = {
+    output: "unused.json",
+    project: "group/project",
+    targetBranch: "main",
+  };
+
+  test("reads again until two reads agree", () => {
+    let calls = 0;
+    const pages = fetchGitLabRemoteInventory(
+      options,
+      listing(() => {
+        calls += 1;
+        // The first read sees a branch that is gone by the second.
+        return {
+          branches:
+            calls === 1
+              ? [
+                  main,
+                  {
+                    commit: { id: SHA.feature },
+                    name: "gone",
+                    protected: false,
+                  },
+                ]
+              : [main],
+          requests: [],
+        };
+      })
+    );
+    expect(pages.branchPages[0]?.branches.map((branch) => branch.name)).toEqual(
+      ["main"]
+    );
+    expect(calls).toBe(6);
+  });
+
+  test("refuses a listing that never settles", () => {
+    let calls = 0;
+    expect(() =>
+      fetchGitLabRemoteInventory(
+        options,
+        listing(() => {
+          calls += 1;
+          return {
+            branches: [main],
+            requests: [
+              {
+                iid: calls,
+                sha: SHA.feature,
+                source_branch: "main",
+                source_project_id: 1,
+                state: "opened",
+                target_project_id: 1,
+              },
+            ],
+          };
+        })
+      )
+    ).toThrow("changed between every one of 4 reads");
   });
 });
 
@@ -680,7 +765,8 @@ describe("remote inventory through the CLI and a loop", () => {
       proposals: 1,
     });
     const log = readFileSync(calls, "utf8").trim().split("\n");
-    expect(log).toHaveLength(3);
+    // Two full reads that normalize identically.
+    expect(log).toHaveLength(6);
     for (const line of log) {
       expect(line.startsWith("api projects/group%2Fproject/")).toBe(true);
       expect(line).not.toContain("-X");

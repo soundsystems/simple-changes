@@ -116,34 +116,30 @@ const glabGet = (options: FetchOptions, endpoint: string): Uint8Array => {
   return result.stdout;
 };
 
-const fetchPages = <T>(
-  options: FetchOptions,
-  kind: "branches" | "merge-requests",
-  endpoint: (page: number) => string
-): Array<{
+interface RawPage<T> {
+  bytes: Uint8Array;
   cursorIn: string | null;
   cursorOut: string | null;
   responseDigest: string;
   rows: T[];
-}> => {
-  const pages: Array<{
-    cursorIn: string | null;
-    cursorOut: string | null;
-    responseDigest: string;
-    rows: T[];
-  }> = [];
+}
+
+const fetchPages = <T>(
+  get: (endpoint: string) => Uint8Array,
+  kind: "branches" | "merge-requests",
+  endpoint: (page: number) => string
+): RawPage<T>[] => {
+  const pages: RawPage<T>[] = [];
   for (let page = 1; page <= PAGE_LIMIT; page += 1) {
-    const bytes = glabGet(options, endpoint(page));
+    const bytes = get(endpoint(page));
     const rows = JSON.parse(decoder.decode(bytes)) as unknown;
     if (!Array.isArray(rows)) {
       fail(`GitLab returned a non-list ${kind} page ${page}.`);
     }
-    if (options.rawDirectory) {
-      writeFileSync(join(options.rawDirectory, `${kind}-${page}.json`), bytes);
-    }
     const cursorOut =
       (rows as unknown[]).length === PER_PAGE ? String(page + 1) : null;
     pages.push({
+      bytes,
       cursorIn: page === 1 ? null : String(page),
       cursorOut,
       responseDigest: createHash("sha256").update(bytes).digest("hex"),
@@ -206,32 +202,114 @@ const normalizeMergeRequest = (request: GitLabMergeRequest) => {
   };
 };
 
-export const fetchGitLabRemoteInventory = (
-  options: FetchOptions
-): RemoteInventoryPages => {
-  if (options.rawDirectory) {
-    mkdirSync(options.rawDirectory, { recursive: true });
-  }
-  const project = encodeURIComponent(options.project);
-  const branchPages = fetchPages<GitLabBranch>(
-    options,
+interface Snapshot {
+  branches: RawPage<GitLabBranch>[];
+  normalized: Pick<RemoteInventoryPages, "branchPages" | "proposalPages">;
+  requests: RawPage<GitLabMergeRequest>[];
+}
+
+const readSnapshot = (
+  get: (endpoint: string) => Uint8Array,
+  project: string
+): Snapshot => {
+  const branches = fetchPages<GitLabBranch>(
+    get,
     "branches",
     (page) =>
       `projects/${project}/repository/branches?per_page=${PER_PAGE}&page=${page}`
   );
   // Oldest first, so a merge request opened mid-listing lands on a later page
   // instead of shifting the pages already read.
-  const requestPages = fetchPages<GitLabMergeRequest>(
-    options,
+  const requests = fetchPages<GitLabMergeRequest>(
+    get,
     "merge-requests",
     (page) =>
       `projects/${project}/merge_requests?state=all&scope=all&order_by=created_at&sort=asc&per_page=${PER_PAGE}&page=${page}`
   );
+  return {
+    branches,
+    normalized: {
+      branchPages: branches.map(
+        ({ cursorIn, cursorOut, responseDigest, rows }) => ({
+          branches: rows.map(normalizeBranch),
+          cursorIn,
+          cursorOut,
+          responseDigest,
+        })
+      ),
+      // Merge requests from forks name the fork's branches, not this
+      // project's.
+      proposalPages: requests.map(
+        ({ cursorIn, cursorOut, responseDigest, rows }) => ({
+          cursorIn,
+          cursorOut,
+          proposals: rows
+            .filter(
+              (request) =>
+                request.source_project_id === request.target_project_id
+            )
+            .map(normalizeMergeRequest),
+          responseDigest,
+        })
+      ),
+    },
+    requests,
+  };
+};
+
+/** Normalized content only: raw bytes also change when a comment lands. */
+const snapshotContent = (snapshot: Snapshot): string =>
+  JSON.stringify({
+    branches: snapshot.normalized.branchPages.map((page) => page.branches),
+    proposals: snapshot.normalized.proposalPages.map((page) => page.proposals),
+  });
+
+const STABLE_READ_ATTEMPTS = 4;
+
+/**
+ * Offset pagination can skip or repeat an item when the listing changes
+ * mid-read, so the fetcher reads the whole listing until two consecutive
+ * reads normalize identically, and refuses when it never settles.
+ */
+const stableSnapshot = (
+  get: (endpoint: string) => Uint8Array,
+  project: string
+): Snapshot => {
+  let previous = readSnapshot(get, project);
+  for (let attempt = 1; attempt < STABLE_READ_ATTEMPTS; attempt += 1) {
+    const current = readSnapshot(get, project);
+    if (snapshotContent(current) === snapshotContent(previous)) {
+      return current;
+    }
+    previous = current;
+  }
+  return fail(
+    `the GitLab branch or merge request listing changed between every one of ${STABLE_READ_ATTEMPTS} reads; wait for it to settle and fetch again.`
+  );
+};
+
+export const fetchGitLabRemoteInventory = (
+  options: FetchOptions,
+  get: (endpoint: string) => Uint8Array = (endpoint) =>
+    glabGet(options, endpoint)
+): RemoteInventoryPages => {
+  const snapshot = stableSnapshot(get, encodeURIComponent(options.project));
+  if (options.rawDirectory) {
+    mkdirSync(options.rawDirectory, { recursive: true });
+    for (const [kind, pages] of [
+      ["branches", snapshot.branches],
+      ["merge-requests", snapshot.requests],
+    ] as const) {
+      for (const [index, page] of pages.entries()) {
+        writeFileSync(
+          join(options.rawDirectory, `${kind}-${index + 1}.json`),
+          page.bytes
+        );
+      }
+    }
+  }
   const pages: RemoteInventoryPages = {
-    branchPages: branchPages.map(({ rows, ...page }) => ({
-      ...page,
-      branches: rows.map(normalizeBranch),
-    })),
+    ...snapshot.normalized,
     ...(options.rawDirectory
       ? {
           evidence: [
@@ -241,15 +319,6 @@ export const fetchGitLabRemoteInventory = (
       : {}),
     observedAt: new Date().toISOString(),
     project: options.project,
-    // Merge requests from forks name the fork's branches, not this project's.
-    proposalPages: requestPages.map(({ rows, ...page }) => ({
-      ...page,
-      proposals: rows
-        .filter(
-          (request) => request.source_project_id === request.target_project_id
-        )
-        .map(normalizeMergeRequest),
-    })),
     provider: "gitlab",
     schemaVersion: 1,
     targetBranch: options.targetBranch,

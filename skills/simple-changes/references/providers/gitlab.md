@@ -41,8 +41,10 @@ refreshed project target exactly.
 [`remote-inventory build`](../cleanup-and-completion.md#build-the-receipts-from-provider-pages).
 It pages through every project branch and every open, merged, and closed merge
 request with read-only `glab api` GET calls (100 per page, merge requests
-oldest first so one opened mid-listing lands on a later page) and writes the
-normalized pages the builder reads:
+oldest first so one opened mid-listing lands on a later page). Offset paging
+can skip or repeat an item while the listing changes, so it reads the whole
+listing until two consecutive reads agree, refuses when four never do, and
+writes the normalized pages the builder reads:
 
 ```sh
 bun skills/simple-changes/scripts/adapters/gitlab-remote-inventory.ts \

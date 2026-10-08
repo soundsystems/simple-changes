@@ -112,6 +112,7 @@ import {
   coordinationLinkIsCurrent,
   markCoordinationAdopted,
   markCoordinationResumeReady,
+  pauseBlocker,
   planAbsentWorktreeClaimRetirementUnderLock,
   readCoordinationDocumentFromCommonDirectory,
   recoverStaleWorktreeCoordinationLock,
@@ -2016,9 +2017,9 @@ export const staleClaimRecoveryCommands = (
  * claim gets a new ID). In every other case the live claim's owner, or the
  * registered owner when nothing holds the checkout, claims and pauses its exact
  * current state, and the controller accepts that pause receipt, which works
- * from any state. A checkout whose directory is gone cannot be paused, so it
- * gets no steps until it is restored; Git does not mark a locked worktree
- * prunable when its directory is deleted, so presence is read from disk.
+ * from any state. While the checkout itself stops `worktree pause` (it is
+ * missing, mid Git operation, or conflicted), the only step is the
+ * instruction that unblocks it; verification then prints the commands.
  */
 const staleClaimRecovery = (
   lease: Pick<LoopLease, "ownerAgentId" | "runId">,
@@ -2026,10 +2027,17 @@ const staleClaimRecovery = (
   worktree: WorktreeInventory,
   { linkedClaim, liveClaim }: WorktreeClaimContext
 ): StaleClaimRecovery => {
-  if (worktree.prunable || !existsSync(worktree.path)) {
+  const blocker = pauseBlocker(worktree);
+  if (blocker) {
+    const unblock = {
+      absent: `Restore the checkout at ${worktree.path}${worktree.branch ? ` on branch ${worktree.branch}` : ""}`,
+      conflicts: `Resolve the conflicts in ${worktree.path}`,
+      "git-operation": `Finish or abort the Git operation in ${worktree.path}`,
+    }[blocker];
+    const step = `${unblock}, then re-run \`${LOOP_VERIFY} --run-id ${lease.runId}\` for its exact recovery steps.`;
     return {
-      commands: [],
-      text: `Its checkout directory no longer exists, so it cannot be paused: restore the checkout at ${worktree.path}${worktree.branch ? ` on branch ${worktree.branch}` : ""}, then re-run \`${LOOP_VERIFY} --run-id ${lease.runId}\` for its exact recovery steps.`,
+      commands: [step],
+      text: `It cannot be paused yet. ${step}`,
     };
   }
   const owner = liveClaim?.owner ?? linkedClaim?.owner;
@@ -9312,13 +9320,6 @@ const violationGuidanceCommands = (
   }
   // Keep every step: two checkouts each need their own accepted receipt.
   commands.push(...staleClaimRecoveryCommands(violations));
-  for (const violation of violations) {
-    if (violation.nextCommands?.length === 0) {
-      add(
-        `Restore the missing checkout at ${violation.path}, then re-run \`${LOOP_VERIFY} --run-id ${lease.runId}\` for its exact recovery steps.`
-      );
-    }
-  }
   if (
     codes.has("remote-destination-changed") ||
     codes.has("remote-destination-rebind-required")

@@ -456,6 +456,31 @@ export const assertNoGitOperation = (worktreePath: string): void => {
   }
 };
 
+export type PauseBlocker = "absent" | "conflicts" | "git-operation";
+
+/**
+ * What stops `worktree pause` from recording this checkout as it stands, or
+ * null: its directory is gone (Git keeps a locked registration unprunable
+ * after deletion, so presence is read from disk), a Git operation is in
+ * progress, or a path is conflicted. Recovery guidance asks the same question
+ * before it prints a pause.
+ */
+export const pauseBlocker = (
+  current: WorktreeInventory
+): PauseBlocker | null => {
+  if (current.prunable || !existsSync(current.path)) {
+    return "absent";
+  }
+  try {
+    assertNoGitOperation(current.path);
+  } catch {
+    return "git-operation";
+  }
+  return current.changes.some((change) => change.conflicted)
+    ? "conflicts"
+    : null;
+};
+
 const assertCurrentEvidence = (
   claim: WorktreeClaim,
   receipt: WorktreePauseReceipt,
@@ -686,10 +711,14 @@ export const pauseClaimedWorktree = (
     () => {
       const inventory = captureInventory(repositoryPath);
       const current = worktreeAt(inventory, pathInput);
-      assertNoGitOperation(current.path);
-      if (current.changes.some((change) => change.conflicted)) {
+      const blocker = pauseBlocker(current);
+      if (blocker) {
         throw new SimpleChangesError(
-          `Worktree ${current.path} has unresolved conflicts.`,
+          {
+            absent: `Worktree ${current.path} no longer exists.`,
+            conflicts: `Worktree ${current.path} has unresolved conflicts.`,
+            "git-operation": `Worktree ${current.path} has an active Git operation.`,
+          }[blocker],
           EXIT_CODES.unsafe
         );
       }

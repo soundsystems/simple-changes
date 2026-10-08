@@ -11,7 +11,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { hostname } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { sleep, spawnSync } from "bun";
 import { PATCH_EQUIVALENCE_MAX_COMMITS } from "../../../skills/simple-changes/scripts/lib/cleanup-core.ts";
@@ -3912,15 +3912,13 @@ describe("active integration-loop lease", () => {
         violation.code === "coordination-claim-stale" &&
         violation.path === missing
     );
-    expect(stale?.nextCommands).toEqual([]);
-    expect(stale?.message).toContain(
-      `Its checkout directory no longer exists, so it cannot be paused: restore the checkout at ${missing} on branch missing-author`
-    );
-    const restore = `Restore the missing checkout at ${missing}, then re-run \`simple-changes loop verify --run-id ${lease.runId}\` for its exact recovery steps.`;
+    const restore = `Restore the checkout at ${missing} on branch missing-author, then re-run \`simple-changes loop verify --run-id ${lease.runId}\` for its exact recovery steps.`;
+    expect(stale?.nextCommands).toEqual([restore]);
+    expect(stale?.message).toContain(`It cannot be paused yet. ${restore}`);
     expect(loopStatus(fixture.root).guidance.nextCommands).toEqual([restore]);
     expect(
       runCli(fixture.root, ["loop", "verify", "--run-id", lease.runId]).stdout
-    ).not.toContain("Next:");
+    ).toContain(`  Next: ${restore}\n`);
 
     // Once restored, the exact claim, pause, and accept steps complete.
     git(fixture.root, ["worktree", "add", "-f", missing, "missing-author"]);
@@ -3987,24 +3985,71 @@ describe("active integration-loop lease", () => {
     removeLocked(after);
 
     const { violations } = verifyLoop(fixture.root);
+    const restore = (path: string) =>
+      `Restore the checkout at ${path} on branch ${basename(path)}, then re-run \`simple-changes loop verify --run-id ${lease.runId}\` for its exact recovery steps.`;
     for (const path of [before, after]) {
-      const stale = violations.find(
+      expect(
+        violations.find(
+          (violation) =>
+            violation.code === "coordination-claim-stale" &&
+            violation.path === path
+        )?.nextCommands
+      ).toEqual([restore(path)]);
+    }
+    const guidance = loopStatus(fixture.root).guidance.nextCommands;
+    expect(guidance).toHaveLength(2);
+    expect(guidance).toEqual(
+      expect.arrayContaining([restore(before), restore(after)])
+    );
+  });
+
+  test("asks for a Git operation or conflicts to be settled before printing pause steps", () => {
+    const fixture = repository();
+    const author = join(fixture.base, "operation-author");
+    git(fixture.root, ["worktree", "add", "-b", "operation-author", author]);
+    const claim = claimWorktree(
+      fixture.root,
+      "operation-owner",
+      author,
+      "codex"
+    );
+    const lease = startLoop(fixture.root, "controller", "integrate");
+    commitFixture(author, "shared.ts", "export const shared = 1;\n");
+    releaseWorktreeClaim(author, "operation-owner", claim.claimId);
+    expect(verifyLoop(fixture.root).ok).toBe(true);
+    const stepAt = () =>
+      verifyLoop(fixture.root).violations.find(
         (violation) =>
           violation.code === "coordination-claim-stale" &&
-          violation.path === path
-      );
-      expect(stale?.nextCommands).toEqual([]);
-      expect(stale?.message).toContain(
-        "Its checkout directory no longer exists, so it cannot be paused"
-      );
-    }
-    const restore = [before, after].map(
-      (path) =>
-        `Restore the missing checkout at ${path}, then re-run \`simple-changes loop verify --run-id ${lease.runId}\` for its exact recovery steps.`
+          violation.path === author
+      )?.nextCommands;
+    const settle = (action: string) => [
+      `${action} ${author}, then re-run \`simple-changes loop verify --run-id ${lease.runId}\` for its exact recovery steps.`,
+    ];
+
+    // A conflicting merge leaves an active Git operation behind.
+    git(author, ["switch", "-c", "operation-side", "HEAD~1"]);
+    commitFixture(author, "shared.ts", "export const shared = 2;\n");
+    git(author, ["switch", "operation-author"]);
+    const merge = spawnSync(
+      ["git", "-C", author, "merge", "--no-edit", "operation-side"],
+      { stderr: "pipe", stdout: "pipe" }
     );
-    const guidance = loopStatus(fixture.root).guidance.nextCommands;
-    expect(guidance).toHaveLength(restore.length);
-    expect(guidance).toEqual(expect.arrayContaining(restore));
+    expect(merge.exitCode).not.toBe(0);
+    expect(stepAt()).toEqual(settle("Finish or abort the Git operation in"));
+    git(author, ["merge", "--abort"]);
+    expect(verifyLoop(fixture.root).ok).toBe(true);
+
+    // A conflicting stash leaves conflicts without an operation.
+    writeFixture(author, "shared.ts", "export const shared = 3;\n");
+    git(author, ["stash"]);
+    commitFixture(author, "shared.ts", "export const shared = 4;\n");
+    const pop = spawnSync(["git", "-C", author, "stash", "pop"], {
+      stderr: "pipe",
+      stdout: "pipe",
+    });
+    expect(pop.exitCode).not.toBe(0);
+    expect(stepAt()).toEqual(settle("Resolve the conflicts in"));
   });
 
   test("tells an author whose own claim went inactive to refresh it in place", () => {

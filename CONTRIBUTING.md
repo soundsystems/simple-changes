@@ -48,10 +48,11 @@ any form it does not support rather than guessing what it does. It gates:
   policy: `84768068` and `soundsystems/simple-changes`): `glab api
   projects/<project>/merge_requests/<iid>/merge -X PUT -f sha=<head>` (or the
   GitHub `repos/<owner>/<repo>/pulls/<n>/merge` equivalent) with exactly one
-  `sha` and no `--input` body, `glab mr merge <iid> --sha <head>`, or `gh pr
-  merge <n> --match-head-commit <head>` (in the `-R` project, or the origin
-  project when `-R` is absent; the proposal is named by number only, never
-  by URL or branch). The merged head must also contain every fetched copy
+  `sha` and no `--input` body, `glab mr merge <iid> -R <project> --sha
+  <head>`, or `gh pr merge <n> -R <owner/repo> --match-head-commit <head>`
+  (`-R` is required, because otherwise `GITLAB_REPO`, `GH_REPO`, or the
+  checkout's remotes choose the project; the proposal is named by number
+  only, never by URL or branch). The merged head must also contain every fetched copy
   of `main` (`refs/remotes/<remote>/main` for each remote, since the guard
   cannot tell which remote a project number means; a copy that exists but
   cannot be read, including a malformed ref, refuses, which needs Git 2.43 or

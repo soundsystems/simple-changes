@@ -9,10 +9,10 @@
  * any form it does not support rather than guessing what it does, and exits
  * 0 for every other command:
  *
- * - a provider merge: `glab mr merge --sha <sha>`, a non-GET `glab api` or
- *   `gh api` call to a merge request or pull request `merge` endpoint with
- *   `sha=<sha>`, or `gh pr merge --match-head-commit <sha>`, whose head must
- *   also contain the fetched upstream target;
+ * - a provider merge: `glab mr merge -R <project> --sha <sha>`, a non-GET
+ *   `glab api` or `gh api` call to a merge request or pull request `merge`
+ *   endpoint with `sha=<sha>`, or `gh pr merge -R <repo> --match-head-commit
+ *   <sha>`, whose head must also contain the fetched upstream target;
  * - `git push <remote> <refspec>...` to a target branch;
  * - `git merge --ff-only` or `git pull --ff-only` while a target branch is
  *   checked out, to a published or receipted commit.
@@ -56,8 +56,6 @@ const LEADING_SLASHES_PATTERN = /^\/+/u;
 const PROPOSAL_NUMBER_PATTERN = /^[1-9]\d*$/u;
 const SHA_PATTERN = /^[0-9a-f]{7,64}$/u;
 const REBASE_EXEC_SHORT_PATTERN = /^-[A-Za-z]*x/u;
-const SCP_REMOTE_PATTERN = /^[^/:]+@[^:]+:(.+)$/u;
-const DOT_GIT_PATTERN = /\.git$/u;
 
 // ------------------------------------------------------------- evidence
 
@@ -997,27 +995,9 @@ const apiMerge = (
   return requireProviderMerge(context, sha, what, scoped.project);
 };
 
-/** The provider project an origin URL names, such as `group/project`. */
-const originProject = (cwd: string): string | null => {
-  const url = git(cwd, ["config", "--get", "remote.origin.url"]).stdout;
-  const scpLike = SCP_REMOTE_PATTERN.exec(url)?.[1];
-  let path = scpLike ?? "";
-  if (!scpLike) {
-    try {
-      path = new URL(url).pathname;
-    } catch {
-      return null;
-    }
-  }
-  return (
-    path.replace(LEADING_SLASHES_PATTERN, "").replace(DOT_GIT_PATTERN, "") ||
-    null
-  );
-};
-
 /**
  * A provider CLI merge, wherever its global flags put the subcommand words,
- * bound to the head named by `shaFlag` and to its `-R` project or origin.
+ * bound to the head named by `shaFlag` and to its required `-R` project.
  */
 interface CliMergeGrammar {
   flags: ReadonlySet<string>;
@@ -1114,8 +1094,15 @@ const cliMerge = (
   if (!SHA_PATTERN.test(sha)) {
     return refuse(`${what} ${shaFlag} ${sha} is not a commit SHA`);
   }
-  const project =
-    lastValue(scanned, ["-R", "--repo"]) ?? originProject(context.cwd);
+  // The project must be named: without -R the CLI picks one from
+  // GITLAB_REPO, GH_REPO, or the checkout's remotes, which the guard cannot
+  // see the way the CLI does.
+  const project = lastValue(scanned, ["-R", "--repo"]);
+  if (!project) {
+    return refuse(
+      `${what} names no -R project; name it explicitly, because the environment (GITLAB_REPO or GH_REPO) or the checkout's remotes could otherwise choose another project`
+    );
+  }
   return requireProviderMerge(context, sha, what, project);
 };
 

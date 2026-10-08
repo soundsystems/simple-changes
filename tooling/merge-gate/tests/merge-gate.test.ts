@@ -158,8 +158,6 @@ describe("merge gate exec guard", () => {
 
   test("binds provider merges to a passing receipt for the exact SHA", () => {
     const { feature, root, writeReceipt } = repository();
-    // `glab mr merge` without -R merges in the origin project.
-    git(root, ["remote", "set-url", "origin", "git@gitlab.com:a/b.git"]);
     const merges = [
       [
         "glab",
@@ -176,7 +174,7 @@ describe("merge gate exec guard", () => {
         `projects/a%2Fb/merge_requests/86/merge?sha=${feature}`,
         "--method=PUT",
       ],
-      ["glab", "mr", "merge", "86", "--sha", feature],
+      ["glab", "mr", "merge", "86", "--sha", feature, "-R", "a/b"],
       ["glab", "mr", "accept", "86", `--sha=${feature}`, "-R", "a/b"],
       ["gh", "pr", "merge", "7", "--match-head-commit", feature, "-R", "o/r"],
       [
@@ -203,6 +201,19 @@ describe("merge gate exec guard", () => {
         allow: true,
         command,
       });
+    }
+    // A CLI merge must name its project: without -R, GITLAB_REPO, GH_REPO,
+    // or the checkout's remotes choose it, even with a receipt for the head.
+    for (const command of [
+      ["glab", "mr", "merge", "86", "--sha", feature],
+      ["gh", "pr", "merge", "7", "--match-head-commit", feature],
+    ]) {
+      const decision = decide(root, command);
+      expect({ allow: decision.allow, command }).toEqual({
+        allow: false,
+        command,
+      });
+      expect(decision.reason).toContain("names no -R project");
     }
     for (const command of [
       ["glab", "mr", "merge", "86"],

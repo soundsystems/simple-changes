@@ -140,9 +140,10 @@ const assertCursorChain = (
     );
   }
   for (let index = 1; index < pages.length; index += 1) {
-    if (pages[index]?.cursorIn !== pages[index - 1]?.cursorOut) {
+    const cursor = pages[index]?.cursorIn;
+    if (cursor === null || cursor !== pages[index - 1]?.cursorOut) {
       fail(
-        `${kind} page ${index + 1} does not continue from the cursor page ${index} returned`
+        `${kind} page ${index + 1} does not continue from the cursor page ${index} returned; only the first page starts and only the last page ends`
       );
     }
   }

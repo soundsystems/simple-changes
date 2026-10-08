@@ -379,6 +379,35 @@ describe("remote-inventory build", () => {
         opening,
       })
     ).toThrow("not deleted during the run: feat/open");
+    const twice = {
+      evidence: ["Contained."],
+      name: "old/closed",
+      obsoleteProof: "target-contains-head" as const,
+    };
+    expect(() =>
+      buildRemoteInventory(final, {
+        decisions: { deletedBranches: [twice, twice], schemaVersion: 1 },
+        opening,
+      })
+    ).toThrow("each deleted branch may have only one decision");
+  });
+
+  test("the receipt validator also refuses a restarted page chain", () => {
+    const { receipt } = buildRemoteInventory(openingPages());
+    const restarted = structuredClone(receipt);
+    for (const coverage of [
+      restarted.initialCoverage,
+      restarted.finalCoverage,
+    ]) {
+      coverage.branches.pages = coverage.branches.pages.map((page) => ({
+        ...page,
+        cursorIn: null,
+        cursorOut: null,
+      }));
+    }
+    expect(() => validateOpeningRemoteInventory(restarted)).toThrow(
+      "pagination cursor chain is incomplete"
+    );
   });
 
   test("refuses inconsistent pages instead of guessing", () => {
@@ -424,6 +453,22 @@ describe("remote-inventory build", () => {
     }
     expect(() => buildRemoteInventory(openDeletion, { opening })).toThrow(
       "still open"
+    );
+
+    const restarted = openingPages();
+    const [ending, restarting] = restarted.branchPages;
+    if (ending && restarting) {
+      ending.cursorOut = null;
+      restarting.cursorIn = null;
+    }
+    expect(() => buildRemoteInventory(restarted)).toThrow(
+      "only the first page starts and only the last page ends"
+    );
+
+    const elsewhere = finalPages();
+    elsewhere.project = "group/other";
+    expect(() => buildRemoteInventory(elsewhere, { opening })).toThrow(
+      "the opening inventory describes gitlab group/project main"
     );
 
     const reprotected = finalPages();

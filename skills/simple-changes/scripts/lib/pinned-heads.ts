@@ -177,12 +177,12 @@ export interface PinnedCommandAnalysis {
 }
 
 // Subcommands that never write a named revision into a branch, the index, or
-// the working tree. Everything else is merge-like for this check.
+// the working tree, and write no configuration or report files. Everything
+// else is merge-like for this check.
 const READ_ONLY_SUBCOMMANDS: ReadonlySet<string> = new Set([
   "add",
   "annotate",
   "blame",
-  "bugreport",
   "cat-file",
   "check-attr",
   "check-ignore",
@@ -197,7 +197,6 @@ const READ_ONLY_SUBCOMMANDS: ReadonlySet<string> = new Set([
   "count-objects",
   "credential",
   "describe",
-  "diagnose",
   "diff",
   "diff-files",
   "diff-index",
@@ -209,12 +208,10 @@ const READ_ONLY_SUBCOMMANDS: ReadonlySet<string> = new Set([
   "hash-object",
   "help",
   "init",
-  "interpret-trailers",
   "log",
   "ls-files",
   "ls-remote",
   "ls-tree",
-  "maintenance",
   "merge-base",
   "mktag",
   "mktree",
@@ -234,7 +231,6 @@ const READ_ONLY_SUBCOMMANDS: ReadonlySet<string> = new Set([
   "show",
   "show-branch",
   "show-ref",
-  "sparse-checkout",
   "status",
   "stripspace",
   "var",
@@ -967,9 +963,9 @@ const operandsAndFlags = (
   return { flags, operands };
 };
 
-// A read-only command that writes a file (`git diff --output=<file>`) can
-// carry a moved commit's content to a later `git apply`, so it is checked
-// like a merge-like command.
+// A command that writes a file (`git diff --output=<file>`, `git reflog show
+// --output=<file>`) can carry a moved commit into a ref file or a later
+// `git apply`, so every Git command is refused with it while units are pinned.
 const writesOutputFile = (args: readonly string[]): boolean =>
   args.some((token) => spelledOption(token, ["--output"]) !== null);
 
@@ -1834,6 +1830,16 @@ const commandRefusals = (
       )
     );
   }
+  if (writesOutputFile(args)) {
+    found.push(
+      refusal(
+        "unclassified",
+        "--output writes a file, which could carry a moved commit into a ref or a later `git apply`",
+        args.find((token) => spelledOption(token, ["--output"]) !== null) ??
+          null
+      )
+    );
+  }
   if (subcommand && writesConfiguration(subcommand, args)) {
     found.push(
       refusal(
@@ -2182,8 +2188,7 @@ const gitRefusals = (
     ...locationRefusals(invocation, context),
   ];
   if (
-    (READ_ONLY_SUBCOMMANDS.has(subcommand) &&
-      !writesOutputFile(invocation.arguments)) ||
+    READ_ONLY_SUBCOMMANDS.has(subcommand) ||
     integratesNothing(subcommand, invocation.arguments)
   ) {
     return always;

@@ -891,6 +891,17 @@ describe("pinned-head command analysis", () => {
       ["git", "reflog", "write", "refs/heads/main", head, head, "copy"],
       ["git", "reflog", "delete", "--updateref", "refs/heads/main@{0}"],
       ["git", "reflog", "expire", "--all"],
+      [
+        "git",
+        "reflog",
+        "show",
+        "-1",
+        "--format=%H",
+        "--output=.git/refs/heads/main",
+        "feat/x",
+      ],
+      ["git", "stash", "show", "--out=patch.diff"],
+      ["git", "log", "--output=x", "main"],
       ["git", "clone", unitPath, "/tmp/unit-copy"],
     ]) {
       expect({ argv, kinds: kinds(argv) }).toEqual({

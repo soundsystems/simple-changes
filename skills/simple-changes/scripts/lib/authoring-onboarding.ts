@@ -524,7 +524,7 @@ const ANY_REVIEWER: AuthoringRoleEntry = {
 };
 
 export const REVIEW_QUESTION_WAITS =
-  "Only one agent is recorded and the running agent is not identified, so a different reviewer cannot be chosen yet; the review question waits until another agent is recorded.";
+  "Fewer than two agents are recorded and the running agent is not identified, so a different reviewer cannot be chosen yet; the review question waits until another agent is recorded or the running agent is identified.";
 
 // Asks R1 and its follow-ups. A different-model choice that never yields an
 // acceptable name goes back to R1, so only an explicit "Any independent

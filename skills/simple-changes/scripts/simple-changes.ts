@@ -2937,12 +2937,6 @@ const runProposalLedgerCommand = (
 ): void => {
   const proposalId = requireCliOption(options.proposalId, "--proposal");
   const head = requireCliOption(options.headRef, "--head");
-  if (options.authoringRequest !== undefined && action !== "record-review") {
-    throw new SimpleChangesError(
-      "--authoring-request applies to proposal record-review only.",
-      EXIT_CODES.usage
-    );
-  }
   // Validated before the receipt is read: an invalid request is a usage
   // error before anything else happens.
   const request =
@@ -3053,6 +3047,13 @@ const PROPOSAL_LEDGER_ACTIONS = new Set([
 // body exits with the validation code instead of an error message.
 const runProposalCommand = (options: CliOptions): number => {
   const [action] = options.positional;
+  // Checked before any subcommand runs, the audit included.
+  if (options.authoringRequest !== undefined && action !== "record-review") {
+    throw new SimpleChangesError(
+      "--authoring-request applies to proposal record-review only.",
+      EXIT_CODES.usage
+    );
+  }
   if (
     options.positional.length === 1 &&
     action !== undefined &&
@@ -3390,6 +3391,18 @@ const runLoopStart = (options: CliOptions): void => {
       EXIT_CODES.usage
     );
   }
+  // The request layer is checked and validated before any other input is
+  // read: an invalid request is a usage error that changes nothing.
+  if (options.authoringRequest !== undefined && options.mode !== "resume") {
+    throw new SimpleChangesError(
+      "--authoring-request applies to loop start --mode resume only.",
+      EXIT_CODES.usage
+    );
+  }
+  const request =
+    options.authoringRequest === undefined
+      ? undefined
+      : parseAuthoringRequest(options.authoringRequest);
   if (options.changelogRequired) {
     const inventory = captureInventory(options.repo);
     const changelogCoordination = inspectChangelogCoordination(
@@ -3414,18 +3427,6 @@ const runLoopStart = (options: CliOptions): void => {
       ) as unknown)
     : undefined;
   let reviewLedger: ReviewLedgerResumeState | null = null;
-  if (options.authoringRequest !== undefined && options.mode !== "resume") {
-    throw new SimpleChangesError(
-      "--authoring-request applies to loop start --mode resume only.",
-      EXIT_CODES.usage
-    );
-  }
-  // Validated before the loop lock is taken: an invalid request is a usage
-  // error that changes nothing.
-  const request =
-    options.authoringRequest === undefined
-      ? undefined
-      : parseAuthoringRequest(options.authoringRequest);
   const lease = startLoop(
     options.repo,
     agentId,

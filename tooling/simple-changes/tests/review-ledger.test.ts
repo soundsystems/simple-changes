@@ -3000,6 +3000,30 @@ describe("schema parity and the command line", () => {
     expect(wrongMode.stderr).toContain(
       "--authoring-request applies to loop start --mode resume only"
     );
+    // The audit refuses the flag too, before it looks for its file.
+    const audit = cli(["proposal", "audit", "--authoring-request", "{}"]);
+    expect(audit.exitCode).toBe(2);
+    expect(audit.stderr).toContain(
+      "--authoring-request applies to proposal record-review only"
+    );
+    // An invalid request is refused before other inputs are read: the
+    // missing inventory file never gets a chance to fail first.
+    const competing = cli([
+      "loop",
+      "start",
+      "--mode",
+      "resume",
+      "--agent-id",
+      "controller",
+      "--authoring-request",
+      '{"schemaVersion":1}',
+      "--opening-remote-inventory",
+      join(config, "missing-inventory.json"),
+      "--repo",
+      fixture.root,
+    ]);
+    expect(competing.exitCode).toBe(2);
+    expect(competing.stderr).toContain("--authoring-request is invalid");
     // Before dispatch, the request's own reviewer is resolved against the
     // head's recorded authors and its provenance is reported as `request`.
     const targeted = cli([

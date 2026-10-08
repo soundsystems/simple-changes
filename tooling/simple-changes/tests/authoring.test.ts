@@ -689,6 +689,61 @@ describe("the request layer", () => {
       escalateOnFindings: "request",
       path: null,
     });
+    // The file named is the highest file layer among the fields in force: a
+    // repository gate kept over a personal model names the repository file,
+    // and a role supplied entirely by the request and defaults names none.
+    const mixed = resolveRequestedRole(
+      "review",
+      [
+        layer(
+          "repository",
+          sidecar({}, { review: { adversarial: true, harness: "running" } })
+        ),
+        layer(
+          "personal",
+          sidecar({ "beta-agent": { model: "personal-beta" } })
+        ),
+      ],
+      sidecar({}, { review: { harness: "beta-agent" } }),
+      "alpha-agent"
+    );
+    expect(mixed.effective).toMatchObject({
+      adversarial: true,
+      harness: "beta-agent",
+      model: "personal-beta",
+    });
+    expect(mixed.source).toEqual({
+      adversarial: "repository",
+      effort: "default",
+      escalateOnFindings: "repository",
+      harness: "request",
+      model: "personal",
+      path: "/repository/authoring.json",
+    });
+    expect(
+      resolveRequestedRole(
+        "proposals",
+        [
+          layer(
+            "repository",
+            sidecar(
+              { "alpha-agent": { model: "repo-alpha" } },
+              { proposals: { effort: "low", harness: "running" } }
+            )
+          ),
+        ],
+        sidecar(
+          { "alpha-agent": { effort: "high", model: "request-alpha" } },
+          { proposals: { harness: "alpha-agent" } }
+        ),
+        "alpha-agent"
+      ).source
+    ).toMatchObject({
+      effort: "request",
+      harness: "request",
+      model: "request",
+      path: null,
+    });
     // A request that defines no role leaves the saved role and replaces
     // harness entries per id (rule 2).
     const entries = resolveRequestedRole(

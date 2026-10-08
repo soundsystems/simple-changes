@@ -858,6 +858,25 @@ export const resolveRequestedRole = (
     loosensAdversarial || requestRole?.adversarial === undefined;
   const keepsFloor =
     loosensFloor || requestRole?.escalateOnFindings === undefined;
+  const source = {
+    ...requested.source,
+    adversarial: keepsAdversarial
+      ? saved.source.adversarial
+      : requested.source.adversarial,
+    escalateOnFindings: keepsFloor
+      ? saved.source.escalateOnFindings
+      : requested.source.escalateOnFindings,
+  };
+  // The file named is the highest file layer among the fields in force; the
+  // gate fields count for the review role only.
+  const inForce = [
+    source.effort,
+    source.harness,
+    source.model,
+    ...(role === "review"
+      ? [source.adversarial, source.escalateOnFindings]
+      : []),
+  ];
   return {
     effective: {
       ...requested.effective,
@@ -867,20 +886,22 @@ export const resolveRequestedRole = (
         ? saved.effective.escalateOnFindings
         : requested.effective.escalateOnFindings,
     },
-    source: {
-      ...requested.source,
-      adversarial: keepsAdversarial
-        ? saved.source.adversarial
-        : requested.source.adversarial,
-      escalateOnFindings: keepsFloor
-        ? saved.source.escalateOnFindings
-        : requested.source.escalateOnFindings,
-      // A gate field kept from a saved file names that file too.
-      path:
-        requested.source.path ??
-        (keepsAdversarial || keepsFloor ? saved.source.path : null),
-    },
+    source: { ...source, path: highestFilePath(inForce, fileLayers) },
   };
+};
+
+// The file of the highest file layer among the given sources; the request
+// and the default have no file.
+const highestFilePath = (
+  sources: readonly AuthoringLayer[],
+  layers: readonly Layer[]
+): string | null => {
+  const [best] = sources
+    .filter((layer) => layer === "repository" || layer === "personal")
+    .sort((left, right) => LAYER_RANK[right] - LAYER_RANK[left]);
+  return best === undefined
+    ? null
+    : (layers.find((layer) => layer.layer === best)?.path ?? null);
 };
 
 /**

@@ -354,9 +354,10 @@ should perform independent reviews?**
 3. **Any independent reviewer**: a separate session of the same model counts,
    as today. Records `{ "harness": "running", "adversarial": false }`.
 
-Ask it only when it has two or more options: with one recorded agent and an
-unidentified running agent, say that the review question waits until another
-agent is recorded, record nothing, and leave it pending.
+Ask it only when it has two or more options: with fewer than two recorded
+agents and an unidentified running agent, say that the review question waits
+until another agent is recorded or the running agent is identified, record
+nothing, and leave it pending.
 
 After option 1, ask **Which agent should review?** among the recorded agents
 except the author's (the running one; none is excluded when it is unknown),

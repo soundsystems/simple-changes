@@ -71,17 +71,19 @@
   (host-agnostic), the both-ways tag-unchanged rule, and listing CI files at
   the reconciliation head during a dry run.
 - Tests:
-  - `release-tag.test.ts` has 42 real-Git tests on temporary repositories and
-    bare remotes. They cover a protected-tag rejection simulated with a
-    `pre-receive` hook, a lost race, holds and waivers, Sync, older receipts,
-    multi-URL and rebound remotes, a killed run, `push.followTags`, partial
-    clones, a lightweight tag already on the target, the URL classifier, and
-    a linked worktree whose relative remote would have bypassed a hold.
+  - `release-tag.test.ts` has 42 tests: 41 real-Git tests on temporary
+    repositories and bare remotes, and one table test of the URL classifier.
+    They cover a protected-tag rejection simulated with a `pre-receive` hook,
+    a lost race, holds and waivers, Sync, older receipts, multi-URL and
+    rebound remotes, a killed run, `push.followTags`, partial clones, a
+    lightweight tag already on the target, and a linked worktree whose
+    relative remote would have bypassed a hold.
   - Protocol tests show an older fork negotiating as before.
   - `update-local-forks` adds tests for the tag-first lookup and
     `metadata.version` reads, and `release-consistency.test.ts` covers the
     `--check` version match.
-  - Mutation runs killed all 72 mutants of the new guards.
+  - Mutation runs killed all 49 recorded mutants of the tag guards, and the
+    release fixes were mutation-tested the same way.
 - Reviews (GPT-6.1 Sol):
   - Round 1 at high effort found two blocking and two should-fix issues.
   - Five xhigh rounds followed, and the last found only a nit, now covered by

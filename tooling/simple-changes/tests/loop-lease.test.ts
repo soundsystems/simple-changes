@@ -132,13 +132,20 @@ const runCli = (
 
 // Run printed recovery steps as written, filling in only their placeholders:
 // each acceptance takes the next receipt an earlier pause printed.
-const runPrintedSteps = (cwd: string, commands: readonly string[]): void => {
+const runPrintedSteps = (
+  cwd: string,
+  commands: readonly string[],
+  placeholders: Record<string, string> = {}
+): void => {
   const receipts: string[] = [];
   const fill = (word: string): string => {
     if (word === "<why>") {
       return "Recover-through-the-printed-steps";
     }
-    return word === "<pause-receipt-id>" ? (receipts.shift() ?? word) : word;
+    if (word === "<pause-receipt-id>") {
+      return receipts.shift() ?? word;
+    }
+    return placeholders[word] ?? word;
   };
   for (const command of commands) {
     const args = command.split(" ").slice(1).map(fill);
@@ -4340,6 +4347,130 @@ describe("active integration-loop lease", () => {
         receipt.receiptId
       )
     ).toThrow(`registered-worktree-branch-changed:${fixture.root}`);
+  });
+
+  for (const concurrentWork of ["allow-claimed", "strict"] as const) {
+    test(`recovers a changed retained checkout through the printed steps (${concurrentWork})`, () => {
+      const fixture = repository();
+      if (concurrentWork === "strict") {
+        writeFixture(
+          fixture.root,
+          ".simple-changes.json",
+          `${JSON.stringify({ ...DEFAULT_POLICY, concurrentWork })}\n`
+        );
+      }
+      const retained = join(fixture.base, "retained-then-changed");
+      git(fixture.root, [
+        "worktree",
+        "add",
+        "-b",
+        "retained-then-changed",
+        retained,
+      ]);
+      const lease = startLoop(fixture.root, "controller", "integrate");
+      const opening = captureInventory(fixture.root).worktrees.find(
+        (worktree) => worktree.path === retained
+      );
+      retainExcludedWorktree(
+        fixture.root,
+        lease.runId,
+        "controller",
+        retained,
+        opening?.changeDigest ?? "",
+        "user",
+        "Keep this checkout."
+      );
+      writeFixture(retained, "edited.ts", "export const edited = true;\n");
+
+      const verification = verifyLoop(fixture.root);
+      const changed = verification.violations.find(
+        (violation) =>
+          violation.code === "retained-worktree-changed" &&
+          violation.path === retained
+      );
+      const printed = [
+        `simple-changes worktree claim --agent-id <owner> --worktree ${retained} --adapter <adapter>`,
+        `simple-changes worktree pause --agent-id <owner> --worktree ${retained} --run-id ${lease.runId} --disposition preserve-in-place --reason <why>`,
+        `simple-changes loop accept-paused-change --run-id ${lease.runId} --agent-id controller --pause-receipt <pause-receipt-id>`,
+      ];
+      expect(changed?.nextCommands).toEqual(printed);
+      expect(staleClaimRecoveryCommands(verification.violations)).toEqual(
+        printed
+      );
+      expect(loopStatus(fixture.root).guidance.nextCommands).toEqual(printed);
+
+      runPrintedSteps(fixture.root, printed, {
+        "<adapter>": "codex",
+        "<owner>": "retained-owner",
+      });
+      expect(verifyLoop(fixture.root)).toMatchObject({
+        ok: true,
+        violations: [],
+      });
+    }, 120_000);
+  }
+
+  test("never lets a sibling receipt excuse a repository-wide violation", () => {
+    const fixture = repository();
+    git(fixture.root, [
+      "remote",
+      "add",
+      "origin",
+      "https://example.invalid/original.git",
+    ]);
+    const [accepted, sibling] = ["remote-accepted", "remote-sibling"].map(
+      (name) => {
+        const path = join(fixture.base, name);
+        git(fixture.root, ["worktree", "add", "-b", `${name}-work`, path]);
+        return path;
+      }
+    );
+    if (!(accepted && sibling)) {
+      throw new Error("Expected two opening worktrees");
+    }
+    const lease = startLoop(fixture.root, "controller", "integrate");
+    const pause = (path: string, owner: string) => {
+      claimWorktree(fixture.root, owner, path, "codex");
+      return pauseClaimedWorktree(
+        fixture.root,
+        owner,
+        path,
+        lease.runId,
+        "preserve-in-place",
+        "Pause the exact checkout."
+      );
+    };
+    writeFixture(accepted, "changed.ts", "export const changed = true;\n");
+    const acceptedReceipt = pause(accepted, "accepted-owner");
+    pause(sibling, "sibling-owner");
+    const straggler = join(fixture.base, "remote-straggler");
+    git(fixture.root, ["worktree", "add", "-b", "remote-straggler", straggler]);
+    const stragglerReceipt = pause(straggler, "straggler-owner");
+    git(fixture.root, [
+      "remote",
+      "set-url",
+      "origin",
+      "https://example.invalid/moved.git",
+    ]);
+
+    // Run from the receipted sibling, the repository-wide violation is
+    // reported at that checkout, and its receipt cannot cover it.
+    expect(() =>
+      acceptPausedWorktreeChange(
+        sibling,
+        lease.runId,
+        "controller",
+        acceptedReceipt.receiptId
+      )
+    ).toThrow(`remote-destination-changed:${sibling}`);
+    expect(() =>
+      adoptPausedWorktree(
+        sibling,
+        lease.runId,
+        "controller",
+        stragglerReceipt.receiptId
+      )
+    ).toThrow(`remote-destination-changed:${sibling}`);
   });
 
   test("orders every printed recovery so it runs as printed", () => {

@@ -2115,8 +2115,10 @@ const concurrentClaimViolations = (
 };
 
 const retainedWorktreeViolations = (
+  lease: LoopLease,
   registered: LoopWorktreeLease,
-  worktree: WorktreeInventory
+  worktree: WorktreeInventory,
+  claims: WorktreeClaimContext
 ): LoopViolation[] => {
   if (registered.role !== "retained") {
     return [];
@@ -2136,12 +2138,15 @@ const retainedWorktreeViolations = (
     registered.baselineHeadSha !== worktree.headSha ||
     registered.baselineChangeDigest !== worktree.changeDigest
   ) {
+    // Claiming promotes it only under allow-claimed, so print the pause and
+    // accept steps, which work under every policy.
+    const recovery = staleClaimRecovery(lease, registered, worktree, claims);
     violations.push({
       changeDigest: worktree.changeDigest,
       code: "retained-worktree-changed",
       headSha: worktree.headSha,
-      message:
-        "A retained excluded worktree changed. Its owner must claim it as an active concurrent author, or pause it at a stable boundary, before integration continues.",
+      message: `A retained excluded worktree changed. ${recovery.text}`,
+      nextCommands: recovery.commands,
       path: worktree.path,
     });
   }
@@ -2197,7 +2202,9 @@ const currentWorktreeViolations = (
     claims,
     worktree
   );
-  violations.push(...retainedWorktreeViolations(registered, worktree));
+  violations.push(
+    ...retainedWorktreeViolations(lease, registered, worktree, claims)
+  );
   if (
     registered.role === "preserved" &&
     (registered.baselineHeadSha !== worktree.headSha ||
@@ -5400,19 +5407,34 @@ const ACCEPTABLE_PAUSED_ROLES: ReadonlySet<LoopWorktreeLease["role"]> = new Set(
   ["concurrent-author", "preserved", "retained"]
 );
 
+// The per-checkout violations that recording that checkout resolves.
+// Repository-wide violations are reported at the checkout a command runs in,
+// so they never qualify.
+const RECORDABLE_SIBLING_CODES: ReadonlySet<LoopViolation["code"]> = new Set([
+  "coordination-claim-stale",
+  "preserved-worktree-changed",
+  "registered-worktree-branch-changed",
+  "retained-worktree-authorization-missing",
+  "retained-worktree-changed",
+  "unregistered-worktree",
+]);
+
 // A sibling checkout that adoption or acceptance could record next, and whose
 // exact current state its own valid current pause receipt for this run
-// covers, is waiting for its own turn: its violations do not block recording
-// another path, so several receipted checkouts can be recorded one at a time
-// in any order. Its own entry keeps failing verification until it is recorded
-// too. Every other violation still blocks.
+// covers, is waiting for its own turn: its per-checkout violations do not
+// block recording another path, so several receipted checkouts can be
+// recorded one at a time in any order. Its own entry keeps failing
+// verification until it is recorded too. Every other violation still blocks.
 const isReceiptedSiblingViolation = (
   lease: LoopLease,
   inventory: RepositoryInventory,
   violation: LoopViolation,
   recordingPath: string
 ): boolean => {
-  if (violation.path === recordingPath) {
+  if (
+    violation.path === recordingPath ||
+    !RECORDABLE_SIBLING_CODES.has(violation.code)
+  ) {
     return false;
   }
   const registered = lease.worktrees.find(
@@ -9278,11 +9300,6 @@ const violationGuidanceCommands = (
   if (codes.has("incomplete-worktree-preparation")) {
     add(
       `simple-changes prepare-agent --run-id ${lease.runId} --agent-id <agent> --purpose <purpose>`
-    );
-  }
-  if (codes.has("retained-worktree-changed")) {
-    add(
-      `Ask the exact worktree owner to claim it as an active concurrent author or pause it at a stable boundary, then re-run \`simple-changes loop verify --run-id ${lease.runId}\`.`
     );
   }
   // Keep every step: two checkouts each need their own accepted receipt.

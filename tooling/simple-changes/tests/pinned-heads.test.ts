@@ -820,6 +820,30 @@ describe("pinned-head command analysis", () => {
         ).toEqual([]);
       }
     );
+    // Without a start commit, `git worktree add` picks the branch named after
+    // the path when it runs, and that branch can be a symbolic ref to a
+    // pinned one.
+    git(root, ["symbolic-ref", "refs/heads/unit-alias", "refs/heads/feat/x"]);
+    const aliasPath = join(dirname(root), "unit-alias");
+    expectKinds(
+      [
+        ["git", "worktree", "add", "--force", aliasPath],
+        ["git", "worktree", "add", "-b", "fresh", aliasPath],
+        ["git", "worktree", "add", "--guess-remote", aliasPath],
+        ["git", "worktree", "add", "--unknown", aliasPath, head],
+      ],
+      ["configured"]
+    );
+    expectKinds(
+      [
+        ["git", "worktree", "add", "--detach", aliasPath, head],
+        ["git", "worktree", "add", "-b", "fresh", aliasPath, head],
+        ["git", "worktree", "add", "-bfresh", "--lock", aliasPath, head],
+        ["git", "worktree", "add", "--", aliasPath, head],
+      ],
+      []
+    );
+    git(root, ["update-ref", "-d", "--no-deref", "refs/heads/unit-alias"]);
     // A merge value read through remote `.` can name the shared stash,
     // which another agent can move while the command waits to start.
     git(root, ["config", "branch.main.remote", "."]);

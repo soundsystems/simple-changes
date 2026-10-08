@@ -33,7 +33,9 @@ import { runGit } from "./process.ts";
  *   or a graft;
  * - it is a merge or rebase that names no revision (or uses an option this
  *   parser does not know), which Git resolves from the current branch's
- *   upstream when it runs, whatever that configuration says then;
+ *   upstream when it runs, whatever that configuration says then, or a
+ *   `worktree add` that names no start commit, for which Git picks the
+ *   branch named after the path;
  * - an argument resolves to a commit that contains a commit a pinned unit
  *   gained after its recorded head (a copy of a moved branch, or its ID);
  * - it is `git pull`, which resolves its repository, refspecs, and upstream
@@ -1483,6 +1485,21 @@ const configuredRefusals = (
       )
     );
   }
+  // Without a start commit, Git picks a branch named after the path (which
+  // can be a symbolic ref to a pinned branch) or a remote-tracking branch
+  // when it runs.
+  if (
+    subcommand === "worktree" &&
+    args[0] === "add" &&
+    !worktreeAddNamesCommit(args.slice(1))
+  ) {
+    found.push(
+      refusal(
+        "configured",
+        "git worktree add names no start commit this check understands, so Git would pick a branch from the path's name when it runs; name the commit to check out"
+      )
+    );
+  }
   if (
     subcommand === "fetch" ||
     subcommand === "push" ||
@@ -1563,6 +1580,60 @@ const pushesEveryBranch = (key: string, value: string): boolean => {
     key.endsWith(".push") &&
     (value === ":" || value === "+:" || value.includes("*"))
   );
+};
+
+// `git worktree add` options this check understands.
+const WORKTREE_ADD_FLAGS: ReadonlySet<string> = new Set([
+  "--checkout",
+  "--detach",
+  "--force",
+  "--guess-remote",
+  "--lock",
+  "--no-checkout",
+  "--no-guess-remote",
+  "--no-relative-paths",
+  "--no-track",
+  "--quiet",
+  "--relative-paths",
+  "--track",
+  "-d",
+  "-f",
+  "-q",
+]);
+const WORKTREE_ADD_VALUE_OPTIONS: ReadonlySet<string> = new Set([
+  "--reason",
+  "-B",
+  "-b",
+]);
+
+const worktreeAddOptionWithValue = (token: string): boolean =>
+  token.startsWith("--reason=") ||
+  (token.length > 2 && (token.startsWith("-b") || token.startsWith("-B")));
+
+// Whether a `git worktree add` names its start commit after the path. Any
+// option this does not know may take the next argument, so it counts as
+// naming none.
+const worktreeAddNamesCommit = (args: readonly string[]): boolean => {
+  const operands: string[] = [];
+  let index = 0;
+  while (index < args.length) {
+    const token = args[index] as string;
+    index += 1;
+    if (token === "--") {
+      operands.push(...args.slice(index));
+      break;
+    }
+    if (WORKTREE_ADD_VALUE_OPTIONS.has(token)) {
+      index += 1;
+    } else if (!token.startsWith("-")) {
+      operands.push(token);
+    } else if (
+      !(WORKTREE_ADD_FLAGS.has(token) || worktreeAddOptionWithValue(token))
+    ) {
+      return false;
+    }
+  }
+  return operands.length >= 2;
 };
 
 // Rebase options this check understands: flags, options whose value is the

@@ -373,8 +373,9 @@
   names a pinned branch in any spelling or letter case, points into a pinned
   checkout, uses an indirect name, fetch or push mapping, or replace ref
   that could stand for one, resolves to a commit containing one a pinned
-  unit gained after its recorded head, or is a merge or rebase that names no
-  revision, which Git would resolve from the upstream when it runs. `-c`, Git options that
+  unit gained after its recorded head, or is a merge, rebase, or `worktree
+  add` that names no revision, which Git would pick from configuration or
+  the path when it runs. `-c`, Git options that
   run commands, configuration writes, and staging that could record a nested
   checkout's HEAD are refused; a fetch may write only remote-tracking refs, a
   push or fetch may use only known options, and nothing may run in a

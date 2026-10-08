@@ -3844,9 +3844,13 @@ const runLoopVerifyAction = (
   if (action !== "verify") {
     return false;
   }
-  const verification = verifyLoop(options.repo);
   // `--for` names the shipping step about to run, so holds covering it gate
   // the same verification every controller already runs before that step.
+  // Before a merge, released and preserved units' branches must also still
+  // point at their recorded heads.
+  const verification = verifyLoop(options.repo, {
+    forMerge: options.holdAction === "merge",
+  });
   const holds = options.holdAction
     ? checkShipHolds(options.repo, {
         action: options.holdAction,

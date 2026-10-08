@@ -65,6 +65,9 @@ the replacement head. This evidence feeds the final shipped-state summary; when
 review changed nothing, record that explicitly instead of inventing a delta.
 
 Merge in dependency order only when the current revision satisfies policy.
+Integrate a released, handed-off, or preserved unit locally by its recorded
+commit ID, never its branch name, which `loop exec` refuses; see
+[inventory and concurrency](inventory-and-concurrency.md#integration-controller-lease-and-concurrent-authors).
 Return the canonical merged commit/revision and refresh downstream units after
 their base changes. Missing authentication, unavailable reviewers, and
 unsupported provider capabilities are blockers with distinct statuses, not

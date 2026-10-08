@@ -1465,6 +1465,7 @@ export interface LoopViolation {
     | "retained-worktree-authorization-missing"
     | "retained-worktree-changed"
     | "coordination-claim-stale"
+    | "registered-branch-moved"
     | "registered-worktree-branch-changed"
     | "remote-destination-changed"
     | "remote-destination-rebind-required"

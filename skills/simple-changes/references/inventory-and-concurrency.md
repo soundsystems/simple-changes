@@ -121,6 +121,36 @@ preserved worktree. Run `loop verify` before merge, deployment, cleanup, and
 completion even when every earlier operation passed. When it fails, resolve
 exactly what it reports and run it again; proceed only on a passing result.
 
+`loop exec` pins every registered unit the run does not author itself to its
+recorded head: a released or handed-off author's recorded state, and a
+preserved, adopted, or retained checkout's baseline or approved override. No
+merge-like `loop exec` command can integrate a commit other than a registered
+unit's recorded head. While units are pinned, `loop exec` runs only Git and
+provider merges that name their commit (`glab mr merge <iid> --sha <head>`);
+any other program, including shells, interpreters, and scripts, is refused
+before it starts, so run it outside `loop exec` or after the units are
+integrated. The only merge-like Git subcommands it runs are `merge`,
+`cherry-pick`, `revert`, `rebase`, `reset`, `push`, `fetch`, `update-ref`,
+`branch`, `tag`, `worktree`, `stash`, `checkout`, `restore`, `am`, and
+`apply`, and one is refused when it could resolve a unit's moving name: an
+argument naming a pinned branch in any spelling, a path into a pinned
+checkout, an indirect name (`@{...}`, `-`, `FETCH_HEAD`, the stash, another
+worktree's refs, `:/` searches, every-branch or stdin options), a fetch or
+push mapping, a merge or rebase that names no revision, a `worktree add`
+without a start commit and `-b`, `-B`, or `--detach`, or a `checkout <name>`
+without `--no-guess` (Git would pick a revision from configuration, the path,
+or a remote-tracking branch when it runs), or a revision containing a commit
+a unit gained after its recorded head. `-c`, Git options that run commands,
+configuration writes, and staging that could record a nested checkout's HEAD
+are refused for every Git command; a fetch may write only remote-tracking
+refs, a push, fetch, cherry-pick, or revert may use only known options, and
+nothing may run in a checkout the run does not author. Name the recorded
+commit instead, as in `git merge --ff-only <head>`; the refusal prints that
+command when it is certainly equivalent, or says the unit moved and prints
+the claim, pause, and accept steps. `loop verify --for merge` also fails
+while such a unit's branch has left its recorded head. The controller and its
+prepared authors are not pinned.
+
 For a Ship lease whose opening inventory contains local changes, first record
 the conserved preview plan with `loop record-scope --receipt <file>`. The plan
 must come from the exact current inventory and account for every changed path

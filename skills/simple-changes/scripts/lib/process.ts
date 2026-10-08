@@ -237,34 +237,68 @@ export interface GitExecutableProbe {
   xcrunFind: () => string | null;
 }
 
+const DIRECT_GIT_UNAVAILABLE =
+  "A read-only command runs Git directly, never through xcrun, whose lookup cache is a write, and found no developer Git without it. Set DEVELOPER_DIR to the Xcode or Command Line Tools developer directory, or put a Git other than the /usr/bin/git shim first on PATH, then run the command again.";
+
+interface GitResolution {
+  executable: string;
+  /** True when `executable` is `git` and PATH resolves it to the shim. */
+  shim: boolean;
+}
+
 // On macOS `/usr/bin/git` is an xcrun shim that locates the active developer
 // directory before every exec, which costs far more than most read-only Git
 // commands themselves. Resolve the binary it would run once per process and
 // call that directly; any other Git on PATH, or a failed lookup, keeps `git`.
-export const resolveGitExecutable = (probe: GitExecutableProbe): string => {
+// With `directOnly`, for read-only commands, it never runs xcrun and refuses
+// rather than fall back to the shim, since both write xcrun's lookup cache.
+const resolveGit = (
+  probe: GitExecutableProbe,
+  directOnly: boolean
+): GitResolution => {
+  const plain = { executable: "git", shim: false };
   if (probe.platform !== "darwin") {
-    return "git";
+    return plain;
   }
   const onPath = probe.which("git");
   if (!onPath) {
-    return "git";
+    return plain;
   }
   let resolvedOnPath: string;
   try {
     resolvedOnPath = probe.realpath(onPath);
-  } catch {
-    return "git";
+  } catch (error) {
+    if (directOnly) {
+      throw SimpleChangesError.withCause(
+        DIRECT_GIT_UNAVAILABLE,
+        EXIT_CODES.unsafe,
+        error
+      );
+    }
+    return plain;
   }
   if (resolvedOnPath !== XCRUN_GIT_SHIM) {
-    return "git";
+    return plain;
   }
-  const developerGit = probe.developerGit?.() ?? probe.xcrunFind();
-  return developerGit &&
+  const developerGit =
+    probe.developerGit?.() ?? (directOnly ? null : probe.xcrunFind());
+  if (
+    developerGit &&
     isAbsolute(developerGit) &&
     developerGit !== XCRUN_GIT_SHIM
-    ? developerGit
-    : "git";
+  ) {
+    return { executable: developerGit, shim: false };
+  }
+  if (directOnly) {
+    throw new SimpleChangesError(DIRECT_GIT_UNAVAILABLE, EXIT_CODES.unsafe);
+  }
+  return { executable: "git", shim: true };
 };
+
+export const resolveGitExecutable = (
+  probe: GitExecutableProbe,
+  options: { directOnly?: boolean } = {}
+): string => resolveGit(probe, options.directOnly === true).executable;
 
 const XCODE_SELECT_LINK = "/var/db/xcode_select_link";
 const COMMAND_LINE_TOOLS = "/Library/Developer/CommandLineTools";
@@ -323,17 +357,42 @@ const xcrunFindGit = (): string | null => {
   return path;
 };
 
-let cachedGitExecutable: string | undefined;
+let cachedGitResolution: GitResolution | undefined;
+let directGitDepth = 0;
+
+/**
+ * Runs `read` with Git resolved directly: no xcrun lookup and no shim, both
+ * of which write xcrun's cache. Resolution happens first, so a read-only
+ * command that cannot run Git directly refuses before it reads anything. A
+ * Git already resolved through xcrun earlier in the process is reused, since
+ * using it runs no xcrun.
+ */
+export const withDirectGitOnly = <T>(read: () => T): T => {
+  directGitDepth += 1;
+  try {
+    gitExecutable();
+    return read();
+  } finally {
+    directGitDepth -= 1;
+  }
+};
 
 export const gitExecutable = (): string => {
-  cachedGitExecutable ??= resolveGitExecutable({
-    developerGit: selectedDeveloperGit,
-    platform: process.platform,
-    realpath: realpathSync,
-    which: (command) => which(command),
-    xcrunFind: xcrunFindGit,
-  });
-  return cachedGitExecutable;
+  const directOnly = directGitDepth > 0;
+  cachedGitResolution ??= resolveGit(
+    {
+      developerGit: selectedDeveloperGit,
+      platform: process.platform,
+      realpath: realpathSync,
+      which: (command) => which(command),
+      xcrunFind: xcrunFindGit,
+    },
+    directOnly
+  );
+  if (directOnly && cachedGitResolution.shim) {
+    throw new SimpleChangesError(DIRECT_GIT_UNAVAILABLE, EXIT_CODES.unsafe);
+  }
+  return cachedGitResolution.executable;
 };
 
 export interface ProcessGroupRunOptions {

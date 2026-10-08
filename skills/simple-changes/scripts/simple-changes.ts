@@ -118,6 +118,7 @@ import {
   buildProposalSignatureBlock,
   type ProposalSignatureRole,
 } from "./lib/proposal-signatures.ts";
+import { withReadOnlyGit } from "./lib/read-only-git.ts";
 import {
   parseReadyWorkInput,
   type ReadyWorkStatus,
@@ -3054,6 +3055,13 @@ const runLoopStatus = (options: CliOptions): void => {
 };
 
 const runLoopOpeningAction = (action: string, options: CliOptions): boolean => {
+  if (action === "draft-outcome") {
+    // Read-only from its first Git call, including the lease lookup.
+    withReadOnlyGit(() =>
+      runLoopDraftOutcome(options, requireCliOption(options.runId, "--run-id"))
+    );
+    return true;
+  }
   if (action === "start") {
     runLoopStart(options);
     return true;
@@ -3273,20 +3281,6 @@ const runLoopDraftOutcome = (options: CliOptions, runId: string): void => {
   );
 };
 
-// Read-only actions that still bind the exact active run.
-const runLoopReadAction = (
-  action: string,
-  options: CliOptions,
-  runId: string,
-  turnEnd: string
-): boolean => {
-  if (action === "draft-outcome") {
-    runLoopDraftOutcome(options, runId);
-    return true;
-  }
-  return runLoopVerifyAction(action, options, turnEnd);
-};
-
 const runLoopCommand = async (options: CliOptions): Promise<void> => {
   const [action] = options.positional;
   if (!action) {
@@ -3309,7 +3303,7 @@ const runLoopCommand = async (options: CliOptions): Promise<void> => {
       EXIT_CODES.unsafe
     );
   }
-  if (runLoopReadAction(action, options, runId, turnEndReminder(lease))) {
+  if (runLoopVerifyAction(action, options, turnEndReminder(lease))) {
     return;
   }
   if (await runLoopEmergencyAction(options, runId)) {
@@ -4316,7 +4310,7 @@ const executeCommand = async (
       runInventory(options);
       return EXIT_CODES.success;
     case "status":
-      runStatus(options);
+      withReadOnlyGit(() => runStatus(options));
       return EXIT_CODES.success;
     case "initialize":
       await runInitialize(options);

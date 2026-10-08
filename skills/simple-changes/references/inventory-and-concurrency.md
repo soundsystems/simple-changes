@@ -474,11 +474,12 @@ installed Simple Changes source, as `behind`, `current`, `ahead`, or `unknown`.
 It is read-only. It never writes, fetches, or takes a lock: it never runs
 `git status` (so no filter, filesystem monitor, or index refresh runs, and
 checkout contents are never compared), other Git reads run with optional
-locks and lazy fetches off, holds are read from this clone only, and state
-files are read without their locks. Git is run directly from the selected
-developer directory where possible; caches the operating system keeps for its
-own tools, such as the macOS developer-tools lookup cache that `xcrun` writes
-when nothing else finds Git, are outside what Simple Changes controls. A section it cannot read shows as `unknown` with the
+locks, lazy fetches, and signature verification off, holds are read from this
+clone only, and state files are read without their locks. On macOS, Git runs
+directly from the developer directory (`DEVELOPER_DIR`, the `xcode-select`
+link, or the Command Line Tools), never through `xcrun` or the `/usr/bin/git`
+shim, which write a lookup cache; when no such Git exists, `status` and `loop
+draft-outcome` refuse and say how to set one. A section it cannot read shows as `unknown` with the
 reason rather than a guess, and a local checkout may be behind its remote, so
 confirm a fork's state on its remote branch before acting on it. It reports;
 it never authorizes recovery, cleanup, or shipping.

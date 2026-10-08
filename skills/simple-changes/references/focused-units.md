@@ -71,7 +71,9 @@ simple-changes loop draft-outcome --run-id <run> \
 
 It only reads the lease and Git, with no lock and no write besides `--output`,
 which refuses an input under any name and any path inside the Git common
-directory, where the lease lives.
+directory, where the lease lives. Git runs with the same read-only settings
+as `simple-changes status` (see `inventory-and-concurrency.md`), and an object
+it cannot read stops the draft instead of turning a file into a deletion.
 It binds the current target, lists every path changed on the target since loop
 start with its exact `ls-tree` entry (`null` for a deleted or moved-away path),
 pre-fills each scoped unit's final paths and rename originals, and adds the

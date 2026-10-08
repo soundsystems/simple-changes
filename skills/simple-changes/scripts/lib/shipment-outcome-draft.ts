@@ -62,6 +62,7 @@ const commitsByPath = (
   const commits = new Map<string, string[]>();
   const output = runGit(repositoryPath, [
     "log",
+    "--no-show-signature",
     "--format=%x01%h",
     "--name-only",
     "--no-renames",

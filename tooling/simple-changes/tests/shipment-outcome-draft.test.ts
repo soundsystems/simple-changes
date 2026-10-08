@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 import {
+  chmodSync,
+  existsSync,
   linkSync,
   mkdirSync,
   readFileSync,
@@ -22,6 +24,8 @@ import {
   startLoop,
 } from "../../../skills/simple-changes/scripts/lib/loop-lease.ts";
 import { buildPreviewPlan } from "../../../skills/simple-changes/scripts/lib/planner.ts";
+import { runGit } from "../../../skills/simple-changes/scripts/lib/process.ts";
+import { withReadOnlyGit } from "../../../skills/simple-changes/scripts/lib/read-only-git.ts";
 import {
   draftShipmentOutcome,
   releasePathsFromChangelogReceipt,
@@ -36,6 +40,8 @@ import {
 } from "./helpers.ts";
 
 setDefaultTimeout(60_000);
+
+const COMMITTER_LINE = /^(committer .*)$/mu;
 
 let repositories: TestRepository[] = [];
 afterEach(() => {
@@ -377,6 +383,60 @@ describe("loop draft-outcome", () => {
     );
     expect(cli.exitCode).not.toBe(0);
     expect(cli.stdout.toString()).not.toContain('"entry":null');
+  });
+
+  test("never runs a signature verifier, even with log.showSignature set", () => {
+    const fixture = repository();
+    const { base, root } = fixture;
+    writeFixture(root, "notes.md", "draft\n");
+    commitAll(root, "Base fixture");
+    const lease = startLoop(root, "controller", "ship");
+    writeFixture(root, "notes.md", "draft, landed\n");
+    commitAll(root, "Land the notes");
+    // Re-create the target commit with a signature header, then point Git's
+    // verifier at a stand-in that records each run.
+    const signed = git(root, ["cat-file", "commit", "HEAD"]).replace(
+      COMMITTER_LINE,
+      "$1\ngpgsig -----BEGIN PGP SIGNATURE-----\n \n c2lnbmF0dXJl\n -----END PGP SIGNATURE-----"
+    );
+    const commitFile = join(base, "signed-commit.txt");
+    writeFileSync(commitFile, `${signed}\n`);
+    git(root, [
+      "update-ref",
+      "HEAD",
+      git(root, ["hash-object", "-t", "commit", "-w", commitFile]),
+    ]);
+    const marker = join(base, "verifier-ran");
+    const verifier = join(base, "fake-gpg");
+    writeFileSync(verifier, `#!/bin/sh\ntouch '${marker}'\nexit 1\n`);
+    chmodSync(verifier, 0o755);
+    git(root, ["config", "gpg.program", verifier]);
+    git(root, ["config", "log.showSignature", "true"]);
+    git(root, ["log", "-1", "--format=%h"]);
+    expect(existsSync(marker)).toBe(true);
+    rmSync(marker);
+
+    const { draft } = draftShipmentOutcome(root, lease.runId);
+    expect(draft.additionalPaths.map((item) => item.path)).toEqual([
+      "notes.md",
+    ]);
+    withReadOnlyGit(() => runGit(root, ["log", "-1", "--format=%h"]));
+    const cli = spawnSync(
+      [
+        "bun",
+        cliPath,
+        "loop",
+        "draft-outcome",
+        "--run-id",
+        lease.runId,
+        "--json",
+        "--repo",
+        root,
+      ],
+      { stderr: "pipe", stdout: "pipe" }
+    );
+    expect(cli.exitCode).toBe(0);
+    expect(existsSync(marker)).toBe(false);
   });
 
   test("never fetches a missing object to draft from a partial clone", () => {

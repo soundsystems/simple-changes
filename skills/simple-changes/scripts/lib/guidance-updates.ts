@@ -1,3 +1,4 @@
+import type { AuthoringQuestionState, DetectedHarness } from "./authoring.ts";
 import type { ChangelogCoordination, RepoPolicy } from "./types.ts";
 
 export const CURRENT_GUIDANCE_VERSION = 27;
@@ -59,11 +60,40 @@ export interface GuidanceUpdateQuestion {
   setting: string;
 }
 
+/**
+ * What the notice may depend on beyond the saved policy: current detection,
+ * the authoring question state (computed from validated sidecars, never from
+ * the acknowledgement), and questions whose wording depends on detection.
+ */
+export interface GuidanceUpdateContext {
+  authoringQuestion?: {
+    models: AuthoringQuestionState;
+    review: AuthoringQuestionState;
+  };
+  detectedHarnesses?: DetectedHarness[];
+  questions?: Record<string, GuidanceUpdateQuestion>;
+}
+
+// A required answer that applies only while its predicate holds; its wording
+// comes from the context, so the notice asks it first when it is pending and
+// otherwise lists the capability without a question.
+interface ConditionalGuidanceAnswer {
+  id: string;
+  when: "authoring-question-pending";
+}
+
+const answerApplies = (
+  answer: ConditionalGuidanceAnswer,
+  context: GuidanceUpdateContext
+): boolean =>
+  answer.when === "authoring-question-pending" &&
+  context.authoringQuestion?.review === "pending";
+
 interface GuidanceUpdateDefinition {
   changelogReviewRelevant: boolean;
   changes: GuidanceUpdateNotice["changes"];
   noticeBullets?: Array<{ priority: number; summary: string }>;
-  requiredAnswers?: GuidanceUpdateQuestion[];
+  requiredAnswers?: Array<GuidanceUpdateQuestion | ConditionalGuidanceAnswer>;
   version: number;
 }
 
@@ -816,7 +846,8 @@ const actionsForGuidanceUpdate = (
 
 export const inspectGuidanceUpdate = (
   policy: RepoPolicy | null,
-  changelogCoordination: ChangelogCoordination
+  changelogCoordination: ChangelogCoordination,
+  context: GuidanceUpdateContext = {}
 ): GuidanceUpdateNotice => {
   const storedVersion = policy ? policy.guidance.version : null;
   const storedDisposition = policy ? policy.guidance.disposition : null;
@@ -833,8 +864,14 @@ export const inspectGuidanceUpdate = (
       ? noticeBullets.map((bullet) => bullet.summary)
       : changes.map((change) => change.summary)
   ).slice(0, 3);
-  const requiredAnswers = pending.flatMap(
-    (update) => update.requiredAnswers ?? []
+  const requiredAnswers = pending.flatMap((update) =>
+    (update.requiredAnswers ?? []).flatMap((answer) => {
+      if (!("when" in answer)) {
+        return [answer];
+      }
+      const question = context.questions?.[answer.id];
+      return question && answerApplies(answer, context) ? [question] : [];
+    })
   );
   const recommendedChanges: GuidanceUpdateQuestion[] = [];
   if (

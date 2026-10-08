@@ -1,4 +1,10 @@
 import { existsSync, readFileSync } from "node:fs";
+import type { AuthoringSidecar } from "./authoring.ts";
+import {
+  type AuthoringOnboardingContext,
+  collectAuthoringAnswers,
+  renderAuthoringSummary,
+} from "./authoring-onboarding.ts";
 import { CURRENT_GUIDANCE_VERSION } from "./guidance-updates.ts";
 import {
   discoverInstructionTargets,
@@ -54,6 +60,9 @@ export interface OnboardingInputs {
 }
 
 export interface OnboardingSelection {
+  // The authoring sidecar to save with the policy (none for run-only scope),
+  // or null when the authoring questions did not run.
+  authoring: AuthoringSidecar | null;
   changelogInstall: ChangelogInstallOffer;
   confirmed: boolean;
   instructionPointer: {
@@ -68,6 +77,9 @@ export interface OnboardingSelection {
 }
 
 export interface OnboardingConversationOptions {
+  // Detection and pre-fill for the authoring questions; they run only when
+  // this is supplied (the interactive setup does; agents use setup --authoring).
+  authoring?: Omit<AuthoringOnboardingContext, "setupStyle"> | null;
   existingPersonalDefaults?: RepoPolicy | null;
   forgeProvider?: string | null;
   showFirstScreen?: boolean;
@@ -1485,6 +1497,7 @@ export const collectOnboardingSelection = async (
         ),
       ].join("\n\n");
       return {
+        authoring: null,
         changelogInstall: NO_CHANGELOG_INSTALL_OFFER,
         confirmed: await prompter.confirm(summary),
         instructionPointer,
@@ -1529,6 +1542,12 @@ export const collectOnboardingSelection = async (
     customize && (conversation.showFirstScreen ?? false),
     conversation.forgeProvider
   );
+  const authoring = conversation.authoring
+    ? await collectAuthoringAnswers(
+        { ...conversation.authoring, setupStyle },
+        prompter
+      )
+    : null;
   const productionDeploy = await selectProductionDeploy(
     defaults,
     inputs,
@@ -1625,16 +1644,27 @@ export const collectOnboardingSelection = async (
     shippingMode,
     uiArtifactVersioning,
   };
-  const summary = renderOnboardingSummary(
-    policy,
-    scope,
-    context,
-    instructionPointer,
-    uiArtifactsRelevant,
-    conversation.forgeProvider,
-    changelogInstall
-  );
+  const summary = [
+    renderOnboardingSummary(
+      policy,
+      scope,
+      context,
+      instructionPointer,
+      uiArtifactsRelevant,
+      conversation.forgeProvider,
+      changelogInstall
+    ),
+    authoring
+      ? renderAuthoringSummary(
+          authoring,
+          conversation.authoring?.definitions ?? []
+        )
+      : null,
+  ]
+    .filter((part): part is string => part !== null)
+    .join("\n\n");
   return {
+    authoring,
     changelogInstall,
     confirmed: await prompter.confirm(summary),
     instructionPointer,

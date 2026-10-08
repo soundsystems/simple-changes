@@ -62,6 +62,14 @@ original branch/head, replacement branch/head, and proposal identity in the
 proposal description and shipment evidence. Re-read it after proposal updates.
 Do not amend already merged history to backfill a missing trailer.
 
+The trailer is Git provenance; review independence reads the review ledger.
+After every rebase, cherry-pick, or squash, attest each new commit with
+`author attest --commit <new sha> --replays <original sha>[,...]`, after
+`loop exec` returns and with `--worktree <path>` when the controller refreshes
+a delegated worktree. Add `--contribution implementation` whenever the
+transplant changed the implementation, then run `proposal record-authors` for
+the new head before review ([review ledger steps](change-requests.md#review-ledger-steps)).
+
 After merge, verify the replacement SHA is reachable from the refreshed target,
 review differences introduced during transplantation, and account for source
 commits added afterward. Follow ordinary reviewed cleanup; a lineage claim

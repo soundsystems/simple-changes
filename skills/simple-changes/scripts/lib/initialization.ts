@@ -1,7 +1,17 @@
+import type {
+  AuthoringFieldSource,
+  AuthoringFileState,
+  AuthoringQuestionState,
+  DetectedHarness,
+  ResolvedAuthoringRole,
+  ResolvedReviewRole,
+} from "./authoring.ts";
 import {
+  type GuidanceUpdateContext,
   type GuidanceUpdateNotice,
   inspectGuidanceUpdate,
 } from "./guidance-updates.ts";
+import type { ReviewerResolution } from "./review-ledger.ts";
 import type {
   ChangelogCoordination,
   ChangelogInstallOffer,
@@ -20,11 +30,26 @@ export type HandoffAction =
 export type PolicyTrust = "not-required" | "trusted" | "untrusted";
 
 export interface InitializationStatus {
+  /** Effective authoring roles with each field's layer (design 2.3). */
+  authoring?: {
+    effective: { proposals: ResolvedAuthoringRole; review: ResolvedReviewRole };
+    source: { proposals: AuthoringFieldSource; review: AuthoringFieldSource };
+  };
+  authoringFiles?: {
+    personal: AuthoringFileState;
+    repository: AuthoringFileState;
+  };
+  /** Per question: computed from validated sidecars and current detection. */
+  authoringQuestion?: {
+    models: AuthoringQuestionState;
+    review: AuthoringQuestionState;
+  };
   changelogCoordination: ChangelogCoordination;
   // Pending Simple Changelogs install offer (command only; `offered` stays
   // false until onboarding asks). Absent or null when no offer applies.
   changelogInstall?: ChangelogInstallOffer | null;
   changelogRequired: boolean;
+  detectedHarnesses?: DetectedHarness[];
   firstUseWalkthroughAvailable: boolean;
   gitPushAuthorization: RepoPolicy["gitPushAuthorization"];
   guidanceUpdate: GuidanceUpdateNotice;
@@ -46,6 +71,8 @@ export interface InitializationStatus {
   readinessConfirmed: boolean;
   reason: string;
   resolvedMode: RequestMode | null;
+  /** The review role resolved before dispatch (provisional or verified). */
+  reviewer?: ReviewerResolution;
   /** Whether the running runtime is older than the target branch's copy. */
   runtimeFreshness?: {
     message: string | null;
@@ -216,6 +243,7 @@ export const inspectInitialization = (
   },
   options: {
     changelogRequired?: boolean;
+    guidanceContext?: GuidanceUpdateContext;
     readinessConfirmed?: boolean;
   } = {}
 ): InitializationStatus => {
@@ -224,7 +252,8 @@ export const inspectInitialization = (
     writeCapable && mode !== "sync" && policy.source === "default";
   const guidanceUpdate = inspectGuidanceUpdate(
     policy.source === "default" ? null : (policy.value ?? null),
-    changelogCoordination
+    changelogCoordination,
+    options.guidanceContext
   );
   const updateActionRequired =
     writeCapable && guidanceUpdate.status === "update-available";

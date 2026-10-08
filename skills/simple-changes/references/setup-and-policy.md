@@ -6,6 +6,7 @@ Contents:
 - Automatic initialization checkpoint
 - Completed-work handoff checkpoint
 - Capability status
+- Authoring preferences
 
 ## Discovery order
 
@@ -306,3 +307,50 @@ Represent each capability as one of:
 
 Never translate any non-supported status into success. Provider-specific
 commands belong only in the matching provider reference or adapter.
+
+## Authoring preferences
+
+An optional sidecar records which agent and model write proposal text
+(`proposals`) and perform reviews (`review`):
+`<primary-checkout>/.simple-changes-authoring.json` for the repository, or
+`authoring.json` beside the personal `preferences.json`. It is committed shared
+configuration like `.simple-changes.json`; until committed it is ordinary
+untracked work. It never joins the policy file, whose closed schema older
+copies enforce, so they ignore it and write with the running model. Repository
+scope writes the repository file, personal scope the personal file, run-only
+nothing; `setup --authoring <json-or-@path> --scope <repository|personal>
+--confirm` records an answer without touching the policy.
+
+```json
+{
+  "schemaVersion": 1,
+  "roles": {
+    "proposals": { "harness": "running" },
+    "review": { "harness": "<agent id>", "adversarial": true, "escalateOnFindings": "xhigh" }
+  },
+  "harnesses": { "<agent id>": { "model": "most-capable", "effort": "xhigh" } }
+}
+```
+
+Precedence, highest first: the current request, the repository sidecar, the
+personal sidecar, then the running agent's most capable model at `xhigh`.
+Roles and agent entries replace whole; an empty sidecar answers the models
+question and defines nothing; a role-level `model` needs an agent id, never
+`running`; `null` means "do not guide this agent". `initialize` reports
+`authoring.effective` with each field's layer in `authoring.source`, and the
+`reviewer` it resolves. `max` effort comes only from an explicit owner choice
+and is never reached by a default, `most-capable`, or escalation.
+
+Before writing, resolve the role; `most-capable` is the most capable model the
+target agent itself reports, never ranked from memory. Write directly when the
+target agent and model are the running ones; otherwise delegate only through a
+mechanism the running agent already has, asking before the first launch of
+another tool in a session, and compare the identity the delegate reports with
+the target (a mismatch is disclosed, and for a review goes through the
+post-return gate in `references/review-and-merge.md`). When the target is
+`unknown` or `null`, the model cannot be resolved, or nothing can delegate,
+write with the running model and say which role was configured, what wrote
+instead, and why. Signatures always name the writer the runtime reported. The
+sidecar is a preference, never authority or identity: it grants no merge,
+push, deployment, migration, publication, release, or credential authority and
+stores no credentials or launch commands.

@@ -417,6 +417,7 @@ Current user direction outranks repository and personal policy. Discovery is
 not authority. Never invent remote, deployment, migration, credential, or
 provider facts. Never use destructive reset, cleanup stash, force deletion,
 force push, protection bypass, or secret export without exact authority.
+Authoring and review model preferences guide delegation only.
 
 Public release versioning and release-note authorship belong to a compatible
 changelog owner. Database automatic modes apply only to the exact saved

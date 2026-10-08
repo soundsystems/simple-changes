@@ -20,7 +20,8 @@ export type SkillCheckCode =
   | "openai-yaml"
   | "invocation-mismatch"
   | "link-broken"
-  | "link-escapes";
+  | "link-escapes"
+  | "vendor-assumption";
 
 export interface SkillCheckIssue {
   code: SkillCheckCode;
@@ -349,6 +350,111 @@ const checkInvocationParity = (
  * every relative link in SKILL.md and references/ resolving, inside the skill
  * directory too when the skill must be self-contained.
  */
+// Authoring preferences assume no harness: the files and reference sections
+// they added name none, and every harness-specific branch goes through
+// agents/harnesses.json or the existing adapter files (harness-session.ts and
+// coordination-adapter.ts), which may name the harnesses they integrate with.
+const VENDOR_NEUTRAL_FILES = [
+  "scripts/lib/authoring.ts",
+  "scripts/lib/authoring-onboarding.ts",
+  "scripts/lib/review-ledger.ts",
+  "evals/schemas/authoring.schema.json",
+  "evals/schemas/harnesses.schema.json",
+  "evals/schemas/review-ledger.schema.json",
+];
+const VENDOR_NEUTRAL_SECTIONS: { heading: string; path: string }[] = [
+  { heading: "Agents, models, and reviews", path: "references/onboarding.md" },
+  { heading: "Authoring preferences", path: "references/setup-and-policy.md" },
+  {
+    heading: "Review identity and the review ledger",
+    path: "references/review-and-merge.md",
+  },
+  { heading: "Review ledger steps", path: "references/change-requests.md" },
+];
+// The pre-ship brief's reviewer bullet, which this feature added.
+const VENDOR_NEUTRAL_PARAGRAPHS: { marker: string; path: string }[] = [
+  { marker: "- **Reviewer:**", path: "references/ship-communication.md" },
+];
+const VENDOR_PATTERNS = [
+  /\bcodex\b/iu,
+  /\bclaude[ -]code\b/iu,
+  /\bCursor\b/u,
+  /\bopenai\b/iu,
+  /\banthropic\b/iu,
+];
+const ESCAPE_PATTERN = /[.*+?^${}()|[\]\\]/gu;
+
+const harnessNamePatterns = (root: string): RegExp[] => {
+  const path = resolve(root, "agents", "harnesses.json");
+  if (!existsSync(path)) {
+    return [];
+  }
+  try {
+    const harnesses = asRecord(
+      asRecord(JSON.parse(readFileSync(path, "utf8"))).harnesses
+    );
+    return Object.entries(harnesses).flatMap(([id, value]) => {
+      const { name } = asRecord(value);
+      return [id, ...(typeof name === "string" ? [name] : [])].map(
+        (text) =>
+          new RegExp(
+            `(?<![\\w-])${text.replace(ESCAPE_PATTERN, "\\$&")}(?![\\w-])`,
+            "u"
+          )
+      );
+    });
+  } catch {
+    return [];
+  }
+};
+
+const sectionText = (source: string, heading: string): string => {
+  const start = source.indexOf(`\n## ${heading}\n`);
+  if (start === -1) {
+    return "";
+  }
+  const end = source.indexOf("\n## ", start + 1);
+  return source.slice(start, end === -1 ? undefined : end);
+};
+
+const paragraphText = (source: string, marker: string): string => {
+  const start = source.indexOf(marker);
+  if (start === -1) {
+    return "";
+  }
+  const end = source.indexOf("\n\n", start);
+  const next = source.indexOf("\n- ", start + marker.length);
+  const stops = [end, next].filter((index) => index !== -1);
+  return source.slice(start, stops.length > 0 ? Math.min(...stops) : undefined);
+};
+
+const checkVendorNeutrality = (root: string): SkillCheckIssue[] => {
+  const patterns = [...VENDOR_PATTERNS, ...harnessNamePatterns(root)];
+  const read = (path: string): string => {
+    const absolute = resolve(root, path);
+    return existsSync(absolute) ? readFileSync(absolute, "utf8") : "";
+  };
+  const texts = [
+    ...VENDOR_NEUTRAL_FILES.map((path) => ({ path, text: read(path) })),
+    ...VENDOR_NEUTRAL_SECTIONS.map(({ heading, path }) => ({
+      path,
+      text: sectionText(read(path), heading),
+    })),
+    ...VENDOR_NEUTRAL_PARAGRAPHS.map(({ marker, path }) => ({
+      path,
+      text: paragraphText(read(path), marker),
+    })),
+  ];
+  return texts
+    .filter(({ text }) => patterns.some((pattern) => pattern.test(text)))
+    .map(({ path }) => ({
+      code: "vendor-assumption" as const,
+      message:
+        "authoring and review preference code and prose must name no harness or vendor; route harness-specific behavior through agents/harnesses.json or the adapter files",
+      path,
+    }));
+};
+
 export const checkSkill = (
   skillDirectory: string,
   options: SkillCheckOptions = {}
@@ -384,7 +490,7 @@ export const checkSkill = (
     [skillPath, ...markdownFiles(resolve(root, "references"))],
     options.selfContained ?? false
   );
-  issues.push(...links.issues);
+  issues.push(...links.issues, ...checkVendorNeutrality(root));
   const name = frontmatter.metadata?.name;
   return {
     issues,

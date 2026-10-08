@@ -27,7 +27,11 @@ it to the shortest message that covers:
   that are actually in scope;
 - **Consequential boundaries:** data changes, migrations, secrets, domains,
   store releases, or other separately authorized operations;
-- **Preserved or blocked work:** anything discovered but not being taken over.
+- **Preserved or blocked work:** anything discovered but not being taken over;
+- **Reviewer:** the `reviewer` `initialize` resolved (agent, model, effort, and
+  whether it must differ from the author) and the layer and file it came from
+  in `authoring.source.review`, so a repository sidecar never changes the
+  reviewer silently.
 
 If completed, verified work is blocked only because a different task owns the
 active shipping controller, include this choice instead of stopping at a

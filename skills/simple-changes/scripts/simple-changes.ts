@@ -6,6 +6,21 @@ import { dirname, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { fileURLToPath } from "node:url";
 import { sleep, stdin } from "bun";
+import {
+  authoringPaths,
+  changelogsHarnessPrefill,
+  detectHarnesses,
+  loadHarnessDefinitions,
+  parseAuthoringAnswer,
+  type RepositoryAuthoring,
+  recordAuthoringAnswer,
+  resolveRepositoryAuthoring,
+  writeAuthoringSidecar,
+} from "./lib/authoring.ts";
+import {
+  type AuthoringOnboardingContext,
+  authoringReviewNoticeQuestion,
+} from "./lib/authoring-onboarding.ts";
 import { auditBranchReplacements } from "./lib/branch-audit.ts";
 import { inspectChangelogCoordination } from "./lib/changelog-coordination.ts";
 import {
@@ -19,6 +34,7 @@ import {
   acknowledgedGuidance,
   CURRENT_GUIDANCE_VERSION,
   type GuidanceUpdateAction,
+  type GuidanceUpdateContext,
 } from "./lib/guidance-updates.ts";
 import { currentHarnessSession } from "./lib/harness-session.ts";
 import {
@@ -136,6 +152,19 @@ import {
   writeInstructionPointer,
 } from "./lib/repository-instructions.ts";
 import {
+  type AuthorAttestResult,
+  attestCommits,
+  type CommitGaps,
+  type RecordAuthorsResult,
+  type RecordReviewResult,
+  type ReviewLedgerResumeState,
+  recordProposalAuthors,
+  recordReviewAttempt,
+  resolveReviewer,
+  type WaiveCoverageResult,
+  waiveProposalCoverage,
+} from "./lib/review-ledger.ts";
+import {
   type RuntimeFreshness,
   runtimeFreshness,
 } from "./lib/runtime-freshness.ts";
@@ -239,6 +268,7 @@ Usage:
     [--migration-target provider:project:environment]
     [--questions blocking-only|always|never]
     [--scope user|repository|run] [--acknowledge-push-scope]
+    [--proposal ID --head SHA]
     [--agent-id ID] [--yes] [--json] [--repo PATH]
   simple-changes setup [--finish review|integrate|ship]
     [--changelog delegate-if-available|preserve-and-report|ask]
@@ -258,6 +288,8 @@ Usage:
     [--questions blocking-only|always|never]
     [--scope user|repository|run] [--acknowledge-push-scope]
     [--agent-id ID] [--yes] [--json] [--repo PATH]
+  simple-changes setup --authoring JSON|@FILE --scope repository|personal
+    --confirm [--agent-id ID] [--json] [--repo PATH]
   simple-changes acknowledge-update --guidance-decision accepted|reviewed|deferred
     [--agent-id ID] [--json] [--repo PATH]
   simple-changes migration decision --state REVIEW_FILE --pending PENDING_FILE --apply-plan APPLY_PLAN_FILE [--json] [--repo PATH]
@@ -384,6 +416,16 @@ Usage:
   simple-changes proposal-signatures --agent NAME --role authored|reviewed|merged
     [--base REF --head REF] [--changelog-receipt FILE] [--json] [--repo PATH]
   simple-changes proposal audit --file FILE [--template FILE] [--json]
+  simple-changes proposal record-authors --proposal ID --base SHA --head SHA
+    [--receipt COPY_AUTHORS_FILE] [--instance ID] [--agent NAME]
+    [--json] [--repo PATH]
+  simple-changes proposal record-review --proposal ID --head SHA
+    --attempt-id UUID --receipt ATTEMPT_FILE [--json] [--repo PATH]
+  simple-changes proposal waive-coverage --proposal ID --head SHA
+    --authors-digest SHA256 --receipt WAIVER_FILE [--json] [--repo PATH]
+  simple-changes author attest --commit SHA [--commit SHA ...] [--agent-id ID]
+    [--contribution implementation] [--replays SHA[,SHA ...]]
+    [--worktree PATH] [--instance ID] [--agent NAME] [--json] [--repo PATH]
   simple-changes skill check [--skill-dir PATH] [--json]
   simple-changes validate KIND FILE [--json]
   simple-changes verify-markdown FILE [--json]
@@ -405,6 +447,10 @@ interface CliOptions {
   applyPlanPath?: string;
   approvalReference?: string;
   approvedBy?: string;
+  attemptId?: string;
+  // setup --authoring: the authoring answer as JSON or @path.
+  authoring?: string;
+  authorsDigest?: string;
   awaitingUser: string[];
   baseRef?: string;
   changelogHandling?: RepoPolicy["changelogHandling"];
@@ -413,7 +459,9 @@ interface CliOptions {
   changelogRequired: boolean;
   check: boolean;
   claimId?: string;
+  commits: string[];
   concurrentWork?: RepoPolicy["concurrentWork"];
+  contribution?: "implementation";
   defaultFinish?: "open-change-request" | "integrate" | "ship";
   disposition?: "preserve-in-place" | "detach-clean-checkout";
   dryRun: boolean;
@@ -434,6 +482,7 @@ interface CliOptions {
   holdScope?: ShipHoldScope;
   holdSeverity?: ShipHoldSeverity;
   hook: boolean;
+  instanceId?: string;
   instructionFile?: string;
   instructionPointer?: "add" | "leave";
   json: boolean;
@@ -451,6 +500,7 @@ interface CliOptions {
   priorReceiptPath?: string;
   productionAuthorized: boolean;
   productionDeploy?: RepoPolicy["productionDeploy"];
+  proposalId?: string;
   proposalScheduling?: RepoPolicy["proposalScheduling"];
   proposalSignatures?: RepoPolicy["proposalSignatures"];
   providerReceiptPath?: string;
@@ -463,12 +513,14 @@ interface CliOptions {
   releaseClaim: boolean;
   releaseVersion?: string;
   remoteName?: string;
+  replays?: string[];
   repo: string;
   repoProvided: boolean;
   requestAction?: "request-pause" | "request-detach" | "notify-resume";
   requestPath?: string;
   runId?: string;
   scope?: SetupScope;
+  sessionId?: string;
   settleMs: number;
   shippingMode?: RepoPolicy["shippingMode"];
   signatureRole?: ProposalSignatureRole;
@@ -490,6 +542,7 @@ interface CliOptions {
 
 const VALUED_OPTIONS = new Set([
   "--name",
+  "--authoring",
   "--deltas",
   "--destination",
   "--upstream",
@@ -557,6 +610,15 @@ const VALUED_OPTIONS = new Set([
   "--until-merged",
   "--version",
   "--worktree",
+  // Review ledger: author attest and the proposal ledger subcommands.
+  "--attempt-id",
+  "--authors-digest",
+  "--commit",
+  "--contribution",
+  "--instance",
+  "--proposal",
+  "--replays",
+  "--session",
 ]);
 
 const BOOLEAN_OPTIONS = new Set([
@@ -578,6 +640,8 @@ const BOOLEAN_OPTIONS = new Set([
   "--ui-artifacts",
   "--write",
   "--yes",
+  // setup --authoring confirms with --confirm (the same as --yes).
+  "--confirm",
 ]);
 
 const requiredOptionValue = (
@@ -799,6 +863,18 @@ const applyProposalSchedulingOption = (
     );
   }
   options.proposalScheduling = value as RepoPolicy["proposalScheduling"];
+  return true;
+};
+
+const applyAuthoringValuedOption = (
+  options: CliOptions,
+  option: string,
+  value: string
+): boolean => {
+  if (option !== "--authoring") {
+    return false;
+  }
+  options.authoring = value;
   return true;
 };
 
@@ -1036,6 +1112,48 @@ const applyHoldValuedOption = (
   return false;
 };
 
+const LEDGER_TEXT_OPTIONS: Record<string, keyof CliOptions> = {
+  "--attempt-id": "attemptId",
+  "--authors-digest": "authorsDigest",
+  "--instance": "instanceId",
+  "--proposal": "proposalId",
+  "--session": "sessionId",
+};
+
+const applyLedgerValuedOption = (
+  options: CliOptions,
+  option: string,
+  value: string
+): boolean => {
+  const key = LEDGER_TEXT_OPTIONS[option];
+  if (key) {
+    Object.assign(options, { [key]: value });
+    return true;
+  }
+  if (option === "--commit") {
+    options.commits.push(value);
+    return true;
+  }
+  if (option === "--replays") {
+    options.replays = [
+      ...(options.replays ?? []),
+      ...value.split(",").map((source) => source.trim()),
+    ];
+    return true;
+  }
+  if (option === "--contribution") {
+    if (value !== "implementation") {
+      throw new SimpleChangesError(
+        "--contribution must be implementation",
+        EXIT_CODES.usage
+      );
+    }
+    options.contribution = value;
+    return true;
+  }
+  return false;
+};
+
 const applyValuedOption = (
   options: CliOptions,
   option: string,
@@ -1044,8 +1162,10 @@ const applyValuedOption = (
   if (
     applyShippingModeOption(options, option, value) ||
     applySetupValuedOption(options, option, value) ||
+    applyAuthoringValuedOption(options, option, value) ||
     applyLoopValuedOption(options, option, value) ||
-    applyHoldValuedOption(options, option, value)
+    applyHoldValuedOption(options, option, value) ||
+    applyLedgerValuedOption(options, option, value)
   ) {
     return;
   }
@@ -1097,13 +1217,14 @@ const applyValuedOption = (
     return;
   }
   if (option === "--scope") {
-    if (!["user", "repository", "run"].includes(value)) {
+    // `personal` names the same private scope as `user`.
+    if (!["user", "personal", "repository", "run"].includes(value)) {
       throw new SimpleChangesError(
-        "--scope must be user, repository, or run",
+        "--scope must be user (or personal), repository, or run",
         EXIT_CODES.usage
       );
     }
-    options.scope = value as SetupScope;
+    options.scope = (value === "personal" ? "user" : value) as SetupScope;
     return;
   }
   if (option === "--version") {
@@ -1178,6 +1299,7 @@ const parseOptions = (args: string[]): CliOptions => {
     awaitingUser: [],
     changelogRequired: false,
     check: false,
+    commits: [],
     dryRun: false,
     evidencePaths: [],
     help: false,
@@ -1494,7 +1616,118 @@ const buildOnboardingInputs = (
   return inputs;
 };
 
+// Writes under the lock setup already uses: the active loop's mutation lease
+// when a loop runs, otherwise the loop state lock of the repository.
+const withSetupWriteLock = async <T>(
+  repositoryPath: string,
+  commonGitDirectory: string,
+  agentId: string | undefined,
+  operation: string,
+  write: () => T
+): Promise<T> => {
+  const activeLoop = readLoopLease(repositoryPath);
+  if (activeLoop) {
+    return (
+      await withLoopMutationLease(
+        repositoryPath,
+        activeLoop.runId,
+        requireCliOption(
+          agentId,
+          "--agent-id while an integration loop is active"
+        ),
+        operation,
+        write
+      )
+    ).result;
+  }
+  return withLoopStateLock(commonGitDirectory, operation, write);
+};
+
+const AUTHORING_EXCLUSIVE_INPUTS = SETUP_INPUT_KEYS.filter(
+  (key) => key !== "scope"
+);
+
+/**
+ * `setup --authoring <json-or-@path> --scope <repository|personal> --confirm`
+ * records the authoring answer as its own transaction: only the sidecar is
+ * written, independent of the guidance acknowledgement.
+ */
+const runAuthoringSetup = async (
+  options: CliOptions,
+  answerText: string
+): Promise<void> => {
+  const mixed = AUTHORING_EXCLUSIVE_INPUTS.filter(
+    (key) => options[key] !== undefined
+  );
+  if (mixed.length > 0) {
+    throw new SimpleChangesError(
+      `setup --authoring is a standalone transaction; record ${mixed.join(", ")} in a separate setup.`,
+      EXIT_CODES.usage
+    );
+  }
+  if (options.scope !== "repository" && options.scope !== "user") {
+    throw new SimpleChangesError(
+      "setup --authoring requires --scope repository or --scope personal; a run-only answer writes nothing.",
+      EXIT_CODES.usage
+    );
+  }
+  if (!options.yes) {
+    throw new SimpleChangesError(
+      "setup --authoring requires --confirm before writing.",
+      EXIT_CODES.usage
+    );
+  }
+  const answer = parseAuthoringAnswer(answerText);
+  const { repository } = captureInventory(options.repo);
+  const scope = options.scope === "user" ? "personal" : "repository";
+  const recorded = await withSetupWriteLock(
+    options.repo,
+    repository.commonGitDirectory,
+    options.agentId,
+    "authoring setup write",
+    () =>
+      recordAuthoringAnswer({
+        answer,
+        primaryCheckout: repository.primaryCheckout,
+        scope,
+      })
+  );
+  const after = resolveRepositoryAuthoring(repository.primaryCheckout);
+  writeOutput(
+    {
+      authoring: { path: recorded.path, scope, written: recorded.written },
+      authoringQuestion: after.authoringQuestion,
+      summary: recorded.summary,
+    },
+    options.json,
+    `${recorded.summary}\n`
+  );
+};
+
+// Detection and pre-fill for the interactive authoring questions; none when
+// the harness data file is unreadable (the questions are then skipped).
+const interactiveAuthoringContext = (
+  primaryCheckout: string | null
+): Omit<AuthoringOnboardingContext, "setupStyle"> | null => {
+  try {
+    const definitions = loadHarnessDefinitions();
+    const { detected, running } = detectHarnesses(definitions);
+    return {
+      definitions,
+      detected,
+      prefill: changelogsHarnessPrefill(primaryCheckout),
+      runningHarness: running,
+    };
+  } catch {
+    return null;
+  }
+};
+
 const runSetup = async (options: CliOptions): Promise<void> => {
+  if (options.authoring !== undefined) {
+    await runAuthoringSetup(options, options.authoring);
+    return;
+  }
   const context = setupContext(options.repo);
   const instructionTargets = options.scope
     ? discoverInstructionTargets(
@@ -1536,6 +1769,9 @@ const runSetup = async (options: CliOptions): Promise<void> => {
       context.primaryCheckout,
       options.uiArtifacts,
       {
+        authoring: process.stdin.isTTY
+          ? interactiveAuthoringContext(context.primaryCheckout)
+          : null,
         existingPersonalDefaults: context.existingPersonalDefaults,
         forgeProvider: context.forgeProvider,
         showFirstScreen: process.stdin.isTTY,
@@ -1548,10 +1784,31 @@ const runSetup = async (options: CliOptions): Promise<void> => {
       written && path
         ? withSavedExecGuard(path, selection.policy)
         : selection.policy;
+    // The authoring answer is saved beside the policy for the same scope;
+    // run-only setup asked but writes nothing.
+    let authoringWrite: { path: string; written: boolean } | null = null;
+    const authoringTarget =
+      selection.confirmed && selection.authoring && selection.scope !== "run"
+        ? (() => {
+            const paths = authoringPaths(
+              context.primaryCheckout ?? options.repo
+            );
+            return selection.scope === "repository"
+              ? paths.repository
+              : paths.personal;
+          })()
+        : null;
     const applyWrites = (): {
       instructionPointerChanged: boolean;
       instructionPointerWritten: boolean;
     } => {
+      if (authoringTarget && selection.authoring) {
+        authoringWrite = writeAuthoringSidecar(
+          authoringTarget,
+          selection.authoring,
+          selection.scope === "user"
+        );
+      }
       let instructionPointerWritten = false;
       let instructionPointerChanged = false;
       if (
@@ -1609,6 +1866,7 @@ const runSetup = async (options: CliOptions): Promise<void> => {
       writeResult = applyWrites();
     }
     const result = {
+      authoring: authoringWrite,
       changelogCoordination: context.changelog,
       changelogInstall: selection.changelogInstall,
       confirmed: selection.confirmed,
@@ -1794,6 +2052,38 @@ const renderTurnEndGuard = (
     : `Turn-end guard: ${state} for ${guard.harness}; this copy cannot be installed from here, so install it from the globally installed Simple Changes`;
 };
 
+const describeReviewer = (
+  reviewer: NonNullable<InitializationStatus["reviewer"]>
+): string => {
+  const target = reviewer.harness
+    ? `${reviewer.model ?? "unknown model"} in ${reviewer.harness} at ${reviewer.effort ?? "unknown effort"}${reviewer.effortSource === "escalation" ? " (escalated after findings)" : ""}`
+    : "no target";
+  const reason = reviewer.reason ? `, ${reviewer.reason}` : "";
+  return `Reviewer (${reviewer.mode}${reviewer.adversarial ? ", different author model or agent required" : ""}): ${reviewer.status}, ${target}${reason}`;
+};
+
+// The authoring preference state: pending questions, a sidecar to repair, and
+// the resolved reviewer the pre-ship brief names.
+const appendAuthoring = (
+  lines: string[],
+  status: InitializationStatus
+): void => {
+  const question = status.authoringQuestion;
+  if (question) {
+    const pending = Object.entries(question)
+      .filter(([, state]) => state === "pending" || state === "repair")
+      .map(([id, state]) => `${id} ${state}`);
+    if (pending.length > 0) {
+      lines.push(
+        `Authoring questions: ${pending.join(", ")}; see references/onboarding.md ("Agents, models, and reviews").`
+      );
+    }
+  }
+  if (status.reviewer) {
+    lines.push(describeReviewer(status.reviewer));
+  }
+};
+
 const renderInitialization = (status: InitializationStatus): string => {
   const lines = [
     "Simple Changes initialization",
@@ -1849,6 +2139,7 @@ const renderInitialization = (status: InitializationStatus): string => {
   appendSimpleChangelogsUpdate(lines, status, combinedUpdate);
   appendCombinedUpdateChoice(lines, status);
   appendFirstUseWalkthroughOffer(lines, status);
+  appendAuthoring(lines, status);
   return `${lines.join("\n")}\n`;
 };
 
@@ -1881,6 +2172,66 @@ const initializationTurnEndGuard = (): InitializationStatus["turnEndGuard"] => {
   }
 };
 
+const AUTHORING_MODES = new Set<InitializationMode>([
+  "handoff",
+  "queue",
+  "sweep",
+  "integrate",
+  "ship",
+  "reconcile",
+  "resume",
+]);
+
+// Authoring preferences for initialization: Preview, Pause, guarded Sync and
+// read-only modes are not applicable (onboarding runs only for write-capable
+// requests other than Sync), and no setup style is in progress, so the review
+// question follows the recommended column of the truth table.
+const initializationAuthoring = (
+  primaryCheckout: string,
+  mode: InitializationMode
+): {
+  fields: Pick<
+    InitializationStatus,
+    "authoring" | "authoringFiles" | "authoringQuestion" | "detectedHarnesses"
+  >;
+  guidanceContext: GuidanceUpdateContext;
+  resolution: RepositoryAuthoring;
+} => {
+  const resolution = resolveRepositoryAuthoring(primaryCheckout, {
+    writeCapable: AUTHORING_MODES.has(mode),
+  });
+  const questions: GuidanceUpdateContext["questions"] = {};
+  if (resolution.authoringQuestion.review === "pending") {
+    try {
+      questions["authoring-review"] = authoringReviewNoticeQuestion({
+        definitions: loadHarnessDefinitions(),
+        detected: resolution.detectedHarnesses,
+        recordedHarnesses: [
+          resolution.authoringFiles.repository,
+          resolution.authoringFiles.personal,
+        ].flatMap((file) => Object.keys(file.value?.harnesses ?? {})),
+        runningHarness: resolution.runningHarness,
+      });
+    } catch {
+      // A broken harness data file leaves the notice without the question.
+    }
+  }
+  return {
+    fields: {
+      authoring: { effective: resolution.effective, source: resolution.source },
+      authoringFiles: resolution.authoringFiles,
+      authoringQuestion: resolution.authoringQuestion,
+      detectedHarnesses: resolution.detectedHarnesses,
+    },
+    guidanceContext: {
+      authoringQuestion: resolution.authoringQuestion,
+      detectedHarnesses: resolution.detectedHarnesses,
+      questions,
+    },
+    resolution,
+  };
+};
+
 const runInitialize = async (options: CliOptions): Promise<void> => {
   if (!options.mode) {
     throw new SimpleChangesError(
@@ -1906,12 +2257,17 @@ const runInitialize = async (options: CliOptions): Promise<void> => {
   const changelogCoordination = inspectChangelogCoordination(
     inventory.repository.primaryCheckout
   );
+  const authoring = initializationAuthoring(
+    inventory.repository.primaryCheckout,
+    options.mode
+  );
   const inspected = inspectInitialization(
     options.mode,
     inventory.policy,
     changelogCoordination,
     {
       changelogRequired: options.changelogRequired,
+      guidanceContext: authoring.guidanceContext,
       readinessConfirmed: options.ready,
     }
   );
@@ -1924,10 +2280,19 @@ const runInitialize = async (options: CliOptions): Promise<void> => {
       : null;
   const status = validateSchema<InitializationStatus>("initialization", {
     ...inspected,
+    ...authoring.fields,
     changelogInstall: pendingChangelogInstallOffer(changelogCoordination),
     handoffClaimRelease: handoffClaimRelease
       ? { claimId: handoffClaimRelease.claimId, path: handoffClaimRelease.path }
       : null,
+    reviewer: resolveReviewer({
+      authoring: authoring.resolution,
+      repositoryRoot: inventory.repository.primaryCheckout,
+      ...(options.proposalId === undefined
+        ? {}
+        : { proposalId: options.proposalId }),
+      ...(options.headRef === undefined ? {} : { head: options.headRef }),
+    }),
     runtimeFreshness: runtimeFreshness(
       {
         targetRef: inventory.targetRef,
@@ -2441,11 +2806,159 @@ const renderProposalAudit = (report: ProposalAuditReport): string =>
         .map((issue) => `- ${issue}`)
         .join("\n")}\n`;
 
+const renderGaps = (gaps: Record<string, CommitGaps>): string =>
+  Object.entries(gaps)
+    .map(
+      ([commit, gap]) =>
+        `Gap on ${commit}: unresolved sources [${gap.unresolvedSources.join(", ")}], uncovered edits [${gap.uncoveredEdits.join(", ")}]\n`
+    )
+    .join("");
+
+const renderRecordedAuthors = (result: RecordAuthorsResult): string =>
+  `${result.status === "unchanged" ? "Already recorded" : "Recorded"} authors for ${result.proposalId} at ${result.head} (${result.commits.length} commits, ${result.fullyCovered ? "fully covered" : "partial coverage"}).\nAuthors digest: ${result.authorsDigest}\n${
+    result.unattributed.length > 0
+      ? `Unattributed: ${result.unattributed.join(", ")}\n`
+      : ""
+  }${renderGaps(result.gaps)}`;
+
+const renderRecordedReview = (result: RecordReviewResult): string => {
+  const { attempt } = result;
+  return `${result.status === "unchanged" ? "Already recorded" : "Recorded"} review attempt ${attempt.attemptId} at ${attempt.headRevision}: verdict ${attempt.verdict}, ${
+    attempt.accepted
+      ? "accepted"
+      : `not accepted (${attempt.acceptanceReason}); ask the owner before reviewing again`
+  }.\n${result.disclosure.message ? `Disclosure: ${result.disclosure.message}\n` : ""}`;
+};
+
+const renderWaiver = (result: WaiveCoverageResult): string =>
+  `${result.status === "unchanged" ? "Already recorded" : "Recorded"} coverage waiver ${result.waiver.waiverId} by ${result.waiver.approvedBy}, bound to ${result.waiver.authorsDigest}.\n${
+    result.covers
+      ? "It covers every outstanding item on this head.\n"
+      : `Still outstanding: ${result.outstanding.unattributed.join(", ") || "no unattributed commits"}\n${renderGaps(result.outstanding.gaps)}`
+  }`;
+
+const runProposalLedgerCommand = (
+  action: string,
+  options: CliOptions
+): void => {
+  const proposalId = requireCliOption(options.proposalId, "--proposal");
+  const head = requireCliOption(options.headRef, "--head");
+  if (action === "record-authors") {
+    const result = recordProposalAuthors({
+      base: requireCliOption(options.baseRef, "--base"),
+      head,
+      proposalId,
+      repositoryPath: options.repo,
+      ...(options.receiptPath === undefined
+        ? {}
+        : { copyAuthorsReceipt: readJsonFile(options.receiptPath) }),
+      ...(options.agentName === undefined ? {} : { agent: options.agentName }),
+      ...(options.instanceId === undefined
+        ? {}
+        : { instance: options.instanceId }),
+    });
+    writeOutput(result, options.json, renderRecordedAuthors(result));
+    return;
+  }
+  const receipt = readJsonFile(
+    requireCliOption(options.receiptPath, "--receipt")
+  );
+  if (action === "record-review") {
+    const result = recordReviewAttempt({
+      attemptId: requireCliOption(options.attemptId, "--attempt-id"),
+      head,
+      proposalId,
+      receipt,
+      repositoryPath: options.repo,
+    });
+    writeOutput(result, options.json, renderRecordedReview(result));
+    return;
+  }
+  const result = waiveProposalCoverage({
+    authorsDigest: requireCliOption(options.authorsDigest, "--authors-digest"),
+    head,
+    proposalId,
+    receipt,
+    repositoryPath: options.repo,
+  });
+  writeOutput(result, options.json, renderWaiver(result));
+};
+
+const renderAttestation = (result: AuthorAttestResult): string => {
+  const who = `${result.identity.logicalId} (${result.identity.agent ?? "model not reported"}, harness ${result.identity.harness ?? "not reported"}, session ${result.identity.session ?? "not reported"})`;
+  const lines = result.attestations.map(
+    ({ commit, status }) =>
+      `${status === "not-attested" ? "Not attested (replay only)" : `Attested (${status})`}: ${commit} for ${who}`
+  );
+  const { replay } = result;
+  if (replay) {
+    lines.push(
+      `Replay ${replay.status}: ${replay.destination} from ${replay.sources.join(", ")} is ${replay.verification} (${replay.detail}).`
+    );
+    if (replay.ownGaps.uncoveredEdit) {
+      lines.push(
+        "The replay is inconclusive and nobody attested an edit on it: if you changed the implementation, attest it with --contribution implementation."
+      );
+    }
+    if (replay.ownGaps.unresolvedSources.length > 0) {
+      lines.push(
+        `Sources with no attested author: ${replay.ownGaps.unresolvedSources.join(", ")}`
+      );
+    }
+  }
+  return `${lines.join("\n")}\n`;
+};
+
+// `author attest` is a public command that takes the loop lock itself, so it
+// runs after `loop exec` returns and never inside it.
+const runAuthorCommand = (options: CliOptions): void => {
+  if (options.positional.length !== 1 || options.positional[0] !== "attest") {
+    throw new SimpleChangesError("author requires attest", EXIT_CODES.usage);
+  }
+  const result = attestCommits({
+    commits: options.commits,
+    repositoryPath: options.repo,
+    ...(options.agentId === undefined ? {} : { logicalId: options.agentId }),
+    ...(options.agentName === undefined ? {} : { agent: options.agentName }),
+    ...(options.instanceId === undefined
+      ? {}
+      : { instance: options.instanceId }),
+    ...(options.sessionId === undefined ? {} : { session: options.sessionId }),
+    ...(options.harness === undefined ? {} : { harness: options.harness }),
+    ...(options.contribution === undefined
+      ? {}
+      : { contribution: options.contribution }),
+    ...(options.replays === undefined ? {} : { replays: options.replays }),
+    ...(options.worktreePath === undefined
+      ? {}
+      : { worktreePath: options.worktreePath }),
+  });
+  writeOutput(result, options.json, renderAttestation(result));
+};
+
+const PROPOSAL_LEDGER_ACTIONS = new Set([
+  "record-authors",
+  "record-review",
+  "waive-coverage",
+]);
+
 // The audit is a check: its report goes to stdout either way, and a failing
 // body exits with the validation code instead of an error message.
 const runProposalCommand = (options: CliOptions): number => {
-  if (options.positional.length !== 1 || options.positional[0] !== "audit") {
-    throw new SimpleChangesError("proposal requires audit", EXIT_CODES.usage);
+  const [action] = options.positional;
+  if (
+    options.positional.length === 1 &&
+    action !== undefined &&
+    PROPOSAL_LEDGER_ACTIONS.has(action)
+  ) {
+    runProposalLedgerCommand(action, options);
+    return EXIT_CODES.success;
+  }
+  if (options.positional.length !== 1 || action !== "audit") {
+    throw new SimpleChangesError(
+      "proposal requires audit, record-authors, record-review, or waive-coverage",
+      EXIT_CODES.usage
+    );
   }
   const file = requireCliOption(options.filePath, "--file");
   const template = options.templatePath;
@@ -2793,11 +3306,17 @@ const runLoopStart = (options: CliOptions): void => {
         readFileSync(resolve(options.openingRemoteInventoryPath), "utf8")
       ) as unknown)
     : undefined;
+  let reviewLedger: ReviewLedgerResumeState | null = null;
   const lease = startLoop(
     options.repo,
     agentId,
     options.mode as RequestMode,
-    openingRemoteInventory
+    openingRemoteInventory,
+    {
+      onReviewLedger: (state) => {
+        reviewLedger = state.state === "absent" ? null : state;
+      },
+    }
   );
   const holds = informationalHolds(options.repo);
   const freshness = leaseRuntimeFreshness(lease);
@@ -2808,6 +3327,7 @@ const runLoopStart = (options: CliOptions): void => {
       inheritedAwaitingUser: resumedQuestions,
       lease,
       manifestDigest: loopManifestDigest(lease),
+      ...(reviewLedger ? { reviewLedger } : {}),
       runtimeFreshness: freshness,
     },
     options.json,
@@ -2815,8 +3335,30 @@ const runLoopStart = (options: CliOptions): void => {
       resumedQuestions
         ? `The previous controller paused for the user's answer to: ${resumedQuestions.join(" | ")}. Confirm their answer before continuing.\n`
         : ""
-    }${renderFreshnessWarning(freshness)}${renderRecordedHolds(holds)}`
+    }${renderResumedReviews(reviewLedger)}${renderFreshnessWarning(freshness)}${renderRecordedHolds(holds)}`
   );
+};
+
+// Accepted reviews that no longer pass the gate on resume need a fresh review.
+const renderResumedReviews = (
+  state: ReviewLedgerResumeState | null
+): string => {
+  if (!state) {
+    return "";
+  }
+  if (state.state === "malformed") {
+    return `Warning: the review ledger at ${state.path} is malformed (${state.reason}); no review counts until it is repaired.\n`;
+  }
+  return state.proposals
+    .flatMap((proposal) =>
+      proposal.attempts
+        .filter((attempt) => attempt.accepted && !attempt.revalidated)
+        .map(
+          (attempt) =>
+            `Review ${attempt.attemptId} of ${proposal.proposalId} no longer counts (${attempt.revalidationReason}); request a fresh review.\n`
+        )
+    )
+    .join("");
 };
 
 // A freshly resumed controller sees what its predecessor was waiting on.
@@ -3778,10 +4320,17 @@ const runPrepareAgent = (options: CliOptions): void => {
     requireCliOption(options.agentId, "--agent-id"),
     requireCliOption(options.purpose, "--purpose")
   );
+  // Commit attestation is a required step of every author's workflow: the
+  // review ledger cannot reconstruct who wrote a commit after the fact.
+  const shellWord = (value: string): string =>
+    PLAIN_SHELL_WORD_PATTERN.test(value)
+      ? value
+      : `'${value.replaceAll("'", "'\\''")}'`;
+  const afterEveryCommit = `simple-changes author attest --commit <sha> --agent-id ${shellWord(prepared.agentId)} --repo ${shellWord(prepared.path)} --json`;
   writeOutput(
-    prepared,
+    { ...prepared, afterEveryCommit },
     options.json,
-    `${prepared.created ? "Created" : "Reused"} ${prepared.path}\nBranch: ${prepared.branch}\nRun: ${prepared.runId}\n`
+    `${prepared.created ? "Created" : "Reused"} ${prepared.path}\nBranch: ${prepared.branch}\nRun: ${prepared.runId}\nRequired after every commit: ${afterEveryCommit}\n`
   );
 };
 
@@ -3981,6 +4530,9 @@ const executeCommand = async (
       return EXIT_CODES.success;
     case "prepare-agent":
       runPrepareAgent(options);
+      return EXIT_CODES.success;
+    case "author":
+      runAuthorCommand(options);
       return EXIT_CODES.success;
     case "release-notes":
       return runReleaseNotes(options);

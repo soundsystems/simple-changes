@@ -3606,9 +3606,9 @@ describe("active integration-loop lease", () => {
         violation.path === authorPath
     );
     const sequence = [
-      `simple-changes worktree claim --agent-id subagent --worktree ${authorPath} --adapter claude-code --owner-ref task-subagent`,
-      `simple-changes worktree pause --agent-id subagent --worktree ${authorPath} --run-id ${lease.runId} --disposition preserve-in-place --reason <why>`,
-      `simple-changes loop accept-paused-change --run-id ${lease.runId} --agent-id controller --pause-receipt <pause-receipt-id>`,
+      `simple-changes worktree claim --agent-id subagent --worktree ${authorPath} --adapter claude-code --owner-ref task-subagent --repo ${fixture.root}`,
+      `simple-changes worktree pause --agent-id subagent --worktree ${authorPath} --run-id ${lease.runId} --disposition preserve-in-place --reason <why> --repo ${fixture.root}`,
+      `simple-changes loop accept-paused-change --run-id ${lease.runId} --agent-id controller --pause-receipt <pause-receipt-id> --repo ${fixture.root}`,
     ];
     expect(stale?.nextCommands).toEqual(sequence);
     for (const command of sequence) {
@@ -3633,11 +3633,15 @@ describe("active integration-loop lease", () => {
     ).rejects.toThrow(
       "Run `simple-changes loop status` for the exact next commands."
     );
-    const verifyText = runCli(fixture.root, [
+    // Verify and every printed step run from outside the repository; each
+    // step names the controller checkout itself.
+    const verifyText = runCli(fixture.base, [
       "loop",
       "verify",
       "--run-id",
       lease.runId,
+      "--repo",
+      fixture.root,
     ]);
     expect(verifyText.exitCode).not.toBe(0);
     for (const command of sequence) {
@@ -3655,7 +3659,7 @@ describe("active integration-loop lease", () => {
             ? "Recover-the-released-author"
             : word.replace("<pause-receipt-id>", receiptId)
         );
-      const result = runCli(fixture.root, [...args, "--json"]);
+      const result = runCli(fixture.base, [...args, "--json"]);
       expect(result.stderr).toBe("");
       expect(result.exitCode).toBe(0);
       if (args[1] === "pause") {
@@ -3912,7 +3916,7 @@ describe("active integration-loop lease", () => {
         violation.code === "coordination-claim-stale" &&
         violation.path === missing
     );
-    const restore = `Restore the checkout at ${missing} on branch missing-author, then re-run \`simple-changes loop verify --run-id ${lease.runId}\` for its exact recovery steps.`;
+    const restore = `Restore the checkout at ${missing} on branch missing-author, then re-run \`simple-changes loop verify --run-id ${lease.runId} --repo ${fixture.root}\` for its exact recovery steps.`;
     expect(stale?.nextCommands).toEqual([restore]);
     expect(stale?.message).toContain(`It cannot be paused yet. ${restore}`);
     expect(loopStatus(fixture.root).guidance.nextCommands).toEqual([restore]);
@@ -3986,7 +3990,7 @@ describe("active integration-loop lease", () => {
 
     const { violations } = verifyLoop(fixture.root);
     const restore = (path: string) =>
-      `Restore the checkout at ${path} on branch ${basename(path)}, then re-run \`simple-changes loop verify --run-id ${lease.runId}\` for its exact recovery steps.`;
+      `Restore the checkout at ${path} on branch ${basename(path)}, then re-run \`simple-changes loop verify --run-id ${lease.runId} --repo ${fixture.root}\` for its exact recovery steps.`;
     for (const path of [before, after]) {
       expect(
         violations.find(
@@ -4024,7 +4028,7 @@ describe("active integration-loop lease", () => {
           violation.path === author
       )?.nextCommands;
     const settle = (action: string) => [
-      `${action} ${author}, then re-run \`simple-changes loop verify --run-id ${lease.runId}\` for its exact recovery steps.`,
+      `${action} ${author}, then re-run \`simple-changes loop verify --run-id ${lease.runId} --repo ${fixture.root}\` for its exact recovery steps.`,
     ];
 
     // A conflicting merge leaves an active Git operation behind.
@@ -4135,9 +4139,9 @@ describe("active integration-loop lease", () => {
       verifyLoop(fixture.root).violations
     );
     expect(printed).toEqual([
-      `simple-changes worktree claim --agent-id inactive-agent --worktree ${authorPath} --adapter codex --owner-ref 'Ann'\\''s task'`,
-      `simple-changes worktree pause --agent-id inactive-agent --worktree ${authorPath} --run-id ${lease.runId} --disposition preserve-in-place --reason <why>`,
-      `simple-changes loop accept-paused-change --run-id ${lease.runId} --agent-id controller --pause-receipt <pause-receipt-id>`,
+      `simple-changes worktree claim --agent-id inactive-agent --worktree ${authorPath} --adapter codex --owner-ref 'Ann'\\''s task' --repo ${fixture.root}`,
+      `simple-changes worktree pause --agent-id inactive-agent --worktree ${authorPath} --run-id ${lease.runId} --disposition preserve-in-place --reason <why> --repo ${fixture.root}`,
+      `simple-changes loop accept-paused-change --run-id ${lease.runId} --agent-id controller --pause-receipt <pause-receipt-id> --repo ${fixture.root}`,
     ]);
 
     // The printed claim runs as written in a POSIX shell and keeps the ID.
@@ -4226,9 +4230,9 @@ describe("active integration-loop lease", () => {
       `now held by claim ${second.claimId} of returning-agent, not by its registered claim ${first.claimId}`
     );
     expect(stale?.nextCommands).toEqual([
-      `simple-changes worktree claim --agent-id returning-agent --worktree ${authorPath} --adapter codex --owner-ref task-return`,
-      `simple-changes worktree pause --agent-id returning-agent --worktree ${authorPath} --run-id ${lease.runId} --disposition preserve-in-place --reason <why>`,
-      `simple-changes loop accept-paused-change --run-id ${lease.runId} --agent-id controller --pause-receipt <pause-receipt-id>`,
+      `simple-changes worktree claim --agent-id returning-agent --worktree ${authorPath} --adapter codex --owner-ref task-return --repo ${fixture.root}`,
+      `simple-changes worktree pause --agent-id returning-agent --worktree ${authorPath} --run-id ${lease.runId} --disposition preserve-in-place --reason <why> --repo ${fixture.root}`,
+      `simple-changes loop accept-paused-change --run-id ${lease.runId} --agent-id controller --pause-receipt <pause-receipt-id> --repo ${fixture.root}`,
     ]);
   });
 
@@ -4546,9 +4550,9 @@ describe("active integration-loop lease", () => {
           violation.path === retained
       );
       const printed = [
-        `simple-changes worktree claim --agent-id <owner> --worktree ${retained} --adapter <adapter>`,
-        `simple-changes worktree pause --agent-id <owner> --worktree ${retained} --run-id ${lease.runId} --disposition preserve-in-place --reason <why>`,
-        `simple-changes loop accept-paused-change --run-id ${lease.runId} --agent-id controller --pause-receipt <pause-receipt-id>`,
+        `simple-changes worktree claim --agent-id <owner> --worktree ${retained} --adapter <adapter> --repo ${fixture.root}`,
+        `simple-changes worktree pause --agent-id <owner> --worktree ${retained} --run-id ${lease.runId} --disposition preserve-in-place --reason <why> --repo ${fixture.root}`,
+        `simple-changes loop accept-paused-change --run-id ${lease.runId} --agent-id controller --pause-receipt <pause-receipt-id> --repo ${fixture.root}`,
       ];
       expect(changed?.nextCommands).toEqual(printed);
       expect(staleClaimRecoveryCommands(verification.violations)).toEqual(
@@ -4699,9 +4703,9 @@ describe("active integration-loop lease", () => {
       "The worktree lease has an incomplete coordination linkage. Owner <owner> runs"
     );
     expect(stale?.nextCommands).toEqual([
-      `simple-changes worktree claim --agent-id <owner> --worktree ${preservedPath} --adapter <adapter>`,
-      `simple-changes worktree pause --agent-id <owner> --worktree ${preservedPath} --run-id ${lease.runId} --disposition preserve-in-place --reason <why>`,
-      `simple-changes loop accept-paused-change --run-id ${lease.runId} --agent-id controller --pause-receipt <pause-receipt-id>`,
+      `simple-changes worktree claim --agent-id <owner> --worktree ${preservedPath} --adapter <adapter> --repo ${fixture.root}`,
+      `simple-changes worktree pause --agent-id <owner> --worktree ${preservedPath} --run-id ${lease.runId} --disposition preserve-in-place --reason <why> --repo ${fixture.root}`,
+      `simple-changes loop accept-paused-change --run-id ${lease.runId} --agent-id controller --pause-receipt <pause-receipt-id> --repo ${fixture.root}`,
     ]);
   });
 
@@ -4871,9 +4875,9 @@ describe("active integration-loop lease", () => {
       `now held by claim ${secondClaim.claimId} of second-agent, not by its registered claim ${firstClaim.claimId}`
     );
     expect(stale?.nextCommands).toEqual([
-      `simple-changes worktree claim --agent-id second-agent --worktree ${authorPath} --adapter codex --owner-ref task-second`,
-      `simple-changes worktree pause --agent-id second-agent --worktree ${authorPath} --run-id ${lease.runId} --disposition preserve-in-place --reason <why>`,
-      `simple-changes loop accept-paused-change --run-id ${lease.runId} --agent-id controller --pause-receipt <pause-receipt-id>`,
+      `simple-changes worktree claim --agent-id second-agent --worktree ${authorPath} --adapter codex --owner-ref task-second --repo ${fixture.root}`,
+      `simple-changes worktree pause --agent-id second-agent --worktree ${authorPath} --run-id ${lease.runId} --disposition preserve-in-place --reason <why> --repo ${fixture.root}`,
+      `simple-changes loop accept-paused-change --run-id ${lease.runId} --agent-id controller --pause-receipt <pause-receipt-id> --repo ${fixture.root}`,
     ]);
   });
 

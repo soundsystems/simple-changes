@@ -2026,12 +2026,12 @@ const staleClaimRecovery = (
   worktree: WorktreeInventory,
   { linkedClaim, liveClaim }: WorktreeClaimContext
 ): StaleClaimRecovery => {
+  // Every step names the controller checkout, so it runs from anywhere; `loop
+  // start` in particular makes the checkout it runs in the controller.
+  const repo = commandWord(
+    registeredController(lease)?.path ?? lease.primaryCheckout
+  );
   if (controllerLifecycle(lease).status !== "active") {
-    // Resume from the controller checkout: `loop start` makes the checkout it
-    // runs in the controller.
-    const repo = commandWord(
-      registeredController(lease)?.path ?? lease.primaryCheckout
-    );
     const resume = `simple-changes loop start --mode resume --agent-id <you> --repo ${repo}`;
     const verify = `${LOOP_VERIFY} --run-id ${lease.runId} --repo ${repo}`;
     return {
@@ -2046,7 +2046,7 @@ const staleClaimRecovery = (
       conflicts: `Resolve the conflicts in ${worktree.path}`,
       "git-operation": `Finish or abort the Git operation in ${worktree.path}`,
     }[blocker];
-    const step = `${unblock}, then re-run \`${LOOP_VERIFY} --run-id ${lease.runId}\` for its exact recovery steps.`;
+    const step = `${unblock}, then re-run \`${LOOP_VERIFY} --run-id ${lease.runId} --repo ${repo}\` for its exact recovery steps.`;
     return {
       commands: [step],
       text: `It cannot be paused yet. ${step}`,
@@ -2060,10 +2060,11 @@ const staleClaimRecovery = (
     `simple-changes worktree claim --agent-id ${agent} --worktree ${path}`,
     `--adapter ${owner ? commandWord(owner.adapter) : "<adapter>"}`,
     ...(owner?.ownerRef ? [`--owner-ref ${commandWord(owner.ownerRef)}`] : []),
+    `--repo ${repo}`,
   ].join(" ");
   const controller = commandWord(lease.ownerAgentId);
-  const pause = `simple-changes worktree pause --agent-id ${agent} --worktree ${path} --run-id ${lease.runId} --disposition preserve-in-place --reason <why>`;
-  const accept = `${ACCEPT_PAUSED_CHANGE} --run-id ${lease.runId} --agent-id ${controller} --pause-receipt <pause-receipt-id>`;
+  const pause = `simple-changes worktree pause --agent-id ${agent} --worktree ${path} --run-id ${lease.runId} --disposition preserve-in-place --reason <why> --repo ${repo}`;
+  const accept = `${ACCEPT_PAUSED_CHANGE} --run-id ${lease.runId} --agent-id ${controller} --pause-receipt <pause-receipt-id> --repo ${repo}`;
   return {
     commands: [claim, pause, accept],
     text: `Owner ${agent} runs \`${claim}\`, then \`${pause}\`; controller ${controller} then runs \`${accept}\` with the receipt ID the pause prints.`,

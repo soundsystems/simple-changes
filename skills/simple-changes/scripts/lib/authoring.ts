@@ -27,7 +27,9 @@ import { resolvePersonalPolicyPath } from "./policy.ts";
 // package knows, and how to detect them, are data in agents/harnesses.json.
 
 export type AuthoringEffort = "low" | "medium" | "high" | "xhigh" | "max";
-export type AuthoringLayer = "repository" | "personal" | "default";
+// `request`: the current request (`--authoring-request`), applied for one
+// invocation and never written.
+export type AuthoringLayer = "request" | "repository" | "personal" | "default";
 export type AuthoringRoleId = "proposals" | "review";
 export type AuthoringQuestionState =
   | "pending"
@@ -127,9 +129,16 @@ export interface AuthoringFieldSource {
   effort: AuthoringLayer;
   harness: AuthoringLayer;
   model: AuthoringLayer;
-  // The file of the highest layer that supplied any of the role's fields, or
-  // null when every field is the built-in default.
+  // The file of the highest file layer that supplied any of the role's
+  // fields, or null when every field is the built-in default or the request.
   path: string | null;
+}
+
+// The review role's gate fields can come from a lower layer than the rest of
+// the role: a request only tightens them (design 2.3 rule 6).
+export interface AuthoringReviewFieldSource extends AuthoringFieldSource {
+  adversarial: AuthoringLayer;
+  escalateOnFindings: AuthoringLayer;
 }
 
 export interface RepositoryAuthoring {
@@ -150,7 +159,10 @@ export interface RepositoryAuthoring {
   // that depends on the review role is never accepted until it is repaired.
   repairRequired: boolean;
   runningHarness: string | null;
-  source: { proposals: AuthoringFieldSource; review: AuthoringFieldSource };
+  source: {
+    proposals: AuthoringFieldSource;
+    review: AuthoringReviewFieldSource;
+  };
 }
 
 // C0 controls (newlines included), DEL, and C1 controls.
@@ -681,7 +693,8 @@ export const changelogsHarnessPrefill = (
 
 interface Layer {
   layer: Exclude<AuthoringLayer, "default">;
-  path: string;
+  // null for the request layer, which comes from no file.
+  path: string | null;
   value: AuthoringSidecar;
 }
 
@@ -709,14 +722,25 @@ const LAYER_RANK: Record<AuthoringLayer, number> = {
   default: 0,
   personal: 1,
   repository: 2,
+  request: 3,
 };
 
+// The file of the highest file layer among the sources; the request layer
+// has no file and never hides the file below it.
 const highestPath = (sources: SourceRef[]): string | null =>
   sources.reduce(
     (best, candidate) =>
-      LAYER_RANK[candidate.layer] > LAYER_RANK[best.layer] ? candidate : best,
+      candidate.path !== null &&
+      LAYER_RANK[candidate.layer] > LAYER_RANK[best.layer]
+        ? candidate
+        : best,
     DEFAULT_SOURCE
   ).path;
+
+const FLOOR_RANK = { high: 1, null: 0, xhigh: 2 } as const;
+
+const floorRank = (floor: "high" | "xhigh" | null): number =>
+  FLOOR_RANK[floor ?? "null"];
 
 /**
  * Section 2.3 resolution. Roles replace whole and harness entries replace
@@ -729,7 +753,7 @@ export const resolveAuthoringRole = (
   role: AuthoringRoleId,
   layers: Layer[],
   runningHarness: string | null
-): { effective: ResolvedReviewRole; source: AuthoringFieldSource } => {
+): { effective: ResolvedReviewRole; source: AuthoringReviewFieldSource } => {
   const roleLayer = layers.find((layer) =>
     Object.hasOwn(layer.value.roles, role)
   );
@@ -783,18 +807,78 @@ export const resolveAuthoringRole = (
     model,
     status,
   };
-  const fields = {
-    effort: effortSource,
-    harness: roleSource,
-    model: modelSource,
-  };
   return {
     effective,
     source: {
-      effort: fields.effort.layer,
-      harness: fields.harness.layer,
-      model: fields.model.layer,
-      path: highestPath(Object.values(fields)),
+      adversarial: roleSource.layer,
+      effort: effortSource.layer,
+      escalateOnFindings: roleSource.layer,
+      harness: roleSource.layer,
+      model: modelSource.layer,
+      path: highestPath([effortSource, roleSource, modelSource]),
+    },
+  };
+};
+
+/**
+ * Resolves one role over the file layers (rules 1 to 4), then applies the
+ * request layer (design 2.3 rule 6): the request supplies the role and
+ * harness entries like any other layer, except that `adversarial` and
+ * `escalateOnFindings` take the stricter of the request's value and the
+ * saved resolution's value. A request can therefore tighten the review gate
+ * for one invocation and never loosen a saved setting; the provenance of
+ * those two fields names the layer whose value is in force.
+ */
+export const resolveRequestedRole = (
+  role: AuthoringRoleId,
+  fileLayers: Layer[],
+  request: AuthoringSidecar | null,
+  runningHarness: string | null
+): { effective: ResolvedReviewRole; source: AuthoringReviewFieldSource } => {
+  const saved = resolveAuthoringRole(role, fileLayers, runningHarness);
+  if (!request) {
+    return saved;
+  }
+  const requested = resolveAuthoringRole(
+    role,
+    [{ layer: "request", path: null, value: request }, ...fileLayers],
+    runningHarness
+  );
+  const requestRole = Object.hasOwn(request.roles, role)
+    ? request.roles[role]
+    : undefined;
+  const loosensAdversarial =
+    saved.effective.adversarial && !requested.effective.adversarial;
+  const loosensFloor =
+    floorRank(requested.effective.escalateOnFindings) <
+    floorRank(saved.effective.escalateOnFindings);
+  // A gate field the request leaves out, or would loosen, stays the saved
+  // value with the saved layer's provenance.
+  const keepsAdversarial =
+    loosensAdversarial || requestRole?.adversarial === undefined;
+  const keepsFloor =
+    loosensFloor || requestRole?.escalateOnFindings === undefined;
+  return {
+    effective: {
+      ...requested.effective,
+      adversarial:
+        requested.effective.adversarial || saved.effective.adversarial,
+      escalateOnFindings: loosensFloor
+        ? saved.effective.escalateOnFindings
+        : requested.effective.escalateOnFindings,
+    },
+    source: {
+      ...requested.source,
+      adversarial: keepsAdversarial
+        ? saved.source.adversarial
+        : requested.source.adversarial,
+      escalateOnFindings: keepsFloor
+        ? saved.source.escalateOnFindings
+        : requested.source.escalateOnFindings,
+      // A gate field kept from a saved file names that file too.
+      path:
+        requested.source.path ??
+        (keepsAdversarial || keepsFloor ? saved.source.path : null),
     },
   };
 };
@@ -850,6 +934,9 @@ export const resolveRepositoryAuthoring = (
     harnessDataPath?: string;
     homeDirectory?: string;
     platform?: NodeJS.Platform;
+    // The current request's validated sidecar object (`--authoring-request`):
+    // the top layer for this resolution only. It never answers a question.
+    request?: AuthoringSidecar | null;
     setupStyle?: AuthoringSetupStyle;
     writeCapable?: boolean;
   } = {}
@@ -877,13 +964,30 @@ export const resolveRepositoryAuthoring = (
   const repository = readAuthoringFile(paths.repository);
   const personal = readAuthoringFile(paths.personal);
   const layers = validLayers(repository, personal);
-  const proposals = resolveAuthoringRole("proposals", layers, runningHarness);
-  const review = resolveAuthoringRole("review", layers, runningHarness);
+  const request = options.request ?? null;
+  const proposals = resolveRequestedRole(
+    "proposals",
+    layers,
+    request,
+    runningHarness
+  );
+  const review = resolveRequestedRole(
+    "review",
+    layers,
+    request,
+    runningHarness
+  );
   const proposalsRole: ResolvedAuthoringRole = {
     effort: proposals.effective.effort,
     harness: proposals.effective.harness,
     model: proposals.effective.model,
     status: proposals.effective.status,
+  };
+  const proposalsSource: AuthoringFieldSource = {
+    effort: proposals.source.effort,
+    harness: proposals.source.harness,
+    model: proposals.source.model,
+    path: proposals.source.path,
   };
   return {
     authoringFiles: { personal, repository },
@@ -903,7 +1007,7 @@ export const resolveRepositoryAuthoring = (
       (file) => file.state === "malformed"
     ),
     runningHarness,
-    source: { proposals: proposals.source, review: review.source },
+    source: { proposals: proposalsSource, review: review.source },
   };
 };
 
@@ -1078,18 +1182,40 @@ export const writeAuthoringSidecar = (
 export const AUTHORING_GUIDANCE = 28;
 
 /** Parses `setup --authoring`: JSON text, or `@path` to a JSON file. */
-export const parseAuthoringAnswer = (text: string): unknown => {
+export const parseAuthoringAnswer = (
+  text: string,
+  option = "--authoring"
+): unknown => {
   try {
     return JSON.parse(
       text.startsWith("@") ? readFileSync(resolve(text.slice(1)), "utf8") : text
     ) as unknown;
   } catch (error) {
     throw SimpleChangesError.withCause(
-      `--authoring must be JSON or @path to a JSON file: ${(error as Error).message}`,
+      `${option} must be JSON or @path to a JSON file: ${(error as Error).message}`,
       EXIT_CODES.usage,
       error
     );
   }
+};
+
+/**
+ * Parses and validates `--authoring-request`: a complete sidecar object
+ * checked exactly as a file would be (design 6.3). An invalid request is a
+ * usage error raised before any other input is acted on; a valid one is the
+ * request layer for one invocation and is never written.
+ */
+export const parseAuthoringRequest = (text: string): AuthoringSidecar => {
+  const validation = validateAuthoringSidecar(
+    parseAuthoringAnswer(text, "--authoring-request")
+  );
+  if (!validation.value) {
+    throw new SimpleChangesError(
+      `--authoring-request is invalid: ${validation.errors.join("; ")}`,
+      EXIT_CODES.usage
+    );
+  }
+  return validation.value;
 };
 
 /**

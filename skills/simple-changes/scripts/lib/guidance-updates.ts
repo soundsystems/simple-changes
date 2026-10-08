@@ -828,7 +828,7 @@ const GUIDANCE_UPDATES: GuidanceUpdateDefinition[] = [
       {
         kind: "integration",
         summary:
-          "`initialize` reports detected agents, both authoring files, the per-question state, the effective roles with each field's source, and the resolved reviewer, which `--proposal <id> --head <sha>` checks against that head's recorded authors; the pre-ship brief names the reviewer and its source.",
+          "`initialize` reports detected agents, both authoring files, the per-question state, the effective roles with each field's source, and the resolved reviewer, which `--proposal <id> --head <sha>` checks against that head's recorded authors; the pre-ship brief names the reviewer and its source. A run-only answer is applied with `--authoring-request <json-or-@path>` on `initialize`, `proposal record-review`, and `loop start --mode resume`: it is never saved, and it can make the review gate adversarial but never loosen a saved setting.",
         version: 28,
       },
     ],

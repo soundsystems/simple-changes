@@ -14,6 +14,7 @@ import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "bun";
 import {
   type AuthoringEffort,
+  type AuthoringSidecar,
   EFFORT_LEVELS,
   higherEffort,
   isHarnessId,
@@ -3022,6 +3023,12 @@ export interface RecordReviewInput {
   /** The parsed `--receipt` JSON describing the returned review. */
   receipt: unknown;
   repositoryPath: string;
+  /**
+   * The validated `--authoring-request` object: the request layer for this
+   * acceptance only (design 2.3 rule 6). It can make the gate adversarial
+   * for a run-only answer and never loosens the saved settings.
+   */
+  request?: AuthoringSidecar;
 }
 
 export interface ReviewDisclosure {
@@ -3226,7 +3233,8 @@ export const recordReviewAttempt = (
       // resume revalidate against the settings current then.
       const settings = authoringSettings(
         input.authoring ? cwd : primaryCheckoutOf(cwd),
-        input.authoring
+        input.authoring,
+        input.request
       );
       const head = resolveCommit(cwd, input.head, "--head");
       const prior = findAttempt(ledger, attemptId);
@@ -3592,11 +3600,18 @@ const authoringSettings = (
   primaryCheckout: string,
   authoring:
     | Pick<RepositoryAuthoring, "effective" | "repairRequired">
-    | undefined
+    | undefined,
+  request?: AuthoringSidecar
 ): { adversarial: boolean; repairRequired: boolean } => {
   try {
-    const resolved = authoring ?? resolveRepositoryAuthoring(primaryCheckout);
+    const resolved =
+      authoring ??
+      resolveRepositoryAuthoring(primaryCheckout, {
+        ...(request === undefined ? {} : { request }),
+      });
     return {
+      // A request only tightens (design 2.3 rule 6): the resolver already
+      // combined it with the saved settings by the stricter value.
       adversarial: resolved.effective.review.adversarial,
       repairRequired: resolved.repairRequired,
     };
@@ -3618,6 +3633,12 @@ export const loadReviewLedgerForResume = (
   primaryCheckout: string,
   options: {
     authoring?: Pick<RepositoryAuthoring, "effective" | "repairRequired">;
+    /**
+     * The run's `--authoring-request`: revalidation then uses the request
+     * combined with the saved settings, so a request-tightened run has one
+     * gate (design 5.5, "One gate per run"). Nothing about it is persisted.
+     */
+    request?: AuthoringSidecar;
   } = {}
 ): ReviewLedgerResumeState => {
   heldLoopLock(lock.commonGitDirectory, lock.operation);
@@ -3631,7 +3652,11 @@ export const loadReviewLedgerForResume = (
   if (current.state !== "valid") {
     return { ...base, proposals: [] };
   }
-  const settings = authoringSettings(primaryCheckout, options.authoring);
+  const settings = authoringSettings(
+    primaryCheckout,
+    options.authoring,
+    options.request
+  );
   const proposals = Object.entries(current.ledger.proposals).map(
     ([proposalId, proposal]): ResumedReviewProposal => {
       const latestHead = latestRecordedHead(proposal);

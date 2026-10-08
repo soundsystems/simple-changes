@@ -30,8 +30,9 @@ it to the shortest message that covers:
 - **Preserved or blocked work:** anything discovered but not being taken over;
 - **Reviewer:** the `reviewer` `initialize` resolved (agent, model, effort, and
   whether it must differ from the author) and the layer and file it came from
-  in `authoring.source.review`, so a repository sidecar never changes the
-  reviewer silently.
+  in `authoring.source.review` (`request` when a run-only answer or an
+  instruction changed it for this run), so a repository sidecar never
+  changes the reviewer silently.
 
 If completed, verified work is blocked only because a different task owns the
 active shipping controller, include this choice instead of stopping at a

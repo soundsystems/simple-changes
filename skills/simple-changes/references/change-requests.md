@@ -177,7 +177,12 @@ nothing is reconstructed later. Record it whatever `proposalSignatures` says:
    `--replays <old sha>[,<old sha>...]`. Add `--contribution implementation`
    whenever you changed the implementation while replaying; nothing infers
    it. A controller refreshing a returned delegated worktree runs this after
-   `loop exec` returns, with `--worktree <path>`.
+   `loop exec` returns, with `--worktree <path>`. A corrected `--replays` may
+   add sources it missed, never drop one (`replay-correction-drops-source`).
+   Fix a wrongly named source only on a destination nobody attested an edit
+   on: rewrite it (an amend is enough) and attest the new sha with the right
+   original sources. A destination carrying an implementation attestation
+   keeps its mapping, and the owner waives any remaining gap.
 3. **Right after creating the proposal, and after every head update**, run
    `simple-changes proposal record-authors --proposal <provider id> --base
    <sha> --head <sha> [--receipt <copy-authors.json>]`. A head without it is

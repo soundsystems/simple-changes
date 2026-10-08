@@ -19,6 +19,7 @@ import {
 import { hostname } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { AuthoringSidecar } from "./authoring.ts";
 import {
   deleteTargetContainedBranches,
   PATCH_EQUIVALENCE_MAX_COMMITS,
@@ -2640,6 +2641,11 @@ const scopeInvariantDigest = (inventory: RepositoryInventory): string =>
 export interface LoopStartOptions {
   /** Receives the review ledger a resume loads under the held loop lock. */
   onReviewLedger?: (state: ReviewLedgerResumeState) => void;
+  /**
+   * The run's `--authoring-request` (resume only): revalidation uses it
+   * combined with the saved settings, so the run has one review gate.
+   */
+  request?: AuthoringSidecar;
 }
 
 export const startLoop = (
@@ -2657,6 +2663,9 @@ export const startLoop = (
     );
   }
   const opening = locateRepository(repositoryPath);
+  // The run's request layer, when one is passed, reaches resume revalidation.
+  const resumeOptions =
+    options.request === undefined ? {} : { request: options.request };
   return withStateLock(
     opening.repository.commonGitDirectory,
     "loop start",
@@ -2684,7 +2693,8 @@ export const startLoop = (
                   inventory.repository.commonGitDirectory,
                   "loop start"
                 ),
-                resumed.primaryCheckout
+                resumed.primaryCheckout,
+                resumeOptions
               );
               options.onReviewLedger?.(reviewLedger);
             }

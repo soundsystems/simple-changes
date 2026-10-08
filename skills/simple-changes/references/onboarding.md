@@ -354,6 +354,10 @@ should perform independent reviews?**
 3. **Any independent reviewer**: a separate session of the same model counts,
    as today. Records `{ "harness": "running", "adversarial": false }`.
 
+Ask it only when it has two or more options: with one recorded agent and an
+unidentified running agent, say that the review question waits until another
+agent is recorded, record nothing, and leave it pending.
+
 After option 1, ask **Which agent should review?** among the recorded agents
 except the author's (the running one; none is excluded when it is unknown),
 in data-file order then unknown ids alphabetically, the first recommended; a
@@ -383,7 +387,9 @@ storage (`references/setup-and-policy.md`, "Authoring preferences"); run-only
 asks but writes nothing, so a pending question returns next time. Terminal
 setup saves it with the policy and reports the confirmed answer as
 `authoringAnswer` and the file written, if any, as `authoring`; after
-run-only, apply `authoringAnswer` to the current request only. Otherwise, and
+run-only, apply `authoringAnswer` to the current request only: pass it as
+`--authoring-request` to every `initialize`, `proposal record-review`, and
+`loop start --mode resume` of the run, and save nothing. Otherwise, and
 for an existing repository, record it with `simple-changes setup --authoring
 '<json>' --scope <repository|personal> --confirm`, a transaction that writes
 only the sidecar.

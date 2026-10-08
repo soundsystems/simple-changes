@@ -21,10 +21,12 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "bun";
-import type {
-  RepositoryAuthoring,
-  ResolvedAuthoringRole,
-  ResolvedReviewRole,
+import {
+  type AuthoringSidecar,
+  type RepositoryAuthoring,
+  type ResolvedAuthoringRole,
+  type ResolvedReviewRole,
+  resolveRepositoryAuthoring,
 } from "../../../skills/simple-changes/scripts/lib/authoring.ts";
 import {
   captureInventory,
@@ -1663,6 +1665,198 @@ describe("proposal ledger commands", () => {
     });
   });
 
+  test("a request layer tightens the gate for one acceptance and never loosens the saved settings", () => {
+    const run = preparedRun();
+    const head = commitFile(run.author, "a.txt", "a\n");
+    attestAsA(run.author, [head]);
+    recordProposalAuthors({
+      agent: "model-alpha",
+      base: run.base,
+      environment: ENV_A,
+      head,
+      proposalId: PROPOSAL,
+      repositoryPath: run.author,
+    });
+    const sameModel = reviewReceipt({
+      agent: "model-alpha",
+      harness: "claude-code",
+      instance: "reviewer-z",
+      session: "session-z",
+    });
+    const adversarial = {
+      harnesses: {},
+      roles: { review: { adversarial: true, harness: "running" } },
+      schemaVersion: 1,
+    } as const;
+    // Nothing is saved, so the gate is not adversarial; a run-only answer
+    // passed as the request makes this acceptance adversarial.
+    const tightened = recordReviewAttempt({
+      attemptId: randomUUID(),
+      head,
+      proposalId: PROPOSAL,
+      receipt: sameModel,
+      repositoryPath: run.author,
+      request: adversarial,
+    });
+    expect(tightened.attempt).toMatchObject({
+      acceptanceReason: "reviewer-not-distinct",
+      accepted: false,
+    });
+    expect(tightened.approvalCandidate).toBe(false);
+    // The same receipt without the request is judged by the saved settings.
+    const plain = recordReviewAttempt({
+      attemptId: randomUUID(),
+      head,
+      proposalId: PROPOSAL,
+      receipt: sameModel,
+      repositoryPath: run.author,
+    });
+    expect(plain.attempt).toMatchObject({
+      acceptanceReason: null,
+      accepted: true,
+    });
+    // A rejection is final for its attempt id: a retry without the request
+    // never resurrects it.
+    const retried = recordReviewAttempt({
+      attemptId: tightened.attempt.attemptId,
+      head,
+      proposalId: PROPOSAL,
+      receipt: sameModel,
+      repositoryPath: run.author,
+    });
+    expect(retried).toMatchObject({
+      approvalCandidate: false,
+      currentValidity: { reason: "reviewer-not-distinct", valid: false },
+      status: "unchanged",
+    });
+    // Nothing was written by the request, while an attempt keeps its audit
+    // fields (a request `max` stays recorded as such), and a resolution
+    // without the request is judged by the saved settings alone.
+    expect(existsSync(join(run.root, ".simple-changes-authoring.json"))).toBe(
+      false
+    );
+    const audited = recordReviewAttempt({
+      attemptId: randomUUID(),
+      head,
+      proposalId: PROPOSAL,
+      receipt: reviewReceipt(REVIEWER_B, {
+        effort: "max",
+        effortSource: "request",
+      }),
+      repositoryPath: run.author,
+      request: adversarial,
+    });
+    expect(audited.attempt).toMatchObject({
+      accepted: true,
+      effort: "max",
+      effortSource: "request",
+      requested: { effort: "xhigh", harness: "codex", model: "model-beta" },
+    });
+    expect(
+      readReviewLedger(commonDirectory(run.root)).ledger.proposals[
+        PROPOSAL
+      ]?.attempts.find(
+        (attempt) => attempt.attemptId === audited.attempt.attemptId
+      )
+    ).toMatchObject({ effort: "max", effortSource: "request" });
+    expect(
+      resolveReviewer({
+        authoring: resolveRepositoryAuthoring(run.root, {
+          environment: { ...process.env, ...ENV_A },
+        }),
+        head,
+        proposalId: PROPOSAL,
+        repositoryRoot: run.author,
+      })
+    ).toMatchObject({ adversarial: false, mode: "verified" });
+    // Before dispatch, the request's own target is checked against the
+    // head's authors; a bare adversarial request would leave the saved
+    // default (most-capable) unresolved and stop the review step.
+    const environment = { ...process.env, ...ENV_A };
+    const resolveWith = (request: AuthoringSidecar) =>
+      reviewerShape(
+        resolveReviewer({
+          authoring: resolveRepositoryAuthoring(run.root, {
+            environment,
+            request,
+          }),
+          head,
+          proposalId: PROPOSAL,
+          repositoryRoot: run.author,
+        })
+      );
+    expect(resolveWith(adversarial)).toMatchObject({
+      adversarial: true,
+      mode: "verified",
+      reason: "most-capable-unresolved",
+      status: "unresolved",
+    });
+    expect(
+      resolveWith({
+        harnesses: {},
+        roles: {
+          review: {
+            adversarial: true,
+            harness: "claude-code",
+            model: "model-beta",
+          },
+        },
+        schemaVersion: 1,
+      })
+    ).toMatchObject({
+      adversarial: true,
+      harness: "claude-code",
+      model: "model-beta",
+      reason: null,
+      status: "resolved",
+    });
+    // A request floor raises later attempts after findings (2.3 rule 6).
+    recordReviewAttempt({
+      attemptId: randomUUID(),
+      head,
+      proposalId: PROPOSAL,
+      receipt: reviewReceipt(REVIEWER_B, {
+        findingsCount: 1,
+        verdict: "findings",
+      }),
+      repositoryPath: run.author,
+    });
+    expect(
+      resolveWith({
+        harnesses: { "claude-code": { effort: "high", model: "model-beta" } },
+        roles: {
+          review: {
+            adversarial: true,
+            escalateOnFindings: "xhigh",
+            harness: "claude-code",
+          },
+        },
+        schemaVersion: 1,
+      })
+    ).toMatchObject({ effort: "xhigh", effortSource: "escalation" });
+    // Saved adversarial review: a request saying otherwise cannot loosen it.
+    writeFileSync(
+      join(run.root, ".simple-changes-authoring.json"),
+      `${JSON.stringify(adversarial)}\n`
+    );
+    const kept = recordReviewAttempt({
+      attemptId: randomUUID(),
+      head,
+      proposalId: PROPOSAL,
+      receipt: sameModel,
+      repositoryPath: run.author,
+      request: {
+        harnesses: {},
+        roles: { review: { adversarial: false, harness: "running" } },
+        schemaVersion: 1,
+      },
+    });
+    expect(kept.attempt).toMatchObject({
+      acceptanceReason: "reviewer-not-distinct",
+      accepted: false,
+    });
+  });
+
   test("the ledger commands accept constructor and toString as proposal ids, and verified resolution treats a sentinel author as missing", () => {
     const run = preparedRun();
     const commit = commitFile(run.author, "a.txt", "a\n");
@@ -2330,6 +2524,74 @@ describe("ledger state, locking, resume and finalization", () => {
     ).toThrow("holds the loop lock");
   });
 
+  test("resume revalidates under the run's request so a run has one gate, and persists nothing", () => {
+    const run = preparedRun();
+    const head = commitFile(run.author, "a.txt", "a\n");
+    attestAsA(run.author, [head]);
+    recordProposalAuthors({
+      base: run.base,
+      environment: ENV_A,
+      head,
+      proposalId: PROPOSAL,
+      repositoryPath: run.author,
+    });
+    // Accepted while nothing was saved: a separate session of the author's
+    // own model passes executor independence alone.
+    const accepted = recordReviewAttempt({
+      attemptId: randomUUID(),
+      head,
+      proposalId: PROPOSAL,
+      receipt: reviewReceipt({
+        agent: "model-alpha",
+        harness: "claude-code",
+        instance: "reviewer-z",
+        session: "session-z",
+      }),
+      repositoryPath: run.author,
+    });
+    expect(accepted.attempt.accepted).toBe(true);
+    // Each resume follows a relinquished controller, as a real resume does.
+    const resume = (from: string, to: string, request?: AuthoringSidecar) => {
+      finalizeLoop(run.root, run.runId, from, "Pause for the owner", {
+        awaitingUser: ["Merge the proposal?"],
+      });
+      let loaded: ReviewLedgerResumeState | null = null;
+      startLoop(run.root, to, "resume", undefined, {
+        onReviewLedger: (state) => {
+          loaded = state;
+        },
+        ...(request === undefined ? {} : { request }),
+      });
+      return (loaded as unknown as ReviewLedgerResumeState).proposals[0];
+    };
+    // A run whose request requires adversarial review cannot count it.
+    expect(
+      resume("controller", "controller-2", {
+        harnesses: {},
+        roles: { review: { adversarial: true, harness: "running" } },
+        schemaVersion: 1,
+      })
+    ).toMatchObject({
+      attempts: [
+        {
+          attemptId: accepted.attempt.attemptId,
+          revalidated: false,
+          revalidationReason: "reviewer-not-distinct",
+        },
+      ],
+      reviewedAttemptId: null,
+    });
+    // Without a request the saved settings judge it again; nothing was
+    // persisted by the request.
+    expect(resume("controller-2", "controller-3")).toMatchObject({
+      attempts: [{ revalidated: true, revalidationReason: null }],
+      reviewedAttemptId: accepted.attempt.attemptId,
+    });
+    expect(existsSync(join(run.root, ".simple-changes-authoring.json"))).toBe(
+      false
+    );
+  });
+
   test("an older copy's state files are untouched by the ledger's presence", () => {
     const run = preparedRun();
     const claimedPath = join(run.fixture.base, "claimed");
@@ -2638,6 +2900,149 @@ describe("schema parity and the command line", () => {
     ]);
     expect(reviewed.exitCode).toBe(0);
     expect(reviewed.stdout).toContain("verdict clean, accepted");
+    // The request layer on the command line: a same-model reviewer is
+    // rejected under a run-only adversarial answer, nothing is saved, and
+    // the flag belongs to record-review alone.
+    const sameModelPath = join(config, "same-model.json");
+    writeFileSync(
+      sameModelPath,
+      JSON.stringify(
+        reviewReceipt({
+          agent: "model-alpha",
+          harness: "claude-code",
+          instance: "reviewer-z",
+          session: "session-z",
+        })
+      )
+    );
+    const requestPath = join(config, "request.json");
+    writeFileSync(
+      requestPath,
+      JSON.stringify({
+        harnesses: {},
+        roles: { review: { adversarial: true, harness: "running" } },
+        schemaVersion: 1,
+      })
+    );
+    const tightened = cli([
+      "proposal",
+      "record-review",
+      "--proposal",
+      PROPOSAL,
+      "--head",
+      commit,
+      "--attempt-id",
+      randomUUID(),
+      "--receipt",
+      sameModelPath,
+      "--authoring-request",
+      `@${requestPath}`,
+      "--json",
+      "--repo",
+      preparation.path,
+    ]);
+    expect(tightened.exitCode).toBe(0);
+    expect(JSON.parse(tightened.stdout)).toMatchObject({
+      attempt: { acceptanceReason: "reviewer-not-distinct", accepted: false },
+    });
+    expect(
+      existsSync(join(fixture.root, ".simple-changes-authoring.json"))
+    ).toBe(false);
+    const invalidRequest = cli([
+      "proposal",
+      "record-review",
+      "--proposal",
+      PROPOSAL,
+      "--head",
+      commit,
+      "--attempt-id",
+      randomUUID(),
+      "--receipt",
+      sameModelPath,
+      "--authoring-request",
+      '{"schemaVersion":1}',
+      "--repo",
+      preparation.path,
+    ]);
+    expect(invalidRequest.exitCode).toBe(2);
+    expect(invalidRequest.stderr).toContain("--authoring-request is invalid");
+    const wrongCommand = cli([
+      "proposal",
+      "record-authors",
+      "--proposal",
+      PROPOSAL,
+      "--base",
+      base,
+      "--head",
+      commit,
+      "--authoring-request",
+      `@${requestPath}`,
+      "--repo",
+      preparation.path,
+    ]);
+    expect(wrongCommand.exitCode).toBe(2);
+    expect(wrongCommand.stderr).toContain(
+      "--authoring-request applies to proposal record-review only"
+    );
+    const wrongMode = cli([
+      "loop",
+      "start",
+      "--mode",
+      "integrate",
+      "--agent-id",
+      "controller",
+      "--authoring-request",
+      `@${requestPath}`,
+      "--repo",
+      fixture.root,
+    ]);
+    expect(wrongMode.exitCode).toBe(2);
+    expect(wrongMode.stderr).toContain(
+      "--authoring-request applies to loop start --mode resume only"
+    );
+    // Before dispatch, the request's own reviewer is resolved against the
+    // head's recorded authors and its provenance is reported as `request`.
+    const targeted = cli([
+      "initialize",
+      "--mode",
+      "queue",
+      "--agent-id",
+      "unit-author",
+      "--proposal",
+      PROPOSAL,
+      "--head",
+      commit,
+      "--authoring-request",
+      JSON.stringify({
+        harnesses: {},
+        roles: {
+          review: {
+            adversarial: true,
+            harness: "claude-code",
+            model: "model-beta",
+          },
+        },
+        schemaVersion: 1,
+      }),
+      "--json",
+      "--repo",
+      preparation.path,
+    ]);
+    expect(targeted.stderr).toBe("");
+    expect(targeted.exitCode).toBe(0);
+    expect(JSON.parse(targeted.stdout)).toMatchObject({
+      authoring: {
+        source: { review: { adversarial: "request", harness: "request" } },
+      },
+      reviewer: {
+        adversarial: true,
+        harness: "claude-code",
+        mode: "verified",
+        model: "model-beta",
+        reason: null,
+        status: "resolved",
+      },
+    });
     const usage = cli(["proposal"]);
     expect(usage.stderr).toContain(
       "proposal requires audit, record-authors, record-review, or waive-coverage"

@@ -8,6 +8,7 @@ import {
   authoringReviewNoticeQuestion,
   collectAuthoringAnswers,
   effortChoices,
+  REVIEW_QUESTION_WAITS,
   recommendedAuthoringAnswer,
   renderAuthoringSummary,
   reviewAgentCandidates,
@@ -1331,6 +1332,58 @@ describe("authoring and review questions", () => {
         setupStyle: "recommended",
       })
     ).toBe(true);
+  });
+
+  test("skips R1 when it would have one option, records nothing, and says the question waits", async () => {
+    // One recorded agent and no identified running agent leave only "Any
+    // independent reviewer", and recording it would silence the question for
+    // good in the one state where an adversarial setup cannot be expressed
+    // (design 5.1.3): nothing is asked, nothing is recorded, review stays
+    // pending.
+    const presented: string[] = [];
+    const { asked, prompter } = scripted(["found", "most-capable", "any"]);
+    const answer = await collectAuthoringAnswers(
+      {
+        definitions,
+        detected: detected("alpha-agent"),
+        prefill: null,
+        runningHarness: null,
+        setupStyle: "customize",
+      },
+      {
+        ...prompter,
+        present: (text: string) => {
+          presented.push(text);
+        },
+      }
+    );
+    expect(asked.map(({ question }) => question)).not.toContain(
+      AUTHORING_QUESTIONS.reviewer
+    );
+    expect(Object.keys(answer.harnesses)).toEqual(["alpha-agent"]);
+    expect(answer.roles.review).toBeUndefined();
+    expect(presented).toContain(REVIEW_QUESTION_WAITS);
+    // Once the running agent is identified, R1 has two options and is asked.
+    const identified = scripted(["found", "most-capable", "any"]);
+    const recorded = await collectAuthoringAnswers(
+      {
+        definitions,
+        detected: detected("alpha-agent"),
+        prefill: null,
+        runningHarness: "alpha-agent",
+        setupStyle: "customize",
+      },
+      identified.prompter
+    );
+    expect(
+      identified.asked.find(
+        ({ question }) => question === AUTHORING_QUESTIONS.reviewer
+      )?.choices
+    ).toEqual(["different-model", "any"]);
+    expect(recorded.roles.review).toEqual({
+      adversarial: false,
+      harness: "running",
+    });
   });
 
   test("offers Question A choices from detection and the Simple Changelogs pre-fill", async () => {

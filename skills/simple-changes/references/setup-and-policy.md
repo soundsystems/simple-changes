@@ -337,11 +337,19 @@ A sidecar that changes while an answer is being written is never replaced.
 
 Precedence, highest first: the current request, the repository sidecar, the
 personal sidecar, then the running agent's most capable model at `xhigh`.
-Roles and agent entries replace whole; an empty sidecar answers the models
-question and defines nothing; a role-level `model` needs an agent id, never
-`running`; `null` means "do not guide this agent". `initialize` reports
-`authoring.effective` with each field's layer in `authoring.source`, and the
-`reviewer` it resolves. A reviewer `model` of `most-capable` is resolved from
+The current request reaches the CLI as `--authoring-request <json-or-@path>`
+(a complete sidecar object) on `initialize`, `proposal record-review`, and
+`loop start --mode resume`: validated like a file, applied to that invocation,
+never written, never an answer. It replaces roles and agent entries like any
+layer, except that `review.adversarial` and `review.escalateOnFindings`
+combine with the saved result by the stricter value, so a request tightens
+the review gate and never loosens it; pass the same request to every one of
+those commands in a run. Roles and agent entries replace whole; an empty
+sidecar answers the models question and defines nothing; a role-level
+`model` needs an agent id, never `running`; `null` means "do not guide this
+agent". `initialize` reports `authoring.effective` with each field's layer
+(`request`, `repository`, `personal`, or `default`) in `authoring.source`,
+and the `reviewer` it resolves. A reviewer `model` of `most-capable` is resolved from
 what the target agent reports before dispatch; if that is impossible, treat
 the reviewer as unresolved and ask the owner. `max` effort comes only from an explicit owner choice
 and is never reached by a default, `most-capable`, or escalation.

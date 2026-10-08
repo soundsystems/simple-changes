@@ -2,6 +2,7 @@ import type {
   AuthoringFieldSource,
   AuthoringFileState,
   AuthoringQuestionState,
+  AuthoringReviewFieldSource,
   DetectedHarness,
   ResolvedAuthoringRole,
   ResolvedReviewRole,
@@ -34,7 +35,10 @@ export interface InitializationStatus {
   /** Effective authoring roles with each field's layer (design 2.3). */
   authoring?: {
     effective: { proposals: ResolvedAuthoringRole; review: ResolvedReviewRole };
-    source: { proposals: AuthoringFieldSource; review: AuthoringFieldSource };
+    source: {
+      proposals: AuthoringFieldSource;
+      review: AuthoringReviewFieldSource;
+    };
   };
   /** A missing or malformed harness data file: detection failed, not empty. */
   authoringErrors?: string[];

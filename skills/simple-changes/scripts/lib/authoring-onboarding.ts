@@ -523,10 +523,18 @@ const ANY_REVIEWER: AuthoringRoleEntry = {
   harness: RUNNING_HARNESS,
 };
 
+export const REVIEW_QUESTION_WAITS =
+  "Only one agent is recorded and the running agent is not identified, so a different reviewer cannot be chosen yet; the review question waits until another agent is recorded.";
+
 // Asks R1 and its follow-ups. A different-model choice that never yields an
 // acceptable name goes back to R1, so only an explicit "Any independent
 // reviewer" records a non-adversarial review; after three rounds without an
-// answer nothing is recorded and the question stays pending.
+// answer nothing is recorded and the question stays pending. R1 is asked only
+// with two or more options (design 5.1.3): with one recorded agent and no
+// identified running agent only "Any independent reviewer" remains, and
+// recording it would silence the question for good in the one state where an
+// adversarial setup cannot be expressed, so nothing is asked or recorded and
+// the question stays pending until another agent is recorded.
 const askReview = async (
   context: AuthoringOnboardingContext,
   prompter: AuthoringPrompter,
@@ -536,14 +544,15 @@ const askReview = async (
   if (roundsLeft === 0) {
     return null;
   }
-  const reviewer = await ask(
-    prompter,
-    AUTHORING_QUESTIONS.reviewer,
-    reviewerChoices({
-      recordedHarnesses: Object.keys(answer.harnesses),
-      runningHarness: context.runningHarness,
-    })
-  );
+  const choices = reviewerChoices({
+    recordedHarnesses: Object.keys(answer.harnesses),
+    runningHarness: context.runningHarness,
+  });
+  if (choices.length < 2) {
+    prompter.present?.(REVIEW_QUESTION_WAITS);
+    return null;
+  }
+  const reviewer = await ask(prompter, AUTHORING_QUESTIONS.reviewer, choices);
   if (reviewer === "any") {
     return ANY_REVIEWER;
   }

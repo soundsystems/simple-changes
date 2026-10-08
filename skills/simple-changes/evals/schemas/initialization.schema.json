@@ -64,7 +64,31 @@
         "path": { "anyOf": [{ "type": "null" }, { "type": "string" }] }
       }
     },
-    "authoringLayer": { "enum": ["repository", "personal", "default"] },
+    "authoringReviewSource": {
+      "description": "The review role's provenance. adversarial and escalateOnFindings may come from a lower layer than the rest of the role: a request only tightens them (design 2.3 rule 6).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "adversarial",
+        "effort",
+        "escalateOnFindings",
+        "harness",
+        "model",
+        "path"
+      ],
+      "properties": {
+        "adversarial": { "$ref": "#/$defs/authoringLayer" },
+        "effort": { "$ref": "#/$defs/authoringLayer" },
+        "escalateOnFindings": { "$ref": "#/$defs/authoringLayer" },
+        "harness": { "$ref": "#/$defs/authoringLayer" },
+        "model": { "$ref": "#/$defs/authoringLayer" },
+        "path": { "anyOf": [{ "type": "null" }, { "type": "string" }] }
+      }
+    },
+    "authoringLayer": {
+      "description": "request: the current request (--authoring-request), applied for one invocation and never written.",
+      "enum": ["request", "repository", "personal", "default"]
+    },
     "guidanceQuestion": {
       "type": "object",
       "additionalProperties": false,
@@ -644,7 +668,7 @@
           "required": ["proposals", "review"],
           "properties": {
             "proposals": { "$ref": "#/$defs/authoringSource" },
-            "review": { "$ref": "#/$defs/authoringSource" }
+            "review": { "$ref": "#/$defs/authoringReviewSource" }
           }
         }
       }

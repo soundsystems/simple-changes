@@ -7,11 +7,13 @@ import { createInterface } from "node:readline/promises";
 import { fileURLToPath } from "node:url";
 import { sleep, stdin } from "bun";
 import {
+  type AuthoringSidecar,
   authoringPaths,
   changelogsHarnessPrefill,
   detectHarnesses,
   loadHarnessDefinitions,
   parseAuthoringAnswer,
+  parseAuthoringRequest,
   type RepositoryAuthoring,
   recordAuthoringAnswer,
   resolveRepositoryAuthoring,
@@ -268,7 +270,7 @@ Usage:
     [--migration-target provider:project:environment]
     [--questions blocking-only|always|never]
     [--scope user|repository|run] [--acknowledge-push-scope]
-    [--proposal ID --head SHA]
+    [--proposal ID --head SHA] [--authoring-request JSON|@FILE]
     [--agent-id ID] [--yes] [--json] [--repo PATH]
   simple-changes setup [--finish review|integrate|ship]
     [--changelog delegate-if-available|preserve-and-report|ask]
@@ -298,7 +300,7 @@ Usage:
   simple-changes inventory [--json] [--repo PATH]
   simple-changes preview [--json] [--repo PATH] [--settle-ms N]
   simple-changes loop start --mode MODE --agent-id ID [--changelog-required]
-    [--opening-remote-inventory FILE]
+    [--opening-remote-inventory FILE] [--authoring-request JSON|@FILE]
     [--json] [--repo PATH]
   simple-changes loop status [--json] [--repo PATH]
   simple-changes loop replan-status [--json] [--repo PATH]
@@ -420,7 +422,8 @@ Usage:
     [--receipt COPY_AUTHORS_FILE] [--instance ID] [--agent NAME]
     [--json] [--repo PATH]
   simple-changes proposal record-review --proposal ID --head SHA
-    --attempt-id UUID --receipt ATTEMPT_FILE [--json] [--repo PATH]
+    --attempt-id UUID --receipt ATTEMPT_FILE [--authoring-request JSON|@FILE]
+    [--json] [--repo PATH]
   simple-changes proposal waive-coverage --proposal ID --head SHA
     --authors-digest SHA256 --receipt WAIVER_FILE [--json] [--repo PATH]
   simple-changes author attest --commit SHA [--commit SHA ...] [--agent-id ID]
@@ -450,6 +453,9 @@ interface CliOptions {
   attemptId?: string;
   // setup --authoring: the authoring answer as JSON or @path.
   authoring?: string;
+  // initialize and proposal record-review --authoring-request: the current
+  // request's sidecar object as JSON or @path, applied and never written.
+  authoringRequest?: string;
   authorsDigest?: string;
   awaitingUser: string[];
   baseRef?: string;
@@ -543,6 +549,7 @@ interface CliOptions {
 const VALUED_OPTIONS = new Set([
   "--name",
   "--authoring",
+  "--authoring-request",
   "--deltas",
   "--destination",
   "--upstream",
@@ -989,6 +996,7 @@ const applyLoopValuedOption = (
     "--apply-plan": "applyPlanPath",
     "--approval-reference": "approvalReference",
     "--approved-by": "approvedBy",
+    "--authoring-request": "authoringRequest",
     "--base": "baseRef",
     "--changelog-receipt": "changelogReceiptPath",
     "--claim-id": "claimId",
@@ -2107,6 +2115,30 @@ const appendAuthoring = (
   if (status.reviewer) {
     lines.push(describeReviewer(status.reviewer));
   }
+  const requested = requestedAuthoringFields(status);
+  if (requested.length > 0) {
+    lines.push(
+      `Authoring request applied to this invocation only (nothing saved): ${requested.join(", ")}.`
+    );
+  }
+};
+
+// The fields the current request supplied (`--authoring-request`), so a
+// run-only answer that changed the reviewer or tightened the gate is visible.
+const requestedAuthoringFields = (status: InitializationStatus): string[] => {
+  const source = status.authoring?.source;
+  if (!source) {
+    return [];
+  }
+  const fields: string[] = [];
+  for (const [role, layers] of Object.entries(source)) {
+    for (const [field, layer] of Object.entries(layers)) {
+      if (layer === "request") {
+        fields.push(`${role}.${field}`);
+      }
+    }
+  }
+  return fields;
 };
 
 const renderInitialization = (status: InitializationStatus): string => {
@@ -2213,7 +2245,8 @@ const AUTHORING_MODES = new Set<InitializationMode>([
 // question follows the recommended column of the truth table.
 const initializationAuthoring = (
   primaryCheckout: string,
-  mode: InitializationMode
+  mode: InitializationMode,
+  request: AuthoringSidecar | null
 ): {
   fields: Pick<
     InitializationStatus,
@@ -2228,6 +2261,7 @@ const initializationAuthoring = (
   resolution: RepositoryAuthoring;
 } => {
   const resolution = resolveRepositoryAuthoring(primaryCheckout, {
+    request,
     writeCapable: AUTHORING_MODES.has(mode),
   });
   const questions: GuidanceUpdateContext["questions"] = {};
@@ -2285,6 +2319,13 @@ const runInitialize = async (options: CliOptions): Promise<void> => {
       EXIT_CODES.usage
     );
   }
+  // The request layer is validated before anything is read or changed: an
+  // invalid --authoring-request is a usage error that leaves every claim
+  // where it was.
+  const authoringRequest =
+    options.authoringRequest === undefined
+      ? null
+      : parseAuthoringRequest(options.authoringRequest);
   const inventory = captureInventory(options.repo);
   const activeLoop = readLoopLease(options.repo);
   if (activeLoop && !["preview", "pause", "handoff"].includes(options.mode)) {
@@ -2299,7 +2340,8 @@ const runInitialize = async (options: CliOptions): Promise<void> => {
   );
   const authoring = initializationAuthoring(
     inventory.repository.primaryCheckout,
-    options.mode
+    options.mode,
+    authoringRequest
   );
   const inspected = inspectInitialization(
     options.mode,
@@ -2895,6 +2937,18 @@ const runProposalLedgerCommand = (
 ): void => {
   const proposalId = requireCliOption(options.proposalId, "--proposal");
   const head = requireCliOption(options.headRef, "--head");
+  if (options.authoringRequest !== undefined && action !== "record-review") {
+    throw new SimpleChangesError(
+      "--authoring-request applies to proposal record-review only.",
+      EXIT_CODES.usage
+    );
+  }
+  // Validated before the receipt is read: an invalid request is a usage
+  // error before anything else happens.
+  const request =
+    options.authoringRequest === undefined
+      ? undefined
+      : parseAuthoringRequest(options.authoringRequest);
   if (action === "record-authors") {
     const result = recordProposalAuthors({
       base: requireCliOption(options.baseRef, "--base"),
@@ -2922,6 +2976,7 @@ const runProposalLedgerCommand = (
       proposalId,
       receipt,
       repositoryPath: options.repo,
+      ...(request === undefined ? {} : { request }),
     });
     writeOutput(result, options.json, renderRecordedReview(result));
     return;
@@ -3359,6 +3414,18 @@ const runLoopStart = (options: CliOptions): void => {
       ) as unknown)
     : undefined;
   let reviewLedger: ReviewLedgerResumeState | null = null;
+  if (options.authoringRequest !== undefined && options.mode !== "resume") {
+    throw new SimpleChangesError(
+      "--authoring-request applies to loop start --mode resume only.",
+      EXIT_CODES.usage
+    );
+  }
+  // Validated before the loop lock is taken: an invalid request is a usage
+  // error that changes nothing.
+  const request =
+    options.authoringRequest === undefined
+      ? undefined
+      : parseAuthoringRequest(options.authoringRequest);
   const lease = startLoop(
     options.repo,
     agentId,
@@ -3368,6 +3435,7 @@ const runLoopStart = (options: CliOptions): void => {
       onReviewLedger: (state) => {
         reviewLedger = state.state === "absent" ? null : state;
       },
+      ...(request === undefined ? {} : { request }),
     }
   );
   const holds = informationalHolds(options.repo);

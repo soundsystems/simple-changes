@@ -93,9 +93,10 @@ repairs it.
   authors of its range and computes `authorsDigest`. A commit with no author,
   a replay source with none, and an inconclusive replay nobody attested are
   gaps; a head with no gaps is fully covered.
-- **Before dispatch.** `initialize --proposal <id> --head <sha>` resolves the
-  reviewer against that head; incomplete coverage is `unresolved` under
-  either setting. Under `adversarial: true`, a `blocked` or `unresolved`
+- **Before dispatch.** `initialize --proposal <id> --head <sha>
+  [--authoring-request <json-or-@path>]` resolves the reviewer against that
+  head, with the current request's answer on top when one is passed;
+  incomplete coverage is `unresolved` under either setting. Under `adversarial: true`, a `blocked` or `unresolved`
   reviewer stops the review step: ask the owner, and never review your own
   proposal to fill the gap.
 - **Coverage waivers.** Only the owner waives, before dispatch:
@@ -109,15 +110,19 @@ repairs it.
   <attempt.json>` holding `requested` (`harness`, `model`, `effort`),
   `verified` (`instance`, `session`, `harness`, `agent` as the delegate
   reported them, `null` when not), `effort`, `effortSource`, `verdict`
-  (`findings`, `clean`, `failed`), and `findingsCount`. It is accepted only
-  when the head is covered or waived, the reviewer's instance or session
-  differs from every author's, and, when adversarial, its harness or model
-  differs too. Missing evidence rejects; a `clean` verdict never proves
-  independence. Disclose a reported identity that differs from the target.
+  (`findings`, `clean`, `failed`), and `findingsCount`. Pass the same
+  `--authoring-request` as `initialize`: a request can make the gate
+  adversarial for this run and never loosens a saved setting. It is accepted
+  only when the head is covered or waived, the reviewer's instance or
+  session differs from every author's, and, when adversarial, its harness or
+  model differs too. Missing evidence rejects; a `clean` verdict never proves
+  independence; a rejected attempt stays rejected. Disclose a reported
+  identity that differs from the target.
 - **Approval.** Reviewed means an accepted `clean` attempt on the current
   head whose digest still matches, plus the fresh evidence above. Resume
-  revalidates accepted attempts; one that no longer passes needs a fresh
-  review.
+  (`loop start --mode resume`, with the run's `--authoring-request`)
+  revalidates accepted attempts under the run's gate; one that no longer
+  passes needs a fresh review.
 - **Escalation as a floor.** With `escalateOnFindings` set, once any review
   of a proposal reports findings, later reviews of it, replacement revisions
   included, run at least at that effort. It never lowers an effort and never

@@ -34,9 +34,11 @@ import {
   detectHarnesses,
   type HarnessDefinition,
   loadHarnessDefinitions,
+  parseAuthoringRequest,
   readAuthoringFile,
   resolveAuthoringRole,
   resolveRepositoryAuthoring,
+  resolveRequestedRole,
   validateAuthoringSidecar,
   writeAuthoringSidecar,
 } from "../../../skills/simple-changes/scripts/lib/authoring.ts";
@@ -403,7 +405,9 @@ describe("authoring resolution", () => {
       status: "resolved",
     });
     expect(proposals.source).toEqual({
+      adversarial: "repository",
       effort: "repository",
+      escalateOnFindings: "repository",
       harness: "repository",
       model: "personal",
       path: "/repository/authoring.json",
@@ -423,7 +427,9 @@ describe("authoring resolution", () => {
       status: "resolved",
     });
     expect(review.source).toEqual({
+      adversarial: "personal",
       effort: "default",
+      escalateOnFindings: "personal",
       harness: "personal",
       model: "repository",
       path: "/repository/authoring.json",
@@ -503,6 +509,245 @@ describe("authoring resolution", () => {
         harness: "unknown",
         status: "unresolved",
       }
+    );
+  });
+});
+
+describe("the request layer", () => {
+  test("applies the request on top and only tightens the review gate", () => {
+    const repository = layer(
+      "repository",
+      sidecar(
+        { "alpha-agent": { model: "repo-alpha" } },
+        {
+          review: {
+            adversarial: false,
+            escalateOnFindings: "high",
+            harness: "alpha-agent",
+          },
+        }
+      )
+    );
+    // The request supplies the role and a harness entry like any layer.
+    const tightened = resolveRequestedRole(
+      "review",
+      [repository],
+      sidecar(
+        { "beta-agent": { effort: "high", model: "request-beta" } },
+        {
+          review: {
+            adversarial: true,
+            escalateOnFindings: "xhigh",
+            harness: "beta-agent",
+          },
+        }
+      ),
+      "alpha-agent"
+    );
+    expect(tightened.effective).toEqual({
+      adversarial: true,
+      effort: "high",
+      escalateOnFindings: "xhigh",
+      harness: "beta-agent",
+      model: "request-beta",
+      status: "resolved",
+    });
+    expect(tightened.source).toEqual({
+      adversarial: "request",
+      effort: "request",
+      escalateOnFindings: "request",
+      harness: "request",
+      model: "request",
+      path: null,
+    });
+    // A request never loosens: a saved adversarial review and floor stay in
+    // force, with their own layer, while the rest of the role is replaced.
+    const saved = layer(
+      "repository",
+      sidecar(
+        {},
+        {
+          review: {
+            adversarial: true,
+            escalateOnFindings: "xhigh",
+            harness: "running",
+          },
+        }
+      )
+    );
+    const kept = resolveRequestedRole(
+      "review",
+      [saved],
+      sidecar(
+        {},
+        {
+          review: {
+            adversarial: false,
+            escalateOnFindings: null,
+            harness: "beta-agent",
+            model: "request-model",
+          },
+        }
+      ),
+      "alpha-agent"
+    );
+    expect(kept.effective).toEqual({
+      adversarial: true,
+      effort: "xhigh",
+      escalateOnFindings: "xhigh",
+      harness: "beta-agent",
+      model: "request-model",
+      status: "resolved",
+    });
+    expect(kept.source).toEqual({
+      adversarial: "repository",
+      effort: "default",
+      escalateOnFindings: "repository",
+      harness: "request",
+      model: "request",
+      path: "/repository/authoring.json",
+    });
+    // Floors combine by the higher value in both directions.
+    const floor = (
+      savedFloor: "high" | "xhigh" | null,
+      requested: "high" | "xhigh" | null
+    ) =>
+      resolveRequestedRole(
+        "review",
+        [
+          layer(
+            "personal",
+            sidecar(
+              {},
+              { review: { escalateOnFindings: savedFloor, harness: "running" } }
+            )
+          ),
+        ],
+        sidecar(
+          {},
+          { review: { escalateOnFindings: requested, harness: "running" } }
+        ),
+        "alpha-agent"
+      );
+    expect(floor(null, "high")).toMatchObject({
+      effective: { escalateOnFindings: "high" },
+      source: { escalateOnFindings: "request" },
+    });
+    expect(floor("high", null)).toMatchObject({
+      effective: { escalateOnFindings: "high" },
+      source: { escalateOnFindings: "personal" },
+    });
+    expect(floor("xhigh", "high")).toMatchObject({
+      effective: { escalateOnFindings: "xhigh" },
+      source: { escalateOnFindings: "personal" },
+    });
+    // A request role that omits the gate fields leaves them, and their
+    // provenance, with the saved layer; equal explicit values name the
+    // request.
+    const omitted = resolveRequestedRole(
+      "review",
+      [repository],
+      sidecar(
+        {},
+        { review: { harness: "beta-agent", model: "request-model" } }
+      ),
+      "alpha-agent"
+    );
+    expect(omitted.effective).toMatchObject({
+      adversarial: false,
+      escalateOnFindings: "high",
+      harness: "beta-agent",
+      model: "request-model",
+    });
+    expect(omitted.source).toEqual({
+      adversarial: "repository",
+      effort: "default",
+      escalateOnFindings: "repository",
+      harness: "request",
+      model: "request",
+      path: "/repository/authoring.json",
+    });
+    expect(
+      resolveRequestedRole(
+        "review",
+        [repository],
+        sidecar(
+          {},
+          {
+            review: {
+              adversarial: false,
+              escalateOnFindings: "high",
+              harness: "beta-agent",
+              model: "request-model",
+            },
+          }
+        ),
+        "alpha-agent"
+      ).source
+    ).toMatchObject({
+      adversarial: "request",
+      escalateOnFindings: "request",
+      path: null,
+    });
+    // A request that defines no role leaves the saved role and replaces
+    // harness entries per id (rule 2).
+    const entries = resolveRequestedRole(
+      "review",
+      [saved],
+      sidecar({ "alpha-agent": { model: "request-alpha" } }),
+      "alpha-agent"
+    );
+    expect(entries.effective).toMatchObject({
+      adversarial: true,
+      harness: "alpha-agent",
+      model: "request-alpha",
+    });
+    expect(entries.source).toMatchObject({
+      adversarial: "repository",
+      harness: "repository",
+      model: "request",
+      path: "/repository/authoring.json",
+    });
+    // No request: exactly the saved resolution.
+    expect(
+      resolveRequestedRole("review", [saved], null, "alpha-agent")
+    ).toEqual(resolveAuthoringRole("review", [saved], "alpha-agent"));
+    // The proposals role takes the request like any layer; it has no gate.
+    expect(
+      resolveRequestedRole(
+        "proposals",
+        [repository],
+        sidecar({}, { proposals: { effort: "max", harness: "alpha-agent" } }),
+        "alpha-agent"
+      )
+    ).toMatchObject({
+      effective: { effort: "max", harness: "alpha-agent", model: "repo-alpha" },
+      source: {
+        effort: "request",
+        harness: "request",
+        model: "repository",
+        path: "/repository/authoring.json",
+      },
+    });
+  });
+
+  test("parses and validates --authoring-request like a file", () => {
+    expect(parseAuthoringRequest(JSON.stringify(EMPTY))).toEqual(EMPTY);
+    const path = join(temporary("request"), "request.json");
+    writeFileSync(path, JSON.stringify(EMPTY));
+    expect(parseAuthoringRequest(`@${path}`)).toEqual(EMPTY);
+    expect(() => parseAuthoringRequest("{")).toThrow(
+      "--authoring-request must be JSON or @path"
+    );
+    expect(() =>
+      parseAuthoringRequest(
+        JSON.stringify(
+          loose({}, { review: { harness: "running", model: "named" } })
+        )
+      )
+    ).toThrow("--authoring-request is invalid");
+    expect(() => parseAuthoringRequest(JSON.stringify({ roles: {} }))).toThrow(
+      "--authoring-request is invalid"
     );
   });
 });
@@ -1147,6 +1392,115 @@ describe("setup --authoring and initialize", () => {
       reason: "authors-not-recorded",
       status: "unresolved",
     });
+    // The request layer: applied for one invocation, visible as `request`,
+    // never written and never an answer (design 2.3 rule 6, 5.1.4).
+    const sidecarPath = join(fixture.root, ".simple-changes-authoring.json");
+    const savedBytes = readFileSync(sidecarPath, "utf8");
+    const request = JSON.stringify(
+      sidecar(
+        { "claude-code": { effort: "high", model: "request-model" } },
+        {
+          review: {
+            adversarial: true,
+            escalateOnFindings: "xhigh",
+            harness: "claude-code",
+            model: "review-model",
+          },
+        }
+      )
+    );
+    const requested = runCli(
+      [
+        "initialize",
+        "--mode",
+        "queue",
+        "--repo",
+        fixture.root,
+        "--json",
+        "--authoring-request",
+        request,
+      ],
+      { ...env, CLAUDE_CODE_SESSION_ID: "authoring-test-session" }
+    );
+    expect(requested.stderr).toBe("");
+    const withRequest = JSON.parse(requested.stdout) as {
+      authoring: {
+        effective: { proposals: unknown; review: unknown };
+        source: { proposals: unknown; review: unknown };
+      };
+      authoringQuestion: unknown;
+      reviewer: Record<string, unknown>;
+    };
+    expect(withRequest.authoring.effective.review).toEqual({
+      adversarial: true,
+      effort: "high",
+      escalateOnFindings: "xhigh",
+      harness: "claude-code",
+      model: "review-model",
+      status: "resolved",
+    });
+    expect(withRequest.authoring.source.review).toEqual({
+      adversarial: "request",
+      effort: "request",
+      escalateOnFindings: "request",
+      harness: "request",
+      model: "request",
+      path: null,
+    });
+    expect(withRequest.authoring.effective.proposals).toMatchObject({
+      harness: "claude-code",
+      model: "request-model",
+    });
+    expect(withRequest.authoring.source.proposals).toEqual({
+      effort: "request",
+      harness: "repository",
+      model: "request",
+      path: sidecarPath,
+    });
+    expect(withRequest.reviewer).toMatchObject({
+      adversarial: true,
+      harness: "claude-code",
+      mode: "provisional",
+      model: "review-model",
+      reason: null,
+      status: "resolved",
+    });
+    expect(withRequest.authoringQuestion).toEqual({
+      models: "answered",
+      review: "answered",
+    });
+    expect(readFileSync(sidecarPath, "utf8")).toBe(savedBytes);
+    const plainText = runCli(
+      [
+        "initialize",
+        "--mode",
+        "queue",
+        "--repo",
+        fixture.root,
+        "--authoring-request",
+        request,
+      ],
+      { ...env, CLAUDE_CODE_SESSION_ID: "authoring-test-session" }
+    );
+    expect(plainText.stdout).toContain(
+      "Authoring request applied to this invocation only (nothing saved): proposals.effort, proposals.model, review.adversarial, review.effort, review.escalateOnFindings, review.harness, review.model."
+    );
+    const invalidRequest = runCli(
+      [
+        "initialize",
+        "--mode",
+        "queue",
+        "--repo",
+        fixture.root,
+        "--json",
+        "--authoring-request",
+        JSON.stringify({ schemaVersion: 1 }),
+      ],
+      env
+    );
+    expect(invalidRequest.exitCode).toBe(2);
+    expect(invalidRequest.stderr).toContain("--authoring-request is invalid");
+    expect(invalidRequest.stdout).toBe("");
     const halfVerified = runCli(
       [
         "initialize",

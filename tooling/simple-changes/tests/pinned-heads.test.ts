@@ -822,8 +822,14 @@ describe("pinned-head command analysis", () => {
     );
     // Without a start commit, `git worktree add` picks the branch named after
     // the path when it runs, and that branch can be a symbolic ref to a
-    // pinned one.
+    // pinned one. Checking out an existing branch by name can fall back to
+    // a remote-tracking branch of that name, which can be one too.
     git(root, ["symbolic-ref", "refs/heads/unit-alias", "refs/heads/feat/x"]);
+    git(root, [
+      "symbolic-ref",
+      "refs/remotes/origin/alias",
+      "refs/heads/feat/x",
+    ]);
     const aliasPath = join(dirname(root), "unit-alias");
     expectKinds(
       [
@@ -831,6 +837,9 @@ describe("pinned-head command analysis", () => {
         ["git", "worktree", "add", "-b", "fresh", aliasPath],
         ["git", "worktree", "add", "--guess-remote", aliasPath],
         ["git", "worktree", "add", "--unknown", aliasPath, head],
+        ["git", "worktree", "add", join(dirname(root), "copy"), "alias"],
+        ["git", "worktree", "add", "--", aliasPath, head],
+        ["git", "worktree", "add", "--reason", "-b", aliasPath, head],
       ],
       ["configured"]
     );
@@ -839,11 +848,12 @@ describe("pinned-head command analysis", () => {
         ["git", "worktree", "add", "--detach", aliasPath, head],
         ["git", "worktree", "add", "-b", "fresh", aliasPath, head],
         ["git", "worktree", "add", "-bfresh", "--lock", aliasPath, head],
-        ["git", "worktree", "add", "--", aliasPath, head],
+        ["git", "worktree", "add", "-d", "--", aliasPath, head],
       ],
       []
     );
     git(root, ["update-ref", "-d", "--no-deref", "refs/heads/unit-alias"]);
+    git(root, ["update-ref", "-d", "--no-deref", "refs/remotes/origin/alias"]);
     // A merge value read through remote `.` can name the shared stash,
     // which another agent can move while the command waits to start.
     git(root, ["config", "branch.main.remote", "."]);
@@ -923,6 +933,10 @@ describe("pinned-head command analysis", () => {
       ["git", "rebase", "-scustom", "main"],
       ["git", "cherry-pick", "--strategy", "custom", head],
       ["git", "revert", "--strat=custom", head],
+      // Revision-walk options select commits only when Git runs.
+      ["git", "cherry-pick", "--ff", "--reflog", "--no-walk=sorted", "-1"],
+      ["git", "revert", "--no-walk", "--all"],
+      ["git", "cherry-pick", "-nx", head],
     ]) {
       expect({ argv, kinds: kinds(argv) }).toEqual({
         argv,
@@ -954,6 +968,18 @@ describe("pinned-head command analysis", () => {
       ["git", "rebase", head],
       ["git", "merge", "-s", "ort", "-X", "theirs", head],
       ["git", "cherry-pick", "-s", "-x", head],
+      [
+        "git",
+        "cherry-pick",
+        "--ff",
+        "-m",
+        "1",
+        "--strategy-option=theirs",
+        head,
+      ],
+      ["git", "cherry-pick", "-m1", "-Xtheirs", "--no-edit", head],
+      ["git", "revert", "--no-edit", "--mainline=1", head],
+      ["git", "cherry-pick", "--abort"],
     ]) {
       expect({ argv, kinds: kinds(argv) }).toEqual({ argv, kinds: [] });
     }

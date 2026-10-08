@@ -34,13 +34,16 @@ import { runGit } from "./process.ts";
  * - it is a merge or rebase that names no revision (or uses an option this
  *   parser does not know), which Git resolves from the current branch's
  *   upstream when it runs, whatever that configuration says then, or a
- *   `worktree add` that names no start commit, for which Git picks the
- *   branch named after the path;
+ *   `worktree add` without a start commit and `-b`, `-B`, or `--detach`, for
+ *   which Git picks a branch named after the path or the name it is given,
+ *   falling back to a remote-tracking branch;
  * - an argument resolves to a commit that contains a commit a pinned unit
  *   gained after its recorded head (a copy of a moved branch, or its ID);
  * - it is `git pull`, which resolves its repository, refspecs, and upstream
- *   when it runs, or a push or fetch with an option this parser does not
- *   know, or a fetch that writes a local ref other than a remote-tracking one;
+ *   when it runs, or a push, fetch, cherry-pick, or revert with an option
+ *   this parser does not know (cherry-pick and revert take revision-walk
+ *   options such as `--reflog`), or a fetch that writes a local ref other
+ *   than a remote-tracking one;
  * - it implicitly reads the shared stash.
  *
  * Every Git command, read-only ones included, is refused while units are
@@ -1496,7 +1499,7 @@ const configuredRefusals = (
     found.push(
       refusal(
         "configured",
-        "git worktree add names no start commit this check understands, so Git would pick a branch from the path's name when it runs; name the commit to check out"
+        "git worktree add names no start commit with -b, -B, or --detach in a form this check understands, so Git could pick a branch from the path's name or a remote-tracking branch when it runs; name the commit and use -b, -B, or --detach"
       )
     );
   }
@@ -1582,6 +1585,88 @@ const pushesEveryBranch = (key: string, value: string): boolean => {
   );
 };
 
+// `git cherry-pick` and `git revert` options this check understands. Both
+// also take revision-walk options (`--reflog`, `--all`, `--no-walk`, ...)
+// that select commits only when Git runs, so any other option is refused.
+const PICK_FLAGS: ReadonlySet<string> = new Set([
+  "--abort",
+  "--allow-empty",
+  "--allow-empty-message",
+  "--continue",
+  "--edit",
+  "--ff",
+  "--gpg-sign",
+  "--keep-redundant-commits",
+  "--no-commit",
+  "--no-edit",
+  "--no-ff",
+  "--no-gpg-sign",
+  "--no-rerere-autoupdate",
+  "--quit",
+  "--reference",
+  "--rerere-autoupdate",
+  "--signoff",
+  "--skip",
+  "-S",
+  "-e",
+  "-n",
+  "-r",
+  "-s",
+  "-x",
+]);
+const PICK_VALUE_OPTIONS: ReadonlySet<string> = new Set([
+  "--cleanup",
+  "--empty",
+  "--mainline",
+  "--strategy",
+  "--strategy-option",
+  "-X",
+  "-m",
+]);
+const PICK_ATTACHED_PREFIXES = [
+  "--cleanup=",
+  "--empty=",
+  "--gpg-sign=",
+  "--mainline=",
+  "--strategy-option=",
+  "--strategy=",
+];
+const PICK_ATTACHED_SHORT = ["-S", "-X", "-m"];
+
+const knownPickOption = (token: string): boolean =>
+  PICK_FLAGS.has(token) ||
+  PICK_ATTACHED_PREFIXES.some((prefix) => token.startsWith(prefix)) ||
+  PICK_ATTACHED_SHORT.some(
+    (prefix) => token.length > prefix.length && token.startsWith(prefix)
+  );
+
+const pickOptionRefusals = (invocation: GitInvocation): PinnedRefusal[] => {
+  const { arguments: args, subcommand } = invocation;
+  if (subcommand !== "cherry-pick" && subcommand !== "revert") {
+    return [];
+  }
+  let index = 0;
+  while (index < args.length) {
+    const token = args[index] as string;
+    index += 1;
+    if (token === "--") {
+      break;
+    }
+    if (PICK_VALUE_OPTIONS.has(token)) {
+      index += 1;
+    } else if (token.startsWith("-") && !knownPickOption(token)) {
+      return [
+        refusal(
+          "unclassified",
+          `git ${subcommand} ${token} is not an option loop exec classifies while units are pinned; revision-walk options select commits only when Git runs`,
+          token
+        ),
+      ];
+    }
+  }
+  return [];
+};
+
 // `git worktree add` options this check understands.
 const WORKTREE_ADD_FLAGS: ReadonlySet<string> = new Set([
   "--checkout",
@@ -1605,16 +1690,28 @@ const WORKTREE_ADD_VALUE_OPTIONS: ReadonlySet<string> = new Set([
   "-B",
   "-b",
 ]);
+const WORKTREE_START_OPTIONS: ReadonlySet<string> = new Set([
+  "--detach",
+  "-B",
+  "-b",
+  "-d",
+]);
+
+// `-b<name>` or `-B<name>`, the new branch attached to the option.
+const attachedNewBranch = (token: string): boolean =>
+  token.length > 2 && (token.startsWith("-b") || token.startsWith("-B"));
 
 const worktreeAddOptionWithValue = (token: string): boolean =>
-  token.startsWith("--reason=") ||
-  (token.length > 2 && (token.startsWith("-b") || token.startsWith("-B")));
+  token.startsWith("--reason=") || attachedNewBranch(token);
 
-// Whether a `git worktree add` names its start commit after the path. Any
-// option this does not know may take the next argument, so it counts as
-// naming none.
+// Whether a `git worktree add` names its start commit after the path and
+// creates a branch or detaches there (`-b`, `-B`, `--detach`): checking out an
+// existing branch by name lets Git fall back to a remote-tracking branch of
+// that name when the name does not resolve. Any option this does not know
+// may take the next argument, so it counts as naming none.
 const worktreeAddNamesCommit = (args: readonly string[]): boolean => {
   const operands: string[] = [];
+  let starts = false;
   let index = 0;
   while (index < args.length) {
     const token = args[index] as string;
@@ -1623,6 +1720,7 @@ const worktreeAddNamesCommit = (args: readonly string[]): boolean => {
       operands.push(...args.slice(index));
       break;
     }
+    starts ||= WORKTREE_START_OPTIONS.has(token) || attachedNewBranch(token);
     if (WORKTREE_ADD_VALUE_OPTIONS.has(token)) {
       index += 1;
     } else if (!token.startsWith("-")) {
@@ -1633,7 +1731,7 @@ const worktreeAddNamesCommit = (args: readonly string[]): boolean => {
       return false;
     }
   }
-  return operands.length >= 2;
+  return starts && operands.length >= 2;
 };
 
 // Rebase options this check understands: flags, options whose value is the
@@ -2415,6 +2513,7 @@ const gitRefusals = (
     ...always,
     ...transferRefusals(invocation, context.facts.refs(invocation.globals)),
     ...stashRefusals(invocation),
+    ...pickOptionRefusals(invocation),
   ];
   const refs = context.facts.refs(invocation.globals);
   const replaced = refs.find((ref) => ref.name.startsWith("refs/replace/"));

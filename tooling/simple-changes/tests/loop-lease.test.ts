@@ -4052,6 +4052,56 @@ describe("active integration-loop lease", () => {
     expect(stepAt()).toEqual(settle("Resolve the conflicts in"));
   });
 
+  test("asks to resume a relinquished controller before printing pause steps", () => {
+    const fixture = repository();
+    const author = join(fixture.base, "relinquished-author");
+    git(fixture.root, ["worktree", "add", "-b", "relinquished-author", author]);
+    const claim = claimWorktree(fixture.root, "author", author, "codex");
+    const lease = startLoop(fixture.root, "controller", "integrate");
+    releaseWorktreeClaim(author, "author", claim.claimId);
+    commitFixture(author, "later.ts", "export const later = true;\n");
+    expect(
+      finalizeLoop(
+        fixture.root,
+        lease.runId,
+        "controller",
+        "The stale author link blocks completion."
+      ).outcome
+    ).toBe("relinquished");
+
+    const resume = [
+      "simple-changes loop start --mode resume --agent-id <you>",
+      `simple-changes loop verify --run-id ${lease.runId}`,
+    ];
+    const printed = () =>
+      staleClaimRecoveryCommands(verifyLoop(fixture.root).violations);
+    expect(printed()).toEqual(resume);
+    const verifyText = runCli(fixture.root, [
+      "loop",
+      "verify",
+      "--run-id",
+      lease.runId,
+    ]).stdout;
+    for (const step of resume) {
+      expect(verifyText).toContain(`  Next: ${step}\n`);
+    }
+
+    runPrintedSteps(fixture.root, resume.slice(0, 1), {
+      "<you>": "controller",
+    });
+    const steps = printed();
+    expect(steps.map((command) => command.split(" ")[2])).toEqual([
+      "claim",
+      "pause",
+      "accept-paused-change",
+    ]);
+    runPrintedSteps(fixture.root, steps);
+    expect(verifyLoop(fixture.root)).toMatchObject({
+      ok: true,
+      violations: [],
+    });
+  }, 120_000);
+
   test("tells an author whose own claim went inactive to refresh it in place", () => {
     const fixture = repository();
     const authorPath = join(fixture.base, "inactive-author");

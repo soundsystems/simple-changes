@@ -2018,15 +2018,24 @@ export const staleClaimRecoveryCommands = (
  * registered owner when nothing holds the checkout, claims and pauses its exact
  * current state, and the controller accepts that pause receipt, which works
  * from any state. While the checkout itself stops `worktree pause` (it is
- * missing, mid Git operation, or conflicted), the only step is the
- * instruction that unblocks it; verification then prints the commands.
+ * missing, mid Git operation, or conflicted), or the controller that must
+ * accept has been relinquished, the only steps are the ones that unblock it;
+ * verification then prints the commands.
  */
 const staleClaimRecovery = (
-  lease: Pick<LoopLease, "ownerAgentId" | "runId">,
+  lease: LoopLease,
   registered: LoopWorktreeLease,
   worktree: WorktreeInventory,
   { linkedClaim, liveClaim }: WorktreeClaimContext
 ): StaleClaimRecovery => {
+  if (controllerLifecycle(lease).status !== "active") {
+    const resume = "simple-changes loop start --mode resume --agent-id <you>";
+    const verify = `${LOOP_VERIFY} --run-id ${lease.runId}`;
+    return {
+      commands: [resume, verify],
+      text: `Its controller has been relinquished, so nothing can accept a pause yet: resume the run with \`${resume}\`, then re-run \`${verify}\` for its exact recovery steps.`,
+    };
+  }
   const blocker = pauseBlocker(worktree);
   if (blocker) {
     const unblock = {
@@ -2102,7 +2111,7 @@ const staleConcurrentClaimCause = (
 };
 
 const concurrentClaimViolations = (
-  lease: Pick<LoopLease, "ownerAgentId" | "runId">,
+  lease: LoopLease,
   registered: LoopWorktreeLease,
   claims: WorktreeClaimContext,
   worktree: WorktreeInventory

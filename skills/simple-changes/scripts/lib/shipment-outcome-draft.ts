@@ -1,12 +1,12 @@
 import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
 import {
+  LS_TREE_ENTRY_PATTERN,
   OUTCOME_DRAFT_MARKER,
   OUTCOME_DRAFT_REVIEW,
   readLoopLease,
   resolvedCurrentTargetRevision,
   targetDiffPaths,
   targetRenameOriginals,
-  targetTreeEntry,
 } from "./loop-lease.ts";
 import { runGit } from "./process.ts";
 import { withReadOnlyGit } from "./read-only-git.ts";
@@ -22,6 +22,7 @@ import type { ShipmentOutcomeReceipt } from "./types.ts";
  */
 
 const COMMIT_CONTEXT_LIMIT = 6;
+const LS_TREE_DIRECTORY_PATTERN = /^\d+\s+tree\s/u;
 
 /**
  * A draft receipt: the outcome plus a `draftReview` field that no runtime's
@@ -98,6 +99,43 @@ const commitContext = (
 };
 
 /**
+ * The final-target entry for a path, as `mode:type:object` in the form
+ * `loop record-outcome` compares. It is null only when `git ls-tree` succeeds
+ * and names no blob or gitlink there (nothing, or a directory, which the
+ * recorder also reads as null). A failed read throws: an unreadable tree must
+ * never turn a file that still exists into a drafted deletion.
+ */
+const finalTreeEntry = (
+  repositoryPath: string,
+  targetRevision: string,
+  path: string
+): string | null => {
+  const result = runGit(
+    repositoryPath,
+    ["ls-tree", targetRevision, "--", path],
+    true
+  );
+  if (result.exitCode !== 0) {
+    throw new SimpleChangesError(
+      `Cannot read ${path} at ${targetRevision}: ${result.stderr.trim() || `git ls-tree exited ${result.exitCode}`}. Restore the missing objects (fetch or repair the repository), then draft again.`,
+      EXIT_CODES.unsafe
+    );
+  }
+  const output = result.stdout.trim();
+  const match = LS_TREE_ENTRY_PATTERN.exec(output);
+  if (match) {
+    return `${match[1]}:${match[2]}:${match[3]}`;
+  }
+  if (output === "" || LS_TREE_DIRECTORY_PATTERN.test(output)) {
+    return null;
+  }
+  throw new SimpleChangesError(
+    `Cannot read ${path} at ${targetRevision}: unexpected git ls-tree output.`,
+    EXIT_CODES.unsafe
+  );
+};
+
+/**
  * The paths a changelog receipt says release preparation wrote: its
  * `paths[].path` entries. Anything else is not a changelog receipt.
  */
@@ -150,7 +188,7 @@ const buildDraft = (
   const delta = targetDiffPaths(root, opening, targetRevision);
   const deltaSet = new Set(delta);
   const renameOriginals = targetRenameOriginals(root, opening, targetRevision);
-  const entry = (path: string) => targetTreeEntry(root, targetRevision, path);
+  const entry = (path: string) => finalTreeEntry(root, targetRevision, path);
   const commits = commitsByPath(root, opening, targetRevision);
   const context = (paths: readonly string[]) => commitContext(commits, paths);
   const warnings: string[] = [];

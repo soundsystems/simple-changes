@@ -1,6 +1,12 @@
 import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
-import { linkSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import {
+  linkSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "bun";
 import {
@@ -336,6 +342,41 @@ describe("loop draft-outcome", () => {
       "target-equivalent",
     ]);
     expect(draft.additionalPaths).toEqual([]);
+  });
+
+  test("refuses to draft an unreadable scoped file as deleted", () => {
+    const fixture = repository();
+    const { root } = fixture;
+    writeFixture(root, "docs/guides/notes.md", "draft\n");
+    commitAll(root, "Base fixture");
+    writeFixture(root, "docs/guides/notes.md", "draft, revised\n");
+    const lease = startLoop(root, "controller", "ship");
+    recordCurrentScope(root, lease.runId);
+    // The opening and final targets match, so neither diff reads a tree;
+    // only the entry lookup reaches the missing subtree.
+    const subtree = git(root, ["rev-parse", "HEAD:docs/guides"]);
+    const objects = git(root, ["rev-parse", "--git-path", "objects"]);
+    rmSync(resolve(root, objects, subtree.slice(0, 2), subtree.slice(2)));
+
+    expect(() => draftShipmentOutcome(root, lease.runId)).toThrow(
+      "Cannot read docs/guides/notes.md at "
+    );
+    const cli = spawnSync(
+      [
+        "bun",
+        cliPath,
+        "loop",
+        "draft-outcome",
+        "--run-id",
+        lease.runId,
+        "--json",
+        "--repo",
+        root,
+      ],
+      { stderr: "pipe", stdout: "pipe" }
+    );
+    expect(cli.exitCode).not.toBe(0);
+    expect(cli.stdout.toString()).not.toContain('"entry":null');
   });
 
   test("never fetches a missing object to draft from a partial clone", () => {

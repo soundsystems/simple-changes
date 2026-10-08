@@ -138,7 +138,7 @@ const DIGEST_PATTERN = /^[0-9a-f]{64}$/u;
 const PERMISSION_DENIED_CODES = new Set(["EACCES", "EPERM", "EROFS"]);
 const SCP_REMOTE_URL_PATTERN = /^[^@/\s]+@([^:/\s]+):(.+)$/u;
 const REMOTE_PROJECT_PATH_PATTERN = /^\/+|\.git\/?$/gu;
-const LS_TREE_ENTRY_PATTERN = /^(\d+)\s+(blob|commit)\s+([0-9a-f]+)\t/u;
+export const LS_TREE_ENTRY_PATTERN = /^(\d+)\s+(blob|commit)\s+([0-9a-f]+)\t/u;
 const LOOP_MODES = new Set<RequestMode>([
   "queue",
   "sweep",

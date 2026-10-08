@@ -16,11 +16,12 @@ TypeScript entry point; Node alone cannot run it.
 Development happens on GitLab at
 <https://gitlab.com/soundsystems/simple-changes>, and a read-only mirror is
 kept in sync at <https://github.com/soundsystems/simple-changes>. Install from
-the mirror: the Skills CLI stores a source without its host and later
-re-resolves it as GitHub shorthand, so an install from the mirror records
-`sourceType: github` and `skills update` works, while an install from GitLab
-cannot be updated in place. The commands below therefore use the mirror; the
-installed tree is byte-identical either way.
+the mirror: older Skills CLI releases, and lock entries without a recorded
+source URL, re-resolve a stored source as GitHub shorthand, so a GitLab install
+may not update in place, while an install from the mirror records
+`sourceType: github` and `skills update` works with every release. The
+commands below therefore use the mirror; the installed tree is byte-identical
+either way.
 
 Clone this repository, then from its root:
 

@@ -15,10 +15,11 @@ Install this skill beside it when at least one fork exists:
 bunx skills add https://github.com/soundsystems/simple-changes --skill update-local-forks -g
 ```
 
-Both commands use the read-only GitHub mirror of the GitLab repository. The
-Skills CLI re-resolves a recorded source as GitHub shorthand, so only a mirror
-install records `sourceType: github` and can be refreshed with `skills update`;
-the installed files are identical either way.
+Both commands use the read-only GitHub mirror of the GitLab repository.
+Older Skills CLI releases, and lock entries without a recorded source URL,
+re-resolve a stored source as GitHub shorthand, so a mirror install, which
+records `sourceType: github`, is the one `skills update` refreshes with every
+release; the installed files are identical either way.
 
 A repository that needs stricter or product-specific behavior copies the
 installed skill into its own directory (for example `skills/<project>-simple-changes`),

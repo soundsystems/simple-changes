@@ -3939,6 +3939,74 @@ describe("active integration-loop lease", () => {
     });
   }, 60_000);
 
+  test("treats a deleted locked checkout as missing, not as released evidence", () => {
+    const fixture = repository();
+    const before = join(fixture.base, "locked-before-release");
+    const after = join(fixture.base, "locked-after-release");
+    for (const [path, branch] of [
+      [before, "locked-before-release"],
+      [after, "locked-after-release"],
+    ] as const) {
+      git(fixture.root, ["worktree", "add", "-b", branch, path]);
+    }
+    const beforeClaim = claimWorktree(
+      fixture.root,
+      "before-owner",
+      before,
+      "codex"
+    );
+    const afterClaim = claimWorktree(
+      fixture.root,
+      "after-owner",
+      after,
+      "codex"
+    );
+    const lease = startLoop(fixture.root, "controller", "integrate");
+    const removeLocked = (path: string) => {
+      git(fixture.root, ["worktree", "lock", path]);
+      rmSync(path, { force: true, recursive: true });
+      // Git keeps a locked registration even with its directory gone.
+      expect(
+        captureInventory(fixture.root).worktrees.find(
+          (worktree) => worktree.path === path
+        )?.prunable
+      ).toBe(false);
+    };
+
+    // Deleted before its release: nothing from the empty directory is
+    // recorded as the released state.
+    removeLocked(before);
+    expect(
+      releaseWorktreeClaim(fixture.root, "before-owner", beforeClaim.claimId)
+    ).toMatchObject({
+      changeDigest: beforeClaim.changeDigest,
+      headSha: beforeClaim.headSha,
+    });
+    // Deleted after its release: the recorded state no longer matches.
+    releaseWorktreeClaim(after, "after-owner", afterClaim.claimId);
+    removeLocked(after);
+
+    const { violations } = verifyLoop(fixture.root);
+    for (const path of [before, after]) {
+      const stale = violations.find(
+        (violation) =>
+          violation.code === "coordination-claim-stale" &&
+          violation.path === path
+      );
+      expect(stale?.nextCommands).toEqual([]);
+      expect(stale?.message).toContain(
+        "Its checkout directory no longer exists, so it cannot be paused"
+      );
+    }
+    const restore = [before, after].map(
+      (path) =>
+        `Restore the missing checkout at ${path}, then re-run \`simple-changes loop verify --run-id ${lease.runId}\` for its exact recovery steps.`
+    );
+    const guidance = loopStatus(fixture.root).guidance.nextCommands;
+    expect(guidance).toHaveLength(restore.length);
+    expect(guidance).toEqual(expect.arrayContaining(restore));
+  });
+
   test("tells an author whose own claim went inactive to refresh it in place", () => {
     const fixture = repository();
     const authorPath = join(fixture.base, "inactive-author");

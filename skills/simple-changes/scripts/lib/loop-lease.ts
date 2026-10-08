@@ -2017,7 +2017,8 @@ export const staleClaimRecoveryCommands = (
  * registered owner when nothing holds the checkout, claims and pauses its exact
  * current state, and the controller accepts that pause receipt, which works
  * from any state. A checkout whose directory is gone cannot be paused, so it
- * gets no steps until it is restored.
+ * gets no steps until it is restored; Git does not mark a locked worktree
+ * prunable when its directory is deleted, so presence is read from disk.
  */
 const staleClaimRecovery = (
   lease: Pick<LoopLease, "ownerAgentId" | "runId">,
@@ -2025,7 +2026,7 @@ const staleClaimRecovery = (
   worktree: WorktreeInventory,
   { linkedClaim, liveClaim }: WorktreeClaimContext
 ): StaleClaimRecovery => {
-  if (worktree.prunable) {
+  if (worktree.prunable || !existsSync(worktree.path)) {
     return {
       commands: [],
       text: `Its checkout directory no longer exists, so it cannot be paused: restore the checkout at ${worktree.path}${worktree.branch ? ` on branch ${worktree.branch}` : ""}, then re-run \`${LOOP_VERIFY} --run-id ${lease.runId}\` for its exact recovery steps.`,

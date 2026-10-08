@@ -1158,14 +1158,17 @@ export const attachClaimedWorktree = (
  * The checkout's exact branch, head, and content digest when its owner
  * releases it, or undefined when the claimed directory is gone. A released
  * claim is never refreshed, so recording the released state lets an active
- * loop admit exactly that state and fail closed on any later change.
+ * loop admit exactly that state and fail closed on any later change. Git does
+ * not mark a locked worktree prunable when its directory is deleted, so the
+ * directory itself must exist.
  */
 const releasedEvidence = (
   inventory: RepositoryInventory,
   path: string
 ): Pick<WorktreeClaim, "branch" | "changeDigest" | "headSha"> | undefined => {
   const current = inventory.worktrees.find(
-    (worktree) => worktree.path === path && !worktree.prunable
+    (worktree) =>
+      worktree.path === path && !worktree.prunable && existsSync(worktree.path)
   );
   return current
     ? {

@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, realpathSync } from "node:fs";
+import { existsSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve, sep } from "node:path";
 import { runGit } from "./process.ts";
@@ -43,11 +43,11 @@ import { runGit } from "./process.ts";
  * (`rebase --exec`, `bisect run`, `--upload-pack`, ...), or writes
  * configuration that later commands would follow.
  *
- * While units are pinned, a command runner (`env`, `xargs`, `sudo`, ...),
- * inline shell or interpreter code (`sh -c`, `python -c`), and any program
- * given Git or a runner as a whole argument are refused outright, because
- * they hide what Git will run; any other program, including a script file
- * run by an interpreter, is opaque. Refusing a legitimate command is accepted, because the
+ * While units are pinned, a command runner (`env`, `xargs`, `sudo`, ...), a
+ * shell or interpreter doing anything but running an existing script file
+ * (`sh -c`, `python -c`), and any program given Git or a runner as a whole
+ * argument are refused outright, because they hide what Git will run; any
+ * other program, including a script file run by an interpreter, is opaque. Refusing a legitimate command is accepted, because the
  * form that names the recorded commit always works. The run's controller and
  * its own prepared authors are not pinned.
  */
@@ -342,58 +342,15 @@ const PREFIX_RUNNERS: ReadonlySet<string> = new Set([
   "yarn",
 ]);
 
-// Shells and interpreters. Running a script file is opaque, like any other
-// program; inline code (`sh -c`, `python -c`, `node -e`) is refused while
-// units are pinned, since it can run Git in forms this check cannot see.
+// Shells and interpreters, whatever version or build suffix their program
+// name carries (`python3.14t`, `node22`, `bash5`). While units are pinned one
+// may only run an existing script file, which is opaque like any other
+// program; inline code (`sh -c`, `python -c...`, `deno eval`) and any other
+// form are refused, since they can run Git in forms this check cannot see.
 // Text processors whose program is always inline are refused outright.
-const INLINE_RUNNERS: ReadonlySet<string> = new Set([
-  "ash",
-  "bash",
-  "bun",
-  "busybox",
-  "cmd",
-  "csh",
-  "dash",
-  "deno",
-  "fish",
-  "julia",
-  "ksh",
-  "lua",
-  "mksh",
-  "node",
-  "osascript",
-  "perl",
-  "php",
-  "powershell",
-  "pwsh",
-  "python",
-  "r",
-  "rscript",
-  "ruby",
-  "sh",
-  "tclsh",
-  "tcsh",
-  "yash",
-  "zsh",
-]);
-const ALWAYS_INLINE_RUNNERS: ReadonlySet<string> = new Set([
-  "awk",
-  "gawk",
-  "mawk",
-  "nawk",
-  "sed",
-  "gsed",
-]);
-// Inline-code options: long forms, and short clusters (`-lc`, `-pe`) that
-// contain one of these letters.
-const INLINE_LONG_OPTIONS = ["--command", "--eval", "--exec", "--print"];
-const INLINE_SHORT_LETTERS = /^-[a-z]*[cepr][a-z]*$/iu;
-const INLINE_WINDOWS_OPTIONS: ReadonlySet<string> = new Set([
-  "/c",
-  "/k",
-  "-command",
-  "-encodedcommand",
-]);
+const SCRIPT_RUNNER_PATTERN =
+  /^(?:ash|bash|bun|busybox|cmd|csh|dash|deno|fish|julia|ksh|lua|luajit|mksh|node|nodejs|osascript|perl|php|powershell|pwsh|pypy|python|pythonw|r|rscript|ruby|sh|tclsh|tcsh|wish|yash|zsh)(?:[^a-z].*)?$/u;
+const TEXT_RUNNER_PATTERN = /^(?:awk|gawk|gsed|mawk|nawk|sed)(?:[^a-z].*)?$/u;
 
 // The only merge-like subcommands loop exec runs while units are pinned, each
 // with every argument checked. Any other one (`send-pack`, `submodule`,
@@ -2171,41 +2128,61 @@ const programFamily = (path: string): string =>
 const isGitProgram = (word: string): boolean =>
   programName(word) === "git" || DASHED_GIT_PROGRAM.test(programName(word));
 
-const hasInlineCode = (args: readonly string[]): boolean =>
-  args[0] === "eval" ||
-  args.some(
-    (arg) =>
-      INLINE_SHORT_LETTERS.test(arg) ||
-      INLINE_WINDOWS_OPTIONS.has(arg.toLowerCase()) ||
-      spelledOption(arg, INLINE_LONG_OPTIONS) !== null
+const isFile = (path: string): boolean => {
+  try {
+    return statSync(path).isFile();
+  } catch {
+    return false;
+  }
+};
+
+// A shell or interpreter runs an existing script file named as its first
+// argument, with no option before it.
+const runsScriptFile = (
+  args: readonly string[],
+  directory: string
+): boolean => {
+  const [script = ""] = args;
+  return (
+    script !== "" &&
+    !script.startsWith("-") &&
+    isFile(resolve(directory, script))
   );
+};
 
 // Git, or a program that could run it, given as a whole argument to another
 // program, which may run it.
 const runsProgram = (arg: string): boolean => {
-  const family = programFamily(arg);
+  const name = programName(arg);
   return (
     isGitProgram(arg) ||
-    PREFIX_RUNNERS.has(family) ||
-    INLINE_RUNNERS.has(family) ||
-    ALWAYS_INLINE_RUNNERS.has(family)
+    PREFIX_RUNNERS.has(programFamily(arg)) ||
+    SCRIPT_RUNNER_PATTERN.test(name) ||
+    TEXT_RUNNER_PATTERN.test(name)
   );
 };
 
 // A program other than Git that could run Git while units are pinned: a
-// prefix runner, inline shell or interpreter code, a text processor whose
-// program is inline, or any program given Git as a whole argument.
-const wrappedRefusals = (argv: readonly string[]): PinnedRefusal[] => {
+// prefix runner, a shell or interpreter that does not just run a script
+// file, a text processor, or any program given Git or a runner as a whole
+// argument.
+const wrappedRefusals = (
+  argv: readonly string[],
+  directory: string
+): PinnedRefusal[] => {
   const [command = ""] = argv;
   const args = argv.slice(1);
-  const family = programFamily(command);
+  const name = programName(command);
   let reason: string | null = null;
-  if (PREFIX_RUNNERS.has(family)) {
+  if (PREFIX_RUNNERS.has(programFamily(command))) {
     reason = `${command} runs another command`;
-  } else if (ALWAYS_INLINE_RUNNERS.has(family)) {
+  } else if (TEXT_RUNNER_PATTERN.test(name)) {
     reason = `${command} runs an inline program`;
-  } else if (INLINE_RUNNERS.has(family) && hasInlineCode(args)) {
-    reason = `${command} runs inline code`;
+  } else if (
+    SCRIPT_RUNNER_PATTERN.test(name) &&
+    !runsScriptFile(args, directory)
+  ) {
+    reason = `${command} runs inline code or something other than a script file`;
   } else if (args.some((arg) => runsProgram(arg))) {
     reason = `${command} is given Git or another runner to run`;
   }
@@ -2437,7 +2414,7 @@ export const analyzePinnedCommand = (
   if (!GIT_EXECUTABLES.has(basename(command).toLowerCase())) {
     return {
       equivalent: null,
-      refusals: wrappedRefusals(argv),
+      refusals: wrappedRefusals(argv, context.checkout),
       subcommand: null,
     };
   }

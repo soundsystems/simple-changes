@@ -759,6 +759,14 @@ describe("pinned-head command analysis", () => {
       ["deno", "eval", "1"],
       ["awk", 'BEGIN { system("true") }'],
       ["uv", "run", "python", "-c", "1"],
+      [
+        "python3.14",
+        "-c__import__('subprocess').run(['git','merge','feat/x'])",
+      ],
+      ["python3.14t", "-c", "1"],
+      ["deno", "--quiet", "eval", "1"],
+      ["bun", "run", "check"],
+      ["python3", "missing-script.py"],
       ["my-wrapper", "sh", "script.sh"],
       ["bun", "-e", "console.log('feat/x')"],
     ]) {
@@ -894,6 +902,14 @@ describe("pinned-head command analysis", () => {
 
   test("lets every other command through, including the recorded-commit form", () => {
     const { analyze, head, kinds, root, unitPath } = analyzer();
+    // Interpreters may run existing script files.
+    for (const script of [
+      "scripts/release.ts",
+      "scripts/git-cleanup.sh",
+      "scripts/check.py",
+    ]) {
+      writeFixture(root, script, "\n");
+    }
     for (const argv of [
       ["git", "merge", "--ff-only", head],
       ["git", "merge", "--no-ff", "-m", "Merge branch 'feat/x'", head],

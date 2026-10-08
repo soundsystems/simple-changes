@@ -344,12 +344,14 @@ the reviewer as unresolved and ask the owner. `max` effort comes only from an ex
 and is never reached by a default, `most-capable`, or escalation.
 
 Before writing, resolve the role; `most-capable` is the most capable model the
-target agent itself reports, never ranked from memory. Write directly when the
-target agent and model are the running ones; otherwise delegate only through a
-mechanism the running agent already has, asking before the first launch of
-another tool in a session, and compare the identity the delegate reports with
-the target (a mismatch is disclosed, and for a review goes through the
-post-return gate in `references/review-and-merge.md`). When the target is
+target agent itself reports, never ranked from memory. Use the nearest effort
+the target offers, never above the configured level. Write directly when the
+target agent and model are the running ones and the effort matches or cannot
+be changed; otherwise delegate only through a mechanism the running agent
+already has, asking before the first launch of another tool in a session.
+Keep the requested target and the identity the delegate reports apart; a
+mismatch is disclosed and signed with the reported identity, and for a review
+goes through the post-return gate in `references/review-and-merge.md`. When the target is
 `unknown` or `null`, the model cannot be resolved, or nothing can delegate,
 write with the running model and say which role was configured, what wrote
 instead, and why. Signatures always name the writer the runtime reported. The

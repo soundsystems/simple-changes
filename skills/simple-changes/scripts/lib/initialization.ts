@@ -36,6 +36,8 @@ export interface InitializationStatus {
     effective: { proposals: ResolvedAuthoringRole; review: ResolvedReviewRole };
     source: { proposals: AuthoringFieldSource; review: AuthoringFieldSource };
   };
+  /** A missing or malformed harness data file: detection failed, not empty. */
+  authoringErrors?: string[];
   authoringFiles?: {
     personal: AuthoringFileState;
     repository: AuthoringFileState;

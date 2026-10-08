@@ -56,7 +56,9 @@ import {
   resolveEffectiveAuthors,
   resolveReviewer,
   reviewApproval,
+  reviewDisclosure,
   reviewLedgerPath,
+  reviewSignatureAgent,
   validateReviewLedger,
   verifyReplay,
   waiveProposalCoverage,
@@ -181,7 +183,9 @@ const addHead = (
   proposalId = PROPOSAL
 ): void => {
   const coverage = headCoverage(ledger, commits);
-  const proposal = ledger.proposals[proposalId] ?? { attempts: [], heads: {} };
+  const proposal = (Object.hasOwn(ledger.proposals, proposalId)
+    ? ledger.proposals[proposalId]
+    : undefined) ?? { attempts: [], heads: {} };
   ledger.proposals[proposalId] = proposal;
   Reflect.deleteProperty(proposal.heads, head);
   proposal.heads[head] = {
@@ -1041,6 +1045,78 @@ describe("post-return gate and approval", () => {
     });
   });
 
+  test("the most-capable sentinel or a blank name on a reported identity is missing model evidence, never a distinct model", () => {
+    const ledger = emptyReviewLedger();
+    attestInMemory(ledger, C1, author("alpha", { agent: "model-a" }));
+    addHead(ledger, C1, [C1]);
+    const sentinelReviewer = {
+      agent: "most-capable",
+      harness: "claude-code",
+      instance: null,
+      session: "session-reviewer",
+    };
+    // Reviewer side: same harness or not, the sentinel proves nothing.
+    expect(
+      decide(ledger, C1, sentinelReviewer, { adversarial: true })
+        .acceptanceReason
+    ).toBe("reviewer-identity-missing");
+    expect(
+      decide(
+        ledger,
+        C1,
+        { ...sentinelReviewer, harness: "codex" },
+        { adversarial: true }
+      ).acceptanceReason
+    ).toBe("reviewer-identity-missing");
+    expect(
+      decide(
+        ledger,
+        C1,
+        { ...sentinelReviewer, agent: "   " },
+        { adversarial: true }
+      ).acceptanceReason
+    ).toBe("reviewer-identity-missing");
+    // Without adversarial review, model identity is not consulted.
+    expect(decide(ledger, C1, sentinelReviewer).accepted).toBe(true);
+    // Author side: an author that reported the sentinel has no model.
+    const sentinelAuthor = emptyReviewLedger();
+    attestInMemory(
+      sentinelAuthor,
+      C1,
+      author("alpha", { agent: "most-capable" })
+    );
+    addHead(sentinelAuthor, C1, [C1]);
+    const concreteReviewer = {
+      agent: "model-b",
+      harness: "claude-code",
+      instance: null,
+      session: "session-reviewer",
+    };
+    expect(
+      decide(sentinelAuthor, C1, concreteReviewer, { adversarial: true })
+        .acceptanceReason
+    ).toBe("author-identity-missing");
+    expect(
+      decide(
+        sentinelAuthor,
+        C1,
+        { ...concreteReviewer, harness: "codex" },
+        { adversarial: true }
+      ).acceptanceReason
+    ).toBe("author-identity-missing");
+    expect(reviewSignatureAgent({ verified: sentinelReviewer })).toBeNull();
+    expect(
+      reviewDisclosure({
+        requested: {
+          effort: "xhigh",
+          harness: "claude-code",
+          model: "model-b",
+        },
+        verified: sentinelReviewer,
+      }).fields
+    ).toEqual(["model"]);
+  });
+
   test("diversity applies only under adversarial review, and missing model identity rejects only there", () => {
     const ledger = emptyReviewLedger();
     attestInMemory(ledger, C1, author("alpha", { agent: null }));
@@ -1164,6 +1240,38 @@ describe("post-return gate and approval", () => {
     // A new head makes the old one stale.
     addHead(ledger, C2, [C1, C2]);
     expect(approval({}, C1).approved).toBe(false);
+  });
+
+  test("proposal ids that name inherited object properties are ordinary ids", () => {
+    const ledger = emptyReviewLedger();
+    for (const proposalId of ["constructor", "toString"]) {
+      expect(
+        decide(ledger, C1, REVIEWER_B, { proposalId }).acceptanceReason
+      ).toBe("authors-not-recorded");
+      expect(
+        reviewApproval({
+          adversarial: false,
+          currentHead: C1,
+          freshEvidence: {
+            checks: true,
+            discussions: true,
+            providerApproval: true,
+          },
+          ledger,
+          proposalId,
+          repairRequired: false,
+        }).approved
+      ).toBe(false);
+    }
+    attestInMemory(ledger, C1, author("alpha"));
+    addHead(ledger, C1, [C1], "constructor");
+    expect(Object.hasOwn(ledger.proposals, "constructor")).toBe(true);
+    expect(
+      decide(ledger, C1, REVIEWER_B, { proposalId: "constructor" })
+    ).toMatchObject({
+      accepted: true,
+    });
+    expect(validateReviewLedger(ledger).reason).toBeNull();
   });
 
   test("escalation is a floor driven by verdict, never above xhigh by itself", () => {
@@ -1413,6 +1521,72 @@ describe("proposal ledger commands", () => {
     expect(updated.authorsDigest).not.toBe(second.authorsDigest);
   });
 
+  test("the ledger commands accept constructor and toString as proposal ids, and verified resolution treats a sentinel author as missing", () => {
+    const run = preparedRun();
+    const commit = commitFile(run.author, "a.txt", "a\n");
+    attestCommits({
+      agent: "most-capable",
+      commits: [commit],
+      environment: ENV_A,
+      logicalId: "author-a",
+      repositoryPath: run.author,
+    });
+    expect(() =>
+      recordReviewAttempt({
+        attemptId: randomUUID(),
+        authoring: stubAuthoring(),
+        head: commit,
+        proposalId: "toString",
+        receipt: reviewReceipt(REVIEWER_B),
+        repositoryPath: run.author,
+      })
+    ).toThrow("authors-not-recorded");
+    for (const proposalId of ["constructor", "toString"]) {
+      expect(
+        recordProposalAuthors({
+          base: run.base,
+          environment: ENV_A,
+          head: commit,
+          proposalId,
+          repositoryPath: run.author,
+        })
+      ).toMatchObject({ proposalId, status: "recorded" });
+      expect(
+        recordReviewAttempt({
+          attemptId: randomUUID(),
+          authoring: stubAuthoring(),
+          head: commit,
+          proposalId,
+          receipt: reviewReceipt(REVIEWER_B),
+          repositoryPath: run.author,
+        }).attempt.accepted
+      ).toBe(true);
+      // The author reported only the sentinel, so a same-harness reviewer
+      // with a named model cannot be shown distinct before dispatch.
+      expect(
+        resolveReviewer({
+          authoring: stubAuthoring({
+            adversarial: true,
+            harness: "claude-code",
+            model: "model-beta",
+          }),
+          head: commit,
+          proposalId,
+          repositoryRoot: run.author,
+        })
+      ).toMatchObject({
+        reason: "author-identity-missing",
+        status: "unresolved",
+      });
+    }
+    const state = readReviewLedger(commonDirectory(run.root));
+    expect(state.state).toBe("valid");
+    expect(Object.keys(state.ledger.proposals).sort()).toEqual([
+      "constructor",
+      "toString",
+    ]);
+  });
+
   test("record-authors runs regardless of proposalSignatures: none", () => {
     const fixture = repository();
     writePolicyFile(join(fixture.root, ".simple-changes.json"), {
@@ -1444,6 +1618,71 @@ describe("proposal ledger commands", () => {
         repositoryPath: fixture.root,
       })
     ).toThrow("stable proposal id");
+  });
+
+  test("an identical record-review retry keeps the stored attempt but reports whether it still counts", () => {
+    const run = preparedRun();
+    const commit = commitFile(run.author, "a.txt", "a\n");
+    attestAsA(run.author, [commit]);
+    const recordHead = () =>
+      recordProposalAuthors({
+        base: run.base,
+        environment: ENV_A,
+        head: commit,
+        proposalId: PROPOSAL,
+        repositoryPath: run.author,
+      });
+    recordHead();
+    const attemptId = randomUUID();
+    const record = () =>
+      recordReviewAttempt({
+        attemptId,
+        authoring: stubAuthoring(),
+        head: commit,
+        proposalId: PROPOSAL,
+        receipt: reviewReceipt(REVIEWER_B),
+        repositoryPath: run.author,
+      });
+    const first = record();
+    expect(first).toMatchObject({
+      approvalCandidate: true,
+      currentValidity: { reason: null, valid: true },
+      status: "recorded",
+    });
+    expect(record()).toMatchObject({
+      approvalCandidate: true,
+      currentValidity: { reason: null, valid: true },
+      status: "unchanged",
+    });
+    // The reviewer's own session later attests the commit: it is now an
+    // effective author, so the identical retry no longer counts.
+    attestCommits({
+      agent: "model-beta",
+      commits: [commit],
+      environment: ENV_B,
+      instance: "reviewer-b",
+      logicalId: "author-a",
+      repositoryPath: run.author,
+    });
+    recordHead();
+    const ledgerBefore = readFileSync(
+      reviewLedgerPath(commonDirectory(run.root)),
+      "utf8"
+    );
+    const retry = record();
+    expect(retry).toMatchObject({
+      approvalCandidate: false,
+      attempt: {
+        accepted: true,
+        attemptId,
+        recordedAt: first.attempt.recordedAt,
+      },
+      currentValidity: { reason: "reviewer-not-independent", valid: false },
+      status: "unchanged",
+    });
+    expect(
+      readFileSync(reviewLedgerPath(commonDirectory(run.root)), "utf8")
+    ).toBe(ledgerBefore);
   });
 
   test("record-review is idempotent on attemptId, refuses a conflicting payload, and keeps requested and verified apart", () => {
@@ -1739,6 +1978,53 @@ describe("ledger state, locking, resume and finalization", () => {
     ).toEqual([]);
   });
 
+  test("only a missing ledger is absent; an inspection or read failure is reported and refuses every write", () => {
+    const run = preparedRun();
+    const commit = commitFile(run.author, "a.txt", "a\n");
+    attestAsA(run.author, [commit]);
+    const common = commonDirectory(run.root);
+    const failing = (code: string) => () => {
+      throw Object.assign(new Error(`injected ${code}`), { code });
+    };
+    expect(readReviewLedger(common, { inspect: failing("ENOENT") }).state).toBe(
+      "absent"
+    );
+    for (const code of ["EACCES", "EIO", "ELOOP"]) {
+      const state = readReviewLedger(common, { inspect: failing(code) });
+      expect(state).toMatchObject({
+        reason: "ledger-malformed",
+        state: "malformed",
+      });
+      expect(state.errors.join(" ")).toContain(
+        `could not be inspected (${code})`
+      );
+    }
+    // A real read failure: the transaction refuses and the history stays.
+    const path = reviewLedgerPath(common);
+    const before = readFileSync(path, "utf8");
+    chmodSync(path, 0o000);
+    try {
+      expect(readReviewLedger(common).errors.join(" ")).toContain(
+        "could not be read"
+      );
+      expect(() =>
+        recordProposalAuthors({
+          base: run.base,
+          environment: ENV_A,
+          head: commit,
+          proposalId: PROPOSAL,
+          repositoryPath: run.author,
+        })
+      ).toThrow("could not be read");
+    } finally {
+      chmodSync(path, 0o600);
+    }
+    expect(readFileSync(path, "utf8")).toBe(before);
+    expect(readReviewLedger(common).ledger.attestations[commit]).toHaveLength(
+      1
+    );
+  });
+
   test("a malformed or cyclic ledger is reported, never repaired, and blocks acceptance", () => {
     const run = preparedRun();
     const commit = commitFile(run.author, "a.txt", "a\n");
@@ -1987,6 +2273,35 @@ describe("schema parity and the command line", () => {
       return [schemaValid, validateReviewLedger(value).reason === null];
     };
     expect(both(ledger)).toEqual([true, true]);
+    // Lengths count code points in both validators: astral characters at
+    // each limit pass, one more fails.
+    const astral = (count: number): string => "\u{1D538}".repeat(count);
+    const withLogicalId = (logicalId: string) => ({
+      ...ledger,
+      attestations: { [A]: [{ ...author("alpha"), logicalId }] },
+    });
+    const withWaiverText = (approvedBy: string, reason: string) => ({
+      ...ledger,
+      proposals: {
+        [PROPOSAL]: {
+          ...ledger.proposals[PROPOSAL],
+          heads: {
+            [S]: {
+              ...ledger.proposals[PROPOSAL]?.heads[S],
+              waivers: [{ ...waiver, approvedBy, reason }],
+            },
+          },
+        },
+      },
+    });
+    expect(both(withLogicalId(astral(128)))).toEqual([true, true]);
+    expect(both(withLogicalId(astral(129)))).toEqual([false, false]);
+    expect(both(withWaiverText(astral(128), astral(1000)))).toEqual([
+      true,
+      true,
+    ]);
+    expect(both(withWaiverText(astral(129), "reason"))).toEqual([false, false]);
+    expect(both(withWaiverText("owner", astral(1001)))).toEqual([false, false]);
     const attempt = ledger.proposals[PROPOSAL]?.attempts[0];
     const variants: unknown[] = [
       { ...ledger, extra: 1 },

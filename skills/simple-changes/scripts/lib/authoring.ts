@@ -64,6 +64,7 @@ const HOME_ROOT = /^(?![/\\])(?![A-Za-z]:)(?!(?:.*[/\\])?\.\.(?:[/\\]|$)).+$/u;
 const ENVIRONMENT_NAME_PATTERN = /^[A-Z_][A-Z0-9_]*$/u;
 const HARNESS_NAME_MAX_LENGTH = 60;
 const ESCALATION_LEVELS = ["high", "xhigh"] as const;
+const MODEL_KEY_SEPARATORS = /[^a-z0-9]+/gu;
 
 type Environment = Record<string, string | undefined>;
 
@@ -177,6 +178,29 @@ export const isModelName = (value: unknown): value is string =>
   characterCount(value) >= 1 &&
   characterCount(value) <= MODEL_MAX_LENGTH &&
   !hasControlCharacter(value);
+
+const modelKey = (value: string): string =>
+  value.toLowerCase().replace(MODEL_KEY_SEPARATORS, "");
+
+/**
+ * Whether two reported model names may name the same model. Harnesses report
+ * names in different shapes (a display name with a family prefix, or an id
+ * with hyphens), so names compare case-insensitively without separators, and
+ * a name that ends with the other counts as the same. This heuristic fails
+ * toward "same": a possible match never passes a diversity check.
+ */
+export const sameModelName = (left: string, right: string): boolean => {
+  const leftKey = modelKey(left);
+  const rightKey = modelKey(right);
+  if (!(leftKey && rightKey)) {
+    return left.trim().toLowerCase() === right.trim().toLowerCase();
+  }
+  return (
+    leftKey === rightKey ||
+    leftKey.endsWith(rightKey) ||
+    rightKey.endsWith(leftKey)
+  );
+};
 
 /** The higher of two effort levels on the shared ladder. */
 export const higherEffort = (

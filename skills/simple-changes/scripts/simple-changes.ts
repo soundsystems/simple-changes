@@ -1718,7 +1718,11 @@ const interactiveAuthoringContext = (
       prefill: changelogsHarnessPrefill(primaryCheckout),
       runningHarness: running,
     };
-  } catch {
+  } catch (error) {
+    // Failed detection is not an empty result: say so instead of skipping.
+    process.stderr.write(
+      `Skipping the authoring questions, and recording none: ${(error as Error).message}\n`
+    );
     return null;
   }
 };
@@ -2068,6 +2072,11 @@ const appendAuthoring = (
   lines: string[],
   status: InitializationStatus
 ): void => {
+  for (const error of status.authoringErrors ?? []) {
+    lines.push(
+      `Authoring data error: ${error} Detection reports nothing and no authoring answer can be recorded until the package is reinstalled.`
+    );
+  }
   const question = status.authoringQuestion;
   if (question) {
     const pending = Object.entries(question)
@@ -2205,6 +2214,7 @@ const initializationAuthoring = (
   fields: Pick<
     InitializationStatus,
     | "authoring"
+    | "authoringErrors"
     | "authoringFiles"
     | "authoringQuestion"
     | "authoringReviewQuestion"
@@ -2235,6 +2245,9 @@ const initializationAuthoring = (
   return {
     fields: {
       authoring: { effective: resolution.effective, source: resolution.source },
+      authoringErrors: resolution.harnessDataError
+        ? [resolution.harnessDataError]
+        : [],
       authoringFiles: resolution.authoringFiles,
       authoringQuestion: resolution.authoringQuestion,
       // Asked at every write-capable initialization while it is pending,
@@ -2840,13 +2853,22 @@ const renderRecordedAuthors = (result: RecordAuthorsResult): string =>
       : ""
   }${renderGaps(result.gaps)}`;
 
+// Acceptance when the attempt was recorded is history; whether it counts now
+// is decided again against the current head, digest, coverage and settings.
 const renderRecordedReview = (result: RecordReviewResult): string => {
-  const { attempt } = result;
-  return `${result.status === "unchanged" ? "Already recorded" : "Recorded"} review attempt ${attempt.attemptId} at ${attempt.headRevision}: verdict ${attempt.verdict}, ${
+  const { attempt, currentValidity } = result;
+  const recorded = `${result.status === "unchanged" ? "Already recorded" : "Recorded"} review attempt ${attempt.attemptId} at ${attempt.headRevision}: verdict ${attempt.verdict}, ${
     attempt.accepted
-      ? "accepted"
-      : `not accepted (${attempt.acceptanceReason}); ask the owner before reviewing again`
-  }.\n${result.disclosure.message ? `Disclosure: ${result.disclosure.message}\n` : ""}`;
+      ? "accepted when recorded"
+      : `not accepted when recorded (${attempt.acceptanceReason})`
+  }.`;
+  let now = "Now: does not count toward approval (its verdict is not clean).";
+  if (!currentValidity.valid) {
+    now = `Now: does not count (${currentValidity.reason}); ask the owner before reviewing again.`;
+  } else if (result.approvalCandidate) {
+    now = "Now: counts toward approval of this head.";
+  }
+  return `${recorded}\n${now}\n${result.disclosure.message ? `Disclosure: ${result.disclosure.message}\n` : ""}`;
 };
 
 const renderWaiver = (result: WaiveCoverageResult): string =>

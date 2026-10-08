@@ -571,6 +571,11 @@
         }
       }
     },
+    "authoringErrors": {
+      "description": "A missing or malformed agents/harnesses.json: detection failed rather than found nothing, and authoring answers are refused until the package is reinstalled.",
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    },
     "authoringFiles": {
       "type": "object",
       "additionalProperties": false,

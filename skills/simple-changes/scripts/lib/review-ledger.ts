@@ -21,6 +21,7 @@ import {
   MOST_CAPABLE,
   type RepositoryAuthoring,
   resolveRepositoryAuthoring,
+  sameModelName,
 } from "./authoring.ts";
 import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
 import { currentHarnessSession } from "./harness-session.ts";
@@ -61,7 +62,6 @@ const UUID_PATTERN =
 const TOKEN_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:@/+-]{0,127}$/u;
 const PROPOSAL_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:/#!@+-]{0,199}$/u;
 const REASON_CODE_PATTERN = /^[a-z][a-z0-9-]{0,63}$/u;
-const MODEL_KEY_SEPARATORS = /[^a-z0-9]+/gu;
 const LINE_SEPARATOR = /\r?\n/u;
 const BLANK_LINE = /\r?\n\r?\n/u;
 const LOGICAL_ID_LIMIT = 128;
@@ -227,6 +227,16 @@ export interface HeldLoopLock {
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
+/**
+ * A map entry only when the map itself holds the key. Proposal ids such as
+ * `constructor` or `toString` are valid, so an inherited property must
+ * never be read as a ledger record.
+ */
+const ownValue = <T>(
+  map: Readonly<Record<string, T>>,
+  key: string
+): T | undefined => (Object.hasOwn(map, key) ? map[key] : undefined);
+
 // C0 controls (newlines included), DEL, and C1 controls.
 const hasControlCharacter = (value: string): boolean =>
   [...value].some((character) => {
@@ -248,17 +258,20 @@ const isTimestamp = (value: unknown): value is string =>
 const isToken = (value: unknown): value is string =>
   typeof value === "string" && TOKEN_PATTERN.test(value);
 
+// Lengths count Unicode characters (code points), as the schema engine does.
+const characterCount = (value: string): number => [...value].length;
+
 const isLogicalId = (value: unknown): value is string =>
   typeof value === "string" &&
-  value.length > 0 &&
-  value.length <= LOGICAL_ID_LIMIT &&
+  characterCount(value) > 0 &&
+  characterCount(value) <= LOGICAL_ID_LIMIT &&
   value.trim() === value &&
   !hasControlCharacter(value);
 
 const isText = (value: unknown, limit: number): value is string =>
   typeof value === "string" &&
   value.trim().length > 0 &&
-  value.length <= limit &&
+  characterCount(value) <= limit &&
   !hasControlCharacter(value);
 
 const isEffort = (value: unknown): value is AuthoringEffort =>
@@ -757,7 +770,7 @@ const replayCycle = (replays: Record<string, ReplayRecord>): string | null => {
     ];
     while (stack.length > 0) {
       const frame = stack.at(-1) as { next: number; node: string };
-      const sources = replays[frame.node]?.sources ?? [];
+      const sources = ownValue(replays, frame.node)?.sources ?? [];
       const source = sources[frame.next];
       if (source === undefined) {
         state.set(frame.node, "done");
@@ -828,13 +841,24 @@ export const emptyReviewLedger = (): ReviewLedger => ({
   schemaVersion: 1,
 });
 
+export interface ReadReviewLedgerOptions {
+  /** Inspects the ledger path; tests inject failures here. */
+  inspect?: (path: string) => { isFile: () => boolean };
+}
+
+const errorCode = (error: unknown): string =>
+  (error as NodeJS.ErrnoException | undefined)?.code ?? "unknown error";
+
 /**
- * Reads and validates the ledger without a lock. A malformed ledger is
+ * Reads and validates the ledger without a lock. Only a missing file is
+ * absence. A malformed ledger, or one that cannot be inspected or read, is
  * reported with its errors and an empty ledger in its place; it is never
- * repaired here, and it blocks acceptance until the owner repairs it.
+ * repaired here, it blocks acceptance, and every write transaction refuses
+ * it, so an inspection failure can never replace recorded history.
  */
 export const readReviewLedger = (
-  commonGitDirectory: string
+  commonGitDirectory: string,
+  options: ReadReviewLedgerOptions = {}
 ): ReviewLedgerState => {
   const path = reviewLedgerPath(commonGitDirectory);
   const malformed = (
@@ -847,24 +871,38 @@ export const readReviewLedger = (
     reason,
     state: "malformed",
   });
+  const inspect = options.inspect ?? lstatSync;
   let isFile: boolean;
   try {
-    isFile = lstatSync(path).isFile();
-  } catch {
-    return {
-      errors: [],
-      ledger: emptyReviewLedger(),
-      path,
-      reason: null,
-      state: "absent",
-    };
+    isFile = inspect(path).isFile();
+  } catch (error) {
+    if (errorCode(error) === "ENOENT") {
+      return {
+        errors: [],
+        ledger: emptyReviewLedger(),
+        path,
+        reason: null,
+        state: "absent",
+      };
+    }
+    return malformed([
+      `${path} could not be inspected (${errorCode(error)}); fix access to it before any ledger write`,
+    ]);
   }
   if (!isFile) {
     return malformed([`${path} must be a regular file`]);
   }
+  let text: string;
+  try {
+    text = readFileSync(path, "utf8");
+  } catch (error) {
+    return malformed([
+      `${path} could not be read (${errorCode(error)}); fix access to it before any ledger write`,
+    ]);
+  }
   let parsed: unknown;
   try {
-    parsed = JSON.parse(readFileSync(path, "utf8"));
+    parsed = JSON.parse(text);
   } catch {
     return malformed([`${path} is not valid JSON`]);
   }
@@ -1112,10 +1150,10 @@ const createResolver = (ledger: ReviewLedger): LedgerResolver => {
   // implementation contribution on that destination. A gap naming a commit
   // with no replay record cannot be shown closed, so it stays open.
   const editOpen = (destination: string): boolean => {
-    const record = ledger.replays[destination];
+    const record = ownValue(ledger.replays, destination);
     return record
       ? record.verification === "inconclusive" &&
-          (ledger.attestations[destination]?.length ?? 0) === 0
+          (ownValue(ledger.attestations, destination)?.length ?? 0) === 0
       : true;
   };
   const cycle = (commit: string): SimpleChangesError =>
@@ -1135,7 +1173,7 @@ const createResolver = (ledger: ReviewLedger): LedgerResolver => {
     const stack: { next: number; node: string }[] = [{ next: 0, node: start }];
     while (stack.length > 0) {
       const frame = stack.at(-1) as { next: number; node: string };
-      const sources = ledger.replays[frame.node]?.sources ?? [];
+      const sources = ownValue(ledger.replays, frame.node)?.sources ?? [];
       const source = sources[frame.next];
       if (source !== undefined) {
         frame.next += 1;
@@ -1157,8 +1195,8 @@ const createResolver = (ledger: ReviewLedger): LedgerResolver => {
     return memo.get(start) as ResolvedNode;
   };
   const evaluate = (commit: string): ResolvedNode => {
-    const record = ledger.replays[commit];
-    const own = ledger.attestations[commit] ?? [];
+    const record = ownValue(ledger.replays, commit);
+    const own = ownValue(ledger.attestations, commit) ?? [];
     const sources = (record?.sources ?? []).map(
       (source) => memo.get(source) as ResolvedNode
     );
@@ -1282,7 +1320,7 @@ const computeCoverage = (
   }
   const pairs = commits
     .flatMap((commit) =>
-      (authors[commit] ?? []).map((author) =>
+      (ownValue(authors, commit) ?? []).map((author) =>
         JSON.stringify({ author: authorIdentity(author), commit })
       )
     )
@@ -1322,7 +1360,7 @@ export const headCoverage = (
 const refreshDerivedRecords = (ledger: ReviewLedger): void => {
   const resolver = createResolver(ledger);
   for (const destination of Object.keys(ledger.replays)) {
-    const record = ledger.replays[destination] as ReplayRecord;
+    const record = ownValue(ledger.replays, destination) as ReplayRecord;
     record.ownGaps = resolver.ownGaps(destination) ?? record.ownGaps;
   }
   for (const proposal of Object.values(ledger.proposals)) {
@@ -1343,7 +1381,7 @@ const waiverCovers = (
     waiver.unattributed.includes(commit)
   ) &&
   Object.entries(coverage.gaps).every(([commit, gaps]) => {
-    const named = waiver.gaps[commit];
+    const named = ownValue(waiver.gaps, commit);
     return (
       named !== undefined &&
       gaps.unresolvedSources.every((sha) =>
@@ -1392,29 +1430,6 @@ export const latestRecordedHead = (proposal: ProposalRecord): string | null =>
 // ---------------------------------------------------------------------------
 // Identity comparison
 
-const modelKey = (value: string): string =>
-  value.toLowerCase().replace(MODEL_KEY_SEPARATORS, "");
-
-/**
- * Whether two reported model names may name the same model. Harnesses report
- * names in different shapes (a display name with a family prefix, or an id
- * with hyphens), so names compare case-insensitively without separators, and
- * a name that ends with the other counts as the same. This heuristic fails
- * toward "same": a possible match never passes a diversity check.
- */
-export const sameModelName = (left: string, right: string): boolean => {
-  const leftKey = modelKey(left);
-  const rightKey = modelKey(right);
-  if (!(leftKey && rightKey)) {
-    return left.trim().toLowerCase() === right.trim().toLowerCase();
-  }
-  return (
-    leftKey === rightKey ||
-    leftKey.endsWith(rightKey) ||
-    rightKey.endsWith(leftKey)
-  );
-};
-
 /**
  * Executor independence, the existing rule: a different instance (both
  * known) or a different session (both known). A background agent with its
@@ -1444,21 +1459,39 @@ const executorIndependence = (
 };
 
 /**
- * Adversarial diversity: a different harness id, or the same harness with a
- * different reported model, is distinct. Missing harness or model evidence
- * on either side is unknown, never distinct.
+ * The model a runtime identity actually reported, or null. The
+ * `most-capable` sentinel is a planning target, never a runtime model, so on
+ * a reported identity it counts as missing evidence, like a blank name.
+ */
+const reportedModel = (agent: string | null): string | null =>
+  agent === null || agent.trim() === "" || agent.trim() === MOST_CAPABLE
+    ? null
+    : agent;
+
+const reportedHarness = (harness: string | null): string | null =>
+  harness === null || harness.trim() === "" ? null : harness;
+
+/**
+ * Adversarial diversity between two reported identities: a different
+ * harness id, or the same harness with a different reported model, is
+ * distinct. Missing harness or model evidence on either side, the sentinel
+ * included, is unknown, never distinct.
  */
 const diversity = (
   reviewer: { agent: string | null; harness: string | null },
   author: { agent: string | null; harness: string | null }
 ): "distinct" | "same" | "unknown" => {
-  if (!(reviewer.harness && reviewer.agent && author.harness && author.agent)) {
+  const reviewerModel = reportedModel(reviewer.agent);
+  const authorModel = reportedModel(author.agent);
+  const reviewerHarness = reportedHarness(reviewer.harness);
+  const authorHarness = reportedHarness(author.harness);
+  if (!(reviewerHarness && reviewerModel && authorHarness && authorModel)) {
     return "unknown";
   }
-  if (reviewer.harness !== author.harness) {
+  if (reviewerHarness !== authorHarness) {
     return "distinct";
   }
-  return sameModelName(reviewer.agent, author.agent) ? "same" : "distinct";
+  return sameModelName(reviewerModel, authorModel) ? "same" : "distinct";
 };
 
 const uniqueAuthors = (coverage: HeadCoverage): Attestation[] => {
@@ -1513,10 +1546,15 @@ const identityFailure = (
   if (authors.length === 0) {
     return "no-effective-authors";
   }
-  if (!(reviewer.harness && reviewer.agent)) {
+  if (!(reportedHarness(reviewer.harness) && reportedModel(reviewer.agent))) {
     return "reviewer-identity-missing";
   }
-  if (authors.some((author) => !(author.harness && author.agent))) {
+  if (
+    authors.some(
+      (author) =>
+        !(reportedHarness(author.harness) && reportedModel(author.agent))
+    )
+  ) {
     return "author-identity-missing";
   }
   return authors.every((author) => diversity(reviewer, author) === "distinct")
@@ -1535,8 +1573,10 @@ const identityFailure = (
 export const evaluateReviewAcceptance = (
   input: AcceptanceInput
 ): AcceptanceDecision => {
-  const proposal = input.ledger.proposals[input.proposalId];
-  const head = proposal?.heads[input.currentHead];
+  const proposal = ownValue(input.ledger.proposals, input.proposalId);
+  const head = proposal
+    ? ownValue(proposal.heads, input.currentHead)
+    : undefined;
   if (!(proposal && head)) {
     return {
       acceptanceReason: "authors-not-recorded",
@@ -1591,7 +1631,8 @@ export interface ApprovalDecision {
 const reviewedAttempt = (
   input: Omit<AcceptanceInput, "attempt" | "waiverId">
 ): { attemptId: string | null; reason: string | null } => {
-  const attempts = input.ledger.proposals[input.proposalId]?.attempts ?? [];
+  const attempts =
+    ownValue(input.ledger.proposals, input.proposalId)?.attempts ?? [];
   let reason = "no-accepted-clean-review";
   for (const attempt of [...attempts].reverse()) {
     if (
@@ -1687,21 +1728,26 @@ const targetDistinctness = (
   author: ReviewerTarget,
   provisional: boolean
 ): "distinct" | "same" | "unknown-author" | "unknown-model" => {
-  if (!(author.harness && author.agent)) {
+  // A provisional author is the configured `proposals` target, a plan that
+  // may name the sentinel; a verified author is a reported runtime identity,
+  // where the sentinel or a blank name is missing evidence.
+  const authorModel = provisional ? author.agent : reportedModel(author.agent);
+  const authorHarness = reportedHarness(author.harness);
+  if (!(authorHarness && authorModel)) {
     return "unknown-author";
   }
-  if (target.harness !== author.harness) {
+  if (target.harness !== authorHarness) {
     return "distinct";
   }
   const targetSentinel = target.model === MOST_CAPABLE;
-  const authorSentinel = author.agent === MOST_CAPABLE;
+  const authorSentinel = authorModel === MOST_CAPABLE;
   if (targetSentinel || authorSentinel) {
     // Two `most-capable` targets in one harness resolve to the same model.
     return provisional && targetSentinel && authorSentinel
       ? "same"
       : "unknown-model";
   }
-  return sameModelName(target.model, author.agent) ? "same" : "distinct";
+  return sameModelName(target.model, authorModel) ? "same" : "distinct";
 };
 
 const adversarialOutcome = (
@@ -1785,8 +1831,8 @@ const verifiedEvidence = (
   if (state.reason) {
     return { attempts: [], authors: [], evidence, failure: state.reason };
   }
-  const proposal = state.ledger.proposals[proposalId];
-  const record = proposal?.heads[head];
+  const proposal = ownValue(state.ledger.proposals, proposalId);
+  const record = proposal ? ownValue(proposal.heads, head) : undefined;
   const attempts = proposal?.attempts ?? [];
   if (!record) {
     return { attempts, authors: [], evidence, failure: "authors-not-recorded" };
@@ -2452,7 +2498,7 @@ const replayReaches = (
     if (current === target) {
       return true;
     }
-    for (const source of ledger.replays[current]?.sources ?? []) {
+    for (const source of ownValue(ledger.replays, current)?.sources ?? []) {
       if (!seen.has(source)) {
         seen.add(source);
         stack.push(source);
@@ -2500,7 +2546,7 @@ const appendAttestation = (
   commit: string,
   attestation: Attestation
 ): "recorded" | "unchanged" => {
-  const list = ledger.attestations[commit] ?? [];
+  const list = ownValue(ledger.attestations, commit) ?? [];
   const key = identityKey(attestation);
   if (list.some((existing) => identityKey(existing) === key)) {
     return "unchanged";
@@ -2526,7 +2572,7 @@ const assertKeepsSources = (
   destination: string,
   sources: readonly string[]
 ): void => {
-  const dropped = (ledger.replays[destination]?.sources ?? []).filter(
+  const dropped = (ownValue(ledger.replays, destination)?.sources ?? []).filter(
     (source) => !sources.includes(source)
   );
   if (dropped.length > 0) {
@@ -2549,7 +2595,7 @@ export const applyReplayRecord = (
   check: ReplayCheck,
   recordedAt: string
 ): NonNullable<AuthorAttestResult["replay"]> => {
-  const existing = ledger.replays[destination];
+  const existing = ownValue(ledger.replays, destination);
   const sources = check.orderedSources;
   assertKeepsSources(ledger, destination, sources);
   const resolver = createResolver(ledger);
@@ -2570,7 +2616,7 @@ export const applyReplayRecord = (
       verification: check.verification,
     };
   }
-  const record = ledger.replays[destination] as ReplayRecord;
+  const record = ownValue(ledger.replays, destination) as ReplayRecord;
   record.ownGaps =
     createResolver(ledger).ownGaps(destination) ?? record.ownGaps;
   let status: "recorded" | "unchanged" | "superseded" = "recorded";
@@ -2884,12 +2930,12 @@ export const recordProposalAuthors = (
       const base = resolveCommit(cwd, input.base, "--base");
       const head = resolveCommit(cwd, input.head, "--head");
       const commits = rangeCommits(cwd, base, head);
-      const proposal = ledger.proposals[proposalId] ?? {
+      const proposal = ownValue(ledger.proposals, proposalId) ?? {
         attempts: [],
         heads: {},
       };
       ledger.proposals[proposalId] = proposal;
-      const existing = proposal.heads[head];
+      const existing = ownValue(proposal.heads, head);
       const copyAuthors = mergeCopyAuthors(existing?.copyAuthors ?? [], added);
       const coverage = headCoverage(ledger, commits);
       const entry: ProposalHead = {
@@ -2950,8 +2996,16 @@ export interface ReviewDisclosure {
 }
 
 export interface RecordReviewResult {
+  /** The attempt still counts now and its verdict is clean. */
   approvalCandidate: boolean;
+  /** The attempt as recorded: `accepted` is its acceptance at that time. */
   attempt: ReviewAttempt;
+  /**
+   * Whether the attempt counts now, against the proposal's current head,
+   * digest, coverage and settings. A retry of a stale attempt reports why it
+   * no longer counts; the stored attempt never changes.
+   */
+  currentValidity: { reason: string | null; valid: boolean };
   disclosure: ReviewDisclosure;
   ledgerPath: string;
   status: "recorded" | "unchanged";
@@ -3060,13 +3114,14 @@ export const reviewDisclosure = (
   attempt: Pick<ReviewAttempt, "requested" | "verified">
 ): ReviewDisclosure => {
   const fields: ReviewDisclosure["fields"] = [];
+  const reported = reportedModel(attempt.verified.agent);
   if (attempt.verified.harness !== attempt.requested.harness) {
     fields.push("harness");
   }
   if (
-    attempt.verified.agent === null ||
+    reported === null ||
     attempt.requested.model === MOST_CAPABLE ||
-    !sameModelName(attempt.requested.model, attempt.verified.agent)
+    !sameModelName(attempt.requested.model, reported)
   ) {
     fields.push("model");
   }
@@ -3080,10 +3135,13 @@ export const reviewDisclosure = (
   };
 };
 
-/** The name a review signature uses: the verified reviewer, never the setting. */
+/**
+ * The name a review signature uses: the model the reviewer reported, never
+ * the setting. Null when it reported none, or only the sentinel.
+ */
 export const reviewSignatureAgent = (
   attempt: Pick<ReviewAttempt, "verified">
-): string | null => attempt.verified.agent;
+): string | null => reportedModel(attempt.verified.agent);
 
 const findAttempt = (
   ledger: ReviewLedger,
@@ -3145,17 +3203,29 @@ export const recordReviewAttempt = (
             EXIT_CODES.validation
           );
         }
+        const proposalRecord = ownValue(ledger.proposals, prior.proposalId);
+        const now = revalidateAttempt(
+          ledger,
+          prior.proposalId,
+          proposalRecord ? latestRecordedHead(proposalRecord) : null,
+          prior.attempt,
+          settings
+        );
         return {
           approvalCandidate:
-            prior.attempt.accepted && prior.attempt.verdict === "clean",
+            now.revalidated && prior.attempt.verdict === "clean",
           attempt: prior.attempt,
+          currentValidity: {
+            reason: now.revalidationReason,
+            valid: now.revalidated,
+          },
           disclosure: reviewDisclosure(prior.attempt),
           ledgerPath,
           status: "unchanged" as const,
         };
       }
-      const proposal = ledger.proposals[proposalId];
-      if (!proposal?.heads[head]) {
+      const proposal = ownValue(ledger.proposals, proposalId);
+      if (!(proposal && ownValue(proposal.heads, head))) {
         throw new SimpleChangesError(
           `authors-not-recorded: run proposal record-authors for ${proposalId} at ${head} before recording a review of it.`,
           EXIT_CODES.validation
@@ -3187,6 +3257,10 @@ export const recordReviewAttempt = (
       return {
         approvalCandidate: attempt.accepted && attempt.verdict === "clean",
         attempt,
+        currentValidity: {
+          reason: attempt.acceptanceReason,
+          valid: attempt.accepted,
+        },
         disclosure: reviewDisclosure(attempt),
         ledgerPath,
         status: "recorded" as const,
@@ -3269,7 +3343,7 @@ const assertWaiverNamesOutstanding = (
       (commit) => !coverage.unattributed.includes(commit)
     ),
     ...Object.entries(named.gaps).flatMap(([commit, gaps]) => {
-      const open = coverage.gaps[commit] ?? sortedGaps([], []);
+      const open = ownValue(coverage.gaps, commit) ?? sortedGaps([], []);
       return [
         ...gaps.unresolvedSources.filter(
           (sha) => !open.unresolvedSources.includes(sha)
@@ -3317,7 +3391,10 @@ export const waiveProposalCoverage = (
     "proposal waive-coverage",
     (ledger) => {
       const head = resolveCommit(cwd, input.head, "--head");
-      const record = ledger.proposals[proposalId]?.heads[head];
+      const record = ownValue(
+        ownValue(ledger.proposals, proposalId)?.heads ?? {},
+        head
+      );
       if (!record) {
         throw new SimpleChangesError(
           `authors-not-recorded: run proposal record-authors for ${proposalId} at ${head} first.`,
@@ -3356,7 +3433,7 @@ export const waiveProposalCoverage = (
       const outstandingGaps = Object.fromEntries(
         Object.entries(coverage.gaps)
           .map(([commit, gaps]): [string, CommitGaps] => {
-            const covered = waiver.gaps[commit] ?? sortedGaps([], []);
+            const covered = ownValue(waiver.gaps, commit) ?? sortedGaps([], []);
             return [
               commit,
               sortedGaps(
@@ -3518,7 +3595,9 @@ export const loadReviewLedgerForResume = (
   const proposals = Object.entries(current.ledger.proposals).map(
     ([proposalId, proposal]): ResumedReviewProposal => {
       const latestHead = latestRecordedHead(proposal);
-      const record = latestHead ? proposal.heads[latestHead] : undefined;
+      const record = latestHead
+        ? ownValue(proposal.heads, latestHead)
+        : undefined;
       const coverage = record
         ? headCoverage(current.ledger, record.commits)
         : null;

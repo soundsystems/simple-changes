@@ -9,6 +9,7 @@ import {
   isModelName,
   MOST_CAPABLE,
   RUNNING_HARNESS,
+  sameModelName,
 } from "./authoring.ts";
 
 // The onboarding questions for authoring and review preferences (design
@@ -278,7 +279,9 @@ export const reviewModelProblem = (
     return "Name a model of 1 to 120 characters without control characters.";
   }
   const authorModel = recorded?.model ?? MOST_CAPABLE;
-  return name === authorModel
+  // The gate's own comparison: case, separators, and a shared suffix count as
+  // the same model, so onboarding never saves a reviewer the gate blocks.
+  return sameModelName(name, authorModel)
     ? "That is the model recorded for this agent, so it would review its own work; name a different model."
     : null;
 };

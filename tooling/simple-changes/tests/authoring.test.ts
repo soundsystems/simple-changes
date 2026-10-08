@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 import {
   chmodSync,
+  cpSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -1111,6 +1112,47 @@ describe("setup --authoring and initialize", () => {
     expect(halfVerified.stderr).toContain(
       "--proposal and --head must be given together"
     );
+  });
+});
+
+describe("broken harness data", () => {
+  test("initialize reports failed detection instead of an empty result", () => {
+    const fixture = createTestRepository();
+    repositories.push(fixture);
+    const copy = join(temporary("installed"), "simple-changes");
+    cpSync(resolve(repositoryRoot, "skills/simple-changes"), copy, {
+      recursive: true,
+    });
+    rmSync(join(copy, "agents", "harnesses.json"));
+    const roots = temporary("roots");
+    mkdirSync(join(roots, ".claude"));
+    const result = spawnSync(
+      [
+        process.execPath,
+        join(copy, "scripts", "simple-changes.ts"),
+        "initialize",
+        "--mode",
+        "queue",
+        "--repo",
+        fixture.root,
+        "--json",
+      ],
+      {
+        env: {
+          ...process.env,
+          SIMPLE_CHANGES_CONFIG_DIR: temporary("config"),
+          SIMPLE_CHANGES_HARNESS_ROOTS: roots,
+        },
+        stderr: "pipe",
+        stdout: "pipe",
+      }
+    );
+    const status = JSON.parse(decoder.decode(result.stdout)) as {
+      authoringErrors: string[];
+      detectedHarnesses: unknown[];
+    };
+    expect(status.detectedHarnesses).toEqual([]);
+    expect(status.authoringErrors.join(" ")).toContain("harnesses.json");
   });
 });
 

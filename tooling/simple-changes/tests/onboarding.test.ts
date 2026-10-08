@@ -1479,6 +1479,16 @@ describe("authoring and review questions", () => {
     expect(
       reviewModelProblem("reviewer-model", { model: "author-model" })
     ).toBeNull();
+    for (const variant of [
+      "AUTHOR-MODEL",
+      "author_model",
+      "Author Model",
+      "vendor/author-model",
+    ]) {
+      expect(reviewModelProblem(variant, { model: "author-model" })).toContain(
+        "review its own work"
+      );
+    }
     const { asked, prompter } = scripted(
       ["found", "specific", "high", "different-model", "max", "xhigh"],
       ["author-model", "author-model", "reviewer-model"]

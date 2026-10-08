@@ -18,7 +18,8 @@ import { runGit } from "./process.ts";
  *
  * The check is bounded and fails closed. It reads the argument array, never a
  * shell. A merge-like Git command is any subcommand that is not a known
- * read-only or index-only one. It is refused when:
+ * read-only or index-only one; while units are pinned only an allowlist of
+ * them runs (`ALLOWED_WHILE_PINNED`), and one is refused when:
  *
  * - an argument mentions a pinned branch in any spelling (local,
  *   remote-tracking, full ref, symbolic ref, revision expression, range, any
@@ -341,6 +342,29 @@ const COMMAND_RUNNERS: ReadonlySet<string> = new Set([
   "xcrun",
   "yash",
   "zsh",
+]);
+
+// The only merge-like subcommands loop exec runs while units are pinned, each
+// with every argument checked. Any other one (`send-pack`, `submodule`,
+// plumbing, `bisect`, `notes`, ...) is refused: its arguments and side
+// effects are not classified here, and the integration flows do not need it.
+const ALLOWED_WHILE_PINNED: ReadonlySet<string> = new Set([
+  "am",
+  "apply",
+  "branch",
+  "checkout",
+  "cherry-pick",
+  "fetch",
+  "merge",
+  "push",
+  "rebase",
+  "reset",
+  "restore",
+  "revert",
+  "stash",
+  "tag",
+  "update-ref",
+  "worktree",
 ]);
 
 const GIT_EXECUTABLES: ReadonlySet<string> = new Set(["git", "git.exe"]);
@@ -711,6 +735,40 @@ export const indirectForm = (
   return every ? `${every}, which can include every branch` : null;
 };
 
+// A revision part names something indirect: a reflog, upstream, or push
+// entry, a message search, FETCH_HEAD, the stash, or another worktree's refs.
+const indirectRevision = (part: string): string | null => {
+  const folded = fold(part);
+  if (folded.includes("@{")) {
+    return "reflog, upstream, push, or previous-branch syntax (`@{...}`)";
+  }
+  if (part.startsWith(":/")) {
+    return "a commit-message search (`:/...`)";
+  }
+  if (FETCH_HEAD_PATTERN.test(folded)) {
+    return "`FETCH_HEAD`, which can hold any fetched branch";
+  }
+  if (STASH_REF_PATTERN.test(folded)) {
+    return "the stash, which every checkout shares";
+  }
+  return OTHER_WORKTREE_PATTERN.test(folded) ? "another worktree's refs" : null;
+};
+
+// The revisions inside one argument: a long option's value, a short option's
+// attached value, and each side of a range, without a leading `^`.
+const revisionParts = (text: string): string[] => {
+  let value = text;
+  if (text.startsWith("--")) {
+    const separator = text.indexOf("=");
+    value = separator === -1 ? "" : text.slice(separator + 1);
+  } else if (text.startsWith("-")) {
+    value = text.slice(2);
+  }
+  return [value, ...value.split(RANGE_SEPARATOR)]
+    .map((part) => (part.startsWith("^") ? part.slice(1) : part))
+    .filter(Boolean);
+};
+
 interface GitInvocation {
   arguments: string[];
   /** The directory the command runs in after every `-C`. */
@@ -983,7 +1041,10 @@ const integratesNothing = (
     return args[0] !== "add";
   }
   if (subcommand === "remote") {
-    return args[0] !== "update";
+    return REMOTE_READERS.has(args[0] ?? "-v");
+  }
+  if (subcommand === "stash") {
+    return STASH_LISTERS.has(args[0] ?? "");
   }
   if (subcommand === "branch") {
     return isBranchDeletion(args);
@@ -1258,7 +1319,11 @@ const tokenRefusals = (
         );
       }
     }
-    const indirect = indirectForm(item.text, everyBranchOptions);
+    const indirect =
+      indirectForm(item.text, everyBranchOptions) ??
+      revisionParts(item.text)
+        .map((part) => indirectRevision(part))
+        .find(Boolean);
     if (indirect) {
       found.push(
         refusal(
@@ -1346,29 +1411,14 @@ const movedUnits = (
       });
   });
 
-// The revisions a token may name: a long option's value, a short option's
-// attached value, and each side of a range.
-const revisionCandidates = (text: string): string[] => {
-  let value = text;
-  if (text.startsWith("--")) {
-    const separator = text.indexOf("=");
-    if (separator === -1) {
-      return [];
-    }
-    value = text.slice(separator + 1);
-  } else if (text.startsWith("-")) {
-    value = text.slice(2);
-  }
-  // Each side of a range, without its peel, path, or ancestry suffix: the
-  // commit it starts from is what must not contain a moved commit.
-  return [value, ...value.split(RANGE_SEPARATOR)]
-    .map((part) => (part.startsWith("^") ? part.slice(1) : part))
+// The commits a token may name: each revision part without its peel, path,
+// or ancestry suffix, since the commit it starts from is what must not
+// contain a moved commit.
+const revisionCandidates = (text: string): string[] =>
+  revisionParts(text)
     .map((part) => part.split(REVISION_SUFFIX, 1)[0] ?? "")
     .filter((part) => part && !part.startsWith("-"));
-};
 
-// A revision that contains a commit a pinned unit gained after its recorded
-// head would integrate that commit, whatever name or ID reached it.
 // Each revision a merge-like command may integrate: its arguments, and the
 // upstream a merge or rebase reads when it names none.
 const integratedRevisions = (
@@ -1708,14 +1758,42 @@ const commandRefusals = (invocation: GitInvocation): PinnedRefusal[] => {
 };
 
 const STASH_READERS: ReadonlySet<string> = new Set(["apply", "branch", "pop"]);
+const STASH_LISTERS: ReadonlySet<string> = new Set(["list", "show"]);
+// Stash actions that read only the working tree, or a commit they name.
+const STASH_WRITERS: ReadonlySet<string> = new Set([
+  "",
+  "clear",
+  "create",
+  "drop",
+  "push",
+  "save",
+  "store",
+]);
+const REMOTE_READERS: ReadonlySet<string> = new Set([
+  "-v",
+  "--verbose",
+  "get-url",
+  "show",
+]);
 
 // The stash is shared by every checkout, so another checkout's `git stash`
 // moves the entry an implicit or numbered stash names. Only a full commit ID
 // pins one.
 const stashRefusals = (invocation: GitInvocation): PinnedRefusal[] => {
-  const [action = "", ...rest] = invocation.arguments;
-  if (invocation.subcommand !== "stash" || !STASH_READERS.has(action)) {
+  const [first = "", ...others] = invocation.arguments;
+  // `git stash -m <message>` and other bare options are `git stash push`.
+  const action = first.startsWith("-") ? "" : first;
+  const rest = first.startsWith("-") ? invocation.arguments : others;
+  if (invocation.subcommand !== "stash" || STASH_WRITERS.has(action)) {
     return [];
+  }
+  if (!STASH_READERS.has(action)) {
+    return [
+      refusal(
+        "unclassified",
+        `git stash ${action} is not a stash action loop exec classifies while units are pinned`
+      ),
+    ];
   }
   const operands = rest.filter((token) => !token.startsWith("-"));
   const entry = operands.at(action === "branch" ? 1 : 0);
@@ -1729,17 +1807,32 @@ const stashRefusals = (invocation: GitInvocation): PinnedRefusal[] => {
       ];
 };
 
-// Push and fetch rules that do not depend on any one argument's text.
-const transferRefusals = (invocation: GitInvocation): PinnedRefusal[] => {
-  const { arguments: args, subcommand } = invocation;
-  if (subcommand === "pull") {
-    return [
+// A fetch writes through a symbolic ref, so a remote-tracking name that
+// points outside `refs/remotes/` would let it update a local branch.
+const symbolicDestinationRefusals = (
+  refs: readonly GitRefRecord[]
+): PinnedRefusal[] =>
+  refs
+    .filter(
+      (ref) =>
+        ref.symref &&
+        ref.name.startsWith(REMOTE_TRACKING_PREFIX) &&
+        !ref.symref.startsWith(REMOTE_TRACKING_PREFIX)
+    )
+    .map((ref) =>
       refusal(
-        "unclassified",
-        "git pull resolves its repository, refspecs, and upstream when it runs; fetch, then merge the recorded commit"
-      ),
-    ];
-  }
+        "configured",
+        `${ref.name} is a symbolic ref to ${ref.symref}, so a fetch could write that ref`,
+        ref.name
+      )
+    );
+
+// Push and fetch rules that do not depend on any one argument's text.
+const transferRefusals = (
+  invocation: GitInvocation,
+  refs: readonly GitRefRecord[]
+): PinnedRefusal[] => {
+  const { arguments: args, subcommand } = invocation;
   if (subcommand !== "push" && subcommand !== "fetch") {
     return [];
   }
@@ -1752,6 +1845,7 @@ const transferRefusals = (invocation: GitInvocation): PinnedRefusal[] => {
     )
   );
   if (subcommand === "fetch") {
+    found.push(...symbolicDestinationRefusals(refs));
     // The first operand is the repository; with --all or --multiple every
     // operand is a repository or group.
     const { flags, operands } = operandsAndFlags(args, grammar);
@@ -1850,24 +1944,33 @@ const gitRefusals = (
   ) {
     return always;
   }
+  if (!ALLOWED_WHILE_PINNED.has(subcommand)) {
+    const alias =
+      !MERGE_LIKE_BUILTINS.has(subcommand) &&
+      context.facts.hasAlias(invocation.globals, subcommand);
+    return [
+      ...always,
+      alias
+        ? refusal(
+            "alias",
+            `git ${subcommand} is an alias, which loop exec does not expand while units are pinned`,
+            subcommand
+          )
+        : refusal(
+            "unclassified",
+            subcommand === "pull"
+              ? "git pull resolves its repository, refspecs, and upstream when it runs; fetch, then merge the recorded commit"
+              : `git ${subcommand} is not one of the merge-like commands loop exec runs while units are pinned (${[...ALLOWED_WHILE_PINNED].join(", ")})`,
+            subcommand
+          ),
+    ];
+  }
   const found = [
     ...always,
     ...locationRefusals(invocation, context),
-    ...transferRefusals(invocation),
+    ...transferRefusals(invocation, context.facts.refs(invocation.globals)),
     ...stashRefusals(invocation),
   ];
-  if (
-    !MERGE_LIKE_BUILTINS.has(subcommand) &&
-    context.facts.hasAlias(invocation.globals, subcommand)
-  ) {
-    found.push(
-      refusal(
-        "alias",
-        `git ${subcommand} is an alias, which loop exec does not expand while units are pinned`,
-        subcommand
-      )
-    );
-  }
   const refs = context.facts.refs(invocation.globals);
   const replaced = refs.find((ref) => ref.name.startsWith("refs/replace/"));
   if (replaced || context.facts.grafted()) {

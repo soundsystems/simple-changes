@@ -41,7 +41,8 @@ import {
   writeFixture,
 } from "./helpers.ts";
 
-setDefaultTimeout(60_000);
+// The analysis tests run many Git commands; leave room for a loaded machine.
+setDefaultTimeout(240_000);
 
 const fixtures: TestRepository[] = [];
 const restoredEnvironment: Record<string, string | undefined> = {};
@@ -163,18 +164,35 @@ const withConfig = <T>(
 
 // Like loop exec, read the worktree list and heads fresh for every command.
 const contextFor = (root: string, pins: PinnedUnit[]): PinnedCommandContext => {
-  const inventory = captureInventory(root);
-  const { commonGitDirectory } = inventory.repository;
+  // `git worktree list` is all the analysis reads from the inventory, and is
+  // much cheaper than capturing one.
+  const worktrees = git(root, ["worktree", "list", "--porcelain"])
+    .split("\n\n")
+    .map((block) => {
+      const lines = block.split("\n");
+      const path = lines.find((line) => line.startsWith("worktree "));
+      const head = lines.find((line) => line.startsWith("HEAD "));
+      return {
+        headSha: head ? head.slice("HEAD ".length) : null,
+        path: path ? path.slice("worktree ".length) : "",
+      };
+    })
+    .filter((worktree) => worktree.path);
+  const commonGitDirectory = git(root, [
+    "rev-parse",
+    "--path-format=absolute",
+    "--git-common-dir",
+  ]);
   return {
     checkout: root,
     checkoutHeads: new Map(
-      inventory.worktrees.map((worktree) => [worktree.path, worktree.headSha])
+      worktrees.map((worktree) => [worktree.path, worktree.headSha])
     ),
     commonGitDirectory,
     facts: gitFactsFor(root, commonGitDirectory),
     ownCheckouts: [root],
     pins,
-    worktreePaths: inventory.worktrees.map((worktree) => worktree.path),
+    worktreePaths: worktrees.map((worktree) => worktree.path),
   };
 };
 
@@ -271,7 +289,6 @@ describe("pinned-head command analysis", () => {
       ["git", "branch", "-f", "-d", "-m", "feat/x", "copy"],
       ["git", "tag", "copy", "feat/x"],
       ["git", "worktree", "add", "../copy", "feat/x"],
-      ["git", "pull", ".", "feat/x"],
       ["git", "push", "origin", "feat/x"],
       ["git", "push", "origin", "feat/x:refs/heads/main"],
       ["git", "push", "-o", "-d", "origin", "feat/x"],
@@ -285,7 +302,6 @@ describe("pinned-head command analysis", () => {
         "remote.origin.push=refs/heads/feat/x:refs/heads/main",
         "push",
       ],
-      ["git", "replay", "--onto", "main", "feat/x"],
       ["git", "stash", "store", "-m", "copy", "feat/x"],
     ]) {
       expect({ argv, kinds: kinds(argv) }).toEqual({
@@ -334,7 +350,6 @@ describe("pinned-head command analysis", () => {
       ["git", "-C", join(unitPath, "sub"), "reset", "--hard", "HEAD"],
       ["git", "fetch", unitPath, "HEAD:refs/heads/main"],
       ["git", "fetch", `file://${unitPath}`, "HEAD:refs/heads/main"],
-      ["git", "pull", unitPath],
       ["git", "--git-dir=.git", "merge", head],
       ["git", "--work-tree", unitPath, "merge", head],
     ]) {
@@ -388,7 +403,7 @@ describe("pinned-head command analysis", () => {
       [["remote.origin.fetch", "+refs/heads/*:refs/heads/stage/*"]],
       () => {
         expect(kinds(["git", "fetch", "origin"])).toEqual(["configured"]);
-        expect(kinds(["git", "remote", "update"])).toEqual(["configured"]);
+        expect(kinds(["git", "remote", "update"])).toEqual(["unclassified"]);
       }
     );
     writeFixture(commonGitDirectory, "branches/legacy", `${unitPath}\n`);
@@ -496,8 +511,8 @@ describe("pinned-head command analysis", () => {
     // is checked at the commit it starts from.
     const lateTree = git(root, ["rev-parse", `${late}^{tree}`]);
     for (const argv of [
-      ["git", "read-tree", "--reset", "-u", "copy^{tree}"],
-      ["git", "read-tree", lateTree],
+      ["git", "checkout", "copy^{tree}", "--", "late.ts"],
+      ["git", "restore", `--source=${lateTree}`, "late.ts"],
       ["git", "checkout", "copy", "--", "late.ts"],
       ["git", "restore", "--source=copy:late.ts", "late.ts"],
     ]) {
@@ -510,9 +525,10 @@ describe("pinned-head command analysis", () => {
     git(root, ["branch", "--set-upstream-to=copy", "main"]);
     expect(kinds(["git", "merge"])).toEqual(["moved"]);
     git(root, ["branch", "--unset-upstream", "main"]);
-    // A read-only command that writes a file is checked too.
+    // A read-only command that writes a file is refused while units are
+    // pinned, since the file could carry a moved commit to `git apply`.
     expect(kinds(["git", "diff", "--output=late.diff", "main..copy"])).toEqual([
-      "moved",
+      "unclassified",
     ]);
     expect(kinds(["git", "diff", "main..copy"])).toEqual([]);
     // A detached checkout is pinned by its path and head alone.
@@ -794,6 +810,47 @@ describe("pinned-head command analysis", () => {
     ]) {
       expect({ argv, kinds: kinds(argv) }).toEqual({ argv, kinds: [] });
     }
+  });
+
+  test("runs only known merge-like subcommands, and finds indirect names inside arguments", () => {
+    const { head, kinds, root, unitPath } = analyzer();
+    for (const argv of [
+      ["git", "send-pack", "/tmp/remote.git"],
+      ["git", "submodule", "add", "../unit", "vendor/unit"],
+      ["git", "stash", "export", "--to-ref", "refs/heads/cache"],
+      ["git", "replay", "--onto", "main", head],
+      ["git", "read-tree", head],
+      ["git", "notes", "add", "-m", "x", head],
+      ["git", "pull", ".", "feat/x"],
+      ["git", "remote", "add", "u", unitPath],
+    ]) {
+      expect({ argv, kinds: kinds(argv) }).toEqual({
+        argv,
+        kinds: ["unclassified"],
+      });
+    }
+    for (const argv of [
+      ["git", "restore", "--source=refs/stash^1", "--staged", "."],
+      ["git", "cherry-pick", "HEAD..refs/stash^1"],
+      ["git", "reset", "--hard", "HEAD@{1}~0"],
+      ["git", "merge", "--ff-only", "HEAD...FETCH_HEAD"],
+    ]) {
+      expect({ argv, kinds: kinds(argv) }).toEqual({
+        argv,
+        kinds: expect.arrayContaining(["indirect"]),
+      });
+    }
+    // A fetch writes through a symbolic ref, so one under refs/remotes/ that
+    // points at a local branch would let it update that branch.
+    git(root, ["symbolic-ref", "refs/remotes/cache", "refs/heads/other"]);
+    expect(
+      kinds(["git", "fetch", "origin", "main:refs/remotes/cache"])
+    ).toEqual(["configured"]);
+    expect(kinds(["git", "fetch", "origin"])).toEqual(["configured"]);
+    git(root, ["symbolic-ref", "--delete", "refs/remotes/cache"]);
+    expect(kinds(["git", "fetch", "origin"])).toEqual([]);
+    expect(kinds(["git", "remote", "-v"])).toEqual([]);
+    expect(kinds(["git", "stash", "list"])).toEqual([]);
   });
 
   test("lets every other command through, including the recorded-commit form", () => {

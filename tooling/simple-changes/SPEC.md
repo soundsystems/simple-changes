@@ -366,20 +366,20 @@
   released or handed-off authors at the state their release recorded, and
   preserved, adopted, and retained checkouts at their baseline or approved
   override. No merge-like `loop exec` command can integrate a commit other
-  than a registered unit's recorded head. While units are pinned, a Git
-  command that is not read-only is refused before the guard when an argument
-  names a pinned branch in any spelling or letter case, points into a pinned
-  checkout, uses an indirect name, alias, upstream, fetch or push mapping, or
-  replace ref that could stand for one, or resolves to a commit containing
-  one a pinned unit gained after its recorded head. `git pull`, `-c`, Git run
-  through a shell or other runner, Git options that run commands,
-  configuration writes, and unknown push or fetch options are refused
-  outright; a fetch may write only remote-tracking refs, and nothing may run
-  in a checkout the run does not author. The refusal prints the commit-ID
-  form when it is certainly equivalent, or the claim, pause, and accept steps
-  when the unit already moved. `loop verify --for merge` fails while a
-  released, handed-off, preserved, or adopted unit's branch has left its
-  recorded head.
+  than a registered unit's recorded head. While units are pinned, it runs
+  only an allowlist of merge-like Git subcommands, and refuses one before the
+  guard when an argument names a pinned branch in any spelling or letter
+  case, points into a pinned checkout, uses an indirect name, upstream, fetch
+  or push mapping, or replace ref that could stand for one, or resolves to a
+  commit containing one a pinned unit gained after its recorded head. `-c`,
+  Git run through a shell or other runner, Git options that run commands, and
+  configuration writes are refused for every Git command; a fetch may write
+  only remote-tracking refs, a push or fetch may use only known options, and
+  nothing may run in a checkout the run does not author. The refusal prints
+  the commit-ID form when it is certainly equivalent, or the claim, pause,
+  and accept steps when the unit already moved. `loop verify --for merge`
+  fails while a released, handed-off, preserved, or adopted unit's branch has
+  left its recorded head.
 - `proposalScheduling` controls only whether independent proposals are
   authored consecutively or in parallel claimed worktrees. It never shares a
   checkout, weakens controller guards or worktree isolation, changes cleanup

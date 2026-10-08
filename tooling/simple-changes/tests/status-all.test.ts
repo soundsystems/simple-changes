@@ -26,7 +26,10 @@ import {
   type StatusRepository,
   statusAll,
 } from "../../../skills/simple-changes/scripts/lib/status-all.ts";
-import { claimWorktree } from "../../../skills/simple-changes/scripts/lib/worktree-coordination.ts";
+import {
+  claimWorktree,
+  releaseWorktreeClaim,
+} from "../../../skills/simple-changes/scripts/lib/worktree-coordination.ts";
 import { discover } from "../../../skills/update-local-forks/scripts/update-local-forks.ts";
 import { git, writeFixture } from "./helpers.ts";
 
@@ -158,6 +161,15 @@ describe("simple-changes status --all", () => {
     git(shipping, ["worktree", "add", "-q", "-b", "author", authorPath]);
     claimWorktree(authorPath, "author-agent", authorPath, "codex");
     writeFixture(authorPath, "draft.txt", "in progress\n");
+    const finishedPath = join(home, "Developer", "shipping-finished");
+    git(shipping, ["worktree", "add", "-q", "-b", "finished", finishedPath]);
+    const finished = claimWorktree(
+      finishedPath,
+      "finished-agent",
+      finishedPath,
+      "codex"
+    );
+    releaseWorktreeClaim(finishedPath, "finished-agent", finished.claimId);
     const lease = startLoop(shipping, "controller", "ship");
     addShipHold(shipping, {
       adapter: "claude-code",
@@ -215,6 +227,7 @@ describe("simple-changes status --all", () => {
         state: "active",
       }),
     ]);
+    expect(status.releasedClaims).toBe(1);
     expect(status.holds).toEqual([
       expect.objectContaining({
         owner: "migration-agent",

@@ -371,7 +371,6 @@ const GIT_EXECUTABLES: ReadonlySet<string> = new Set(["git", "git.exe"]);
 const EXE_SUFFIX = /\.exe$/u;
 const DASHED_GIT_PROGRAM = /^git-([a-z][a-z0-9-]*)$/u;
 const NAME_CHARACTER = /[\p{L}\p{N}_-]/u;
-const MESSAGE_SEARCH_PATTERN = /(?:^|\.\.|[\^:=+]):\//u;
 const OTHER_WORKTREE_PATTERN =
   /(?:^|\.\.|[\^:=+])(?:main-worktree|worktrees\/[^/]+)\//u;
 const STASH_REF_PATTERN = /^(?:refs\/)?stash(?:$|[~^:@])/u;
@@ -698,43 +697,6 @@ const spelledOption = (
     : (options.find((option) => option.startsWith(name)) ?? null);
 };
 
-/**
- * The indirect form `token` uses, or null. `everyBranchOptions` is false for
- * a fetch, whose `--all` means every remote and writes no local branch.
- */
-export const indirectForm = (
-  token: string,
-  everyBranchOptions = true
-): string | null => {
-  const folded = fold(token);
-  const reading = spelledOption(token, STDIN_OPTIONS);
-  if (reading) {
-    return `${reading}, which reads names loop exec cannot see`;
-  }
-  if (folded.includes("@{")) {
-    return "reflog, upstream, push, or previous-branch syntax (`@{...}`)";
-  }
-  if (token === "-") {
-    return "the previous branch (`-`)";
-  }
-  if (MESSAGE_SEARCH_PATTERN.test(token)) {
-    return "a commit-message search (`:/...`)";
-  }
-  if (FETCH_HEAD_PATTERN.test(folded)) {
-    return "`FETCH_HEAD`, which can hold any fetched branch";
-  }
-  if (STASH_REF_PATTERN.test(folded)) {
-    return "the stash, which every checkout shares";
-  }
-  if (OTHER_WORKTREE_PATTERN.test(folded)) {
-    return "another worktree's refs";
-  }
-  const every = everyBranchOptions
-    ? spelledOption(token, EVERY_BRANCH_OPTIONS)
-    : null;
-  return every ? `${every}, which can include every branch` : null;
-};
-
 // A revision part names something indirect: a reflog, upstream, or push
 // entry, a message search, FETCH_HEAD, the stash, or another worktree's refs.
 const indirectRevision = (part: string): string | null => {
@@ -752,6 +714,36 @@ const indirectRevision = (part: string): string | null => {
     return "the stash, which every checkout shares";
   }
   return OTHER_WORKTREE_PATTERN.test(folded) ? "another worktree's refs" : null;
+};
+
+/**
+ * The indirect form `token` uses, or null: an option that reads names from
+ * elsewhere or carries every branch (also when abbreviated), the previous
+ * branch `-`, or an indirect name in any revision inside it. Every-branch
+ * options do not count for a fetch, whose `--all` means every remote.
+ */
+export const indirectForm = (
+  token: string,
+  everyBranchOptions = true
+): string | null => {
+  const reading = spelledOption(token, STDIN_OPTIONS);
+  if (reading) {
+    return `${reading}, which reads names loop exec cannot see`;
+  }
+  if (token === "-") {
+    return "the previous branch (`-`)";
+  }
+  const every = everyBranchOptions
+    ? spelledOption(token, EVERY_BRANCH_OPTIONS)
+    : null;
+  if (every) {
+    return `${every}, which can include every branch`;
+  }
+  return (
+    revisionParts(token)
+      .map((part) => indirectRevision(part))
+      .find(Boolean) ?? null
+  );
 };
 
 // The revisions inside one argument: a long option's value, a short option's
@@ -1319,11 +1311,7 @@ const tokenRefusals = (
         );
       }
     }
-    const indirect =
-      indirectForm(item.text, everyBranchOptions) ??
-      revisionParts(item.text)
-        .map((part) => indirectRevision(part))
-        .find(Boolean);
+    const indirect = indirectForm(item.text, everyBranchOptions);
     if (indirect) {
       found.push(
         refusal(

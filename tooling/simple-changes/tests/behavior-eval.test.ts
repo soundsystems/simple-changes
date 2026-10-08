@@ -72,7 +72,8 @@ const strictOutputSchemaProblems = (
     string,
     Record<string, unknown>
   >;
-  if (schema.type === "object") {
+  const types = Array.isArray(schema.type) ? schema.type : [schema.type];
+  if (types.includes("object")) {
     if (schema.additionalProperties !== false) {
       problems.push(`${path} must set additionalProperties: false`);
     }
@@ -179,6 +180,22 @@ describe("model behavior evaluation", () => {
     ).toEqual([
       "#/properties/note must be required",
       "#/properties/errors/uniqueItems is not allowed in strict mode",
+    ]);
+    expect(
+      strictOutputSchemaProblems({
+        properties: {
+          nested: {
+            properties: { value: { type: "string" } },
+            type: ["object", "null"],
+          },
+        },
+        required: ["nested"],
+        type: "object",
+      })
+    ).toEqual([
+      "# must set additionalProperties: false",
+      "#/properties/nested must set additionalProperties: false",
+      "#/properties/nested/properties/value must be required",
     ]);
   });
 

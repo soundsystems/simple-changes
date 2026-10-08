@@ -460,18 +460,20 @@ incomplete run.
 Changes repository under the roots `update-local-forks discover` scans (global
 skill roots, `~/Developer`, `~/Projects`, `~/Code`, `~/src`, and each
 `--root`): the lease with its controller state and liveness (`live`, `stale`,
-or `unknown`), unreleased worktree claims and whether each checkout is absent
-or still matches its claim, recorded holds, ready-work receipts with their
-freshness and whether their checkout still exists,
+or `unknown`), unreleased worktree claims and whether each checkout is absent,
+moved, or still at its claimed head, recorded holds, ready-work receipts with
+their freshness from refs and whether their checkout still exists,
 and a pending guidance notice when the repository's acknowledged guidance is
 older than the guidance of the runtime running `status`; a repository that
 runs a fork sees that notice once its fork reaches the same guidance. It then lists every fork, compared with the newest
 installed Simple Changes source, as `behind`, `current`, `ahead`, or `unknown`.
 `simple-changes status` without `--all` shows the current repository only.
 
-It is read-only. It never writes, fetches, or takes a lock: Git runs with
-optional locks off, holds are read from this clone only, and state files are
-read without their locks. A section it cannot read shows as `unknown` with the
+It is read-only. It never writes, fetches, or takes a lock: it never runs
+`git status` (so no filter, filesystem monitor, or index refresh runs, and
+checkout contents are never compared), other Git reads run with optional
+locks and lazy fetches off, holds are read from this clone only, and state
+files are read without their locks. A section it cannot read shows as `unknown` with the
 reason rather than a guess, and a local checkout may be behind its remote, so
 confirm a fork's state on its remote branch before acting on it. It reports;
 it never authorizes recovery, cleanup, or shipping.

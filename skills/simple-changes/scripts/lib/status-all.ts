@@ -1,7 +1,6 @@
 import {
   type Dirent,
   existsSync,
-  lstatSync,
   readdirSync,
   readFileSync,
   realpathSync,
@@ -9,30 +8,37 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { revisionContainmentMethod } from "./cleanup-core.ts";
 import { CURRENT_GUIDANCE_VERSION } from "./guidance-updates.ts";
 import { captureInventory, locateRepository } from "./inventory.ts";
 import {
   controllerBindingPath,
   type LeaseLiveness,
   leaseLiveness,
+  loopLeasePath,
   readControllerBinding,
   readLeaseFromCommonDirectory,
 } from "./loop-lease.ts";
+import { runGit } from "./process.ts";
 import { withReadOnlyGit } from "./read-only-git.ts";
-import { readyWorkStatus } from "./ready-work.ts";
-import { evaluateShipHolds } from "./ship-holds.ts";
+import { readReadyReceipts, readyReceiptsPath } from "./ready-work.ts";
+import { evaluateShipHolds, shipHoldsPath } from "./ship-holds.ts";
 import { GLOBAL_SKILL_ROOTS, PROJECT_ROOTS } from "./skill-roots.ts";
 import type { RepositoryInventory } from "./types.ts";
-import { readCoordinationDocumentFromCommonDirectory } from "./worktree-coordination.ts";
+import {
+  readCoordinationDocumentFromCommonDirectory,
+  worktreeCoordinationPath,
+} from "./worktree-coordination.ts";
 
 /**
  * A read-only view of Simple Changes state across every repository and fork
  * under the roots `update-local-forks discover` scans. It never writes,
- * fetches, or takes a lock: Git runs with optional locks, lazy fetches, and
- * the filesystem monitor off, holds are read locally only, and state files
- * are read without their locks, so a section another process is rewriting
- * may read as unknown. Anything that cannot be read is reported as unknown
- * with the reason, never guessed.
+ * fetches, or takes a lock: it never runs `git status` (so no filter,
+ * filesystem monitor, or index refresh runs), other Git reads run with
+ * optional locks and lazy fetches off, holds are read locally only, and
+ * state files are read without their locks, so a section another process is
+ * rewriting may read as unknown. Anything that cannot be read is reported as
+ * unknown with the reason, never guessed.
  */
 
 const MAX_DEPTH = 6;
@@ -85,8 +91,11 @@ export interface StatusClaim {
   adapter: string;
   agentId: string;
   branch: string | null;
-  /** How the checkout compares with the claim: unknown when unreadable. */
-  checkout: "absent" | "changed" | "matches" | "moved" | "unknown";
+  /**
+   * How the checkout's HEAD compares with the claim; contents are never
+   * compared, and unknown means the checkout could not be observed.
+   */
+  checkout: "absent" | "at-claimed-head" | "moved" | "unknown";
   claimId: string;
   path: string;
   state: string;
@@ -381,22 +390,42 @@ const section = <T>(read: () => T): T | Unknown => {
 };
 
 /**
+ * Whether a state file exists, following symlinks: absent only on ENOENT or
+ * ENOTDIR, unknown on any other failure (a loop, no permission), so a reader
+ * that treats a missing file as empty state never turns an unreadable file
+ * into a fact.
+ */
+const probeFile = (path: string): "absent" | "present" | Unknown => {
+  try {
+    statSync(path);
+    return "present";
+  } catch (error) {
+    const { code } = error as NodeJS.ErrnoException;
+    return code === "ENOENT" || code === "ENOTDIR" ? "absent" : unknown(error);
+  }
+};
+
+/** Reads a state section only once its file is known present or absent. */
+const stateSection = <T>(path: string, read: () => T): T | Unknown => {
+  const probed = probeFile(path);
+  return isUnknown(probed) ? probed : section(read);
+};
+
+/**
  * The binding is advisory: a missing one, or one for another controller
- * tenure, means nothing is awaited, but one that cannot be parsed is unknown.
+ * tenure, means nothing is awaited, but one that cannot be read is unknown.
  */
 const awaitingUserStatus = (
   lease: Parameters<typeof readControllerBinding>[0]
 ): StatusLease["awaitingUser"] => {
-  const questions = readControllerBinding(lease)?.awaitingUser?.questions;
-  if (questions) {
-    return questions;
-  }
   const path = controllerBindingPath(lease.commonGitDirectory);
+  const probed = probeFile(path);
+  if (probed !== "present") {
+    return probed === "absent" ? null : probed;
+  }
   return section(() => {
-    if (existsSync(path)) {
-      JSON.parse(readFileSync(path, "utf8"));
-    }
-    return null;
+    JSON.parse(readFileSync(path, "utf8"));
+    return readControllerBinding(lease)?.awaitingUser?.questions ?? null;
   });
 };
 
@@ -422,19 +451,18 @@ const leaseStatus = (commonGitDirectory: string): StatusLease | null => {
 };
 
 /**
- * Whether `path` exists: false only when the filesystem says it does not
- * (ENOENT or ENOTDIR), null when it cannot tell, such as without permission.
+ * Whether a checkout exists, following symlinks: false only on ENOENT or
+ * ENOTDIR, null when the filesystem cannot tell (a loop, no permission).
  */
 const pathPresence = (path: string): boolean | null => {
-  try {
-    lstatSync(path);
-    return true;
-  } catch (error) {
-    const { code } = error as NodeJS.ErrnoException;
-    return code === "ENOENT" || code === "ENOTDIR" ? false : null;
-  }
+  const probed = probeFile(path);
+  return isUnknown(probed) ? null : probed === "present";
 };
 
+/**
+ * Claims compare the checkout's HEAD only. Status never runs `git status`,
+ * so it never compares contents and never reports a checkout as unchanged.
+ */
 const claimStatus = (
   inventory: RepositoryInventory
 ): { claims: StatusClaim[]; released: number } => {
@@ -447,18 +475,14 @@ const claimStatus = (
       const worktree = inventory.worktrees.find(
         (item) => item.path === claim.path
       );
-      // A deleted checkout can keep prunable Git metadata whose digest is not
-      // observed content, so absence is checked on disk first.
       const present = pathPresence(claim.path);
-      let checkout: StatusClaim["checkout"] = "matches";
+      let checkout: StatusClaim["checkout"] = "at-claimed-head";
       if (present === false) {
         checkout = "absent";
-      } else if (present === null || !worktree) {
+      } else if (present === null || !worktree || worktree.prunable) {
         checkout = "unknown";
       } else if (worktree.headSha !== claim.headSha) {
         checkout = "moved";
-      } else if (worktree.changeDigest !== claim.changeDigest) {
-        checkout = "changed";
       }
       return {
         adapter: claim.owner.adapter,
@@ -473,6 +497,55 @@ const claimStatus = (
     }),
     released: document.claims.length - open.length,
   };
+};
+
+const commitOf = (root: string, ref: string): string | null => {
+  const result = runGit(
+    root,
+    ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`],
+    true
+  );
+  return result.exitCode === 0 ? result.stdout.trim() : null;
+};
+
+/**
+ * Ready-work freshness from refs alone: shipped once the target contains the
+ * receipted head, stale once the branch moved or is gone, otherwise current
+ * at the receipted head (contents not compared).
+ */
+const readyStatus = (
+  inventory: RepositoryInventory
+): Exclude<StatusRepository["readyWork"], Unknown> => {
+  const root = inventory.repository.primaryCheckout;
+  const target = commitOf(root, inventory.targetRef);
+  return readReadyReceipts(inventory.repository.commonGitDirectory).map(
+    (receipt) => {
+      const method = target
+        ? revisionContainmentMethod(root, target, receipt.headSha)
+        : null;
+      const branchHead = commitOf(root, `refs/heads/${receipt.branch}`);
+      let freshness: "current" | "shipped" | "stale" = "current";
+      let detail = `Branch ${receipt.branch} is still at the receipted commit; contents were not compared.`;
+      if (method) {
+        freshness = "shipped";
+        detail = `${inventory.targetRef} already contains ${receipt.headSha} (${method}).`;
+      } else if (branchHead !== receipt.headSha) {
+        freshness = "stale";
+        detail = branchHead
+          ? `Branch ${receipt.branch} moved to ${branchHead} after the receipt.`
+          : `Branch ${receipt.branch} no longer exists locally.`;
+      }
+      return {
+        branch: receipt.branch,
+        checkoutPresent: pathPresence(receipt.path),
+        detail,
+        freshness,
+        headSha: receipt.headSha,
+        owner: receipt.owner.agentId,
+        path: receipt.path,
+      };
+    }
+  );
 };
 
 const guidanceStatus = (
@@ -502,8 +575,12 @@ const repositoryStatus = (
   directory: string,
   commonGitDirectory: string
 ): StatusRepository => {
-  const captured = section(() => captureInventory(directory));
-  const lease = section(() => leaseStatus(commonGitDirectory));
+  const captured = section(() =>
+    captureInventory(directory, { skipWorktreeStatus: true })
+  );
+  const lease = stateSection(loopLeasePath(commonGitDirectory), () =>
+    leaseStatus(commonGitDirectory)
+  );
   if (isUnknown(captured)) {
     return {
       claims: captured,
@@ -517,12 +594,15 @@ const repositoryStatus = (
     };
   }
   const inventory = captured;
-  const claims = section(() => claimStatus(inventory));
+  const claims = stateSection(
+    worktreeCoordinationPath(commonGitDirectory),
+    () => claimStatus(inventory)
+  );
   return {
     claims: isUnknown(claims) ? claims : claims.claims,
     commonGitDirectory,
     guidance: section(() => guidanceStatus(inventory)),
-    holds: section(() =>
+    holds: stateSection(shipHoldsPath(commonGitDirectory), () =>
       evaluateShipHolds(inventory, { localOnly: true }).holds.map((item) => ({
         holdId: item.hold.holdId,
         owner: item.hold.owner.agentId,
@@ -534,16 +614,8 @@ const repositoryStatus = (
       }))
     ),
     lease,
-    readyWork: section(() =>
-      readyWorkStatus(inventory).map((item) => ({
-        branch: item.receipt.branch,
-        checkoutPresent: pathPresence(item.receipt.path),
-        detail: item.detail,
-        freshness: item.freshness,
-        headSha: item.receipt.headSha,
-        owner: item.receipt.owner.agentId,
-        path: item.receipt.path,
-      }))
+    readyWork: stateSection(readyReceiptsPath(commonGitDirectory), () =>
+      readyStatus(inventory)
     ),
     releasedClaims: isUnknown(claims) ? null : claims.released,
     repository: inventory.repository.primaryCheckout,

@@ -10,6 +10,7 @@ import {
   realpathSync,
   rmSync,
   statSync,
+  symlinkSync,
   utimesSync,
   writeFileSync,
 } from "node:fs";
@@ -232,7 +233,8 @@ describe("simple-changes status --all", () => {
     expect(status.claims).toEqual([
       expect.objectContaining({
         agentId: "author-agent",
-        checkout: "changed",
+        // Status compares HEAD only; it never runs git status.
+        checkout: "at-claimed-head",
         path: authorPath,
         state: "active",
       }),
@@ -331,6 +333,16 @@ describe("simple-changes status --all", () => {
     const lease = status?.lease as { awaitingUser: unknown } | undefined;
     expect(isUnknown(lease?.awaitingUser)).toBe(true);
 
+    // A checkout replaced by a symlink loop cannot be observed.
+    symlinkSync(gone, gone);
+    const [looped] = statusAll({
+      home,
+      runtime: { skillDirectory: home, version: "0.27.1" },
+    }).repositories;
+    expect(looped?.claims).toEqual([
+      expect.objectContaining({ checkout: "unknown", path: gone }),
+    ]);
+
     writeFileSync(worktreeCoordinationPath(common), "{ not json");
     const [unreadable] = statusAll({
       home,
@@ -338,6 +350,18 @@ describe("simple-changes status --all", () => {
     }).repositories;
     expect(isUnknown(unreadable?.claims)).toBe(true);
     expect(unreadable?.releasedClaims).toBeNull();
+
+    // A state file that cannot be looked up is unknown, never empty.
+    rmSync(worktreeCoordinationPath(common));
+    symlinkSync(
+      worktreeCoordinationPath(common),
+      worktreeCoordinationPath(common)
+    );
+    const [lookup] = statusAll({
+      home,
+      runtime: { skillDirectory: home, version: "0.27.1" },
+    }).repositories;
+    expect(isUnknown(lookup?.claims)).toBe(true);
   });
 
   test("reports ready receipts, their checkouts, and awaited questions", () => {

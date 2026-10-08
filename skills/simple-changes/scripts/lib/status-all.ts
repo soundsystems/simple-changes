@@ -739,12 +739,52 @@ const policyProbe = (primaryCheckout: string): Unknown | null => {
 };
 
 /**
+ * The head a merge-conditioned hold waits on, read from the refs the ordinary
+ * evaluation reads, in its order: the local branch, then the target remote's
+ * copy (a published hold reads only its publication remote's copy). The
+ * evaluation treats a ref it cannot resolve as missing and falls back, so a
+ * ref that exists but cannot be read is unknown here, never a fallback.
+ */
+const holdSourceHead = (
+  inventory: RepositoryInventory,
+  item: ShipHoldEvaluation
+): string | null | Unknown => {
+  const branch = item.evidence?.branch;
+  if (!branch) {
+    return null;
+  }
+  const root = inventory.repository.primaryCheckout;
+  let refs: string[] = [`refs/heads/${branch}`];
+  const remote = inventory.repository.targetRemote;
+  if (remote) {
+    refs.push(`refs/remotes/${remote}/${branch}`);
+  }
+  if (item.hold.source === "remote") {
+    const published = item.hold.publication?.remote;
+    refs = published ? [`refs/remotes/${published}/${branch}`] : [];
+  }
+  for (const ref of refs) {
+    const present = refPresence(root, ref);
+    if (present === null) {
+      return unknown(new Error(`${ref} cannot be read`));
+    }
+    if (present) {
+      return (
+        commitOf(root, ref) ??
+        unknown(new Error(`${ref} does not name a readable commit`))
+      );
+    }
+  }
+  return null;
+};
+
+/**
  * A hold waiting for a branch to merge, judged again against the target's
  * full ref (the ordinary evaluation reads the target by its short name, which
  * a same-named tag can answer) with history-aware containment: satisfied when
  * the target contains the branch head, active when it does not, and unknown
- * when the target cannot be read, its history cannot be read, or the clone is
- * shallow (where cut history can make distinct tips with identical trees
+ * when the target or the branch cannot be read, its history cannot be read,
+ * or the clone is shallow (where cut history can make distinct tips with identical trees
  * look patch-equivalent). Other holds keep their evaluated status.
  */
 const holdStatus = (
@@ -752,8 +792,19 @@ const holdStatus = (
   item: ShipHoldEvaluation,
   target: string | null | Unknown
 ): string => {
-  const head = item.evidence?.branchHead;
-  if (!((item.status === "active" || item.status === "satisfied") && head)) {
+  if (
+    !(
+      (item.status === "active" || item.status === "satisfied") &&
+      item.evidence
+    )
+  ) {
+    return item.status;
+  }
+  const head = holdSourceHead(inventory, item);
+  if (isUnknown(head)) {
+    return "unknown";
+  }
+  if (!head) {
     return item.status;
   }
   if (target === null || isUnknown(target)) {

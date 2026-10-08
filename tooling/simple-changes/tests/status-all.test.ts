@@ -964,6 +964,28 @@ describe("simple-changes status --all", () => {
     expect(malformed?.readyWork).toEqual([
       expect.objectContaining({ branch: "ready", freshness: "unknown" }),
     ]);
+    // The hold waiting on that branch is unknown too, not still active.
+    expect(malformed?.holds).toEqual([
+      expect.objectContaining({ status: "unknown", untilMerged: "ready" }),
+    ]);
+
+    // With a target remote, the ordinary evaluation falls back from the
+    // unreadable local branch to a remote copy the target contains and says
+    // satisfied; status must not.
+    git(repository, ["tag", "-d", "main"]);
+    git(repository, ["remote", "add", "origin", repository]);
+    git(repository, ["update-ref", "refs/remotes/origin/main", "main"]);
+    git(repository, ["update-ref", "refs/remotes/origin/ready", "main"]);
+    expect(
+      evaluateShipHolds(captureInventory(repository), { localOnly: true }).holds
+    ).toEqual([expect.objectContaining({ status: "satisfied" })]);
+    const [fallback] = statusAll({
+      home,
+      runtime: { skillDirectory: home, version: "0.27.1" },
+    }).repositories;
+    expect(fallback?.holds).toEqual([
+      expect.objectContaining({ status: "unknown", untilMerged: "ready" }),
+    ]);
   });
 
   test("shows unreadable state as unknown and keeps going", () => {

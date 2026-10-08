@@ -51,9 +51,10 @@ any form it does not support rather than guessing what it does. It gates:
   `sha` and no `--input` body, `glab mr merge <iid> --sha <head>`, or `gh pr
   merge <n> --match-head-commit <head>` (in the `-R` project, or the origin
   project when `-R` is absent; the proposal is named by number only, never
-  by URL or branch). The merged head must also contain the fetched
-  `origin/main`, so the merge result is exactly the checked tree; fetch right
-  before merging, because the provider can still merge onto a `main` that
+  by URL or branch). The merged head must also contain every fetched copy
+  of `main` (`refs/remotes/<remote>/main` for each remote, since the guard
+  cannot tell which remote a project number means), so the merge result is
+  exactly the checked tree; fetch right before merging, because the provider can still merge onto a `main` that
   moved after the fetch. The guard and `check:receipt` read real history:
   replacement refs and graft files, which can show a commit with another
   tree or other parents than a push or merge transfers, are ignored.

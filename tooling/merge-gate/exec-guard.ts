@@ -102,9 +102,9 @@ const publishedContains = (
 /**
  * A provider merge ships the merge of `sha` into the target. That result is
  * exactly the checked tree only when `sha` already contains the fetched
- * upstream target, so require that as well as the receipt. The provider can
- * still merge onto a target that moved after the last fetch; fetch right
- * before merging.
+ * upstream target, so require that, for every remote's fetched copy, as well
+ * as the receipt. The provider can still merge onto a target that moved
+ * after the last fetch; fetch right before merging.
  */
 const requireProviderMerge = (
   context: GuardContext,
@@ -123,22 +123,42 @@ const requireProviderMerge = (
     return checked;
   }
   for (const target of context.targets) {
-    const ref = publishedRef(context.cwd, target);
-    if (!ref) {
+    const refs = fetchedCopies(context.cwd, target);
+    if (refs.length === 0) {
       return refuse(
         `${what}: no fetched upstream copy of ${target} exists, so the guard cannot prove the merge ships exactly ${sha}; fetch the target first`
       );
     }
-    if (
-      git(context.cwd, ["merge-base", "--is-ancestor", ref, commit])
-        .exitCode !== 0
-    ) {
-      return refuse(
-        `${what}: ${sha} does not contain ${ref}, so the merge would ship a tree no receipt covers; update the branch from the target, check it again, then merge`
-      );
+    for (const ref of refs) {
+      if (
+        git(context.cwd, ["merge-base", "--is-ancestor", ref, commit])
+          .exitCode !== 0
+      ) {
+        return refuse(
+          `${what}: ${sha} does not contain ${ref}, so the merge would ship a tree no receipt covers; update the branch from the target, check it again, then merge`
+        );
+      }
     }
   }
   return checked;
+};
+
+/**
+ * Every fetched copy of `target`, one per remote. The guard cannot tell which
+ * remote is the merge's project (a project can be named by number), so a
+ * provider merge must contain all of them; a stale or divergent copy refuses
+ * rather than letting the guard check the wrong one.
+ */
+const fetchedCopies = (cwd: string, target: string): string[] => {
+  const remotes = git(cwd, ["remote"]);
+  if (remotes.exitCode !== 0) {
+    return [];
+  }
+  return remotes.stdout
+    .split("\n")
+    .filter(Boolean)
+    .map((remote) => `refs/remotes/${remote}/${target}`)
+    .filter((ref) => resolveCommit(cwd, ref) !== null);
 };
 
 // ------------------------------------------------------- argument scanning

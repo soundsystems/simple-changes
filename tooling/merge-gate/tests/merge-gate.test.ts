@@ -311,6 +311,63 @@ describe("merge gate exec guard", () => {
     }
   });
 
+  test("binds provider merges to every fetched copy of the target", () => {
+    const { base, feature, published, root, writeReceipt } = repository();
+    writeReceipt(feature);
+    const forms = [
+      [
+        "glab",
+        "api",
+        "projects/84768068/merge_requests/86/merge",
+        "-X",
+        "PUT",
+        "-f",
+        `sha=${feature}`,
+      ],
+      ["glab", "mr", "merge", "86", "--sha", feature, "-R", "a/b"],
+      ["gh", "pr", "merge", "7", "--match-head-commit", feature, "-R", "o/r"],
+      [
+        "gh",
+        "api",
+        "repos/o/r/pulls/7/merge",
+        "-X",
+        "PUT",
+        "-f",
+        `sha=${feature}`,
+      ],
+    ];
+    for (const command of forms) {
+      expect({ allow: decide(root, command).allow, command }).toEqual({
+        allow: true,
+        command,
+      });
+    }
+    // origin's main moved on to a commit the feature lacks, while a stale
+    // backup remote, configured as main's remote, still has the old main.
+    const moved = git(root, [
+      "commit-tree",
+      `${published}^{tree}`,
+      "-p",
+      published,
+      "-m",
+      "Moved on",
+    ]);
+    git(root, ["update-ref", "refs/remotes/origin/main", moved]);
+    git(root, ["remote", "add", "backup", join(base, "backup.git")]);
+    git(root, ["update-ref", "refs/remotes/backup/main", published]);
+    git(root, ["config", "branch.main.remote", "backup"]);
+    for (const command of forms) {
+      const decision = decide(root, command);
+      expect({ allow: decision.allow, command }).toEqual({
+        allow: false,
+        command,
+      });
+      expect(decision.reason).toContain(
+        "does not contain refs/remotes/origin/main"
+      );
+    }
+  });
+
   test("refuses a provider merge whose head does not contain the published target", () => {
     const { root, writeReceipt } = repository();
     const orphan = git(root, [
@@ -888,6 +945,31 @@ describe("bun run check:receipt", () => {
     expect(result.exitCode).toBe(1);
     expect(result.stderr).toContain("the checkout is not clean");
     expect(existsSync(receiptPath(join(root, ".git"), head))).toBe(false);
+  });
+
+  test("runs the check against real history, never replaced or grafted parents", () => {
+    for (const rewrite of ["replace", "graft"] as const) {
+      // The check passes only when Git shows HEAD's real parent.
+      const { head, root } = checkRepository(
+        "git rev-parse --verify -q HEAD~1"
+      );
+      if (rewrite === "replace") {
+        git(root, ["replace", "--graft", head]);
+      } else {
+        writeFileSync(join(root, ".git", "info", "grafts"), `${head}\n`);
+      }
+      // Plain Git now shows HEAD with no parent; the tree is unchanged.
+      expect(
+        spawnSync(["git", "-C", root, "rev-parse", "--verify", "-q", "HEAD~1"])
+          .exitCode
+      ).not.toBe(0);
+      const result = runCheckReceipt(root);
+      expect({ exitCode: result.exitCode, rewrite }).toEqual({
+        exitCode: 0,
+        rewrite,
+      });
+      expect(existsSync(receiptPath(join(root, ".git"), head))).toBe(true);
+    }
   });
 
   test("records nothing for a failing check, a dirty checkout, or a check that edits files", () => {

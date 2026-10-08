@@ -17,11 +17,13 @@
  * - `git merge --ff-only` or `git pull --ff-only` while a target branch is
  *   checked out, to a published or receipted commit.
  *
- * The enforcement boundary is `loop exec` with these plain argv forms. The
- * guard sees only the argv `loop exec` runs, so a merge run any other way, or
- * by a program that runs other programs (interpreters, build tools, `xargs`),
- * is outside it: it is a convenience gate for this repository's controller,
- * not a security boundary.
+ * The enforcement boundary is `loop exec` with these plain argv forms, with
+ * git, glab, or gh as the command itself: any other program that receives
+ * one of them, or a shell, as an argument is refused. The guard sees only the
+ * argv `loop exec` runs, so a merge run any other way, or by a program that
+ * starts git another way (an interpreter, a build tool), is outside it: it is
+ * a convenience gate for this repository's controller, not a security
+ * boundary.
  */
 
 import { basename, resolve } from "node:path";
@@ -48,7 +50,6 @@ const refuse = (reason: string): GuardDecision => ({ allow: false, reason });
 const SHELLS = new Set(["sh", "bash", "zsh", "dash", "ksh", "fish"]);
 const SHELL_RISK_PATTERN = /\b(?:git|glab|gh)\b|\$(?:[@*0-9]|\{)/u;
 const SHELL_COMMAND_FLAG_PATTERN = /^-[A-Za-z]*c[A-Za-z]*$/u;
-const ENV_ASSIGNMENT_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*=/u;
 const SHORT_CLUSTER_PATTERN = /^-[A-Za-z]{2,}$/u;
 const LEADING_SLASHES_PATTERN = /^\/+/u;
 const SHA_PATTERN = /^[0-9a-f]{7,64}$/u;
@@ -1070,96 +1071,7 @@ const analyzeProvider = (
 
 // ---------------------------------------------------------------- entry
 
-const ENV_VALUED = ["-u", "--unset", "-C", "--chdir"];
-
-/**
- * One `env` argument: how many arguments it uses and any new directory, or
- * null at the command it wraps.
- */
-const envArgument = (
-  argv: readonly string[],
-  index: number,
-  cwd: string
-): { cwd: string; used: number } | GuardDecision | null => {
-  const argument = argv[index] ?? "";
-  if (argument === "-S" || argument.startsWith("--split-string")) {
-    return refuse(
-      "env -S hides the command line from the guard; run the command as a plain argv"
-    );
-  }
-  if (argument.startsWith("GIT_") && argument.includes("=")) {
-    return refuse(
-      `env ${argument.slice(0, argument.indexOf("="))}=... changes what git does, so the guard cannot check it; run the command without it`
-    );
-  }
-  if (argument === "-C" || argument === "--chdir") {
-    return { cwd: resolve(cwd, argv[index + 1] ?? ""), used: 2 };
-  }
-  if (argument.startsWith("--chdir=")) {
-    return { cwd: resolve(cwd, argument.slice("--chdir=".length)), used: 1 };
-  }
-  if (ENV_VALUED.includes(argument)) {
-    return { cwd, used: 2 };
-  }
-  return ENV_ASSIGNMENT_PATTERN.test(argument) || argument.startsWith("-")
-    ? { cwd, used: 1 }
-    : null;
-};
-
-/** Skips one `env` invocation's options and assignments. */
-const skipEnv = (
-  argv: readonly string[],
-  start: number,
-  cwd: string
-): { cwd: string; index: number } | GuardDecision => {
-  let index = start;
-  let directory = cwd;
-  while (index < argv.length) {
-    if (argv[index] === "--") {
-      return { cwd: directory, index: index + 1 };
-    }
-    const step = envArgument(argv, index, directory);
-    if (step === null) {
-      break;
-    }
-    if ("allow" in step) {
-      return step;
-    }
-    directory = step.cwd;
-    index += step.used;
-  }
-  return { cwd: directory, index };
-};
-
-/**
- * Strips `env`, `command`, and `nohup` wrappers, tracking `env -C`, and
- * whether an `env` changed the environment the wrapped command sees.
- */
-const unwrap = (
-  argv: readonly string[],
-  cwd: string
-):
-  | { argv: string[]; cwd: string; environmentChanged: boolean }
-  | GuardDecision => {
-  let index = 0;
-  let directory = cwd;
-  let environmentChanged = false;
-  for (;;) {
-    const executable = basename(argv[index] ?? "");
-    if (executable === "command" || executable === "nohup") {
-      index += 1;
-    } else if (executable === "env") {
-      const skipped = skipEnv(argv, index + 1, directory);
-      if ("allow" in skipped) {
-        return skipped;
-      }
-      environmentChanged ||= skipped.index > index + 1;
-      ({ cwd: directory, index } = skipped);
-    } else {
-      return { argv: argv.slice(index), cwd: directory, environmentChanged };
-    }
-  }
-};
+const GATED_TOOLS = new Set(["git", "glab", "gh"]);
 
 const shellScript = (argv: readonly string[]): string | null => {
   for (const [index, argument] of argv.slice(1).entries()) {
@@ -1173,20 +1085,30 @@ const shellScript = (argv: readonly string[]): string | null => {
   return null;
 };
 
+/**
+ * Whether a later argument runs git, glab, gh, or a shell: any program that
+ * receives one as an argument (env, nohup, xargs, sudo, timeout, and the
+ * rest) may run it with arguments the guard cannot read, so the guard never
+ * tries to parse wrapper grammars and refuses the whole command instead.
+ */
+const wrapsGatedCommand = (argv: readonly string[]): string | undefined =>
+  argv
+    .slice(1)
+    .find(
+      (argument) =>
+        GATED_TOOLS.has(basename(argument)) || SHELLS.has(basename(argument))
+    );
+
 export const evaluateCommand = (
-  command: readonly string[],
+  argv: readonly string[],
   context: GuardContext
 ): GuardDecision => {
-  const unwrapped = unwrap(command, context.cwd);
-  if ("allow" in unwrapped) {
-    return unwrapped;
-  }
-  const { argv, cwd, environmentChanged } = unwrapped;
   const executable = basename(argv[0] ?? "");
-  if (environmentChanged && ["git", "glab", "gh"].includes(executable)) {
-    return refuse(
-      `env changes the environment ${executable} reads its configuration from (HOME, XDG_CONFIG_HOME, host variables), which the guard cannot check; run ${executable} without env`
-    );
+  if (executable === "git") {
+    return analyzeGit(argv, context);
+  }
+  if (executable === "glab" || executable === "gh") {
+    return analyzeProvider(argv, context);
   }
   if (SHELLS.has(executable)) {
     const script = shellScript(argv);
@@ -1196,11 +1118,19 @@ export const evaluateCommand = (
         )
       : allow();
   }
-  if (executable === "git") {
-    return analyzeGit(argv, { ...context, cwd });
+  const wrapped = wrapsGatedCommand(argv);
+  if (wrapped) {
+    return refuse(
+      `${executable} runs ${basename(wrapped)} with arguments the guard cannot check; run ${basename(wrapped)} directly as the command`
+    );
   }
-  return executable === "glab" || executable === "gh"
-    ? analyzeProvider(argv, { ...context, cwd })
+  return executable === "env" &&
+    argv.some(
+      (argument) => argument === "-S" || argument.startsWith("--split-string")
+    )
+    ? refuse(
+        "env -S hides the command line from the guard; run the command as a plain argv"
+      )
     : allow();
 };
 

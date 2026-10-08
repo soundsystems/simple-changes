@@ -148,6 +148,8 @@ describe("merge gate exec guard", () => {
       ["gh", "api", "-X", "DELETE", "repos/o/r/git/refs/heads/feat/x"],
       ["sh", "-c", "echo shipped"],
       ["simple-changes", "loop", "status"],
+      ["env", "FOO=1", "bun", "run", "check"],
+      ["nohup", "bun", "run", "check"],
     ]) {
       expect({ command, ...decide(root, command) }).toMatchObject({
         allow: true,
@@ -410,6 +412,13 @@ describe("merge gate exec guard", () => {
       ["env", "-S", "git push origin main"],
       ["git", "push"],
       ["git", "push", "origin"],
+      ["nohup", "--", "git", "push", "origin", "HEAD:refs/heads/main"],
+      ["nohup", "glab", "mr", "merge", "86", "--sha", feature, "-R", "a/b"],
+      ["xargs", "git", "push", "origin"],
+      ["sudo", "-u", "someone", "git", "push", "origin", "HEAD:main"],
+      ["timeout", "5", "sh", "-c", "echo"],
+      ["command", "git", "push", "origin", "HEAD:main"],
+      ["/usr/bin/env", "git", "status"],
       ["git", "push", "-on", "origin", "HEAD:main"],
       ["git", "push", "-od", "origin", "HEAD:main"],
       ["git", "push", "-fu", "origin", "main:refs/heads/main"],

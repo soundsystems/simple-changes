@@ -72,8 +72,10 @@ pattern or matching (`:`) refspec, except `git push <remote> --tags`; a short
 option cluster or attached short value anywhere (Git reads `-on` as `-o n`),
 so write each option on its own; git global
 options other than `-C`, paging, and `--no-optional-locks` (so no `-c`,
-`--git-dir`, `--work-tree`, or `--exec-path`); an `env` wrapper that changes the
-environment of git, glab, or gh; a git subcommand that is not a known built-in
+`--git-dir`, `--work-tree`, or `--exec-path`); any other program that receives
+git, glab, gh, or a shell as an argument (`env`, `nohup`, `xargs`, `sudo`,
+`timeout`, and the rest), since it could run them with arguments the guard
+cannot read; `env -S`; a git subcommand that is not a known built-in
 (aliases, `git-*` programs, `send-pack`, `http-push`, `subtree`); `git rebase
 --exec` or `-x` in any form, `git submodule foreach`, and `git bisect run`; `git
 merge` or `git pull` options outside the supported set on `main`, including
@@ -81,8 +83,8 @@ merge` or `git pull` options outside the supported set on `main`, including
 or its own arguments. Every other command passes. Push feature branches as
 `git push -u origin <branch>:<branch>`.
 
-The enforcement boundary is `loop exec` with these plain argv forms: run every
-merge that way. The guard sees only the argv `loop exec` runs and the
+The enforcement boundary is `loop exec` with these plain argv forms, with git,
+glab, or gh as the command itself: run every merge that way. The guard sees only the argv `loop exec` runs and the
 controller's own environment and glab or gh host configuration, so a merge run
 any other way, or by a program that runs other programs (an interpreter, a
 build tool, `xargs`), is not gated. It is a convenience gate for this

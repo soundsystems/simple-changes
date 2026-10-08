@@ -24,6 +24,7 @@ import {
   LEASE_STALE_AFTER_MS,
   leaseLiveness,
   loopLeasePath,
+  loopStatus,
   readControllerBinding,
   readLoopLease,
   recoverStaleLoopLease,
@@ -203,6 +204,11 @@ describe("turn-end guard", () => {
     expect(
       pausedLease ? readControllerBinding(pausedLease)?.awaitingUser : null
     ).toMatchObject({ questions: ["Apply migration 0042 to production?"] });
+    // The printed resume names the controller checkout, so it runs anywhere.
+    expect(loopStatus(repository.root).guidance.nextCommands).toEqual([
+      `simple-changes loop start --mode resume --agent-id <you> --repo ${repository.root}`,
+      `simple-changes loop close-equivalent --run-id ${lease.runId} --agent-id <you> --approved-by <user> --reason <why> --repo ${repository.root}`,
+    ]);
     expect(
       turnCheck({ sessionId: SESSION, stopHookActive: false }).decision
     ).toBe("allow");

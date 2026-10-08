@@ -2026,11 +2026,7 @@ const staleClaimRecovery = (
   worktree: WorktreeInventory,
   { linkedClaim, liveClaim }: WorktreeClaimContext
 ): StaleClaimRecovery => {
-  // Every step names the controller checkout, so it runs from anywhere; `loop
-  // start` in particular makes the checkout it runs in the controller.
-  const repo = commandWord(
-    registeredController(lease)?.path ?? lease.primaryCheckout
-  );
+  const repo = controllerRepo(lease);
   if (controllerLifecycle(lease).status !== "active") {
     const resume = `simple-changes loop start --mode resume --agent-id <you> --repo ${repo}`;
     const verify = `${LOOP_VERIFY} --run-id ${lease.runId} --repo ${repo}`;
@@ -2052,8 +2048,26 @@ const staleClaimRecovery = (
       text: `It cannot be paused yet. ${step}`,
     };
   }
-  const owner = liveClaim?.owner ?? linkedClaim?.owner;
-  const ownerId = owner?.agentId ?? registered.agentId;
+  const controller = commandWord(lease.ownerAgentId);
+  const verify = `${LOOP_VERIFY} --run-id ${lease.runId} --repo ${repo}`;
+  // Only the active controller may claim the primary checkout, so another
+  // agent still holding it releases it first.
+  const primary = worktree.isPrimary || worktree.path === lease.primaryCheckout;
+  if (primary && liveClaim && liveClaim.owner.agentId !== lease.ownerAgentId) {
+    const release = `simple-changes worktree release --agent-id ${commandWord(liveClaim.owner.agentId)} --claim-id ${liveClaim.claimId} --repo ${repo}`;
+    return {
+      commands: [release, verify],
+      text: `Only the active controller ${controller} may claim the primary checkout, which ${liveClaim.owner.agentId} still holds: run \`${release}\`, then re-run \`${verify}\` for its exact recovery steps.`,
+    };
+  }
+  const candidate = liveClaim?.owner ?? linkedClaim?.owner;
+  const owner =
+    primary && candidate?.agentId !== lease.ownerAgentId
+      ? undefined
+      : candidate;
+  const ownerId = primary
+    ? lease.ownerAgentId
+    : (owner?.agentId ?? registered.agentId);
   const agent = ownerId ? commandWord(ownerId) : "<owner>";
   const path = commandWord(worktree.path);
   const claim = [
@@ -2062,7 +2076,6 @@ const staleClaimRecovery = (
     ...(owner?.ownerRef ? [`--owner-ref ${commandWord(owner.ownerRef)}`] : []),
     `--repo ${repo}`,
   ].join(" ");
-  const controller = commandWord(lease.ownerAgentId);
   const pause = `simple-changes worktree pause --agent-id ${agent} --worktree ${path} --run-id ${lease.runId} --disposition preserve-in-place --reason <why> --repo ${repo}`;
   const accept = `${ACCEPT_PAUSED_CHANGE} --run-id ${lease.runId} --agent-id ${controller} --pause-receipt <pause-receipt-id> --repo ${repo}`;
   return {
@@ -2922,6 +2935,12 @@ const owesFirstScope = (lease: LoopLease): boolean =>
 
 const registeredController = (lease: LoopLease): LoopWorktreeLease | null =>
   lease.worktrees.find((worktree) => worktree.role === "controller") ?? null;
+
+// The controller checkout, quoted for a printed `--repo`, so a printed step
+// runs from anywhere; `loop start` in particular makes the checkout it runs
+// in the controller.
+const controllerRepo = (lease: LoopLease): string =>
+  commandWord(registeredController(lease)?.path ?? lease.primaryCheckout);
 
 /**
  * Describes how a worktree differs from the exact state `loop start` saw, or
@@ -9368,13 +9387,15 @@ const withArchiveRecordedGuidance = (
       }
     : guidance;
 
+const resumeCommands = (lease: LoopLease): string[] => [
+  `simple-changes loop start --mode resume --agent-id <you> --repo ${controllerRepo(lease)}`,
+  `simple-changes loop close-equivalent --run-id ${lease.runId} --agent-id <you> --approved-by <user> --reason <why> --repo ${controllerRepo(lease)}`,
+];
+
 const relinquishedGuidance = (lease: LoopLease): LoopGuidance =>
   withArchiveRecordedGuidance(lease, {
     headline: `Loop ${lease.runId} has released its controller. Resume it to finish its recorded work; takeover approval is unnecessary. Its existing scope and safety checks still apply.`,
-    nextCommands: [
-      "simple-changes loop start --mode resume --agent-id <you>",
-      `simple-changes loop close-equivalent --run-id ${lease.runId} --agent-id <you> --approved-by <user> --reason <why>`,
-    ],
+    nextCommands: resumeCommands(lease),
   });
 
 const loopGuidanceFor = (
@@ -9404,10 +9425,7 @@ const loopGuidanceFor = (
   if (awaitingUser) {
     return withArchiveRecordedGuidance(lease, {
       headline: `Loop ${lease.runId} is paused waiting on the user: ${awaitingUser.questions.join(" | ")}. Once they answer, resume it; takeover approval is unnecessary, and its existing scope and safety checks still apply.`,
-      nextCommands: [
-        "simple-changes loop start --mode resume --agent-id <you>",
-        `simple-changes loop close-equivalent --run-id ${lease.runId} --agent-id <you> --approved-by <user> --reason <why>`,
-      ],
+      nextCommands: resumeCommands(lease),
     });
   }
   if (lifecycle.status === "relinquished") {

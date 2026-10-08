@@ -4080,6 +4080,7 @@ describe("active integration-loop lease", () => {
     const printed = () =>
       staleClaimRecoveryCommands(verifyLoop(fixture.root).violations);
     expect(printed()).toEqual(resume);
+    expect(loopStatus(author).guidance.nextCommands[0]).toBe(resume[0]);
     // Every step runs from the author's checkout, as an agent there would.
     const verifyText = runCli(author, [
       "loop",
@@ -4103,6 +4104,83 @@ describe("active integration-loop lease", () => {
     ]);
     runPrintedSteps(author, steps);
     expect(verifyLoop(fixture.root)).toMatchObject({
+      ok: true,
+      violations: [],
+    });
+  }, 120_000);
+
+  test("has the current controller recover the primary checkout after a controller transfer", () => {
+    const fixture = repository();
+    const controllerCheckout = join(fixture.base, "linked-controller");
+    git(fixture.root, [
+      "worktree",
+      "add",
+      "-b",
+      "linked-controller",
+      controllerCheckout,
+    ]);
+    const lease = startLoop(
+      controllerCheckout,
+      "first-controller",
+      "integrate"
+    );
+    const primaryClaim = claimWorktree(
+      controllerCheckout,
+      "first-controller",
+      fixture.root,
+      "codex"
+    );
+    acceptPausedWorktreeChange(
+      controllerCheckout,
+      lease.runId,
+      "first-controller",
+      pauseClaimedWorktree(
+        controllerCheckout,
+        "first-controller",
+        fixture.root,
+        lease.runId,
+        "preserve-in-place",
+        "Hold the primary checkout."
+      ).receiptId
+    );
+    takeoverLoop(
+      controllerCheckout,
+      lease.runId,
+      "next-controller",
+      loopManifestDigest(readLoopLease(controllerCheckout) ?? lease),
+      "user",
+      "Hand control to the next controller."
+    );
+    const steps = () =>
+      verifyLoop(controllerCheckout).violations.find(
+        (violation) =>
+          violation.code === "coordination-claim-stale" &&
+          violation.path === fixture.root
+      )?.nextCommands;
+
+    // The former controller still holds the primary checkout: it releases first.
+    writeFixture(fixture.root, "changed.ts", "export const changed = true;\n");
+    expect(steps()).toEqual([
+      `simple-changes worktree release --agent-id first-controller --claim-id ${primaryClaim.claimId} --repo ${controllerCheckout}`,
+      `simple-changes loop verify --run-id ${lease.runId} --repo ${controllerCheckout}`,
+    ]);
+    releaseWorktreeClaim(
+      controllerCheckout,
+      "first-controller",
+      primaryClaim.claimId
+    );
+
+    // Then only the current controller may claim, pause, and accept it.
+    const printed = staleClaimRecoveryCommands(
+      verifyLoop(controllerCheckout).violations
+    );
+    expect(printed).toEqual([
+      `simple-changes worktree claim --agent-id next-controller --worktree ${fixture.root} --adapter <adapter> --repo ${controllerCheckout}`,
+      `simple-changes worktree pause --agent-id next-controller --worktree ${fixture.root} --run-id ${lease.runId} --disposition preserve-in-place --reason <why> --repo ${controllerCheckout}`,
+      `simple-changes loop accept-paused-change --run-id ${lease.runId} --agent-id next-controller --pause-receipt <pause-receipt-id> --repo ${controllerCheckout}`,
+    ]);
+    runPrintedSteps(fixture.base, printed, { "<adapter>": "codex" });
+    expect(verifyLoop(controllerCheckout)).toMatchObject({
       ok: true,
       violations: [],
     });

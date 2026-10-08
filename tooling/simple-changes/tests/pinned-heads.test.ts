@@ -517,6 +517,7 @@ describe("pinned-head command analysis", () => {
       ["git", "restore", `--source=${lateTree}`, "late.ts"],
       ["git", "checkout", "copy", "--", "late.ts"],
       ["git", "restore", "--source=copy:late.ts", "late.ts"],
+      ["git", "restore", "-qscopy", "--", "late.ts"],
     ]) {
       expect({ argv, kinds: kinds(argv) }).toEqual({
         argv,
@@ -745,6 +746,8 @@ describe("pinned-head command analysis", () => {
       ["sudo", "/usr/bin/git", "merge", head],
       ["mise", "exec", "--", "git", "merge", head],
       ["/usr/bin/xcrun", "git", "merge", "feat/x"],
+      ["env", "/usr/libexec/git-core/git-merge", "--ff-only", "feat/x"],
+      ["sh", "-c", "git-merge --ff-only feat/x"],
     ]) {
       expect({ argv, kinds: kinds(argv) }).toEqual({
         argv,
@@ -852,6 +855,8 @@ describe("pinned-head command analysis", () => {
     }
     for (const argv of [
       ["git", "restore", "--source=refs/stash^1", "--staged", "."],
+      ["git", "restore", "-qsstash^1", "--worktree", "--staged", "--", "."],
+      ["git", "merge", "-nFETCH_HEAD"],
       ["git", "cherry-pick", "HEAD..refs/stash^1"],
       ["git", "reset", "--hard", "HEAD@{1}~0"],
       ["git", "merge", "--ff-only", "HEAD...FETCH_HEAD"],

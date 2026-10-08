@@ -748,14 +748,16 @@ export const indirectForm = (
 // The revisions inside one argument: a long option's value, a short option's
 // attached value, and each side of a range, without a leading `^`.
 const revisionParts = (text: string): string[] => {
-  let value = text;
+  let values = [text];
   if (text.startsWith("--")) {
     const separator = text.indexOf("=");
-    value = separator === -1 ? "" : text.slice(separator + 1);
+    values = separator === -1 ? [] : [text.slice(separator + 1)];
   } else if (text.startsWith("-")) {
-    value = text.slice(2);
+    // A cluster such as `-qsstash^1` may attach a value after any letter.
+    values = [...text.slice(2)].map((_, index) => text.slice(index + 2));
   }
-  return [value, ...value.split(RANGE_SEPARATOR)]
+  return values
+    .flatMap((value) => [value, ...value.split(RANGE_SEPARATOR)])
     .map((part) => (part.startsWith("^") ? part.slice(1) : part))
     .filter(Boolean);
 };
@@ -2108,15 +2110,19 @@ const programName = (path: string): string =>
 // Git run by another program: a command runner whose arguments mention Git
 // anywhere (a shell script, an interpreter's code), or any program given Git
 // as a whole argument (`xcrun git`, `mise exec -- git`).
+// `git`, or a dashed Git program such as `git-merge`.
+const isGitProgram = (word: string): boolean =>
+  programName(word) === "git" || DASHED_GIT_PROGRAM.test(programName(word));
+
 const wrappedRefusals = (argv: readonly string[]): PinnedRefusal[] => {
   const [command = ""] = argv;
   const args = argv.slice(1);
   const runsGit =
-    args.some((arg) => programName(arg) === "git") ||
+    args.some((arg) => isGitProgram(arg)) ||
     (COMMAND_RUNNERS.has(programName(command)) &&
       args
         .flatMap((arg) => arg.split(WRAPPER_WORD_SEPARATOR))
-        .some((word) => programName(word) === "git"));
+        .some((word) => isGitProgram(word)));
   return runsGit
     ? [
         refusal(

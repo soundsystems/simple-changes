@@ -13,10 +13,20 @@ units, and validate the result without mutating Git or contacting a provider.
 Requires [Bun](https://bun.sh/) 1.2 or later and Git. The CLI is a Bun
 TypeScript entry point; Node alone cannot run it.
 
+Development happens on GitLab at
+<https://gitlab.com/soundsystems/simple-changes>, and a read-only mirror is
+kept in sync at <https://github.com/soundsystems/simple-changes>. Install from
+the mirror: older Skills CLI releases, and lock entries without a recorded
+source URL, re-resolve a stored source as GitHub shorthand, so a GitLab install
+may not update in place, while an install from the mirror records
+`sourceType: github` and `skills update` works with every release. The
+commands below therefore use the mirror; the installed tree is byte-identical
+either way.
+
 Clone this repository, then from its root:
 
 ```sh
-git clone https://gitlab.com/soundsystems/simple-changes.git
+git clone https://github.com/soundsystems/simple-changes.git
 cd simple-changes
 bun install
 bun run simple-changes initialize --mode sync
@@ -27,7 +37,14 @@ bun run simple-changes release-notes
 bun run simple-changes release-notes --check --repo .
 ```
 
-Install it once in the portable global Skills directory:
+Install it once globally with the Skills CLI:
+
+```sh
+bunx skills add https://github.com/soundsystems/simple-changes --skill simple-changes -g
+```
+
+Or copy it from the clone into the portable global Skills directory (a copy is
+not tracked by the Skills CLI, so update it the same way):
 
 ```sh
 mkdir -p ~/.agents/skills
@@ -128,7 +145,7 @@ Then keep the fork current with the `update-local-forks` skill, which ships
 in this package and is meant for anyone who forked, not only maintainers:
 
 ```sh
-bunx skills add https://gitlab.com/soundsystems/simple-changes --skill update-local-forks
+bunx skills add https://github.com/soundsystems/simple-changes --skill update-local-forks -g
 ```
 
 Ask an agent to update your local forks, or run the helper directly. It scans

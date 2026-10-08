@@ -181,8 +181,11 @@ when arriving later. The next guarded observation promotes a qualifying opening
 `preserved` entry and binds its exact claim ID and owner. Head and content-digest
 drift are expected for that role. The controller excludes it from the current
 integration and cleanup. Verification still fails closed if the claim is
-absent, released, reassigned, or branch-mismatched, or if the worktree is
-primary or on the primary target branch. Use `concurrentWork: "strict"` for the
+absent, reassigned, or branch-mismatched, if the worktree changed after its
+owner released the claim, or if the worktree is primary or on the primary
+target branch. A released claim is never refreshed, so `loop verify` and `loop
+status` then print the exact recovery: the owner claims and pauses the checkout
+with `preserve-in-place`, and the controller runs `loop accept-paused-change`. Use `concurrentWork: "strict"` for the
 older repository-wide serialized behavior. Legacy `preserve` policy values
 follow `allow-claimed`.
 
@@ -500,9 +503,10 @@ Use `loop accept-paused-change` for an opening preserved worktree whose owner
 changed it before pausing. Both commands require the receipt's run, repository,
 path, branch, HEAD, digest, claim owner, and current state to match, register the
 worktree as preserved with `mutationAllowed: false`, and reject the update when
-any unrelated manifest violation remains. A sibling unregistered worktree that
-holds its own valid current pause receipt does not count as a blocking
-violation, so several receipted stragglers can be adopted one at a time in any
+any unrelated manifest violation remains. A sibling worktree that either
+command could record next, and whose exact current state its own valid current
+pause receipt for this run covers, does not count as a blocking violation, so
+several receipted checkouts can be adopted or accepted one at a time in any
 order instead of deadlocking against each other. `loop allow` remains the separate
 exceptional user-approved override path.
 

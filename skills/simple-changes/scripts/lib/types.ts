@@ -1471,6 +1471,12 @@ export interface LoopViolation {
     | "unregistered-worktree";
   headSha: string | null;
   message: string;
+  /**
+   * Exact recovery steps, in order, when this violation has them: commands,
+   * or the one instruction that must come first while the checkout itself
+   * blocks them.
+   */
+  nextCommands?: string[];
   path: string;
 }
 

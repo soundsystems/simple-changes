@@ -6,14 +6,20 @@ Install Simple Changes globally so every repository and every fork updates
 from one source:
 
 ```sh
-bunx skills add https://gitlab.com/soundsystems/simple-changes --skill simple-changes
+bunx skills add https://github.com/soundsystems/simple-changes --skill simple-changes -g
 ```
 
 Install this skill beside it when at least one fork exists:
 
 ```sh
-bunx skills add https://gitlab.com/soundsystems/simple-changes --skill update-local-forks
+bunx skills add https://github.com/soundsystems/simple-changes --skill update-local-forks -g
 ```
+
+Both commands use the read-only GitHub mirror of the GitLab repository.
+Older Skills CLI releases, and lock entries without a recorded source URL,
+re-resolve a stored source as GitHub shorthand, so a mirror install, which
+records `sourceType: github`, is the one `skills update` refreshes with every
+release; the installed files are identical either way.
 
 A repository that needs stricter or product-specific behavior copies the
 installed skill into its own directory (for example `skills/<project>-simple-changes`),

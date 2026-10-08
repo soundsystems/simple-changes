@@ -3,8 +3,10 @@
 import { describe, expect, test } from "bun:test";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
+import { YAML } from "bun";
 
 const skillRoot = resolve(import.meta.dir, "../../../../skills/publish-skill");
+const FRONTMATTER_PATTERN = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/u;
 
 const readPackageFile = (path: string): Promise<string> =>
   readFile(resolve(skillRoot, path), "utf8");
@@ -131,5 +133,16 @@ describe("publish-skill package design", () => {
     expect(agentMetadata).toContain("discovered local consumer");
     expect(agentMetadata).toContain("Preserve dirty baseline checkouts");
     expect(agentMetadata).toContain("newly observed active external work");
+  });
+
+  // The Skills CLI hides an internal skill only when `metadata.internal ===
+  // true`, so a quoted "true" or a missing key would list it publicly.
+  test("keeps metadata.internal a YAML boolean true", () => {
+    const frontmatter = FRONTMATTER_PATTERN.exec(skill)?.[1];
+    expect(frontmatter).toBeDefined();
+    const parsed = YAML.parse(frontmatter ?? "") as {
+      metadata?: Record<string, unknown>;
+    };
+    expect(parsed.metadata?.internal).toBe(true);
   });
 });

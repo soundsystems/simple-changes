@@ -60,6 +60,7 @@ import {
   replanLoop,
   retainExcludedWorktree,
   retireAbsentWorktree,
+  staleClaimRecoveryCommands,
   startLoop,
   takeoverLoop,
   turnEndReminder,
@@ -200,7 +201,7 @@ import {
   standaloneWorktreeCleanup,
 } from "./lib/worktree-maintenance.ts";
 
-const VERSION = "0.27.0";
+const VERSION = "0.27.1";
 const SCRIPT_FILE = fileURLToPath(import.meta.url);
 const PLAIN_SHELL_WORD_PATTERN = /^[\w./-]+$/u;
 const PACKAGE_ROOT = resolve(dirname(SCRIPT_FILE), "..");
@@ -2514,6 +2515,14 @@ const renderLoopVerification = (
   return `${lines.join("\n")}\n`;
 };
 
+// `loop status` lists the same commands in its guidance.
+const renderViolationNextCommands = (
+  result: ReturnType<typeof verifyLoop>
+): string =>
+  staleClaimRecoveryCommands(result.violations)
+    .map((command) => `  Next: ${command}\n`)
+    .join("");
+
 const runLoopRecovery = (options: CliOptions): void => {
   if (options.staleLease) {
     const receipt = recoverStaleLoopLease(
@@ -2984,7 +2993,7 @@ const runLoopVerifyAction = (
   writeOutput(
     { ...verification, ...(holds ? { holds } : {}), turnEnd },
     options.json,
-    `${renderLoopVerification(verification)}${holds ? renderHoldReport(holds) : ""}${turnEnd}\n`
+    `${renderLoopVerification(verification)}${renderViolationNextCommands(verification)}${holds ? renderHoldReport(holds) : ""}${turnEnd}\n`
   );
   if (!verification.ok) {
     throw new SimpleChangesError(

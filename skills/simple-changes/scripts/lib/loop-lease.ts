@@ -102,6 +102,7 @@ import type {
   RequestMode,
   ShipmentOutcomeReceipt,
   WorktreeClaim,
+  WorktreeClaimReleaseReason,
   WorktreeCoordinationDocument,
   WorktreeInventory,
 } from "./types.ts";
@@ -111,11 +112,13 @@ import {
   coordinationLinkIsCurrent,
   markCoordinationAdopted,
   markCoordinationResumeReady,
+  pauseBlocker,
   planAbsentWorktreeClaimRetirementUnderLock,
   readCoordinationDocumentFromCommonDirectory,
   recoverStaleWorktreeCoordinationLock,
   releaseAbsentWorktreeClaimsUnderLock,
   releaseClaimUnderLock,
+  releaseRecordedState,
   retireAbsentWorktreeClaimsUnderLock,
   withWorktreeCoordinationLock,
   worktreeClaimDocumentDigest,
@@ -1908,45 +1911,243 @@ const withConcurrentAuthorAdmissions = (
   };
 };
 
-const concurrentClaimViolations = (
+// An author's own finished release, through `initialize --mode handoff`, a
+// ready-work receipt, or a plain `worktree release`, makes its checkout
+// ordinary stable work. Each records the exact state it released, so the
+// release admits only that state, only when the release itself recorded it
+// from the present checkout, and only while no newer live claim holds the
+// checkout. Any other release goes through pause and accept. Callers find
+// the claim by the registration's own claim ID.
+const COMPLETED_RELEASE_REASONS: ReadonlySet<WorktreeClaimReleaseReason> =
+  new Set(["handoff", "owner-release"]);
+
+const completedReleaseMatches = (
   registered: LoopWorktreeLease,
-  concurrentClaim: WorktreeClaim | undefined,
-  linkedClaim: WorktreeClaim | undefined,
+  claim: WorktreeClaim | undefined,
+  worktree: WorktreeInventory,
+  { liveClaim, releaseRecorded }: ReleaseContext
+): boolean =>
+  claim?.state === "released" &&
+  claim.releaseReason !== undefined &&
+  COMPLETED_RELEASE_REASONS.has(claim.releaseReason) &&
+  releaseRecorded &&
+  claim.owner.agentId === registered.agentId &&
+  claim.path === worktree.path &&
+  claim.branch === worktree.branch &&
+  claim.headSha === worktree.headSha &&
+  claim.changeDigest === worktree.changeDigest &&
+  liveClaim === undefined;
+
+interface ReleaseContext {
+  /** The unreleased claim that holds the checkout now, if any. */
+  liveClaim: WorktreeClaim | undefined;
+  /** The linked claim's release recorded the state from the present checkout. */
+  releaseRecorded: boolean;
+}
+
+/** The claim that holds a checkout now: the one it has not released. */
+const liveClaimFor = (
+  document: WorktreeCoordinationDocument,
+  commonGitDirectory: string,
+  path: string
+): WorktreeClaim | undefined =>
+  document.claims.find(
+    (claim) =>
+      claim.commonGitDirectory === commonGitDirectory &&
+      claim.path === path &&
+      claim.state !== "released"
+  );
+
+interface WorktreeClaimContext extends ReleaseContext {
+  /** The active claim that admits a concurrent author on this checkout. */
+  concurrentClaim: WorktreeClaim | undefined;
+  /** The claim the registration names, in any state. */
+  linkedClaim: WorktreeClaim | undefined;
+}
+
+const SAFE_COMMAND_WORD_PATTERN = /^[A-Za-z0-9._:/@%+=,-]+$/u;
+
+// Quote a value only when a POSIX shell would split or expand it.
+const commandWord = (value: string): string =>
+  SAFE_COMMAND_WORD_PATTERN.test(value)
+    ? value
+    : `'${value.replaceAll("'", "'\\''")}'`;
+
+interface StaleClaimRecovery {
+  commands: string[];
+  text: string;
+}
+
+const ACCEPT_PAUSED_CHANGE = "simple-changes loop accept-paused-change";
+const LOOP_VERIFY = "simple-changes loop verify";
+
+/**
+ * Every stale link's recovery commands, ordered to run as printed: owners
+ * claim and pause every checkout before the controller accepts any receipt,
+ * because an acceptance refuses while a changed sibling still lacks its own
+ * current receipt, and verification runs once at the end. Each acceptance is
+ * bound to its path by the receipt it names.
+ */
+export const staleClaimRecoveryCommands = (
+  violations: readonly LoopViolation[]
+): string[] => {
+  const ownerSteps: string[] = [];
+  const accepts: string[] = [];
+  const verifies = new Set<string>();
+  for (const command of violations.flatMap(
+    (violation) => violation.nextCommands ?? []
+  )) {
+    if (command.startsWith(`${ACCEPT_PAUSED_CHANGE} `)) {
+      accepts.push(command);
+    } else if (command.startsWith(`${LOOP_VERIFY} `)) {
+      verifies.add(command);
+    } else {
+      ownerSteps.push(command);
+    }
+  }
+  return [...ownerSteps, ...accepts, ...verifies];
+};
+
+/**
+ * The exact recovery for one stale coordination link or changed retained
+ * checkout. A released claim is never refreshed (a new claim gets a new ID),
+ * so the live claim's owner, or the registered owner when nothing holds the
+ * checkout, claims and pauses its exact current state, and the controller
+ * accepts that pause receipt; this works from any claim state, and an author
+ * who wants to keep working simply claims the checkout again afterwards.
+ * While the checkout itself stops `worktree pause` (it is missing, mid Git
+ * operation, or conflicted), or the controller that must accept has been
+ * relinquished, the only steps are the ones that unblock it; verification
+ * then prints the commands.
+ */
+const staleClaimRecovery = (
+  lease: LoopLease,
+  registered: LoopWorktreeLease,
+  worktree: WorktreeInventory,
+  { linkedClaim, liveClaim }: WorktreeClaimContext
+): StaleClaimRecovery => {
+  const repo = controllerRepo(lease);
+  if (controllerLifecycle(lease).status !== "active") {
+    const resume = `simple-changes loop start --mode resume --agent-id <you> --repo ${repo}`;
+    const verify = `${LOOP_VERIFY} --run-id ${lease.runId} --repo ${repo}`;
+    return {
+      commands: [resume, verify],
+      text: `Its controller has been relinquished, so nothing can accept a pause yet: resume the run with \`${resume}\`, then re-run \`${verify}\` for its exact recovery steps.`,
+    };
+  }
+  const blocker = pauseBlocker(worktree);
+  if (blocker) {
+    const unblock = {
+      absent: `Restore the checkout at ${worktree.path}${worktree.branch ? ` on branch ${worktree.branch}` : ""}`,
+      conflicts: `Resolve the conflicts in ${worktree.path}`,
+      "git-operation": `Finish or abort the Git operation in ${worktree.path}`,
+    }[blocker];
+    const step = `${unblock}, then re-run \`${LOOP_VERIFY} --run-id ${lease.runId} --repo ${repo}\` for its exact recovery steps.`;
+    return {
+      commands: [step],
+      text: `It cannot be paused yet. ${step}`,
+    };
+  }
+  const controller = commandWord(lease.ownerAgentId);
+  const verify = `${LOOP_VERIFY} --run-id ${lease.runId} --repo ${repo}`;
+  // Only the active controller may claim the primary checkout, so another
+  // agent still holding it releases it first.
+  const primary = worktree.isPrimary || worktree.path === lease.primaryCheckout;
+  if (primary && liveClaim && liveClaim.owner.agentId !== lease.ownerAgentId) {
+    const release = `simple-changes worktree release --agent-id ${commandWord(liveClaim.owner.agentId)} --claim-id ${liveClaim.claimId} --repo ${repo}`;
+    return {
+      commands: [release, verify],
+      text: `Only the active controller ${controller} may claim the primary checkout, which ${liveClaim.owner.agentId} still holds: run \`${release}\`, then re-run \`${verify}\` for its exact recovery steps.`,
+    };
+  }
+  const candidate = liveClaim?.owner ?? linkedClaim?.owner;
+  const owner =
+    primary && candidate?.agentId !== lease.ownerAgentId
+      ? undefined
+      : candidate;
+  const ownerId = primary
+    ? lease.ownerAgentId
+    : (owner?.agentId ?? registered.agentId);
+  const agent = ownerId ? commandWord(ownerId) : "<owner>";
+  const path = commandWord(worktree.path);
+  const claim = [
+    `simple-changes worktree claim --agent-id ${agent} --worktree ${path}`,
+    `--adapter ${owner ? commandWord(owner.adapter) : "<adapter>"}`,
+    ...(owner?.ownerRef ? [`--owner-ref ${commandWord(owner.ownerRef)}`] : []),
+    `--repo ${repo}`,
+  ].join(" ");
+  const pause = `simple-changes worktree pause --agent-id ${agent} --worktree ${path} --run-id ${lease.runId} --disposition preserve-in-place --reason <why> --repo ${repo}`;
+  const accept = `${ACCEPT_PAUSED_CHANGE} --run-id ${lease.runId} --agent-id ${controller} --pause-receipt <pause-receipt-id> --repo ${repo}`;
+  return {
+    commands: [claim, pause, accept],
+    text: `Owner ${agent} runs \`${claim}\`, then \`${pause}\`; controller ${controller} then runs \`${accept}\` with the receipt ID the pause prints.`,
+  };
+};
+
+const staleConcurrentClaimCause = (
+  registered: LoopWorktreeLease,
+  { linkedClaim, liveClaim, releaseRecorded }: WorktreeClaimContext
+): string => {
+  const claimId = registered.claimId ?? "(none)";
+  if (liveClaim && liveClaim.claimId !== registered.claimId) {
+    return `This concurrent author worktree is now held by claim ${liveClaim.claimId} of ${liveClaim.owner.agentId}, not by its registered claim ${claimId}.`;
+  }
+  if (linkedClaim?.state === "released") {
+    const reason = linkedClaim.releaseReason ?? "unrecorded";
+    const never =
+      "A released claim is never refreshed; a new claim gets a new ID.";
+    if (
+      !(
+        linkedClaim.releaseReason &&
+        COMPLETED_RELEASE_REASONS.has(linkedClaim.releaseReason)
+      )
+    ) {
+      return `The registered claim ${claimId} of this concurrent author worktree was released (${reason}), which does not hand its work off. ${never}`;
+    }
+    return releaseRecorded
+      ? `This concurrent author worktree no longer matches the exact state ${linkedClaim.owner.agentId} released under claim ${claimId} (${reason}). ${never}`
+      : `The registered claim ${claimId} of this concurrent author worktree was released (${reason}) without recording the checkout's state at release, so no state is admitted. ${never}`;
+  }
+  if (linkedClaim) {
+    return `The registered claim ${claimId} of this concurrent author worktree is ${linkedClaim.state} or records another branch.`;
+  }
+  return `The registered claim ${claimId} of this concurrent author worktree no longer exists.`;
+};
+
+const concurrentClaimViolations = (
+  lease: LoopLease,
+  registered: LoopWorktreeLease,
+  claims: WorktreeClaimContext,
   worktree: WorktreeInventory
 ): LoopViolation[] => {
-  const completedHandoffMatches =
-    linkedClaim?.state === "released" &&
-    linkedClaim.releaseReason === "handoff" &&
-    linkedClaim.claimId === registered.claimId &&
-    linkedClaim.owner.agentId === registered.agentId &&
-    linkedClaim.path === worktree.path &&
-    linkedClaim.branch === worktree.branch &&
-    linkedClaim.headSha === worktree.headSha &&
-    linkedClaim.changeDigest === worktree.changeDigest;
+  const { concurrentClaim, linkedClaim } = claims;
   if (
     registered.role !== "concurrent-author" ||
-    completedHandoffMatches ||
+    completedReleaseMatches(registered, linkedClaim, worktree, claims) ||
     (concurrentClaim &&
       concurrentClaim.claimId === registered.claimId &&
       concurrentClaim.owner.agentId === registered.agentId)
   ) {
     return [];
   }
+  const recovery = staleClaimRecovery(lease, registered, worktree, claims);
   return [
     {
       changeDigest: worktree.changeDigest,
       code: "coordination-claim-stale",
       headSha: worktree.headSha,
-      message:
-        "A concurrent author worktree lost or changed its active ownership claim. Refresh the original claim or use strict paused-worktree coordination before integration continues.",
+      message: `${staleConcurrentClaimCause(registered, claims)} ${recovery.text}`,
+      nextCommands: recovery.commands,
       path: worktree.path,
     },
   ];
 };
 
 const retainedWorktreeViolations = (
+  lease: LoopLease,
   registered: LoopWorktreeLease,
-  worktree: WorktreeInventory
+  worktree: WorktreeInventory,
+  claims: WorktreeClaimContext
 ): LoopViolation[] => {
   if (registered.role !== "retained") {
     return [];
@@ -1966,12 +2167,15 @@ const retainedWorktreeViolations = (
     registered.baselineHeadSha !== worktree.headSha ||
     registered.baselineChangeDigest !== worktree.changeDigest
   ) {
+    // Claiming promotes it only under allow-claimed, so print the pause and
+    // accept steps, which work under every policy.
+    const recovery = staleClaimRecovery(lease, registered, worktree, claims);
     violations.push({
       changeDigest: worktree.changeDigest,
       code: "retained-worktree-changed",
       headSha: worktree.headSha,
-      message:
-        "A retained excluded worktree changed. Its owner must claim it as an active concurrent author, or pause it at a stable boundary, before integration continues.",
+      message: `A retained excluded worktree changed. ${recovery.text}`,
+      nextCommands: recovery.commands,
       path: worktree.path,
     });
   }
@@ -2011,24 +2215,25 @@ const currentWorktreeViolations = (
   worktree: WorktreeInventory,
   registered: LoopWorktreeLease | undefined,
   preparation: LoopWorktreePreparation | undefined,
-  concurrentClaim: WorktreeClaim | undefined,
-  linkedClaim: WorktreeClaim | undefined
+  claims: WorktreeClaimContext
 ): LoopViolation[] => {
   if (!registered) {
     return unregisteredWorktreeViolations(
       lease,
       worktree,
       preparation,
-      concurrentClaim
+      claims.concurrentClaim
     );
   }
   const violations = concurrentClaimViolations(
+    lease,
     registered,
-    concurrentClaim,
-    linkedClaim,
+    claims,
     worktree
   );
-  violations.push(...retainedWorktreeViolations(registered, worktree));
+  violations.push(
+    ...retainedWorktreeViolations(lease, registered, worktree, claims)
+  );
   if (
     registered.role === "preserved" &&
     (registered.baselineHeadSha !== worktree.headSha ||
@@ -2056,12 +2261,13 @@ const currentWorktreeViolations = (
       worktree
     )
   ) {
+    const recovery = staleClaimRecovery(lease, registered, worktree, claims);
     violations.push({
       changeDigest: worktree.changeDigest,
       code: "coordination-claim-stale",
       headSha: worktree.headSha,
-      message:
-        "The adopted worktree claim or pause receipt no longer matches current coordination and Git evidence.",
+      message: `The adopted worktree claim or pause receipt no longer matches current coordination and Git evidence. ${recovery.text}`,
+      nextCommands: recovery.commands,
       path: worktree.path,
     });
   }
@@ -2070,11 +2276,13 @@ const currentWorktreeViolations = (
     ((registered.claimId && !registered.pauseReceiptId) ||
       (!registered.claimId && registered.pauseReceiptId))
   ) {
+    const recovery = staleClaimRecovery(lease, registered, worktree, claims);
     violations.push({
       changeDigest: worktree.changeDigest,
       code: "coordination-claim-stale",
       headSha: worktree.headSha,
-      message: "The worktree lease has an incomplete coordination linkage.",
+      message: `The worktree lease has an incomplete coordination linkage. ${recovery.text}`,
+      nextCommands: recovery.commands,
       path: worktree.path,
     });
   }
@@ -2161,14 +2369,25 @@ const verificationAgainst = (
           (claim) => claim.claimId === registered.claimId
         )
       : undefined;
+    const liveClaim = liveClaimFor(
+      coordination,
+      lease.commonGitDirectory,
+      worktree.path
+    );
     violations.push(
       ...currentWorktreeViolations(
         lease,
         worktree,
         registered,
         preparationByPath.get(worktree.path),
-        concurrentClaim,
-        linkedClaim
+        {
+          concurrentClaim,
+          linkedClaim,
+          liveClaim,
+          releaseRecorded:
+            linkedClaim !== undefined &&
+            releaseRecordedState(coordination, linkedClaim.claimId),
+        }
       )
     );
   }
@@ -2716,6 +2935,12 @@ const owesFirstScope = (lease: LoopLease): boolean =>
 
 const registeredController = (lease: LoopLease): LoopWorktreeLease | null =>
   lease.worktrees.find((worktree) => worktree.role === "controller") ?? null;
+
+// The controller checkout, quoted for a printed `--repo`, so a printed step
+// runs from anywhere; `loop start` in particular makes the checkout it runs
+// in the controller.
+const controllerRepo = (lease: LoopLease): string =>
+  commandWord(registeredController(lease)?.path ?? lease.primaryCheckout);
 
 /**
  * Describes how a worktree differs from the exact state `loop start` saw, or
@@ -3907,7 +4132,9 @@ export const guardLoopMutation = (
         throw new SimpleChangesError(
           `Loop guard rejected mutation: ${verification.violations
             .map((violation) => `${violation.code}:${violation.path}`)
-            .join(", ")}`,
+            .join(
+              ", "
+            )}. Run \`simple-changes loop status\` for the exact next commands.`,
           EXIT_CODES.unsafe
         );
       }
@@ -3963,7 +4190,9 @@ export const withLoopMutationLease = <T>(
         throw new SimpleChangesError(
           `Loop operation rejected mutation: ${openingVerification.violations
             .map((violation) => `${violation.code}:${violation.path}`)
-            .join(", ")}`,
+            .join(
+              ", "
+            )}. Run \`simple-changes loop status\` for the exact next commands.`,
           EXIT_CODES.unsafe
         );
       }
@@ -5208,12 +5437,48 @@ const exactPausedEvidence = (
   return { claimId: claim.claimId, current, pauseReceiptId };
 };
 
-const isAdoptablePausedWorktreeViolation = (
+// Registered entries that `loop accept-paused-change` may record.
+const ACCEPTABLE_PAUSED_ROLES: ReadonlySet<LoopWorktreeLease["role"]> = new Set(
+  ["concurrent-author", "preserved", "retained"]
+);
+
+// The per-checkout violations that recording that checkout resolves.
+// Repository-wide violations are reported at the checkout a command runs in,
+// so they never qualify.
+const RECORDABLE_SIBLING_CODES: ReadonlySet<LoopViolation["code"]> = new Set([
+  "coordination-claim-stale",
+  "preserved-worktree-changed",
+  "registered-worktree-branch-changed",
+  "retained-worktree-authorization-missing",
+  "retained-worktree-changed",
+  "unregistered-worktree",
+]);
+
+// A sibling checkout that adoption or acceptance could record next, and whose
+// exact current state its own valid current pause receipt for this run
+// covers, is waiting for its own turn: its per-checkout violations do not
+// block recording another path, so several receipted checkouts can be
+// recorded one at a time in any order. Its own entry keeps failing
+// verification until it is recorded too. Every other violation still blocks.
+const isReceiptedSiblingViolation = (
   lease: LoopLease,
   inventory: RepositoryInventory,
-  violation: LoopViolation
+  violation: LoopViolation,
+  recordingPath: string
 ): boolean => {
-  if (violation.code !== "unregistered-worktree") {
+  if (
+    violation.path === recordingPath ||
+    !RECORDABLE_SIBLING_CODES.has(violation.code)
+  ) {
+    return false;
+  }
+  const registered = lease.worktrees.find(
+    (worktree) => worktree.path === violation.path
+  );
+  const recordable = registered
+    ? !registered.createdByRun && ACCEPTABLE_PAUSED_ROLES.has(registered.role)
+    : violation.code === "unregistered-worktree";
+  if (!recordable) {
     return false;
   }
   const current = inventory.worktrees.find(
@@ -5297,7 +5562,12 @@ export const adoptPausedWorktree = (
       const verification = verificationAgainst(candidate, inventory);
       const blocking = verification.violations.filter(
         (violation) =>
-          !isAdoptablePausedWorktreeViolation(lease, inventory, violation)
+          !isReceiptedSiblingViolation(
+            lease,
+            inventory,
+            violation,
+            evidence.current.path
+          )
       );
       if (blocking.length > 0) {
         throw new SimpleChangesError(
@@ -5436,7 +5706,7 @@ export const acceptPausedWorktreeChange = (
         (worktree) =>
           worktree.path === evidence.current.path &&
           !worktree.createdByRun &&
-          ["preserved", "retained", "concurrent-author"].includes(worktree.role)
+          ACCEPTABLE_PAUSED_ROLES.has(worktree.role)
       );
       if (!registered) {
         throw new SimpleChangesError(
@@ -5463,7 +5733,12 @@ export const acceptPausedWorktreeChange = (
           !(
             (violation.code === "coordination-claim-stale" &&
               violation.path !== evidence.current.path) ||
-            isAdoptablePausedWorktreeViolation(lease, inventory, violation)
+            isReceiptedSiblingViolation(
+              lease,
+              inventory,
+              violation,
+              evidence.current.path
+            )
           )
       );
       if (blocking.length > 0) {
@@ -5697,18 +5972,13 @@ const emptyFinalizationCleanup = (): FinalizationCleanupResult => ({
 const completedHandoffContainment = (
   registered: LoopWorktreeLease,
   claim: WorktreeClaim,
+  release: ReleaseContext,
   worktree: WorktreeInventory,
   repositoryPath: string,
   targetRevision: string
 ): TargetContainmentMethod | null => {
   if (
-    claim.state !== "released" ||
-    claim.releaseReason !== "handoff" ||
-    claim.owner.agentId !== registered.agentId ||
-    claim.path !== worktree.path ||
-    claim.branch !== worktree.branch ||
-    claim.headSha !== worktree.headSha ||
-    claim.changeDigest !== worktree.changeDigest ||
+    !completedReleaseMatches(registered, claim, worktree, release) ||
     worktree.changes.length > 0
   ) {
     return null;
@@ -5763,6 +6033,14 @@ const reconcileConcurrentAuthorClaims = (
     const handoffContainment = completedHandoffContainment(
       registered,
       claim,
+      {
+        liveClaim: liveClaimFor(
+          coordination,
+          lease.commonGitDirectory,
+          registered.path
+        ),
+        releaseRecorded: releaseRecordedState(coordination, claim.claimId),
+      },
       worktree,
       repositoryPath,
       targetRevision
@@ -5878,7 +6156,6 @@ type AutomaticCleanupCandidate = WorktreeInventory & { headSha: string };
 const automaticCleanupCandidates = (
   lease: LoopLease,
   inventory: RepositoryInventory,
-  targetBranch: string,
   targetRevision: string
 ): AutomaticCleanupCandidate[] => {
   const registeredByPath = new Map(
@@ -5887,10 +6164,6 @@ const automaticCleanupCandidates = (
   const coordination = readCoordinationDocumentFromCommonDirectory(
     lease.commonGitDirectory
   );
-  const primaryBranch =
-    inventory.worktrees.find(
-      (worktree) => worktree.path === lease.primaryCheckout
-    )?.branch ?? null;
   return inventory.worktrees.filter((worktree) => {
     const registered = registeredByPath.get(worktree.path);
     const removalDisposition = matchingRemovalDisposition(lease, worktree);
@@ -5919,15 +6192,23 @@ const automaticCleanupCandidates = (
     if (!(basicCandidate && registered)) {
       return false;
     }
-    const activelyClaimed = concurrentClaimFor(
-      lease,
-      worktree,
+    // Any claim not yet released holds the checkout, whatever its state or
+    // the policy, except the claim this run adopted through the
+    // registration's own pause receipt.
+    const holder = liveClaimFor(
       coordination,
-      primaryBranch,
-      targetBranch
+      lease.commonGitDirectory,
+      worktree.path
     );
+    const held =
+      holder !== undefined &&
+      !(
+        holder.state === "adopted-preserved" &&
+        holder.claimId === registered.claimId &&
+        registered.pauseReceiptId !== undefined
+      );
     return Boolean(
-      !activelyClaimed &&
+      !held &&
         (registered.createdByRun ||
           (registered.role === "preserved" &&
             registered.baselineHeadSha === worktree.headSha &&
@@ -6118,7 +6399,6 @@ const crashAfterAutomaticWorktreeRemovalForTest = (path: string): void => {
 const removeAutomaticWorktrees = (
   lease: LoopLease,
   repositoryPath: string,
-  targetBranch: string,
   targetRevision: string,
   candidates: AutomaticCleanupCandidate[],
   cleanup: FinalizationCleanupResult
@@ -6132,7 +6412,6 @@ const removeAutomaticWorktrees = (
     const fresh = automaticCleanupCandidates(
       lease,
       freshInventory,
-      targetBranch,
       targetRevision
     ).find(
       (candidate) =>
@@ -6177,7 +6456,6 @@ const pruneAutomaticWorktreeMetadata = (
   lease: LoopLease,
   repositoryPath: string,
   candidates: AutomaticCleanupCandidate[],
-  targetBranch: string,
   targetRevision: string,
   cleanup: FinalizationCleanupResult
 ): AutomaticRemovalResult => {
@@ -6193,7 +6471,6 @@ const pruneAutomaticWorktreeMetadata = (
   const freshCandidates = automaticCleanupCandidates(
     currentLease,
     freshInventory,
-    targetBranch,
     targetRevision
   );
   const freshPrunable = freshInventory.worktrees.filter(
@@ -6740,13 +7017,11 @@ const automaticFinalizationCleanup = (
   const candidates = automaticCleanupCandidates(
     lease,
     inventoryInput,
-    targetBranch,
     targetRevision
   );
   const liveRemoval = removeAutomaticWorktrees(
     lease,
     repositoryPath,
-    targetBranch,
     targetRevision,
     candidates,
     cleanup
@@ -6756,7 +7031,6 @@ const automaticFinalizationCleanup = (
     lease,
     repositoryPath,
     candidates,
-    targetBranch,
     targetRevision,
     cleanup
   );
@@ -9028,8 +9302,18 @@ const violationGuidanceCommands = (
       `simple-changes loop rebaseline --run-id ${lease.runId} --agent-id ${lease.ownerAgentId} --approved-by <user> --reason <why>`
     );
   }
+  // An override cannot resolve a path whose coordination link is stale; its
+  // printed claim, pause, and accept steps below do.
+  const stalePaths = new Set(
+    violations
+      .filter((violation) => violation.code === "coordination-claim-stale")
+      .map((violation) => violation.path)
+  );
   for (const violation of violations) {
-    if (violation.code === "preserved-worktree-changed") {
+    if (
+      violation.code === "preserved-worktree-changed" &&
+      !stalePaths.has(violation.path)
+    ) {
       add(
         `simple-changes loop allow --run-id ${lease.runId} --agent-id ${lease.ownerAgentId} --worktree ${violation.path} --status-digest ${violation.changeDigest ?? "<digest>"} --approved-by <user> --reason <why>`
       );
@@ -9053,14 +9337,8 @@ const violationGuidanceCommands = (
       `simple-changes prepare-agent --run-id ${lease.runId} --agent-id <agent> --purpose <purpose>`
     );
   }
-  if (
-    codes.has("retained-worktree-changed") ||
-    codes.has("coordination-claim-stale")
-  ) {
-    add(
-      "Ask the exact worktree owner to refresh its claim or pause receipt, then re-run `simple-changes loop verify`."
-    );
-  }
+  // Keep every step: two checkouts each need their own accepted receipt.
+  commands.push(...staleClaimRecoveryCommands(violations));
   if (
     codes.has("remote-destination-changed") ||
     codes.has("remote-destination-rebind-required")
@@ -9109,13 +9387,15 @@ const withArchiveRecordedGuidance = (
       }
     : guidance;
 
+const resumeCommands = (lease: LoopLease): string[] => [
+  `simple-changes loop start --mode resume --agent-id <you> --repo ${controllerRepo(lease)}`,
+  `simple-changes loop close-equivalent --run-id ${lease.runId} --agent-id <you> --approved-by <user> --reason <why> --repo ${controllerRepo(lease)}`,
+];
+
 const relinquishedGuidance = (lease: LoopLease): LoopGuidance =>
   withArchiveRecordedGuidance(lease, {
     headline: `Loop ${lease.runId} has released its controller. Resume it to finish its recorded work; takeover approval is unnecessary. Its existing scope and safety checks still apply.`,
-    nextCommands: [
-      "simple-changes loop start --mode resume --agent-id <you>",
-      `simple-changes loop close-equivalent --run-id ${lease.runId} --agent-id <you> --approved-by <user> --reason <why>`,
-    ],
+    nextCommands: resumeCommands(lease),
   });
 
 const loopGuidanceFor = (
@@ -9145,10 +9425,7 @@ const loopGuidanceFor = (
   if (awaitingUser) {
     return withArchiveRecordedGuidance(lease, {
       headline: `Loop ${lease.runId} is paused waiting on the user: ${awaitingUser.questions.join(" | ")}. Once they answer, resume it; takeover approval is unnecessary, and its existing scope and safety checks still apply.`,
-      nextCommands: [
-        "simple-changes loop start --mode resume --agent-id <you>",
-        `simple-changes loop close-equivalent --run-id ${lease.runId} --agent-id <you> --approved-by <user> --reason <why>`,
-      ],
+      nextCommands: resumeCommands(lease),
     });
   }
   if (lifecycle.status === "relinquished") {

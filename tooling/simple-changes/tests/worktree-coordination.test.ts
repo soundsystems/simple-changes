@@ -1,5 +1,12 @@
 import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
-import { chmodSync, mkdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import {
+  chmodSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import {
   buildCoordinationRequest,
@@ -26,6 +33,7 @@ import {
   releaseHandoffWorktreeClaim,
   releaseWorktreeClaim,
   takeoverWorktreeClaim,
+  withWorktreeCoordinationLock,
   worktreeCoordinationPath,
   worktreeTakeoversPath,
 } from "../../../skills/simple-changes/scripts/lib/worktree-coordination.ts";
@@ -733,6 +741,84 @@ describe("worktree claim takeover", () => {
       state: "released",
     });
     expect(readWorktreeCoordination(fixture.root).claims[0]).toMatchObject({
+      releaseReason: "owner-release",
+    });
+  });
+
+  test("checks the releasing owner under the coordination lock", () => {
+    const fixture = repository();
+    const worktree = join(fixture.base, "release-race");
+    git(fixture.root, ["worktree", "add", "-b", "release-race", worktree]);
+    const claim = claimWorktree(fixture.root, "owner", worktree, "codex");
+    const { commonGitDirectory } = captureInventory(fixture.root).repository;
+    const coordinationPath = worktreeCoordinationPath(commonGitDirectory);
+
+    // A takeover holds the lock while it reassigns the claim. A release that
+    // checked ownership before taking the lock would have accepted the old
+    // owner and then released the new owner's claim.
+    withWorktreeCoordinationLock(commonGitDirectory, "takeover", () => {
+      const document = JSON.parse(readFileSync(coordinationPath, "utf8")) as {
+        claims: { owner: { agentId: string } }[];
+      };
+      for (const item of document.claims) {
+        item.owner.agentId = "new-owner";
+      }
+      writeFileSync(coordinationPath, `${JSON.stringify(document)}\n`);
+      expect(() =>
+        releaseWorktreeClaim(fixture.root, "owner", claim.claimId)
+      ).toThrow("is busy");
+    });
+
+    expect(() =>
+      releaseWorktreeClaim(fixture.root, "owner", claim.claimId)
+    ).toThrow("Only the exact claim owner may release this worktree claim.");
+    expect(readWorktreeCoordination(fixture.root).claims[0]).toMatchObject({
+      owner: { agentId: "new-owner" },
+      state: "active",
+    });
+    expect(
+      releaseWorktreeClaim(fixture.root, "new-owner", claim.claimId)
+    ).toMatchObject({ releaseReason: "owner-release", state: "released" });
+    expect(() =>
+      releaseWorktreeClaim(fixture.root, "new-owner", claim.claimId)
+    ).toThrow(
+      `Claim ${claim.claimId} cannot transition from released to released.`
+    );
+  });
+
+  test("records the released state, never evidence from a missing checkout", () => {
+    const fixture = repository();
+    const worktree = join(fixture.base, "release-evidence");
+    git(fixture.root, ["worktree", "add", "-b", "release-evidence", worktree]);
+    const claim = claimWorktree(fixture.root, "owner", worktree, "codex");
+    writeFixture(worktree, "released.ts", "export const released = true;\n");
+    const current = captureInventory(fixture.root).worktrees.find(
+      (item) => item.path === worktree
+    );
+
+    expect(
+      releaseWorktreeClaim(fixture.root, "owner", claim.claimId)
+    ).toMatchObject({
+      branch: current?.branch,
+      changeDigest: current?.changeDigest,
+      headSha: current?.headSha,
+    });
+
+    // A removed checkout still lists its branch head and an empty status
+    // digest; neither is a state its owner released.
+    const gone = join(fixture.base, "release-gone");
+    git(fixture.root, ["worktree", "add", "-b", "release-gone", gone]);
+    const goneClaim = claimWorktree(fixture.root, "owner", gone, "codex");
+    writeFixture(gone, "gone.ts", "export const gone = true;\n");
+    git(gone, ["add", "gone.ts"]);
+    git(gone, ["commit", "-m", "Commit before removal"]);
+    rmSync(gone, { force: true, recursive: true });
+    expect(
+      releaseWorktreeClaim(fixture.root, "owner", goneClaim.claimId)
+    ).toMatchObject({
+      branch: goneClaim.branch,
+      changeDigest: goneClaim.changeDigest,
+      headSha: goneClaim.headSha,
       releaseReason: "owner-release",
     });
   });

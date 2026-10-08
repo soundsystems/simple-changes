@@ -105,7 +105,6 @@ for (const journey of manifest.journeys) {
 
 const requiredSkillFiles = [
   "SKILL.md",
-  "SPEC.md",
   "CHANGELOG.md",
   "agents/openai.yaml",
   "scripts/simple-changes.ts",
@@ -130,6 +129,7 @@ for (const filename of requiredSkillFiles) {
 
 const requiredToolingFiles = [
   "EVAL.md",
+  "SPEC.md",
   "behavior-eval.ts",
   "adapters/claude-eval.ts",
   "adapters/codex-eval.ts",
@@ -157,6 +157,7 @@ for (const filename of requiredToolingFiles) {
 
 const forbiddenSkillFiles = [
   "EVAL.md",
+  "SPEC.md",
   "scripts/behavior-eval.ts",
   "scripts/tests",
   "evals/fixtures",

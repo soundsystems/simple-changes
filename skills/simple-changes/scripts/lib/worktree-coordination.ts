@@ -456,6 +456,31 @@ export const assertNoGitOperation = (worktreePath: string): void => {
   }
 };
 
+export type PauseBlocker = "absent" | "conflicts" | "git-operation";
+
+/**
+ * What stops `worktree pause` from recording this checkout as it stands, or
+ * null: its directory is gone (Git keeps a locked registration unprunable
+ * after deletion, so presence is read from disk), a Git operation is in
+ * progress, or a path is conflicted. Recovery guidance asks the same question
+ * before it prints a pause.
+ */
+export const pauseBlocker = (
+  current: WorktreeInventory
+): PauseBlocker | null => {
+  if (current.prunable || !existsSync(current.path)) {
+    return "absent";
+  }
+  try {
+    assertNoGitOperation(current.path);
+  } catch {
+    return "git-operation";
+  }
+  return current.changes.some((change) => change.conflicted)
+    ? "conflicts"
+    : null;
+};
+
 const assertCurrentEvidence = (
   claim: WorktreeClaim,
   receipt: WorktreePauseReceipt,
@@ -686,10 +711,14 @@ export const pauseClaimedWorktree = (
     () => {
       const inventory = captureInventory(repositoryPath);
       const current = worktreeAt(inventory, pathInput);
-      assertNoGitOperation(current.path);
-      if (current.changes.some((change) => change.conflicted)) {
+      const blocker = pauseBlocker(current);
+      if (blocker) {
         throw new SimpleChangesError(
-          `Worktree ${current.path} has unresolved conflicts.`,
+          {
+            absent: `Worktree ${current.path} no longer exists.`,
+            conflicts: `Worktree ${current.path} has unresolved conflicts.`,
+            "git-operation": `Worktree ${current.path} has an active Git operation.`,
+          }[blocker],
           EXIT_CODES.unsafe
         );
       }
@@ -1154,6 +1183,31 @@ export const attachClaimedWorktree = (
   );
 };
 
+/**
+ * The checkout's exact branch, head, and content digest when its owner
+ * releases it, or undefined when the claimed directory is gone. A released
+ * claim is never refreshed, so recording the released state lets an active
+ * loop admit exactly that state and fail closed on any later change. Git does
+ * not mark a locked worktree prunable when its directory is deleted, so the
+ * directory itself must exist.
+ */
+const releasedEvidence = (
+  inventory: RepositoryInventory,
+  path: string
+): Pick<WorktreeClaim, "branch" | "changeDigest" | "headSha"> | undefined => {
+  const current = inventory.worktrees.find(
+    (worktree) =>
+      worktree.path === path && !worktree.prunable && existsSync(worktree.path)
+  );
+  return current
+    ? {
+        branch: current.branch,
+        changeDigest: current.changeDigest,
+        headSha: current.headSha,
+      }
+    : undefined;
+};
+
 export const releaseWorktreeClaim = (
   repositoryPath: string,
   agentIdInput: string,
@@ -1161,25 +1215,34 @@ export const releaseWorktreeClaim = (
 ): WorktreeClaim => {
   const agentId = requiredText(agentIdInput, "agent ID", 128);
   const claimId = requiredText(claimIdInput, "claim ID", 128);
-  const inventory = captureInventory(repositoryPath);
-  const document = readCoordinationDocumentFromCommonDirectory(
-    inventory.repository.commonGitDirectory
-  );
-  const claim = document.claims.find((item) => item.claimId === claimId);
-  if (!claim || claim.owner.agentId !== agentId) {
-    throw new SimpleChangesError(
-      "Only the exact claim owner may release this worktree claim.",
-      EXIT_CODES.unsafe
+  const { commonGitDirectory } = locateRepository(repositoryPath).repository;
+  // Check the owner and capture the released state under the same lock as
+  // the release, so a takeover cannot reassign the claim in between.
+  return withCoordinationLock(commonGitDirectory, "worktree released", () => {
+    const inventory = captureInventory(repositoryPath);
+    const document =
+      readCoordinationDocumentFromCommonDirectory(commonGitDirectory);
+    const claim = document.claims.find((item) => item.claimId === claimId);
+    if (!claim || claim.owner.agentId !== agentId) {
+      throw new SimpleChangesError(
+        "Only the exact claim owner may release this worktree claim.",
+        EXIT_CODES.unsafe
+      );
+    }
+    if (!LIVE_STATES.has(claim.state)) {
+      throw new SimpleChangesError(
+        `Claim ${claimId} cannot transition from ${claim.state} to released.`,
+        EXIT_CODES.unsafe
+      );
+    }
+    return releaseClaimUnderLock(
+      commonGitDirectory,
+      claimId,
+      agentId,
+      "owner-release",
+      releasedEvidence(inventory, claim.path)
     );
-  }
-  return transitionClaim(
-    inventory.repository.commonGitDirectory,
-    claimId,
-    agentId,
-    "released",
-    { releaseReason: "owner-release" },
-    [...LIVE_STATES]
-  );
+  });
 };
 
 const releasedClaim = (
@@ -1275,11 +1338,35 @@ export const releaseClaimUnderLock = (
     claimId,
     actorAgentId,
     "released",
-    now
+    now,
+    currentEvidence
+      ? `${RELEASED_STATE_EVENT_PREFIX}${randomUUID()}`
+      : `event-${randomUUID()}`
   );
   writeCoordinationDocument(commonGitDirectory, document);
   return updated;
 };
+
+// The claim record is closed to new fields, so older clients that share the
+// coordination file can still read it; a release that recorded the
+// checkout's exact state at release time is marked in its event ID instead.
+const RELEASED_STATE_EVENT_PREFIX = "event-released-state-";
+
+/**
+ * Whether a released claim's branch, head, and digest are the state its
+ * release recorded from the present checkout, rather than evidence left from
+ * an earlier claim or refresh (a release by an older client, or one whose
+ * checkout was already gone).
+ */
+export const releaseRecordedState = (
+  document: WorktreeCoordinationDocument,
+  claimId: string
+): boolean =>
+  document.events.some(
+    (event) =>
+      event.claimId === claimId &&
+      event.eventId.startsWith(RELEASED_STATE_EVENT_PREFIX)
+  );
 
 /**
  * Completed-work handoff: the author declares the checkout it is running in
@@ -1310,7 +1397,8 @@ export const releaseHandoffWorktreeClaim = (
       commonGitDirectory,
       claim.claimId,
       agentId,
-      "handoff"
+      "handoff",
+      releasedEvidence(captureInventory(repositoryPath), claim.path)
     );
   });
 };

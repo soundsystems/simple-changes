@@ -3415,6 +3415,9 @@ export const targetDiffPaths = (
     "--no-renames",
     "--name-only",
     "-z",
+    // A changed gitlink is a final-target change even where configuration
+    // or .gitmodules says to ignore submodules.
+    "--ignore-submodules=none",
     openingRevision,
     finalRevision,
     "--",
@@ -3433,6 +3436,7 @@ export const targetRenameOriginals = (
     "--name-status",
     "-z",
     "-M",
+    "--ignore-submodules=none",
     openingRevision,
     finalRevision,
     "--",
@@ -3920,22 +3924,40 @@ export const OUTCOME_DRAFT_MARKER = "SIMPLE-CHANGES-DRAFT:";
  */
 export const OUTCOME_DRAFT_REVIEW = `${OUTCOME_DRAFT_MARKER} review every entry, replace each placeholder, then delete this draftReview field before loop record-outcome.`;
 
-const assertNoOutcomeDraftPlaceholders = (
-  receipt: ShipmentOutcomeReceipt
-): void => {
-  const texts = [
-    ...receipt.units.flatMap((unit) => [
-      [`summary of unit ${unit.unitId}`, unit.summary] as const,
-      ...unit.evidence.map(
-        (item) => [`evidence of unit ${unit.unitId}`, item] as const
-      ),
-    ]),
-    ...receipt.additionalPaths.map(
-      (item) => [`reason for ${item.path}`, item.reason] as const
+const listOf = (value: unknown): unknown[] =>
+  Array.isArray(value) ? value : [];
+
+const fieldOf = (value: unknown, key: string): unknown =>
+  typeof value === "object" && value !== null
+    ? (value as Record<string, unknown>)[key]
+    : undefined;
+
+/**
+ * Reads the raw input defensively, so placeholders are refused even in a
+ * receipt the schema would reject for another reason.
+ */
+const assertNoOutcomeDraftPlaceholders = (receipt: unknown): void => {
+  const texts: Array<readonly [string, unknown]> = [
+    ...listOf(fieldOf(receipt, "units")).flatMap((unit) => {
+      const unitId = String(fieldOf(unit, "unitId"));
+      return [
+        [`summary of unit ${unitId}`, fieldOf(unit, "summary")] as const,
+        ...listOf(fieldOf(unit, "evidence")).map(
+          (item) => [`evidence of unit ${unitId}`, item] as const
+        ),
+      ];
+    }),
+    ...listOf(fieldOf(receipt, "additionalPaths")).map(
+      (item) =>
+        [
+          `reason for ${String(fieldOf(item, "path"))}`,
+          fieldOf(item, "reason"),
+        ] as const
     ),
   ];
-  const drafts = texts.filter(([, text]) =>
-    text.includes(OUTCOME_DRAFT_MARKER)
+  const drafts = texts.filter(
+    ([, text]) =>
+      typeof text === "string" && text.includes(OUTCOME_DRAFT_MARKER)
   );
   if (drafts.length > 0) {
     throw new SimpleChangesError(
@@ -3964,11 +3986,13 @@ export const recordShipmentOutcome = (
       EXIT_CODES.validation
     );
   }
+  // Placeholders are refused before anything else reads the receipt, with
+  // or without preserved-source overrides.
+  assertNoOutcomeDraftPlaceholders(receiptInput);
   // Overrides ride on the receipt's units but are stored beside the lease;
   // the recorded digest covers the complete receipt, overrides included.
   const { overrides, receipt, receiptDigest } =
     splitShipmentOutcomeInput(receiptInput);
-  assertNoOutcomeDraftPlaceholders(receipt);
   assertPreservedSourceApproval(overrides, approval);
   const opening = locateRepository(repositoryPath);
   // The coordination lock keeps the claim a preserved-source override binds

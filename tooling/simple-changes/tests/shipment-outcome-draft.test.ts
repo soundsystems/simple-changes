@@ -374,6 +374,63 @@ describe("loop draft-outcome", () => {
     expect(present()).toBe(false);
   });
 
+  test("lists a changed gitlink even where submodules are ignored", () => {
+    const fixture = repository();
+    const { root } = fixture;
+    const first = git(root, ["rev-parse", "HEAD"]);
+    git(root, [
+      "update-index",
+      "--add",
+      "--cacheinfo",
+      `160000,${first},vendor/module`,
+    ]);
+    git(root, ["commit", "-q", "-m", "Pin a module"]);
+    mkdirSync(join(root, "vendor", "module"), { recursive: true });
+    git(root, ["config", "diff.ignoreSubmodules", "all"]);
+    const lease = startLoop(root, "controller", "ship");
+    const second = git(root, ["rev-parse", "HEAD"]);
+    git(root, [
+      "update-index",
+      "--cacheinfo",
+      `160000,${second},vendor/module`,
+    ]);
+    git(root, ["commit", "-q", "-m", "Move the module pin"]);
+
+    const { draft } = draftShipmentOutcome(root, lease.runId);
+
+    expect(draft.additionalPaths).toEqual([
+      expect.objectContaining({
+        entry: `160000:commit:${second}`,
+        path: "vendor/module",
+      }),
+    ]);
+    recordShipmentOutcome(root, lease.runId, "controller", reviewed(draft));
+  });
+
+  test("refuses placeholders before reading a preserved-source override", () => {
+    const fixture = repository();
+    const lease = startLoop(fixture.root, "controller", "ship");
+    expect(() =>
+      recordShipmentOutcome(fixture.root, lease.runId, "controller", {
+        additionalPaths: [],
+        runId: lease.runId,
+        schemaVersion: 1,
+        targetRevision: lease.targetRevision,
+        units: [
+          {
+            disposition: "target-equivalent",
+            evidence: ["Reviewed."],
+            finalPaths: [],
+            originalPaths: [],
+            preservedSourceOverride: {},
+            summary: `${OUTCOME_DRAFT_MARKER} unreviewed`,
+            unitId: "unit-1",
+          },
+        ],
+      })
+    ).toThrow("draft placeholder");
+  });
+
   test("reads release paths only from a changelog receipt's paths list", () => {
     expect(
       releasePathsFromChangelogReceipt({

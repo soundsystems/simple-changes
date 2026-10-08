@@ -23,10 +23,11 @@ import { runGit } from "./process.ts";
  * pinned checkout, or an indirect name that could resolve to one: reflog,
  * upstream, and previous-branch syntax, `FETCH_HEAD`, another worktree's
  * refs, message search, and every-branch options. Configuration that could
- * stand in for a name (an upstream, a matching push, a remote that points
- * into a pinned checkout, an alias, a replace ref, or a graft) is refused the
- * same way. A program other than Git is classified only when its arguments
- * run Git; then any mention refuses it. Refusing a legitimate command is
+ * stand in for a name (an upstream, a matching push, a remote or URL rewrite
+ * that points into a pinned checkout, an alias, a replace ref, or a graft) is
+ * refused the same way. Git run through a shell or other command runner is
+ * refused outright while units are pinned, because the runner hides what Git
+ * will read; any other program is opaque. Refusing a legitimate command is
  * accepted, because the form that names the recorded commit always works.
  * The run's controller and its own prepared authors are not pinned.
  */

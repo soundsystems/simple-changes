@@ -520,11 +520,19 @@ const ANY_REVIEWER: AuthoringRoleEntry = {
   harness: RUNNING_HARNESS,
 };
 
+// Asks R1 and its follow-ups. A different-model choice that never yields an
+// acceptable name goes back to R1, so only an explicit "Any independent
+// reviewer" records a non-adversarial review; after three rounds without an
+// answer nothing is recorded and the question stays pending.
 const askReview = async (
   context: AuthoringOnboardingContext,
   prompter: AuthoringPrompter,
-  answer: AuthoringSidecar
-): Promise<AuthoringRoleEntry> => {
+  answer: AuthoringSidecar,
+  roundsLeft = 3
+): Promise<AuthoringRoleEntry | null> => {
+  if (roundsLeft === 0) {
+    return null;
+  }
   const reviewer = await ask(
     prompter,
     AUTHORING_QUESTIONS.reviewer,
@@ -541,7 +549,10 @@ const askReview = async (
       ? await askDifferentAgent(context, prompter, answer)
       : await askDifferentModel(context, prompter, answer);
   if (!role) {
-    return ANY_REVIEWER;
+    prompter.present?.(
+      "No different reviewer model was named; choose again, or pick Any independent reviewer."
+    );
+    return askReview(context, prompter, answer, roundsLeft - 1);
   }
   const escalation = await ask(
     prompter,
@@ -600,7 +611,10 @@ export const collectAuthoringAnswers = async (
     prompter.present?.(
       "A review from a different agent catches what the author's own model tends to miss, and self-review is never counted as independent."
     );
-    answer.roles.review = await askReview(context, prompter, answer);
+    const review = await askReview(context, prompter, answer);
+    if (review) {
+      answer.roles.review = review;
+    }
   }
   prompter.present?.(AUTHORING_PREFERENCE_NOTE);
   return answer;

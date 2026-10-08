@@ -879,6 +879,8 @@ describe("authoring review question in the update notice", () => {
       models: "pending",
       review: "pending",
     });
+    // The question itself still comes with every initialization.
+    expect(acknowledged.authoringReviewQuestion?.id).toBe("authoring-review");
     run([
       "setup",
       "--authoring",
@@ -894,7 +896,9 @@ describe("authoring review question in the update notice", () => {
       "repository",
       "--confirm",
     ]);
-    expect(run(["initialize", "--mode", "queue"]).authoringQuestion).toEqual({
+    const answered = run(["initialize", "--mode", "queue"]);
+    expect(answered.authoringReviewQuestion).toBeNull();
+    expect(answered.authoringQuestion).toEqual({
       models: "answered",
       review: "answered",
     });

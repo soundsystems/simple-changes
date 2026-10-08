@@ -2079,6 +2079,18 @@ const appendAuthoring = (
       );
     }
   }
+  const review = status.authoringReviewQuestion;
+  if (review) {
+    lines.push(
+      "",
+      review.question,
+      ...review.choices.map(
+        (choice) =>
+          `- ${choice.label}${choice.recommended && !choice.label.includes("Recommended") ? " (Recommended)" : ""}: ${choice.description}`
+      ),
+      "Record the answer with `simple-changes setup --authoring` (references/onboarding.md)."
+    );
+  }
   if (status.reviewer) {
     lines.push(describeReviewer(status.reviewer));
   }
@@ -2192,7 +2204,11 @@ const initializationAuthoring = (
 ): {
   fields: Pick<
     InitializationStatus,
-    "authoring" | "authoringFiles" | "authoringQuestion" | "detectedHarnesses"
+    | "authoring"
+    | "authoringFiles"
+    | "authoringQuestion"
+    | "authoringReviewQuestion"
+    | "detectedHarnesses"
   >;
   guidanceContext: GuidanceUpdateContext;
   resolution: RepositoryAuthoring;
@@ -2221,6 +2237,9 @@ const initializationAuthoring = (
       authoring: { effective: resolution.effective, source: resolution.source },
       authoringFiles: resolution.authoringFiles,
       authoringQuestion: resolution.authoringQuestion,
+      // Asked at every write-capable initialization while it is pending,
+      // whatever the guidance version: acknowledgement never answers it.
+      authoringReviewQuestion: questions["authoring-review"] ?? null,
       detectedHarnesses: resolution.detectedHarnesses,
     },
     guidanceContext: {

@@ -338,7 +338,9 @@ Roles and agent entries replace whole; an empty sidecar answers the models
 question and defines nothing; a role-level `model` needs an agent id, never
 `running`; `null` means "do not guide this agent". `initialize` reports
 `authoring.effective` with each field's layer in `authoring.source`, and the
-`reviewer` it resolves. `max` effort comes only from an explicit owner choice
+`reviewer` it resolves. A reviewer `model` of `most-capable` is resolved from
+what the target agent reports before dispatch; if that is impossible, treat
+the reviewer as unresolved and ask the owner. `max` effort comes only from an explicit owner choice
 and is never reached by a default, `most-capable`, or escalation.
 
 Before writing, resolve the role; `most-capable` is the most capable model the

@@ -198,6 +198,16 @@ const VALIDATION_TABLE: { name: string; valid: boolean; value: unknown }[] = [
     valid: false,
     value: loose({ gamma: { effort: "turbo", model: "y" } }),
   },
+  {
+    name: "a harness id spelled like an inherited property",
+    valid: true,
+    value: loose({ constructor: { model: "x" } }),
+  },
+  {
+    name: "a malformed entry under an inherited property name",
+    valid: false,
+    value: loose({ constructor: { extra: true, model: 42 } }),
+  },
   { name: "unknown top-level key", valid: false, value: { ...EMPTY, x: 1 } },
   {
     name: "schema version 2",
@@ -318,7 +328,9 @@ const schemaAccepts = (
       checks.push(Object.hasOwn(value, key));
     }
     for (const [key, item] of Object.entries(value)) {
-      const nested = properties[key] ?? schema.additionalProperties;
+      const nested = Object.hasOwn(properties, key)
+        ? properties[key]
+        : schema.additionalProperties;
       if (nested === false) {
         checks.push(false);
       } else if (isObject(nested)) {
@@ -419,6 +431,31 @@ describe("authoring resolution", () => {
         "alpha-agent"
       ).effective
     ).toMatchObject({ harness: "beta-agent", model: "personal-beta" });
+  });
+
+  test("a role-level model and effort win over the target's entry", () => {
+    expect(
+      resolveAuthoringRole(
+        "review",
+        [
+          layer(
+            "personal",
+            sidecar(
+              { "beta-agent": { effort: "low", model: "entry-model" } },
+              {
+                review: {
+                  adversarial: true,
+                  effort: "max",
+                  harness: "beta-agent",
+                  model: "role-model",
+                },
+              }
+            )
+          ),
+        ],
+        "alpha-agent"
+      ).effective
+    ).toMatchObject({ effort: "max", model: "role-model", status: "resolved" });
   });
 
   test("handles null entries, unknown ids, and an unknown running harness", () => {

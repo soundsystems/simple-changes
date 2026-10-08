@@ -559,6 +559,7 @@ describe("author attest", () => {
     const first = commitFile(run.author, "x.txt", "same\n");
     attestAsA(run.author, [first]);
     git(run.author, ["revert", "--no-edit", "HEAD"]);
+    const revert = git(run.author, ["rev-parse", "HEAD"]);
     const second = commitFile(run.author, "x.txt", "same\n");
     const replay = (commit: string, sources: string[]) =>
       attestCommits({
@@ -574,6 +575,14 @@ describe("author attest", () => {
     // Two distinct commits adding the identical change link one way only.
     expect(replay(second, [first]).replay?.verification).toBe("verified");
     expect(() => replay(first, [second])).toThrow("replay-cycle");
+    // A corrected mapping may add a source but never drop one.
+    expect(() => replay(second, [revert])).toThrow(
+      "replay-correction-drops-source"
+    );
+    expect(replay(second, [first, revert]).replay).toMatchObject({
+      sources: [first, revert],
+      status: "superseded",
+    });
   });
 
   test("rejects merges, non-contiguous sets, root commits and empty diffs as unsupported", () => {
@@ -796,7 +805,7 @@ describe("effective authors and gaps", () => {
     );
   });
 
-  test("a corrected mapping supersedes the destination's own verification but never its inherited gaps", () => {
+  test("a corrected mapping may add sources and supersede the destination's own verification, but never drops a source or an inherited gap", () => {
     const ledger = emptyReviewLedger();
     attestInMemory(ledger, A, alpha);
     replayInMemory(ledger, X, [V], "verified");
@@ -807,16 +816,50 @@ describe("effective authors and gaps", () => {
       inheritedGaps: { unresolvedSources: [V] },
       ownGaps: { uncoveredEdit: true },
     });
-    const corrected = replayInMemory(ledger, S, [A], "verified");
+    expect(() => replayInMemory(ledger, S, [A], "verified")).toThrow(
+      "replay-correction-drops-source"
+    );
+    const corrected = replayInMemory(ledger, S, [X, A], "verified");
     expect(corrected).toMatchObject({
-      ownGaps: { uncoveredEdit: false, unresolvedSources: [] },
-      sources: [A],
+      ownGaps: { uncoveredEdit: false, unresolvedSources: [X] },
+      sources: [X, A],
       status: "superseded",
       verification: "verified",
     });
     expect(ledger.replays[S]?.inheritedGaps.unresolvedSources).toEqual([V]);
-    expect(headCoverage(ledger, [S]).gaps[S]?.unresolvedSources).toEqual([V]);
-    expect(replayInMemory(ledger, S, [A], "verified").status).toBe("unchanged");
+    expect(headCoverage(ledger, [S]).gaps[S]?.unresolvedSources).toEqual([
+      V,
+      X,
+    ]);
+    expect(replayInMemory(ledger, S, [X, A], "verified").status).toBe(
+      "unchanged"
+    );
+  });
+
+  test("a remap cannot drop an implementer: a late attestation of a dropped source still reaches the destination", () => {
+    // S replays attested A plus unattested U; T replays S. Remapping T to A
+    // alone is refused, so attesting U later makes U's author an effective
+    // author of T, and that author cannot review T.
+    const ledger = emptyReviewLedger();
+    attestInMemory(ledger, A, alpha);
+    replayInMemory(ledger, S, [A, U], "verified");
+    replayInMemory(ledger, T, [S], "verified");
+    expect(() => replayInMemory(ledger, T, [A], "verified")).toThrow(
+      "replay-correction-drops-source"
+    );
+    expect(ledger.replays[T]?.sources).toEqual([S]);
+    const upsilon = author("upsilon");
+    attestInMemory(ledger, U, upsilon);
+    addHead(ledger, T, [T]);
+    expect(headCoverage(ledger, [T]).fullyCovered).toBe(true);
+    expect(
+      resolveEffectiveAuthors(ledger, T)
+        .authors.map((entry) => entry.logicalId ?? "")
+        .sort((left, right) => left.localeCompare(right))
+    ).toEqual(["agent-alpha", "agent-upsilon"]);
+    expect(decide(ledger, T, asReviewer(upsilon)).acceptanceReason).toBe(
+      "reviewer-not-independent"
+    );
   });
 
   test("a replayed commit without --replays stays unattributed, and a replayer's edit stays uncovered", () => {
@@ -865,6 +908,52 @@ describe("effective authors and gaps", () => {
     expect(visited.length).toBe(1 + 40 * 2);
     expect(authors.map((entry) => entry.logicalId)).toEqual(["agent-alpha"]);
     expect(headCoverage(ledger, [top]).fullyCovered).toBe(true);
+  });
+
+  test("resolves coverage of a 3,000-link chain once per commit within a generous bound", () => {
+    const links = 3000;
+    const chain = Array.from({ length: links + 1 }, (_, index) =>
+      fakeSha(10_000 + index)
+    );
+    const unattested = fakeSha(9999);
+    const ledger = emptyReviewLedger();
+    attestInMemory(ledger, chain[0] as string, alpha);
+    for (let index = 1; index <= links; index += 1) {
+      // The first replay squashes in an unattested source, so every later
+      // commit carries that gap forward, as a real write would record it.
+      ledger.replays[chain[index] as string] = {
+        inheritedGaps: {
+          uncoveredEdits: [],
+          unresolvedSources: index === 1 ? [] : [unattested],
+        },
+        ownGaps: {
+          uncoveredEdit: false,
+          unresolvedSources: index === 1 ? [unattested] : [],
+        },
+        recordedAt: STAMP,
+        sources:
+          index === 1
+            ? [chain[0] as string, unattested]
+            : [chain[index - 1] as string],
+        verification: "verified",
+      };
+    }
+    const started = performance.now();
+    const coverage = headCoverage(ledger, chain);
+    const elapsed = performance.now() - started;
+    expect(coverage.unattributed).toEqual([]);
+    expect(Object.keys(coverage.gaps)).toHaveLength(links);
+    expect(coverage.gaps[chain.at(-1) as string]).toEqual({
+      uncoveredEdits: [],
+      unresolvedSources: [unattested],
+    });
+    expect(elapsed).toBeLessThan(5000);
+    const top = resolveEffectiveAuthors(ledger, chain.at(-1) as string);
+    expect(top.visited).toHaveLength(links + 2);
+    expect(new Set(top.visited).size).toBe(top.visited.length);
+    expect(top.authors.map((entry) => entry.logicalId)).toEqual([
+      "agent-alpha",
+    ]);
   });
 
   test("reports a cycle in a loaded ledger as ledger-cycle", () => {
@@ -1149,6 +1238,34 @@ describe("reviewer resolution before dispatch", () => {
       resolve({ adversarial: true, status: "no-delegation" })
     ).toMatchObject({ reason: "reviewer-not-distinct", status: "blocked" });
     expect(resolve({ status: "no-delegation" }).reason).toBe("no-delegation");
+    // A concrete harness id may be spelled "unknown"; only the status says
+    // that detection failed.
+    const concrete = { harness: "unknown", model: "model-gamma" };
+    expect(resolve(concrete)).toMatchObject({
+      harness: "unknown",
+      model: "model-gamma",
+      reason: null,
+      status: "resolved",
+    });
+    expect(resolve({ ...concrete, adversarial: true }).status).toBe("resolved");
+    expect(
+      resolve(
+        { ...concrete, adversarial: true },
+        { harness: "unknown", model: "model-delta" }
+      ).status
+    ).toBe("resolved");
+    expect(
+      resolve(
+        { ...concrete, adversarial: true },
+        { harness: "unknown", model: "model-gamma" }
+      )
+    ).toMatchObject({ reason: "reviewer-not-distinct", status: "blocked" });
+    expect(
+      resolve(
+        { adversarial: true },
+        { harness: "unknown", model: "most-capable", status: "unresolved" }
+      ).reason
+    ).toBe("running-harness-unknown");
     expect(resolve({}, {}, true)).toMatchObject({
       reason: "authoring-repair",
       status: "unresolved",
@@ -1879,6 +1996,41 @@ describe("schema parity and the command line", () => {
         ...ledger,
         attestations: { [A]: [{ ...author("alpha"), agent: "" }] },
       },
+      { ...ledger, attestations: { bad: ledger.attestations[A] } },
+      {
+        ...ledger,
+        attestations: { ["AB".padStart(40, "0")]: ledger.attestations[A] },
+      },
+      { ...ledger, replays: { bad: ledger.replays[S] } },
+      {
+        ...ledger,
+        proposals: { "bad id": ledger.proposals[PROPOSAL] },
+      },
+      {
+        ...ledger,
+        proposals: {
+          [PROPOSAL]: {
+            ...ledger.proposals[PROPOSAL],
+            heads: { bad: ledger.proposals[PROPOSAL]?.heads[S] },
+          },
+        },
+      },
+      {
+        ...ledger,
+        proposals: {
+          [PROPOSAL]: {
+            ...ledger.proposals[PROPOSAL],
+            heads: {
+              [S]: {
+                ...ledger.proposals[PROPOSAL]?.heads[S],
+                gaps: {
+                  bad: { uncoveredEdits: [S], unresolvedSources: [] },
+                },
+              },
+            },
+          },
+        },
+      },
       {
         ...ledger,
         replays: {
@@ -1901,8 +2053,11 @@ describe("schema parity and the command line", () => {
         },
       })),
     ];
-    for (const variant of variants) {
-      expect(both(variant)).toEqual([false, false]);
+    for (const [index, variant] of variants.entries()) {
+      expect({ index, verdicts: both(variant) }).toEqual({
+        index,
+        verdicts: [false, false],
+      });
     }
   });
 

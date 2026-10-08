@@ -9,6 +9,7 @@ import type {
 import {
   type GuidanceUpdateContext,
   type GuidanceUpdateNotice,
+  type GuidanceUpdateQuestion,
   inspectGuidanceUpdate,
 } from "./guidance-updates.ts";
 import type { ReviewerResolution } from "./review-ledger.ts";
@@ -44,6 +45,8 @@ export interface InitializationStatus {
     models: AuthoringQuestionState;
     review: AuthoringQuestionState;
   };
+  /** The review question to ask now while it is pending, else null. */
+  authoringReviewQuestion?: GuidanceUpdateQuestion | null;
   changelogCoordination: ChangelogCoordination;
   // Pending Simple Changelogs install offer (command only; `offered` stays
   // false until onboarding asks). Absent or null when no offer applies.

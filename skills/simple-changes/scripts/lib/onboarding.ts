@@ -1454,6 +1454,79 @@ const selectScope = async (
   );
 };
 
+// The first-screen offer to reuse saved personal defaults for this run.
+// Returns the run-only selection when the owner accepts it.
+const reuseExistingPersonalDefaults = async (
+  prompter: OnboardingPrompter,
+  context: ChangelogCoordination,
+  uiArtifactsRelevant: boolean,
+  conversation: OnboardingConversationOptions
+): Promise<OnboardingSelection | null> => {
+  const existingPersonalDefaults =
+    conversation.existingPersonalDefaults ?? null;
+  if (!(conversation.showFirstScreen && existingPersonalDefaults)) {
+    return null;
+  }
+  prompter.present?.(
+    "Global personal defaults are a private fallback used only when a repository has no visible team policy. I found an existing saved set; no file has been changed."
+  );
+  const disposition = choiceValue<"use" | "review">(
+    await prompter.choose(
+      ONBOARDING_QUESTIONS.existingPersonalDefaults,
+      existingPersonalDefaultChoices,
+      "use"
+    ),
+    existingPersonalDefaultChoices,
+    ONBOARDING_QUESTIONS.existingPersonalDefaults
+  );
+  if (disposition === "use") {
+    const instructionPointer: OnboardingSelection["instructionPointer"] = {
+      action: "unavailable",
+      block: null,
+      target: null,
+    };
+    // This run writes nothing, but the review question still follows its
+    // own trigger: run-only setup asks it with two or more harnesses.
+    const authoring = conversation.authoring
+      ? await collectAuthoringAnswers(
+          { ...conversation.authoring, setupStyle: "run" },
+          prompter
+        )
+      : null;
+    const summary = [
+      "Use the existing global personal defaults for this run.",
+      "No repository policy or personal preference file will be changed.",
+      renderOnboardingSummary(
+        existingPersonalDefaults,
+        "run",
+        context,
+        instructionPointer,
+        uiArtifactsRelevant,
+        conversation.forgeProvider
+      ),
+      authoring
+        ? renderAuthoringSummary(
+            authoring,
+            conversation.authoring?.definitions ?? []
+          )
+        : null,
+    ]
+      .filter((part): part is string => part !== null)
+      .join("\n\n");
+    return {
+      authoring,
+      changelogInstall: NO_CHANGELOG_INSTALL_OFFER,
+      confirmed: await prompter.confirm(summary),
+      instructionPointer,
+      policy: existingPersonalDefaults,
+      scope: "run",
+      setupStyle: "run",
+      summary,
+    };
+  }
+  return null;
+};
+
 export const collectOnboardingSelection = async (
   defaults: RepoPolicy,
   inputs: OnboardingInputs,
@@ -1465,48 +1538,14 @@ export const collectOnboardingSelection = async (
 ): Promise<OnboardingSelection> => {
   const existingPersonalDefaults =
     conversation.existingPersonalDefaults ?? null;
-  if (conversation.showFirstScreen && existingPersonalDefaults) {
-    prompter.present?.(
-      "Global personal defaults are a private fallback used only when a repository has no visible team policy. I found an existing saved set; no file has been changed."
-    );
-    const disposition = choiceValue<"use" | "review">(
-      await prompter.choose(
-        ONBOARDING_QUESTIONS.existingPersonalDefaults,
-        existingPersonalDefaultChoices,
-        "use"
-      ),
-      existingPersonalDefaultChoices,
-      ONBOARDING_QUESTIONS.existingPersonalDefaults
-    );
-    if (disposition === "use") {
-      const instructionPointer: OnboardingSelection["instructionPointer"] = {
-        action: "unavailable",
-        block: null,
-        target: null,
-      };
-      const summary = [
-        "Use the existing global personal defaults for this run.",
-        "No repository policy or personal preference file will be changed.",
-        renderOnboardingSummary(
-          existingPersonalDefaults,
-          "run",
-          context,
-          instructionPointer,
-          uiArtifactsRelevant,
-          conversation.forgeProvider
-        ),
-      ].join("\n\n");
-      return {
-        authoring: null,
-        changelogInstall: NO_CHANGELOG_INSTALL_OFFER,
-        confirmed: await prompter.confirm(summary),
-        instructionPointer,
-        policy: existingPersonalDefaults,
-        scope: "run",
-        setupStyle: "run",
-        summary,
-      };
-    }
+  const reused = await reuseExistingPersonalDefaults(
+    prompter,
+    context,
+    uiArtifactsRelevant,
+    conversation
+  );
+  if (reused) {
+    return reused;
   }
   const setupStyle = await selectSetupStyle(
     defaults,

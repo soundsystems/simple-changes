@@ -127,10 +127,12 @@ const validateString = (
   path: string,
   errors: string[]
 ): void => {
-  if (typeof schema.minLength === "number" && value.length < schema.minLength) {
+  // JSON Schema lengths count Unicode characters (code points).
+  const characters = [...value].length;
+  if (typeof schema.minLength === "number" && characters < schema.minLength) {
     errors.push(`${path} must have at least ${schema.minLength} characters`);
   }
-  if (typeof schema.maxLength === "number" && value.length > schema.maxLength) {
+  if (typeof schema.maxLength === "number" && characters > schema.maxLength) {
     errors.push(`${path} must have at most ${schema.maxLength} characters`);
   }
   if (

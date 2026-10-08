@@ -365,6 +365,12 @@ then ask **After a review finds problems, how should later reviews of that
 change run?** with **At xhigh effort (Recommended)** (`escalateOnFindings:
 "xhigh"`) or **Same effort as before** (`null`).
 
+While `authoringQuestion.review` is `pending`, `initialize` also prints the
+question itself as `authoringReviewQuestion`; ask it once in each write-capable
+run before mutation, whatever the guidance version, because acknowledging an
+update never answers it. If no different reviewer model is named, ask R1 again
+rather than recording **Any independent reviewer**.
+
 Say: "This is a preference, not a permission. The agent still asks before
 launching another tool for the first time, and every proposal and review is
 signed by the model that actually wrote it." Save the answer with the chosen

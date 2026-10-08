@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://simple-changes.dev/schemas/review-ledger.schema.json",
   "title": "Simple Changes review ledger",
-  "description": "The proposal-scoped review ledger at <common git dir>/simple-changes/review-ledger.json. The runtime validates it by hand (scripts/lib/review-ledger.ts) with the same rules, plus what this schema cannot express: map keys are full commit SHAs or proposal ids, identities are unique per commit, range-scoped lists name only commits in the range, attempt ids are unique, and replay links are acyclic.",
+  "description": "The proposal-scoped review ledger at <common git dir>/simple-changes/review-ledger.json. The runtime validates it by hand (scripts/lib/review-ledger.ts) with the same rules. Map keys are constrained here with propertyNames (full commit SHAs, proposal ids). What a JSON schema cannot express is checked by hand only: identities are unique per commit, a replay never names its own destination and its own gaps name only its sources, range-scoped lists name only commits in the range, attempt ids are unique across proposals, and replay links are acyclic.",
   "type": "object",
   "additionalProperties": false,
   "required": ["attestations", "proposals", "replays", "schemaVersion"],
@@ -10,6 +10,7 @@
     "schemaVersion": { "const": 1 },
     "attestations": {
       "type": "object",
+      "propertyNames": { "$ref": "#/$defs/sha" },
       "additionalProperties": {
         "type": "array",
         "minItems": 1,
@@ -18,10 +19,12 @@
     },
     "replays": {
       "type": "object",
+      "propertyNames": { "$ref": "#/$defs/sha" },
       "additionalProperties": { "$ref": "#/$defs/replay" }
     },
     "proposals": {
       "type": "object",
+      "propertyNames": { "$ref": "#/$defs/proposalId" },
       "additionalProperties": { "$ref": "#/$defs/proposal" }
     }
   },
@@ -34,6 +37,10 @@
       "type": "array",
       "uniqueItems": true,
       "items": { "$ref": "#/$defs/sha" }
+    },
+    "proposalId": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/#!@+-]{0,199}$"
     },
     "digest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
     "uuid": {
@@ -120,6 +127,7 @@
     },
     "gapMap": {
       "type": "object",
+      "propertyNames": { "$ref": "#/$defs/sha" },
       "additionalProperties": { "$ref": "#/$defs/gaps" }
     },
     "replay": {
@@ -336,6 +344,7 @@
       "properties": {
         "heads": {
           "type": "object",
+          "propertyNames": { "$ref": "#/$defs/sha" },
           "additionalProperties": { "$ref": "#/$defs/head" }
         },
         "attempts": {

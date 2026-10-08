@@ -887,6 +887,20 @@ describe("schema keyword support", () => {
     }
   };
 
+  test("counts string lengths in Unicode characters", () => {
+    const schema = { maxLength: 3, minLength: 3, type: "string" };
+    expect(
+      validateSchemaDocument<string>(
+        "text",
+        schema,
+        "\u{1F600}\u{1F600}\u{1F600}"
+      )
+    ).toBe("\u{1F600}\u{1F600}\u{1F600}");
+    expect(() => validateSchemaDocument("text", schema, "ab")).toThrow(
+      "at least 3 characters"
+    );
+  });
+
   test("enforces propertyNames on every key of a map", () => {
     const schema = {
       additionalProperties: { type: "string" },

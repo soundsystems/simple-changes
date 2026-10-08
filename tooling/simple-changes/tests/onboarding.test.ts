@@ -1514,6 +1514,85 @@ describe("authoring and review questions", () => {
     );
   });
 
+  test("a different-model choice without an acceptable name asks R1 again, never recording any reviewer silently", async () => {
+    const retried = scripted(
+      ["found", "most-capable", "different-model", "any"],
+      ["most-capable", "most-capable", "most-capable"]
+    );
+    const answer = await collectAuthoringAnswers(
+      {
+        definitions,
+        detected: detected("alpha-agent"),
+        prefill: null,
+        runningHarness: "alpha-agent",
+        setupStyle: "customize",
+      },
+      retried.prompter
+    );
+    expect(
+      retried.asked.filter(
+        ({ question }) => question === AUTHORING_QUESTIONS.reviewer
+      )
+    ).toHaveLength(2);
+    expect(answer.roles.review).toEqual({
+      adversarial: false,
+      harness: "running",
+    });
+    const exhausted = scripted(
+      [
+        "found",
+        "most-capable",
+        "different-model",
+        "different-model",
+        "different-model",
+      ],
+      []
+    );
+    const unanswered = await collectAuthoringAnswers(
+      {
+        definitions,
+        detected: detected("alpha-agent"),
+        prefill: null,
+        runningHarness: "alpha-agent",
+        setupStyle: "customize",
+      },
+      exhausted.prompter
+    );
+    expect(Object.hasOwn(unanswered.roles, "review")).toBe(false);
+  });
+
+  test("reusing personal defaults still asks the review question with two detected harnesses", async () => {
+    const { asked, prompter } = scripted(["use", "any"]);
+    const selection = await collectOnboardingSelection(
+      configuredPolicy(),
+      {},
+      prompter,
+      undefined,
+      null,
+      false,
+      {
+        authoring: {
+          definitions,
+          detected: detected("alpha-agent", "beta-agent"),
+          prefill: null,
+          runningHarness: "alpha-agent",
+        },
+        existingPersonalDefaults: configuredPolicy({
+          defaultFinish: "integrate",
+        }),
+        showFirstScreen: true,
+      }
+    );
+    expect(selection.scope).toBe("run");
+    expect(asked.map(({ question }) => question)).toContain(
+      AUTHORING_QUESTIONS.reviewer
+    );
+    expect(selection.authoring?.roles.review).toEqual({
+      adversarial: false,
+      harness: "running",
+    });
+  });
+
   test("records the recommended default without asking the model questions", async () => {
     const { asked, prompter } = scripted([]);
     const answer = await collectAuthoringAnswers(

@@ -590,6 +590,10 @@
         "review": { "$ref": "#/$defs/authoringQuestionState" }
       }
     },
+    "authoringReviewQuestion": {
+      "description": "The independent-review question to ask while authoringQuestion.review is pending, whatever the guidance version.",
+      "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/guidanceQuestion" }]
+    },
     "authoring": {
       "description": "Effective authoring roles with each field's layer and the file of the highest layer that supplied any field.",
       "type": "object",

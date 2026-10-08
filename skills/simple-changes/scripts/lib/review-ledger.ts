@@ -21,7 +21,6 @@ import {
   MOST_CAPABLE,
   type RepositoryAuthoring,
   resolveRepositoryAuthoring,
-  UNKNOWN_HARNESS,
 } from "./authoring.ts";
 import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
 import { currentHarnessSession } from "./harness-session.ts";
@@ -1010,47 +1009,12 @@ const identityKey = (
     identity.logicalId ?? null,
   ]);
 
-/**
- * A commit's effective authors: its own attestations plus the effective
- * authors of every source its replay record names, recursively, resolved at
- * read time and never copied. Each commit is visited at most once.
- */
-export const resolveEffectiveAuthors = (
-  ledger: ReviewLedger,
-  commit: string
-): { authors: Attestation[]; visited: string[] } => {
-  const visited: string[] = [];
-  const seen = new Set<string>([commit]);
-  const stack = [commit];
-  const authors = new Map<string, Attestation>();
-  while (stack.length > 0) {
-    const current = stack.pop() as string;
-    visited.push(current);
-    for (const attestation of ledger.attestations[current] ?? []) {
-      const key = identityKey(attestation);
-      if (!authors.has(key)) {
-        authors.set(key, attestation);
-      }
-    }
-    for (const source of ledger.replays[current]?.sources ?? []) {
-      if (!seen.has(source)) {
-        seen.add(source);
-        stack.push(source);
-      }
-    }
-  }
-  return {
-    authors: [...authors.entries()]
-      .sort(([left], [right]) => left.localeCompare(right))
-      .map(([, attestation]) => attestation),
-    visited,
-  };
-};
-
 interface LedgerResolver {
   authors: (commit: string) => Attestation[];
   gaps: (commit: string) => CommitGaps;
   ownGaps: (commit: string) => ReplayRecord["ownGaps"] | null;
+  /** Commits evaluated so far, each exactly once, in evaluation order. */
+  visited: readonly string[];
 }
 
 const sortedGaps = (
@@ -1061,20 +1025,89 @@ const sortedGaps = (
   unresolvedSources: [...new Set(unresolved)].sort(),
 });
 
-const createResolver = (ledger: ReviewLedger): LedgerResolver => {
-  const authorMemo = new Map<string, Attestation[]>();
-  const gapMemo = new Map<string, CommitGaps>();
-  const inProgress = new Set<string>();
-  const authors = (commit: string): Attestation[] => {
-    const known = authorMemo.get(commit);
-    if (known) {
-      return known;
+// One evaluated commit. Sets and maps are never mutated once stored, so a
+// commit that adds nothing to its single source shares that source's values
+// and a long linear chain stays linear in time and memory.
+interface ResolvedNode {
+  authors: ReadonlyMap<string, Attestation>;
+  own: ReplayRecord["ownGaps"] | null;
+  uncovered: ReadonlySet<string>;
+  unresolved: ReadonlySet<string>;
+}
+
+const EMPTY_SET: ReadonlySet<string> = new Set<string>();
+const EMPTY_AUTHORS: ReadonlyMap<string, Attestation> = new Map();
+
+const unionSets = (
+  bases: readonly ReadonlySet<string>[],
+  extras: readonly string[]
+): ReadonlySet<string> => {
+  const nonEmpty = bases.filter((base) => base.size > 0);
+  const [first] = nonEmpty;
+  if (!first) {
+    return extras.length === 0 ? EMPTY_SET : new Set(extras);
+  }
+  if (nonEmpty.length === 1 && extras.every((extra) => first.has(extra))) {
+    return first;
+  }
+  const union = new Set(first);
+  for (const base of nonEmpty.slice(1)) {
+    for (const value of base) {
+      union.add(value);
     }
-    const resolved = resolveEffectiveAuthors(ledger, commit).authors;
-    authorMemo.set(commit, resolved);
-    return resolved;
-  };
-  const unresolved = (commit: string): boolean => authors(commit).length === 0;
+  }
+  for (const extra of extras) {
+    union.add(extra);
+  }
+  return union;
+};
+
+const unionAuthors = (
+  bases: readonly ReadonlyMap<string, Attestation>[],
+  own: readonly Attestation[]
+): ReadonlyMap<string, Attestation> => {
+  const nonEmpty = bases.filter((base) => base.size > 0);
+  const [first] = nonEmpty;
+  const ownKeys = own.map((attestation) => identityKey(attestation));
+  if (
+    first &&
+    nonEmpty.length === 1 &&
+    ownKeys.every((key) => first.has(key))
+  ) {
+    return first;
+  }
+  if (!first && own.length === 0) {
+    return EMPTY_AUTHORS;
+  }
+  const union = new Map<string, Attestation>();
+  for (const base of nonEmpty) {
+    for (const [key, attestation] of base) {
+      if (!union.has(key)) {
+        union.set(key, attestation);
+      }
+    }
+  }
+  for (const [index, attestation] of own.entries()) {
+    const key = ownKeys[index] as string;
+    if (!union.has(key)) {
+      union.set(key, attestation);
+    }
+  }
+  return union;
+};
+
+/**
+ * Effective authors and gaps for the whole ledger, resolved at read time
+ * through the replay links in one iterative post-order traversal shared by
+ * every query. Each commit is evaluated at most once per resolver, after its
+ * sources, so coverage over many commits never re-walks a shared ancestry.
+ * A commit reached again while still on the traversal stack is a cycle,
+ * reported as `ledger-cycle`.
+ */
+const createResolver = (ledger: ReviewLedger): LedgerResolver => {
+  const memo = new Map<string, ResolvedNode>();
+  const onStack = new Set<string>();
+  const visited: string[] = [];
   // An inconclusive replay's edit stays uncovered until someone attests an
   // implementation contribution on that destination. A gap naming a commit
   // with no replay record cannot be shown closed, so it stays open.
@@ -1085,54 +1118,122 @@ const createResolver = (ledger: ReviewLedger): LedgerResolver => {
           (ledger.attestations[destination]?.length ?? 0) === 0
       : true;
   };
-  const ownGaps = (commit: string): ReplayRecord["ownGaps"] | null => {
-    const record = ledger.replays[commit];
-    if (!record) {
-      return null;
-    }
-    return {
-      uncoveredEdit:
-        record.verification === "inconclusive" &&
-        (ledger.attestations[commit]?.length ?? 0) === 0,
-      unresolvedSources: record.sources.filter(unresolved),
-    };
-  };
-  const gaps = (commit: string): CommitGaps => {
-    const known = gapMemo.get(commit);
+  const cycle = (commit: string): SimpleChangesError =>
+    new SimpleChangesError(
+      `ledger-cycle: replay records loop through ${commit}.`,
+      EXIT_CODES.validation
+    );
+  const resolveNode = (start: string): ResolvedNode => {
+    const known = memo.get(start);
     if (known) {
       return known;
     }
-    const record = ledger.replays[commit];
-    if (!record) {
-      return sortedGaps([], []);
+    if (onStack.has(start)) {
+      throw cycle(start);
     }
-    if (inProgress.has(commit)) {
-      throw new SimpleChangesError(
-        `ledger-cycle: replay records loop through ${commit}.`,
-        EXIT_CODES.validation
-      );
+    onStack.add(start);
+    const stack: { next: number; node: string }[] = [{ next: 0, node: start }];
+    while (stack.length > 0) {
+      const frame = stack.at(-1) as { next: number; node: string };
+      const sources = ledger.replays[frame.node]?.sources ?? [];
+      const source = sources[frame.next];
+      if (source !== undefined) {
+        frame.next += 1;
+        if (memo.has(source)) {
+          continue;
+        }
+        if (onStack.has(source)) {
+          throw cycle(source);
+        }
+        onStack.add(source);
+        stack.push({ next: 0, node: source });
+        continue;
+      }
+      stack.pop();
+      memo.set(frame.node, evaluate(frame.node));
+      onStack.delete(frame.node);
+      visited.push(frame.node);
     }
-    inProgress.add(commit);
-    const own = ownGaps(commit) as ReplayRecord["ownGaps"];
-    const unresolvedSources = [...own.unresolvedSources];
-    const uncoveredEdits = own.uncoveredEdit ? [commit] : [];
-    unresolvedSources.push(
-      ...record.inheritedGaps.unresolvedSources.filter(unresolved)
-    );
-    uncoveredEdits.push(
-      ...record.inheritedGaps.uncoveredEdits.filter(editOpen)
-    );
-    for (const source of record.sources) {
-      const inherited = gaps(source);
-      unresolvedSources.push(...inherited.unresolvedSources);
-      uncoveredEdits.push(...inherited.uncoveredEdits);
-    }
-    inProgress.delete(commit);
-    const result = sortedGaps(unresolvedSources, uncoveredEdits);
-    gapMemo.set(commit, result);
-    return result;
+    return memo.get(start) as ResolvedNode;
   };
-  return { authors, gaps, ownGaps };
+  const evaluate = (commit: string): ResolvedNode => {
+    const record = ledger.replays[commit];
+    const own = ledger.attestations[commit] ?? [];
+    const sources = (record?.sources ?? []).map(
+      (source) => memo.get(source) as ResolvedNode
+    );
+    const authors = unionAuthors(
+      sources.map((source) => source.authors),
+      own
+    );
+    if (!record) {
+      return {
+        authors,
+        own: null,
+        uncovered: EMPTY_SET,
+        unresolved: EMPTY_SET,
+      };
+    }
+    const ownGaps = {
+      uncoveredEdit: record.verification === "inconclusive" && own.length === 0,
+      unresolvedSources: record.sources.filter(
+        (_, index) => sources[index]?.authors.size === 0
+      ),
+    };
+    // Stored inherited gaps stay until closed: a source attested since, or an
+    // edit attested since. They are resolved through the same memo.
+    const inheritedUnresolved = record.inheritedGaps.unresolvedSources.filter(
+      (sha) => resolveNode(sha).authors.size === 0
+    );
+    const inheritedUncovered =
+      record.inheritedGaps.uncoveredEdits.filter(editOpen);
+    return {
+      authors,
+      own: ownGaps,
+      uncovered: unionSets(
+        sources.map((source) => source.uncovered),
+        [...(ownGaps.uncoveredEdit ? [commit] : []), ...inheritedUncovered]
+      ),
+      unresolved: unionSets(
+        sources.map((source) => source.unresolved),
+        [...ownGaps.unresolvedSources, ...inheritedUnresolved]
+      ),
+    };
+  };
+  const sortedAuthors = new Map<string, Attestation[]>();
+  return {
+    authors: (commit) => {
+      const known = sortedAuthors.get(commit);
+      if (known) {
+        return known;
+      }
+      const sorted = [...resolveNode(commit).authors.entries()]
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([, attestation]) => attestation);
+      sortedAuthors.set(commit, sorted);
+      return sorted;
+    },
+    gaps: (commit) => {
+      const node = resolveNode(commit);
+      return sortedGaps(node.unresolved, node.uncovered);
+    },
+    ownGaps: (commit) => resolveNode(commit).own,
+    visited,
+  };
+};
+
+/**
+ * A commit's effective authors: its own attestations plus the effective
+ * authors of every source its replay record names, recursively, resolved at
+ * read time and never copied. Each commit is visited at most once.
+ */
+export const resolveEffectiveAuthors = (
+  ledger: ReviewLedger,
+  commit: string
+): { authors: Attestation[]; visited: string[] } => {
+  const resolver = createResolver(ledger);
+  const authors = resolver.authors(commit);
+  return { authors, visited: [...resolver.visited] };
 };
 
 const hasGaps = (gaps: CommitGaps): boolean =>
@@ -1767,7 +1868,9 @@ export const resolveReviewer = (input: {
   resolution.effort = effort.effort;
   resolution.effortSource = effort.effortSource;
   resolution.model = review.model;
-  if (review.harness === UNKNOWN_HARNESS || review.status === "unresolved") {
+  // Failed detection is a status, never a harness string: a concrete harness
+  // id may itself be spelled "unknown".
+  if (review.status === "unresolved") {
     return {
       ...resolution,
       reason: "running-harness-unknown",
@@ -1791,7 +1894,7 @@ export const resolveReviewer = (input: {
     ({ authors } = verified);
   } else {
     const { proposals } = input.authoring.effective;
-    if (proposals.harness === UNKNOWN_HARNESS) {
+    if (proposals.status === "unresolved") {
       return {
         ...resolution,
         reason: "running-harness-unknown",
@@ -2380,6 +2483,7 @@ const replaySources = (
       EXIT_CODES.usage
     );
   }
+  assertKeepsSources(ledger, destination, sources);
   for (const source of sources) {
     if (source === destination || replayReaches(ledger, source, destination)) {
       throw new SimpleChangesError(
@@ -2412,9 +2516,32 @@ const unionGaps = (...lists: CommitGaps[]): CommitGaps =>
   );
 
 /**
+ * A corrected mapping may add sources but never drop one an earlier record
+ * for the destination named: effective authors follow the current links, so
+ * dropping a source would remove its implementers from every descendant's
+ * gate. The record keeps one source list, so the safe default is to refuse.
+ */
+const assertKeepsSources = (
+  ledger: ReviewLedger,
+  destination: string,
+  sources: readonly string[]
+): void => {
+  const dropped = (ledger.replays[destination]?.sources ?? []).filter(
+    (source) => !sources.includes(source)
+  );
+  if (dropped.length > 0) {
+    throw new SimpleChangesError(
+      `replay-correction-drops-source: ${destination} already replays ${dropped.join(", ")}; a corrected mapping may add sources but never drop one, because dropping it would remove its authors from every later replay. Name every earlier source again.`,
+      EXIT_CODES.validation
+    );
+  }
+};
+
+/**
  * Writes the destination's replay record. An identical mapping (sources and
- * verification) is a no-op; a corrected one supersedes the destination's own
- * verification and own gaps but keeps every inherited gap it had.
+ * verification) is a no-op; a corrected one may only add sources, and it
+ * supersedes the destination's own verification and own gaps but keeps
+ * every inherited gap it had.
  */
 export const applyReplayRecord = (
   ledger: ReviewLedger,
@@ -2424,6 +2551,7 @@ export const applyReplayRecord = (
 ): NonNullable<AuthorAttestResult["replay"]> => {
   const existing = ledger.replays[destination];
   const sources = check.orderedSources;
+  assertKeepsSources(ledger, destination, sources);
   const resolver = createResolver(ledger);
   const unchanged =
     existing !== undefined &&

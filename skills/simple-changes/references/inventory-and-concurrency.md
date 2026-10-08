@@ -454,6 +454,26 @@ and it applies only while that controller holds control. Work a hold does not co
 finalize`: a halted run relinquishes with its blockers recorded like any other
 incomplete run.
 
+## Status across repositories
+
+`simple-changes status --all [--root DIR ...] [--json]` shows, for every Simple
+Changes repository under the roots `update-local-forks discover` scans (global
+skill roots, `~/Developer`, `~/Projects`, `~/Code`, `~/src`, and each
+`--root`): the lease with its controller state and liveness (`live`, `stale`,
+or `unknown`), unreleased worktree claims and whether each checkout still
+matches its claim, recorded holds, ready-work receipts with their freshness,
+and a pending guidance notice when the repository's acknowledged guidance is
+older than this runtime's. It then lists every fork, compared with the newest
+installed Simple Changes source, as `behind`, `current`, `ahead`, or `unknown`.
+`simple-changes status` without `--all` shows the current repository only.
+
+It is read-only. It never writes, fetches, or takes a lock: Git runs with
+optional locks off, holds are read from this clone only, and state files are
+read without their locks. A section it cannot read shows as `unknown` with the
+reason rather than a guess, and a local checkout may be behind its remote, so
+confirm a fork's state on its remote branch before acting on it. It reports;
+it never authorizes recovery, cleanup, or shipping.
+
 ## Owner claims and safe pauses
 
 Every owner-created worktree should be claimed immediately with `worktree

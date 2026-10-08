@@ -478,7 +478,8 @@ It is read-only. It never writes, fetches, or takes a lock: it never runs
 checkout contents are never compared), other Git reads run with optional
 locks, lazy fetches, signature verification, and trace output off and with
 every inherited `GIT_*` environment variable dropped (each repository is
-read by path), holds are read from this clone only, and state files are read without their locks. On macOS, Git runs
+read by path), the target is read through its full ref so a same-named tag
+cannot stand in for it, holds are read from this clone only, and state files are read without their locks. On macOS, Git runs
 directly from the developer directory (`DEVELOPER_DIR`, the `xcode-select`
 link, or the Command Line Tools), never through `xcrun` or the `/usr/bin/git`
 shim, which write a lookup cache (a developer Git that resolves to the shim

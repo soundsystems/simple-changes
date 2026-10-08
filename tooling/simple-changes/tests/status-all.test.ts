@@ -905,6 +905,67 @@ describe("simple-changes status --all", () => {
     ]);
   });
 
+  test("never lets a tag named like the target stand in for it", () => {
+    const home = temporaryHome();
+    const repository = initRepository(join(home, "Developer", "tagged"));
+    writeFixture(repository, ".simple-changes.json", policy(27));
+    git(repository, ["add", ".simple-changes.json"]);
+    git(repository, ["commit", "-q", "-m", "Add policy"]);
+    const path = join(home, "Developer", "tagged-ready");
+    git(repository, ["worktree", "add", "-q", "-b", "ready", path]);
+    const claim = claimWorktree(path, "ready-agent", path, "codex");
+    writeFixture(path, "ready.txt", "finished\n");
+    git(path, ["add", "ready.txt"]);
+    git(path, ["commit", "-q", "-m", "Finish"]);
+    recordReadyWork(path, "ready-agent", claim.claimId, {
+      checks: [{ command: "bun run check", note: null, result: "passed" }],
+      deploymentConstraints: [],
+      migrations: [],
+      releaseImpact: "patch",
+      scope: "Finish.",
+      unresolvedAuthority: [],
+    });
+    addShipHold(repository, {
+      adapter: "codex",
+      agentId: "ready-agent",
+      reason: "Wait for the ready change.",
+      scope: "ship",
+      severity: "delay",
+      untilMerged: "ready",
+    });
+    // A tag named main at the unmerged ready head: `main` alone now names it.
+    const head = git(path, ["rev-parse", "HEAD"]);
+    git(repository, ["tag", "main", head]);
+    expect(
+      evaluateShipHolds(captureInventory(repository), { localOnly: true }).holds
+    ).toEqual([expect.objectContaining({ status: "satisfied" })]);
+
+    const [status] = statusAll({
+      home,
+      runtime: { skillDirectory: home, version: "0.27.1" },
+    }).repositories;
+
+    expect(status?.readyWork).toEqual([
+      expect.objectContaining({ branch: "ready", freshness: "current" }),
+    ]);
+    expect(status?.holds).toEqual([
+      expect.objectContaining({ status: "active", untilMerged: "ready" }),
+    ]);
+
+    // A malformed branch ref is unreadable, not a deleted branch.
+    writeFileSync(
+      join(repository, ".git", "refs", "heads", "ready"),
+      "not an object name\n"
+    );
+    const [malformed] = statusAll({
+      home,
+      runtime: { skillDirectory: home, version: "0.27.1" },
+    }).repositories;
+    expect(malformed?.readyWork).toEqual([
+      expect.objectContaining({ branch: "ready", freshness: "unknown" }),
+    ]);
+  });
+
   test("shows unreadable state as unknown and keeps going", () => {
     const home = temporaryHome();
     const broken = initRepository(join(home, "Developer", "broken"));

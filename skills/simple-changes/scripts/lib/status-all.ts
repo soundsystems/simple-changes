@@ -536,17 +536,48 @@ const commitOf = (root: string, ref: string): string | null => {
   return result.exitCode === 0 ? result.stdout.trim() : null;
 };
 
-/** Whether a ref exists: show-ref exits 1 only when it does not. */
+/**
+ * Whether a ref exists: `show-ref --exists` exits 2 only when it does not, so
+ * a malformed or unreadable ref (which `show-ref --verify` also reports as
+ * missing) is null, never absent. A Git without `--exists` reads null too.
+ */
 const refPresence = (root: string, ref: string): boolean | null => {
-  const { exitCode } = runGit(
-    root,
-    ["show-ref", "--verify", "--quiet", ref],
-    true
-  );
+  const { exitCode } = runGit(root, ["show-ref", "--exists", ref], true);
   if (exitCode === 0) {
     return true;
   }
-  return exitCode === 1 ? false : null;
+  return exitCode === 2 ? false : null;
+};
+
+/**
+ * The target commit, read through its full ref. The inventory names the
+ * target short (`origin/main` or `main`), and Git resolves a short name to a
+ * same-named tag before a branch, so a tag could stand in for the target.
+ * Null when the target ref does not exist; unknown when it cannot be read.
+ */
+const targetCommit = (
+  inventory: RepositoryInventory
+): string | null | Unknown => {
+  const { targetRef } = inventory;
+  const remote = inventory.repository.targetRemote;
+  let full = `refs/heads/${targetRef}`;
+  if (targetRef.startsWith("refs/")) {
+    full = targetRef;
+  } else if (remote && targetRef.startsWith(`${remote}/`)) {
+    full = `refs/remotes/${targetRef}`;
+  }
+  const root = inventory.repository.primaryCheckout;
+  const present = refPresence(root, full);
+  if (present === null) {
+    return unknown(new Error(`the target ${full} cannot be read`));
+  }
+  if (!present) {
+    return null;
+  }
+  return (
+    commitOf(root, full) ??
+    unknown(new Error(`the target ${full} does not name a readable commit`))
+  );
 };
 
 type ReadyFreshness = "current" | "shipped" | "stale" | "unknown";
@@ -605,11 +636,17 @@ const readyContainment = (
  */
 const readyFreshness = (
   root: string,
-  target: string | null,
+  target: string | null | Unknown,
   targetRef: string,
   branch: string,
   head: string
 ): { detail: string; freshness: ReadyFreshness } => {
+  if (isUnknown(target)) {
+    return {
+      detail: `Whether ${targetRef} contains ${head} cannot be read here: ${target.error}.`,
+      freshness: "unknown",
+    };
+  }
   const headPresent =
     runGit(root, ["cat-file", "-e", `${head}^{commit}`], true).exitCode === 0;
   if (!(target && headPresent)) {
@@ -659,10 +696,10 @@ const readyFreshness = (
 };
 
 const readyStatus = (
-  inventory: RepositoryInventory
+  inventory: RepositoryInventory,
+  target: string | null | Unknown
 ): Exclude<StatusRepository["readyWork"], Unknown> => {
   const root = inventory.repository.primaryCheckout;
-  const target = commitOf(root, inventory.targetRef);
   return readReadyReceipts(inventory.repository.commonGitDirectory).map(
     (receipt) => ({
       ...readyFreshness(
@@ -702,38 +739,35 @@ const policyProbe = (primaryCheckout: string): Unknown | null => {
 };
 
 /**
- * A hold waiting for a branch to merge reads active whenever merge evidence
- * is missing, and satisfied when the branch looks contained. When the branch
- * and target tips resolve but their history cannot be read, or the clone is
- * shallow (where cut history can make distinct tips with identical trees look
- * patch-equivalent), either reading is unknown. A satisfied hold that the
- * history-aware check cannot confirm is unknown too.
+ * A hold waiting for a branch to merge, judged again against the target's
+ * full ref (the ordinary evaluation reads the target by its short name, which
+ * a same-named tag can answer) with history-aware containment: satisfied when
+ * the target contains the branch head, active when it does not, and unknown
+ * when the target cannot be read, its history cannot be read, or the clone is
+ * shallow (where cut history can make distinct tips with identical trees
+ * look patch-equivalent). Other holds keep their evaluated status.
  */
 const holdStatus = (
   inventory: RepositoryInventory,
-  item: ShipHoldEvaluation
+  item: ShipHoldEvaluation,
+  target: string | null | Unknown
 ): string => {
-  const { evidence } = item;
-  if (
-    !(
-      (item.status === "active" || item.status === "satisfied") &&
-      evidence?.branchHead &&
-      evidence.targetRevision
-    )
-  ) {
+  const head = item.evidence?.branchHead;
+  if (!((item.status === "active" || item.status === "satisfied") && head)) {
     return item.status;
+  }
+  if (target === null || isUnknown(target)) {
+    return "unknown";
   }
   const contained = readyContainment(
     inventory.repository.primaryCheckout,
-    evidence.targetRevision,
-    evidence.branchHead
+    target,
+    head
   );
   if (isUnknown(contained)) {
     return "unknown";
   }
-  return item.status === "satisfied" && contained === null
-    ? "unknown"
-    : item.status;
+  return contained === null ? "active" : "satisfied";
 };
 
 const guidanceStatus = (
@@ -782,6 +816,7 @@ const repositoryStatus = (
     };
   }
   const inventory = captured;
+  const target = targetCommit(inventory);
   const claims = stateSection(
     worktreeCoordinationPath(commonGitDirectory),
     () => claimStatus(inventory)
@@ -799,13 +834,13 @@ const repositoryStatus = (
         reason: item.hold.reason,
         scope: item.hold.scope,
         severity: item.hold.severity,
-        status: holdStatus(inventory, item),
+        status: holdStatus(inventory, item, target),
         untilMerged: item.hold.untilMerged,
       }))
     ),
     lease,
     readyWork: stateSection(readyReceiptsPath(commonGitDirectory), () =>
-      readyStatus(inventory)
+      readyStatus(inventory, target)
     ),
     releasedClaims: isUnknown(claims) ? null : claims.released,
     repository: inventory.repository.primaryCheckout,

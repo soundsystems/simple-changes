@@ -174,18 +174,13 @@ const fetchedCopies = (
   const unreadable: string[] = [];
   for (const remote of remotes.stdout.split("\n").filter(Boolean)) {
     const ref = `refs/remotes/${remote}/${target}`;
-    // Exit 1 with no output is the only answer that means "no such ref".
-    const raw = git(cwd, [
-      "rev-parse",
-      "--verify",
-      "--quiet",
-      "--end-of-options",
-      ref,
-    ]);
-    if (raw.exitCode === 1 && raw.stdout === "") {
+    // `show-ref --exists` exits 2 only for a ref that does not exist; a
+    // malformed or unreadable ref is an error, never absence.
+    const exists = git(cwd, ["show-ref", "--exists", ref]);
+    if (exists.exitCode === 2) {
       continue;
     }
-    if (raw.exitCode === 0 && resolveCommit(cwd, ref) !== null) {
+    if (exists.exitCode === 0 && resolveCommit(cwd, ref) !== null) {
       readable.push(ref);
     } else {
       unreadable.push(ref);

@@ -54,7 +54,8 @@ any form it does not support rather than guessing what it does. It gates:
   by URL or branch). The merged head must also contain every fetched copy
   of `main` (`refs/remotes/<remote>/main` for each remote, since the guard
   cannot tell which remote a project number means; a copy that exists but
-  cannot be read refuses), so the merge result is
+  cannot be read, including a malformed ref, refuses, which needs Git 2.43 or
+  later for `show-ref --exists`), so the merge result is
   exactly the checked tree; fetch right before merging, because the provider can still merge onto a `main` that
   moved after the fetch. The guard and `check:receipt` read real history:
   replacement refs and graft files, which can show a commit with another

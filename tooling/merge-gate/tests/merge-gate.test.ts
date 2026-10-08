@@ -368,20 +368,24 @@ describe("merge gate exec guard", () => {
     }
     // origin's main names a commit this clone lacks, while the readable
     // backup copy is contained: the unreadable copy must not be skipped.
-    // Git refuses to point a ref at a missing object, so write the ref file.
-    writeFileSync(
-      join(root, ".git", "refs", "remotes", "origin", "main"),
-      `${"1".repeat(40)}\n`
-    );
-    for (const command of forms) {
-      const decision = decide(root, command);
-      expect({ allow: decision.allow, command }).toEqual({
-        allow: false,
-        command,
-      });
-      expect(decision.reason).toContain(
-        "refs/remotes/origin/main exists but cannot be read"
+    // Git refuses to point a ref at a missing object or at malformed text,
+    // so write the ref file: neither may pass as an absent copy.
+    for (const contents of ["1".repeat(40), "not an object name"]) {
+      writeFileSync(
+        join(root, ".git", "refs", "remotes", "origin", "main"),
+        `${contents}\n`
       );
+      for (const command of forms) {
+        const decision = decide(root, command);
+        expect({ allow: decision.allow, command, contents }).toEqual({
+          allow: false,
+          command,
+          contents,
+        });
+        expect(decision.reason).toContain(
+          "refs/remotes/origin/main exists but cannot be read"
+        );
+      }
     }
   });
 

@@ -43,9 +43,11 @@ import { runGit } from "./process.ts";
  * (`rebase --exec`, `bisect run`, `--upload-pack`, ...), or writes
  * configuration that later commands would follow.
  *
- * Git run through a shell or other command runner is refused outright while
- * units are pinned, because the runner hides what Git will read; any other
- * program is opaque. Refusing a legitimate command is accepted, because the
+ * While units are pinned, a command runner (`env`, `xargs`, `sudo`, ...),
+ * inline shell or interpreter code (`sh -c`, `python -c`), and any program
+ * given Git or a runner as a whole argument are refused outright, because
+ * they hide what Git will run; any other program, including a script file
+ * run by an interpreter, is opaque. Refusing a legitimate command is accepted, because the
  * form that names the recorded commit always works. The run's controller and
  * its own prepared authors are not pinned.
  */
@@ -283,64 +285,114 @@ const MERGE_LIKE_BUILTINS: ReadonlySet<string> = new Set([
   "worktree",
 ]);
 
-// Programs that run another command from their arguments: shells, command
-// prefixes, and script interpreters. Git run through one of them cannot be
-// classified (its subcommand, upstream, and configuration are hidden), so
-// while units are pinned it is refused whatever it names; run Git directly.
-const COMMAND_RUNNERS: ReadonlySet<string> = new Set([
+// Programs that run the rest of their arguments as another command. While
+// units are pinned they are refused outright: whatever they run is hidden.
+const PREFIX_RUNNERS: ReadonlySet<string> = new Set([
   "arch",
-  "bash",
-  "bun",
+  "asdf",
   "bunx",
-  "busybox",
   "caffeinate",
   "chroot",
-  "cmd",
   "command",
-  "csh",
-  "dash",
-  "deno",
+  "conda",
+  "direnv",
   "doas",
+  "dtruss",
+  "entr",
   "env",
-  "eval",
   "exec",
-  "fish",
+  "find",
   "flock",
+  "gdb",
   "gtimeout",
+  "hyperfine",
   "ionice",
-  "ksh",
-  "mksh",
+  "lldb",
+  "ltrace",
+  "mise",
   "nice",
-  "node",
+  "nix",
+  "nix-shell",
   "nohup",
+  "npm",
   "npx",
-  "osascript",
   "parallel",
-  "perl",
-  "php",
+  "pipenv",
+  "pnpm",
   "pnpx",
-  "powershell",
-  "pwsh",
-  "python",
-  "python3",
-  "ruby",
+  "poetry",
   "runuser",
   "script",
   "setsid",
-  "sh",
+  "ssh",
   "stdbuf",
+  "strace",
   "su",
   "sudo",
   "taskset",
-  "tcsh",
   "time",
   "timeout",
   "unbuffer",
+  "uv",
+  "uvx",
+  "valgrind",
   "watch",
   "xargs",
   "xcrun",
+  "yarn",
+]);
+
+// Shells and interpreters. Running a script file is opaque, like any other
+// program; inline code (`sh -c`, `python -c`, `node -e`) is refused while
+// units are pinned, since it can run Git in forms this check cannot see.
+// Text processors whose program is always inline are refused outright.
+const INLINE_RUNNERS: ReadonlySet<string> = new Set([
+  "ash",
+  "bash",
+  "bun",
+  "busybox",
+  "cmd",
+  "csh",
+  "dash",
+  "deno",
+  "fish",
+  "julia",
+  "ksh",
+  "lua",
+  "mksh",
+  "node",
+  "osascript",
+  "perl",
+  "php",
+  "powershell",
+  "pwsh",
+  "python",
+  "r",
+  "rscript",
+  "ruby",
+  "sh",
+  "tclsh",
+  "tcsh",
   "yash",
   "zsh",
+]);
+const ALWAYS_INLINE_RUNNERS: ReadonlySet<string> = new Set([
+  "awk",
+  "gawk",
+  "mawk",
+  "nawk",
+  "sed",
+  "gsed",
+]);
+// Inline-code options: long forms, and short clusters (`-lc`, `-pe`) that
+// contain one of these letters.
+const INLINE_LONG_OPTIONS = ["--command", "--eval", "--exec", "--print"];
+const INLINE_SHORT_LETTERS = /^-[a-z]*[cepr][a-z]*$/iu;
+const INLINE_WINDOWS_OPTIONS: ReadonlySet<string> = new Set([
+  "/c",
+  "/k",
+  "-command",
+  "-encodedcommand",
 ]);
 
 // The only merge-like subcommands loop exec runs while units are pinned, each
@@ -368,6 +420,7 @@ const ALLOWED_WHILE_PINNED: ReadonlySet<string> = new Set([
 
 const GIT_EXECUTABLES: ReadonlySet<string> = new Set(["git", "git.exe"]);
 const EXE_SUFFIX = /\.exe$/u;
+const VERSION_SUFFIX = /-?[\d.]+$/u;
 const DASHED_GIT_PROGRAM = /^git-([a-z][a-z0-9-]*)$/u;
 const NAME_CHARACTER = /[\p{L}\p{N}_-]/u;
 const OTHER_WORKTREE_PATTERN =
@@ -375,7 +428,6 @@ const OTHER_WORKTREE_PATTERN =
 const STASH_REF_PATTERN = /^(?:refs\/)?stash(?:$|[~^:@])/u;
 const FETCH_HEAD_PATTERN =
   /(?:^|[^\p{L}\p{N}_-])fetch_head(?:$|[^\p{L}\p{N}_-])/u;
-const WRAPPER_WORD_SEPARATOR = /[\s;&|()<>'"`$\\=]+/u;
 const WHOLE_REF_TOKEN = /^[^\s~^:?*[\\@{}]+$/u;
 const OBJECT_ID = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/u;
 const RANGE_SEPARATOR = /\.{2,3}/u;
@@ -2107,6 +2159,11 @@ const gitRefusals = (
 const programName = (path: string): string =>
   basename(path).toLowerCase().replace(EXE_SUFFIX, "");
 
+// A program's name without a version suffix: `python3.14`, `node22`,
+// `perl5.36`, and `python-3.12` are python, node, perl, and python.
+const programFamily = (path: string): string =>
+  programName(path).replace(VERSION_SUFFIX, "");
+
 // Git run by another program: a command runner whose arguments mention Git
 // anywhere (a shell script, an interpreter's code), or any program given Git
 // as a whole argument (`xcrun git`, `mise exec -- git`).
@@ -2114,20 +2171,49 @@ const programName = (path: string): string =>
 const isGitProgram = (word: string): boolean =>
   programName(word) === "git" || DASHED_GIT_PROGRAM.test(programName(word));
 
+const hasInlineCode = (args: readonly string[]): boolean =>
+  args[0] === "eval" ||
+  args.some(
+    (arg) =>
+      INLINE_SHORT_LETTERS.test(arg) ||
+      INLINE_WINDOWS_OPTIONS.has(arg.toLowerCase()) ||
+      spelledOption(arg, INLINE_LONG_OPTIONS) !== null
+  );
+
+// Git, or a program that could run it, given as a whole argument to another
+// program, which may run it.
+const runsProgram = (arg: string): boolean => {
+  const family = programFamily(arg);
+  return (
+    isGitProgram(arg) ||
+    PREFIX_RUNNERS.has(family) ||
+    INLINE_RUNNERS.has(family) ||
+    ALWAYS_INLINE_RUNNERS.has(family)
+  );
+};
+
+// A program other than Git that could run Git while units are pinned: a
+// prefix runner, inline shell or interpreter code, a text processor whose
+// program is inline, or any program given Git as a whole argument.
 const wrappedRefusals = (argv: readonly string[]): PinnedRefusal[] => {
   const [command = ""] = argv;
   const args = argv.slice(1);
-  const runsGit =
-    args.some((arg) => isGitProgram(arg)) ||
-    (COMMAND_RUNNERS.has(programName(command)) &&
-      args
-        .flatMap((arg) => arg.split(WRAPPER_WORD_SEPARATOR))
-        .some((word) => isGitProgram(word)));
-  return runsGit
+  const family = programFamily(command);
+  let reason: string | null = null;
+  if (PREFIX_RUNNERS.has(family)) {
+    reason = `${command} runs another command`;
+  } else if (ALWAYS_INLINE_RUNNERS.has(family)) {
+    reason = `${command} runs an inline program`;
+  } else if (INLINE_RUNNERS.has(family) && hasInlineCode(args)) {
+    reason = `${command} runs inline code`;
+  } else if (args.some((arg) => runsProgram(arg))) {
+    reason = `${command} is given Git or another runner to run`;
+  }
+  return reason
     ? [
         refusal(
           "wrapped",
-          `it runs Git through ${command}, which hides the subcommand, upstream, and configuration Git will use; run Git directly`
+          `${reason}, which could run Git out of this check's sight; run Git directly, or a script file`
         ),
       ]
     : [];

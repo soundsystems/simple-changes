@@ -748,6 +748,19 @@ describe("pinned-head command analysis", () => {
       ["/usr/bin/xcrun", "git", "merge", "feat/x"],
       ["env", "/usr/libexec/git-core/git-merge", "--ff-only", "feat/x"],
       ["sh", "-c", "git-merge --ff-only feat/x"],
+      [
+        "/opt/homebrew/bin/python3.14",
+        "-c",
+        "import os; os.execvp('git', ['git', 'merge', '--ff-only', 'feat/x'])",
+      ],
+      ["sh", "-c", `exec "$${"{"}GIT:-git}" merge --ff-only feat/x`],
+      ["bash", "-lc", "make integrate"],
+      ["node", "-pe", "1"],
+      ["deno", "eval", "1"],
+      ["awk", 'BEGIN { system("true") }'],
+      ["uv", "run", "python", "-c", "1"],
+      ["my-wrapper", "sh", "script.sh"],
+      ["bun", "-e", "console.log('feat/x')"],
     ]) {
       expect({ argv, kinds: kinds(argv) }).toEqual({
         argv,
@@ -912,9 +925,10 @@ describe("pinned-head command analysis", () => {
       ["git", "branch", "-D", "-r", "origin/feat/x"],
       ["git", "worktree", "remove", unitPath],
       ["git", "mktag"],
-      ["bun", "-e", "console.log('feat/x')"],
+      ["bun", "scripts/release.ts", "feat/x"],
       ["glab", "mr", "create", "--title", "Fix git hooks on feat/x"],
       ["bash", "scripts/git-cleanup.sh"],
+      ["python3.14", "scripts/check.py"],
     ]) {
       expect({ argv, kinds: kinds(argv) }).toEqual({ argv, kinds: [] });
     }
@@ -1277,7 +1291,7 @@ describe("pinned heads in loop exec", () => {
         ["git", "status"],
         ["git", "log", "--oneline", "feat/pinned"],
         ["git", "commit", "--allow-empty", "-m", "Mentions feat/pinned"],
-        [process.execPath, "-e", "console.log('feat/pinned')"],
+        ["/bin/echo", "feat/pinned"],
         ["git", "merge", "--no-ff", "-m", "Merge branch 'feat/pinned'", head],
       ],
       async (argv) => ({

@@ -127,8 +127,9 @@ naming a pinned branch in any spelling, a path into a pinned checkout, an
 indirect name (`@{...}`, `-`, `FETCH_HEAD`, the stash, another worktree's
 refs, `:/` searches, every-branch or stdin options), an upstream or fetch or
 push mapping, or a revision containing a commit a unit gained after its
-recorded head. `-c`, Git run through a shell or other runner, Git options that
-run commands, and configuration writes are refused for every Git command; a
+recorded head. `-c`, Git options that run commands, and configuration writes
+are refused for every Git command, as are command runners (`env`, `xargs`,
+`sudo`, ...) and inline shell or interpreter code (`sh -c`, `python -c`); a
 fetch may write only remote-tracking refs, a push or fetch may use only known
 options, and nothing may run in a checkout the run does not author. Name the
 recorded commit instead, as in `git merge --ff-only <head>`; the refusal

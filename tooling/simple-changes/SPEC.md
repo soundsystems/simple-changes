@@ -372,8 +372,8 @@
   case, points into a pinned checkout, uses an indirect name, upstream, fetch
   or push mapping, or replace ref that could stand for one, or resolves to a
   commit containing one a pinned unit gained after its recorded head. `-c`,
-  Git run through a shell or other runner, Git options that run commands, and
-  configuration writes are refused for every Git command; a fetch may write
+  Git options that run commands, configuration writes, command runners, and
+  inline shell or interpreter code are refused; a fetch may write
   only remote-tracking refs, a push or fetch may use only known options, and
   nothing may run in a checkout the run does not author. The refusal prints
   the commit-ID form when it is certainly equivalent, or the claim, pause,

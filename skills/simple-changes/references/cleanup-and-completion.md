@@ -160,6 +160,57 @@ branch and open/merged/closed proposal page chains (a terminal cursor chain
 and response digest for every page and every proposal state) from the
 persisted opening and final inventories.
 
+### Build the receipts from provider pages
+
+Build both receipts with `remote-inventory build` instead of by hand. It never
+calls a provider: a fetcher behind the provider boundary writes one complete
+snapshot as normalized pages (for GitLab, the
+[reference fetcher](providers/gitlab.md#remote-inventory-fetcher)), and the
+builder computes cursors, accounted `itemCount`s, and ledger digests exactly as
+the receipt validator checks them, then validates its own result:
+
+```sh
+simple-changes remote-inventory build --pages opening-pages.json --output opening.json
+simple-changes loop start --mode ship --agent-id "$AGENT_ID" --opening-remote-inventory opening.json
+# ... after the last provider mutation, fetch a fresh snapshot ...
+simple-changes remote-inventory build --pages final-pages.json \
+  --opening-remote-inventory opening.json --output final.json
+simple-changes loop reconcile-remote-branches --run-id "$RUN_ID" \
+  --agent-id "$AGENT_ID" --receipt final.json
+```
+
+The pages file (`evals/schemas/remote-inventory-pages.schema.json`) names
+`provider`, `project` (the project path from the target remote, never a local
+path), `targetBranch`, and `observedAt`, then lists `branchPages` and
+`proposalPages` in provider order. Each page has `cursorIn` (null on the
+first), `cursorOut` (null on the last), an optional `responseDigest` (the
+SHA-256 of the raw page; the builder hashes the normalized items when it is
+absent), and its items: branches as `{ name, headRevision, protected }`,
+proposals as `{ objectId, sourceBranch, state, headRevision }` with `state`
+one of `open`, `merged`, or `closed`. A proposal page accounts only the
+proposals whose source branch is in the ledger.
+
+Without `--opening-remote-inventory` the builder writes an opening receipt:
+one snapshot, every branch preserved (the target, protected branches, branches
+with an open proposal, and every other branch as ambiguous). With it, the
+builder writes the final receipt over the union of both inventories, keeping
+the opening's branch and proposal order so the receipt starts from the exact
+opening inventory. A moved or newly arrived branch is preserved as ambiguous. A
+branch deleted during the run is recorded as `deleted-merged` only from
+provider records: a final merged proposal at its exact opening head, or the
+one proposal open at that head that later merged at another head, which adds
+`mergedHeadAncestry` for `loop reconcile-remote-branches` to check with Git.
+Any other deletion stops the build and names the branch: decide it from
+evidence or the user's approval, then pass `--decisions FILE`
+(`evals/schemas/remote-inventory-decisions.schema.json`) with one
+`deletedBranches` entry naming either `obsoleteProof`
+(`target-contains-head` or `provider-diff-empty`) or a `supersession`, plus
+`evidence`. The builder never makes that judgment, and the reconciliation
+command still checks every proof. It also refuses a branch or proposal listed
+twice (the listing shifted while paging; fetch again), a broken cursor chain,
+a missing target, a deleted branch with an open proposal, and a branch whose
+protection changed during the run.
+
 A source branch whose MR was open at the opening inventory, then merged at that
 same head or after a fast-forward, and deleted by GitLab is recorded as
 `deleted-merged` with `merged-proposal-head` proof. List that MR twice (open at

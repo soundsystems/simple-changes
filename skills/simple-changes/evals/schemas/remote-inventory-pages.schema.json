@@ -1,0 +1,94 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://simple-changes.dev/schemas/remote-inventory-pages.schema.json",
+  "title": "Simple Changes normalized remote inventory pages",
+  "description": "One complete provider snapshot of every branch and every open, merged, and closed proposal, as consecutive pages in the order the provider returned them. A provider fetcher writes it; `simple-changes remote-inventory build` turns it into a remote-branch-reconciliation receipt without calling any provider API.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "provider",
+    "project",
+    "targetBranch",
+    "observedAt",
+    "branchPages",
+    "proposalPages"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "provider": { "type": "string", "minLength": 1 },
+    "project": { "type": "string", "minLength": 1 },
+    "targetBranch": { "type": "string", "minLength": 1 },
+    "observedAt": { "type": "string", "format": "date-time" },
+    "evidence": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1, "maxLength": 500 }
+    },
+    "branchPages": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/branchPage" }
+    },
+    "proposalPages": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/proposalPage" }
+    }
+  },
+  "$defs": {
+    "cursor": {
+      "anyOf": [{ "type": "string", "minLength": 1 }, { "type": "null" }]
+    },
+    "revision": { "type": "string", "pattern": "^[0-9a-f]{40,64}$" },
+    "responseDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "branchPage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cursorIn", "cursorOut", "branches"],
+      "properties": {
+        "cursorIn": { "$ref": "#/$defs/cursor" },
+        "cursorOut": { "$ref": "#/$defs/cursor" },
+        "responseDigest": { "$ref": "#/$defs/responseDigest" },
+        "branches": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "headRevision", "protected"],
+            "properties": {
+              "name": { "type": "string", "minLength": 1 },
+              "headRevision": { "$ref": "#/$defs/revision" },
+              "protected": { "type": "boolean" }
+            }
+          }
+        }
+      }
+    },
+    "proposalPage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cursorIn", "cursorOut", "proposals"],
+      "properties": {
+        "cursorIn": { "$ref": "#/$defs/cursor" },
+        "cursorOut": { "$ref": "#/$defs/cursor" },
+        "responseDigest": { "$ref": "#/$defs/responseDigest" },
+        "proposals": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["objectId", "sourceBranch", "state", "headRevision"],
+            "properties": {
+              "objectId": { "type": "string", "minLength": 1 },
+              "sourceBranch": { "type": "string", "minLength": 1 },
+              "state": { "enum": ["open", "merged", "closed"] },
+              "headRevision": {
+                "anyOf": [{ "$ref": "#/$defs/revision" }, { "type": "null" }]
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

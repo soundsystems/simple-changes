@@ -35,6 +35,27 @@ branches again and record the final remote-branch reconciliation receipt. The
 receipt's `project`, `targetBranch`, and `targetRevision` must describe the
 refreshed project target exactly.
 
+## Remote inventory fetcher
+
+`scripts/adapters/gitlab-remote-inventory.ts` is the reference fetcher for
+[`remote-inventory build`](../cleanup-and-completion.md#build-the-receipts-from-provider-pages).
+It pages through every project branch and every open, merged, and closed merge
+request with read-only `glab api` GET calls (100 per page, merge requests
+oldest first so one opened mid-listing lands on a later page) and writes the
+normalized pages the builder reads:
+
+```sh
+bun skills/simple-changes/scripts/adapters/gitlab-remote-inventory.ts \
+  --project group/project --target-branch main \
+  --raw-dir opening-raw --output opening-pages.json
+```
+
+`--project` is the project path from the target remote URL, not a local path or
+numeric ID. `--raw-dir` keeps each raw page; its `responseDigest` is the SHA-256
+of those saved bytes. A `locked` merge request counts as open, which preserves
+its branch, and merge requests from forks are left out because their source
+branches belong to the fork. Pass `--hostname` for a self-managed instance.
+
 ## Gate merges on hosted CI
 
 A repository can refuse a merge whose hosted pipeline has not passed by

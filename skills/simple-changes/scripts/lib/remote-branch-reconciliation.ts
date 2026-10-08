@@ -199,7 +199,13 @@ const validatePagination = (
   }
 };
 
-const coverageDigest = (
+/**
+ * The `ledgerDigest` a coverage proof must carry: SHA-256 of the compact JSON
+ * `{ entryDigest, pageDigests }`, where `entryDigest` hashes the phase's
+ * accounted branch (`{ headRevision, name }`) or proposal
+ * (`{ branch, headRevision, objectId, state }`) entries in receipt order.
+ */
+export const coverageDigest = (
   receipt: RemoteBranchReconciliationReceipt,
   phase: "initial" | "final",
   kind: "branches" | "proposals",

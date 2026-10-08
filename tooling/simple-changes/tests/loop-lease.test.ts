@@ -130,6 +130,29 @@ const runCli = (
   };
 };
 
+// Run printed recovery steps as written, filling in only their placeholders:
+// each acceptance takes the next receipt an earlier pause printed.
+const runPrintedSteps = (cwd: string, commands: readonly string[]): void => {
+  const receipts: string[] = [];
+  const fill = (word: string): string => {
+    if (word === "<why>") {
+      return "Recover-through-the-printed-steps";
+    }
+    return word === "<pause-receipt-id>" ? (receipts.shift() ?? word) : word;
+  };
+  for (const command of commands) {
+    const args = command.split(" ").slice(1).map(fill);
+    const result = runCli(cwd, [...args, "--json"]);
+    expect({ command, stderr: result.stderr }).toEqual({ command, stderr: "" });
+    expect(result.exitCode).toBe(0);
+    if (args[1] === "pause") {
+      receipts.push(
+        (JSON.parse(result.stdout) as { receiptId: string }).receiptId
+      );
+    }
+  }
+};
+
 // Reproduce the ledger written before opening provider and clean scope capture.
 const removeLegacyOpeningEvidence = (stored: LoopLease): void => {
   Reflect.deleteProperty(stored, "openingRemoteInventory");
@@ -3902,40 +3925,219 @@ describe("active integration-loop lease", () => {
         "accept-paused-change",
         "accept-paused-change",
       ]);
-      expect(loopStatus(fixture.root).guidance.nextCommands).toEqual(
-        expect.arrayContaining(printed)
-      );
+      // loop status prints exactly these steps: an override cannot resolve a
+      // checkout whose coordination link is stale.
+      expect(loopStatus(fixture.root).guidance.nextCommands).toEqual(printed);
       expect(
         runCli(fixture.root, ["loop", "verify", "--run-id", lease.runId]).stdout
       ).toContain(printed.map((command) => `  Next: ${command}\n`).join(""));
 
-      // Run them in the printed order; each acceptance names its own receipt.
-      const receipts: string[] = [];
-      const fill = (word: string): string => {
-        if (word === "<why>") {
-          return "Hand-the-changed-checkout-back";
-        }
-        return word === "<pause-receipt-id>"
-          ? (receipts.shift() ?? word)
-          : word;
-      };
-      for (const command of printed) {
-        const args = command.split(" ").slice(1).map(fill);
-        const result = runCli(fixture.root, [...args, "--json"]);
-        expect(result.stderr).toBe("");
-        expect(result.exitCode).toBe(0);
-        if (args[1] === "pause") {
-          receipts.push(
-            (JSON.parse(result.stdout) as { receiptId: string }).receiptId
-          );
-        }
-      }
+      runPrintedSteps(fixture.root, printed);
       expect(verifyLoop(fixture.root)).toMatchObject({
         ok: true,
         violations: [],
       });
     }, 120_000);
   }
+
+  test("recovers two concurrent authors that both switched branches through the printed steps", () => {
+    const fixture = repository();
+    const paths = ["switching-first", "switching-second"].map((name) => {
+      const path = join(fixture.base, name);
+      git(fixture.root, ["worktree", "add", "-b", `${name}-work`, path]);
+      return path;
+    });
+    for (const [index, path] of paths.entries()) {
+      claimWorktree(fixture.root, `switcher-${index}`, path, "codex");
+    }
+    const lease = startLoop(fixture.root, "controller", "ship");
+    for (const path of paths) {
+      expect(lease.worktrees).toContainEqual(
+        expect.objectContaining({ path, role: "concurrent-author" })
+      );
+    }
+    for (const [index, path] of paths.entries()) {
+      git(path, ["checkout", "-b", `switched-${index}`]);
+    }
+    const verification = verifyLoop(fixture.root);
+    for (const path of paths) {
+      for (const code of [
+        "coordination-claim-stale",
+        "registered-worktree-branch-changed",
+      ]) {
+        expect(verification.violations).toContainEqual(
+          expect.objectContaining({ code, path })
+        );
+      }
+    }
+    const printed = staleClaimRecoveryCommands(verification.violations);
+    expect(printed.map((command) => command.split(" ")[2])).toEqual([
+      "claim",
+      "pause",
+      "claim",
+      "pause",
+      "accept-paused-change",
+      "accept-paused-change",
+    ]);
+    expect(loopStatus(fixture.root).guidance.nextCommands).toEqual(printed);
+
+    runPrintedSteps(fixture.root, printed);
+    expect(verifyLoop(fixture.root)).toMatchObject({
+      ok: true,
+      violations: [],
+    });
+  }, 120_000);
+
+  test("keeps a changed sibling blocking until its own current receipt covers it", () => {
+    const fixture = repository();
+    writeFixture(
+      fixture.root,
+      ".simple-changes.json",
+      `${JSON.stringify({ ...DEFAULT_POLICY, concurrentWork: "strict" })}\n`
+    );
+    const [first, second] = ["sibling-first", "sibling-second"].map((name) => {
+      const path = join(fixture.base, name);
+      git(fixture.root, ["worktree", "add", "-b", `${name}-work`, path]);
+      return path;
+    });
+    if (!(first && second)) {
+      throw new Error("Expected two sibling worktrees");
+    }
+    const lease = startLoop(fixture.root, "controller", "integrate");
+    const claimAndPause = (
+      path: string,
+      owner: string,
+      runId = lease.runId
+    ) => {
+      claimWorktree(fixture.root, owner, path, "codex");
+      return pauseClaimedWorktree(
+        fixture.root,
+        owner,
+        path,
+        runId,
+        "preserve-in-place",
+        "Pause the exact checkout."
+      );
+    };
+    for (const [path, owner] of [
+      [first, "first-owner"],
+      [second, "second-owner"],
+    ] as const) {
+      acceptPausedWorktreeChange(
+        fixture.root,
+        lease.runId,
+        "controller",
+        claimAndPause(path, owner).receiptId
+      );
+    }
+    writeFixture(first, "changed.ts", "export const changed = 1;\n");
+    writeFixture(second, "changed.ts", "export const changed = 1;\n");
+    const firstReceipt = claimAndPause(first, "first-owner");
+    const acceptFirst = () =>
+      acceptPausedWorktreeChange(
+        fixture.root,
+        lease.runId,
+        "controller",
+        firstReceipt.receiptId
+      );
+    const blockedBySecond = `preserved-worktree-changed:${second}`;
+
+    // Its adoption receipt no longer matches the changed checkout.
+    expect(acceptFirst).toThrow(blockedBySecond);
+    // A receipt for another run does not cover it.
+    claimAndPause(second, "second-owner", "run-another-run");
+    expect(acceptFirst).toThrow(blockedBySecond);
+    // Nor does a receipt whose claim is live again.
+    claimAndPause(second, "second-owner");
+    claimWorktree(fixture.root, "second-owner", second, "codex");
+    expect(acceptFirst).toThrow(blockedBySecond);
+    // Nor one whose checkout changed after the pause.
+    pauseClaimedWorktree(
+      fixture.root,
+      "second-owner",
+      second,
+      lease.runId,
+      "preserve-in-place",
+      "Pause before another edit."
+    );
+    writeFixture(second, "changed.ts", "export const changed = 2;\n");
+    expect(acceptFirst).toThrow(blockedBySecond);
+    // Nor one whose claim another owner now holds.
+    const secondReceipt = claimAndPause(second, "second-owner");
+    const coordinationPath = worktreeCoordinationPath(
+      captureInventory(fixture.root).repository.commonGitDirectory
+    );
+    const original = readFileSync(coordinationPath, "utf8");
+    const reassigned = JSON.parse(original) as {
+      claims: { claimId: string; owner: { agentId: string } }[];
+    };
+    for (const item of reassigned.claims) {
+      if (item.claimId === secondReceipt.claimId) {
+        item.owner.agentId = "another-owner";
+      }
+    }
+    writeFileSync(coordinationPath, `${JSON.stringify(reassigned)}\n`);
+    expect(acceptFirst).toThrow(blockedBySecond);
+    writeFileSync(coordinationPath, original);
+
+    // Its own exact current receipt lets the first checkout go first.
+    acceptFirst();
+    expect(verifyLoop(fixture.root).ok).toBe(false);
+    acceptPausedWorktreeChange(
+      fixture.root,
+      lease.runId,
+      "controller",
+      secondReceipt.receiptId
+    );
+    expect(verifyLoop(fixture.root)).toMatchObject({
+      ok: true,
+      violations: [],
+    });
+  });
+
+  test("never lets a receipt excuse the controller checkout switching branches", () => {
+    const fixture = repository();
+    const preserved = join(fixture.base, "accepted-beside-controller");
+    git(fixture.root, [
+      "worktree",
+      "add",
+      "-b",
+      "accepted-beside-controller-work",
+      preserved,
+    ]);
+    const lease = startLoop(fixture.root, "controller", "integrate");
+    writeFixture(preserved, "changed.ts", "export const changed = true;\n");
+    claimWorktree(fixture.root, "preserved-owner", preserved, "codex");
+    const receipt = pauseClaimedWorktree(
+      fixture.root,
+      "preserved-owner",
+      preserved,
+      lease.runId,
+      "preserve-in-place",
+      "Pause the changed checkout."
+    );
+    // Only the loop controller may claim its own checkout, and its receipt
+    // still cannot excuse that checkout's branch change.
+    git(fixture.root, ["checkout", "-b", "controller-switched"]);
+    claimWorktree(fixture.root, "controller", fixture.root, "codex");
+    pauseClaimedWorktree(
+      fixture.root,
+      "controller",
+      fixture.root,
+      lease.runId,
+      "preserve-in-place",
+      "Pause the controller checkout."
+    );
+
+    expect(() =>
+      acceptPausedWorktreeChange(
+        fixture.root,
+        lease.runId,
+        "controller",
+        receipt.receiptId
+      )
+    ).toThrow(`registered-worktree-branch-changed:${fixture.root}`);
+  });
 
   test("orders every printed recovery so it runs as printed", () => {
     const stale = (nextCommands: string[]) => ({

@@ -5370,22 +5370,33 @@ const exactPausedEvidence = (
   return { claimId: claim.claimId, current, pauseReceiptId };
 };
 
-// A sibling that is unregistered, or registered preserved and changed, but
-// holds its own valid current pause receipt for this run is waiting for its
-// own adoption or acceptance; it does not block another path's, so several
-// receipted checkouts can be accepted one at a time in any order. Its own
-// entry keeps failing verification until it is accepted too.
-const RECEIPTED_SIBLING_CODES: ReadonlySet<LoopViolation["code"]> = new Set([
-  "preserved-worktree-changed",
-  "unregistered-worktree",
-]);
+// Registered entries that `loop accept-paused-change` may record.
+const ACCEPTABLE_PAUSED_ROLES: ReadonlySet<LoopWorktreeLease["role"]> = new Set(
+  ["concurrent-author", "preserved", "retained"]
+);
 
-const isAdoptablePausedWorktreeViolation = (
+// A sibling checkout that adoption or acceptance could record next, and whose
+// exact current state its own valid current pause receipt for this run
+// covers, is waiting for its own turn: its violations do not block recording
+// another path, so several receipted checkouts can be recorded one at a time
+// in any order. Its own entry keeps failing verification until it is recorded
+// too. Every other violation still blocks.
+const isReceiptedSiblingViolation = (
   lease: LoopLease,
   inventory: RepositoryInventory,
-  violation: LoopViolation
+  violation: LoopViolation,
+  recordingPath: string
 ): boolean => {
-  if (!RECEIPTED_SIBLING_CODES.has(violation.code)) {
+  if (violation.path === recordingPath) {
+    return false;
+  }
+  const registered = lease.worktrees.find(
+    (worktree) => worktree.path === violation.path
+  );
+  const recordable = registered
+    ? !registered.createdByRun && ACCEPTABLE_PAUSED_ROLES.has(registered.role)
+    : violation.code === "unregistered-worktree";
+  if (!recordable) {
     return false;
   }
   const current = inventory.worktrees.find(
@@ -5469,7 +5480,12 @@ export const adoptPausedWorktree = (
       const verification = verificationAgainst(candidate, inventory);
       const blocking = verification.violations.filter(
         (violation) =>
-          !isAdoptablePausedWorktreeViolation(lease, inventory, violation)
+          !isReceiptedSiblingViolation(
+            lease,
+            inventory,
+            violation,
+            evidence.current.path
+          )
       );
       if (blocking.length > 0) {
         throw new SimpleChangesError(
@@ -5608,7 +5624,7 @@ export const acceptPausedWorktreeChange = (
         (worktree) =>
           worktree.path === evidence.current.path &&
           !worktree.createdByRun &&
-          ["preserved", "retained", "concurrent-author"].includes(worktree.role)
+          ACCEPTABLE_PAUSED_ROLES.has(worktree.role)
       );
       if (!registered) {
         throw new SimpleChangesError(
@@ -5635,7 +5651,12 @@ export const acceptPausedWorktreeChange = (
           !(
             (violation.code === "coordination-claim-stale" &&
               violation.path !== evidence.current.path) ||
-            isAdoptablePausedWorktreeViolation(lease, inventory, violation)
+            isReceiptedSiblingViolation(
+              lease,
+              inventory,
+              violation,
+              evidence.current.path
+            )
           )
       );
       if (blocking.length > 0) {
@@ -9196,8 +9217,18 @@ const violationGuidanceCommands = (
       `simple-changes loop rebaseline --run-id ${lease.runId} --agent-id ${lease.ownerAgentId} --approved-by <user> --reason <why>`
     );
   }
+  // An override cannot resolve a path whose coordination link is stale; its
+  // printed claim, pause, and accept steps below do.
+  const stalePaths = new Set(
+    violations
+      .filter((violation) => violation.code === "coordination-claim-stale")
+      .map((violation) => violation.path)
+  );
   for (const violation of violations) {
-    if (violation.code === "preserved-worktree-changed") {
+    if (
+      violation.code === "preserved-worktree-changed" &&
+      !stalePaths.has(violation.path)
+    ) {
       add(
         `simple-changes loop allow --run-id ${lease.runId} --agent-id ${lease.ownerAgentId} --worktree ${violation.path} --status-digest ${violation.changeDigest ?? "<digest>"} --approved-by <user> --reason <why>`
       );

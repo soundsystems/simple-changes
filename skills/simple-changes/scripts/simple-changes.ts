@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 
 import { createHash } from "node:crypto";
-import { readFileSync, writeSync } from "node:fs";
+import { readFileSync, writeFileSync, writeSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { fileURLToPath } from "node:url";
@@ -46,6 +46,7 @@ import {
   loopReplanStatus,
   loopStatus,
   markWorktreeResumeReady,
+  OUTCOME_DRAFT_MARKER,
   prepareAgentWorktree,
   readControllerBinding,
   readLoopLease,
@@ -130,6 +131,10 @@ import {
 import type { ReleaseNotes } from "./lib/release-notes.ts";
 import { extractReleaseNotes } from "./lib/release-notes.ts";
 import { runReleaseTag } from "./lib/release-tag.ts";
+import {
+  buildRemoteInventory,
+  type RemoteInventoryBuild,
+} from "./lib/remote-inventory.ts";
 import { renderInventory, renderPlan } from "./lib/report.ts";
 import {
   discoverInstructionTargets,
@@ -155,8 +160,19 @@ import {
   type ShipHoldReport,
   waiveShipHold,
 } from "./lib/ship-holds.ts";
+import {
+  draftShipmentOutcome,
+  releasePathsFromChangelogReceipt,
+} from "./lib/shipment-outcome-draft.ts";
 import { checkSkill, type SkillCheckReport } from "./lib/skill-check.ts";
 import { isForkRuntime, skillRootOf } from "./lib/skill-roots.ts";
+import {
+  isUnknown,
+  repositoryStatusFor,
+  type StatusReport,
+  type StatusRepository,
+  statusAll,
+} from "./lib/status-all.ts";
 import {
   hookInstallScript,
   parseTurnCheckHookInput,
@@ -264,7 +280,11 @@ Usage:
   simple-changes migration apply --state REVIEW_FILE --pending PENDING_FILE --apply-plan APPLY_PLAN_FILE [--json] [--repo PATH]
   simple-changes permissions bundle REQUESTS_FILE [--json]
   simple-changes inventory [--json] [--repo PATH]
+  simple-changes status [--all [--root DIR ...]] [--json] [--repo PATH]
   simple-changes preview [--json] [--repo PATH] [--settle-ms N]
+  simple-changes remote-inventory build --pages PAGES_FILE
+    [--opening-remote-inventory FILE [--decisions FILE]] [--output FILE]
+    [--json]
   simple-changes loop start --mode MODE --agent-id ID [--changelog-required]
     [--opening-remote-inventory FILE]
     [--json] [--repo PATH]
@@ -283,6 +303,8 @@ Usage:
     --receipt CHANGE_PLAN_FILE [--json] [--repo PATH]
   simple-changes loop refresh-scope --run-id ID --agent-id ID
     --receipt CHANGE_PLAN_FILE [--json] [--repo PATH]
+  simple-changes loop draft-outcome --run-id ID [--changelog-receipt FILE]
+    [--output FILE] [--json] [--repo PATH]
   simple-changes loop record-outcome --run-id ID --agent-id ID
     --receipt SHIPMENT_OUTCOME_FILE
     [--approved-by USER --approval-reference REFERENCE]
@@ -401,6 +423,7 @@ interface CliOptions {
   adapter?: string;
   agentId?: string;
   agentName?: string;
+  all: boolean;
   alreadyLive: boolean;
   applyPlanPath?: string;
   approvalReference?: string;
@@ -414,6 +437,7 @@ interface CliOptions {
   check: boolean;
   claimId?: string;
   concurrentWork?: RepoPolicy["concurrentWork"];
+  decisionsPath?: string;
   defaultFinish?: "open-change-request" | "integrate" | "ship";
   disposition?: "preserve-in-place" | "detach-clean-checkout";
   dryRun: boolean;
@@ -443,8 +467,10 @@ interface CliOptions {
   migrationTargets: RepoPolicy["migrationTargets"];
   mode?: InitializationMode;
   openingRemoteInventoryPath?: string;
+  outputPath?: string;
   overrideHalt: boolean;
   ownerRef?: string;
+  pagesPath?: string;
   pauseReceiptId?: string;
   pendingPath?: string;
   positional: string[];
@@ -467,6 +493,7 @@ interface CliOptions {
   repoProvided: boolean;
   requestAction?: "request-pause" | "request-detach" | "notify-resume";
   requestPath?: string;
+  roots: string[];
   runId?: string;
   scope?: SetupScope;
   settleMs: number;
@@ -502,6 +529,7 @@ const VALUED_OPTIONS = new Set([
   "--changelog",
   "--changelog-install",
   "--concurrent-work",
+  "--decisions",
   "--agent",
   "--base",
   "--changelog-receipt",
@@ -527,6 +555,8 @@ const VALUED_OPTIONS = new Set([
   "--mode",
   "--owner-ref",
   "--opening-remote-inventory",
+  "--output",
+  "--pages",
   "--pending",
   "--pause-receipt",
   "--prior-receipt",
@@ -543,6 +573,7 @@ const VALUED_OPTIONS = new Set([
   "--request",
   "--request-action",
   "--repo",
+  "--root",
   "--run-id",
   "--scope",
   "--shipping-mode",
@@ -560,6 +591,7 @@ const VALUED_OPTIONS = new Set([
 ]);
 
 const BOOLEAN_OPTIONS = new Set([
+  "--all",
   "--already-live",
   "--production-authorized",
   "--version-authorized",
@@ -916,6 +948,7 @@ const applyLoopValuedOption = (
     "--base": "baseRef",
     "--changelog-receipt": "changelogReceiptPath",
     "--claim-id": "claimId",
+    "--decisions": "decisionsPath",
     "--deltas": "forkDeltas",
     "--destination": "forkDestination",
     "--file": "filePath",
@@ -924,7 +957,9 @@ const applyLoopValuedOption = (
     "--manifest-digest": "manifestDigest",
     "--name": "forkName",
     "--opening-remote-inventory": "openingRemoteInventoryPath",
+    "--output": "outputPath",
     "--owner-ref": "ownerRef",
+    "--pages": "pagesPath",
     "--pause-receipt": "pauseReceiptId",
     "--pending": "pendingPath",
     "--prior-receipt": "priorReceiptPath",
@@ -961,6 +996,10 @@ const applyLoopValuedOption = (
   }
   if (option === "--awaiting-user") {
     options.awaitingUser.push(value);
+    return true;
+  }
+  if (option === "--root") {
+    options.roots.push(resolve(value));
     return true;
   }
   if (option === "--harness") {
@@ -1138,6 +1177,8 @@ const applyTurnGuardBooleanOption = (
 const applyBooleanOption = (options: CliOptions, option: string): void => {
   if (option === "--acknowledge-push-scope") {
     options.acknowledgePushScope = true;
+  } else if (option === "--all") {
+    options.all = true;
   } else if (option === "--already-live") {
     options.alreadyLive = true;
   } else if (option === "--production-authorized") {
@@ -1174,6 +1215,7 @@ const applyBooleanOption = (options: CliOptions, option: string): void => {
 const parseOptions = (args: string[]): CliOptions => {
   const options: CliOptions = {
     acknowledgePushScope: false,
+    all: false,
     alreadyLive: false,
     awaitingUser: [],
     changelogRequired: false,
@@ -1192,6 +1234,7 @@ const parseOptions = (args: string[]): CliOptions => {
     releaseClaim: false,
     repo: process.cwd(),
     repoProvided: false,
+    roots: [],
     settleMs: 0,
     staleLease: false,
     tagAutomationAuthorized: false,
@@ -1244,6 +1287,133 @@ const parseOptions = (args: string[]): CliOptions => {
 
 const writeOutput = (value: unknown, json: boolean, text: string): void => {
   process.stdout.write(json ? `${JSON.stringify(value, null, 2)}\n` : text);
+};
+
+const STATUS_READ_ONLY_NOTE =
+  "Read-only: nothing was fetched, locked, or written, and local checkouts may be behind their remotes; state that could not be read shows as unknown.";
+
+const short = (sha: string | null): string => sha?.slice(0, 8) ?? "(none)";
+
+const renderStatusLease = (lease: StatusRepository["lease"]): string[] => {
+  if (isUnknown(lease)) {
+    return [`  Lease: unknown (${lease.error})`];
+  }
+  if (!lease) {
+    return [];
+  }
+  return [
+    `  Lease: ${lease.runId} (${lease.mode}) by ${lease.ownerAgentId}, controller ${lease.controllerStatus}, liveness ${lease.liveness.state} (last activity ${lease.liveness.lastUpdatedAt})`,
+    ...(lease.awaitingUser ?? []).map(
+      (question) => `    Awaiting the user: ${question}`
+    ),
+  ];
+};
+
+const renderStatusSection = <T>(
+  label: string,
+  items: T[] | { error: string; state: "unknown" },
+  render: (item: T) => string
+): string[] =>
+  isUnknown(items)
+    ? [`  ${label}: unknown (${items.error})`]
+    : items.map((item) => `  ${render(item)}`);
+
+const renderStatusGuidance = (
+  guidance: StatusRepository["guidance"]
+): string[] => {
+  if (isUnknown(guidance)) {
+    return [`  Guidance: unknown (${guidance.error})`];
+  }
+  return guidance.state === "current"
+    ? []
+    : [
+        `  Guidance: ${guidance.state} (stored ${guidance.storedVersion ?? "none"}, this runtime ${guidance.currentVersion})`,
+      ];
+};
+
+const renderStatusRepository = (status: StatusRepository): string[] => {
+  const lines = [
+    ...renderStatusLease(status.lease),
+    ...renderStatusSection(
+      "Claims",
+      status.claims,
+      (claim) =>
+        `Claim ${claim.state}: ${claim.path} by ${claim.agentId} (${claim.adapter}); checkout ${claim.checkout}`
+    ),
+    ...renderStatusSection(
+      "Holds",
+      status.holds,
+      (hold) =>
+        `Hold ${hold.status} (${hold.severity} ${hold.scope}) by ${hold.owner}: ${hold.reason}`
+    ),
+    ...renderStatusSection(
+      "Ready work",
+      status.readyWork,
+      (item) =>
+        `Ready work ${item.freshness}: ${item.branch} at ${short(item.headSha)} by ${item.owner}; ${item.detail}`
+    ),
+    ...renderStatusGuidance(status.guidance),
+  ];
+  return [
+    status.repository,
+    ...(lines.length > 0 ? lines : ["  Nothing in flight."]),
+  ];
+};
+
+const renderStatusReport = (report: StatusReport): string => {
+  const lines = [
+    `Simple Changes status across ${report.repositories.length} repositor${report.repositories.length === 1 ? "y" : "ies"} under ${report.roots.length} root(s).`,
+    ...report.repositories.flatMap(renderStatusRepository),
+  ];
+  if (report.forks.length > 0) {
+    lines.push(
+      report.upstream
+        ? `Forks, compared with ${report.upstream.path} at ${report.upstream.version} (guidance ${report.upstream.guidanceVersion}):`
+        : "Forks (no installed Simple Changes source to compare with):"
+    );
+    for (const fork of report.forks.filter((item) => !item.linkedWorktree)) {
+      lines.push(
+        `  ${fork.state}: ${fork.name} at ${fork.path}, runtime ${fork.runtimeVersion ?? "unknown"} (guidance ${fork.guidanceVersion ?? "unknown"}), pinned ${fork.pin}`
+      );
+    }
+    const linked = report.forks.filter((item) => item.linkedWorktree).length;
+    if (linked > 0) {
+      lines.push(
+        `  ${linked} more fork cop${linked === 1 ? "y" : "ies"} in linked worktrees; --json lists them.`
+      );
+    }
+  }
+  lines.push(STATUS_READ_ONLY_NOTE);
+  return `${lines.join("\n")}\n`;
+};
+
+const runStatus = (options: CliOptions): void => {
+  if (options.positional.length > 0) {
+    throw new SimpleChangesError(
+      `Unexpected argument: ${options.positional[0]}`,
+      EXIT_CODES.usage
+    );
+  }
+  if (!options.all) {
+    if (options.roots.length > 0) {
+      throw new SimpleChangesError(
+        "--root applies only with --all.",
+        EXIT_CODES.usage
+      );
+    }
+    const status = repositoryStatusFor(options.repo);
+    writeOutput(
+      status,
+      options.json,
+      `${[...renderStatusRepository(status), STATUS_READ_ONLY_NOTE].join("\n")}\n`
+    );
+    return;
+  }
+  const report = statusAll({
+    roots: options.roots,
+    runtime: { skillDirectory: PACKAGE_ROOT, version: VERSION },
+  });
+  writeOutput(report, options.json, renderStatusReport(report));
 };
 
 const runInventory = (options: CliOptions): void => {
@@ -3050,11 +3220,56 @@ const runLoopTurnCheck = async (options: CliOptions): Promise<void> => {
   process.exit(0);
 };
 
+const runLoopDraftOutcome = (options: CliOptions, runId: string): void => {
+  const outcome = draftShipmentOutcome(options.repo, runId, {
+    ...(options.changelogReceiptPath
+      ? {
+          releasePaths: releasePathsFromChangelogReceipt(
+            readJsonFile(options.changelogReceiptPath)
+          ),
+        }
+      : {}),
+  });
+  const { summary } = outcome;
+  const text = [
+    `Drafted the shipment outcome for ${runId} at ${summary.targetRevision}: ${summary.units} scoped unit(s) and ${summary.additionalPaths} additional path(s) (${summary.externalTargetChanges} external-target-change, ${summary.releaseGenerated} release-generated)${summary.deletedPaths.length > 0 ? `, including ${summary.deletedPaths.length} deleted path(s) recorded with a null entry` : ""}.`,
+    ...outcome.warnings.map((warning) => `Warning: ${warning}`),
+    `Before recording, replace all ${outcome.placeholders} ${OUTCOME_DRAFT_MARKER} placeholder(s) and check each classification and unit disposition; record-outcome refuses the draft until then.`,
+    `Then run: ${outcome.recordCommand}`,
+  ].join("\n");
+  emitDocument(
+    options,
+    outcome.draft,
+    {
+      placeholders: outcome.placeholders,
+      recordCommand: outcome.recordCommand,
+      summary,
+      warnings: outcome.warnings,
+    },
+    `${text}\n`,
+    [options.changelogReceiptPath]
+  );
+};
+
+// Read-only actions that still bind the exact active run.
+const runLoopReadAction = (
+  action: string,
+  options: CliOptions,
+  runId: string,
+  turnEnd: string
+): boolean => {
+  if (action === "draft-outcome") {
+    runLoopDraftOutcome(options, runId);
+    return true;
+  }
+  return runLoopVerifyAction(action, options, turnEnd);
+};
+
 const runLoopCommand = async (options: CliOptions): Promise<void> => {
   const [action] = options.positional;
   if (!action) {
     throw new SimpleChangesError(
-      "loop requires start, status, verify, record-scope, refresh-scope, record-outcome, guard, exec, recover, recover-post-cleanup, close-equivalent, replan-status, replan, archive-recorded, takeover, rebaseline, allow, dispose-worktree, retain-worktree, retire-absent-worktree, adopt-worktree, accept-paused-change, reconcile-remote-branches, emergency, end, finalize, or turn-check",
+      "loop requires start, status, verify, record-scope, refresh-scope, draft-outcome, record-outcome, guard, exec, recover, recover-post-cleanup, close-equivalent, replan-status, replan, archive-recorded, takeover, rebaseline, allow, dispose-worktree, retain-worktree, retire-absent-worktree, adopt-worktree, accept-paused-change, reconcile-remote-branches, emergency, end, finalize, or turn-check",
       EXIT_CODES.usage
     );
   }
@@ -3072,7 +3287,7 @@ const runLoopCommand = async (options: CliOptions): Promise<void> => {
       EXIT_CODES.unsafe
     );
   }
-  if (runLoopVerifyAction(action, options, turnEndReminder(lease))) {
+  if (runLoopReadAction(action, options, runId, turnEndReminder(lease))) {
     return;
   }
   if (await runLoopEmergencyAction(options, runId)) {
@@ -3771,6 +3986,91 @@ const runPrune = (options: CliOptions): void => {
   writeOutput(report, options.json, renderPrune(report));
 };
 
+/**
+ * Writes a built receipt or draft to `--output` and reports `summary`, or,
+ * without `--output`, prints the document itself on stdout so it can be
+ * redirected, with the summary on stderr in text mode.
+ */
+const emitDocument = (
+  options: CliOptions,
+  document: unknown,
+  summary: Record<string, unknown>,
+  text: string,
+  inputs: readonly (string | undefined)[]
+): void => {
+  const body = `${JSON.stringify(document, null, 2)}\n`;
+  if (!options.outputPath) {
+    process.stdout.write(body);
+    if (!options.json) {
+      process.stderr.write(text);
+    }
+    return;
+  }
+  const output = resolve(options.outputPath);
+  if (inputs.some((input) => input && resolve(input) === output)) {
+    throw new SimpleChangesError(
+      "--output must not overwrite one of this command's input files.",
+      EXIT_CODES.usage
+    );
+  }
+  writeFileSync(output, body, "utf8");
+  writeOutput(
+    { ...summary, output },
+    options.json,
+    `${text}Wrote ${output}.\n`
+  );
+};
+
+const renderRemoteInventoryBuild = (build: RemoteInventoryBuild): string => {
+  const { receipt, summary } = build;
+  const lines = [
+    `Built the ${build.phase} remote inventory for ${receipt.provider} ${receipt.project} ${receipt.targetBranch} at ${summary.targetRevision}: ${summary.branches} branch(es), ${summary.proposals} accounted proposal(s).`,
+  ];
+  if (build.phase === "final") {
+    for (const [label, names] of [
+      ["Deleted during the run", summary.deletedBranches],
+      ["Moved and preserved", summary.movedBranches],
+      ["Arrived and preserved", summary.arrivedBranches],
+    ] as const) {
+      if (names.length > 0) {
+        lines.push(`${label}: ${names.join(", ")}`);
+      }
+    }
+  }
+  return `${lines.join("\n")}\n`;
+};
+
+const runRemoteInventoryCommand = (options: CliOptions): void => {
+  if (options.positional[0] !== "build" || options.positional.length !== 1) {
+    throw new SimpleChangesError(
+      "remote-inventory requires build",
+      EXIT_CODES.usage
+    );
+  }
+  const pagesPath = requireCliOption(options.pagesPath, "--pages");
+  if (options.decisionsPath && !options.openingRemoteInventoryPath) {
+    throw new SimpleChangesError(
+      "--decisions applies only with --opening-remote-inventory, to a final inventory.",
+      EXIT_CODES.usage
+    );
+  }
+  const build = buildRemoteInventory(readJsonFile(pagesPath), {
+    ...(options.openingRemoteInventoryPath
+      ? { opening: readJsonFile(options.openingRemoteInventoryPath) }
+      : {}),
+    ...(options.decisionsPath
+      ? { decisions: readJsonFile(options.decisionsPath) }
+      : {}),
+  });
+  emitDocument(
+    options,
+    build.receipt,
+    { phase: build.phase, summary: build.summary },
+    renderRemoteInventoryBuild(build),
+    [pagesPath, options.openingRemoteInventoryPath, options.decisionsPath]
+  );
+};
+
 const runPrepareAgent = (options: CliOptions): void => {
   const prepared = prepareAgentWorktree(
     options.repo,
@@ -3928,6 +4228,9 @@ const executeCommand = async (
     case "inventory":
       runInventory(options);
       return EXIT_CODES.success;
+    case "status":
+      runStatus(options);
+      return EXIT_CODES.success;
     case "initialize":
       await runInitialize(options);
       return EXIT_CODES.success;
@@ -3978,6 +4281,9 @@ const executeCommand = async (
       return EXIT_CODES.success;
     case "prune":
       runPrune(options);
+      return EXIT_CODES.success;
+    case "remote-inventory":
+      runRemoteInventoryCommand(options);
       return EXIT_CODES.success;
     case "prepare-agent":
       runPrepareAgent(options);

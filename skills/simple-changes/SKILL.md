@@ -178,6 +178,7 @@ When the target is GitLab, first paginate the complete opening remote inventory
 unchanged receipt through `loop start --opening-remote-inventory <file>`. A
 legacy GitLab run without this evidence is close-only; see
 [cleanup and completion](references/cleanup-and-completion.md).
+Build both inventory receipts from fetched pages with `remote-inventory build`.
 
 When an active loop assigns a new author into that same integration unit, run
 `simple-changes prepare-agent` before edits. Independent agents create an
@@ -203,6 +204,7 @@ After review and integration settle, record one exact
 `loop record-outcome --receipt <shipment-outcome.json>` receipt before
 completion; see [focused units](references/focused-units.md). This controller
 audit step is not another user decision.
+Start from `loop draft-outcome`, and replace every draft placeholder first.
 
 When scheduling allows parallel authoring and the host can start isolated
 agents, delegate independent units instead of authoring them one after
@@ -303,6 +305,7 @@ Reuse session authority that already covers this recovery. A dead helper PID or
 old heartbeat alone does not establish that the owning agent has stopped.
 
 Follow [inventory and concurrency](references/inventory-and-concurrency.md).
+`status --all` is a read-only view of every local repository's runs and forks.
 
 ## Shipment holds
 

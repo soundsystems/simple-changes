@@ -1,5 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { readdirSync, readFileSync } from "node:fs";
 import { readdir, readFile } from "node:fs/promises";
+import { dirname, join, relative } from "node:path";
 import { YAML } from "bun";
 
 const skillPath = new URL(
@@ -73,6 +75,10 @@ const cleanupCompletionPath = new URL(
   "../../../skills/simple-changes/references/cleanup-and-completion.md",
   import.meta.url
 );
+const recoveryPath = new URL(
+  "../../../skills/simple-changes/references/recovery.md",
+  import.meta.url
+);
 const gitlabProviderPath = new URL(
   "../../../skills/simple-changes/references/providers/gitlab.md",
   import.meta.url
@@ -143,10 +149,252 @@ describe("packaged skill frontmatter", () => {
   });
 });
 
+const PACKAGED_SKILLS = [
+  "simple-changes",
+  "publish-skill",
+  "update-local-forks",
+] as const;
+
+/** Every Markdown file under a directory, as absolute paths, sorted. */
+const walkMarkdown = (directory: string): string[] =>
+  readdirSync(directory, { withFileTypes: true })
+    .flatMap((entry) => {
+      const path = join(directory, entry.name);
+      if (entry.isDirectory()) {
+        return walkMarkdown(path);
+      }
+      return entry.name.endsWith(".md") ? [path] : [];
+    })
+    .sort();
+
+// The contents list a reference opens with, and its `##` headings, outside
+// code fences. The list is the run of top-level `- ` items that follows a
+// `Contents:` line before the first `##` heading; nested items are ignored
+// and the first other line ends it.
+const FENCE_PATTERN = /^\s*(```|~~~)/u;
+const CONTENTS_ITEM_PATTERN = /^- (.+)$/u;
+const NESTED_ITEM_PATTERN = /^\s+- /u;
+const MARKDOWN_ESCAPE_PATTERN = /\\([\\`*_{}[\]()#+\-.!])/gu;
+const ANY_HEADING_PATTERN = /^(#{1,6})\s+(.*)$/u;
+const SLUG_DROP_PATTERN = /[^\p{L}\p{N}\s_-]/gu;
+const WHITESPACE_CHARACTER_PATTERN = /\s/gu;
+const ANCHOR_LINK_PATTERN = /\]\(([^)\s#]*)#([^)\s]+)\)/gu;
+
+const fenceAfter = (line: string, fence: string | null): string | null => {
+  const marker = FENCE_PATTERN.exec(line)?.[1];
+  if (!marker) {
+    return fence;
+  }
+  if (fence === null) {
+    return marker;
+  }
+  return marker === fence ? null : fence;
+};
+
+const outlineOf = (
+  source: string
+): { contents: string[] | null; headings: string[] } => {
+  const headings: string[] = [];
+  let contents: string[] | null = null;
+  let listing = false;
+  let fence: string | null = null;
+  for (const line of source.split("\n")) {
+    const wasFenced = fence !== null;
+    fence = fenceAfter(line, fence);
+    if (wasFenced || fence !== null) {
+      listing = false;
+    } else if (line.startsWith("## ")) {
+      listing = false;
+      headings.push(line.slice(3).trim());
+    } else if (headings.length === 0) {
+      const item = CONTENTS_ITEM_PATTERN.exec(line)?.[1];
+      if (contents === null && line.trim() === "Contents:") {
+        contents = [];
+        listing = true;
+      } else if (listing && item) {
+        // A Markdown escape keeps an item such as `1\. Setup` a plain item.
+        contents?.push(item.trim().replace(MARKDOWN_ESCAPE_PATTERN, "$1"));
+      } else if (
+        listing &&
+        !NESTED_ITEM_PATTERN.test(line) &&
+        (line.trim() !== "" || (contents?.length ?? 0) > 0)
+      ) {
+        listing = false;
+      }
+    }
+  }
+  return { contents, headings };
+};
+
+// GitHub and GitLab heading slugs: lowercase, punctuation dropped, spaces to
+// hyphens. Every heading of any level outside code fences has one.
+const anchorsOf = (source: string): Set<string> => {
+  const anchors = new Set<string>();
+  let fence: string | null = null;
+  for (const line of source.split("\n")) {
+    const wasFenced = fence !== null;
+    fence = fenceAfter(line, fence);
+    const heading = ANY_HEADING_PATTERN.exec(line)?.[2];
+    if (!(wasFenced || fence !== null) && heading !== undefined) {
+      anchors.add(
+        heading
+          .trim()
+          .toLowerCase()
+          .replace(SLUG_DROP_PATTERN, "")
+          .replace(WHITESPACE_CHARACTER_PATTERN, "-")
+      );
+    }
+  }
+  return anchors;
+};
+
+// Claude Code keeps only the first ~5,000 tokens of a loaded skill after
+// compaction, so the whole SKILL.md must fit. 17,500 bytes is 5,000 tokens at
+// a conservative 3.5 bytes per token; move detail into a reference instead of
+// raising it.
+const SKILL_BYTE_BUDGET = 17_500;
+// Agents preview the first lines of a reference to decide whether to read on,
+// so every long reference opens with a contents list naming each `##` heading
+// in order (ported from Simple Changelogs' distribution check).
+const CONTENTS_LINE_THRESHOLD = 100;
+
 describe("Simple Changes skill contract", () => {
   test("keeps the primary skill as a compact router", async () => {
     const skill = await readFile(skillPath, "utf8");
     expect(skill.split("\n").length).toBeLessThanOrEqual(500);
+  });
+
+  test("keeps SKILL.md inside the post-compaction token budget", async () => {
+    const skill = await readFile(skillPath);
+    expect(skill.byteLength).toBeLessThanOrEqual(SKILL_BYTE_BUDGET);
+    // The table, invariants, and router lead, so they survive compaction.
+    const text = skill.toString("utf8");
+    const order = [
+      "## Classify the request",
+      "## Authority and invariants",
+      "## Reference router",
+    ].map((heading) => text.indexOf(heading));
+    expect(order.every((index) => index > 0)).toBe(true);
+    expect(order).toEqual([...order].sort((left, right) => left - right));
+    expect(text.indexOf("\n## ") + 1).toBe(order[0] ?? -1);
+  });
+
+  test("links every packaged reference directly from its SKILL.md", () => {
+    const unlinked: string[] = [];
+    for (const name of PACKAGED_SKILLS) {
+      const root = join(skillsDirectory.pathname, name);
+      const skill = readFileSync(join(root, "SKILL.md"), "utf8");
+      const references = walkMarkdown(join(root, "references"));
+      expect(references.length).toBeGreaterThan(0);
+      for (const reference of references) {
+        const relativePath = relative(root, reference);
+        if (!skill.includes(`](${relativePath})`)) {
+          unlinked.push(`${name}/${relativePath}`);
+        }
+      }
+    }
+    expect(unlinked).toEqual([]);
+  });
+
+  test("every long reference opens with a contents list of its sections", () => {
+    const problems: string[] = [];
+    for (const name of PACKAGED_SKILLS) {
+      for (const reference of walkMarkdown(
+        join(skillsDirectory.pathname, name, "references")
+      )) {
+        const source = readFileSync(reference, "utf8");
+        const lineCount = source.split("\n").length - 1;
+        const { contents, headings } = outlineOf(source);
+        const label = relative(skillsDirectory.pathname, reference);
+        if (contents === null) {
+          if (lineCount > CONTENTS_LINE_THRESHOLD) {
+            problems.push(
+              `${label} has ${lineCount} lines but no Contents list`
+            );
+          }
+        } else if (contents.join("\n") !== headings.join("\n")) {
+          problems.push(
+            `${label} Contents must list its ## headings exactly and in order`
+          );
+        }
+      }
+    }
+    expect(problems).toEqual([]);
+  });
+
+  test("every heading anchor a packaged skill links to exists", () => {
+    const broken: string[] = [];
+    let checked = 0;
+    for (const name of PACKAGED_SKILLS) {
+      const root = join(skillsDirectory.pathname, name);
+      for (const file of [
+        join(root, "SKILL.md"),
+        ...walkMarkdown(join(root, "references")),
+      ]) {
+        for (const [, target = "", anchor = ""] of readFileSync(
+          file,
+          "utf8"
+        ).matchAll(ANCHOR_LINK_PATTERN)) {
+          const resolved = target ? join(dirname(file), target) : file;
+          checked += 1;
+          if (!anchorsOf(readFileSync(resolved, "utf8")).has(anchor)) {
+            broken.push(
+              `${relative(skillsDirectory.pathname, file)} -> ${target}#${anchor}`
+            );
+          }
+        }
+      }
+    }
+    expect(broken).toEqual([]);
+    expect(checked).toBeGreaterThan(10);
+  });
+
+  test("routes recovery to its own reference and keeps every recovery path there", async () => {
+    const [skill, recovery, cleanup] = await Promise.all([
+      readFile(skillPath, "utf8"),
+      readFile(recoveryPath, "utf8"),
+      readFile(cleanupCompletionPath, "utf8"),
+    ]);
+    const normalizedSkill = skill.replace(/\s+/g, " ");
+    const normalizedRecovery = recovery.replace(/\s+/g, " ");
+    expect(normalizedSkill).toContain(
+      "read [recovery](references/recovery.md) before acting"
+    );
+    // Every trigger, including the ones no loop reports.
+    for (const trigger of [
+      "when `loop status`, `loop verify`, or finalization reports a blocker",
+      "a released or orphaned claim",
+      "when merged work or orphaned worktrees have no loop to clean them up",
+      "when an editor's or desktop app's worktree list is stale",
+    ]) {
+      expect(normalizedSkill).toContain(trigger);
+    }
+    expect(normalizedRecovery).toContain(
+      "when an editor's or desktop app's worktree list is stale after cleanup"
+    );
+    for (const command of [
+      'loop recover --agent-id "$AGENT_ID"',
+      "loop recover --stale-lease",
+      "worktree takeover",
+      "worktree equivalence",
+      "loop close-equivalent",
+      "loop rebaseline",
+      "worktree cleanup",
+      "prune --approved-by",
+      "worktree refresh-index",
+      "loop recover-post-cleanup",
+      "loop replan",
+      "loop archive-recorded",
+      "loop dispose-worktree",
+      "loop retire-absent-worktree",
+      "loop adopt-worktree",
+      "loop accept-paused-change",
+    ]) {
+      expect(normalizedRecovery).toContain(command);
+    }
+    // The catalogue lives once, in recovery.md, not in the completion guide.
+    expect(cleanup).not.toContain("**Nothing-to-ship close.**");
+    expect(cleanup).not.toContain("### Replan a frozen shipment");
   });
 
   test("first-use onboarding explains the workflow before preference questions", async () => {
@@ -249,14 +497,16 @@ describe("Simple Changes skill contract", () => {
   });
 
   test("terminal loop lifecycle releases or relinquishes every controller", async () => {
-    const [skill, inventory, cleanup] = await Promise.all([
+    const [skill, inventory, cleanup, recovery] = await Promise.all([
       readFile(skillPath, "utf8"),
       readFile(inventoryConcurrencyPath, "utf8"),
       readFile(cleanupCompletionPath, "utf8"),
+      readFile(recoveryPath, "utf8"),
     ]);
     const normalizedSkill = skill.replace(/\s+/g, " ");
     const normalizedInventory = inventory.replace(/\s+/g, " ");
     const normalizedCleanup = cleanup.replace(/\s+/g, " ");
+    const normalizedRecovery = recovery.replace(/\s+/g, " ");
 
     expect(normalizedSkill).toContain(
       "Before every terminal assistant response after a loop has started"
@@ -268,7 +518,7 @@ describe("Simple Changes skill contract", () => {
     expect(normalizedSkill).toContain(
       "An exact verified shipment may close with an unchanged primary explicitly preserved in its scope"
     );
-    expect(normalizedSkill).toContain(
+    expect(normalizedRecovery).toContain(
       "exact current run ID and manifest digest plus approver and reason"
     );
     expect(normalizedInventory).toContain(
@@ -853,12 +1103,16 @@ describe("Simple Changes skill contract", () => {
   });
 
   test("Active loops serialize integration while allowing claimed authors", async () => {
-    const [skill, concurrency] = await Promise.all([
+    const [skill, concurrency, cleanup, recovery] = await Promise.all([
       readFile(skillPath, "utf8"),
       readFile(inventoryConcurrencyPath, "utf8"),
+      readFile(cleanupCompletionPath, "utf8"),
+      readFile(recoveryPath, "utf8"),
     ]);
     const normalizedSkill = skill.replace(/\s+/g, " ");
     const normalizedConcurrency = concurrency.replace(/\s+/g, " ");
+    const normalizedCleanup = cleanup.replace(/\s+/g, " ");
+    const normalizedRecovery = recovery.replace(/\s+/g, " ");
 
     expect(normalizedSkill).toContain(
       "start one active loop only after initialization returns `preLoopActionRequired: false`"
@@ -879,7 +1133,7 @@ describe("Simple Changes skill contract", () => {
     expect(normalizedSkill).toContain(
       "A busy lock blocks only the named short integration operation"
     );
-    expect(normalizedSkill).toContain(
+    expect(normalizedRecovery).toContain(
       'use `loop recover --agent-id "$AGENT_ID"`'
     );
     expect(normalizedSkill).toContain(
@@ -906,7 +1160,7 @@ describe("Simple Changes skill contract", () => {
     expect(normalizedSkill).toContain(
       "generate one non-mutating preview plan from the current inventory"
     );
-    expect(normalizedSkill).toContain(
+    expect(normalizedCleanup).toContain(
       "one that owed a scope, recorded none, and changed nothing: finalization closes it instead of freezing its scope"
     );
     expect(normalizedConcurrency).toContain(
@@ -930,7 +1184,7 @@ describe("Simple Changes skill contract", () => {
     expect(normalizedConcurrency).toContain(
       "It refuses to adopt staged, unstaged, or untracked content"
     );
-    expect(normalizedConcurrency).toContain(
+    expect(normalizedRecovery).toContain(
       "every recorded child/process group is inactive"
     );
     expect(normalizedConcurrency).toContain(
@@ -939,9 +1193,9 @@ describe("Simple Changes skill contract", () => {
     expect(normalizedConcurrency).toContain(
       "An override is an exceptional user handoff, not a way to suppress the guard"
     );
-    expect(normalizedSkill).toContain("loop dispose-worktree");
-    expect(normalizedSkill).toContain("loop retire-absent-worktree");
-    expect(normalizedSkill).toContain(
+    expect(normalizedRecovery).toContain("loop dispose-worktree");
+    expect(normalizedRecovery).toContain("loop retire-absent-worktree");
+    expect(normalizedRecovery).toContain(
       "proving it clean with zero unique commits"
     );
     expect(normalizedConcurrency).toContain(

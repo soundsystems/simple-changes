@@ -398,7 +398,8 @@ simple-changes help
 `release-delivery-receipt`, `release-tag-receipt`,
 `remote-branch-reconciliation`,
 `remote-branch-ancestry`, `remote-branch-supersession`,
-`release-consistency`, `release-notes`, `proposal-audit`,
+`release-consistency`, `release-notes`, `release-notes-pointer`,
+`proposal-audit`,
 `ready-work-receipt`, `ship-holds`, `loop-lease`, `loop-close-equivalent`,
 `migration-review`, `migration-pending`, `migration-apply-plan`,
 `post-cleanup-recovery`, `shipment-outcome`, `stale-lease-recovery`,
@@ -439,12 +440,17 @@ structured manual coordination blocker and leaves Git and the active lease
 unchanged.
 
 Exit codes are stable: `0` success, `2` usage, `3` invalid input or contract,
-`4` inventory failure, and `5` unsafe repository state.
+`4` inventory failure, `5` unsafe repository state, and `6` release notes
+older than the installed window (a link was printed instead; not an error).
 
 `release-notes` renders the latest released section of the packaged Simple
 Changes `CHANGELOG.md` and omits pending `Unreleased` content and HTML comments.
 Use `--version VERSION` for an older published release or `--json` for
-automation. An explicit `--repo PATH` may read another checkout without writing
+automation. The installed copy carries the releases of the last six guidance
+versions; for an older release, `--version` prints a link to it in the full
+[CHANGELOG.md](CHANGELOG.md) with the notices of the guidance versions it
+introduced and exits `6`. Maintainers regenerate the installed window at
+release with `bun tooling/simple-changes/package-changelog.ts`. An explicit `--repo PATH` may read another checkout without writing
 it. The source-maintainer-only `--check` mode requires `--repo PATH` and
 validates the latest public changelog, developer changelog, root package
 version, and the packaged `SKILL.md` `metadata.version` without changing

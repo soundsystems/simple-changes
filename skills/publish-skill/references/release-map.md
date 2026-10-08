@@ -1,5 +1,14 @@
 # Release Map
 
+Contents:
+
+- Discover Targets
+- Classify Ownership Before Scope
+- Discover Every Consumer
+- Resolve Default Branches
+- Read Fork Provenance
+- Isolate Work
+
 Use this reference to discover the complete production topology.
 
 Build the release map before creating a worktree or editing a changelog.

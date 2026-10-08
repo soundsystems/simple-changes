@@ -1,8 +1,24 @@
 # Change proposals
 
+Contents:
+
+- Create and audit proposals
+- Body shape
+- Agent signatures
+
+## Create and audit proposals
+
 Use **change proposal** as the neutral internal term. Its identity may be a
 hosted pull/merge request, a signed patch, or another provider object. Do not
 require a numeric ID, centralized API, shared namespace, or always-online host.
+
+Create/update neutral proposals in the summary, evidence, and merge-danger body
+shape from [change proposals](#body-shape), with real Markdown newlines;
+re-read stored source/rendering, resolve checks/discussions/review, and merge
+only the exact approved head. Under the default `proposalSignatures` policy,
+the agent that authors, reviews, or merges a proposal appends its model name
+and version to the proposal's signature block; see
+[change proposals](#agent-signatures).
 
 Before creation:
 

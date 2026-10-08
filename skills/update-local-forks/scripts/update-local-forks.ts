@@ -1131,6 +1131,9 @@ const searchSourceCommit = (
   }
 ): { commit: string | null; verified: boolean; reason: string } => {
   const { branch, matches, ref, refused, version } = search;
+  // The pickaxe also finds the commits that later trim this release out of
+  // the packaged changelog's window; only a commit whose packaged changelog
+  // still carries the release heading can be its entry.
   const entries = git(
     upstream.gitDirectory,
     [
@@ -1144,7 +1147,14 @@ const searchSourceCommit = (
     true
   )
     .split("\n")
-    .filter(Boolean);
+    .filter(Boolean)
+    .filter((commit) =>
+      git(
+        upstream.gitDirectory,
+        ["cat-file", "blob", `${commit}:${UPSTREAM_SKILL_PATH}/CHANGELOG.md`],
+        true
+      ).includes(`## ${version} `)
+    );
   if (entries.length === 0) {
     return {
       commit: null,

@@ -13,14 +13,15 @@ export interface ReleaseNotes {
   version: string;
 }
 
-interface ReleaseSection {
+export interface ReleaseSection {
   bodyStart: number;
   date: string | null;
   headingStart: number;
   version: string;
 }
 
-const releaseSections = (changelog: string): ReleaseSection[] => {
+/** Every released `## <version>[ - <date>]` heading, newest first. */
+export const releaseSections = (changelog: string): ReleaseSection[] => {
   const sections: ReleaseSection[] = [];
   for (const match of changelog.matchAll(RELEASE_HEADING_PATTERN)) {
     const version = match[1] ?? match[2];

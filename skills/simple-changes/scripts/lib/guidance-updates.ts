@@ -1,6 +1,6 @@
 import type { ChangelogCoordination, RepoPolicy } from "./types.ts";
 
-export const CURRENT_GUIDANCE_VERSION = 27;
+export const CURRENT_GUIDANCE_VERSION = 28;
 
 export type GuidanceUpdateAction =
   | "review-settings"
@@ -780,7 +780,46 @@ const GUIDANCE_UPDATES: GuidanceUpdateDefinition[] = [
     ],
     version: 27,
   },
+  {
+    changelogReviewRelevant: false,
+    changes: [
+      {
+        kind: "behavior",
+        summary:
+          "SKILL.md now fits in the first 5,000 tokens a harness keeps after compaction: the request table, invariants, and reference router come first, every reference and provider reference is linked directly, and the recovery paths (lock and stale-lease recovery, takeover, the released-claim pause and accept steps, re-baseline, close-equivalent, lease-less prune, replan, and archive-recorded) moved unchanged into `references/recovery.md`, which agents read when `loop status`, `loop verify`, or finalization reports trouble.",
+        version: 28,
+      },
+      {
+        kind: "integration",
+        summary:
+          "The installed skill carries the release notes of the last six guidance versions; `release-notes --version` for an older release prints its link in the full changelog with the notices of the guidance versions it introduced and exits 6 instead of failing, and `update-local-forks` still verifies an older release's tree after its notes leave the window.",
+        version: 28,
+      },
+    ],
+    noticeBullets: [
+      {
+        priority: 180,
+        summary:
+          "Simple Changes keeps its core rules within what an agent remembers after a long conversation and reads its recovery steps only when a run reports trouble; release notes older than the last six guidance versions open from a link to the full changelog.",
+      },
+    ],
+    version: 28,
+  },
 ];
+
+/**
+ * The practical notice for one guidance version: its notice bullets, or its
+ * change summaries when it has none; empty for a version with no definition.
+ */
+export const guidanceNotice = (version: number): string[] => {
+  const update = GUIDANCE_UPDATES.find((entry) => entry.version === version);
+  if (!update) {
+    return [];
+  }
+  return update.noticeBullets && update.noticeBullets.length > 0
+    ? update.noticeBullets.map((bullet) => bullet.summary)
+    : update.changes.map((change) => change.summary);
+};
 
 const recommendedActionFor = (
   requiredAnswers: GuidanceUpdateQuestion[],

@@ -23,6 +23,8 @@ it, so the harness may still prompt for the `release-tag` command; and under
 `never` it refuses before any write and prints the exact commands for the
 user.
 
+`configure-harness` requests only the narrowest verified repository-scoped push
+rule; see [harness-aware push authorization](#closed-preference-values).
 Never translate `configure-harness` into blanket shell access, permission for
 every remote, credential storage, or authority to force-push. Resolve the exact
 remote name and URL from current Git configuration first. Repository ownership,

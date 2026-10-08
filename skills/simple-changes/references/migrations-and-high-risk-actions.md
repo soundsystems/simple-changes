@@ -90,6 +90,11 @@ eligible for automatic policy authorization unless its adapter constrains and
 proves that exact set; otherwise request explicit authority.
 Only an `auto-apply` result grants saved-policy authority to continue without
 another permission prompt; follow every other result exactly.
+Apply only through `simple-changes migration decision` and
+`simple-changes migration apply` with the closed evidence described in
+[high-risk actions](migrations-and-high-risk-actions.md). Broad apply-all, stale, replayed, target-mismatched, or
+command-changed plans require new review/authority. Do not apply a migration
+while installed-client compatibility is `incompatible` or `unverified`.
 
 - `ask-after-review`: request exact apply authority after the audit.
 - `auto-apply-reviewed-routine`: proceed without another prompt only when the

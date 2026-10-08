@@ -36,6 +36,11 @@ Classify the request mode and whether it requires changelog work, then run:
 simple-changes initialize --mode <mode> [--changelog-required] --json
 ```
 
+When initialization reports `turnEndGuard` as not installed or outdated and
+it has no `installCommand`, as from a fork with no current global install, tell
+the user to install the guard from the globally installed Simple Changes; see
+[turn-end guard](cleanup-and-completion.md#turn-end-guard).
+
 Sync, queue, sweep, integrate, ship, reconcile, resume, and handoff are
 write-capable. Preview and pause are read-only or preservation-only. Sync uses
 fixed local-only preservation guardrails and does not start workflow-preference

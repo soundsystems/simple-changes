@@ -1136,6 +1136,70 @@ describe("update-local-forks", () => {
     });
   });
 
+  test("finds a release the packaged changelog later trimmed out of its window", () => {
+    const fixture = createFixture();
+    // Later releases package only their recent window, so 0.2.0's heading
+    // leaves the packaged changelog; the release tree itself never changes.
+    const trim = commitPackage(
+      fixture.upstream,
+      "chore(release): Prepare Simple Changes 0.3.0",
+      {
+        "CHANGELOG.md": changelogThrough("0.3.0"),
+        "scripts/lib/core.ts": "export const core = 3;\n",
+      }
+    );
+    commitPackage(
+      fixture.upstream,
+      "chore(release): Prepare Simple Changes 0.4.0",
+      {
+        "CHANGELOG.md": changelogThrough("0.4.0"),
+        "scripts/lib/core.ts": "export const core = 4;\n",
+      }
+    );
+    expect(
+      git(fixture.upstream, [
+        "log",
+        "--format=%H",
+        "-S## 0.2.0 ",
+        "main",
+        "--",
+        "skills/simple-changes/CHANGELOG.md",
+      ]).split("\n")
+    ).toEqual([trim, fixture.release]);
+
+    const plan = planForkUpdate({
+      fork: fixture.fork,
+      source: fixture.source,
+      upstream: fixture.upstream,
+    });
+    expect(plan.source).toMatchObject({
+      commit: fixture.release,
+      commitVerified: true,
+      version: "0.2.0",
+    });
+    expect(plan.pinUpdate).toEqual({
+      from: fixture.pin,
+      reason: "byte-identical tree",
+      to: fixture.release,
+    });
+
+    // An unverified search still names the release entry, never the trim.
+    writeFileSync(
+      join(fixture.source, "scripts/lib/core.ts"),
+      "export const core = 99;\n"
+    );
+    const unverified = planForkUpdate({
+      fork: fixture.fork,
+      source: fixture.source,
+      upstream: fixture.upstream,
+    });
+    expect(unverified.source).toMatchObject({
+      commit: fixture.release,
+      commitVerified: false,
+    });
+    expect(unverified.pinUpdate.to).toBeNull();
+  });
+
   test("never bumps the pin when no commit after the release entry matches", () => {
     const fixture = createFixture();
     const { entry, merge, released } = releaseThroughSideBranch(fixture);

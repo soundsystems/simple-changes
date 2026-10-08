@@ -10,13 +10,18 @@ import {
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn as bunSpawn, spawnSync as bunSpawnSync, sleep } from "bun";
+import { EXIT_CODES } from "../../../skills/simple-changes/scripts/lib/errors.ts";
 import { CURRENT_GUIDANCE_VERSION } from "../../../skills/simple-changes/scripts/lib/guidance-updates.ts";
 import { captureInventory } from "../../../skills/simple-changes/scripts/lib/inventory.ts";
 import {
   DEFAULT_POLICY,
   writeRepositoryPolicyTrustReceipt,
 } from "../../../skills/simple-changes/scripts/lib/policy.ts";
-import { SCHEMA_NAMES } from "../../../skills/simple-changes/scripts/lib/schema.ts";
+import type { ReleaseNotesPointer } from "../../../skills/simple-changes/scripts/lib/release-history.ts";
+import {
+  SCHEMA_NAMES,
+  validateSchema,
+} from "../../../skills/simple-changes/scripts/lib/schema.ts";
 import {
   createTestRepository,
   git,
@@ -3234,6 +3239,73 @@ while (!existsSync(process.env.SIMPLE_CHANGES_TEST_RELEASE_PATH)) {
     expect(output.version).not.toBe("99.0.0");
     expect(output.markdown).not.toContain("Wrong repository.");
     expect(output.source).toEndWith("/simple-changes/CHANGELOG.md");
+  });
+
+  test("points at the canonical changelog for a release older than the packaged notes", () => {
+    const fixture = createTestRepository();
+    repositories.push(fixture);
+    // No --repo, as the update notice's view-release-notes action runs it.
+    const text = spawnSync(
+      [process.execPath, cliPath, "release-notes", "--version", "0.1.0"],
+      { cwd: fixture.root, stderr: "pipe", stdout: "pipe" }
+    );
+    expect(text.exitCode).toBe(EXIT_CODES.outsideWindow);
+    expect(text.exitCode).toBe(6);
+    expect(decoder.decode(text.stderr)).toBe("");
+    expect(decoder.decode(text.stdout)).toContain(
+      "Simple Changes 0.1.0 (2026-07-23) is older than the release notes this installation carries"
+    );
+    expect(decoder.decode(text.stdout)).toContain(
+      "https://gitlab.com/soundsystems/simple-changes/-/blob/main/CHANGELOG.md#010---2026-07-23"
+    );
+
+    const json = spawnSync(
+      [
+        process.execPath,
+        cliPath,
+        "release-notes",
+        "--version",
+        "0.1.0",
+        "--json",
+      ],
+      { cwd: fixture.root, stderr: "pipe", stdout: "pipe" }
+    );
+    expect(json.exitCode).toBe(6);
+    const pointer = validateSchema<ReleaseNotesPointer>(
+      "release-notes-pointer",
+      JSON.parse(decoder.decode(json.stdout))
+    );
+    expect(pointer).toMatchObject({
+      anchor: "010---2026-07-23",
+      status: "outside-packaged-window",
+      version: "0.1.0",
+    });
+
+    // An unpublished version is still an error, and so is an older release
+    // read from an explicit --repo checkout that lacks it.
+    const unknown = spawnSync(
+      [process.execPath, cliPath, "release-notes", "--version", "0.0.1"],
+      { cwd: fixture.root, stderr: "pipe", stdout: "pipe" }
+    );
+    expect(unknown.exitCode).toBe(EXIT_CODES.validation);
+    writeFixture(
+      fixture.root,
+      "CHANGELOG.md",
+      "# Changelog\n\n## 0.2.0 - 2026-07-25\n\n- Newer notes.\n"
+    );
+    const explicit = spawnSync(
+      [
+        process.execPath,
+        cliPath,
+        "release-notes",
+        "--version",
+        "0.1.0",
+        "--repo",
+        fixture.root,
+      ],
+      { stderr: "pipe", stdout: "pipe" }
+    );
+    expect(explicit.exitCode).toBe(EXIT_CODES.validation);
   });
 
   test("selects a release-note version from the CLI", () => {

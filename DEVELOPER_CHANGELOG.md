@@ -21,7 +21,7 @@
 - `SPEC.md` moved to `tooling/simple-changes/SPEC.md`; the eval requires it
   there and refuses it inside the package. Forks receive the removal as a
   delete, or as a review item where they edited it. The installed skill went
-  from 1,780,152 to 1,766,868 bytes and from 124 to 123 files, packaged notes
+  from 1,780,152 to 1,766,961 bytes and from 124 to 123 files, packaged notes
   included.
 - Released-author admission: an owner release admits the checkout like a
   handoff only when the release recorded the exact state (owner, path, branch,

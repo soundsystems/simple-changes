@@ -1,5 +1,38 @@
 # Changelog
 
+## 0.27.0 - 2026-10-07
+
+- Releases can now get a Git tag on their exact commit. When Simple
+  Changelogs names a tag for a release (Simple Changelogs 0.25.0 or later,
+  once your repository chooses a tag style), the new `release-tag` command
+  checks before the release merge that the name is free. When the release
+  goes public, it creates an unsigned annotated tag on the verified commit,
+  pushes only that tag to the repository's own remote, and reads it back. It
+  never moves, replaces, or deletes a tag, and running it again is safe. A
+  blocked tag push, such as one your Git host's tag protection rejects, stops
+  the deployment, and final verification requires the tag.
+- Pushing a tag uses the release's existing approval. Before the push, the
+  agent lists what CI a push of that tag can start, and the push waits for
+  that review. Deploy and migration holds also block it, Sync never tags, and
+  a repository whose push setting is `never` is refused. A remote whose URL
+  depends on the folder Git runs in, such as a relative local path, is
+  refused before anything is written; use an absolute path or a network URL.
+  Protecting your release tag pattern, such as `v*`, with your Git host's tag
+  protection is recommended.
+- `update-local-forks` now looks for the release's `v<version>` tag first
+  when finding the commit a fork should pin. It still proves the tagged tree
+  is byte-identical to the installed release and on the branch's history
+  before using it, and otherwise searches history as before.
+- The installed `SKILL.md` now states its release version, so a fork update
+  reads the installed and pinned releases directly. Copies installed before
+  0.27.0 are still read from their changelog.
+- Simple Changes versions now follow its guidance number: 0.27.0 introduces
+  guidance 27, and a fix that leaves guidance unchanged is a patch release
+  such as 0.27.1. Until Simple Changelogs 0.25.0 is installed, nothing about
+  your releases changes, because older Simple Changelogs names no tag. Hosted
+  GitHub or GitLab Releases are out of scope.
+<!-- simple-changelogs-signature agent="Claude Opus 5.5 xhigh" at="2026-10-07T14:50:00-05:00" -->
+
 ## 0.25.2 - 2026-10-06
 
 - `acknowledge-update` now records a guidance decision by changing only the

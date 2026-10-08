@@ -1,6 +1,6 @@
 import type { ChangelogCoordination, RepoPolicy } from "./types.ts";
 
-export const CURRENT_GUIDANCE_VERSION = 26;
+export const CURRENT_GUIDANCE_VERSION = 27;
 
 export type GuidanceUpdateAction =
   | "review-settings"
@@ -748,6 +748,37 @@ const GUIDANCE_UPDATES: GuidanceUpdateDefinition[] = [
       },
     ],
     version: 26,
+  },
+  {
+    changelogReviewRelevant: true,
+    changes: [
+      {
+        kind: "integration",
+        summary:
+          "Changelog negotiation adds request v3 and receipt v4, whose release record names the release's Git tag, and now pairs each request version only with receipts it may advertise, so request v1 never meets receipt v3; Simple Changelogs before 0.25.0 negotiates exactly as before and names no tag.",
+        version: 27,
+      },
+      {
+        kind: "behavior",
+        summary:
+          "`release-tag` publishes the tag a receipt v4 names: `--dry-run` before the release merge stops it when the name is taken, and once the release crosses its public boundary it builds an unsigned annotated tag on the verified commit, pushes only that tag to the run's single-URL target remote, reads it back, and never moves, replaces, or deletes a tag; final verification requires it, and a blocked tag stops the deployment.",
+        version: 27,
+      },
+      {
+        kind: "behavior",
+        summary:
+          "A tag push needs the release's existing approval plus `--tag-automation-authorized` after the controller lists what CI a push of that tag can start; deploy and migration holds block it, Sync never tags, and `update-local-forks` tries the `v<version>` tag first but still proves a byte-identical tree on the branch's first-parent history.",
+        version: 27,
+      },
+    ],
+    noticeBullets: [
+      {
+        priority: 175,
+        summary:
+          "Releases can now get a Git tag on their exact commit: when Simple Changelogs names one, Simple Changes checks the name before merging and pushes the tag when the release goes out, under the approval it already has. Nothing changes until Simple Changelogs asks whether to tag.",
+      },
+    ],
+    version: 27,
   },
 ];
 

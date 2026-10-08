@@ -3,6 +3,7 @@ name: simple-changes
 description: Use when a user asks to sync with remote main, package, queue, publish, integrate, review, merge, ship, reconcile, or clean local Git changes, branches, worktrees, proposals, or deployments. Preserve concurrent work, create focused proposals, satisfy checks and review, merge current approved heads, verify authorized deployment, and reconcile proven cleanup. Do not use to author changelogs or release notes directly, for non-Git synchronization, or for read-only code review.
 metadata:
   models: Claude Opus 5.5, Claude Fable 5.1
+  version: "0.27.0"
 ---
 
 # Simple Changes
@@ -379,7 +380,11 @@ read-only work, or incomplete verification.
    finalized target. Verify the live deployment observes the same revision,
    even when no deployment was created during this run. A Ship or resumed Ship
    loop is incomplete when the live revision differs from the latest canonical
-   target revision.
+   target revision. When the receipt names a release tag, run `release-tag
+   --dry-run` before the release merge, publish it with `release-tag` before
+   any deployment, and require `already-present` at final verification, even
+   with no deployment; see
+   [release tags](references/changelog-coordination.md#release-tags).
 10. Run final local/provider inventory and clean only proven objects. A dirty
     primary requires classification before completion. Finalization safely normalizes tracked target-identical paths;
     classify every remaining path against the refreshed target, ship genuine
@@ -420,6 +425,11 @@ An installed-client compatibility finding of `incompatible` or `unverified`
 blocks the affected migration, API, backend, or production deployment. A new
 client release alone does not make a breaking rollout safe because older
 binaries may remain installed.
+
+Create or push a Git tag only through `release-tag`, and only the tag a
+verified receipt names, under the release's existing approval and reviewed tag
+automation, to the run's own single-URL target remote. Never move, replace,
+or delete a tag, and never tag from Sync or as a delegated author.
 
 GitLab cleanup is required only when the selected target remote is GitLab, not
 merely because an auxiliary GitLab remote exists.

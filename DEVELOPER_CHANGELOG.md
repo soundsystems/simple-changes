@@ -1,5 +1,103 @@
 # Developer changelog
 
+## 0.27.0 - 2026-10-07
+
+- Changelog negotiation adds request v3 and receipt v4.
+  - A receipt v4 release record carries a required `tag`, either null or
+    `{name, message}`. `validate-changelog-transaction` refuses names Git
+    would reject, a leading `-`, and names not bound to the version, and
+    requires the tag to stay identical from prepare to verify; adding,
+    dropping, or changing it is a protocol mismatch.
+  - Negotiation now caps the receipt by the chosen request (v1 up to 2, v2 up
+    to 3, v3 up to 4), so request v1 never meets receipt v3. A provider that
+    advertises no shared request still reports the uncapped receipt overlap
+    and stays incompatible.
+  - The release-set check accepts v3 and v4 together and refuses two release
+    trains naming one tag.
+- `release-tag` (`scripts/lib/release-tag.ts`, schema
+  `release-tag-receipt`):
+  - `--dry-run` on the prepared receipt runs before the release merge and
+    stops a release whose tag name is already taken.
+  - Apply runs only after the release gate allows publication and with
+    `--tag-automation-authorized`, for the active controller only, never in
+    Sync or for a delegated author. It honors deploy and migration holds and
+    refuses under `gitPushAuthorization: "never"` before any hold read.
+  - It builds the tag with `git mktag` (unsigned, no ref), pushes it by
+    object id with `--no-follow-tags` to the run's single-URL target remote,
+    reads it back, and only then installs the local tag, so an unpublished
+    local tag cannot leak through a later push. It never moves or deletes a
+    tag, and a re-run reports `already-present`.
+  - Any failed tag push is `push-rejected`, whatever the host's message says,
+    and blocks the deployment. Exit 0 covers ready, created, already-present,
+    and not-applicable; exit 5 is blocked; an unverified prior receipt exits
+    3. Final verification requires `already-present`.
+  - Writes go through the guarded executor, which now accepts in-memory
+    input. Hold reads gained a `fetchMissing` option and fetch missing
+    objects only through that executor, partial-clone lazy fetches are
+    blocked, and when containment needs a newer branch head, apply runs one
+    guarded branch fetch after every refusal has passed.
+  - The target remote must be the only bound remote that matches the run's
+    target ref and the remote that holds and read-back follow. A multi-URL
+    remote is refused and prints no push command.
+  - A target remote whose URL depends on Git's working directory is refused
+    with `remote-not-single-url` before any write, in the dry run and apply:
+    a relative or `~` local path, a `file://` URL without an absolute path, a
+    Windows path without its drive, or an `ext::` or `fd::` helper. Shipment
+    holds are read from the primary checkout while the tag is pushed from the
+    controller's, so such a URL could name two repositories. Helper names
+    follow Git's grammar, and the refusal names only the helper so a command
+    line is never echoed.
+- `update-local-forks` tries the `v<version>` tag first. It uses the tag only
+  when its tree is byte-identical to the installed release and its commit is
+  on the branch's first-parent history, fetches with `--no-tags`, and
+  otherwise falls back to the history search with the reason.
+- `SKILL.md` frontmatter states the release in `metadata.version`.
+  `release-notes --check` requires it to match the packaged changelog's top
+  release and `package.json`, and `update-local-forks` reads the installed
+  and pinned versions from it before falling back to the changelog. Both
+  readers use a small strict line reader instead of `Bun.YAML`, which older
+  supported Bun versions lack.
+- The changelog request and receipt schemas ship minified
+  (`JSON.stringify(JSON.parse(text))` plus a newline) so Simple Changelogs
+  can vendor them byte for byte; Biome skips both files, a contract test
+  keeps them minified, and their advertised digests are unchanged.
+- Guidance 27 has no required answers. `SKILL.md`, `SPEC.md`, the README, and
+  the changelog-coordination, deployments, ship-communication, sync, and
+  push-authorization references describe the tag step in host-agnostic terms.
+  `.out-of-scope/hosted-releases.md` records why hosted releases are out of
+  scope.
+- The design followed a reviewed spec. Its deviations, kept small and
+  reviewed, include the exit-3 refusal, `push-rejected` for every failed push
+  (host-agnostic), the both-ways tag-unchanged rule, and listing CI files at
+  the reconciliation head during a dry run.
+- Tests:
+  - `release-tag.test.ts` has 42 tests: 41 real-Git tests on temporary
+    repositories and bare remotes, and one table test of the URL classifier.
+    They cover a protected-tag rejection simulated with a `pre-receive` hook,
+    a lost race, holds and waivers, Sync, older receipts, multi-URL and
+    rebound remotes, a killed run, `push.followTags`, partial clones, a
+    lightweight tag already on the target, and a linked worktree whose
+    relative remote would have bypassed a hold.
+  - Protocol tests show an older fork negotiating as before.
+  - `update-local-forks` adds tests for the tag-first lookup and
+    `metadata.version` reads, and `release-consistency.test.ts` covers the
+    `--check` version match.
+  - Mutation runs killed all 49 recorded mutants of the tag guards, and the
+    release fixes were mutation-tested the same way.
+- Reviews (GPT-6.1 Sol):
+  - Round 1 at high effort found two blocking and two should-fix issues.
+  - Five xhigh rounds followed, and the last found only a nit, now covered by
+    a test.
+  - The first release review, at xhigh, found the relative-remote hold
+    bypass (blocking). Four more xhigh rounds fixed it and the later
+    findings: helper-name grammar, Windows drive-relative paths, a refusal
+    that could echo an `ext::` command, and a dependence on `Bun.YAML`. The
+    last round found no blocking or should-fix issue. Its two nits, in the
+    `metadata.version` reader, affect only unusual YAML: a comment-only line
+    can shift the detected `metadata` indentation, and `0.27.0#preview` reads
+    as `0.27.0`.
+<!-- simple-changelogs-signature agent="Claude Opus 5.5 xhigh" at="2026-10-07T14:50:00-05:00" -->
+
 ## 0.25.2 - 2026-10-06
 
 - `acknowledge-update` writes through a new `writeGuidanceAcknowledgement` in

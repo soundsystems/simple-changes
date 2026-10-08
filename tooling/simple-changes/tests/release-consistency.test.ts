@@ -3,6 +3,7 @@ import {
   checkReleaseConsistency,
   renderReleaseConsistency,
 } from "../../../skills/simple-changes/scripts/lib/release-consistency.ts";
+import { skillMetadataVersion } from "../../../skills/simple-changes/scripts/lib/skill-check.ts";
 import { createTestRepository, writeFixture } from "./helpers.ts";
 
 describe("release consistency", () => {
@@ -143,6 +144,162 @@ describe("release consistency", () => {
           issue.startsWith("package.json is not valid JSON:")
         )
       ).toBe(true);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+});
+
+describe("packaged skill version identity", () => {
+  // A repository that packages the skill, every version at `version` except
+  // the overrides.
+  const packagedRepository = (
+    overrides: {
+      metadata?: string | null;
+      packaged?: string;
+      packageVersion?: string;
+    } = {}
+  ) => {
+    const fixture = createTestRepository();
+    const version = "0.27.0";
+    const history = (title: string, release: string) =>
+      `# ${title}\n\n## ${release} - 2026-10-07\n\n- Notes.\n`;
+    writeFixture(fixture.root, "CHANGELOG.md", history("Changelog", version));
+    writeFixture(
+      fixture.root,
+      "DEVELOPER_CHANGELOG.md",
+      history("Developer changelog", version)
+    );
+    writeFixture(
+      fixture.root,
+      "package.json",
+      `{ "name": "simple-changes", "version": "${overrides.packageVersion ?? version}" }\n`
+    );
+    writeFixture(
+      fixture.root,
+      "skills/simple-changes/CHANGELOG.md",
+      history("Changelog", overrides.packaged ?? version)
+    );
+    const metadata =
+      overrides.metadata === null
+        ? ""
+        : `  version: "${overrides.metadata ?? version}"\n`;
+    writeFixture(
+      fixture.root,
+      "skills/simple-changes/SKILL.md",
+      `---\nname: simple-changes\ndescription: Ships changes.\nmetadata:\n  models: Claude Opus 5.5\n${metadata}---\n\n# Simple Changes\n`
+    );
+    return fixture;
+  };
+
+  test("accepts metadata.version equal to the packaged changelog and package", () => {
+    const fixture = packagedRepository();
+    try {
+      const report = checkReleaseConsistency(fixture.root);
+      expect(report.issues).toEqual([]);
+      expect(report.versions.map((record) => record.role)).toEqual([
+        "customer-history",
+        "developer-history",
+        "package",
+        "packaged-history",
+        "skill-metadata",
+      ]);
+      expect(renderReleaseConsistency(report)).toContain(
+        "skill-metadata: 0.27.0"
+      );
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  test("refuses metadata.version that disagrees with the packaged changelog", () => {
+    const fixture = packagedRepository({ metadata: "0.26.0" });
+    try {
+      const report = checkReleaseConsistency(fixture.root);
+      expect(report.valid).toBe(false);
+      expect(report.issues).toEqual([
+        "skills/simple-changes/SKILL.md metadata.version 0.26.0 does not match the packaged CHANGELOG.md release 0.27.0.",
+        "skills/simple-changes/SKILL.md metadata.version 0.26.0 does not match package.json version 0.27.0.",
+      ]);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  test("refuses a packaged changelog or package that moved without metadata.version", () => {
+    const packaged = packagedRepository({ packaged: "0.28.0" });
+    const packageOnly = packagedRepository({ packageVersion: "0.28.0" });
+    try {
+      expect(checkReleaseConsistency(packaged.root).issues).toEqual([
+        "skills/simple-changes/SKILL.md metadata.version 0.27.0 does not match the packaged CHANGELOG.md release 0.28.0.",
+        "packaged-history version 0.28.0 does not match public release 0.27.0.",
+      ]);
+      expect(checkReleaseConsistency(packageOnly.root).issues).toEqual([
+        "skills/simple-changes/SKILL.md metadata.version 0.27.0 does not match package.json version 0.28.0.",
+        "package version 0.28.0 does not match public release 0.27.0.",
+      ]);
+    } finally {
+      packaged.cleanup();
+      packageOnly.cleanup();
+    }
+  });
+
+  test("reads metadata.version without a YAML parser", () => {
+    const fixture = packagedRepository();
+    const runtime = (globalThis as unknown as { Bun: { YAML?: unknown } }).Bun;
+    const parser = runtime.YAML;
+    try {
+      runtime.YAML = undefined;
+      expect(checkReleaseConsistency(fixture.root)).toMatchObject({
+        issues: [],
+        valid: true,
+      });
+    } finally {
+      runtime.YAML = parser;
+      fixture.cleanup();
+    }
+  });
+
+  test("reads only the metadata mapping's own version entry", () => {
+    const skill = (body: string) =>
+      `---\nname: simple-changes\ndescription: Ships.\n${body}---\n\n# Simple Changes\n`;
+    for (const value of [
+      "0.27.0",
+      "'0.27.0'",
+      '"0.27.0"',
+      "0.27.0 # release",
+    ]) {
+      expect(
+        skillMetadataVersion(skill(`metadata:\n  version: ${value}\n`))
+      ).toBe("0.27.0");
+    }
+    expect(
+      skillMetadataVersion(
+        skill(
+          'metadata:\n  models: Claude Opus 5.5\n  nested:\n    version: "9.9.9"\n  version: "0.27.0"\n'
+        )
+      )
+    ).toBe("0.27.0");
+    for (const body of [
+      'version: "0.27.0"\n',
+      "metadata: { version: 0.27.0 }\n",
+      'metadata:\n  nested:\n    version: "9.9.9"\n',
+      'metadata:\n  models: x\nversion: "0.27.0"\n',
+    ]) {
+      expect(skillMetadataVersion(skill(body))).toBeNull();
+    }
+    expect(skillMetadataVersion("# No frontmatter\n")).toBeNull();
+  });
+
+  test("requires metadata.version once the skill is packaged", () => {
+    const fixture = packagedRepository({ metadata: null });
+    try {
+      expect(checkReleaseConsistency(fixture.root)).toMatchObject({
+        issues: [
+          "skills/simple-changes/SKILL.md has no metadata.version string.",
+        ],
+        valid: false,
+      });
     } finally {
       fixture.cleanup();
     }

@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { basename, resolve } from "node:path";
 import { extractReleaseNotes } from "./release-notes.ts";
+import { skillMetadataVersion } from "./skill-check.ts";
 
 const EMPTY_UNRELEASED_PATTERN =
   /^##[ \t]+Unreleased[ \t]*\n(?:[ \t]*\n|<!--[\s\S]*?-->[ \t]*\n)*(?=##[ \t]+|(?![\s\S]))/imu;
@@ -10,7 +11,12 @@ const UNRELEASED_HEADING_PATTERN = /^\[?unreleased\]?$/iu;
 export interface ReleaseVersionRecord {
   date: string | null;
   path: string;
-  role: "customer-history" | "developer-history" | "package";
+  role:
+    | "customer-history"
+    | "developer-history"
+    | "package"
+    | "packaged-history"
+    | "skill-metadata";
   version: string;
 }
 
@@ -63,7 +69,7 @@ const unreleasedIssues = (markdown: string, name: string): string[] => {
 
 const inspectHistory = (
   path: string,
-  role: "customer-history" | "developer-history",
+  role: "customer-history" | "developer-history" | "packaged-history",
   issues: string[],
   versions: ReleaseVersionRecord[]
 ): void => {
@@ -90,6 +96,58 @@ const inspectHistory = (
   issues.push(...unreleasedIssues(markdown, basename(path)));
 };
 
+const PACKAGED_SKILL = "skills/simple-changes";
+
+/**
+ * A repository that packages the Simple Changes skill also states the release
+ * in the packaged CHANGELOG.md and in SKILL.md `metadata.version`, which must
+ * equal that changelog's top release and the package version.
+ */
+const inspectPackagedSkill = (
+  repository: string,
+  packageVersion: string | null,
+  issues: string[],
+  versions: ReleaseVersionRecord[]
+): void => {
+  const skillPath = resolve(repository, PACKAGED_SKILL, "SKILL.md");
+  if (!existsSync(skillPath)) {
+    return;
+  }
+  const packagedPath = resolve(repository, PACKAGED_SKILL, "CHANGELOG.md");
+  const before = versions.length;
+  inspectHistory(packagedPath, "packaged-history", issues, versions);
+  const packaged = versions.length > before ? versions.at(-1) : undefined;
+  let metadataVersion: string | null = null;
+  try {
+    metadataVersion = skillMetadataVersion(readFileSync(skillPath, "utf8"));
+  } catch (error) {
+    issues.push(
+      `${PACKAGED_SKILL}/SKILL.md frontmatter could not be read: ${error instanceof Error ? error.message : String(error)}`
+    );
+    return;
+  }
+  if (!metadataVersion) {
+    issues.push(`${PACKAGED_SKILL}/SKILL.md has no metadata.version string.`);
+    return;
+  }
+  versions.push({
+    date: null,
+    path: skillPath,
+    role: "skill-metadata",
+    version: metadataVersion,
+  });
+  if (packaged && packaged.version !== metadataVersion) {
+    issues.push(
+      `${PACKAGED_SKILL}/SKILL.md metadata.version ${metadataVersion} does not match the packaged CHANGELOG.md release ${packaged.version}.`
+    );
+  }
+  if (packageVersion && packageVersion !== metadataVersion) {
+    issues.push(
+      `${PACKAGED_SKILL}/SKILL.md metadata.version ${metadataVersion} does not match package.json version ${packageVersion}.`
+    );
+  }
+};
+
 export const checkReleaseConsistency = (
   repository: string
 ): ReleaseConsistencyReport => {
@@ -112,10 +170,17 @@ export const checkReleaseConsistency = (
     });
   }
 
+  inspectPackagedSkill(repository, packageVersion, issues, versions);
+
   const publicVersion = versions.find(
     (record) => record.role === "customer-history"
   );
   for (const record of versions) {
+    // SKILL.md metadata is compared with the packaged changelog and the
+    // package above, so one disagreement is reported once.
+    if (record.role === "skill-metadata") {
+      continue;
+    }
     if (publicVersion && record.version !== publicVersion.version) {
       issues.push(
         `${record.role} version ${record.version} does not match public release ${publicVersion.version}.`

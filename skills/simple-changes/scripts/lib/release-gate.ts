@@ -6,11 +6,12 @@ import type {
   ChangelogCapabilities,
   ChangelogFeature,
   ChangelogReceipt,
-  ChangelogReceiptV3,
   ChangelogRequest,
+  LineCarryingChangelogReceipt,
   ModernChangelogReceipt,
   ReleaseReasonCode,
   ReleaseRequiredAction,
+  ReleaseTag,
 } from "./types.ts";
 import {
   assertReleaseSetConsistency,
@@ -22,8 +23,8 @@ import {
 
 export interface ChangelogConsumerCapabilities {
   features: ChangelogFeature[];
-  receiptVersions: Array<1 | 2 | 3>;
-  requestVersions: Array<1 | 2>;
+  receiptVersions: Array<1 | 2 | 3 | 4>;
+  requestVersions: Array<1 | 2 | 3>;
   schemaDigests: NonNullable<ChangelogCapabilities["schemaDigests"]>;
 }
 
@@ -31,8 +32,8 @@ export interface NegotiatedChangelogProtocol {
   compatible: boolean;
   features: ChangelogFeature[];
   reasonCode: "unsupported-protocol" | null;
-  receiptVersion: 1 | 2 | 3 | null;
-  requestVersion: 1 | 2 | null;
+  receiptVersion: 1 | 2 | 3 | 4 | null;
+  requestVersion: 1 | 2 | 3 | null;
   requiredAction: "upgrade-producer" | null;
   schemaDigestStatus: "match" | "differs" | "unadvertised";
 }
@@ -45,8 +46,8 @@ export const packagedChangelogProtocol = (): ChangelogConsumerCapabilities => ({
     "guidance-update-notices",
     "shared-version-lines",
   ],
-  receiptVersions: [1, 2, 3],
-  requestVersions: [1, 2],
+  receiptVersions: [1, 2, 3, 4],
+  requestVersions: [1, 2, 3],
   schemaDigests: {
     changelogReceipt: sha256Json(
       JSON.parse(readFileSync(schemaPath("changelog-receipt"), "utf8"))
@@ -85,6 +86,10 @@ const compareSchemaDigests = (
     : "differs";
 };
 
+// The highest receipt version each request version may advertise: request v1
+// allows receipts 1 and 2, request v2 adds 3, and request v3 adds 4.
+const RECEIPT_CAP_BY_REQUEST = { 1: 2, 2: 3, 3: 4 } as const;
+
 export const negotiateChangelogProtocol = (
   input: unknown,
   consumer: ChangelogConsumerCapabilities = packagedChangelogProtocol()
@@ -97,9 +102,16 @@ export const negotiateChangelogProtocol = (
     producer.requestVersions,
     consumer.requestVersions
   );
+  // The receipt is the highest shared version the chosen request may
+  // advertise, so request v1 never pairs with receipt v3 or v4. Without a
+  // shared request the pair is incompatible, and the uncapped receipt
+  // overlap is reported only as a diagnostic.
+  const receiptCap = requestVersion
+    ? RECEIPT_CAP_BY_REQUEST[requestVersion]
+    : Number.POSITIVE_INFINITY;
   const receiptVersion = highestOverlap(
     producer.receiptVersions,
-    consumer.receiptVersions
+    consumer.receiptVersions.filter((version) => version <= receiptCap)
   );
   const schemaDigestStatus = compareSchemaDigests(producer, consumer);
   if (!(requestVersion && receiptVersion)) {
@@ -271,8 +283,8 @@ const assertEntryOnlyBinding = (
   }
 };
 
-// The request must have advertised the receipt's version; v3 also echoes
-// the release set and carries the version line.
+// The request must have advertised the receipt's version; v3 and v4 also
+// echo the release set and carry the version line, and v4 names the tag.
 const assertReceiptVersion = (
   request: ChangelogRequest,
   receipt: ModernChangelogReceipt
@@ -282,8 +294,11 @@ const assertReceiptVersion = (
       `The delegated request did not advertise receipt v${receipt.schemaVersion}.`
     );
   }
-  if (receipt.schemaVersion === 3) {
+  if (receipt.schemaVersion === 3 || receipt.schemaVersion === 4) {
     assertVersionLine(request, receipt, protocolMismatchFor);
+  }
+  if (receipt.schemaVersion === 4 && receipt.release?.tag) {
+    assertReleaseTag(receipt.release.tag, receipt.release.version);
   }
 };
 
@@ -315,7 +330,60 @@ const assertVersionResolution = (
   }
 };
 
-// Receipts v2 and v3 share every binding below.
+// The structural ref-name rules the schema's character class cannot express,
+// matching `git check-ref-format refs/tags/<name>`, plus a leading `-` so a
+// name can never read as an option.
+const tagNameProblem = (name: string): string | null => {
+  if (name.startsWith("-")) {
+    return "must not start with -";
+  }
+  if (name.startsWith("/") || name.endsWith("/")) {
+    return "must not start or end with /";
+  }
+  if (name.endsWith(".")) {
+    return "must not end with .";
+  }
+  for (const sequence of ["..", "@{", "//"]) {
+    if (name.includes(sequence)) {
+      return `must not contain ${sequence}`;
+    }
+  }
+  if (
+    name
+      .split("/")
+      .some(
+        (component) => component.startsWith(".") || component.endsWith(".lock")
+      )
+  ) {
+    return "must not have a component that starts with . or ends with .lock";
+  }
+  return null;
+};
+
+const VERSION_BOUNDARY_PATTERN = /[0-9.]$/u;
+
+/**
+ * A release tag is the version itself, or a literal prefix plus the version
+ * whose last character is neither a digit nor `.`, so `v1` plus `1.2.0` can
+ * never pass as `v11.2.0`.
+ */
+export const assertReleaseTag = (tag: ReleaseTag, version: string): void => {
+  const problem = tagNameProblem(tag.name);
+  if (problem) {
+    protocolMismatch(`Release tag ${tag.name} ${problem}.`);
+  }
+  const prefix = tag.name.slice(0, tag.name.length - version.length);
+  if (
+    !tag.name.endsWith(version) ||
+    (prefix !== "" && VERSION_BOUNDARY_PATTERN.test(prefix))
+  ) {
+    protocolMismatch(
+      `Release tag ${tag.name} must be ${version} or end with it after a character other than a digit or ".".`
+    );
+  }
+};
+
+// Receipts v2, v3, and v4 share every binding below.
 const validateModernTransaction = (
   request: ChangelogRequest,
   receipt: ModernChangelogReceipt
@@ -391,13 +459,18 @@ const validateModernTransaction = (
 // The decision digest must cover the version line's state: a later phase that
 // keeps the approved digest cannot carry a different state. The outcome may
 // change, because an approved direction can turn a catch-up into an advance.
+const carriesVersionLine = (
+  receipt: ChangelogReceipt
+): receipt is LineCarryingChangelogReceipt =>
+  receipt.schemaVersion === 3 || receipt.schemaVersion === 4;
+
 const assertDigestCoversVersionLine = (
   prior: ChangelogReceipt,
   receipt: ChangelogReceipt
 ): void => {
   if (
-    prior.schemaVersion === 3 &&
-    receipt.schemaVersion === 3 &&
+    carriesVersionLine(prior) &&
+    carriesVersionLine(receipt) &&
     prior.decisionDigest === receipt.decisionDigest &&
     !sameLineState(
       prior.versionDecision?.versionLine ?? null,
@@ -406,6 +479,40 @@ const assertDigestCoversVersionLine = (
   ) {
     protocolMismatch(
       "The version line's state changed while the decision digest stayed the same; the digest must cover the line state."
+    );
+  }
+};
+
+// The tag a receipt's release record names: a v4 release's tag, or null for a
+// release from an earlier receipt version, which cannot name one.
+const releaseTagOf = (receipt: ChangelogReceipt): ReleaseTag | null =>
+  receipt.schemaVersion === 4 ? (receipt.release?.tag ?? null) : null;
+
+const sameTag = (left: ReleaseTag | null, right: ReleaseTag | null): boolean =>
+  left === null || right === null
+    ? left === right
+    : left.name === right.name && left.message === right.message;
+
+// Once a prepared v4 release names its tag (or no tag), every later receipt
+// that carries the release names exactly the same one: the pre-merge dry run
+// checked that name, so a dropped, added, or changed tag fails closed. A
+// receipt without a release record (an entry-only or blocked receipt) has
+// nothing to compare.
+const assertTagUnchanged = (
+  prior: ChangelogReceipt,
+  receipt: ChangelogReceipt
+): void => {
+  if (
+    prior.schemaVersion !== 4 ||
+    prior.release === null ||
+    receipt.schemaVersion === 1 ||
+    receipt.release === null
+  ) {
+    return;
+  }
+  if (!sameTag(releaseTagOf(prior), releaseTagOf(receipt))) {
+    protocolMismatch(
+      "The release tag changed after prepare; a later receipt must name exactly the prior receipt's release.tag."
     );
   }
 };
@@ -425,10 +532,12 @@ export const inspectChangelogTransaction = (
     priorReceiptInput
   );
   if (priorReceiptDigestStatus === "verified") {
-    assertDigestCoversVersionLine(
-      validateSchema<ChangelogReceipt>("changelog-receipt", priorReceiptInput),
-      receipt
+    const prior = validateSchema<ChangelogReceipt>(
+      "changelog-receipt",
+      priorReceiptInput
     );
+    assertDigestCoversVersionLine(prior, receipt);
+    assertTagUnchanged(prior, receipt);
   }
   return {
     priorReceiptDigestStatus,
@@ -647,11 +756,35 @@ export const decideReleaseGate = (
   return decideModernReceipt(context, receipt);
 };
 
+// Two trains in one release set must never claim one tag name; the changelog
+// workflow's prefix-free templates already prevent it, and this is the cheap
+// backstop.
+const assertDistinctReleaseTags = (
+  receipts: LineCarryingChangelogReceipt[]
+): void => {
+  const claimed = new Map<string, string>();
+  for (const receipt of receipts) {
+    const name = releaseTagOf(receipt)?.name;
+    if (!name) {
+      continue;
+    }
+    const train =
+      receipt.versionDecision?.releaseTrain ?? receipt.transactionId;
+    const other = claimed.get(name);
+    if (other !== undefined && other !== train) {
+      protocolMismatch(
+        `Release tag ${name} is named by both ${other} and ${train}; each train needs its own tag.`
+      );
+    }
+    claimed.set(name, train);
+  }
+};
+
 /**
  * Checks the receipts of one multi-train release set together: shared release
- * set, input target, and train list, and one number per version line. Each
- * receipt must be a receipt v3; a v1 or v2 receipt carries no release-set
- * echo or version line to compare.
+ * set, input target, and train list, one number per version line, and one tag
+ * per train. Each receipt must be a receipt v3 or v4; a v1 or v2 receipt
+ * carries no release-set echo or version line to compare.
  */
 export const validateChangelogReleaseSet = (
   receiptInputs: unknown[]
@@ -661,15 +794,17 @@ export const validateChangelogReleaseSet = (
       "changelog-receipt",
       input
     );
-    if (receipt.schemaVersion !== 3) {
+    if (!carriesVersionLine(receipt)) {
       return protocolMismatch(
-        "A release-set check needs receipt v3, which echoes the release set."
+        "A release-set check needs receipt v3 or v4, which echo the release set."
       );
     }
     return receipt;
   });
-  return assertReleaseSetConsistency(
-    receipts as ChangelogReceiptV3[],
+  const consistency = assertReleaseSetConsistency(
+    receipts,
     protocolMismatchFor
   );
+  assertDistinctReleaseTags(receipts);
+  return consistency;
 };

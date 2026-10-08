@@ -42,6 +42,8 @@ const PROVENANCE_PATTERN = /Forked from `simple-changes` @ `([0-9a-f]{7,40})`/u;
 const GUIDANCE_PATTERN = /CURRENT_GUIDANCE_VERSION = (\d+);/u;
 const CHANGELOG_VERSION_PATTERN = /^## (\d+\.\d+\.\d+)\b/mu;
 const SKILL_NAME_PATTERN = /^name:\s*(\S+)\s*$/mu;
+const FRONTMATTER_PATTERN = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/u;
+const RELEASE_VERSION_PATTERN = /^\d+\.\d+\.\d+$/u;
 const GLOBAL_SKILL_ROOTS = [
   ".agents/skills",
   ".codex/skills",
@@ -168,6 +170,63 @@ export interface DiscoveredSource {
 const skillNameOf = (skillMarkdown: string): string | null =>
   SKILL_NAME_PATTERN.exec(skillMarkdown)?.[1] ?? null;
 
+const METADATA_KEY_PATTERN = /^metadata:[ \t]*$/u;
+const LEADING_SPACE_PATTERN = /^[ \t]*/u;
+const METADATA_VERSION_PATTERN =
+  /^version:[ \t]*(?:"([^"\\]*)"|'([^']*)'|([^\s"'#][^#]*?))[ \t]*(?:#.*)?$/u;
+
+/**
+ * The release a SKILL.md states in frontmatter `metadata.version`, or null
+ * when it states none (releases before 0.27.0) or not as a plain `X.Y.Z`.
+ * Read without a YAML parser, so it works on every supported Bun: the
+ * `metadata:` block mapping's direct `version:` entry, as a plain, single-,
+ * or double-quoted scalar. Any other shape reads as no version.
+ */
+const statedVersionOf = (skill: string): string | null => {
+  const frontmatter = FRONTMATTER_PATTERN.exec(skill)?.[1];
+  if (frontmatter === undefined) {
+    return null;
+  }
+  const lines = frontmatter.split(LINE_BREAK_PATTERN);
+  const start = lines.findIndex((line) => METADATA_KEY_PATTERN.test(line));
+  let indent: string | null = null;
+  for (const line of start < 0 ? [] : lines.slice(start + 1)) {
+    if (line.trim() === "") {
+      continue;
+    }
+    const lead = LEADING_SPACE_PATTERN.exec(line)?.[0] ?? "";
+    if (lead === "") {
+      break;
+    }
+    indent ??= lead;
+    const entry =
+      lead === indent
+        ? METADATA_VERSION_PATTERN.exec(line.slice(lead.length))
+        : null;
+    if (entry) {
+      return entry[1] ?? entry[2] ?? entry[3] ?? null;
+    }
+  }
+  return null;
+};
+
+const metadataVersionOf = (skillMarkdown: string | null): string | null => {
+  const version = skillMarkdown ? statedVersionOf(skillMarkdown) : null;
+  return version && RELEASE_VERSION_PATTERN.test(version) ? version : null;
+};
+
+/**
+ * A packaged skill's release: SKILL.md `metadata.version` first, then the top
+ * release heading of its CHANGELOG.md, as every release before 0.27.0 has.
+ */
+const releaseVersionOf = (
+  skillMarkdown: string | null,
+  changelog: string | null
+): string | null =>
+  metadataVersionOf(skillMarkdown) ??
+  CHANGELOG_VERSION_PATTERN.exec(changelog ?? "")?.[1] ??
+  null;
+
 const runtimeLayoutOf = (forkPath: string): DiscoveredFork["runtimeLayout"] =>
   existsSync(join(forkPath, "runtime", "scripts")) ||
   existsSync(join(forkPath, "runtime", "evals"))
@@ -229,14 +288,14 @@ export const inspectSource = (sourcePath: string): DiscoveredSource | null => {
   if (PROVENANCE_PATTERN.test(skill)) {
     return null;
   }
-  const changelog = readText(join(sourcePath, "CHANGELOG.md")) ?? "";
+  const changelog = readText(join(sourcePath, "CHANGELOG.md"));
   const guidance =
     readText(join(sourcePath, "scripts", "lib", "guidance-updates.ts")) ?? "";
   const guidanceVersion = GUIDANCE_PATTERN.exec(guidance)?.[1];
   return {
     guidanceVersion: guidanceVersion ? Number(guidanceVersion) : null,
     path: realpathSync(sourcePath),
-    version: CHANGELOG_VERSION_PATTERN.exec(changelog)?.[1] ?? null,
+    version: releaseVersionOf(skill, changelog),
   };
 };
 
@@ -909,12 +968,96 @@ const matchesInstalledTree = (
   };
 };
 
+/** Where a release tag's commit is read from, or null when it is unavailable. */
+const releaseTagRef = (
+  upstream: UpstreamHandle,
+  url: string,
+  tag: string
+): string | null => {
+  if (upstream.kind === "checkout") {
+    // A source checkout is read as it is and never fetched into.
+    return `refs/tags/${tag}`;
+  }
+  const local = `refs/upstream-tags/${tag}`;
+  const fetched = run([
+    "git",
+    "-C",
+    upstream.gitDirectory,
+    "fetch",
+    "--quiet",
+    "--no-tags",
+    "--depth",
+    String(UPSTREAM_FETCH_DEPTH),
+    url,
+    `+refs/tags/${tag}:${local}`,
+  ]);
+  return fetched.exitCode === 0 ? local : null;
+};
+
+/**
+ * The release tag `v<version>` as a shortcut to the released commit. The name
+ * proves nothing: the tagged commit must be on the searched branch's
+ * first-parent history and its packaged tree must be byte-identical to the
+ * installed source. A missing or unfetchable tag returns null silently; a tag
+ * that fails a check returns why, and the search runs either way.
+ */
+const verifyReleaseTag = (
+  upstream: UpstreamHandle,
+  url: string,
+  ref: string,
+  version: string,
+  matches: (commit: string, tree: string) => boolean
+): { commit: string; reason: string } | { failure: string } | null => {
+  const tag = `v${version}`;
+  const tagRef = releaseTagRef(upstream, url, tag);
+  const revision = (spec: string): string =>
+    git(
+      upstream.gitDirectory,
+      ["rev-parse", "--verify", "--quiet", spec],
+      true
+    ).trim();
+  if (!(tagRef && revision(tagRef))) {
+    return null;
+  }
+  const commit = revision(`${tagRef}^{commit}`);
+  if (!commit) {
+    return { failure: `tag ${tag} does not point to a commit` };
+  }
+  const onFirstParent = git(
+    upstream.gitDirectory,
+    ["rev-list", "--first-parent", ref],
+    true
+  )
+    .split("\n")
+    .includes(commit);
+  if (!onFirstParent) {
+    return {
+      failure: `tag ${tag} (${shortSha(commit)}) is not on the first-parent history of the searched branch`,
+    };
+  }
+  const tree = git(
+    upstream.gitDirectory,
+    ["rev-parse", "--verify", "--quiet", `${commit}:${UPSTREAM_SKILL_PATH}`],
+    true
+  ).trim();
+  if (!(tree && matches(commit, tree))) {
+    return {
+      failure: `the packaged tree at tag ${tag} (${shortSha(commit)}) is not byte-identical to the installed source`,
+    };
+  }
+  return {
+    commit,
+    reason: `byte-identical tree at tag ${tag} (${shortSha(commit)})`,
+  };
+};
+
 /**
  * Find the upstream commit whose packaged skill is byte-identical to the
- * installed source. Search the fetched default branch for the release entry,
- * then prove tree equality against the entry and every commit after it before
- * the next release entry, preferring the branch's own first-parent history so
- * the pin stays reachable from it; a provenance pin is never bumped to a guess.
+ * installed source. Try the release tag first; otherwise search the fetched
+ * default branch for the release entry, then prove tree equality against the
+ * entry and every commit after it before the next release entry, preferring
+ * the branch's own first-parent history so the pin stays reachable from it; a
+ * provenance pin is never bumped to a guess.
  */
 const locateSourceCommit = (
   upstream: UpstreamHandle,
@@ -937,6 +1080,7 @@ const locateSourceCommit = (
       upstream.gitDirectory,
       "fetch",
       "--quiet",
+      "--no-tags",
       "--depth",
       String(UPSTREAM_FETCH_DEPTH),
       url,
@@ -952,6 +1096,41 @@ const locateSourceCommit = (
   }
   const ref =
     upstream.kind === "cache" ? `refs/remotes/upstream/${branch}` : branch;
+  const { matches, refused } = matchesInstalledTree(upstream, source);
+  const tagged = verifyReleaseTag(upstream, url, ref, version, matches);
+  if (tagged && "commit" in tagged) {
+    return { commit: tagged.commit, reason: tagged.reason, verified: true };
+  }
+  const searched = searchSourceCommit(upstream, {
+    branch,
+    matches,
+    ref,
+    refused,
+    version,
+  });
+  return tagged
+    ? {
+        ...searched,
+        reason: `${searched.reason} (${tagged.failure}, so the release history was searched instead)`,
+      }
+    : searched;
+};
+
+/**
+ * Search the branch for the release entry and its window, as described on
+ * locateSourceCommit.
+ */
+const searchSourceCommit = (
+  upstream: UpstreamHandle,
+  search: {
+    branch: string;
+    matches: (commit: string, tree: string) => boolean;
+    ref: string;
+    refused: string[];
+    version: string;
+  }
+): { commit: string | null; verified: boolean; reason: string } => {
+  const { branch, matches, ref, refused, version } = search;
   const entries = git(
     upstream.gitDirectory,
     [
@@ -973,7 +1152,6 @@ const locateSourceCommit = (
       verified: false,
     };
   }
-  const { matches, refused } = matchesInstalledTree(upstream, source);
   const at = (commit: string, entry: string): string =>
     commit === entry
       ? `the ${version} release entry ${shortSha(entry)}`
@@ -2029,9 +2207,10 @@ export const planForkUpdate = (options: {
   const pinnedGuidance = GUIDANCE_PATTERN.exec(
     treeFile(upstream, fork.pin, "scripts/lib/guidance-updates.ts") ?? ""
   )?.[1];
-  const pinnedVersion = CHANGELOG_VERSION_PATTERN.exec(
-    treeFile(upstream, fork.pin, "CHANGELOG.md") ?? ""
-  )?.[1];
+  const pinnedVersion = releaseVersionOf(
+    treeFile(upstream, fork.pin, "SKILL.md"),
+    treeFile(upstream, fork.pin, "CHANGELOG.md")
+  );
 
   const classified = classifyForkFiles(fork, upstream, installed);
   const { entries, plannedContent } = classified;

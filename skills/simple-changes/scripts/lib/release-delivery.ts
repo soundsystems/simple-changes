@@ -56,6 +56,9 @@ const verifiedChangelogReceipt = (input: unknown): VerifiedChangelogReceipt => {
       "the verified receipt must name the reconciliation head and finalized target revisions"
     );
   }
+  // Checked above: a verified release record and a complete lineage. The
+  // cast only restates them, since the spread cannot keep the receipt
+  // version and its release shape correlated.
   return {
     ...receipt,
     release: receipt.release,
@@ -64,7 +67,7 @@ const verifiedChangelogReceipt = (input: unknown): VerifiedChangelogReceipt => {
       inputTargetRevision,
       reconciliationHeadRevision,
     },
-  };
+  } as VerifiedChangelogReceipt;
 };
 
 const releaseTrainFor = (

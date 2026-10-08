@@ -68,7 +68,9 @@ file the plan cannot carry. Rename the file, then plan again.
 The plan also moves the old provenance sha where the fork's own files outside
 the runtime name it, as the exact string; nothing is inferred.
 It never rewrites a version literal, `CURRENT_GUIDANCE_VERSION = <old>` or
-`Simple Changes <old version>`: whether a line states the fork's current
+`Simple Changes <old version>` (the old version is the pinned tree's
+`SKILL.md` `metadata.version`, or its `CHANGELOG.md` top release when it
+states none): whether a line states the fork's current
 version, a minimum, or a past release is a maintainer's call. Instead, every
 fork-owned line that names one becomes a `review` item giving the line, its
 text, and a suggested replacement; change by hand each one that states the
@@ -169,6 +171,21 @@ since review fixes often land after the release-prep commit. It prefers a
 commit on the default branch's first-parent history, such as the merge that
 brought the release in, over one only on a merged side branch. When no commit
 in that range matches, the pin stays and the plan says why.
+
+Before that search, the planner tries the release tag `v<version>` (the
+version the installed `SKILL.md` states in frontmatter `metadata.version`,
+or, for a release before 0.27.0 that states none, the top release of its
+`CHANGELOG.md`) as a shortcut. With
+`--upstream`, it reads the checkout's own tag and never fetches into it;
+otherwise it fetches only that tag into the cache's private
+`refs/upstream-tags/` namespace at the branch fetch's depth, and both cache
+fetches pass `--no-tags`, so the cache never collects other tags. The tag's
+name proves nothing: its commit must be on the searched branch's first-parent
+history and its packaged tree must pass the same byte-identity proof, and the
+reason then reads `byte-identical tree at tag v<version> (<commit>)`. A
+missing or unfetchable tag falls back to the search silently; a tag that fails
+either check falls back too, and the reason says why it did not verify. The
+pin still moves only to a verified commit.
 
 ## Guidance versions
 

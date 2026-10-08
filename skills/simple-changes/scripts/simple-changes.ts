@@ -128,6 +128,7 @@ import {
 } from "./lib/release-gate.ts";
 import type { ReleaseNotes } from "./lib/release-notes.ts";
 import { extractReleaseNotes } from "./lib/release-notes.ts";
+import { runReleaseTag } from "./lib/release-tag.ts";
 import { renderInventory, renderPlan } from "./lib/report.ts";
 import {
   discoverInstructionTargets,
@@ -171,6 +172,7 @@ import type {
   ChangelogRequest,
   InitializationMode,
   LoopLease,
+  ReleaseTagReceipt,
   RepoPolicy,
   RequestMode,
   SchemaName,
@@ -198,7 +200,7 @@ import {
   standaloneWorktreeCleanup,
 } from "./lib/worktree-maintenance.ts";
 
-const VERSION = "0.25.2";
+const VERSION = "0.27.0";
 const SCRIPT_FILE = fileURLToPath(import.meta.url);
 const PLAIN_SHELL_WORD_PATTERN = /^[\w./-]+$/u;
 const PACKAGE_ROOT = resolve(dirname(SCRIPT_FILE), "..");
@@ -374,6 +376,10 @@ Usage:
     [--version-authorized] [--json]
   simple-changes release-delivery --changelog-receipt FILE --provider-receipt FILE
     [--request FILE] [--json]
+  simple-changes release-tag --run-id ID --agent-id ID --request FILE
+    --receipt FILE [--prior-receipt FILE] --production ask|allow|deny
+    [--production-authorized] [--already-live] [--tag-automation-authorized]
+    [--dry-run] [--json] [--repo PATH]
   simple-changes proposal-signatures --agent NAME --role authored|reviewed|merged
     [--base REF --head REF] [--changelog-receipt FILE] [--json] [--repo PATH]
   simple-changes proposal audit --file FILE [--template FILE] [--json]
@@ -469,6 +475,7 @@ interface CliOptions {
   staleLease: boolean;
   statePath?: string;
   statusDigest?: string;
+  tagAutomationAuthorized: boolean;
   targetRef?: string;
   templatePath?: string;
   uiArtifacts: boolean;
@@ -566,6 +573,7 @@ const BOOLEAN_OPTIONS = new Set([
   "--ready",
   "--release",
   "--stale-lease",
+  "--tag-automation-authorized",
   "--ui-artifacts",
   "--write",
   "--yes",
@@ -1149,6 +1157,8 @@ const applyBooleanOption = (options: CliOptions, option: string): void => {
     options.dryRun = true;
   } else if (option === "--stale-lease") {
     options.staleLease = true;
+  } else if (option === "--tag-automation-authorized") {
+    options.tagAutomationAuthorized = true;
   } else if (option === "--ready") {
     options.ready = true;
   } else if (option === "--release") {
@@ -1183,6 +1193,7 @@ const parseOptions = (args: string[]): CliOptions => {
     repoProvided: false,
     settleMs: 0,
     staleLease: false,
+    tagAutomationAuthorized: false,
     uiArtifacts: false,
     versionAuthorized: false,
     write: false,
@@ -2229,6 +2240,57 @@ const runReleaseGate = (options: CliOptions): void => {
     options.json,
     `Release gate: ${decision.action}${decision.selectedVersion ? ` (version ${decision.selectedVersion})` : ""}. ${decision.reason}\n`
   );
+};
+
+const RELEASE_TAG_SUMMARIES: Record<ReleaseTagReceipt["status"], string> = {
+  "already-present": "is already published",
+  blocked: "is blocked",
+  created: "was created and pushed",
+  "not-applicable": "does not apply",
+  ready: "is ready",
+};
+
+const renderReleaseTag = (receipt: ReleaseTagReceipt): string => {
+  const lines = [
+    `Release tag ${receipt.name ?? `for ${receipt.releaseTrain}`} ${RELEASE_TAG_SUMMARIES[receipt.status]}${receipt.reasonCode ? ` (${receipt.reasonCode}; ${receipt.requiredAction})` : ""}.`,
+  ];
+  if (receipt.reason) {
+    lines.push(receipt.reason);
+  }
+  if (receipt.manualCommands.length > 0) {
+    lines.push("To publish it yourself:", ...receipt.manualCommands);
+  }
+  if (receipt.ciConfigurationFiles.length > 0) {
+    lines.push(
+      `CI configuration at the target (a reminder; review what a tag push starts): ${receipt.ciConfigurationFiles.join(", ")}`
+    );
+  }
+  return `${lines.join("\n")}\n`;
+};
+
+// Exit 0 for ready, created, already-present, and not-applicable; a blocked
+// tag exits 5 so the deployment it gates cannot proceed by accident.
+const runReleaseTagCommand = async (options: CliOptions): Promise<number> => {
+  const receipt = await runReleaseTag({
+    agentId: requireCliOption(options.agentId, "--agent-id"),
+    alreadyLive: options.alreadyLive,
+    dryRun: options.dryRun,
+    ...(options.priorReceiptPath === undefined
+      ? {}
+      : { priorReceipt: readJsonFile(options.priorReceiptPath) }),
+    productionAuthorized: options.productionAuthorized,
+    productionDeploy: requireCliOption(
+      options.productionDeploy,
+      "--production"
+    ) as RepoPolicy["productionDeploy"],
+    receipt: readJsonFile(requireCliOption(options.receiptPath, "--receipt")),
+    repositoryPath: options.repo,
+    request: readJsonFile(requireCliOption(options.requestPath, "--request")),
+    runId: requireCliOption(options.runId, "--run-id"),
+    tagAutomationAuthorized: options.tagAutomationAuthorized,
+  });
+  writeOutput(receipt, options.json, renderReleaseTag(receipt));
+  return receipt.status === "blocked" ? EXIT_CODES.unsafe : EXIT_CODES.success;
 };
 
 const runProposalSignatures = (options: CliOptions): void => {
@@ -3928,6 +3990,8 @@ const executeCommand = async (
     case "release-delivery":
       runReleaseDelivery(options);
       return EXIT_CODES.success;
+    case "release-tag":
+      return runReleaseTagCommand(options);
     case "proposal-signatures":
       runProposalSignatures(options);
       return EXIT_CODES.success;

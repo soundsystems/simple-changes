@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { spawnSync } from "bun";
 import {
   changelogReceiptDigest,
   createChangelogRequest,
@@ -12,7 +13,11 @@ import {
 import type {
   ChangelogReceiptV2,
   ChangelogReceiptV3,
+  ChangelogReceiptV4,
   ChangelogRequest,
+  ReleaseTag,
+  VersionDecision,
+  VersionDecisionV3,
   VersionLine,
 } from "../../../skills/simple-changes/scripts/lib/types.ts";
 import { compareStableVersions } from "../../../skills/simple-changes/scripts/lib/version-line.ts";
@@ -224,7 +229,7 @@ describe("changelog protocol negotiation", () => {
         guidanceVersion: 1,
         provider: "simple-changelogs",
         receiptVersions: [1],
-        requestVersions: [3],
+        requestVersions: [4],
         schemaDigests: consumer.schemaDigests,
         schemaVersion: 1,
       })
@@ -803,8 +808,8 @@ describe("shared version lines (request v2, receipt v3)", () => {
   test("negotiates request v2 and receipt v3 and ignores unknown features", () => {
     const consumer = packagedChangelogProtocol();
     expect(consumer).toMatchObject({
-      receiptVersions: [1, 2, 3],
-      requestVersions: [1, 2],
+      receiptVersions: [1, 2, 3, 4],
+      requestVersions: [1, 2, 3],
     });
     expect(
       negotiateChangelogProtocol({
@@ -814,10 +819,10 @@ describe("shared version lines (request v2, receipt v3)", () => {
           "a-later-feature",
           "multi-train-receipts",
         ],
-        guidanceVersion: 30,
+        guidanceVersion: 24,
         provider: "simple-changelogs",
-        receiptVersions: [1, 2, 3, 4],
-        requestVersions: [1, 2, 3],
+        receiptVersions: [1, 2, 3, 5],
+        requestVersions: [1, 2, 9],
         schemaDigests: consumer.schemaDigests,
         schemaVersion: 1,
       })
@@ -1349,5 +1354,418 @@ describe("shared version lines (request v2, receipt v3)", () => {
       action: "merge-reconciliation",
       selectedVersion: "0.10.0",
     });
+  });
+});
+
+describe("release tags (request v3, receipt v4)", () => {
+  const TAG = { message: "Acme Web 0.10.0", name: "v0.10.0" };
+
+  const requestV3 = (
+    phase: ChangelogRequest["phase"] = "prepare",
+    overrides: Partial<ChangelogRequest> = {}
+  ): ChangelogRequest => ({
+    ...request(phase),
+    releaseSetTrains: null,
+    schemaVersion: 3,
+    supportedReceiptVersions: [1, 2, 3, 4],
+    ...overrides,
+  });
+
+  const receiptV4 = (
+    status: ChangelogReceiptV2["status"] = "prepared",
+    tag: ReleaseTag | null = TAG,
+    version = "0.10.0"
+  ): ChangelogReceiptV4 => {
+    const base = receipt(status);
+    const decision = base.versionDecision;
+    return {
+      ...base,
+      release: base.release ? { ...base.release, tag, version } : null,
+      releaseSetTrains: null,
+      schemaVersion: 4,
+      versionDecision: decision
+        ? {
+            ...decision,
+            selectedVersion: decision.selectedVersion ? version : null,
+            suggestedVersion: version,
+            versionLine: null,
+          }
+        : null,
+    };
+  };
+
+  const withVersion = (version: string) =>
+    requestV3("prepare", { approvedVersion: version });
+
+  const producer = (
+    requestVersions: number[],
+    receiptVersions: number[]
+  ): unknown => ({
+    distribution: "full",
+    features: [],
+    guidanceVersion: 25,
+    provider: "simple-changelogs",
+    receiptVersions,
+    requestVersions,
+    schemaVersion: 1,
+  });
+
+  test("negotiates every row of the version table, capped by the request", () => {
+    const negotiated = (
+      requestVersions: number[],
+      receiptVersions: number[],
+      consumer = packagedChangelogProtocol()
+    ) => {
+      const result = negotiateChangelogProtocol(
+        producer(requestVersions, receiptVersions),
+        consumer
+      );
+      return [result.requestVersion, result.receiptVersion];
+    };
+    // Simple Changes 0.27.0 against each Simple Changelogs 0.25.0 peer, then
+    // against Simple Changelogs 0.1.0 and its forks at guidance 24.
+    expect(negotiated([1, 2, 3], [1, 2, 3, 4])).toEqual([3, 4]);
+    expect(negotiated([1, 3], [1, 2, 4])).toEqual([3, 4]);
+    expect(negotiated([1], [2])).toEqual([1, 2]);
+    expect(negotiated([1, 2], [1, 2, 3])).toEqual([2, 3]);
+    expect(negotiated([1], [1, 2])).toEqual([1, 2]);
+    // An older controller negotiates exactly as it does today.
+    const older = {
+      ...packagedChangelogProtocol(),
+      receiptVersions: [1, 2, 3] as Array<1 | 2 | 3 | 4>,
+      requestVersions: [1, 2] as Array<1 | 2 | 3>,
+    };
+    expect(negotiated([1, 2, 3], [1, 2, 3, 4], older)).toEqual([2, 3]);
+    expect(negotiated([1, 3], [1, 2, 4], older)).toEqual([1, 2]);
+    // The cap: a request never pairs with a receipt it may not advertise.
+    expect(negotiated([1], [1, 2, 3, 4])).toEqual([1, 2]);
+    expect(negotiated([2], [1, 2, 3, 4])).toEqual([2, 3]);
+    expect(negotiated([1, 2, 3], [1, 2, 3])).toEqual([3, 3]);
+    expect(negotiated([3], [1, 2])).toEqual([3, 2]);
+  });
+
+  test("lets only request v3 advertise receipt v4", () => {
+    expect(createChangelogRequest(requestV3()).schemaVersion).toBe(3);
+    expect(() =>
+      createChangelogRequest({
+        ...requestV3(),
+        schemaVersion: 2,
+      })
+    ).toThrow("Invalid changelog-request");
+    expect(() =>
+      createChangelogRequest({
+        ...request("prepare"),
+        supportedReceiptVersions: [1, 2, 4],
+      })
+    ).toThrow("Invalid changelog-request");
+    expect(
+      validateChangelogTransaction(requestV3(), receiptV4())
+    ).toMatchObject({ release: { tag: TAG }, schemaVersion: 4 });
+    expect(() =>
+      validateChangelogTransaction(
+        requestV3("prepare", { supportedReceiptVersions: [1, 2, 3] }),
+        receiptV4()
+      )
+    ).toThrow("did not advertise receipt v4");
+    // Request v3 still accepts every earlier receipt.
+    expect(
+      validateChangelogTransaction(requestV3(), receipt("prepared"))
+    ).toMatchObject({ schemaVersion: 2 });
+  });
+
+  test("requires the release tag field and allows a null tag", () => {
+    const tagged = receiptV4();
+    const { tag: _tag, ...untaggedRelease } = tagged.release ?? {};
+    const missing = { ...tagged, release: untaggedRelease };
+    expect(() => validateChangelogTransaction(requestV3(), missing)).toThrow(
+      "Invalid changelog-receipt"
+    );
+    expect(
+      validateChangelogTransaction(requestV3(), receiptV4("prepared", null))
+    ).toMatchObject({ release: { tag: null } });
+  });
+
+  test("binds the tag name to the version", () => {
+    const accepted: [string, string][] = [
+      ["v1.2.0", "1.2.0"],
+      ["1.2.0", "1.2.0"],
+      ["@acme/sdk@1.2.0", "1.2.0"],
+      ["release-2026-10-07", "2026-10-07"],
+      ["v1!2.0", "1!2.0"],
+      ["v2.0.0-rc.1", "2.0.0-rc.1"],
+    ];
+    for (const [name, version] of accepted) {
+      expect(
+        validateChangelogTransaction(
+          withVersion(version),
+          receiptV4("prepared", { message: `Acme ${version}`, name }, version)
+        )
+      ).toMatchObject({ release: { tag: { name } } });
+    }
+    for (const name of ["v11.2.0", "v1.2.0-45", "1.1.2.0", "v1.2.1"]) {
+      expect(() =>
+        validateChangelogTransaction(
+          withVersion("1.2.0"),
+          receiptV4("prepared", { message: "Acme 1.2.0", name }, "1.2.0")
+        )
+      ).toThrow("must be 1.2.0 or end with it");
+    }
+  });
+
+  test("refuses every ref-name failure class, as Git does", () => {
+    const structural: [string, string][] = [
+      ["a..b/1.2.0", "1.2.0"],
+      ["a@{b/1.2.0", "1.2.0"],
+      ["a//1.2.0", "1.2.0"],
+      [".hidden/1.2.0", "1.2.0"],
+      ["release.lock/1.2.0", "1.2.0"],
+      ["/v1.2.0", "1.2.0"],
+      ["v1.2.0/", "1.2.0/"],
+      ["v1.2.0.", "1.2.0."],
+    ];
+    for (const [name, version] of structural) {
+      const gitCheck = spawnSync([
+        "git",
+        "check-ref-format",
+        `refs/tags/${name}`,
+      ]);
+      expect({ git: gitCheck.exitCode !== 0, name }).toEqual({
+        git: true,
+        name,
+      });
+      expect(() =>
+        validateChangelogTransaction(
+          withVersion(version),
+          receiptV4("prepared", { message: "Acme", name }, version)
+        )
+      ).toThrow(`Release tag ${name} must not`);
+    }
+    // Git allows a leading dash under refs/tags/, but a name must never read
+    // as an option.
+    expect(() =>
+      validateChangelogTransaction(
+        withVersion("1.2.0"),
+        receiptV4("prepared", { message: "Acme", name: "-1.2.0" }, "1.2.0")
+      )
+    ).toThrow("must not start with -");
+    for (const name of [
+      "v 1.2.0",
+      "v~1.2.0",
+      "v^1.2.0",
+      "v:1.2.0",
+      "v?1.2.0",
+      "v*1.2.0",
+      "v[1.2.0",
+      "v\\1.2.0",
+      "v\u007f1.2.0",
+      "v\t1.2.0",
+    ]) {
+      expect(() =>
+        validateChangelogTransaction(
+          withVersion("1.2.0"),
+          receiptV4("prepared", { message: "Acme", name }, "1.2.0")
+        )
+      ).toThrow("Invalid changelog-receipt");
+    }
+    for (const message of ["Two\nlines", "", "x".repeat(201), "Tab\there"]) {
+      expect(() =>
+        validateChangelogTransaction(
+          requestV3(),
+          receiptV4("prepared", { message, name: "v0.10.0" })
+        )
+      ).toThrow("Invalid changelog-receipt");
+    }
+  });
+
+  test("keeps the tag unchanged from prepare to verify", () => {
+    const prior = receiptV4("prepared");
+    const verify = requestV3("verify", {
+      priorReceiptDigest: changelogReceiptDigest(prior),
+    });
+    expect(
+      inspectChangelogTransaction(verify, receiptV4("verified"), prior).receipt
+    ).toMatchObject({ release: { tag: TAG } });
+    for (const tag of [
+      null,
+      { ...TAG, name: "release-0.10.0" },
+      { ...TAG, message: "Another message" },
+    ]) {
+      expect(() =>
+        inspectChangelogTransaction(verify, receiptV4("verified", tag), prior)
+      ).toThrow("The release tag changed after prepare");
+    }
+    // A receipt v3 after a tagged v4 prior drops the tag.
+    const verifiedV3: ChangelogReceiptV3 = {
+      ...receipt("verified"),
+      releaseSetTrains: null,
+      schemaVersion: 3,
+      versionDecision: {
+        ...(receipt("verified").versionDecision as VersionDecision),
+        versionLine: null,
+      },
+    };
+    expect(() =>
+      inspectChangelogTransaction(verify, verifiedV3, prior)
+    ).toThrow("The release tag changed after prepare");
+    // A tag cannot appear after an untagged prepare either.
+    const untagged = receiptV4("prepared", null);
+    const afterUntagged = requestV3("verify", {
+      priorReceiptDigest: changelogReceiptDigest(untagged),
+    });
+    expect(() =>
+      inspectChangelogTransaction(
+        afterUntagged,
+        receiptV4("verified"),
+        untagged
+      )
+    ).toThrow("The release tag changed after prepare");
+    // A blocked receipt without a release record keeps its routing.
+    const blockedReceipt = receiptV4("blocked");
+    blockedReceipt.phase = "verify";
+    blockedReceipt.sourceRevision = revisionC;
+    blockedReceipt.paths = [];
+    blockedReceipt.revisionLineage = {
+      finalizedTargetRevision: revisionC,
+      inputTargetRevision: revisionA,
+      reconciliationHeadRevision: revisionB,
+    };
+    blockedReceipt.reasonCode = "final-verification-failed";
+    blockedReceipt.requiredAction = "review-finalization";
+    blockedReceipt.reason = "The finalized target lacks the release.";
+    blockedReceipt.versionDecision = {
+      ...(blockedReceipt.versionDecision as VersionDecisionV3),
+      resolution: "blocked",
+      selectedVersion: "0.10.0",
+    };
+    expect(
+      inspectChangelogTransaction(verify, blockedReceipt, prior).receipt
+    ).toMatchObject({ status: "blocked" });
+  });
+
+  test("gates a v4 receipt exactly like v3", () => {
+    expect(
+      decideReleaseGate({
+        alreadyLive: false,
+        productionAuthorized: true,
+        productionDeploy: "allow",
+        receipt: receiptV4(),
+        request: requestV3(),
+        versionAuthorized: false,
+      })
+    ).toMatchObject({ action: "merge-reconciliation" });
+  });
+
+  test("checks mixed v3 and v4 release sets and refuses one tag for two trains", () => {
+    const member = (
+      train: string,
+      schemaVersion: 3 | 4,
+      tag: ReleaseTag | null
+    ): ChangelogReceiptV3 | ChangelogReceiptV4 => {
+      const base = receiptV4("prepared", tag);
+      const decision = base.versionDecision as VersionDecisionV3;
+      const shared = {
+        ...base,
+        releaseSetId: "set-1",
+        releaseSetTrains: ["ios", "web"],
+        transactionId: `release-${train}`,
+        versionDecision: { ...decision, releaseTrain: train },
+      };
+      if (schemaVersion === 4) {
+        return shared;
+      }
+      const { release, ...rest } = shared;
+      return {
+        ...rest,
+        release: release
+          ? {
+              date: release.date,
+              targetContainedUnreleased: release.targetContainedUnreleased,
+              version: release.version,
+            }
+          : null,
+        schemaVersion: 3,
+      };
+    };
+    expect(
+      validateChangelogReleaseSet([
+        member("web", 4, { message: "Web 0.10.0", name: "web@0.10.0" }),
+        member("ios", 3, null),
+      ])
+    ).toMatchObject({ missingTrains: [], receipts: 2 });
+    expect(
+      validateChangelogReleaseSet([
+        member("web", 4, { message: "Web 0.10.0", name: "web@0.10.0" }),
+        member("ios", 4, { message: "iOS 0.10.0", name: "ios@0.10.0" }),
+      ])
+    ).toMatchObject({ receipts: 2 });
+    expect(() =>
+      validateChangelogReleaseSet([
+        member("web", 4, TAG),
+        member("ios", 4, { ...TAG, message: "iOS 0.10.0" }),
+      ])
+    ).toThrow("Release tag v0.10.0 is named by both web and ios");
+    expect(() =>
+      validateChangelogReleaseSet([receipt("prepared"), member("ios", 4, null)])
+    ).toThrow("needs receipt v3 or v4");
+  });
+
+  test("applies the version-line checks and digest binding to v4", () => {
+    const lined = (sharedVersion: string): ChangelogReceiptV4 => {
+      const base = receiptV4("prepared", TAG, "0.10.0");
+      return {
+        ...base,
+        versionDecision: {
+          ...(base.versionDecision as VersionDecisionV3),
+          currentVersion: "0.9.0",
+          versionLine: {
+            members: ["ios", "web"],
+            memberVersions: { ios: sharedVersion, web: "0.9.0" },
+            mode: "catch-up",
+            outcome: "catch-up",
+            sharedVersion,
+            sharedVersionTrains: ["ios"],
+          },
+        },
+      };
+    };
+    expect(
+      validateChangelogTransaction(requestV3(), lined("0.10.0"))
+    ).toMatchObject({ schemaVersion: 4 });
+    const mismatched = lined("0.10.0");
+    if (mismatched.versionDecision?.versionLine) {
+      mismatched.versionDecision.versionLine.sharedVersion = "0.11.0";
+    }
+    expect(() => validateChangelogTransaction(requestV3(), mismatched)).toThrow(
+      "sharedVersion must be the highest"
+    );
+    const prior = lined("0.10.0");
+    prior.status = "decision-required";
+    prior.phase = "classify";
+    prior.paths = [];
+    prior.release = null;
+    prior.reasonCode = "version-direction-required";
+    prior.requiredAction = "choose-version";
+    prior.reason = "Choose.";
+    prior.sourceRevision = revisionA;
+    prior.revisionLineage = {
+      finalizedTargetRevision: null,
+      inputTargetRevision: revisionA,
+      reconciliationHeadRevision: null,
+    };
+    if (prior.versionDecision) {
+      prior.versionDecision.policyAction = "ask";
+      prior.versionDecision.resolution = "approval-required";
+      prior.versionDecision.selectedVersion = null;
+    }
+    const prepare = requestV3("prepare", {
+      priorReceiptDigest: changelogReceiptDigest(prior),
+    });
+    const moved = lined("0.10.0");
+    if (moved.versionDecision?.versionLine) {
+      moved.versionDecision.versionLine.memberVersions.web = "0.9.1";
+    }
+    expect(() => inspectChangelogTransaction(prepare, moved, prior)).toThrow(
+      "the digest must cover the line state"
+    );
   });
 });

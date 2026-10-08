@@ -67,6 +67,37 @@ describe("changelog protocol CLI", () => {
     expect(result.exitCode).toBe(0);
     expect(JSON.parse(decoder.decode(result.stdout))).toMatchObject({
       compatible: true,
+      receiptVersion: 4,
+      requestVersion: 3,
+    });
+  });
+
+  test("negotiates an older Simple Changelogs fork exactly as before", () => {
+    const fixture = createTestRepository();
+    repositories.push(fixture);
+    // A full fork at guidance 24 (Simple Changelogs 0.1.0): no tag field.
+    writeFixture(
+      fixture.root,
+      "fork.json",
+      JSON.stringify({
+        distribution: "simple-changelogs",
+        features: ["public-version-policy", "classify-prepare-verify"],
+        guidanceVersion: 24,
+        provider: "simple-changelogs",
+        receiptVersions: [1, 2, 3],
+        requestVersions: [1, 2],
+        schemaVersion: 1,
+      })
+    );
+    const result = runCli(
+      fixture.root,
+      "negotiate-changelog",
+      "fork.json",
+      "--json"
+    );
+    expect(result.exitCode).toBe(0);
+    expect(JSON.parse(decoder.decode(result.stdout))).toMatchObject({
+      compatible: true,
       receiptVersion: 3,
       requestVersion: 2,
     });

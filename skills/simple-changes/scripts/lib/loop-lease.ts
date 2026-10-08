@@ -55,11 +55,12 @@ import {
 } from "./preserved-source-override.ts";
 import { primaryDeliveryProof } from "./primary-delivery-proof.ts";
 import {
+  assertCommandSucceeded,
   type CommandProcess,
   type CommandResult,
   GuardedProcessGroupStillAliveError,
-  runCommandInProcessGroup,
   runGit,
+  runInProcessGroup,
 } from "./process.ts";
 import {
   remoteBranchReconciliationDigest,
@@ -4227,41 +4228,147 @@ export const executeLoopMutation = async (
       );
     }
   }
-  const guarded = await withLoopMutationLease(
+  const guarded = await withGuardedLoopCommands(
     repositoryPath,
     runId,
     agentIdInput,
     "loop exec",
-    async (context) => {
-      const inventory = captureInventory(repositoryPath);
-      const checkout = inventory.repository.currentCheckout;
-      // The repository's guard runs last, after every lease check, and only
-      // restricts: a refusal leaves the child unstarted.
-      const guard = execGuardFor(inventory);
-      if (guard) {
-        context.markChildStarting();
-        await assertExecGuardAllows({
-          checkout,
-          command: commandInput,
-          guard,
-          onSpawn: context.registerProcess,
-          runId,
-        });
-      }
-      context.markChildStarting();
-      return runCommandInProcessGroup(
-        command,
-        args,
-        checkout,
-        context.registerProcess
-      );
-    }
+    async (runGuarded) =>
+      assertCommandSucceeded(command, args, await runGuarded(commandInput))
   );
   return {
     command: [command, ...args],
     result: guarded.result,
     verification: guarded.verification,
   };
+};
+
+export interface GuardedLoopCommandInput {
+  /** Extra environment for the command, on top of this process's own. */
+  environment?: Record<string, string>;
+  /** In-memory input for the command's stdin. */
+  stdin?: string;
+}
+
+/**
+ * Runs one command exactly as `loop exec` runs its child: the repository's
+ * `execGuard` sees the exact argv first, and the command runs in its own
+ * tracked process group from the current checkout. It resolves with the
+ * command's result whatever its exit code; a guard refusal, a command that
+ * cannot start, or a surviving process group rejects.
+ */
+export type GuardedLoopCommand = (
+  argv: readonly string[],
+  input?: GuardedLoopCommandInput
+) => Promise<CommandResult>;
+
+export interface GuardedLoopCommandOptions {
+  /** Refuse unless the agent owns the active controller lease. */
+  controllerOnly?: boolean;
+}
+
+/**
+ * Holds the controller's integration lock across one or more guarded
+ * commands. Lease and manifest verification run before the first command and
+ * after the last, exactly as for a single `loop exec`.
+ */
+export const withGuardedLoopCommands = <T>(
+  repositoryPath: string,
+  runId: string,
+  agentIdInput: string,
+  operationName: string,
+  operation: (
+    runGuarded: GuardedLoopCommand,
+    inventory: RepositoryInventory
+  ) => Promise<T>,
+  options: GuardedLoopCommandOptions = {}
+): Promise<LoopOperationResult<T>> =>
+  withLoopMutationLease(
+    repositoryPath,
+    runId,
+    agentIdInput,
+    operationName,
+    (context) => {
+      const inventory = captureInventory(repositoryPath);
+      if (options.controllerOnly) {
+        assertLeaseController(requireLease(inventory), runId, agentIdInput);
+      }
+      const checkout = inventory.repository.currentCheckout;
+      // The repository's guard runs last, after every lease check, and only
+      // restricts: a refusal leaves the command unstarted.
+      const guard = execGuardFor(inventory);
+      const runGuarded: GuardedLoopCommand = async (argv, input = {}) => {
+        const [command, ...args] = argv;
+        if (!command) {
+          throw new SimpleChangesError(
+            "A guarded command needs an executable.",
+            EXIT_CODES.usage
+          );
+        }
+        if (guard) {
+          context.markChildStarting();
+          await assertExecGuardAllows({
+            checkout,
+            command: argv,
+            guard,
+            onSpawn: context.registerProcess,
+            runId,
+          });
+        }
+        context.markChildStarting();
+        return runInProcessGroup(
+          command,
+          args,
+          checkout,
+          context.registerProcess,
+          {
+            environment: { ...input.environment, LC_ALL: "C" },
+            ...(input.stdin === undefined ? {} : { stdin: input.stdin }),
+            streamOutputToStderr: false,
+          }
+        );
+      };
+      return operation(runGuarded, inventory);
+    }
+  );
+
+// The active run's own controller: matching run, active (not relinquished),
+// and owned by this agent. Delegated authors never qualify.
+const assertLeaseController = (
+  lease: LoopLease,
+  runId: string,
+  agentIdInput: string
+): LoopLease => {
+  const agentId = requiredText(agentIdInput, "agent ID");
+  assertMatchingRun(lease, runId);
+  assertControllerActive(lease);
+  if (lease.ownerAgentId !== agentId) {
+    throw new SimpleChangesError(
+      `Only the controller of ${lease.runId} (${lease.ownerAgentId}) may run this step; ${agentId} may not.`,
+      EXIT_CODES.unsafe
+    );
+  }
+  return lease;
+};
+
+/**
+ * The active lease, when `agentId` controls run `runId`; read without the
+ * integration lock, for read-only steps that only need the controller's
+ * bindings.
+ */
+export const readControllerLease = (
+  repositoryPath: string,
+  runId: string,
+  agentId: string
+): LoopLease => {
+  const lease = readLoopLease(repositoryPath);
+  if (!lease) {
+    throw new SimpleChangesError(
+      "No active Simple Changes integration loop was found.",
+      EXIT_CODES.unsafe
+    );
+  }
+  return assertLeaseController(lease, runId, agentId);
 };
 
 export interface PreparedAgentWorktree {

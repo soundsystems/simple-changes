@@ -31,6 +31,7 @@ import {
   discover,
   type ForkPlan,
   inspectFork,
+  inspectSource,
   intentionalOmissions,
   openUpstream,
   type PlanEntry,
@@ -2709,5 +2710,307 @@ describe("update-local-forks", () => {
     expect(reference).toContain("--skill update-local-forks");
     expect(reference).toContain("never rewrites a version literal");
     expect(skill).toContain("change by hand");
+  });
+});
+
+describe("update-local-forks version identity", () => {
+  const withMetadataVersion = (skill: string, version: string): string =>
+    skill.replace(
+      "name: simple-changes\n",
+      `name: simple-changes\nmetadata:\n  version: "${version}"\n`
+    );
+
+  test("reads the installed version from SKILL.md metadata.version first", () => {
+    const fixture = createFixture();
+    const skillPath = join(fixture.source, "SKILL.md");
+    // Without the field, the packaged changelog's top release is the version.
+    expect(inspectSource(fixture.source)?.version).toBe("0.2.0");
+    writeFileSync(
+      skillPath,
+      withMetadataVersion(readFileSync(skillPath, "utf8"), "0.3.0")
+    );
+    expect(inspectSource(fixture.source)?.version).toBe("0.3.0");
+    // No YAML parser is needed to read it.
+    const runtime = (globalThis as unknown as { Bun: { YAML?: unknown } }).Bun;
+    const parser = runtime.YAML;
+    try {
+      runtime.YAML = undefined;
+      expect(inspectSource(fixture.source)?.version).toBe("0.3.0");
+    } finally {
+      runtime.YAML = parser;
+    }
+    // Only the metadata mapping's own entry counts, not a nested one.
+    writeFileSync(
+      skillPath,
+      readFileSync(
+        join(fixture.upstream, "skills/simple-changes/SKILL.md"),
+        "utf8"
+      ).replace(
+        "name: simple-changes\n",
+        'name: simple-changes\nmetadata:\n  release:\n    version: "9.9.9"\n'
+      )
+    );
+    expect(inspectSource(fixture.source)?.version).toBe("0.2.0");
+    // A field that is not a plain release version falls back too.
+    writeFileSync(
+      skillPath,
+      withMetadataVersion(
+        readFileSync(
+          join(fixture.upstream, "skills/simple-changes/SKILL.md"),
+          "utf8"
+        ),
+        "next"
+      )
+    );
+    expect(inspectSource(fixture.source)?.version).toBe("0.2.0");
+  });
+
+  test("plans a source that states metadata.version exactly as one that does not", () => {
+    const fixture = createFixture();
+    const released = commitPackage(
+      fixture.upstream,
+      "chore(release): Publish Simple Changes 0.3.0",
+      {
+        "CHANGELOG.md": changelogThrough("0.3.0", "0.2.0", "0.1.0"),
+        "SKILL.md": withMetadataVersion(
+          readFileSync(
+            join(fixture.upstream, "skills/simple-changes/SKILL.md"),
+            "utf8"
+          ),
+          "0.3.0"
+        ),
+      }
+    );
+    const plan = planForkUpdate({
+      fork: fixture.fork,
+      source: installSnapshot(fixture, "with-metadata"),
+      upstream: fixture.upstream,
+    });
+    expect(plan.source).toMatchObject({
+      commit: released,
+      commitVerified: true,
+      version: "0.3.0",
+    });
+  });
+
+  // The fork's notes name the pinned release, so the plan lists that literal
+  // only when it knows the pinned version.
+  const notesReason = (plan: ForkPlan): string | undefined =>
+    plan.entries.find((entry) => entry.forkPath === "notes.md")?.reason;
+
+  test("an old pin without metadata.version reads its changelog", () => {
+    const fixture = createFixture();
+    const plan = planForkUpdate({
+      fork: fixture.fork,
+      source: fixture.source,
+      upstream: fixture.upstream,
+    });
+    expect(notesReason(plan)).toContain(
+      "`Bundled Simple Changes 0.1.0.` -> `Bundled Simple Changes 0.2.0.`"
+    );
+  });
+
+  test("a new pin reads metadata.version before its changelog", () => {
+    const fixture = createFixture();
+    // A pin whose SKILL.md states 0.1.0 while its changelog's top heading
+    // says otherwise: only metadata.version names the fork's 0.1.0 literal.
+    git(fixture.upstream, [
+      "checkout",
+      "-q",
+      "-b",
+      "metadata-pin",
+      fixture.pin,
+    ]);
+    const pinned = commitPackage(fixture.upstream, "chore: State the version", {
+      "CHANGELOG.md": changelogThrough("0.0.9"),
+      "SKILL.md": withMetadataVersion(
+        readFileSync(
+          join(fixture.upstream, "skills/simple-changes/SKILL.md"),
+          "utf8"
+        ),
+        "0.1.0"
+      ),
+    });
+    git(fixture.upstream, ["checkout", "-q", "main"]);
+    for (const path of ["SKILL.md", "scripts/test.sh"]) {
+      const location = join(fixture.fork, path);
+      writeFileSync(
+        location,
+        readFileSync(location, "utf8").replaceAll(fixture.pin, pinned)
+      );
+    }
+    const plan = planForkUpdate({
+      fork: fixture.fork,
+      source: fixture.source,
+      upstream: fixture.upstream,
+    });
+    expect(plan.pinUpdate.from).toBe(pinned);
+    expect(notesReason(plan)).toContain(
+      "`Bundled Simple Changes 0.1.0.` -> `Bundled Simple Changes 0.2.0.`"
+    );
+  });
+});
+
+describe("update-local-forks release-tag shortcut", () => {
+  test("pins the tagged commit when its tree is byte-identical", () => {
+    const fixture = createFixture();
+    const { merge, released } = releaseThroughSideBranch(fixture);
+    git(fixture.upstream, [
+      "tag",
+      "-a",
+      "v0.3.0",
+      "-m",
+      "Simple Changes 0.3.0",
+      merge,
+    ]);
+    const plan = planForkUpdate({
+      fork: fixture.fork,
+      source: released,
+      upstream: fixture.upstream,
+    });
+    expect(plan.source).toMatchObject({ commit: merge, commitVerified: true });
+    expect(plan.pinUpdate).toEqual({
+      from: fixture.pin,
+      reason: `byte-identical tree at tag v0.3.0 (${merge.slice(0, 12)})`,
+      to: merge,
+    });
+  });
+
+  test("accepts a lightweight tag only on the same proof", () => {
+    const fixture = createFixture();
+    const { merge, released } = releaseThroughSideBranch(fixture);
+    git(fixture.upstream, ["tag", "v0.3.0", merge]);
+    const plan = planForkUpdate({
+      fork: fixture.fork,
+      source: released,
+      upstream: fixture.upstream,
+    });
+    expect(plan.pinUpdate.reason).toBe(
+      `byte-identical tree at tag v0.3.0 (${merge.slice(0, 12)})`
+    );
+  });
+
+  test("falls back to the search when the tag names another tree", () => {
+    const fixture = createFixture();
+    const { entry, merge, released } = releaseThroughSideBranch(fixture);
+    // main's own commit before the merge is first-parent history but still
+    // carries the 0.2.0 tree.
+    const before = git(fixture.upstream, ["rev-parse", `${merge}^1`]);
+    git(fixture.upstream, ["tag", "-a", "v0.3.0", "-m", "Wrong tree", before]);
+    const plan = planForkUpdate({
+      fork: fixture.fork,
+      source: released,
+      upstream: fixture.upstream,
+    });
+    expect(plan.source).toMatchObject({ commit: merge, commitVerified: true });
+    expect(plan.pinUpdate.to).toBe(merge);
+    expect(plan.pinUpdate.reason).toBe(
+      `byte-identical tree at ${merge.slice(0, 12)}, after the 0.3.0 release entry ${entry.slice(0, 12)} on main (the packaged tree at tag v0.3.0 (${before.slice(0, 12)}) is not byte-identical to the installed source, so the release history was searched instead)`
+    );
+  });
+
+  test("falls back to the search when the tag is off the branch's first-parent history", () => {
+    const fixture = createFixture();
+    const { entry, merge, released, sideTip } =
+      releaseThroughSideBranch(fixture);
+    // The side-branch tip carries the released tree but only reaches main
+    // through the merge.
+    git(fixture.upstream, ["tag", "-a", "v0.3.0", "-m", "Side tip", sideTip]);
+    const plan = planForkUpdate({
+      fork: fixture.fork,
+      source: released,
+      upstream: fixture.upstream,
+    });
+    expect(plan.pinUpdate.to).toBe(merge);
+    expect(plan.pinUpdate.reason).toBe(
+      `byte-identical tree at ${merge.slice(0, 12)}, after the 0.3.0 release entry ${entry.slice(0, 12)} on main (tag v0.3.0 (${sideTip.slice(0, 12)}) is not on the first-parent history of the searched branch, so the release history was searched instead)`
+    );
+  });
+
+  test("says why a tag that names no commit was not used", () => {
+    const fixture = createFixture();
+    const { entry, merge, released } = releaseThroughSideBranch(fixture);
+    const tree = git(fixture.upstream, ["rev-parse", `${merge}^{tree}`]);
+    git(fixture.upstream, ["tag", "v0.3.0", tree]);
+    const plan = planForkUpdate({
+      fork: fixture.fork,
+      source: released,
+      upstream: fixture.upstream,
+    });
+    expect(plan.pinUpdate.to).toBe(merge);
+    expect(plan.pinUpdate.reason).toBe(
+      `byte-identical tree at ${merge.slice(0, 12)}, after the 0.3.0 release entry ${entry.slice(0, 12)} on main (tag v0.3.0 does not point to a commit, so the release history was searched instead)`
+    );
+  });
+
+  test("never pins an unverified tagged commit when the search finds nothing", () => {
+    const fixture = createFixture();
+    const { merge, released } = releaseThroughSideBranch(fixture);
+    git(fixture.upstream, ["tag", "-a", "v0.3.0", "-m", "Release", merge]);
+    writeFileSync(
+      join(released, "scripts/lib/core.ts"),
+      "export const core = 99;\n"
+    );
+    const plan = planForkUpdate({
+      fork: fixture.fork,
+      source: released,
+      upstream: fixture.upstream,
+    });
+    expect(plan.source.commitVerified).toBe(false);
+    expect(plan.pinUpdate.to).toBeNull();
+    expect(plan.pinUpdate.reason).toContain(
+      "the pin will not be bumped. (the packaged tree at tag v0.3.0"
+    );
+  });
+
+  test("fetches only the release tag into the cache, never other tags", () => {
+    const fixture = createFixture();
+    const { merge, released } = releaseThroughSideBranch(fixture);
+    git(fixture.upstream, ["tag", "-a", "v0.3.0", "-m", "Release", merge]);
+    git(fixture.upstream, [
+      "tag",
+      "-a",
+      "v0.2.0",
+      "-m",
+      "Older",
+      fixture.release,
+    ]);
+    git(fixture.upstream, ["tag", "unrelated", fixture.pin]);
+    const cache = join(fixture.base, "cache", "upstream.git");
+    const plan = planForkUpdate({
+      cache,
+      fork: fixture.fork,
+      source: released,
+      url: fixture.upstream,
+    });
+    expect(plan.pinUpdate).toMatchObject({
+      reason: `byte-identical tree at tag v0.3.0 (${merge.slice(0, 12)})`,
+      to: merge,
+    });
+    expect(
+      git(cache, ["for-each-ref", "--format=%(refname)", "refs/tags"])
+    ).toBe("");
+    expect(
+      git(cache, ["for-each-ref", "--format=%(refname)", "refs/upstream-tags"])
+    ).toBe("refs/upstream-tags/v0.3.0");
+  });
+
+  test("falls back silently when the cache cannot fetch the tag", () => {
+    const fixture = createFixture();
+    const { entry, merge, released } = releaseThroughSideBranch(fixture);
+    const cache = join(fixture.base, "cache", "upstream.git");
+    const plan = planForkUpdate({
+      cache,
+      fork: fixture.fork,
+      source: released,
+      url: fixture.upstream,
+    });
+    expect(plan.pinUpdate).toMatchObject({
+      reason: `byte-identical tree at ${merge.slice(0, 12)}, after the 0.3.0 release entry ${entry.slice(0, 12)} on main`,
+      to: merge,
+    });
+    expect(
+      git(cache, ["for-each-ref", "--format=%(refname)", "refs/tags"])
+    ).toBe("");
   });
 });

@@ -927,3 +927,94 @@ describe("schema keyword support", () => {
     }
   });
 });
+
+describe("release tag receipts", () => {
+  const created = {
+    ciConfigurationFiles: [".github/workflows/release.yml"],
+    manualCommands: [],
+    mode: "apply",
+    name: "v1.4.0",
+    reason: "Tagged v1.4.0.",
+    reasonCode: null,
+    releaseTrain: "web",
+    remote: "origin",
+    requiredAction: null,
+    schemaVersion: 1,
+    status: "created",
+    tagObject: "a".repeat(40),
+    target: "b".repeat(40),
+    transactionId: "release-1.4.0",
+    version: "1.4.0",
+  };
+
+  test("accepts each mode's statuses and closed reason pairs", () => {
+    expect(validateSchema<unknown>("release-tag-receipt", created)).toEqual(
+      created
+    );
+    expect(
+      validateSchema<unknown>("release-tag-receipt", {
+        ...created,
+        mode: "dry-run",
+        status: "ready",
+        tagObject: null,
+        target: null,
+      })
+    ).toMatchObject({ status: "ready" });
+    expect(
+      validateSchema<unknown>("release-tag-receipt", {
+        ...created,
+        reason: "Rejected.",
+        reasonCode: "push-rejected",
+        requiredAction: "retry-after-fix",
+        status: "blocked",
+        tagObject: null,
+      })
+    ).toMatchObject({ status: "blocked" });
+    expect(
+      validateSchema<unknown>("release-tag-receipt", {
+        ...created,
+        name: null,
+        reason: "No tag.",
+        status: "not-applicable",
+        tagObject: null,
+        target: null,
+        version: null,
+      })
+    ).toMatchObject({ status: "not-applicable" });
+  });
+
+  test("refuses a mismatched pair, a status outside its mode, or a missing identity", () => {
+    const invalid = [
+      { ...created, mode: "dry-run" },
+      { ...created, mode: "apply", status: "ready" },
+      {
+        ...created,
+        reasonCode: "push-rejected",
+        requiredAction: "retry-after-fix",
+      },
+      {
+        ...created,
+        reason: "Moved.",
+        reasonCode: "target-moved",
+        requiredAction: "retry-after-fix",
+        status: "blocked",
+      },
+      {
+        ...created,
+        reason: null,
+        reasonCode: "shipment-hold",
+        requiredAction: "resolve-hold",
+        status: "blocked",
+      },
+      { ...created, tagObject: null },
+      { ...created, status: "already-present", target: null },
+      { ...created, reasonCode: "unknown-code", status: "blocked" },
+      { ...created, extra: true },
+    ];
+    for (const receipt of invalid) {
+      expect(() =>
+        validateSchema<unknown>("release-tag-receipt", receipt)
+      ).toThrow("Invalid release-tag-receipt");
+    }
+  });
+});

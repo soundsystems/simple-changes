@@ -54,7 +54,8 @@ A Sync request authorizes:
 
 It does not authorize:
 
-- pushing local commits or tags;
+- pushing local commits or tags, or running `release-tag`, which needs an
+  active controller lease that Sync never holds;
 - opening, updating, approving, or merging a proposal;
 - deploying or releasing;
 - remote migrations, backfills, secrets, domains, or store actions;

@@ -1,0 +1,292 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://simple-changes.dev/schemas/release-tag-receipt.schema.json",
+  "title": "Simple Changes release tag receipt",
+  "description": "One release-tag run: a dry run reports whether the receipt's tag name is free (ready) or already on the target; an apply builds the annotated tag, pushes it to the lease's target remote, reads it back, and reports created or already-present. Blocked runs name a closed reason and required action.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "mode",
+    "status",
+    "transactionId",
+    "releaseTrain",
+    "version",
+    "name",
+    "target",
+    "remote",
+    "tagObject",
+    "ciConfigurationFiles",
+    "reasonCode",
+    "requiredAction",
+    "reason",
+    "manualCommands"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "mode": { "enum": ["dry-run", "apply"] },
+    "status": {
+      "enum": [
+        "ready",
+        "created",
+        "already-present",
+        "not-applicable",
+        "blocked"
+      ]
+    },
+    "transactionId": { "type": "string", "minLength": 1 },
+    "releaseTrain": { "type": "string", "minLength": 1 },
+    "version": {
+      "anyOf": [{ "type": "string", "minLength": 1 }, { "type": "null" }]
+    },
+    "name": {
+      "anyOf": [{ "type": "string", "minLength": 1 }, { "type": "null" }]
+    },
+    "target": {
+      "anyOf": [
+        { "type": "string", "pattern": "^[0-9a-f]{40,64}$" },
+        { "type": "null" }
+      ]
+    },
+    "remote": {
+      "anyOf": [{ "type": "string", "minLength": 1 }, { "type": "null" }]
+    },
+    "tagObject": {
+      "anyOf": [
+        { "type": "string", "pattern": "^[0-9a-f]{40,64}$" },
+        { "type": "null" }
+      ]
+    },
+    "ciConfigurationFiles": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "reasonCode": {
+      "anyOf": [
+        {
+          "enum": [
+            "release-not-crossed",
+            "tag-automation-unreviewed",
+            "shipment-hold",
+            "remote-not-single-url",
+            "tag-exists-elsewhere",
+            "local-tag-conflict",
+            "target-not-contained",
+            "target-moved",
+            "push-not-authorized",
+            "tag-create-failed",
+            "push-rejected",
+            "readback-failed"
+          ]
+        },
+        { "type": "null" }
+      ]
+    },
+    "requiredAction": {
+      "anyOf": [
+        {
+          "enum": [
+            "await-release-authority",
+            "review-tag-automation",
+            "resolve-hold",
+            "push-manually",
+            "resolve-tag-conflict",
+            "refresh-and-reverify",
+            "refresh-and-reclassify",
+            "retry-after-fix"
+          ]
+        },
+        { "type": "null" }
+      ]
+    },
+    "reason": {
+      "anyOf": [{ "type": "string", "minLength": 1 }, { "type": "null" }]
+    },
+    "manualCommands": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "status": { "const": "blocked" } },
+        "required": ["status"]
+      },
+      "then": {
+        "properties": {
+          "reasonCode": { "type": "string" },
+          "requiredAction": { "type": "string" },
+          "reason": { "type": "string", "minLength": 1 }
+        }
+      },
+      "else": {
+        "properties": {
+          "reasonCode": { "type": "null" },
+          "requiredAction": { "type": "null" }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": { "mode": { "const": "dry-run" } },
+        "required": ["mode"]
+      },
+      "then": {
+        "properties": {
+          "status": {
+            "enum": ["ready", "already-present", "not-applicable", "blocked"]
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "status": {
+            "enum": ["created", "already-present", "not-applicable", "blocked"]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": { "status": { "enum": ["ready", "created"] } },
+        "required": ["status"]
+      },
+      "then": {
+        "properties": {
+          "version": { "type": "string" },
+          "name": { "type": "string" },
+          "remote": { "type": "string" }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": { "status": { "enum": ["created", "already-present"] } },
+        "required": ["status"]
+      },
+      "then": {
+        "properties": {
+          "version": { "type": "string" },
+          "name": { "type": "string" },
+          "target": { "type": "string" },
+          "remote": { "type": "string" },
+          "tagObject": { "type": "string" }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": { "status": { "const": "not-applicable" } },
+        "required": ["status"]
+      },
+      "then": {
+        "properties": {
+          "tagObject": { "type": "null" },
+          "manualCommands": { "maxItems": 0 }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "reasonCode": { "const": "release-not-crossed" }
+        },
+        "required": ["reasonCode"]
+      },
+      "then": {
+        "properties": {
+          "requiredAction": { "const": "await-release-authority" }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "reasonCode": { "const": "tag-automation-unreviewed" }
+        },
+        "required": ["reasonCode"]
+      },
+      "then": {
+        "properties": {
+          "requiredAction": { "const": "review-tag-automation" }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": { "reasonCode": { "const": "shipment-hold" } },
+        "required": ["reasonCode"]
+      },
+      "then": {
+        "properties": { "requiredAction": { "const": "resolve-hold" } }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "reasonCode": {
+            "enum": ["remote-not-single-url", "push-not-authorized"]
+          }
+        },
+        "required": ["reasonCode"]
+      },
+      "then": {
+        "properties": { "requiredAction": { "const": "push-manually" } }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "reasonCode": {
+            "enum": ["tag-exists-elsewhere", "local-tag-conflict"]
+          }
+        },
+        "required": ["reasonCode"]
+      },
+      "then": {
+        "properties": {
+          "requiredAction": { "const": "resolve-tag-conflict" }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "reasonCode": { "const": "target-not-contained" }
+        },
+        "required": ["reasonCode"]
+      },
+      "then": {
+        "properties": {
+          "requiredAction": { "const": "refresh-and-reverify" }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": { "reasonCode": { "const": "target-moved" } },
+        "required": ["reasonCode"]
+      },
+      "then": {
+        "properties": {
+          "requiredAction": { "const": "refresh-and-reclassify" }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "reasonCode": {
+            "enum": ["tag-create-failed", "push-rejected", "readback-failed"]
+          }
+        },
+        "required": ["reasonCode"]
+      },
+      "then": {
+        "properties": { "requiredAction": { "const": "retry-after-fix" } }
+      }
+    }
+  ]
+}

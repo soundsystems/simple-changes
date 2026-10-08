@@ -326,7 +326,7 @@ describe("Simple Changes skill contract", () => {
     );
     expect(requestSchema).toContain('"prepare-release-files"');
     expect(receiptSchema).toContain('"targetContainedUnreleased"');
-    expect(receiptSchema).toContain('"const": "integrated"');
+    expect(receiptSchema).toContain('"const":"integrated"');
     expect(receiptSchema).toContain('"decision-required"');
     expect(receiptSchema).toContain('"classified"');
     expect(normalizedCoordination).toContain(
@@ -336,6 +336,18 @@ describe("Simple Changes skill contract", () => {
       "proceed to `prepare` without requesting version or production approval"
     );
     expect(deliverySchema).toContain('"deployedRevision"');
+  });
+
+  test("ships the vendored protocol schemas minified, byte for byte", async () => {
+    // Simple Changelogs vendors these two files byte-identically; both repos
+    // produce them as JSON.stringify(JSON.parse(text)) + "\n".
+    const paths = [changelogRequestSchemaPath, changelogReceiptSchemaPath];
+    const shipped = await Promise.all(
+      paths.map((path) => readFile(path, "utf8"))
+    );
+    expect(
+      shipped.map((text) => text === `${JSON.stringify(JSON.parse(text))}\n`)
+    ).toEqual([true, true]);
   });
 
   test("release-gate flags come only from their sources and features stay informational", async () => {

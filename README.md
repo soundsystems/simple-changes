@@ -362,6 +362,10 @@ simple-changes release-gate --request FILE --receipt FILE [--prior-receipt FILE]
   [--version-authorized] [--json]
 simple-changes release-delivery --changelog-receipt FILE --provider-receipt FILE
   [--request FILE] [--json]
+simple-changes release-tag --run-id ID --agent-id ID --request FILE
+  --receipt FILE [--prior-receipt FILE] --production ask|allow|deny
+  [--production-authorized] [--already-live] [--tag-automation-authorized]
+  [--dry-run] [--json] [--repo PATH]
 simple-changes proposal-signatures --agent NAME --role authored|reviewed|merged
   [--base REF --head REF] [--changelog-receipt FILE] [--json] [--repo PATH]
 simple-changes proposal audit --file FILE [--template FILE] [--json]
@@ -374,7 +378,8 @@ simple-changes help
 `KIND` is one of `repo-policy`, `changelog-capabilities`, `changelog-request`,
 `changelog-receipt`, `emergency-shipping`, `initialization`, `inventory`,
 `change-plan`, `run-state`, `permission-bundle`, `provider-receipt`,
-`release-delivery-receipt`, `remote-branch-reconciliation`,
+`release-delivery-receipt`, `release-tag-receipt`,
+`remote-branch-reconciliation`,
 `remote-branch-ancestry`, `remote-branch-supersession`,
 `release-consistency`, `release-notes`, `proposal-audit`,
 `ready-work-receipt`, `ship-holds`, `loop-lease`, `loop-close-equivalent`,
@@ -424,8 +429,9 @@ Changes `CHANGELOG.md` and omits pending `Unreleased` content and HTML comments.
 Use `--version VERSION` for an older published release or `--json` for
 automation. An explicit `--repo PATH` may read another checkout without writing
 it. The source-maintainer-only `--check` mode requires `--repo PATH` and
-validates the latest public changelog, developer changelog, and root package
-version without changing them.
+validates the latest public changelog, developer changelog, root package
+version, and the packaged `SKILL.md` `metadata.version` without changing
+them.
 
 ## Policy
 
@@ -623,6 +629,11 @@ Core contracts remain forge-, database-, and hosting-provider agnostic.
 Provider references translate those contracts into discoverable capabilities;
 they do not make any named provider, domain, branch convention, database,
 deployment command, or release channel mandatory.
+
+Releases are numbered `0.<guidance>.<patch>`. A release that advances the
+guidance checkpoint takes it as the minor version (0.27.0 introduces guidance
+27), a fix that leaves guidance unchanged is a patch release, and each release
+is tagged `v<version>` on its merge commit.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for contribution guidance.
 

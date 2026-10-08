@@ -533,9 +533,12 @@ export interface ChangelogRequest {
    */
   releaseSetTrains?: string[] | null;
   releaseTrain: string;
-  schemaVersion: 1 | 2;
-  /** Request v1 advertises receipts 1 and 2; request v2 may add 3. */
-  supportedReceiptVersions: Array<1 | 2 | 3>;
+  schemaVersion: 1 | 2 | 3;
+  /**
+   * Request v1 advertises receipts 1 and 2; request v2 may add 3; request v3
+   * may add 4.
+   */
+  supportedReceiptVersions: Array<1 | 2 | 3 | 4>;
   transactionId: string;
 }
 
@@ -650,8 +653,35 @@ export interface ChangelogReceiptV3
   versionDecision: VersionDecisionV3 | null;
 }
 
+/**
+ * Receipt v4's release tag: the annotated Git tag Simple Changes publishes
+ * for this release, named by the changelog workflow.
+ */
+export interface ReleaseTag {
+  message: string;
+  name: string;
+}
+
+/** Receipt v4 is receipt v3 whose release record also names its tag. */
+export interface ChangelogReceiptV4
+  extends Omit<ChangelogReceiptV3, "release" | "schemaVersion"> {
+  release:
+    | (NonNullable<ChangelogReceiptV3["release"]> & {
+        tag: ReleaseTag | null;
+      })
+    | null;
+  schemaVersion: 4;
+}
+
+/** Receipts that echo the release set and carry the version line. */
+export type LineCarryingChangelogReceipt =
+  | ChangelogReceiptV3
+  | ChangelogReceiptV4;
+
 /** Receipts that carry revision lineage and a decision digest. */
-export type ModernChangelogReceipt = ChangelogReceiptV2 | ChangelogReceiptV3;
+export type ModernChangelogReceipt =
+  | ChangelogReceiptV2
+  | LineCarryingChangelogReceipt;
 
 export type ChangelogReceipt = ChangelogReceiptV1 | ModernChangelogReceipt;
 
@@ -673,6 +703,58 @@ export interface ReleaseDeliveryReceipt {
   status: "complete" | "partial" | "blocked";
   transactionId: string;
   version: string;
+}
+
+/** Why `release-tag` stopped; each code has exactly one required action. */
+export type ReleaseTagReasonCode =
+  | "release-not-crossed"
+  | "tag-automation-unreviewed"
+  | "shipment-hold"
+  | "remote-not-single-url"
+  | "tag-exists-elsewhere"
+  | "local-tag-conflict"
+  | "target-not-contained"
+  | "target-moved"
+  | "push-not-authorized"
+  | "tag-create-failed"
+  | "push-rejected"
+  | "readback-failed";
+
+export type ReleaseTagRequiredAction =
+  | "await-release-authority"
+  | "review-tag-automation"
+  | "resolve-hold"
+  | "push-manually"
+  | "resolve-tag-conflict"
+  | "refresh-and-reverify"
+  | "refresh-and-reclassify"
+  | "retry-after-fix";
+
+/** One `release-tag` run's result, dry run or apply. */
+export interface ReleaseTagReceipt {
+  /** CI configuration files present at the target, as a reminder only. */
+  ciConfigurationFiles: string[];
+  /** Exact commands for the user when the tag must be pushed by hand. */
+  manualCommands: string[];
+  mode: "dry-run" | "apply";
+  name: string | null;
+  reason: string | null;
+  reasonCode: ReleaseTagReasonCode | null;
+  releaseTrain: string;
+  remote: string | null;
+  requiredAction: ReleaseTagRequiredAction | null;
+  schemaVersion: 1;
+  status:
+    | "ready"
+    | "created"
+    | "already-present"
+    | "not-applicable"
+    | "blocked";
+  /** The tag object this run published, or the one already on the remote. */
+  tagObject: string | null;
+  target: string | null;
+  transactionId: string;
+  version: string | null;
 }
 
 export interface ReleaseDecisionLedgerEntry {

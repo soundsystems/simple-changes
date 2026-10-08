@@ -23,7 +23,8 @@ it to the shortest message that covers:
 - **Ready scope:** the units, branches, proposals, and user-visible outcomes
   intended for this Ship run;
 - **Path to production:** checks, proposal/merge order, release reconciliation,
-  deployments, and focused verification that are actually in scope;
+  the release tag when one is named, deployments, and focused verification
+  that are actually in scope;
 - **Consequential boundaries:** data changes, migrations, secrets, domains,
   store releases, or other separately authorized operations;
 - **Preserved or blocked work:** anything discovered but not being taken over.
@@ -72,6 +73,17 @@ release-version selection, merge, production deployment, migration apply,
 secret or environment writes, DNS changes, store releases, remote cleanup, and
 history rewrites. Let the user approve all listed items, decline all, or approve
 named IDs in one reply, then record each decision independently.
+
+A release tag needs no item, question, or setting of its own: name it inside
+the existing release item, such as "Release 1.4.0: merge, tag `v1.4.0`,
+deploy". Before the pre-merge dry run, as part of deployment discovery, list
+every CI workflow or job a push of that exact tag name can start, with its
+consequential effects. The release's own publication needs nothing more. Any
+other effect, such as another app's deployment, a separately versioned
+package, a migration, or a store release, or an effect you cannot determine,
+becomes its own checklist item; without that operation's authority the tag is
+not pushed. Pass `--tag-automation-authorized` to `release-tag` only after
+every listed effect is authorized.
 
 The bundle is not blanket authority. It cannot authorize an unlisted action,
 different target, changed revision, force push, protection bypass, credentials,
@@ -165,7 +177,9 @@ much evidence it carries.
 The final response then compares the pre-ship brief with the observed result:
 
 - what actually shipped and its user-visible or operational outcomes;
-- proposal, merge, release, canonical-target, and deployment identities;
+- proposal, merge, release, canonical-target, and deployment identities, and
+  the release tag beside the delivery result ("Tagged `v1.4.0` on `abc1234`,
+  pushed to `origin`");
 - the selected version and source, policy/decision digests, complete
   input/reconciliation/finalized/deployed revision lineage, and composite
   release-delivery receipt;

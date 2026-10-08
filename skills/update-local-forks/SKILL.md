@@ -36,7 +36,11 @@ saved plan, and it never commits, pushes, or runs a fork's scripts.
    saving a separate plan file for each, and read every summary. The plan
    pins the fork to the exact upstream release commit only when the installed
    source is byte-identical to that release; otherwise it says why the pin
-   stays. Use `--upstream <checkout>` when a canonical source
+   stays. It tries the release's `v<version>` tag first, then searches the
+   release history; a tag counts only when its commit is on the default
+   branch's first-parent history and its tree is byte-identical, so a
+   missing, moved, or wrong tag falls back to the search and the reason says
+   why. Use `--upstream <checkout>` when a canonical source
    checkout is on this machine; without it, the pinned base is fetched into a
    local cache from the canonical repository.
 3. **Explain before writing.** Tell the user, in plain language, how many

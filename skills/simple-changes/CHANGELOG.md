@@ -1,5 +1,62 @@
 # Changelog
 
+## 0.28.0 - 2026-10-08
+
+- You can now choose which model writes proposal descriptions and merge
+  messages, and who performs independent reviews, in each coding agent you
+  use. Setup asks **Which coding agents do you use?** and one model question
+  per agent. When two or more agents are recorded, it also asks **Who should
+  perform independent reviews?**, and this update asks that once. Answers are
+  saved in `.simple-changes-authoring.json` for one repository or in a
+  personal `authoring.json`, never in your policy file. They guide delegation
+  only: they grant no authority, and signatures always name the model that
+  actually did the work.
+- Independent review is now checked, not assumed. Agents record who wrote
+  each commit with `author attest`, including after a rebase or
+  cherry-pick, and run `proposal record-authors` after opening or updating
+  a proposal. `proposal record-review` accepts a review only when every
+  commit on the head is attributed or explicitly waived and the reviewer is
+  a different agent or session from every author. When you asked for an
+  adversarial review, it must also be a different agent or model. After a
+  review finds something, later reviews of that change run at least at the
+  escalation effort you set.
+- `initialize` shows the reviewer it resolved and where each setting came
+  from, and the pre-ship brief names it. A one-run answer passed with
+  `--authoring-request` can make the review requirement stricter for that
+  run but never looser, and is never saved.
+- A Ship run now merges exactly the commit each released, handed-off, or
+  preserved worktree was recorded at. If one of those branches moves while
+  the run is merging, `loop exec` refuses before Git starts and prints the
+  same command with the recorded commit ID, or the steps to take the
+  checkout back, and `loop verify --for merge` fails until it is resolved.
+  Before, a commit another agent made while the merge waited could be
+  merged with it.
+- While such worktrees wait to be merged, `loop exec` runs only Git and
+  provider merges that name their commit, such as `glab mr merge <iid>
+  --sha <commit>`. Run other tools outside `loop exec`, or after those
+  worktrees are merged.
+- SKILL.md is about 40% smaller, so its core rules fit in what an agent
+  keeps after a long conversation is compacted. The recovery steps moved
+  unchanged to `references/recovery.md`, which agents read when a run
+  reports trouble.
+- The installed skill now carries the release notes of the last six
+  guidance versions instead of the full history. `release-notes --version`
+  for an older release prints a link to it in the full changelog, with the
+  notices of the guidance versions it introduced, and exits 6.
+  `update-local-forks` still verifies older releases.
+- `remote-inventory build` builds the opening and final remote inventory
+  receipts a GitLab Ship run needs from fetched pages, and a GitLab
+  reference fetcher pages branches and merge requests read-only, so those
+  receipts no longer need a hand-written collector.
+- `loop draft-outcome` drafts the shipment outcome receipt from Git: every
+  path changed since the run started, with its exact entry, and the scoped
+  units. Every explanation in it is a placeholder, and `loop record-outcome`
+  refuses the receipt until each one is replaced.
+- `status --all` shows every local repository's runs, worktree claims,
+  holds, ready work, pending guidance notices, and forks behind their
+  source, without writing, fetching, or locking anything.
+<!-- simple-changelogs-signature agent="Claude Opus 5.5 xhigh" at="2026-10-08T17:15:02-05:00" -->
+
 ## 0.27.1 - 2026-10-08
 
 - Install Simple Changes from its GitHub mirror,
@@ -598,177 +655,3 @@
   keep reading their state and leases unchanged. Simple Changes guidance moves
   to version 23 to explain the new abilities.
 <!-- simple-changelogs-signature agent="Fable 5.1" at="2026-10-01T16:10:25-05:00" -->
-
-## 0.20.0 - 2026-10-01
-
-- Inventory capture is much faster. Commands that read the repository
-  inventory, including `loop start`, `loop status`, and `loop finalize`, now
-  make far fewer Git calls, so a capture that took 8 to 17 seconds on a large
-  macOS repository completes in about a second. Inventory digests are
-  unchanged, so existing leases, plans, and receipts keep matching.
-- Ship independent units in parallel. The new parallel agents guidance in
-  Simple Changes explains how a controller prepares one worktree per unit with
-  `prepare-agent`, lets each agent author and commit only inside its own
-  worktree, and alone pushes, merges, and finalizes. `publish-skill` gains
-  matching guidance for synchronizing several forks at once, and
-  `update-local-forks` now plans every fork up front so one approval can cover
-  all of them, then updates each repository in its own agent where the host
-  supports isolated agents.
-- A failed `loop finalize` no longer leaves a live controller behind. When
-  finalization fails after ownership and locks are established, the run is
-  relinquished with the failure reason and the original error is still
-  reported, so the next agent can resume instead of facing a lease it can
-  neither resume nor take over. An untouched Ship run still closes as before.
-  `loop start` against a stale lease now names the exact stale-lease recovery
-  command, and the skill tells controllers to confirm release with
-  `loop status --json` after every finalize.
-- `release-notes --check` now accepts one empty `## Unreleased` heading when it
-  is the first heading in a changelog, the anchor Simple Changelogs keeps after
-  every release, instead of reporting it as a failure. A second `Unreleased`
-  heading, or an empty one anywhere else, is still reported.
-<!-- simple-changelogs-signature agent="Fable 5.1" at="2026-10-01T14:12:24-05:00" -->
-
-## 0.19.0 - 2026-09-30
-
-- A Ship run no longer dead-ends when something unrelated changes between
-  `loop start` and `loop record-scope`. Recording the first scope now checks
-  only what the shipment depends on: the plan must come from the current
-  inventory, the target and the repository's policy and provider bindings must
-  be unchanged, the controller checkout and every scoped source worktree must
-  still match what the run registered at start, and verification must pass.
-  Claimed authors may keep editing, and unrelated branch commits or stashes no
-  longer block the run; each refusal names the exact cause and next step.
-- A Ship run that recorded no scope and changed nothing can be closed cleanly
-  with `loop end` or `loop finalize`, which writes an abort receipt and deletes
-  the lease so a fresh `loop start` takes a new baseline. The lease now records
-  when the run first mutated shared state, and any evidence of mutation keeps
-  the existing finalize-and-replan path in force.
-<!-- simple-changelogs-signature agent="Fable 5.1" at="2026-09-30T19:46:51-05:00" -->
-
-## 0.18.0 - 2026-09-22
-
-- Account for a preserved worktree that its owning task deleted mid-run with the
-  new `loop retire-absent-worktree` command. On named approval, and only when
-  the path is gone from both the filesystem and Git's worktree list, it records
-  the absence so the run can continue instead of being blocked by a
-  missing-worktree violation or forced to recreate the deleted checkout. It
-  deletes nothing, proves no delivery, and never authorizes branch cleanup.
-<!-- simple-changelogs-signature agent="Fable 5.1" at="2026-09-22T16:17:07-05:00" -->
-
-## 0.17.1 - 2026-09-16
-
-- Shipments whose work was packaged from a dirty primary checkout and then
-  changed by review can now record their outcome and close. Delivery is proven
-  when that checkout is unchanged from its baseline, its head is contained in
-  the target, and every remaining changed path was delivered, preserved, or
-  excluded; the checkout's bytes stay in place instead of blocking closure.
-<!-- simple-changelogs-signature agent="Fable 5.1" at="2026-09-16T19:29:27-05:00" -->
-
-## 0.17.0 - 2026-09-11
-
-- Check old branches for work already shipped through a rebased or squashed
-  replacement with the new read-only `branch audit` command. It reports
-  candidates for independent review before reapplying work, and guidance now
-  preserves original commit lineage when preparing replacements. Candidate
-  matches do not authorize cleanup.
-<!-- simple-changelogs-signature agent="gpt-6-astra" at="2026-09-11T14:09:32-05:00" -->
-
-## 0.16.2 - 2026-09-09
-
-- Finished shipments can now close while unchanged local work explicitly excluded from the shipment stays safely in place.
-<!-- simple-changelogs-signature agent="Astra medium" at="2026-09-09T17:57:46+00:00" -->
-
-## 0.16.1 - 2026-09-08
-
-- Cleanup preserves missing-worktree records until every record affected by pruning is freshly checked. It recognizes its own verified primary-checkout synchronization and keeps failed closure attempts retryable without recording completion.
-<!-- simple-changelogs-signature agent="GPT-6 Astra medium" at="2026-09-08T18:04:48+00:00" -->
-
-## 0.16.0 - 2026-09-08
-
-- Fork synchronization now flags fork-owned command lists that may hide newly
-  added upstream commands. Review identifies the missing commands so maintainers
-  can expose them or confirm that the omission is intentional.
-- Target discovery now respects the remote configured for the repository's
-  integration branch when the working branch has no remote of its own,
-  preventing an `origin` mirror from taking precedence.
-<!-- simple-changelogs-signature agent="gpt-6-astra medium" at="2026-09-07T12:49:08-05:00" -->
-
-- Recover a frozen shipment whose scope no longer covers the work to integrate.
-  With the current owner's explicit user approval and exact inventory evidence,
-  `loop replan` archives the old run so a fresh shipment can be planned. It keeps
-  every file, commit, worktree, claim, and prior receipt in place.
-- Finish a reviewed clean-branch integration after its exact target changes are
-  reconciled, while preserving unrelated local work and other authors' claims.
-<!-- simple-changelogs-signature agent="gpt-6-astra medium" at="2026-09-08T08:53:51-05:00" -->
-
-## 0.15.2 - 2026-09-04
-
-- Standalone cleanup now preserves every checkout and branch registered by an
-  open shipment, even when its heartbeat is stale. Cleanup also waits for shared
-  integration operations, preventing concurrent work from losing its registration.
-<!-- simple-changelogs-signature agent="gpt-6-astra medium" at="2026-09-04T20:23:24-05:00" -->
-
-## 0.15.1 - 2026-09-04
-
-- Fork synchronization now recognizes an already-current provenance pin and
-  verifies the reviewed plan before reporting success.
-- Verified shipments can now close while unrelated local work remains preserved,
-  without requiring that work to be merged or discarded.
-<!-- simple-changelogs-signature agent="Astra medium" at="2026-09-04T23:38:58+00:00" -->
-
-## 0.15.0 - 2026-09-04
-
-- Local cleanup no longer depends on a shipment run reaching finalization. The
-  new `prune` command runs the same proven-safe pass finalization already ran,
-  without holding a controller lease, so an agent that merged its work and then
-  stopped no longer leaves merged worktrees and branches piling up:
-  - It removes unchanged clean checkouts the refreshed target already contains,
-    worktree records whose directory is gone, and eligible local branches.
-    Containment is proven by exact ancestry or by matching every commit's
-    patch, and each removal records which proof was used.
-  - The complete plan is always reported before anything is removed, and
-    `--dry-run` reports that plan and changes nothing.
-  - Dirty, claimed, preserved, and retained work is never touched, and anything
-    registered by a lease that is not provably stale is left alone.
-- An abandoned shipment lease no longer blocks every other agent in the
-  repository. Leases now record a heartbeat, `loop status` reports whether a
-  lease is live, stale, or unknown, and `loop recover --stale-lease` clears a
-  stale lease with your explicit approval, records a recovery receipt, and
-  preserves every worktree, branch, claim, and durable record. It clears the
-  bookkeeping record only, never your work. A lease counts as stale only when
-  its owner cannot be proven alive and its last heartbeat is more than four
-  hours old; a lease whose state cannot be proven is never treated as stale.
-  Recording a heartbeat never affects `loop takeover`, which still compares the
-  same safety-relevant manifest and still refuses when it genuinely changed.
-<!-- simple-changelogs-signature agent="claude-opus-5 medium" at="2026-09-04T10:05:00-05:00" -->
-
-## 0.14.0 - 2026-09-02
-
-- Repository-specific Simple Changes forks can now be updated from the global
-  installation with the new `update-local-forks` skill. It plans each fork
-  against its provenance pin, preserves local behavior, and reports conflicts
-  or omitted references for review without committing or pushing.
-- CMS-only changelog handoffs now advance relevant operator-history changes
-  from classification to preparation without requesting a public version or
-  production approval. Shipped coordination guidance documents the complete
-  handoff.
-- The CLI now reports the installed `0.14.0` package version correctly.
-<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-09-02T16:07:42-05:00" -->
-
-## 0.13.0 - 2026-09-02
-
-- Change proposals can now carry clear agent-and-model attribution for authored,
-  reviewed, and merged work. Attribution documents the action but never replaces
-  review or merge approval.
-- Production release delivery now combines verified changelog and deployment
-  evidence, so an incomplete or blocked release cannot be presented as fully
-  delivered.
-- Worktree claims now release through owner action, completed-work handoff, or
-  finalization evidence, preventing finished work from needlessly blocking an
-  active shipment.
-- Setup now recognizes CMS-only changelog work and offers the compatible Simple
-  Changelogs setup when it is needed. Non-interactive runs must opt into that
-  installation explicitly.
-- Production migrations now check installed-client compatibility before they can
-  proceed.
-<!-- simple-changelogs-signature agent="gpt-5.6-sol medium" at="2026-09-02T18:08:00-05:00" -->

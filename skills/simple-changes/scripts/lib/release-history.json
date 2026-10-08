@@ -1,4 +1,5 @@
 [
+  { "date": "2026-10-08", "guidance": 28, "version": "0.28.0" },
   { "date": "2026-10-08", "guidance": 27, "version": "0.27.1" },
   { "date": "2026-10-07", "guidance": 27, "version": "0.27.0" },
   { "date": "2026-10-06", "guidance": 26, "version": "0.25.2" },

@@ -834,6 +834,18 @@ const GUIDANCE_UPDATES: GuidanceUpdateDefinition[] = [
       {
         kind: "behavior",
         summary:
+          "Released, handed-off, preserved, adopted, and retained worktrees are pinned to their recorded commits: while any is pinned, `loop exec` runs only Git and provider merges that name their commit (`glab mr merge <iid> --sha <commit>`, optionally with `-R <project>`), refuses before Git starts any command that could integrate a later commit, and prints the same command with the recorded commit ID or the claim, pause, and accept steps; `loop verify --for merge` reports a registered branch that moved.",
+        version: 28,
+      },
+      {
+        kind: "integration",
+        summary:
+          "`remote-inventory build` builds the opening and final remote inventory receipts from fetched provider pages, with a read-only GitLab reference fetcher; `loop draft-outcome` drafts the shipment outcome from Git with placeholders that `loop record-outcome` refuses until each is replaced; and `status --all` shows every local repository's runs, claims, holds, ready work, pending notices, and forks without writing, fetching, or locking.",
+        version: 28,
+      },
+      {
+        kind: "behavior",
+        summary:
           "SKILL.md now fits in the first 5,000 tokens a harness keeps after compaction: the request table, invariants, and reference router come first, every reference and provider reference is linked directly, and the recovery paths (lock and stale-lease recovery, takeover, the released-claim pause and accept steps, re-baseline, close-equivalent, lease-less prune, replan, and archive-recorded) moved unchanged into `references/recovery.md`, which agents read when `loop status`, `loop verify`, or finalization reports trouble.",
         version: 28,
       },
@@ -849,6 +861,11 @@ const GUIDANCE_UPDATES: GuidanceUpdateDefinition[] = [
         priority: 180,
         summary:
           "You can now choose which model writes proposals and who reviews them in each coding agent you use, and a review from a different agent or model is checked against the recorded author of every commit. When two or more agents are detected, this update asks who should perform independent reviews.",
+      },
+      {
+        priority: 180,
+        summary:
+          "Ship runs now merge exactly the commit each released or preserved worktree was recorded at: while such worktrees wait, `loop exec` runs only Git and provider merges that name their commit, and refuses any merge that could pick up a later commit, printing the commit-ID command or the recovery steps instead.",
       },
       {
         priority: 180,

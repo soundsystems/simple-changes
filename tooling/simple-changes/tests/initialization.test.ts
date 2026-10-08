@@ -73,7 +73,7 @@ describe("first-run initialization", () => {
     );
     expect(from19.changes.map((item) => item.version)).toEqual([
       20, 20, 21, 21, 21, 22, 22, 22, 22, 23, 23, 24, 24, 24, 25, 25, 25, 26,
-      26, 26, 27, 27, 27, 28, 28, 28, 28, 28,
+      26, 26, 27, 27, 27, 28, 28, 28, 28, 28, 28, 28,
     ]);
     expect(
       from19.changes.filter((item) => item.version === 27).at(-1)?.summary
@@ -323,7 +323,7 @@ describe("first-run initialization", () => {
       "reads its recovery steps only when a run reports trouble"
     );
     expect(status.guidanceUpdate.summaryBullets.join(" ")).toContain(
-      "Releases can now get a Git tag"
+      "merge exactly the commit each released or preserved worktree"
     );
     expect(status.guidanceUpdate.summaryBullets.join(" ")).toContain(
       "choose which model writes proposals and who reviews them"

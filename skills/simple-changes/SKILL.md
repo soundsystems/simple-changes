@@ -4,7 +4,7 @@ description: Use when a user asks to sync with remote main, package, queue, publ
 license: Apache-2.0
 compatibility: Requires Git and Bun 1.2 or later
 metadata:
-  version: "0.27.1"
+  version: "0.28.0"
 ---
 
 # Simple Changes

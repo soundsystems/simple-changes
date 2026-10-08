@@ -1688,8 +1688,52 @@ const CONFIG_READ_OPTIONS: ReadonlySet<string> = new Set([
   "-l",
 ]);
 
+// Merge strategies Git implements itself; any other name runs the program
+// `git-merge-<name>`.
+const BUILTIN_STRATEGIES: ReadonlySet<string> = new Set([
+  "octopus",
+  "ort",
+  "ours",
+  "recursive",
+  "resolve",
+  "subtree",
+]);
+const STRATEGY_SUBCOMMANDS: ReadonlySet<string> = new Set([
+  "cherry-pick",
+  "merge",
+  "rebase",
+  "revert",
+]);
+
+// The merge strategies a command names, attached or in the next argument.
+const strategies = (args: readonly string[]): string[] =>
+  args.flatMap((token, index) => {
+    const next = args[index + 1] ?? "";
+    if (token === "-s") {
+      return [next];
+    }
+    if (spelledOption(token, ["--strategy"])) {
+      const separator = token.indexOf("=");
+      return [separator === -1 ? next : token.slice(separator + 1)];
+    }
+    return token.startsWith("-s") && !token.startsWith("--")
+      ? [token.slice(2)]
+      : [];
+  });
+
 const executes = (subcommand: string, args: readonly string[]): boolean => {
   if (EXECUTING_SUBCOMMANDS.has(subcommand)) {
+    return true;
+  }
+  if (
+    STRATEGY_SUBCOMMANDS.has(subcommand) &&
+    // cherry-pick and revert spell signoff `-s`; they take only `--strategy`.
+    strategies(
+      subcommand === "cherry-pick" || subcommand === "revert"
+        ? args.filter((token) => token !== "-s")
+        : args
+    ).some((name) => !BUILTIN_STRATEGIES.has(name))
+  ) {
     return true;
   }
   const option = (token: string, options: readonly string[]) =>
@@ -1844,6 +1888,15 @@ const transferRefusals = (
       token
     )
   );
+  if (subcommand === "push" && args.includes("--tags")) {
+    found.push(
+      refusal(
+        "indirect",
+        "--tags pushes every tag, including one another agent made on a moved unit",
+        "--tags"
+      )
+    );
+  }
   if (subcommand === "fetch") {
     found.push(...symbolicDestinationRefusals(refs));
     // The first operand is the repository; with --all or --multiple every

@@ -329,6 +329,7 @@ describe("pinned-head command analysis", () => {
       ["git", "push", "--mirror", "origin"],
       ["git", "push", "--al", "origin"],
       ["git", "push", "--mir", "origin"],
+      ["git", "push", "--tags", "origin"],
       ["git", "fetch", "--refm=+refs/heads/*:refs/heads/x/*", ".", "feat/y"],
       ["git", "push", "origin", ":"],
       ["git", "push", "origin", "refs/heads/*:refs/heads/*"],
@@ -780,6 +781,11 @@ describe("pinned-head command analysis", () => {
       ["git", "config", "core.hooksPath", "/tmp/hooks"],
       ["git", "config", "set", "alias.m", "merge"],
       ["git", "init", "--template=/tmp/template"],
+      ["git", "merge", "-s", "custom", head],
+      ["git", "merge", "--strategy=custom", head],
+      ["git", "rebase", "-scustom", "main"],
+      ["git", "cherry-pick", "--strategy", "custom", head],
+      ["git", "revert", "--strat=custom", head],
     ]) {
       expect({ argv, kinds: kinds(argv) }).toEqual({
         argv,
@@ -807,6 +813,8 @@ describe("pinned-head command analysis", () => {
       ["git", "stash", "apply", head],
       ["git", "stash", "branch", "recovered", head],
       ["git", "rebase", head],
+      ["git", "merge", "-s", "ort", "-X", "theirs", head],
+      ["git", "cherry-pick", "-s", "-x", head],
     ]) {
       expect({ argv, kinds: kinds(argv) }).toEqual({ argv, kinds: [] });
     }

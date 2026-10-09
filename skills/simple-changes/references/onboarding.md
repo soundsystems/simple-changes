@@ -6,6 +6,7 @@ Contents:
 - Question presentation contract
 - First screen
 - Customized questions
+- Agents, models, and reviews
 - Preference storage
 - Confirm, apply, and continue
 
@@ -309,6 +310,90 @@ Ask **When should I ask for permission or help? Choose one:**
    they are otherwise authorized.
 3. **Don't interrupt me**: Skip anything that lacks authority and report it at
    the end.
+
+## Agents, models, and reviews
+
+`initialize` reports `detectedHarnesses` (a running session variable or a
+home-directory root named in `agents/harnesses.json`; nothing inside is read)
+and `authoringQuestion.models` and `.review`, each `pending`, `answered`,
+`repair`, or `not-applicable`, from validated sidecars and current detection,
+never from the guidance acknowledgement. Preview, Pause, guarded Sync, and
+read-only modes are `not-applicable`. For `repair`, show the file's errors and
+ask the owner to repair or remove it; never overwrite it. Fill `<names>` and
+`<agent>` with display names; an unknown id shows as itself.
+
+**Models.** Recommended setup records, without asking, the most capable model
+at `xhigh` for every detected agent and `"proposals": { "harness": "running" }`.
+Customize and the walkthrough explain that the skill can hand proposal writing
+and reviews to a specific model, but only inside the agents the owner uses,
+then ask the agent list. When a Simple Changelogs sidecar already lists agents
+(its repository sidecar, then its personal `authoring.json`; a malformed file
+counts as absent and imports nothing), ask **Simple Changelogs already lists
+your agents: `<names>`. Use the same list here?** with **Yes (Recommended)**
+or **Edit the list**. Otherwise ask **Which coding agents do you use?** with
+**The ones I found: `<names>` (Recommended)**, **Edit the list**, and **Only
+the agent running now** (omitted when nothing beyond it is detected; with
+nothing detected, offer only **Edit the list**). Then, per agent, ask **In
+`<agent>`, which model should write proposal descriptions and merge messages?**
+with **The most capable model available, at xhigh effort (Recommended)**, **A
+specific model** (name it, then an effort, `xhigh` by default; `max` is offered
+only with its cost, the slowest and most expensive setting), or **Do not guide
+this** (`null`).
+
+**Reviews.** With two or more detected agents, ask the review questions in
+every setup style, run-only included, whatever the agent list selected;
+otherwise ask them in Customize and the walkthrough, or when a second model
+name was recorded. Explain that a review from a different agent catches what
+the author's model tends to miss, and self-review never counts. Ask **Who
+should perform independent reviews?**
+
+1. **A different agent (Recommended when more than one agent is recorded)**:
+   offered only with two or more recorded agents.
+2. **A different model in the same agent (Recommended otherwise)**: offered
+   only when the running agent is identified; its id binds the model.
+3. **Any independent reviewer**: a separate session of the same model counts,
+   as today. Records `{ "harness": "running", "adversarial": false }`.
+
+Ask it only when it has two or more options: with fewer than two recorded
+agents and an unidentified running agent, say that the review question waits
+until another agent is recorded or the running agent is identified, record
+nothing, and leave it pending.
+
+After option 1, ask **Which agent should review?** among the recorded agents
+except the author's (the running one; none is excluded when it is unknown),
+in data-file order then unknown ids alphabetically, the first recommended; a
+single candidate skips the question. If that agent has no entry yet, ask its
+model question worded "which model should review". After option 2, ask **Which
+model in `<agent>` should review?** and an effort; reject a name equal to the
+model recorded for that agent. Options 1 and 2 record `adversarial: true` and
+then ask **After a review finds problems, how should later reviews of that
+change run?** with **At xhigh effort (Recommended)** (`escalateOnFindings:
+"xhigh"`) or **Same effort as before** (`null`).
+
+While `authoringQuestion.review` is `pending`, `initialize` also prints the
+question itself as `authoringReviewQuestion`; ask it once in each write-capable
+run before mutation, whatever the guidance version, because acknowledging an
+update never answers it. Its choices follow the agents recorded when it is
+answered: while the models question is pending, ask that first (the printed
+choices assume its recommended answer, so drop **A different agent** if fewer
+than two agents end up recorded). It is null while only one answer is possible,
+one recorded agent and an unidentified running agent; the question stays
+pending until the owner records another agent. If no different reviewer model is named, ask R1 again
+rather than recording **Any independent reviewer**.
+
+Say: "This is a preference, not a permission. The agent still asks before
+launching another tool for the first time, and every proposal and review is
+signed by the model that actually wrote it." Save the answer with the chosen
+storage (`references/setup-and-policy.md`, "Authoring preferences"); run-only
+asks but writes nothing, so a pending question returns next time. Terminal
+setup saves it with the policy and reports the confirmed answer as
+`authoringAnswer` and the file written, if any, as `authoring`; after
+run-only, apply `authoringAnswer` to the current request only: pass it as
+`--authoring-request` to every `initialize`, `proposal record-review`, and
+`loop start --mode resume` of the run, and save nothing. Otherwise, and
+for an existing repository, record it with `simple-changes setup --authoring
+'<json>' --scope <repository|personal> --confirm`, a transaction that writes
+only the sidecar.
 
 ## Preference storage
 

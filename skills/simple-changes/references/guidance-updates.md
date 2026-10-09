@@ -25,6 +25,14 @@ multiple choice; put the recommended answer first and explain its practical
 consequence in one sentence. Do not bury a required answer in release notes or
 an exhaustive feature tour.
 
+A required answer can depend on current state: the authoring review question
+(`authoring-review`) appears only while `initialize` reports
+`authoringQuestion.review` as `pending`. Record that answer with `setup
+--authoring` (`references/onboarding.md`, "Agents, models, and reviews").
+Acknowledging the update records only the disposition and never answers it, so
+the question returns at the next initialization until a valid sidecar answers
+it, and a second agent detected later makes it pending again.
+
 If `recommendedChanges` is nonempty, show those next under **Recommended
 change** with the current and recommended answer. A recommendation is not a
 mandatory answer unless it also appears in `requiredAnswers`.
@@ -58,7 +66,12 @@ Offer these multiple-choice actions:
 - **Expanded walkthrough:** Explain every intervening behavior, setting,
   example, consequence, and safety boundary only when the user asks for it.
 - **View detailed Simple Changes release notes:** Run the advertised read-only
-  release-notes command and show the requested released section.
+  release-notes command and show the requested released section. The
+  installed notes cover the releases of the last six guidance versions. For an
+  older release, `simple-changes release-notes --version <version>` exits `6`
+  instead of printing notes: show its link to that release in the full
+  changelog and the notice bullets of each guidance version that release
+  introduced. Exit `6` is not a failure.
 - **Decide later:** Leave the update unresolved so it appears again next time.
   When `requiredAnswers` is empty and the user chooses this a second time for
   the same version, record `deferred` instead so the notice stops repeating;
@@ -142,7 +155,8 @@ default.
 
 ## Resolve required changelog updates before a loop
 
-When the request requires changelog work, call initialization with
+Resolve installed update choices before acquiring a loop. When the request
+requires changelog work, call initialization with
 `--changelog-required`. If the companion update is available, initialization
 returns `preLoopActionRequired: true` and `mutationAllowed: false`.
 

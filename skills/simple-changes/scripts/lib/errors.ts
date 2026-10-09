@@ -18,6 +18,9 @@ export class SimpleChangesError extends Error {
 
 export const EXIT_CODES = {
   inventory: 4,
+  // Not an error: `release-notes --version` printed where an older release's
+  // notes live instead of the notes themselves.
+  outsideWindow: 6,
   success: 0,
   unsafe: 5,
   usage: 2,

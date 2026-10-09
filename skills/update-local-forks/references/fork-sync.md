@@ -1,5 +1,15 @@
 # Fork sync
 
+Contents:
+
+- Install once, fork per repository
+- How every file is classified
+- Omitted references
+- Command gates
+- Classify what you port by hand
+- Guidance versions
+- After applying
+
 ## Install once, fork per repository
 
 Install Simple Changes globally so every repository and every fork updates
@@ -176,7 +186,11 @@ release's changelog entry, or a later commit before the next release entry,
 since review fixes often land after the release-prep commit. It prefers a
 commit on the default branch's first-parent history, such as the merge that
 brought the release in, over one only on a merged side branch. When no commit
-in that range matches, the pin stays and the plan says why.
+in that range matches, the pin stays and the plan says why. The packaged
+`CHANGELOG.md` carries only recent releases, so a later release that trims an
+older release's heading out of it is never taken for that release's entry;
+history is never rewritten, so the trimmed release's own tree still proves
+byte identity.
 
 Before that search, the planner tries the release tag `v<version>` (the
 version the installed `SKILL.md` states in frontmatter `metadata.version`,

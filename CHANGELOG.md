@@ -1,5 +1,62 @@
 # Changelog
 
+## 0.28.0 - 2026-10-08
+
+- You can now choose which model writes proposal descriptions and merge
+  messages, and who performs independent reviews, in each coding agent you
+  use. Setup asks **Which coding agents do you use?** and one model question
+  per agent. When two or more agents are recorded, it also asks **Who should
+  perform independent reviews?**, and this update asks that once. Answers are
+  saved in `.simple-changes-authoring.json` for one repository or in a
+  personal `authoring.json`, never in your policy file. They guide delegation
+  only: they grant no authority, and signatures always name the model that
+  actually did the work.
+- Independent review is now checked, not assumed. Agents record who wrote
+  each commit with `author attest`, including after a rebase or
+  cherry-pick, and run `proposal record-authors` after opening or updating
+  a proposal. `proposal record-review` accepts a review only when every
+  commit on the head is attributed or explicitly waived and the reviewer is
+  a different agent or session from every author. When you asked for an
+  adversarial review, it must also be a different agent or model. After a
+  review finds something, later reviews of that change run at least at the
+  escalation effort you set.
+- `initialize` shows the reviewer it resolved and where each setting came
+  from, and the pre-ship brief names it. A one-run answer passed with
+  `--authoring-request` can make the review requirement stricter for that
+  run but never looser, and is never saved.
+- A Ship run now merges exactly the commit each released, handed-off, or
+  preserved worktree was recorded at. If one of those branches moves while
+  the run is merging, `loop exec` refuses before Git starts and prints the
+  same command with the recorded commit ID, or the steps to take the
+  checkout back, and `loop verify --for merge` fails until it is resolved.
+  Before, a commit another agent made while the merge waited could be
+  merged with it.
+- While such worktrees wait to be merged, `loop exec` runs only Git and
+  provider merges that name their commit, such as `glab mr merge <iid>
+  --sha <commit>`. Run other tools outside `loop exec`, or after those
+  worktrees are merged.
+- SKILL.md is about 40% smaller, so its core rules fit in what an agent
+  keeps after a long conversation is compacted. The recovery steps moved
+  unchanged to `references/recovery.md`, which agents read when a run
+  reports trouble.
+- The installed skill now carries the release notes of the last six
+  guidance versions instead of the full history. `release-notes --version`
+  for an older release prints a link to it in the full changelog, with the
+  notices of the guidance versions it introduced, and exits 6.
+  `update-local-forks` still verifies older releases.
+- `remote-inventory build` builds the opening and final remote inventory
+  receipts a GitLab Ship run needs from fetched pages, and a GitLab
+  reference fetcher pages branches and merge requests read-only, so those
+  receipts no longer need a hand-written collector.
+- `loop draft-outcome` drafts the shipment outcome receipt from Git: every
+  path changed since the run started, with its exact entry, and the scoped
+  units. Every explanation in it is a placeholder, and `loop record-outcome`
+  refuses the receipt until each one is replaced.
+- `status --all` shows every local repository's runs, worktree claims,
+  holds, ready work, pending guidance notices, and forks behind their
+  source, without writing, fetching, or locking anything.
+<!-- simple-changelogs-signature agent="Claude Opus 5.5 xhigh" at="2026-10-08T17:15:02-05:00" -->
+
 ## 0.27.1 - 2026-10-08
 
 - Install Simple Changes from its GitHub mirror,

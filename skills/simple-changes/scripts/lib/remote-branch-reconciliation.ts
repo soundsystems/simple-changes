@@ -182,8 +182,11 @@ const validatePagination = (
         EXIT_CODES.validation
       );
     }
+    // A null cursor marks only the first page's start and the last page's
+    // end, so two terminal pages can never chain into a "complete" listing.
     for (let index = 1; index < pages.length; index += 1) {
-      if (pages[index]?.cursorIn !== pages[index - 1]?.cursorOut) {
+      const cursor = pages[index]?.cursorIn;
+      if (cursor === null || cursor !== pages[index - 1]?.cursorOut) {
         throw new SimpleChangesError(
           `Invalid remote branch reconciliation: ${label} ${kind} pagination cursor chain is incomplete`,
           EXIT_CODES.validation
@@ -199,7 +202,13 @@ const validatePagination = (
   }
 };
 
-const coverageDigest = (
+/**
+ * The `ledgerDigest` a coverage proof must carry: SHA-256 of the compact JSON
+ * `{ entryDigest, pageDigests }`, where `entryDigest` hashes the phase's
+ * accounted branch (`{ headRevision, name }`) or proposal
+ * (`{ branch, headRevision, objectId, state }`) entries in receipt order.
+ */
+export const coverageDigest = (
   receipt: RemoteBranchReconciliationReceipt,
   phase: "initial" | "final",
   kind: "branches" | "proposals",

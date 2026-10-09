@@ -1,5 +1,10 @@
 import { existsSync, readFileSync } from "node:fs";
 import { basename, resolve } from "node:path";
+import {
+  packagedChangelog,
+  parseReleaseHistory,
+  releaseHistoryIssues,
+} from "./release-history.ts";
 import { extractReleaseNotes } from "./release-notes.ts";
 import { skillMetadataVersion } from "./skill-check.ts";
 
@@ -97,6 +102,48 @@ const inspectHistory = (
 };
 
 const PACKAGED_SKILL = "skills/simple-changes";
+const PACKAGED_HISTORY = `${PACKAGED_SKILL}/scripts/lib/release-history.json`;
+
+/**
+ * Where the packaged skill keeps a release history, its CHANGELOG.md must be
+ * exactly the release-note window that history selects from the root
+ * CHANGELOG.md, and the history must list the root changelog's releases.
+ */
+const inspectPackagedWindow = (
+  repository: string,
+  packagedPath: string,
+  issues: string[]
+): void => {
+  const historyPath = resolve(repository, PACKAGED_HISTORY);
+  const rootPath = resolve(repository, "CHANGELOG.md");
+  if (!(existsSync(historyPath) && existsSync(rootPath))) {
+    return;
+  }
+  try {
+    const history = parseReleaseHistory(
+      readFileSync(historyPath, "utf8"),
+      historyPath
+    );
+    const root = readFileSync(rootPath, "utf8");
+    for (const issue of releaseHistoryIssues(root, history)) {
+      issues.push(`${PACKAGED_HISTORY}: ${issue}.`);
+    }
+    if (
+      existsSync(packagedPath) &&
+      readFileSync(packagedPath, "utf8") !== packagedChangelog(root, history)
+    ) {
+      issues.push(
+        `${PACKAGED_SKILL}/CHANGELOG.md is not the release-note window of CHANGELOG.md; regenerate it with bun tooling/simple-changes/package-changelog.ts.`
+      );
+    }
+  } catch (error) {
+    issues.push(
+      error instanceof Error
+        ? error.message
+        : `${PACKAGED_HISTORY} could not be read.`
+    );
+  }
+};
 
 /**
  * A repository that packages the Simple Changes skill also states the release
@@ -117,6 +164,7 @@ const inspectPackagedSkill = (
   const before = versions.length;
   inspectHistory(packagedPath, "packaged-history", issues, versions);
   const packaged = versions.length > before ? versions.at(-1) : undefined;
+  inspectPackagedWindow(repository, packagedPath, issues);
   let metadataVersion: string | null = null;
   try {
     metadataVersion = skillMetadataVersion(readFileSync(skillPath, "utf8"));

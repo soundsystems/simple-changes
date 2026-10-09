@@ -47,6 +47,33 @@ describe("preview planning", () => {
     expect(planFingerprint(plan)).toBe(planFingerprint(plan));
   });
 
+  test("plans an uncommitted authoring sidecar as an ordinary unit", () => {
+    const fixture = createTestRepository();
+    repositories.push(fixture);
+    writeFixture(
+      fixture.root,
+      ".simple-changes-authoring.json",
+      `${JSON.stringify({ harnesses: {}, roles: {}, schemaVersion: 1 })}\n`
+    );
+    const opening = captureInventory(fixture.root);
+    const current = captureInventory(fixture.root);
+    const plan = buildPreviewPlan(
+      opening,
+      current,
+      compareSnapshots(opening, current)
+    );
+    expect(plan.units.flatMap((unit) => unit.paths)).toContain(
+      ".simple-changes-authoring.json"
+    );
+    expect(() => validatePlanConservation(plan, current)).not.toThrow();
+    git(fixture.root, ["add", ".simple-changes-authoring.json"]);
+    git(fixture.root, ["commit", "-m", "Record authoring preferences"]);
+    const clean = captureInventory(fixture.root);
+    expect(
+      buildPreviewPlan(clean, clean, compareSnapshots(clean, clean)).units
+    ).toHaveLength(0);
+  });
+
   test("keeps Sync authority narrower than ordinary local writes", () => {
     const syncUnit: ChangePlan["units"][number] = {
       checks: ["git status --short"],

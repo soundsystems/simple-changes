@@ -7,6 +7,14 @@ nor an absent MR for the original branch proves that work remains to ship.
 
 ## Audit before reapplying
 
+Before creating a worktree, rebasing, cherry-picking, or merging an old local
+branch, run `simple-changes branch audit --head <branch> --target <ref> --json`
+against the refreshed target. A unique SHA or a missing MR on that branch name
+does not establish unshipped work. Resolve replacement candidates against merged
+proposals and independent review first. Record original SHAs
+in replacement commits when moving work to a different branch. Discovery hints
+never permit deletion or waive the existing cleanup proofs.
+
 Run this read-only check from the primary checkout before creating a worktree
 or merging, rebasing, or cherry-picking an old source:
 
@@ -61,6 +69,14 @@ the trailer records provenance, not independent approval. Keep the mapping of
 original branch/head, replacement branch/head, and proposal identity in the
 proposal description and shipment evidence. Re-read it after proposal updates.
 Do not amend already merged history to backfill a missing trailer.
+
+The trailer is Git provenance; review independence reads the review ledger.
+After every rebase, cherry-pick, or squash, attest each new commit with
+`author attest --commit <new sha> --replays <original sha>[,...]`, after
+`loop exec` returns and with `--worktree <path>` when the controller refreshes
+a delegated worktree. Add `--contribution implementation` whenever the
+transplant changed the implementation, then run `proposal record-authors` for
+the new head before review ([review ledger steps](change-requests.md#review-ledger-steps)).
 
 After merge, verify the replacement SHA is reachable from the refreshed target,
 review differences introduced during transplantation, and account for source

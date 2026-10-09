@@ -5,6 +5,90 @@
   "type": "object",
   "additionalProperties": false,
   "$defs": {
+    "authoringQuestionState": {
+      "enum": ["pending", "answered", "repair", "not-applicable"]
+    },
+    "authoringFile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "state", "errors"],
+      "properties": {
+        "path": { "type": "string", "minLength": 1 },
+        "state": { "enum": ["absent", "valid", "malformed"] },
+        "errors": { "type": "array", "items": { "type": "string" } },
+        "value": {
+          "description": "The validated sidecar (authoring.schema.json), present only when state is valid.",
+          "type": "object"
+        }
+      }
+    },
+    "authoringRoleFields": {
+      "type": "object",
+      "required": ["effort", "harness", "model", "status"],
+      "properties": {
+        "effort": { "enum": ["low", "medium", "high", "xhigh", "max"] },
+        "harness": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9-]{0,39}$"
+        },
+        "model": { "type": "string", "minLength": 1 },
+        "status": {
+          "enum": ["resolved", "most-capable", "unresolved", "no-delegation"]
+        }
+      }
+    },
+    "authoringRole": {
+      "allOf": [
+        { "$ref": "#/$defs/authoringRoleFields" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["effort", "harness", "model", "status"],
+          "properties": {
+            "effort": {},
+            "harness": {},
+            "model": {},
+            "status": {}
+          }
+        }
+      ]
+    },
+    "authoringSource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["effort", "harness", "model", "path"],
+      "properties": {
+        "effort": { "$ref": "#/$defs/authoringLayer" },
+        "harness": { "$ref": "#/$defs/authoringLayer" },
+        "model": { "$ref": "#/$defs/authoringLayer" },
+        "path": { "anyOf": [{ "type": "null" }, { "type": "string" }] }
+      }
+    },
+    "authoringReviewSource": {
+      "description": "The review role's provenance. adversarial and escalateOnFindings may come from a lower layer than the rest of the role: a request only tightens them (design 2.3 rule 6).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "adversarial",
+        "effort",
+        "escalateOnFindings",
+        "harness",
+        "model",
+        "path"
+      ],
+      "properties": {
+        "adversarial": { "$ref": "#/$defs/authoringLayer" },
+        "effort": { "$ref": "#/$defs/authoringLayer" },
+        "escalateOnFindings": { "$ref": "#/$defs/authoringLayer" },
+        "harness": { "$ref": "#/$defs/authoringLayer" },
+        "model": { "$ref": "#/$defs/authoringLayer" },
+        "path": { "anyOf": [{ "type": "null" }, { "type": "string" }] }
+      }
+    },
+    "authoringLayer": {
+      "description": "request: the current request (--authoring-request), applied for one invocation and never written.",
+      "enum": ["request", "repository", "personal", "default"]
+    },
     "guidanceQuestion": {
       "type": "object",
       "additionalProperties": false,
@@ -491,6 +575,216 @@
         "status": { "enum": ["current", "behind-target", "not-applicable"] },
         "targetRef": { "anyOf": [{ "type": "string" }, { "type": "null" }] },
         "targetVersion": { "anyOf": [{ "type": "string" }, { "type": "null" }] }
+      }
+    },
+    "detectedHarnesses": {
+      "description": "Read-only detection from agents/harnesses.json: a running session variable or a home-directory root that exists.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "name", "evidence"],
+        "properties": {
+          "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,39}$" },
+          "name": { "type": "string", "minLength": 1, "maxLength": 60 },
+          "evidence": {
+            "type": "array",
+            "minItems": 1,
+            "items": { "type": "string", "minLength": 1 }
+          }
+        }
+      }
+    },
+    "authoringErrors": {
+      "description": "A missing or malformed agents/harnesses.json: detection failed rather than found nothing, and authoring answers are refused until the package is reinstalled.",
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "authoringFiles": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository", "personal"],
+      "properties": {
+        "repository": { "$ref": "#/$defs/authoringFile" },
+        "personal": { "$ref": "#/$defs/authoringFile" }
+      }
+    },
+    "authoringQuestion": {
+      "description": "Per question, from validated sidecars and current detection; never from the guidance acknowledgement.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["models", "review"],
+      "properties": {
+        "models": { "$ref": "#/$defs/authoringQuestionState" },
+        "review": { "$ref": "#/$defs/authoringQuestionState" }
+      }
+    },
+    "authoringReviewQuestion": {
+      "description": "The independent-review question to ask while authoringQuestion.review is pending, whatever the guidance version.",
+      "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/guidanceQuestion" }]
+    },
+    "authoring": {
+      "description": "Effective authoring roles with each field's layer and the file of the highest layer that supplied any field.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["effective", "source"],
+      "properties": {
+        "effective": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["proposals", "review"],
+          "properties": {
+            "proposals": { "$ref": "#/$defs/authoringRole" },
+            "review": {
+              "allOf": [
+                { "$ref": "#/$defs/authoringRoleFields" },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "effort",
+                    "harness",
+                    "model",
+                    "status",
+                    "adversarial",
+                    "escalateOnFindings"
+                  ],
+                  "properties": {
+                    "effort": {},
+                    "harness": {},
+                    "model": {},
+                    "status": {},
+                    "adversarial": { "type": "boolean" },
+                    "escalateOnFindings": { "enum": ["high", "xhigh", null] }
+                  }
+                }
+              ]
+            }
+          }
+        },
+        "source": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["proposals", "review"],
+          "properties": {
+            "proposals": { "$ref": "#/$defs/authoringSource" },
+            "review": { "$ref": "#/$defs/authoringReviewSource" }
+          }
+        }
+      }
+    },
+    "reviewer": {
+      "description": "The review role resolved before dispatch: provisional without --proposal/--head, verified against that head's effective authors with them.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "adversarial",
+        "effort",
+        "effortSource",
+        "harness",
+        "mode",
+        "model",
+        "proposal",
+        "reason",
+        "status"
+      ],
+      "properties": {
+        "adversarial": { "type": "boolean" },
+        "effort": {
+          "anyOf": [
+            { "type": "null" },
+            { "enum": ["low", "medium", "high", "xhigh", "max"] }
+          ]
+        },
+        "effortSource": { "enum": ["configured", "escalation", null] },
+        "harness": {
+          "anyOf": [
+            { "type": "null" },
+            { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,39}$" }
+          ]
+        },
+        "mode": { "enum": ["provisional", "verified"] },
+        "model": {
+          "anyOf": [{ "type": "null" }, { "type": "string", "minLength": 1 }]
+        },
+        "reason": {
+          "enum": [
+            null,
+            "authoring-repair",
+            "author-identity-missing",
+            "authors-not-recorded",
+            "coverage-incomplete",
+            "ledger-cycle",
+            "ledger-malformed",
+            "most-capable-unresolved",
+            "no-delegation",
+            "no-effective-authors",
+            "reviewer-not-distinct",
+            "running-harness-unknown"
+          ]
+        },
+        "status": { "enum": ["resolved", "unresolved", "blocked"] },
+        "proposal": {
+          "anyOf": [
+            { "type": "null" },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "authorsDigest",
+                "coverageWaiverId",
+                "fullyCovered",
+                "gaps",
+                "head",
+                "proposalId",
+                "reviewedAttemptId",
+                "unattributed"
+              ],
+              "properties": {
+                "authorsDigest": {
+                  "anyOf": [
+                    { "type": "null" },
+                    { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+                  ]
+                },
+                "coverageWaiverId": {
+                  "anyOf": [{ "type": "null" }, { "type": "string" }]
+                },
+                "fullyCovered": { "type": "boolean" },
+                "gaps": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["uncoveredEdits", "unresolvedSources"],
+                    "properties": {
+                      "uncoveredEdits": {
+                        "type": "array",
+                        "items": { "type": "string" }
+                      },
+                      "unresolvedSources": {
+                        "type": "array",
+                        "items": { "type": "string" }
+                      }
+                    }
+                  }
+                },
+                "head": {
+                  "type": "string",
+                  "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+                },
+                "proposalId": { "type": "string", "minLength": 1 },
+                "reviewedAttemptId": {
+                  "anyOf": [{ "type": "null" }, { "type": "string" }]
+                },
+                "unattributed": {
+                  "type": "array",
+                  "items": { "type": "string" }
+                }
+              }
+            }
+          ]
+        }
       }
     },
     "turnEndGuard": {

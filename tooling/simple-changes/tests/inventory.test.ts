@@ -75,6 +75,22 @@ describe("Git inventory and concurrency", () => {
     expect(existsSync(join(fixture.root, ".git/simple-changes"))).toBe(false);
   });
 
+  test("inventories an uncommitted authoring sidecar as ordinary work and a committed one as clean", () => {
+    const fixture = repository();
+    const sidecar = `${JSON.stringify({ harnesses: {}, roles: {}, schemaVersion: 1 })}\n`;
+    writeFixture(fixture.root, ".simple-changes-authoring.json", sidecar);
+    const uncommitted = captureInventory(fixture.root);
+    expect(uncommitted.localChanges.map((change) => change.path)).toContain(
+      ".simple-changes-authoring.json"
+    );
+    git(fixture.root, ["add", ".simple-changes-authoring.json"]);
+    git(fixture.root, ["commit", "-m", "Record authoring preferences"]);
+    const committed = captureInventory(fixture.root);
+    expect(committed.localChanges.map((change) => change.path)).not.toContain(
+      ".simple-changes-authoring.json"
+    );
+  });
+
   test("streams large binary identities and never reads a FIFO", () => {
     const fixture = repository();
     const binaryPath = join(fixture.root, "large.bin");

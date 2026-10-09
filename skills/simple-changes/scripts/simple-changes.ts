@@ -1,11 +1,36 @@
 #!/usr/bin/env bun
 
 import { createHash } from "node:crypto";
-import { readFileSync, writeSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import {
+  lstatSync,
+  readFileSync,
+  realpathSync,
+  type Stats,
+  statSync,
+  writeFileSync,
+  writeSync,
+} from "node:fs";
+import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { fileURLToPath } from "node:url";
 import { sleep, stdin } from "bun";
+import {
+  type AuthoringSidecar,
+  authoringPaths,
+  changelogsHarnessPrefill,
+  detectHarnesses,
+  loadHarnessDefinitions,
+  parseAuthoringAnswer,
+  parseAuthoringRequest,
+  type RepositoryAuthoring,
+  recordAuthoringAnswer,
+  resolveRepositoryAuthoring,
+  writeAuthoringSidecar,
+} from "./lib/authoring.ts";
+import {
+  type AuthoringOnboardingContext,
+  authoringReviewNoticeQuestion,
+} from "./lib/authoring-onboarding.ts";
 import { auditBranchReplacements } from "./lib/branch-audit.ts";
 import { inspectChangelogCoordination } from "./lib/changelog-coordination.ts";
 import {
@@ -19,6 +44,7 @@ import {
   acknowledgedGuidance,
   CURRENT_GUIDANCE_VERSION,
   type GuidanceUpdateAction,
+  type GuidanceUpdateContext,
 } from "./lib/guidance-updates.ts";
 import { currentHarnessSession } from "./lib/harness-session.ts";
 import {
@@ -42,10 +68,12 @@ import {
   grantLoopOverride,
   guardLoopMutation,
   type LoopEquivalenceEvidence,
+  loopLeasePath,
   loopManifestDigest,
   loopReplanStatus,
   loopStatus,
   markWorktreeResumeReady,
+  OUTCOME_DRAFT_MARKER,
   prepareAgentWorktree,
   readControllerBinding,
   readLoopLease,
@@ -108,6 +136,7 @@ import {
   buildProposalSignatureBlock,
   type ProposalSignatureRole,
 } from "./lib/proposal-signatures.ts";
+import { withReadOnlyGit } from "./lib/read-only-git.ts";
 import {
   parseReadyWorkInput,
   type ReadyWorkStatus,
@@ -127,14 +156,36 @@ import {
   negotiateChangelogProtocol,
   validateChangelogReleaseSet,
 } from "./lib/release-gate.ts";
+import type { ReleaseNotesPointer } from "./lib/release-history.ts";
+import {
+  releaseNotesPointer,
+  renderReleaseNotesPointer,
+} from "./lib/release-history.ts";
 import type { ReleaseNotes } from "./lib/release-notes.ts";
 import { extractReleaseNotes } from "./lib/release-notes.ts";
 import { runReleaseTag } from "./lib/release-tag.ts";
+import {
+  buildRemoteInventory,
+  type RemoteInventoryBuild,
+} from "./lib/remote-inventory.ts";
 import { renderInventory, renderPlan } from "./lib/report.ts";
 import {
   discoverInstructionTargets,
   writeInstructionPointer,
 } from "./lib/repository-instructions.ts";
+import {
+  type AuthorAttestResult,
+  attestCommits,
+  type CommitGaps,
+  type RecordAuthorsResult,
+  type RecordReviewResult,
+  type ReviewLedgerResumeState,
+  recordProposalAuthors,
+  recordReviewAttempt,
+  resolveReviewer,
+  type WaiveCoverageResult,
+  waiveProposalCoverage,
+} from "./lib/review-ledger.ts";
 import {
   type RuntimeFreshness,
   runtimeFreshness,
@@ -155,8 +206,19 @@ import {
   type ShipHoldReport,
   waiveShipHold,
 } from "./lib/ship-holds.ts";
+import {
+  draftShipmentOutcome,
+  releasePathsFromChangelogReceipt,
+} from "./lib/shipment-outcome-draft.ts";
 import { checkSkill, type SkillCheckReport } from "./lib/skill-check.ts";
 import { isForkRuntime, skillRootOf } from "./lib/skill-roots.ts";
+import {
+  isUnknown,
+  repositoryStatusFor,
+  type StatusReport,
+  type StatusRepository,
+  statusAll,
+} from "./lib/status-all.ts";
 import {
   hookInstallScript,
   parseTurnCheckHookInput,
@@ -201,7 +263,7 @@ import {
   standaloneWorktreeCleanup,
 } from "./lib/worktree-maintenance.ts";
 
-const VERSION = "0.27.1";
+const VERSION = "0.28.0";
 const SCRIPT_FILE = fileURLToPath(import.meta.url);
 const PLAIN_SHELL_WORD_PATTERN = /^[\w./-]+$/u;
 const PACKAGE_ROOT = resolve(dirname(SCRIPT_FILE), "..");
@@ -239,6 +301,7 @@ Usage:
     [--migration-target provider:project:environment]
     [--questions blocking-only|always|never]
     [--scope user|repository|run] [--acknowledge-push-scope]
+    [--proposal ID --head SHA] [--authoring-request JSON|@FILE]
     [--agent-id ID] [--yes] [--json] [--repo PATH]
   simple-changes setup [--finish review|integrate|ship]
     [--changelog delegate-if-available|preserve-and-report|ask]
@@ -258,15 +321,21 @@ Usage:
     [--questions blocking-only|always|never]
     [--scope user|repository|run] [--acknowledge-push-scope]
     [--agent-id ID] [--yes] [--json] [--repo PATH]
+  simple-changes setup --authoring JSON|@FILE --scope repository|personal
+    --confirm [--agent-id ID] [--json] [--repo PATH]
   simple-changes acknowledge-update --guidance-decision accepted|reviewed|deferred
     [--agent-id ID] [--json] [--repo PATH]
   simple-changes migration decision --state REVIEW_FILE --pending PENDING_FILE --apply-plan APPLY_PLAN_FILE [--json] [--repo PATH]
   simple-changes migration apply --state REVIEW_FILE --pending PENDING_FILE --apply-plan APPLY_PLAN_FILE [--json] [--repo PATH]
   simple-changes permissions bundle REQUESTS_FILE [--json]
   simple-changes inventory [--json] [--repo PATH]
+  simple-changes status [--all [--root DIR ...]] [--json] [--repo PATH]
   simple-changes preview [--json] [--repo PATH] [--settle-ms N]
+  simple-changes remote-inventory build --pages PAGES_FILE
+    [--opening-remote-inventory FILE [--decisions FILE]] [--output FILE]
+    [--json]
   simple-changes loop start --mode MODE --agent-id ID [--changelog-required]
-    [--opening-remote-inventory FILE]
+    [--opening-remote-inventory FILE] [--authoring-request JSON|@FILE]
     [--json] [--repo PATH]
   simple-changes loop status [--json] [--repo PATH]
   simple-changes loop replan-status [--json] [--repo PATH]
@@ -283,6 +352,8 @@ Usage:
     --receipt CHANGE_PLAN_FILE [--json] [--repo PATH]
   simple-changes loop refresh-scope --run-id ID --agent-id ID
     --receipt CHANGE_PLAN_FILE [--json] [--repo PATH]
+  simple-changes loop draft-outcome --run-id ID [--changelog-receipt FILE]
+    [--output FILE] [--json] [--repo PATH]
   simple-changes loop record-outcome --run-id ID --agent-id ID
     --receipt SHIPMENT_OUTCOME_FILE
     [--approved-by USER --approval-reference REFERENCE]
@@ -384,6 +455,17 @@ Usage:
   simple-changes proposal-signatures --agent NAME --role authored|reviewed|merged
     [--base REF --head REF] [--changelog-receipt FILE] [--json] [--repo PATH]
   simple-changes proposal audit --file FILE [--template FILE] [--json]
+  simple-changes proposal record-authors --proposal ID --base SHA --head SHA
+    [--receipt COPY_AUTHORS_FILE] [--instance ID] [--agent NAME]
+    [--json] [--repo PATH]
+  simple-changes proposal record-review --proposal ID --head SHA
+    --attempt-id UUID --receipt ATTEMPT_FILE [--authoring-request JSON|@FILE]
+    [--json] [--repo PATH]
+  simple-changes proposal waive-coverage --proposal ID --head SHA
+    --authors-digest SHA256 --receipt WAIVER_FILE [--json] [--repo PATH]
+  simple-changes author attest --commit SHA [--commit SHA ...] [--agent-id ID]
+    [--contribution implementation] [--replays SHA[,SHA ...]]
+    [--worktree PATH] [--instance ID] [--agent NAME] [--json] [--repo PATH]
   simple-changes skill check [--skill-dir PATH] [--json]
   simple-changes validate KIND FILE [--json]
   simple-changes verify-markdown FILE [--json]
@@ -393,7 +475,8 @@ Schema kinds:
 ${schemaKindLines}
 
 Exit codes:
-  0 success, 2 usage, 3 invalid contract, 4 inventory failure, 5 unsafe state
+  0 success, 2 usage, 3 invalid contract, 4 inventory failure, 5 unsafe state,
+  6 release notes older than the packaged window (printed a link instead)
 `;
 
 interface CliOptions {
@@ -401,10 +484,18 @@ interface CliOptions {
   adapter?: string;
   agentId?: string;
   agentName?: string;
+  all: boolean;
   alreadyLive: boolean;
   applyPlanPath?: string;
   approvalReference?: string;
   approvedBy?: string;
+  attemptId?: string;
+  // setup --authoring: the authoring answer as JSON or @path.
+  authoring?: string;
+  // initialize and proposal record-review --authoring-request: the current
+  // request's sidecar object as JSON or @path, applied and never written.
+  authoringRequest?: string;
+  authorsDigest?: string;
   awaitingUser: string[];
   baseRef?: string;
   changelogHandling?: RepoPolicy["changelogHandling"];
@@ -413,7 +504,10 @@ interface CliOptions {
   changelogRequired: boolean;
   check: boolean;
   claimId?: string;
+  commits: string[];
   concurrentWork?: RepoPolicy["concurrentWork"];
+  contribution?: "implementation";
+  decisionsPath?: string;
   defaultFinish?: "open-change-request" | "integrate" | "ship";
   disposition?: "preserve-in-place" | "detach-clean-checkout";
   dryRun: boolean;
@@ -434,6 +528,7 @@ interface CliOptions {
   holdScope?: ShipHoldScope;
   holdSeverity?: ShipHoldSeverity;
   hook: boolean;
+  instanceId?: string;
   instructionFile?: string;
   instructionPointer?: "add" | "leave";
   json: boolean;
@@ -443,14 +538,17 @@ interface CliOptions {
   migrationTargets: RepoPolicy["migrationTargets"];
   mode?: InitializationMode;
   openingRemoteInventoryPath?: string;
+  outputPath?: string;
   overrideHalt: boolean;
   ownerRef?: string;
+  pagesPath?: string;
   pauseReceiptId?: string;
   pendingPath?: string;
   positional: string[];
   priorReceiptPath?: string;
   productionAuthorized: boolean;
   productionDeploy?: RepoPolicy["productionDeploy"];
+  proposalId?: string;
   proposalScheduling?: RepoPolicy["proposalScheduling"];
   proposalSignatures?: RepoPolicy["proposalSignatures"];
   providerReceiptPath?: string;
@@ -463,12 +561,15 @@ interface CliOptions {
   releaseClaim: boolean;
   releaseVersion?: string;
   remoteName?: string;
+  replays?: string[];
   repo: string;
   repoProvided: boolean;
   requestAction?: "request-pause" | "request-detach" | "notify-resume";
   requestPath?: string;
+  roots: string[];
   runId?: string;
   scope?: SetupScope;
+  sessionId?: string;
   settleMs: number;
   shippingMode?: RepoPolicy["shippingMode"];
   signatureRole?: ProposalSignatureRole;
@@ -490,6 +591,8 @@ interface CliOptions {
 
 const VALUED_OPTIONS = new Set([
   "--name",
+  "--authoring",
+  "--authoring-request",
   "--deltas",
   "--destination",
   "--upstream",
@@ -502,6 +605,7 @@ const VALUED_OPTIONS = new Set([
   "--changelog",
   "--changelog-install",
   "--concurrent-work",
+  "--decisions",
   "--agent",
   "--base",
   "--changelog-receipt",
@@ -527,6 +631,8 @@ const VALUED_OPTIONS = new Set([
   "--mode",
   "--owner-ref",
   "--opening-remote-inventory",
+  "--output",
+  "--pages",
   "--pending",
   "--pause-receipt",
   "--prior-receipt",
@@ -543,6 +649,7 @@ const VALUED_OPTIONS = new Set([
   "--request",
   "--request-action",
   "--repo",
+  "--root",
   "--run-id",
   "--scope",
   "--shipping-mode",
@@ -557,9 +664,19 @@ const VALUED_OPTIONS = new Set([
   "--until-merged",
   "--version",
   "--worktree",
+  // Review ledger: author attest and the proposal ledger subcommands.
+  "--attempt-id",
+  "--authors-digest",
+  "--commit",
+  "--contribution",
+  "--instance",
+  "--proposal",
+  "--replays",
+  "--session",
 ]);
 
 const BOOLEAN_OPTIONS = new Set([
+  "--all",
   "--already-live",
   "--production-authorized",
   "--version-authorized",
@@ -578,6 +695,8 @@ const BOOLEAN_OPTIONS = new Set([
   "--ui-artifacts",
   "--write",
   "--yes",
+  // setup --authoring confirms with --confirm (the same as --yes).
+  "--confirm",
 ]);
 
 const requiredOptionValue = (
@@ -802,6 +921,18 @@ const applyProposalSchedulingOption = (
   return true;
 };
 
+const applyAuthoringValuedOption = (
+  options: CliOptions,
+  option: string,
+  value: string
+): boolean => {
+  if (option !== "--authoring") {
+    return false;
+  }
+  options.authoring = value;
+  return true;
+};
+
 const applySetupValuedOption = (
   options: CliOptions,
   option: string,
@@ -913,9 +1044,11 @@ const applyLoopValuedOption = (
     "--apply-plan": "applyPlanPath",
     "--approval-reference": "approvalReference",
     "--approved-by": "approvedBy",
+    "--authoring-request": "authoringRequest",
     "--base": "baseRef",
     "--changelog-receipt": "changelogReceiptPath",
     "--claim-id": "claimId",
+    "--decisions": "decisionsPath",
     "--deltas": "forkDeltas",
     "--destination": "forkDestination",
     "--file": "filePath",
@@ -924,7 +1057,9 @@ const applyLoopValuedOption = (
     "--manifest-digest": "manifestDigest",
     "--name": "forkName",
     "--opening-remote-inventory": "openingRemoteInventoryPath",
+    "--output": "outputPath",
     "--owner-ref": "ownerRef",
+    "--pages": "pagesPath",
     "--pause-receipt": "pauseReceiptId",
     "--pending": "pendingPath",
     "--prior-receipt": "priorReceiptPath",
@@ -961,6 +1096,10 @@ const applyLoopValuedOption = (
   }
   if (option === "--awaiting-user") {
     options.awaitingUser.push(value);
+    return true;
+  }
+  if (option === "--root") {
+    options.roots.push(resolve(value));
     return true;
   }
   if (option === "--harness") {
@@ -1036,6 +1175,48 @@ const applyHoldValuedOption = (
   return false;
 };
 
+const LEDGER_TEXT_OPTIONS: Record<string, keyof CliOptions> = {
+  "--attempt-id": "attemptId",
+  "--authors-digest": "authorsDigest",
+  "--instance": "instanceId",
+  "--proposal": "proposalId",
+  "--session": "sessionId",
+};
+
+const applyLedgerValuedOption = (
+  options: CliOptions,
+  option: string,
+  value: string
+): boolean => {
+  const key = LEDGER_TEXT_OPTIONS[option];
+  if (key) {
+    Object.assign(options, { [key]: value });
+    return true;
+  }
+  if (option === "--commit") {
+    options.commits.push(value);
+    return true;
+  }
+  if (option === "--replays") {
+    options.replays = [
+      ...(options.replays ?? []),
+      ...value.split(",").map((source) => source.trim()),
+    ];
+    return true;
+  }
+  if (option === "--contribution") {
+    if (value !== "implementation") {
+      throw new SimpleChangesError(
+        "--contribution must be implementation",
+        EXIT_CODES.usage
+      );
+    }
+    options.contribution = value;
+    return true;
+  }
+  return false;
+};
+
 const applyValuedOption = (
   options: CliOptions,
   option: string,
@@ -1044,8 +1225,10 @@ const applyValuedOption = (
   if (
     applyShippingModeOption(options, option, value) ||
     applySetupValuedOption(options, option, value) ||
+    applyAuthoringValuedOption(options, option, value) ||
     applyLoopValuedOption(options, option, value) ||
-    applyHoldValuedOption(options, option, value)
+    applyHoldValuedOption(options, option, value) ||
+    applyLedgerValuedOption(options, option, value)
   ) {
     return;
   }
@@ -1097,13 +1280,14 @@ const applyValuedOption = (
     return;
   }
   if (option === "--scope") {
-    if (!["user", "repository", "run"].includes(value)) {
+    // `personal` names the same private scope as `user`.
+    if (!["user", "personal", "repository", "run"].includes(value)) {
       throw new SimpleChangesError(
-        "--scope must be user, repository, or run",
+        "--scope must be user (or personal), repository, or run",
         EXIT_CODES.usage
       );
     }
-    options.scope = value as SetupScope;
+    options.scope = (value === "personal" ? "user" : value) as SetupScope;
     return;
   }
   if (option === "--version") {
@@ -1138,6 +1322,8 @@ const applyTurnGuardBooleanOption = (
 const applyBooleanOption = (options: CliOptions, option: string): void => {
   if (option === "--acknowledge-push-scope") {
     options.acknowledgePushScope = true;
+  } else if (option === "--all") {
+    options.all = true;
   } else if (option === "--already-live") {
     options.alreadyLive = true;
   } else if (option === "--production-authorized") {
@@ -1174,10 +1360,12 @@ const applyBooleanOption = (options: CliOptions, option: string): void => {
 const parseOptions = (args: string[]): CliOptions => {
   const options: CliOptions = {
     acknowledgePushScope: false,
+    all: false,
     alreadyLive: false,
     awaitingUser: [],
     changelogRequired: false,
     check: false,
+    commits: [],
     dryRun: false,
     evidencePaths: [],
     help: false,
@@ -1192,6 +1380,7 @@ const parseOptions = (args: string[]): CliOptions => {
     releaseClaim: false,
     repo: process.cwd(),
     repoProvided: false,
+    roots: [],
     settleMs: 0,
     staleLease: false,
     tagAutomationAuthorized: false,
@@ -1244,6 +1433,141 @@ const parseOptions = (args: string[]): CliOptions => {
 
 const writeOutput = (value: unknown, json: boolean, text: string): void => {
   process.stdout.write(json ? `${JSON.stringify(value, null, 2)}\n` : text);
+};
+
+const STATUS_READ_ONLY_NOTE =
+  "Read-only: nothing was fetched, locked, or written, and local checkouts may be behind their remotes; state that could not be read shows as unknown.";
+
+const READY_CHECKOUT_NOTES: Record<string, string> = {
+  false: " (checkout absent)",
+  null: " (checkout unknown)",
+};
+
+const short = (sha: string | null): string => sha?.slice(0, 8) ?? "(none)";
+
+const renderStatusLease = (lease: StatusRepository["lease"]): string[] => {
+  if (isUnknown(lease)) {
+    return [`  Lease: unknown (${lease.error})`];
+  }
+  if (!lease) {
+    return [];
+  }
+  const { awaitingUser } = lease;
+  return [
+    `  Lease: ${lease.runId} (${lease.mode}) by ${lease.ownerAgentId}, controller ${lease.controllerStatus}, liveness ${lease.liveness.state} (last activity ${lease.liveness.lastUpdatedAt})`,
+    ...(isUnknown(awaitingUser)
+      ? [`    Awaiting the user: unknown (${awaitingUser.error})`]
+      : (awaitingUser ?? []).map(
+          (question) => `    Awaiting the user: ${question}`
+        )),
+  ];
+};
+
+const renderStatusSection = <T>(
+  label: string,
+  items: T[] | { error: string; state: "unknown" },
+  render: (item: T) => string
+): string[] =>
+  isUnknown(items)
+    ? [`  ${label}: unknown (${items.error})`]
+    : items.map((item) => `  ${render(item)}`);
+
+const renderStatusGuidance = (
+  guidance: StatusRepository["guidance"]
+): string[] => {
+  if (isUnknown(guidance)) {
+    return [`  Guidance: unknown (${guidance.error})`];
+  }
+  return guidance.state === "current"
+    ? []
+    : [
+        `  Guidance: ${guidance.state} (stored ${guidance.storedVersion ?? "none"}, this runtime ${guidance.currentVersion})`,
+      ];
+};
+
+const renderStatusRepository = (status: StatusRepository): string[] => {
+  const lines = [
+    ...renderStatusLease(status.lease),
+    ...renderStatusSection(
+      "Claims",
+      status.claims,
+      (claim) =>
+        `Claim ${claim.state}: ${claim.path} by ${claim.agentId} (${claim.adapter}); checkout ${claim.checkout}`
+    ),
+    ...renderStatusSection(
+      "Holds",
+      status.holds,
+      (hold) =>
+        `Hold ${hold.status} (${hold.severity} ${hold.scope}) by ${hold.owner}: ${hold.reason}`
+    ),
+    ...renderStatusSection(
+      "Ready work",
+      status.readyWork,
+      (item) =>
+        `Ready work ${item.freshness}${READY_CHECKOUT_NOTES[String(item.checkoutPresent)] ?? ""}: ${item.branch} at ${short(item.headSha)} by ${item.owner}; ${item.detail}`
+    ),
+    ...renderStatusGuidance(status.guidance),
+  ];
+  return [
+    status.repository,
+    ...(lines.length > 0 ? lines : ["  Nothing in flight."]),
+  ];
+};
+
+const renderStatusReport = (report: StatusReport): string => {
+  const lines = [
+    `Simple Changes status across ${report.repositories.length} repositor${report.repositories.length === 1 ? "y" : "ies"} under ${report.roots.length} root(s).`,
+    ...report.repositories.flatMap(renderStatusRepository),
+  ];
+  if (report.forks.length > 0) {
+    lines.push(
+      report.upstream
+        ? `Forks, compared with ${report.upstream.path} at ${report.upstream.version} (guidance ${report.upstream.guidanceVersion}):`
+        : "Forks (no installed Simple Changes source to compare with):"
+    );
+    for (const fork of report.forks.filter((item) => !item.linkedWorktree)) {
+      lines.push(
+        `  ${fork.state}: ${fork.name} at ${fork.path}, runtime ${fork.runtimeVersion ?? "unknown"} (guidance ${fork.guidanceVersion ?? "unknown"}), pinned ${fork.pin}`
+      );
+    }
+    const linked = report.forks.filter((item) => item.linkedWorktree).length;
+    if (linked > 0) {
+      lines.push(
+        `  ${linked} more fork cop${linked === 1 ? "y" : "ies"} in linked worktrees; --json lists them.`
+      );
+    }
+  }
+  lines.push(STATUS_READ_ONLY_NOTE);
+  return `${lines.join("\n")}\n`;
+};
+
+const runStatus = (options: CliOptions): void => {
+  if (options.positional.length > 0) {
+    throw new SimpleChangesError(
+      `Unexpected argument: ${options.positional[0]}`,
+      EXIT_CODES.usage
+    );
+  }
+  if (!options.all) {
+    if (options.roots.length > 0) {
+      throw new SimpleChangesError(
+        "--root applies only with --all.",
+        EXIT_CODES.usage
+      );
+    }
+    const status = repositoryStatusFor(options.repo);
+    writeOutput(
+      status,
+      options.json,
+      `${[...renderStatusRepository(status), STATUS_READ_ONLY_NOTE].join("\n")}\n`
+    );
+    return;
+  }
+  const report = statusAll({
+    roots: options.roots,
+    runtime: { skillDirectory: PACKAGE_ROOT, version: VERSION },
+  });
+  writeOutput(report, options.json, renderStatusReport(report));
 };
 
 const runInventory = (options: CliOptions): void => {
@@ -1494,7 +1818,122 @@ const buildOnboardingInputs = (
   return inputs;
 };
 
+// Writes under the lock setup already uses: the active loop's mutation lease
+// when a loop runs, otherwise the loop state lock of the repository.
+const withSetupWriteLock = async <T>(
+  repositoryPath: string,
+  commonGitDirectory: string,
+  agentId: string | undefined,
+  operation: string,
+  write: () => T
+): Promise<T> => {
+  const activeLoop = readLoopLease(repositoryPath);
+  if (activeLoop) {
+    return (
+      await withLoopMutationLease(
+        repositoryPath,
+        activeLoop.runId,
+        requireCliOption(
+          agentId,
+          "--agent-id while an integration loop is active"
+        ),
+        operation,
+        write
+      )
+    ).result;
+  }
+  return withLoopStateLock(commonGitDirectory, operation, write);
+};
+
+const AUTHORING_EXCLUSIVE_INPUTS = SETUP_INPUT_KEYS.filter(
+  (key) => key !== "scope"
+);
+
+/**
+ * `setup --authoring <json-or-@path> --scope <repository|personal> --confirm`
+ * records the authoring answer as its own transaction: only the sidecar is
+ * written, independent of the guidance acknowledgement.
+ */
+const runAuthoringSetup = async (
+  options: CliOptions,
+  answerText: string
+): Promise<void> => {
+  const mixed = AUTHORING_EXCLUSIVE_INPUTS.filter(
+    (key) => options[key] !== undefined
+  );
+  if (mixed.length > 0) {
+    throw new SimpleChangesError(
+      `setup --authoring is a standalone transaction; record ${mixed.join(", ")} in a separate setup.`,
+      EXIT_CODES.usage
+    );
+  }
+  if (options.scope !== "repository" && options.scope !== "user") {
+    throw new SimpleChangesError(
+      "setup --authoring requires --scope repository or --scope personal; a run-only answer writes nothing.",
+      EXIT_CODES.usage
+    );
+  }
+  if (!options.yes) {
+    throw new SimpleChangesError(
+      "setup --authoring requires --confirm before writing.",
+      EXIT_CODES.usage
+    );
+  }
+  const answer = parseAuthoringAnswer(answerText);
+  const { repository } = captureInventory(options.repo);
+  const scope = options.scope === "user" ? "personal" : "repository";
+  const recorded = await withSetupWriteLock(
+    options.repo,
+    repository.commonGitDirectory,
+    options.agentId,
+    "authoring setup write",
+    () =>
+      recordAuthoringAnswer({
+        answer,
+        primaryCheckout: repository.primaryCheckout,
+        scope,
+      })
+  );
+  const after = resolveRepositoryAuthoring(repository.primaryCheckout);
+  writeOutput(
+    {
+      authoring: { path: recorded.path, scope, written: recorded.written },
+      authoringQuestion: after.authoringQuestion,
+      summary: recorded.summary,
+    },
+    options.json,
+    `${recorded.summary}\n`
+  );
+};
+
+// Detection and pre-fill for the interactive authoring questions; none when
+// the harness data file is unreadable (the questions are then skipped).
+const interactiveAuthoringContext = (
+  primaryCheckout: string | null
+): Omit<AuthoringOnboardingContext, "setupStyle"> | null => {
+  try {
+    const definitions = loadHarnessDefinitions();
+    const { detected, running } = detectHarnesses(definitions);
+    return {
+      definitions,
+      detected,
+      prefill: changelogsHarnessPrefill(primaryCheckout),
+      runningHarness: running,
+    };
+  } catch (error) {
+    // Failed detection is not an empty result: say so instead of skipping.
+    process.stderr.write(
+      `Skipping the authoring questions, and recording none: ${(error as Error).message}\n`
+    );
+    return null;
+  }
+};
+
 const runSetup = async (options: CliOptions): Promise<void> => {
+  if (options.authoring !== undefined) {
+    await runAuthoringSetup(options, options.authoring);
+    return;
+  }
   const context = setupContext(options.repo);
   const instructionTargets = options.scope
     ? discoverInstructionTargets(
@@ -1536,6 +1975,9 @@ const runSetup = async (options: CliOptions): Promise<void> => {
       context.primaryCheckout,
       options.uiArtifacts,
       {
+        authoring: process.stdin.isTTY
+          ? interactiveAuthoringContext(context.primaryCheckout)
+          : null,
         existingPersonalDefaults: context.existingPersonalDefaults,
         forgeProvider: context.forgeProvider,
         showFirstScreen: process.stdin.isTTY,
@@ -1548,10 +1990,31 @@ const runSetup = async (options: CliOptions): Promise<void> => {
       written && path
         ? withSavedExecGuard(path, selection.policy)
         : selection.policy;
+    // The authoring answer is saved beside the policy for the same scope;
+    // run-only setup asked but writes nothing.
+    let authoringWrite: { path: string; written: boolean } | null = null;
+    const authoringTarget =
+      selection.confirmed && selection.authoring && selection.scope !== "run"
+        ? (() => {
+            const paths = authoringPaths(
+              context.primaryCheckout ?? options.repo
+            );
+            return selection.scope === "repository"
+              ? paths.repository
+              : paths.personal;
+          })()
+        : null;
     const applyWrites = (): {
       instructionPointerChanged: boolean;
       instructionPointerWritten: boolean;
     } => {
+      if (authoringTarget && selection.authoring) {
+        authoringWrite = writeAuthoringSidecar(
+          authoringTarget,
+          selection.authoring,
+          selection.scope === "user"
+        );
+      }
       let instructionPointerWritten = false;
       let instructionPointerChanged = false;
       if (
@@ -1609,6 +2072,11 @@ const runSetup = async (options: CliOptions): Promise<void> => {
       writeResult = applyWrites();
     }
     const result = {
+      // `authoring` is the persistence receipt (null for run-only, which
+      // writes nothing); `authoringAnswer` is the confirmed answer itself,
+      // which a run-only setup applies to the current request only.
+      authoring: authoringWrite,
+      authoringAnswer: selection.confirmed ? selection.authoring : null,
       changelogCoordination: context.changelog,
       changelogInstall: selection.changelogInstall,
       confirmed: selection.confirmed,
@@ -1794,6 +2262,79 @@ const renderTurnEndGuard = (
     : `Turn-end guard: ${state} for ${guard.harness}; this copy cannot be installed from here, so install it from the globally installed Simple Changes`;
 };
 
+const describeReviewer = (
+  reviewer: NonNullable<InitializationStatus["reviewer"]>
+): string => {
+  const target = reviewer.harness
+    ? `${reviewer.model ?? "unknown model"} in ${reviewer.harness} at ${reviewer.effort ?? "unknown effort"}${reviewer.effortSource === "escalation" ? " (escalated after findings)" : ""}`
+    : "no target";
+  const reason = reviewer.reason ? `, ${reviewer.reason}` : "";
+  return `Reviewer (${reviewer.mode}${reviewer.adversarial ? ", different author model or agent required" : ""}): ${reviewer.status}, ${target}${reason}`;
+};
+
+// The authoring preference state: pending questions, a sidecar to repair, and
+// the resolved reviewer the pre-ship brief names.
+const appendAuthoring = (
+  lines: string[],
+  status: InitializationStatus
+): void => {
+  for (const error of status.authoringErrors ?? []) {
+    lines.push(
+      `Authoring data error: ${error} Detection reports nothing and no authoring answer can be recorded until the package is reinstalled.`
+    );
+  }
+  const question = status.authoringQuestion;
+  if (question) {
+    const pending = Object.entries(question)
+      .filter(([, state]) => state === "pending" || state === "repair")
+      .map(([id, state]) => `${id} ${state}`);
+    if (pending.length > 0) {
+      lines.push(
+        `Authoring questions: ${pending.join(", ")}; see references/onboarding.md ("Agents, models, and reviews").`
+      );
+    }
+  }
+  const review = status.authoringReviewQuestion;
+  if (review) {
+    lines.push(
+      "",
+      review.question,
+      ...review.choices.map(
+        (choice) =>
+          `- ${choice.label}${choice.recommended && !choice.label.includes("Recommended") ? " (Recommended)" : ""}: ${choice.description}`
+      ),
+      "Record the answer with `simple-changes setup --authoring` (references/onboarding.md)."
+    );
+  }
+  if (status.reviewer) {
+    lines.push(describeReviewer(status.reviewer));
+  }
+  const requested = requestedAuthoringFields(status);
+  if (requested.length > 0) {
+    lines.push(
+      `Authoring request applied to this invocation only (nothing saved): ${requested.join(", ")}.`
+    );
+  }
+};
+
+// The fields the current request supplied (`--authoring-request`), so a
+// run-only answer that changed the reviewer or tightened the gate is visible.
+const requestedAuthoringFields = (status: InitializationStatus): string[] => {
+  const source = status.authoring?.source;
+  if (!source) {
+    return [];
+  }
+  const fields: string[] = [];
+  for (const [role, layers] of Object.entries(source)) {
+    for (const [field, layer] of Object.entries(layers)) {
+      if (layer === "request") {
+        fields.push(`${role}.${field}`);
+      }
+    }
+  }
+  return fields;
+};
+
 const renderInitialization = (status: InitializationStatus): string => {
   const lines = [
     "Simple Changes initialization",
@@ -1849,6 +2390,7 @@ const renderInitialization = (status: InitializationStatus): string => {
   appendSimpleChangelogsUpdate(lines, status, combinedUpdate);
   appendCombinedUpdateChoice(lines, status);
   appendFirstUseWalkthroughOffer(lines, status);
+  appendAuthoring(lines, status);
   return `${lines.join("\n")}\n`;
 };
 
@@ -1881,6 +2423,83 @@ const initializationTurnEndGuard = (): InitializationStatus["turnEndGuard"] => {
   }
 };
 
+const AUTHORING_MODES = new Set<InitializationMode>([
+  "handoff",
+  "queue",
+  "sweep",
+  "integrate",
+  "ship",
+  "reconcile",
+  "resume",
+]);
+
+// Authoring preferences for initialization: Preview, Pause, guarded Sync and
+// read-only modes are not applicable (onboarding runs only for write-capable
+// requests other than Sync), and no setup style is in progress, so the review
+// question follows the recommended column of the truth table.
+const initializationAuthoring = (
+  primaryCheckout: string,
+  mode: InitializationMode,
+  request: AuthoringSidecar | null
+): {
+  fields: Pick<
+    InitializationStatus,
+    | "authoring"
+    | "authoringErrors"
+    | "authoringFiles"
+    | "authoringQuestion"
+    | "authoringReviewQuestion"
+    | "detectedHarnesses"
+  >;
+  guidanceContext: GuidanceUpdateContext;
+  resolution: RepositoryAuthoring;
+} => {
+  const resolution = resolveRepositoryAuthoring(primaryCheckout, {
+    request,
+    writeCapable: AUTHORING_MODES.has(mode),
+  });
+  const questions: GuidanceUpdateContext["questions"] = {};
+  if (resolution.authoringQuestion.review === "pending") {
+    try {
+      const question = authoringReviewNoticeQuestion({
+        definitions: loadHarnessDefinitions(),
+        detected: resolution.detectedHarnesses,
+        modelsPending: resolution.authoringQuestion.models === "pending",
+        recordedHarnesses: [
+          resolution.authoringFiles.repository,
+          resolution.authoringFiles.personal,
+        ].flatMap((file) => Object.keys(file.value?.harnesses ?? {})),
+        runningHarness: resolution.runningHarness,
+      });
+      if (question) {
+        questions["authoring-review"] = question;
+      }
+    } catch {
+      // A broken harness data file leaves the notice without the question.
+    }
+  }
+  return {
+    fields: {
+      authoring: { effective: resolution.effective, source: resolution.source },
+      authoringErrors: resolution.harnessDataError
+        ? [resolution.harnessDataError]
+        : [],
+      authoringFiles: resolution.authoringFiles,
+      authoringQuestion: resolution.authoringQuestion,
+      // Asked at every write-capable initialization while it is pending,
+      // whatever the guidance version: acknowledgement never answers it.
+      authoringReviewQuestion: questions["authoring-review"] ?? null,
+      detectedHarnesses: resolution.detectedHarnesses,
+    },
+    guidanceContext: {
+      authoringQuestion: resolution.authoringQuestion,
+      detectedHarnesses: resolution.detectedHarnesses,
+      questions,
+    },
+    resolution,
+  };
+};
+
 const runInitialize = async (options: CliOptions): Promise<void> => {
   if (!options.mode) {
     throw new SimpleChangesError(
@@ -1894,6 +2513,13 @@ const runInitialize = async (options: CliOptions): Promise<void> => {
       EXIT_CODES.usage
     );
   }
+  // The request layer is validated before anything is read or changed: an
+  // invalid --authoring-request is a usage error that leaves every claim
+  // where it was.
+  const authoringRequest =
+    options.authoringRequest === undefined
+      ? null
+      : parseAuthoringRequest(options.authoringRequest);
   const inventory = captureInventory(options.repo);
   const activeLoop = readLoopLease(options.repo);
   if (activeLoop && !["preview", "pause", "handoff"].includes(options.mode)) {
@@ -1906,15 +2532,31 @@ const runInitialize = async (options: CliOptions): Promise<void> => {
   const changelogCoordination = inspectChangelogCoordination(
     inventory.repository.primaryCheckout
   );
+  const authoring = initializationAuthoring(
+    inventory.repository.primaryCheckout,
+    options.mode,
+    authoringRequest
+  );
   const inspected = inspectInitialization(
     options.mode,
     inventory.policy,
     changelogCoordination,
     {
       changelogRequired: options.changelogRequired,
+      guidanceContext: authoring.guidanceContext,
       readinessConfirmed: options.ready,
     }
   );
+  // Resolved before anything changes: an invalid --proposal or --head is a
+  // usage error that must leave the handoff claim where it was.
+  const reviewer = resolveReviewer({
+    authoring: authoring.resolution,
+    repositoryRoot: inventory.repository.primaryCheckout,
+    ...(options.proposalId === undefined
+      ? {}
+      : { proposalId: options.proposalId }),
+    ...(options.headRef === undefined ? {} : { head: options.headRef }),
+  });
   // A proceeding handoff declares the current checkout finished: release the
   // author's own claim there so the work becomes an ordinary stable unit that
   // any controller may ship, instead of a concurrent-author exclusion.
@@ -1924,10 +2566,12 @@ const runInitialize = async (options: CliOptions): Promise<void> => {
       : null;
   const status = validateSchema<InitializationStatus>("initialization", {
     ...inspected,
+    ...authoring.fields,
     changelogInstall: pendingChangelogInstallOffer(changelogCoordination),
     handoffClaimRelease: handoffClaimRelease
       ? { claimId: handoffClaimRelease.claimId, path: handoffClaimRelease.path }
       : null,
+    reviewer,
     runtimeFreshness: runtimeFreshness(
       {
         targetRef: inventory.targetRef,
@@ -2441,11 +3085,182 @@ const renderProposalAudit = (report: ProposalAuditReport): string =>
         .map((issue) => `- ${issue}`)
         .join("\n")}\n`;
 
+const renderGaps = (gaps: Record<string, CommitGaps>): string =>
+  Object.entries(gaps)
+    .map(
+      ([commit, gap]) =>
+        `Gap on ${commit}: unresolved sources [${gap.unresolvedSources.join(", ")}], uncovered edits [${gap.uncoveredEdits.join(", ")}]\n`
+    )
+    .join("");
+
+const renderRecordedAuthors = (result: RecordAuthorsResult): string =>
+  `${result.status === "unchanged" ? "Already recorded" : "Recorded"} authors for ${result.proposalId} at ${result.head} (${result.commits.length} commits, ${result.fullyCovered ? "fully covered" : "partial coverage"}).\nAuthors digest: ${result.authorsDigest}\n${
+    result.unattributed.length > 0
+      ? `Unattributed: ${result.unattributed.join(", ")}\n`
+      : ""
+  }${renderGaps(result.gaps)}`;
+
+// Acceptance when the attempt was recorded is history; whether it counts now
+// is decided again against the current head, digest, coverage and settings.
+const renderRecordedReview = (result: RecordReviewResult): string => {
+  const { attempt, currentValidity } = result;
+  const recorded = `${result.status === "unchanged" ? "Already recorded" : "Recorded"} review attempt ${attempt.attemptId} at ${attempt.headRevision}: verdict ${attempt.verdict}, ${
+    attempt.accepted
+      ? "accepted when recorded"
+      : `not accepted when recorded (${attempt.acceptanceReason})`
+  }.`;
+  let now = "Now: does not count toward approval (its verdict is not clean).";
+  if (!currentValidity.valid) {
+    now = `Now: does not count (${currentValidity.reason}); ask the owner before reviewing again.`;
+  } else if (result.approvalCandidate) {
+    now = "Now: counts toward approval of this head.";
+  }
+  return `${recorded}\n${now}\n${result.disclosure.message ? `Disclosure: ${result.disclosure.message}\n` : ""}`;
+};
+
+const renderWaiver = (result: WaiveCoverageResult): string =>
+  `${result.status === "unchanged" ? "Already recorded" : "Recorded"} coverage waiver ${result.waiver.waiverId} by ${result.waiver.approvedBy}, bound to ${result.waiver.authorsDigest}.\n${
+    result.covers
+      ? "It covers every outstanding item on this head.\n"
+      : `Still outstanding: ${result.outstanding.unattributed.join(", ") || "no unattributed commits"}\n${renderGaps(result.outstanding.gaps)}`
+  }`;
+
+const runProposalLedgerCommand = (
+  action: string,
+  options: CliOptions
+): void => {
+  const proposalId = requireCliOption(options.proposalId, "--proposal");
+  const head = requireCliOption(options.headRef, "--head");
+  // Validated before the receipt is read: an invalid request is a usage
+  // error before anything else happens.
+  const request =
+    options.authoringRequest === undefined
+      ? undefined
+      : parseAuthoringRequest(options.authoringRequest);
+  if (action === "record-authors") {
+    const result = recordProposalAuthors({
+      base: requireCliOption(options.baseRef, "--base"),
+      head,
+      proposalId,
+      repositoryPath: options.repo,
+      ...(options.receiptPath === undefined
+        ? {}
+        : { copyAuthorsReceipt: readJsonFile(options.receiptPath) }),
+      ...(options.agentName === undefined ? {} : { agent: options.agentName }),
+      ...(options.instanceId === undefined
+        ? {}
+        : { instance: options.instanceId }),
+    });
+    writeOutput(result, options.json, renderRecordedAuthors(result));
+    return;
+  }
+  const receipt = readJsonFile(
+    requireCliOption(options.receiptPath, "--receipt")
+  );
+  if (action === "record-review") {
+    const result = recordReviewAttempt({
+      attemptId: requireCliOption(options.attemptId, "--attempt-id"),
+      head,
+      proposalId,
+      receipt,
+      repositoryPath: options.repo,
+      ...(request === undefined ? {} : { request }),
+    });
+    writeOutput(result, options.json, renderRecordedReview(result));
+    return;
+  }
+  const result = waiveProposalCoverage({
+    authorsDigest: requireCliOption(options.authorsDigest, "--authors-digest"),
+    head,
+    proposalId,
+    receipt,
+    repositoryPath: options.repo,
+  });
+  writeOutput(result, options.json, renderWaiver(result));
+};
+
+const renderAttestation = (result: AuthorAttestResult): string => {
+  const who = `${result.identity.logicalId} (${result.identity.agent ?? "model not reported"}, harness ${result.identity.harness ?? "not reported"}, session ${result.identity.session ?? "not reported"})`;
+  const lines = result.attestations.map(
+    ({ commit, status }) =>
+      `${status === "not-attested" ? "Not attested (replay only)" : `Attested (${status})`}: ${commit} for ${who}`
+  );
+  const { replay } = result;
+  if (replay) {
+    lines.push(
+      `Replay ${replay.status}: ${replay.destination} from ${replay.sources.join(", ")} is ${replay.verification} (${replay.detail}).`
+    );
+    if (replay.ownGaps.uncoveredEdit) {
+      lines.push(
+        "The replay is inconclusive and nobody attested an edit on it: if you changed the implementation, attest it with --contribution implementation."
+      );
+    }
+    if (replay.ownGaps.unresolvedSources.length > 0) {
+      lines.push(
+        `Sources with no attested author: ${replay.ownGaps.unresolvedSources.join(", ")}`
+      );
+    }
+  }
+  return `${lines.join("\n")}\n`;
+};
+
+// `author attest` is a public command that takes the loop lock itself, so it
+// runs after `loop exec` returns and never inside it.
+const runAuthorCommand = (options: CliOptions): void => {
+  if (options.positional.length !== 1 || options.positional[0] !== "attest") {
+    throw new SimpleChangesError("author requires attest", EXIT_CODES.usage);
+  }
+  const result = attestCommits({
+    commits: options.commits,
+    repositoryPath: options.repo,
+    ...(options.agentId === undefined ? {} : { logicalId: options.agentId }),
+    ...(options.agentName === undefined ? {} : { agent: options.agentName }),
+    ...(options.instanceId === undefined
+      ? {}
+      : { instance: options.instanceId }),
+    ...(options.sessionId === undefined ? {} : { session: options.sessionId }),
+    ...(options.harness === undefined ? {} : { harness: options.harness }),
+    ...(options.contribution === undefined
+      ? {}
+      : { contribution: options.contribution }),
+    ...(options.replays === undefined ? {} : { replays: options.replays }),
+    ...(options.worktreePath === undefined
+      ? {}
+      : { worktreePath: options.worktreePath }),
+  });
+  writeOutput(result, options.json, renderAttestation(result));
+};
+
+const PROPOSAL_LEDGER_ACTIONS = new Set([
+  "record-authors",
+  "record-review",
+  "waive-coverage",
+]);
+
 // The audit is a check: its report goes to stdout either way, and a failing
 // body exits with the validation code instead of an error message.
 const runProposalCommand = (options: CliOptions): number => {
-  if (options.positional.length !== 1 || options.positional[0] !== "audit") {
-    throw new SimpleChangesError("proposal requires audit", EXIT_CODES.usage);
+  const [action] = options.positional;
+  // Checked before any subcommand runs, the audit included.
+  if (options.authoringRequest !== undefined && action !== "record-review") {
+    throw new SimpleChangesError(
+      "--authoring-request applies to proposal record-review only.",
+      EXIT_CODES.usage
+    );
+  }
+  if (
+    options.positional.length === 1 &&
+    action !== undefined &&
+    PROPOSAL_LEDGER_ACTIONS.has(action)
+  ) {
+    runProposalLedgerCommand(action, options);
+    return EXIT_CODES.success;
+  }
+  if (options.positional.length !== 1 || action !== "audit") {
+    throw new SimpleChangesError(
+      "proposal requires audit, record-authors, record-review, or waive-coverage",
+      EXIT_CODES.usage
+    );
   }
   const file = requireCliOption(options.filePath, "--file");
   const template = options.templatePath;
@@ -2770,6 +3585,18 @@ const runLoopStart = (options: CliOptions): void => {
       EXIT_CODES.usage
     );
   }
+  // The request layer is checked and validated before any other input is
+  // read: an invalid request is a usage error that changes nothing.
+  if (options.authoringRequest !== undefined && options.mode !== "resume") {
+    throw new SimpleChangesError(
+      "--authoring-request applies to loop start --mode resume only.",
+      EXIT_CODES.usage
+    );
+  }
+  const request =
+    options.authoringRequest === undefined
+      ? undefined
+      : parseAuthoringRequest(options.authoringRequest);
   if (options.changelogRequired) {
     const inventory = captureInventory(options.repo);
     const changelogCoordination = inspectChangelogCoordination(
@@ -2793,11 +3620,18 @@ const runLoopStart = (options: CliOptions): void => {
         readFileSync(resolve(options.openingRemoteInventoryPath), "utf8")
       ) as unknown)
     : undefined;
+  let reviewLedger: ReviewLedgerResumeState | null = null;
   const lease = startLoop(
     options.repo,
     agentId,
     options.mode as RequestMode,
-    openingRemoteInventory
+    openingRemoteInventory,
+    {
+      onReviewLedger: (state) => {
+        reviewLedger = state.state === "absent" ? null : state;
+      },
+      ...(request === undefined ? {} : { request }),
+    }
   );
   const holds = informationalHolds(options.repo);
   const freshness = leaseRuntimeFreshness(lease);
@@ -2808,6 +3642,7 @@ const runLoopStart = (options: CliOptions): void => {
       inheritedAwaitingUser: resumedQuestions,
       lease,
       manifestDigest: loopManifestDigest(lease),
+      ...(reviewLedger ? { reviewLedger } : {}),
       runtimeFreshness: freshness,
     },
     options.json,
@@ -2815,8 +3650,30 @@ const runLoopStart = (options: CliOptions): void => {
       resumedQuestions
         ? `The previous controller paused for the user's answer to: ${resumedQuestions.join(" | ")}. Confirm their answer before continuing.\n`
         : ""
-    }${renderFreshnessWarning(freshness)}${renderRecordedHolds(holds)}`
+    }${renderResumedReviews(reviewLedger)}${renderFreshnessWarning(freshness)}${renderRecordedHolds(holds)}`
   );
+};
+
+// Accepted reviews that no longer pass the gate on resume need a fresh review.
+const renderResumedReviews = (
+  state: ReviewLedgerResumeState | null
+): string => {
+  if (!state) {
+    return "";
+  }
+  if (state.state === "malformed") {
+    return `Warning: the review ledger at ${state.path} is malformed (${state.reason}); no review counts until it is repaired.\n`;
+  }
+  return state.proposals
+    .flatMap((proposal) =>
+      proposal.attempts
+        .filter((attempt) => attempt.accepted && !attempt.revalidated)
+        .map(
+          (attempt) =>
+            `Review ${attempt.attemptId} of ${proposal.proposalId} no longer counts (${attempt.revalidationReason}); request a fresh review.\n`
+        )
+    )
+    .join("");
 };
 
 // A freshly resumed controller sees what its predecessor was waiting on.
@@ -2867,6 +3724,13 @@ const runLoopStatus = (options: CliOptions): void => {
 };
 
 const runLoopOpeningAction = (action: string, options: CliOptions): boolean => {
+  if (action === "draft-outcome") {
+    // Read-only from its first Git call, including the lease lookup.
+    withReadOnlyGit(() =>
+      runLoopDraftOutcome(options, requireCliOption(options.runId, "--run-id"))
+    );
+    return true;
+  }
   if (action === "start") {
     runLoopStart(options);
     return true;
@@ -2980,9 +3844,13 @@ const runLoopVerifyAction = (
   if (action !== "verify") {
     return false;
   }
-  const verification = verifyLoop(options.repo);
   // `--for` names the shipping step about to run, so holds covering it gate
   // the same verification every controller already runs before that step.
+  // Before a merge, released and preserved units' branches must also still
+  // point at their recorded heads.
+  const verification = verifyLoop(options.repo, {
+    forMerge: options.holdAction === "merge",
+  });
   const holds = options.holdAction
     ? checkShipHolds(options.repo, {
         action: options.holdAction,
@@ -3050,11 +3918,47 @@ const runLoopTurnCheck = async (options: CliOptions): Promise<void> => {
   process.exit(0);
 };
 
+const runLoopDraftOutcome = (options: CliOptions, runId: string): void => {
+  const outcome = draftShipmentOutcome(options.repo, runId, {
+    ...(options.changelogReceiptPath
+      ? {
+          releasePaths: releasePathsFromChangelogReceipt(
+            readJsonFile(options.changelogReceiptPath)
+          ),
+        }
+      : {}),
+  });
+  const { summary } = outcome;
+  const text = [
+    `Drafted the shipment outcome for ${runId} at ${summary.targetRevision}: ${summary.units} scoped unit(s) and ${summary.additionalPaths} additional path(s) (${summary.externalTargetChanges} external-target-change, ${summary.releaseGenerated} release-generated)${summary.deletedPaths.length > 0 ? `, including ${summary.deletedPaths.length} deleted path(s) recorded with a null entry` : ""}.`,
+    ...outcome.warnings.map((warning) => `Warning: ${warning}`),
+    `Before recording, replace all ${outcome.placeholders} ${OUTCOME_DRAFT_MARKER} placeholder(s) and check each classification and unit disposition; record-outcome refuses the draft until then.`,
+    `Then run: ${outcome.recordCommand}`,
+  ].join("\n");
+  emitDocument(
+    options,
+    outcome.draft,
+    {
+      placeholders: outcome.placeholders,
+      recordCommand: outcome.recordCommand,
+      summary,
+      warnings: outcome.warnings,
+    },
+    `${text}\n`,
+    [
+      options.changelogReceiptPath,
+      loopLeasePath(
+        locateRepository(options.repo).repository.commonGitDirectory
+      ),
+    ]
+  );
+};
+
 const runLoopCommand = async (options: CliOptions): Promise<void> => {
   const [action] = options.positional;
   if (!action) {
     throw new SimpleChangesError(
-      "loop requires start, status, verify, record-scope, refresh-scope, record-outcome, guard, exec, recover, recover-post-cleanup, close-equivalent, replan-status, replan, archive-recorded, takeover, rebaseline, allow, dispose-worktree, retain-worktree, retire-absent-worktree, adopt-worktree, accept-paused-change, reconcile-remote-branches, emergency, end, finalize, or turn-check",
+      "loop requires start, status, verify, record-scope, refresh-scope, draft-outcome, record-outcome, guard, exec, recover, recover-post-cleanup, close-equivalent, replan-status, replan, archive-recorded, takeover, rebaseline, allow, dispose-worktree, retain-worktree, retire-absent-worktree, adopt-worktree, accept-paused-change, reconcile-remote-branches, emergency, end, finalize, or turn-check",
       EXIT_CODES.usage
     );
   }
@@ -3771,6 +4675,156 @@ const runPrune = (options: CliOptions): void => {
   writeOutput(report, options.json, renderPrune(report));
 };
 
+/**
+ * Writes a built receipt or draft to `--output` and reports `summary`, or,
+ * without `--output`, prints the document itself on stdout so it can be
+ * redirected, with the summary on stderr in text mode.
+ */
+/**
+ * An existing `--output` must be a regular file that is not one of the
+ * inputs under any name: not a symbolic link, and not the same file (device
+ * and inode) as an input reached through a hard link or an aliased directory.
+ */
+/**
+ * The Git common directory of the repository the command runs in, where
+ * Simple Changes keeps its state, or null outside a repository.
+ */
+const stateDirectoryFor = (repository: string): string | null => {
+  try {
+    return realpathSync(
+      locateRepository(repository).repository.commonGitDirectory
+    );
+  } catch {
+    return null;
+  }
+};
+
+const assertOutputIsNotInput = (
+  output: string,
+  inputs: readonly (string | undefined)[],
+  stateDirectory: string | null
+): void => {
+  const refuseOutput = (why: string): never => {
+    throw new SimpleChangesError(
+      `--output ${output} ${why}; name a new file.`,
+      EXIT_CODES.usage
+    );
+  };
+  if (stateDirectory) {
+    let parent: string | null = null;
+    try {
+      parent = realpathSync(dirname(output));
+    } catch {
+      parent = null;
+    }
+    const inside = parent === null ? null : relative(stateDirectory, parent);
+    // `..drafts` is a child named with two dots, not a parent.
+    if (
+      inside !== null &&
+      !(inside === ".." || inside.startsWith(`..${sep}`) || isAbsolute(inside))
+    ) {
+      refuseOutput(
+        "is inside the Git common directory, where Simple Changes keeps its state"
+      );
+    }
+  }
+  let existing: Stats;
+  try {
+    existing = lstatSync(output);
+  } catch {
+    return;
+  }
+  if (!existing.isFile()) {
+    refuseOutput("is not a regular file");
+  }
+  for (const input of inputs) {
+    let source: Stats | null = null;
+    try {
+      source = input ? statSync(resolve(input)) : null;
+    } catch {
+      source = null;
+    }
+    if (source && source.dev === existing.dev && source.ino === existing.ino) {
+      refuseOutput("is one of this command's input files");
+    }
+  }
+};
+
+const emitDocument = (
+  options: CliOptions,
+  document: unknown,
+  summary: Record<string, unknown>,
+  text: string,
+  inputs: readonly (string | undefined)[]
+): void => {
+  const body = `${JSON.stringify(document, null, 2)}\n`;
+  if (!options.outputPath) {
+    process.stdout.write(body);
+    if (!options.json) {
+      process.stderr.write(text);
+    }
+    return;
+  }
+  const output = resolve(options.outputPath);
+  assertOutputIsNotInput(output, inputs, stateDirectoryFor(options.repo));
+  writeFileSync(output, body, "utf8");
+  writeOutput(
+    { ...summary, output },
+    options.json,
+    `${text}Wrote ${output}.\n`
+  );
+};
+
+const renderRemoteInventoryBuild = (build: RemoteInventoryBuild): string => {
+  const { receipt, summary } = build;
+  const lines = [
+    `Built the ${build.phase} remote inventory for ${receipt.provider} ${receipt.project} ${receipt.targetBranch} at ${summary.targetRevision}: ${summary.branches} branch(es), ${summary.proposals} accounted proposal(s).`,
+  ];
+  if (build.phase === "final") {
+    for (const [label, names] of [
+      ["Deleted during the run", summary.deletedBranches],
+      ["Moved and preserved", summary.movedBranches],
+      ["Arrived and preserved", summary.arrivedBranches],
+    ] as const) {
+      if (names.length > 0) {
+        lines.push(`${label}: ${names.join(", ")}`);
+      }
+    }
+  }
+  return `${lines.join("\n")}\n`;
+};
+
+const runRemoteInventoryCommand = (options: CliOptions): void => {
+  if (options.positional[0] !== "build" || options.positional.length !== 1) {
+    throw new SimpleChangesError(
+      "remote-inventory requires build",
+      EXIT_CODES.usage
+    );
+  }
+  const pagesPath = requireCliOption(options.pagesPath, "--pages");
+  if (options.decisionsPath && !options.openingRemoteInventoryPath) {
+    throw new SimpleChangesError(
+      "--decisions applies only with --opening-remote-inventory, to a final inventory.",
+      EXIT_CODES.usage
+    );
+  }
+  const build = buildRemoteInventory(readJsonFile(pagesPath), {
+    ...(options.openingRemoteInventoryPath
+      ? { opening: readJsonFile(options.openingRemoteInventoryPath) }
+      : {}),
+    ...(options.decisionsPath
+      ? { decisions: readJsonFile(options.decisionsPath) }
+      : {}),
+  });
+  emitDocument(
+    options,
+    build.receipt,
+    { phase: build.phase, summary: build.summary },
+    renderRemoteInventoryBuild(build),
+    [pagesPath, options.openingRemoteInventoryPath, options.decisionsPath]
+  );
+};
+
 const runPrepareAgent = (options: CliOptions): void => {
   const prepared = prepareAgentWorktree(
     options.repo,
@@ -3778,10 +4832,17 @@ const runPrepareAgent = (options: CliOptions): void => {
     requireCliOption(options.agentId, "--agent-id"),
     requireCliOption(options.purpose, "--purpose")
   );
+  // Commit attestation is a required step of every author's workflow: the
+  // review ledger cannot reconstruct who wrote a commit after the fact.
+  const shellWord = (value: string): string =>
+    PLAIN_SHELL_WORD_PATTERN.test(value)
+      ? value
+      : `'${value.replaceAll("'", "'\\''")}'`;
+  const afterEveryCommit = `simple-changes author attest --commit <sha> --agent-id ${shellWord(prepared.agentId)} --repo ${shellWord(prepared.path)} --json`;
   writeOutput(
-    prepared,
+    { ...prepared, afterEveryCommit },
     options.json,
-    `${prepared.created ? "Created" : "Reused"} ${prepared.path}\nBranch: ${prepared.branch}\nRun: ${prepared.runId}\n`
+    `${prepared.created ? "Created" : "Reused"} ${prepared.path}\nBranch: ${prepared.branch}\nRun: ${prepared.runId}\nRequired after every commit: ${afterEveryCommit}\n`
   );
 };
 
@@ -3808,13 +4869,24 @@ const runReleaseNotes = (options: CliOptions): number => {
   }
   const releaseRoot = options.repoProvided ? options.repo : PACKAGE_ROOT;
   const changelogPath = resolve(releaseRoot, "CHANGELOG.md");
+  const changelog = readFileSync(changelogPath, "utf8");
+  // The packaged notes cover recent guidance versions only; an older
+  // published release gets a pointer to the canonical changelog instead.
+  const pointer =
+    !options.repoProvided && options.releaseVersion
+      ? releaseNotesPointer(changelog, options.releaseVersion)
+      : null;
+  if (pointer) {
+    writeOutput(
+      validateSchema<ReleaseNotesPointer>("release-notes-pointer", pointer),
+      options.json,
+      renderReleaseNotesPointer(pointer)
+    );
+    return EXIT_CODES.outsideWindow;
+  }
   const notes = validateSchema<ReleaseNotes>(
     "release-notes",
-    extractReleaseNotes(
-      readFileSync(changelogPath, "utf8"),
-      changelogPath,
-      options.releaseVersion
-    )
+    extractReleaseNotes(changelog, changelogPath, options.releaseVersion)
   );
   writeOutput(notes, options.json, notes.markdown);
   return EXIT_CODES.success;
@@ -3928,6 +5000,9 @@ const executeCommand = async (
     case "inventory":
       runInventory(options);
       return EXIT_CODES.success;
+    case "status":
+      withReadOnlyGit(() => runStatus(options));
+      return EXIT_CODES.success;
     case "initialize":
       await runInitialize(options);
       return EXIT_CODES.success;
@@ -3979,8 +5054,14 @@ const executeCommand = async (
     case "prune":
       runPrune(options);
       return EXIT_CODES.success;
+    case "remote-inventory":
+      runRemoteInventoryCommand(options);
+      return EXIT_CODES.success;
     case "prepare-agent":
       runPrepareAgent(options);
+      return EXIT_CODES.success;
+    case "author":
+      runAuthorCommand(options);
       return EXIT_CODES.success;
     case "release-notes":
       return runReleaseNotes(options);

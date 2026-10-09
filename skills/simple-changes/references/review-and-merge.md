@@ -1,5 +1,11 @@
 # Review and merge
 
+Contents:
+
+- What an agent review examines
+- Review identity and the review ledger
+- Signing reviews and merges
+
 Review eligibility comes from fresh provider and repository evidence:
 
 - exact current head or patch revision;
@@ -59,6 +65,9 @@ the replacement head. This evidence feeds the final shipped-state summary; when
 review changed nothing, record that explicitly instead of inventing a delta.
 
 Merge in dependency order only when the current revision satisfies policy.
+Integrate a released, handed-off, or preserved unit locally by its recorded
+commit ID, never its branch name, which `loop exec` refuses; see
+[inventory and concurrency](inventory-and-concurrency.md#integration-controller-lease-and-concurrent-authors).
 Return the canonical merged commit/revision and refresh downstream units after
 their base changes. Missing authentication, unavailable reviewers, and
 unsupported provider capabilities are blockers with distinct statuses, not
@@ -70,6 +79,65 @@ re-check both immediately before merge. Do not convert a policy-required
 non-author merge into an author merge merely because an independent review
 already exists.
 
+## Review identity and the review ledger
+
+Two requirements apply. **Executor independence** is the rule above: the
+reviewer is a separate agent or session from every author of the change.
+When the review role sets `adversarial: true`, review also needs
+**diversity**: a different harness, or the same harness with a different
+reported model, from every author. Diversity adds to executor independence
+and never replaces it.
+
+The evidence lives in `review-ledger.json` under `<common git
+dir>/simple-changes/`, beside the loop lease. Each write takes the loop lock,
+validates the whole file, and replaces it atomically. A malformed ledger is
+reported, never repaired silently, and blocks acceptance until the owner
+repairs it.
+
+- **Attestation.** Authors attest every commit, and replays link rewritten
+  commits to their sources ([ledger steps](change-requests.md#review-ledger-steps)).
+  Effective authors follow those links at read time, so a later attestation
+  anywhere in a commit's ancestry counts at once.
+- **Coverage.** `proposal record-authors` binds a head to the effective
+  authors of its range and computes `authorsDigest`. A commit with no author,
+  a replay source with none, and an inconclusive replay nobody attested are
+  gaps; a head with no gaps is fully covered.
+- **Before dispatch.** `initialize --proposal <id> --head <sha>
+  [--authoring-request <json-or-@path>]` resolves the reviewer against that
+  head, with the current request's answer on top when one is passed;
+  incomplete coverage is `unresolved` under either setting. Under `adversarial: true`, a `blocked` or `unresolved`
+  reviewer stops the review step: ask the owner, and never review your own
+  proposal to fill the gap.
+- **Coverage waivers.** Only the owner waives, before dispatch:
+  `proposal waive-coverage --proposal <id> --head <sha> --authors-digest
+  <digest> --receipt <waiver.json>` with `{"approvedBy", "reason",
+  "unattributed": [<sha>], "gaps": {<commit>: {"unresolvedSources",
+  "uncoveredEdits"}}}` naming exactly the outstanding items. A waiver covers
+  only what it names and goes stale when the digest changes.
+- **Post-return gate.** Record every returned review with `proposal
+  record-review --proposal <id> --head <sha> --attempt-id <uuid> --receipt
+  <attempt.json>` holding `requested` (`harness`, `model`, `effort`),
+  `verified` (`instance`, `session`, `harness`, `agent` as the delegate
+  reported them, `null` when not), `effort`, `effortSource`, `verdict`
+  (`findings`, `clean`, `failed`), and `findingsCount`. Pass the same
+  `--authoring-request` as `initialize`: a request can make the gate
+  adversarial for this run and never loosens a saved setting. It is accepted
+  only when the head is covered or waived, the reviewer's instance or
+  session differs from every author's, and, when adversarial, its harness or
+  model differs too. Missing evidence rejects; a `clean` verdict never proves
+  independence; a rejected attempt stays rejected. Disclose a reported
+  identity that differs from the target.
+- **Approval.** Reviewed means an accepted `clean` attempt on the current
+  head whose digest still matches, plus the fresh evidence above. Resume
+  (`loop start --mode resume`, with the run's `--authoring-request`)
+  revalidates accepted attempts under the run's gate; one that no longer
+  passes needs a fresh review.
+- **Escalation as a floor.** With `escalateOnFindings` set, once any review
+  of a proposal reports findings, later reviews of it, replacement revisions
+  included, run at least at that effort. It never lowers an effort and never
+  reaches `max` by itself; a `max` the user asks for is recorded with
+  `effortSource: "request"`.
+
 ## Signing reviews and merges
 
 When `proposalSignatures` is `agent-and-version` (the default), the agent that
@@ -80,6 +148,8 @@ both in the format defined in
 [change proposals](change-requests.md). Post the same review line as the
 review comment or approval body when the provider supports one, and add the
 trailer `Merged-By-Agent: <model name> <version>` to the merge commit message
-when the provider lets the merger set it. Author and reviewer signatures from
+when the provider lets the merger set it. A delegated review is signed with
+the model the reviewer reported, never the configured preference. Author and
+reviewer signatures from
 the same model name and version still do not make a review independent; the
 independence rule above is decided by executor identity, not by signatures.

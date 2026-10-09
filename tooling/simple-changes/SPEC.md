@@ -362,6 +362,30 @@
   on stderr. Any nonzero exit or failure to start refuses the command before
   its child exists. A guard only restricts: it needs no policy trust receipt,
   grants no authority, and gates nothing run outside `loop exec`.
+- `loop exec` pins every registered unit the run does not author itself:
+  released or handed-off authors at the state their release recorded, and
+  preserved, adopted, and retained checkouts at their baseline or approved
+  override. No merge-like `loop exec` command can integrate a commit other
+  than a registered unit's recorded head. While units are pinned it runs only
+  Git and provider merges that name their commit (`glab mr merge <iid> --sha
+  <head>`, optionally with `-R <project>`), refusing every other program before it starts, and only an
+  allowlist of merge-like Git subcommands. One is refused when an argument
+  names a pinned branch in any spelling or letter case, points into a pinned
+  checkout, uses an indirect name, fetch or push mapping, or replace ref
+  that could stand for one, resolves to a commit containing one a pinned
+  unit gained after its recorded head, or is a merge or rebase that names no
+  revision, a `worktree add` without a start commit and `-b`, `-B`, or
+  `--detach`, or a `checkout <name>` without `--no-guess`, for which Git
+  would pick a revision from configuration, the path, or a remote-tracking
+  branch when it runs. `-c`, Git options that run commands, configuration
+  writes, and staging that could record a nested checkout's HEAD are
+  refused; a fetch may write only remote-tracking refs, a push, fetch,
+  cherry-pick, or revert may use only known options, and nothing may run in
+  a checkout the run does not author. The refusal prints the commit-ID form
+  when it is certainly equivalent, or the claim, pause, and accept steps when
+  the unit already moved. `loop verify --for merge` fails while a released,
+  handed-off, preserved, or adopted unit's branch has left its recorded
+  head.
 - `proposalScheduling` controls only whether independent proposals are
   authored consecutively or in parallel claimed worktrees. It never shares a
   checkout, weakens controller guards or worktree isolation, changes cleanup

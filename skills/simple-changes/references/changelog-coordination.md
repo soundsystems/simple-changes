@@ -96,6 +96,13 @@ The preference grants coordination behavior, not permission to invent release
 intent, create new destinations, publish a release, change a version, or bypass
 the changelog workflow's own authority checks.
 
+When compatible Simple Changelogs is installed, default changelog handling to
+**Delegate when available**. When changelog work is relevant but the skill is
+not installed or compatible, offer installation and setup timing per
+[onboarding](onboarding.md); never install it silently, and
+installation grants no version, release, publication, deployment, or
+data-write authority.
+
 ## Use a closed three-phase transaction
 
 Create one `changelog-request` per release train with a stable transaction ID,
@@ -249,6 +256,11 @@ unless the repository opts out. The changelog workflow names the tag; the
 release gate decides when it may be published; `release-tag` creates,
 pushes, and verifies it. Simple Changes never reads the tag setting and never
 chooses a name.
+
+When the receipt names a release tag, run `release-tag
+--dry-run` before the release merge, publish it with `release-tag` before
+any deployment, and require `already-present` at final verification, even
+with no deployment; see [release tags](#release-tags).
 
 Simple Changes 0.27.0 and later understand request v3 and receipt v4.
 Controllers from 0.13.0 to 0.26 ignore those versions and negotiate exactly

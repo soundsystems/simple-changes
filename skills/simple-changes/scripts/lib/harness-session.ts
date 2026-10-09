@@ -39,6 +39,13 @@ const visibleProcess = (pid: number | null): number | null => {
 };
 
 /**
+ * The harness ids this adapter identifies from their session variables. For
+ * these, `currentHarnessSession` alone decides whether one is running; the
+ * authoring detection consults `agents/harnesses.json` for every other id.
+ */
+export const SESSION_HARNESS_IDS: readonly string[] = ["claude-code", "codex"];
+
+/**
  * The harness session running this command, when the harness says so. Claude
  * Code exports its session ID and the PID of the session's own process; Codex
  * exports its thread ID. The session lets a turn-end hook recognize the runs

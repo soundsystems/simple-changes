@@ -1,14 +1,33 @@
 # Change proposals
 
+Contents:
+
+- Create and audit proposals
+- Body shape
+- Agent signatures
+- Review ledger steps
+
+## Create and audit proposals
+
 Use **change proposal** as the neutral internal term. Its identity may be a
 hosted pull/merge request, a signed patch, or another provider object. Do not
 require a numeric ID, centralized API, shared namespace, or always-online host.
+
+Create/update neutral proposals in the summary, evidence, and merge-danger body
+shape from [change proposals](#body-shape), with real Markdown newlines;
+re-read stored source/rendering, resolve checks/discussions/review, and merge
+only the exact approved head. Under the default `proposalSignatures` policy,
+the agent that authors, reviews, or merges a proposal appends its model name
+and version to the proposal's signature block; see
+[change proposals](#agent-signatures).
 
 Before creation:
 
 - refresh the base when mutation mode allows remote reads;
 - verify exact base and head/revision IDs;
 - confirm the proposal paths match one validated unit;
+- confirm every commit in the range is attested
+  ([review ledger steps](#review-ledger-steps));
 - render the description to a file or structured API field using real newline
   characters.
 
@@ -28,6 +47,9 @@ After creation or update, fetch and re-read:
 - stored source body;
 - rendered body or equivalent;
 - current state and draft status.
+
+Then run `proposal record-authors` for that head before presenting the
+proposal as ready for review.
 
 Save the fetched source body to a file and audit it before re-reading the
 rendered body:
@@ -158,3 +180,33 @@ is `none`, add no signature block and leave existing blocks untouched.
 A signature is attribution, not authority: it does not approve, satisfy an
 independent-review requirement, or authorize a merge, and an unsigned proposal
 is never rejected for that reason alone.
+
+## Review ledger steps
+
+Review independence is checked against what agents record at the time;
+nothing is reconstructed later. Record it whatever `proposalSignatures` says:
+
+1. **After every commit**, the agent that made it runs `simple-changes author
+   attest --commit <sha> --agent-id <id> [--instance <id>] [--agent "<model>
+   <version>"]` in its own session. `--instance` and `--agent` are what the
+   harness reports for this agent; omit what it does not report.
+2. **After every rebase, cherry-pick, or squash**, attest each new commit with
+   `--replays <old sha>[,<old sha>...]`. Add `--contribution implementation`
+   whenever you changed the implementation while replaying; nothing infers
+   it. A controller refreshing a returned delegated worktree runs this after
+   `loop exec` returns, with `--worktree <path>`. A corrected `--replays` may
+   add sources it missed, never drop one (`replay-correction-drops-source`).
+   Fix a wrongly named source only on a destination nobody attested an edit
+   on: rewrite it (an amend is enough) and attest the new sha with the right
+   original sources. A destination carrying an implementation attestation
+   keeps its mapping, and the owner waives any remaining gap.
+3. **Right after creating the proposal, and after every head update**, run
+   `simple-changes proposal record-authors --proposal <provider id> --base
+   <sha> --head <sha> [--receipt <copy-authors.json>]`. A head without it is
+   `authors-not-recorded` and not ready for review.
+
+The receipt adds description authors only: `{"copyAuthors": [{"source":
+"direct"}]}` for the executing session, or `{"source": "delegated", ...}` with
+the `instance`, `session`, `harness`, and `agent` the delegate reported
+(`null` for anything it did not). Description authors never count for
+independence.

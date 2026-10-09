@@ -19,6 +19,7 @@ import {
 import { hostname } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { AuthoringSidecar } from "./authoring.ts";
 import {
   deleteTargetContainedBranches,
   PATCH_EQUIVALENCE_MAX_COMMITS,
@@ -47,6 +48,15 @@ import {
   assertNoSymlinkAncestors,
   assertSafeRelativePath,
 } from "./path-safety.ts";
+import {
+  analyzePinnedCommand,
+  describePinnedUnit,
+  gitFactsFor,
+  type PinnedCommandAnalysis,
+  type PinnedGitFacts,
+  type PinnedUnit,
+  type PinnedUnitState,
+} from "./pinned-heads.ts";
 import { buildPreviewPlan, validatePlanConservation } from "./planner.ts";
 import {
   preservedSourceOverrideFailure,
@@ -72,6 +82,13 @@ import {
   validateRemoteBranchReconciliation,
   validateRemoteBranchSupersessionRecord,
 } from "./remote-branch-reconciliation.ts";
+import {
+  heldLoopLock,
+  loadReviewLedgerForResume,
+  type ReviewAttemptsReport,
+  type ReviewLedgerResumeState,
+  reviewAttemptsForFinalization,
+} from "./review-ledger.ts";
 import { validateSchema, validateSchemaDocument } from "./schema.ts";
 import type {
   ChangePlan,
@@ -138,7 +155,7 @@ const DIGEST_PATTERN = /^[0-9a-f]{64}$/u;
 const PERMISSION_DENIED_CODES = new Set(["EACCES", "EPERM", "EROFS"]);
 const SCP_REMOTE_URL_PATTERN = /^[^@/\s]+@([^:/\s]+):(.+)$/u;
 const REMOTE_PROJECT_PATH_PATTERN = /^\/+|\.git\/?$/gu;
-const LS_TREE_ENTRY_PATTERN = /^(\d+)\s+(blob|commit)\s+([0-9a-f]+)\t/u;
+export const LS_TREE_ENTRY_PATTERN = /^(\d+)\s+(blob|commit)\s+([0-9a-f]+)\t/u;
 const LOOP_MODES = new Set<RequestMode>([
   "queue",
   "sweep",
@@ -512,7 +529,7 @@ const controllerLifecycle = (lease: LoopLease): LoopControllerLifecycle =>
 
 const CONTROLLER_BINDING_FILENAME = "active-loop-controller.json";
 
-const controllerBindingPath = (commonGitDirectory: string): string =>
+export const controllerBindingPath = (commonGitDirectory: string): string =>
   resolve(stateDirectory(commonGitDirectory), CONTROLLER_BINDING_FILENAME);
 
 const isControllerSession = (
@@ -1074,14 +1091,47 @@ const matchingOverride = (
       override.changeDigest === worktree.changeDigest
   );
 
-const resolvedCurrentTargetRevision = (lease: LoopLease): string | null => {
-  const result = runGit(
-    lease.primaryCheckout,
-    ["rev-parse", "--verify", `${lease.targetRef}^{commit}`],
-    true
-  );
-  const revision = result.stdout.trim();
-  return result.exitCode === 0 && revision ? revision : null;
+/**
+ * The full refs a lease's short target name may mean, most specific first.
+ * Git resolves a short name to a same-named tag before a branch, so reading
+ * the target only through refs/remotes or refs/heads keeps a tag named
+ * `main` or `origin/main` from standing in for it. A target under a bound
+ * remote is that remote-tracking ref; a lease without bindings tries the
+ * remote-tracking ref before the local branch.
+ */
+const targetFullRefs = (
+  lease: Pick<LoopLease, "remoteBindings" | "targetRef">
+): string[] => {
+  const { targetRef } = lease;
+  if (targetRef.startsWith("refs/")) {
+    return [targetRef];
+  }
+  const bindings = lease.remoteBindings;
+  if (bindings && bindings.length > 0) {
+    return bindings.some((binding) => targetRef.startsWith(`${binding.name}/`))
+      ? [`refs/remotes/${targetRef}`]
+      : [`refs/heads/${targetRef}`];
+  }
+  return targetRef.includes("/")
+    ? [`refs/remotes/${targetRef}`, `refs/heads/${targetRef}`]
+    : [`refs/heads/${targetRef}`];
+};
+
+export const resolvedCurrentTargetRevision = (
+  lease: LoopLease
+): string | null => {
+  for (const ref of targetFullRefs(lease)) {
+    const result = runGit(
+      lease.primaryCheckout,
+      ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`],
+      true
+    );
+    const revision = result.stdout.trim();
+    if (result.exitCode === 0 && revision) {
+      return revision;
+    }
+  }
+  return null;
 };
 
 const matchingRemovalDisposition = (
@@ -2084,6 +2134,389 @@ const staleClaimRecovery = (
   };
 };
 
+// A completed release that recorded its checkout's exact state: that state
+// is the unit's recorded head, whoever holds the checkout now.
+const recordedRelease = (
+  registered: LoopWorktreeLease,
+  claim: WorktreeClaim | undefined,
+  coordination: WorktreeCoordinationDocument
+): claim is WorktreeClaim =>
+  claim?.state === "released" &&
+  claim.releaseReason !== undefined &&
+  COMPLETED_RELEASE_REASONS.has(claim.releaseReason) &&
+  releaseRecordedState(coordination, claim.claimId) &&
+  claim.owner.agentId === registered.agentId &&
+  claim.path === registered.path;
+
+/**
+ * Every registered unit whose branch the run does not move itself, with the
+ * heads the run recorded for it: the state its owner released or handed off,
+ * or a preserved, adopted, or retained baseline plus any exact approved
+ * override. The controller and its own prepared authors are not pinned, nor
+ * is the primary or target branch. See `pinned-heads.ts` for the boundary.
+ */
+const pinnedUnitsFor = (
+  lease: LoopLease,
+  inventory: RepositoryInventory,
+  coordination: WorktreeCoordinationDocument
+): PinnedUnit[] => {
+  const { primaryBranch, targetBranch } = resolvePrimaryAndTargetBranches(
+    lease,
+    inventory
+  );
+  const units: PinnedUnit[] = [];
+  for (const unit of lease.worktrees.flatMap((registered) =>
+    registrationPins(lease, registered, coordination)
+  )) {
+    if (
+      (unit.branch === null ||
+        (unit.branch !== primaryBranch && unit.branch !== targetBranch)) &&
+      !units.some(
+        (existing) =>
+          existing.branch === unit.branch && existing.path === unit.path
+      )
+    ) {
+      units.push(unit);
+    }
+  }
+  return units;
+};
+
+// One registration's pins. A concurrent author whose release recorded its
+// exact state is pinned to that state; its registered branch, when it
+// differs, and an author still holding its claim have no recorded head. A
+// detached checkout is pinned by its path and head alone.
+const registrationPins = (
+  lease: LoopLease,
+  registered: LoopWorktreeLease,
+  coordination: WorktreeCoordinationDocument
+): PinnedUnit[] => {
+  const { branch, path } = registered;
+  if (registered.role === "concurrent-author") {
+    const claim = coordination.claims.find(
+      (item) => item.claimId === registered.claimId
+    );
+    const pins: PinnedUnit[] = [];
+    const released = recordedRelease(registered, claim, coordination);
+    if (released) {
+      pins.push({
+        branch: claim.branch,
+        owner: claim.owner.agentId,
+        path,
+        recordedHeads: claim.headSha ? [claim.headSha] : [],
+        state: claim.releaseReason === "handoff" ? "handed-off" : "released",
+      });
+    }
+    if (!released || (branch && branch !== claim.branch)) {
+      pins.push({
+        branch,
+        owner: claim?.owner.agentId ?? registered.agentId,
+        path,
+        recordedHeads: [],
+        state: claim && claim.state !== "released" ? "claimed" : "unrecorded",
+      });
+    }
+    return pins;
+  }
+  if (!(registered.role === "preserved" || registered.role === "retained")) {
+    return [];
+  }
+  return [
+    {
+      branch,
+      owner: registered.agentId,
+      path,
+      recordedHeads: [
+        registered.baselineHeadSha,
+        ...lease.overrides
+          .filter((override) => override.path === path)
+          .map((override) => override.headSha),
+      ].filter((head): head is string => Boolean(head)),
+      state: pinnedBaselineState(registered),
+    },
+  ];
+};
+
+const pinnedBaselineState = (
+  registered: LoopWorktreeLease
+): PinnedUnitState => {
+  if (registered.role === "retained") {
+    return "retained";
+  }
+  return registered.claimId && registered.pauseReceiptId
+    ? "adopted"
+    : "preserved";
+};
+
+const absentWorktree = (registered: LoopWorktreeLease): WorktreeInventory => ({
+  bare: false,
+  branch: registered.branch,
+  changeDigest: registered.baselineChangeDigest,
+  changes: [],
+  detached: false,
+  headSha: null,
+  isCurrent: false,
+  isPrimary: false,
+  locked: false,
+  path: registered.path,
+  prunable: true,
+});
+
+// The claim, pause, and accept steps that record a pinned unit's current
+// state, exactly as a stale coordination link prints them.
+const pinnedUnitRecovery = (
+  lease: LoopLease,
+  inventory: RepositoryInventory,
+  coordination: WorktreeCoordinationDocument,
+  unit: PinnedUnit
+): StaleClaimRecovery | null => {
+  const registered = lease.worktrees.find((item) => item.path === unit.path);
+  if (!registered) {
+    return null;
+  }
+  const current =
+    inventory.worktrees.find((item) => item.path === unit.path) ??
+    absentWorktree(registered);
+  return staleClaimRecovery(lease, registered, current, {
+    concurrentClaim: undefined,
+    linkedClaim: coordination.claims.find(
+      (claim) => claim.claimId === registered.claimId
+    ),
+    liveClaim: liveClaimFor(coordination, lease.commonGitDirectory, unit.path),
+    releaseRecorded: false,
+  });
+};
+
+const localBranchHeads = (repositoryPath: string): Map<string, string> =>
+  new Map(
+    runGit(
+      repositoryPath,
+      ["for-each-ref", "--format=%(refname)%00%(objectname)", "refs/heads/"],
+      true
+    )
+      .stdout.split("\n")
+      .filter(Boolean)
+      .map((line): [string, string] => {
+        const [name = "", head = ""] = line.split("\0");
+        return [name.slice("refs/heads/".length), head];
+      })
+  );
+
+const PINNED_BOUNDARY =
+  "No merge-like `loop exec` command can integrate a commit other than a registered unit's recorded head, and a branch name can move while the command waits.";
+
+// What to do about one pinned unit a refused command named: the commit to
+// name instead, whether its branch has already moved, or why there is none.
+const pinnedUnitGuidance = (
+  lease: LoopLease,
+  inventory: RepositoryInventory,
+  coordination: WorktreeCoordinationDocument,
+  unit: PinnedUnit,
+  current: string | null,
+  subcommand: string | null
+): string[] => {
+  const recorded = unit.recordedHeads.at(-1);
+  const recovery = pinnedUnitRecovery(lease, inventory, coordination, unit);
+  const recoverySteps = (recovery?.commands ?? []).map(
+    (command) => `  Next: ${command}`
+  );
+  if (!recorded) {
+    return unit.state === "claimed"
+      ? [
+          `- ${describePinnedUnit(unit)} has no recorded head: the run integrates it only after its owner releases or hands it off, which records the exact commit.`,
+        ]
+      : [
+          `- ${describePinnedUnit(unit)} has no recorded head. Record its current state first:`,
+          ...recoverySteps,
+        ];
+  }
+  if (current && !unit.recordedHeads.includes(current)) {
+    return [
+      `- ${describePinnedUnit(unit)} has moved from its recorded head ${recorded} to ${current}. Name ${recorded} to integrate the recorded commit, or record the newer one first:`,
+      ...recoverySteps,
+    ];
+  }
+  const notes = [
+    `- ${describePinnedUnit(unit)}: replace the branch name with its recorded head ${recorded}.`,
+  ];
+  if (subcommand === "push" && unit.branch) {
+    notes.push(
+      `  A push names the destination in full: ${recorded}:refs/heads/${unit.branch}.`
+    );
+  }
+  if (subcommand === "merge") {
+    notes.push(
+      "  A merge commit then names the commit ID instead of the branch; pass -m to keep a branch-named title."
+    );
+  }
+  return notes;
+};
+
+const pinnedRefusalMessage = (
+  lease: LoopLease,
+  inventory: RepositoryInventory,
+  coordination: WorktreeCoordinationDocument,
+  argv: readonly string[],
+  analysis: PinnedCommandAnalysis,
+  facts: PinnedGitFacts,
+  invocation: { agentId: string; checkout: string; runId: string }
+): string => {
+  const heads = new Map(
+    facts.refs([]).map((ref) => [ref.name, ref.object] as const)
+  );
+  const lines = [
+    `loop exec refused ${JSON.stringify(argv)} before starting it. ${PINNED_BOUNDARY}`,
+  ];
+  for (const item of analysis.refusals) {
+    lines.push(`- ${item.detail}.`);
+  }
+  const loopExec = `simple-changes loop exec --run-id ${invocation.runId} --agent-id ${commandWord(invocation.agentId)} --repo ${commandWord(invocation.checkout)} --`;
+  if (analysis.equivalent) {
+    lines.push(
+      "Run the equivalent command, which names the recorded commit instead:",
+      `  Next: ${loopExec} ${analysis.equivalent.map(commandWord).join(" ")}`
+    );
+    return lines.join("\n");
+  }
+  const named = [
+    ...new Set(
+      analysis.refusals.flatMap((item) => (item.unit ? [item.unit] : []))
+    ),
+  ];
+  for (const unit of named) {
+    // Where the unit is now: its branch, or its checkout when that moved.
+    const current = [
+      unit.branch ? heads.get(`refs/heads/${unit.branch}`) : undefined,
+      inventory.worktrees.find((worktree) => worktree.path === unit.path)
+        ?.headSha,
+    ].filter((head): head is string => Boolean(head));
+    lines.push(
+      ...pinnedUnitGuidance(
+        lease,
+        inventory,
+        coordination,
+        unit,
+        current.find((head) => !unit.recordedHeads.includes(head)) ??
+          current[0] ??
+          null,
+        analysis.subcommand
+      )
+    );
+  }
+  if (named.length === 0) {
+    lines.push(
+      "Name each unit by its recorded commit ID instead; run the underlying Git subcommand directly, without an alias, wrapper, or indirect name."
+    );
+  }
+  return lines.join("\n");
+};
+
+/**
+ * Refuses a guarded command before it starts when it could integrate a
+ * pinned unit's branch by name instead of by its recorded head.
+ */
+const assertPinnedHeads = (
+  lease: LoopLease,
+  inventory: RepositoryInventory,
+  argv: readonly string[],
+  invocation: { agentId: string; checkout: string; runId: string }
+): void => {
+  const coordination = readCoordinationDocumentFromCommonDirectory(
+    lease.commonGitDirectory
+  );
+  const pins = pinnedUnitsFor(lease, inventory, coordination);
+  if (pins.length === 0) {
+    return;
+  }
+  const facts = gitFactsFor(invocation.checkout, lease.commonGitDirectory);
+  const analysis = analyzePinnedCommand(argv, {
+    checkout: invocation.checkout,
+    checkoutHeads: new Map(
+      inventory.worktrees.map((worktree) => [worktree.path, worktree.headSha])
+    ),
+    commonGitDirectory: lease.commonGitDirectory,
+    facts,
+    ownCheckouts: lease.worktrees
+      .filter(
+        (worktree) =>
+          worktree.role === "controller" || worktree.role === "author"
+      )
+      .map((worktree) => worktree.path),
+    pins,
+    worktreePaths: inventory.worktrees.map((worktree) => worktree.path),
+  });
+  if (analysis.refusals.length > 0) {
+    throw new SimpleChangesError(
+      pinnedRefusalMessage(
+        lease,
+        inventory,
+        coordination,
+        argv,
+        analysis,
+        facts,
+        invocation
+      ),
+      EXIT_CODES.unsafe
+    );
+  }
+};
+
+// States whose recorded head `loop verify --for merge` holds the branch to.
+const MERGE_VERIFIED_STATES: ReadonlySet<PinnedUnitState> = new Set([
+  "adopted",
+  "handed-off",
+  "preserved",
+  "released",
+]);
+
+/**
+ * Before a merge, each released, handed-off, preserved, or adopted unit's
+ * local branch must still point at a head the run recorded. A checkout that
+ * is still present and on its branch already fails verification when it
+ * moves; this also covers a branch that moved without its checkout, such as
+ * after the checkout was removed or switched to another branch.
+ */
+const registeredBranchViolations = (
+  lease: LoopLease,
+  inventory: RepositoryInventory,
+  existing: readonly LoopViolation[]
+): LoopViolation[] => {
+  const coordination = readCoordinationDocumentFromCommonDirectory(
+    lease.commonGitDirectory
+  );
+  const flagged = new Set(existing.map((violation) => violation.path));
+  const retired = retiredAbsentPaths(lease, inventory);
+  const heads = localBranchHeads(lease.primaryCheckout);
+  const violations: LoopViolation[] = [];
+  for (const unit of pinnedUnitsFor(lease, inventory, coordination)) {
+    const head = unit.branch ? heads.get(unit.branch) : undefined;
+    const recorded = unit.recordedHeads.at(-1);
+    if (
+      !(head && recorded && MERGE_VERIFIED_STATES.has(unit.state)) ||
+      unit.recordedHeads.includes(head) ||
+      flagged.has(unit.path) ||
+      retired.has(unit.path) ||
+      removalDispositionForPath(lease, unit.path)
+    ) {
+      continue;
+    }
+    const recovery = pinnedUnitRecovery(lease, inventory, coordination, unit);
+    violations.push({
+      changeDigest:
+        inventory.worktrees.find((worktree) => worktree.path === unit.path)
+          ?.changeDigest ?? null,
+      code: "registered-branch-moved",
+      headSha: head,
+      message:
+        `Branch ${describePinnedUnit(unit)} moved from its recorded head ${recorded} to ${head}, so a merge that names it would integrate a commit this run never recorded. ${recovery?.text ?? ""}`.trim(),
+      ...(recovery ? { nextCommands: recovery.commands } : {}),
+      path: unit.path,
+    });
+    flagged.add(unit.path);
+  }
+  return violations;
+};
+
 const staleConcurrentClaimCause = (
   registered: LoopWorktreeLease,
   { linkedClaim, liveClaim, releaseRecorded }: WorktreeClaimContext
@@ -2630,11 +3063,22 @@ const scopeInvariantDigest = (inventory: RepositoryInventory): string =>
     targetRemote: inventory.repository.targetRemote,
   });
 
+export interface LoopStartOptions {
+  /** Receives the review ledger a resume loads under the held loop lock. */
+  onReviewLedger?: (state: ReviewLedgerResumeState) => void;
+  /**
+   * The run's `--authoring-request` (resume only): revalidation uses it
+   * combined with the saved settings, so the run has one review gate.
+   */
+  request?: AuthoringSidecar;
+}
+
 export const startLoop = (
   repositoryPath: string,
   agentIdInput: string,
   mode: RequestMode,
-  openingRemoteInventoryInput?: unknown
+  openingRemoteInventoryInput?: unknown,
+  options: LoopStartOptions = {}
 ): LoopLease => {
   const agentId = requiredText(agentIdInput, "agent ID");
   if (!LOOP_MODES.has(mode)) {
@@ -2644,6 +3088,9 @@ export const startLoop = (
     );
   }
   const opening = locateRepository(repositoryPath);
+  // The run's request layer, when one is passed, reaches resume revalidation.
+  const resumeOptions =
+    options.request === undefined ? {} : { request: options.request };
   return withStateLock(
     opening.repository.commonGitDirectory,
     "loop start",
@@ -2664,6 +3111,18 @@ export const startLoop = (
           );
           if (resumed) {
             refreshControllerSession(resumed);
+            if (mode === "resume") {
+              // Beside the lease it transfers, under the loop lock it holds.
+              const reviewLedger = loadReviewLedgerForResume(
+                heldLoopLock(
+                  inventory.repository.commonGitDirectory,
+                  "loop start"
+                ),
+                resumed.primaryCheckout,
+                resumeOptions
+              );
+              options.onReviewLedger?.(reviewLedger);
+            }
             return resumed;
           }
           const now = new Date().toISOString();
@@ -3403,7 +3862,7 @@ export interface ShipmentOutcomeRecord {
   summary: string;
 }
 
-const targetDiffPaths = (
+export const targetDiffPaths = (
   repositoryPath: string,
   openingRevision: string,
   finalRevision: string
@@ -3413,6 +3872,9 @@ const targetDiffPaths = (
     "--no-renames",
     "--name-only",
     "-z",
+    // A changed gitlink is a final-target change even where configuration
+    // or .gitmodules says to ignore submodules.
+    "--ignore-submodules=none",
     openingRevision,
     finalRevision,
     "--",
@@ -3421,7 +3883,7 @@ const targetDiffPaths = (
     .filter(Boolean)
     .sort((left, right) => left.localeCompare(right));
 
-const targetRenameOriginals = (
+export const targetRenameOriginals = (
   repositoryPath: string,
   openingRevision: string,
   finalRevision: string
@@ -3431,6 +3893,7 @@ const targetRenameOriginals = (
     "--name-status",
     "-z",
     "-M",
+    "--ignore-submodules=none",
     openingRevision,
     finalRevision,
     "--",
@@ -3904,6 +4367,84 @@ const assertPreservedSourceApproval = (
   }
 };
 
+/**
+ * Every placeholder `loop draft-outcome` writes starts with this marker, and
+ * `loop record-outcome` refuses any receipt text that still contains it, so
+ * a draft cannot be recorded until each placeholder has been replaced.
+ */
+export const OUTCOME_DRAFT_MARKER = "SIMPLE-CHANGES-DRAFT:";
+
+/**
+ * The `draftReview` field every draft carries. No shipment-outcome schema
+ * accepts it, so a draft is unrecordable, even by an older runtime, until a
+ * reviewer deletes it.
+ */
+export const OUTCOME_DRAFT_REVIEW = `${OUTCOME_DRAFT_MARKER} review every entry, replace each placeholder, then delete this draftReview field before loop record-outcome.`;
+
+type DraftTextPath = Array<number | string>;
+const LEADING_DOT_PATTERN = /^\./u;
+
+/** Every location in the raw receipt whose text carries the draft marker. */
+const draftTextPaths = (
+  value: unknown,
+  path: DraftTextPath = []
+): DraftTextPath[] => {
+  if (typeof value === "string") {
+    return value.includes(OUTCOME_DRAFT_MARKER) ? [path] : [];
+  }
+  if (Array.isArray(value)) {
+    return value.flatMap((item, index) =>
+      draftTextPaths(item, [...path, index])
+    );
+  }
+  if (typeof value === "object" && value !== null) {
+    return Object.entries(value).flatMap(([key, item]) =>
+      draftTextPaths(item, [...path, key])
+    );
+  }
+  return [];
+};
+
+const fieldOf = (value: unknown, path: DraftTextPath): unknown =>
+  path.reduce<unknown>(
+    (current, key) =>
+      typeof current === "object" && current !== null
+        ? (current as Record<number | string, unknown>)[key]
+        : undefined,
+    value
+  );
+
+/** A reader's name for a draft text location, such as "reason for SPEC.md". */
+const draftTextLabel = (receipt: unknown, path: DraftTextPath): string => {
+  const [list, index, field] = path;
+  if (list === "units" && (field === "summary" || field === "evidence")) {
+    return `${field} of unit ${String(fieldOf(receipt, ["units", index ?? 0, "unitId"]))}`;
+  }
+  if (list === "additionalPaths" && field === "reason") {
+    return `reason for ${String(fieldOf(receipt, ["additionalPaths", index ?? 0, "path"]))}`;
+  }
+  return path
+    .map((key) => (typeof key === "number" ? `[${key}]` : `.${key}`))
+    .join("")
+    .replace(LEADING_DOT_PATTERN, "");
+};
+
+/**
+ * Reads the raw input, every string anywhere in it including any
+ * preserved-source override, so a placeholder is refused even in a receipt
+ * the schema would reject for another reason.
+ */
+const assertNoOutcomeDraftPlaceholders = (receipt: unknown): void => {
+  const drafts = draftTextPaths(receipt);
+  const [first] = drafts;
+  if (first) {
+    throw new SimpleChangesError(
+      `Shipment outcome still carries ${drafts.length} draft placeholder(s), starting with the ${draftTextLabel(receipt, first)}. Replace every ${OUTCOME_DRAFT_MARKER} placeholder with the reviewed text, check each classification and disposition, then record it again.`,
+      EXIT_CODES.validation
+    );
+  }
+};
+
 export const recordShipmentOutcome = (
   repositoryPath: string,
   runIdInput: string,
@@ -3913,6 +4454,19 @@ export const recordShipmentOutcome = (
 ): ShipmentOutcomeRecord => {
   const runId = requiredRunId(runIdInput);
   const agentId = requiredText(agentIdInput, "agent ID");
+  if (
+    typeof receiptInput === "object" &&
+    receiptInput !== null &&
+    "draftReview" in receiptInput
+  ) {
+    throw new SimpleChangesError(
+      "This shipment outcome is still an unreviewed loop draft-outcome draft. Review every entry, replace each placeholder, delete the draftReview field, then record it.",
+      EXIT_CODES.validation
+    );
+  }
+  // Placeholders are refused before anything else reads the receipt, with
+  // or without preserved-source overrides.
+  assertNoOutcomeDraftPlaceholders(receiptInput);
   // Overrides ride on the receipt's units but are stored beside the lease;
   // the recorded digest covers the complete receipt, overrides included.
   const { overrides, receipt, receiptDigest } =
@@ -4082,7 +4636,18 @@ const emptyVerification = (
   violations: [],
 });
 
-export const verifyLoop = (repositoryPath: string): LoopVerification => {
+export interface LoopVerifyOptions {
+  /**
+   * Also hold each released, handed-off, preserved, or adopted unit's branch
+   * to its recorded head, as `loop verify --for merge` does.
+   */
+  forMerge?: boolean;
+}
+
+export const verifyLoop = (
+  repositoryPath: string,
+  options: LoopVerifyOptions = {}
+): LoopVerification => {
   const opening = locateRepository(repositoryPath);
   return withStateLock(
     opening.repository.commonGitDirectory,
@@ -4104,7 +4669,19 @@ export const verifyLoop = (repositoryPath: string): LoopVerification => {
               updatedAt: new Date().toISOString(),
             })
           : projected;
-      return verificationAgainst(lease, inventory);
+      const verification = verificationAgainst(lease, inventory);
+      if (!options.forMerge) {
+        return verification;
+      }
+      const violations = [
+        ...verification.violations,
+        ...registeredBranchViolations(
+          lease,
+          inventory,
+          verification.violations
+        ),
+      ];
+      return { ...verification, ok: violations.length === 0, violations };
     }
   );
 };
@@ -4534,6 +5111,12 @@ export const withGuardedLoopCommands = <T>(
             EXIT_CODES.usage
           );
         }
+        // Pinned heads are a lease check, so they refuse before the guard.
+        assertPinnedHeads(requireLease(inventory), inventory, argv, {
+          agentId: agentIdInput,
+          checkout,
+          runId,
+        });
         if (guard) {
           context.markChildStarting();
           await assertExecGuardAllows({
@@ -7116,13 +7699,16 @@ const automaticFinalizationCleanup = (
   return { cleanup, lease };
 };
 
-const targetTreeEntry = (
+export const targetTreeEntry = (
   repositoryPath: string,
   targetRevision: string,
   path: string
 ): string | null => {
   try {
+    // A literal pathspec, so a file named like pathspec magic (`:README.md`)
+    // reads its own entry rather than another file's.
     const output = runGit(repositoryPath, [
+      "--literal-pathspecs",
       "ls-tree",
       targetRevision,
       "--",
@@ -7581,11 +8167,23 @@ export interface LoopFinalizationReceipt {
   leaseDigest: string;
   preservedWorktrees: string[];
   reason: string;
+  /** Review attempts recorded during the run, per proposal, when a ledger exists. */
+  reviewAttempts?: ReviewAttemptsReport;
   runId: string;
   schemaVersion: 1;
   shipmentStatus: "closed" | "open" | "unstarted";
   targetRevision: string | null;
 }
+
+const reviewAttemptsField = (
+  lease: LoopLease
+): Pick<LoopFinalizationReceipt, "reviewAttempts"> => {
+  const report = reviewAttemptsForFinalization(
+    lease.commonGitDirectory,
+    lease.createdAt
+  );
+  return report ? { reviewAttempts: report } : {};
+};
 
 export interface PostCleanupRecoveryResult {
   active: false;
@@ -8225,6 +8823,7 @@ const finalizationDecision = (
       .map((worktree) => worktree.path)
       .sort((left, right) => left.localeCompare(right)),
     reason,
+    ...reviewAttemptsField(lease),
     runId: lease.runId,
     schemaVersion: 1,
     targetRevision: verifiedDelivery
@@ -8307,6 +8906,7 @@ const finalizeUnmutatedRun = (
       .map((worktree) => worktree.path)
       .sort((left, right) => left.localeCompare(right)),
     reason,
+    ...reviewAttemptsField(lease),
     runId: lease.runId,
     schemaVersion: 1,
     shipmentStatus: "unstarted",

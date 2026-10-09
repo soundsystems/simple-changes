@@ -1,5 +1,13 @@
 # Production Loop
 
+Contents:
+
+- Ownership Gate
+- 1\. Canonical Source
+- 2\. Downstream Forks
+- 3\. Consumer Installations
+- 4\. Final Convergence
+
 ## Ownership Gate
 
 Before each mutation in this loop, compare the exact branch, worktree, and MR or

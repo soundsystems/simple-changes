@@ -1,0 +1,83 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://simple-changes.dev/schemas/authoring.schema.json",
+  "title": "Simple Changes authoring preferences",
+  "description": "The .simple-changes-authoring.json repository sidecar and the personal authoring.json beside preferences.json. A preference for which agent and model write proposal text and perform reviews; never authority or identity.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "roles", "harnesses"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "roles": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "proposals": { "$ref": "#/$defs/role" },
+        "review": { "$ref": "#/$defs/reviewRole" }
+      }
+    },
+    "harnesses": {
+      "type": "object",
+      "propertyNames": { "$ref": "#/$defs/harnessId" },
+      "additionalProperties": {
+        "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/harnessEntry" }]
+      }
+    }
+  },
+  "$defs": {
+    "harnessId": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,39}$" },
+    "concreteHarnessId": {
+      "type": "string",
+      "pattern": "^(?!running$)[a-z0-9][a-z0-9-]{0,39}$"
+    },
+    "target": {
+      "anyOf": [{ "const": "running" }, { "$ref": "#/$defs/harnessId" }]
+    },
+    "model": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 120,
+      "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]+$"
+    },
+    "effort": { "enum": ["low", "medium", "high", "xhigh", "max"] },
+    "harnessEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["model"],
+      "properties": {
+        "model": { "$ref": "#/$defs/model" },
+        "effort": { "$ref": "#/$defs/effort" }
+      }
+    },
+    "role": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["harness"],
+      "properties": {
+        "harness": { "$ref": "#/$defs/target" },
+        "model": { "$ref": "#/$defs/model" },
+        "effort": { "$ref": "#/$defs/effort" }
+      },
+      "if": { "required": ["model"] },
+      "then": {
+        "properties": { "harness": { "$ref": "#/$defs/concreteHarnessId" } }
+      }
+    },
+    "reviewRole": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["harness"],
+      "properties": {
+        "harness": { "$ref": "#/$defs/target" },
+        "model": { "$ref": "#/$defs/model" },
+        "effort": { "$ref": "#/$defs/effort" },
+        "adversarial": { "type": "boolean" },
+        "escalateOnFindings": { "enum": ["high", "xhigh", null] }
+      },
+      "if": { "required": ["model"] },
+      "then": {
+        "properties": { "harness": { "$ref": "#/$defs/concreteHarnessId" } }
+      }
+    }
+  }
+}

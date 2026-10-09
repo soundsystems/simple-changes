@@ -11,6 +11,13 @@ export const GLOBAL_SKILL_ROOTS = [
   ".cursor/skills",
 ] as const;
 
+/**
+ * Conventional project folders under the home directory. Together with
+ * `GLOBAL_SKILL_ROOTS` these are the roots `update-local-forks discover`
+ * scans, and `simple-changes status --all` scans the same ones.
+ */
+export const PROJECT_ROOTS = ["Developer", "Projects", "Code", "src"] as const;
+
 export interface SkillRootOptions {
   environment?: Record<string, string | undefined>;
   homeDirectory?: string;

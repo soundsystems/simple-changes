@@ -1,6 +1,7 @@
+import type { AuthoringQuestionState, DetectedHarness } from "./authoring.ts";
 import type { ChangelogCoordination, RepoPolicy } from "./types.ts";
 
-export const CURRENT_GUIDANCE_VERSION = 27;
+export const CURRENT_GUIDANCE_VERSION = 28;
 
 export type GuidanceUpdateAction =
   | "review-settings"
@@ -59,11 +60,40 @@ export interface GuidanceUpdateQuestion {
   setting: string;
 }
 
+/**
+ * What the notice may depend on beyond the saved policy: current detection,
+ * the authoring question state (computed from validated sidecars, never from
+ * the acknowledgement), and questions whose wording depends on detection.
+ */
+export interface GuidanceUpdateContext {
+  authoringQuestion?: {
+    models: AuthoringQuestionState;
+    review: AuthoringQuestionState;
+  };
+  detectedHarnesses?: DetectedHarness[];
+  questions?: Record<string, GuidanceUpdateQuestion>;
+}
+
+// A required answer that applies only while its predicate holds; its wording
+// comes from the context, so the notice asks it first when it is pending and
+// otherwise lists the capability without a question.
+interface ConditionalGuidanceAnswer {
+  id: string;
+  when: "authoring-question-pending";
+}
+
+const answerApplies = (
+  answer: ConditionalGuidanceAnswer,
+  context: GuidanceUpdateContext
+): boolean =>
+  answer.when === "authoring-question-pending" &&
+  context.authoringQuestion?.review === "pending";
+
 interface GuidanceUpdateDefinition {
   changelogReviewRelevant: boolean;
   changes: GuidanceUpdateNotice["changes"];
   noticeBullets?: Array<{ priority: number; summary: string }>;
-  requiredAnswers?: GuidanceUpdateQuestion[];
+  requiredAnswers?: Array<GuidanceUpdateQuestion | ConditionalGuidanceAnswer>;
   version: number;
 }
 
@@ -780,7 +810,89 @@ const GUIDANCE_UPDATES: GuidanceUpdateDefinition[] = [
     ],
     version: 27,
   },
+  {
+    changelogReviewRelevant: false,
+    changes: [
+      {
+        kind: "onboarding",
+        summary:
+          "An optional authoring sidecar, `.simple-changes-authoring.json` or a personal `authoring.json`, records which model writes proposal descriptions and merge messages and who performs independent reviews in each coding agent the owner uses; it is a preference only, so it grants no authority and never changes who signs. Setup asks **Which coding agents do you use?**, one model question per agent, and, with two or more agents detected, **Who should perform independent reviews?**; `setup --authoring <json-or-@path> --scope <repository|personal> --confirm` records an answer without touching the policy.",
+        version: 28,
+      },
+      {
+        kind: "behavior",
+        summary:
+          "Agents attest every commit with `author attest` (with `--replays` after a rebase, cherry-pick, or squash) and run `proposal record-authors` after creating or updating a proposal. `proposal record-review` accepts a returned review only when the head's commits are attributed or waived with `proposal waive-coverage`, the reviewer is a separate agent or session from every author, and, for an adversarial review, a different agent or model; after findings, later reviews run at least at the recorded escalation effort.",
+        version: 28,
+      },
+      {
+        kind: "integration",
+        summary:
+          "`initialize` reports detected agents, both authoring files, the per-question state, the effective roles with each field's source, and the resolved reviewer, which `--proposal <id> --head <sha>` checks against that head's recorded authors; the pre-ship brief names the reviewer and its source. A run-only answer is applied with `--authoring-request <json-or-@path>` on `initialize`, `proposal record-review`, and `loop start --mode resume`: it is never saved, and it can make the review gate adversarial but never loosen a saved setting.",
+        version: 28,
+      },
+      {
+        kind: "behavior",
+        summary:
+          "Released, handed-off, preserved, adopted, and retained worktrees are pinned to their recorded commits: while any is pinned, `loop exec` runs only Git and provider merges that name their commit (`glab mr merge <iid> --sha <commit>`, optionally with `-R <project>`), refuses before Git starts any command that could integrate a later commit, and prints the same command with the recorded commit ID or the claim, pause, and accept steps; `loop verify --for merge` reports a registered branch that moved.",
+        version: 28,
+      },
+      {
+        kind: "integration",
+        summary:
+          "`remote-inventory build` builds the opening and final remote inventory receipts from fetched provider pages, with a read-only GitLab reference fetcher; `loop draft-outcome` drafts the shipment outcome from Git with placeholders that `loop record-outcome` refuses until each is replaced; and `status --all` shows every local repository's runs, claims, holds, ready work, pending notices, and forks without writing, fetching, or locking.",
+        version: 28,
+      },
+      {
+        kind: "behavior",
+        summary:
+          "SKILL.md now fits in the first 5,000 tokens a harness keeps after compaction: the request table, invariants, and reference router come first, every reference and provider reference is linked directly, and the recovery paths (lock and stale-lease recovery, takeover, the released-claim pause and accept steps, re-baseline, close-equivalent, lease-less prune, replan, and archive-recorded) moved unchanged into `references/recovery.md`, which agents read when `loop status`, `loop verify`, or finalization reports trouble.",
+        version: 28,
+      },
+      {
+        kind: "integration",
+        summary:
+          "The installed skill carries the release notes of the last six guidance versions; `release-notes --version` for an older release prints its link in the full changelog with the notices of the guidance versions it introduced and exits 6 instead of failing, and `update-local-forks` still verifies an older release's tree after its notes leave the window.",
+        version: 28,
+      },
+    ],
+    noticeBullets: [
+      {
+        priority: 180,
+        summary:
+          "You can now choose which model writes proposals and who reviews them in each coding agent you use, and a review from a different agent or model is checked against the recorded author of every commit. When two or more agents are detected, this update asks who should perform independent reviews.",
+      },
+      {
+        priority: 180,
+        summary:
+          "Ship runs now merge exactly the commit each released or preserved worktree was recorded at: while such worktrees wait, `loop exec` runs only Git and provider merges that name their commit, and refuses any merge that could pick up a later commit, printing the commit-ID command or the recovery steps instead.",
+      },
+      {
+        priority: 180,
+        summary:
+          "Simple Changes keeps its core rules within what an agent remembers after a long conversation and reads its recovery steps only when a run reports trouble; release notes older than the last six guidance versions open from a link to the full changelog.",
+      },
+    ],
+    requiredAnswers: [
+      { id: "authoring-review", when: "authoring-question-pending" },
+    ],
+    version: 28,
+  },
 ];
+
+/**
+ * The practical notice for one guidance version: its notice bullets, or its
+ * change summaries when it has none; empty for a version with no definition.
+ */
+export const guidanceNotice = (version: number): string[] => {
+  const update = GUIDANCE_UPDATES.find((entry) => entry.version === version);
+  if (!update) {
+    return [];
+  }
+  return update.noticeBullets && update.noticeBullets.length > 0
+    ? update.noticeBullets.map((bullet) => bullet.summary)
+    : update.changes.map((change) => change.summary);
+};
 
 const recommendedActionFor = (
   requiredAnswers: GuidanceUpdateQuestion[],
@@ -816,7 +928,8 @@ const actionsForGuidanceUpdate = (
 
 export const inspectGuidanceUpdate = (
   policy: RepoPolicy | null,
-  changelogCoordination: ChangelogCoordination
+  changelogCoordination: ChangelogCoordination,
+  context: GuidanceUpdateContext = {}
 ): GuidanceUpdateNotice => {
   const storedVersion = policy ? policy.guidance.version : null;
   const storedDisposition = policy ? policy.guidance.disposition : null;
@@ -833,8 +946,14 @@ export const inspectGuidanceUpdate = (
       ? noticeBullets.map((bullet) => bullet.summary)
       : changes.map((change) => change.summary)
   ).slice(0, 3);
-  const requiredAnswers = pending.flatMap(
-    (update) => update.requiredAnswers ?? []
+  const requiredAnswers = pending.flatMap((update) =>
+    (update.requiredAnswers ?? []).flatMap((answer) => {
+      if (!("when" in answer)) {
+        return [answer];
+      }
+      const question = context.questions?.[answer.id];
+      return question && answerApplies(answer, context) ? [question] : [];
+    })
   );
   const recommendedChanges: GuidanceUpdateQuestion[] = [];
   if (

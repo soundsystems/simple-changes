@@ -197,16 +197,19 @@ gets the ordinary plan.
 
 Resolve it in three steps:
 
-1. Re-apply each change in the declaration's new file; for a removed
-   declaration, remove it there.
-2. Take upstream's version of the old file. When the fork also changed the
+1. Take upstream's version of the old file. When the fork also changed the
    old file elsewhere, settle it from the merge below the sidecar header
-   instead; when upstream removed it, delete it.
+   instead, taking upstream's side wherever it took a moved declaration out;
+   when upstream removed the file, delete it.
+2. Re-apply each change where its code lives now: in the declaration's new
+   file, or in the old file for a statement that stays there (see below). For
+   a removed declaration, remove it from the new file.
 3. Delete the sidecar. Until then, every later plan lists the old file as
    `review`, even after the pin moves.
 
-Never take either side whole: the fork's side keeps the declaration in a file
-upstream no longer reads it from, and upstream's side drops the change.
+Never resolve it by taking either side whole and stopping: the fork's side
+keeps the declaration in a file upstream no longer reads it from, and
+upstream's side alone drops the change.
 
 Fork checks that read the old file's text, such as
 `grep -q '<name>' runtime/scripts/lib/<file>.ts` in `scripts/test.sh`, fail
@@ -219,8 +222,12 @@ Matching is by column-0 top-level declaration name, read without a parser, so
 a declaration renamed while it moved is not detected, and neither is one that
 is not a column-0 `const`, `let`, `var`, `function`, `class`, `interface`,
 `type`, or `enum`. A declaration runs from the comment lines directly above it
-through the last line upstream took out of the old file; a statement upstream
-kept after it is not part of it, so a fork change there merges as usual. Review a large upstream refactor by hand when the fork
+to the next top-level declaration, import, or re-export, so a column-0
+statement right after a moved declaration counts as part of it. A fork change
+to such a statement also makes the old file a conflict, even when upstream
+kept the statement there; the sidecar's diff shows the change, and it stays
+in the old file. Whenever the plan cannot tell, it conflicts rather than risk
+losing a change. Review a large upstream refactor by hand when the fork
 edits the files it touches.
 
 ## Classify what you port by hand

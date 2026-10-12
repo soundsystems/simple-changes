@@ -66,8 +66,8 @@ saved plan, and it never commits, pushes, or runs a fork's scripts.
    upstream change into the fork's prose keeping its stricter local rules,
    then delete the sidecar. Until it is deleted, every later plan reports the
    file as unresolved. A conflict that names moved declarations is never
-   resolved by taking either side whole: re-apply each change in the
-   declaration's new file, then settle the old file as its sidecar says.
+   resolved by taking either side whole: settle the old file as its sidecar
+   says, and re-apply each change where its code lives now.
    An `unrecorded-omission` is an upstream reference
    added or changed since the pin that the fork neither carries nor records:
    carry the file, or list it with its reason under `## Intentional

@@ -2959,7 +2959,7 @@ describe("update-local-forks moved declarations", () => {
 
     expect(lease).toMatchObject({ action: "conflict", sidecarDigest: null });
     expect(lease?.reason).toBe(
-      `Upstream moved 2 declarations out of this file, and the fork changed 1: \`relinquish\` (edited) -> ${RECOVERY_PATH}. Each arrives in its new file without the fork's change, so this file conflicts even where its lines merge. Re-apply each change in its new file (for a removed declaration, remove it there; the sidecar header lists the diffs), take the installed upstream version of this file, then delete ${LEASE_PATH}.upstream-merge.`
+      `Upstream moved 2 declarations out of this file, and the fork changed 1: \`relinquish\` (edited) -> ${RECOVERY_PATH}. Each arrives in its new file without the fork's change, so this file conflicts even where its lines merge. Take the installed upstream version of this file, re-apply each change where its code lives now (in its new file, or in this file for a statement that stays here; for a removed declaration, remove it there; the sidecar header lists the diffs), then delete ${LEASE_PATH}.upstream-merge.`
     );
     expect(lease?.content).toStartWith(
       [
@@ -3003,7 +3003,7 @@ describe("update-local-forks moved declarations", () => {
     expect(pending.pinUpdate.from).toBe(fixture.release);
     expect(entryOf(pending, LEASE_PATH)).toMatchObject({
       action: "review",
-      reason: `Upstream moved declarations the fork changed out of this file; ${LEASE_PATH}.upstream-merge lists each one, its new file, and the fork's diff. Re-apply each change in its new file, settle this file as the sidecar says, then delete the sidecar.`,
+      reason: `Upstream moved declarations the fork changed out of this file; ${LEASE_PATH}.upstream-merge lists each one, its new file, and the fork's diff. Re-apply each change where its code lives now, settle this file as the sidecar says, then delete the sidecar.`,
     });
   });
 
@@ -3016,19 +3016,23 @@ describe("update-local-forks moved declarations", () => {
 
     expect(lease?.action).toBe("conflict");
     expect(lease?.reason).toContain(
-      "settle this file from the merge below the sidecar header, which carries the fork's other changes to it"
+      "Settle this file from the merge below the sidecar header, taking upstream's side wherever it took a moved declaration out,"
     );
-    expect(lease?.reason).not.toContain("take the installed upstream version");
+    expect(lease?.reason).not.toContain("Take the installed upstream version");
     expect(lease?.content).toContain(acme);
   });
 
-  test("keeps today's plan when the fork changed only a statement upstream kept after a moved declaration", () => {
+  test("fails closed, losing nothing, when the fork changed a statement that follows a moved declaration", () => {
+    // A declaration's chunk runs to the next top-level declaration, so a
+    // statement right after it counts as part of it. Upstream kept this one
+    // in the old file; the per-file merge is clean, but the plan cannot tell
+    // the statement from the declaration, so it conflicts rather than guess.
     const loaded = 'console.info("lease module loaded");';
+    const acme = 'console.info("acme lease module loaded");';
     const tail = `// Loaded once per process.\n${loaded}\n`;
     const pinned = `${LEASE_AT_PIN}\n${tail}`;
     const released = `${LEASE_RELEASED}\n${tail}`;
-    const forkLease = (source: string): string =>
-      source.replace(loaded, 'console.info("acme lease module loaded");');
+    const forkLease = (source: string): string => source.replace(loaded, acme);
     expect(mergesCleanly(forkLease(pinned), pinned, released)).toBe(true);
     const fixture = movedFixture({
       forkLease,
@@ -3039,37 +3043,49 @@ describe("update-local-forks moved declarations", () => {
       },
     });
     const plan = planMoved(fixture);
+    const lease = entryOf(plan, LEASE_PATH);
 
-    expect(entryOf(plan, LEASE_PATH)).toMatchObject({
-      action: "merge",
-      reason:
-        "Upstream and the fork changed different lines; three-way merge applied.",
-    });
-    expect(entryOf(plan, LEASE_PATH)?.content).toContain(
-      'console.info("acme lease module loaded");'
-    );
-    expect(entryOf(plan, RECOVERY_PATH)).toMatchObject({
-      action: "add",
-      reason: "New upstream runtime file.",
-    });
-    expect(plan.summary.conflict).toBe(0);
-
-    // With a moved edit too, the kept statement is the fork's other change.
-    const both = movedFixture({
-      forkLease: (source) => forkLease(editRelinquish(source)),
-      pinned,
-      released: {
-        "scripts/lib/lease-recovery.ts": LEASE_RECOVERY,
-        "scripts/lib/lease.ts": released,
-      },
-    });
-    const lease = entryOf(planMoved(both), LEASE_PATH);
     expect(lease?.action).toBe("conflict");
     expect(lease?.reason).toContain(
-      `the fork changed 1: \`relinquish\` (edited) -> ${RECOVERY_PATH}.`
+      `the fork changed 1: \`LEASE_MARKER\` (edited) -> ${RECOVERY_PATH}.`
     );
+    // The resolution keeps a change to a statement that stays in this file,
+    // and the merge behind the header still carries it.
     expect(lease?.reason).toContain(
-      "settle this file from the merge below the sidecar header"
+      "or in this file for a statement that stays here"
+    );
+    expect(lease?.content).toContain(`+${acme}`);
+    expect(
+      lease?.content?.split(
+        "== end of moved declarations; the merge of this file follows ==\n"
+      )[1]
+    ).toContain(acme);
+    expect(entryOf(plan, RECOVERY_PATH)?.action).toBe("add");
+    expect(plan.pinUpdate.to).toBe(fixture.release);
+  });
+
+  test("conflicts an edit inside a moved template literal even when upstream keeps its text in the old file", () => {
+    // Upstream renamed the declaration in the old file and moved the original
+    // name to a new file: Git sees only the header line change, and the
+    // fork's edit to the template text merges cleanly into the renamed copy.
+    const moved = "export const moved = `\nfirst\nsecond\nbase\n`;\n";
+    const retained = moved.replace("const moved", "const retained");
+    const forkLease = (source: string): string =>
+      source.replace("\nbase\n", "\nfork\n");
+    expect(mergesCleanly(forkLease(moved), moved, retained)).toBe(true);
+    const fixture = movedFixture({
+      forkLease,
+      pinned: moved,
+      released: {
+        "scripts/lib/lease-recovery.ts": moved,
+        "scripts/lib/lease.ts": retained,
+      },
+    });
+    const lease = entryOf(planMoved(fixture), LEASE_PATH);
+
+    expect(lease?.action).toBe("conflict");
+    expect(lease?.reason).toContain(
+      `the fork changed 1: \`moved\` (edited) -> ${RECOVERY_PATH}.`
     );
   });
 
@@ -3305,7 +3321,7 @@ describe("update-local-forks moved declarations", () => {
     expect(lease?.reason).toContain(
       `Upstream moved 3 declarations out of this file, and the fork changed 1: \`relinquish\` (edited) -> ${core}.`
     );
-    expect(lease?.reason).toContain("delete this file as upstream did");
+    expect(lease?.reason).toContain("Delete this file as upstream did");
     expect(lease?.content).toEndWith(
       "== end of moved declarations; upstream removed this file ==\n"
     );

@@ -1930,7 +1930,7 @@ const recordsMovedDeclarations = (
 const pendingSidecarReason = (forkRoot: string, forkPath: string): string => {
   const sidecar = forkPath + MERGE_SIDECAR_SUFFIX;
   return recordsMovedDeclarations(forkRoot, forkPath)
-    ? `Upstream moved declarations the fork changed out of this file; ${sidecar} lists each one, its new file, and the fork's diff. Re-apply each change in its new file, settle this file as the sidecar says, then delete the sidecar.`
+    ? `Upstream moved declarations the fork changed out of this file; ${sidecar} lists each one, its new file, and the fork's diff. Re-apply each change where its code lives now, settle this file as the sidecar says, then delete the sidecar.`
     : `An earlier upstream merge conflicted; merge ${sidecar} into this file by hand, then delete the sidecar.`;
 };
 
@@ -2055,9 +2055,6 @@ const CHUNK_BREAK_PATTERN = /^(?:import\b|export\s*(?:\*|\{|type\s*\{))/u;
 const COMMENT_LINE_PATTERN = /^\s*(?:\/\/|\/\*|\*)/u;
 const BLANK_LINE_PATTERN = /^\s*$/u;
 const TRAILING_LINE_BREAK_PATTERN = /\n$/u;
-const HUNK_HEADER_PATTERN = /^@@ -(\d+)(?:,(\d+))? \+\d+(?:,\d+)? @@/gmu;
-/** A line that still belongs to the statement above it: blank, indented, or closing. */
-const CONTINUATION_LINE_PATTERN = /^(?:\s|[})\]`;,]|$)/u;
 const MOVED_SIDECAR_END = {
   merged: "== end of moved declarations; the merge of this file follows ==",
   removed: "== end of moved declarations; upstream removed this file ==",
@@ -2221,123 +2218,21 @@ const homesOf = (
   );
 };
 
-/** The moved and kept parts of a pinned declaration, as split below. */
-interface DeclarationParts {
-  kept: string;
-  moved: string;
-}
-
-/** What the scan reads: parsed declarations and each one's moved part. */
-interface MoveScan {
-  partsOf: (file: UpstreamFile, name: string) => DeclarationParts;
-  read: DeclarationReader;
-}
-
 /**
- * The zero-based pinned lines of a file that the installed version changed or
- * took out, from Git's own line diff; every line when upstream removed the
- * file or the diff fails, so an unreadable diff never narrows a declaration.
- */
-const removedLinesOf = (file: UpstreamFile): Set<number> => {
-  const { base, target } = file.versions;
-  const every = new Set(
-    Array.from({ length: (base ?? "").split("\n").length }, (_, line) => line)
-  );
-  if (base === null || target === null) {
-    return every;
-  }
-  const { exitCode, output } = diffBytes(base, target, ["--unified=0"]);
-  if (exitCode !== 1) {
-    return every;
-  }
-  const removed = new Set<number>();
-  for (const [, start, length] of output.matchAll(HUNK_HEADER_PATTERN)) {
-    const first = Number(start) - 1;
-    for (let line = first; line < first + Number(length ?? "1"); line += 1) {
-      removed.add(line);
-    }
-  }
-  return removed;
-};
-
-/**
- * A pinned declaration split where upstream stopped taking it out of the file:
- * the moved part runs to the last line upstream took out, with any blank,
- * indented, or closing lines right after; the kept part is what follows and
- * upstream left in place, such as a column-0 statement after the declaration.
- * A fork change to the kept part stays in this file's merge, so it is not a
- * change to the declaration that moved.
- */
-const splitDeclaration = (
-  source: string,
-  declaration: Declaration,
-  removed: Set<number>
-): DeclarationParts => {
-  const lines = source.split("\n");
-  const numbers = declaration.ranges.flatMap(([first, stop]) =>
-    Array.from({ length: stop - first }, (_, offset) => first + offset)
-  );
-  let end = 0;
-  for (const [index, line] of numbers.entries()) {
-    if (removed.has(line)) {
-      end = index + 1;
-    }
-  }
-  if (end === 0) {
-    end = numbers.length;
-  }
-  while (
-    end < numbers.length &&
-    CONTINUATION_LINE_PATTERN.test(withoutCr(lines[numbers[end] ?? 0] ?? ""))
-  ) {
-    end += 1;
-  }
-  const textOf = (part: number[]): string =>
-    part.map((line) => lines[line] ?? "").join("\n");
-  return {
-    kept: textOf(numbers.slice(end)),
-    moved: textOf(numbers.slice(0, end)),
-  };
-};
-
-const moveScan = (): MoveScan => {
-  const read = declarationReader();
-  const removed = new Map<string, Set<number>>();
-  const partsOf = (file: UpstreamFile, name: string): DeclarationParts => {
-    const declaration = read(file, "base").get(name);
-    if (declaration === undefined || file.versions.base === null) {
-      return { kept: "", moved: "" };
-    }
-    let lines = removed.get(file.upstreamPath);
-    if (lines === undefined) {
-      lines = removedLinesOf(file);
-      removed.set(file.upstreamPath, lines);
-    }
-    return splitDeclaration(file.versions.base, declaration, lines);
-  };
-  return { partsOf, read };
-};
-
-/** Whether `text` is `head`, or `head` followed by more whole lines. */
-const startsWithLines = (text: string, head: string): boolean =>
-  text === head || text.startsWith(`${head}\n`);
-
-/**
- * What the fork did to a moved declaration, judged by its copy in the file the
- * declaration left, or failing that by its copy in a file that declares it
- * now: a copy equal to the pinned text or to an installed one is no change,
- * and so is a copy in the file it left whose moved part is untouched; no copy
- * at all is a removal. A fork that already carries a file that is new
- * upstream lets that file decide, since the plan never writes over it (it
- * stays as the fork has it or conflicts), so nothing the fork changed is lost.
+ * What the fork did to a moved declaration, judged by its whole chunk in the
+ * file the declaration left, or failing that by its copy in a file that
+ * declares it now: a copy equal to the pinned text or to an installed one is
+ * no change, any other copy is an edit, and no copy at all is a removal. A
+ * fork that already carries a file that is new upstream lets that file decide,
+ * since the plan never writes over it (it stays as the fork has it or
+ * conflicts), so nothing the fork changed is lost.
  */
 const forkChangeOf = (
   file: UpstreamFile,
   name: string,
   candidates: UpstreamFile[],
-  scan: MoveScan
+  read: DeclarationReader
 ): Pick<MovedDeclaration, "change" | "forkText"> => {
-  const { read } = scan;
   const inFile = read(file, "current").get(name)?.text;
   if (
     inFile === undefined &&
@@ -2361,19 +2256,17 @@ const forkChangeOf = (
     read(file, "base").get(name)?.text,
     ...candidates.map((candidate) => read(candidate, "target").get(name)?.text),
   ];
-  const unchanged =
-    upstreamTexts.includes(forkText) ||
-    (inFile !== undefined &&
-      startsWithLines(inFile, scan.partsOf(file, name).moved));
-  return { change: unchanged ? null : "edited", forkText };
+  return {
+    change: upstreamTexts.includes(forkText) ? null : "edited",
+    forkText,
+  };
 };
 
 const movesOutOf = (
   file: UpstreamFile,
   declarers: Map<string, UpstreamFile[]>,
-  scan: MoveScan
+  read: DeclarationReader
 ): MovedDeclaration[] => {
-  const { read } = scan;
   const kept = read(file, "target");
   const moved: MovedDeclaration[] = [];
   for (const [name, { text }] of read(file, "base")) {
@@ -2387,7 +2280,7 @@ const movesOutOf = (
       homes: homesOf(name, text, candidates, read),
       name,
       pinnedText: text,
-      ...forkChangeOf(file, name, candidates, scan),
+      ...forkChangeOf(file, name, candidates, read),
     });
   }
   return moved;
@@ -2416,43 +2309,32 @@ const outsideDeclarations = (
 };
 
 /**
- * Whether the fork changed the file outside what moved, in a way the installed
- * upstream version does not already carry: outside the moved declarations'
- * chunks, or in the part of a moved declaration's chunk that upstream kept.
+ * Whether the fork changed the file outside the moved declarations' chunks, in
+ * a way the installed upstream version does not already carry.
  */
 const otherForkChangesIn = (
   file: UpstreamFile,
   moved: MovedDeclaration[],
-  scan: MoveScan
+  read: DeclarationReader
 ): boolean => {
   const { base, current, target } = file.versions;
   if (base === null || current === null) {
     return false;
   }
-  const { read } = scan;
   const names = moved.map((declaration) => declaration.name);
   const forkRest = outsideDeclarations(current, read(file, "current"), names);
-  const keptChanged = moved.some((declaration) => {
-    const forkCopy = read(file, "current").get(declaration.name)?.text;
-    if (forkCopy === undefined || forkCopy === declaration.pinnedText) {
-      return false;
-    }
-    const { kept } = scan.partsOf(file, declaration.name);
-    return kept !== "" && !forkCopy.endsWith(`\n${kept}`);
-  });
   return (
-    keptChanged ||
-    (forkRest !== outsideDeclarations(base, read(file, "base"), names) &&
-      (target === null ||
-        forkRest !== outsideDeclarations(target, read(file, "target"), names)))
+    forkRest !== outsideDeclarations(base, read(file, "base"), names) &&
+    (target === null ||
+      forkRest !== outsideDeclarations(target, read(file, "target"), names))
   );
 };
 
 /** Each upstream code file that declarations moved out of since the pin. */
 const movedDeclarations = (classified: ClassifiedFork): MovedOut[] => {
   const files = [...classified.files.values()];
-  const scan = moveScan();
-  const declarers = changedDeclarers(files, scan.read);
+  const read = declarationReader();
+  const declarers = changedDeclarers(files, read);
   const moves: MovedOut[] = [];
   for (const file of files) {
     if (
@@ -2464,12 +2346,12 @@ const movedDeclarations = (classified: ClassifiedFork): MovedOut[] => {
     ) {
       continue;
     }
-    const moved = movesOutOf(file, declarers, scan);
+    const moved = movesOutOf(file, declarers, read);
     if (moved.length > 0) {
       moves.push({
         file,
         moved,
-        otherForkChanges: otherForkChangesIn(file, moved, scan),
+        otherForkChanges: otherForkChangesIn(file, moved, read),
       });
     }
   }
@@ -2550,19 +2432,25 @@ const movedList = (moved: MovedDeclaration[]): string =>
 const declarationCount = (count: number): string =>
   count === 1 ? "1 declaration" : `${count} declarations`;
 
-/** The one-line resolution for a file that lost declarations the fork changed. */
+/**
+ * The one-line resolution for a file that lost declarations the fork changed.
+ * A declaration's chunk runs to the next top-level declaration, so a change
+ * the plan attributes to it can be to a statement that stays in this file;
+ * the resolution re-applies each change where its code lives now, so no
+ * reading of it drops a change.
+ */
 const movedResolution = (out: MovedOut): string => {
   const sidecar = out.file.forkPath + MERGE_SIDECAR_SUFFIX;
   const reapply =
-    "Re-apply each change in its new file (for a removed declaration, remove it there; the sidecar header lists the diffs)";
+    "re-apply each change where its code lives now (in its new file, or in this file for a statement that stays here; for a removed declaration, remove it there; the sidecar header lists the diffs)";
   if (out.file.versions.target === null) {
     return out.otherForkChanges
-      ? `${reapply}, keep or drop the fork's other changes to this file deliberately since upstream removed it, then delete ${sidecar}.`
-      : `${reapply}, delete this file as upstream did, then delete ${sidecar}.`;
+      ? `Keep or drop the fork's other changes to this file deliberately since upstream removed it, ${reapply}, then delete ${sidecar}.`
+      : `Delete this file as upstream did, ${reapply}, then delete ${sidecar}.`;
   }
   return out.otherForkChanges
-    ? `${reapply}, settle this file from the merge below the sidecar header, which carries the fork's other changes to it, then delete ${sidecar}.`
-    : `${reapply}, take the installed upstream version of this file, then delete ${sidecar}.`;
+    ? `Settle this file from the merge below the sidecar header, taking upstream's side wherever it took a moved declaration out, ${reapply}, then delete ${sidecar}.`
+    : `Take the installed upstream version of this file, ${reapply}, then delete ${sidecar}.`;
 };
 
 /** The sidecar's opening: each move, the resolution, and each fork diff. */

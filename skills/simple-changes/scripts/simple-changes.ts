@@ -5003,11 +5003,12 @@ const runPrepareAgent = (options: CliOptions): void => {
       ? value
       : `'${value.replaceAll("'", "'\\''")}'`;
   const afterEveryCommit = `simple-changes author attest --commit <sha> --agent-id ${shellWord(prepared.agentId)} --repo ${shellWord(prepared.path)} --json`;
+  // The author may run in another session; its first use claims the binding.
   const workDir = bindRunWorkDirectory(
     workRepository,
     prepared.runId,
     prepared.agentId,
-    workDirectorySession(),
+    null,
     null
   );
   writeOutput(
@@ -5029,9 +5030,6 @@ const workDirectoryFor = (
   const session = workDirectorySession();
   if (lease) {
     const binding = runWorkDirectoryBinding(repository, lease.runId, agentId);
-    if (binding && sameSession(binding.session, session)) {
-      return { bound: true, path: binding.path };
-    }
     const controller =
       lease.ownerAgentId === agentId &&
       sameSession(
@@ -5039,12 +5037,22 @@ const workDirectoryFor = (
         session
       );
     const author =
-      !binding &&
-      (lease.preparations.some((entry) => entry.agentId === agentId) ||
-        lease.worktrees.some(
-          (worktree) => worktree.createdByRun && worktree.agentId === agentId
-        ));
-    if (controller || author) {
+      lease.preparations.some((entry) => entry.agentId === agentId) ||
+      lease.worktrees.some(
+        (worktree) => worktree.createdByRun && worktree.agentId === agentId
+      );
+    if (binding && sameSession(binding.session, session)) {
+      // The first session to use an unclaimed binding claims it.
+      if (
+        binding.session === null &&
+        session !== null &&
+        (controller || author)
+      ) {
+        bindRunWorkDirectory(repository, lease.runId, agentId, session, null);
+      }
+      return { bound: true, path: binding.path };
+    }
+    if (controller || (author && !binding)) {
       return {
         bound: true,
         path: bindRunWorkDirectory(
@@ -5065,12 +5073,18 @@ const workDirectoryFor = (
 const runWorkDirectory = (options: CliOptions): void => {
   const [action, target] = options.positional;
   const repository = locateWorkDirectoryRepository(options.repo);
-  const lease = readLoopLease(options.repo);
   if (action === "remove") {
-    const removed = removeWorkDirectory(
-      repository,
-      requireCliOption(target, "the work directory path"),
-      lease?.runId ?? null
+    const path = requireCliOption(target, "the work directory path");
+    // Under the state lock, so no run can bind it between check and removal.
+    const removed = withLoopStateLock(
+      repository.commonGitDirectory,
+      "workdir remove",
+      () =>
+        removeWorkDirectory(
+          repository,
+          path,
+          readLoopLease(options.repo)?.runId ?? null
+        )
     );
     writeOutput(
       { removed: true, workDir: removed },
@@ -5086,7 +5100,11 @@ const runWorkDirectory = (options: CliOptions): void => {
     );
   }
   const agentId = requireCliOption(options.agentId, "--agent-id");
-  const { bound, path } = workDirectoryFor(repository, lease, agentId);
+  const { bound, path } = workDirectoryFor(
+    repository,
+    readLoopLease(options.repo),
+    agentId
+  );
   writeOutput({ agentId, bound, workDir: path }, options.json, `${path}\n`);
 };
 

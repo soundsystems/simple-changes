@@ -135,15 +135,17 @@ const deepestExisting = (path: string): string => {
 // `path` with its deepest existing ancestor resolved once, so a directory
 // that does not exist yet still compares against real checkouts, and later
 // steps never re-resolve a link another user could retarget.
-const canonicalPath = (path: string): { existing: string; path: string } => {
+const canonicalPath = (
+  path: string
+): { existing: string; missing: string[]; path: string } => {
   const existing = deepestExisting(path);
-  let missing = path;
-  const segments: string[] = [];
-  while (!existsSync(missing)) {
-    segments.unshift(basename(missing));
-    missing = dirname(missing);
+  let current = path;
+  const missing: string[] = [];
+  while (!existsSync(current)) {
+    missing.unshift(basename(current));
+    current = dirname(current);
   }
-  return { existing, path: join(existing, ...segments) };
+  return { existing, missing, path: join(existing, ...missing) };
 };
 
 const isWithin = (parent: string, child: string): boolean => {
@@ -157,19 +159,35 @@ const unsafe = (message: string): SimpleChangesError =>
     EXIT_CODES.unsafe
   );
 
+const protectedPaths = (repository: WorkDirectoryRepository): string[] => [
+  ...new Set([
+    owningCheckout(repository.commonGitDirectory),
+    repository.commonGitDirectory,
+    ...repository.checkouts,
+  ]),
+];
+
 const assertOutsideRepository = (
   repository: WorkDirectoryRepository,
   path: string
 ): void => {
-  for (const protectedPath of new Set([
-    owningCheckout(repository.commonGitDirectory),
-    repository.commonGitDirectory,
-    ...repository.checkouts,
-  ])) {
+  for (const protectedPath of protectedPaths(repository)) {
     if (isWithin(canonicalPath(protectedPath).path, path)) {
       throw unsafe(
         `Refusing a work directory inside ${protectedPath}: ${path}.`
       );
+    }
+  }
+};
+
+// A checkout someone placed inside a work directory survives its removal.
+const assertHoldsNoCheckout = (
+  repository: WorkDirectoryRepository,
+  path: string
+): void => {
+  for (const protectedPath of protectedPaths(repository)) {
+    if (isWithin(path, canonicalPath(protectedPath).path)) {
+      throw unsafe(`Refusing to remove ${path}, which holds ${protectedPath}.`);
     }
   }
 };
@@ -252,7 +270,13 @@ export const repositoryWorkDirectory = (
   const root = join(parent.path, basename(configured));
   assertOutsideRepository(repository, root);
   assertTrustedAncestors(parent.existing);
-  mkdirSync(parent.path, { mode: 0o700, recursive: true });
+  // Create each missing parent alone and check it before descending, so a
+  // link swapped in is refused before anything is made through it.
+  let created = parent.existing;
+  for (const segment of parent.missing) {
+    created = join(created, segment);
+    ensurePrivateDirectory(created);
+  }
   assertTrustedAncestors(parent.path);
   ensurePrivateDirectory(root);
   const directory = join(root, repositoryKey(repository));
@@ -495,6 +519,7 @@ export const removeRunWorkDirectories = (
     }
     try {
       assertRepositoryWorkDirectory(repository, binding.path);
+      assertHoldsNoCheckout(repository, binding.path);
       rmSync(binding.path, { force: true, recursive: true });
       result.removed.push(binding.path);
     } catch (error) {
@@ -552,6 +577,7 @@ export const removeWorkDirectory = (
       EXIT_CODES.unsafe
     );
   }
+  assertHoldsNoCheckout(repository, real);
   rmSync(real, { force: true, recursive: true });
   return real;
 };

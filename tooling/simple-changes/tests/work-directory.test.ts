@@ -448,6 +448,43 @@ describe("work directory identity and paths", () => {
   });
 });
 
+describe("work directory safety", () => {
+  test("creates each missing parent privately", () => {
+    const { base } = workRoot();
+    const { location } = repository();
+    const root = join(base, "a", "b", "root");
+    repositoryWorkDirectory(location, { [WORK_ROOT_ENVIRONMENT]: root });
+    for (const path of [join(base, "a"), join(base, "a", "b"), root]) {
+      expect(mode(path)).toBe(0o700);
+    }
+  });
+
+  test("never removes a directory that holds a registered checkout", () => {
+    const { environment } = workRoot();
+    const { fixture, location } = repository();
+    const directory = bindRunWorkDirectory(
+      location,
+      "run-a",
+      "controller",
+      null,
+      null,
+      environment
+    );
+    const nested = join(directory, "author");
+    git(fixture.root, ["worktree", "add", "-q", "-b", "nested", nested]);
+
+    const removal = removeRunWorkDirectories(
+      locateWorkDirectoryRepository(fixture.root),
+      "run-a"
+    );
+    expect(removal.removed).toEqual([]);
+    expect(removal.kept).toEqual([
+      { path: directory, reason: expect.stringContaining("which holds") },
+    ]);
+    expect(existsSync(join(nested, "README.md"))).toBe(true);
+  });
+});
+
 describe("work directories through the CLI", () => {
   const run = (
     args: string[],
@@ -631,5 +668,61 @@ describe("work directories through the CLI", () => {
       removedWorkDirectories: [abandoned],
     });
     expect(existsSync(abandoned)).toBe(false);
+  });
+
+  test("a prepared author's own session claims its directory", () => {
+    const { fixture } = repository();
+    const config = realpathSync(
+      mkdtempSync(join(tmpdir(), "work-directory-config-"))
+    );
+    scratch.push(config);
+    const session = (id: string) => ({
+      CLAUDE_CODE_SESSION_ID: id,
+      SIMPLE_CHANGES_CONFIG_DIR: config,
+    });
+    const started = run(
+      [
+        "loop",
+        "start",
+        "--mode",
+        "queue",
+        "--agent-id",
+        "controller",
+        "--json",
+      ],
+      fixture.root,
+      session("controller-session")
+    );
+    const { lease } = JSON.parse(started.stdout) as {
+      lease: { runId: string };
+    };
+    const prepared = run(
+      [
+        "prepare-agent",
+        "--run-id",
+        lease.runId,
+        "--agent-id",
+        "author",
+        "--purpose",
+        "unit",
+        "--json",
+      ],
+      fixture.root,
+      session("controller-session")
+    );
+    expect(prepared.exitCode).toBe(0);
+    const { workDir } = JSON.parse(prepared.stdout) as { workDir: string };
+    const ask = (id: string) =>
+      JSON.parse(
+        run(
+          ["workdir", "--agent-id", "author", "--json"],
+          fixture.root,
+          session(id)
+        ).stdout
+      ) as { bound: boolean; workDir: string };
+
+    expect(ask("author-session")).toMatchObject({ bound: true, workDir });
+    expect(ask("author-session")).toMatchObject({ bound: true, workDir });
+    expect(ask("other-session").bound).toBe(false);
   });
 });

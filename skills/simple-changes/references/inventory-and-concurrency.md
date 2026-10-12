@@ -324,10 +324,11 @@ system temporary directory and prints it; it needs no loop, so it serves the
 GitLab opening inventory that `loop start` requires. Call it once per task and
 keep the path. `loop start` binds the directory that holds its
 `--opening-remote-inventory` file to the run, or binds a new one, and reports it
-as `workDir`; `prepare-agent` binds and reports one for each author. Inside a
-run, `workdir` prints the directory bound to the run's controller or an author,
-binding one first for a controller that took over; a different harness session
-that reuses the agent ID gets a new directory of its own instead. Set
+as `workDir`; `prepare-agent` binds and reports one for each author, which the
+author's own harness session claims on first use. Inside a run, `workdir`
+prints the directory bound to the run's controller or an author, binding one
+first for a controller that took over; a different harness session that reuses
+the agent ID gets a new directory of its own instead. Set
 `SIMPLE_CHANGES_WORK_ROOT` to an absolute path to move the root. The CLI
 refuses a root inside any registered checkout or the Git common directory, one
 that is a symlink, owned by another user, or writable by others, and one under
@@ -338,6 +339,7 @@ run used, including those of authors who finished and of controllers who
 handed off. A `loop finalize` that completes or closes without mutation, and a
 successful `loop end`, remove exactly those directories and report them as
 `removedWorkDirectories`; the CLI keeps what it ingested in its own state. A
+directory that holds a registered checkout is kept and reported instead. A
 paused or relinquished run keeps them for the resume. Because every directory
 is unique, two runs, or two sessions sharing an agent ID, never share or remove
 each other's files. Under the loop locks, the next `loop start` removes the

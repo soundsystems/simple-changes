@@ -3,9 +3,10 @@
   "distribution": "skill-repository",
   "guidance": {
     "backfillStatus": "not-applicable",
-    "version": 15
+    "version": 26
   },
   "developerChangelog": "required",
   "signatures": "agent-and-timestamp",
-  "newReleaseNoteSurfaces": "existing-only"
+  "newReleaseNoteSurfaces": "existing-only",
+  "releaseTags": "v{version}"
 }

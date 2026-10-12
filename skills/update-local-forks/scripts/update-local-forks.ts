@@ -150,13 +150,13 @@ const walkFiles = (root: string, base = root): string[] => {
  * Every regular file under `root` but Git's own, skipped directories included,
  * by raw path bytes: where upstream code can move to, whether or not the plan
  * carries the file. A valid UTF-8 path reads as text, as the plan names it;
- * any other is labeled by its hex bytes, which no planned path can equal, and
- * its location still reads the file.
+ * any other is labeled by its hex bytes for display only, and its location
+ * still reads the file.
  */
 const walkEveryFile = (
   root: Buffer,
   prefix?: Buffer
-): { location: Buffer; path: string }[] =>
+): { location: Buffer; path: string; utf8: boolean }[] =>
   readdirSync(prefix ? Buffer.concat([root, SLASH, prefix]) : root, {
     encoding: "buffer",
   }).flatMap((raw) => {
@@ -167,13 +167,15 @@ const walkEveryFile = (
     if (status.isDirectory()) {
       return byteString(name) === ".git" ? [] : walkEveryFile(root, path);
     }
+    const utf8 = isUtf8(path);
     return status.isFile()
       ? [
           {
             location,
-            path: isUtf8(path)
+            path: utf8
               ? path.toString("utf8")
               : `<path bytes ${path.toString("hex")}>`,
+            utf8,
           },
         ]
       : [];
@@ -2077,8 +2079,12 @@ const classifyForkFiles = (
   }
   // Installed files the plan never carries, such as those under `dist`, still
   // count as places code moved to.
-  for (const { location, path } of walkEveryFile(Buffer.from(source.path))) {
-    if (!upstreamPaths.has(path)) {
+  // Only a valid UTF-8 path can be one the plan carries; any other always
+  // counts, whatever its display label reads like.
+  for (const { location, path, utf8 } of walkEveryFile(
+    Buffer.from(source.path)
+  )) {
+    if (!(utf8 && upstreamPaths.has(path))) {
       unmapped.push({
         forkPath: path,
         upstreamPath: path,

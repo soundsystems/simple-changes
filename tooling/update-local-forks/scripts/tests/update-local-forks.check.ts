@@ -3902,6 +3902,30 @@ describe("update-local-forks moved declarations", () => {
     expect(entryOf(plan, LEASE_PATH)?.reason).toContain("<path bytes ");
   });
 
+  test("counts a raw-named destination even when a pinned path reads like its label", () => {
+    // Round 11: labels are for display only; a name that is not valid UTF-8
+    // always counts as a destination.
+    const label = `<path bytes ${Buffer.from("scripts/dist/\xff", "latin1").toString("hex")}>`;
+    const pinned = "export const moved = 1;\nexport const kept = 2;\n";
+    const released = "export const kept = 2;\n";
+    const fixture = movedFixture({
+      forkLease: () => released,
+      pinned,
+      pinnedExtra: { [label]: "" },
+      released: { [label]: null, "scripts/lib/lease.ts": released },
+    });
+    const dist = join(fixture.source, "scripts", "dist");
+    mkdirSync(dist, { recursive: true });
+    const plan = withRawName(
+      dist,
+      Buffer.from([0xff]),
+      "export const moved = 1;\n",
+      () => planMoved(fixture)
+    );
+
+    expect(entryOf(plan, LEASE_PATH)?.action).toBe("conflict");
+  });
+
   test("refuses a plan that carries a file where a moved-code sidecar goes", () => {
     // Round 7: upstream adds a file at the conflicting file's sidecar path,
     // or under it; writing both would overwrite the sidecar or fail midway.

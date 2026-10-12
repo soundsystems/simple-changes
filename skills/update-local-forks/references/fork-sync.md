@@ -6,6 +6,7 @@ Contents:
 - How every file is classified
 - Omitted references
 - Command gates
+- Moved code
 - Classify what you port by hand
 - Guidance versions
 - After applying
@@ -52,6 +53,7 @@ deltas. Two layouts are recognized:
 | Changed | Unchanged | `update` (upstream version written) |
 | Changed | Edited on different lines | `merge` (three-way result written) |
 | Changed | Edited on the same lines | `conflict` (file untouched; marked merge written to `<file>.upstream-merge`) |
+| Changed or removed; declarations the fork edited moved elsewhere | Edited or removed those declarations | `conflict` even where its lines merge (sidecar names each declaration, its new file, and the fork's diff; the new file is still written) |
 | Changed reference | Omitted, not recorded | `unrecorded-omission` (holds the pin) |
 | Changed reference | Omitted, recorded | `review` (confirm the recorded reason still holds) |
 | Changed, not a reference | Omitted | `review` (confirm the omission still applies) |
@@ -166,6 +168,58 @@ still apply. Otherwise the pin can
 advance with the rest of the update. Every later plan reports the conflicted
 file as `review` until the sidecar is merged in and deleted.
 Never leave conflict markers inside a live skill file.
+
+## Moved code
+
+Upstream sometimes moves code between files, as when it splits one large
+module into several. The rules above weigh one file at a time, so a fork's
+edit to a declaration that moved has no line left to merge in the old file,
+and the new file arrives as upstream wrote it, without the edit. The old file
+can merge cleanly or even match upstream, and when it does conflict, taking
+upstream's side looks like the obvious resolution of a refactor and drops the
+edit.
+
+So the plan compares each upstream code file's top-level declarations at the
+pin with those in the installed source. A declaration that left a file and is
+declared by an installed code file that changed since the pin has moved
+there. When the fork edited or removed one, the old file is a `conflict`
+whatever its lines did. It stays untouched; its reason names each
+declaration, how the fork changed it, and its new file; and its
+`.upstream-merge` sidecar opens with a header listing the moves and the
+fork's diff of each, followed by the merge or upstream's version. The new
+file is still written, and its reason points back to the old one. A fork that
+omits the old file gets the conflict without a sidecar: remove the moved
+declarations from the new file if the fork still leaves them out. When the old
+file still waits on an earlier sidecar, the conflict writes nothing and the
+provenance pin holds until that sidecar is settled, so the next plan still
+sees the moves. A fork that kept every moved declaration as upstream had it
+gets the ordinary plan.
+
+Resolve it in three steps:
+
+1. Re-apply each change in the declaration's new file; for a removed
+   declaration, remove it there.
+2. Take upstream's version of the old file. When the fork also changed the
+   old file elsewhere, settle it from the merge below the sidecar header
+   instead; when upstream removed it, delete it.
+3. Delete the sidecar. Until then, every later plan lists the old file as
+   `review`, even after the pin moves.
+
+Never take either side whole: the fork's side keeps the declaration in a file
+upstream no longer reads it from, and upstream's side drops the change.
+
+Fork checks that read the old file's text, such as
+`grep -q '<name>' runtime/scripts/lib/<file>.ts` in `scripts/test.sh`, fail
+once that text moves. The plan adds an advisory note to each fork-owned file
+with such a line, giving the line, each quoted literal the old file held at
+the pin and no longer holds, and the files that hold it now. Point the check
+at those files. The note never changes an action, blocks, or holds the pin.
+
+Matching is by column-0 top-level declaration name, read without a parser, so
+a declaration renamed while it moved is not detected, and neither is one that
+is not a column-0 `const`, `let`, `var`, `function`, `class`, `interface`,
+`type`, or `enum`. Review a large upstream refactor by hand when the fork
+edits the files it touches.
 
 ## Classify what you port by hand
 

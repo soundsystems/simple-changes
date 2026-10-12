@@ -65,7 +65,10 @@ saved plan, and it never commits, pushes, or runs a fork's scripts.
    `SKILL.md`; read the `.upstream-merge` sidecar, merge the
    upstream change into the fork's prose keeping its stricter local rules,
    then delete the sidecar. Until it is deleted, every later plan reports the
-   file as unresolved. An `unrecorded-omission` is an upstream reference
+   file as unresolved. A conflict that names moved declarations is never
+   resolved by taking either side whole: re-apply each change in the
+   declaration's new file, then settle the old file as its sidecar says.
+   An `unrecorded-omission` is an upstream reference
    added or changed since the pin that the fork neither carries nor records:
    carry the file, or list it with its reason under `## Intentional
    omissions` in the fork's `references/fork-maintenance.md` (that section
@@ -137,6 +140,7 @@ host support, work through the forks one at a time.
 ## Reports
 
 Report per fork: the pin movement, counts by action, every conflict,
-unrecorded omission, and review item with its reason, the pin rewrites
-made, the version literals left to change by hand, and the exact next command. Say plainly when a fork was skipped as a linked worktree or left
+unrecorded omission, and review item with its reason, each advisory note,
+the pin rewrites made, the version literals left to change by hand, and the
+exact next command. Say plainly when a fork was skipped as a linked worktree or left
 untouched because the plan was not applied.

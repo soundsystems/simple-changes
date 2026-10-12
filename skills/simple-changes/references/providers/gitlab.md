@@ -49,7 +49,7 @@ writes the normalized pages the builder reads:
 ```sh
 bun skills/simple-changes/scripts/adapters/gitlab-remote-inventory.ts \
   --project group/project --target-branch main \
-  --raw-dir opening-raw --output opening-pages.json
+  --raw-dir "$WORK_DIR/opening-raw" --output "$WORK_DIR/opening-pages.json"
 ```
 
 `--project` is the project path from the target remote URL, not a local path or

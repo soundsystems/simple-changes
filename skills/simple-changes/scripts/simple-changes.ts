@@ -172,6 +172,7 @@ import { renderInventory, renderPlan } from "./lib/report.ts";
 import {
   discoverInstructionTargets,
   writeInstructionPointer,
+  writeScratchFileRule,
 } from "./lib/repository-instructions.ts";
 import {
   type AuthorAttestResult,
@@ -244,6 +245,20 @@ import type {
   ShipHoldSeverity,
 } from "./lib/types.ts";
 import {
+  bindRunWorkDirectory,
+  createWorkDirectory,
+  locateWorkDirectoryRepository,
+  type RunWorkDirectoryRemoval,
+  removeFinishedRunWorkDirectories,
+  removeRunWorkDirectories,
+  removeWorkDirectory,
+  repositoryWorkDirectory,
+  runWorkDirectoryBinding,
+  sameSession,
+  type WorkDirectoryRepository,
+  workDirectoryContaining,
+} from "./lib/work-directory.ts";
+import {
   attachClaimedWorktree,
   claimWorktree,
   detachClaimedWorktree,
@@ -292,6 +307,7 @@ Usage:
     [--proposal-signatures agent-and-version|none]
     [--handoff ask|automatic|user-signaled]
     [--instruction-pointer add|leave] [--instruction-file PATH]
+    [--scratch-file-rule add|leave]
     [--ui-artifacts]
     [--ui-versioning repository|number-and-date|date-only|number-only]
     [--production ask|allow|deny]
@@ -311,6 +327,7 @@ Usage:
     [--proposal-signatures agent-and-version|none]
     [--handoff ask|automatic|user-signaled]
     [--instruction-pointer add|leave] [--instruction-file PATH]
+    [--scratch-file-rule add|leave]
     [--ui-artifacts]
     [--ui-versioning repository|number-and-date|date-only|number-only]
     [--production ask|allow|deny]
@@ -439,6 +456,8 @@ Usage:
     [--dry-run] [--json] [--repo PATH]
   simple-changes prepare-agent --run-id ID --agent-id ID --purpose SLUG
     [--json] [--repo PATH]
+  simple-changes workdir --agent-id ID [--json] [--repo PATH]
+  simple-changes workdir remove PATH [--json] [--repo PATH]
   simple-changes release-notes [--check] [--json] [--repo PATH] [--version VERSION]
   simple-changes negotiate-changelog CAPABILITIES_FILE [--json]
   simple-changes validate-changelog-transaction REQUEST_FILE RECEIPT_FILE [--prior-receipt FILE] [--json]
@@ -569,6 +588,7 @@ interface CliOptions {
   roots: string[];
   runId?: string;
   scope?: SetupScope;
+  scratchFileRule?: "add" | "leave";
   sessionId?: string;
   settleMs: number;
   shippingMode?: RepoPolicy["shippingMode"];
@@ -625,6 +645,7 @@ const VALUED_OPTIONS = new Set([
   "--hold-scope",
   "--instruction-file",
   "--instruction-pointer",
+  "--scratch-file-rule",
   "--manifest-digest",
   "--migration-handling",
   "--migration-target",
@@ -818,6 +839,32 @@ const applyHandoffOption = (
   return true;
 };
 
+// Each managed instruction block is added or left alone.
+const INSTRUCTION_BLOCK_OPTIONS = {
+  "--instruction-pointer": "instructionPointer",
+  "--scratch-file-rule": "scratchFileRule",
+} as const;
+
+const applyInstructionBlockOption = (
+  options: CliOptions,
+  option: string,
+  value: string
+): boolean => {
+  const key =
+    INSTRUCTION_BLOCK_OPTIONS[option as keyof typeof INSTRUCTION_BLOCK_OPTIONS];
+  if (!key) {
+    return false;
+  }
+  if (value !== "add" && value !== "leave") {
+    throw new SimpleChangesError(
+      `${option} must be add or leave`,
+      EXIT_CODES.usage
+    );
+  }
+  options[key] = value;
+  return true;
+};
+
 const applyMigrationOption = (
   options: CliOptions,
   option: string,
@@ -977,6 +1024,7 @@ const applySetupValuedOption = (
     applySignatureRoleOption(options, option, value) ||
     applyFinishOption(options, option, value) ||
     applyHandoffOption(options, option, value) ||
+    applyInstructionBlockOption(options, option, value) ||
     applyMigrationOption(options, option, value)
   ) {
     return true;
@@ -997,16 +1045,6 @@ const applySetupValuedOption = (
   }
   if (option === "--instruction-file") {
     options.instructionFile = value;
-    return true;
-  }
-  if (option === "--instruction-pointer") {
-    if (!["add", "leave"].includes(value)) {
-      throw new SimpleChangesError(
-        "--instruction-pointer must be add or leave",
-        EXIT_CODES.usage
-      );
-    }
-    options.instructionPointer = value as "add" | "leave";
     return true;
   }
   if (option === "--ui-versioning") {
@@ -1692,6 +1730,7 @@ const setupNeedsPrompt = (
       (instructionTargetCount === 1 &&
         options.instructionPointer === "add" &&
         options.handoffTiming)) &&
+    (instructionTargetCount <= 1 || options.scratchFileRule !== "add") &&
     options.yes
   );
 
@@ -1791,6 +1830,7 @@ const SETUP_INPUT_KEYS = [
   "productionDeploy",
   "questions",
   "scope",
+  "scratchFileRule",
   "shippingMode",
   "uiArtifactVersioning",
 ] as const satisfies readonly (keyof OnboardingInputs & keyof CliOptions)[];
@@ -1814,6 +1854,10 @@ const buildOnboardingInputs = (
     options.defaultFinish === "ship"
   ) {
     inputs.migrationHandling = "ask-after-review";
+  }
+  // Optional: automation that never names it keeps its instructions as-is.
+  if (!(inputs.scratchFileRule || needsPrompt)) {
+    inputs.scratchFileRule = "leave";
   }
   return inputs;
 };
@@ -2007,6 +2051,8 @@ const runSetup = async (options: CliOptions): Promise<void> => {
     const applyWrites = (): {
       instructionPointerChanged: boolean;
       instructionPointerWritten: boolean;
+      scratchFileRuleChanged: boolean;
+      scratchFileRuleWritten: boolean;
     } => {
       if (authoringTarget && selection.authoring) {
         authoringWrite = writeAuthoringSidecar(
@@ -2029,6 +2075,19 @@ const runSetup = async (options: CliOptions): Promise<void> => {
         instructionPointerWritten = pointerResult.written;
         instructionPointerChanged = pointerResult.changed;
       }
+      let scratchFileRuleWritten = false;
+      let scratchFileRuleChanged = false;
+      if (
+        selection.confirmed &&
+        selection.scratchFileRule.action === "add" &&
+        selection.scratchFileRule.target
+      ) {
+        const ruleResult = writeScratchFileRule(
+          selection.scratchFileRule.target
+        );
+        scratchFileRuleWritten = ruleResult.written;
+        scratchFileRuleChanged = ruleResult.changed;
+      }
       if (written && path) {
         writePolicyFile(path, policy, selection.scope === "user");
         if (selection.scope === "repository" && context.primaryCheckout) {
@@ -2041,7 +2100,12 @@ const runSetup = async (options: CliOptions): Promise<void> => {
           );
         }
       }
-      return { instructionPointerChanged, instructionPointerWritten };
+      return {
+        instructionPointerChanged,
+        instructionPointerWritten,
+        scratchFileRuleChanged,
+        scratchFileRuleWritten,
+      };
     };
     const activeLoop = context.primaryCheckout
       ? readLoopLease(options.repo)
@@ -2088,6 +2152,11 @@ const runSetup = async (options: CliOptions): Promise<void> => {
       path,
       policy,
       scope: selection.scope,
+      scratchFileRule: {
+        ...selection.scratchFileRule,
+        changed: writeResult.scratchFileRuleChanged,
+        written: writeResult.scratchFileRuleWritten,
+      },
       setupStyle: selection.setupStyle,
       summary: selection.summary,
       uiArtifactsRelevant: options.uiArtifacts,
@@ -3392,6 +3461,40 @@ const runLoopExec = async (
   );
 };
 
+// A run that closed cleanly no longer needs the files its agents passed to the
+// CLI: what the CLI kept is in its own state. A run that stops keeps them, and
+// a directory that fails validation is reported, never removed.
+const removeClosedRunWorkDirectories = (
+  removal: () => RunWorkDirectoryRemoval
+): string[] => {
+  try {
+    const { kept, removed } = removal();
+    for (const { path, reason } of kept) {
+      process.stderr.write(`Warning: kept work directory ${path}: ${reason}\n`);
+    }
+    return removed;
+  } catch (error) {
+    process.stderr.write(
+      `Warning: kept this run's work directories: ${(error as Error).message}\n`
+    );
+    return [];
+  }
+};
+
+const workSessionOf = (
+  session: ReturnType<typeof currentHarnessSession>
+): string | null =>
+  session ? `${session.harness}:${session.sessionId}` : null;
+
+// The harness session a work directory binding follows, when known.
+const workDirectorySession = (): string | null =>
+  workSessionOf(currentHarnessSession());
+
+const renderRemovedWorkDirectories = (removed: readonly string[]): string =>
+  removed.length > 0
+    ? `Removed ${removed.length} agent work director${removed.length === 1 ? "y" : "ies"}.\n`
+    : "";
+
 const runLoopFinalizationAction = (
   action: string,
   options: CliOptions,
@@ -3431,23 +3534,46 @@ const runLoopFinalizationAction = (
     return true;
   }
   if (action === "end") {
-    const ended = endLoop(options.repo, runId, agentId, options.reason ?? null);
+    const workRepository = locateWorkDirectoryRepository(options.repo);
+    let removedWorkDirectories: string[] = [];
+    const ended = endLoop(
+      options.repo,
+      runId,
+      agentId,
+      options.reason ?? null,
+      () => {
+        removedWorkDirectories = removeClosedRunWorkDirectories(() =>
+          removeRunWorkDirectories(workRepository, runId)
+        );
+      }
+    );
     writeOutput(
-      ended,
+      { ...ended, removedWorkDirectories },
       options.json,
-      ended.closedWithoutMutation
-        ? `Closed ${runId} without changing anything; it owed no shipment scope, reconciliation, or cleanup. Start a fresh loop for a new baseline.\nReceipt: ${ended.closedWithoutMutation.receiptPath}\n`
-        : `Ended ${runId} after a clean manifest verification.\n`
+      `${
+        ended.closedWithoutMutation
+          ? `Closed ${runId} without changing anything; it owed no shipment scope, reconciliation, or cleanup. Start a fresh loop for a new baseline.\nReceipt: ${ended.closedWithoutMutation.receiptPath}\n`
+          : `Ended ${runId} after a clean manifest verification.\n`
+      }${renderRemovedWorkDirectories(removedWorkDirectories)}`
     );
     return true;
   }
   if (action === "finalize") {
+    const workRepository = locateWorkDirectoryRepository(options.repo);
+    let removedWorkDirectories: string[] = [];
     const result = finalizeLoop(
       options.repo,
       runId,
       agentId,
       requireCliOption(options.reason, "--reason"),
-      { awaitingUser: options.awaitingUser }
+      {
+        awaitingUser: options.awaitingUser,
+        onClosed: () => {
+          removedWorkDirectories = removeClosedRunWorkDirectories(() =>
+            removeRunWorkDirectories(workRepository, runId)
+          );
+        },
+      }
     );
     if (result.outcome === "relinquished" && options.awaitingUser.length > 0) {
       writeOutput(
@@ -3470,9 +3596,9 @@ const runLoopFinalizationAction = (
     }
     if (result.closedWithoutMutation) {
       writeOutput(
-        { ...result, manifestDigest: null },
+        { ...result, manifestDigest: null, removedWorkDirectories },
         options.json,
-        `Closed ${runId} without changing anything: the repository changed after the loop started, so its shipment scope could not be recorded. Start a fresh loop for a new baseline.\nReceipt: ${result.closedWithoutMutation.receiptPath}\n`
+        `Closed ${runId} without changing anything: the repository changed after the loop started, so its shipment scope could not be recorded. Start a fresh loop for a new baseline.\nReceipt: ${result.closedWithoutMutation.receiptPath}\n${renderRemovedWorkDirectories(removedWorkDirectories)}`
       );
       return true;
     }
@@ -3480,9 +3606,10 @@ const runLoopFinalizationAction = (
       {
         ...result,
         manifestDigest: result.lease ? loopManifestDigest(result.lease) : null,
+        removedWorkDirectories,
       },
       options.json,
-      `Completed and released ${runId}. Normalized ${result.cleanup.cleanedPrimaryPaths.length} target-equivalent primary path(s), removed ${result.cleanup.removedWorktrees.length} worktree(s) and ${result.cleanup.removedBranches.length} branch(es); pruned ${result.cleanup.prunedWorktreeMetadata} stale worktree record(s); released ${result.cleanup.releasedClaims.length} finished or orphaned worktree claim(s).\n`
+      `Completed and released ${runId}. Normalized ${result.cleanup.cleanedPrimaryPaths.length} target-equivalent primary path(s), removed ${result.cleanup.removedWorktrees.length} worktree(s) and ${result.cleanup.removedBranches.length} branch(es); pruned ${result.cleanup.prunedWorktreeMetadata} stale worktree record(s); released ${result.cleanup.releasedClaims.length} finished or orphaned worktree claim(s).\n${renderRemovedWorkDirectories(removedWorkDirectories)}`
     );
     return true;
   }
@@ -3620,7 +3747,19 @@ const runLoopStart = (options: CliOptions): void => {
         readFileSync(resolve(options.openingRemoteInventoryPath), "utf8")
       ) as unknown)
     : undefined;
+  // An unsafe work root is refused before the loop, so it leaves no run.
+  const workRepository = locateWorkDirectoryRepository(options.repo);
+  repositoryWorkDirectory(workRepository);
+  // The opening inventory's work directory becomes the run's own.
+  const openingWorkDirectory = options.openingRemoteInventoryPath
+    ? workDirectoryContaining(
+        workRepository,
+        resolve(options.openingRemoteInventoryPath)
+      )
+    : null;
   let reviewLedger: ReviewLedgerResumeState | null = null;
+  let workDir: string | null = null;
+  let removedWorkDirectories: string[] = [];
   const lease = startLoop(
     options.repo,
     agentId,
@@ -3629,6 +3768,26 @@ const runLoopStart = (options: CliOptions): void => {
     {
       onReviewLedger: (state) => {
         reviewLedger = state.state === "absent" ? null : state;
+      },
+      // Under the loop locks: only this run is live, so every other run's
+      // directories are finished and no close can race the sweep.
+      onStarted: (started) => {
+        try {
+          workDir = bindRunWorkDirectory(
+            workRepository,
+            started.runId,
+            agentId,
+            workDirectorySession(),
+            openingWorkDirectory
+          );
+        } catch (error) {
+          process.stderr.write(
+            `Warning: no work directory was bound: ${(error as Error).message}\n`
+          );
+        }
+        removedWorkDirectories = removeClosedRunWorkDirectories(() =>
+          removeFinishedRunWorkDirectories(workRepository, started.runId)
+        );
       },
       ...(request === undefined ? {} : { request }),
     }
@@ -3643,10 +3802,12 @@ const runLoopStart = (options: CliOptions): void => {
       lease,
       manifestDigest: loopManifestDigest(lease),
       ...(reviewLedger ? { reviewLedger } : {}),
+      removedWorkDirectories,
       runtimeFreshness: freshness,
+      workDir,
     },
     options.json,
-    `Started ${lease.runId} for ${lease.ownerAgentId}.\nManifest: ${loopManifestDigest(lease)}\n${
+    `Started ${lease.runId} for ${lease.ownerAgentId}.\nManifest: ${loopManifestDigest(lease)}\n${workDir ? `Work directory: ${workDir}\n` : ""}${
       resumedQuestions
         ? `The previous controller paused for the user's answer to: ${resumedQuestions.join(" | ")}. Confirm their answer before continuing.\n`
         : ""
@@ -4826,6 +4987,9 @@ const runRemoteInventoryCommand = (options: CliOptions): void => {
 };
 
 const runPrepareAgent = (options: CliOptions): void => {
+  // An unsafe work root is refused before any worktree is prepared.
+  const workRepository = locateWorkDirectoryRepository(options.repo);
+  repositoryWorkDirectory(workRepository);
   const prepared = prepareAgentWorktree(
     options.repo,
     requireCliOption(options.runId, "--run-id"),
@@ -4839,11 +5003,109 @@ const runPrepareAgent = (options: CliOptions): void => {
       ? value
       : `'${value.replaceAll("'", "'\\''")}'`;
   const afterEveryCommit = `simple-changes author attest --commit <sha> --agent-id ${shellWord(prepared.agentId)} --repo ${shellWord(prepared.path)} --json`;
-  writeOutput(
-    { ...prepared, afterEveryCommit },
-    options.json,
-    `${prepared.created ? "Created" : "Reused"} ${prepared.path}\nBranch: ${prepared.branch}\nRun: ${prepared.runId}\nRequired after every commit: ${afterEveryCommit}\n`
+  // The author may run in another session; its first use claims the binding.
+  const workDir = bindRunWorkDirectory(
+    workRepository,
+    prepared.runId,
+    prepared.agentId,
+    null,
+    null
   );
+  writeOutput(
+    { ...prepared, afterEveryCommit, workDir },
+    options.json,
+    `${prepared.created ? "Created" : "Reused"} ${prepared.path}\nBranch: ${prepared.branch}\nRun: ${prepared.runId}\nWork directory: ${workDir}\nRequired after every commit: ${afterEveryCommit}\n`
+  );
+};
+
+// The directory an agent should use: inside a run, the one bound to it when
+// it is the run's controller or one of its authors in the same session;
+// otherwise a new one of its own, so another session that reuses an agent ID
+// never shares, or has removed, the run's files.
+const workDirectoryFor = (
+  repository: WorkDirectoryRepository,
+  lease: LoopLease | null,
+  agentId: string
+): { bound: boolean; path: string } => {
+  const session = workDirectorySession();
+  if (lease) {
+    const binding = runWorkDirectoryBinding(repository, lease.runId, agentId);
+    const controller =
+      lease.ownerAgentId === agentId &&
+      sameSession(
+        workSessionOf(readControllerBinding(lease)?.session ?? null),
+        session
+      );
+    const author =
+      lease.preparations.some((entry) => entry.agentId === agentId) ||
+      lease.worktrees.some(
+        (worktree) => worktree.createdByRun && worktree.agentId === agentId
+      );
+    if (binding && sameSession(binding.session, session)) {
+      // The first session to use an unclaimed binding claims it.
+      if (
+        binding.session === null &&
+        session !== null &&
+        (controller || author)
+      ) {
+        bindRunWorkDirectory(repository, lease.runId, agentId, session, null);
+      }
+      return { bound: true, path: binding.path };
+    }
+    if (controller || (author && !binding)) {
+      return {
+        bound: true,
+        path: bindRunWorkDirectory(
+          repository,
+          lease.runId,
+          agentId,
+          session,
+          null
+        ),
+      };
+    }
+  }
+  return { bound: false, path: createWorkDirectory(repository, agentId) };
+};
+
+// Plain output is the bare path, so `WORK_DIR=$(simple-changes workdir ...)`
+// works before a loop exists, as a GitLab opening inventory needs.
+const runWorkDirectory = (options: CliOptions): void => {
+  const [action, target] = options.positional;
+  const repository = locateWorkDirectoryRepository(options.repo);
+  if (action === "remove") {
+    const path = requireCliOption(target, "the work directory path");
+    // Under the state lock, so no run can bind it between check and removal.
+    const removed = withLoopStateLock(
+      repository.commonGitDirectory,
+      "workdir remove",
+      () =>
+        removeWorkDirectory(
+          repository,
+          path,
+          readLoopLease(options.repo)?.runId ?? null
+        )
+    );
+    writeOutput(
+      { removed: true, workDir: removed },
+      options.json,
+      `Removed ${removed}\n`
+    );
+    return;
+  }
+  if (action !== undefined) {
+    throw new SimpleChangesError(
+      "workdir takes no action, or remove PATH",
+      EXIT_CODES.usage
+    );
+  }
+  const agentId = requireCliOption(options.agentId, "--agent-id");
+  const { bound, path } = workDirectoryFor(
+    repository,
+    readLoopLease(options.repo),
+    agentId
+  );
+  writeOutput({ agentId, bound, workDir: path }, options.json, `${path}\n`);
 };
 
 const runReleaseNotes = (options: CliOptions): number => {
@@ -5059,6 +5321,9 @@ const executeCommand = async (
       return EXIT_CODES.success;
     case "prepare-agent":
       runPrepareAgent(options);
+      return EXIT_CODES.success;
+    case "workdir":
+      runWorkDirectory(options);
       return EXIT_CODES.success;
     case "author":
       runAuthorCommand(options);

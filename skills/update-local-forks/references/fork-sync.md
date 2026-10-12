@@ -224,9 +224,11 @@ Matching is by column-0 top-level declaration name, read without a parser, so
 a declaration renamed while it moved is not detected, and neither is one that
 is not a column-0 `const`, `let`, `var`, `function`, `class`, `interface`,
 `type`, or `enum`. A declaration runs from the comment lines directly above it
-to the next top-level declaration, import, or re-export (a line inside a
-template literal or block comment never ends it), so a column-0 statement
-right after a moved declaration counts as part of it. A fork change
+to the next top-level declaration, import, or re-export, and also over every
+line upstream carried verbatim into its new home; a look-alike line inside a
+template literal or block comment never ends a declaration or stands in for
+one. So a column-0 statement right after a moved declaration counts as part
+of it. A fork change
 to such a statement also makes the old file a conflict, even when upstream
 kept the statement there; the sidecar's diff shows the change, and it stays
 in the old file. Whenever the plan cannot tell, it conflicts rather than risk

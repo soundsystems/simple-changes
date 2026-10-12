@@ -2063,9 +2063,13 @@ const MOVED_SIDECAR_END = {
 } as const;
 
 interface Declaration {
+  /** The zero-based line that declares it, preferring one outside literals. */
+  line: number;
   /** Zero-based [start, end) line ranges of each chunk with this name. */
   ranges: [number, number][];
   text: string;
+  /** Whether a line outside any literal or block comment declares it. */
+  trusted: boolean;
 }
 
 type Declarations = Map<string, Declaration>;
@@ -2087,7 +2091,7 @@ const chunkStart = (lines: string[], index: number): number => {
 const addChunk = (
   declarations: Declarations,
   lines: string[],
-  open: { name: string; start: number },
+  open: { line: number; name: string; start: number; trusted: boolean },
   end: number
 ): void => {
   let last = end;
@@ -2096,9 +2100,15 @@ const addChunk = (
   }
   const text = lines.slice(open.start, last).join("\n");
   const known = declarations.get(open.name);
+  const line =
+    known === undefined || (open.trusted && !known.trusted)
+      ? open.line
+      : known.line;
   declarations.set(open.name, {
+    line,
     ranges: [...(known?.ranges ?? []), [open.start, last]],
     text: known === undefined ? text : `${known.text}\n${text}`,
+    trusted: open.trusted || (known?.trusted ?? false),
   });
 };
 
@@ -2176,6 +2186,12 @@ const scanCode = (scan: LiteralScan, source: string, index: number): number => {
   return index + 1;
 };
 
+/** The index past an escape at `index`, a CRLF line continuation included. */
+const escapeEnd = (source: string, index: number): number =>
+  source[index + 1] === "\r" && source[index + 2] === "\n"
+    ? index + 3
+    : index + 2;
+
 const scanTemplate = (
   scan: LiteralScan,
   source: string,
@@ -2183,13 +2199,14 @@ const scanTemplate = (
 ): number => {
   const character = source[index];
   if (character === "\\") {
-    return index + 2;
+    return escapeEnd(source, index);
   }
   if (character === "`") {
     scan.mode = "code";
   } else if (character === "$" && source[index + 1] === "{") {
     scan.expressions.push(0);
     scan.mode = "code";
+    scan.previous = "{";
     return index + 2;
   }
   return index + 1;
@@ -2215,7 +2232,7 @@ const scanStep = (scan: LiteralScan, source: string, index: number): number => {
       return index + 1;
     default:
       if (character === "\\") {
-        return index + 2;
+        return escapeEnd(source, index);
       }
       if (character === "\n" || QUOTE_MODES[character ?? ""] === scan.mode) {
         scan.mode = "code";
@@ -2258,13 +2275,13 @@ const linesInsideLiterals = (source: string): boolean[] => {
 const declarationsOf = (source: string): Declarations => {
   const lines = source.split("\n");
   const inside = linesInsideLiterals(source);
-  const found: { index: number; name: string }[] = [];
+  const found: { index: number; name: string; trusted: boolean }[] = [];
   const boundaries: number[] = [];
   for (const [index, raw] of lines.entries()) {
     const line = withoutCr(raw);
     const name = DECLARATION_PATTERN.exec(line)?.[1];
     if (name !== undefined) {
-      found.push({ index, name });
+      found.push({ index, name, trusted: !inside[index] });
     }
     if (inside[index]) {
       continue;
@@ -2277,14 +2294,14 @@ const declarationsOf = (source: string): Declarations => {
   }
   const declarations: Declarations = new Map();
   let next = 0;
-  for (const { index, name } of found) {
+  for (const { index, name, trusted } of found) {
     while ((boundaries[next] ?? Number.POSITIVE_INFINITY) <= index) {
       next += 1;
     }
     addChunk(
       declarations,
       lines,
-      { name, start: chunkStart(lines, index) },
+      { line: index, name, start: chunkStart(lines, index), trusted },
       boundaries[next] ?? lines.length
     );
   }
@@ -2296,6 +2313,44 @@ type DeclarationReader = (
   file: UpstreamFile,
   copy: keyof Versions
 ) => Declarations;
+
+/** The lines of one copy of an upstream file, each split once. */
+type LinesReader = (file: UpstreamFile, copy: keyof Versions) => string[];
+
+const linesReader = (): LinesReader => {
+  const split = new Map<string, string[]>();
+  return (file, copy) => {
+    const key = `${copy}:${file.upstreamPath}`;
+    let lines = split.get(key);
+    if (lines === undefined) {
+      lines = (file.versions[copy] ?? "").split("\n");
+      split.set(key, lines);
+    }
+    return lines;
+  };
+};
+
+/**
+ * The text of `name` in that copy when a line outside any literal declares it:
+ * a look-alike inside a template literal never stands in for a declaration.
+ */
+const trustedText = (
+  read: DeclarationReader,
+  file: UpstreamFile,
+  copy: keyof Versions,
+  name: string
+): string | undefined => {
+  const declaration = read(file, copy).get(name);
+  return declaration?.trusted ? declaration.text : undefined;
+};
+
+/** Whether a line outside any literal declares `name` in that copy. */
+const declaresOutsideLiterals = (
+  read: DeclarationReader,
+  file: UpstreamFile,
+  copy: keyof Versions,
+  name: string
+): boolean => read(file, copy).get(name)?.trusted === true;
 
 const declarationReader = (): DeclarationReader => {
   const parsed = new Map<string, Declarations>();
@@ -2370,7 +2425,7 @@ const homesOf = (
   read: DeclarationReader
 ): UpstreamFile[] => {
   const fresh = candidates.filter(
-    (candidate) => !read(candidate, "base").has(name)
+    (candidate) => !declaresOutsideLiterals(read, candidate, "base", name)
   );
   const verbatim = (candidate: UpstreamFile): number =>
     read(candidate, "target").get(name)?.text === pinnedText ? 0 : 1;
@@ -2381,42 +2436,95 @@ const homesOf = (
   );
 };
 
+/** What the move analysis reads for one file a declaration left. */
+interface MoveScan {
+  /** The best new home of the declaration being judged. */
+  home?: UpstreamFile | undefined;
+  lines: LinesReader;
+  /** The moved declarations whose pinned chunk covers each pinned line. */
+  owners: Map<number, string[]>;
+  read: DeclarationReader;
+}
+
 /**
- * What the fork did to a moved declaration. Its whole chunk in the file the
- * declaration left is an edit unless it equals the pinned text or an
- * installed copy. When the fork took it out of that file, each file that
- * newly declares it would bring it back: that is a removal, unless the fork
+ * Whether the fork's copy differs, line for line, from the text upstream
+ * carried verbatim from the file the declaration left into its new home,
+ * counted from the declaration's own line. That span ignores chunk
+ * boundaries, so a boundary the reader misjudges inside a literal cannot hide
+ * an edit to text that moved. A difference inside another moved
+ * declaration's chunk is that declaration's own edit and is reported there.
+ */
+const forkChangedVerbatimSpan = (
+  file: UpstreamFile,
+  name: string,
+  scan: MoveScan
+): boolean => {
+  const { home } = scan;
+  const pinned = scan.read(file, "base").get(name);
+  const fork = scan.read(file, "current").get(name);
+  const moved =
+    home === undefined ? undefined : scan.read(home, "target").get(name);
+  if (!(home && pinned && fork && moved)) {
+    return false;
+  }
+  const pinnedLines = scan.lines(file, "base");
+  const homeLines = scan.lines(home, "target");
+  const forkLines = scan.lines(file, "current");
+  for (
+    let offset = 0;
+    pinned.line + offset < pinnedLines.length &&
+    pinnedLines[pinned.line + offset] === homeLines[moved.line + offset];
+    offset += 1
+  ) {
+    const line = pinned.line + offset;
+    const another = (scan.owners.get(line) ?? []).some(
+      (owner) => owner !== name
+    );
+    if (!another && forkLines[fork.line + offset] !== pinnedLines[line]) {
+      return true;
+    }
+  }
+  return false;
+};
+
+/**
+ * What the fork did to a moved declaration. Its copy in the file the
+ * declaration left is an edit unless its whole chunk equals the pinned text
+ * or an installed copy and it keeps every line upstream carried verbatim into
+ * the new home. When the fork took it out of that file, each file that newly
+ * declares it would bring it back: that is a removal, unless the fork
  * carries that file as a file new upstream, which the plan never writes over
  * (it stays as the fork has it or conflicts), or carries its own copy there,
- * which is judged as an edit. A file that already declared it at the pin
- * brings nothing back.
+ * which is judged as an edit. A file that already declared it at the pin,
+ * outside any literal, brings nothing back.
  */
 const forkChangeOf = (
   file: UpstreamFile,
   name: string,
   candidates: UpstreamFile[],
-  read: DeclarationReader
+  scan: MoveScan
 ): Pick<MovedDeclaration, "change" | "forkText"> => {
+  const { read } = scan;
   const upstreamTexts = [
     read(file, "base").get(name)?.text,
     ...candidates.map((candidate) => read(candidate, "target").get(name)?.text),
   ];
-  const inFile = read(file, "current").get(name)?.text;
+  const inFile = trustedText(read, file, "current", name);
   if (inFile !== undefined) {
-    return {
-      change: upstreamTexts.includes(inFile) ? null : "edited",
-      forkText: inFile,
-    };
+    const edited =
+      !upstreamTexts.includes(inFile) ||
+      forkChangedVerbatimSpan(file, name, scan);
+    return { change: edited ? "edited" : null, forkText: inFile };
   }
   for (const home of candidates) {
     const newFile = home.versions.base === null;
     if (
-      read(home, "base").has(name) ||
+      declaresOutsideLiterals(read, home, "base", name) ||
       (newFile && home.versions.current !== null)
     ) {
       continue;
     }
-    const copy = read(home, "current").get(name)?.text;
+    const copy = trustedText(read, home, "current", name);
     if (copy === undefined) {
       return { change: "removed", forkText: null };
     }
@@ -2427,28 +2535,65 @@ const forkChangeOf = (
   return { change: null, forkText: null };
 };
 
-const movesOutOf = (
+/**
+ * The pinned declarations that left a file for a changed file that declares
+ * them. A name declared outside literals at the pin stays only if a line
+ * outside literals declares it in the installed file, so a look-alike inside
+ * a template literal never masks a move; a look-alike at the pin stays
+ * wherever its name still appears.
+ */
+const leftDeclarations = (
   file: UpstreamFile,
   declarers: Map<string, UpstreamFile[]>,
   read: DeclarationReader
-): MovedDeclaration[] => {
-  const kept = read(file, "target");
-  const moved: MovedDeclaration[] = [];
-  for (const [name, { text }] of read(file, "base")) {
+): { candidates: UpstreamFile[]; declaration: Declaration; name: string }[] =>
+  [...read(file, "base")].flatMap(([name, declaration]) => {
     const candidates = (declarers.get(name) ?? []).filter(
       (candidate) => candidate !== file
     );
-    if (kept.has(name) || candidates.length === 0) {
-      continue;
+    const kept = declaration.trusted
+      ? declaresOutsideLiterals(read, file, "target", name)
+      : read(file, "target").has(name);
+    return kept || candidates.length === 0
+      ? []
+      : [{ candidates, declaration, name }];
+  });
+
+const movesOutOf = (
+  file: UpstreamFile,
+  declarers: Map<string, UpstreamFile[]>,
+  scan: { lines: LinesReader; read: DeclarationReader }
+): MovedDeclaration[] => {
+  const { read } = scan;
+  const left = leftDeclarations(file, declarers, read);
+  const pinnedLines = scan.lines(file, "base");
+  // Each chunk owns the blank lines after it too, so a fork insertion inside
+  // one moved declaration never reads as a change to another.
+  const owners = new Map<number, string[]>();
+  for (const { declaration, name } of left) {
+    for (const [start, end] of declaration.ranges) {
+      let stop = end;
+      while (BLANK_LINE_PATTERN.test(pinnedLines[stop] ?? "x")) {
+        stop += 1;
+      }
+      for (let line = start; line < stop; line += 1) {
+        owners.set(line, [...(owners.get(line) ?? []), name]);
+      }
     }
-    moved.push({
-      homes: homesOf(name, text, candidates, read),
-      name,
-      pinnedText: text,
-      ...forkChangeOf(file, name, candidates, read),
-    });
   }
-  return moved;
+  return left.map(({ candidates, declaration, name }) => {
+    const homes = homesOf(name, declaration.text, candidates, read);
+    return {
+      homes,
+      name,
+      pinnedText: declaration.text,
+      ...forkChangeOf(file, name, candidates, {
+        ...scan,
+        home: homes[0],
+        owners,
+      }),
+    };
+  });
 };
 
 /** A file's non-blank lines outside the named declarations' chunks. */
@@ -2499,6 +2644,7 @@ const otherForkChangesIn = (
 const movedDeclarations = (classified: ClassifiedFork): MovedOut[] => {
   const files = [...classified.files.values()];
   const read = declarationReader();
+  const lines = linesReader();
   const declarers = changedDeclarers(files, read);
   const moves: MovedOut[] = [];
   for (const file of files) {
@@ -2511,7 +2657,7 @@ const movedDeclarations = (classified: ClassifiedFork): MovedOut[] => {
     ) {
       continue;
     }
-    const moved = movesOutOf(file, declarers, read);
+    const moved = movesOutOf(file, declarers, { lines, read });
     if (moved.length > 0) {
       moves.push({
         file,

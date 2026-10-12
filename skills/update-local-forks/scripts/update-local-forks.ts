@@ -3241,6 +3241,7 @@ export interface ApplyReceipt {
 
 const WRITE_ACTIONS = new Set<PlanAction>(["update", "merge", "add"]);
 const DIGEST_PATTERN = /^[0-9a-f]{64}$/u;
+const COMBINING_MARK_PATTERN = /\p{M}/gu;
 const BASE64_PATTERN =
   /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u;
 
@@ -3292,8 +3293,15 @@ const safeForkPath = (forkRoot: string, value: unknown): value is string => {
  * sidecar, or fail halfway through apply.
  */
 const assertSidecarsFree = (entries: PlanEntry[]): void => {
-  // Folded as a case- and normalization-insensitive filesystem would see them.
-  const fold = (path: string): string => path.normalize("NFD").toLowerCase();
+  // Folded at least as far as a case- and normalization-insensitive
+  // filesystem would fold them, and further: compatibility forms, combining
+  // marks dropped, and case folded both ways (so σ and ς, or ß and ss, meet).
+  const fold = (path: string): string =>
+    path
+      .normalize("NFKD")
+      .replace(COMBINING_MARK_PATTERN, "")
+      .toUpperCase()
+      .toLowerCase();
   const paths = entries.map((entry) => entry.forkPath);
   for (const entry of entries) {
     // Every conflict: one writes its sidecar, and one that binds an earlier
@@ -3601,12 +3609,31 @@ const entryBytes = (entry: PlanEntry): Buffer | undefined => {
     : Buffer.from(entry.content, "utf8");
 };
 
+/**
+ * Fail loudly when a file apply wrote no longer holds what it wrote: two
+ * planned paths named one file on this filesystem.
+ */
+const assertWritesDistinct = (
+  forkRoot: string,
+  wrote: Map<string, Buffer>
+): void => {
+  for (const [forkPath, bytes] of wrote) {
+    const now = readBytes(join(forkRoot, forkPath));
+    if (now === null || !Buffer.from(now, "latin1").equals(bytes)) {
+      throw new ForkUpdateError(
+        `${forkPath} no longer holds what apply wrote: another path in the plan names the same file on this filesystem. Check the fork against the plan, then plan again.`
+      );
+    }
+  }
+};
+
 const applyEntries = (
   forkRoot: string,
   entries: PlanEntry[]
 ): { deleted: string[]; written: string[] } => {
   const written: string[] = [];
   const deleted: string[] = [];
+  const wrote = new Map<string, Buffer>();
   for (const entry of entries) {
     const path = join(forkRoot, entry.forkPath);
     const bytes = entryBytes(entry);
@@ -3614,14 +3641,24 @@ const applyEntries = (
       mkdirSync(dirname(path), { recursive: true });
       writeFileSync(path, bytes);
       written.push(entry.forkPath);
+      wrote.set(entry.forkPath, bytes);
     } else if (entry.action === "delete") {
       unlinkSync(path);
       deleted.push(entry.forkPath);
-    } else if (entry.action === "conflict" && bytes !== undefined) {
-      writeFileSync(path + MERGE_SIDECAR_SUFFIX, bytes);
-      written.push(entry.forkPath + MERGE_SIDECAR_SUFFIX);
     }
   }
+  // Sidecars last: should two planned paths name one file on this
+  // filesystem, upstream's copy is what gets lost, never a conflict's record.
+  for (const entry of entries) {
+    const bytes = entryBytes(entry);
+    if (entry.action === "conflict" && bytes !== undefined) {
+      const sidecar = entry.forkPath + MERGE_SIDECAR_SUFFIX;
+      writeFileSync(join(forkRoot, sidecar), bytes);
+      written.push(sidecar);
+      wrote.set(sidecar, bytes);
+    }
+  }
+  assertWritesDistinct(forkRoot, wrote);
   return { deleted, written };
 };
 

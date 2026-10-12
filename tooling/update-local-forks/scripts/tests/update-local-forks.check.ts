@@ -400,6 +400,27 @@ const withRawName = <T>(
 };
 
 /**
+ * Run `body` on a filesystem where writing `from` lands on `to`, as when two
+ * names alias one file; `node:fs` is mocked, as in withRawName.
+ */
+const withWriteAlias = <T>(from: string, to: string, body: () => T): T => {
+  const real = fs.writeFileSync;
+  mock.module("node:fs", () => ({
+    ...fs,
+    writeFileSync: (path: unknown, ...rest: unknown[]): unknown =>
+      (real as (...args: unknown[]) => unknown)(
+        String(path) === from ? to : path,
+        ...rest
+      ),
+  }));
+  try {
+    return body();
+  } finally {
+    mock.module("node:fs", () => ({ ...fs, writeFileSync: real }));
+  }
+};
+
+/**
  * The 0.25.0 shape: release 0.3.0 is prepared on a side branch, review fixes
  * land after the release-prep commit without touching the changelog, main
  * moves on outside the package, and a merge brings the fixed tree onto main.
@@ -3924,6 +3945,49 @@ describe("update-local-forks moved declarations", () => {
     );
 
     expect(entryOf(plan, LEASE_PATH)?.action).toBe("conflict");
+  });
+
+  test("refuses a sidecar alias under Unicode case folding, and keeps the record if one slips through", () => {
+    // Round 12: casefolded filesystems alias σ and ς, or ß and ss; the check
+    // folds further than any of them.
+    for (const [old, alias] of [
+      ["σ", "ς"],
+      ["straße", "strasse"],
+    ] as const) {
+      const fixture = movedFixture({
+        forkFiles: {
+          [`runtime/scripts/lib/${old}.ts`]: "export const kept = 2;\n",
+        },
+        pinnedExtra: {
+          [`scripts/lib/${old}.ts`]:
+            "export const moved = 1;\nexport const kept = 2;\n",
+        },
+        released: {
+          "scripts/lib/lease-recovery.ts": LEASE_RECOVERY,
+          "scripts/lib/lease.ts": LEASE_RELEASED,
+          [`scripts/lib/${alias}.ts.upstream-merge`]:
+            "export const moved = 1;\n",
+          [`scripts/lib/${old}.ts`]: "export const kept = 2;\n",
+        },
+      });
+      expect(() => planMoved(fixture)).toThrow(
+        `its sidecar goes at runtime/scripts/lib/${old}.ts.upstream-merge`
+      );
+    }
+
+    // Should a filesystem alias two paths the check cannot see, the sidecar
+    // is written last and survives, and apply fails loudly.
+    const fixture = movedFixture({ forkLease: editRelinquish });
+    const plan = planMoved(fixture);
+    const sidecar = join(fixture.fork, `${LEASE_PATH}.upstream-merge`);
+    expect(() =>
+      withWriteAlias(join(fixture.fork, RECOVERY_PATH), sidecar, () =>
+        applyForkPlan(plan)
+      )
+    ).toThrow("no longer holds what apply wrote");
+    expect(readFileSync(sidecar, "utf8")).toStartWith(
+      "== update-local-forks: moved declarations =="
+    );
   });
 
   test("refuses a plan that carries a file where a moved-code sidecar goes", () => {

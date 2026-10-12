@@ -32,7 +32,7 @@ import {
   loopLockPath,
   readLeaseFromCommonDirectory,
   withLoopStateLock,
-} from "./loop-lease.ts";
+} from "./loop-lease-core.ts";
 import { gitExecutable, runGit, runGitWithInput } from "./process.ts";
 import type {
   LoopLease,

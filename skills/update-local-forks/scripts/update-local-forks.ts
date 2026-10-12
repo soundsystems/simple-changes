@@ -2054,6 +2054,8 @@ const DECLARATION_PATTERN =
 const CHUNK_BREAK_PATTERN = /^(?:import\b|export\s*(?:\*|\{|type\s*\{))/u;
 const COMMENT_LINE_PATTERN = /^\s*(?:\/\/|\/\*|\*)/u;
 const BLANK_LINE_PATTERN = /^\s*$/u;
+/** A character after which `/` opens a regex literal rather than dividing. */
+const REGEX_PRECEDER_PATTERN = /^$|[(,=:[!&|?{};+\-*%<>~^]$/u;
 const TRAILING_LINE_BREAK_PATTERN = /\n$/u;
 const MOVED_SIDECAR_END = {
   merged: "== end of moved declarations; the merge of this file follows ==",
@@ -2100,30 +2102,191 @@ const addChunk = (
   });
 };
 
+type LiteralMode = "block" | "code" | "double" | "line" | "single" | "template";
+
+/** Where a light scan of quotes, comments, and template literals stands. */
+interface LiteralScan {
+  /** Brace depth inside each open template `${`, innermost last. */
+  expressions: number[];
+  mode: LiteralMode;
+  /** The last significant code character, which tells a regex from a division. */
+  previous: string;
+}
+
+const QUOTE_MODES: Record<string, LiteralMode> = {
+  "'": "single",
+  '"': "double",
+  "`": "template",
+};
+
+/** The index just past a regex literal at `start`, or `start + 1` if the line ends first. */
+const regexEnd = (source: string, start: number): number => {
+  let inClass = false;
+  for (let index = start + 1; index < source.length; index += 1) {
+    const character = source[index];
+    if (character === "\n") {
+      return start + 1;
+    }
+    if (character === "\\") {
+      index += 1;
+    } else if (character === "[" || character === "]") {
+      inClass = character === "[";
+    } else if (character === "/" && !inClass) {
+      return index + 1;
+    }
+  }
+  return start + 1;
+};
+
+const scanBraces = (scan: LiteralScan, character: string): void => {
+  const depth = scan.expressions.at(-1);
+  if (depth === undefined) {
+    return;
+  }
+  if (character === "{") {
+    scan.expressions[scan.expressions.length - 1] = depth + 1;
+  } else if (depth === 0) {
+    scan.expressions.pop();
+    scan.mode = "template";
+  } else {
+    scan.expressions[scan.expressions.length - 1] = depth - 1;
+  }
+};
+
+const scanCode = (scan: LiteralScan, source: string, index: number): number => {
+  const character = source[index] ?? "";
+  const next = source[index + 1] ?? "";
+  if (character === "/" && (next === "/" || next === "*")) {
+    scan.mode = next === "/" ? "line" : "block";
+    return index + 2;
+  }
+  if (character === "/" && REGEX_PRECEDER_PATTERN.test(scan.previous)) {
+    scan.previous = "/";
+    return regexEnd(source, index);
+  }
+  const quote = QUOTE_MODES[character];
+  if (quote !== undefined) {
+    scan.mode = quote;
+  } else if (character === "{" || character === "}") {
+    scanBraces(scan, character);
+  }
+  if (!BLANK_LINE_PATTERN.test(character)) {
+    scan.previous = character;
+  }
+  return index + 1;
+};
+
+const scanTemplate = (
+  scan: LiteralScan,
+  source: string,
+  index: number
+): number => {
+  const character = source[index];
+  if (character === "\\") {
+    return index + 2;
+  }
+  if (character === "`") {
+    scan.mode = "code";
+  } else if (character === "$" && source[index + 1] === "{") {
+    scan.expressions.push(0);
+    scan.mode = "code";
+    return index + 2;
+  }
+  return index + 1;
+};
+
+const scanStep = (scan: LiteralScan, source: string, index: number): number => {
+  const character = source[index];
+  switch (scan.mode) {
+    case "code":
+      return scanCode(scan, source, index);
+    case "template":
+      return scanTemplate(scan, source, index);
+    case "block":
+      if (character === "*" && source[index + 1] === "/") {
+        scan.mode = "code";
+        return index + 2;
+      }
+      return index + 1;
+    case "line":
+      if (character === "\n") {
+        scan.mode = "code";
+      }
+      return index + 1;
+    default:
+      if (character === "\\") {
+        return index + 2;
+      }
+      if (character === "\n" || QUOTE_MODES[character ?? ""] === scan.mode) {
+        scan.mode = "code";
+      }
+      return index + 1;
+  }
+};
+
+/**
+ * Whether each line starts inside a template literal, a block comment, or a
+ * string continued past its line, by a light scan of quotes, comments,
+ * template literals with their `${}` nesting, and regex literals told apart
+ * from division by the character before them.
+ */
+const linesInsideLiterals = (source: string): boolean[] => {
+  const inside = [false];
+  const scan: LiteralScan = { expressions: [], mode: "code", previous: "" };
+  let index = 0;
+  while (index < source.length) {
+    const next = scanStep(scan, source, index);
+    for (let at = index; at < next && at < source.length; at += 1) {
+      if (source[at] === "\n") {
+        inside.push(scan.mode !== "code");
+      }
+    }
+    index = next;
+  }
+  return inside;
+};
+
 /**
  * The column-0 top-level declarations of a code file, read without a parser:
  * each chunk starts at the comment lines directly above its declaration and
  * ends before the next chunk or a column-0 import or re-export, without
- * trailing blank lines. Chunks that share a name, such as overloads, join.
+ * trailing blank lines. Chunks that share a name, such as overloads, join. A
+ * line inside a template literal or block comment that reads as a
+ * declaration still names one, but never ends another's chunk: when the scan
+ * cannot tell, a chunk only grows, so an edit is never hidden by a short one.
  */
 const declarationsOf = (source: string): Declarations => {
   const lines = source.split("\n");
-  const declarations: Declarations = new Map();
-  let open: { name: string; start: number } | null = null;
+  const inside = linesInsideLiterals(source);
+  const found: { index: number; name: string }[] = [];
+  const boundaries: number[] = [];
   for (const [index, raw] of lines.entries()) {
     const line = withoutCr(raw);
     const name = DECLARATION_PATTERN.exec(line)?.[1];
-    if (name === undefined && !CHUNK_BREAK_PATTERN.test(line)) {
+    if (name !== undefined) {
+      found.push({ index, name });
+    }
+    if (inside[index]) {
       continue;
     }
-    const end = name === undefined ? index : chunkStart(lines, index);
-    if (open !== null) {
-      addChunk(declarations, lines, open, end);
+    if (name !== undefined) {
+      boundaries.push(chunkStart(lines, index));
+    } else if (CHUNK_BREAK_PATTERN.test(line)) {
+      boundaries.push(index);
     }
-    open = name === undefined ? null : { name, start: end };
   }
-  if (open !== null) {
-    addChunk(declarations, lines, open, lines.length);
+  const declarations: Declarations = new Map();
+  let next = 0;
+  for (const { index, name } of found) {
+    while ((boundaries[next] ?? Number.POSITIVE_INFINITY) <= index) {
+      next += 1;
+    }
+    addChunk(
+      declarations,
+      lines,
+      { name, start: chunkStart(lines, index) },
+      boundaries[next] ?? lines.length
+    );
   }
   return declarations;
 };
@@ -2219,13 +2382,14 @@ const homesOf = (
 };
 
 /**
- * What the fork did to a moved declaration, judged by its whole chunk in the
- * file the declaration left, or failing that by its copy in a file that
- * declares it now: a copy equal to the pinned text or to an installed one is
- * no change, any other copy is an edit, and no copy at all is a removal. A
- * fork that already carries a file that is new upstream lets that file decide,
- * since the plan never writes over it (it stays as the fork has it or
- * conflicts), so nothing the fork changed is lost.
+ * What the fork did to a moved declaration. Its whole chunk in the file the
+ * declaration left is an edit unless it equals the pinned text or an
+ * installed copy. When the fork took it out of that file, each file that
+ * newly declares it would bring it back: that is a removal, unless the fork
+ * carries that file as a file new upstream, which the plan never writes over
+ * (it stays as the fork has it or conflicts), or carries its own copy there,
+ * which is judged as an edit. A file that already declared it at the pin
+ * brings nothing back.
  */
 const forkChangeOf = (
   file: UpstreamFile,
@@ -2233,33 +2397,34 @@ const forkChangeOf = (
   candidates: UpstreamFile[],
   read: DeclarationReader
 ): Pick<MovedDeclaration, "change" | "forkText"> => {
-  const inFile = read(file, "current").get(name)?.text;
-  if (
-    inFile === undefined &&
-    candidates.some(
-      (candidate) =>
-        candidate.versions.base === null && candidate.versions.current !== null
-    )
-  ) {
-    return { change: null, forkText: null };
-  }
-  const forkText =
-    inFile ??
-    candidates
-      .map((candidate) => read(candidate, "current").get(name)?.text)
-      .find((text) => text !== undefined) ??
-    null;
-  if (forkText === null) {
-    return { change: "removed", forkText };
-  }
   const upstreamTexts = [
     read(file, "base").get(name)?.text,
     ...candidates.map((candidate) => read(candidate, "target").get(name)?.text),
   ];
-  return {
-    change: upstreamTexts.includes(forkText) ? null : "edited",
-    forkText,
-  };
+  const inFile = read(file, "current").get(name)?.text;
+  if (inFile !== undefined) {
+    return {
+      change: upstreamTexts.includes(inFile) ? null : "edited",
+      forkText: inFile,
+    };
+  }
+  for (const home of candidates) {
+    const newFile = home.versions.base === null;
+    if (
+      read(home, "base").has(name) ||
+      (newFile && home.versions.current !== null)
+    ) {
+      continue;
+    }
+    const copy = read(home, "current").get(name)?.text;
+    if (copy === undefined) {
+      return { change: "removed", forkText: null };
+    }
+    if (!upstreamTexts.includes(copy)) {
+      return { change: "edited", forkText: copy };
+    }
+  }
+  return { change: null, forkText: null };
 };
 
 const movesOutOf = (

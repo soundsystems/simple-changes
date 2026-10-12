@@ -3068,25 +3068,57 @@ describe("update-local-forks moved declarations", () => {
     // Upstream renamed the declaration in the old file and moved the original
     // name to a new file: Git sees only the header line change, and the
     // fork's edit to the template text merges cleanly into the renamed copy.
-    const moved = "export const moved = `\nfirst\nsecond\nbase\n`;\n";
-    const retained = moved.replace("const moved", "const retained");
-    const forkLease = (source: string): string =>
-      source.replace("\nbase\n", "\nfork\n");
-    expect(mergesCleanly(forkLease(moved), moved, retained)).toBe(true);
+    // A column-0 line inside the template that reads as a declaration must
+    // not end the chunk before the edit.
+    for (const body of ["first\nsecond", "first\nconst text = example;"]) {
+      const moved = `export const moved = \`\n${body}\nbase\n\`;\n`;
+      const retained = moved.replace("const moved", "const retained");
+      const forkLease = (source: string): string =>
+        source.replace("\nbase\n", "\nfork edit\n");
+      expect(mergesCleanly(forkLease(moved), moved, retained)).toBe(true);
+      const fixture = movedFixture({
+        forkLease,
+        pinned: moved,
+        released: {
+          "scripts/lib/lease-recovery.ts": moved,
+          "scripts/lib/lease.ts": retained,
+        },
+      });
+      const lease = entryOf(planMoved(fixture), LEASE_PATH);
+
+      expect(lease?.action).toBe("conflict");
+      expect(lease?.reason).toContain(
+        `the fork changed 1: \`moved\` (edited) -> ${RECOVERY_PATH}.`
+      );
+    }
+  });
+
+  test("conflicts a removal that a changed file newly declaring the name would undo, whatever else the fork carries", () => {
+    // Upstream moves `relinquish` into core.ts, which existed at the pin, and
+    // into a new file the fork already carries with content of its own. The
+    // new file is never written over, but core.ts updates and brings the
+    // declaration the fork removed back.
+    const relinquish = `${RELINQUISH.join("\n")}\n`;
+    const core = "export const core = 2;\n";
+    const withoutRelinquish = (source: string): string =>
+      source.replace(`${relinquish}\n`, "");
     const fixture = movedFixture({
-      forkLease,
-      pinned: moved,
+      forkFiles: { [RECOVERY_PATH]: "export const other = true;\n" },
+      forkLease: withoutRelinquish,
       released: {
-        "scripts/lib/lease-recovery.ts": moved,
-        "scripts/lib/lease.ts": retained,
+        "scripts/lib/core.ts": `${core}\n${relinquish}`,
+        "scripts/lib/lease-recovery.ts": relinquish,
+        "scripts/lib/lease.ts": withoutRelinquish(LEASE_AT_PIN),
       },
     });
-    const lease = entryOf(planMoved(fixture), LEASE_PATH);
+    const plan = planMoved(fixture);
 
-    expect(lease?.action).toBe("conflict");
-    expect(lease?.reason).toContain(
-      `the fork changed 1: \`moved\` (edited) -> ${RECOVERY_PATH}.`
+    expect(entryOf(plan, LEASE_PATH)?.action).toBe("conflict");
+    expect(entryOf(plan, LEASE_PATH)?.reason).toContain(
+      `\`relinquish\` (removed) -> runtime/scripts/lib/core.ts or ${RECOVERY_PATH}`
     );
+    expect(entryOf(plan, "runtime/scripts/lib/core.ts")?.action).toBe("update");
+    expect(entryOf(plan, RECOVERY_PATH)?.action).toBe("conflict");
   });
 
   test("conflicts a fork copy of a moved declaration in a file that existed at the pin", () => {

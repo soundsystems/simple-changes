@@ -183,7 +183,9 @@ So the plan compares each upstream code file's top-level declarations at the
 pin with those in the installed source. A declaration that left a file and is
 declared by an installed code file that changed since the pin has moved
 there. When the fork edited or removed one, the old file is a `conflict`
-whatever its lines did. It stays untouched; its reason names each
+whatever its lines did. A removal counts when a file that newly declares the
+name would bring it back; a file new upstream that the fork already carries is
+never written over, so it brings nothing back. It stays untouched; its reason names each
 declaration, how the fork changed it, and its new file; and its
 `.upstream-merge` sidecar opens with a header listing the moves and the
 fork's diff of each, followed by the merge or upstream's version. The new
@@ -222,8 +224,9 @@ Matching is by column-0 top-level declaration name, read without a parser, so
 a declaration renamed while it moved is not detected, and neither is one that
 is not a column-0 `const`, `let`, `var`, `function`, `class`, `interface`,
 `type`, or `enum`. A declaration runs from the comment lines directly above it
-to the next top-level declaration, import, or re-export, so a column-0
-statement right after a moved declaration counts as part of it. A fork change
+to the next top-level declaration, import, or re-export (a line inside a
+template literal or block comment never ends it), so a column-0 statement
+right after a moved declaration counts as part of it. A fork change
 to such a statement also makes the old file a conflict, even when upstream
 kept the statement there; the sidecar's diff shows the change, and it stays
 in the old file. Whenever the plan cannot tell, it conflicts rather than risk

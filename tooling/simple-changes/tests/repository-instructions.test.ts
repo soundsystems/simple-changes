@@ -130,6 +130,34 @@ describe("repository instruction pointers", () => {
     );
   });
 
+  test("refuses managed blocks that nest or cross", () => {
+    const fixture = createTestRepository();
+    repositories.push(fixture);
+    const pointer = renderInstructionPointer("repository", "automatic");
+    const [pointerStart = "", pointerEnd = ""] = [
+      pointer.split("\n")[0],
+      pointer.split("\n").at(-1),
+    ];
+    const rule = renderScratchFileRule();
+    const nested = `${pointerStart}\n${rule}\n${pointerEnd}\n`;
+    const [ruleStart = "", , ruleEnd = ""] = rule.split("\n");
+    const crossed = `${pointerStart}\n${ruleStart}\n${pointerEnd}\n${ruleEnd}\n`;
+    for (const contents of [nested, crossed]) {
+      writeFixture(fixture.root, "AGENTS.md", contents);
+      const [target] = discoverInstructionTargets("repository", fixture.root);
+      if (!target) {
+        throw new Error("Expected an instruction target");
+      }
+      expect(() => writeInstructionPointer(target, "confirm-ready")).toThrow(
+        "invalid Simple Changes managed block"
+      );
+      expect(() => writeScratchFileRule(target)).toThrow(
+        "invalid Simple Changes managed block"
+      );
+      expect(readFileSync(target.path, "utf8")).toBe(contents);
+    }
+  });
+
   test("supports an explicit existing global instruction file", () => {
     const fixture = createTestRepository();
     repositories.push(fixture);

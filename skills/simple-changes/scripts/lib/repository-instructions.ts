@@ -206,6 +206,42 @@ const formatWithNewline = (source: string, value: string): string => {
   return value.replaceAll("\n", newline);
 };
 
+// Each block appears at most once, ends after it starts, and never overlaps
+// or nests in the other, so replacing one can never cut into the other.
+const managedBlockSpans = (
+  source: string,
+  path: string
+): Map<ManagedBlockMarkers, { end: number; start: number }> => {
+  const invalid = () =>
+    new SimpleChangesError(
+      `Instruction file has an invalid Simple Changes managed block: ${path}`,
+      EXIT_CODES.unsafe
+    );
+  const spans = new Map<ManagedBlockMarkers, { end: number; start: number }>();
+  for (const markers of [POINTER_MARKERS, SCRATCH_FILE_MARKERS]) {
+    const startCount = markerCount(source, markers.start);
+    const endCount = markerCount(source, markers.end);
+    if (startCount > 1 || endCount > 1 || startCount !== endCount) {
+      throw invalid();
+    }
+    if (startCount === 1) {
+      const start = source.indexOf(markers.start);
+      const end = source.indexOf(markers.end, start);
+      if (end < start) {
+        throw invalid();
+      }
+      spans.set(markers, { end: end + markers.end.length, start });
+    }
+  }
+  const [first, second] = [...spans.values()].sort(
+    (left, right) => left.start - right.start
+  );
+  if (first && second && second.start < first.end) {
+    throw invalid();
+  }
+  return spans;
+};
+
 const planManagedBlock = (
   target: InstructionTarget,
   markers: ManagedBlockMarkers,
@@ -213,27 +249,12 @@ const planManagedBlock = (
 ): InstructionPointerPlan & { contents: string } => {
   assertExistingInstructionFile(target.path);
   const source = readFileSync(target.path, "utf8");
-  const startCount = markerCount(source, markers.start);
-  const endCount = markerCount(source, markers.end);
-  if (startCount > 1 || endCount > 1 || startCount !== endCount) {
-    throw new SimpleChangesError(
-      `Instruction file has an invalid Simple Changes managed block: ${target.path}`,
-      EXIT_CODES.unsafe
-    );
-  }
+  const span = managedBlockSpans(source, target.path).get(markers);
   const formattedBlock = formatWithNewline(source, block);
   let contents: string;
-  if (startCount === 1) {
-    const start = source.indexOf(markers.start);
-    const end = source.indexOf(markers.end, start);
-    if (end < start) {
-      throw new SimpleChangesError(
-        `Instruction file has an invalid Simple Changes managed block: ${target.path}`,
-        EXIT_CODES.unsafe
-      );
-    }
-    contents = `${source.slice(0, start)}${formattedBlock}${source.slice(
-      end + markers.end.length
+  if (span) {
+    contents = `${source.slice(0, span.start)}${formattedBlock}${source.slice(
+      span.end
     )}`;
   } else {
     const newline = source.includes("\r\n") ? "\r\n" : "\n";

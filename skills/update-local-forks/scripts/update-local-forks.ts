@@ -2934,7 +2934,12 @@ const commandParityReview = (
   }
   const pending = new Set<string>();
   for (const entry of entries) {
-    if (entry.action !== "keep-fork-only") {
+    // A fork-only file stays a gate candidate while it waits on a sidecar
+    // that records moved code; that review must not hide the gate's.
+    const forkOnly =
+      entry.action === "keep-fork-only" ||
+      (entry.action === "review" && entry.upstreamPath === null);
+    if (!forkOnly) {
       continue;
     }
     const content = readText(join(fork.path, entry.forkPath));
@@ -2950,8 +2955,9 @@ const commandParityReview = (
       continue;
     }
     pending.add(entry.forkPath);
+    const prior = entry.action === "review" ? `${entry.reason} ` : "";
     entry.action = "review";
-    entry.reason = `This fork-owned file lists ${gated} upstream commands together, so it reads as a gate on the runtime surface. Upstream added ${missing.join(", ")}, which it does not name; extend it or confirm the omission is deliberate.`;
+    entry.reason = `${prior}This fork-owned file lists ${gated} upstream commands together, so it reads as a gate on the runtime surface. Upstream added ${missing.join(", ")}, which it does not name; extend it or confirm the omission is deliberate.`;
   }
   return pending;
 };

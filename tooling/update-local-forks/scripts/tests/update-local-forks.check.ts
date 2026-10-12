@@ -3744,6 +3744,40 @@ describe("update-local-forks moved declarations", () => {
     );
   });
 
+  test("still reviews a fork-owned command gate that waits on a moved-code sidecar", () => {
+    // Round 6: a fork-only file whose sidecar records moved code is a review
+    // item, and it must still be weighed as a gate when upstream adds a
+    // command, so the pin holds for the gate as it does without the sidecar.
+    const gate = "scripts/simple-changes-runtime.sh";
+    const fixture = movedFixture({
+      forkFiles: {
+        [gate]: [
+          "#!/bin/sh",
+          'case "$1" in',
+          "  help | initialize | loop | worktree | prune) ;;",
+          "  *) exit 64 ;;",
+          "esac",
+          "",
+        ].join("\n"),
+        [`${gate}.upstream-merge`]:
+          "== update-local-forks: moved declarations ==\nearlier move\n",
+      },
+      released: {
+        "scripts/lib/lease-recovery.ts": LEASE_RECOVERY,
+        "scripts/lib/lease.ts": LEASE_RELEASED,
+        "scripts/simple-changes.ts": cliSource([...RELEASED_COMMANDS, "ship"]),
+      },
+    });
+    const plan = planMoved(fixture);
+    const entry = entryOf(plan, gate);
+
+    expect(entry?.action).toBe("review");
+    expect(entry?.reason).toContain(`${gate}.upstream-merge lists each one`);
+    expect(entry?.reason).toContain("Upstream added ship");
+    expect(plan.pinUpdate.to).toBeNull();
+    expect(plan.pinUpdate.reason).toContain("gate review");
+  });
+
   test("conflicts without a sidecar when the fork omits the file declarations left", () => {
     const fixture = movedFixture({ forkLease: () => null });
     const plan = planMoved(fixture);

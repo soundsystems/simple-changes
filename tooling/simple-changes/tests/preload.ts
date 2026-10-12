@@ -15,12 +15,14 @@ for (const name of [
   delete process.env[name];
 }
 
-// Authoring detection reads home-directory roots by existence and the
-// Simple Changelogs personal sidecar for the onboarding pre-fill. Point both
-// at an empty private directory so the developer's machine never decides a
-// test's outcome; tests that cover detection set their own roots.
+// Authoring detection reads home-directory roots by existence, the personal
+// Simple Changes sidecar beside preferences.json, and the Simple Changelogs
+// personal sidecar for the onboarding pre-fill. Point all three at an empty
+// private directory so the developer's machine never decides a test's
+// outcome; tests that cover detection or personal files set their own.
 const isolatedAuthoringRoots = mkdtempSync(
   join(tmpdir(), "simple-changes-harness-roots-")
 );
 process.env.SIMPLE_CHANGES_HARNESS_ROOTS = isolatedAuthoringRoots;
+process.env.SIMPLE_CHANGES_CONFIG_DIR = isolatedAuthoringRoots;
 process.env.SIMPLE_CHANGELOGS_CONFIG_DIR = isolatedAuthoringRoots;

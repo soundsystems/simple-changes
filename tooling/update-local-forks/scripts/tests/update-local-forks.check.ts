@@ -3855,7 +3855,51 @@ describe("update-local-forks moved declarations", () => {
     );
 
     expect(entryOf(plan, LEASE_PATH)?.action).toBe("conflict");
-    expect(entryOf(plan, LEASE_PATH)?.reason).toContain("scripts/dist/");
+    expect(entryOf(plan, LEASE_PATH)?.reason).toContain("<path bytes ");
+  });
+
+  test("conflicts when the old file ends its lines with CR or a Unicode line separator", () => {
+    // Round 10: lines split at every line terminator, not only LF.
+    for (const end of ["\r", " ", " "]) {
+      const released = `export const kept = 2;${end}`;
+      const fixture = movedFixture({
+        forkLease: () => released,
+        pinned: `export const moved = 1;${end}export const kept = 2;${end}`,
+        released: {
+          "scripts/lib/lease-recovery.ts": `export const moved = 1;${end}`,
+          "scripts/lib/lease.ts": released,
+        },
+      });
+
+      expect(entryOf(planMoved(fixture), LEASE_PATH)?.action).toBe("conflict");
+    }
+  });
+
+  test("conflicts when a raw-named destination reads like a path upstream removed", () => {
+    // Round 10: a name that is not valid UTF-8 is labeled by its bytes, so it
+    // never passes for the pinned `dist/ÿ.ts` and is never skipped as carried.
+    const pinned = "export const moved = 1;\nexport const kept = 2;\n";
+    const released = "export const kept = 2;\n";
+    const fixture = movedFixture({
+      forkLease: () => released,
+      pinned,
+      pinnedExtra: { "scripts/dist/ÿ.ts": "" },
+      released: {
+        "scripts/dist/ÿ.ts": null,
+        "scripts/lib/lease.ts": released,
+      },
+    });
+    const dist = join(fixture.source, "scripts", "dist");
+    mkdirSync(dist, { recursive: true });
+    const plan = withRawName(
+      dist,
+      Buffer.from([0xff, 0x2e, 0x74, 0x73]),
+      "export const moved = 1;\n",
+      () => planMoved(fixture)
+    );
+
+    expect(entryOf(plan, LEASE_PATH)?.action).toBe("conflict");
+    expect(entryOf(plan, LEASE_PATH)?.reason).toContain("<path bytes ");
   });
 
   test("refuses a plan that carries a file where a moved-code sidecar goes", () => {

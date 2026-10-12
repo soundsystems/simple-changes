@@ -150,7 +150,8 @@ const walkFiles = (root: string, base = root): string[] => {
  * Every regular file under `root` but Git's own, skipped directories included,
  * by raw path bytes: where upstream code can move to, whether or not the plan
  * carries the file. A valid UTF-8 path reads as text, as the plan names it;
- * any other is kept as its bytes, and its location still reads the file.
+ * any other is labeled by its hex bytes, which no planned path can equal, and
+ * its location still reads the file.
  */
 const walkEveryFile = (
   root: Buffer,
@@ -170,7 +171,9 @@ const walkEveryFile = (
       ? [
           {
             location,
-            path: isUtf8(path) ? path.toString("utf8") : byteString(path),
+            path: isUtf8(path)
+              ? path.toString("utf8")
+              : `<path bytes ${path.toString("hex")}>`,
           },
         ]
       : [];
@@ -2124,6 +2127,7 @@ const CHUNK_BREAK_PATTERN = /^(?:import\b|export\s*(?:\*|\{|type\s*\{))/u;
 const COMMENT_LINE_PATTERN = /^\s*(?:\/\/|\/\*|\*)/u;
 const BLANK_LINE_PATTERN = /^\s*$/u;
 const WHITESPACE_PATTERN = /\s/gu;
+const LINE_TERMINATOR_PATTERN = /\r\n|[\n\r\u0085\u2028\u2029]/u;
 const IDENTIFIER_CHARACTER_PATTERN = /[\w$]/u;
 /** The fewest non-blank characters a significant line holds. */
 const SIGNIFICANT_LINE_LENGTH = 8;
@@ -2139,22 +2143,24 @@ const changedSincePin = (file: UpstreamFile): boolean =>
   file.versions.base !== file.versions.target;
 
 /**
- * A line, read as UTF-8 and trimmed (a byte-order mark and Unicode spaces
- * included), when it can carry code, or null: braces and punctuation never
- * count.
+ * A line, trimmed (a byte-order mark and Unicode spaces included), when it can
+ * carry code, or null: braces and punctuation never count.
  */
 const significantLine = (line: string): string | null => {
-  const trimmed = shown(line).trim();
+  const trimmed = line.trim();
   return trimmed.replace(WHITESPACE_PATTERN, "").length >=
     SIGNIFICANT_LINE_LENGTH && IDENTIFIER_CHARACTER_PATTERN.test(trimmed)
     ? trimmed
     : null;
 };
 
-/** How many times each significant line occurs in a copy. */
+/**
+ * How many times each significant line occurs in a copy, read as UTF-8 and
+ * split at every line terminator, not only LF.
+ */
 const significantCounts = (source: string | null): Map<string, number> => {
   const counts = new Map<string, number>();
-  for (const line of (source ?? "").split("\n")) {
+  for (const line of shown(source ?? "").split(LINE_TERMINATOR_PATTERN)) {
     const significant = significantLine(line);
     if (significant !== null) {
       counts.set(significant, (counts.get(significant) ?? 0) + 1);

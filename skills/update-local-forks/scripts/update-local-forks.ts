@@ -2034,18 +2034,27 @@ const classifyForkFiles = (
 
 /**
  * Every classifier above weighs one file on its own, so it cannot see code
- * that upstream moved between files. When a declaration leaves file P for file
- * M, M arrives as upstream wrote it, without the fork's edit, and P can merge
- * cleanly or even match upstream, so the edit disappears without a conflict;
- * when P does conflict, taking upstream's side drops the edit just the same.
- * This pass compares the column-0 top-level declarations of each upstream code
- * file at the pin and in the installed source. A declaration that left P and is
- * declared by an installed code file that changed since the pin has moved
- * there. When the fork edited or removed a moved declaration, P becomes a
- * conflict naming each one and its new file, and its sidecar opens with a
- * header listing the moves and the fork's diff; M is still written, with a note
- * pointing back to P. Matching is by name, so a declaration renamed while it
- * moved is not found.
+ * that upstream moved between files. When code leaves file P for file M, M
+ * arrives as upstream wrote it, without any fork change to that code, and P
+ * can merge cleanly or even match upstream, so the change disappears without a
+ * conflict; when P does conflict, taking upstream's side drops it just the
+ * same.
+ *
+ * The safety rule weighs whole files and never declaration boundaries. A
+ * significant line holds an identifier character and at least eight
+ * non-blank characters. Code moved out of P when a significant line upstream
+ * removed from P since the pin (pinned lines less installed lines, trimmed and
+ * counted as multisets) is among the lines upstream added since the pin to
+ * another installed file. Then, when the fork's P differs from the pinned P
+ * in any byte, or the fork omits P, P is a conflict: its sidecar opens with a
+ * header naming the move and the fork's diff, and each new file is still
+ * written, with a note pointing back. A fork whose P equals the pin gets the
+ * ordinary plan. A move that rewrites every significant line it carries, or
+ * renames everything it moves, is not detected.
+ *
+ * Which declarations moved, and which of them the fork changed, is named from
+ * column-0 declaration names on a best-effort basis, for the reason and the
+ * sidecar header only; a wrong or missing name never changes the action.
  */
 const CODE_FILE_PATTERN = /\.(?:[cm]?[jt]s|[jt]sx)$/u;
 const DECLARATION_PATTERN =
@@ -2054,27 +2063,86 @@ const DECLARATION_PATTERN =
 const CHUNK_BREAK_PATTERN = /^(?:import\b|export\s*(?:\*|\{|type\s*\{))/u;
 const COMMENT_LINE_PATTERN = /^\s*(?:\/\/|\/\*|\*)/u;
 const BLANK_LINE_PATTERN = /^\s*$/u;
-/** A character after which `/` opens a regex literal rather than dividing. */
-const REGEX_PRECEDER_PATTERN = /^$|[(,=:[!&|?{};+\-*%<>~^]$/u;
+const WHITESPACE_PATTERN = /\s/gu;
+const IDENTIFIER_CHARACTER_PATTERN = /[\w$]/u;
+/** The fewest non-blank characters a significant line holds. */
+const SIGNIFICANT_LINE_LENGTH = 8;
 const TRAILING_LINE_BREAK_PATTERN = /\n$/u;
 const MOVED_SIDECAR_END = {
   merged: "== end of moved declarations; the merge of this file follows ==",
   removed: "== end of moved declarations; upstream removed this file ==",
 } as const;
 
+const isCodeFile = (path: string): boolean => CODE_FILE_PATTERN.test(path);
+
+const changedSincePin = (file: UpstreamFile): boolean =>
+  file.versions.base !== file.versions.target;
+
+/** A line trimmed when it can carry code, or null: braces and punctuation never count. */
+const significantLine = (line: string): string | null => {
+  const trimmed = line.trim();
+  return trimmed.replace(WHITESPACE_PATTERN, "").length >=
+    SIGNIFICANT_LINE_LENGTH && IDENTIFIER_CHARACTER_PATTERN.test(trimmed)
+    ? trimmed
+    : null;
+};
+
+/** How many times each significant line occurs in a copy. */
+const significantCounts = (source: string | null): Map<string, number> => {
+  const counts = new Map<string, number>();
+  for (const line of (source ?? "").split("\n")) {
+    const significant = significantLine(line);
+    if (significant !== null) {
+      counts.set(significant, (counts.get(significant) ?? 0) + 1);
+    }
+  }
+  return counts;
+};
+
+/** The lines `from` holds more often than `less`: a multiset difference. */
+const linesBeyond = (
+  from: Map<string, number>,
+  less: Map<string, number>
+): Set<string> =>
+  new Set(
+    [...from]
+      .filter(([line, count]) => count > (less.get(line) ?? 0))
+      .map(([line]) => line)
+  );
+
+/** Each installed file that changed since the pin, with the lines it gained. */
+const addedLines = (files: UpstreamFile[]): Map<UpstreamFile, Set<string>> =>
+  new Map(
+    files
+      .filter((file) => file.versions.target !== null && changedSincePin(file))
+      .map((file) => [
+        file,
+        linesBeyond(
+          significantCounts(file.versions.target),
+          significantCounts(file.versions.base)
+        ),
+      ])
+  );
+
+/** Whether two sets share a member, walking the smaller one. */
+const overlaps = (left: Set<string>, right: Set<string>): boolean => {
+  const [small, large] =
+    left.size <= right.size ? [left, right] : [right, left];
+  for (const line of small) {
+    if (large.has(line)) {
+      return true;
+    }
+  }
+  return false;
+};
+
 interface Declaration {
-  /** The zero-based line that declares it, preferring one outside literals. */
-  line: number;
   /** Zero-based [start, end) line ranges of each chunk with this name. */
   ranges: [number, number][];
   text: string;
-  /** Whether a line outside any literal or block comment declares it. */
-  trusted: boolean;
 }
 
 type Declarations = Map<string, Declaration>;
-
-const isCodeFile = (path: string): boolean => CODE_FILE_PATTERN.test(path);
 
 /** Where a declaration's chunk starts: the comment lines directly above it. */
 const chunkStart = (lines: string[], index: number): number => {
@@ -2091,7 +2159,7 @@ const chunkStart = (lines: string[], index: number): number => {
 const addChunk = (
   declarations: Declarations,
   lines: string[],
-  open: { line: number; name: string; start: number; trusted: boolean },
+  open: { name: string; start: number },
   end: number
 ): void => {
   let last = end;
@@ -2100,210 +2168,36 @@ const addChunk = (
   }
   const text = lines.slice(open.start, last).join("\n");
   const known = declarations.get(open.name);
-  const line =
-    known === undefined || (open.trusted && !known.trusted)
-      ? open.line
-      : known.line;
   declarations.set(open.name, {
-    line,
     ranges: [...(known?.ranges ?? []), [open.start, last]],
     text: known === undefined ? text : `${known.text}\n${text}`,
-    trusted: open.trusted || (known?.trusted ?? false),
   });
 };
 
-type LiteralMode = "block" | "code" | "double" | "line" | "single" | "template";
-
-/** Where a light scan of quotes, comments, and template literals stands. */
-interface LiteralScan {
-  /** Brace depth inside each open template `${`, innermost last. */
-  expressions: number[];
-  mode: LiteralMode;
-  /** The last significant code character, which tells a regex from a division. */
-  previous: string;
-}
-
-const QUOTE_MODES: Record<string, LiteralMode> = {
-  "'": "single",
-  '"': "double",
-  "`": "template",
-};
-
-/** The index just past a regex literal at `start`, or `start + 1` if the line ends first. */
-const regexEnd = (source: string, start: number): number => {
-  let inClass = false;
-  for (let index = start + 1; index < source.length; index += 1) {
-    const character = source[index];
-    if (character === "\n") {
-      return start + 1;
-    }
-    if (character === "\\") {
-      index += 1;
-    } else if (character === "[" || character === "]") {
-      inClass = character === "[";
-    } else if (character === "/" && !inClass) {
-      return index + 1;
-    }
-  }
-  return start + 1;
-};
-
-const scanBraces = (scan: LiteralScan, character: string): void => {
-  const depth = scan.expressions.at(-1);
-  if (depth === undefined) {
-    return;
-  }
-  if (character === "{") {
-    scan.expressions[scan.expressions.length - 1] = depth + 1;
-  } else if (depth === 0) {
-    scan.expressions.pop();
-    scan.mode = "template";
-  } else {
-    scan.expressions[scan.expressions.length - 1] = depth - 1;
-  }
-};
-
-const scanCode = (scan: LiteralScan, source: string, index: number): number => {
-  const character = source[index] ?? "";
-  const next = source[index + 1] ?? "";
-  if (character === "/" && (next === "/" || next === "*")) {
-    scan.mode = next === "/" ? "line" : "block";
-    return index + 2;
-  }
-  if (character === "/" && REGEX_PRECEDER_PATTERN.test(scan.previous)) {
-    scan.previous = "/";
-    return regexEnd(source, index);
-  }
-  const quote = QUOTE_MODES[character];
-  if (quote !== undefined) {
-    scan.mode = quote;
-  } else if (character === "{" || character === "}") {
-    scanBraces(scan, character);
-  }
-  if (!BLANK_LINE_PATTERN.test(character)) {
-    scan.previous = character;
-  }
-  return index + 1;
-};
-
-/** The index past an escape at `index`, a CRLF line continuation included. */
-const escapeEnd = (source: string, index: number): number =>
-  source[index + 1] === "\r" && source[index + 2] === "\n"
-    ? index + 3
-    : index + 2;
-
-const scanTemplate = (
-  scan: LiteralScan,
-  source: string,
-  index: number
-): number => {
-  const character = source[index];
-  if (character === "\\") {
-    return escapeEnd(source, index);
-  }
-  if (character === "`") {
-    scan.mode = "code";
-  } else if (character === "$" && source[index + 1] === "{") {
-    scan.expressions.push(0);
-    scan.mode = "code";
-    scan.previous = "{";
-    return index + 2;
-  }
-  return index + 1;
-};
-
-const scanStep = (scan: LiteralScan, source: string, index: number): number => {
-  const character = source[index];
-  switch (scan.mode) {
-    case "code":
-      return scanCode(scan, source, index);
-    case "template":
-      return scanTemplate(scan, source, index);
-    case "block":
-      if (character === "*" && source[index + 1] === "/") {
-        scan.mode = "code";
-        return index + 2;
-      }
-      return index + 1;
-    case "line":
-      if (character === "\n") {
-        scan.mode = "code";
-      }
-      return index + 1;
-    default:
-      if (character === "\\") {
-        return escapeEnd(source, index);
-      }
-      if (character === "\n" || QUOTE_MODES[character ?? ""] === scan.mode) {
-        scan.mode = "code";
-      }
-      return index + 1;
-  }
-};
-
 /**
- * Whether each line starts inside a template literal, a block comment, or a
- * string continued past its line, by a light scan of quotes, comments,
- * template literals with their `${}` nesting, and regex literals told apart
- * from division by the character before them.
- */
-const linesInsideLiterals = (source: string): boolean[] => {
-  const inside = [false];
-  const scan: LiteralScan = { expressions: [], mode: "code", previous: "" };
-  let index = 0;
-  while (index < source.length) {
-    const next = scanStep(scan, source, index);
-    for (let at = index; at < next && at < source.length; at += 1) {
-      if (source[at] === "\n") {
-        inside.push(scan.mode !== "code");
-      }
-    }
-    index = next;
-  }
-  return inside;
-};
-
-/**
- * The column-0 top-level declarations of a code file, read without a parser:
- * each chunk starts at the comment lines directly above its declaration and
- * ends before the next chunk or a column-0 import or re-export, without
- * trailing blank lines. Chunks that share a name, such as overloads, join. A
- * line inside a template literal or block comment that reads as a
- * declaration still names one, but never ends another's chunk: when the scan
- * cannot tell, a chunk only grows, so an edit is never hidden by a short one.
+ * The column-0 top-level declarations of a code file, for naming only: each
+ * chunk starts at the comment lines directly above its declaration and ends
+ * before the next chunk or a column-0 import or re-export, without trailing
+ * blank lines. Chunks that share a name, such as overloads, join.
  */
 const declarationsOf = (source: string): Declarations => {
   const lines = source.split("\n");
-  const inside = linesInsideLiterals(source);
-  const found: { index: number; name: string; trusted: boolean }[] = [];
-  const boundaries: number[] = [];
+  const declarations: Declarations = new Map();
+  let open: { name: string; start: number } | null = null;
   for (const [index, raw] of lines.entries()) {
     const line = withoutCr(raw);
     const name = DECLARATION_PATTERN.exec(line)?.[1];
-    if (name !== undefined) {
-      found.push({ index, name, trusted: !inside[index] });
-    }
-    if (inside[index]) {
+    if (name === undefined && !CHUNK_BREAK_PATTERN.test(line)) {
       continue;
     }
-    if (name !== undefined) {
-      boundaries.push(chunkStart(lines, index));
-    } else if (CHUNK_BREAK_PATTERN.test(line)) {
-      boundaries.push(index);
+    const end = name === undefined ? index : chunkStart(lines, index);
+    if (open !== null) {
+      addChunk(declarations, lines, open, end);
     }
+    open = name === undefined ? null : { name, start: end };
   }
-  const declarations: Declarations = new Map();
-  let next = 0;
-  for (const { index, name, trusted } of found) {
-    while ((boundaries[next] ?? Number.POSITIVE_INFINITY) <= index) {
-      next += 1;
-    }
-    addChunk(
-      declarations,
-      lines,
-      { line: index, name, start: chunkStart(lines, index), trusted },
-      boundaries[next] ?? lines.length
-    );
+  if (open !== null) {
+    addChunk(declarations, lines, open, lines.length);
   }
   return declarations;
 };
@@ -2313,44 +2207,6 @@ type DeclarationReader = (
   file: UpstreamFile,
   copy: keyof Versions
 ) => Declarations;
-
-/** The lines of one copy of an upstream file, each split once. */
-type LinesReader = (file: UpstreamFile, copy: keyof Versions) => string[];
-
-const linesReader = (): LinesReader => {
-  const split = new Map<string, string[]>();
-  return (file, copy) => {
-    const key = `${copy}:${file.upstreamPath}`;
-    let lines = split.get(key);
-    if (lines === undefined) {
-      lines = (file.versions[copy] ?? "").split("\n");
-      split.set(key, lines);
-    }
-    return lines;
-  };
-};
-
-/**
- * The text of `name` in that copy when a line outside any literal declares it:
- * a look-alike inside a template literal never stands in for a declaration.
- */
-const trustedText = (
-  read: DeclarationReader,
-  file: UpstreamFile,
-  copy: keyof Versions,
-  name: string
-): string | undefined => {
-  const declaration = read(file, copy).get(name);
-  return declaration?.trusted ? declaration.text : undefined;
-};
-
-/** Whether a line outside any literal declares `name` in that copy. */
-const declaresOutsideLiterals = (
-  read: DeclarationReader,
-  file: UpstreamFile,
-  copy: keyof Versions,
-  name: string
-): boolean => read(file, copy).get(name)?.trusted === true;
 
 const declarationReader = (): DeclarationReader => {
   const parsed = new Map<string, Declarations>();
@@ -2374,7 +2230,7 @@ interface MovedDeclaration {
   /** What the fork did to it, or null when the fork kept upstream's text. */
   change: ForkChange | null;
   forkText: string | null;
-  /** The installed files that now declare it, best match first. */
+  /** The installed files that now declare it. */
   homes: UpstreamFile[];
   name: string;
   pinnedText: string;
@@ -2382,217 +2238,56 @@ interface MovedDeclaration {
 
 interface MovedOut {
   file: UpstreamFile;
+  /** The installed files that gained significant lines this file lost. */
+  homes: UpstreamFile[];
+  /** The declarations named as moved, for wording only. */
   moved: MovedDeclaration[];
-  /** Whether the fork also changed the file outside the moved declarations. */
+  /** Whether the fork also changed the file outside the named declarations. */
   otherForkChanges: boolean;
 }
 
-const changedSincePin = (file: UpstreamFile): boolean =>
-  file.versions.base !== file.versions.target;
-
-/** The installed code files changed since the pin, by each name they declare. */
-const changedDeclarers = (
-  files: UpstreamFile[],
+/**
+ * The column-0 declarations that left a file for one of its new homes, and
+ * what the fork did to each, judged by its copy in the file or failing that in
+ * a home: a copy equal to the pinned or an installed copy is no change,
+ * another copy is an edit, and no copy is a removal. For wording only.
+ */
+const namedMoves = (
+  file: UpstreamFile,
+  homes: UpstreamFile[],
   read: DeclarationReader
-): Map<string, UpstreamFile[]> => {
-  const declarers = new Map<string, UpstreamFile[]>();
-  for (const file of files) {
-    if (
-      !(
-        isCodeFile(file.upstreamPath) &&
-        file.versions.target !== null &&
-        changedSincePin(file)
-      )
-    ) {
-      continue;
-    }
-    for (const name of read(file, "target").keys()) {
-      declarers.set(name, [...(declarers.get(name) ?? []), file]);
-    }
-  }
-  return declarers;
-};
-
-/**
- * Where a declaration that left a file lives now: the changed files that newly
- * declare it, or, when none does, every changed file that declares it, with a
- * verbatim copy of the pinned text first.
- */
-const homesOf = (
-  name: string,
-  pinnedText: string,
-  candidates: UpstreamFile[],
-  read: DeclarationReader
-): UpstreamFile[] => {
-  const fresh = candidates.filter(
-    (candidate) => !declaresOutsideLiterals(read, candidate, "base", name)
-  );
-  const verbatim = (candidate: UpstreamFile): number =>
-    read(candidate, "target").get(name)?.text === pinnedText ? 0 : 1;
-  return [...(fresh.length > 0 ? fresh : candidates)].sort(
-    (left, right) =>
-      verbatim(left) - verbatim(right) ||
-      byText(left.upstreamPath, right.upstreamPath)
-  );
-};
-
-/** What the move analysis reads for one file a declaration left. */
-interface MoveScan {
-  /** The best new home of the declaration being judged. */
-  home?: UpstreamFile | undefined;
-  lines: LinesReader;
-  /** The moved declarations whose pinned chunk covers each pinned line. */
-  owners: Map<number, string[]>;
-  read: DeclarationReader;
-}
-
-/**
- * Whether the fork's copy differs, line for line, from the text upstream
- * carried verbatim from the file the declaration left into its new home,
- * counted from the declaration's own line. That span ignores chunk
- * boundaries, so a boundary the reader misjudges inside a literal cannot hide
- * an edit to text that moved. A difference inside another moved
- * declaration's chunk is that declaration's own edit and is reported there.
- */
-const forkChangedVerbatimSpan = (
-  file: UpstreamFile,
-  name: string,
-  scan: MoveScan
-): boolean => {
-  const { home } = scan;
-  const pinned = scan.read(file, "base").get(name);
-  const fork = scan.read(file, "current").get(name);
-  const moved =
-    home === undefined ? undefined : scan.read(home, "target").get(name);
-  if (!(home && pinned && fork && moved)) {
-    return false;
-  }
-  const pinnedLines = scan.lines(file, "base");
-  const homeLines = scan.lines(home, "target");
-  const forkLines = scan.lines(file, "current");
-  for (
-    let offset = 0;
-    pinned.line + offset < pinnedLines.length &&
-    pinnedLines[pinned.line + offset] === homeLines[moved.line + offset];
-    offset += 1
-  ) {
-    const line = pinned.line + offset;
-    const another = (scan.owners.get(line) ?? []).some(
-      (owner) => owner !== name
-    );
-    if (!another && forkLines[fork.line + offset] !== pinnedLines[line]) {
-      return true;
-    }
-  }
-  return false;
-};
-
-/**
- * What the fork did to a moved declaration. Its copy in the file the
- * declaration left is an edit unless its whole chunk equals the pinned text
- * or an installed copy and it keeps every line upstream carried verbatim into
- * the new home. When the fork took it out of that file, each file that newly
- * declares it would bring it back: that is a removal, unless the fork
- * carries that file as a file new upstream, which the plan never writes over
- * (it stays as the fork has it or conflicts), or carries its own copy there,
- * which is judged as an edit. A file that already declared it at the pin,
- * outside any literal, brings nothing back.
- */
-const forkChangeOf = (
-  file: UpstreamFile,
-  name: string,
-  candidates: UpstreamFile[],
-  scan: MoveScan
-): Pick<MovedDeclaration, "change" | "forkText"> => {
-  const { read } = scan;
-  const upstreamTexts = [
-    read(file, "base").get(name)?.text,
-    ...candidates.map((candidate) => read(candidate, "target").get(name)?.text),
-  ];
-  const inFile = trustedText(read, file, "current", name);
-  if (inFile !== undefined) {
-    const edited =
-      !upstreamTexts.includes(inFile) ||
-      forkChangedVerbatimSpan(file, name, scan);
-    return { change: edited ? "edited" : null, forkText: inFile };
-  }
-  for (const home of candidates) {
-    const newFile = home.versions.base === null;
-    if (
-      declaresOutsideLiterals(read, home, "base", name) ||
-      (newFile && home.versions.current !== null)
-    ) {
-      continue;
-    }
-    const copy = trustedText(read, home, "current", name);
-    if (copy === undefined) {
-      return { change: "removed", forkText: null };
-    }
-    if (!upstreamTexts.includes(copy)) {
-      return { change: "edited", forkText: copy };
-    }
-  }
-  return { change: null, forkText: null };
-};
-
-/**
- * The pinned declarations that left a file for a changed file that declares
- * them. A name declared outside literals at the pin stays only if a line
- * outside literals declares it in the installed file, so a look-alike inside
- * a template literal never masks a move; a look-alike at the pin stays
- * wherever its name still appears.
- */
-const leftDeclarations = (
-  file: UpstreamFile,
-  declarers: Map<string, UpstreamFile[]>,
-  read: DeclarationReader
-): { candidates: UpstreamFile[]; declaration: Declaration; name: string }[] =>
-  [...read(file, "base")].flatMap(([name, declaration]) => {
-    const candidates = (declarers.get(name) ?? []).filter(
-      (candidate) => candidate !== file
-    );
-    const kept = declaration.trusted
-      ? declaresOutsideLiterals(read, file, "target", name)
-      : read(file, "target").has(name);
-    return kept || candidates.length === 0
-      ? []
-      : [{ candidates, declaration, name }];
-  });
-
-const movesOutOf = (
-  file: UpstreamFile,
-  declarers: Map<string, UpstreamFile[]>,
-  scan: { lines: LinesReader; read: DeclarationReader }
 ): MovedDeclaration[] => {
-  const { read } = scan;
-  const left = leftDeclarations(file, declarers, read);
-  const pinnedLines = scan.lines(file, "base");
-  // Each chunk owns the blank lines after it too, so a fork insertion inside
-  // one moved declaration never reads as a change to another.
-  const owners = new Map<number, string[]>();
-  for (const { declaration, name } of left) {
-    for (const [start, end] of declaration.ranges) {
-      let stop = end;
-      while (BLANK_LINE_PATTERN.test(pinnedLines[stop] ?? "x")) {
-        stop += 1;
-      }
-      for (let line = start; line < stop; line += 1) {
-        owners.set(line, [...(owners.get(line) ?? []), name]);
-      }
+  const kept = read(file, "target");
+  const forkDeclarations = read(file, "current");
+  return [...read(file, "base")].flatMap(([name, declaration]) => {
+    const declaredIn = homes.filter((home) => read(home, "target").has(name));
+    if (kept.has(name) || declaredIn.length === 0) {
+      return [];
     }
-  }
-  return left.map(({ candidates, declaration, name }) => {
-    const homes = homesOf(name, declaration.text, candidates, read);
-    return {
-      homes,
-      name,
-      pinnedText: declaration.text,
-      ...forkChangeOf(file, name, candidates, {
-        ...scan,
-        home: homes[0],
-        owners,
-      }),
-    };
+    const inFile = forkDeclarations.get(name)?.text;
+    const inHome = declaredIn
+      .map((home) => read(home, "current").get(name)?.text)
+      .find((text) => text !== undefined);
+    const forkText = inFile ?? inHome ?? null;
+    const upstreamTexts = [
+      declaration.text,
+      ...declaredIn.map((home) => read(home, "target").get(name)?.text),
+    ];
+    let change: ForkChange | null = null;
+    if (forkText === null) {
+      change = "removed";
+    } else if (!upstreamTexts.includes(forkText)) {
+      change = "edited";
+    }
+    return [
+      {
+        change,
+        forkText,
+        homes: declaredIn,
+        name,
+        pinnedText: declaration.text,
+      },
+    ];
   });
 };
 
@@ -2619,8 +2314,9 @@ const outsideDeclarations = (
 };
 
 /**
- * Whether the fork changed the file outside the moved declarations' chunks, in
- * a way the installed upstream version does not already carry.
+ * Whether the fork changed the file outside the named declarations' chunks,
+ * in a way the installed upstream version does not already carry. Wording
+ * only: it picks between taking upstream's version and settling the merge.
  */
 const otherForkChangesIn = (
   file: UpstreamFile,
@@ -2640,12 +2336,11 @@ const otherForkChangesIn = (
   );
 };
 
-/** Each upstream code file that declarations moved out of since the pin. */
+/** Each upstream code file that code moved out of since the pin. */
 const movedDeclarations = (classified: ClassifiedFork): MovedOut[] => {
   const files = [...classified.files.values()];
+  const added = addedLines(files);
   const read = declarationReader();
-  const lines = linesReader();
-  const declarers = changedDeclarers(files, read);
   const moves: MovedOut[] = [];
   for (const file of files) {
     if (
@@ -2657,10 +2352,19 @@ const movedDeclarations = (classified: ClassifiedFork): MovedOut[] => {
     ) {
       continue;
     }
-    const moved = movesOutOf(file, declarers, { lines, read });
-    if (moved.length > 0) {
+    const removed = linesBeyond(
+      significantCounts(file.versions.base),
+      significantCounts(file.versions.target)
+    );
+    const homes = [...added]
+      .filter(([home, lines]) => home !== file && overlaps(removed, lines))
+      .map(([home]) => home)
+      .sort((left, right) => byText(left.upstreamPath, right.upstreamPath));
+    if (homes.length > 0) {
+      const moved = namedMoves(file, homes, read);
       moves.push({
         file,
+        homes,
         moved,
         otherForkChanges: otherForkChangesIn(file, moved, read),
       });
@@ -2715,11 +2419,11 @@ const diffBytes = (
   }
 };
 
-/** The unified diff from a declaration's pinned text to the fork's copy. */
-const declarationDiff = (pinned: string, fork: string | null): string => {
+/** The unified diff from a pinned text to the fork's copy. */
+const pinToForkDiff = (pinned: string, fork: string | null): string => {
   const { exitCode, output } = diffBytes(
-    `${pinned}\n`,
-    fork === null ? "" : `${fork}\n`,
+    pinned.endsWith("\n") ? pinned : `${pinned}\n`,
+    fork === null || fork.endsWith("\n") ? (fork ?? "") : `${fork}\n`,
     ["--unified=3"]
   );
   const hunks = output.indexOf("\n@@");
@@ -2729,6 +2433,9 @@ const declarationDiff = (pinned: string, fork: string | null): string => {
       : [...prefixedLines("-", pinned), ...prefixedLines("+", fork)].join("\n");
   return `--- pinned upstream\n+++ fork\n${body}`;
 };
+
+const homeList = (homes: UpstreamFile[]): string =>
+  homes.map((home) => home.forkPath).join(", ");
 
 const movedList = (moved: MovedDeclaration[]): string =>
   moved
@@ -2743,58 +2450,76 @@ const movedList = (moved: MovedDeclaration[]): string =>
 const declarationCount = (count: number): string =>
   count === 1 ? "1 declaration" : `${count} declarations`;
 
+/** The declarations the fork changed, as named; empty when naming cannot tell. */
+const changedDeclarations = (out: MovedOut): MovedDeclaration[] =>
+  out.moved.filter((declaration) => declaration.change !== null);
+
+/** What moved and what the fork changed, as one clause for a reason. */
+const movedSummary = (out: MovedOut): string => {
+  const changed = changedDeclarations(out);
+  if (changed.length === 0) {
+    return `Upstream moved code out of this file to ${homeList(out.homes)}, and the fork changed this file; the plan cannot tell which of the fork's changes belong to the moved code`;
+  }
+  return `Upstream moved ${declarationCount(out.moved.length)} out of this file, and the fork changed ${changed.length}: ${movedList(changed)}`;
+};
+
 /**
- * The one-line resolution for a file that lost declarations the fork changed.
- * A declaration's chunk runs to the next top-level declaration, so a change
- * the plan attributes to it can be to a statement that stays in this file;
- * the resolution re-applies each change where its code lives now, so no
- * reading of it drops a change.
+ * The one-line resolution for a file that lost code the fork may have
+ * changed. A change can be to a statement that stays in this file, so the
+ * resolution re-applies each change where its code lives now, and settles the
+ * merge whenever the fork changed anything beyond the named declarations.
  */
 const movedResolution = (out: MovedOut): string => {
   const sidecar = out.file.forkPath + MERGE_SIDECAR_SUFFIX;
   const reapply =
     "re-apply each change where its code lives now (in its new file, or in this file for a statement that stays here; for a removed declaration, remove it there; the sidecar header lists the diffs)";
+  const settle = out.otherForkChanges || changedDeclarations(out).length === 0;
   if (out.file.versions.target === null) {
-    return out.otherForkChanges
+    return settle
       ? `Keep or drop the fork's other changes to this file deliberately since upstream removed it, ${reapply}, then delete ${sidecar}.`
       : `Delete this file as upstream did, ${reapply}, then delete ${sidecar}.`;
   }
-  return out.otherForkChanges
-    ? `Settle this file from the merge below the sidecar header, taking upstream's side wherever it took a moved declaration out, ${reapply}, then delete ${sidecar}.`
+  return settle
+    ? `Settle this file from the merge below the sidecar header, taking upstream's side wherever it took moved code out, ${reapply}, then delete ${sidecar}.`
     : `Take the installed upstream version of this file, ${reapply}, then delete ${sidecar}.`;
 };
 
-/** The sidecar's opening: each move, the resolution, and each fork diff. */
-const movedSidecarHeader = (
-  out: MovedOut,
-  changed: MovedDeclaration[],
-  resolution: string
-): string => {
+/**
+ * The sidecar's opening: the move, the resolution, and the fork's diff of
+ * each declaration it changed, or of the whole file when naming cannot tell.
+ */
+const movedSidecarHeader = (out: MovedOut, resolution: string): string => {
+  const changed = changedDeclarations(out);
+  const { base, current, target } = out.file.versions;
   const summary = [
     MOVED_SIDECAR_HEADER,
-    `Upstream moved these declarations out of ${out.file.forkPath}, and the fork changed them; each arrives in its new file without the fork's change:`,
+    changed.length === 0
+      ? `Upstream moved code out of ${out.file.forkPath} to ${homeList(out.homes)}, and the fork changed this file; the plan cannot tell which change belongs to the moved code.`
+      : `Upstream moved these declarations out of ${out.file.forkPath}, and the fork changed them; each arrives in its new file without the fork's change:`,
     ...changed.map((declaration) => `- ${movedList([declaration])}`),
     resolution,
     "",
   ].map(textBytes);
-  const diffs = changed.flatMap((declaration) => [
-    textBytes(`\`${declaration.name}\`, pinned upstream -> fork:`),
-    declarationDiff(declaration.pinnedText, declaration.forkText),
-    "",
-  ]);
+  const diffs =
+    changed.length === 0
+      ? [
+          textBytes("This file, pinned upstream -> fork:"),
+          pinToForkDiff(base ?? "", current),
+          "",
+        ]
+      : changed.flatMap((declaration) => [
+          textBytes(`\`${declaration.name}\`, pinned upstream -> fork:`),
+          pinToForkDiff(declaration.pinnedText, declaration.forkText),
+          "",
+        ]);
   const end =
-    out.file.versions.target === null
-      ? MOVED_SIDECAR_END.removed
-      : MOVED_SIDECAR_END.merged;
+    target === null ? MOVED_SIDECAR_END.removed : MOVED_SIDECAR_END.merged;
   return [...summary, ...diffs, end, ""].join("\n");
 };
 
-/** Point each new home back at the file whose fork change it lacks. */
-const noteMovedHomes = (
-  entries: PlanEntry[],
-  out: MovedOut,
-  changed: MovedDeclaration[]
-): void => {
+/** Point each new home back at the file whose fork change it may lack. */
+const noteMovedHomes = (entries: PlanEntry[], out: MovedOut): void => {
+  const changed = changedDeclarations(out);
   const received = new Map<string, string[]>();
   for (const declaration of changed) {
     for (const home of declaration.homes) {
@@ -2804,45 +2529,51 @@ const noteMovedHomes = (
       ]);
     }
   }
+  const from = out.file.forkPath;
   for (const entry of entries) {
-    const names =
-      entry.upstreamPath === null
-        ? undefined
-        : received.get(entry.upstreamPath);
+    if (entry.upstreamPath === null) {
+      continue;
+    }
+    const names = received.get(entry.upstreamPath);
     if (names !== undefined) {
       const listed = names.map((name) => `\`${name}\``).join(", ");
-      entry.reason = `${entry.reason} Receives ${listed} moved from ${out.file.forkPath} without the fork's change; re-apply it here (see ${out.file.forkPath}).`;
+      entry.reason = `${entry.reason} Receives ${listed} moved from ${from} without the fork's change; re-apply it here (see ${from}).`;
+    } else if (
+      changed.length === 0 &&
+      out.homes.some((home) => home.upstreamPath === entry.upstreamPath)
+    ) {
+      entry.reason = `${entry.reason} Receives code moved from ${from}, which the fork changed; re-apply any of the fork's changes that belong here (see ${from}).`;
     }
   }
 };
 
 /**
- * A file that lost declarations the fork changed while an earlier sidecar
+ * A file that lost code the fork may have changed while an earlier sidecar
  * still waits beside it: a conflict that writes nothing and binds that
  * sidecar as it is. Writing a new sidecar would overwrite the earlier one,
- * and moving the pin would hide the moves from every later plan, so the pin
- * holds until the earlier sidecar is settled and the moves can be planned.
+ * and moving the pin would hide the move from every later plan, so the pin
+ * holds until the earlier sidecar is settled and the move can be planned.
  */
 const holdMovedEdits = (
   entry: PlanEntry,
   out: MovedOut,
-  changed: MovedDeclaration[],
   sidecar: string | null
 ): void => {
   const { current } = out.file.versions;
   Reflect.deleteProperty(entry, "content");
   entry.action = "conflict";
   entry.forkDigest = current === null ? null : bytesDigest(current);
-  entry.reason = `Upstream moved ${declarationCount(out.moved.length)} out of this file, and the fork changed ${changed.length}: ${movedList(changed)}. This file still waits on ${out.file.forkPath}${MERGE_SIDECAR_SUFFIX}; settle that sidecar and delete it, then plan again so these moves are planned. The provenance pin holds until then.`;
+  entry.reason = `${movedSummary(out)}. This file still waits on ${out.file.forkPath}${MERGE_SIDECAR_SUFFIX}; settle that sidecar and delete it, then plan again so the move is planned. The provenance pin holds until then.`;
   entry.sidecarDigest = sidecar === null ? null : bytesDigest(sidecar);
 };
 
 /**
- * Make a file that lost declarations the fork changed a conflict, whatever
- * its own lines did: a sidecar opening with the moves, then the merge or
- * upstream's version, and nothing written over the file. A fork that omits
- * the file gets no sidecar, since none can sit beside a file it lacks. Returns
- * whether the file holds the pin because an earlier sidecar still waits.
+ * Make a file that lost code a conflict when the fork changed or omits it,
+ * whatever its own lines did: a sidecar opening with the move, then the merge
+ * or upstream's version, and nothing written over the file. A fork that
+ * omits the file gets no sidecar, since none can sit beside a file it lacks.
+ * A fork whose copy equals the pin keeps the ordinary plan. Returns whether
+ * the file holds the pin because an earlier sidecar still waits.
  */
 const escalateMovedEdits = (
   fork: DiscoveredFork,
@@ -2850,35 +2581,34 @@ const escalateMovedEdits = (
   out: MovedOut
 ): boolean => {
   const { file } = out;
-  const changed = out.moved.filter(
-    (declaration) => declaration.change !== null
-  );
+  const { base, current, target } = file.versions;
   const entry = classified.entries.find(
     (candidate) => candidate.upstreamPath === file.upstreamPath
   );
-  if (changed.length === 0 || entry === undefined) {
+  if (entry === undefined || (current !== null && current === base)) {
     return false;
   }
-  noteMovedHomes(classified.entries, out, changed);
+  noteMovedHomes(classified.entries, out);
   classified.plannedContent.delete(file.forkPath);
   const pending = join(fork.path, file.forkPath + MERGE_SIDECAR_SUFFIX);
   if (existsSync(pending)) {
-    holdMovedEdits(entry, out, changed, readBytes(pending));
+    holdMovedEdits(entry, out, readBytes(pending));
     return true;
   }
-  const moved = `Upstream moved ${declarationCount(out.moved.length)} out of this file`;
-  if (file.versions.current === null) {
+  if (current === null) {
     Reflect.deleteProperty(entry, "content");
-    entry.reason = `${moved}, which the fork omits: ${movedList(changed)}. Each arrives in its new file, which this plan writes; remove it there if the fork still leaves it out, or record why the fork now carries it.`;
+    const changed = changedDeclarations(out);
+    const omitted =
+      changed.length === 0
+        ? `Upstream moved code out of this file to ${homeList(out.homes)}, which the fork omits`
+        : `Upstream moved ${declarationCount(out.moved.length)} out of this file, which the fork omits: ${movedList(changed)}`;
+    entry.reason = `${omitted}. The moved code arrives in its new file, which this plan writes; remove it there if the fork still leaves it out, or record why the fork now carries it.`;
   } else {
     const resolution = movedResolution(out);
-    const merged =
-      file.versions.target === null
-        ? ""
-        : (entry.content ?? file.versions.target);
-    entry.content = movedSidecarHeader(out, changed, resolution) + merged;
+    const merged = target === null ? "" : (entry.content ?? target);
+    entry.content = movedSidecarHeader(out, resolution) + merged;
     classified.plannedContent.set(file.forkPath, entry.content);
-    entry.reason = `${moved}, and the fork changed ${changed.length}: ${movedList(changed)}. Each arrives in its new file without the fork's change, so this file conflicts even where its lines merge. ${resolution}`;
+    entry.reason = `${movedSummary(out)}. ${changedDeclarations(out).length === 0 ? "The moved code arrives" : "Each arrives"} in its new file without the fork's change, so this file conflicts even where its lines merge. ${resolution}`;
   }
   entry.action = "conflict";
   entry.sidecarDigest = null;
@@ -2886,7 +2616,7 @@ const escalateMovedEdits = (
 };
 
 /**
- * Find moved declarations and escalate each file whose fork edit they lose;
+ * Find files that code moved out of and escalate each one the fork changed;
  * `held` says whether one waits on an earlier sidecar and so holds the pin.
  */
 const reviewMovedDeclarations = (
@@ -3883,11 +3613,12 @@ apply     Write exactly what a saved plan says: updates, merges, additions,
           a review item is never written, but for the pin. Fails closed if
           the fork changed since the plan.
 
-A file that upstream moved top-level declarations out of conflicts when the
-fork edited or removed one of them, even where its lines merge: the sidecar
-lists each declaration, its new file, and the fork's diff. The new file is
-still written. A fork-owned line that reads a moved literal from the old file
-gets an advisory note naming the file that holds it now.
+A file that upstream moved code out of (a significant line removed from it
+appears among the lines added to another upstream file) conflicts when the
+fork changed it anywhere or omits it, even where its lines merge: the sidecar
+names the move and the fork's diff. The new file is still written. A
+fork-owned line that reads a moved literal from the old file gets an advisory
+note naming the file that holds it now.
 
 An upstream reference added or changed since the pin that the fork neither
 carries nor lists under "## Intentional omissions" in its

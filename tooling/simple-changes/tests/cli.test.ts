@@ -2737,6 +2737,57 @@ while (!existsSync(process.env.SIMPLE_CHANGES_TEST_RELEASE_PATH)) {
     );
   });
 
+  test("adds the scratch-file rule only when setup names it", () => {
+    const fixture = createTestRepository();
+    repositories.push(fixture);
+    writeFixture(fixture.root, "AGENTS.md", "# Agent guidance\n");
+    const setupWith = (extra: string[]) =>
+      spawnSync(
+        [
+          process.execPath,
+          cliPath,
+          "setup",
+          "--finish",
+          "review",
+          "--git-push-authorization",
+          "ask",
+          "--questions",
+          "blocking-only",
+          "--scope",
+          "repository",
+          "--instruction-pointer",
+          "leave",
+          ...extra,
+          "--yes",
+          "--json",
+          "--repo",
+          fixture.root,
+        ],
+        { stderr: "pipe", stdout: "pipe" }
+      );
+    const agentsPath = resolve(fixture.root, "AGENTS.md");
+
+    const omitted = setupWith([]);
+    expect(omitted.exitCode).toBe(0);
+    expect(JSON.parse(decoder.decode(omitted.stdout))).toMatchObject({
+      scratchFileRule: { action: "leave", written: false },
+    });
+    expect(readFileSync(agentsPath, "utf8")).toBe("# Agent guidance\n");
+
+    const added = setupWith(["--scratch-file-rule", "add"]);
+    expect(added.exitCode).toBe(0);
+    expect(JSON.parse(decoder.decode(added.stdout))).toMatchObject({
+      instructionPointer: { action: "leave", written: false },
+      scratchFileRule: { action: "add", changed: true, written: true },
+    });
+    const contents = readFileSync(agentsPath, "utf8");
+    expect(contents).toContain("<!-- simple-changes:scratch-files:start -->");
+    expect(contents).not.toContain("<!-- simple-changes:start -->");
+
+    const rejected = setupWith(["--scratch-file-rule", "later"]);
+    expect(rejected.exitCode).toBe(EXIT_CODES.usage);
+  });
+
   test("adds a confirmed instruction pointer and gates completed-work handoff", () => {
     const fixture = createTestRepository();
     repositories.push(fixture);

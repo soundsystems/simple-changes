@@ -172,6 +172,7 @@ import { renderInventory, renderPlan } from "./lib/report.ts";
 import {
   discoverInstructionTargets,
   writeInstructionPointer,
+  writeScratchFileRule,
 } from "./lib/repository-instructions.ts";
 import {
   type AuthorAttestResult,
@@ -299,6 +300,7 @@ Usage:
     [--proposal-signatures agent-and-version|none]
     [--handoff ask|automatic|user-signaled]
     [--instruction-pointer add|leave] [--instruction-file PATH]
+    [--scratch-file-rule add|leave]
     [--ui-artifacts]
     [--ui-versioning repository|number-and-date|date-only|number-only]
     [--production ask|allow|deny]
@@ -318,6 +320,7 @@ Usage:
     [--proposal-signatures agent-and-version|none]
     [--handoff ask|automatic|user-signaled]
     [--instruction-pointer add|leave] [--instruction-file PATH]
+    [--scratch-file-rule add|leave]
     [--ui-artifacts]
     [--ui-versioning repository|number-and-date|date-only|number-only]
     [--production ask|allow|deny]
@@ -577,6 +580,7 @@ interface CliOptions {
   roots: string[];
   runId?: string;
   scope?: SetupScope;
+  scratchFileRule?: "add" | "leave";
   sessionId?: string;
   settleMs: number;
   shippingMode?: RepoPolicy["shippingMode"];
@@ -633,6 +637,7 @@ const VALUED_OPTIONS = new Set([
   "--hold-scope",
   "--instruction-file",
   "--instruction-pointer",
+  "--scratch-file-rule",
   "--manifest-digest",
   "--migration-handling",
   "--migration-target",
@@ -826,6 +831,32 @@ const applyHandoffOption = (
   return true;
 };
 
+// Each managed instruction block is added or left alone.
+const INSTRUCTION_BLOCK_OPTIONS = {
+  "--instruction-pointer": "instructionPointer",
+  "--scratch-file-rule": "scratchFileRule",
+} as const;
+
+const applyInstructionBlockOption = (
+  options: CliOptions,
+  option: string,
+  value: string
+): boolean => {
+  const key =
+    INSTRUCTION_BLOCK_OPTIONS[option as keyof typeof INSTRUCTION_BLOCK_OPTIONS];
+  if (!key) {
+    return false;
+  }
+  if (value !== "add" && value !== "leave") {
+    throw new SimpleChangesError(
+      `${option} must be add or leave`,
+      EXIT_CODES.usage
+    );
+  }
+  options[key] = value;
+  return true;
+};
+
 const applyMigrationOption = (
   options: CliOptions,
   option: string,
@@ -985,6 +1016,7 @@ const applySetupValuedOption = (
     applySignatureRoleOption(options, option, value) ||
     applyFinishOption(options, option, value) ||
     applyHandoffOption(options, option, value) ||
+    applyInstructionBlockOption(options, option, value) ||
     applyMigrationOption(options, option, value)
   ) {
     return true;
@@ -1005,16 +1037,6 @@ const applySetupValuedOption = (
   }
   if (option === "--instruction-file") {
     options.instructionFile = value;
-    return true;
-  }
-  if (option === "--instruction-pointer") {
-    if (!["add", "leave"].includes(value)) {
-      throw new SimpleChangesError(
-        "--instruction-pointer must be add or leave",
-        EXIT_CODES.usage
-      );
-    }
-    options.instructionPointer = value as "add" | "leave";
     return true;
   }
   if (option === "--ui-versioning") {
@@ -1700,6 +1722,7 @@ const setupNeedsPrompt = (
       (instructionTargetCount === 1 &&
         options.instructionPointer === "add" &&
         options.handoffTiming)) &&
+    (instructionTargetCount <= 1 || options.scratchFileRule !== "add") &&
     options.yes
   );
 
@@ -1799,6 +1822,7 @@ const SETUP_INPUT_KEYS = [
   "productionDeploy",
   "questions",
   "scope",
+  "scratchFileRule",
   "shippingMode",
   "uiArtifactVersioning",
 ] as const satisfies readonly (keyof OnboardingInputs & keyof CliOptions)[];
@@ -1822,6 +1846,10 @@ const buildOnboardingInputs = (
     options.defaultFinish === "ship"
   ) {
     inputs.migrationHandling = "ask-after-review";
+  }
+  // Optional: automation that never names it keeps its instructions as-is.
+  if (!(inputs.scratchFileRule || needsPrompt)) {
+    inputs.scratchFileRule = "leave";
   }
   return inputs;
 };
@@ -2015,6 +2043,8 @@ const runSetup = async (options: CliOptions): Promise<void> => {
     const applyWrites = (): {
       instructionPointerChanged: boolean;
       instructionPointerWritten: boolean;
+      scratchFileRuleChanged: boolean;
+      scratchFileRuleWritten: boolean;
     } => {
       if (authoringTarget && selection.authoring) {
         authoringWrite = writeAuthoringSidecar(
@@ -2037,6 +2067,19 @@ const runSetup = async (options: CliOptions): Promise<void> => {
         instructionPointerWritten = pointerResult.written;
         instructionPointerChanged = pointerResult.changed;
       }
+      let scratchFileRuleWritten = false;
+      let scratchFileRuleChanged = false;
+      if (
+        selection.confirmed &&
+        selection.scratchFileRule.action === "add" &&
+        selection.scratchFileRule.target
+      ) {
+        const ruleResult = writeScratchFileRule(
+          selection.scratchFileRule.target
+        );
+        scratchFileRuleWritten = ruleResult.written;
+        scratchFileRuleChanged = ruleResult.changed;
+      }
       if (written && path) {
         writePolicyFile(path, policy, selection.scope === "user");
         if (selection.scope === "repository" && context.primaryCheckout) {
@@ -2049,7 +2092,12 @@ const runSetup = async (options: CliOptions): Promise<void> => {
           );
         }
       }
-      return { instructionPointerChanged, instructionPointerWritten };
+      return {
+        instructionPointerChanged,
+        instructionPointerWritten,
+        scratchFileRuleChanged,
+        scratchFileRuleWritten,
+      };
     };
     const activeLoop = context.primaryCheckout
       ? readLoopLease(options.repo)
@@ -2096,6 +2144,11 @@ const runSetup = async (options: CliOptions): Promise<void> => {
       path,
       policy,
       scope: selection.scope,
+      scratchFileRule: {
+        ...selection.scratchFileRule,
+        changed: writeResult.scratchFileRuleChanged,
+        written: writeResult.scratchFileRuleWritten,
+      },
       setupStyle: selection.setupStyle,
       summary: selection.summary,
       uiArtifactsRelevant: options.uiArtifacts,

@@ -10,6 +10,7 @@ import {
   discoverInstructionTargets,
   type InstructionTarget,
   renderInstructionPointer,
+  renderScratchFileRule,
 } from "./repository-instructions.ts";
 import type {
   ChangelogCoordination,
@@ -55,8 +56,15 @@ export interface OnboardingInputs {
   proposalSignatures?: RepoPolicy["proposalSignatures"];
   questions?: RepoPolicy["questions"];
   scope?: SetupScope;
+  scratchFileRule?: "add" | "leave";
   shippingMode?: RepoPolicy["shippingMode"];
   uiArtifactVersioning?: RepoPolicy["uiArtifactVersioning"];
+}
+
+export interface InstructionBlockSelection {
+  action: "add" | "leave" | "unavailable";
+  block: string | null;
+  target: InstructionTarget | null;
 }
 
 export interface OnboardingSelection {
@@ -66,16 +74,20 @@ export interface OnboardingSelection {
   authoring: AuthoringSidecar | null;
   changelogInstall: ChangelogInstallOffer;
   confirmed: boolean;
-  instructionPointer: {
-    action: "add" | "leave" | "unavailable";
-    block: string | null;
-    target: InstructionTarget | null;
-  };
+  instructionPointer: InstructionBlockSelection;
   policy: RepoPolicy;
   scope: SetupScope;
+  /** The optional scratch-file rule, a managed block of its own. */
+  scratchFileRule: InstructionBlockSelection;
   setupStyle: SetupStyle;
   summary: string;
 }
+
+const UNAVAILABLE_INSTRUCTION_BLOCK: InstructionBlockSelection = {
+  action: "unavailable",
+  block: null,
+  target: null,
+};
 
 export interface OnboardingConversationOptions {
   // Detection and pre-fill for the authoring questions; they run only when
@@ -112,6 +124,8 @@ export const ONBOARDING_QUESTIONS = {
   proposalSignatures:
     "Should agents sign the change proposals they author, review, or merge?",
   scope: "Where should these preferences live?",
+  scratchFileRule: (path: string) =>
+    `Should I also add a rule to \`${path}\` that keeps agents' scratch files out of your project folders?`,
   shippingMode: "How should routine Ship requests run?",
   start:
     "Simple Changes can set up the workflow before continuing. Choose one:",
@@ -653,6 +667,21 @@ const INSTRUCTION_POINTER_CHOICES = [
   },
 ] as const satisfies readonly OnboardingChoice[];
 
+const SCRATCH_FILE_RULE_CHOICES = [
+  {
+    description:
+      "Add or update one managed rule: agents keep scratch files, captured output, proof bundles, and handoff notes in a temporary directory and delete them when the task ends.",
+    label: "Add the rule",
+    value: "add",
+  },
+  {
+    description:
+      "Do not add the rule; agents decide where their scratch files go.",
+    label: "Leave it out",
+    value: "leave",
+  },
+] as const satisfies readonly OnboardingChoice[];
+
 export const HANDOFF_CHOICES = [
   {
     description:
@@ -866,6 +895,17 @@ const gitPushAuthorizationSummary = (policy: RepoPolicy): string | null => {
   return "Git pushes: leave harness settings unchanged and ask at each push boundary.";
 };
 
+const scratchFileRuleSummary = (
+  scratchFileRule: InstructionBlockSelection
+): string | null => {
+  if (scratchFileRule.action === "add" && scratchFileRule.target) {
+    return `Scratch-file rule: update ${scratchFileRule.target.scope} file ${scratchFileRule.target.path}.\nProposed managed rule:\n${scratchFileRule.block}`;
+  }
+  return scratchFileRule.action === "leave"
+    ? "Scratch-file rule: not added."
+    : null;
+};
+
 const instructionPointerSummary = (
   instructionPointer: OnboardingSelection["instructionPointer"]
 ): string => {
@@ -889,7 +929,8 @@ export const renderOnboardingSummary = (
   },
   uiArtifactsRelevant = false,
   forgeProvider?: string | null,
-  changelogInstall?: ChangelogInstallOffer | null
+  changelogInstall?: ChangelogInstallOffer | null,
+  scratchFileRule: InstructionBlockSelection = UNAVAILABLE_INSTRUCTION_BLOCK
 ): string => {
   const actions = finishActionSummary(policy, forgeProvider);
   const { production, shippingMode } = shippingSummary(policy);
@@ -922,6 +963,7 @@ export const renderOnboardingSummary = (
     instructionPointer.action === "add"
       ? `Completed-work handoff: ${handoffLabel(policy.handoffTiming)}.`
       : null,
+    scope === "run" ? null : scratchFileRuleSummary(scratchFileRule),
     "Every migration is reviewed before apply. Destructive, irreversible, unbounded, lock-heavy, target-mismatched, or unprotected migrations still require explicit exact-target authorization; backfills, secrets, DNS changes, store releases, and history rewrites remain separately gated.",
   ]
     .filter((line): line is string => line !== null)
@@ -936,6 +978,7 @@ const selectInstructionPointer = async (
 ): Promise<{
   handoffTiming: RepoPolicy["handoffTiming"];
   instructionPointer: OnboardingSelection["instructionPointer"];
+  scratchFileRule: InstructionBlockSelection;
 }> => {
   const targets = discoverInstructionTargets(
     scope,
@@ -943,7 +986,10 @@ const selectInstructionPointer = async (
     inputs.instructionFile
   );
   let target: InstructionTarget | null = targets[0] ?? null;
-  if (targets.length > 1 && inputs.instructionPointer !== "leave") {
+  const mayEditInstructions = !(
+    inputs.instructionPointer === "leave" && inputs.scratchFileRule === "leave"
+  );
+  if (targets.length > 1 && mayEditInstructions) {
     const firstTarget = targets[0] as InstructionTarget;
     const targetChoices = targets.map((candidate) => ({
       description: `Update only ${candidate.path}.`,
@@ -1006,7 +1052,35 @@ const selectInstructionPointer = async (
   } else {
     instructionPointer = { action: "leave", block: null, target };
   }
-  return { handoffTiming, instructionPointer };
+  return {
+    handoffTiming,
+    instructionPointer,
+    scratchFileRule: await selectScratchFileRule(inputs, prompter, target),
+  };
+};
+
+const selectScratchFileRule = async (
+  inputs: OnboardingInputs,
+  prompter: OnboardingPrompter,
+  target: InstructionTarget | null
+): Promise<InstructionBlockSelection> => {
+  if (!target) {
+    return UNAVAILABLE_INSTRUCTION_BLOCK;
+  }
+  const choice =
+    inputs.scratchFileRule ??
+    choiceValue<"add" | "leave">(
+      await prompter.choose(
+        ONBOARDING_QUESTIONS.scratchFileRule(target.path),
+        SCRATCH_FILE_RULE_CHOICES,
+        "add"
+      ),
+      SCRATCH_FILE_RULE_CHOICES,
+      ONBOARDING_QUESTIONS.scratchFileRule(target.path)
+    );
+  return choice === "add"
+    ? { action: "add", block: renderScratchFileRule(), target }
+    : { action: "leave", block: null, target };
 };
 
 const selectUiArtifactVersioning = async (
@@ -1481,11 +1555,7 @@ const reuseExistingPersonalDefaults = async (
     ONBOARDING_QUESTIONS.existingPersonalDefaults
   );
   if (disposition === "use") {
-    const instructionPointer: OnboardingSelection["instructionPointer"] = {
-      action: "unavailable",
-      block: null,
-      target: null,
-    };
+    const instructionPointer = UNAVAILABLE_INSTRUCTION_BLOCK;
     // This run writes nothing, but the review question still follows its
     // own trigger: run-only setup asks it with two or more harnesses.
     const authoring = conversation.authoring
@@ -1521,6 +1591,7 @@ const reuseExistingPersonalDefaults = async (
       instructionPointer,
       policy: existingPersonalDefaults,
       scope: "run",
+      scratchFileRule: UNAVAILABLE_INSTRUCTION_BLOCK,
       setupStyle: "run",
       summary,
     };
@@ -1657,12 +1728,8 @@ export const collectOnboardingSelection = async (
     conversation.showFirstScreen ?? false,
     Boolean(existingPersonalDefaults)
   );
-  const { handoffTiming, instructionPointer } = await selectInstructionPointer(
-    inputs,
-    scope,
-    prompter,
-    primaryCheckout
-  );
+  const { handoffTiming, instructionPointer, scratchFileRule } =
+    await selectInstructionPointer(inputs, scope, prompter, primaryCheckout);
   const policy: RepoPolicy = {
     changelogHandling,
     concurrentWork: inputs.concurrentWork ?? defaults.concurrentWork,
@@ -1692,7 +1759,8 @@ export const collectOnboardingSelection = async (
       instructionPointer,
       uiArtifactsRelevant,
       conversation.forgeProvider,
-      changelogInstall
+      changelogInstall,
+      scratchFileRule
     ),
     authoring
       ? renderAuthoringSummary(
@@ -1710,6 +1778,7 @@ export const collectOnboardingSelection = async (
     instructionPointer,
     policy,
     scope,
+    scratchFileRule,
     setupStyle,
     summary,
   };

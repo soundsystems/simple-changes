@@ -269,6 +269,7 @@ simple-changes fork create --name NAME --deltas TEXT
 simple-changes initialize --mode MODE
   [--ready] [--handoff ask|automatic|user-signaled]
   [--instruction-pointer add|leave] [--instruction-file PATH]
+  [--scratch-file-rule add|leave]
   [--ui-artifacts]
   [--ui-versioning repository|number-and-date|date-only|number-only]
   [--changelog delegate-if-available|preserve-and-report|ask]
@@ -282,6 +283,7 @@ simple-changes initialize --mode MODE
 simple-changes setup [--finish review|integrate|ship]
   [--handoff ask|automatic|user-signaled]
   [--instruction-pointer add|leave] [--instruction-file PATH]
+  [--scratch-file-rule add|leave]
   [--ui-artifacts]
   [--ui-versioning repository|number-and-date|date-only|number-only]
   [--changelog delegate-if-available|preserve-and-report|ask]
@@ -602,6 +604,13 @@ bun run simple-changes setup \
 
 For a task that will preserve multiple UI iterations, add `--ui-artifacts` and
 `--ui-versioning repository|number-and-date|date-only|number-only`.
+
+Add `--scratch-file-rule add` to also write an optional managed rule, in its
+own block, that tells every agent to keep scratch files, captured output, proof
+bundles, and handoff notes in a private temporary directory and delete them
+when the task ends. During a run, `simple-changes workdir --agent-id ID` prints
+that directory for the files an agent passes to the CLI, and a clean
+finalization removes it.
 
 Even an automatic ship preference does not authorize remote migrations,
 backfills, secrets or environment changes, DNS changes, store releases, or

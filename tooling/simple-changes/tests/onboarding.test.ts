@@ -1128,6 +1128,9 @@ describe("onboarding conversation", () => {
     const pointerQuestion = ONBOARDING_QUESTIONS.instructionPointer(
       resolve(fixture.root, "AGENTS.md")
     );
+    const scratchQuestion = ONBOARDING_QUESTIONS.scratchFileRule(
+      resolve(fixture.root, "AGENTS.md")
+    );
     const answers = new Map<string, string>([
       [ONBOARDING_QUESTIONS.finish, "open-change-request"],
       [ONBOARDING_QUESTIONS.gitPushAuthorization, "ask"],
@@ -1135,6 +1138,7 @@ describe("onboarding conversation", () => {
       [ONBOARDING_QUESTIONS.scope, "repository"],
       [pointerQuestion, "add"],
       [ONBOARDING_QUESTIONS.handoff, "confirm-ready"],
+      [scratchQuestion, "leave"],
     ]);
     const selection = await collectOnboardingSelection(
       DEFAULT_POLICY,
@@ -1158,8 +1162,10 @@ describe("onboarding conversation", () => {
       ONBOARDING_QUESTIONS.scope,
       pointerQuestion,
       ONBOARDING_QUESTIONS.handoff,
+      scratchQuestion,
     ]);
-    expect(defaults.at(-1)).toBe("confirm-ready");
+    expect(defaults.at(-2)).toBe("confirm-ready");
+    expect(defaults.at(-1)).toBe("add");
     expect(HANDOFF_CHOICES.map((choice) => choice.value)).toEqual([
       "confirm-ready",
       "automatic",
@@ -1176,6 +1182,8 @@ describe("onboarding conversation", () => {
     expect(selection.summary).toContain(
       "Is this ready for Simple Changes, or do you want more changes first?"
     );
+    expect(selection.scratchFileRule.action).toBe("leave");
+    expect(selection.summary).toContain("Scratch-file rule: not added.");
   });
 
   test("skips handoff timing when instructions remain unchanged", async () => {
@@ -1192,6 +1200,12 @@ describe("onboarding conversation", () => {
       [ONBOARDING_QUESTIONS.permission, "blocking-only"],
       [ONBOARDING_QUESTIONS.scope, "repository"],
       [pointerQuestion, "leave"],
+      [
+        ONBOARDING_QUESTIONS.scratchFileRule(
+          resolve(fixture.root, "AGENTS.md")
+        ),
+        "add",
+      ],
     ]);
     const selection = await collectOnboardingSelection(
       DEFAULT_POLICY,
@@ -1210,6 +1224,44 @@ describe("onboarding conversation", () => {
     expect(questions).not.toContain(ONBOARDING_QUESTIONS.handoff);
     expect(selection.policy.handoffTiming).toBe("confirm-ready");
     expect(selection.instructionPointer.action).toBe("leave");
+    // The scratch-file rule is offered on its own, without the pointer.
+    expect(selection.scratchFileRule).toMatchObject({
+      action: "add",
+      target: { path: resolve(fixture.root, "AGENTS.md") },
+    });
+    expect(selection.scratchFileRule.block).toContain(
+      "<!-- simple-changes:scratch-files:start -->"
+    );
+    expect(selection.summary).toContain("Proposed managed rule:");
+  });
+
+  test("asks nothing about the scratch-file rule without an instruction file", async () => {
+    const fixture = createTestRepository();
+    repositories.push(fixture);
+    const questions: string[] = [];
+    const answers = new Map<string, string>([
+      [ONBOARDING_QUESTIONS.finish, "open-change-request"],
+      [ONBOARDING_QUESTIONS.gitPushAuthorization, "ask"],
+      [ONBOARDING_QUESTIONS.permission, "blocking-only"],
+      [ONBOARDING_QUESTIONS.scope, "repository"],
+    ]);
+    const selection = await collectOnboardingSelection(
+      DEFAULT_POLICY,
+      {},
+      {
+        choose: (question) => {
+          questions.push(question);
+          return Promise.resolve(answers.get(question) ?? "");
+        },
+        confirm: () => Promise.resolve(true),
+      },
+      undefined,
+      fixture.root
+    );
+
+    expect(questions).toEqual([...answers.keys()]);
+    expect(selection.scratchFileRule.action).toBe("unavailable");
+    expect(selection.summary).not.toContain("Scratch-file rule");
   });
 });
 

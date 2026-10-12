@@ -11,7 +11,9 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   discoverInstructionTargets,
   renderInstructionPointer,
+  renderScratchFileRule,
   writeInstructionPointer,
+  writeScratchFileRule,
 } from "../../../skills/simple-changes/scripts/lib/repository-instructions.ts";
 import { runningSkillName } from "../../../skills/simple-changes/scripts/lib/skill-roots.ts";
 import {
@@ -80,6 +82,52 @@ describe("repository instruction pointers", () => {
       changed: false,
       written: false,
     });
+  });
+
+  test("keeps the scratch-file rule in its own block beside the pointer", () => {
+    const fixture = createTestRepository();
+    repositories.push(fixture);
+    writeFixture(fixture.root, "AGENTS.md", "# Agent guidance\n");
+    const [target] = discoverInstructionTargets("repository", fixture.root);
+    if (!target) {
+      throw new Error("Expected an instruction target");
+    }
+
+    expect(writeScratchFileRule(target)).toMatchObject({
+      changed: true,
+      written: true,
+    });
+    writeInstructionPointer(target, "automatic");
+    // Rewriting the pointer leaves the rule, and the rule is never repeated.
+    writeInstructionPointer(target, "confirm-ready");
+    expect(writeScratchFileRule(target)).toMatchObject({
+      changed: false,
+      written: false,
+    });
+    const contents = readFileSync(target.path, "utf8");
+    expect(contents).toContain(renderScratchFileRule());
+    expect(
+      contents.match(/<!-- simple-changes:scratch-files:start -->/gu)
+    ).toHaveLength(1);
+    expect(contents.match(/<!-- simple-changes:start -->/gu)).toHaveLength(1);
+    expect(renderScratchFileRule()).toContain(
+      "never inside or next to a repository checkout"
+    );
+  });
+
+  test("refuses a duplicated scratch-file block", () => {
+    const fixture = createTestRepository();
+    repositories.push(fixture);
+    const block = renderScratchFileRule();
+    writeFixture(fixture.root, "AGENTS.md", `${block}\n\n${block}\n`);
+    const [target] = discoverInstructionTargets("repository", fixture.root);
+    if (!target) {
+      throw new Error("Expected an instruction target");
+    }
+
+    expect(() => writeScratchFileRule(target)).toThrow(
+      "invalid Simple Changes managed block"
+    );
   });
 
   test("supports an explicit existing global instruction file", () => {

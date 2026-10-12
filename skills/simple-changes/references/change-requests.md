@@ -51,8 +51,9 @@ After creation or update, fetch and re-read:
 Then run `proposal record-authors` for that head before presenting the
 proposal as ready for review.
 
-Save the fetched source body to a file and audit it before re-reading the
-rendered body:
+Save the fetched source body to a file in the agent's
+[work directory](inventory-and-concurrency.md#agent-work-directories) and audit
+it before re-reading the rendered body:
 
 ```sh
 simple-changes proposal audit --file <body.md> [--template <template.md>] --json

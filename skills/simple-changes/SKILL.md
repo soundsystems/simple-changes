@@ -96,7 +96,7 @@ or delete a tag, and never tag from Sync or as a delegated author.
   [Cloudflare](references/providers/cloudflare.md),
   [Fly](references/providers/fly.md), and
   [Railway](references/providers/railway.md).
-  Unsupported capabilities are blockers, never guessed success.
+  Unsupported capabilities are blockers.
 
 ## Initialize before mutation
 
@@ -129,9 +129,9 @@ update the checkout, before integrating or shipping.
 
 ## Communicate
 
-Default every user-facing message to plain language, even when the underlying
-workflow is technical. Lead with what happened, what it means for the user, and
-what happens next. Keep most progress updates to one to three short sentences.
+Default every user-facing message to plain language. Lead with what happened,
+what it means for the user, and what happens next. Keep most progress updates
+to one to three short sentences.
 
 After initialization and planning, but before the first consequential Ship
 mutation, send a concise pre-ship brief in the same assistant turn. State scope,
@@ -161,7 +161,8 @@ controller is rejected; independent authors use distinct claimed worktrees.
 When the target is GitLab, first paginate the complete opening remote inventory
 (every branch and every open, merged, and closed proposal), then pass that
 unchanged receipt, built by `remote-inventory build`, through `loop start
---opening-remote-inventory <file>`.
+--opening-remote-inventory <file>`. Keep every file you pass to the CLI in the
+`simple-changes workdir --agent-id "$AGENT_ID"` directory.
 
 When an active loop assigns a new author into that same integration unit, run
 `simple-changes prepare-agent` before edits. Independent agents create an

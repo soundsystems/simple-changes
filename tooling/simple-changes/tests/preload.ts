@@ -24,3 +24,9 @@ const isolatedAuthoringRoots = mkdtempSync(
 );
 process.env.SIMPLE_CHANGES_HARNESS_ROOTS = isolatedAuthoringRoots;
 process.env.SIMPLE_CHANGELOGS_CONFIG_DIR = isolatedAuthoringRoots;
+
+// Agent work directories default to the system temporary directory; keep the
+// ones loop and prepare-agent create in tests out of the developer's.
+process.env.SIMPLE_CHANGES_WORK_ROOT = mkdtempSync(
+  join(tmpdir(), "simple-changes-work-root-")
+);

@@ -4,6 +4,7 @@ Contents:
 
 - Integration-controller lease and concurrent authors
 - New agents during an active loop
+- Agent work directories
 - Parallel agents
 - Ready work blocked by another shipping controller
 - Ready-work receipts
@@ -287,7 +288,8 @@ so explicit recovery must prove the remaining processes inactive.
 An agent joining the same integration unit must begin with `prepare-agent`. The command records a
 pending preparation before creating a unique branch and sibling worktree from
 the pinned target revision, then registers the completed worktree with the
-active run and returns its exact path. Use that path as the agent's working
+active run and returns its exact path and the agent's
+[work directory](#agent-work-directories). Use that path as the agent's working
 directory before it edits, formats, generates, stages, or commits files.
 Repeating the command for the same agent ID returns the existing registration;
 if creation stopped partway through, the same command validates and resumes the
@@ -305,6 +307,36 @@ the active integration run.
 Read-only review can inspect commit objects or provider diffs without an
 authoring worktree. The moment a reviewer needs to make a change, it becomes an
 author and must prepare an isolated worktree first.
+
+## Agent work directories
+
+Every file an agent passes to the CLI, such as provider pages, remote-inventory
+receipts, proposal bodies, decision files, and waiver or evidence JSON, goes in
+that agent's work directory. Never write one inside a checkout, where it is
+untracked content that blocks cleanup, or beside one, where nothing removes it.
+
+```sh
+WORK_DIR=$(simple-changes workdir --agent-id "$AGENT_ID")
+```
+
+The command prints a private (`0700`) directory under the system temporary
+directory, one per repository and agent ID, and needs no loop, so it works for
+the GitLab opening inventory that `loop start` requires. `loop start` and
+`prepare-agent` also report it as `workDir`. Every worktree of a repository
+shares the same directory for one agent. Set `SIMPLE_CHANGES_WORK_ROOT` to an
+absolute path to move the root; the CLI refuses a root inside a checkout or the
+Git common directory, and one that is a symlink, owned by another user, or
+writable by others.
+
+A `loop finalize` that completes or closes without mutation, and a successful
+`loop end`, remove the work directories of the controller and of every agent
+`prepare-agent` registered, and report them as `removedWorkDirectories`. The
+CLI keeps what it ingested in its own state, so nothing it needs is lost. A
+paused or relinquished run keeps them for the resume. After `loop
+close-equivalent` or `loop archive-recorded`, or for a work directory used
+outside any run, remove it with `simple-changes workdir remove --agent-id
+"$AGENT_ID"`. The operating system's temporary-file cleanup eventually sweeps
+whatever an abandoned run leaves.
 
 ## Parallel agents
 

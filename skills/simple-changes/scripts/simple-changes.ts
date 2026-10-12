@@ -246,7 +246,6 @@ import type {
 } from "./lib/types.ts";
 import {
   bindRunWorkDirectory,
-  boundWorkDirectory,
   createWorkDirectory,
   locateWorkDirectoryRepository,
   type RunWorkDirectoryRemoval,
@@ -254,6 +253,9 @@ import {
   removeRunWorkDirectories,
   removeWorkDirectory,
   repositoryWorkDirectory,
+  runWorkDirectoryBinding,
+  sameSession,
+  type WorkDirectoryRepository,
   workDirectoryContaining,
 } from "./lib/work-directory.ts";
 import {
@@ -3463,15 +3465,10 @@ const runLoopExec = async (
 // CLI: what the CLI kept is in its own state. A run that stops keeps them, and
 // a directory that fails validation is reported, never removed.
 const removeClosedRunWorkDirectories = (
-  repositoryPath: string,
-  removal: (
-    repository: ReturnType<typeof locateWorkDirectoryRepository>
-  ) => RunWorkDirectoryRemoval
+  removal: () => RunWorkDirectoryRemoval
 ): string[] => {
   try {
-    const { kept, removed } = removal(
-      locateWorkDirectoryRepository(repositoryPath)
-    );
+    const { kept, removed } = removal();
     for (const { path, reason } of kept) {
       process.stderr.write(`Warning: kept work directory ${path}: ${reason}\n`);
     }
@@ -3483,6 +3480,15 @@ const removeClosedRunWorkDirectories = (
     return [];
   }
 };
+
+const workSessionOf = (
+  session: ReturnType<typeof currentHarnessSession>
+): string | null =>
+  session ? `${session.harness}:${session.sessionId}` : null;
+
+// The harness session a work directory binding follows, when known.
+const workDirectorySession = (): string | null =>
+  workSessionOf(currentHarnessSession());
 
 const renderRemovedWorkDirectories = (removed: readonly string[]): string =>
   removed.length > 0
@@ -3528,10 +3534,18 @@ const runLoopFinalizationAction = (
     return true;
   }
   if (action === "end") {
-    const ended = endLoop(options.repo, runId, agentId, options.reason ?? null);
-    const removedWorkDirectories = removeClosedRunWorkDirectories(
+    const workRepository = locateWorkDirectoryRepository(options.repo);
+    let removedWorkDirectories: string[] = [];
+    const ended = endLoop(
       options.repo,
-      (repository) => removeRunWorkDirectories(repository, runId)
+      runId,
+      agentId,
+      options.reason ?? null,
+      () => {
+        removedWorkDirectories = removeClosedRunWorkDirectories(() =>
+          removeRunWorkDirectories(workRepository, runId)
+        );
+      }
     );
     writeOutput(
       { ...ended, removedWorkDirectories },
@@ -3545,12 +3559,21 @@ const runLoopFinalizationAction = (
     return true;
   }
   if (action === "finalize") {
+    const workRepository = locateWorkDirectoryRepository(options.repo);
+    let removedWorkDirectories: string[] = [];
     const result = finalizeLoop(
       options.repo,
       runId,
       agentId,
       requireCliOption(options.reason, "--reason"),
-      { awaitingUser: options.awaitingUser }
+      {
+        awaitingUser: options.awaitingUser,
+        onClosed: () => {
+          removedWorkDirectories = removeClosedRunWorkDirectories(() =>
+            removeRunWorkDirectories(workRepository, runId)
+          );
+        },
+      }
     );
     if (result.outcome === "relinquished" && options.awaitingUser.length > 0) {
       writeOutput(
@@ -3571,10 +3594,6 @@ const runLoopFinalizationAction = (
         EXIT_CODES.unsafe
       );
     }
-    const removedWorkDirectories = removeClosedRunWorkDirectories(
-      options.repo,
-      (repository) => removeRunWorkDirectories(repository, runId)
-    );
     if (result.closedWithoutMutation) {
       writeOutput(
         { ...result, manifestDigest: null, removedWorkDirectories },
@@ -3739,6 +3758,8 @@ const runLoopStart = (options: CliOptions): void => {
       )
     : null;
   let reviewLedger: ReviewLedgerResumeState | null = null;
+  let workDir: string | null = null;
+  let removedWorkDirectories: string[] = [];
   const lease = startLoop(
     options.repo,
     agentId,
@@ -3748,19 +3769,28 @@ const runLoopStart = (options: CliOptions): void => {
       onReviewLedger: (state) => {
         reviewLedger = state.state === "absent" ? null : state;
       },
+      // Under the loop locks: only this run is live, so every other run's
+      // directories are finished and no close can race the sweep.
+      onStarted: (started) => {
+        try {
+          workDir = bindRunWorkDirectory(
+            workRepository,
+            started.runId,
+            agentId,
+            workDirectorySession(),
+            openingWorkDirectory
+          );
+        } catch (error) {
+          process.stderr.write(
+            `Warning: no work directory was bound: ${(error as Error).message}\n`
+          );
+        }
+        removedWorkDirectories = removeClosedRunWorkDirectories(() =>
+          removeFinishedRunWorkDirectories(workRepository, started.runId)
+        );
+      },
       ...(request === undefined ? {} : { request }),
     }
-  );
-  const workDir = bindRunWorkDirectory(
-    workRepository,
-    lease.runId,
-    agentId,
-    openingWorkDirectory
-  );
-  // Only this run is live, so every other run's directories are finished.
-  const removedWorkDirectories = removeClosedRunWorkDirectories(
-    options.repo,
-    (repository) => removeFinishedRunWorkDirectories(repository, lease.runId)
   );
   const holds = informationalHolds(options.repo);
   const freshness = leaseRuntimeFreshness(lease);
@@ -3777,7 +3807,7 @@ const runLoopStart = (options: CliOptions): void => {
       workDir,
     },
     options.json,
-    `Started ${lease.runId} for ${lease.ownerAgentId}.\nManifest: ${loopManifestDigest(lease)}\nWork directory: ${workDir}\n${
+    `Started ${lease.runId} for ${lease.ownerAgentId}.\nManifest: ${loopManifestDigest(lease)}\n${workDir ? `Work directory: ${workDir}\n` : ""}${
       resumedQuestions
         ? `The previous controller paused for the user's answer to: ${resumedQuestions.join(" | ")}. Confirm their answer before continuing.\n`
         : ""
@@ -4977,6 +5007,7 @@ const runPrepareAgent = (options: CliOptions): void => {
     workRepository,
     prepared.runId,
     prepared.agentId,
+    workDirectorySession(),
     null
   );
   writeOutput(
@@ -4986,18 +5017,60 @@ const runPrepareAgent = (options: CliOptions): void => {
   );
 };
 
+// The directory an agent should use: inside a run, the one bound to it when
+// it is the run's controller or one of its authors in the same session;
+// otherwise a new one of its own, so another session that reuses an agent ID
+// never shares, or has removed, the run's files.
+const workDirectoryFor = (
+  repository: WorkDirectoryRepository,
+  lease: LoopLease | null,
+  agentId: string
+): { bound: boolean; path: string } => {
+  const session = workDirectorySession();
+  if (lease) {
+    const binding = runWorkDirectoryBinding(repository, lease.runId, agentId);
+    if (binding && sameSession(binding.session, session)) {
+      return { bound: true, path: binding.path };
+    }
+    const controller =
+      lease.ownerAgentId === agentId &&
+      sameSession(
+        workSessionOf(readControllerBinding(lease)?.session ?? null),
+        session
+      );
+    const author =
+      !binding &&
+      (lease.preparations.some((entry) => entry.agentId === agentId) ||
+        lease.worktrees.some(
+          (worktree) => worktree.createdByRun && worktree.agentId === agentId
+        ));
+    if (controller || author) {
+      return {
+        bound: true,
+        path: bindRunWorkDirectory(
+          repository,
+          lease.runId,
+          agentId,
+          session,
+          null
+        ),
+      };
+    }
+  }
+  return { bound: false, path: createWorkDirectory(repository, agentId) };
+};
+
 // Plain output is the bare path, so `WORK_DIR=$(simple-changes workdir ...)`
-// works before a loop exists, as a GitLab opening inventory needs. Inside a
-// run, an agent gets the directory the run bound to it.
+// works before a loop exists, as a GitLab opening inventory needs.
 const runWorkDirectory = (options: CliOptions): void => {
   const [action, target] = options.positional;
   const repository = locateWorkDirectoryRepository(options.repo);
-  const activeRunId = readLoopLease(options.repo)?.runId ?? null;
+  const lease = readLoopLease(options.repo);
   if (action === "remove") {
     const removed = removeWorkDirectory(
       repository,
       requireCliOption(target, "the work directory path"),
-      activeRunId
+      lease?.runId ?? null
     );
     writeOutput(
       { removed: true, workDir: removed },
@@ -5013,15 +5086,8 @@ const runWorkDirectory = (options: CliOptions): void => {
     );
   }
   const agentId = requireCliOption(options.agentId, "--agent-id");
-  const bound = activeRunId
-    ? boundWorkDirectory(repository, activeRunId, agentId)
-    : null;
-  const path = bound ?? createWorkDirectory(repository, agentId);
-  writeOutput(
-    { agentId, bound: bound !== null, workDir: path },
-    options.json,
-    `${path}\n`
-  );
+  const { bound, path } = workDirectoryFor(repository, lease, agentId);
+  writeOutput({ agentId, bound, workDir: path }, options.json, `${path}\n`);
 };
 
 const runReleaseNotes = (options: CliOptions): number => {

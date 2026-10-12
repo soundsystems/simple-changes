@@ -15,13 +15,14 @@ import { basename, dirname, join } from "node:path";
 import { spawnSync } from "bun";
 import {
   bindRunWorkDirectory,
-  boundWorkDirectory,
   createWorkDirectory,
   locateWorkDirectoryRepository,
   removeFinishedRunWorkDirectories,
   removeRunWorkDirectories,
   removeWorkDirectory,
   repositoryWorkDirectory,
+  runWorkDirectoryBinding,
+  sameSession,
   WORK_ROOT_ENVIRONMENT,
   workDirectoryContaining,
 } from "../../../skills/simple-changes/scripts/lib/work-directory.ts";
@@ -66,6 +67,9 @@ const repository = () => {
 };
 
 const mode = (path: string): number => statSync(path).mode % 0o1000;
+
+const byPath = (left: string, right: string): number =>
+  left.localeCompare(right);
 
 describe("agent work directories", () => {
   test("creates a new private directory on every request", () => {
@@ -152,39 +156,52 @@ describe("agent work directories", () => {
 
   test("binds the opening inventory's directory and reuses one binding", () => {
     const { environment } = workRoot();
-    const { location } = repository();
+    const { fixture, location } = repository();
     const opening = createWorkDirectory(location, "controller", environment);
     writeFileSync(join(opening, "opening.json"), "{}\n");
 
     expect(
       workDirectoryContaining(location, join(opening, "opening.json"))
     ).toBe(opening);
-    expect(workDirectoryContaining(location, location.currentCheckout)).toBe(
-      null
-    );
+    expect(
+      workDirectoryContaining(location, join(fixture.root, "README.md"))
+    ).toBe(null);
     expect(
       bindRunWorkDirectory(
         location,
         "run-a",
         "controller",
+        null,
         opening,
         environment
       )
     ).toBe(opening);
     expect(
-      bindRunWorkDirectory(location, "run-a", "controller", null, environment)
+      bindRunWorkDirectory(
+        location,
+        "run-a",
+        "controller",
+        null,
+        null,
+        environment
+      )
     ).toBe(opening);
-    expect(boundWorkDirectory(location, "run-a", "controller")).toBe(opening);
+    expect(runWorkDirectoryBinding(location, "run-a", "controller")?.path).toBe(
+      opening
+    );
 
     const author = bindRunWorkDirectory(
       location,
       "run-a",
       "author",
       null,
+      null,
       environment
     );
     expect(author).not.toBe(opening);
-    expect(boundWorkDirectory(location, "run-a", "author")).toBe(author);
+    expect(runWorkDirectoryBinding(location, "run-a", "author")?.path).toBe(
+      author
+    );
   });
 
   test("a clean close removes exactly the run's directories", () => {
@@ -195,12 +212,14 @@ describe("agent work directories", () => {
       "run-a",
       "controller",
       null,
+      null,
       environment
     );
     const author = bindRunWorkDirectory(
       location,
       "run-a",
       "author",
+      null,
       null,
       environment
     );
@@ -210,6 +229,7 @@ describe("agent work directories", () => {
       location,
       "run-b",
       "controller",
+      null,
       null,
       environment
     );
@@ -236,7 +256,14 @@ describe("agent work directories", () => {
   test("never removes a tampered binding's path", () => {
     const { base, environment } = workRoot();
     const { location } = repository();
-    bindRunWorkDirectory(location, "run-a", "controller", null, environment);
+    bindRunWorkDirectory(
+      location,
+      "run-a",
+      "controller",
+      null,
+      null,
+      environment
+    );
     const outside = join(base, "precious");
     mkdirSync(outside, { mode: 0o700 });
     const bindings = join(
@@ -269,12 +296,14 @@ describe("agent work directories", () => {
       "run-old",
       "controller",
       null,
+      null,
       environment
     );
     const abandoned = bindRunWorkDirectory(
       location,
       "run-old",
       "author",
+      null,
       null,
       environment
     );
@@ -283,6 +312,7 @@ describe("agent work directories", () => {
         location,
         "run-new",
         "controller",
+        null,
         reused,
         environment
       )
@@ -293,7 +323,9 @@ describe("agent work directories", () => {
       removed: [abandoned],
     });
     expect(existsSync(reused)).toBe(true);
-    expect(boundWorkDirectory(location, "run-new", "controller")).toBe(reused);
+    expect(
+      runWorkDirectoryBinding(location, "run-new", "controller")?.path
+    ).toBe(reused);
   });
 
   test("removes one directory on request unless the live run holds it", () => {
@@ -303,6 +335,7 @@ describe("agent work directories", () => {
       location,
       "run-a",
       "controller",
+      null,
       null,
       environment
     );
@@ -320,12 +353,115 @@ describe("agent work directories", () => {
   });
 });
 
+describe("work directory identity and paths", () => {
+  test("a binding follows its agent to a new session", () => {
+    const { environment } = workRoot();
+    const { location } = repository();
+    const path = bindRunWorkDirectory(
+      location,
+      "run-a",
+      "controller",
+      "claude-code:first",
+      null,
+      environment
+    );
+    expect(runWorkDirectoryBinding(location, "run-a", "controller")).toEqual({
+      path,
+      session: "claude-code:first",
+    });
+    // A resume or takeover proves the new session holds the run.
+    expect(
+      bindRunWorkDirectory(
+        location,
+        "run-a",
+        "controller",
+        "codex:second",
+        null,
+        environment
+      )
+    ).toBe(path);
+    expect(runWorkDirectoryBinding(location, "run-a", "controller")).toEqual({
+      path,
+      session: "codex:second",
+    });
+    expect(sameSession("codex:second", "codex:second")).toBe(true);
+    expect(sameSession("codex:second", null)).toBe(true);
+    expect(sameSession("codex:second", "claude-code:first")).toBe(false);
+  });
+
+  test("never removes a binding that leaves the repository directory", () => {
+    const { environment, root } = workRoot();
+    const { location } = repository();
+    const own = bindRunWorkDirectory(
+      location,
+      "run-a",
+      "controller",
+      null,
+      null,
+      environment
+    );
+    const repositoryDirectory = dirname(own);
+    const other = createWorkDirectory(location, "other", environment);
+    const bindings = join(
+      location.commonGitDirectory,
+      "simple-changes",
+      "work-directories",
+      "run-a"
+    );
+    for (const [name, path] of [
+      ["dots", `${repositoryDirectory}/..`],
+      ["trailing", `${other}/`],
+      ["inner", `${repositoryDirectory}/../${basename(repositoryDirectory)}`],
+    ] as const) {
+      writeFileSync(
+        join(bindings, `${name}.json`),
+        `${JSON.stringify({ agentId: name, path, schemaVersion: 1 })}\n`
+      );
+    }
+
+    const removal = removeRunWorkDirectories(location, "run-a");
+    expect(removal.removed).toEqual([own]);
+    expect(removal.kept.map((entry) => entry.path).sort(byPath)).toEqual(
+      [
+        `${repositoryDirectory}/..`,
+        `${other}/`,
+        `${repositoryDirectory}/../${basename(repositoryDirectory)}`,
+      ].sort(byPath)
+    );
+    for (const path of [root, repositoryDirectory, other]) {
+      expect(existsSync(path)).toBe(true);
+    }
+  });
+
+  test("refuses a root inside any registered worktree", () => {
+    const { fixture, location } = repository();
+    const worktree = join(fixture.base, "linked");
+    git(fixture.root, ["worktree", "add", "-q", "-b", "linked", worktree]);
+    const fromPrimary = locateWorkDirectoryRepository(fixture.root);
+    expect(fromPrimary.checkouts).toContain(realpathSync(worktree));
+    const root = join(worktree, "scratch");
+    expect(() =>
+      repositoryWorkDirectory(fromPrimary, { [WORK_ROOT_ENVIRONMENT]: root })
+    ).toThrow("Refusing a work directory inside");
+    expect(existsSync(root)).toBe(false);
+    expect(location.checkouts).toContain(fixture.root);
+  });
+});
+
 describe("work directories through the CLI", () => {
-  const run = (args: string[], repositoryPath: string) => {
+  const run = (
+    args: string[],
+    repositoryPath: string,
+    environment: Record<string, string> = {}
+  ) => {
     const result = spawnSync(
       [process.execPath, cliPath, ...args, "--repo", repositoryPath],
       {
-        env: { ...process.env, SIMPLE_CHANGES_SKILL_ROOTS: "" },
+        env: {
+          ...process.env,
+          SIMPLE_CHANGES_SKILL_ROOTS: "",
+          ...environment,
+        },
         stderr: "pipe",
         stdout: "pipe",
       }
@@ -403,5 +539,97 @@ describe("work directories through the CLI", () => {
       removedWorkDirectories: [workDir],
     });
     expect(existsSync(workDir)).toBe(false);
+  });
+
+  test("another session reusing the controller's agent ID gets its own directory", () => {
+    const { fixture, location } = repository();
+    // A session-bound start records the controller's session; keep that
+    // record out of the developer's configuration.
+    const config = realpathSync(
+      mkdtempSync(join(tmpdir(), "work-directory-config-"))
+    );
+    scratch.push(config);
+    const session = (id: string) => ({
+      CLAUDE_CODE_SESSION_ID: id,
+      SIMPLE_CHANGES_CONFIG_DIR: config,
+    });
+    const started = run(
+      [
+        "loop",
+        "start",
+        "--mode",
+        "queue",
+        "--agent-id",
+        "controller",
+        "--json",
+      ],
+      fixture.root,
+      session("session-one")
+    );
+    expect(started.exitCode).toBe(0);
+    const { lease, workDir } = JSON.parse(started.stdout) as {
+      lease: { runId: string };
+      workDir: string;
+    };
+    const ask = (id: string) =>
+      JSON.parse(
+        run(
+          ["workdir", "--agent-id", "controller", "--json"],
+          fixture.root,
+          session(id)
+        ).stdout
+      ) as { agentId: string; bound: boolean; workDir: string };
+
+    expect(ask("session-one")).toEqual({
+      agentId: "controller",
+      bound: true,
+      workDir,
+    });
+    const intruder = ask("session-two");
+    expect(intruder.bound).toBe(false);
+    expect(intruder.workDir).not.toBe(workDir);
+
+    // A controller whose binding is gone, as after a takeover, is bound again.
+    rmSync(
+      join(
+        location.commonGitDirectory,
+        "simple-changes",
+        "work-directories",
+        lease.runId
+      ),
+      { force: true, recursive: true }
+    );
+    const rebound = ask("session-one");
+    expect(rebound.bound).toBe(true);
+    expect(ask("session-one").workDir).toBe(rebound.workDir);
+    expect(ask("session-two").bound).toBe(false);
+  });
+
+  test("loop start removes the directories of runs that ended without a close", () => {
+    const { fixture, location } = repository();
+    const abandoned = bindRunWorkDirectory(
+      location,
+      "run-abandoned",
+      "controller",
+      null,
+      null
+    );
+    const started = run(
+      [
+        "loop",
+        "start",
+        "--mode",
+        "queue",
+        "--agent-id",
+        "controller",
+        "--json",
+      ],
+      fixture.root
+    );
+    expect(started.exitCode).toBe(0);
+    expect(JSON.parse(started.stdout)).toMatchObject({
+      removedWorkDirectories: [abandoned],
+    });
+    expect(existsSync(abandoned)).toBe(false);
   });
 });

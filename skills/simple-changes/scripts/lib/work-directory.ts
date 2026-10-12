@@ -12,7 +12,15 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, dirname, isAbsolute, join, relative, sep } from "node:path";
+import {
+  basename,
+  dirname,
+  isAbsolute,
+  join,
+  normalize,
+  relative,
+  sep,
+} from "node:path";
 import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
 import { sha256 } from "./hash.ts";
 import { locateRepository } from "./inventory.ts";
@@ -34,14 +42,22 @@ const BINDINGS_DIRECTORY = join("simple-changes", "work-directories");
 const RUN_ID_PATTERN = /^[\w.-]+$/u;
 
 export interface WorkDirectoryRepository {
+  /** Every registered checkout; a work directory is never inside one. */
+  checkouts: string[];
   commonGitDirectory: string;
-  currentCheckout: string;
 }
 
 interface WorkDirectoryBinding {
   agentId: string;
   path: string;
   schemaVersion: 1;
+  /** The harness session that holds it (`harness:id`), when known. */
+  session: string | null;
+}
+
+export interface RunWorkDirectoryBinding {
+  path: string;
+  session: string | null;
 }
 
 export interface RunWorkDirectoryRemoval {
@@ -49,14 +65,23 @@ export interface RunWorkDirectoryRemoval {
   removed: string[];
 }
 
+const WORKTREE_LINE = /^worktree (.+)$/u;
+
 export const locateWorkDirectoryRepository = (
   directory: string
 ): WorkDirectoryRepository => ({
+  checkouts: runGit(directory, ["worktree", "list", "--porcelain"])
+    .stdout.split("\n")
+    .map((line) => WORKTREE_LINE.exec(line)?.[1])
+    .filter((path): path is string => path !== undefined),
   commonGitDirectory: locateRepository(directory).repository.commonGitDirectory,
-  currentCheckout: realpathSync(
-    runGit(directory, ["rev-parse", "--show-toplevel"]).stdout.trim()
-  ),
 });
+
+/** Sessions match unless both are known and differ. */
+export const sameSession = (
+  left: string | null,
+  right: string | null
+): boolean => left === null || right === null || left === right;
 
 // The checkout that owns `<checkout>/.git`; a bare repository is its own.
 const owningCheckout = (commonGitDirectory: string): string =>
@@ -107,9 +132,10 @@ const deepestExisting = (path: string): string => {
   return realpathSync(existing);
 };
 
-// `path` with its deepest existing ancestor resolved, so a directory that does
-// not exist yet still compares against real checkouts.
-const canonicalPath = (path: string): string => {
+// `path` with its deepest existing ancestor resolved once, so a directory
+// that does not exist yet still compares against real checkouts, and later
+// steps never re-resolve a link another user could retarget.
+const canonicalPath = (path: string): { existing: string; path: string } => {
   const existing = deepestExisting(path);
   let missing = path;
   const segments: string[] = [];
@@ -117,7 +143,7 @@ const canonicalPath = (path: string): string => {
     segments.unshift(basename(missing));
     missing = dirname(missing);
   }
-  return join(existing, ...segments);
+  return { existing, path: join(existing, ...segments) };
 };
 
 const isWithin = (parent: string, child: string): boolean => {
@@ -138,9 +164,9 @@ const assertOutsideRepository = (
   for (const protectedPath of new Set([
     owningCheckout(repository.commonGitDirectory),
     repository.commonGitDirectory,
-    repository.currentCheckout,
+    ...repository.checkouts,
   ])) {
-    if (isWithin(realpathSync(protectedPath), path)) {
+    if (isWithin(canonicalPath(protectedPath).path, path)) {
       throw unsafe(
         `Refusing a work directory inside ${protectedPath}: ${path}.`
       );
@@ -174,7 +200,8 @@ const assertPrivateDirectory = (path: string): void => {
 };
 
 // Only this user or root may rename anything above the root, or replace it:
-// a writable ancestor must be sticky, as /tmp is.
+// a writable ancestor must be sticky, as /tmp is. Each step is checked
+// without following links, so a link swapped into the path is refused.
 const assertTrustedAncestors = (realPath: string): void => {
   const uid = currentUser();
   let current = realPath;
@@ -219,13 +246,14 @@ export const repositoryWorkDirectory = (
   environment: NodeJS.ProcessEnv = process.env
 ): string => {
   const configured = configuredRoot(environment);
-  assertOutsideRepository(repository, canonicalPath(configured));
-  // Resolve the ancestors, never the root itself: a root that is a symlink
-  // must be refused, not followed.
-  const parent = dirname(configured);
-  assertTrustedAncestors(deepestExisting(parent));
-  mkdirSync(parent, { mode: 0o700, recursive: true });
-  const root = join(realpathSync(parent), basename(configured));
+  // Resolve the ancestors once, never the root itself: a root that is a
+  // symlink must be refused, not followed.
+  const parent = canonicalPath(dirname(configured));
+  const root = join(parent.path, basename(configured));
+  assertOutsideRepository(repository, root);
+  assertTrustedAncestors(parent.existing);
+  mkdirSync(parent.path, { mode: 0o700, recursive: true });
+  assertTrustedAncestors(parent.path);
   ensurePrivateDirectory(root);
   const directory = join(root, repositoryKey(repository));
   ensurePrivateDirectory(directory);
@@ -257,13 +285,21 @@ const assertRepositoryWorkDirectory = (
 ): void => {
   const parent = dirname(path);
   const root = dirname(parent);
-  if (!isAbsolute(path) || basename(parent) !== repositoryKey(repository)) {
+  if (
+    !isAbsolute(path) ||
+    normalize(path) !== path ||
+    path.endsWith(sep) ||
+    basename(parent) !== repositoryKey(repository)
+  ) {
     throw unsafe(`Not a work directory of this repository: ${path}.`);
   }
   assertTrustedAncestors(dirname(root));
   assertPrivateDirectory(root);
   assertPrivateDirectory(parent);
   assertPrivateDirectory(path);
+  if (realpathSync(path) !== path) {
+    throw unsafe(`Not a work directory of this repository: ${path}.`);
+  }
   assertOutsideRepository(repository, path);
 };
 
@@ -327,7 +363,12 @@ const readBinding = (path: string): WorkDirectoryBinding | null => {
     return typeof value.agentId === "string" &&
       typeof value.path === "string" &&
       value.schemaVersion === 1
-      ? (value as WorkDirectoryBinding)
+      ? {
+          agentId: value.agentId,
+          path: value.path,
+          schemaVersion: 1,
+          session: typeof value.session === "string" ? value.session : null,
+        }
       : null;
   } catch {
     return null;
@@ -358,33 +399,65 @@ const boundRuns = (commonGitDirectory: string): string[] => {
 };
 
 /** The directory bound to this agent in this run, when it still exists. */
-export const boundWorkDirectory = (
+export const runWorkDirectoryBinding = (
   repository: WorkDirectoryRepository,
   runId: string,
   agentId: string
-): string | null => {
+): RunWorkDirectoryBinding | null => {
   const binding = readBinding(
     bindingPath(repository.commonGitDirectory, runId, agentId)
   );
-  return binding && existsSync(binding.path) ? binding.path : null;
+  return binding && existsSync(binding.path)
+    ? { path: binding.path, session: binding.session }
+    : null;
+};
+
+const writeBinding = (
+  repository: WorkDirectoryRepository,
+  runId: string,
+  binding: WorkDirectoryBinding
+): void => {
+  const target = bindingPath(
+    repository.commonGitDirectory,
+    runId,
+    binding.agentId
+  );
+  mkdirSync(dirname(target), { mode: 0o700, recursive: true });
+  const temporary = `${target}.${process.pid}.${randomUUID()}.tmp`;
+  writeFileSync(temporary, `${JSON.stringify(binding, null, 2)}\n`, {
+    encoding: "utf8",
+    flag: "wx",
+    mode: 0o600,
+  });
+  renameSync(temporary, target);
 };
 
 /**
  * Records the run's work directory for this agent and returns it: the one
  * already bound, else `candidate` (the directory holding the opening
- * inventory) when no other run holds it, else a new one.
+ * inventory), else a new one. Callers prove the agent is the run's current
+ * controller or one of its authors, so the binding follows it to `session`.
  */
 export const bindRunWorkDirectory = (
   repository: WorkDirectoryRepository,
   runId: string,
   agentId: string,
+  session: string | null,
   candidate: string | null,
   environment: NodeJS.ProcessEnv = process.env
 ): string => {
-  const existing = boundWorkDirectory(repository, runId, agentId);
+  const existing = runWorkDirectoryBinding(repository, runId, agentId);
   if (existing) {
-    assertRepositoryWorkDirectory(repository, existing);
-    return existing;
+    assertRepositoryWorkDirectory(repository, existing.path);
+    if (session !== null && existing.session !== session) {
+      writeBinding(repository, runId, {
+        agentId,
+        path: existing.path,
+        schemaVersion: 1,
+        session,
+      });
+    }
+    return existing.path;
   }
   if (candidate) {
     // Only one run is live, so a candidate another run still records belongs
@@ -403,16 +476,7 @@ export const bindRunWorkDirectory = (
   const path =
     candidate ?? createWorkDirectory(repository, agentId, environment);
   assertRepositoryWorkDirectory(repository, path);
-  const target = bindingPath(repository.commonGitDirectory, runId, agentId);
-  mkdirSync(dirname(target), { mode: 0o700, recursive: true });
-  const binding: WorkDirectoryBinding = { agentId, path, schemaVersion: 1 };
-  const temporary = `${target}.${process.pid}.${randomUUID()}.tmp`;
-  writeFileSync(temporary, `${JSON.stringify(binding, null, 2)}\n`, {
-    encoding: "utf8",
-    flag: "wx",
-    mode: 0o600,
-  });
-  renameSync(temporary, target);
+  writeBinding(repository, runId, { agentId, path, schemaVersion: 1, session });
   return path;
 };
 

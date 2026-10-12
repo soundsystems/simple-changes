@@ -2153,6 +2153,11 @@ export interface LoopFinalizationOptions {
    * questions, and resumes with `loop start --mode resume` after the answer.
    */
   awaitingUser?: readonly string[];
+  /**
+   * Runs under the loop locks when the run closes (completed or closed
+   * without mutation), never when it pauses or relinquishes.
+   */
+  onClosed?: () => void;
 }
 
 const MAX_AWAITING_USER_QUESTIONS = 10;
@@ -2180,6 +2185,35 @@ const awaitingUserQuestions = (
     );
   }
   return questions;
+};
+
+const finalizeRun = (
+  repositoryPath: string,
+  lease: LoopLease,
+  inventory: RepositoryInventory,
+  reason: string,
+  awaitingUser: string[] | null
+): LoopFinalizationResult => {
+  const untouched = finalizeUnmutatedRun(
+    lease,
+    inventory,
+    reason,
+    awaitingUser
+  );
+  if (untouched) {
+    return untouched;
+  }
+  try {
+    return finalizeOwnedLoop(
+      repositoryPath,
+      lease,
+      inventory,
+      reason,
+      awaitingUser
+    );
+  } catch (error) {
+    return relinquishAfterFinalizationError(lease, error, awaitingUser);
+  }
 };
 
 export const finalizeLoop = (
@@ -2211,26 +2245,17 @@ export const finalizeLoop = (
             );
           }
           assertControllerActive(lease);
-          const untouched = finalizeUnmutatedRun(
+          const result = finalizeRun(
+            repositoryPath,
             lease,
             inventory,
             reason,
             awaitingUser
           );
-          if (untouched) {
-            return untouched;
+          if (result.outcome !== "relinquished") {
+            options.onClosed?.();
           }
-          try {
-            return finalizeOwnedLoop(
-              repositoryPath,
-              lease,
-              inventory,
-              reason,
-              awaitingUser
-            );
-          } catch (error) {
-            return relinquishAfterFinalizationError(lease, error, awaitingUser);
-          }
+          return result;
         }
       )
   );
@@ -2244,7 +2269,9 @@ export const endLoop = (
   repositoryPath: string,
   runId: string,
   ownerAgentIdInput: string,
-  reasonInput: string | null = null
+  reasonInput: string | null = null,
+  // Runs under the loop locks once the run has ended.
+  onClosed?: () => void
 ): LoopEndResult => {
   const ownerAgentId = requiredText(ownerAgentIdInput, "agent ID");
   const reason = reasonInput?.trim() || null;
@@ -2267,21 +2294,21 @@ export const endLoop = (
         // A Ship run that never changed anything owes no shipment scope, remote
         // reconciliation, or cleanup; those gates protect integrated work.
         if (unmutatedCloseReady(lease, inventory, verification)) {
-          return {
-            ...verification,
-            closedWithoutMutation: closeUnmutatedRun(
-              lease,
-              verification,
-              reason,
-              "loop end"
-            ),
-          };
+          const closedWithoutMutation = closeUnmutatedRun(
+            lease,
+            verification,
+            reason,
+            "loop end"
+          );
+          onClosed?.();
+          return { ...verification, closedWithoutMutation };
         }
         const blockers = loopCompletionBlockers(lease, inventory, verification);
         if (blockers.length > 0) {
           throw new SimpleChangesError(blockers.join(" "), EXIT_CODES.unsafe);
         }
         rmSync(loopLeasePath(lease.commonGitDirectory), { force: true });
+        onClosed?.();
         return verification;
       }
     )

@@ -137,6 +137,11 @@ export interface LoopStartOptions {
   /** Receives the review ledger a resume loads under the held loop lock. */
   onReviewLedger?: (state: ReviewLedgerResumeState) => void;
   /**
+   * Runs under the loop locks once the run is started or resumed, so work
+   * that depends on which run is live cannot race another start or close.
+   */
+  onStarted?: (lease: LoopLease) => void;
+  /**
    * The run's `--authoring-request` (resume only): revalidation uses it
    * combined with the saved settings, so the run has one review gate.
    */
@@ -193,6 +198,7 @@ export const startLoop = (
               );
               options.onReviewLedger?.(reviewLedger);
             }
+            options.onStarted?.(resumed);
             return resumed;
           }
           const now = new Date().toISOString();
@@ -318,6 +324,7 @@ export const startLoop = (
             inheritedAwaitingUser: null,
             session,
           });
+          options.onStarted?.(written);
           return written;
         }
       )

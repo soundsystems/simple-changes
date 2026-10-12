@@ -2846,14 +2846,16 @@ const movedFixture = (
   options: {
     forkFiles?: Record<string, string>;
     forkLease?: (pinned: string) => string | null;
+    pinned?: string;
     released?: Record<string, string | null>;
   } = {}
 ): Fixture => {
   const fixture = createFixture();
+  const pinnedLease = options.pinned ?? LEASE_AT_PIN;
   const pin = commitPackage(
     fixture.upstream,
     "feat(lease): Add the lease module",
-    { "scripts/lib/lease.ts": LEASE_AT_PIN }
+    { "scripts/lib/lease.ts": pinnedLease }
   );
   const fork = join(
     fixture.base,
@@ -2877,7 +2879,7 @@ const movedFixture = (
     "SKILL.md",
     `---\nname: acme-simple-changes\n---\n\n# Acme Simple Changes\n\nForked from \`simple-changes\` @ \`${pin}\`. Acme-specific deltas: none.\n\nIntro line, revised.\n\n## Rules\n\nRule one.\n`
   );
-  const forkLease = options.forkLease?.(LEASE_AT_PIN);
+  const forkLease = options.forkLease?.(pinnedLease);
   if (forkLease === null) {
     rmSync(join(fork, LEASE_PATH));
   } else if (forkLease !== undefined) {
@@ -3018,6 +3020,83 @@ describe("update-local-forks moved declarations", () => {
     );
     expect(lease?.reason).not.toContain("take the installed upstream version");
     expect(lease?.content).toContain(acme);
+  });
+
+  test("keeps today's plan when the fork changed only a statement upstream kept after a moved declaration", () => {
+    const loaded = 'console.info("lease module loaded");';
+    const tail = `// Loaded once per process.\n${loaded}\n`;
+    const pinned = `${LEASE_AT_PIN}\n${tail}`;
+    const released = `${LEASE_RELEASED}\n${tail}`;
+    const forkLease = (source: string): string =>
+      source.replace(loaded, 'console.info("acme lease module loaded");');
+    expect(mergesCleanly(forkLease(pinned), pinned, released)).toBe(true);
+    const fixture = movedFixture({
+      forkLease,
+      pinned,
+      released: {
+        "scripts/lib/lease-recovery.ts": LEASE_RECOVERY,
+        "scripts/lib/lease.ts": released,
+      },
+    });
+    const plan = planMoved(fixture);
+
+    expect(entryOf(plan, LEASE_PATH)).toMatchObject({
+      action: "merge",
+      reason:
+        "Upstream and the fork changed different lines; three-way merge applied.",
+    });
+    expect(entryOf(plan, LEASE_PATH)?.content).toContain(
+      'console.info("acme lease module loaded");'
+    );
+    expect(entryOf(plan, RECOVERY_PATH)).toMatchObject({
+      action: "add",
+      reason: "New upstream runtime file.",
+    });
+    expect(plan.summary.conflict).toBe(0);
+
+    // With a moved edit too, the kept statement is the fork's other change.
+    const both = movedFixture({
+      forkLease: (source) => forkLease(editRelinquish(source)),
+      pinned,
+      released: {
+        "scripts/lib/lease-recovery.ts": LEASE_RECOVERY,
+        "scripts/lib/lease.ts": released,
+      },
+    });
+    const lease = entryOf(planMoved(both), LEASE_PATH);
+    expect(lease?.action).toBe("conflict");
+    expect(lease?.reason).toContain(
+      `the fork changed 1: \`relinquish\` (edited) -> ${RECOVERY_PATH}.`
+    );
+    expect(lease?.reason).toContain(
+      "settle this file from the merge below the sidecar header"
+    );
+  });
+
+  test("conflicts a fork copy of a moved declaration in a file that existed at the pin", () => {
+    // The fork moved the declaration itself, with an edit, into a file upstream
+    // also moves it to; that file merges, so the copy is compared, not trusted.
+    const relinquish = `${RELINQUISH.join("\n")}\n`;
+    const core = "export const core = 2;\n";
+    const fixture = movedFixture({
+      forkFiles: {
+        "runtime/scripts/lib/core.ts": `${core}\n${editRelinquish(relinquish)}`,
+      },
+      forkLease: (source) => source.replace(`${RELINQUISH.join("\n")}\n\n`, ""),
+      released: {
+        "scripts/lib/core.ts": `${core}\n${relinquish}`,
+        "scripts/lib/lease.ts": LEASE_AT_PIN.replace(
+          `${RELINQUISH.join("\n")}\n\n`,
+          ""
+        ),
+      },
+    });
+    const lease = entryOf(planMoved(fixture), LEASE_PATH);
+
+    expect(lease?.action).toBe("conflict");
+    expect(lease?.reason).toContain(
+      "`relinquish` (edited) -> runtime/scripts/lib/core.ts"
+    );
   });
 
   test("leaves a fork that kept every moved declaration with today's plan", () => {

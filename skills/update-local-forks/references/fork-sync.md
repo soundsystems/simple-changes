@@ -218,7 +218,9 @@ at those files. The note never changes an action, blocks, or holds the pin.
 Matching is by column-0 top-level declaration name, read without a parser, so
 a declaration renamed while it moved is not detected, and neither is one that
 is not a column-0 `const`, `let`, `var`, `function`, `class`, `interface`,
-`type`, or `enum`. Review a large upstream refactor by hand when the fork
+`type`, or `enum`. A declaration runs from the comment lines directly above it
+through the last line upstream took out of the old file; a statement upstream
+kept after it is not part of it, so a fork change there merges as usual. Review a large upstream refactor by hand when the fork
 edits the files it touches.
 
 ## Classify what you port by hand

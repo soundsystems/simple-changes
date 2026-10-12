@@ -12,11 +12,13 @@
  */
 import { createHash } from "node:crypto";
 import {
+  closeSync,
   type Dirent,
   existsSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
+  openSync,
   readdirSync,
   readFileSync,
   realpathSync,
@@ -3303,6 +3305,7 @@ const assertSidecarsFree = (entries: PlanEntry[]): void => {
       .toUpperCase()
       .toLowerCase();
   const paths = entries.map((entry) => entry.forkPath);
+  const sidecars = new Map<string, string>();
   for (const entry of entries) {
     // Every conflict: one writes its sidecar, and one that binds an earlier
     // sidecar must find it as it was.
@@ -3311,9 +3314,12 @@ const assertSidecarsFree = (entries: PlanEntry[]): void => {
     }
     const sidecar = entry.forkPath + MERGE_SIDECAR_SUFFIX;
     const folded = fold(sidecar);
-    const taken = paths.find(
-      (path) => fold(path) === folded || fold(path).startsWith(`${folded}/`)
-    );
+    const taken =
+      sidecars.get(folded) ??
+      paths.find(
+        (path) => fold(path) === folded || fold(path).startsWith(`${folded}/`)
+      );
+    sidecars.set(folded, sidecar);
     if (taken !== undefined) {
       throw new ForkUpdateError(
         `${entry.forkPath} conflicts, and its sidecar goes at ${sidecar}, but the plan also carries ${taken}; resolve ${entry.forkPath} by hand without the sidecar, then plan again.`,
@@ -3610,6 +3616,104 @@ const entryBytes = (entry: PlanEntry): Buffer | undefined => {
 };
 
 /**
+ * Refuse, before any write, when a file apply writes, deletes, or rewrites is
+ * the same file (a hard link, or a name the filesystem aliases) as another
+ * such file, or as a file a conflict keeps as it was: its own file or an
+ * earlier sidecar it binds.
+ */
+const assertDistinctFiles = (
+  forkRoot: string,
+  entries: PlanEntry[],
+  rewrites: LiteralRewrite[]
+): void => {
+  const touched = [
+    ...entries
+      .filter(
+        (entry) => WRITE_ACTIONS.has(entry.action) || entry.action === "delete"
+      )
+      .map((entry) => entry.forkPath),
+    ...rewrites.map((rewrite) => rewrite.forkPath),
+  ];
+  const kept = entries
+    .filter((entry) => entry.action === "conflict")
+    .flatMap((entry) => [
+      entry.forkPath,
+      ...(typeof entry.sidecarDigest === "string"
+        ? [entry.forkPath + MERGE_SIDECAR_SUFFIX]
+        : []),
+    ]);
+  const identities = new Map<string, string>();
+  for (const [index, forkPath] of [...touched, ...kept].entries()) {
+    const status = statSync(join(forkRoot, forkPath), {
+      throwIfNoEntry: false,
+    });
+    if (status === undefined) {
+      continue;
+    }
+    const identity = `${status.dev}:${status.ino}`;
+    const other = identities.get(identity);
+    if (other !== undefined && other !== forkPath) {
+      throw new ForkUpdateError(
+        `${other} and ${forkPath} are the same file on this filesystem (a hard link or an aliased name), and apply would change one of them; separate them, then plan again.`,
+        EXIT.blocked
+      );
+    }
+    // Kept files only need checking against touched ones.
+    if (index < touched.length) {
+      identities.set(identity, forkPath);
+    }
+  }
+};
+
+/**
+ * Reserve, before any content is written, every path apply creates: each new
+ * file and each sidecar is created empty and exclusively. A path that already
+ * exists under another name, or that names the same file as another
+ * reservation, fails its reservation; then every reservation is removed and
+ * apply refuses, so no filesystem alias can make one write land on another.
+ */
+/** Create `path` empty and exclusively, noting what it made; false on failure. */
+const reserve = (path: string, made: string[]): boolean => {
+  try {
+    const directory = mkdirSync(dirname(path), { recursive: true });
+    if (directory !== undefined) {
+      made.push(directory);
+    }
+    closeSync(openSync(path, "wx"));
+    made.push(path);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+const reserveNewPaths = (forkRoot: string, entries: PlanEntry[]): void => {
+  const fresh = entries.flatMap((entry) => {
+    if (entryBytes(entry) === undefined) {
+      return [];
+    }
+    if (entry.action === "conflict") {
+      return [entry.forkPath + MERGE_SIDECAR_SUFFIX];
+    }
+    return WRITE_ACTIONS.has(entry.action) && entry.forkDigest === null
+      ? [entry.forkPath]
+      : [];
+  });
+  const made: string[] = [];
+  for (const forkPath of fresh) {
+    if (!reserve(join(forkRoot, forkPath), made)) {
+      for (const created of made.reverse()) {
+        rmSync(created, { force: true, recursive: true });
+      }
+      throw new ForkUpdateError(
+        `${forkPath} could not be created on its own: another path in the plan, or a file already in the fork, names the same file on this filesystem. Nothing was written; separate them, then plan again.`,
+        EXIT.blocked
+      );
+    }
+  }
+};
+
+/**
  * Fail loudly when a file apply wrote no longer holds what it wrote: two
  * planned paths named one file on this filesystem.
  */
@@ -3624,6 +3728,24 @@ const assertWritesDistinct = (
         `${forkPath} no longer holds what apply wrote: another path in the plan names the same file on this filesystem. Check the fork against the plan, then plan again.`
       );
     }
+  }
+};
+
+/** Fail loudly when apply changed a file or an earlier sidecar a conflict keeps. */
+const assertKeptByConflict = (forkRoot: string, entry: PlanEntry): void => {
+  const current = readBytes(join(forkRoot, entry.forkPath));
+  const sidecar =
+    typeof entry.sidecarDigest === "string"
+      ? readBytes(join(forkRoot, entry.forkPath + MERGE_SIDECAR_SUFFIX))
+      : undefined;
+  if (
+    (current === null ? null : bytesDigest(current)) !== entry.forkDigest ||
+    (sidecar !== undefined &&
+      (sidecar === null ? null : bytesDigest(sidecar)) !== entry.sidecarDigest)
+  ) {
+    throw new ForkUpdateError(
+      `Apply changed ${entry.forkPath} or its earlier sidecar, which its conflict keeps as they were: two planned paths name one file on this filesystem. Check the fork against the plan, then plan again.`
+    );
   }
 };
 
@@ -3659,6 +3781,11 @@ const applyEntries = (
     }
   }
   assertWritesDistinct(forkRoot, wrote);
+  for (const entry of entries) {
+    if (entry.action === "conflict") {
+      assertKeptByConflict(forkRoot, entry);
+    }
+  }
   return { deleted, written };
 };
 
@@ -3712,6 +3839,8 @@ export const applyForkPlan = (plan: ForkPlan): ApplyReceipt => {
     assertNoSymlinkPath(forkRoot, rewrite.forkPath);
   }
   assertForkUnchanged(forkRoot, validated.entries, validated.literalRewrites);
+  assertDistinctFiles(forkRoot, validated.entries, validated.literalRewrites);
+  reserveNewPaths(forkRoot, validated.entries);
   const { deleted, written } = applyEntries(forkRoot, validated.entries);
   const literalRewrites = applyLiteralRewrites(
     forkRoot,

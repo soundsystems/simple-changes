@@ -14,6 +14,7 @@ import * as fs from "node:fs";
 import {
   cpSync,
   existsSync,
+  linkSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
@@ -417,6 +418,28 @@ const withWriteAlias = <T>(from: string, to: string, body: () => T): T => {
     return body();
   } finally {
     mock.module("node:fs", () => ({ ...fs, writeFileSync: real }));
+  }
+};
+
+/**
+ * Run `body` on a filesystem where exclusively creating `taken` fails, as when
+ * the name aliases a file that already exists; `node:fs` is mocked.
+ */
+const withTakenName = <T>(taken: string, body: () => T): T => {
+  const real = fs.openSync;
+  mock.module("node:fs", () => ({
+    ...fs,
+    openSync: (path: unknown, ...rest: unknown[]): unknown => {
+      if (String(path) === taken) {
+        throw Object.assign(new Error(`EEXIST: ${taken}`), { code: "EEXIST" });
+      }
+      return (real as (...args: unknown[]) => unknown)(path, ...rest);
+    },
+  }));
+  try {
+    return body();
+  } finally {
+    mock.module("node:fs", () => ({ ...fs, openSync: real }));
   }
 };
 
@@ -3988,6 +4011,76 @@ describe("update-local-forks moved declarations", () => {
     expect(readFileSync(sidecar, "utf8")).toStartWith(
       "== update-local-forks: moved declarations =="
     );
+  });
+
+  test("refuses before writing when a file apply updates is the held sidecar under another name", () => {
+    // Round 13: the fork's earlier sidecar is a hard link to a file the plan
+    // updates; writing that file would rewrite the sidecar the conflict binds.
+    const pinned = "export const moved = 1;\nexport const kept = 2;\n";
+    const released = "export const kept = 2;\n";
+    const fixture = movedFixture({
+      forkLease: () => released,
+      pinned,
+      pinnedExtra: { "scripts/lib/q.ts": "export const earlier = 1;\n" },
+      released: {
+        "scripts/lib/lease-recovery.ts": "export const moved = 1;\n",
+        "scripts/lib/lease.ts": released,
+        "scripts/lib/q.ts": "export const replacement = 1;\n",
+      },
+    });
+    const sidecar = join(fixture.fork, `${LEASE_PATH}.upstream-merge`);
+    linkSync(join(fixture.fork, "runtime/scripts/lib/q.ts"), sidecar);
+    const plan = planMoved(fixture);
+    expect(entryOf(plan, LEASE_PATH)?.action).toBe("conflict");
+    expect(entryOf(plan, "runtime/scripts/lib/q.ts")?.action).toBe("update");
+
+    expect(() => applyForkPlan(plan)).toThrow("are the same file");
+    expect(readFileSync(sidecar, "utf8")).toBe("export const earlier = 1;\n");
+    expect(existsSync(join(fixture.fork, RECOVERY_PATH))).toBe(false);
+  });
+
+  test("refuses two conflicts whose sidecars would alias each other", () => {
+    // Round 13: sidecars are checked against each other, not only against
+    // planned files. APFS keeps café and cafe apart, but the check folds
+    // further than any filesystem, combining marks included.
+    const fixture = movedFixture({
+      forkFiles: {
+        "runtime/scripts/lib/cafe.ts": "export const keepB = 2;\n",
+        "runtime/scripts/lib/café.ts": "export const keepA = 1;\n",
+      },
+      pinnedExtra: {
+        "scripts/lib/cafe.ts":
+          "export const beta = 2;\nexport const keepB = 2;\n",
+        "scripts/lib/café.ts":
+          "export const alpha = 1;\nexport const keepA = 1;\n",
+      },
+      released: {
+        "scripts/lib/cafe.ts": "export const keepB = 2;\n",
+        "scripts/lib/café.ts": "export const keepA = 1;\n",
+        "scripts/lib/lease-recovery.ts": LEASE_RECOVERY,
+        "scripts/lib/lease.ts": LEASE_RELEASED,
+        "scripts/lib/m.ts": "export const alpha = 1;\nexport const beta = 2;\n",
+      },
+    });
+
+    expect(() => planMoved(fixture)).toThrow("its sidecar goes at");
+  });
+
+  test("reserves every new path before writing, so an alias writes nothing at all", () => {
+    // A name the filesystem aliases, which no check can foresee, fails its
+    // exclusive reservation; every reservation is removed and nothing is
+    // written, the pin included.
+    const fixture = movedFixture({ forkLease: editRelinquish });
+    const plan = planMoved(fixture);
+    const sidecar = join(fixture.fork, `${LEASE_PATH}.upstream-merge`);
+    const skill = readFileSync(join(fixture.fork, "SKILL.md"), "utf8");
+
+    expect(() => withTakenName(sidecar, () => applyForkPlan(plan))).toThrow(
+      "could not be created on its own"
+    );
+    expect(existsSync(sidecar)).toBe(false);
+    expect(existsSync(join(fixture.fork, RECOVERY_PATH))).toBe(false);
+    expect(readFileSync(join(fixture.fork, "SKILL.md"), "utf8")).toBe(skill);
   });
 
   test("refuses a plan that carries a file where a moved-code sidecar goes", () => {

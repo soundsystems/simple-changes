@@ -3797,6 +3797,27 @@ describe("update-local-forks moved declarations", () => {
     expect(entryOf(plan, LEASE_PATH)?.reason).toContain("-> CHANGELOG.md");
   });
 
+  test("conflicts when code moved out into a directory the plan never carries", () => {
+    // Round 8: installed files under `dist` or `coverage` are never planned,
+    // but a line moved there still counts as moved code.
+    const pinned = "export const moved = 1;\nexport const kept = 2;\n";
+    const released = "export const kept = 2;\n";
+    for (const destination of ["scripts/dist/m.ts", "scripts/coverage/m.ts"]) {
+      const fixture = movedFixture({
+        forkLease: () => released,
+        pinned,
+        released: {
+          [destination]: "export const moved = 1;\n",
+          "scripts/lib/lease.ts": released,
+        },
+      });
+      const plan = planMoved(fixture);
+
+      expect(entryOf(plan, LEASE_PATH)?.action).toBe("conflict");
+      expect(entryOf(plan, LEASE_PATH)?.reason).toContain(`-> ${destination}`);
+    }
+  });
+
   test("refuses a plan that carries a file where a moved-code sidecar goes", () => {
     // Round 7: upstream adds a file at the conflicting file's sidecar path,
     // or under it; writing both would overwrite the sidecar or fail midway.
@@ -3805,6 +3826,8 @@ describe("update-local-forks moved declarations", () => {
     for (const collision of [
       "scripts/lib/lease.ts.upstream-merge",
       "scripts/lib/lease.ts.upstream-merge/m.ts",
+      // Round 8: a case alias names the same file on most macOS volumes.
+      "scripts/lib/lease.ts.UPSTREAM-MERGE",
     ]) {
       const fixture = movedFixture({
         forkLease: () => released,

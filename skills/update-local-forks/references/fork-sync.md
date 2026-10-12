@@ -184,7 +184,8 @@ character and at least eight non-blank characters; bare braces, brackets, and
 punctuation never count. Code moved out of a file when a significant line
 upstream removed from it since the pin (the pinned lines less the installed
 lines, trimmed and counted) is among the lines upstream added since the pin to
-another installed file, new or changed. When code moved out of a file and the
+another installed file, new or changed, including one the plan never carries,
+such as the changelog. When code moved out of a file and the
 fork's copy differs from the pin in any byte, or the fork omits the file, the
 file is a `conflict`, even when the fork's change sits elsewhere in it and its
 lines merge. A fork whose copy equals the pin gets the ordinary plan.

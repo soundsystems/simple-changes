@@ -146,6 +146,23 @@ const walkFiles = (root: string, base = root): string[] => {
   });
 };
 
+/**
+ * Every regular file under `root` but Git's own, skipped directories included:
+ * where upstream code can move to, whether or not the plan carries the file.
+ */
+const walkEveryFile = (root: string, base = root): string[] => {
+  if (!existsSync(root)) {
+    return [];
+  }
+  return readdirSync(root, { withFileTypes: true }).flatMap((entry) => {
+    const path = join(root, entry.name);
+    if (entry.isDirectory()) {
+      return entry.name === ".git" ? [] : walkEveryFile(path, base);
+    }
+    return entry.isFile() ? [relative(base, path)] : [];
+  });
+};
+
 const assertNoSymlinkPath = (root: string, relativePath: string): void => {
   let current = root;
   for (const component of relativePath.split("/")) {
@@ -2042,6 +2059,21 @@ const classifyForkFiles = (
       entries.push(forkOnlyEntry(fork, forkPath));
     }
   }
+  // Installed files the plan never carries, such as those under `dist`, still
+  // count as places code moved to.
+  for (const upstreamPath of walkEveryFile(source.path)) {
+    if (!upstreamPaths.has(upstreamPath)) {
+      unmapped.push({
+        forkPath: upstreamPath,
+        upstreamPath,
+        versions: {
+          base: null,
+          current: null,
+          target: readBytes(join(source.path, upstreamPath)),
+        },
+      });
+    }
+  }
   return { entries, files, plannedContent, unmapped, upstreamCopies };
 };
 
@@ -3227,9 +3259,12 @@ const safeForkPath = (forkRoot: string, value: unknown): value is string => {
 
 /**
  * Refuse a plan that carries a file where a conflict's sidecar goes, or under
- * it: writing both would overwrite the sidecar, or fail halfway through apply.
+ * it, in any case or Unicode normalization: writing both would overwrite the
+ * sidecar, or fail halfway through apply.
  */
 const assertSidecarsFree = (entries: PlanEntry[]): void => {
+  // Folded as a case- and normalization-insensitive filesystem would see them.
+  const fold = (path: string): string => path.normalize("NFD").toLowerCase();
   const paths = entries.map((entry) => entry.forkPath);
   for (const entry of entries) {
     if (
@@ -3239,8 +3274,9 @@ const assertSidecarsFree = (entries: PlanEntry[]): void => {
       continue;
     }
     const sidecar = entry.forkPath + MERGE_SIDECAR_SUFFIX;
+    const folded = fold(sidecar);
     const taken = paths.find(
-      (path) => path === sidecar || path.startsWith(`${sidecar}/`)
+      (path) => fold(path) === folded || fold(path).startsWith(`${folded}/`)
     );
     if (taken !== undefined) {
       throw new ForkUpdateError(

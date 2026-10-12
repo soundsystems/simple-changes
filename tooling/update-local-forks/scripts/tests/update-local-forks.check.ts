@@ -2999,6 +2999,8 @@ const movedFixture = (
     forkFiles?: Record<string, string>;
     forkLease?: (pinned: string) => string | null;
     pinned?: string;
+    /** Other packaged files the pin adds, which the fork copies too. */
+    pinnedExtra?: Record<string, string>;
     released?: Record<string, string | null>;
   } = {}
 ): Fixture => {
@@ -3007,7 +3009,7 @@ const movedFixture = (
   const pin = commitPackage(
     fixture.upstream,
     "feat(lease): Add the lease module",
-    { "scripts/lib/lease.ts": pinnedLease }
+    { ...options.pinnedExtra, "scripts/lib/lease.ts": pinnedLease }
   );
   const fork = join(
     fixture.base,
@@ -3818,6 +3820,44 @@ describe("update-local-forks moved declarations", () => {
     }
   });
 
+  test("conflicts when the moved line carries a byte-order mark at the pin", () => {
+    // Round 9: lines are read as UTF-8 before trimming, so an encoded BOM
+    // never keeps a moved line from matching.
+    const fixture = movedFixture({
+      forkLease: () => "",
+      pinned: "﻿export const moved = 1;\n",
+      released: {
+        "scripts/lib/lease-recovery.ts": "export const moved = 1;\n",
+        "scripts/lib/lease.ts": "",
+      },
+    });
+
+    expect(entryOf(planMoved(fixture), LEASE_PATH)?.action).toBe("conflict");
+  });
+
+  test("conflicts when code moved into a file whose name is not valid UTF-8", () => {
+    // Round 9: a destination under a directory the plan never carries is read
+    // by its raw path bytes, so a name that does not decode still counts.
+    const pinned = "export const moved = 1;\nexport const kept = 2;\n";
+    const released = "export const kept = 2;\n";
+    const fixture = movedFixture({
+      forkLease: () => released,
+      pinned,
+      released: { "scripts/lib/lease.ts": released },
+    });
+    const dist = join(fixture.source, "scripts", "dist");
+    mkdirSync(dist, { recursive: true });
+    const plan = withRawName(
+      dist,
+      Buffer.from([0xff, 0x2e, 0x74, 0x73]),
+      "export const moved = 1;\n",
+      () => planMoved(fixture)
+    );
+
+    expect(entryOf(plan, LEASE_PATH)?.action).toBe("conflict");
+    expect(entryOf(plan, LEASE_PATH)?.reason).toContain("scripts/dist/");
+  });
+
   test("refuses a plan that carries a file where a moved-code sidecar goes", () => {
     // Round 7: upstream adds a file at the conflicting file's sidecar path,
     // or under it; writing both would overwrite the sidecar or fail midway.
@@ -3841,6 +3881,22 @@ describe("update-local-forks moved declarations", () => {
         `its sidecar goes at ${LEASE_PATH}.upstream-merge`
       );
     }
+
+    // Round 9: an upstream update to the earlier sidecar a held conflict
+    // binds would destroy it.
+    const held = movedFixture({
+      forkLease: () => released,
+      pinned,
+      pinnedExtra: { "scripts/lib/lease.ts.upstream-merge": "earlier merge\n" },
+      released: {
+        "scripts/lib/lease-recovery.ts": "export const moved = 1;\n",
+        "scripts/lib/lease.ts": released,
+        "scripts/lib/lease.ts.upstream-merge": "upstream replacement\n",
+      },
+    });
+    expect(() => planMoved(held)).toThrow(
+      `its sidecar goes at ${LEASE_PATH}.upstream-merge`
+    );
 
     // A saved plan edited to carry one is refused before anything is written.
     const fixture = movedFixture({ forkLease: editRelinquish });

@@ -147,21 +147,34 @@ const walkFiles = (root: string, base = root): string[] => {
 };
 
 /**
- * Every regular file under `root` but Git's own, skipped directories included:
- * where upstream code can move to, whether or not the plan carries the file.
+ * Every regular file under `root` but Git's own, skipped directories included,
+ * by raw path bytes: where upstream code can move to, whether or not the plan
+ * carries the file. A valid UTF-8 path reads as text, as the plan names it;
+ * any other is kept as its bytes, and its location still reads the file.
  */
-const walkEveryFile = (root: string, base = root): string[] => {
-  if (!existsSync(root)) {
-    return [];
-  }
-  return readdirSync(root, { withFileTypes: true }).flatMap((entry) => {
-    const path = join(root, entry.name);
-    if (entry.isDirectory()) {
-      return entry.name === ".git" ? [] : walkEveryFile(path, base);
+const walkEveryFile = (
+  root: Buffer,
+  prefix?: Buffer
+): { location: Buffer; path: string }[] =>
+  readdirSync(prefix ? Buffer.concat([root, SLASH, prefix]) : root, {
+    encoding: "buffer",
+  }).flatMap((raw) => {
+    const name = Buffer.from(raw);
+    const path = prefix ? Buffer.concat([prefix, SLASH, name]) : name;
+    const location = Buffer.concat([root, SLASH, path]);
+    const status = lstatSync(location);
+    if (status.isDirectory()) {
+      return byteString(name) === ".git" ? [] : walkEveryFile(root, path);
     }
-    return entry.isFile() ? [relative(base, path)] : [];
+    return status.isFile()
+      ? [
+          {
+            location,
+            path: isUtf8(path) ? path.toString("utf8") : byteString(path),
+          },
+        ]
+      : [];
   });
-};
 
 const assertNoSymlinkPath = (root: string, relativePath: string): void => {
   let current = root;
@@ -2061,15 +2074,15 @@ const classifyForkFiles = (
   }
   // Installed files the plan never carries, such as those under `dist`, still
   // count as places code moved to.
-  for (const upstreamPath of walkEveryFile(source.path)) {
-    if (!upstreamPaths.has(upstreamPath)) {
+  for (const { location, path } of walkEveryFile(Buffer.from(source.path))) {
+    if (!upstreamPaths.has(path)) {
       unmapped.push({
-        forkPath: upstreamPath,
-        upstreamPath,
+        forkPath: path,
+        upstreamPath: path,
         versions: {
           base: null,
           current: null,
-          target: readBytes(join(source.path, upstreamPath)),
+          target: byteString(readFileSync(location)),
         },
       });
     }
@@ -2125,9 +2138,13 @@ const isCodeFile = (path: string): boolean => CODE_FILE_PATTERN.test(path);
 const changedSincePin = (file: UpstreamFile): boolean =>
   file.versions.base !== file.versions.target;
 
-/** A line trimmed when it can carry code, or null: braces and punctuation never count. */
+/**
+ * A line, read as UTF-8 and trimmed (a byte-order mark and Unicode spaces
+ * included), when it can carry code, or null: braces and punctuation never
+ * count.
+ */
 const significantLine = (line: string): string | null => {
-  const trimmed = line.trim();
+  const trimmed = shown(line).trim();
   return trimmed.replace(WHITESPACE_PATTERN, "").length >=
     SIGNIFICANT_LINE_LENGTH && IDENTIFIER_CHARACTER_PATTERN.test(trimmed)
     ? trimmed
@@ -3267,10 +3284,9 @@ const assertSidecarsFree = (entries: PlanEntry[]): void => {
   const fold = (path: string): string => path.normalize("NFD").toLowerCase();
   const paths = entries.map((entry) => entry.forkPath);
   for (const entry of entries) {
-    if (
-      entry.action !== "conflict" ||
-      (entry.content === undefined && entry.contentBase64 === undefined)
-    ) {
+    // Every conflict: one writes its sidecar, and one that binds an earlier
+    // sidecar must find it as it was.
+    if (entry.action !== "conflict") {
       continue;
     }
     const sidecar = entry.forkPath + MERGE_SIDECAR_SUFFIX;

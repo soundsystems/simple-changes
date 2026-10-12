@@ -1913,6 +1913,11 @@ interface ClassifiedFork {
   /** Every mapped upstream path's three copies, by upstream path. */
   files: Map<string, UpstreamFile>;
   plannedContent: Map<string, string>;
+  /**
+   * Upstream paths the fork never carries, such as `CHANGELOG.md`, with their
+   * pinned and installed copies: code moved there still counts as moved.
+   */
+  unmapped: UpstreamFile[];
   /** Upstream's bytes for each mapped fork path, at the pin and installed. */
   upstreamCopies: Map<string, string[]>;
 }
@@ -1966,6 +1971,7 @@ const classifyForkFiles = (
   ]);
   const entries: PlanEntry[] = [];
   const files = new Map<string, UpstreamFile>();
+  const unmapped: UpstreamFile[] = [];
   const plannedContent = new Map<string, string>();
   const upstreamCopies = new Map<string, string[]>();
   const forkPathsTouched = new Set<string>();
@@ -1975,6 +1981,15 @@ const classifyForkFiles = (
     if (forkPath === null) {
       // The fork's own file at this path is that history; list it once.
       forkPathsTouched.add(upstreamPath);
+      unmapped.push({
+        forkPath: upstreamPath,
+        upstreamPath,
+        versions: {
+          base: treeBlob(upstream, fork.pin, upstreamPath),
+          current: null,
+          target: readBytes(join(source.path, upstreamPath)),
+        },
+      });
       entries.push({
         action: "skip",
         forkDigest: null,
@@ -2027,7 +2042,7 @@ const classifyForkFiles = (
       entries.push(forkOnlyEntry(fork, forkPath));
     }
   }
-  return { entries, files, plannedContent, upstreamCopies };
+  return { entries, files, plannedContent, unmapped, upstreamCopies };
 };
 
 // ------------------------------------------------------- moved declarations
@@ -2339,7 +2354,7 @@ const otherForkChangesIn = (
 /** Each upstream code file that code moved out of since the pin. */
 const movedDeclarations = (classified: ClassifiedFork): MovedOut[] => {
   const files = [...classified.files.values()];
-  const added = addedLines(files);
+  const added = addedLines([...files, ...classified.unmapped]);
   const read = declarationReader();
   const moves: MovedOut[] = [];
   for (const file of files) {
@@ -3135,6 +3150,7 @@ export const planForkUpdate = (options: {
   );
   listVersionLiterals(entries, literals.review, literalRewrites);
   listStaleProbes(fork, classified, moved.moves);
+  assertSidecarsFree(entries);
   for (const entry of entries) {
     encodeContent(entry);
   }
@@ -3207,6 +3223,32 @@ const safeForkPath = (forkRoot: string, value: unknown): value is string => {
   return (
     contained !== "" && !contained.startsWith("..") && !isAbsolute(contained)
   );
+};
+
+/**
+ * Refuse a plan that carries a file where a conflict's sidecar goes, or under
+ * it: writing both would overwrite the sidecar, or fail halfway through apply.
+ */
+const assertSidecarsFree = (entries: PlanEntry[]): void => {
+  const paths = entries.map((entry) => entry.forkPath);
+  for (const entry of entries) {
+    if (
+      entry.action !== "conflict" ||
+      (entry.content === undefined && entry.contentBase64 === undefined)
+    ) {
+      continue;
+    }
+    const sidecar = entry.forkPath + MERGE_SIDECAR_SUFFIX;
+    const taken = paths.find(
+      (path) => path === sidecar || path.startsWith(`${sidecar}/`)
+    );
+    if (taken !== undefined) {
+      throw new ForkUpdateError(
+        `${entry.forkPath} conflicts, and its sidecar goes at ${sidecar}, but the plan also carries ${taken}; resolve ${entry.forkPath} by hand without the sidecar, then plan again.`,
+        EXIT.blocked
+      );
+    }
+  }
 };
 
 // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: The closed plan schema is deliberately validated field by field at one trust boundary.
@@ -3409,6 +3451,7 @@ const validateForkPlan = (value: unknown): ForkPlan => {
   ) {
     throw new ForkUpdateError("The plan metadata is invalid.", EXIT.usage);
   }
+  assertSidecarsFree(value.entries as PlanEntry[]);
   // An earlier plan may rewrite a version literal, which this version only
   // lists, or a literal in a file the plan carries from upstream; refuse it
   // before any write.

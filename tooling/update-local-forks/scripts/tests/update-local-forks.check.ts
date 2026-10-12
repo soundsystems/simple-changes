@@ -3778,6 +3778,71 @@ describe("update-local-forks moved declarations", () => {
     expect(plan.pinUpdate.reason).toContain("gate review");
   });
 
+  test("conflicts when code moved out only into the packaged changelog", () => {
+    // Round 7: the changelog is the fork's own history and never planned, but
+    // a line moved there still counts as moved code.
+    const pinned = "export const moved = 1;\nexport const kept = 2;\n";
+    const released = "export const kept = 2;\n";
+    const fixture = movedFixture({
+      forkLease: () => released,
+      pinned,
+      released: {
+        "CHANGELOG.md": `${changelogThrough("0.3.0", "0.2.0", "0.1.0")}\n\`\`\`ts\nexport const moved = 1;\n\`\`\`\n`,
+        "scripts/lib/lease.ts": released,
+      },
+    });
+    const plan = planMoved(fixture);
+
+    expect(entryOf(plan, LEASE_PATH)?.action).toBe("conflict");
+    expect(entryOf(plan, LEASE_PATH)?.reason).toContain("-> CHANGELOG.md");
+  });
+
+  test("refuses a plan that carries a file where a moved-code sidecar goes", () => {
+    // Round 7: upstream adds a file at the conflicting file's sidecar path,
+    // or under it; writing both would overwrite the sidecar or fail midway.
+    const pinned = "export const moved = 1;\nexport const kept = 2;\n";
+    const released = "export const kept = 2;\n";
+    for (const collision of [
+      "scripts/lib/lease.ts.upstream-merge",
+      "scripts/lib/lease.ts.upstream-merge/m.ts",
+    ]) {
+      const fixture = movedFixture({
+        forkLease: () => released,
+        pinned,
+        released: {
+          [collision]: "export const moved = 1;\n",
+          "scripts/lib/lease.ts": released,
+        },
+      });
+      expect(() => planMoved(fixture)).toThrow(
+        `its sidecar goes at ${LEASE_PATH}.upstream-merge`
+      );
+    }
+
+    // A saved plan edited to carry one is refused before anything is written.
+    const fixture = movedFixture({ forkLease: editRelinquish });
+    const plan = planMoved(fixture);
+    const sneaked: ForkPlan = {
+      ...plan,
+      entries: [
+        ...plan.entries,
+        {
+          action: "add",
+          content: "export const sneaked = true;\n",
+          forkDigest: null,
+          forkPath: `${LEASE_PATH}.upstream-merge`,
+          reason: "New upstream runtime file.",
+          upstreamPath: "scripts/lib/lease.ts.upstream-merge",
+        },
+      ],
+    };
+    expect(() => applyForkPlan(sneaked)).toThrow("its sidecar goes at");
+    expect(existsSync(join(fixture.fork, `${LEASE_PATH}.upstream-merge`))).toBe(
+      false
+    );
+    expect(existsSync(join(fixture.fork, RECOVERY_PATH))).toBe(false);
+  });
+
   test("conflicts without a sidecar when the fork omits the file declarations left", () => {
     const fixture = movedFixture({ forkLease: () => null });
     const plan = planMoved(fixture);

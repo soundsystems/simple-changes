@@ -60,9 +60,9 @@
   deletes shares a device and inode with another such file, with any file
   it leaves untouched, or with any sidecar already waiting beside an entry;
   it reserves every new path with `wx`, writes every
-  sidecar first and again last, so a write that fails midway never leaves a
-  conflict's record empty, and verifies every write and every file a
-  conflict keeps.
+  sidecar first and again last, so a regular-file write that fails after the
+  sidecars are filled cannot leave a conflict without its record, and
+  verifies every write and every file a conflict keeps.
 - Documented limits: a move that rewrites every significant line it
   carries, a declaration renamed while it moves, a conflict for any fork
   change in a file code moved out of, a resolved move that conflicts again

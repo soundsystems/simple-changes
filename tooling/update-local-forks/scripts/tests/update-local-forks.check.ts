@@ -4140,6 +4140,37 @@ describe("update-local-forks moved declarations", () => {
     expect(existsSync(join(fixture.fork, RECOVERY_PATH))).toBe(false);
   });
 
+  test("refuses before writing when a pending review sidecar is hard-linked to a file apply updates", () => {
+    // Release review: the saved merge waiting beside a review file is kept
+    // too, whether or not the plan binds its digest.
+    const shared = "export const shared = 1;\n";
+    const fixture = movedFixture({
+      forkFiles: {
+        "runtime/scripts/lib/x.ts.upstream-merge": "earlier merge\n",
+      },
+      pinnedExtra: { "scripts/lib/x.ts": shared, "scripts/lib/y.ts": shared },
+      released: {
+        "scripts/lib/lease-recovery.ts": LEASE_RECOVERY,
+        "scripts/lib/lease.ts": LEASE_RELEASED,
+        "scripts/lib/y.ts": "export const shared = 2;\n",
+      },
+    });
+    const sidecar = join(
+      fixture.fork,
+      "runtime/scripts/lib/x.ts.upstream-merge"
+    );
+    const y = join(fixture.fork, "runtime/scripts/lib/y.ts");
+    rmSync(sidecar);
+    linkSync(y, sidecar);
+    const plan = planMoved(fixture);
+    expect(entryOf(plan, "runtime/scripts/lib/x.ts")?.action).toBe("review");
+    expect(entryOf(plan, "runtime/scripts/lib/y.ts")?.action).toBe("update");
+
+    expect(() => applyForkPlan(plan)).toThrow("are the same file");
+    expect(readFileSync(sidecar, "utf8")).toBe(shared);
+    expect(existsSync(join(fixture.fork, RECOVERY_PATH))).toBe(false);
+  });
+
   test("refuses a plan that carries a file where a moved-code sidecar goes", () => {
     // Round 7: upstream adds a file at the conflicting file's sidecar path,
     // or under it; writing both would overwrite the sidecar or fail midway.

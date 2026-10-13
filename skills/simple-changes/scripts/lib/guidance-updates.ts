@@ -884,7 +884,7 @@ const GUIDANCE_UPDATES: GuidanceUpdateDefinition[] = [
       {
         kind: "behavior",
         summary:
-          "`loop start` and `prepare-agent` report a private `workDir` outside every checkout and the Git common directory, unique to each call and bound to the run under the loop locks; agents keep the files they hand to Simple Changes there (provider pages, receipts, proposal bodies, and decision files) instead of folders beside the project. A clean `loop finalize` or `loop end` removes the run's directories and a blocked or preserved run keeps them; `simple-changes workdir --agent-id <id>` prints one and `workdir remove <path>` deletes one by hand.",
+          "`loop start` and `prepare-agent` report a private `workDir` outside every checkout and the Git common directory, kept for its agent and run and bound to the run under the loop locks; agents keep the files they hand to Simple Changes there (provider pages, receipts, proposal bodies, and decision files) instead of folders beside the project. A clean `loop finalize` or `loop end` removes the run's directories and a blocked or preserved run keeps them; `simple-changes workdir --agent-id <id>` prints one and `workdir remove <path>` deletes one by hand.",
         version: 29,
       },
       {

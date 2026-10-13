@@ -18,7 +18,7 @@
   which removes the only runtime import cycle. A TypeScript-API proof
   (statements, export set, 10,497 identifier bindings, imports, cycles) ran
   outside the repository.
-- Agent work directories (`lib/work-directory.ts`): unique 0700 directories
+- Agent work directories (`lib/work-directory.ts`): private 0700 directories
   under `<tmpdir>/simple-changes-<uid>/<repo-slug>-<sha12>/`, or under
   `SIMPLE_CHANGES_WORK_ROOT`. The root is refused inside any registered
   checkout or the Git common directory, as a symlink, when owned by another
@@ -57,8 +57,9 @@
 - update-local-forks apply: before writing, it refuses a plan whose
   sidecars collide with planned paths or each other after NFKD, mark
   removal, and two-way case folding, or in which a file it writes or
-  deletes shares a device and inode with another such file or with any file
-  it leaves untouched; it reserves every new path with `wx`, writes every
+  deletes shares a device and inode with another such file, with any file
+  it leaves untouched, or with any sidecar already waiting beside an entry;
+  it reserves every new path with `wx`, writes every
   sidecar first and again last, so a write that fails midway never leaves a
   conflict's record empty, and verifies every write and every file a
   conflict keeps.
@@ -87,8 +88,10 @@
   found only apply-side alias and input cases, each fixed. Round 14 found
   nothing blocking and two should-fix cases, a failed apply that advanced
   the pin before filling a sidecar and a hard link to a file apply leaves
-  untouched; both were fixed with tests, the owner ended the loop there, and
-  the exact-head release review covers the final code.
+  untouched; both were fixed with tests, and the owner ended the loop there.
+  The first exact-head release review (xhigh) found one more such case, a
+  sidecar waiting beside a review file whose digest the plan does not bind,
+  and a wording nit; both are fixed, with a test for the first.
 <!-- simple-changelogs-signature agent="Claude Opus 5.5 xhigh" at="2026-10-12T19:09:00-05:00" -->
 
 ## 0.28.0 - 2026-10-08

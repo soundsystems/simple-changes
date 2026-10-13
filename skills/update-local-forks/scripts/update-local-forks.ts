@@ -3619,7 +3619,8 @@ const entryBytes = (entry: PlanEntry): Buffer | undefined => {
  * Refuse, before any write, when a file apply writes, deletes, or rewrites is
  * the same file (a hard link, or a name the filesystem aliases) as another
  * such file, or as a file apply leaves as it is: any entry it neither writes
- * nor deletes, or an earlier sidecar a conflict binds.
+ * nor deletes, or any sidecar already waiting beside an entry, whether or not
+ * the plan binds its digest. A sidecar path with no file yet is skipped.
  */
 const assertDistinctFiles = (
   forkRoot: string,
@@ -3638,9 +3639,7 @@ const assertDistinctFiles = (
     ...(WRITE_ACTIONS.has(entry.action) || entry.action === "delete"
       ? []
       : [entry.forkPath]),
-    ...(typeof entry.sidecarDigest === "string"
-      ? [entry.forkPath + MERGE_SIDECAR_SUFFIX]
-      : []),
+    entry.forkPath + MERGE_SIDECAR_SUFFIX,
   ]);
   const identities = new Map<string, string>();
   for (const [index, forkPath] of [...touched, ...kept].entries()) {

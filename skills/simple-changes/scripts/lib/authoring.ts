@@ -429,9 +429,20 @@ export const readAuthoringFile = (
   }
 };
 
+// True for a regular file in a real directory: neither may be a symbolic
+// link, so the fork's copy cannot point outside the fork.
+const isUnlinkedFile = (directory: string, file: string): boolean => {
+  try {
+    return lstatSync(directory).isDirectory() && lstatSync(file).isFile();
+  } catch {
+    return false;
+  }
+};
+
 // The package root holds agents/harnesses.json. A repository fork keeps this
 // runtime under its own runtime/ directory and carries the data file beside
-// its SKILL.md, so a runtime/ package without the file looks one level up.
+// its SKILL.md, so a runtime/ package without the file looks one level up,
+// at an unlinked file only.
 export const packagedHarnessDataPath = (
   packageRoot: string = resolve(
     dirname(fileURLToPath(import.meta.url)),
@@ -443,8 +454,9 @@ export const packagedHarnessDataPath = (
   if (existsSync(packaged) || basename(packageRoot) !== "runtime") {
     return packaged;
   }
-  const forkCopy = join(dirname(packageRoot), "agents", "harnesses.json");
-  return existsSync(forkCopy) ? forkCopy : packaged;
+  const forkAgents = join(dirname(packageRoot), "agents");
+  const forkCopy = join(forkAgents, "harnesses.json");
+  return isUnlinkedFile(forkAgents, forkCopy) ? forkCopy : packaged;
 };
 
 const harnessDefinitionErrors = (id: string, value: unknown): string[] => {

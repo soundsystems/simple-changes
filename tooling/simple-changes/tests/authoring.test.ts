@@ -887,6 +887,26 @@ describe("harness detection", () => {
     expect(packagedHarnessDataPath(bare)).toBe(
       join(bare, "agents", "harnesses.json")
     );
+    // A symlinked agents/ directory or data file could point outside the
+    // fork, so neither is followed.
+    const outside = temporary("outside");
+    place(outside);
+    const linkedDirectory = temporary("linked-directory");
+    mkdirSync(join(linkedDirectory, "runtime"));
+    symlinkSync(join(outside, "agents"), join(linkedDirectory, "agents"));
+    expect(packagedHarnessDataPath(join(linkedDirectory, "runtime"))).toBe(
+      join(linkedDirectory, "runtime", "agents", "harnesses.json")
+    );
+    const linkedFile = temporary("linked-file");
+    mkdirSync(join(linkedFile, "runtime"));
+    mkdirSync(join(linkedFile, "agents"));
+    symlinkSync(
+      join(outside, "agents", "harnesses.json"),
+      join(linkedFile, "agents", "harnesses.json")
+    );
+    expect(packagedHarnessDataPath(join(linkedFile, "runtime"))).toBe(
+      join(linkedFile, "runtime", "agents", "harnesses.json")
+    );
   });
 });
 

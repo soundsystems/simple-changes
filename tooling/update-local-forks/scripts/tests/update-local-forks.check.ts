@@ -560,6 +560,47 @@ const repinFixture = (
   };
 };
 
+/** The fixture fork's SKILL.md with `intro` in place of upstream's intro. */
+const acmeSkill = (pin: string, intro: string): string =>
+  `---\nname: acme-simple-changes\n---\n\n# Acme Simple Changes\n\nForked from \`simple-changes\` @ \`${pin}\`. Acme-specific deltas: GitLab only.\n\n${intro}\n\n## Rules\n\nRule one.\n`;
+
+/**
+ * A release whose SKILL.md rewrites the same intro the fork rewrote, so the
+ * fork's SKILL.md, which carries the pin, conflicts. SPEC.md conflicts too.
+ */
+const skillConflictFixture = (): Fixture => {
+  const fixture = createFixture();
+  writeFileSync(
+    join(fixture.fork, "SKILL.md"),
+    acmeSkill(fixture.pin, "Fork intro.")
+  );
+  writeFileSync(
+    join(fixture.upstream, "skills/simple-changes/SKILL.md"),
+    "---\nname: simple-changes\n---\n\n# Simple Changes\n\nUpstream intro.\n\n## Rules\n\nRule one.\n"
+  );
+  git(fixture.upstream, ["add", "."]);
+  git(fixture.upstream, ["commit", "-q", "-m", "conflicting release"]);
+  cpSync(join(fixture.upstream, "skills/simple-changes"), fixture.source, {
+    force: true,
+    recursive: true,
+  });
+  return fixture;
+};
+
+/** Merge both of skillConflictFixture's sidecars by hand and delete them. */
+const mergeSkillConflictByHand = (fixture: Fixture): void => {
+  writeFileSync(
+    join(fixture.fork, "SKILL.md"),
+    acmeSkill(fixture.pin, "Upstream intro.\n\nFork intro.")
+  );
+  writeFileSync(
+    join(fixture.fork, "SPEC.md"),
+    "# Spec\n\n- guarantee a\n- guarantee b\n- guarantee c\n- acme guarantee\n"
+  );
+  rmSync(join(fixture.fork, "SKILL.md.upstream-merge"));
+  rmSync(join(fixture.fork, "SPEC.md.upstream-merge"));
+};
+
 /** The line numbers an entry lists as version literals to change by hand. */
 const listedLines = (entry: PlanEntry | undefined): number[] =>
   [...(entry?.reason ?? "").matchAll(/\bline (\d+): /gu)].map((match) =>
@@ -2688,22 +2729,7 @@ describe("update-local-forks", () => {
   });
 
   test("keeps the provenance pin pending when SKILL.md conflicts", () => {
-    const fixture = createFixture();
-    writeFileSync(
-      join(fixture.fork, "SKILL.md"),
-      `---\nname: acme-simple-changes\n---\n\n# Acme Simple Changes\n\nForked from \`simple-changes\` @ \`${fixture.pin}\`. Acme-specific deltas: GitLab only.\n\nFork intro.\n\n## Rules\n\nRule one.\n`
-    );
-    writeFileSync(
-      join(fixture.upstream, "skills/simple-changes/SKILL.md"),
-      "---\nname: simple-changes\n---\n\n# Simple Changes\n\nUpstream intro.\n\n## Rules\n\nRule one.\n"
-    );
-    git(fixture.upstream, ["add", "."]);
-    git(fixture.upstream, ["commit", "-q", "-m", "conflicting release"]);
-    cpSync(join(fixture.upstream, "skills/simple-changes"), fixture.source, {
-      force: true,
-      recursive: true,
-    });
-
+    const fixture = skillConflictFixture();
     const plan = planForkUpdate({
       fork: fixture.fork,
       source: fixture.source,
@@ -2713,6 +2739,11 @@ describe("update-local-forks", () => {
       plan.entries.find((entry) => entry.forkPath === "SKILL.md")?.action
     ).toBe("conflict");
     expect(plan.pinUpdate.to).toBeNull();
+    expect(plan.source.commitVerified).toBe(true);
+    // The way out is named with the exact commit to merge against.
+    expect(plan.pinUpdate.reason).toContain(
+      `--resolved SKILL.md --resolved-against ${plan.source.commit?.slice(0, 12)}`
+    );
     expect(
       plan.literalRewrites.some((rewrite) => rewrite.from === fixture.pin)
     ).toBe(false);
@@ -2725,6 +2756,403 @@ describe("update-local-forks", () => {
     expect(existsSync(join(fixture.fork, "SKILL.md.upstream-merge"))).toBe(
       true
     );
+  });
+
+  test("holds the pin while SKILL.md waits on its sidecar, moving it nowhere", () => {
+    // SKILL.md carries the pin, so a plan that cannot write SKILL.md must not
+    // claim the pin moved: before this held, apply rewrote the pin in the
+    // fork's tests and reported it moved while SKILL.md kept the old one.
+    const fixture = skillConflictFixture();
+    const options = {
+      fork: fixture.fork,
+      source: fixture.source,
+      upstream: fixture.upstream,
+    };
+    applyForkPlan(planForkUpdate(options));
+    const testScript = readFileSync(
+      join(fixture.fork, "scripts/test.sh"),
+      "utf8"
+    );
+
+    const pending = planForkUpdate(options);
+    const skill = pending.entries.find(
+      (entry) => entry.forkPath === "SKILL.md"
+    );
+    expect(skill?.action).toBe("review");
+    expect(skill?.content).toBeUndefined();
+    expect(pending.pinUpdate.to).toBeNull();
+    expect(pending.pinUpdate.reason).toContain(
+      "SKILL.md waits on SKILL.md.upstream-merge"
+    );
+    expect(pending.literalRewrites).toEqual([]);
+
+    const receipt = applyForkPlan(pending);
+    expect(receipt.pin.to).toBeNull();
+    expect(receipt.literalRewrites).toBe(0);
+    expect(readFileSync(join(fixture.fork, "scripts/test.sh"), "utf8")).toBe(
+      testScript
+    );
+    expect(readFileSync(join(fixture.fork, "SKILL.md"), "utf8")).toContain(
+      fixture.pin
+    );
+  });
+
+  test("advances the pin past a SKILL.md conflict once each file merged by hand is named", () => {
+    const fixture = skillConflictFixture();
+    const options = {
+      fork: fixture.fork,
+      source: fixture.source,
+      upstream: fixture.upstream,
+    };
+    const first = planForkUpdate(options);
+    const release = first.source.commit as string;
+    applyForkPlan(first);
+    mergeSkillConflictByHand(fixture);
+    const merged = {
+      skill: readFileSync(join(fixture.fork, "SKILL.md"), "utf8"),
+      spec: readFileSync(join(fixture.fork, "SPEC.md"), "utf8"),
+    };
+
+    // Against the old pin a merged file conflicts again, and SKILL.md carries
+    // the pin, so no plan without --resolved can ever move it.
+    const stuck = planForkUpdate(options);
+    expect(stuck.pinUpdate).toMatchObject({ from: fixture.pin, to: null });
+    expect(
+      stuck.entries
+        .filter((entry) => entry.action === "conflict")
+        .map((entry) => entry.forkPath)
+    ).toEqual(["SKILL.md", "SPEC.md"]);
+
+    const settled = planForkUpdate({
+      ...options,
+      resolved: {
+        against: release.slice(0, 7),
+        paths: ["SKILL.md", "SPEC.md"],
+      },
+    });
+    expect(settled.pinUpdate).toMatchObject({ from: fixture.pin, to: release });
+    expect(settled.summary.conflict).toBe(0);
+    const skill = settled.entries.find(
+      (entry) => entry.forkPath === "SKILL.md"
+    );
+    expect(skill?.action).toBe("update");
+    expect(skill?.content).toBe(merged.skill.replace(fixture.pin, release));
+    const spec = settled.entries.find((entry) => entry.forkPath === "SPEC.md");
+    expect(spec).toMatchObject({ action: "keep-fork-delta" });
+    expect(spec?.content).toBeUndefined();
+    // Each kept file binds its sidecar's absence, so apply rechecks both.
+    expect(spec?.sidecarDigest).toBeNull();
+    expect(skill?.sidecarDigest).toBeNull();
+    for (const entry of [skill, spec]) {
+      expect(entry?.notes).toContain(
+        `Merged by hand against ${release}; kept as it is.`
+      );
+    }
+    // The pin also moves where the fork's own test names it.
+    expect(settled.literalRewrites).toEqual([
+      expect.objectContaining({
+        forkPath: "scripts/test.sh",
+        from: fixture.pin,
+        to: release,
+      }),
+    ]);
+
+    const receipt = applyForkPlan(settled);
+    expect(receipt.pin).toEqual({ from: fixture.pin, to: release });
+    expect(receipt.conflicts).toEqual([]);
+    expect(readFileSync(join(fixture.fork, "SKILL.md"), "utf8")).toBe(
+      merged.skill.replace(fixture.pin, release)
+    );
+    expect(readFileSync(join(fixture.fork, "SPEC.md"), "utf8")).toBe(
+      merged.spec
+    );
+    expect(existsSync(join(fixture.fork, "SPEC.md.upstream-merge"))).toBe(
+      false
+    );
+    expect(
+      readFileSync(join(fixture.fork, "scripts/test.sh"), "utf8")
+    ).toContain(release);
+
+    // From the new pin, nothing is left to write.
+    const after = planForkUpdate(options);
+    expect(after.pinUpdate.from).toBe(release);
+    for (const action of ["update", "merge", "add", "delete", "conflict"]) {
+      expect(after.summary[action as keyof typeof after.summary]).toBe(0);
+    }
+  });
+
+  test("refuses to apply a settlement after a kept file changed or a sidecar returned", () => {
+    const fixture = skillConflictFixture();
+    const options = {
+      fork: fixture.fork,
+      source: fixture.source,
+      upstream: fixture.upstream,
+    };
+    const first = planForkUpdate(options);
+    const release = first.source.commit as string;
+    applyForkPlan(first);
+    mergeSkillConflictByHand(fixture);
+    const settle = () =>
+      planForkUpdate({
+        ...options,
+        resolved: { against: release, paths: ["SKILL.md", "SPEC.md"] },
+      });
+    const merged = readFileSync(join(fixture.fork, "SPEC.md"), "utf8");
+
+    // The merge undone after planning: upstream's guarantee is gone again.
+    const undone = settle();
+    writeFileSync(
+      join(fixture.fork, "SPEC.md"),
+      "# Spec\n\n- guarantee a\n- guarantee b\n- acme guarantee\n"
+    );
+    expect(() => applyForkPlan(undone)).toThrow(
+      "SPEC.md changed after the plan was made"
+    );
+    writeFileSync(join(fixture.fork, "SPEC.md"), merged);
+
+    // A sidecar that returns after planning means the file is not settled.
+    const returned = settle();
+    writeFileSync(join(fixture.fork, "SPEC.md.upstream-merge"), "unmerged\n");
+    expect(() => applyForkPlan(returned)).toThrow(
+      "SPEC.md.upstream-merge changed after the plan was made"
+    );
+    rmSync(join(fixture.fork, "SPEC.md.upstream-merge"));
+    const skillReturned = settle();
+    writeFileSync(join(fixture.fork, "SKILL.md.upstream-merge"), "unmerged\n");
+    expect(() => applyForkPlan(skillReturned)).toThrow(
+      "SKILL.md.upstream-merge changed after the plan was made"
+    );
+    expect(readFileSync(join(fixture.fork, "SKILL.md"), "utf8")).toContain(
+      fixture.pin
+    );
+    rmSync(join(fixture.fork, "SKILL.md.upstream-merge"));
+
+    // Absence means nothing at the path: neither a directory nor a dangling
+    // symlink reads as a file, and neither is the absence the plan bound.
+    const sidecarPath = join(fixture.fork, "SPEC.md.upstream-merge");
+    const directory = settle();
+    mkdirSync(sidecarPath);
+    expect(() => applyForkPlan(directory)).toThrow(
+      "SPEC.md.upstream-merge changed after the plan was made"
+    );
+    rmSync(sidecarPath, { recursive: true });
+    const dangling = settle();
+    symlinkSync(join(fixture.base, "missing"), sidecarPath);
+    expect(() => applyForkPlan(dangling)).toThrow(
+      "SPEC.md.upstream-merge changed after the plan was made"
+    );
+    rmSync(sidecarPath);
+    expect(readFileSync(join(fixture.fork, "SKILL.md"), "utf8")).toContain(
+      fixture.pin
+    );
+
+    // Only a conflict may bind an earlier sidecar's bytes.
+    const tampered = settle();
+    for (const entry of tampered.entries) {
+      if (entry.forkPath === "SPEC.md") {
+        entry.sidecarDigest = createHash("sha256")
+          .update("unmerged\n")
+          .digest("hex");
+      }
+    }
+    expect(() => applyForkPlan(tampered)).toThrow(
+      "other entries may bind only its absence"
+    );
+
+    // Merged to upstream's exact bytes, a named file stays current, and is
+    // still bound: undoing the merge after planning must not pass.
+    writeFileSync(
+      join(fixture.fork, "SPEC.md"),
+      "# Spec\n\n- guarantee a\n- guarantee b\n- guarantee c\n"
+    );
+    const exact = settle();
+    expect(
+      exact.entries.find((entry) => entry.forkPath === "SPEC.md")
+    ).toMatchObject({ action: "current", sidecarDigest: null });
+    writeFileSync(
+      join(fixture.fork, "SPEC.md"),
+      "# Spec\n\n- guarantee a\n- guarantee b\n- acme guarantee\n"
+    );
+    expect(() => applyForkPlan(exact)).toThrow(
+      "SPEC.md changed after the plan was made"
+    );
+
+    // A file upstream removed, which the first apply deleted, is bound as
+    // absent: a directory appearing there after planning must not pass.
+    writeFileSync(join(fixture.fork, "SPEC.md"), merged);
+    const removed = planForkUpdate({
+      ...options,
+      resolved: {
+        against: release,
+        paths: ["SKILL.md", "SPEC.md", "references/obsolete.md"],
+      },
+    });
+    expect(
+      removed.entries.find(
+        (entry) => entry.forkPath === "references/obsolete.md"
+      )
+    ).toMatchObject({
+      action: "current",
+      forkDigest: null,
+      sidecarDigest: null,
+    });
+    mkdirSync(join(fixture.fork, "references/obsolete.md"));
+    expect(() => applyForkPlan(removed)).toThrow(
+      "references/obsolete.md changed after the plan was made"
+    );
+  });
+
+  test("refuses --resolved that cannot vouch for a hand merge", () => {
+    const untouched = createFixture();
+    const options = {
+      fork: untouched.fork,
+      source: untouched.source,
+      upstream: untouched.upstream,
+    };
+    const release = planForkUpdate(options).source.commit as string;
+    // A file that still matches the pin never took upstream's change.
+    expect(() =>
+      planForkUpdate({
+        ...options,
+        resolved: { against: release, paths: ["runtime/scripts/lib/core.ts"] },
+      })
+    ).toThrow(
+      "--resolved names runtime/scripts/lib/core.ts, which this plan would update"
+    );
+    expect(() =>
+      planForkUpdate({
+        ...options,
+        resolved: { against: release, paths: ["notes.md"] },
+      })
+    ).toThrow("--resolved names notes.md, which the fork does not carry");
+    // SPEC.md conflicts, but this plan was never applied, so no sidecar was
+    // written for anyone to merge: naming it would skip upstream's change.
+    expect(() =>
+      planForkUpdate({
+        ...options,
+        resolved: { against: release, paths: ["SPEC.md"] },
+      })
+    ).toThrow(
+      "This plan still writes references/obsolete.md, runtime/scripts/lib/core.ts, runtime/scripts/lib/extra.ts and 3 more, so the plan that conflicted was never applied"
+    );
+
+    const fixture = skillConflictFixture();
+    const conflicted = {
+      fork: fixture.fork,
+      source: fixture.source,
+      upstream: fixture.upstream,
+    };
+    const first = planForkUpdate(conflicted);
+    const target = first.source.commit as string;
+    applyForkPlan(first);
+    expect(() =>
+      planForkUpdate({
+        ...conflicted,
+        resolved: { against: target, paths: ["SKILL.md"] },
+      })
+    ).toThrow("SKILL.md still waits on SKILL.md.upstream-merge");
+
+    mergeSkillConflictByHand(fixture);
+    // Merged against another release: the installed one may hold changes the
+    // hand merge never saw.
+    expect(() =>
+      planForkUpdate({
+        ...conflicted,
+        resolved: { against: fixture.pin, paths: ["SKILL.md"] },
+      })
+    ).toThrow(`but the installed source is release commit ${target}`);
+    expect(() =>
+      planForkUpdate({
+        ...conflicted,
+        resolved: { against: target.slice(0, 6), paths: ["SKILL.md"] },
+      })
+    ).toThrow("--resolved-against takes a commit of 7 to 40 hex digits");
+
+    // A clean merge nobody named still writes upstream's change, so the plan
+    // that conflicted was never applied there: naming SKILL.md alone would
+    // let the pin pass a merge that never happened.
+    writeFileSync(
+      join(fixture.fork, "SPEC.md"),
+      "# Acme Spec\n\n- guarantee a\n- guarantee b\n"
+    );
+    const unmerged = {
+      ...conflicted,
+      resolved: { against: target, paths: ["SKILL.md"] },
+    };
+    expect(
+      planForkUpdate(conflicted).entries.find(
+        (entry) => entry.forkPath === "SPEC.md"
+      )?.action
+    ).toBe("merge");
+    expect(() => planForkUpdate(unmerged)).toThrow(
+      "This plan still writes SPEC.md, so the plan that conflicted was never applied"
+    );
+    // Named, the maintainer vouches for that file too.
+    expect(
+      planForkUpdate({
+        ...conflicted,
+        resolved: { against: target, paths: ["SKILL.md", "SPEC.md"] },
+      }).entries.find((entry) => entry.forkPath === "SPEC.md")?.action
+    ).toBe("keep-fork-delta");
+    expect(readFileSync(join(fixture.fork, "SKILL.md"), "utf8")).toContain(
+      fixture.pin
+    );
+  });
+
+  test("the CLI takes files merged by hand with the release they were merged against", () => {
+    const fixture = skillConflictFixture();
+    const run = (args: string[]) =>
+      spawnSync([process.execPath, cliPath, ...args], {
+        stderr: "pipe",
+        stdout: "pipe",
+      });
+    const planArgs = [
+      "plan",
+      "--fork",
+      fixture.fork,
+      "--source",
+      fixture.source,
+      "--upstream",
+      fixture.upstream,
+      "--json",
+    ];
+    const first = run(planArgs);
+    expect(first.exitCode).toBe(3);
+    const planPath = join(fixture.base, "plan.json");
+    writeFileSync(planPath, decoder.decode(first.stdout));
+    const release = (JSON.parse(decoder.decode(first.stdout)) as ForkPlan)
+      .source.commit as string;
+    expect(run(["apply", "--plan", planPath, "--json"]).exitCode).toBe(3);
+    mergeSkillConflictByHand(fixture);
+
+    const alone = run([...planArgs, "--resolved", "SKILL.md"]);
+    expect(alone.exitCode).toBe(2);
+    expect(decoder.decode(alone.stderr)).toContain(
+      "--resolved requires --resolved-against"
+    );
+    const bare = run([...planArgs, "--resolved-against", release]);
+    expect(bare.exitCode).toBe(2);
+    expect(decoder.decode(bare.stderr)).toContain(
+      "--resolved-against requires --resolved"
+    );
+
+    const settled = run([
+      ...planArgs,
+      "--resolved",
+      "SKILL.md",
+      "--resolved",
+      "./SPEC.md",
+      "--resolved-against",
+      release,
+    ]);
+    expect(settled.exitCode).toBe(0);
+    writeFileSync(planPath, decoder.decode(settled.stdout));
+    const applied = run(["apply", "--plan", planPath, "--json"]);
+    expect(applied.exitCode).toBe(0);
+    expect(JSON.parse(decoder.decode(applied.stdout))).toMatchObject({
+      conflicts: [],
+      pin: { from: fixture.pin, to: release },
+    });
   });
 
   test("the CLI plans, applies, and reports through JSON", () => {
@@ -2826,6 +3254,10 @@ describe("update-local-forks", () => {
     expect(skill).toContain(
       "A conflict that names moved declarations is never"
     );
+    expect(skill).toContain("`--resolved-against <commit>`");
+    expect(skill).toContain("Never move the pin by hand.");
+    expect(reference).toContain("## Settle a held pin");
+    expect(reference).toContain("Never move the provenance line by hand");
   });
 });
 
@@ -3789,6 +4221,50 @@ describe("update-local-forks moved declarations", () => {
     expect(readFileSync(join(fixture.fork, RECOVERY_PATH), "utf8")).toBe(
       carried
     );
+  });
+
+  test("settles a held move once both files are named as merged by hand", () => {
+    const fixture = movedFixture({
+      forkLease: editRelinquish,
+      released: {
+        "references/fresh.md": "# Fresh\n",
+        "scripts/lib/lease-recovery.ts": LEASE_RECOVERY,
+        "scripts/lib/lease.ts": LEASE_RELEASED,
+      },
+    });
+    applyForkPlan(planMoved(fixture));
+    const carried = editRelinquish(LEASE_RECOVERY);
+    write(fixture.fork, RECOVERY_PATH, carried);
+    write(fixture.fork, LEASE_PATH, LEASE_RELEASED);
+    rmSync(join(fixture.fork, `${LEASE_PATH}.upstream-merge`));
+    write(
+      fixture.fork,
+      "references/fork-maintenance.md",
+      "# Acme fork maintenance\n\n## Intentional omissions\n\n- `references/fresh.md`: Acme keeps no fresh notes.\n"
+    );
+
+    const settled = planForkUpdate({
+      fork: fixture.fork,
+      resolved: {
+        against: fixture.release,
+        paths: [LEASE_PATH, RECOVERY_PATH],
+      },
+      source: fixture.source,
+      upstream: fixture.upstream,
+    });
+    expect(entryOf(settled, LEASE_PATH)?.action).toBe("keep-fork-delta");
+    expect(entryOf(settled, RECOVERY_PATH)?.action).toBe("keep-fork-delta");
+    expect(settled.pinUpdate.to).toBe(fixture.release);
+
+    const receipt = applyForkPlan(settled);
+    expect(receipt.conflicts).toEqual([]);
+    expect(readFileSync(join(fixture.fork, RECOVERY_PATH), "utf8")).toBe(
+      carried
+    );
+    expect(existsSync(join(fixture.fork, `${LEASE_PATH}.upstream-merge`))).toBe(
+      false
+    );
+    expect(planMoved(fixture).summary.conflict).toBe(0);
   });
 
   test("still reviews a fork-owned command gate that waits on a moved-code sidecar", () => {

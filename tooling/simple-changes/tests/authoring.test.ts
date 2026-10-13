@@ -34,6 +34,7 @@ import {
   detectHarnesses,
   type HarnessDefinition,
   loadHarnessDefinitions,
+  packagedHarnessDataPath,
   parseAuthoringRequest,
   readAuthoringFile,
   resolveAuthoringRole,
@@ -847,6 +848,65 @@ describe("harness detection", () => {
       '{"schemaVersion":1,"harnesses":{"x":{"name":"x","homeRoots":["../up"],"sessionEnv":[]}}}'
     );
     expect(() => loadHarnessDefinitions(broken)).toThrow("malformed");
+  });
+
+  test("a fork's runtime/ package finds the harness data its fork carries", () => {
+    const data = '{"schemaVersion":1,"harnesses":{}}';
+    const place = (directory: string): string => {
+      mkdirSync(join(directory, "agents"), { recursive: true });
+      const path = join(directory, "agents", "harnesses.json");
+      writeFileSync(path, data);
+      return path;
+    };
+    // The upstream layout reads its own package root.
+    const upstream = temporary("upstream-package");
+    expect(packagedHarnessDataPath(upstream)).toBe(place(upstream));
+    // A fork carries agents/ beside SKILL.md, above its runtime/ package.
+    const fork = temporary("fork");
+    const runtime = join(fork, "runtime");
+    mkdirSync(runtime);
+    const forkCopy = place(fork);
+    expect(packagedHarnessDataPath(runtime)).toBe(forkCopy);
+    expect(loadHarnessDefinitions(packagedHarnessDataPath(runtime))).toEqual(
+      []
+    );
+    // A copy inside the runtime package still wins.
+    const runtimeCopy = place(runtime);
+    expect(packagedHarnessDataPath(runtime)).toBe(runtimeCopy);
+    // Only a package named runtime looks one level up, and a missing file
+    // still names the package's own path, so the error points there.
+    const other = temporary("other");
+    const nested = join(other, "package");
+    mkdirSync(nested);
+    place(other);
+    expect(packagedHarnessDataPath(nested)).toBe(
+      join(nested, "agents", "harnesses.json")
+    );
+    const bare = join(temporary("bare"), "runtime");
+    mkdirSync(bare);
+    expect(packagedHarnessDataPath(bare)).toBe(
+      join(bare, "agents", "harnesses.json")
+    );
+    // A symlinked agents/ directory or data file could point outside the
+    // fork, so neither is followed.
+    const outside = temporary("outside");
+    place(outside);
+    const linkedDirectory = temporary("linked-directory");
+    mkdirSync(join(linkedDirectory, "runtime"));
+    symlinkSync(join(outside, "agents"), join(linkedDirectory, "agents"));
+    expect(packagedHarnessDataPath(join(linkedDirectory, "runtime"))).toBe(
+      join(linkedDirectory, "runtime", "agents", "harnesses.json")
+    );
+    const linkedFile = temporary("linked-file");
+    mkdirSync(join(linkedFile, "runtime"));
+    mkdirSync(join(linkedFile, "agents"));
+    symlinkSync(
+      join(outside, "agents", "harnesses.json"),
+      join(linkedFile, "agents", "harnesses.json")
+    );
+    expect(packagedHarnessDataPath(join(linkedFile, "runtime"))).toBe(
+      join(linkedFile, "runtime", "agents", "harnesses.json")
+    );
   });
 });
 

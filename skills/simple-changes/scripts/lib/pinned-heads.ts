@@ -2641,6 +2641,19 @@ const GLAB_MERGE_FLAGS: ReadonlySet<string> = new Set([
   "--yes",
 ]);
 
+// A long flag above may also spell its boolean value, as in
+// `--auto-merge=false`, which some merge guards require; the value only
+// switches the flag, so it cannot name another commit.
+const GLAB_BOOLEAN_FLAG_VALUE = /^(--[a-z-]+)=(?:true|false)$/u;
+
+const isGlabMergeFlag = (token: string): boolean => {
+  if (GLAB_MERGE_FLAGS.has(token)) {
+    return true;
+  }
+  const flag = GLAB_BOOLEAN_FLAG_VALUE.exec(token)?.[1];
+  return flag !== undefined && GLAB_MERGE_FLAGS.has(flag);
+};
+
 // One `glab mr merge` argument: how many arguments it uses, or null when it
 // is not one the pinned grammar accepts. A `-R`/`--repo` project value must
 // not start with a dash, so no option can consume the `--sha` argument.
@@ -2667,7 +2680,7 @@ const glabMergeArgument = (
     requests.push(token);
     return 1;
   }
-  return GLAB_MERGE_FLAGS.has(token) ? 1 : null;
+  return isGlabMergeFlag(token) ? 1 : null;
 };
 
 // A documented provider merge that names the exact commit it merges, so the

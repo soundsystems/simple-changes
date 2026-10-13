@@ -127,7 +127,7 @@ recorded head: a released or handed-off author's recorded state, and a
 preserved, adopted, or retained checkout's baseline or approved override. No
 merge-like `loop exec` command can integrate a commit other than a registered
 unit's recorded head. While units are pinned, `loop exec` runs only Git and
-provider merges that name their commit (`glab mr merge <iid> --sha <head>`, optionally with `-R <project>`);
+provider merges that name their commit (`glab mr merge <iid> --sha <head>`, optionally with `-R <project>` and glab's on/off merge flags, such as `--auto-merge=false`);
 any other program, including shells, interpreters, and scripts, is refused
 before it starts, so run it outside `loop exec` or after the units are
 integrated. The only merge-like Git subcommands it runs are `merge`,

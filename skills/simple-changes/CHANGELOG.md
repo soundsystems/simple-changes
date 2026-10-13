@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.29.1 - 2026-10-13
+
+- **Bug Fixes & Improvements**:
+  - While released or preserved worktrees wait to merge, `loop exec` now
+    also accepts glab's on/off merge flags with an explicit value, such as
+    `glab mr merge <iid> --sha <commit> --auto-merge=false`, which some
+    repositories' merge guards require. The merge still has to name its
+    commit.
+  - A repository fork that keeps the Simple Changes runtime in a `runtime/`
+    folder now finds the agent list it carries beside its SKILL.md
+    (`agents/harnesses.json`), so `initialize` detects your coding agents
+    without a second copy inside `runtime/`.
+  - update-local-forks can now move a fork's pin after you merge a
+    conflicting SKILL.md by hand. Apply the plan that conflicted, merge each
+    sidecar, then plan again with `--resolved <path>` for each merged file
+    and `--resolved-against <commit>` naming the installed release. That
+    plan keeps those files as they are and moves the pin, including where
+    the fork's own tests and notes name it.
+  - update-local-forks no longer reports the pin moving while SKILL.md
+    still waits on its sidecar. Before, apply rewrote the pin in the fork's
+    tests but left SKILL.md on the old pin.
+<!-- simple-changelogs-signature agent="Claude Opus 5.5 xhigh" at="2026-10-13T10:23:00-05:00" -->
+
 ## 0.29.0 - 2026-10-12
 
 - Agents now keep the files they hand to Simple Changes, such as provider

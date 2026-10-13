@@ -65,7 +65,13 @@ saved plan, and it never commits, pushes, or runs a fork's scripts.
    `SKILL.md`; read the `.upstream-merge` sidecar, merge the
    upstream change into the fork's prose keeping its stricter local rules,
    then delete the sidecar. Until it is deleted, every later plan reports the
-   file as unresolved. A conflict that names moved declarations is never
+   file as unresolved. A merged file still conflicts against the old pin, so
+   while the pin stays held, as it does when `SKILL.md` conflicted, plan
+   again with `--resolved <path>` for each file you merged and
+   `--resolved-against <commit>`, the installed release the pin reason names;
+   that plan keeps those files as they are and moves the pin.
+   Never move the pin by hand.
+   A conflict that names moved declarations is never
    resolved by taking either side whole: settle the old file as its sidecar
    says, and re-apply each change where its code lives now.
    An `unrecorded-omission` is an upstream reference

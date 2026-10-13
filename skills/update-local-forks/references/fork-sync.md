@@ -180,7 +180,10 @@ the plan that conflicted, merge each sidecar it wrote and delete it, then
 plan again naming each file you merged with `--resolved <path>` (once per
 file) and the release you merged against with `--resolved-against <commit>`:
 the installed source's commit, which the plan that conflicted reports as
-`source.commit` and names in its pin reason.
+`source.commit` and names in its pin reason. When that apply already moved
+the pin, as it does when `SKILL.md` did not conflict, the next plan compares
+against the new pin and keeps each merged file on its own; plan again without
+these flags.
 
 ```sh
 update-local-forks plan --fork <dir> --resolved SKILL.md --resolved SPEC.md \

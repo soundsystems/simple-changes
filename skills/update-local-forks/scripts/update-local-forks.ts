@@ -3740,9 +3740,16 @@ const validateForkPlan = (value: unknown): ForkPlan => {
 // plan was made; never overwrite work that arrived in between.
 const assertSidecarUnchanged = (forkRoot: string, entry: PlanEntry): void => {
   const sidecarPath = entry.forkPath + MERGE_SIDECAR_SUFFIX;
-  const sidecar = readBytes(join(forkRoot, sidecarPath));
-  const sidecarDigest = sidecar === null ? null : bytesDigest(sidecar);
-  if (sidecarDigest !== entry.sidecarDigest) {
+  const location = join(forkRoot, sidecarPath);
+  const sidecar = readBytes(location);
+  // A bound absence means nothing at the path: a directory or a dangling
+  // symlink reads as no file, but is not the absence the plan bound.
+  const changed =
+    entry.sidecarDigest === null
+      ? lstatSync(location, { throwIfNoEntry: false }) !== undefined
+      : (sidecar === null ? null : bytesDigest(sidecar)) !==
+        entry.sidecarDigest;
+  if (changed) {
     throw new ForkUpdateError(
       `${sidecarPath} changed after the plan was made; re-run plan.`,
       EXIT.blocked

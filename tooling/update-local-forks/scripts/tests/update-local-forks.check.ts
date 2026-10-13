@@ -2925,9 +2925,28 @@ describe("update-local-forks", () => {
     expect(readFileSync(join(fixture.fork, "SKILL.md"), "utf8")).toContain(
       fixture.pin
     );
+    rmSync(join(fixture.fork, "SKILL.md.upstream-merge"));
+
+    // Absence means nothing at the path: neither a directory nor a dangling
+    // symlink reads as a file, and neither is the absence the plan bound.
+    const sidecarPath = join(fixture.fork, "SPEC.md.upstream-merge");
+    const directory = settle();
+    mkdirSync(sidecarPath);
+    expect(() => applyForkPlan(directory)).toThrow(
+      "SPEC.md.upstream-merge changed after the plan was made"
+    );
+    rmSync(sidecarPath, { recursive: true });
+    const dangling = settle();
+    symlinkSync(join(fixture.base, "missing"), sidecarPath);
+    expect(() => applyForkPlan(dangling)).toThrow(
+      "SPEC.md.upstream-merge changed after the plan was made"
+    );
+    rmSync(sidecarPath);
+    expect(readFileSync(join(fixture.fork, "SKILL.md"), "utf8")).toContain(
+      fixture.pin
+    );
 
     // Only a conflict may bind an earlier sidecar's bytes.
-    rmSync(join(fixture.fork, "SKILL.md.upstream-merge"));
     const tampered = settle();
     for (const entry of tampered.entries) {
       if (entry.forkPath === "SPEC.md") {

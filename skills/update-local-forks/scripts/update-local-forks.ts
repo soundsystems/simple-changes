@@ -3096,12 +3096,12 @@ const mergedAgainst = (
   return source.commit;
 };
 
-/** The entry to keep for a file named as merged by hand, or null if none. */
+/** The entry of a file named as merged by hand, or why naming it is refused. */
 const mergedByHand = (
   fork: DiscoveredFork,
   entries: PlanEntry[],
   forkPath: string
-): PlanEntry | null => {
+): PlanEntry => {
   const entry = entries.find(
     (candidate) =>
       candidate.forkPath === forkPath && candidate.upstreamPath !== null
@@ -3119,10 +3119,7 @@ const mergedByHand = (
       EXIT.blocked
     );
   }
-  if (entry.action === "current") {
-    return null;
-  }
-  if (entry.action !== "conflict" && entry.action !== "merge") {
+  if (!["conflict", "merge", "current"].includes(entry.action)) {
     const verb = PENDING_WRITES.has(entry.action)
       ? `would ${entry.action}`
       : `classifies as ${entry.action}`;
@@ -3161,9 +3158,11 @@ const assertApplied = (entries: PlanEntry[]): void => {
  * carry changes that merge never saw; for a file that still waits on its
  * sidecar, which is not merged yet; and for a file the plan would otherwise
  * update, add, delete, or leave alone, which never took upstream's change. A
- * file that already matches the installed upstream needs nothing. While the
+ * file that already matches the installed upstream stays `current`. While the
  * plan still writes other files, the plan that conflicted was never applied,
- * so no sidecar was written to merge, and naming is refused too.
+ * so no sidecar was written to merge, and naming is refused too. Every named
+ * file binds its digest and its sidecar's absence, so apply refuses if either
+ * changed after the plan was made.
  */
 const keepResolved = (
   fork: DiscoveredFork,
@@ -3177,21 +3176,24 @@ const keepResolved = (
       resolved.paths.map((path) => path.replace(LEADING_DOT_SLASH_PATTERN, ""))
     ),
   ].sort(byText);
-  const kept = named
-    .map((forkPath) => mergedByHand(fork, classified.entries, forkPath))
-    .filter((entry) => entry !== null);
+  const kept = named.map((forkPath) =>
+    mergedByHand(fork, classified.entries, forkPath)
+  );
   assertApplied(classified.entries);
   for (const entry of kept) {
-    entry.action = "keep-fork-delta";
-    entry.reason =
-      "Merged by hand after an earlier conflict; the fork's file stands.";
     entry.notes = [
       ...(entry.notes ?? []),
       `Merged by hand against ${release}; kept as it is.`,
     ];
-    Reflect.deleteProperty(entry, "content");
     // Settled only while no sidecar returns and the file stays as merged.
     entry.sidecarDigest = null;
+    if (entry.action === "current") {
+      continue;
+    }
+    entry.action = "keep-fork-delta";
+    entry.reason =
+      "Merged by hand after an earlier conflict; the fork's file stands.";
+    Reflect.deleteProperty(entry, "content");
     classified.plannedContent.delete(entry.forkPath);
   }
 };

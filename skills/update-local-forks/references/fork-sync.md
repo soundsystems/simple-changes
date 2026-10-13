@@ -196,9 +196,11 @@ its sidecar; a file that did not conflict or merge against the pin, such as
 one that still matches it and so never took upstream's change; and any name
 while the plan still updates, adds, or deletes another file, which shows the
 plan that conflicted was never applied, so no sidecar was merged. A named
-file that already matches the installed upstream needs nothing. Review and
-apply that plan like any other. Never move the provenance line by hand: that
-skips the release proof and leaves the old pin in the fork's tests and notes.
+file that already matches the installed upstream stays `current`. Every named
+file binds its bytes and its sidecar's absence, so apply refuses if either
+changed after the plan was made. Review and apply that plan like any other.
+Never move the provenance line by hand: that skips the release proof and
+leaves the old pin in the fork's tests and notes.
 
 ## Moved code
 

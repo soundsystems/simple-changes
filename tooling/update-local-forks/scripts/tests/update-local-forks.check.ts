@@ -2939,6 +2939,24 @@ describe("update-local-forks", () => {
     expect(() => applyForkPlan(tampered)).toThrow(
       "other entries may bind only its absence"
     );
+
+    // Merged to upstream's exact bytes, a named file stays current, and is
+    // still bound: undoing the merge after planning must not pass.
+    writeFileSync(
+      join(fixture.fork, "SPEC.md"),
+      "# Spec\n\n- guarantee a\n- guarantee b\n- guarantee c\n"
+    );
+    const exact = settle();
+    expect(
+      exact.entries.find((entry) => entry.forkPath === "SPEC.md")
+    ).toMatchObject({ action: "current", sidecarDigest: null });
+    writeFileSync(
+      join(fixture.fork, "SPEC.md"),
+      "# Spec\n\n- guarantee a\n- guarantee b\n- acme guarantee\n"
+    );
+    expect(() => applyForkPlan(exact)).toThrow(
+      "SPEC.md changed after the plan was made"
+    );
   });
 
   test("refuses --resolved that cannot vouch for a hand merge", () => {

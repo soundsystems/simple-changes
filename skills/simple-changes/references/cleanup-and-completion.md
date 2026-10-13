@@ -176,16 +176,22 @@ snapshot as normalized pages (for GitLab, the
 builder computes cursors, accounted `itemCount`s, and ledger digests exactly as
 the receipt validator checks them, then validates its own result. `--output`
 never overwrites an input under any name or writes inside the Git common
-directory:
+directory. Keep the pages and receipts in the agent's
+[work directory](inventory-and-concurrency.md#agent-work-directories), which a
+clean finalization removes:
 
 ```sh
-simple-changes remote-inventory build --pages opening-pages.json --output opening.json
-simple-changes loop start --mode ship --agent-id "$AGENT_ID" --opening-remote-inventory opening.json
+WORK_DIR=$(simple-changes workdir --agent-id "$AGENT_ID")
+simple-changes remote-inventory build --pages "$WORK_DIR/opening-pages.json" \
+  --output "$WORK_DIR/opening.json"
+simple-changes loop start --mode ship --agent-id "$AGENT_ID" \
+  --opening-remote-inventory "$WORK_DIR/opening.json"
 # ... after the last provider mutation, fetch a fresh snapshot ...
-simple-changes remote-inventory build --pages final-pages.json \
-  --opening-remote-inventory opening.json --output final.json
+simple-changes remote-inventory build --pages "$WORK_DIR/final-pages.json" \
+  --opening-remote-inventory "$WORK_DIR/opening.json" \
+  --output "$WORK_DIR/final.json"
 simple-changes loop reconcile-remote-branches --run-id "$RUN_ID" \
-  --agent-id "$AGENT_ID" --receipt final.json
+  --agent-id "$AGENT_ID" --receipt "$WORK_DIR/final.json"
 ```
 
 The pages file (`evals/schemas/remote-inventory-pages.schema.json`) names

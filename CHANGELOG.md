@@ -1,5 +1,39 @@
 # Changelog
 
+## 0.29.0 - 2026-10-12
+
+- Agents now keep the files they hand to Simple Changes, such as provider
+  pages, receipts, proposal bodies, and decision files, in a private
+  temporary work directory instead of folders beside your projects.
+  `loop start` and `prepare-agent` report it as `workDir`. A run that
+  finishes cleanly deletes it, and a blocked or preserved run keeps it for
+  recovery. `simple-changes workdir --agent-id <id>` prints the directory,
+  and `workdir remove <path>` deletes one by hand.
+- Setup can add an optional rule to AGENTS.md or CLAUDE.md that tells every
+  agent to keep scratch files, proof bundles, and handoff notes out of your
+  project folders and to delete them when the task ends. Choose it when
+  setup offers it, or pass `--scratch-file-rule add`; nothing changes unless
+  you add it.
+- Updating a fork no longer drops your change when upstream moves code you
+  edited into another file. `update-local-forks` now makes the old file a
+  conflict whenever upstream moved code out of it and your fork changed it,
+  even where the lines would merge cleanly, and names what moved where. The
+  new file is still written, with a note pointing back, and a fork that
+  never touched the old file gets the same plan as before.
+- When a fork's own checks, such as `scripts/test.sh`, search a file for
+  text that upstream moved elsewhere, the update plan adds a note naming the
+  file that holds it now. Notes never block an update.
+- `update-local-forks` refuses, before writing anything, a plan in which two
+  paths would name the same file on disk, so a conflict's saved merge is
+  never overwritten.
+- The loop runtime's largest file, `scripts/lib/loop-lease.ts`, is now ten
+  smaller files grouped by command. Commands, output, and stored files are
+  unchanged, and imports from `loop-lease.ts` keep working. Fork checks that
+  read its text should read `loop-lease*.ts`.
+- The guidance 29 update notice describes the work directory, the optional
+  rule, and the fork update change, and needs no answer.
+<!-- simple-changelogs-signature agent="Claude Opus 5.5 xhigh" at="2026-10-12T19:09:00-05:00" -->
+
 ## 0.28.0 - 2026-10-08
 
 - You can now choose which model writes proposal descriptions and merge

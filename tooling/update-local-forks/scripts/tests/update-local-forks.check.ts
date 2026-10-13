@@ -12,8 +12,10 @@ import { createHash } from "node:crypto";
 // biome-ignore lint/performance/noNamespaceImport: mock.module must stand in for every node:fs export.
 import * as fs from "node:fs";
 import {
+  chmodSync,
   cpSync,
   existsSync,
+  linkSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
@@ -396,6 +398,49 @@ const withRawName = <T>(
   } finally {
     mock.module("node:fs", () => ({ ...fs, ...real }));
     rmSync(store, { force: true, recursive: true });
+  }
+};
+
+/**
+ * Run `body` on a filesystem where writing `from` lands on `to`, as when two
+ * names alias one file; `node:fs` is mocked, as in withRawName.
+ */
+const withWriteAlias = <T>(from: string, to: string, body: () => T): T => {
+  const real = fs.writeFileSync;
+  mock.module("node:fs", () => ({
+    ...fs,
+    writeFileSync: (path: unknown, ...rest: unknown[]): unknown =>
+      (real as (...args: unknown[]) => unknown)(
+        String(path) === from ? to : path,
+        ...rest
+      ),
+  }));
+  try {
+    return body();
+  } finally {
+    mock.module("node:fs", () => ({ ...fs, writeFileSync: real }));
+  }
+};
+
+/**
+ * Run `body` on a filesystem where exclusively creating `taken` fails, as when
+ * the name aliases a file that already exists; `node:fs` is mocked.
+ */
+const withTakenName = <T>(taken: string, body: () => T): T => {
+  const real = fs.openSync;
+  mock.module("node:fs", () => ({
+    ...fs,
+    openSync: (path: unknown, ...rest: unknown[]): unknown => {
+      if (String(path) === taken) {
+        throw Object.assign(new Error(`EEXIST: ${taken}`), { code: "EEXIST" });
+      }
+      return (real as (...args: unknown[]) => unknown)(path, ...rest);
+    },
+  }));
+  try {
+    return body();
+  } finally {
+    mock.module("node:fs", () => ({ ...fs, openSync: real }));
   }
 };
 
@@ -2774,7 +2819,1474 @@ describe("update-local-forks", () => {
     expect(reference).toContain("--skill update-local-forks");
     expect(reference).toContain("never rewrites a version literal");
     expect(skill).toContain("change by hand");
+    expect(reference).toContain("## Moved code");
+    expect(reference).toContain("code moved out of it to another file");
+    expect(reference).toContain("even when the fork's change sits elsewhere");
+    expect(reference).toContain("declaration renamed while it moved");
+    expect(skill).toContain(
+      "A conflict that names moved declarations is never"
+    );
   });
+});
+
+const LEASE_DOC = [
+  "/**",
+  " * Gives the lease back after a failed finalization.",
+  " *",
+  " * The holder keeps its claim until the lease file is rewritten, so a",
+  " * crash between the two steps leaves a lease that names a holder.",
+  " */",
+];
+const RELINQUISH = [
+  ...LEASE_DOC,
+  "export const relinquish = (holder: string): string => {",
+  '  const reason = ["released by", holder].join(" ");',
+  "  return reason;",
+  "};",
+];
+const LEASE_MARKER = 'export const LEASE_MARKER = "lease-marker-v1";';
+const READ_LEASE = [
+  "/** Reads the lease file. */",
+  "export const readLease = (path: string): string =>",
+  '  readFileSync(path, "utf8");',
+];
+const LEASE_IMPORT = 'import { readFileSync } from "node:fs";';
+/** The module at the pin: three declarations in one file. */
+const LEASE_AT_PIN = [
+  LEASE_IMPORT,
+  "",
+  ...READ_LEASE,
+  "",
+  ...RELINQUISH,
+  "",
+  LEASE_MARKER,
+  "",
+].join("\n");
+/** The release splits it: two declarations move to a new module. */
+const LEASE_RELEASED = [
+  LEASE_IMPORT,
+  "",
+  'export { LEASE_MARKER, relinquish } from "./lease-recovery.ts";',
+  "",
+  ...READ_LEASE,
+  "",
+].join("\n");
+const LEASE_RECOVERY = [...RELINQUISH, "", LEASE_MARKER, ""].join("\n");
+const LEASE_PATH = "runtime/scripts/lib/lease.ts";
+/** What a plan says about moved declarations, which today's plan never does. */
+const MOVE_TEXT_PATTERN = /moved|Receives/u;
+const WHITESPACE_PATTERN = /\s/gu;
+const IDENTIFIER_PATTERN = /[\w$]/u;
+const CARRIAGE_RETURN_PATTERN = /\r$/u;
+const RECOVERY_PATH = "runtime/scripts/lib/lease-recovery.ts";
+/** A fork edit inside the body of a declaration upstream moves. */
+const editRelinquish = (lease: string): string =>
+  lease.replace(
+    "  return reason;",
+    '  if (holder === "") {\n    throw new Error("no holder");\n  }\n  return reason;'
+  );
+
+const INTERPOLATION = ["$", "{"].join("");
+const TEMPLATE_MOVED = "export const moved = `\nfirst\nsecond\nbase\n`;\n";
+const TEMPLATE_LOOKALIKE =
+  "export const moved = `\nfirst\nconst text = example;\nbase\n`;\n";
+const REGEX_IN_INTERPOLATION = [
+  "export const moved = `",
+  `${INTERPOLATION}/}\`/.test("x")}`,
+  "const fake = 1;",
+  "first",
+  "second",
+  "base",
+  "`;",
+  "",
+].join("\n");
+const CRLF_CONTINUATION =
+  'export const moved = "first\\\r\nconst fake = 1;\\\r\nsecond\\\r\nbase";\r\n';
+const LOOKALIKE_REAL = 'export const moved = "base";';
+const LOOKALIKE_EXAMPLE =
+  'export const example = `\nconst moved = "example";\n`;\n';
+/** Round 5: a regex backtick before a template that holds a look-alike. */
+const REGEX_BACKTICK_PINNED = `${LOOKALIKE_REAL}\nexport const kept = () => {\n  return /\`/;\n};\n`;
+const REGEX_BACKTICK_RELEASED = `export const kept = () => {\n  return /\`/;\n};\n${LOOKALIKE_EXAMPLE}`;
+/** Round 5: a regex character class holding a backtick, untouched by the fork. */
+const REGEX_CLASS_PINNED =
+  "export function prep() { return /[`]/; }\nexport const moved = 1;\n";
+/** Round 5: a declaration that stays, eight blank lines below one that moves. */
+const GAP_PINNED = `export const moved = 1;\n${"\n".repeat(8)}export const stayed = 1;\n`;
+const KEPT_TAIL =
+  '// Loaded once per process.\nconsole.info("lease module loaded");\n';
+const STRANDED_DOC = [
+  LEASE_IMPORT,
+  "",
+  'export { LEASE_MARKER, relinquish } from "./lease-recovery.ts";',
+  "",
+  ...READ_LEASE,
+  "",
+  ...LEASE_DOC,
+  "",
+].join("\n");
+const CORE_AT_PIN = "export const core = 2;\n";
+const RELINQUISH_TEXT = `${RELINQUISH.join("\n")}\n`;
+
+/** Every upstream move the tests build, as the pinned old file and the release. */
+const MOVED_CODE_CASES: {
+  name: string;
+  pinned: string;
+  released: Record<string, string | null>;
+}[] = [
+  {
+    name: "a split into a new module",
+    pinned: LEASE_AT_PIN,
+    released: {
+      "scripts/lib/lease-recovery.ts": LEASE_RECOVERY,
+      "scripts/lib/lease.ts": LEASE_RELEASED,
+    },
+  },
+  {
+    name: "a split that strands a doc comment",
+    pinned: LEASE_AT_PIN,
+    released: {
+      "scripts/lib/lease-recovery.ts": [
+        ...RELINQUISH.slice(LEASE_DOC.length),
+        "",
+        LEASE_MARKER,
+        "",
+      ].join("\n"),
+      "scripts/lib/lease.ts": STRANDED_DOC,
+    },
+  },
+  {
+    name: "a split that keeps a statement",
+    pinned: `${LEASE_AT_PIN}\n${KEPT_TAIL}`,
+    released: {
+      "scripts/lib/lease-recovery.ts": LEASE_RECOVERY,
+      "scripts/lib/lease.ts": `${LEASE_RELEASED}\n${KEPT_TAIL}`,
+    },
+  },
+  {
+    name: "a move into a file that existed at the pin",
+    pinned: LEASE_AT_PIN,
+    released: {
+      "scripts/lib/core.ts": `${CORE_AT_PIN}\n${RELINQUISH_TEXT}`,
+      "scripts/lib/lease.ts": LEASE_AT_PIN.replace(`${RELINQUISH_TEXT}\n`, ""),
+    },
+  },
+  {
+    name: "a rename away",
+    pinned: LEASE_AT_PIN,
+    released: {
+      "scripts/lib/lease-core.ts": LEASE_AT_PIN,
+      "scripts/lib/lease.ts": null,
+    },
+  },
+  ...[
+    TEMPLATE_MOVED,
+    TEMPLATE_LOOKALIKE,
+    REGEX_IN_INTERPOLATION,
+    CRLF_CONTINUATION,
+  ].map((pinned, index) => ({
+    name: `an in-place rename that copies a literal-heavy declaration (${index + 1})`,
+    pinned,
+    released: {
+      "scripts/lib/lease-recovery.ts": pinned,
+      "scripts/lib/lease.ts": pinned.replace("const moved", "const retained"),
+    },
+  })),
+  {
+    name: "a move behind a template look-alike",
+    pinned: `${LOOKALIKE_REAL}\n${LOOKALIKE_EXAMPLE}`,
+    released: {
+      "scripts/lib/lease-recovery.ts": `${LOOKALIKE_REAL}\n`,
+      "scripts/lib/lease.ts": LOOKALIKE_EXAMPLE,
+    },
+  },
+  {
+    name: "a move behind a regex backtick",
+    pinned: REGEX_BACKTICK_PINNED,
+    released: {
+      "scripts/lib/lease-recovery.ts": `${LOOKALIKE_REAL}\n`,
+      "scripts/lib/lease.ts": REGEX_BACKTICK_RELEASED,
+    },
+  },
+  {
+    name: "a move beside a regex character class",
+    pinned: REGEX_CLASS_PINNED,
+    released: {
+      "scripts/lib/lease-recovery.ts": "export const moved = 1;\n",
+      "scripts/lib/lease.ts": "export function prep() { return /[`]/; }\n",
+    },
+  },
+  {
+    name: "a move that copies the whole old file",
+    pinned: GAP_PINNED,
+    released: {
+      "scripts/lib/lease-recovery.ts": GAP_PINNED,
+      "scripts/lib/lease.ts": GAP_PINNED.replace(
+        "export const moved = 1;\n",
+        ""
+      ),
+    },
+  },
+];
+
+/** The safety rule's significant line: an identifier character and eight non-blank characters. */
+const isSignificant = (line: string): boolean =>
+  line.replace(WHITESPACE_PATTERN, "").length >= 8 &&
+  IDENTIFIER_PATTERN.test(line);
+
+/**
+ * A runtime-layout fork cut from a pin that holds the lease module, and a
+ * 0.3.0 release whose packaged files are `released` (by default the split
+ * that moves `relinquish` and `LEASE_MARKER` into lease-recovery.ts).
+ */
+const movedFixture = (
+  options: {
+    forkFiles?: Record<string, string>;
+    forkLease?: (pinned: string) => string | null;
+    pinned?: string;
+    /** Other packaged files the pin adds, which the fork copies too. */
+    pinnedExtra?: Record<string, string>;
+    released?: Record<string, string | null>;
+  } = {}
+): Fixture => {
+  const fixture = createFixture();
+  const pinnedLease = options.pinned ?? LEASE_AT_PIN;
+  const pin = commitPackage(
+    fixture.upstream,
+    "feat(lease): Add the lease module",
+    { ...options.pinnedExtra, "scripts/lib/lease.ts": pinnedLease }
+  );
+  const fork = join(
+    fixture.base,
+    "Developer",
+    "moved",
+    "skills",
+    "acme-simple-changes"
+  );
+  const packaged = join(fixture.upstream, "skills/simple-changes");
+  for (const directory of ["scripts", "evals"]) {
+    cpSync(join(packaged, directory), join(fork, "runtime", directory), {
+      recursive: true,
+    });
+  }
+  cpSync(join(packaged, "references"), join(fork, "references"), {
+    recursive: true,
+  });
+  write(fork, "SPEC.md", readFileSync(join(packaged, "SPEC.md"), "utf8"));
+  write(
+    fork,
+    "SKILL.md",
+    `---\nname: acme-simple-changes\n---\n\n# Acme Simple Changes\n\nForked from \`simple-changes\` @ \`${pin}\`. Acme-specific deltas: none.\n\nIntro line, revised.\n\n## Rules\n\nRule one.\n`
+  );
+  const forkLease = options.forkLease?.(pinnedLease);
+  if (forkLease === null) {
+    rmSync(join(fork, LEASE_PATH));
+  } else if (forkLease !== undefined) {
+    write(fork, LEASE_PATH, forkLease);
+  }
+  for (const [path, contents] of Object.entries(options.forkFiles ?? {})) {
+    write(fork, path, contents);
+  }
+  const released = options.released ?? {
+    "scripts/lib/lease-recovery.ts": LEASE_RECOVERY,
+    "scripts/lib/lease.ts": LEASE_RELEASED,
+  };
+  for (const [path, contents] of Object.entries(released)) {
+    if (contents === null) {
+      rmSync(join(packaged, path));
+    }
+  }
+  const release = commitPackage(
+    fixture.upstream,
+    "chore(release): Publish Simple Changes 0.3.0",
+    {
+      "CHANGELOG.md": changelogThrough("0.3.0", "0.2.0", "0.1.0"),
+      ...Object.fromEntries(
+        Object.entries(released).filter(
+          (pair): pair is [string, string] => pair[1] !== null
+        )
+      ),
+    }
+  );
+  return {
+    ...fixture,
+    fork,
+    pin,
+    release,
+    source: installSnapshot(fixture, "moved"),
+  };
+};
+
+const planMoved = (fixture: Fixture): ForkPlan =>
+  planForkUpdate({
+    fork: fixture.fork,
+    source: fixture.source,
+    upstream: fixture.upstream,
+  });
+
+const entryOf = (plan: ForkPlan, forkPath: string): PlanEntry | undefined =>
+  plan.entries.find((entry) => entry.forkPath === forkPath);
+
+/** Whether `git merge-file` merges the three versions without a conflict. */
+const mergesCleanly = (ours: string, base: string, theirs: string): boolean => {
+  const directory = mkdtempSync(join(tmpdir(), "update-local-forks-merge-"));
+  scratch.push(directory);
+  for (const [name, contents] of Object.entries({ base, ours, theirs })) {
+    writeFileSync(join(directory, name), contents);
+  }
+  return (
+    spawnSync(
+      [
+        "git",
+        "merge-file",
+        "-p",
+        join(directory, "ours"),
+        join(directory, "base"),
+        join(directory, "theirs"),
+      ],
+      { stderr: "pipe", stdout: "pipe" }
+    ).exitCode === 0
+  );
+};
+
+describe("update-local-forks moved declarations", () => {
+  test("conflicts a file whose moved declaration the fork edited and still writes its new home", () => {
+    const fixture = movedFixture({ forkLease: editRelinquish });
+    const plan = planMoved(fixture);
+    const lease = entryOf(plan, LEASE_PATH);
+    const recovery = entryOf(plan, RECOVERY_PATH);
+
+    expect(lease).toMatchObject({ action: "conflict", sidecarDigest: null });
+    expect(lease?.reason).toBe(
+      `Upstream moved 2 declarations out of this file, and the fork changed 1: \`relinquish\` (edited) -> ${RECOVERY_PATH}. Each arrives in its new file without the fork's change, so this file conflicts even where its lines merge. Take the installed upstream version of this file, re-apply each change where its code lives now (in its new file, or in this file for a statement that stays here; for a removed declaration, remove it there; the sidecar header lists the diffs), then delete ${LEASE_PATH}.upstream-merge.`
+    );
+    expect(lease?.content).toStartWith(
+      [
+        "== update-local-forks: moved declarations ==",
+        `Upstream moved these declarations out of ${LEASE_PATH}, and the fork changed them; each arrives in its new file without the fork's change:`,
+        `- \`relinquish\` (edited) -> ${RECOVERY_PATH}`,
+      ].join("\n")
+    );
+    expect(lease?.content).toContain(
+      "`relinquish`, pinned upstream -> fork:\n--- pinned upstream\n+++ fork\n@@"
+    );
+    expect(lease?.content).toContain('+  if (holder === "") {');
+    expect(lease?.content).toContain(
+      "== end of moved declarations; the merge of this file follows ==\n"
+    );
+    // The new home is still written, as upstream has it, and points back.
+    expect(recovery).toMatchObject({ action: "add", content: LEASE_RECOVERY });
+    expect(recovery?.reason).toBe(
+      `New upstream runtime file. Receives \`relinquish\` moved from ${LEASE_PATH} without the fork's change; re-apply it here (see ${LEASE_PATH}).`
+    );
+    expect(plan.pinUpdate.to).toBe(fixture.release);
+
+    const before = readFileSync(join(fixture.fork, LEASE_PATH), "utf8");
+    const receipt = applyForkPlan(plan);
+    expect(receipt.conflicts).toEqual([LEASE_PATH]);
+    expect(receipt.written).toContain(`${LEASE_PATH}.upstream-merge`);
+    expect(receipt.written).toContain(RECOVERY_PATH);
+    expect(receipt.pin.to).toBe(fixture.release);
+    expect(readFileSync(join(fixture.fork, LEASE_PATH), "utf8")).toBe(before);
+    expect(readFileSync(join(fixture.fork, RECOVERY_PATH), "utf8")).toBe(
+      LEASE_RECOVERY
+    );
+    const sidecar = readFileSync(
+      join(fixture.fork, `${LEASE_PATH}.upstream-merge`),
+      "utf8"
+    );
+    expect(sidecar).toStartWith("== update-local-forks: moved declarations ==");
+
+    // Once the pin moved, the sidecar is the record: the file stays in review.
+    const pending = planMoved(fixture);
+    expect(pending.pinUpdate.from).toBe(fixture.release);
+    expect(entryOf(pending, LEASE_PATH)).toMatchObject({
+      action: "review",
+      reason: `Upstream moved declarations the fork changed out of this file; ${LEASE_PATH}.upstream-merge lists each one, its new file, and the fork's diff. Re-apply each change where its code lives now, settle this file as the sidecar says, then delete the sidecar.`,
+    });
+  });
+
+  test("never tells a fork that also changed the old file elsewhere to take upstream's version", () => {
+    const acme = "export const acmeOnly = true;";
+    const fixture = movedFixture({
+      forkLease: (pinned) => `${editRelinquish(pinned)}\n${acme}\n`,
+    });
+    const lease = entryOf(planMoved(fixture), LEASE_PATH);
+
+    expect(lease?.action).toBe("conflict");
+    expect(lease?.reason).toContain(
+      "Settle this file from the merge below the sidecar header, taking upstream's side wherever it took moved code out,"
+    );
+    expect(lease?.reason).not.toContain("Take the installed upstream version");
+    expect(lease?.content).toContain(acme);
+  });
+
+  test("fails closed, losing nothing, when the fork changed a statement that follows a moved declaration", () => {
+    // A declaration's chunk runs to the next top-level declaration, so a
+    // statement right after it counts as part of it. Upstream kept this one
+    // in the old file; the per-file merge is clean, but the plan cannot tell
+    // the statement from the declaration, so it conflicts rather than guess.
+    const loaded = 'console.info("lease module loaded");';
+    const acme = 'console.info("acme lease module loaded");';
+    const tail = `// Loaded once per process.\n${loaded}\n`;
+    const pinned = `${LEASE_AT_PIN}\n${tail}`;
+    const released = `${LEASE_RELEASED}\n${tail}`;
+    const forkLease = (source: string): string => source.replace(loaded, acme);
+    expect(mergesCleanly(forkLease(pinned), pinned, released)).toBe(true);
+    const fixture = movedFixture({
+      forkLease,
+      pinned,
+      released: {
+        "scripts/lib/lease-recovery.ts": LEASE_RECOVERY,
+        "scripts/lib/lease.ts": released,
+      },
+    });
+    const plan = planMoved(fixture);
+    const lease = entryOf(plan, LEASE_PATH);
+
+    expect(lease?.action).toBe("conflict");
+    expect(lease?.reason).toContain(
+      `the fork changed 1: \`LEASE_MARKER\` (edited) -> ${RECOVERY_PATH}.`
+    );
+    // The resolution keeps a change to a statement that stays in this file,
+    // and the merge behind the header still carries it.
+    expect(lease?.reason).toContain(
+      "or in this file for a statement that stays here"
+    );
+    expect(lease?.content).toContain(`+${acme}`);
+    expect(
+      lease?.content?.split(
+        "== end of moved declarations; the merge of this file follows ==\n"
+      )[1]
+    ).toContain(acme);
+    expect(entryOf(plan, RECOVERY_PATH)?.action).toBe("add");
+    expect(plan.pinUpdate.to).toBe(fixture.release);
+  });
+
+  test("conflicts an edit inside a moved template literal even when upstream keeps its text in the old file", () => {
+    // Upstream renamed the declaration in the old file and moved the original
+    // name to a new file: Git sees only the header line change, and the
+    // fork's edit to the template text merges cleanly into the renamed copy.
+    // A column-0 line inside the template that reads as a declaration ends
+    // the named chunk early, so naming cannot tell; the file rule still
+    // conflicts, and the reason falls back to naming the move only.
+    const named = `the fork changed 1: \`moved\` (edited) -> ${RECOVERY_PATH}.`;
+    const unnamed = `Upstream moved code out of this file to ${RECOVERY_PATH}, and the fork changed this file;`;
+    for (const [body, said] of [
+      ["first\nsecond", named],
+      ["first\nconst text = example;", unnamed],
+    ] as const) {
+      const moved = `export const moved = \`\n${body}\nbase\n\`;\n`;
+      const retained = moved.replace("const moved", "const retained");
+      const forkLease = (source: string): string =>
+        source.replace("\nbase\n", "\nfork edit\n");
+      expect(mergesCleanly(forkLease(moved), moved, retained)).toBe(true);
+      const fixture = movedFixture({
+        forkLease,
+        pinned: moved,
+        released: {
+          "scripts/lib/lease-recovery.ts": moved,
+          "scripts/lib/lease.ts": retained,
+        },
+      });
+      const lease = entryOf(planMoved(fixture), LEASE_PATH);
+
+      expect(lease?.action).toBe("conflict");
+      expect(lease?.reason).toContain(said);
+    }
+  });
+
+  test("conflicts an edit to a moved declaration whose literal text could mislead the reader", () => {
+    // Each pinned declaration is valid JavaScript whose text a parser-free
+    // reader could misjudge: a regex inside `${}` holding a brace and a
+    // backtick, and a CRLF string continuation. Upstream renamed it in place
+    // and copied the original into a new file, so the per-file merge is clean.
+    const interpolation = ["$", "{"].join("");
+    const cases = [
+      [
+        "export const moved = `",
+        `${interpolation}/}\`/.test("x")}`,
+        "const fake = 1;",
+        "first",
+        "second",
+        "base",
+        "`;",
+        "",
+      ].join("\n"),
+      'export const moved = "first\\\r\nconst fake = 1;\\\r\nsecond\\\r\nbase";\r\n',
+    ];
+    for (const moved of cases) {
+      const retained = moved.replace("const moved", "const retained");
+      const forkLease = (source: string): string =>
+        source.replace("base", "fork edit");
+      expect(mergesCleanly(forkLease(moved), moved, retained)).toBe(true);
+      const fixture = movedFixture({
+        forkLease,
+        pinned: moved,
+        released: {
+          "scripts/lib/lease-recovery.ts": moved,
+          "scripts/lib/lease.ts": retained,
+        },
+      });
+      const lease = entryOf(planMoved(fixture), LEASE_PATH);
+
+      // The safety rule reads whole files, so no literal can mislead it.
+      expect(lease?.action).toBe("conflict");
+      expect(lease?.reason).toContain(
+        `Upstream moved code out of this file to ${RECOVERY_PATH}, and the fork changed this file;`
+      );
+      expect(lease?.content).toContain("+fork edit");
+    }
+  });
+
+  test("conflicts a removal that a look-alike inside a template literal would otherwise mask", () => {
+    const real = 'export const moved = "base";';
+    const example = 'export const example = `\nconst moved = "example";\n`;\n';
+    const pinned = `${real}\n${example}`;
+    const fixture = movedFixture({
+      forkLease: () => example,
+      pinned,
+      released: {
+        "scripts/lib/lease-recovery.ts": `${real}\n`,
+        "scripts/lib/lease.ts": example,
+      },
+    });
+    const plan = planMoved(fixture);
+
+    expect(entryOf(plan, LEASE_PATH)?.action).toBe("conflict");
+    expect(entryOf(plan, LEASE_PATH)?.reason).toContain(
+      `Upstream moved code out of this file to ${RECOVERY_PATH}, and the fork changed this file;`
+    );
+    expect(entryOf(plan, RECOVERY_PATH)?.action).toBe("add");
+  });
+
+  test("conflicts a removal that a regex backtick could hide behind a template look-alike", () => {
+    // Round 5: the fork took the declaration out of the old file, just as
+    // upstream did, and the old file now holds a look-alike in a template
+    // after a regex with a backtick. Only the new file brings it back.
+    const fixture = movedFixture({
+      forkLease: () => REGEX_BACKTICK_RELEASED,
+      pinned: REGEX_BACKTICK_PINNED,
+      released: {
+        "scripts/lib/lease-recovery.ts": `${LOOKALIKE_REAL}\n`,
+        "scripts/lib/lease.ts": REGEX_BACKTICK_RELEASED,
+      },
+    });
+    const plan = planMoved(fixture);
+
+    expect(entryOf(plan, LEASE_PATH)?.action).toBe("conflict");
+    expect(entryOf(plan, LEASE_PATH)?.reason).toContain(
+      `out of this file to ${RECOVERY_PATH}`
+    );
+    expect(entryOf(plan, RECOVERY_PATH)?.action).toBe("add");
+  });
+
+  test("keeps today's plan for an untouched fork whatever its literals hold", () => {
+    // Round 5: a regex character class holding a backtick. The fork's old
+    // file equals the pin, so the plan is exactly what it was before moves
+    // were read.
+    const fixture = movedFixture({
+      pinned: REGEX_CLASS_PINNED,
+      released: {
+        "scripts/lib/lease-recovery.ts": "export const moved = 1;\n",
+        "scripts/lib/lease.ts": "export function prep() { return /[`]/; }\n",
+      },
+    });
+    const plan = planMoved(fixture);
+
+    expect(entryOf(plan, LEASE_PATH)).toMatchObject({
+      action: "update",
+      reason: "Changed upstream only; apply the upstream version.",
+    });
+    expect(entryOf(plan, RECOVERY_PATH)).toMatchObject({
+      action: "add",
+      reason: "New upstream runtime file.",
+    });
+    for (const entry of plan.entries) {
+      expect(entry.reason).not.toMatch(MOVE_TEXT_PATTERN);
+      expect(entry.notes).toBeUndefined();
+    }
+  });
+
+  test("conflicts by design when the fork changed a declaration that stays beside one that moved", () => {
+    // Round 5: the new file copies the whole old file, so the moved
+    // declaration's lines and the one that stays read alike; any fork change
+    // to a file code moved out of conflicts, and the merge keeps the change.
+    const forkLease = (source: string): string =>
+      source.replace("const stayed = 1;", "const stayed = 2;");
+    const released = GAP_PINNED.replace("export const moved = 1;\n", "");
+    expect(mergesCleanly(forkLease(GAP_PINNED), GAP_PINNED, released)).toBe(
+      true
+    );
+    const fixture = movedFixture({
+      forkLease,
+      pinned: GAP_PINNED,
+      released: {
+        "scripts/lib/lease-recovery.ts": GAP_PINNED,
+        "scripts/lib/lease.ts": released,
+      },
+    });
+    const lease = entryOf(planMoved(fixture), LEASE_PATH);
+
+    expect(lease?.action).toBe("conflict");
+    expect(
+      lease?.content?.split(
+        "== end of moved declarations; the merge of this file follows ==\n"
+      )[1]
+    ).toContain("export const stayed = 2;");
+  });
+
+  test("conflicts a removal that a changed file newly declaring the name would undo, whatever else the fork carries", () => {
+    // Upstream moves `relinquish` into core.ts, which existed at the pin, and
+    // into a new file the fork already carries with content of its own. The
+    // new file is never written over, but core.ts updates and brings the
+    // declaration the fork removed back.
+    const relinquish = `${RELINQUISH.join("\n")}\n`;
+    const core = "export const core = 2;\n";
+    const withoutRelinquish = (source: string): string =>
+      source.replace(`${relinquish}\n`, "");
+    const fixture = movedFixture({
+      forkFiles: { [RECOVERY_PATH]: "export const other = true;\n" },
+      forkLease: withoutRelinquish,
+      released: {
+        "scripts/lib/core.ts": `${core}\n${relinquish}`,
+        "scripts/lib/lease-recovery.ts": relinquish,
+        "scripts/lib/lease.ts": withoutRelinquish(LEASE_AT_PIN),
+      },
+    });
+    const plan = planMoved(fixture);
+
+    expect(entryOf(plan, LEASE_PATH)?.action).toBe("conflict");
+    expect(entryOf(plan, LEASE_PATH)?.reason).toContain(
+      `\`relinquish\` (removed) -> runtime/scripts/lib/core.ts or ${RECOVERY_PATH}`
+    );
+    expect(entryOf(plan, "runtime/scripts/lib/core.ts")?.action).toBe("update");
+    expect(entryOf(plan, RECOVERY_PATH)?.action).toBe("conflict");
+  });
+
+  test("conflicts a fork copy of a moved declaration in a file that existed at the pin", () => {
+    // The fork moved the declaration itself, with an edit, into a file upstream
+    // also moves it to; that file merges, so the copy is compared, not trusted.
+    const relinquish = `${RELINQUISH.join("\n")}\n`;
+    const core = "export const core = 2;\n";
+    const fixture = movedFixture({
+      forkFiles: {
+        "runtime/scripts/lib/core.ts": `${core}\n${editRelinquish(relinquish)}`,
+      },
+      forkLease: (source) => source.replace(`${RELINQUISH.join("\n")}\n\n`, ""),
+      released: {
+        "scripts/lib/core.ts": `${core}\n${relinquish}`,
+        "scripts/lib/lease.ts": LEASE_AT_PIN.replace(
+          `${RELINQUISH.join("\n")}\n\n`,
+          ""
+        ),
+      },
+    });
+    const lease = entryOf(planMoved(fixture), LEASE_PATH);
+
+    expect(lease?.action).toBe("conflict");
+    expect(lease?.reason).toContain(
+      "`relinquish` (edited) -> runtime/scripts/lib/core.ts"
+    );
+  });
+
+  test("leaves a fork that kept every moved declaration with today's plan", () => {
+    const fixture = movedFixture();
+    const plan = planMoved(fixture);
+    const byPath = Object.fromEntries(
+      plan.entries.map((entry) => [entry.forkPath, entry.action])
+    );
+
+    expect(byPath).toMatchObject({
+      "CHANGELOG.md": "skip",
+      [LEASE_PATH]: "update",
+      [RECOVERY_PATH]: "add",
+      "SKILL.md": "update",
+    });
+    expect(entryOf(plan, LEASE_PATH)).toEqual({
+      action: "update",
+      content: LEASE_RELEASED,
+      forkDigest: createHash("sha256").update(LEASE_AT_PIN).digest("hex"),
+      forkPath: LEASE_PATH,
+      reason: "Changed upstream only; apply the upstream version.",
+      upstreamPath: "scripts/lib/lease.ts",
+    });
+    expect(entryOf(plan, RECOVERY_PATH)).toEqual({
+      action: "add",
+      content: LEASE_RECOVERY,
+      forkDigest: null,
+      forkPath: RECOVERY_PATH,
+      reason: "New upstream runtime file.",
+      upstreamPath: "scripts/lib/lease-recovery.ts",
+    });
+    expect(plan.summary).toMatchObject({
+      add: 1,
+      conflict: 0,
+      merge: 0,
+      review: 0,
+      update: 2,
+    });
+    for (const entry of plan.entries) {
+      expect(entry.reason).not.toMatch(MOVE_TEXT_PATTERN);
+      expect(entry.notes).toBeUndefined();
+    }
+    expect(plan.pinUpdate.to).toBe(fixture.release);
+  });
+
+  test("conflicts a file whose moved declaration the fork removed, even where it matches upstream", () => {
+    // The fork dropped both declarations upstream moves; its file now equals
+    // upstream's but for the re-export, so the per-file merge is clean and
+    // the new file would bring both back without a word.
+    const removed = (pinned: string): string =>
+      pinned
+        .replace(`${RELINQUISH.join("\n")}\n\n`, "")
+        .replace(`\n${LEASE_MARKER}\n`, "");
+    expect(
+      mergesCleanly(removed(LEASE_AT_PIN), LEASE_AT_PIN, LEASE_RELEASED)
+    ).toBe(true);
+    const fixture = movedFixture({ forkLease: removed });
+    const plan = planMoved(fixture);
+    const lease = entryOf(plan, LEASE_PATH);
+
+    expect(lease).toMatchObject({ action: "conflict", sidecarDigest: null });
+    expect(lease?.reason).toContain(
+      `the fork changed 2: \`relinquish\` (removed) -> ${RECOVERY_PATH}; \`LEASE_MARKER\` (removed) -> ${RECOVERY_PATH}.`
+    );
+    expect(lease?.content).toContain(
+      `- \`LEASE_MARKER\` (removed) -> ${RECOVERY_PATH}`
+    );
+    expect(lease?.content).toContain(`-${LEASE_MARKER}`);
+    expect(entryOf(plan, RECOVERY_PATH)?.reason).toContain(
+      `Receives \`relinquish\`, \`LEASE_MARKER\` moved from ${LEASE_PATH}`
+    );
+    expect(plan.pinUpdate.to).toBe(fixture.release);
+  });
+
+  test("conflicts a fork edit to a moved declaration that sits far from upstream's change", () => {
+    // A mechanical split that cuts at the declaration line leaves its doc
+    // comment behind. The fork edited that comment, four lines from what
+    // upstream removed, so the per-file merge is clean and would leave the
+    // edit stranded above nothing while the code arrives in the new file.
+    const strandedDoc = [
+      LEASE_IMPORT,
+      "",
+      'export { LEASE_MARKER, relinquish } from "./lease-recovery.ts";',
+      "",
+      ...READ_LEASE,
+      "",
+      ...LEASE_DOC,
+      "",
+    ].join("\n");
+    const recovery = [
+      ...RELINQUISH.slice(LEASE_DOC.length),
+      "",
+      LEASE_MARKER,
+      "",
+    ].join("\n");
+    const editDoc = (pinned: string): string =>
+      pinned.replace(
+        " * Gives the lease back after a failed finalization.",
+        " * Gives the lease back after a failed or aborted finalization."
+      );
+    expect(
+      mergesCleanly(editDoc(LEASE_AT_PIN), LEASE_AT_PIN, strandedDoc)
+    ).toBe(true);
+    const fixture = movedFixture({
+      forkLease: editDoc,
+      released: {
+        "scripts/lib/lease-recovery.ts": recovery,
+        "scripts/lib/lease.ts": strandedDoc,
+      },
+    });
+    const plan = planMoved(fixture);
+    const lease = entryOf(plan, LEASE_PATH);
+
+    expect(lease).toMatchObject({ action: "conflict", sidecarDigest: null });
+    expect(lease?.reason).toContain(
+      `the fork changed 1: \`relinquish\` (edited) -> ${RECOVERY_PATH}.`
+    );
+    // The clean merge follows the header, so nothing of it is lost either.
+    expect(lease?.content).toContain(
+      "== end of moved declarations; the merge of this file follows ==\n"
+    );
+    expect(lease?.content).toContain(
+      "+ * Gives the lease back after a failed or aborted finalization."
+    );
+    expect(entryOf(plan, RECOVERY_PATH)?.action).toBe("add");
+    expect(plan.pinUpdate.to).toBe(fixture.release);
+  });
+
+  test("notes fork-owned probes that read moved text from the old file, without blocking", () => {
+    const testScript = [
+      "#!/bin/sh",
+      "set -eu",
+      `grep -q 'readLease' ${LEASE_PATH}`,
+      `grep -q 'lease-marker-v1' "$skill_dir/${LEASE_PATH}"`,
+      "grep -q 'released by' \\",
+      `  ${LEASE_PATH}`,
+      "grep -q 'lease-marker-v1' runtime/scripts/lib/other.ts",
+      "",
+    ].join("\n");
+    const fixture = movedFixture({
+      forkFiles: { "scripts/test.sh": testScript },
+    });
+    const plan = planMoved(fixture);
+    const probe = entryOf(plan, "scripts/test.sh");
+
+    expect(probe).toMatchObject({
+      action: "keep-fork-only",
+      reason: "Fork-owned file with no upstream counterpart.",
+    });
+    expect(probe?.notes).toEqual([
+      `Advisory: these lines read text that upstream moved out of the file they name, so a check reading that file no longer finds it; point each at the file that holds the text now: line 4: \`lease-marker-v1\` left ${LEASE_PATH} for ${RECOVERY_PATH}; lines 5-6: \`released by\` left ${LEASE_PATH} for ${RECOVERY_PATH}.`,
+    ]);
+    // Advisory only: nothing else in the plan changes and the pin moves.
+    expect(entryOf(plan, LEASE_PATH)?.action).toBe("update");
+    expect(plan.summary.conflict).toBe(0);
+    expect(plan.pinUpdate.to).toBe(fixture.release);
+
+    const text = spawnSync(
+      [
+        process.execPath,
+        cliPath,
+        "plan",
+        "--fork",
+        fixture.fork,
+        "--source",
+        fixture.source,
+        "--upstream",
+        fixture.upstream,
+      ],
+      { stderr: "pipe", stdout: "pipe" }
+    );
+    expect(text.exitCode).toBe(0);
+    expect(decoder.decode(text.stdout)).toContain(
+      "  note     scripts/test.sh: Advisory: these lines read text"
+    );
+    // A saved plan carrying notes validates and applies.
+    const planPath = join(fixture.base, "moved-plan.json");
+    writeFileSync(planPath, JSON.stringify(plan));
+    const applied = spawnSync(
+      [process.execPath, cliPath, "apply", "--plan", planPath, "--json"],
+      { stderr: "pipe", stdout: "pipe" }
+    );
+    expect(applied.exitCode).toBe(0);
+    expect(JSON.parse(decoder.decode(applied.stdout))).toMatchObject({
+      conflicts: [],
+      pin: { from: fixture.pin, to: fixture.release },
+    });
+    expect(readFileSync(join(fixture.fork, "scripts/test.sh"), "utf8")).toBe(
+      testScript
+    );
+  });
+
+  test("conflicts a file upstream renamed away after the fork edited a declaration in it", () => {
+    const fixture = movedFixture({
+      forkLease: editRelinquish,
+      released: {
+        "scripts/lib/lease-core.ts": LEASE_AT_PIN,
+        "scripts/lib/lease.ts": null,
+      },
+    });
+    const plan = planMoved(fixture);
+    const lease = entryOf(plan, LEASE_PATH);
+    const core = "runtime/scripts/lib/lease-core.ts";
+
+    expect(lease).toMatchObject({ action: "conflict", sidecarDigest: null });
+    expect(lease?.reason).toContain(
+      `Upstream moved 3 declarations out of this file, and the fork changed 1: \`relinquish\` (edited) -> ${core}.`
+    );
+    expect(lease?.reason).toContain("Delete this file as upstream did");
+    expect(lease?.content).toEndWith(
+      "== end of moved declarations; upstream removed this file ==\n"
+    );
+    expect(entryOf(plan, core)?.action).toBe("add");
+
+    const receipt = applyForkPlan(plan);
+    expect(receipt.conflicts).toEqual([LEASE_PATH]);
+    expect(existsSync(join(fixture.fork, LEASE_PATH))).toBe(true);
+    // The old file now has no upstream counterpart; its sidecar keeps it in
+    // review until it is settled, then it is the fork's own file.
+    expect(entryOf(planMoved(fixture), LEASE_PATH)?.action).toBe("review");
+    rmSync(join(fixture.fork, `${LEASE_PATH}.upstream-merge`));
+    expect(entryOf(planMoved(fixture), LEASE_PATH)?.action).toBe(
+      "keep-fork-only"
+    );
+  });
+
+  test("holds the pin while an earlier sidecar waits on a file that lost a fork-edited declaration", () => {
+    const earlier = "earlier merge\n";
+    const fixture = movedFixture({
+      forkFiles: { [`${LEASE_PATH}.upstream-merge`]: earlier },
+      forkLease: editRelinquish,
+    });
+    const plan = planMoved(fixture);
+    const lease = entryOf(plan, LEASE_PATH);
+    const forkLease = readFileSync(join(fixture.fork, LEASE_PATH), "utf8");
+
+    // A new sidecar would overwrite the earlier one, and a moved pin would
+    // hide the moves from every later plan: bind the sidecar, hold the pin.
+    expect(lease).toMatchObject({
+      action: "conflict",
+      forkDigest: createHash("sha256").update(forkLease).digest("hex"),
+      sidecarDigest: createHash("sha256").update(earlier).digest("hex"),
+    });
+    expect(lease?.content).toBeUndefined();
+    expect(lease?.reason).toContain(
+      `This file still waits on ${LEASE_PATH}.upstream-merge; settle that sidecar and delete it, then plan again so the move is planned.`
+    );
+    expect(plan.pinUpdate.to).toBeNull();
+    expect(plan.pinUpdate.reason).toContain(
+      "still waits on an earlier sidecar"
+    );
+    expect(entryOf(plan, "SKILL.md")?.action).toBe("review");
+    expect(entryOf(plan, RECOVERY_PATH)?.action).toBe("add");
+
+    const receipt = applyForkPlan(plan);
+    expect(receipt.conflicts).toEqual([LEASE_PATH]);
+    expect(receipt.pin.to).toBeNull();
+    expect(
+      readFileSync(join(fixture.fork, `${LEASE_PATH}.upstream-merge`), "utf8")
+    ).toBe(earlier);
+
+    rmSync(join(fixture.fork, `${LEASE_PATH}.upstream-merge`));
+    const settled = planMoved(fixture);
+    expect(entryOf(settled, LEASE_PATH)?.content).toStartWith(
+      "== update-local-forks: moved declarations =="
+    );
+    expect(settled.pinUpdate.to).toBe(fixture.release);
+  });
+
+  test("raises a held move again until the pin advances, never writing over the carried change", () => {
+    // A new reference the fork does not record holds the pin, so the next
+    // plan still compares against the old base. The fork's old file still
+    // differs from the pin, so it conflicts again; the new file, which the
+    // fork now carries with its change, is never written over.
+    const fixture = movedFixture({
+      forkLease: editRelinquish,
+      released: {
+        "references/fresh.md": "# Fresh\n",
+        "scripts/lib/lease-recovery.ts": LEASE_RECOVERY,
+        "scripts/lib/lease.ts": LEASE_RELEASED,
+      },
+    });
+    const plan = planMoved(fixture);
+    expect(entryOf(plan, LEASE_PATH)?.action).toBe("conflict");
+    expect(plan.pinUpdate.to).toBeNull();
+    applyForkPlan(plan);
+
+    // Resolved as the sidecar says: the change re-applied in its new file,
+    // upstream's old file taken, the sidecar deleted.
+    const carried = editRelinquish(LEASE_RECOVERY);
+    write(fixture.fork, RECOVERY_PATH, carried);
+    write(fixture.fork, LEASE_PATH, LEASE_RELEASED);
+    rmSync(join(fixture.fork, `${LEASE_PATH}.upstream-merge`));
+    const next = planMoved(fixture);
+    expect(next.pinUpdate.from).toBe(fixture.pin);
+    expect(entryOf(next, LEASE_PATH)?.action).toBe("conflict");
+    expect(entryOf(next, RECOVERY_PATH)?.action).toBe("conflict");
+    applyForkPlan(next);
+    expect(readFileSync(join(fixture.fork, RECOVERY_PATH), "utf8")).toBe(
+      carried
+    );
+  });
+
+  test("still reviews a fork-owned command gate that waits on a moved-code sidecar", () => {
+    // Round 6: a fork-only file whose sidecar records moved code is a review
+    // item, and it must still be weighed as a gate when upstream adds a
+    // command, so the pin holds for the gate as it does without the sidecar.
+    const gate = "scripts/simple-changes-runtime.sh";
+    const fixture = movedFixture({
+      forkFiles: {
+        [gate]: [
+          "#!/bin/sh",
+          'case "$1" in',
+          "  help | initialize | loop | worktree | prune) ;;",
+          "  *) exit 64 ;;",
+          "esac",
+          "",
+        ].join("\n"),
+        [`${gate}.upstream-merge`]:
+          "== update-local-forks: moved declarations ==\nearlier move\n",
+      },
+      released: {
+        "scripts/lib/lease-recovery.ts": LEASE_RECOVERY,
+        "scripts/lib/lease.ts": LEASE_RELEASED,
+        "scripts/simple-changes.ts": cliSource([...RELEASED_COMMANDS, "ship"]),
+      },
+    });
+    const plan = planMoved(fixture);
+    const entry = entryOf(plan, gate);
+
+    expect(entry?.action).toBe("review");
+    expect(entry?.reason).toContain(`${gate}.upstream-merge lists each one`);
+    expect(entry?.reason).toContain("Upstream added ship");
+    expect(plan.pinUpdate.to).toBeNull();
+    expect(plan.pinUpdate.reason).toContain("gate review");
+  });
+
+  test("conflicts when code moved out only into the packaged changelog", () => {
+    // Round 7: the changelog is the fork's own history and never planned, but
+    // a line moved there still counts as moved code.
+    const pinned = "export const moved = 1;\nexport const kept = 2;\n";
+    const released = "export const kept = 2;\n";
+    const fixture = movedFixture({
+      forkLease: () => released,
+      pinned,
+      released: {
+        "CHANGELOG.md": `${changelogThrough("0.3.0", "0.2.0", "0.1.0")}\n\`\`\`ts\nexport const moved = 1;\n\`\`\`\n`,
+        "scripts/lib/lease.ts": released,
+      },
+    });
+    const plan = planMoved(fixture);
+
+    expect(entryOf(plan, LEASE_PATH)?.action).toBe("conflict");
+    expect(entryOf(plan, LEASE_PATH)?.reason).toContain("-> CHANGELOG.md");
+  });
+
+  test("conflicts when code moved out into a directory the plan never carries", () => {
+    // Round 8: installed files under `dist` or `coverage` are never planned,
+    // but a line moved there still counts as moved code.
+    const pinned = "export const moved = 1;\nexport const kept = 2;\n";
+    const released = "export const kept = 2;\n";
+    for (const destination of ["scripts/dist/m.ts", "scripts/coverage/m.ts"]) {
+      const fixture = movedFixture({
+        forkLease: () => released,
+        pinned,
+        released: {
+          [destination]: "export const moved = 1;\n",
+          "scripts/lib/lease.ts": released,
+        },
+      });
+      const plan = planMoved(fixture);
+
+      expect(entryOf(plan, LEASE_PATH)?.action).toBe("conflict");
+      expect(entryOf(plan, LEASE_PATH)?.reason).toContain(`-> ${destination}`);
+    }
+  });
+
+  test("conflicts when the moved line carries a byte-order mark at the pin", () => {
+    // Round 9: lines are read as UTF-8 before trimming, so an encoded BOM
+    // never keeps a moved line from matching.
+    const fixture = movedFixture({
+      forkLease: () => "",
+      pinned: "﻿export const moved = 1;\n",
+      released: {
+        "scripts/lib/lease-recovery.ts": "export const moved = 1;\n",
+        "scripts/lib/lease.ts": "",
+      },
+    });
+
+    expect(entryOf(planMoved(fixture), LEASE_PATH)?.action).toBe("conflict");
+  });
+
+  test("conflicts when code moved into a file whose name is not valid UTF-8", () => {
+    // Round 9: a destination under a directory the plan never carries is read
+    // by its raw path bytes, so a name that does not decode still counts.
+    const pinned = "export const moved = 1;\nexport const kept = 2;\n";
+    const released = "export const kept = 2;\n";
+    const fixture = movedFixture({
+      forkLease: () => released,
+      pinned,
+      released: { "scripts/lib/lease.ts": released },
+    });
+    const dist = join(fixture.source, "scripts", "dist");
+    mkdirSync(dist, { recursive: true });
+    const plan = withRawName(
+      dist,
+      Buffer.from([0xff, 0x2e, 0x74, 0x73]),
+      "export const moved = 1;\n",
+      () => planMoved(fixture)
+    );
+
+    expect(entryOf(plan, LEASE_PATH)?.action).toBe("conflict");
+    expect(entryOf(plan, LEASE_PATH)?.reason).toContain("<path bytes ");
+  });
+
+  test("conflicts when the old file ends its lines with CR or a Unicode line separator", () => {
+    // Round 10: lines split at every line terminator, not only LF.
+    for (const end of ["\r", " ", " "]) {
+      const released = `export const kept = 2;${end}`;
+      const fixture = movedFixture({
+        forkLease: () => released,
+        pinned: `export const moved = 1;${end}export const kept = 2;${end}`,
+        released: {
+          "scripts/lib/lease-recovery.ts": `export const moved = 1;${end}`,
+          "scripts/lib/lease.ts": released,
+        },
+      });
+
+      expect(entryOf(planMoved(fixture), LEASE_PATH)?.action).toBe("conflict");
+    }
+  });
+
+  test("conflicts when a raw-named destination reads like a path upstream removed", () => {
+    // Round 10: a name that is not valid UTF-8 is labeled by its bytes, so it
+    // never passes for the pinned `dist/ÿ.ts` and is never skipped as carried.
+    const pinned = "export const moved = 1;\nexport const kept = 2;\n";
+    const released = "export const kept = 2;\n";
+    const fixture = movedFixture({
+      forkLease: () => released,
+      pinned,
+      pinnedExtra: { "scripts/dist/ÿ.ts": "" },
+      released: {
+        "scripts/dist/ÿ.ts": null,
+        "scripts/lib/lease.ts": released,
+      },
+    });
+    const dist = join(fixture.source, "scripts", "dist");
+    mkdirSync(dist, { recursive: true });
+    const plan = withRawName(
+      dist,
+      Buffer.from([0xff, 0x2e, 0x74, 0x73]),
+      "export const moved = 1;\n",
+      () => planMoved(fixture)
+    );
+
+    expect(entryOf(plan, LEASE_PATH)?.action).toBe("conflict");
+    expect(entryOf(plan, LEASE_PATH)?.reason).toContain("<path bytes ");
+  });
+
+  test("counts a raw-named destination even when a pinned path reads like its label", () => {
+    // Round 11: labels are for display only; a name that is not valid UTF-8
+    // always counts as a destination.
+    const label = `<path bytes ${Buffer.from("scripts/dist/\xff", "latin1").toString("hex")}>`;
+    const pinned = "export const moved = 1;\nexport const kept = 2;\n";
+    const released = "export const kept = 2;\n";
+    const fixture = movedFixture({
+      forkLease: () => released,
+      pinned,
+      pinnedExtra: { [label]: "" },
+      released: { [label]: null, "scripts/lib/lease.ts": released },
+    });
+    const dist = join(fixture.source, "scripts", "dist");
+    mkdirSync(dist, { recursive: true });
+    const plan = withRawName(
+      dist,
+      Buffer.from([0xff]),
+      "export const moved = 1;\n",
+      () => planMoved(fixture)
+    );
+
+    expect(entryOf(plan, LEASE_PATH)?.action).toBe("conflict");
+  });
+
+  test("refuses a sidecar alias under Unicode case folding, and keeps the record if one slips through", () => {
+    // Round 12: casefolded filesystems alias σ and ς, or ß and ss; the check
+    // folds further than any of them.
+    for (const [old, alias] of [
+      ["σ", "ς"],
+      ["straße", "strasse"],
+    ] as const) {
+      const fixture = movedFixture({
+        forkFiles: {
+          [`runtime/scripts/lib/${old}.ts`]: "export const kept = 2;\n",
+        },
+        pinnedExtra: {
+          [`scripts/lib/${old}.ts`]:
+            "export const moved = 1;\nexport const kept = 2;\n",
+        },
+        released: {
+          "scripts/lib/lease-recovery.ts": LEASE_RECOVERY,
+          "scripts/lib/lease.ts": LEASE_RELEASED,
+          [`scripts/lib/${alias}.ts.upstream-merge`]:
+            "export const moved = 1;\n",
+          [`scripts/lib/${old}.ts`]: "export const kept = 2;\n",
+        },
+      });
+      expect(() => planMoved(fixture)).toThrow(
+        `its sidecar goes at runtime/scripts/lib/${old}.ts.upstream-merge`
+      );
+    }
+
+    // Should a filesystem alias two paths the check cannot see, the sidecar
+    // is written last and survives, and apply fails loudly.
+    const fixture = movedFixture({ forkLease: editRelinquish });
+    const plan = planMoved(fixture);
+    const sidecar = join(fixture.fork, `${LEASE_PATH}.upstream-merge`);
+    expect(() =>
+      withWriteAlias(join(fixture.fork, RECOVERY_PATH), sidecar, () =>
+        applyForkPlan(plan)
+      )
+    ).toThrow("no longer holds what apply wrote");
+    expect(readFileSync(sidecar, "utf8")).toStartWith(
+      "== update-local-forks: moved declarations =="
+    );
+  });
+
+  test("refuses before writing when a file apply updates is the held sidecar under another name", () => {
+    // Round 13: the fork's earlier sidecar is a hard link to a file the plan
+    // updates; writing that file would rewrite the sidecar the conflict binds.
+    const pinned = "export const moved = 1;\nexport const kept = 2;\n";
+    const released = "export const kept = 2;\n";
+    const fixture = movedFixture({
+      forkLease: () => released,
+      pinned,
+      pinnedExtra: { "scripts/lib/q.ts": "export const earlier = 1;\n" },
+      released: {
+        "scripts/lib/lease-recovery.ts": "export const moved = 1;\n",
+        "scripts/lib/lease.ts": released,
+        "scripts/lib/q.ts": "export const replacement = 1;\n",
+      },
+    });
+    const sidecar = join(fixture.fork, `${LEASE_PATH}.upstream-merge`);
+    linkSync(join(fixture.fork, "runtime/scripts/lib/q.ts"), sidecar);
+    const plan = planMoved(fixture);
+    expect(entryOf(plan, LEASE_PATH)?.action).toBe("conflict");
+    expect(entryOf(plan, "runtime/scripts/lib/q.ts")?.action).toBe("update");
+
+    expect(() => applyForkPlan(plan)).toThrow("are the same file");
+    expect(readFileSync(sidecar, "utf8")).toBe("export const earlier = 1;\n");
+    expect(existsSync(join(fixture.fork, RECOVERY_PATH))).toBe(false);
+  });
+
+  test("refuses two conflicts whose sidecars would alias each other", () => {
+    // Round 13: sidecars are checked against each other, not only against
+    // planned files. APFS keeps café and cafe apart, but the check folds
+    // further than any filesystem, combining marks included.
+    const fixture = movedFixture({
+      forkFiles: {
+        "runtime/scripts/lib/cafe.ts": "export const keepB = 2;\n",
+        "runtime/scripts/lib/café.ts": "export const keepA = 1;\n",
+      },
+      pinnedExtra: {
+        "scripts/lib/cafe.ts":
+          "export const beta = 2;\nexport const keepB = 2;\n",
+        "scripts/lib/café.ts":
+          "export const alpha = 1;\nexport const keepA = 1;\n",
+      },
+      released: {
+        "scripts/lib/cafe.ts": "export const keepB = 2;\n",
+        "scripts/lib/café.ts": "export const keepA = 1;\n",
+        "scripts/lib/lease-recovery.ts": LEASE_RECOVERY,
+        "scripts/lib/lease.ts": LEASE_RELEASED,
+        "scripts/lib/m.ts": "export const alpha = 1;\nexport const beta = 2;\n",
+      },
+    });
+
+    expect(() => planMoved(fixture)).toThrow("its sidecar goes at");
+  });
+
+  test("reserves every new path before writing, so an alias writes nothing at all", () => {
+    // A name the filesystem aliases, which no check can foresee, fails its
+    // exclusive reservation; every reservation is removed and nothing is
+    // written, the pin included.
+    const fixture = movedFixture({ forkLease: editRelinquish });
+    const plan = planMoved(fixture);
+    const sidecar = join(fixture.fork, `${LEASE_PATH}.upstream-merge`);
+    const skill = readFileSync(join(fixture.fork, "SKILL.md"), "utf8");
+
+    expect(() => withTakenName(sidecar, () => applyForkPlan(plan))).toThrow(
+      "could not be created on its own"
+    );
+    expect(existsSync(sidecar)).toBe(false);
+    expect(existsSync(join(fixture.fork, RECOVERY_PATH))).toBe(false);
+    expect(readFileSync(join(fixture.fork, "SKILL.md"), "utf8")).toBe(skill);
+  });
+
+  test("keeps the moved-code record when a later write fails partway through apply", () => {
+    // Round 14: sidecars are written before any other file, so a write that
+    // fails after the pin moved never leaves a conflict without its record.
+    const fixture = movedFixture({
+      forkLease: editRelinquish,
+      released: {
+        "scripts/lib/core.ts": "export const core = 3;\n",
+        "scripts/lib/lease-recovery.ts": LEASE_RECOVERY,
+        "scripts/lib/lease.ts": LEASE_RELEASED,
+      },
+    });
+    const plan = planMoved(fixture);
+    const core = join(fixture.fork, "runtime/scripts/lib/core.ts");
+    expect(entryOf(plan, "runtime/scripts/lib/core.ts")?.action).toBe("update");
+    chmodSync(core, 0o444);
+    try {
+      expect(() => applyForkPlan(plan)).toThrow();
+    } finally {
+      chmodSync(core, 0o644);
+    }
+    const sidecar = readFileSync(
+      join(fixture.fork, `${LEASE_PATH}.upstream-merge`),
+      "utf8"
+    );
+    expect(sidecar).toBe(entryOf(plan, LEASE_PATH)?.content ?? "");
+    expect(sidecar).toStartWith("== update-local-forks: moved declarations ==");
+  });
+
+  test("refuses before writing when a file apply leaves as it is is hard-linked to one it updates", () => {
+    // Round 14: a review file hard-linked to a file the plan updates would
+    // change with it while apply reported success.
+    const shared = "export const shared = 1;\n";
+    const fixture = movedFixture({
+      forkFiles: {
+        "runtime/scripts/lib/x.ts.upstream-merge": "earlier merge\n",
+      },
+      pinnedExtra: { "scripts/lib/x.ts": shared, "scripts/lib/y.ts": shared },
+      released: {
+        "scripts/lib/lease-recovery.ts": LEASE_RECOVERY,
+        "scripts/lib/lease.ts": LEASE_RELEASED,
+        "scripts/lib/y.ts": "export const shared = 2;\n",
+      },
+    });
+    const x = join(fixture.fork, "runtime/scripts/lib/x.ts");
+    const y = join(fixture.fork, "runtime/scripts/lib/y.ts");
+    rmSync(x);
+    linkSync(y, x);
+    const plan = planMoved(fixture);
+    expect(entryOf(plan, "runtime/scripts/lib/x.ts")?.action).toBe("review");
+    expect(entryOf(plan, "runtime/scripts/lib/y.ts")?.action).toBe("update");
+
+    expect(() => applyForkPlan(plan)).toThrow("are the same file");
+    expect(readFileSync(x, "utf8")).toBe(shared);
+    expect(existsSync(join(fixture.fork, RECOVERY_PATH))).toBe(false);
+  });
+
+  test("refuses before writing when a pending review sidecar is hard-linked to a file apply updates", () => {
+    // Release review: the saved merge waiting beside a review file is kept
+    // too, whether or not the plan binds its digest.
+    const shared = "export const shared = 1;\n";
+    const fixture = movedFixture({
+      forkFiles: {
+        "runtime/scripts/lib/x.ts.upstream-merge": "earlier merge\n",
+      },
+      pinnedExtra: { "scripts/lib/x.ts": shared, "scripts/lib/y.ts": shared },
+      released: {
+        "scripts/lib/lease-recovery.ts": LEASE_RECOVERY,
+        "scripts/lib/lease.ts": LEASE_RELEASED,
+        "scripts/lib/y.ts": "export const shared = 2;\n",
+      },
+    });
+    const sidecar = join(
+      fixture.fork,
+      "runtime/scripts/lib/x.ts.upstream-merge"
+    );
+    const y = join(fixture.fork, "runtime/scripts/lib/y.ts");
+    rmSync(sidecar);
+    linkSync(y, sidecar);
+    const plan = planMoved(fixture);
+    expect(entryOf(plan, "runtime/scripts/lib/x.ts")?.action).toBe("review");
+    expect(entryOf(plan, "runtime/scripts/lib/y.ts")?.action).toBe("update");
+
+    expect(() => applyForkPlan(plan)).toThrow("are the same file");
+    expect(readFileSync(sidecar, "utf8")).toBe(shared);
+    expect(existsSync(join(fixture.fork, RECOVERY_PATH))).toBe(false);
+  });
+
+  test("refuses a plan that carries a file where a moved-code sidecar goes", () => {
+    // Round 7: upstream adds a file at the conflicting file's sidecar path,
+    // or under it; writing both would overwrite the sidecar or fail midway.
+    const pinned = "export const moved = 1;\nexport const kept = 2;\n";
+    const released = "export const kept = 2;\n";
+    for (const collision of [
+      "scripts/lib/lease.ts.upstream-merge",
+      "scripts/lib/lease.ts.upstream-merge/m.ts",
+      // Round 8: a case alias names the same file on most macOS volumes.
+      "scripts/lib/lease.ts.UPSTREAM-MERGE",
+    ]) {
+      const fixture = movedFixture({
+        forkLease: () => released,
+        pinned,
+        released: {
+          [collision]: "export const moved = 1;\n",
+          "scripts/lib/lease.ts": released,
+        },
+      });
+      expect(() => planMoved(fixture)).toThrow(
+        `its sidecar goes at ${LEASE_PATH}.upstream-merge`
+      );
+    }
+
+    // Round 9: an upstream update to the earlier sidecar a held conflict
+    // binds would destroy it.
+    const held = movedFixture({
+      forkLease: () => released,
+      pinned,
+      pinnedExtra: { "scripts/lib/lease.ts.upstream-merge": "earlier merge\n" },
+      released: {
+        "scripts/lib/lease-recovery.ts": "export const moved = 1;\n",
+        "scripts/lib/lease.ts": released,
+        "scripts/lib/lease.ts.upstream-merge": "upstream replacement\n",
+      },
+    });
+    expect(() => planMoved(held)).toThrow(
+      `its sidecar goes at ${LEASE_PATH}.upstream-merge`
+    );
+
+    // A saved plan edited to carry one is refused before anything is written.
+    const fixture = movedFixture({ forkLease: editRelinquish });
+    const plan = planMoved(fixture);
+    const sneaked: ForkPlan = {
+      ...plan,
+      entries: [
+        ...plan.entries,
+        {
+          action: "add",
+          content: "export const sneaked = true;\n",
+          forkDigest: null,
+          forkPath: `${LEASE_PATH}.upstream-merge`,
+          reason: "New upstream runtime file.",
+          upstreamPath: "scripts/lib/lease.ts.upstream-merge",
+        },
+      ],
+    };
+    expect(() => applyForkPlan(sneaked)).toThrow("its sidecar goes at");
+    expect(existsSync(join(fixture.fork, `${LEASE_PATH}.upstream-merge`))).toBe(
+      false
+    );
+    expect(existsSync(join(fixture.fork, RECOVERY_PATH))).toBe(false);
+  });
+
+  test("conflicts without a sidecar when the fork omits the file declarations left", () => {
+    const fixture = movedFixture({ forkLease: () => null });
+    const plan = planMoved(fixture);
+    const lease = entryOf(plan, LEASE_PATH);
+
+    expect(lease).toMatchObject({
+      action: "conflict",
+      forkDigest: null,
+      sidecarDigest: null,
+    });
+    expect(lease?.content).toBeUndefined();
+    expect(lease?.reason).toContain(
+      "Upstream moved 2 declarations out of this file, which the fork omits:"
+    );
+    const receipt = applyForkPlan(plan);
+    expect(receipt.conflicts).toEqual([LEASE_PATH]);
+    expect(existsSync(join(fixture.fork, `${LEASE_PATH}.upstream-merge`))).toBe(
+      false
+    );
+    expect(readFileSync(join(fixture.fork, RECOVERY_PATH), "utf8")).toBe(
+      LEASE_RECOVERY
+    );
+  });
+});
+
+describe("update-local-forks moved code, any fork change", () => {
+  // The safety property, line by line: for every move the tests build, a
+  // fork that changes any one significant line of the old file conflicts.
+  for (const { name, pinned, released } of MOVED_CODE_CASES) {
+    test(`conflicts every single-line fork change in ${name}`, () => {
+      const fixture = movedFixture({ pinned, released });
+      const lines = pinned.split("\n");
+      let checked = 0;
+      for (const [index, line] of lines.entries()) {
+        if (!isSignificant(line)) {
+          continue;
+        }
+        const mutated = [...lines];
+        mutated[index] = line
+          .replace(CARRIAGE_RETURN_PATTERN, "")
+          .concat(" // fork mutation", line.endsWith("\r") ? "\r" : "");
+        write(fixture.fork, LEASE_PATH, mutated.join("\n"));
+        const entry = entryOf(planMoved(fixture), LEASE_PATH);
+        expect({ action: entry?.action, line: index + 1 }).toEqual({
+          action: "conflict",
+          line: index + 1,
+        });
+        checked += 1;
+      }
+      expect(checked).toBeGreaterThan(0);
+    });
+  }
 });
 
 describe("update-local-forks version identity", () => {

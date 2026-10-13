@@ -241,8 +241,19 @@ setup points agents at the fork by its own `SKILL.md` name; a personal block
 keeps generic wording because it spans repositories. The start and end markers
 never change, so an existing block is found and replaced in place.
 
+Whenever a target exists, also ask whether to add the optional scratch-file
+rule, whatever the pointer answer was. It is a second managed block with its
+own `<!-- simple-changes:scratch-files:start -->` and `:end -->` markers, so
+rewriting the pointer never removes it. It tells every agent, not only Simple
+Changes runs, to keep scratch files, captured command output, proof bundles,
+and handoff notes in a private temporary directory, never inside or next to a
+checkout, and to delete them when the task ends unless the user asks to keep
+them. Offer **Add the rule** first and **Leave it out** second. Non-interactive
+setup adds it only with `--scratch-file-rule add`; omitting the flag leaves the
+file as it is, and adding the rule needs exactly one target.
+
 The confirmation summary must
-show the exact target path and proposed managed block. Apply an authorized edit
+show the exact target path and each proposed managed block. Apply an authorized edit
 atomically, preserve existing content and newline style, and re-read it after
 writing.
 
@@ -257,6 +268,7 @@ simple-changes setup \
   --instruction-file /exact/existing/AGENTS.md \
   --instruction-pointer add \
   --handoff ask \
+  --scratch-file-rule add \
   --yes
 ```
 

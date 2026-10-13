@@ -33,8 +33,21 @@ export interface InstructionPointerResult extends InstructionPointerPlan {
   written: boolean;
 }
 
-const START_MARKER = "<!-- simple-changes:start -->";
-const END_MARKER = "<!-- simple-changes:end -->";
+interface ManagedBlockMarkers {
+  end: string;
+  start: string;
+}
+
+const POINTER_MARKERS: ManagedBlockMarkers = {
+  end: "<!-- simple-changes:end -->",
+  start: "<!-- simple-changes:start -->",
+};
+// A separate block, so the pointer and this rule are added, kept, or
+// replaced independently.
+const SCRATCH_FILE_MARKERS: ManagedBlockMarkers = {
+  end: "<!-- simple-changes:scratch-files:end -->",
+  start: "<!-- simple-changes:scratch-files:start -->",
+};
 const REPOSITORY_CANDIDATES = ["AGENTS.md", "CLAUDE.md"] as const;
 
 let runningSkill: string | undefined;
@@ -169,7 +182,21 @@ export const renderInstructionPointer = (
   timing: HandoffTiming,
   skillName: string = defaultSkillName()
 ): string =>
-  [START_MARKER, pointerBody(scope, timing, skillName), END_MARKER].join("\n");
+  [
+    POINTER_MARKERS.start,
+    pointerBody(scope, timing, skillName),
+    POINTER_MARKERS.end,
+  ].join("\n");
+
+const SCRATCH_FILE_RULE =
+  "Write scratch files, captured command output, proof bundles, and handoff notes to the session's scratch directory or a private folder under the system temporary directory, never inside or next to a repository checkout. During a Simple Changes run, use the work directory it reports. Delete them when the task ends unless the user asks to keep them.";
+
+export const renderScratchFileRule = (): string =>
+  [
+    SCRATCH_FILE_MARKERS.start,
+    SCRATCH_FILE_RULE,
+    SCRATCH_FILE_MARKERS.end,
+  ].join("\n");
 
 const markerCount = (source: string, marker: string): number =>
   source.split(marker).length - 1;
@@ -179,35 +206,55 @@ const formatWithNewline = (source: string, value: string): string => {
   return value.replaceAll("\n", newline);
 };
 
-const planInstructionPointer = (
+// Each block appears at most once, ends after it starts, and never overlaps
+// or nests in the other, so replacing one can never cut into the other.
+const managedBlockSpans = (
+  source: string,
+  path: string
+): Map<ManagedBlockMarkers, { end: number; start: number }> => {
+  const invalid = () =>
+    new SimpleChangesError(
+      `Instruction file has an invalid Simple Changes managed block: ${path}`,
+      EXIT_CODES.unsafe
+    );
+  const spans = new Map<ManagedBlockMarkers, { end: number; start: number }>();
+  for (const markers of [POINTER_MARKERS, SCRATCH_FILE_MARKERS]) {
+    const startCount = markerCount(source, markers.start);
+    const endCount = markerCount(source, markers.end);
+    if (startCount > 1 || endCount > 1 || startCount !== endCount) {
+      throw invalid();
+    }
+    if (startCount === 1) {
+      const start = source.indexOf(markers.start);
+      const end = source.indexOf(markers.end, start);
+      if (end < start) {
+        throw invalid();
+      }
+      spans.set(markers, { end: end + markers.end.length, start });
+    }
+  }
+  const [first, second] = [...spans.values()].sort(
+    (left, right) => left.start - right.start
+  );
+  if (first && second && second.start < first.end) {
+    throw invalid();
+  }
+  return spans;
+};
+
+const planManagedBlock = (
   target: InstructionTarget,
-  timing: HandoffTiming,
-  skillName: string
+  markers: ManagedBlockMarkers,
+  block: string
 ): InstructionPointerPlan & { contents: string } => {
   assertExistingInstructionFile(target.path);
   const source = readFileSync(target.path, "utf8");
-  const startCount = markerCount(source, START_MARKER);
-  const endCount = markerCount(source, END_MARKER);
-  if (startCount > 1 || endCount > 1 || startCount !== endCount) {
-    throw new SimpleChangesError(
-      `Instruction file has an invalid Simple Changes managed block: ${target.path}`,
-      EXIT_CODES.unsafe
-    );
-  }
-  const block = renderInstructionPointer(target.scope, timing, skillName);
+  const span = managedBlockSpans(source, target.path).get(markers);
   const formattedBlock = formatWithNewline(source, block);
   let contents: string;
-  if (startCount === 1) {
-    const start = source.indexOf(START_MARKER);
-    const end = source.indexOf(END_MARKER, start);
-    if (end < start) {
-      throw new SimpleChangesError(
-        `Instruction file has an invalid Simple Changes managed block: ${target.path}`,
-        EXIT_CODES.unsafe
-      );
-    }
-    contents = `${source.slice(0, start)}${formattedBlock}${source.slice(
-      end + END_MARKER.length
+  if (span) {
+    contents = `${source.slice(0, span.start)}${formattedBlock}${source.slice(
+      span.end
     )}`;
   } else {
     const newline = source.includes("\r\n") ? "\r\n" : "\n";
@@ -228,12 +275,12 @@ const planInstructionPointer = (
   };
 };
 
-export const writeInstructionPointer = (
+const writeManagedBlock = (
   target: InstructionTarget,
-  timing: HandoffTiming,
-  skillName: string = defaultSkillName()
+  markers: ManagedBlockMarkers,
+  block: string
 ): InstructionPointerResult => {
-  const plan = planInstructionPointer(target, timing, skillName);
+  const plan = planManagedBlock(target, markers, block);
   if (!plan.changed) {
     return {
       block: plan.block,
@@ -275,3 +322,19 @@ export const writeInstructionPointer = (
     written: true,
   };
 };
+
+export const writeInstructionPointer = (
+  target: InstructionTarget,
+  timing: HandoffTiming,
+  skillName: string = defaultSkillName()
+): InstructionPointerResult =>
+  writeManagedBlock(
+    target,
+    POINTER_MARKERS,
+    renderInstructionPointer(target.scope, timing, skillName)
+  );
+
+export const writeScratchFileRule = (
+  target: InstructionTarget
+): InstructionPointerResult =>
+  writeManagedBlock(target, SCRATCH_FILE_MARKERS, renderScratchFileRule());

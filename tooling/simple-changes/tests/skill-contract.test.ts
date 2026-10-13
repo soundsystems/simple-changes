@@ -87,17 +87,20 @@ const codexMetadataPath = new URL(
   "../../../skills/simple-changes/agents/openai.yaml",
   import.meta.url
 );
+const runtimeLibraryDirectory = new URL(
+  "../../../skills/simple-changes/scripts/lib/",
+  import.meta.url
+);
+// loop-lease.ts only re-exports its command-group modules, so scan them all.
+const LOOP_LEASE_SOURCE_PATTERN = /^loop-lease(?:-[a-z]+)?\.ts$/u;
+const loopLeaseSources = readdirSync(runtimeLibraryDirectory).filter((file) =>
+  LOOP_LEASE_SOURCE_PATTERN.test(file)
+);
 const runtimeSourcePaths = [
   "process.ts",
-  "loop-lease.ts",
   "worktree-coordination.ts",
-].map(
-  (file) =>
-    new URL(
-      `../../../skills/simple-changes/scripts/lib/${file}`,
-      import.meta.url
-    )
-);
+  ...loopLeaseSources,
+].map((file) => new URL(file, runtimeLibraryDirectory));
 
 const skillsDirectory = new URL("../../../skills/", import.meta.url);
 const FRONTMATTER_PATTERN = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/u;
@@ -539,6 +542,8 @@ describe("Simple Changes skill contract", () => {
   });
 
   test("runtime sources do not carry obsolete Biome suppressions", async () => {
+    expect(loopLeaseSources).toContain("loop-lease.ts");
+    expect(loopLeaseSources.length).toBeGreaterThan(1);
     const sources = await Promise.all(
       runtimeSourcePaths.map((path) => readFile(path, "utf8"))
     );

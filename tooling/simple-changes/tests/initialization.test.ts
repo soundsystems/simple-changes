@@ -73,13 +73,18 @@ describe("first-run initialization", () => {
     );
     expect(from19.changes.map((item) => item.version)).toEqual([
       20, 20, 21, 21, 21, 22, 22, 22, 22, 23, 23, 24, 24, 24, 25, 25, 25, 26,
-      26, 26, 27, 27, 27, 28, 28, 28, 28, 28, 28, 28,
+      26, 26, 27, 27, 27, 28, 28, 28, 28, 28, 28, 28, 29, 29, 29, 29,
     ]);
     expect(
       from19.changes.filter((item) => item.version === 27).at(-1)?.summary
     ).toContain("`update-local-forks` tries the `v<version>` tag first");
-    expect(from19.changes.at(-1)?.summary).toContain(
+    expect(
+      from19.changes.filter((item) => item.version === 28).at(-1)?.summary
+    ).toContain(
       "`release-notes --version` for an older release prints its link"
+    );
+    expect(from19.changes.at(-1)?.summary).toContain(
+      "`scripts/lib/loop-lease.ts` is split into ten command-group modules"
     );
   });
   test("propagates the saved shipping preference into emergency classification", () => {
@@ -300,7 +305,7 @@ describe("first-run initialization", () => {
           available: true,
           owner: "simple-changelogs",
         },
-        currentVersion: 28,
+        currentVersion: 29,
         headline: "**Simple Changes has recently been updated.**",
         presentationOrder: [
           "required-answers",
@@ -320,10 +325,10 @@ describe("first-run initialization", () => {
     });
     expect(status.guidanceUpdate.summaryBullets).toHaveLength(3);
     expect(status.guidanceUpdate.summaryBullets.join(" ")).toContain(
-      "reads its recovery steps only when a run reports trouble"
+      "keep the files they pass to Simple Changes in a private temporary work directory"
     );
     expect(status.guidanceUpdate.summaryBullets.join(" ")).toContain(
-      "merge exactly the commit each released or preserved worktree"
+      "add an optional rule to AGENTS.md or CLAUDE.md"
     );
     expect(status.guidanceUpdate.summaryBullets.join(" ")).toContain(
       "choose which model writes proposals and who reviews them"

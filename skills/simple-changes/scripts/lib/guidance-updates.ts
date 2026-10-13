@@ -1,7 +1,7 @@
 import type { AuthoringQuestionState, DetectedHarness } from "./authoring.ts";
 import type { ChangelogCoordination, RepoPolicy } from "./types.ts";
 
-export const CURRENT_GUIDANCE_VERSION = 28;
+export const CURRENT_GUIDANCE_VERSION = 29;
 
 export type GuidanceUpdateAction =
   | "review-settings"
@@ -877,6 +877,53 @@ const GUIDANCE_UPDATES: GuidanceUpdateDefinition[] = [
       { id: "authoring-review", when: "authoring-question-pending" },
     ],
     version: 28,
+  },
+  {
+    changelogReviewRelevant: false,
+    changes: [
+      {
+        kind: "behavior",
+        summary:
+          "`loop start` and `prepare-agent` report a private `workDir` outside every checkout and the Git common directory, kept for its agent and run and bound to the run under the loop locks; agents keep the files they hand to Simple Changes there (provider pages, receipts, proposal bodies, and decision files) instead of folders beside the project. A clean `loop finalize` or `loop end` removes the run's directories and a blocked or preserved run keeps them; `simple-changes workdir --agent-id <id>` prints one and `workdir remove <path>` deletes one by hand.",
+        version: 29,
+      },
+      {
+        kind: "onboarding",
+        summary:
+          "`setup` and `initialize` accept `--scratch-file-rule add|leave`: `add` writes a separate managed block to AGENTS.md or CLAUDE.md telling every agent to keep scratch files, proof bundles, and handoff notes out of project folders and to delete them when the task ends. Nothing changes unless you add it, non-interactive setup leaves it out, and nested or crossed managed blocks are refused.",
+        version: 29,
+      },
+      {
+        kind: "behavior",
+        summary:
+          "`update-local-forks` makes a file a conflict when upstream moved code out of it, meaning a significant line removed there appears among lines added to another upstream file, and the fork changed or omits that file, so a fork's edit to moved code is never dropped silently; the reason and sidecar name the moves, the new file is still written with a note pointing back, an untouched fork gets the same plan as before, and fork checks that search moved text get an advisory note naming its new file.",
+        version: 29,
+      },
+      {
+        kind: "integration",
+        summary:
+          "`scripts/lib/loop-lease.ts` is split into ten command-group modules behind a facade that re-exports the same 86 names, with no behavior change; fork checks that read its text should read `loop-lease*.ts`.",
+        version: 29,
+      },
+    ],
+    noticeBullets: [
+      {
+        priority: 185,
+        summary:
+          "Agents now keep the files they pass to Simple Changes in a private temporary work directory, and a run that finishes cleanly deletes it, so runs stop leaving folders next to your projects.",
+      },
+      {
+        priority: 185,
+        summary:
+          "Setup can also add an optional rule to AGENTS.md or CLAUDE.md that keeps every agent's scratch files out of your project folders.",
+      },
+      {
+        priority: 180,
+        summary:
+          "Updating a fork now stops with a conflict, instead of dropping your change, when upstream moved code you edited into another file.",
+      },
+    ],
+    version: 29,
   },
 ];
 

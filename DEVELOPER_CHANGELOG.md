@@ -1,5 +1,99 @@
 # Developer changelog
 
+## 0.29.0 - 2026-10-12
+
+- Release integration: `release/0.29.0` merges `refactor/split-loop-lease`,
+  `feat/run-work-dir`, and `fix/ulf-moved-code`, each built and reviewed on
+  its own branch. The release branch adds the contract-test and preload
+  fixes below, the guidance 29 entry, and this repository's guidance
+  acknowledgements (`.simple-changes.json` guidance 28;
+  `.simple-changelogs.json` guidance 26 with `releaseTags: "v{version}"`).
+- Loop runtime split: `lib/loop-lease.ts` is now a facade of `export ... from`
+  lines with one file-level `noBarrelFile` suppression, re-exporting the same
+  86 names (54 values, 32 types). Its 350 top-level statements moved
+  byte-identical into `loop-lease-core`, `-start`, `-status`, `-verify`,
+  `-remote`, `-shipment`, `-mutation`, `-worktrees`, `-finalize`, and
+  `-recovery`; private helpers a sibling needs are exported from their new
+  module only. `lib/review-ledger.ts` imports `loop-lease-core.ts` directly,
+  which removes the only runtime import cycle. A TypeScript-API proof
+  (statements, export set, 10,497 identifier bindings, imports, cycles) ran
+  outside the repository.
+- Agent work directories (`lib/work-directory.ts`): private 0700 directories
+  under `<tmpdir>/simple-changes-<uid>/<repo-slug>-<sha12>/`, or under
+  `SIMPLE_CHANGES_WORK_ROOT`. The root is refused inside any registered
+  checkout or the Git common directory, as a symlink, when owned by another
+  user, when writable by group or others, or when an ancestor could be
+  replaced by another user; missing parents are created one at a time. Runs
+  bind each directory in
+  `<git-common-dir>/simple-changes/work-directories/<runId>/<sha16(agentId)>.json`
+  with the path and harness session, and the lease schema is unchanged.
+  `LoopStartOptions.onStarted`, `LoopFinalizationOptions.onClosed`, and an
+  `onClosed` argument to `endLoop` bind, clean, and sweep finished runs
+  under the loop locks. Cleanup removes only this repository's canonical
+  private directories bound to the run, never one holding a registered
+  checkout, and an author's binding is claimed by the author's own session.
+  The CLI adds `workdir --agent-id ID` and `workdir remove PATH`; JSON gains
+  `workDir` (loop start, prepare-agent), `removedWorkDirectories` (loop
+  start, finalize, end), and `bound` (workdir).
+- Scratch-file rule: `setup` and `initialize` accept `--scratch-file-rule
+  add|leave`. The rule is its own managed block with
+  `simple-changes:scratch-files` markers, both managed blocks are validated
+  together, nested or crossed blocks are refused, and non-interactive setup
+  defaults to `leave`. Guidance 29 lists it as an onboarding change, not a
+  recommended change, because the notice has no check for an existing block.
+- update-local-forks moved code: a code file P conflicts when a significant
+  line (an identifier character and at least 8 non-blank characters,
+  compared trimmed after UTF-8 decoding and splitting at every line
+  terminator) removed from P since the pin is among the lines added to any
+  other installed upstream file, including files the plan never carries,
+  and the fork's P differs from the pin in any byte or is missing. The
+  content is the sidecar header plus the merged content or upstream P, with
+  `sidecarDigest: null`; a fork that omits P gets a content-less conflict,
+  and a P whose earlier sidecar still waits gets a conflict bound to that
+  sidecar that holds the pin. An untouched fork's plan is unchanged by
+  construction. Column-0 declaration names only word the reason and header.
+  Plan entries gain an optional `notes` field (validated, rendered, ignored
+  by apply) for the advisory stale-probe note.
+- update-local-forks apply: before writing, it refuses a plan whose
+  sidecars collide with planned paths or each other after NFKD, mark
+  removal, and two-way case folding, or in which a file it writes or
+  deletes shares a device and inode with another such file, with any file
+  it leaves untouched, or with any sidecar already waiting beside an entry;
+  it reserves every new path with `wx`, writes every
+  sidecar first and again last, so a regular-file write that fails after the
+  sidecars are filled cannot leave a conflict without its record, and
+  verifies every write and every file a conflict keeps.
+- Documented limits: a move that rewrites every significant line it
+  carries, a declaration renamed while it moves, a conflict for any fork
+  change in a file code moved out of, a resolved move that conflicts again
+  while the pin is held for another reason, and filesystem aliasing beyond
+  the folds and identity checks above, which apply's write verification
+  reports as a failure.
+- Test hygiene: the preload now also isolates `SIMPLE_CHANGES_CONFIG_DIR`
+  and `SIMPLE_CHANGES_WORK_ROOT`. Before, an owner's personal
+  `authoring.json` reached in-process tests and failed two review-ledger
+  tests. The suppression check in `skill-contract.test.ts` scans every
+  `loop-lease*.ts` module and requires more than one. The authoring-notice
+  tests store guidance 27, the version before the review question, instead
+  of the current version minus one.
+- Guidance 29: four changes (work directory, scratch-file rule, moved-code
+  conflicts, the split) and three notice bullets, the first two at priority
+  185 and the fork bullet at 180, with no required answer.
+- Reviews (GPT-6.1 Sol): the split was clean at high (three notes, one of
+  which added an import audit to the proof). The work directory took four
+  rounds, high then xhigh, the last with no actionable findings.
+  update-local-forks took 14 rounds, xhigh after the first:
+  rounds 1 to 5 kept finding ways to fool a parser-free declaration scanner,
+  so round 6 onward reviewed the file-level rule instead, and rounds 6 to 13
+  found only apply-side alias and input cases, each fixed. Round 14 found
+  nothing blocking and two should-fix cases, a failed apply that advanced
+  the pin before filling a sidecar and a hard link to a file apply leaves
+  untouched; both were fixed with tests, and the owner ended the loop there.
+  The first exact-head release review (xhigh) found one more such case, a
+  sidecar waiting beside a review file whose digest the plan does not bind,
+  and a wording nit; both are fixed, with a test for the first.
+<!-- simple-changelogs-signature agent="Claude Opus 5.5 xhigh" at="2026-10-12T19:09:00-05:00" -->
+
 ## 0.28.0 - 2026-10-08
 
 - Release integration: `release/0.28.0` merges `feat/lighter-guidance`,

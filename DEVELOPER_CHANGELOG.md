@@ -1,5 +1,36 @@
 # Developer changelog
 
+## 0.29.1 - 2026-10-13
+
+- `lib/pinned-heads.ts`: `glabMergeArgument` also accepts
+  `--<flag>=true|false` for the long no-value flags in `GLAB_MERGE_FLAGS`
+  (`--auto-merge`, `--rebase`, `--remove-source-branch`, `--squash`,
+  `--yes`). Short flags, other long options, and any other value are still
+  refused, and exactly one `--sha` must still name the commit. 0.29.0
+  refused Hash's guarded `glab mr merge ... --auto-merge=false` whenever a
+  worktree was registered.
+- `lib/authoring.ts`: `packagedHarnessDataPath(packageRoot)` reads
+  `<package root>/agents/harnesses.json` and, for a package directory named
+  `runtime` without that file, the fork's own `agents/harnesses.json` one
+  level up, only when that file and its `agents/` directory are not
+  symbolic links, so the copy cannot point outside the fork; a missing file
+  still names the package's own path. The Hash and
+  Pulse forks had added a `runtime/agents/harnesses.json` copy so
+  `initialize` would detect agents; they can drop it at their next sync.
+- `references/inventory-and-concurrency.md` names the on/off merge flags in
+  the pinned provider-merge form.
+- Tests: the pinned grammar accepts `--auto-merge=false` and
+  `--remove-source-branch=true` beside `-R` and `--sha`, and refuses
+  `--auto-merge=maybe`, `--message=x`, `-y=false`, and `--repo=x/y`; the
+  harness lookup covers the upstream package, a fork's `runtime/` package,
+  a copy inside `runtime/` winning, a missing file, and a symlinked
+  `agents/` directory or data file, which are not followed. Each new test
+  fails without its fix.
+- Reviews (GPT-6.1 Sol): the fixes took one high round, whose should-fix
+  (the fork-level copy followed symbolic links) added the symlink guard,
+  then xhigh rounds as recorded in the merge request.
+<!-- simple-changelogs-signature agent="Claude Opus 5.5 xhigh" at="2026-10-13T10:23:00-05:00" -->
+
 ## 0.29.0 - 2026-10-12
 
 - Release integration: `release/0.29.0` merges `refactor/split-loop-lease`,

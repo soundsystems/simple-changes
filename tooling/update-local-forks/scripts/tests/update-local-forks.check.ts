@@ -2840,7 +2840,9 @@ describe("update-local-forks", () => {
     const spec = settled.entries.find((entry) => entry.forkPath === "SPEC.md");
     expect(spec).toMatchObject({ action: "keep-fork-delta" });
     expect(spec?.content).toBeUndefined();
-    expect(Object.hasOwn(spec ?? {}, "sidecarDigest")).toBe(false);
+    // Each kept file binds its sidecar's absence, so apply rechecks both.
+    expect(spec?.sidecarDigest).toBeNull();
+    expect(skill?.sidecarDigest).toBeNull();
     for (const entry of [skill, spec]) {
       expect(entry?.notes).toContain(
         `Merged by hand against ${release}; kept as it is.`
@@ -2877,6 +2879,66 @@ describe("update-local-forks", () => {
     for (const action of ["update", "merge", "add", "delete", "conflict"]) {
       expect(after.summary[action as keyof typeof after.summary]).toBe(0);
     }
+  });
+
+  test("refuses to apply a settlement after a kept file changed or a sidecar returned", () => {
+    const fixture = skillConflictFixture();
+    const options = {
+      fork: fixture.fork,
+      source: fixture.source,
+      upstream: fixture.upstream,
+    };
+    const first = planForkUpdate(options);
+    const release = first.source.commit as string;
+    applyForkPlan(first);
+    mergeSkillConflictByHand(fixture);
+    const settle = () =>
+      planForkUpdate({
+        ...options,
+        resolved: { against: release, paths: ["SKILL.md", "SPEC.md"] },
+      });
+    const merged = readFileSync(join(fixture.fork, "SPEC.md"), "utf8");
+
+    // The merge undone after planning: upstream's guarantee is gone again.
+    const undone = settle();
+    writeFileSync(
+      join(fixture.fork, "SPEC.md"),
+      "# Spec\n\n- guarantee a\n- guarantee b\n- acme guarantee\n"
+    );
+    expect(() => applyForkPlan(undone)).toThrow(
+      "SPEC.md changed after the plan was made"
+    );
+    writeFileSync(join(fixture.fork, "SPEC.md"), merged);
+
+    // A sidecar that returns after planning means the file is not settled.
+    const returned = settle();
+    writeFileSync(join(fixture.fork, "SPEC.md.upstream-merge"), "unmerged\n");
+    expect(() => applyForkPlan(returned)).toThrow(
+      "SPEC.md.upstream-merge changed after the plan was made"
+    );
+    rmSync(join(fixture.fork, "SPEC.md.upstream-merge"));
+    const skillReturned = settle();
+    writeFileSync(join(fixture.fork, "SKILL.md.upstream-merge"), "unmerged\n");
+    expect(() => applyForkPlan(skillReturned)).toThrow(
+      "SKILL.md.upstream-merge changed after the plan was made"
+    );
+    expect(readFileSync(join(fixture.fork, "SKILL.md"), "utf8")).toContain(
+      fixture.pin
+    );
+
+    // Only a conflict may bind an earlier sidecar's bytes.
+    rmSync(join(fixture.fork, "SKILL.md.upstream-merge"));
+    const tampered = settle();
+    for (const entry of tampered.entries) {
+      if (entry.forkPath === "SPEC.md") {
+        entry.sidecarDigest = createHash("sha256")
+          .update("unmerged\n")
+          .digest("hex");
+      }
+    }
+    expect(() => applyForkPlan(tampered)).toThrow(
+      "other entries may bind only its absence"
+    );
   });
 
   test("refuses --resolved that cannot vouch for a hand merge", () => {

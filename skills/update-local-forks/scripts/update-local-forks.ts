@@ -1279,6 +1279,11 @@ export interface PlanEntry {
    */
   notes?: string[];
   reason: string;
+  /**
+   * The sidecar state apply must find: a conflict's earlier sidecar, or null
+   * for none. A file kept as merged by hand binds null, so apply refuses if
+   * the file changed or a sidecar appeared after the plan was made.
+   */
   sidecarDigest?: string | null;
   upstreamPath: string | null;
 }
@@ -3185,7 +3190,8 @@ const keepResolved = (
       `Merged by hand against ${release}; kept as it is.`,
     ];
     Reflect.deleteProperty(entry, "content");
-    Reflect.deleteProperty(entry, "sidecarDigest");
+    // Settled only while no sidecar returns and the file stays as merged.
+    entry.sidecarDigest = null;
     classified.plannedContent.delete(entry.forkPath);
   }
 };
@@ -3635,12 +3641,14 @@ const validateForkPlan = (value: unknown): ForkPlan => {
     if (entry.action === "current" && entry.upstreamPath !== null) {
       carriedEntryPaths.add(entry.forkPath);
     }
+    const bindsSidecar = Object.hasOwn(entry, "sidecarDigest");
     if (
-      (entry.action === "conflict") !==
-      Object.hasOwn(entry, "sidecarDigest")
+      entry.action === "conflict"
+        ? !bindsSidecar
+        : bindsSidecar && entry.sidecarDigest !== null
     ) {
       throw new ForkUpdateError(
-        "Conflict entries must bind their sidecar state.",
+        "Conflict entries must bind their sidecar state, and other entries may bind only its absence.",
         EXIT.usage
       );
     }
@@ -3757,15 +3765,18 @@ const assertForkUnchanged = (
   rewrites: LiteralRewrite[]
 ): void => {
   for (const entry of entries) {
-    if (!(WRITE_ACTIONS.has(entry.action) || entry.action === "delete")) {
-      if (entry.action !== "conflict") {
-        continue;
-      }
+    // A conflict, or a file kept as merged by hand, binds its sidecar state.
+    const bindsSidecar = Object.hasOwn(entry, "sidecarDigest");
+    if (
+      bindsSidecar ||
+      WRITE_ACTIONS.has(entry.action) ||
+      entry.action === "delete"
+    ) {
       assertFileUnchanged(forkRoot, entry);
-      assertSidecarUnchanged(forkRoot, entry);
-      continue;
     }
-    assertFileUnchanged(forkRoot, entry);
+    if (bindsSidecar) {
+      assertSidecarUnchanged(forkRoot, entry);
+    }
   }
   for (const rewrite of rewrites) {
     const current = readBytes(join(forkRoot, rewrite.forkPath));

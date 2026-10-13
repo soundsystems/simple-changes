@@ -19,6 +19,25 @@
   `initialize` would detect agents; they can drop it at their next sync.
 - `references/inventory-and-concurrency.md` names the on/off merge flags in
   the pinned provider-merge form.
+- update-local-forks pin advance (from `fix/ulf-pin-advance`):
+  `planForkUpdate` accepts `resolved: { against, paths }`, and the CLI takes
+  a repeatable `--resolved PATH` with `--resolved-against COMMIT`, each
+  requiring the other. A named file must conflict, merge, or already match
+  the installed upstream; it becomes `keep-fork-delta` (a `current` file
+  stays `current`) with a note naming the commit. Naming is refused when the
+  commit is not the installed source's verified release, the file still has
+  its sidecar, the plan would update, add, delete, or keep the file
+  unchanged, or an unnamed update, add, delete, or merge into new bytes is
+  still pending, which means the conflicting plan was never applied.
+- Every named file binds `sidecarDigest: null`; apply checks its digest, or
+  that nothing exists at its path when it was bound absent, and that nothing
+  exists at its sidecar path. Plan validation lets entries other than
+  conflicts bind only `null`. `advanceProvenance` sets the pin only when
+  SKILL.md's entry is one apply writes or leaves alone, and while SKILL.md
+  holds the pin the reason names the exact `--resolved SKILL.md
+  --resolved-against <commit>` command. update-local-forks SKILL.md step 5
+  and fork-sync.md ("Settle a held pin") document it, and both now say never
+  to move the pin by hand.
 - Tests: the pinned grammar accepts `--auto-merge=false` and
   `--remove-source-branch=true` beside `-R` and `--sha`, and refuses
   `--auto-merge=maybe`, `--message=x`, `-y=false`, and `--repo=x/y`; the
@@ -26,9 +45,15 @@
   a copy inside `runtime/` winning, a missing file, and a symlinked
   `agents/` directory or data file, which are not followed. Each new test
   fails without its fix.
-- Reviews (GPT-6.1 Sol): the fixes took one high round, whose should-fix
-  (the fork-level copy followed symbolic links) added the symlink guard,
-  then xhigh rounds as recorded in the merge request.
+- Reviews (GPT-6.1 Sol): the runtime fixes took one high round, whose
+  should-fix (the fork-level copy followed symbolic links) added the symlink
+  guard, and an xhigh round that approved them. The pin advance took five
+  rounds, high then xhigh: four found one gap each (kept files not
+  rechecked at apply, a named current file left unbound, a directory or
+  dangling symlink read as an absent sidecar, and an unnamed clean merge
+  that let the pin advance before apply), each fixed with tests, and round
+  5 was clean. The exact-head release review is recorded in the merge
+  request.
 <!-- simple-changelogs-signature agent="Claude Opus 5.5 xhigh" at="2026-10-13T10:23:00-05:00" -->
 
 ## 0.29.0 - 2026-10-12

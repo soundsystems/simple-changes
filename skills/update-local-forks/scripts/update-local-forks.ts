@@ -12,10 +12,13 @@
  */
 import { createHash } from "node:crypto";
 import {
+  closeSync,
   type Dirent,
   existsSync,
   lstatSync,
   mkdirSync,
+  mkdtempSync,
+  openSync,
   readdirSync,
   readFileSync,
   realpathSync,
@@ -25,7 +28,14 @@ import {
   writeFileSync,
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import {
+  basename,
+  dirname,
+  isAbsolute,
+  join,
+  relative,
+  resolve,
+} from "node:path";
 import { spawnSync } from "bun";
 
 const VERSION = "1.0.0";
@@ -73,6 +83,8 @@ const OMISSION_ENTRY_PATTERN = /^[-*][ \t]+`([^`\s]+)`:[ \t]+(\S.*)$/u;
 const LINE_BREAK_PATTERN = /\r?\n/u;
 /** Sidecar left beside a file whose upstream merge conflicted. */
 const MERGE_SIDECAR_SUFFIX = ".upstream-merge";
+/** The first line of a sidecar whose file lost declarations the fork changed. */
+const MOVED_SIDECAR_HEADER = "== update-local-forks: moved declarations ==";
 const EXIT = { blocked: 3, failure: 4, success: 0, usage: 2 } as const;
 
 class ForkUpdateError extends Error {
@@ -135,6 +147,41 @@ const walkFiles = (root: string, base = root): string[] => {
     return entry.isFile() ? [relative(base, path)] : [];
   });
 };
+
+/**
+ * Every regular file under `root` but Git's own, skipped directories included,
+ * by raw path bytes: where upstream code can move to, whether or not the plan
+ * carries the file. A valid UTF-8 path reads as text, as the plan names it;
+ * any other is labeled by its hex bytes for display only, and its location
+ * still reads the file.
+ */
+const walkEveryFile = (
+  root: Buffer,
+  prefix?: Buffer
+): { location: Buffer; path: string; utf8: boolean }[] =>
+  readdirSync(prefix ? Buffer.concat([root, SLASH, prefix]) : root, {
+    encoding: "buffer",
+  }).flatMap((raw) => {
+    const name = Buffer.from(raw);
+    const path = prefix ? Buffer.concat([prefix, SLASH, name]) : name;
+    const location = Buffer.concat([root, SLASH, path]);
+    const status = lstatSync(location);
+    if (status.isDirectory()) {
+      return byteString(name) === ".git" ? [] : walkEveryFile(root, path);
+    }
+    const utf8 = isUtf8(path);
+    return status.isFile()
+      ? [
+          {
+            location,
+            path: utf8
+              ? path.toString("utf8")
+              : `<path bytes ${path.toString("hex")}>`,
+            utf8,
+          },
+        ]
+      : [];
+  });
 
 const assertNoSymlinkPath = (root: string, relativePath: string): void => {
   let current = root;
@@ -1226,6 +1273,11 @@ export interface PlanEntry {
   contentBase64?: string;
   forkDigest: string | null;
   forkPath: string;
+  /**
+   * Advisory notes for a maintainer. A note never changes the action, never
+   * blocks, and never holds the pin; apply ignores it.
+   */
+  notes?: string[];
   reason: string;
   sidecarDigest?: string | null;
   upstreamPath: string | null;
@@ -1701,6 +1753,59 @@ const versionLiterals = (
     : []),
 ];
 
+/** A fork file the fork owns, as the plan leaves it. */
+interface ForkOwnedFile {
+  content: string;
+  forkPath: string;
+  /** What the plan writes there, if anything. */
+  planned: string | undefined;
+  /** Upstream's lines for the same path, at the pin and installed. */
+  upstreamLines: Set<string>;
+}
+
+/**
+ * Each fork file that is the fork's own: neither a sidecar nor a changelog,
+ * and not byte for byte an upstream copy at the pin or in the installed
+ * release. Byte strings: an ASCII literal moves and every other byte stays. A
+ * conflicting file stays as it is, so its own lines are the ones read.
+ */
+const forkOwnedFiles = (
+  fork: DiscoveredFork,
+  classified: ClassifiedFork
+): ForkOwnedFile[] => {
+  const conflicted = new Set(
+    classified.entries
+      .filter((entry) => entry.action === "conflict")
+      .map((entry) => entry.forkPath)
+  );
+  const owned: ForkOwnedFile[] = [];
+  for (const forkPath of walkFiles(fork.path)) {
+    if (
+      forkPath.endsWith(MERGE_SIDECAR_SUFFIX) ||
+      CHANGELOG_FILE_PATTERN.test(forkPath)
+    ) {
+      continue;
+    }
+    const planned = classified.plannedContent.get(forkPath);
+    const content =
+      (conflicted.has(forkPath) ? undefined : planned) ??
+      readBytes(join(fork.path, forkPath));
+    const copies = classified.upstreamCopies.get(forkPath) ?? [];
+    if (content === null || copies.includes(content)) {
+      continue;
+    }
+    owned.push({
+      content,
+      forkPath,
+      planned,
+      upstreamLines: new Set(
+        copies.flatMap((copy) => copy.split("\n").map(withoutCr))
+      ),
+    });
+  }
+  return owned;
+};
+
 /**
  * The pin moves where the fork names it, as before. A version literal, the
  * release or the guidance constant, is never moved: whether a line states the
@@ -1717,31 +1822,10 @@ const literalPlanFor = (
 ): LiteralPlan => {
   const plan: LiteralPlan = { review: new Map(), rewrites: [] };
   const pin = newPin ? literalPair(fork.pin, newPin) : [];
-  const conflicted = new Set(
-    classified.entries
-      .filter((entry) => entry.action === "conflict")
-      .map((entry) => entry.forkPath)
-  );
-  for (const forkPath of walkFiles(fork.path)) {
-    if (
-      forkPath.endsWith(MERGE_SIDECAR_SUFFIX) ||
-      CHANGELOG_FILE_PATTERN.test(forkPath)
-    ) {
-      continue;
-    }
-    // Byte strings: an ASCII literal moves and every other byte stays. A
-    // conflicting file stays as it is, so its own lines are the ones listed.
-    const planned = classified.plannedContent.get(forkPath);
-    const content =
-      (conflicted.has(forkPath) ? undefined : planned) ??
-      readBytes(join(fork.path, forkPath));
-    const copies = classified.upstreamCopies.get(forkPath) ?? [];
-    if (content === null || copies.includes(content)) {
-      continue;
-    }
-    const upstreamLines = new Set(
-      copies.flatMap((copy) => copy.split("\n").map(withoutCr))
-    );
+  for (const { content, forkPath, planned, upstreamLines } of forkOwnedFiles(
+    fork,
+    classified
+  )) {
     const lines = versions.flatMap((version) =>
       versionLiteralLines(forkPath, content, upstreamLines, version)
     );
@@ -1854,12 +1938,64 @@ const advanceProvenance = (
   return true;
 };
 
+/** One mapped upstream path with its pinned, fork, and installed copies. */
+interface UpstreamFile {
+  forkPath: string;
+  upstreamPath: string;
+  versions: Versions;
+}
+
 interface ClassifiedFork {
   entries: PlanEntry[];
+  /** Every mapped upstream path's three copies, by upstream path. */
+  files: Map<string, UpstreamFile>;
   plannedContent: Map<string, string>;
+  /**
+   * Upstream paths the fork never carries, such as `CHANGELOG.md`, with their
+   * pinned and installed copies: code moved there still counts as moved.
+   */
+  unmapped: UpstreamFile[];
   /** Upstream's bytes for each mapped fork path, at the pin and installed. */
   upstreamCopies: Map<string, string[]>;
 }
+
+/** Whether the sidecar beside a fork file records moved declarations. */
+const recordsMovedDeclarations = (
+  forkRoot: string,
+  forkPath: string
+): boolean =>
+  (readBytes(join(forkRoot, forkPath + MERGE_SIDECAR_SUFFIX)) ?? "").startsWith(
+    MOVED_SIDECAR_HEADER
+  );
+
+/** Why a file whose sidecar is still beside it stays a review item. */
+const pendingSidecarReason = (forkRoot: string, forkPath: string): string => {
+  const sidecar = forkPath + MERGE_SIDECAR_SUFFIX;
+  return recordsMovedDeclarations(forkRoot, forkPath)
+    ? `Upstream moved declarations the fork changed out of this file; ${sidecar} lists each one, its new file, and the fork's diff. Re-apply each change where its code lives now, settle this file as the sidecar says, then delete the sidecar.`
+    : `An earlier upstream merge conflicted; merge ${sidecar} into this file by hand, then delete the sidecar.`;
+};
+
+/**
+ * A fork file with no upstream counterpart. One that upstream removed after
+ * moving declarations the fork changed out of it keeps its sidecar in review.
+ */
+const forkOnlyEntry = (fork: DiscoveredFork, forkPath: string): PlanEntry =>
+  recordsMovedDeclarations(fork.path, forkPath)
+    ? {
+        action: "review",
+        forkDigest: null,
+        forkPath,
+        reason: pendingSidecarReason(fork.path, forkPath),
+        upstreamPath: null,
+      }
+    : {
+        action: "keep-fork-only",
+        forkDigest: sha256(readFileSync(join(fork.path, forkPath))),
+        forkPath,
+        reason: "Fork-owned file with no upstream counterpart.",
+        upstreamPath: null,
+      };
 
 const classifyForkFiles = (
   fork: DiscoveredFork,
@@ -1871,6 +2007,8 @@ const classifyForkFiles = (
     ...walkFiles(source.path),
   ]);
   const entries: PlanEntry[] = [];
+  const files = new Map<string, UpstreamFile>();
+  const unmapped: UpstreamFile[] = [];
   const plannedContent = new Map<string, string>();
   const upstreamCopies = new Map<string, string[]>();
   const forkPathsTouched = new Set<string>();
@@ -1880,6 +2018,15 @@ const classifyForkFiles = (
     if (forkPath === null) {
       // The fork's own file at this path is that history; list it once.
       forkPathsTouched.add(upstreamPath);
+      unmapped.push({
+        forkPath: upstreamPath,
+        upstreamPath,
+        versions: {
+          base: treeBlob(upstream, fork.pin, upstreamPath),
+          current: null,
+          target: readBytes(join(source.path, upstreamPath)),
+        },
+      });
       entries.push({
         action: "skip",
         forkDigest: null,
@@ -1902,13 +2049,14 @@ const classifyForkFiles = (
       forkPath,
       [versions.base, versions.target].filter((copy) => copy !== null)
     );
+    files.set(upstreamPath, { forkPath, upstreamPath, versions });
     if (existsSync(join(fork.path, forkPath + MERGE_SIDECAR_SUFFIX))) {
       forkPathsTouched.add(forkPath + MERGE_SIDECAR_SUFFIX);
       entries.push({
         action: "review",
         forkDigest: null,
         forkPath,
-        reason: `An earlier upstream merge conflicted; merge ${forkPath}${MERGE_SIDECAR_SUFFIX} into this file by hand, then delete the sidecar.`,
+        reason: pendingSidecarReason(fork.path, forkPath),
         upstreamPath,
       });
       continue;
@@ -1928,16 +2076,803 @@ const classifyForkFiles = (
       continue;
     }
     if (!forkPathsTouched.has(forkPath)) {
-      entries.push({
-        action: "keep-fork-only",
-        forkDigest: sha256(readFileSync(join(fork.path, forkPath))),
-        forkPath,
-        reason: "Fork-owned file with no upstream counterpart.",
-        upstreamPath: null,
+      entries.push(forkOnlyEntry(fork, forkPath));
+    }
+  }
+  // Installed files the plan never carries, such as those under `dist`, still
+  // count as places code moved to.
+  // Only a valid UTF-8 path can be one the plan carries; any other always
+  // counts, whatever its display label reads like.
+  for (const { location, path, utf8 } of walkEveryFile(
+    Buffer.from(source.path)
+  )) {
+    if (!(utf8 && upstreamPaths.has(path))) {
+      unmapped.push({
+        forkPath: path,
+        upstreamPath: path,
+        versions: {
+          base: null,
+          current: null,
+          target: byteString(readFileSync(location)),
+        },
       });
     }
   }
-  return { entries, plannedContent, upstreamCopies };
+  return { entries, files, plannedContent, unmapped, upstreamCopies };
+};
+
+// ------------------------------------------------------- moved declarations
+
+/**
+ * Every classifier above weighs one file on its own, so it cannot see code
+ * that upstream moved between files. When code leaves file P for file M, M
+ * arrives as upstream wrote it, without any fork change to that code, and P
+ * can merge cleanly or even match upstream, so the change disappears without a
+ * conflict; when P does conflict, taking upstream's side drops it just the
+ * same.
+ *
+ * The safety rule weighs whole files and never declaration boundaries. A
+ * significant line holds an identifier character and at least eight
+ * non-blank characters. Code moved out of P when a significant line upstream
+ * removed from P since the pin (pinned lines less installed lines, trimmed and
+ * counted as multisets) is among the lines upstream added since the pin to
+ * another installed file. Then, when the fork's P differs from the pinned P
+ * in any byte, or the fork omits P, P is a conflict: its sidecar opens with a
+ * header naming the move and the fork's diff, and each new file is still
+ * written, with a note pointing back. A fork whose P equals the pin gets the
+ * ordinary plan. A move that rewrites every significant line it carries, or
+ * renames everything it moves, is not detected.
+ *
+ * Which declarations moved, and which of them the fork changed, is named from
+ * column-0 declaration names on a best-effort basis, for the reason and the
+ * sidecar header only; a wrong or missing name never changes the action.
+ */
+const CODE_FILE_PATTERN = /\.(?:[cm]?[jt]s|[jt]sx)$/u;
+const DECLARATION_PATTERN =
+  /^(?:export\s+)?(?:declare\s+)?(?:default\s+)?(?:async\s+)?(?:const\s+enum|const|let|var|function\*?|interface|type|class|abstract\s+class|enum)\s+([A-Za-z_$][\w$]*)/u;
+/** A column-0 import or re-export ends the declaration above it. */
+const CHUNK_BREAK_PATTERN = /^(?:import\b|export\s*(?:\*|\{|type\s*\{))/u;
+const COMMENT_LINE_PATTERN = /^\s*(?:\/\/|\/\*|\*)/u;
+const BLANK_LINE_PATTERN = /^\s*$/u;
+const WHITESPACE_PATTERN = /\s/gu;
+const LINE_TERMINATOR_PATTERN = /\r\n|[\n\r\u0085\u2028\u2029]/u;
+const IDENTIFIER_CHARACTER_PATTERN = /[\w$]/u;
+/** The fewest non-blank characters a significant line holds. */
+const SIGNIFICANT_LINE_LENGTH = 8;
+const TRAILING_LINE_BREAK_PATTERN = /\n$/u;
+const MOVED_SIDECAR_END = {
+  merged: "== end of moved declarations; the merge of this file follows ==",
+  removed: "== end of moved declarations; upstream removed this file ==",
+} as const;
+
+const isCodeFile = (path: string): boolean => CODE_FILE_PATTERN.test(path);
+
+const changedSincePin = (file: UpstreamFile): boolean =>
+  file.versions.base !== file.versions.target;
+
+/**
+ * A line, trimmed (a byte-order mark and Unicode spaces included), when it can
+ * carry code, or null: braces and punctuation never count.
+ */
+const significantLine = (line: string): string | null => {
+  const trimmed = line.trim();
+  return trimmed.replace(WHITESPACE_PATTERN, "").length >=
+    SIGNIFICANT_LINE_LENGTH && IDENTIFIER_CHARACTER_PATTERN.test(trimmed)
+    ? trimmed
+    : null;
+};
+
+/**
+ * How many times each significant line occurs in a copy, read as UTF-8 and
+ * split at every line terminator, not only LF.
+ */
+const significantCounts = (source: string | null): Map<string, number> => {
+  const counts = new Map<string, number>();
+  for (const line of shown(source ?? "").split(LINE_TERMINATOR_PATTERN)) {
+    const significant = significantLine(line);
+    if (significant !== null) {
+      counts.set(significant, (counts.get(significant) ?? 0) + 1);
+    }
+  }
+  return counts;
+};
+
+/** The lines `from` holds more often than `less`: a multiset difference. */
+const linesBeyond = (
+  from: Map<string, number>,
+  less: Map<string, number>
+): Set<string> =>
+  new Set(
+    [...from]
+      .filter(([line, count]) => count > (less.get(line) ?? 0))
+      .map(([line]) => line)
+  );
+
+/** Each installed file that changed since the pin, with the lines it gained. */
+const addedLines = (files: UpstreamFile[]): Map<UpstreamFile, Set<string>> =>
+  new Map(
+    files
+      .filter((file) => file.versions.target !== null && changedSincePin(file))
+      .map((file) => [
+        file,
+        linesBeyond(
+          significantCounts(file.versions.target),
+          significantCounts(file.versions.base)
+        ),
+      ])
+  );
+
+/** Whether two sets share a member, walking the smaller one. */
+const overlaps = (left: Set<string>, right: Set<string>): boolean => {
+  const [small, large] =
+    left.size <= right.size ? [left, right] : [right, left];
+  for (const line of small) {
+    if (large.has(line)) {
+      return true;
+    }
+  }
+  return false;
+};
+
+interface Declaration {
+  /** Zero-based [start, end) line ranges of each chunk with this name. */
+  ranges: [number, number][];
+  text: string;
+}
+
+type Declarations = Map<string, Declaration>;
+
+/** Where a declaration's chunk starts: the comment lines directly above it. */
+const chunkStart = (lines: string[], index: number): number => {
+  let start = index;
+  while (
+    start > 0 &&
+    COMMENT_LINE_PATTERN.test(withoutCr(lines[start - 1] ?? ""))
+  ) {
+    start -= 1;
+  }
+  return start;
+};
+
+const addChunk = (
+  declarations: Declarations,
+  lines: string[],
+  open: { name: string; start: number },
+  end: number
+): void => {
+  let last = end;
+  while (last > open.start && BLANK_LINE_PATTERN.test(lines[last - 1] ?? "")) {
+    last -= 1;
+  }
+  const text = lines.slice(open.start, last).join("\n");
+  const known = declarations.get(open.name);
+  declarations.set(open.name, {
+    ranges: [...(known?.ranges ?? []), [open.start, last]],
+    text: known === undefined ? text : `${known.text}\n${text}`,
+  });
+};
+
+/**
+ * The column-0 top-level declarations of a code file, for naming only: each
+ * chunk starts at the comment lines directly above its declaration and ends
+ * before the next chunk or a column-0 import or re-export, without trailing
+ * blank lines. Chunks that share a name, such as overloads, join.
+ */
+const declarationsOf = (source: string): Declarations => {
+  const lines = source.split("\n");
+  const declarations: Declarations = new Map();
+  let open: { name: string; start: number } | null = null;
+  for (const [index, raw] of lines.entries()) {
+    const line = withoutCr(raw);
+    const name = DECLARATION_PATTERN.exec(line)?.[1];
+    if (name === undefined && !CHUNK_BREAK_PATTERN.test(line)) {
+      continue;
+    }
+    const end = name === undefined ? index : chunkStart(lines, index);
+    if (open !== null) {
+      addChunk(declarations, lines, open, end);
+    }
+    open = name === undefined ? null : { name, start: end };
+  }
+  if (open !== null) {
+    addChunk(declarations, lines, open, lines.length);
+  }
+  return declarations;
+};
+
+/** The declarations of one copy of an upstream file, each parsed once. */
+type DeclarationReader = (
+  file: UpstreamFile,
+  copy: keyof Versions
+) => Declarations;
+
+const declarationReader = (): DeclarationReader => {
+  const parsed = new Map<string, Declarations>();
+  return (file, copy) => {
+    const key = `${copy}:${file.upstreamPath}`;
+    const known = parsed.get(key);
+    if (known !== undefined) {
+      return known;
+    }
+    const source = file.versions[copy];
+    const declarations: Declarations =
+      source === null ? new Map() : declarationsOf(source);
+    parsed.set(key, declarations);
+    return declarations;
+  };
+};
+
+type ForkChange = "edited" | "removed";
+
+interface MovedDeclaration {
+  /** What the fork did to it, or null when the fork kept upstream's text. */
+  change: ForkChange | null;
+  forkText: string | null;
+  /** The installed files that now declare it. */
+  homes: UpstreamFile[];
+  name: string;
+  pinnedText: string;
+}
+
+interface MovedOut {
+  file: UpstreamFile;
+  /** The installed files that gained significant lines this file lost. */
+  homes: UpstreamFile[];
+  /** The declarations named as moved, for wording only. */
+  moved: MovedDeclaration[];
+  /** Whether the fork also changed the file outside the named declarations. */
+  otherForkChanges: boolean;
+}
+
+/**
+ * The column-0 declarations that left a file for one of its new homes, and
+ * what the fork did to each, judged by its copy in the file or failing that in
+ * a home: a copy equal to the pinned or an installed copy is no change,
+ * another copy is an edit, and no copy is a removal. For wording only.
+ */
+const namedMoves = (
+  file: UpstreamFile,
+  homes: UpstreamFile[],
+  read: DeclarationReader
+): MovedDeclaration[] => {
+  const kept = read(file, "target");
+  const forkDeclarations = read(file, "current");
+  return [...read(file, "base")].flatMap(([name, declaration]) => {
+    const declaredIn = homes.filter((home) => read(home, "target").has(name));
+    if (kept.has(name) || declaredIn.length === 0) {
+      return [];
+    }
+    const inFile = forkDeclarations.get(name)?.text;
+    const inHome = declaredIn
+      .map((home) => read(home, "current").get(name)?.text)
+      .find((text) => text !== undefined);
+    const forkText = inFile ?? inHome ?? null;
+    const upstreamTexts = [
+      declaration.text,
+      ...declaredIn.map((home) => read(home, "target").get(name)?.text),
+    ];
+    let change: ForkChange | null = null;
+    if (forkText === null) {
+      change = "removed";
+    } else if (!upstreamTexts.includes(forkText)) {
+      change = "edited";
+    }
+    return [
+      {
+        change,
+        forkText,
+        homes: declaredIn,
+        name,
+        pinnedText: declaration.text,
+      },
+    ];
+  });
+};
+
+/** A file's non-blank lines outside the named declarations' chunks. */
+const outsideDeclarations = (
+  source: string,
+  declarations: Declarations,
+  names: string[]
+): string => {
+  const inside = new Set<number>();
+  for (const name of names) {
+    for (const [start, end] of declarations.get(name)?.ranges ?? []) {
+      for (let line = start; line < end; line += 1) {
+        inside.add(line);
+      }
+    }
+  }
+  return source
+    .split("\n")
+    .filter(
+      (line, index) => !(inside.has(index) || BLANK_LINE_PATTERN.test(line))
+    )
+    .join("\n");
+};
+
+/**
+ * Whether the fork changed the file outside the named declarations' chunks,
+ * in a way the installed upstream version does not already carry. Wording
+ * only: it picks between taking upstream's version and settling the merge.
+ */
+const otherForkChangesIn = (
+  file: UpstreamFile,
+  moved: MovedDeclaration[],
+  read: DeclarationReader
+): boolean => {
+  const { base, current, target } = file.versions;
+  if (base === null || current === null) {
+    return false;
+  }
+  const names = moved.map((declaration) => declaration.name);
+  const forkRest = outsideDeclarations(current, read(file, "current"), names);
+  return (
+    forkRest !== outsideDeclarations(base, read(file, "base"), names) &&
+    (target === null ||
+      forkRest !== outsideDeclarations(target, read(file, "target"), names))
+  );
+};
+
+/** Each upstream code file that code moved out of since the pin. */
+const movedDeclarations = (classified: ClassifiedFork): MovedOut[] => {
+  const files = [...classified.files.values()];
+  const added = addedLines([...files, ...classified.unmapped]);
+  const read = declarationReader();
+  const moves: MovedOut[] = [];
+  for (const file of files) {
+    if (
+      !(
+        isCodeFile(file.upstreamPath) &&
+        file.versions.base !== null &&
+        changedSincePin(file)
+      )
+    ) {
+      continue;
+    }
+    const removed = linesBeyond(
+      significantCounts(file.versions.base),
+      significantCounts(file.versions.target)
+    );
+    const homes = [...added]
+      .filter(([home, lines]) => home !== file && overlaps(removed, lines))
+      .map(([home]) => home)
+      .sort((left, right) => byText(left.upstreamPath, right.upstreamPath));
+    if (homes.length > 0) {
+      const moved = namedMoves(file, homes, read);
+      moves.push({
+        file,
+        homes,
+        moved,
+        otherForkChanges: otherForkChangesIn(file, moved, read),
+      });
+    }
+  }
+  return moves;
+};
+
+/** A text string as the byte string a plan carries. */
+const textBytes = (text: string): string =>
+  Buffer.from(text, "utf8").toString("latin1");
+
+/** Each line of `text`, prefixed: the diff when Git cannot produce one. */
+const prefixedLines = (prefix: string, text: string | null): string[] =>
+  text === null ? [] : text.split("\n").map((line) => `${prefix}${line}`);
+
+/**
+ * `git diff --no-index` of two byte strings: as text, with the Myers
+ * algorithm, so a user's diff configuration never changes what is compared.
+ */
+const diffBytes = (
+  before: string,
+  after: string,
+  options: string[]
+): { exitCode: number; output: string } => {
+  const scratch = mkdtempSync(join(tmpdir(), "update-local-forks-diff-"));
+  try {
+    const paths = {
+      after: join(scratch, "after"),
+      before: join(scratch, "before"),
+    };
+    writeFileSync(paths.before, Buffer.from(before, "latin1"));
+    writeFileSync(paths.after, Buffer.from(after, "latin1"));
+    const result = spawnSync(
+      [
+        "git",
+        "diff",
+        "--no-index",
+        "--no-color",
+        "--no-ext-diff",
+        "--text",
+        "--diff-algorithm=myers",
+        ...options,
+        paths.before,
+        paths.after,
+      ],
+      { stderr: "pipe", stdout: "pipe" }
+    );
+    return { exitCode: result.exitCode, output: byteString(result.stdout) };
+  } finally {
+    rmSync(scratch, { force: true, recursive: true });
+  }
+};
+
+/** The unified diff from a pinned text to the fork's copy. */
+const pinToForkDiff = (pinned: string, fork: string | null): string => {
+  const { exitCode, output } = diffBytes(
+    pinned.endsWith("\n") ? pinned : `${pinned}\n`,
+    fork === null || fork.endsWith("\n") ? (fork ?? "") : `${fork}\n`,
+    ["--unified=3"]
+  );
+  const hunks = output.indexOf("\n@@");
+  const body =
+    exitCode === 1 && hunks >= 0
+      ? output.slice(hunks + 1).replace(TRAILING_LINE_BREAK_PATTERN, "")
+      : [...prefixedLines("-", pinned), ...prefixedLines("+", fork)].join("\n");
+  return `--- pinned upstream\n+++ fork\n${body}`;
+};
+
+const homeList = (homes: UpstreamFile[]): string =>
+  homes.map((home) => home.forkPath).join(", ");
+
+const movedList = (moved: MovedDeclaration[]): string =>
+  moved
+    .map(
+      (declaration) =>
+        `\`${declaration.name}\` (${declaration.change}) -> ${declaration.homes
+          .map((home) => home.forkPath)
+          .join(" or ")}`
+    )
+    .join("; ");
+
+const declarationCount = (count: number): string =>
+  count === 1 ? "1 declaration" : `${count} declarations`;
+
+/** The declarations the fork changed, as named; empty when naming cannot tell. */
+const changedDeclarations = (out: MovedOut): MovedDeclaration[] =>
+  out.moved.filter((declaration) => declaration.change !== null);
+
+/** What moved and what the fork changed, as one clause for a reason. */
+const movedSummary = (out: MovedOut): string => {
+  const changed = changedDeclarations(out);
+  if (changed.length === 0) {
+    return `Upstream moved code out of this file to ${homeList(out.homes)}, and the fork changed this file; the plan cannot tell which of the fork's changes belong to the moved code`;
+  }
+  return `Upstream moved ${declarationCount(out.moved.length)} out of this file, and the fork changed ${changed.length}: ${movedList(changed)}`;
+};
+
+/**
+ * The one-line resolution for a file that lost code the fork may have
+ * changed. A change can be to a statement that stays in this file, so the
+ * resolution re-applies each change where its code lives now, and settles the
+ * merge whenever the fork changed anything beyond the named declarations.
+ */
+const movedResolution = (out: MovedOut): string => {
+  const sidecar = out.file.forkPath + MERGE_SIDECAR_SUFFIX;
+  const reapply =
+    "re-apply each change where its code lives now (in its new file, or in this file for a statement that stays here; for a removed declaration, remove it there; the sidecar header lists the diffs)";
+  const settle = out.otherForkChanges || changedDeclarations(out).length === 0;
+  if (out.file.versions.target === null) {
+    return settle
+      ? `Keep or drop the fork's other changes to this file deliberately since upstream removed it, ${reapply}, then delete ${sidecar}.`
+      : `Delete this file as upstream did, ${reapply}, then delete ${sidecar}.`;
+  }
+  return settle
+    ? `Settle this file from the merge below the sidecar header, taking upstream's side wherever it took moved code out, ${reapply}, then delete ${sidecar}.`
+    : `Take the installed upstream version of this file, ${reapply}, then delete ${sidecar}.`;
+};
+
+/**
+ * The sidecar's opening: the move, the resolution, and the fork's diff of
+ * each declaration it changed, or of the whole file when naming cannot tell.
+ */
+const movedSidecarHeader = (out: MovedOut, resolution: string): string => {
+  const changed = changedDeclarations(out);
+  const { base, current, target } = out.file.versions;
+  const summary = [
+    MOVED_SIDECAR_HEADER,
+    changed.length === 0
+      ? `Upstream moved code out of ${out.file.forkPath} to ${homeList(out.homes)}, and the fork changed this file; the plan cannot tell which change belongs to the moved code.`
+      : `Upstream moved these declarations out of ${out.file.forkPath}, and the fork changed them; each arrives in its new file without the fork's change:`,
+    ...changed.map((declaration) => `- ${movedList([declaration])}`),
+    resolution,
+    "",
+  ].map(textBytes);
+  const diffs =
+    changed.length === 0
+      ? [
+          textBytes("This file, pinned upstream -> fork:"),
+          pinToForkDiff(base ?? "", current),
+          "",
+        ]
+      : changed.flatMap((declaration) => [
+          textBytes(`\`${declaration.name}\`, pinned upstream -> fork:`),
+          pinToForkDiff(declaration.pinnedText, declaration.forkText),
+          "",
+        ]);
+  const end =
+    target === null ? MOVED_SIDECAR_END.removed : MOVED_SIDECAR_END.merged;
+  return [...summary, ...diffs, end, ""].join("\n");
+};
+
+/** Point each new home back at the file whose fork change it may lack. */
+const noteMovedHomes = (entries: PlanEntry[], out: MovedOut): void => {
+  const changed = changedDeclarations(out);
+  const received = new Map<string, string[]>();
+  for (const declaration of changed) {
+    for (const home of declaration.homes) {
+      received.set(home.upstreamPath, [
+        ...(received.get(home.upstreamPath) ?? []),
+        declaration.name,
+      ]);
+    }
+  }
+  const from = out.file.forkPath;
+  for (const entry of entries) {
+    if (entry.upstreamPath === null) {
+      continue;
+    }
+    const names = received.get(entry.upstreamPath);
+    if (names !== undefined) {
+      const listed = names.map((name) => `\`${name}\``).join(", ");
+      entry.reason = `${entry.reason} Receives ${listed} moved from ${from} without the fork's change; re-apply it here (see ${from}).`;
+    } else if (
+      changed.length === 0 &&
+      out.homes.some((home) => home.upstreamPath === entry.upstreamPath)
+    ) {
+      entry.reason = `${entry.reason} Receives code moved from ${from}, which the fork changed; re-apply any of the fork's changes that belong here (see ${from}).`;
+    }
+  }
+};
+
+/**
+ * A file that lost code the fork may have changed while an earlier sidecar
+ * still waits beside it: a conflict that writes nothing and binds that
+ * sidecar as it is. Writing a new sidecar would overwrite the earlier one,
+ * and moving the pin would hide the move from every later plan, so the pin
+ * holds until the earlier sidecar is settled and the move can be planned.
+ */
+const holdMovedEdits = (
+  entry: PlanEntry,
+  out: MovedOut,
+  sidecar: string | null
+): void => {
+  const { current } = out.file.versions;
+  Reflect.deleteProperty(entry, "content");
+  entry.action = "conflict";
+  entry.forkDigest = current === null ? null : bytesDigest(current);
+  entry.reason = `${movedSummary(out)}. This file still waits on ${out.file.forkPath}${MERGE_SIDECAR_SUFFIX}; settle that sidecar and delete it, then plan again so the move is planned. The provenance pin holds until then.`;
+  entry.sidecarDigest = sidecar === null ? null : bytesDigest(sidecar);
+};
+
+/**
+ * Make a file that lost code a conflict when the fork changed or omits it,
+ * whatever its own lines did: a sidecar opening with the move, then the merge
+ * or upstream's version, and nothing written over the file. A fork that
+ * omits the file gets no sidecar, since none can sit beside a file it lacks.
+ * A fork whose copy equals the pin keeps the ordinary plan. Returns whether
+ * the file holds the pin because an earlier sidecar still waits.
+ */
+const escalateMovedEdits = (
+  fork: DiscoveredFork,
+  classified: ClassifiedFork,
+  out: MovedOut
+): boolean => {
+  const { file } = out;
+  const { base, current, target } = file.versions;
+  const entry = classified.entries.find(
+    (candidate) => candidate.upstreamPath === file.upstreamPath
+  );
+  if (entry === undefined || (current !== null && current === base)) {
+    return false;
+  }
+  noteMovedHomes(classified.entries, out);
+  classified.plannedContent.delete(file.forkPath);
+  const pending = join(fork.path, file.forkPath + MERGE_SIDECAR_SUFFIX);
+  if (existsSync(pending)) {
+    holdMovedEdits(entry, out, readBytes(pending));
+    return true;
+  }
+  if (current === null) {
+    Reflect.deleteProperty(entry, "content");
+    const changed = changedDeclarations(out);
+    const omitted =
+      changed.length === 0
+        ? `Upstream moved code out of this file to ${homeList(out.homes)}, which the fork omits`
+        : `Upstream moved ${declarationCount(out.moved.length)} out of this file, which the fork omits: ${movedList(changed)}`;
+    entry.reason = `${omitted}. The moved code arrives in its new file, which this plan writes; remove it there if the fork still leaves it out, or record why the fork now carries it.`;
+  } else {
+    const resolution = movedResolution(out);
+    const merged = target === null ? "" : (entry.content ?? target);
+    entry.content = movedSidecarHeader(out, resolution) + merged;
+    classified.plannedContent.set(file.forkPath, entry.content);
+    entry.reason = `${movedSummary(out)}. ${changedDeclarations(out).length === 0 ? "The moved code arrives" : "Each arrives"} in its new file without the fork's change, so this file conflicts even where its lines merge. ${resolution}`;
+  }
+  entry.action = "conflict";
+  entry.sidecarDigest = null;
+  return false;
+};
+
+/**
+ * Find files that code moved out of and escalate each one the fork changed;
+ * `held` says whether one waits on an earlier sidecar and so holds the pin.
+ */
+const reviewMovedDeclarations = (
+  fork: DiscoveredFork,
+  classified: ClassifiedFork
+): { held: boolean; moves: MovedOut[] } => {
+  const moves = movedDeclarations(classified);
+  let held = false;
+  for (const out of moves) {
+    held = escalateMovedEdits(fork, classified, out) || held;
+  }
+  return { held, moves };
+};
+
+// ------------------------------------------------------------- stale probes
+
+/**
+ * A fork's own checks often read an upstream file for a literal, such as
+ * `grep -q 'name' runtime/scripts/lib/<file>.ts`. When upstream moves that
+ * text into another file, the check starts failing. For each fork-owned line
+ * that names a file upstream moved declarations out of, every quoted literal
+ * that file held at the pin and no longer holds is listed with the installed
+ * files that hold it now. The note is advisory: it never changes an action,
+ * blocks, or holds the pin. Lines joined by a trailing backslash read as one.
+ */
+const QUOTED_LITERAL_PATTERN = /'([^'\n]*)'|"([^"\n]*)"|`([^`\n]*)`/gu;
+const REGEXP_SPECIAL_PATTERN = /[.*+?^${}()|[\]\\]/gu;
+const PROBE_HOLDERS_SHOWN = 3;
+
+interface LogicalLine {
+  first: number;
+  last: number;
+  physical: string[];
+  text: string;
+}
+
+/** Lines joined across trailing-backslash continuations, as a shell reads them. */
+const logicalLines = (content: string): LogicalLine[] => {
+  const lines: LogicalLine[] = [];
+  let pending: LogicalLine | null = null;
+  for (const [index, raw] of content.split("\n").entries()) {
+    const line = withoutCr(raw);
+    const continues = line.endsWith("\\");
+    const part = continues ? line.slice(0, -1) : line;
+    const current: LogicalLine =
+      pending === null
+        ? { first: index, last: index, physical: [line], text: part }
+        : {
+            first: pending.first,
+            last: index,
+            physical: [...pending.physical, line],
+            text: `${pending.text} ${part}`,
+          };
+    pending = continues ? current : null;
+    if (!continues) {
+      lines.push(current);
+    }
+  }
+  if (pending !== null) {
+    lines.push(pending);
+  }
+  return lines;
+};
+
+interface ProbeSource {
+  file: UpstreamFile;
+  /** Matches a line that names the file. */
+  named: RegExp;
+}
+
+const probeSources = (moves: MovedOut[]): ProbeSource[] =>
+  moves.map(({ file }) => ({
+    file,
+    named: new RegExp(
+      `(?<![\\w.-])${basename(file.upstreamPath).replace(REGEXP_SPECIAL_PATTERN, "\\$&")}(?![\\w-])`,
+      "u"
+    ),
+  }));
+
+/** The quoted literals on a line naming `source` that left its file. */
+const movedLiterals = (text: string, source: ProbeSource): string[] => {
+  if (!source.named.test(text)) {
+    return [];
+  }
+  const { base, target } = source.file.versions;
+  const literals = [...text.matchAll(QUOTED_LITERAL_PATTERN)].map(
+    (match) => match[1] ?? match[2] ?? match[3] ?? ""
+  );
+  return [...new Set(literals)].filter(
+    (literal) =>
+      literal !== "" &&
+      (base ?? "").includes(literal) &&
+      !(target ?? "").includes(literal)
+  );
+};
+
+/** The installed files that hold a literal now, preferring new holders. */
+const holdersOf = (
+  literal: string,
+  from: UpstreamFile,
+  files: UpstreamFile[]
+): string => {
+  const holding = files.filter(
+    (file) => file !== from && (file.versions.target ?? "").includes(literal)
+  );
+  const fresh = holding.filter(
+    (file) => !(file.versions.base ?? "").includes(literal)
+  );
+  const paths = (fresh.length > 0 ? fresh : holding)
+    .map((file) => file.forkPath)
+    .sort(byText);
+  if (paths.length === 0) {
+    return "no installed file";
+  }
+  const listed = paths.slice(0, PROBE_HOLDERS_SHOWN).join(", ");
+  return paths.length > PROBE_HOLDERS_SHOWN
+    ? `${listed} and ${paths.length - PROBE_HOLDERS_SHOWN} more`
+    : listed;
+};
+
+const staleProbeLines = (
+  owned: ForkOwnedFile,
+  sources: ProbeSource[],
+  files: UpstreamFile[]
+): string[] => {
+  const records = recordLines(owned.forkPath, owned.content.split("\n"));
+  const items: string[] = [];
+  for (const line of logicalLines(owned.content)) {
+    if (
+      records[line.first] ||
+      line.physical.every((physical) => owned.upstreamLines.has(physical))
+    ) {
+      continue;
+    }
+    const at =
+      line.first === line.last
+        ? `line ${line.first + 1}`
+        : `lines ${line.first + 1}-${line.last + 1}`;
+    for (const source of sources) {
+      for (const literal of movedLiterals(line.text, source)) {
+        items.push(
+          `${at}: \`${shown(literal)}\` left ${source.file.forkPath} for ${holdersOf(literal, source.file, files)}`
+        );
+      }
+    }
+  }
+  return items;
+};
+
+/** Text a probe can live in: valid UTF-8 without NUL bytes. */
+const isProbeText = (content: string): boolean =>
+  !content.includes("\0") && isUtf8(Buffer.from(content, "latin1"));
+
+/** Note each fork-owned file whose lines read text that moved elsewhere. */
+const listStaleProbes = (
+  fork: DiscoveredFork,
+  classified: ClassifiedFork,
+  moves: MovedOut[]
+): void => {
+  if (moves.length === 0) {
+    return;
+  }
+  const sources = probeSources(moves);
+  const files = [...classified.files.values()];
+  for (const owned of forkOwnedFiles(fork, classified)) {
+    const entry = classified.entries.find(
+      (candidate) => candidate.forkPath === owned.forkPath
+    );
+    const items = isProbeText(owned.content)
+      ? staleProbeLines(owned, sources, files)
+      : [];
+    if (entry !== undefined && items.length > 0) {
+      entry.notes = [
+        ...(entry.notes ?? []),
+        `Advisory: these lines read text that upstream moved out of the file they name, so a check reading that file no longer finds it; point each at the file that holds the text now: ${items.join("; ")}.`,
+      ];
+    }
+  }
 };
 
 // ----------------------------------------------------------- command parity
@@ -2077,7 +3012,12 @@ const commandParityReview = (
   }
   const pending = new Set<string>();
   for (const entry of entries) {
-    if (entry.action !== "keep-fork-only") {
+    // A fork-only file stays a gate candidate while it waits on a sidecar
+    // that records moved code; that review must not hide the gate's.
+    const forkOnly =
+      entry.action === "keep-fork-only" ||
+      (entry.action === "review" && entry.upstreamPath === null);
+    if (!forkOnly) {
       continue;
     }
     const content = readText(join(fork.path, entry.forkPath));
@@ -2093,33 +3033,52 @@ const commandParityReview = (
       continue;
     }
     pending.add(entry.forkPath);
+    const prior = entry.action === "review" ? `${entry.reason} ` : "";
     entry.action = "review";
-    entry.reason = `This fork-owned file lists ${gated} upstream commands together, so it reads as a gate on the runtime surface. Upstream added ${missing.join(", ")}, which it does not name; extend it or confirm the omission is deliberate.`;
+    entry.reason = `${prior}This fork-owned file lists ${gated} upstream commands together, so it reads as a gate on the runtime surface. Upstream added ${missing.join(", ")}, which it does not name; extend it or confirm the omission is deliberate.`;
   }
   return pending;
 };
 
 /**
- * Why the provenance pin cannot advance yet, or null: new-command gate review
- * and unrecorded reference omissions both hold it. While either is pending,
- * SKILL.md stays on its old base; partially merging it without advancing its
- * pin can conflict with that same upstream hunk when the next plan retries.
+ * Why the provenance pin cannot advance yet, or null: new-command gate review,
+ * unrecorded reference omissions, and a file that lost moved declarations the
+ * fork changed while an earlier sidecar waits beside it each hold it. While
+ * any is pending, SKILL.md stays on its old base; partially merging it without
+ * advancing its pin can conflict with that same upstream hunk when the next
+ * plan retries.
  */
 const holdPin = (
   entries: PlanEntry[],
   plannedContent: Map<string, string>,
-  parityPending: boolean
+  held: { moved: boolean; parity: boolean }
 ): string | null => {
   const omissionsPending = entries.some(
     (entry) => entry.action === "unrecorded-omission"
   );
-  if (!(parityPending || omissionsPending)) {
+  const holds = [
+    {
+      label: "new-command gate review",
+      message:
+        "New upstream commands require fork-owned gate review; resolve it before advancing the pin.",
+      pending: held.parity,
+    },
+    {
+      label: "every unrecorded reference omission",
+      message: `Upstream references changed that this fork neither carries nor lists under Intentional omissions in ${OMISSIONS_FILE}; carry or record each before advancing the pin.`,
+      pending: omissionsPending,
+    },
+    {
+      label: "every earlier sidecar on a file that lost moved declarations",
+      message:
+        "A file that lost declarations the fork changed still waits on an earlier sidecar; settle it so the moves can be planned before advancing the pin.",
+      pending: held.moved,
+    },
+  ].filter((hold) => hold.pending);
+  if (holds.length === 0) {
     return null;
   }
-  const pending = [
-    ...(parityPending ? ["new-command gate review"] : []),
-    ...(omissionsPending ? ["every unrecorded reference omission"] : []),
-  ].join(" and ");
+  const pending = holds.map((hold) => hold.label).join(" and ");
   const skillEntry = entries.find((entry) => entry.forkPath === "SKILL.md");
   if (skillEntry && skillEntry.action !== "conflict") {
     skillEntry.action = "review";
@@ -2127,18 +3086,7 @@ const holdPin = (
     Reflect.deleteProperty(skillEntry, "content");
     plannedContent.delete("SKILL.md");
   }
-  return [
-    ...(parityPending
-      ? [
-          "New upstream commands require fork-owned gate review; resolve it before advancing the pin.",
-        ]
-      : []),
-    ...(omissionsPending
-      ? [
-          `Upstream references changed that this fork neither carries nor lists under Intentional omissions in ${OMISSIONS_FILE}; carry or record each before advancing the pin.`,
-        ]
-      : []),
-  ].join(" ");
+  return holds.map((hold) => hold.message).join(" ");
 };
 
 /**
@@ -2223,6 +3171,7 @@ export const planForkUpdate = (options: {
   );
 
   const classified = classifyForkFiles(fork, upstream, installed);
+  const moved = reviewMovedDeclarations(fork, classified);
   const { entries, plannedContent } = classified;
   const parityReviewPaths = commandParityReview(
     fork,
@@ -2230,11 +3179,10 @@ export const planForkUpdate = (options: {
     upstream,
     installed
   );
-  const heldReason = holdPin(
-    entries,
-    plannedContent,
-    parityReviewPaths.size > 0
-  );
+  const heldReason = holdPin(entries, plannedContent, {
+    moved: moved.held,
+    parity: parityReviewPaths.size > 0,
+  });
   const pinCandidate = source.commitVerified ? source.commit : null;
   const pinReady =
     heldReason === null &&
@@ -2264,6 +3212,8 @@ export const planForkUpdate = (options: {
       (heldReason === null || rewrite.forkPath !== "SKILL.md")
   );
   listVersionLiterals(entries, literals.review, literalRewrites);
+  listStaleProbes(fork, classified, moved.moves);
+  assertSidecarsFree(entries);
   for (const entry of entries) {
     encodeContent(entry);
   }
@@ -2293,6 +3243,7 @@ export interface ApplyReceipt {
 
 const WRITE_ACTIONS = new Set<PlanAction>(["update", "merge", "add"]);
 const DIGEST_PATTERN = /^[0-9a-f]{64}$/u;
+const COMBINING_MARK_PATTERN = /\p{M}/gu;
 const BASE64_PATTERN =
   /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u;
 
@@ -2336,6 +3287,46 @@ const safeForkPath = (forkRoot: string, value: unknown): value is string => {
   return (
     contained !== "" && !contained.startsWith("..") && !isAbsolute(contained)
   );
+};
+
+/**
+ * Refuse a plan that carries a file where a conflict's sidecar goes, or under
+ * it, in any case or Unicode normalization: writing both would overwrite the
+ * sidecar, or fail halfway through apply.
+ */
+const assertSidecarsFree = (entries: PlanEntry[]): void => {
+  // Folded at least as far as a case- and normalization-insensitive
+  // filesystem would fold them, and further: compatibility forms, combining
+  // marks dropped, and case folded both ways (so σ and ς, or ß and ss, meet).
+  const fold = (path: string): string =>
+    path
+      .normalize("NFKD")
+      .replace(COMBINING_MARK_PATTERN, "")
+      .toUpperCase()
+      .toLowerCase();
+  const paths = entries.map((entry) => entry.forkPath);
+  const sidecars = new Map<string, string>();
+  for (const entry of entries) {
+    // Every conflict: one writes its sidecar, and one that binds an earlier
+    // sidecar must find it as it was.
+    if (entry.action !== "conflict") {
+      continue;
+    }
+    const sidecar = entry.forkPath + MERGE_SIDECAR_SUFFIX;
+    const folded = fold(sidecar);
+    const taken =
+      sidecars.get(folded) ??
+      paths.find(
+        (path) => fold(path) === folded || fold(path).startsWith(`${folded}/`)
+      );
+    sidecars.set(folded, sidecar);
+    if (taken !== undefined) {
+      throw new ForkUpdateError(
+        `${entry.forkPath} conflicts, and its sidecar goes at ${sidecar}, but the plan also carries ${taken}; resolve ${entry.forkPath} by hand without the sidecar, then plan again.`,
+        EXIT.blocked
+      );
+    }
+  }
 };
 
 // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: The closed plan schema is deliberately validated field by field at one trust boundary.
@@ -2420,12 +3411,17 @@ const validateForkPlan = (value: unknown): ForkPlan => {
         hasExactKeys(
           entry,
           ["action", "forkDigest", "forkPath", "reason", "upstreamPath"],
-          ["content", "contentBase64", "sidecarDigest"]
+          ["content", "contentBase64", "notes", "sidecarDigest"]
         ) &&
         PLAN_ACTIONS.includes(entry.action as PlanAction) &&
         safeForkPath(forkRoot, entry.forkPath)
       ) ||
       typeof entry.reason !== "string" ||
+      !(
+        entry.notes === undefined ||
+        (Array.isArray(entry.notes) &&
+          entry.notes.every((note) => typeof note === "string"))
+      ) ||
       !(
         entry.upstreamPath === null ||
         (typeof entry.upstreamPath === "string" &&
@@ -2533,6 +3529,7 @@ const validateForkPlan = (value: unknown): ForkPlan => {
   ) {
     throw new ForkUpdateError("The plan metadata is invalid.", EXIT.usage);
   }
+  assertSidecarsFree(value.entries as PlanEntry[]);
   // An earlier plan may rewrite a version literal, which this version only
   // lists, or a literal in a file the plan carries from upstream; refuse it
   // before any write.
@@ -2618,12 +3615,147 @@ const entryBytes = (entry: PlanEntry): Buffer | undefined => {
     : Buffer.from(entry.content, "utf8");
 };
 
+/**
+ * Refuse, before any write, when a file apply writes, deletes, or rewrites is
+ * the same file (a hard link, or a name the filesystem aliases) as another
+ * such file, or as a file a conflict keeps as it was: its own file or an
+ * earlier sidecar it binds.
+ */
+const assertDistinctFiles = (
+  forkRoot: string,
+  entries: PlanEntry[],
+  rewrites: LiteralRewrite[]
+): void => {
+  const touched = [
+    ...entries
+      .filter(
+        (entry) => WRITE_ACTIONS.has(entry.action) || entry.action === "delete"
+      )
+      .map((entry) => entry.forkPath),
+    ...rewrites.map((rewrite) => rewrite.forkPath),
+  ];
+  const kept = entries
+    .filter((entry) => entry.action === "conflict")
+    .flatMap((entry) => [
+      entry.forkPath,
+      ...(typeof entry.sidecarDigest === "string"
+        ? [entry.forkPath + MERGE_SIDECAR_SUFFIX]
+        : []),
+    ]);
+  const identities = new Map<string, string>();
+  for (const [index, forkPath] of [...touched, ...kept].entries()) {
+    const status = statSync(join(forkRoot, forkPath), {
+      throwIfNoEntry: false,
+    });
+    if (status === undefined) {
+      continue;
+    }
+    const identity = `${status.dev}:${status.ino}`;
+    const other = identities.get(identity);
+    if (other !== undefined && other !== forkPath) {
+      throw new ForkUpdateError(
+        `${other} and ${forkPath} are the same file on this filesystem (a hard link or an aliased name), and apply would change one of them; separate them, then plan again.`,
+        EXIT.blocked
+      );
+    }
+    // Kept files only need checking against touched ones.
+    if (index < touched.length) {
+      identities.set(identity, forkPath);
+    }
+  }
+};
+
+/**
+ * Reserve, before any content is written, every path apply creates: each new
+ * file and each sidecar is created empty and exclusively. A path that already
+ * exists under another name, or that names the same file as another
+ * reservation, fails its reservation; then every reservation is removed and
+ * apply refuses, so no filesystem alias can make one write land on another.
+ */
+/** Create `path` empty and exclusively, noting what it made; false on failure. */
+const reserve = (path: string, made: string[]): boolean => {
+  try {
+    const directory = mkdirSync(dirname(path), { recursive: true });
+    if (directory !== undefined) {
+      made.push(directory);
+    }
+    closeSync(openSync(path, "wx"));
+    made.push(path);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+const reserveNewPaths = (forkRoot: string, entries: PlanEntry[]): void => {
+  const fresh = entries.flatMap((entry) => {
+    if (entryBytes(entry) === undefined) {
+      return [];
+    }
+    if (entry.action === "conflict") {
+      return [entry.forkPath + MERGE_SIDECAR_SUFFIX];
+    }
+    return WRITE_ACTIONS.has(entry.action) && entry.forkDigest === null
+      ? [entry.forkPath]
+      : [];
+  });
+  const made: string[] = [];
+  for (const forkPath of fresh) {
+    if (!reserve(join(forkRoot, forkPath), made)) {
+      for (const created of made.reverse()) {
+        rmSync(created, { force: true, recursive: true });
+      }
+      throw new ForkUpdateError(
+        `${forkPath} could not be created on its own: another path in the plan, or a file already in the fork, names the same file on this filesystem. Nothing was written; separate them, then plan again.`,
+        EXIT.blocked
+      );
+    }
+  }
+};
+
+/**
+ * Fail loudly when a file apply wrote no longer holds what it wrote: two
+ * planned paths named one file on this filesystem.
+ */
+const assertWritesDistinct = (
+  forkRoot: string,
+  wrote: Map<string, Buffer>
+): void => {
+  for (const [forkPath, bytes] of wrote) {
+    const now = readBytes(join(forkRoot, forkPath));
+    if (now === null || !Buffer.from(now, "latin1").equals(bytes)) {
+      throw new ForkUpdateError(
+        `${forkPath} no longer holds what apply wrote: another path in the plan names the same file on this filesystem. Check the fork against the plan, then plan again.`
+      );
+    }
+  }
+};
+
+/** Fail loudly when apply changed a file or an earlier sidecar a conflict keeps. */
+const assertKeptByConflict = (forkRoot: string, entry: PlanEntry): void => {
+  const current = readBytes(join(forkRoot, entry.forkPath));
+  const sidecar =
+    typeof entry.sidecarDigest === "string"
+      ? readBytes(join(forkRoot, entry.forkPath + MERGE_SIDECAR_SUFFIX))
+      : undefined;
+  if (
+    (current === null ? null : bytesDigest(current)) !== entry.forkDigest ||
+    (sidecar !== undefined &&
+      (sidecar === null ? null : bytesDigest(sidecar)) !== entry.sidecarDigest)
+  ) {
+    throw new ForkUpdateError(
+      `Apply changed ${entry.forkPath} or its earlier sidecar, which its conflict keeps as they were: two planned paths name one file on this filesystem. Check the fork against the plan, then plan again.`
+    );
+  }
+};
+
 const applyEntries = (
   forkRoot: string,
   entries: PlanEntry[]
 ): { deleted: string[]; written: string[] } => {
   const written: string[] = [];
   const deleted: string[] = [];
+  const wrote = new Map<string, Buffer>();
   for (const entry of entries) {
     const path = join(forkRoot, entry.forkPath);
     const bytes = entryBytes(entry);
@@ -2631,12 +3763,27 @@ const applyEntries = (
       mkdirSync(dirname(path), { recursive: true });
       writeFileSync(path, bytes);
       written.push(entry.forkPath);
+      wrote.set(entry.forkPath, bytes);
     } else if (entry.action === "delete") {
       unlinkSync(path);
       deleted.push(entry.forkPath);
-    } else if (entry.action === "conflict" && bytes !== undefined) {
-      writeFileSync(path + MERGE_SIDECAR_SUFFIX, bytes);
-      written.push(entry.forkPath + MERGE_SIDECAR_SUFFIX);
+    }
+  }
+  // Sidecars last: should two planned paths name one file on this
+  // filesystem, upstream's copy is what gets lost, never a conflict's record.
+  for (const entry of entries) {
+    const bytes = entryBytes(entry);
+    if (entry.action === "conflict" && bytes !== undefined) {
+      const sidecar = entry.forkPath + MERGE_SIDECAR_SUFFIX;
+      writeFileSync(join(forkRoot, sidecar), bytes);
+      written.push(sidecar);
+      wrote.set(sidecar, bytes);
+    }
+  }
+  assertWritesDistinct(forkRoot, wrote);
+  for (const entry of entries) {
+    if (entry.action === "conflict") {
+      assertKeptByConflict(forkRoot, entry);
     }
   }
   return { deleted, written };
@@ -2692,6 +3839,8 @@ export const applyForkPlan = (plan: ForkPlan): ApplyReceipt => {
     assertNoSymlinkPath(forkRoot, rewrite.forkPath);
   }
   assertForkUnchanged(forkRoot, validated.entries, validated.literalRewrites);
+  assertDistinctFiles(forkRoot, validated.entries, validated.literalRewrites);
+  reserveNewPaths(forkRoot, validated.entries);
   const { deleted, written } = applyEntries(forkRoot, validated.entries);
   const literalRewrites = applyLiteralRewrites(
     forkRoot,
@@ -2742,6 +3891,13 @@ apply     Write exactly what a saved plan says: updates, merges, additions,
           and its marked merge is written beside it as <file>.upstream-merge;
           a review item is never written, but for the pin. Fails closed if
           the fork changed since the plan.
+
+A file that upstream moved code out of (a significant line removed from it
+appears among the lines added to another upstream file) conflicts when the
+fork changed it anywhere or omits it, even where its lines merge: the sidecar
+names the move and the fork's diff. The new file is still written. A
+fork-owned line that reads a moved literal from the old file gets an advisory
+note naming the file that holds it now.
 
 An upstream reference added or changed since the pin that the fork neither
 carries nor lists under "## Intentional omissions" in its
@@ -2845,6 +4001,11 @@ const renderPlan = (plan: ForkPlan): string => {
       lines.push(
         `  ${entry.action.padEnd(8)} ${entry.forkPath}: ${entry.reason}`
       );
+    }
+  }
+  for (const entry of plan.entries) {
+    for (const note of entry.notes ?? []) {
+      lines.push(`  note     ${entry.forkPath}: ${note}`);
     }
   }
   for (const rewrite of plan.literalRewrites) {

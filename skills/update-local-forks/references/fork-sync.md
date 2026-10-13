@@ -6,6 +6,7 @@ Contents:
 - How every file is classified
 - Omitted references
 - Command gates
+- Moved code
 - Classify what you port by hand
 - Guidance versions
 - After applying
@@ -52,6 +53,7 @@ deltas. Two layouts are recognized:
 | Changed | Unchanged | `update` (upstream version written) |
 | Changed | Edited on different lines | `merge` (three-way result written) |
 | Changed | Edited on the same lines | `conflict` (file untouched; marked merge written to `<file>.upstream-merge`) |
+| Changed or removed; code moved out of it to another file | Edited anywhere, or omitted | `conflict` even where its lines merge (sidecar names the move and the fork's diff; the new file is still written) |
 | Changed reference | Omitted, not recorded | `unrecorded-omission` (holds the pin) |
 | Changed reference | Omitted, recorded | `review` (confirm the recorded reason still holds) |
 | Changed, not a reference | Omitted | `review` (confirm the omission still applies) |
@@ -166,6 +168,72 @@ still apply. Otherwise the pin can
 advance with the rest of the update. Every later plan reports the conflicted
 file as `review` until the sidecar is merged in and deleted.
 Never leave conflict markers inside a live skill file.
+
+## Moved code
+
+Upstream sometimes moves code between files, as when it splits one large
+module into several. The rules above weigh one file at a time, so a fork's
+change to code that moved has no line left to merge in the old file, and the
+new file arrives as upstream wrote it, without the change. The old file can
+merge cleanly or even match upstream, and when it does conflict, taking
+upstream's side looks like the obvious resolution of a refactor and drops the
+change.
+
+So the plan weighs whole files. A significant line holds an identifier
+character and at least eight non-blank characters; bare braces, brackets, and
+punctuation never count. Code moved out of a file when a significant line
+upstream removed from it since the pin (the pinned lines less the installed
+lines, trimmed and counted) is among the lines upstream added since the pin to
+another installed file, new or changed, including one the plan never carries,
+such as the changelog. When code moved out of a file and the
+fork's copy differs from the pin in any byte, or the fork omits the file, the
+file is a `conflict`, even when the fork's change sits elsewhere in it and its
+lines merge. A fork whose copy equals the pin gets the ordinary plan.
+
+The conflicting file stays untouched. Its reason names the move: which
+declarations moved and which the fork changed, read from column-0 declaration
+names where it can, or otherwise the files the code moved to. Its
+`.upstream-merge` sidecar opens with a header giving the move and the fork's
+diff, each changed declaration's or the whole file's, followed by the merge
+or upstream's version. Each new file is still written, and its reason points
+back to the old one. A fork that omits the old file gets the conflict without
+a sidecar: remove the moved code from the new file if the fork still leaves
+it out. When the old file still waits on an earlier sidecar, the conflict
+writes nothing and the provenance pin holds until that sidecar is settled, so
+the next plan still sees the move. While the pin is held for any reason, the
+next plan compares against the old pin, so a resolved move conflicts again
+until the pin advances; the new file the fork now carries is never written
+over.
+
+Resolve it in three steps:
+
+1. Take upstream's version of the old file. When the fork also changed the
+   old file beyond the declarations the header names, or the header could not
+   name them, settle it from the merge below the sidecar header instead,
+   taking upstream's side wherever it took moved code out; when upstream
+   removed the file, delete it.
+2. Re-apply each change where its code lives now: in the code's new file, or
+   in the old file for code that stays there. For a removed declaration,
+   remove it from the new file.
+3. Delete the sidecar. Until then, every later plan lists the old file as
+   `review`, even after the pin moves.
+
+Never resolve it by taking either side whole and stopping: the fork's side
+keeps the code in a file upstream no longer reads it from, and upstream's side
+alone drops the change.
+
+Fork checks that read the old file's text, such as
+`grep -q '<name>' runtime/scripts/lib/<file>.ts` in `scripts/test.sh`, fail
+once that text moves. The plan adds an advisory note to each fork-owned file
+with such a line, giving the line, each quoted literal the old file held at
+the pin and no longer holds, and the files that hold it now. Point the check
+at those files. The note never changes an action, blocks, or holds the pin.
+
+The rule reads lines, not syntax, so it has two accepted limits: a move that
+rewrites every significant line it carries is not detected, and neither is a
+declaration renamed while it moved. The names in a reason or sidecar header
+are a best effort; a wrong or missing name never changes the action. Review a
+large upstream refactor by hand when the fork edits the files it touches.
 
 ## Classify what you port by hand
 

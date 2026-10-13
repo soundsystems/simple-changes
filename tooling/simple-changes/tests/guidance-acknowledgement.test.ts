@@ -768,6 +768,9 @@ describe("withAcknowledgedGuidanceText", () => {
 });
 
 describe("authoring review question in the update notice", () => {
+  // Guidance 28 introduced the review question; a stored version before it
+  // has that update pending whatever the current guidance version is.
+  const beforeAuthoringGuidance = 27;
   const coordination = inspectChangelogCoordination(null);
   const question = {
     choices: [
@@ -792,14 +795,10 @@ describe("authoring review question in the update notice", () => {
     const notice = (
       review: "pending" | "answered" | "not-applicable" | "repair"
     ) =>
-      inspectGuidanceUpdate(
-        policyAt(CURRENT_GUIDANCE_VERSION - 1),
-        coordination,
-        {
-          authoringQuestion: { models: "answered", review },
-          questions: { "authoring-review": question },
-        }
-      );
+      inspectGuidanceUpdate(policyAt(beforeAuthoringGuidance), coordination, {
+        authoringQuestion: { models: "answered", review },
+        questions: { "authoring-review": question },
+      });
     expect(notice("pending").requiredAnswers).toEqual([question]);
     expect(notice("pending").recommendedAction).toBeNull();
     for (const review of ["answered", "not-applicable", "repair"] as const) {
@@ -808,10 +807,8 @@ describe("authoring review question in the update notice", () => {
     }
     // Without the context the notice lists the capability without a question.
     expect(
-      inspectGuidanceUpdate(
-        policyAt(CURRENT_GUIDANCE_VERSION - 1),
-        coordination
-      ).requiredAnswers
+      inspectGuidanceUpdate(policyAt(beforeAuthoringGuidance), coordination)
+        .requiredAnswers
     ).toEqual([]);
   });
 
@@ -836,7 +833,7 @@ describe("authoring review question in the update notice", () => {
           ...DEFAULT_POLICY,
           guidance: {
             disposition: "accepted",
-            version: CURRENT_GUIDANCE_VERSION - 1,
+            version: beforeAuthoringGuidance,
           },
         },
         null,

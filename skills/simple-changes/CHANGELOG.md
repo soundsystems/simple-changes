@@ -1,5 +1,39 @@
 # Changelog
 
+## 0.29.0 - 2026-10-12
+
+- Agents now keep the files they hand to Simple Changes, such as provider
+  pages, receipts, proposal bodies, and decision files, in a private
+  temporary work directory instead of folders beside your projects.
+  `loop start` and `prepare-agent` report it as `workDir`. A run that
+  finishes cleanly deletes it, and a blocked or preserved run keeps it for
+  recovery. `simple-changes workdir --agent-id <id>` prints the directory,
+  and `workdir remove <path>` deletes one by hand.
+- Setup can add an optional rule to AGENTS.md or CLAUDE.md that tells every
+  agent to keep scratch files, proof bundles, and handoff notes out of your
+  project folders and to delete them when the task ends. Choose it when
+  setup offers it, or pass `--scratch-file-rule add`; nothing changes unless
+  you add it.
+- Updating a fork no longer drops your change when upstream moves code you
+  edited into another file. `update-local-forks` now makes the old file a
+  conflict whenever upstream moved code out of it and your fork changed it,
+  even where the lines would merge cleanly, and names what moved where. The
+  new file is still written, with a note pointing back, and a fork that
+  never touched the old file gets the same plan as before.
+- When a fork's own checks, such as `scripts/test.sh`, search a file for
+  text that upstream moved elsewhere, the update plan adds a note naming the
+  file that holds it now. Notes never block an update.
+- `update-local-forks` refuses, before writing anything, a plan in which two
+  paths would name the same file on disk, so a conflict's saved merge is
+  never overwritten.
+- The loop runtime's largest file, `scripts/lib/loop-lease.ts`, is now ten
+  smaller files grouped by command. Commands, output, and stored files are
+  unchanged, and imports from `loop-lease.ts` keep working. Fork checks that
+  read its text should read `loop-lease*.ts`.
+- The guidance 29 update notice describes the work directory, the optional
+  rule, and the fork update change, and needs no answer.
+<!-- simple-changelogs-signature agent="Claude Opus 5.5 xhigh" at="2026-10-12T19:09:00-05:00" -->
+
 ## 0.28.0 - 2026-10-08
 
 - You can now choose which model writes proposal descriptions and merge
@@ -624,34 +658,3 @@
   repository still read every lease and receipt. Simple Changes guidance moves
   to version 24 to explain the new abilities.
 <!-- simple-changelogs-signature agent="Fable 5.1" at="2026-10-01T20:10:14-05:00" -->
-
-## 0.21.0 - 2026-10-01
-
-- Hand off finished work without sending a message. An author whose checkout
-  is clean and committed runs `worktree release --ready-receipt <file>` to
-  record what the unit changes, which checks passed, its release impact,
-  migrations, and deployment constraints against that exact head. Every
-  controller in every harness on the machine sees the receipt in
-  `worktree status --json`, marked current, stale, or shipped, so an active
-  shipment picks the work up at its next planning point and nobody has to find
-  the other agent's thread. A receipt is evidence, not authority: it never
-  grants merge, deploy, migration, or cleanup permission.
-- Pause or halt a shipment from any agent. `hold add` records a hold that
-  delays or halts merges, deployments, or migrations, with a plain reason the
-  user will read and an optional `--until-merged <branch>` that ends the hold
-  once the target contains that branch. `loop verify --for merge`,
-  `--for deploy`, or `--for migrations`, `hold check --for`, and
-  `migration apply` stop on a covering hold: a delay asks the user whether to
-  wait or continue, and a halt stops the step until the hold ends. Only the
-  owner releases a hold without approval, a waiver applies to one run, and
-  overriding a halt takes an explicit override.
-- Share a hold with other machines. `hold publish` pushes it to the target
-  remote as `refs/simple-changes/holds/<id>` so clones elsewhere, including
-  cloud sandboxes, see it, and `hold release` withdraws it. Reading published
-  holds never prompts for credentials and times out instead of hanging, and a
-  gate that cannot read them fails closed rather than treating them as absent.
-- Existing installations keep working. Receipts and holds live in new files
-  beside the worktree claims, so 0.19 and 0.20 clients sharing a repository
-  keep reading their state and leases unchanged. Simple Changes guidance moves
-  to version 23 to explain the new abilities.
-<!-- simple-changelogs-signature agent="Fable 5.1" at="2026-10-01T16:10:25-05:00" -->

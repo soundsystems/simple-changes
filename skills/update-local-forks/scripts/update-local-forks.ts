@@ -1905,8 +1905,19 @@ const summarize = (entries: PlanEntry[]): Record<PlanAction, number> =>
     ])
   ) as Record<PlanAction, number>;
 
+/** SKILL.md entries the plan writes, or leaves as they are, so the pin can move. */
+const PIN_CARRIERS = new Set<PlanAction>([
+  "current",
+  "keep-fork-delta",
+  "update",
+  "merge",
+  "add",
+]);
+
 // The provenance line lives in SKILL.md; rewrite it on whatever content the
 // plan will write there, or on the current file when SKILL.md is untouched.
+// Apply never writes a conflict or a review item, so a SKILL.md that conflicts
+// or waits on its sidecar keeps the old pin, and so does the plan.
 const advanceProvenance = (
   fork: DiscoveredFork,
   entries: PlanEntry[],
@@ -1914,7 +1925,7 @@ const advanceProvenance = (
   newPin: string | null
 ): boolean => {
   const skillEntry = entries.find((entry) => entry.forkPath === "SKILL.md");
-  if (!(newPin && skillEntry) || skillEntry.action === "conflict") {
+  if (!(newPin && skillEntry && PIN_CARRIERS.has(skillEntry.action))) {
     return false;
   }
   const basis =
@@ -3040,6 +3051,163 @@ const commandParityReview = (
   return pending;
 };
 
+/** Files a maintainer merged by hand, and the release commit merged against. */
+export interface ResolvedFiles {
+  against: string;
+  paths: readonly string[];
+}
+
+const COMMIT_PATTERN = /^[0-9a-f]{7,40}$/u;
+const LEADING_DOT_SLASH_PATTERN = /^(?:\.\/)+/u;
+
+/** Actions that still write a fork file when a plan is applied. */
+const PENDING_WRITES = new Set<PlanAction>(["update", "add", "delete"]);
+const PENDING_SHOWN = 3;
+
+/** The installed release commit `against` names, or why it names none. */
+const mergedAgainst = (
+  against: string,
+  source: { commit: string | null; commitVerified: boolean }
+): string => {
+  const commit = against.toLowerCase();
+  if (!COMMIT_PATTERN.test(commit)) {
+    throw new ForkUpdateError(
+      `--resolved-against takes a commit of 7 to 40 hex digits, not ${against}.`,
+      EXIT.usage
+    );
+  }
+  if (!(source.commitVerified && source.commit)) {
+    throw new ForkUpdateError(
+      `The installed source matches no verified release commit, so no file can be kept as merged against ${against}.`,
+      EXIT.blocked
+    );
+  }
+  if (!source.commit.startsWith(commit)) {
+    throw new ForkUpdateError(
+      `The files named with --resolved were merged against ${against}, but the installed source is release commit ${source.commit}. Plan without --resolved, apply, and merge the sidecars that plan writes.`,
+      EXIT.blocked
+    );
+  }
+  return source.commit;
+};
+
+/** The entry to keep for a file named as merged by hand, or null if none. */
+const mergedByHand = (
+  fork: DiscoveredFork,
+  entries: PlanEntry[],
+  forkPath: string
+): PlanEntry | null => {
+  const entry = entries.find(
+    (candidate) =>
+      candidate.forkPath === forkPath && candidate.upstreamPath !== null
+  );
+  if (entry === undefined) {
+    throw new ForkUpdateError(
+      `--resolved names ${forkPath}, which the fork does not carry from upstream.`,
+      EXIT.usage
+    );
+  }
+  const sidecar = forkPath + MERGE_SIDECAR_SUFFIX;
+  if (existsSync(join(fork.path, sidecar))) {
+    throw new ForkUpdateError(
+      `${forkPath} still waits on ${sidecar}; merge it into ${forkPath} by hand and delete it, then plan again.`,
+      EXIT.blocked
+    );
+  }
+  if (entry.action === "current") {
+    return null;
+  }
+  if (entry.action !== "conflict" && entry.action !== "merge") {
+    const verb = PENDING_WRITES.has(entry.action)
+      ? `would ${entry.action}`
+      : `classifies as ${entry.action}`;
+    throw new ForkUpdateError(
+      `--resolved names ${forkPath}, which this plan ${verb}: ${entry.reason} Name only a file that conflicted and that you merged by hand.`,
+      EXIT.usage
+    );
+  }
+  return entry;
+};
+
+/** Refuses while the plan still writes files the conflicting plan would have. */
+const assertApplied = (entries: PlanEntry[]): void => {
+  const pending = entries
+    .filter((entry) => PENDING_WRITES.has(entry.action))
+    .map((entry) => entry.forkPath);
+  if (pending.length === 0) {
+    return;
+  }
+  const listed = pending.slice(0, PENDING_SHOWN).join(", ");
+  const more =
+    pending.length > PENDING_SHOWN
+      ? ` and ${pending.length - PENDING_SHOWN} more`
+      : "";
+  throw new ForkUpdateError(
+    `This plan still writes ${listed}${more}, so the plan that conflicted was never applied and no sidecar was merged. Plan without --resolved, apply it, merge each sidecar it writes by hand, then name those files.`,
+    EXIT.blocked
+  );
+};
+
+/**
+ * A file merged by hand after a conflict still conflicts against the old pin,
+ * and SKILL.md carries the pin, so without this no plan could advance it.
+ * Each named file is kept as it is. Naming is refused for a merge made
+ * against anything but the installed source's verified release, which may
+ * carry changes that merge never saw; for a file that still waits on its
+ * sidecar, which is not merged yet; and for a file the plan would otherwise
+ * update, add, delete, or leave alone, which never took upstream's change. A
+ * file that already matches the installed upstream needs nothing. While the
+ * plan still writes other files, the plan that conflicted was never applied,
+ * so no sidecar was written to merge, and naming is refused too.
+ */
+const keepResolved = (
+  fork: DiscoveredFork,
+  classified: ClassifiedFork,
+  resolved: ResolvedFiles,
+  source: { commit: string | null; commitVerified: boolean }
+): void => {
+  const release = mergedAgainst(resolved.against, source);
+  const named = [
+    ...new Set(
+      resolved.paths.map((path) => path.replace(LEADING_DOT_SLASH_PATTERN, ""))
+    ),
+  ].sort(byText);
+  const kept = named
+    .map((forkPath) => mergedByHand(fork, classified.entries, forkPath))
+    .filter((entry) => entry !== null);
+  assertApplied(classified.entries);
+  for (const entry of kept) {
+    entry.action = "keep-fork-delta";
+    entry.reason =
+      "Merged by hand after an earlier conflict; the fork's file stands.";
+    entry.notes = [
+      ...(entry.notes ?? []),
+      `Merged by hand against ${release}; kept as it is.`,
+    ];
+    Reflect.deleteProperty(entry, "content");
+    Reflect.deleteProperty(entry, "sidecarDigest");
+    classified.plannedContent.delete(entry.forkPath);
+  }
+};
+
+/** Why SKILL.md, which carries the pin, keeps it when nothing else holds it. */
+const provenanceBlocker = (
+  fork: DiscoveredFork,
+  entries: PlanEntry[],
+  pin: string
+): string => {
+  const skill = entries.find((entry) => entry.forkPath === "SKILL.md");
+  const sidecar = `SKILL.md${MERGE_SIDECAR_SUFFIX}`;
+  const settle = `plan again with --resolved SKILL.md --resolved-against ${pin.slice(0, 12)}, adding --resolved for each other file merged by hand`;
+  if (skill?.action === "conflict") {
+    return `SKILL.md carries the pin and conflicts, so the pin stays. Unless SKILL.md is already merged by hand against this release, apply this plan, merge the ${sidecar} it writes into SKILL.md by hand, and delete it. Then ${settle}.`;
+  }
+  if (existsSync(join(fork.path, sidecar))) {
+    return `SKILL.md waits on ${sidecar}, so the pin stays. Merge it into SKILL.md by hand, delete it, then ${settle}.`;
+  }
+  return "The provenance file cannot carry the new pin; resolve it before advancing the pin.";
+};
+
 /**
  * Why the provenance pin cannot advance yet, or null: new-command gate review,
  * unrecorded reference omissions, and a file that lost moved declarations the
@@ -3124,6 +3292,8 @@ export const planForkUpdate = (options: {
   branch?: string;
   cache?: string;
   fork: string;
+  /** Files merged by hand after a conflict, kept so the pin can advance. */
+  resolved?: ResolvedFiles;
   source: string;
   upstream?: string;
   url?: string;
@@ -3172,6 +3342,9 @@ export const planForkUpdate = (options: {
 
   const classified = classifyForkFiles(fork, upstream, installed);
   const moved = reviewMovedDeclarations(fork, classified);
+  if (options.resolved !== undefined) {
+    keepResolved(fork, classified, options.resolved, source);
+  }
   const { entries, plannedContent } = classified;
   const parityReviewPaths = commandParityReview(
     fork,
@@ -3189,7 +3362,7 @@ export const planForkUpdate = (options: {
     advanceProvenance(fork, entries, plannedContent, pinCandidate);
   const ordinaryPinReason =
     pinCandidate && !pinReady
-      ? "The provenance file conflicts; resolve it before advancing the pin."
+      ? provenanceBlocker(fork, entries, pinCandidate)
       : located.reason;
   const pinUpdate: ForkPlan["pinUpdate"] = {
     from: fork.pin,
@@ -3882,7 +4055,8 @@ const HELP = `update-local-forks ${VERSION}
 Usage:
   update-local-forks discover [--root DIR ...] [--json]
   update-local-forks plan --fork DIR [--source DIR] [--upstream DIR | --upstream-url URL]
-    [--branch NAME] [--cache DIR] [--json]
+    [--branch NAME] [--cache DIR] [--resolved PATH ... --resolved-against COMMIT]
+    [--json]
   update-local-forks apply --plan FILE [--json]
   update-local-forks help
 
@@ -3894,6 +4068,10 @@ plan      Classify every file of one fork against its pinned base and the
           Each use of the old release or guidance version in a fork-owned
           file is a review item with a suggested replacement; change it by
           hand where it states the fork's current version.
+          --resolved names a file merged by hand after a conflict (repeat it
+          per file) and --resolved-against the installed release commit it
+          was merged against; the plan keeps each such file as it is, so a
+          SKILL.md merged by hand can carry the new pin.
 apply     Write exactly what a saved plan says: updates, merges, additions,
           deletions, the provenance pin, and the old pin where the fork's own
           files name it. Version literals are never rewritten, and a plan
@@ -3908,6 +4086,13 @@ fork changed it anywhere or omits it, even where its lines merge: the sidecar
 names the move and the fork's diff. The new file is still written. A
 fork-owned line that reads a moved literal from the old file gets an advisory
 note naming the file that holds it now.
+
+SKILL.md carries the pin, so the pin stays while SKILL.md conflicts or waits
+on its sidecar. A file merged by hand still conflicts against the old pin, so
+after applying the plan that conflicted and merging each sidecar it wrote,
+plan again naming each merged file with --resolved and the release commit
+with --resolved-against, which must be the installed source's verified
+release.
 
 An upstream reference added or changed since the pin that the fork neither
 carries nor lists under "## Intentional omissions" in its
@@ -3928,6 +4113,8 @@ interface CliOptions {
   json: boolean;
   plan?: string;
   positional: string[];
+  resolved: string[];
+  resolvedAgainst?: string;
   roots: string[];
   source?: string;
   upstream?: string;
@@ -3935,7 +4122,12 @@ interface CliOptions {
 }
 
 const parseOptions = (args: string[]): CliOptions => {
-  const options: CliOptions = { json: false, positional: [], roots: [] };
+  const options: CliOptions = {
+    json: false,
+    positional: [],
+    resolved: [],
+    roots: [],
+  };
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index] as string;
     const value = (): string => {
@@ -3973,6 +4165,12 @@ const parseOptions = (args: string[]): CliOptions => {
         break;
       case "--plan":
         options.plan = value();
+        break;
+      case "--resolved":
+        options.resolved.push(value());
+        break;
+      case "--resolved-against":
+        options.resolvedAgainst = value();
         break;
       default:
         if (arg.startsWith("--")) {
@@ -4056,6 +4254,18 @@ const runPlan = (options: CliOptions): number => {
   if (!options.fork) {
     throw new ForkUpdateError("plan requires --fork DIR", EXIT.usage);
   }
+  if (options.resolved.length > 0 && options.resolvedAgainst === undefined) {
+    throw new ForkUpdateError(
+      "--resolved requires --resolved-against COMMIT, the installed release commit the files were merged against.",
+      EXIT.usage
+    );
+  }
+  if (options.resolved.length === 0 && options.resolvedAgainst !== undefined) {
+    throw new ForkUpdateError(
+      "--resolved-against requires --resolved PATH for each file merged by hand.",
+      EXIT.usage
+    );
+  }
   const source =
     options.source ?? discover({ roots: options.roots }).sources[0]?.path;
   if (!source) {
@@ -4069,6 +4279,14 @@ const runPlan = (options: CliOptions): number => {
     source,
     ...(options.branch === undefined ? {} : { branch: options.branch }),
     ...(options.cache === undefined ? {} : { cache: options.cache }),
+    ...(options.resolvedAgainst === undefined
+      ? {}
+      : {
+          resolved: {
+            against: options.resolvedAgainst,
+            paths: options.resolved,
+          },
+        }),
     ...(options.upstream === undefined ? {} : { upstream: options.upstream }),
     ...(options.url === undefined ? {} : { url: options.url }),
   });

@@ -6,6 +6,7 @@ Contents:
 - How every file is classified
 - Omitted references
 - Command gates
+- Settle a held pin
 - Moved code
 - Classify what you port by hand
 - Guidance versions
@@ -160,14 +161,44 @@ because a gate that still permits a retired command is refused by the runtime
 anyway.
 
 A `.upstream-merge` sidecar is the durable record of an unresolved conflict.
-When `SKILL.md` conflicts or new-command gate review remains unresolved, the
-provenance pin stays pending so a later plan cannot lose that review. Pending
-command-gate review also keeps `SKILL.md` unchanged, avoiding a partial prose
-merge against an old pin when planning again. Other clean runtime updates can
-still apply. Otherwise the pin can
+When `SKILL.md` conflicts or waits on its sidecar, or new-command gate review
+remains unresolved, the provenance pin stays pending so a later plan cannot
+lose that review: `SKILL.md` carries the pin, and apply never writes a
+conflict or a review item. Pending command-gate review also keeps `SKILL.md`
+unchanged, avoiding a partial prose merge against an old pin when planning
+again. Other clean runtime updates can still apply. Otherwise the pin can
 advance with the rest of the update. Every later plan reports the conflicted
 file as `review` until the sidecar is merged in and deleted.
 Never leave conflict markers inside a live skill file.
+
+## Settle a held pin
+
+A file merged by hand still differs from both the pinned and the installed
+upstream, so a plan that compares against the old pin conflicts on it again,
+and a `SKILL.md` merged by hand would hold the pin forever. After applying
+the plan that conflicted, merge each sidecar it wrote and delete it, then
+plan again naming each file you merged with `--resolved <path>` (once per
+file) and the release you merged against with `--resolved-against <commit>`:
+the installed source's commit, which the plan that conflicted reports as
+`source.commit` and names in its pin reason.
+
+```sh
+update-local-forks plan --fork <dir> --resolved SKILL.md --resolved SPEC.md \
+  --resolved-against <commit> --json > settle.json
+```
+
+Each named file becomes `keep-fork-delta`, with a note naming the commit, and
+stays exactly as it is. `SKILL.md` then carries the new pin, and the pin also
+moves where the fork's own files name it, once nothing else holds it. The
+plan refuses a commit other than the installed source's verified release,
+which may carry changes the hand merge never saw; a file that still waits on
+its sidecar; a file that did not conflict or merge against the pin, such as
+one that still matches it and so never took upstream's change; and any name
+while the plan still updates, adds, or deletes another file, which shows the
+plan that conflicted was never applied, so no sidecar was merged. A named
+file that already matches the installed upstream needs nothing. Review and
+apply that plan like any other. Never move the provenance line by hand: that
+skips the release proof and leaves the old pin in the fork's tests and notes.
 
 ## Moved code
 
@@ -203,7 +234,8 @@ writes nothing and the provenance pin holds until that sidecar is settled, so
 the next plan still sees the move. While the pin is held for any reason, the
 next plan compares against the old pin, so a resolved move conflicts again
 until the pin advances; the new file the fork now carries is never written
-over.
+over. Once the move is settled, name both files with `--resolved` as in
+[Settle a held pin](#settle-a-held-pin).
 
 Resolve it in three steps:
 

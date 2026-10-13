@@ -3618,8 +3618,8 @@ const entryBytes = (entry: PlanEntry): Buffer | undefined => {
 /**
  * Refuse, before any write, when a file apply writes, deletes, or rewrites is
  * the same file (a hard link, or a name the filesystem aliases) as another
- * such file, or as a file a conflict keeps as it was: its own file or an
- * earlier sidecar it binds.
+ * such file, or as a file apply leaves as it is: any entry it neither writes
+ * nor deletes, or an earlier sidecar a conflict binds.
  */
 const assertDistinctFiles = (
   forkRoot: string,
@@ -3634,14 +3634,14 @@ const assertDistinctFiles = (
       .map((entry) => entry.forkPath),
     ...rewrites.map((rewrite) => rewrite.forkPath),
   ];
-  const kept = entries
-    .filter((entry) => entry.action === "conflict")
-    .flatMap((entry) => [
-      entry.forkPath,
-      ...(typeof entry.sidecarDigest === "string"
-        ? [entry.forkPath + MERGE_SIDECAR_SUFFIX]
-        : []),
-    ]);
+  const kept = entries.flatMap((entry) => [
+    ...(WRITE_ACTIONS.has(entry.action) || entry.action === "delete"
+      ? []
+      : [entry.forkPath]),
+    ...(typeof entry.sidecarDigest === "string"
+      ? [entry.forkPath + MERGE_SIDECAR_SUFFIX]
+      : []),
+  ]);
   const identities = new Map<string, string>();
   for (const [index, forkPath] of [...touched, ...kept].entries()) {
     const status = statSync(join(forkRoot, forkPath), {
@@ -3756,6 +3756,17 @@ const applyEntries = (
   const written: string[] = [];
   const deleted: string[] = [];
   const wrote = new Map<string, Buffer>();
+  // Sidecars first: should any later write fail, each conflict's record is
+  // already in place, even after the pin moved.
+  for (const entry of entries) {
+    const bytes = entryBytes(entry);
+    if (entry.action === "conflict" && bytes !== undefined) {
+      writeFileSync(
+        join(forkRoot, entry.forkPath + MERGE_SIDECAR_SUFFIX),
+        bytes
+      );
+    }
+  }
   for (const entry of entries) {
     const path = join(forkRoot, entry.forkPath);
     const bytes = entryBytes(entry);
@@ -3769,7 +3780,7 @@ const applyEntries = (
       deleted.push(entry.forkPath);
     }
   }
-  // Sidecars last: should two planned paths name one file on this
+  // Sidecars again, last: should two planned paths name one file on this
   // filesystem, upstream's copy is what gets lost, never a conflict's record.
   for (const entry of entries) {
     const bytes = entryBytes(entry);

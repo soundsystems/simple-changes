@@ -12,6 +12,7 @@ import { createHash } from "node:crypto";
 // biome-ignore lint/performance/noNamespaceImport: mock.module must stand in for every node:fs export.
 import * as fs from "node:fs";
 import {
+  chmodSync,
   cpSync,
   existsSync,
   linkSync,
@@ -4081,6 +4082,62 @@ describe("update-local-forks moved declarations", () => {
     expect(existsSync(sidecar)).toBe(false);
     expect(existsSync(join(fixture.fork, RECOVERY_PATH))).toBe(false);
     expect(readFileSync(join(fixture.fork, "SKILL.md"), "utf8")).toBe(skill);
+  });
+
+  test("keeps the moved-code record when a later write fails partway through apply", () => {
+    // Round 14: sidecars are written before any other file, so a write that
+    // fails after the pin moved never leaves a conflict without its record.
+    const fixture = movedFixture({
+      forkLease: editRelinquish,
+      released: {
+        "scripts/lib/core.ts": "export const core = 3;\n",
+        "scripts/lib/lease-recovery.ts": LEASE_RECOVERY,
+        "scripts/lib/lease.ts": LEASE_RELEASED,
+      },
+    });
+    const plan = planMoved(fixture);
+    const core = join(fixture.fork, "runtime/scripts/lib/core.ts");
+    expect(entryOf(plan, "runtime/scripts/lib/core.ts")?.action).toBe("update");
+    chmodSync(core, 0o444);
+    try {
+      expect(() => applyForkPlan(plan)).toThrow();
+    } finally {
+      chmodSync(core, 0o644);
+    }
+    const sidecar = readFileSync(
+      join(fixture.fork, `${LEASE_PATH}.upstream-merge`),
+      "utf8"
+    );
+    expect(sidecar).toBe(entryOf(plan, LEASE_PATH)?.content ?? "");
+    expect(sidecar).toStartWith("== update-local-forks: moved declarations ==");
+  });
+
+  test("refuses before writing when a file apply leaves as it is is hard-linked to one it updates", () => {
+    // Round 14: a review file hard-linked to a file the plan updates would
+    // change with it while apply reported success.
+    const shared = "export const shared = 1;\n";
+    const fixture = movedFixture({
+      forkFiles: {
+        "runtime/scripts/lib/x.ts.upstream-merge": "earlier merge\n",
+      },
+      pinnedExtra: { "scripts/lib/x.ts": shared, "scripts/lib/y.ts": shared },
+      released: {
+        "scripts/lib/lease-recovery.ts": LEASE_RECOVERY,
+        "scripts/lib/lease.ts": LEASE_RELEASED,
+        "scripts/lib/y.ts": "export const shared = 2;\n",
+      },
+    });
+    const x = join(fixture.fork, "runtime/scripts/lib/x.ts");
+    const y = join(fixture.fork, "runtime/scripts/lib/y.ts");
+    rmSync(x);
+    linkSync(y, x);
+    const plan = planMoved(fixture);
+    expect(entryOf(plan, "runtime/scripts/lib/x.ts")?.action).toBe("review");
+    expect(entryOf(plan, "runtime/scripts/lib/y.ts")?.action).toBe("update");
+
+    expect(() => applyForkPlan(plan)).toThrow("are the same file");
+    expect(readFileSync(x, "utf8")).toBe(shared);
+    expect(existsSync(join(fixture.fork, RECOVERY_PATH))).toBe(false);
   });
 
   test("refuses a plan that carries a file where a moved-code sidecar goes", () => {

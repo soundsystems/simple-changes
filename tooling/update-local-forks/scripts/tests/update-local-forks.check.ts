@@ -2976,6 +2976,30 @@ describe("update-local-forks", () => {
     expect(() => applyForkPlan(exact)).toThrow(
       "SPEC.md changed after the plan was made"
     );
+
+    // A file upstream removed, which the first apply deleted, is bound as
+    // absent: a directory appearing there after planning must not pass.
+    writeFileSync(join(fixture.fork, "SPEC.md"), merged);
+    const removed = planForkUpdate({
+      ...options,
+      resolved: {
+        against: release,
+        paths: ["SKILL.md", "SPEC.md", "references/obsolete.md"],
+      },
+    });
+    expect(
+      removed.entries.find(
+        (entry) => entry.forkPath === "references/obsolete.md"
+      )
+    ).toMatchObject({
+      action: "current",
+      forkDigest: null,
+      sidecarDigest: null,
+    });
+    mkdirSync(join(fixture.fork, "references/obsolete.md"));
+    expect(() => applyForkPlan(removed)).toThrow(
+      "references/obsolete.md changed after the plan was made"
+    );
   });
 
   test("refuses --resolved that cannot vouch for a hand merge", () => {
@@ -3009,7 +3033,7 @@ describe("update-local-forks", () => {
         resolved: { against: release, paths: ["SPEC.md"] },
       })
     ).toThrow(
-      "This plan still writes references/obsolete.md, runtime/scripts/lib/core.ts, runtime/scripts/lib/extra.ts and 2 more, so the plan that conflicted was never applied"
+      "This plan still writes references/obsolete.md, runtime/scripts/lib/core.ts, runtime/scripts/lib/extra.ts and 3 more, so the plan that conflicted was never applied"
     );
 
     const fixture = skillConflictFixture();
@@ -3043,6 +3067,33 @@ describe("update-local-forks", () => {
         resolved: { against: target.slice(0, 6), paths: ["SKILL.md"] },
       })
     ).toThrow("--resolved-against takes a commit of 7 to 40 hex digits");
+
+    // A clean merge nobody named still writes upstream's change, so the plan
+    // that conflicted was never applied there: naming SKILL.md alone would
+    // let the pin pass a merge that never happened.
+    writeFileSync(
+      join(fixture.fork, "SPEC.md"),
+      "# Acme Spec\n\n- guarantee a\n- guarantee b\n"
+    );
+    const unmerged = {
+      ...conflicted,
+      resolved: { against: target, paths: ["SKILL.md"] },
+    };
+    expect(
+      planForkUpdate(conflicted).entries.find(
+        (entry) => entry.forkPath === "SPEC.md"
+      )?.action
+    ).toBe("merge");
+    expect(() => planForkUpdate(unmerged)).toThrow(
+      "This plan still writes SPEC.md, so the plan that conflicted was never applied"
+    );
+    // Named, the maintainer vouches for that file too.
+    expect(
+      planForkUpdate({
+        ...conflicted,
+        resolved: { against: target, paths: ["SKILL.md", "SPEC.md"] },
+      }).entries.find((entry) => entry.forkPath === "SPEC.md")?.action
+    ).toBe("keep-fork-delta");
     expect(readFileSync(join(fixture.fork, "SKILL.md"), "utf8")).toContain(
       fixture.pin
     );

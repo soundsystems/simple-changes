@@ -3131,10 +3131,24 @@ const mergedByHand = (
   return entry;
 };
 
-/** Refuses while the plan still writes files the conflicting plan would have. */
-const assertApplied = (entries: PlanEntry[]): void => {
+/**
+ * Refuses while the plan still writes a file nobody named: an update, an
+ * addition, a deletion, or a merge into new bytes, which applying the plan
+ * that conflicted would have written already.
+ */
+const assertApplied = (
+  entries: PlanEntry[],
+  named: ReadonlySet<PlanEntry>
+): void => {
   const pending = entries
-    .filter((entry) => PENDING_WRITES.has(entry.action))
+    .filter(
+      (entry) =>
+        !named.has(entry) &&
+        (PENDING_WRITES.has(entry.action) ||
+          (entry.action === "merge" &&
+            entry.content !== undefined &&
+            bytesDigest(entry.content) !== entry.forkDigest))
+    )
     .map((entry) => entry.forkPath);
   if (pending.length === 0) {
     return;
@@ -3159,10 +3173,10 @@ const assertApplied = (entries: PlanEntry[]): void => {
  * sidecar, which is not merged yet; and for a file the plan would otherwise
  * update, add, delete, or leave alone, which never took upstream's change. A
  * file that already matches the installed upstream stays `current`. While the
- * plan still writes other files, the plan that conflicted was never applied,
- * so no sidecar was written to merge, and naming is refused too. Every named
- * file binds its digest and its sidecar's absence, so apply refuses if either
- * changed after the plan was made.
+ * plan still writes a file nobody named, the plan that conflicted was never
+ * applied, so no sidecar was written to merge, and naming is refused too.
+ * Every named file binds its digest and its sidecar's absence, so apply
+ * refuses if either changed after the plan was made.
  */
 const keepResolved = (
   fork: DiscoveredFork,
@@ -3179,7 +3193,7 @@ const keepResolved = (
   const kept = named.map((forkPath) =>
     mergedByHand(fork, classified.entries, forkPath)
   );
-  assertApplied(classified.entries);
+  assertApplied(classified.entries, new Set(kept));
   for (const entry of kept) {
     entry.notes = [
       ...(entry.notes ?? []),
@@ -3785,6 +3799,19 @@ const assertForkUnchanged = (
     }
     if (bindsSidecar) {
       assertSidecarUnchanged(forkRoot, entry);
+      // A bound absent file, like a bound absent sidecar, means nothing at
+      // the path; readBytes reads a directory or a dangling symlink as none.
+      if (
+        entry.forkDigest === null &&
+        lstatSync(join(forkRoot, entry.forkPath), {
+          throwIfNoEntry: false,
+        }) !== undefined
+      ) {
+        throw new ForkUpdateError(
+          `${entry.forkPath} changed after the plan was made; re-run plan.`,
+          EXIT.blocked
+        );
+      }
     }
   }
   for (const rewrite of rewrites) {

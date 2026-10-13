@@ -10,7 +10,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { homedir, hostname } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
 import {
@@ -429,14 +429,23 @@ export const readAuthoringFile = (
   }
 };
 
-const packagedHarnessDataPath = (): string =>
-  resolve(
+// The package root holds agents/harnesses.json. A repository fork keeps this
+// runtime under its own runtime/ directory and carries the data file beside
+// its SKILL.md, so a runtime/ package without the file looks one level up.
+export const packagedHarnessDataPath = (
+  packageRoot: string = resolve(
     dirname(fileURLToPath(import.meta.url)),
     "..",
-    "..",
-    "agents",
-    "harnesses.json"
-  );
+    ".."
+  )
+): string => {
+  const packaged = join(packageRoot, "agents", "harnesses.json");
+  if (existsSync(packaged) || basename(packageRoot) !== "runtime") {
+    return packaged;
+  }
+  const forkCopy = join(dirname(packageRoot), "agents", "harnesses.json");
+  return existsSync(forkCopy) ? forkCopy : packaged;
+};
 
 const harnessDefinitionErrors = (id: string, value: unknown): string[] => {
   const path = `harnesses.${id}`;

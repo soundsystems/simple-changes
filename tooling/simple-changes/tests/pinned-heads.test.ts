@@ -909,6 +909,11 @@ describe("pinned-head command analysis", () => {
       ["glab", "mr", "merge", "12", "--repo", "--sha", head],
       ["glab", "mr", "merge", "12", "--sha", head, "-R"],
       ["glab", "mr", "merge", "12", "-Rx/y", "--sha", head],
+      // Only a listed long flag may spell a value, and only true or false.
+      ["glab", "mr", "merge", "12", "--auto-merge=maybe", "--sha", head],
+      ["glab", "mr", "merge", "12", "--message=x", "--sha", head],
+      ["glab", "mr", "merge", "12", "-y=false", "--sha", head],
+      ["glab", "mr", "merge", "12", "--repo=x/y", "--sha", head],
     ]) {
       expect({ argv, kinds: kinds(argv) }).toEqual({
         argv,
@@ -923,6 +928,22 @@ describe("pinned-head command analysis", () => {
     ).toEqual([]);
     expect(
       kinds(["glab", "mr", "merge", "12", "--sha", head, "--repo", "x/y"])
+    ).toEqual([]);
+    // A merge guard may require `--auto-merge=false`; a boolean value only
+    // switches the flag, so the commit stays the one `--sha` names.
+    expect(
+      kinds([
+        "glab",
+        "mr",
+        "merge",
+        "12",
+        "-R",
+        "x/y",
+        "--sha",
+        head,
+        "--auto-merge=false",
+        "--remove-source-branch=true",
+      ])
     ).toEqual([]);
     expect(kinds(["git", "--exec-path=/tmp", "merge", head])).toEqual([
       "unclassified",

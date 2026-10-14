@@ -1,61 +1,67 @@
 # Developer changelog
 
-## Unreleased
+## 0.29.2 - 2026-10-14
 
 - `lib/repository-instructions.ts`: `SCRATCH_FILE_RULE`, the body of the
-  `simple-changes:scratch-files` managed block, now defines one scratch
-  folder per agent (the folder its brief names, the `workDir` a run reports,
-  or `mktemp -d` under the session scratch directory or the system temporary
-  directory), a folder inside the parent's for every agent it starts, and
-  cleanup of exactly the agent's own folder by its path, never by pattern,
-  extension, or age in a directory other agents share. The rule is
-  627 bytes, up from 348; a first draft of 960
-  also spelled out that shared parents are not yours, where hand-off files
-  go, and that a folder you did not create is not yours, which the four
-  guarantees already imply, so those sentences live in
-  `references/inventory-and-concurrency.md` for runs instead. New:
-  `inspectScratchFileRule(target)` returns `current`, `stale`, `absent`, or
-  `invalid`, comparing through the writer's own newline formatting so
-  `stale` is exactly when `writeScratchFileRule` would change the file;
+  `simple-changes:scratch-files` managed block, now gives each agent one
+  scratch folder (the folder its brief names, the `workDir` a run reports,
+  or a `mktemp -d` folder under the session scratch directory or the system
+  temporary directory), has a parent give each agent it starts a folder
+  inside its own, and limits cleanup to that folder by its path, never by
+  pattern, extension, or age in a directory other agents share. The markers
+  are unchanged, so `writeScratchFileRule` replaces an older block in place.
+  The rule is 627 bytes, up from 348. The first draft was 960 bytes; its
+  sentences on shared parent directories, hand-off files, and folders you
+  did not create moved to `references/inventory-and-concurrency.md`, since
+  the rule's four guarantees imply them.
+- Also in `lib/repository-instructions.ts`: `inspectScratchFileRule(target)`
+  returns `current`, `stale`, `absent`, or `invalid`, comparing through the
+  writer's newline formatting so `stale` means exactly that
+  `writeScratchFileRule` would change the file.
   `discoverGlobalInstructionTargets(environment, home)` lists the existing,
-  unlinked `~/.codex/AGENTS.md` (or `$CODEX_HOME/AGENTS.md`) and
-  `~/.claude/CLAUDE.md` (or `$CLAUDE_CONFIG_DIR/CLAUDE.md`) under
-  `SIMPLE_CHANGES_HARNESS_ROOTS` or the home directory, the roots harness
-  detection and the turn-end guard already use; `locateInstructionTarget(path,
-  primaryCheckout)` gives an explicit path repository scope inside the
-  primary checkout and user scope elsewhere. The question and the **Add the
-  rule** description in `lib/onboarding.ts` follow the rule.
+  unlinked `$CODEX_HOME/AGENTS.md` and `$CLAUDE_CONFIG_DIR/CLAUDE.md`,
+  defaulting to `.codex/` and `.claude/` under `SIMPLE_CHANGES_HARNESS_ROOTS`
+  or the home directory. `locateInstructionTarget(path, primaryCheckout)`
+  gives an explicit path repository scope inside the primary checkout and
+  user scope elsewhere. `lib/onboarding.ts` rewords the setup question and
+  the **Add the rule** description to match.
 - `initialize` adds the optional closed `scratchFileRule` field
-  (`evals/schemas/initialization.schema.json`): `targets[]` of `path`,
-  `scope`, `status`, and a `refreshCommand` for a stale block that runs the
-  running copy's `scratch-file-rule refresh --instruction-file <path> --repo
-  <repo>`. Text output names stale and invalid blocks only, and a file that
-  cannot be inspected is left out rather than failing initialization.
-  `scratch-file-rule refresh` locates the target, takes the loop state lock,
-  rewrites a stale block through `writeScratchFileRule`, reports a current
-  one unchanged, refuses an absent one with exit 2 naming
-  `setup --scratch-file-rule add`, and refuses an invalid one with exit 5.
-- `workDirectoryFor` in `simple-changes.ts` binds a directory to the live run
-  for any agent ID without a same-session binding, not only the controller
-  and prepared authors, so `removeRunWorkDirectories` removes reviewers' and
-  check runners' directories at a clean close; an ID another session already
-  bound still gets its own unbound directory.
+  (`evals/schemas/initialization.schema.json`), null when it inspects no
+  instruction file: `targets[]` of `path`, `scope`, `status`, and, for a stale
+  block, a `refreshCommand` that runs the running copy's
+  `scratch-file-rule refresh --instruction-file <path> --repo <repo>`. Text
+  output names only stale and invalid blocks, and a file that cannot be
+  inspected is left out rather than failing initialization.
+- New `scratch-file-rule refresh --instruction-file PATH`: locates the
+  target, takes the loop state lock, rewrites a stale block through
+  `writeScratchFileRule`, reports a current one unchanged, and refuses an
+  absent block with exit 2 naming `setup --scratch-file-rule add` and an
+  invalid one with exit 5.
+- `workDirectoryFor` in `simple-changes.ts`: inside a run, any agent ID
+  without a same-session binding now gets a directory bound to the run, not
+  only the controller and prepared authors, so `removeRunWorkDirectories`
+  removes reviewers' and check runners' directories at a clean close. An ID
+  another session already bound still gets its own unbound directory.
 - `SKILL.md` keeps scratch files in the agent's own `workdir` directory,
   deletes nothing outside it, and offers a stale block's `refreshCommand`
   once. To stay inside the 17,500-byte budget it drops "use the same
   invocation everywhere", shortens the parallel-agents opening clause, and
-  drops the "Present update notices per" sentence, whose reference the router
-  already links. `references/inventory-and-concurrency.md` "Agent work
-  directories" states the ownership rule, names a harness scratch directory
-  as shared, keeps a file another agent reads until finalization, and says
-  `workdir` binds any agent of the run; "Parallel agents" step 2 adds the
-  `workDir` and a second required brief clause (scratch only in that
-  directory, delete nothing outside it, leave it in place), and step 3 leaves
-  the directory in place. `references/setup-and-policy.md` documents
-  `scratchFileRule` and the refresh command, and `references/onboarding.md`
-  and the README describe the new rule and command.
-- Guidance stays at 29: the stale-block report and refresh replace an update
-  notice, so no guidance entry is added.
+  drops the "Present update notices per" sentence, whose link the reference
+  router already carries.
+- `references/inventory-and-concurrency.md`: "Agent work directories" says
+  `workdir` binds any agent of the run and adds the ownership rule: the
+  directory and its contents are the agent's alone, a harness scratch
+  directory is shared, only the run or the owner removes a work directory,
+  nothing is deleted by pattern, extension, or age in a shared directory,
+  and a file another agent reads stays until finalization.
+  "Parallel agents" step 2 adds the `workDir` to every brief and a second
+  required clause (scratch only in that directory, delete nothing outside
+  it, leave it in place); step 3 leaves the directory in place.
+  `references/setup-and-policy.md` documents `scratchFileRule` and the
+  refresh command, and `references/onboarding.md` and the README describe
+  the new rule and command.
+- Guidance stays at 29, with no guidance entry and no update notice: the
+  stale-block report and refresh reach users who added the old block.
 - Tests: `repository-instructions.test.ts` pins the rule's ownership phrases,
   rejects "Delete them when the task ends", and covers
   `inspectScratchFileRule` (absent, current, stale, CRLF, invalid) and
@@ -70,7 +76,7 @@
   the root cause, the design, the exact replacement rule as a diff for the
   user's global AGENTS.md, the fork pickup path, and the decisions taken on
   its open questions.
-<!-- simple-changelogs-signature agent="Claude Fable 5.1" at="2026-10-14T12:23:17-05:00" -->
+<!-- simple-changelogs-signature agent="Claude Opus 5.5 xhigh" at="2026-10-14T14:19:09-05:00" -->
 
 ## 0.29.1 - 2026-10-13
 

@@ -210,12 +210,12 @@ Three ways to apply it:
 
 1. **Paste the diff.** The markers are unchanged, so Simple Changes keeps
    managing the block.
-1. **Run the refresh** once a release carrying this change is installed.
+2. **Run the refresh** once a release carrying this change is installed.
    `initialize` reports the global block as `stale` with a `refreshCommand`;
    with the user's agreement,
    `simple-changes scratch-file-rule refresh --instruction-file /Users/jaay/.codex/AGENTS.md`
    rewrites exactly that block.
-2. **Run setup** once a release carrying this change is installed. The
+3. **Run setup** once a release carrying this change is installed. The
    non-interactive form needs every answer the personal scope requires, and
    no personal `preferences.json` exists today (only `authoring.json`), so
    it would also create one from these answers:

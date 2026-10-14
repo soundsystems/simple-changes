@@ -1,36 +1,32 @@
 # Changelog
 
-## Unreleased
+## 0.29.2 - 2026-10-14
 
-- Each agent now keeps its scratch files in one folder of its own and deletes
-  only that folder. The optional scratch-file rule that setup adds to
-  AGENTS.md or CLAUDE.md names the folder (the one the agent's brief names,
-  the work directory a Simple Changes run reports, or a new folder the agent
-  creates under the session's scratch directory or the system temporary
-  directory), has an agent that starts another agent give it a folder inside
-  its own and name it in the brief, and limits cleanup to exactly the agent's
-  own folder, never by pattern, extension, or age in a directory other
-  agents share. Before, the rule said only to delete scratch files when the
-  task ends, without saying whose.
-- `initialize` now reports `scratchFileRule`: whether the repository's
-  AGENTS.md or CLAUDE.md and the global `~/.codex/AGENTS.md` or
-  `~/.claude/CLAUDE.md` carry that block as this release writes it
-  (`current`), as an earlier one wrote it (`stale`), not at all (`absent`),
-  or with broken markers (`invalid`). A stale block comes with a
-  `refreshCommand`; with your agreement,
-  `simple-changes scratch-file-rule refresh --instruction-file <path>`
-  rewrites exactly that block in place and changes nothing else. A file
-  without the rule is never given one this way; that remains a setup choice.
-- Parallel-agent briefs now name each author's own work directory from
-  `prepare-agent` and forbid deleting anything outside it, including in a
-  harness scratch directory the author shares with the controller. The
-  author leaves the directory in place, and the run's clean finalization
-  removes it.
-- Inside a run, `simple-changes workdir --agent-id <id>` now binds a
-  directory to the run for any agent, such as a reviewer or a check runner,
-  not only the controller and prepared authors, so the run's clean
-  finalization removes it too.
-<!-- simple-changelogs-signature agent="Claude Fable 5.1" at="2026-10-14T12:23:17-05:00" -->
+- **Bug Fixes & Improvements**:
+  - The optional scratch-file rule that setup adds to AGENTS.md or
+    CLAUDE.md now gives each agent one scratch folder of its own and lets
+    it delete only that folder, never files matched by pattern in a folder
+    other agents share. An agent that starts another agent gives it a
+    folder inside its own. Before, the rule said only to delete scratch
+    files when the task ends, so a subagent could delete the files of the
+    agent that started it.
+  - `initialize` now tells you when the scratch-file rule in your
+    repository's AGENTS.md or CLAUDE.md, or in your global
+    `~/.codex/AGENTS.md` or `~/.claude/CLAUDE.md`, still has an earlier
+    release's text. Your agent offers once to run
+    `simple-changes scratch-file-rule refresh --instruction-file <path>`,
+    which rewrites just that rule and leaves the rest of the file alone. It
+    never adds the rule to a file without one.
+  - When Simple Changes runs agents in parallel, each agent's brief now
+    names the work directory `prepare-agent` made for it, tells the agent
+    to keep its scratch files there, and forbids deleting anything outside
+    it, even in a scratch folder it shares with the agent that started it.
+    The run deletes those directories when it finishes cleanly.
+  - During a run, `simple-changes workdir --agent-id <id>` now ties any
+    agent's work directory to the run, including a reviewer's or a check
+    runner's, so the run deletes it when it finishes cleanly. Before, only
+    the controller's and authors' directories were deleted with the run.
+<!-- simple-changelogs-signature agent="Claude Opus 5.5 xhigh" at="2026-10-14T14:19:09-05:00" -->
 
 ## 0.29.1 - 2026-10-13
 

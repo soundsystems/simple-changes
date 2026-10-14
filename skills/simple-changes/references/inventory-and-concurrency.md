@@ -324,13 +324,14 @@ system temporary directory and prints it; it needs no loop, so it serves the
 GitLab opening inventory that `loop start` requires. Call it once per task and
 keep the path. `loop start` binds the directory that holds its
 `--opening-remote-inventory` file to the run, or binds a new one, and reports it
-as `workDir`; `prepare-agent` binds and reports one for each author, which the
-author's own harness session claims on first use. Inside a run, `workdir`
-prints the directory bound to the agent, binding a new one to the run for a
-controller that took over, an author, or any other agent of the run, such as
-a reviewer or check runner, so a clean close removes it too; a different
-harness session that reuses a bound agent ID gets a new directory of its own
-instead. Set
+as `workDir`; `prepare-agent` binds and reports one for each author. Inside a
+run, `workdir` prints the directory bound to the agent, binding a new one to
+the run for a controller that took over, an author, or any other agent of the
+run, such as a reviewer or check runner, so a clean close removes it too. The
+first known harness session to use a binding claims it, and a different
+session that reuses that agent ID gets a new directory of its own instead.
+Binding and claiming take the loop state lock, so two first requests never
+lose a directory; when `workdir` reports the state busy, retry it. Set
 `SIMPLE_CHANGES_WORK_ROOT` to an absolute path to move the root. The CLI
 refuses a root inside any registered checkout or the Git common directory, one
 that is a symlink, owned by another user, or writable by others, and one under

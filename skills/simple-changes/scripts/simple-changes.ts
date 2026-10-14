@@ -76,6 +76,7 @@ import {
   OUTCOME_DRAFT_MARKER,
   prepareAgentWorktree,
   readControllerBinding,
+  readLeaseFromCommonDirectory,
   readLoopLease,
   rebaselineLoopWorktrees,
   recordEmergencyShipping,
@@ -5091,11 +5092,55 @@ const runPrepareAgent = (options: CliOptions): void => {
   );
 };
 
-// The directory an agent should use: inside a run, the one bound to it in the
-// same session, binding a new one for the controller, an author, or any
-// other agent of the run (a reviewer, a check runner) so a clean close
-// removes it; otherwise a new one of its own, so another session that reuses
-// an agent ID never shares, or has removed, the run's files.
+type RunWorkDirectoryUse =
+  | { action: "bind" }
+  | { action: "unbound" }
+  | { action: "use"; path: string };
+
+// What the run's `workdir` does for this agent in this session: use the
+// directory bound to it, bind one (claiming an unclaimed binding, rebinding
+// the controller's, or creating one for the controller, an author, or any
+// other agent of the run, such as a reviewer or check runner, so a clean
+// close removes it), or hand out an unbound directory, so another session
+// that reuses an agent ID never shares, or has removed, the run's files.
+const runWorkDirectoryUse = (
+  repository: WorkDirectoryRepository,
+  lease: LoopLease,
+  agentId: string,
+  session: string | null
+): RunWorkDirectoryUse => {
+  const binding = runWorkDirectoryBinding(repository, lease.runId, agentId);
+  const owner = lease.ownerAgentId === agentId;
+  const controller =
+    owner &&
+    sameSession(
+      workSessionOf(readControllerBinding(lease)?.session ?? null),
+      session
+    );
+  const author =
+    lease.preparations.some((entry) => entry.agentId === agentId) ||
+    lease.worktrees.some(
+      (worktree) => worktree.createdByRun && worktree.agentId === agentId
+    );
+  if (binding && sameSession(binding.session, session)) {
+    // The first known session to use an unclaimed binding claims it, so a
+    // later session gets its own directory instead of sharing this one.
+    // Only another session reusing the controller's agent ID never claims.
+    return binding.session === null &&
+      session !== null &&
+      (controller || author || !owner)
+      ? { action: "bind" }
+      : { action: "use", path: binding.path };
+  }
+  return controller || !binding ? { action: "bind" } : { action: "unbound" };
+};
+
+// The directory an agent should use, per `runWorkDirectoryUse` inside a run
+// and a new one of its own otherwise. A directory the session already holds
+// is returned without a lock. Binding and claiming are decided again under
+// the loop state lock, where loop start and finalize change bindings too:
+// two first requests for one agent ID never each bind a directory and lose
+// one, and none binds to a run that closed in the meantime.
 const workDirectoryFor = (
   repository: WorkDirectoryRepository,
   lease: LoopLease | null,
@@ -5103,40 +5148,44 @@ const workDirectoryFor = (
 ): { bound: boolean; path: string } => {
   const session = workDirectorySession();
   if (lease) {
-    const binding = runWorkDirectoryBinding(repository, lease.runId, agentId);
-    const controller =
-      lease.ownerAgentId === agentId &&
-      sameSession(
-        workSessionOf(readControllerBinding(lease)?.session ?? null),
-        session
-      );
-    const author =
-      lease.preparations.some((entry) => entry.agentId === agentId) ||
-      lease.worktrees.some(
-        (worktree) => worktree.createdByRun && worktree.agentId === agentId
-      );
-    if (binding && sameSession(binding.session, session)) {
-      // The first session to use an unclaimed binding claims it.
-      if (
-        binding.session === null &&
-        session !== null &&
-        (controller || author)
-      ) {
-        bindRunWorkDirectory(repository, lease.runId, agentId, session, null);
-      }
-      return { bound: true, path: binding.path };
+    const use = runWorkDirectoryUse(repository, lease, agentId, session);
+    if (use.action === "use") {
+      return { bound: true, path: use.path };
     }
-    if (controller || !binding) {
-      return {
-        bound: true,
-        path: bindRunWorkDirectory(
-          repository,
-          lease.runId,
-          agentId,
-          session,
-          null
-        ),
-      };
+    if (use.action === "bind") {
+      const path = withLoopStateLock(
+        repository.commonGitDirectory,
+        "workdir",
+        () => {
+          const current = readLeaseFromCommonDirectory(
+            repository.commonGitDirectory
+          );
+          if (current?.runId !== lease.runId) {
+            return null;
+          }
+          const locked = runWorkDirectoryUse(
+            repository,
+            current,
+            agentId,
+            session
+          );
+          if (locked.action === "use") {
+            return locked.path;
+          }
+          return locked.action === "bind"
+            ? bindRunWorkDirectory(
+                repository,
+                current.runId,
+                agentId,
+                session,
+                null
+              )
+            : null;
+        }
+      );
+      if (path !== null) {
+        return { bound: true, path };
+      }
     }
   }
   return { bound: false, path: createWorkDirectory(repository, agentId) };

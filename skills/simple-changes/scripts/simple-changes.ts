@@ -5064,11 +5064,26 @@ const runPrepareAgent = (options: CliOptions): void => {
   // An unsafe work root is refused before any worktree is prepared.
   const workRepository = locateWorkDirectoryRepository(options.repo);
   repositoryWorkDirectory(workRepository);
+  // Bound under preparation's own state lock, for a new or a reused
+  // preparation, so a concurrent `workdir` request for the same agent ID
+  // cannot bind a second directory, and a run that closes meanwhile is
+  // never bound to. The author may run in another session; its first use
+  // claims the binding.
+  let workDir: string | null = null;
   const prepared = prepareAgentWorktree(
     options.repo,
     requireCliOption(options.runId, "--run-id"),
     requireCliOption(options.agentId, "--agent-id"),
-    requireCliOption(options.purpose, "--purpose")
+    requireCliOption(options.purpose, "--purpose"),
+    (agent) => {
+      workDir = bindRunWorkDirectory(
+        workRepository,
+        agent.runId,
+        agent.agentId,
+        null,
+        null
+      );
+    }
   );
   // Commit attestation is a required step of every author's workflow: the
   // review ledger cannot reconstruct who wrote a commit after the fact.
@@ -5077,14 +5092,6 @@ const runPrepareAgent = (options: CliOptions): void => {
       ? value
       : `'${value.replaceAll("'", "'\\''")}'`;
   const afterEveryCommit = `simple-changes author attest --commit <sha> --agent-id ${shellWord(prepared.agentId)} --repo ${shellWord(prepared.path)} --json`;
-  // The author may run in another session; its first use claims the binding.
-  const workDir = bindRunWorkDirectory(
-    workRepository,
-    prepared.runId,
-    prepared.agentId,
-    null,
-    null
-  );
   writeOutput(
     { ...prepared, afterEveryCommit, workDir },
     options.json,
@@ -5153,11 +5160,11 @@ const workDirectoryLockWaitMs = (): number => {
 // The directory an agent should use, per `runWorkDirectoryUse` inside a run
 // and a new one of its own otherwise. A directory the session already holds
 // is returned without a lock. Binding and claiming are decided again under
-// the loop state lock, where loop start and finalize change bindings too:
-// two first requests for one agent ID never each bind a directory and lose
-// one, and none binds to a run that closed in the meantime. A busy lock is
-// waited out for a bounded time, so an author's first claim outlasts a
-// controller's short `loop exec`.
+// the loop state lock, where loop start, prepare-agent, and finalize change
+// bindings too: two first requests for one agent ID never each bind a
+// directory and lose one, and none binds to a run that closed in the
+// meantime. A busy lock is waited out for a bounded time, so an author's
+// first claim outlasts a controller's short `loop exec`.
 const workDirectoryFor = async (
   repository: WorkDirectoryRepository,
   lease: LoopLease | null,

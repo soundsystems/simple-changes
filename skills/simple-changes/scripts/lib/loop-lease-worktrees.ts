@@ -14,6 +14,7 @@ import {
   assertShipmentScopeRecorded,
   currentTargetRevision,
   DIGEST_PATTERN,
+  readLeaseFromCommonDirectory,
   requiredText,
   requireLease,
   requireOwnedLease,
@@ -65,15 +66,38 @@ export interface PreparedAgentWorktree {
   runId: string;
 }
 
+/**
+ * Prepares, or returns the existing registration of, the agent's worktree
+ * under the loop state lock. `onPrepared` runs under that same lock, for a
+ * new and a reused preparation alike, after the lease is re-read and still
+ * names the run, so state bound to the run there (such as the agent's work
+ * directory) cannot race `workdir` or a closing run.
+ */
 export const prepareAgentWorktree = (
   repositoryPath: string,
   runId: string,
   agentIdInput: string,
-  purposeInput: string
+  purposeInput: string,
+  onPrepared?: (prepared: PreparedAgentWorktree) => void
 ): PreparedAgentWorktree => {
   const agentId = requiredText(agentIdInput, "agent ID");
   const purpose = slug(requiredText(purposeInput, "purpose"), "work");
   const opening = locateRepository(repositoryPath);
+  const prepared = (result: PreparedAgentWorktree): PreparedAgentWorktree => {
+    if (onPrepared) {
+      const current = readLeaseFromCommonDirectory(
+        opening.repository.commonGitDirectory
+      );
+      if (current?.runId !== result.runId) {
+        throw new SimpleChangesError(
+          `Run ${result.runId} is no longer active; agent ${agentId} was not bound to it.`,
+          EXIT_CODES.unsafe
+        );
+      }
+      onPrepared(result);
+    }
+    return result;
+  };
   return withStateLock(
     opening.repository.commonGitDirectory,
     "prepare agent worktree",
@@ -107,14 +131,14 @@ export const prepareAgentWorktree = (
             EXIT_CODES.unsafe
           );
         }
-        return {
+        return prepared({
           agentId,
           baseRevision: existing.baselineHeadSha ?? lease.targetRevision,
           branch: existing.branch,
           created: false,
           path: existing.path,
           runId: lease.runId,
-        };
+        });
       }
 
       const finalizePreparation = (
@@ -169,14 +193,14 @@ export const prepareAgentWorktree = (
             EXIT_CODES.unsafe
           );
         }
-        return {
+        return prepared({
           agentId,
           baseRevision: preparation.baseRevision,
           branch: preparation.branch,
           created: true,
           path: createdWorktree.path,
           runId: currentLease.runId,
-        };
+        });
       };
 
       const resumePreparation = (

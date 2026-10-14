@@ -18,7 +18,10 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { sleepSync, spawn, spawnSync } from "bun";
 import { EXIT_CODES } from "../../../skills/simple-changes/scripts/lib/errors.ts";
-import { withLoopStateLock } from "../../../skills/simple-changes/scripts/lib/loop-lease.ts";
+import {
+  prepareAgentWorktree,
+  withLoopStateLock,
+} from "../../../skills/simple-changes/scripts/lib/loop-lease.ts";
 import {
   bindRunWorkDirectory,
   createWorkDirectory,
@@ -1093,6 +1096,59 @@ describe("work directories through the CLI", () => {
     });
     expect(existsSync(abandoned)).toBe(false);
   });
+
+  test("prepare-agent binds under its own state lock, for a new or a reused preparation", () => {
+    const { fixture, location } = repository();
+    const { lease } = startQueueRun(fixture.root);
+    const bound: string[] = [];
+    const bindUnderLock = (agent: { agentId: string; runId: string }) => {
+      // Preparation still holds the lock, so no `workdir` request can bind
+      // a second directory for this agent in between.
+      expect(() =>
+        withLoopStateLock(location.commonGitDirectory, "probe", () => null)
+      ).toThrow("Active-loop state is busy");
+      bound.push(
+        bindRunWorkDirectory(location, agent.runId, agent.agentId, null, null)
+      );
+    };
+    const created = prepareAgentWorktree(
+      fixture.root,
+      lease.runId,
+      "author",
+      "unit",
+      bindUnderLock
+    );
+    const reused = prepareAgentWorktree(
+      fixture.root,
+      lease.runId,
+      "author",
+      "unit",
+      bindUnderLock
+    );
+    expect([created.created, reused.created]).toEqual([true, false]);
+    expect(bound).toHaveLength(2);
+    expect(bound[1]).toBe(bound[0]);
+
+    // The CLI reports that same binding as the author's work directory.
+    const prepared = run(
+      [
+        "prepare-agent",
+        "--run-id",
+        lease.runId,
+        "--agent-id",
+        "author",
+        "--purpose",
+        "unit",
+        "--json",
+      ],
+      fixture.root
+    );
+    expect(prepared.exitCode).toBe(0);
+    expect(JSON.parse(prepared.stdout)).toMatchObject({
+      created: false,
+      workDir: bound[0],
+    });
+  }, 60_000);
 
   test("a prepared author's own session claims its directory", () => {
     const { fixture } = repository();

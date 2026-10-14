@@ -15,6 +15,7 @@ export {
   SESSION_EXIT_GRACE_MS,
   turnEndReminder,
   withLoopStateLock,
+  withLoopStateLockWaiting,
 } from "./loop-lease-core.ts";
 export type {
   FinalizationCleanupResult,

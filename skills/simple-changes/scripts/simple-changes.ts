@@ -96,6 +96,7 @@ import {
   verifyLoop,
   withLoopMutationLease,
   withLoopStateLock,
+  withLoopStateLockWaiting,
 } from "./lib/loop-lease.ts";
 import { auditMarkdown } from "./lib/markdown.ts";
 import {
@@ -5133,17 +5134,35 @@ const runWorkDirectoryUse = (
   return controller || !binding ? { action: "bind" } : { action: "unbound" };
 };
 
+// How long `workdir` waits for another holder of the loop state lock, such
+// as a controller's `loop exec`, before reporting it busy, and how often it
+// checks. Tests shorten the wait.
+const WORK_DIRECTORY_LOCK_WAIT_MS = 30_000;
+const WORK_DIRECTORY_LOCK_POLL_MS = 250;
+
+const workDirectoryLockWaitMs = (): number => {
+  const override =
+    process.env.NODE_ENV === "test"
+      ? Number(process.env.SIMPLE_CHANGES_TEST_WORKDIR_LOCK_WAIT_MS)
+      : Number.NaN;
+  return Number.isInteger(override) && override >= 0
+    ? override
+    : WORK_DIRECTORY_LOCK_WAIT_MS;
+};
+
 // The directory an agent should use, per `runWorkDirectoryUse` inside a run
 // and a new one of its own otherwise. A directory the session already holds
 // is returned without a lock. Binding and claiming are decided again under
 // the loop state lock, where loop start and finalize change bindings too:
 // two first requests for one agent ID never each bind a directory and lose
-// one, and none binds to a run that closed in the meantime.
-const workDirectoryFor = (
+// one, and none binds to a run that closed in the meantime. A busy lock is
+// waited out for a bounded time, so an author's first claim outlasts a
+// controller's short `loop exec`.
+const workDirectoryFor = async (
   repository: WorkDirectoryRepository,
   lease: LoopLease | null,
   agentId: string
-): { bound: boolean; path: string } => {
+): Promise<{ bound: boolean; path: string }> => {
   const session = workDirectorySession();
   if (lease) {
     const use = runWorkDirectoryUse(repository, lease, agentId, session);
@@ -5151,7 +5170,8 @@ const workDirectoryFor = (
       return { bound: true, path: use.path };
     }
     if (use.action === "bind") {
-      const path = withLoopStateLock(
+      const waitMs = workDirectoryLockWaitMs();
+      const path = await withLoopStateLockWaiting(
         repository.commonGitDirectory,
         "workdir",
         () => {
@@ -5179,6 +5199,15 @@ const workDirectoryFor = (
                 null
               )
             : null;
+        },
+        {
+          intervalMs: WORK_DIRECTORY_LOCK_POLL_MS,
+          onWait: () => {
+            process.stderr.write(
+              `Active-loop state is busy; waiting up to ${waitMs / 1000}s to bind this work directory.\n`
+            );
+          },
+          waitMs,
         }
       );
       if (path !== null) {
@@ -5191,7 +5220,7 @@ const workDirectoryFor = (
 
 // Plain output is the bare path, so `WORK_DIR=$(simple-changes workdir ...)`
 // works before a loop exists, as a GitLab opening inventory needs.
-const runWorkDirectory = (options: CliOptions): void => {
+const runWorkDirectory = async (options: CliOptions): Promise<void> => {
   const [action, target] = options.positional;
   const repository = locateWorkDirectoryRepository(options.repo);
   if (action === "remove") {
@@ -5221,7 +5250,7 @@ const runWorkDirectory = (options: CliOptions): void => {
     );
   }
   const agentId = requireCliOption(options.agentId, "--agent-id");
-  const { bound, path } = workDirectoryFor(
+  const { bound, path } = await workDirectoryFor(
     repository,
     readLoopLease(options.repo),
     agentId
@@ -5492,7 +5521,7 @@ const executeCommand = async (
       runPrepareAgent(options);
       return EXIT_CODES.success;
     case "workdir":
-      runWorkDirectory(options);
+      await runWorkDirectory(options);
       return EXIT_CODES.success;
     case "scratch-file-rule":
       runScratchFileRule(options);

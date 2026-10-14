@@ -333,7 +333,10 @@ session that reuses that agent ID gets a new directory of its own instead;
 another session on the controller's agent ID always does, even before the
 controller has bound or claimed one.
 Binding and claiming take the loop state lock, so two first requests never
-lose a directory; when `workdir` reports the state busy, retry it. Set
+lose a directory. `workdir` waits up to 30 seconds for another holder, such as
+a controller's `loop exec`, and exits 5 only if the lock is still busy then:
+retry it once that operation ends, or keep using the `workDir` your brief
+names. Set
 `SIMPLE_CHANGES_WORK_ROOT` to an absolute path to move the root. The CLI
 refuses a root inside any registered checkout or the Git common directory, one
 that is a symlink, owned by another user, or writable by others, and one under

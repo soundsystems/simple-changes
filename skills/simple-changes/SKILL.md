@@ -171,7 +171,7 @@ isolated worktree and immediately run `worktree claim`. A claim is the lock:
 while it is active, no controller packages, merges, or cleans that checkout.
 After registration,
 both run-prepared and independently claimed authors edit, generate, format,
-test, stage, and commit normally and concurrently in their own distinct
+test, stage, and commit normally and concurrently in their own
 worktrees and branches. Run only shared integration mutations through `loop
 exec`. Use `loop guard` only for
 external provider calls and verify immediately afterward. Before merge,
@@ -181,7 +181,7 @@ migrations` so [shipment holds](#shipment-holds) gate that step. Proceed
 only on a passing result. After review and integration settle, record one exact
 `loop record-outcome --receipt <shipment-outcome.json>` receipt, drafted by
 `loop draft-outcome`, before completion. A busy lock blocks only the named
-short integration operation, never unrelated authors.
+short integration operation, never unrelated authors, whose `workdir` waits.
 
 When scheduling and the host allow parallel authoring, delegate independent
 units per

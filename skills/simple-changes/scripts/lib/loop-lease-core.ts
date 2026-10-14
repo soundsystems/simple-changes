@@ -14,6 +14,7 @@ import {
 } from "node:fs";
 import { hostname } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
 import {
   currentHarnessSession,
@@ -343,6 +344,54 @@ const withStateLock = <T>(
 // Standalone maintenance shares this short lock without acquiring a controller
 // lease, so its inventory cannot race a registration or integration mutation.
 export { withStateLock as withLoopStateLock };
+
+// Only another holder's lock is waited out: a permission or filesystem
+// failure is reported at once, never retried.
+const isStateLockBusy = (error: unknown): boolean =>
+  error instanceof SimpleChangesError &&
+  (error.cause as NodeJS.ErrnoException | undefined)?.code === "EEXIST";
+
+/**
+ * `withLoopStateLock` for a short operation that should wait out another
+ * holder, such as a controller's `loop exec`, instead of failing at once: it
+ * polls every `intervalMs` and reports the busy lock as `withLoopStateLock`
+ * does only once `waitMs` has passed. `onWait` runs once, when the first
+ * attempt finds the lock busy. The operation itself runs synchronously
+ * under the lock, so it must re-read any state it decides on.
+ */
+export const withLoopStateLockWaiting = <T>(
+  commonGitDirectory: string,
+  operationName: string,
+  operation: () => T,
+  options: { intervalMs: number; onWait?: () => void; waitMs: number }
+): Promise<T> => {
+  const deadline = Date.now() + options.waitMs;
+  let waiting = false;
+  // Polls by recursion, as process-group waits do, one attempt at a time.
+  const attempt = async (): Promise<T> => {
+    let lock: StateLock;
+    try {
+      lock = acquireStateLock(commonGitDirectory, operationName);
+    } catch (error) {
+      const remaining = deadline - Date.now();
+      if (!isStateLockBusy(error) || remaining <= 0) {
+        throw error;
+      }
+      if (!waiting) {
+        waiting = true;
+        options.onWait?.();
+      }
+      await delay(Math.min(options.intervalMs, remaining));
+      return attempt();
+    }
+    try {
+      return operation();
+    } finally {
+      lock.release();
+    }
+  };
+  return attempt();
+};
 
 const withAsyncStateLock = async <T>(
   commonGitDirectory: string,

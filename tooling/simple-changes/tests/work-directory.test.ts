@@ -1,10 +1,13 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import {
   chmodSync,
+  closeSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
+  openSync,
   readdirSync,
+  readFileSync,
   realpathSync,
   rmSync,
   statSync,
@@ -13,7 +16,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
-import { spawn, spawnSync } from "bun";
+import { sleepSync, spawn, spawnSync } from "bun";
 import { EXIT_CODES } from "../../../skills/simple-changes/scripts/lib/errors.ts";
 import { withLoopStateLock } from "../../../skills/simple-changes/scripts/lib/loop-lease.ts";
 import {
@@ -753,13 +756,16 @@ describe("work directories through the CLI", () => {
 
     withLoopStateLock(location.commonGitDirectory, "test holder", () => {
       // Binding a new directory and claiming an unclaimed one both wait for
-      // the lock: the CLI reports it busy and changes nothing.
+      // the lock, here for a shortened bound, and then report it busy and
+      // change nothing.
+      const shortWait = { SIMPLE_CHANGES_TEST_WORKDIR_LOCK_WAIT_MS: "400" };
       for (const refused of [
-        ask("checker"),
-        ask("reviewer", session("reviewer-session")),
+        ask("checker", shortWait),
+        ask("reviewer", { ...session("reviewer-session"), ...shortWait }),
       ]) {
         expect(refused.exitCode).toBe(EXIT_CODES.unsafe);
-        expect(refused.stderr).toContain("Active-loop state is busy");
+        expect(refused.stderr).toContain("waiting up to 0.4s");
+        expect(refused.stderr).toContain("Active-loop state is busy at");
       }
       // A directory the caller already holds needs no lock.
       const reused = ask("reviewer");
@@ -790,6 +796,68 @@ describe("work directories through the CLI", () => {
       bound: true,
       workDir: first.workDir,
     });
+  }, 60_000);
+
+  test("workdir waits out a busy lock that is released within its bound", async () => {
+    const { fixture, location } = repository();
+    const { lease } = startQueueRun(fixture.root);
+    const logs = realpathSync(
+      mkdtempSync(join(tmpdir(), "work-directory-log-"))
+    );
+    scratch.push(logs);
+    const stderrPath = join(logs, "stderr.txt");
+    const stderr = openSync(stderrPath, "w");
+    const children: ReturnType<typeof spawn>[] = [];
+    try {
+      // Hold the lock, as a controller's `loop exec` does, until the
+      // request reports that it is waiting, then release it.
+      withLoopStateLock(location.commonGitDirectory, "test holder", () => {
+        const child = spawn(
+          [
+            process.execPath,
+            cliPath,
+            "workdir",
+            "--agent-id",
+            "checker",
+            "--json",
+            "--repo",
+            fixture.root,
+          ],
+          {
+            env: { ...process.env, SIMPLE_CHANGES_SKILL_ROOTS: "" },
+            stderr,
+            stdout: "pipe",
+          }
+        );
+        children.push(child);
+        const deadline = Date.now() + 50_000;
+        while (
+          !readFileSync(stderrPath, "utf8").includes("waiting up to 30s")
+        ) {
+          if (Date.now() > deadline) {
+            throw new Error("workdir never reported waiting for the lock");
+          }
+          sleepSync(50);
+        }
+      });
+      const [child] = children;
+      if (!child) {
+        throw new Error("Expected the workdir request to start.");
+      }
+      const [exitCode, stdout] = await Promise.all([
+        child.exited,
+        new Response(child.stdout as ReadableStream).text(),
+      ]);
+      expect(exitCode).toBe(0);
+      const waited = JSON.parse(stdout) as { bound: boolean; workDir: string };
+      expect(waited.bound).toBe(true);
+      expect(runWorkDirectoryBinding(location, lease.runId, "checker")).toEqual(
+        { path: waited.workDir, session: null }
+      );
+    } finally {
+      await Promise.all(children.map((child) => child.exited));
+      closeSync(stderr);
+    }
   }, 60_000);
 
   test("concurrent first requests for one agent ID never lose a binding", async () => {
@@ -837,7 +905,8 @@ describe("work directories through the CLI", () => {
         expect(parsed.bound).toBe(true);
         reported.add(parsed.workDir);
       } else {
-        // A request that met another's lock is asked to retry.
+        // A request waits out another's lock; past its bound it is asked to
+        // retry.
         expect(result.exitCode).toBe(EXIT_CODES.unsafe);
         expect(result.stderr).toContain("Active-loop state is busy");
       }

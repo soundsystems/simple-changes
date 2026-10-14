@@ -7,10 +7,11 @@
     CLAUDE.md now gives each agent one scratch folder of its own and lets
     it delete only that folder, never files matched by pattern in a folder
     other agents share. An agent that starts another agent gives it a
-    folder inside its own, and a folder Simple Changes gave an agent during
-    a run is left for the run to delete. Before, the rule said only to
-    delete scratch files when the task ends, so a subagent could delete the
-    files of the agent that started it.
+    folder inside its own, or the work directory a Simple Changes run made
+    for it, and a folder Simple Changes gave an agent during a run is left
+    for the run to delete. Before, the rule said only to delete scratch
+    files when the task ends, so a subagent could delete the files of the
+    agent that started it.
   - `initialize` now tells you when the scratch-file rule in your
     repository's AGENTS.md or CLAUDE.md, or in your global
     `~/.codex/AGENTS.md` or `~/.claude/CLAUDE.md`, still has an earlier
@@ -27,7 +28,7 @@
     agent's work directory to the run, including a reviewer's or a check
     runner's, so the run deletes it when it finishes cleanly. Before, only
     the controller's and authors' directories were deleted with the run.
-<!-- simple-changelogs-signature agent="Claude Opus 5.5 xhigh" at="2026-10-14T15:04:03-05:00" -->
+<!-- simple-changelogs-signature agent="Claude Opus 5.5 xhigh" at="2026-10-14T17:15:30-05:00" -->
 
 ## 0.29.1 - 2026-10-13
 

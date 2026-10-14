@@ -7,16 +7,18 @@
   scratch folder (the folder its brief names, the `workDir` a run reports,
   or a `mktemp -d` folder under the session scratch directory or the system
   temporary directory), has a parent give each agent it starts a folder
-  inside its own, and limits cleanup to that folder by its path, never by
-  pattern, extension, or age in a directory other agents share. A folder a
-  Simple Changes run reported is left for the run to remove, as
-  `references/inventory-and-concurrency.md` requires of the run's agents.
-  The markers are unchanged, so `writeScratchFileRule` replaces an older
-  block in place. The rule is 686 bytes, up from 348. The first draft was
-  960 bytes; its sentences on shared parent directories, hand-off files,
-  and folders you did not create moved to
-  `references/inventory-and-concurrency.md`, since the rule's four
-  guarantees imply them.
+  inside its own, or the work directory a Simple Changes run prepared for
+  it, and limits cleanup to that folder by its path, never by pattern,
+  extension, or age in a directory other agents share. A folder a Simple
+  Changes run reported is left for the run to remove. Both run clauses
+  match what `references/inventory-and-concurrency.md` requires of a run's
+  agents: a delegated author's folder is the sibling `workDir`
+  `prepare-agent` reported, and the run removes it. The markers are
+  unchanged, so `writeScratchFileRule` replaces an older block in place.
+  The rule is 736 bytes, up from 348. The first draft was 960 bytes; its
+  sentences on shared parent directories, hand-off files, and folders you
+  did not create moved to `references/inventory-and-concurrency.md`, since
+  the rule's four guarantees imply them.
 - Also in `lib/repository-instructions.ts`: `inspectScratchFileRule(target)`
   returns `current`, `stale`, `absent`, or `invalid`, comparing through the
   writer's newline formatting so `stale` means exactly that
@@ -41,14 +43,19 @@
   inspected on its own, so one that cannot be inspected, such as a
   `CLAUDE.md` linked to `AGENTS.md`, is left out without hiding the other
   or failing initialization.
-- New `scratch-file-rule refresh --instruction-file PATH`: locates the
-  target, takes the loop state lock, rewrites a stale block through
-  `writeScratchFileRule`, reports a current one unchanged, and refuses an
-  absent block with exit 2 naming `setup --scratch-file-rule add` and an
-  invalid one with exit 5. While any loop lease exists, including a paused
-  or relinquished one, it also refuses, with exit 5 and "refresh it after
-  the run ends", a repository-scope target or any target inside a
-  registered checkout, whatever its scope, since the run preserves those
+- New `scratch-file-rule refresh --instruction-file PATH`, implemented as
+  `refreshScratchFileRule(repository, file)` in new
+  `lib/scratch-file-rule.ts`: takes the loop state lock, reads the
+  registered checkouts (new `registeredCheckouts` in `lib/work-directory.ts`)
+  and the lease again under it, locates and classifies the target there, so
+  a checkout registered meanwhile, such as one `prepare-agent` adds, is
+  seen, rewrites a stale block through `writeScratchFileRule`, reports a
+  current one unchanged, and refuses an absent block with exit 2 naming
+  `setup --scratch-file-rule add` and an invalid one with exit 5. While any
+  loop lease exists, including a paused or relinquished one, it also
+  refuses, with exit 5 and "refresh it after the run ends", a
+  repository-scope target or any target inside a registered checkout or a
+  path the lease records, whatever its scope, since the run preserves those
   checkouts; a global file outside every checkout is still refreshed.
 - `workDirectoryFor` in `simple-changes.ts`: inside a run, any agent ID
   without a same-session binding now gets a directory bound to the run, not
@@ -108,9 +115,10 @@
   command.
 - Guidance stays at 29, with no guidance entry and no update notice: the
   stale-block report and refresh reach users who added the old block.
-- Tests: `repository-instructions.test.ts` pins the rule's ownership and
-  run-retention phrases, rejects "Delete them when the task ends", and
-  covers `inspectScratchFileRule` (absent, current, stale, CRLF, invalid),
+- Tests: `repository-instructions.test.ts` pins the rule's ownership,
+  run-prepared child folder, and run-retention phrases, rejects "Delete
+  them when the task ends", and covers `inspectScratchFileRule` (absent,
+  current, stale, CRLF, invalid),
   `discoverGlobalInstructionTargets` (harness roots, the home directory,
   `CODEX_HOME`, a linked file skipped, an empty root), and
   `discoverRepositoryInstructionTargets` (a linked `CLAUDE.md`, a directory
@@ -118,7 +126,8 @@
   with a stale global block, refreshes it, sees it current, refuses a file
   without the rule, reports a stale `AGENTS.md` beside a linked `CLAUDE.md`
   with its `refreshCommand`, and, with a run started, refuses to refresh the
-  primary and a linked checkout's `AGENTS.md` but rewrites the global one;
+  primary and a linked checkout's `AGENTS.md` but rewrites the global one,
+  and refuses a checkout registered after the repository was located;
   `work-directory.test.ts` binds a reviewer's directory inside a run and
   sees finalize remove it with the controller's, lets the first known
   session claim a helper binding made without one while a second session
@@ -128,13 +137,13 @@
   but returns a held directory, binds once a held lock is released within
   the wait, binds `prepare-agent`'s directory under preparation's lock for a
   new and a reused preparation, and keeps exactly one bound directory
-  across four concurrent first requests; `skill-contract.test.ts` pins the SKILL.md sentences and
-  the brief requirements.
+  across four concurrent first requests; `skill-contract.test.ts` pins the
+  SKILL.md sentences and the brief requirements.
 - `docs/plans/2026-10-14-per-agent-scratch-folders.md` records the incident,
   the root cause, the design, the exact replacement rule as a diff for the
   user's global AGENTS.md, the fork pickup path, and the decisions taken on
   its open questions.
-<!-- simple-changelogs-signature agent="Claude Opus 5.5 xhigh" at="2026-10-14T16:00:52-05:00" -->
+<!-- simple-changelogs-signature agent="Claude Opus 5.5 xhigh" at="2026-10-14T17:15:30-05:00" -->
 
 ## 0.29.1 - 2026-10-13
 

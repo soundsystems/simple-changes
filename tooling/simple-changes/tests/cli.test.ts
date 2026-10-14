@@ -2894,6 +2894,69 @@ while (!existsSync(process.env.SIMPLE_CHANGES_TEST_RELEASE_PATH)) {
     );
   });
 
+  test("initialize reports a stale AGENTS.md rule beside a linked CLAUDE.md", () => {
+    const fixture = createTestRepository();
+    repositories.push(fixture);
+    const home = resolve(fixture.base, "home");
+    const agentsPath = resolve(fixture.root, "AGENTS.md");
+    writeFixture(
+      fixture.root,
+      "AGENTS.md",
+      "# Agent guidance\n\n<!-- simple-changes:scratch-files:start -->\nDelete them when the task ends.\n<!-- simple-changes:scratch-files:end -->\n"
+    );
+    // Many repositories link CLAUDE.md to AGENTS.md. The link is never
+    // inspected, and it must not hide the regular file beside it.
+    symlinkSync("AGENTS.md", resolve(fixture.root, "CLAUDE.md"));
+    const initialize = (json: boolean) =>
+      spawnSync(
+        [
+          process.execPath,
+          cliPath,
+          "initialize",
+          "--mode",
+          "preview",
+          ...(json ? ["--json"] : []),
+          "--repo",
+          fixture.root,
+        ],
+        {
+          env: {
+            CLAUDE_CONFIG_DIR: resolve(home, ".claude"),
+            CODEX_HOME: resolve(home, ".codex"),
+            SIMPLE_CHANGES_HARNESS_ROOTS: home,
+          },
+          stderr: "pipe",
+          stdout: "pipe",
+        }
+      );
+
+    const reported = initialize(true);
+    expect(reported.exitCode).toBe(0);
+    const { scratchFileRule } = JSON.parse(decoder.decode(reported.stdout)) as {
+      scratchFileRule: {
+        targets: {
+          path: string;
+          refreshCommand: string | null;
+          scope: string;
+          status: string;
+        }[];
+      } | null;
+    };
+    expect(scratchFileRule?.targets).toEqual([
+      {
+        path: agentsPath,
+        refreshCommand: expect.stringContaining(
+          `scratch-file-rule refresh --instruction-file ${agentsPath}`
+        ),
+        scope: "repository",
+        status: "stale",
+      },
+    ]);
+    expect(decoder.decode(initialize(false).stdout)).toContain(
+      `Scratch-file rule: stale in ${agentsPath}`
+    );
+  });
+
   test("adds a confirmed instruction pointer and gates completed-work handoff", () => {
     const fixture = createTestRepository();
     repositories.push(fixture);

@@ -173,6 +173,7 @@ import { renderInventory, renderPlan } from "./lib/report.ts";
 import {
   discoverGlobalInstructionTargets,
   discoverInstructionTargets,
+  discoverRepositoryInstructionTargets,
   type InstructionTarget,
   inspectScratchFileRule,
   locateInstructionTarget,
@@ -2528,19 +2529,17 @@ const scratchFileRuleRefreshCommand = (
   `${shellWord(process.execPath)} ${shellWord(SCRIPT_FILE)} scratch-file-rule refresh --instruction-file ${shellWord(target.path)} --repo ${shellWord(repositoryPath)}`;
 
 // Reported, never rewritten, by initialize: a block an older release wrote
-// keeps its text until the user agrees to the refresh. A file that cannot be
-// inspected is left out rather than failing initialization.
+// keeps its text until the user agrees to the refresh. Each file is
+// discovered and inspected on its own, so one that cannot be inspected is
+// left out without hiding its siblings or failing initialization.
 const initializationScratchFileRule = (
   primaryCheckout: string | null,
   repositoryPath: string
 ): InitializationStatus["scratchFileRule"] => {
-  const targets: InstructionTarget[] = [];
-  try {
-    targets.push(...discoverInstructionTargets("repository", primaryCheckout));
-  } catch {
-    // A linked or escaping repository file is not a target.
-  }
-  targets.push(...discoverGlobalInstructionTargets());
+  const targets: InstructionTarget[] = [
+    ...discoverRepositoryInstructionTargets(primaryCheckout),
+    ...discoverGlobalInstructionTargets(),
+  ];
   const inspected: ScratchFileRuleTarget[] = [];
   for (const target of targets) {
     let status: ReturnType<typeof inspectScratchFileRule>;

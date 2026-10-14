@@ -11,6 +11,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   discoverGlobalInstructionTargets,
   discoverInstructionTargets,
+  discoverRepositoryInstructionTargets,
   inspectScratchFileRule,
   renderInstructionPointer,
   renderScratchFileRule,
@@ -231,6 +232,33 @@ describe("repository instruction pointers", () => {
         missingHome
       )
     ).toEqual([]);
+  });
+
+  test("inspects each repository instruction file on its own", () => {
+    const fixture = createTestRepository();
+    repositories.push(fixture);
+    expect(discoverRepositoryInstructionTargets(null)).toEqual([]);
+    expect(discoverRepositoryInstructionTargets(fixture.root)).toEqual([]);
+
+    // A CLAUDE.md linked to AGENTS.md makes setup refuse the repository
+    // scope, but must not hide the regular AGENTS.md from inspection.
+    writeFixture(fixture.root, "AGENTS.md", "# Agent guidance\n");
+    symlinkSync("AGENTS.md", resolve(fixture.root, "CLAUDE.md"));
+    expect(() =>
+      discoverInstructionTargets("repository", fixture.root)
+    ).toThrow("Refusing to update an instruction symlink");
+    expect(discoverRepositoryInstructionTargets(fixture.root)).toEqual([
+      { path: resolve(fixture.root, "AGENTS.md"), scope: "repository" },
+    ]);
+
+    // Either file may be the unsafe one.
+    const reversed = createTestRepository();
+    repositories.push(reversed);
+    writeFixture(reversed.root, "CLAUDE.md", "# Claude guidance\n");
+    mkdirSync(resolve(reversed.root, "AGENTS.md"));
+    expect(discoverRepositoryInstructionTargets(reversed.root)).toEqual([
+      { path: resolve(reversed.root, "CLAUDE.md"), scope: "repository" },
+    ]);
   });
 
   test("refuses a duplicated scratch-file block", () => {

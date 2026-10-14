@@ -154,6 +154,29 @@ export const discoverInstructionTargets = (
     });
 };
 
+// The repository's instruction files that are safe to inspect, each checked
+// on its own: a missing, linked, escaping, or irregular candidate is simply
+// not a target, and never hides a regular sibling. Setup keeps
+// `discoverInstructionTargets`, which refuses the whole repository scope.
+export const discoverRepositoryInstructionTargets = (
+  primaryCheckout: string | null
+): InstructionTarget[] => {
+  if (!primaryCheckout) {
+    return [];
+  }
+  const targets: InstructionTarget[] = [];
+  for (const filename of REPOSITORY_CANDIDATES) {
+    try {
+      targets.push(
+        ...discoverInstructionTargets("repository", primaryCheckout, filename)
+      );
+    } catch {
+      // Absent, a symlink, outside the checkout, or not a regular file.
+    }
+  }
+  return targets;
+};
+
 // The global instruction files the harnesses read, under the roots harness
 // detection and the turn-end guard use. A missing, linked, or irregular
 // file is simply not a target.

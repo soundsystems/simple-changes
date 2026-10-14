@@ -308,7 +308,7 @@ The user answered the six open questions on 2026-10-14:
    `invalid`, and offers a stale one's `refreshCommand` once.
 2. **Silent `0.29.2`, not guidance 30.** The stale-block report reaches users
    who added the old block, so no update notice is needed.
-3. **Length: shortened.** The rule is 627 bytes, down from a 961-byte first
+3. **Length: shortened.** The rule is 627 bytes, down from a 960-byte first
    draft (348 before). It keeps the four guarantees: one folder of your own,
    a folder inside yours for each child, deletion of exactly your own folder,
    and no deletion by pattern, extension, or age in a shared directory. The

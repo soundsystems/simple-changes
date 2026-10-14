@@ -201,7 +201,7 @@ describe("repository instruction pointers", () => {
       { path: resolve(home, ".claude/CLAUDE.md"), scope: "user" },
     ]);
     const codexHome = join(fixture.base, "codex-home");
-    writeFixture(codexHome, "AGENTS.md", "# Codex elsewhere\n");
+    writeFixture(fixture.base, "codex-home/AGENTS.md", "# Codex elsewhere\n");
     expect(
       discoverGlobalInstructionTargets(
         { CODEX_HOME: codexHome, SIMPLE_CHANGES_HARNESS_ROOTS: home },

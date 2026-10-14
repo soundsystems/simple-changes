@@ -246,11 +246,17 @@ rule, whatever the pointer answer was. It is a second managed block with its
 own `<!-- simple-changes:scratch-files:start -->` and `:end -->` markers, so
 rewriting the pointer never removes it. It tells every agent, not only Simple
 Changes runs, to keep scratch files, captured command output, proof bundles,
-and handoff notes in a private temporary directory, never inside or next to a
-checkout, and to delete them when the task ends unless the user asks to keep
-them. Offer **Add the rule** first and **Leave it out** second. Non-interactive
-setup adds it only with `--scratch-file-rule add`; omitting the flag leaves the
-file as it is, and adding the rule needs exactly one target.
+and handoff notes in one scratch folder of its own, never inside or next to a
+checkout: the folder its brief names, the work directory a Simple Changes run
+reports, or a new folder it creates under the session's scratch directory or
+the system temporary directory. An agent that starts another agent gives it a
+folder of its own and names it in the brief, and when the task ends it deletes
+exactly its own folder, never another agent's and never by pattern across a
+shared directory, unless the user asks to keep it. Offer **Add the rule**
+first and **Leave it out** second. Non-interactive setup adds it only with
+`--scratch-file-rule add`; omitting the flag leaves the file as it is, and
+adding the rule needs exactly one target. The markers never change, so
+running setup again after an update rewrites an older block in place.
 
 The confirmation summary must
 show the exact target path and each proposed managed block. Apply an authorized edit

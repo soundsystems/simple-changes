@@ -12,7 +12,7 @@ metadata:
 Turn ready repository work into focused, verified proposals without disturbing
 active work. In commands below, `simple-changes` means
 `bun <skill-root>/scripts/simple-changes.ts` (or an installed `simple-changes`
-bin); use the same invocation everywhere.
+bin).
 
 ## Classify the request
 
@@ -161,8 +161,9 @@ controller is rejected; independent authors use distinct claimed worktrees.
 When the target is GitLab, first paginate the complete opening remote inventory
 (every branch and every open, merged, and closed proposal), then pass that
 unchanged receipt, built by `remote-inventory build`, through `loop start
---opening-remote-inventory <file>`. Keep every file you pass to the CLI in the
-`simple-changes workdir --agent-id "$AGENT_ID"` directory.
+--opening-remote-inventory <file>`. Keep every file you pass to the CLI, and
+your scratch files, in your own `simple-changes workdir --agent-id "$AGENT_ID"`
+directory; delete nothing outside it.
 
 When an active loop assigns a new author into that same integration unit, run
 `simple-changes prepare-agent` before edits. Independent agents create an
@@ -182,8 +183,8 @@ only on a passing result. After review and integration settle, record one exact
 `loop draft-outcome`, before completion. A busy lock blocks only the named
 short integration operation, never unrelated authors.
 
-When scheduling allows parallel authoring and the host can start isolated
-agents, delegate independent units per
+When scheduling and the host allow parallel authoring, delegate independent
+units per
 [parallel agents](references/inventory-and-concurrency.md#parallel-agents):
 the controller prepares every agent's worktree with `prepare-agent`, and the
 controller alone pushes, merges, and finalizes.

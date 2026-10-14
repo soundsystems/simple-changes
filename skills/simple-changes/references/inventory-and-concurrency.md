@@ -348,6 +348,19 @@ close-equivalent` or `loop archive-recorded`. Remove any other directory with
 `simple-changes workdir remove <path>`; the operating system's temporary-file
 cleanup eventually sweeps the rest.
 
+The directory is the agent's alone, and so is everything in it: scratch
+files, captured command output, proof bundles, review logs, and proposal
+drafts belong there too, never in a directory other agents share. A harness
+scratch directory is shared: a session's subagents inherit the same path, so
+a subagent that cleans up there by pattern deletes the controller's drafts
+and receipts with its own. Only the run removes a work directory, through its
+clean finalization, or the agent that owns it removes it with `workdir
+remove`; never delete by pattern, extension, or age in the work root, a
+harness scratch directory, or any other shared directory, and never a
+directory you did not create or receive. A file another agent reads after
+you finish stays where it is until finalization removes it: leave the
+directory in place and report the path.
+
 ## Parallel agents
 
 When scheduling selects parallel authoring and the host can start isolated
@@ -378,8 +391,9 @@ branch onto the updated target through `loop exec`.
    Concurrent calls collide on the busy state lock, so agents gain nothing by
    preparing their own worktrees.
 2. Start the agents together. Give each one its exact prepared path, branch,
-   agent ID, and unit scope; the checks to run; and its boundary: edit,
-   generate, format, check, stage, and commit only inside that worktree. A
+   agent ID, and unit scope, and the `workDir` `prepare-agent` reported; the
+   checks to run; and its boundary: edit, generate, format, check, stage, and
+   commit only inside that worktree. A
    delegated agent runs no `initialize` or `loop` command, push, provider call,
    merge, release, deployment, or cleanup, and never touches another worktree,
    branch, stash, or tag. The runtime still lets any run-prepared author use
@@ -387,8 +401,14 @@ branch onto the updated target through `loop exec`.
    every brief: after every commit, run the `author attest` command
    `prepare-agent` printed as `afterEveryCommit`, beside `worktree claim` for
    a claimed checkout ([review ledger steps](change-requests.md#review-ledger-steps)).
+   Also required in every brief: the agent's scratch files, captured output,
+   and notes go only in its own `workDir`; it deletes nothing outside that
+   directory, including in a harness scratch directory it shares with the
+   controller, and leaves the directory in place when it returns, because the
+   run's clean finalization removes it.
 3. Each agent returns its final commit, the checks it ran with their results,
-   and any open question, leaving its worktree clean. Before treating the unit
+   and any open question, leaving its worktree clean and its work directory in
+   place. Before treating the unit
    as ready, the controller confirms that the registered branch head equals the
    reported commit and that no uncommitted changes remain. A unit with an open
    question or a failed check waits while the others continue.

@@ -607,11 +607,18 @@ For a task that will preserve multiple UI iterations, add `--ui-artifacts` and
 `--ui-versioning repository|number-and-date|date-only|number-only`.
 
 Add `--scratch-file-rule add` to also write an optional managed rule, in its
-own block, that tells every agent to keep scratch files, captured output, proof
-bundles, and handoff notes in a private temporary directory and delete them
-when the task ends. During a run, `simple-changes workdir --agent-id ID` prints
-that directory for the files an agent passes to the CLI, and a clean
-finalization removes it.
+own block, that gives every agent one scratch folder of its own for scratch
+files, captured output, proof bundles, and handoff notes, outside every project
+folder: the folder its brief names, the work directory a Simple Changes run
+reports, or a new folder under the session's scratch directory or the system
+temporary directory. An agent that starts another agent creates and names a
+folder for it, and when the task ends each agent deletes exactly its own
+folder, never another agent's and never by pattern across a shared directory.
+During a run, `simple-changes workdir --agent-id ID` prints that folder for the
+files an agent passes to the CLI, `prepare-agent` reports one per delegated
+author, and a clean finalization removes them. The block's markers never
+change, so running setup with the flag again after an update rewrites an older
+rule in place.
 
 Even an automatic ship preference does not authorize remote migrations,
 backfills, secrets or environment changes, DNS changes, store releases, or

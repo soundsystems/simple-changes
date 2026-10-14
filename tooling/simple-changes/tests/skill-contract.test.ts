@@ -1252,6 +1252,20 @@ describe("Simple Changes skill contract", () => {
     expect(normalizedConcurrency).toContain(
       "A delegated agent runs no `initialize` or `loop` command, push, provider call, merge, release, deployment, or cleanup"
     );
+    // Scratch files are owned per agent: the brief names the author's own
+    // `workDir`, and nothing outside it is the author's to delete.
+    expect(normalizedSkill).toContain(
+      'in your own `simple-changes workdir --agent-id "$AGENT_ID"` directory; delete nothing outside it'
+    );
+    expect(normalizedConcurrency).toContain(
+      "and the `workDir` `prepare-agent` reported"
+    );
+    expect(normalizedConcurrency).toContain(
+      "it deletes nothing outside that directory, including in a harness scratch directory it shares with the controller"
+    );
+    expect(normalizedConcurrency).toContain(
+      "never delete by pattern, extension, or age in the work root, a harness scratch directory, or any other shared directory"
+    );
     expect(normalizedConcurrency).toContain(
       "the controller confirms that the registered branch head equals the reported commit"
     );

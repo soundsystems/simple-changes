@@ -115,6 +115,26 @@ describe("repository instruction pointers", () => {
     );
   });
 
+  test("scopes the scratch-file rule to one folder per agent", () => {
+    // The rule once said only to delete scratch files when the task ends.
+    // A subagent sharing its parent's scratch directory followed it by
+    // pattern and deleted the parent's drafts, so ownership is explicit.
+    const rule = renderScratchFileRule();
+    for (const phrase of [
+      "only inside one scratch folder of your own",
+      "the folder your brief names, the work directory a Simple Changes run reports",
+      "a new folder you create with `mktemp -d`",
+      "nothing outside your folder is yours",
+      "give it a folder of its own, normally one you create inside yours, and name that path in its brief",
+      "leave your folder in place and report the path",
+      "delete exactly your own folder by its recorded path",
+      "never delete by pattern, extension, or age in a shared directory, and never a folder you did not create or receive",
+    ]) {
+      expect(rule).toContain(phrase);
+    }
+    expect(rule).not.toContain("Delete them when the task ends");
+  });
+
   test("refuses a duplicated scratch-file block", () => {
     const fixture = createTestRepository();
     repositories.push(fixture);

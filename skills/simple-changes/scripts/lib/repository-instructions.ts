@@ -188,8 +188,12 @@ export const renderInstructionPointer = (
     POINTER_MARKERS.end,
   ].join("\n");
 
+// One folder per agent, deleted only by that agent or the run that bound it:
+// several agents share a harness scratch directory and the work root, so a
+// rule that says only "delete your scratch files" invites a subagent to
+// sweep its parent's files by pattern.
 const SCRATCH_FILE_RULE =
-  "Write scratch files, captured command output, proof bundles, and handoff notes to the session's scratch directory or a private folder under the system temporary directory, never inside or next to a repository checkout. During a Simple Changes run, use the work directory it reports. Delete them when the task ends unless the user asks to keep them.";
+  "Write scratch files, captured command output, proof bundles, and handoff notes only inside one scratch folder of your own, never inside or next to a repository checkout: the folder your brief names, the work directory a Simple Changes run reports, or else a new folder you create with `mktemp -d` under the session's scratch directory or the system temporary directory. Those parent directories are shared with other agents; nothing outside your folder is yours. When you start another agent, give it a folder of its own, normally one you create inside yours, and name that path in its brief. A file another agent will read after you finish goes where your brief says; without such a place, leave your folder in place and report the path. When the task ends, delete exactly your own folder by its recorded path, unless the user asks to keep it; never delete by pattern, extension, or age in a shared directory, and never a folder you did not create or receive.";
 
 export const renderScratchFileRule = (): string =>
   [

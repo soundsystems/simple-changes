@@ -125,7 +125,7 @@ export const ONBOARDING_QUESTIONS = {
     "Should agents sign the change proposals they author, review, or merge?",
   scope: "Where should these preferences live?",
   scratchFileRule: (path: string) =>
-    `Should I also add a rule to \`${path}\` that keeps agents' scratch files out of your project folders?`,
+    `Should I also add a rule to \`${path}\` that gives each agent one scratch folder of its own, outside your project folders?`,
   shippingMode: "How should routine Ship requests run?",
   start:
     "Simple Changes can set up the workflow before continuing. Choose one:",
@@ -670,7 +670,7 @@ const INSTRUCTION_POINTER_CHOICES = [
 const SCRATCH_FILE_RULE_CHOICES = [
   {
     description:
-      "Add or update one managed rule: agents keep scratch files, captured output, proof bundles, and handoff notes in a temporary directory and delete them when the task ends.",
+      "Add or update one managed rule: each agent keeps scratch files, captured output, proof bundles, and handoff notes in one scratch folder of its own, outside your project folders, and deletes only that folder when the task ends.",
     label: "Add the rule",
     value: "add",
   },

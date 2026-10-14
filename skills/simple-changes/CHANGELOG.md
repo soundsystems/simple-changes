@@ -1,5 +1,26 @@
 # Changelog
 
+## Unreleased
+
+- Each agent now gets one scratch folder of its own and deletes only that
+  folder. The optional scratch-file rule that setup adds to AGENTS.md or
+  CLAUDE.md now says where that folder is (the folder the agent's brief
+  names, the work directory a Simple Changes run reports, or a new folder
+  under the session's scratch directory or the system temporary directory),
+  tells an agent that starts another agent to create and name a folder for
+  it, and limits cleanup to exactly its own folder, never by pattern across a
+  shared directory and never another agent's. Before, the rule said only to
+  delete scratch files when the task ends, without saying whose. A block
+  added by an earlier version keeps the old text until you run setup with
+  `--scratch-file-rule add` again, which rewrites it in place.
+- Parallel-agent briefs now name each author's own work directory from
+  `prepare-agent` and forbid deleting anything outside it, including in a
+  harness scratch directory the author shares with the controller. The
+  author leaves the directory in place, and the run's clean finalization
+  removes it.
+- Guidance moves to 30. The update notice needs no decision.
+<!-- simple-changelogs-signature agent="Claude Fable 5.1" at="2026-10-14T11:14:55-05:00" -->
+
 ## 0.29.1 - 2026-10-13
 
 - **Bug Fixes & Improvements**:

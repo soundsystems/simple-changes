@@ -1,5 +1,47 @@
 # Developer changelog
 
+## Unreleased
+
+- `lib/repository-instructions.ts`: `SCRATCH_FILE_RULE`, the body of the
+  `simple-changes:scratch-files` managed block, now defines one scratch
+  folder per agent (the folder its brief names, the `workDir` a run reports,
+  or `mktemp -d` under the session scratch directory or the system temporary
+  directory), a folder created inside the parent's for every agent it
+  starts, hand-off files left in place and reported, and cleanup of exactly
+  the agent's own folder by its recorded path, never by pattern, extension,
+  or age in a shared directory. The markers are unchanged, so
+  `writeScratchFileRule` replaces an older block in place. The question and
+  the **Add the rule** description in `lib/onboarding.ts` follow it.
+- `SKILL.md` keeps scratch files in the agent's own `workdir` directory and
+  deletes nothing outside it. The file was 7 bytes under its 17,500-byte
+  budget, so "use the same invocation everywhere" is dropped and the
+  parallel-agents opening clause is shorter. `references/inventory-and-concurrency.md`
+  "Agent work directories" states the ownership rule, names a harness scratch
+  directory as shared, and keeps a file another agent reads until
+  finalization; "Parallel agents" step 2 adds the `workDir` and a second
+  required brief clause (scratch only in that directory, delete nothing
+  outside it, leave it in place), and step 3 leaves the directory in place.
+  `references/setup-and-policy.md`, `references/onboarding.md`, and the
+  README describe the new rule.
+- Guidance 30: `CURRENT_GUIDANCE_VERSION` is 30 with one definition (one
+  `onboarding` and one `behavior` change, notice-bullet priority 190,
+  `changelogReviewRelevant: false`, no required answer) whose strings Claude
+  Fable 5.1 wrote. `initialization.test.ts` expects version 30, its two
+  changes at the end of the 19-to-current list, and the new top bullet,
+  which displaces the guidance 28 authoring one.
+- Tests: `repository-instructions.test.ts` pins the ownership phrases of the
+  rule and rejects "Delete them when the task ends";
+  `skill-contract.test.ts` pins the SKILL.md sentence, the `workDir` in the
+  brief, and the no-deletion clauses.
+- `docs/plans/2026-10-14-per-agent-scratch-folders.md` records the incident
+  (a subagent deleting its parent session's shared scratch directory by
+  pattern, twice), the root cause, the ownership design, the exact
+  replacement rule as a diff for the user's global AGENTS.md, the fork
+  pickup path through `update-local-forks`, and open questions, including
+  whether `initialize` should detect and rewrite a stale block and whether
+  helper agents' work directories should bind to the run.
+<!-- simple-changelogs-signature agent="Claude Fable 5.1" at="2026-10-14T11:14:55-05:00" -->
+
 ## 0.29.1 - 2026-10-13
 
 - `lib/pinned-heads.ts`: `glabMergeArgument` also accepts

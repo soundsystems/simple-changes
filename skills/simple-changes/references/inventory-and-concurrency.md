@@ -329,7 +329,9 @@ run, `workdir` prints the directory bound to the agent, binding a new one to
 the run for a controller that took over, an author, or any other agent of the
 run, such as a reviewer or check runner, so a clean close removes it too. The
 first known harness session to use a binding claims it, and a different
-session that reuses that agent ID gets a new directory of its own instead.
+session that reuses that agent ID gets a new directory of its own instead;
+another session on the controller's agent ID always does, even before the
+controller has bound or claimed one.
 Binding and claiming take the loop state lock, so two first requests never
 lose a directory; when `workdir` reports the state busy, retry it. Set
 `SIMPLE_CHANGES_WORK_ROOT` to an absolute path to move the root. The CLI

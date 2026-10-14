@@ -5108,26 +5108,25 @@ const runWorkDirectoryUse = (
   agentId: string,
   session: string | null
 ): RunWorkDirectoryUse => {
-  const binding = runWorkDirectoryBinding(repository, lease.runId, agentId);
-  const owner = lease.ownerAgentId === agentId;
-  const controller =
-    owner &&
-    sameSession(
+  // Another known session reusing the controller's agent ID never binds,
+  // claims, or uses the run's directory, even one the controller has not
+  // bound or claimed yet: the controller would later rebind that same path,
+  // and finalize would delete the other session's files with the run's.
+  if (
+    lease.ownerAgentId === agentId &&
+    !sameSession(
       workSessionOf(readControllerBinding(lease)?.session ?? null),
       session
-    );
-  const author =
-    lease.preparations.some((entry) => entry.agentId === agentId) ||
-    lease.worktrees.some(
-      (worktree) => worktree.createdByRun && worktree.agentId === agentId
-    );
+    )
+  ) {
+    return { action: "unbound" };
+  }
+  const controller = lease.ownerAgentId === agentId;
+  const binding = runWorkDirectoryBinding(repository, lease.runId, agentId);
   if (binding && sameSession(binding.session, session)) {
     // The first known session to use an unclaimed binding claims it, so a
     // later session gets its own directory instead of sharing this one.
-    // Only another session reusing the controller's agent ID never claims.
-    return binding.session === null &&
-      session !== null &&
-      (controller || author || !owner)
+    return binding.session === null && session !== null
       ? { action: "bind" }
       : { action: "use", path: binding.path };
   }

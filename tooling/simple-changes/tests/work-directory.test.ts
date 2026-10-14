@@ -925,6 +925,78 @@ describe("work directories through the CLI", () => {
     expect(ask("session-two").bound).toBe(false);
   });
 
+  test("another session on the controller's agent ID never takes a missing or unclaimed binding", () => {
+    const { fixture, location } = repository();
+    const session = sessionEnvironment();
+    const started = run(
+      [
+        "loop",
+        "start",
+        "--mode",
+        "queue",
+        "--agent-id",
+        "controller",
+        "--json",
+      ],
+      fixture.root,
+      session("session-one")
+    );
+    expect(started.exitCode).toBe(0);
+    const { lease } = JSON.parse(started.stdout) as {
+      lease: { runId: string };
+    };
+    const bindings = join(
+      location.commonGitDirectory,
+      "simple-changes",
+      "work-directories",
+      lease.runId
+    );
+    const ask = (id: string) =>
+      JSON.parse(
+        run(
+          ["workdir", "--agent-id", "controller", "--json"],
+          fixture.root,
+          session(id)
+        ).stdout
+      ) as { bound: boolean; workDir: string };
+
+    // The controller's binding is gone, as after a takeover: the other
+    // session asks first, and must not create the binding the controller
+    // would then rebind and share.
+    rmSync(bindings, { force: true, recursive: true });
+    const foreign = ask("session-two");
+    expect(foreign.bound).toBe(false);
+    expect(
+      runWorkDirectoryBinding(location, lease.runId, "controller")
+    ).toBeNull();
+    const rebound = ask("session-one");
+    expect(rebound).toMatchObject({ bound: true });
+    expect(rebound.workDir).not.toBe(foreign.workDir);
+
+    // Nor may it use or claim a binding no session has claimed yet.
+    rmSync(bindings, { force: true, recursive: true });
+    const unclaimed = bindRunWorkDirectory(
+      location,
+      lease.runId,
+      "controller",
+      null,
+      null
+    );
+    const refused = ask("session-two");
+    expect(refused.bound).toBe(false);
+    expect(refused.workDir).not.toBe(unclaimed);
+    expect(
+      runWorkDirectoryBinding(location, lease.runId, "controller")
+    ).toEqual({ path: unclaimed, session: null });
+    expect(ask("session-one")).toMatchObject({
+      bound: true,
+      workDir: unclaimed,
+    });
+    expect(
+      runWorkDirectoryBinding(location, lease.runId, "controller")?.session
+    ).toBe("claude-code:session-one");
+  }, 60_000);
+
   test("loop start removes the directories of runs that ended without a close", () => {
     const { fixture, location } = repository();
     const abandoned = bindRunWorkDirectory(

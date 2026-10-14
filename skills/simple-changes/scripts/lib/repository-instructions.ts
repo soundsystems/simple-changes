@@ -289,7 +289,7 @@ export const renderInstructionPointer = (
 // rule that says only "delete your scratch files" invites a subagent to
 // sweep its parent's files by pattern.
 const SCRATCH_FILE_RULE =
-  "Write scratch files, captured command output, proof bundles, and handoff notes only in one scratch folder of your own, never inside or next to a repository checkout: the folder your brief names, the work directory a Simple Changes run reports, or a new folder you create with `mktemp -d` under the session's scratch directory or the system temporary directory. When you start another agent, give it a folder inside yours and name the path in its brief. When the task ends, delete exactly your own folder by its path, unless the user asks to keep it or a Simple Changes run reported it, which the run removes; never delete by pattern, extension, or age in a directory other agents share.";
+  "Write scratch files, captured command output, proof bundles, and handoff notes only in one scratch folder of your own, never inside or next to a repository checkout: the folder your brief names, the work directory a Simple Changes run reports, or a new folder you create with `mktemp -d` under the session's scratch directory or the system temporary directory. When you start another agent, give it a folder inside yours, or the one a Simple Changes run prepared for it, and name the path in its brief. When the task ends, delete exactly your own folder by its path, unless the user asks to keep it or a Simple Changes run reported it, which the run removes; never delete by pattern, extension, or age in a directory other agents share.";
 
 export const renderScratchFileRule = (): string =>
   [

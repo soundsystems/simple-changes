@@ -614,9 +614,10 @@ files, captured output, proof bundles, and handoff notes, outside every project
 folder: the folder its brief names, the work directory a Simple Changes run
 reports, or a new folder under the session's scratch directory or the system
 temporary directory. An agent that starts another agent creates and names a
-folder for it, and when the task ends each agent deletes exactly its own
-folder, never another agent's and never by pattern across a shared directory,
-and leaves a folder a Simple Changes run reported for the run to remove.
+folder for it, or names the one a Simple Changes run prepared for it, and when
+the task ends each agent deletes exactly its own folder, never another agent's
+and never by pattern across a shared directory, and leaves a folder a Simple
+Changes run reported for the run to remove.
 During a run, `simple-changes workdir --agent-id ID` prints that folder for the
 files an agent passes to the CLI, `prepare-agent` reports one per delegated
 author, and a clean finalization removes them. The block's markers never

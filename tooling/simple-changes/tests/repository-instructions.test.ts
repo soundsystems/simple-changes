@@ -126,13 +126,15 @@ describe("repository instruction pointers", () => {
     // A subagent sharing its parent's scratch directory followed it by
     // pattern and deleted the parent's drafts, so ownership is explicit.
     // A run's work directory stays for the run's clean finalization, as
-    // references/inventory-and-concurrency.md requires of run agents.
+    // references/inventory-and-concurrency.md requires of run agents, and a
+    // delegated author's folder is the sibling work directory the run
+    // prepared, not one inside the controller's.
     const rule = renderScratchFileRule();
     for (const phrase of [
       "only in one scratch folder of your own",
       "the folder your brief names, the work directory a Simple Changes run reports",
       "a new folder you create with `mktemp -d` under the session's scratch directory",
-      "give it a folder inside yours and name the path in its brief",
+      "give it a folder inside yours, or the one a Simple Changes run prepared for it, and name the path in its brief",
       "delete exactly your own folder by its path",
       "unless the user asks to keep it or a Simple Changes run reported it, which the run removes",
       "never delete by pattern, extension, or age in a directory other agents share",

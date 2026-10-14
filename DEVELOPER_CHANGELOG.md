@@ -45,30 +45,55 @@
   target, takes the loop state lock, rewrites a stale block through
   `writeScratchFileRule`, reports a current one unchanged, and refuses an
   absent block with exit 2 naming `setup --scratch-file-rule add` and an
-  invalid one with exit 5.
+  invalid one with exit 5. While any loop lease exists, including a paused
+  or relinquished one, it also refuses, with exit 5 and "refresh it after
+  the run ends", a repository-scope target or any target inside a
+  registered checkout, whatever its scope, since the run preserves those
+  checkouts; a global file outside every checkout is still refreshed.
 - `workDirectoryFor` in `simple-changes.ts`: inside a run, any agent ID
   without a same-session binding now gets a directory bound to the run, not
   only the controller and prepared authors, so `removeRunWorkDirectories`
   removes reviewers' and check runners' directories at a clean close. The
   first known session to use an unclaimed binding claims it for any agent,
-  so an ID another session already bound gets its own unbound directory;
-  only another session reusing the controller's agent ID never claims. A
+  so an ID another session already bound gets its own unbound directory.
+  Another known session reusing the controller's agent ID never binds,
+  claims, or uses the run's directory, even one the controller has not
+  bound or claimed yet, and gets an unbound directory of its own. A
   directory the session already holds is returned without a lock. Every
   bind and claim is decided again under the loop state lock (operation
   `workdir`), after re-reading the lease and the binding, so two concurrent
-  first requests never each bind a directory and lose one, a caller that
-  meets the lock gets the usual busy error (exit 5) to retry, and nothing
-  binds to a run that closed in the meantime.
+  first requests never each bind a directory and lose one, and nothing
+  binds to a run that closed in the meantime. A busy lock, such as a
+  controller's `loop exec`, is waited out for up to 30 seconds, polling
+  every 250 ms, with a one-line stderr notice; only then does `workdir`
+  exit 5 with the usual busy error. Tests shorten the bound through
+  `SIMPLE_CHANGES_TEST_WORKDIR_LOCK_WAIT_MS`, honored only when `NODE_ENV`
+  is `test`.
+- `lib/loop-lease-core.ts`: `withLoopStateLockWaiting(commonGitDirectory,
+  operationName, operation, { intervalMs, onWait, waitMs })`, re-exported
+  from `lib/loop-lease.ts`, retries only a busy state lock, by recursive
+  polling, and reports it busy as `withLoopStateLock` does once `waitMs`
+  has passed; a permission or filesystem failure still fails at once.
+- `lib/loop-lease-worktrees.ts`: `prepareAgentWorktree` takes an optional
+  `onPrepared(prepared)` callback that runs under its own state lock, for a
+  new and a reused preparation alike, after re-reading the lease and
+  confirming it still names the run. `prepare-agent` binds the author's work
+  directory there instead of after the lock is released, so a concurrent
+  `workdir` request cannot bind a second directory for the same agent ID
+  and a run closed in between is never bound to.
 - `SKILL.md` keeps scratch files in the agent's own `workdir` directory,
-  deletes nothing outside it, and offers a stale block's `refreshCommand`
-  once. To stay inside the 17,500-byte budget it drops "use the same
-  invocation everywhere", shortens the parallel-agents opening clause, and
-  drops the "Present update notices per" sentence, whose link the reference
-  router already carries.
+  deletes nothing outside it, offers a stale block's `refreshCommand` once,
+  and says an unrelated author's `workdir` waits for a busy lock. To
+  stay inside the 17,500-byte budget it drops "use the same invocation
+  everywhere", shortens the parallel-agents opening clause, drops the
+  "Present update notices per" sentence, whose link the reference router
+  already carries, and drops "distinct" before "worktrees and branches".
 - `references/inventory-and-concurrency.md`: "Agent work directories" says
   `workdir` binds any agent of the run, that the first known session claims
-  any binding, and that binding and claiming take the loop state lock, so a
-  busy `workdir` is retried. It adds the ownership rule: the directory and
+  any binding, that another session on the controller's agent ID always
+  gets its own directory, and that binding and claiming take the loop state
+  lock, which `workdir` waits up to 30 seconds for before exiting 5. It adds
+  the ownership rule: the directory and
   its contents are the agent's alone, a harness scratch directory is
   shared, only the run or the owner removes a work directory, nothing is
   deleted by pattern, extension, or age in a shared directory, and a file
@@ -77,7 +102,8 @@
   required clause (scratch only in that directory, delete nothing outside
   it, leave it in place); step 3 leaves the directory in place.
   `references/setup-and-policy.md` documents `scratchFileRule`, the refresh
-  command, and the rule's run-retention clause, and
+  command and its refusal while a run holds the repository, and the rule's
+  run-retention clause, and
   `references/onboarding.md` and the README describe the new rule and
   command.
 - Guidance stays at 29, with no guidance entry and no update notice: the
@@ -90,20 +116,25 @@
   `discoverRepositoryInstructionTargets` (a linked `CLAUDE.md`, a directory
   named `AGENTS.md`); `cli.test.ts` runs `initialize` against a fixture home
   with a stale global block, refreshes it, sees it current, refuses a file
-  without the rule, and reports a stale `AGENTS.md` beside a linked
-  `CLAUDE.md` with its `refreshCommand`; `work-directory.test.ts` binds a
-  reviewer's directory inside a run and sees finalize remove it with the
-  controller's, lets the first known session claim a helper binding made
-  without one while a second session gets an unbound directory, refuses a
-  new bind or claim while the state lock is held but returns a held
-  directory, and keeps exactly one bound directory across four concurrent
-  first requests; `skill-contract.test.ts` pins the SKILL.md sentences and
+  without the rule, reports a stale `AGENTS.md` beside a linked `CLAUDE.md`
+  with its `refreshCommand`, and, with a run started, refuses to refresh the
+  primary and a linked checkout's `AGENTS.md` but rewrites the global one;
+  `work-directory.test.ts` binds a reviewer's directory inside a run and
+  sees finalize remove it with the controller's, lets the first known
+  session claim a helper binding made without one while a second session
+  gets an unbound directory, keeps another session on the controller's
+  agent ID off a missing or unclaimed controller binding, exits 5 for a new
+  bind or claim only after a shortened wait while the state lock stays held
+  but returns a held directory, binds once a held lock is released within
+  the wait, binds `prepare-agent`'s directory under preparation's lock for a
+  new and a reused preparation, and keeps exactly one bound directory
+  across four concurrent first requests; `skill-contract.test.ts` pins the SKILL.md sentences and
   the brief requirements.
 - `docs/plans/2026-10-14-per-agent-scratch-folders.md` records the incident,
   the root cause, the design, the exact replacement rule as a diff for the
   user's global AGENTS.md, the fork pickup path, and the decisions taken on
   its open questions.
-<!-- simple-changelogs-signature agent="Claude Opus 5.5 xhigh" at="2026-10-14T15:04:03-05:00" -->
+<!-- simple-changelogs-signature agent="Claude Opus 5.5 xhigh" at="2026-10-14T16:00:52-05:00" -->
 
 ## 0.29.1 - 2026-10-13
 

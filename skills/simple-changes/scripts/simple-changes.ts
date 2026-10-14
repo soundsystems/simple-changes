@@ -5265,8 +5265,34 @@ const runWorkDirectory = async (options: CliOptions): Promise<void> => {
   writeOutput({ agentId, bound, workDir: path }, options.json, `${path}\n`);
 };
 
+// Whether `path` is inside one of the repository's registered checkouts,
+// compared through real paths; a checkout that no longer exists holds nothing.
+const insideRegisteredCheckout = (
+  path: string,
+  checkouts: readonly string[]
+): boolean => {
+  const real = realpathSync(path);
+  return checkouts.some((checkout) => {
+    let root: string;
+    try {
+      root = realpathSync(checkout);
+    } catch {
+      return false;
+    }
+    const relativePath = relative(root, real);
+    return !(
+      relativePath === ".." ||
+      relativePath.startsWith(`..${sep}`) ||
+      isAbsolute(relativePath)
+    );
+  });
+};
+
 // Rewrites one stale scratch-file block in place, and nothing else: adding
-// the rule to a file without one stays a setup decision.
+// the rule to a file without one stays a setup decision. While any run holds
+// a lease here, a file in one of the repository's checkouts is left alone:
+// the run preserves those checkouts, and a paused or relinquished run still
+// resumes against them. A global file outside every checkout stays free.
 const runScratchFileRule = (options: CliOptions): void => {
   if (options.positional[0] !== "refresh") {
     throw new SimpleChangesError(
@@ -5281,6 +5307,17 @@ const runScratchFileRule = (options: CliOptions): void => {
     repository.commonGitDirectory,
     "scratch-file-rule refresh",
     () => {
+      const lease = readLeaseFromCommonDirectory(repository.commonGitDirectory);
+      if (
+        lease &&
+        (target.scope === "repository" ||
+          insideRegisteredCheckout(target.path, repository.checkouts))
+      ) {
+        throw new SimpleChangesError(
+          `Simple Changes run ${lease.runId} holds this repository, and ${target.path} is in one of its checkouts; refresh it after the run ends.`,
+          EXIT_CODES.unsafe
+        );
+      }
       const status = inspectScratchFileRule(target);
       if (status === "absent") {
         throw new SimpleChangesError(

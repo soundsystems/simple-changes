@@ -51,7 +51,10 @@ release. Offer once to run its `refreshCommand`
 rewrites exactly that block in place and nothing else; declining changes
 nothing. It never adds the rule to a file without one, which stays a setup
 choice, and an `invalid` block (duplicated or crossed markers) is repaired by
-hand.
+hand. While a Simple Changes run holds the repository, even a paused one, it
+refuses a file in any of the repository's checkouts with exit 5, because the
+run preserves them: offer it again after the run ends. A global file outside
+every checkout can be refreshed at any time.
 
 Sync, queue, sweep, integrate, ship, reconcile, resume, and handoff are
 write-capable. Preview and pause are read-only or preservation-only. Sync uses

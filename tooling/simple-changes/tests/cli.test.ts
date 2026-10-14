@@ -2894,6 +2894,67 @@ while (!existsSync(process.env.SIMPLE_CHANGES_TEST_RELEASE_PATH)) {
     );
   });
 
+  test("refresh leaves a checkout's rule alone while a run holds the repository", () => {
+    const fixture = createTestRepository();
+    repositories.push(fixture);
+    const home = resolve(fixture.base, "home");
+    const stale =
+      "# Agent guidance\n\n<!-- simple-changes:scratch-files:start -->\nDelete them when the task ends.\n<!-- simple-changes:scratch-files:end -->\n";
+    writeFixture(fixture.root, "AGENTS.md", stale);
+    git(fixture.root, ["add", "AGENTS.md"]);
+    git(fixture.root, ["commit", "-q", "-m", "Add agent guidance"]);
+    // A linked checkout's file falls outside the primary checkout, so it has
+    // user scope, but the run preserves it all the same.
+    const linked = resolve(fixture.base, "linked");
+    git(fixture.root, ["worktree", "add", "-q", "-b", "linked", linked]);
+    const globalPath = resolve(home, ".codex/AGENTS.md");
+    writeFixture(home, ".codex/AGENTS.md", stale);
+    const cli = (args: string[]) =>
+      spawnSync(
+        [process.execPath, cliPath, ...args, "--json", "--repo", fixture.root],
+        {
+          env: {
+            CLAUDE_CONFIG_DIR: resolve(home, ".claude"),
+            CODEX_HOME: resolve(home, ".codex"),
+            SIMPLE_CHANGES_HARNESS_ROOTS: home,
+          },
+          stderr: "pipe",
+          stdout: "pipe",
+        }
+      );
+    const refresh = (path: string) =>
+      cli(["scratch-file-rule", "refresh", "--instruction-file", path]);
+
+    expect(
+      cli(["loop", "start", "--mode", "queue", "--agent-id", "controller"])
+        .exitCode
+    ).toBe(0);
+    for (const path of [
+      resolve(fixture.root, "AGENTS.md"),
+      resolve(linked, "AGENTS.md"),
+    ]) {
+      const refused = refresh(path);
+      expect(refused.exitCode).toBe(EXIT_CODES.unsafe);
+      expect(decoder.decode(refused.stderr)).toContain(
+        "refresh it after the run ends"
+      );
+      expect(readFileSync(path, "utf8")).toBe(stale);
+    }
+
+    // A global file outside every checkout is still refreshed.
+    const refreshed = refresh(globalPath);
+    expect(refreshed.exitCode).toBe(0);
+    expect(JSON.parse(decoder.decode(refreshed.stdout))).toMatchObject({
+      path: globalPath,
+      scope: "user",
+      status: "stale",
+      written: true,
+    });
+    expect(readFileSync(globalPath, "utf8")).toContain(
+      "one scratch folder of your own"
+    );
+  });
+
   test("initialize reports a stale AGENTS.md rule beside a linked CLAUDE.md", () => {
     const fixture = createTestRepository();
     repositories.push(fixture);

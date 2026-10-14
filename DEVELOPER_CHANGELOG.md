@@ -6,41 +6,71 @@
   `simple-changes:scratch-files` managed block, now defines one scratch
   folder per agent (the folder its brief names, the `workDir` a run reports,
   or `mktemp -d` under the session scratch directory or the system temporary
-  directory), a folder created inside the parent's for every agent it
-  starts, hand-off files left in place and reported, and cleanup of exactly
-  the agent's own folder by its recorded path, never by pattern, extension,
-  or age in a shared directory. The markers are unchanged, so
-  `writeScratchFileRule` replaces an older block in place. The question and
-  the **Add the rule** description in `lib/onboarding.ts` follow it.
-- `SKILL.md` keeps scratch files in the agent's own `workdir` directory and
-  deletes nothing outside it. The file was 7 bytes under its 17,500-byte
-  budget, so "use the same invocation everywhere" is dropped and the
-  parallel-agents opening clause is shorter. `references/inventory-and-concurrency.md`
-  "Agent work directories" states the ownership rule, names a harness scratch
-  directory as shared, and keeps a file another agent reads until
-  finalization; "Parallel agents" step 2 adds the `workDir` and a second
-  required brief clause (scratch only in that directory, delete nothing
-  outside it, leave it in place), and step 3 leaves the directory in place.
-  `references/setup-and-policy.md`, `references/onboarding.md`, and the
-  README describe the new rule.
-- Guidance 30: `CURRENT_GUIDANCE_VERSION` is 30 with one definition (one
-  `onboarding` and one `behavior` change, notice-bullet priority 190,
-  `changelogReviewRelevant: false`, no required answer) whose strings Claude
-  Fable 5.1 wrote. `initialization.test.ts` expects version 30, its two
-  changes at the end of the 19-to-current list, and the new top bullet,
-  which displaces the guidance 28 authoring one.
-- Tests: `repository-instructions.test.ts` pins the ownership phrases of the
-  rule and rejects "Delete them when the task ends";
-  `skill-contract.test.ts` pins the SKILL.md sentence, the `workDir` in the
-  brief, and the no-deletion clauses.
-- `docs/plans/2026-10-14-per-agent-scratch-folders.md` records the incident
-  (a subagent deleting its parent session's shared scratch directory by
-  pattern, twice), the root cause, the ownership design, the exact
-  replacement rule as a diff for the user's global AGENTS.md, the fork
-  pickup path through `update-local-forks`, and open questions, including
-  whether `initialize` should detect and rewrite a stale block and whether
-  helper agents' work directories should bind to the run.
-<!-- simple-changelogs-signature agent="Claude Fable 5.1" at="2026-10-14T11:14:55-05:00" -->
+  directory), a folder inside the parent's for every agent it starts, and
+  cleanup of exactly the agent's own folder by its path, never by pattern,
+  extension, or age in a directory other agents share. The rule is
+  627 bytes, up from 348; a first draft of 960
+  also spelled out that shared parents are not yours, where hand-off files
+  go, and that a folder you did not create is not yours, which the four
+  guarantees already imply, so those sentences live in
+  `references/inventory-and-concurrency.md` for runs instead. New:
+  `inspectScratchFileRule(target)` returns `current`, `stale`, `absent`, or
+  `invalid`, comparing through the writer's own newline formatting so
+  `stale` is exactly when `writeScratchFileRule` would change the file;
+  `discoverGlobalInstructionTargets(environment, home)` lists the existing,
+  unlinked `~/.codex/AGENTS.md` (or `$CODEX_HOME/AGENTS.md`) and
+  `~/.claude/CLAUDE.md` (or `$CLAUDE_CONFIG_DIR/CLAUDE.md`) under
+  `SIMPLE_CHANGES_HARNESS_ROOTS` or the home directory, the roots harness
+  detection and the turn-end guard already use; `locateInstructionTarget(path,
+  primaryCheckout)` gives an explicit path repository scope inside the
+  primary checkout and user scope elsewhere. The question and the **Add the
+  rule** description in `lib/onboarding.ts` follow the rule.
+- `initialize` adds the optional closed `scratchFileRule` field
+  (`evals/schemas/initialization.schema.json`): `targets[]` of `path`,
+  `scope`, `status`, and a `refreshCommand` for a stale block that runs the
+  running copy's `scratch-file-rule refresh --instruction-file <path> --repo
+  <repo>`. Text output names stale and invalid blocks only, and a file that
+  cannot be inspected is left out rather than failing initialization.
+  `scratch-file-rule refresh` locates the target, takes the loop state lock,
+  rewrites a stale block through `writeScratchFileRule`, reports a current
+  one unchanged, refuses an absent one with exit 2 naming
+  `setup --scratch-file-rule add`, and refuses an invalid one with exit 5.
+- `workDirectoryFor` in `simple-changes.ts` binds a directory to the live run
+  for any agent ID without a same-session binding, not only the controller
+  and prepared authors, so `removeRunWorkDirectories` removes reviewers' and
+  check runners' directories at a clean close; an ID another session already
+  bound still gets its own unbound directory.
+- `SKILL.md` keeps scratch files in the agent's own `workdir` directory,
+  deletes nothing outside it, and offers a stale block's `refreshCommand`
+  once. To stay inside the 17,500-byte budget it drops "use the same
+  invocation everywhere", shortens the parallel-agents opening clause, and
+  drops the "Present update notices per" sentence, whose reference the router
+  already links. `references/inventory-and-concurrency.md` "Agent work
+  directories" states the ownership rule, names a harness scratch directory
+  as shared, keeps a file another agent reads until finalization, and says
+  `workdir` binds any agent of the run; "Parallel agents" step 2 adds the
+  `workDir` and a second required brief clause (scratch only in that
+  directory, delete nothing outside it, leave it in place), and step 3 leaves
+  the directory in place. `references/setup-and-policy.md` documents
+  `scratchFileRule` and the refresh command, and `references/onboarding.md`
+  and the README describe the new rule and command.
+- Guidance stays at 29: the stale-block report and refresh replace an update
+  notice, so no guidance entry is added.
+- Tests: `repository-instructions.test.ts` pins the rule's ownership phrases,
+  rejects "Delete them when the task ends", and covers
+  `inspectScratchFileRule` (absent, current, stale, CRLF, invalid) and
+  `discoverGlobalInstructionTargets` (harness roots, the home directory,
+  `CODEX_HOME`, a linked file skipped, an empty root); `cli.test.ts` runs
+  `initialize` against a fixture home with a stale global block, refreshes
+  it, sees it current, and refuses a file without the rule;
+  `work-directory.test.ts` binds a reviewer's directory inside a run and sees
+  finalize remove it with the controller's; `skill-contract.test.ts` pins the
+  SKILL.md sentences and the brief requirements.
+- `docs/plans/2026-10-14-per-agent-scratch-folders.md` records the incident,
+  the root cause, the design, the exact replacement rule as a diff for the
+  user's global AGENTS.md, the fork pickup path, and the decisions taken on
+  its open questions.
+<!-- simple-changelogs-signature agent="Claude Fable 5.1" at="2026-10-14T12:23:17-05:00" -->
 
 ## 0.29.1 - 2026-10-13
 

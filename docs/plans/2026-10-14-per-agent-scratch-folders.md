@@ -2,10 +2,11 @@
 
 **Date:** 2026-10-14
 
-**Status:** Proposal. Upstream implementation begun on
-`feat/per-agent-scratch-folders` (rule text, skill text, guidance 30, tests,
-changelog); the global rule change below is a diff awaiting the user's
-approval; fork updates follow the release.
+**Status:** Implemented on `feat/per-agent-scratch-folders` (rule text,
+stale-block report and refresh, run-bound helper directories, skill text,
+tests, changelog) for a silent `0.29.2` with guidance staying at 29. The
+global rule change below is a diff awaiting the user's approval; fork updates
+follow the release.
 
 **Scope:** The managed scratch-file rule, agent work directories, parallel-agent
 briefs, and how the user's global instructions and repository forks pick the
@@ -179,8 +180,9 @@ the removal of exactly that recorded path, never a selection of files.
 
 `workdir --agent-id`, the `workDir` that `prepare-agent` reports, `workdir
 remove`, and finalize already exist; outside a run, `mktemp -d` is the helper.
-A small `workdir` extension for helper agents is listed under open questions,
-and nothing here depends on it.
+Two small additions came out of the decisions below: `workdir --agent-id`
+inside a run now binds any agent's directory to the run, and
+`scratch-file-rule refresh` rewrites a stale block that `initialize` reports.
 
 ## The global rule
 
@@ -197,17 +199,22 @@ this work; it waits on the user's approval.**
  
  <!-- simple-changes:scratch-files:start -->
 -Write scratch files, captured command output, proof bundles, and handoff notes to the session's scratch directory or a private folder under the system temporary directory, never inside or next to a repository checkout. During a Simple Changes run, use the work directory it reports. Delete them when the task ends unless the user asks to keep them.
-+Write scratch files, captured command output, proof bundles, and handoff notes only inside one scratch folder of your own, never inside or next to a repository checkout: the folder your brief names, the work directory a Simple Changes run reports, or else a new folder you create with `mktemp -d` under the session's scratch directory or the system temporary directory. Those parent directories are shared with other agents; nothing outside your folder is yours. When you start another agent, give it a folder of its own, normally one you create inside yours, and name that path in its brief. A file another agent will read after you finish goes where your brief says; without such a place, leave your folder in place and report the path. When the task ends, delete exactly your own folder by its recorded path, unless the user asks to keep it; never delete by pattern, extension, or age in a shared directory, and never a folder you did not create or receive.
++Write scratch files, captured command output, proof bundles, and handoff notes only in one scratch folder of your own, never inside or next to a repository checkout: the folder your brief names, the work directory a Simple Changes run reports, or a new folder you create with `mktemp -d` under the session's scratch directory or the system temporary directory. When you start another agent, give it a folder inside yours and name the path in its brief. When the task ends, delete exactly your own folder by its path, unless the user asks to keep it; never delete by pattern, extension, or age in a directory other agents share.
  <!-- simple-changes:scratch-files:end -->
 ```
 
-The patch applied cleanly in a dry run (`patch --dry-run -p4`) against a copy
-of the file. `~/.claude/CLAUDE.md` needs no change: it includes the file.
+The diff was generated against the user's current file and replaces only the
+managed block. `~/.claude/CLAUDE.md` needs no change: it includes the file.
 
-Two ways to apply it:
+Three ways to apply it:
 
 1. **Paste the diff.** The markers are unchanged, so Simple Changes keeps
    managing the block.
+1. **Run the refresh** once a release carrying this change is installed.
+   `initialize` reports the global block as `stale` with a `refreshCommand`;
+   with the user's agreement,
+   `simple-changes scratch-file-rule refresh --instruction-file /Users/jaay/.codex/AGENTS.md`
+   rewrites exactly that block.
 2. **Run setup** once a release carrying this change is installed. The
    non-interactive form needs every answer the personal scope requires, and
    no personal `preferences.json` exists today (only `authoring.json`), so
@@ -233,50 +240,53 @@ All on `feat/per-agent-scratch-folders` in the canonical repository.
 
 | File | Change |
 | --- | --- |
-| `skills/simple-changes/scripts/lib/repository-instructions.ts` | `SCRATCH_FILE_RULE` is the text in the diff above. Markers unchanged, so `writeScratchFileRule` replaces an older block in place. |
+| `skills/simple-changes/scripts/lib/repository-instructions.ts` | `SCRATCH_FILE_RULE` is the text in the diff above (627 bytes, up from 348). Markers unchanged, so `writeScratchFileRule` replaces an older block in place. New `inspectScratchFileRule` (`current`, `stale`, `absent`, `invalid`), `discoverGlobalInstructionTargets` (the global Codex and Claude files under the harness roots), and `locateInstructionTarget` for an explicit path. |
+| `skills/simple-changes/scripts/lib/initialization.ts`, `evals/schemas/initialization.schema.json` | Optional `scratchFileRule.targets[]` (`path`, `scope`, `status`, `refreshCommand` for a stale block). |
+| `skills/simple-changes/scripts/simple-changes.ts` | `initialize` fills `scratchFileRule` and names stale and invalid blocks in text output; new `scratch-file-rule refresh --instruction-file PATH` rewrites one stale block under the loop state lock and refuses an absent (exit 2) or invalid (exit 5) one; `workDirectoryFor` binds a directory to the live run for any agent without a same-session binding. |
+| `skills/simple-changes/scripts/lib/work-directory.ts` | `bindRunWorkDirectory` documents that any agent the run's `workdir` serves is bound, so a clean close removes it. |
 | `skills/simple-changes/scripts/lib/onboarding.ts` | The question and the **Add the rule** description say "one scratch folder of its own" and "deletes only that folder". |
 | `skills/simple-changes/SKILL.md` | "Keep every file you pass to the CLI, and your scratch files, in your own `simple-changes workdir --agent-id "$AGENT_ID"` directory; delete nothing outside it." To stay inside the 17,500-byte budget (the file was 7 bytes under it), "use the same invocation everywhere" is dropped and the parallel-agents opening clause is shortened. |
 | `skills/simple-changes/references/inventory-and-concurrency.md` | "Agent work directories" gains the ownership paragraph: the directory and everything in it is the agent's alone, a harness scratch directory is shared, only the run or the owner removes a work directory, never delete by pattern, extension, or age in the work root or a harness scratch directory, and a file another agent reads stays until finalization. "Parallel agents" step 2 adds the `workDir` to what every brief gives, and a second required brief clause: scratch files go only in that `workDir`, delete nothing outside it, including in a harness scratch directory shared with the controller, and leave it in place. Step 3 leaves the work directory in place. |
-| `skills/simple-changes/references/setup-and-policy.md` | Describes the new rule and that setup rewrites an older block in place. |
+| `skills/simple-changes/references/setup-and-policy.md` | Describes the new rule, `scratchFileRule`, and the refresh command, which never adds the rule to a file without one. |
 | `skills/simple-changes/references/onboarding.md` | The rule "gives every agent one scratch folder of its own outside project folders, and lets it delete only that folder". |
-| `skills/simple-changes/scripts/lib/guidance-updates.ts` | `CURRENT_GUIDANCE_VERSION` 30 with one definition: an `onboarding` change (the rule) and a `behavior` change (the brief), one notice bullet at priority 190 telling users who added the block to run setup with `--scratch-file-rule add` again, `changelogReviewRelevant: false`, no required answer. |
 | `README.md` | The `--scratch-file-rule add` paragraph. |
-| `tooling/simple-changes/tests/repository-instructions.test.ts` | Pins the ownership phrases of the rule and rejects "Delete them when the task ends". |
+| `tooling/simple-changes/tests/repository-instructions.test.ts` | Pins the ownership phrases of the rule, rejects "Delete them when the task ends", and covers `inspectScratchFileRule` and `discoverGlobalInstructionTargets`. |
+| `tooling/simple-changes/tests/cli.test.ts` | `initialize` against a fixture home with a stale global block, the refresh, and the refusal for a file without the rule. |
+| `tooling/simple-changes/tests/work-directory.test.ts` | A reviewer's directory binds to the run and finalize removes it. |
 | `tooling/simple-changes/tests/skill-contract.test.ts` | Pins the SKILL.md sentence and the brief requirements. |
-| `tooling/simple-changes/tests/initialization.test.ts` | Expects version 30, its two changes, and the new top bullet. |
 | `CHANGELOG.md`, `DEVELOPER_CHANGELOG.md`, `skills/simple-changes/CHANGELOG.md` | `Unreleased` entries in the public and developer histories. The packaged copy is regenerated with `bun tooling/simple-changes/package-changelog.ts`, because the release-history test requires it to be the exact generated window of the root file, `Unreleased` included; the `release-notes` command omits that section when it renders. |
 
-Release impact: `release:package`, `release:customer-visible`. The guidance
-bump makes the next release `0.30.0` under the README's numbering; see the
-open questions for the patch-release alternative.
+Release impact: `release:package`, `release:customer-visible`. Guidance stays
+at 29 and the release is a silent `0.29.2`: the stale-block report replaces an
+update notice. The release owner does the version bump and release prep.
 
 ## How forks pick it up
 
 Forks update through the `update-local-forks` skill after the release, not by
 hand:
 
-1. Release and tag `0.30.0`, update the global install, then run
+1. Release and tag `0.29.2`, update the global install, then run
    `update-local-forks discover` and, per fork,
    `plan --fork <dir> --upstream /Users/jaay/Developer/simple-changes --json`,
    explain the plan, and `apply` it.
 2. What each fork should expect. `scripts/lib/repository-instructions.ts`,
-   `onboarding.ts`, and `guidance-updates.ts` update (mapped under `runtime/`
+   `onboarding.ts`, `initialization.ts`, and `work-directory.ts` update (mapped under `runtime/`
    for a runtime-directory layout, three-way merged where the fork edited
    them), so the fork's own `setup --scratch-file-rule add` writes the new
    text. `references/inventory-and-concurrency.md`, `setup-and-policy.md`,
    and `onboarding.md` update or merge. `SKILL.md` almost always conflicts
    because forks rewrite it: read the `.upstream-merge` sidecar, port the one
    sentence into the fork's prose, delete the sidecar, then plan again with
-   `--resolved SKILL.md --resolved-against <0.30.0 commit>` so the pin moves.
-   A version-literals review item names fork lines that still say guidance
-   29 or 0.29.1.
+   `--resolved SKILL.md --resolved-against <0.29.2 commit>` so the pin moves.
+   A version-literals review item names fork lines that still say 0.29.1.
 3. Fork-specific text. A fork that briefs subagents in its own words, such as
    Site Secure's `thor-simple-changes`, ports two things: the ownership
    paragraph under "Agent work directories" and the "Also required in every
    brief" clause, keeping its stricter local rules. A repository
    `AGENTS.md` or `CLAUDE.md` that holds an older managed block is refreshed
-   by running that fork's setup with `--scratch-file-rule add`, or by the
-   same diff.
+   by the fork's `scratch-file-rule refresh` once `initialize` reports it
+   stale, by that fork's setup with `--scratch-file-rule add`, or by the same
+   diff.
 4. Run the fork's own checks and its runtime's `simple-changes skill check`,
    append the range to the fork's `references/fork-maintenance.md`, and hand
    the change to that repository's Simple Changes policy. The updater never
@@ -289,29 +299,28 @@ Simple Changelogs structure lint
 (`simple-changelogs-skill-maintainer/scripts/query.ts check`). The results of
 the run on this branch travel with the hand-off to the release owner.
 
-## Open questions
+## Decisions
 
-1. **Detect a stale block.** Should `initialize` compare an existing
-   `simple-changes:scratch-files` block with the current `SCRATCH_FILE_RULE`
-   and offer to rewrite it, instead of relying on the guidance notice to send
-   the user back to setup? It is the natural follow-up and the only way a
-   fork's users get the new text without re-running setup.
-2. **Guidance 30 or a patch.** This branch bumps guidance because users who
-   added the block must act. If the release owner prefers a silent `0.29.2`,
-   drop the guidance commit and the "Guidance moves to 30" bullet; the rule
-   still changes for every block written from then on.
-3. **Length.** The rule grew from 349 to 961 bytes, inside a file every
-   agent loads on every turn. A two-sentence form is possible at the cost of
-   the hand-off and crash cases. Is the longer text acceptable?
-4. **Helper agents in a run.** `workdir --agent-id <id>` for an agent that is
-   neither the controller nor a prepared author (a reviewer, a check runner)
-   returns an unbound directory that finalization never removes. Should the
-   controller be able to bind a helper's directory to the run, or create one
-   inside its own, so helpers are cleaned up the same way as authors?
-5. **Stricter subagent rule.** The rule lets a subagent make a `mktemp -d`
-   folder under the shared session scratchpad. Should it instead require the
-   parent to name the folder every time, so a subagent never writes at the
-   scratchpad root at all?
-6. **Repository scope for Site Secure.** The user's fix is the global file.
-   Should Site Secure's own `AGENTS.md` also carry the block, so agents that
-   do not load the global file (Codex in CI, another machine) see the rule?
+The user answered the six open questions on 2026-10-14:
+
+1. **Detect a stale block: yes.** `initialize` reports each repository and
+   global instruction file's block as `current`, `stale`, `absent`, or
+   `invalid`, and offers a stale one's `refreshCommand` once.
+2. **Silent `0.29.2`, not guidance 30.** The stale-block report reaches users
+   who added the old block, so no update notice is needed.
+3. **Length: shortened.** The rule is 627 bytes, down from a 961-byte first
+   draft (348 before). It keeps the four guarantees: one folder of your own,
+   a folder inside yours for each child, deletion of exactly your own folder,
+   and no deletion by pattern, extension, or age in a shared directory. The
+   sentences on shared parents, hand-off files, and folders you did not
+   create moved to `references/inventory-and-concurrency.md`, since the
+   guarantees already imply them.
+4. **Helper agents: bound to the run.** `workdir --agent-id` inside a run
+   binds any agent's directory, so a clean finalize removes reviewers' and
+   check runners' directories with the rest.
+5. **No stricter subagent rule.** Banning the shared scratchpad would push an
+   unbriefed subagent into the system temporary directory, which can need
+   permission and is not cleaned with the session. The one-folder rule
+   already prevents the incident.
+6. **Site Secure carries the block too.** Its repository `AGENTS.md` gets the
+   same managed block, so agents that do not load the global file see it.

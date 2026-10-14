@@ -42,6 +42,17 @@ it has no `installCommand`, as from a fork with no current global install, tell
 the user to install the guard from the globally installed Simple Changes; see
 [turn-end guard](cleanup-and-completion.md#turn-end-guard).
 
+When it reports `scratchFileRule`, each listed instruction file (the
+repository's `AGENTS.md` or `CLAUDE.md`, and the global `~/.codex/AGENTS.md`
+or `~/.claude/CLAUDE.md`) carries the scratch-file block as `current`,
+`stale`, `absent`, or `invalid`. A `stale` block was written by an earlier
+release. Offer once to run its `refreshCommand`
+(`simple-changes scratch-file-rule refresh --instruction-file <path>`), which
+rewrites exactly that block in place and nothing else; declining changes
+nothing. It never adds the rule to a file without one, which stays a setup
+choice, and an `invalid` block (duplicated or crossed markers) is repaired by
+hand.
+
 Sync, queue, sweep, integrate, ship, reconcile, resume, and handoff are
 write-capable. Preview and pause are read-only or preservation-only. Sync uses
 fixed local-only preservation guardrails and does not start workflow-preference
@@ -256,7 +267,8 @@ shared directory, unless the user asks to keep it. Offer **Add the rule**
 first and **Leave it out** second. Non-interactive setup adds it only with
 `--scratch-file-rule add`; omitting the flag leaves the file as it is, and
 adding the rule needs exactly one target. The markers never change, so
-running setup again after an update rewrites an older block in place.
+`initialize` reports a block an earlier release wrote as `stale`, and
+`scratch-file-rule refresh`, or setup run again, rewrites it in place.
 
 The confirmation summary must
 show the exact target path and each proposed managed block. Apply an authorized edit

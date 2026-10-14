@@ -170,7 +170,11 @@ import {
 } from "./lib/remote-inventory.ts";
 import { renderInventory, renderPlan } from "./lib/report.ts";
 import {
+  discoverGlobalInstructionTargets,
   discoverInstructionTargets,
+  type InstructionTarget,
+  inspectScratchFileRule,
+  locateInstructionTarget,
   writeInstructionPointer,
   writeScratchFileRule,
 } from "./lib/repository-instructions.ts";
@@ -458,6 +462,8 @@ Usage:
     [--json] [--repo PATH]
   simple-changes workdir --agent-id ID [--json] [--repo PATH]
   simple-changes workdir remove PATH [--json] [--repo PATH]
+  simple-changes scratch-file-rule refresh --instruction-file PATH
+    [--json] [--repo PATH]
   simple-changes release-notes [--check] [--json] [--repo PATH] [--version VERSION]
   simple-changes negotiate-changelog CAPABILITIES_FILE [--json]
   simple-changes validate-changelog-transaction REQUEST_FILE RECEIPT_FILE [--prior-receipt FILE] [--json]
@@ -2404,6 +2410,23 @@ const requestedAuthoringFields = (status: InitializationStatus): string[] => {
   return fields;
 };
 
+// Names only the scratch-file blocks that need the user: a stale one with
+// its refresh command, a malformed one to repair by hand.
+const renderScratchFileRuleTargets = (status: InitializationStatus): string[] =>
+  (status.scratchFileRule?.targets ?? []).flatMap((target) => {
+    if (target.status === "stale") {
+      return [
+        `Scratch-file rule: stale in ${target.path}; with the user's agreement, run \`${target.refreshCommand}\``,
+      ];
+    }
+    if (target.status === "invalid") {
+      return [
+        `Scratch-file rule: malformed managed block in ${target.path}; repair it by hand`,
+      ];
+    }
+    return [];
+  });
+
 const renderInitialization = (status: InitializationStatus): string => {
   const lines = [
     "Simple Changes initialization",
@@ -2433,6 +2456,7 @@ const renderInitialization = (status: InitializationStatus): string => {
   if (status.turnEndGuard) {
     lines.push(renderTurnEndGuard(status.turnEndGuard));
   }
+  lines.push(...renderScratchFileRuleTargets(status));
   if (status.runtimeFreshness?.message) {
     lines.push(`Warning: ${status.runtimeFreshness.message}`);
   }
@@ -2490,6 +2514,51 @@ const initializationTurnEndGuard = (): InitializationStatus["turnEndGuard"] => {
   } catch {
     return null;
   }
+};
+
+type ScratchFileRuleTarget = NonNullable<
+  InitializationStatus["scratchFileRule"]
+>["targets"][number];
+
+const scratchFileRuleRefreshCommand = (
+  target: InstructionTarget,
+  repositoryPath: string
+): string =>
+  `${shellWord(process.execPath)} ${shellWord(SCRIPT_FILE)} scratch-file-rule refresh --instruction-file ${shellWord(target.path)} --repo ${shellWord(repositoryPath)}`;
+
+// Reported, never rewritten, by initialize: a block an older release wrote
+// keeps its text until the user agrees to the refresh. A file that cannot be
+// inspected is left out rather than failing initialization.
+const initializationScratchFileRule = (
+  primaryCheckout: string | null,
+  repositoryPath: string
+): InitializationStatus["scratchFileRule"] => {
+  const targets: InstructionTarget[] = [];
+  try {
+    targets.push(...discoverInstructionTargets("repository", primaryCheckout));
+  } catch {
+    // A linked or escaping repository file is not a target.
+  }
+  targets.push(...discoverGlobalInstructionTargets());
+  const inspected: ScratchFileRuleTarget[] = [];
+  for (const target of targets) {
+    let status: ReturnType<typeof inspectScratchFileRule>;
+    try {
+      status = inspectScratchFileRule(target);
+    } catch {
+      continue;
+    }
+    inspected.push({
+      path: target.path,
+      refreshCommand:
+        status === "stale"
+          ? scratchFileRuleRefreshCommand(target, repositoryPath)
+          : null,
+      scope: target.scope,
+      status,
+    });
+  }
+  return inspected.length > 0 ? { targets: inspected } : null;
 };
 
 const AUTHORING_MODES = new Set<InitializationMode>([
@@ -2648,6 +2717,10 @@ const runInitialize = async (options: CliOptions): Promise<void> => {
       },
       VERSION,
       SCRIPT_FILE
+    ),
+    scratchFileRule: initializationScratchFileRule(
+      inventory.repository.primaryCheckout,
+      options.repo
     ),
     turnEndGuard: initializationTurnEndGuard(),
   });
@@ -5018,10 +5091,11 @@ const runPrepareAgent = (options: CliOptions): void => {
   );
 };
 
-// The directory an agent should use: inside a run, the one bound to it when
-// it is the run's controller or one of its authors in the same session;
-// otherwise a new one of its own, so another session that reuses an agent ID
-// never shares, or has removed, the run's files.
+// The directory an agent should use: inside a run, the one bound to it in the
+// same session, binding a new one for the controller, an author, or any
+// other agent of the run (a reviewer, a check runner) so a clean close
+// removes it; otherwise a new one of its own, so another session that reuses
+// an agent ID never shares, or has removed, the run's files.
 const workDirectoryFor = (
   repository: WorkDirectoryRepository,
   lease: LoopLease | null,
@@ -5052,7 +5126,7 @@ const workDirectoryFor = (
       }
       return { bound: true, path: binding.path };
     }
-    if (controller || (author && !binding)) {
+    if (controller || !binding) {
       return {
         bound: true,
         path: bindRunWorkDirectory(
@@ -5106,6 +5180,54 @@ const runWorkDirectory = (options: CliOptions): void => {
     agentId
   );
   writeOutput({ agentId, bound, workDir: path }, options.json, `${path}\n`);
+};
+
+// Rewrites one stale scratch-file block in place, and nothing else: adding
+// the rule to a file without one stays a setup decision.
+const runScratchFileRule = (options: CliOptions): void => {
+  if (options.positional[0] !== "refresh") {
+    throw new SimpleChangesError(
+      "scratch-file-rule takes the action refresh",
+      EXIT_CODES.usage
+    );
+  }
+  const file = requireCliOption(options.instructionFile, "--instruction-file");
+  const repository = locateWorkDirectoryRepository(options.repo);
+  const target = locateInstructionTarget(file, repository.checkouts[0] ?? null);
+  const result = withLoopStateLock(
+    repository.commonGitDirectory,
+    "scratch-file-rule refresh",
+    () => {
+      const status = inspectScratchFileRule(target);
+      if (status === "absent") {
+        throw new SimpleChangesError(
+          `No Simple Changes scratch-file rule in ${target.path}; add one with setup --scratch-file-rule add.`,
+          EXIT_CODES.usage
+        );
+      }
+      if (status === "invalid") {
+        throw new SimpleChangesError(
+          `Instruction file has an invalid Simple Changes managed block; repair it by hand: ${target.path}`,
+          EXIT_CODES.unsafe
+        );
+      }
+      const written = status === "stale" ? writeScratchFileRule(target) : null;
+      return {
+        changed: written?.changed ?? false,
+        path: target.path,
+        scope: target.scope,
+        status,
+        written: written?.written ?? false,
+      };
+    }
+  );
+  writeOutput(
+    result,
+    options.json,
+    result.written
+      ? `Rewrote the scratch-file rule in ${result.path}\n`
+      : `The scratch-file rule in ${result.path} is current\n`
+  );
 };
 
 const runReleaseNotes = (options: CliOptions): number => {
@@ -5324,6 +5446,9 @@ const executeCommand = async (
       return EXIT_CODES.success;
     case "workdir":
       runWorkDirectory(options);
+      return EXIT_CODES.success;
+    case "scratch-file-rule":
+      runScratchFileRule(options);
       return EXIT_CODES.success;
     case "author":
       runAuthorCommand(options);

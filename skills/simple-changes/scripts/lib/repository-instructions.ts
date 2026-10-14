@@ -9,6 +9,7 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
+import { homedir } from "node:os";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
@@ -153,6 +154,78 @@ export const discoverInstructionTargets = (
     });
 };
 
+// The global instruction files the harnesses read, under the roots harness
+// detection and the turn-end guard use. A missing, linked, or irregular
+// file is simply not a target.
+export const discoverGlobalInstructionTargets = (
+  environment: NodeJS.ProcessEnv = process.env,
+  home: string = homedir()
+): InstructionTarget[] => {
+  const override = environment.SIMPLE_CHANGES_HARNESS_ROOTS?.trim();
+  const base = override ? resolve(override) : home;
+  const candidates = [
+    resolve(
+      environment.CODEX_HOME?.trim() || resolve(base, ".codex"),
+      "AGENTS.md"
+    ),
+    resolve(
+      environment.CLAUDE_CONFIG_DIR?.trim() || resolve(base, ".claude"),
+      "CLAUDE.md"
+    ),
+  ];
+  const targets: InstructionTarget[] = [];
+  for (const path of candidates) {
+    try {
+      targets.push(...discoverInstructionTargets("user", null, path));
+    } catch {
+      // Absent, a symlink, or not a regular file: nothing to inspect.
+    }
+  }
+  return targets;
+};
+
+/**
+ * The target for an explicit path: repository scope inside the primary
+ * checkout, with that scope's checks, and user scope anywhere else.
+ */
+export const locateInstructionTarget = (
+  path: string,
+  primaryCheckout: string | null
+): InstructionTarget => {
+  const resolved = resolve(path);
+  assertExistingInstructionFile(resolved);
+  if (primaryCheckout) {
+    const relativePath = relative(
+      realpathSync(primaryCheckout),
+      realpathSync(resolved)
+    );
+    if (
+      !(
+        relativePath === ".." ||
+        relativePath.startsWith(`..${sep}`) ||
+        isAbsolute(relativePath)
+      )
+    ) {
+      const [target] = discoverInstructionTargets(
+        "repository",
+        primaryCheckout,
+        resolved
+      );
+      if (target) {
+        return target;
+      }
+    }
+  }
+  const [target] = discoverInstructionTargets("user", null, resolved);
+  if (!target) {
+    throw new SimpleChangesError(
+      `Not an instruction file: ${resolved}`,
+      EXIT_CODES.usage
+    );
+  }
+  return target;
+};
+
 const pointerBody = (
   scope: InstructionScope,
   timing: HandoffTiming,
@@ -193,7 +266,7 @@ export const renderInstructionPointer = (
 // rule that says only "delete your scratch files" invites a subagent to
 // sweep its parent's files by pattern.
 const SCRATCH_FILE_RULE =
-  "Write scratch files, captured command output, proof bundles, and handoff notes only inside one scratch folder of your own, never inside or next to a repository checkout: the folder your brief names, the work directory a Simple Changes run reports, or else a new folder you create with `mktemp -d` under the session's scratch directory or the system temporary directory. Those parent directories are shared with other agents; nothing outside your folder is yours. When you start another agent, give it a folder of its own, normally one you create inside yours, and name that path in its brief. A file another agent will read after you finish goes where your brief says; without such a place, leave your folder in place and report the path. When the task ends, delete exactly your own folder by its recorded path, unless the user asks to keep it; never delete by pattern, extension, or age in a shared directory, and never a folder you did not create or receive.";
+  "Write scratch files, captured command output, proof bundles, and handoff notes only in one scratch folder of your own, never inside or next to a repository checkout: the folder your brief names, the work directory a Simple Changes run reports, or a new folder you create with `mktemp -d` under the session's scratch directory or the system temporary directory. When you start another agent, give it a folder inside yours and name the path in its brief. When the task ends, delete exactly your own folder by its path, unless the user asks to keep it; never delete by pattern, extension, or age in a directory other agents share.";
 
 export const renderScratchFileRule = (): string =>
   [
@@ -342,3 +415,31 @@ export const writeScratchFileRule = (
   target: InstructionTarget
 ): InstructionPointerResult =>
   writeManagedBlock(target, SCRATCH_FILE_MARKERS, renderScratchFileRule());
+
+export type ScratchFileRuleState = "absent" | "current" | "invalid" | "stale";
+
+/**
+ * The state of the scratch-file block in `target`: `current` when it reads
+ * exactly as this runtime renders it, `stale` when its markers wrap older
+ * text that `writeScratchFileRule` would replace in place, `invalid` when
+ * the markers are malformed (nothing rewrites that), else `absent`.
+ */
+export const inspectScratchFileRule = (
+  target: InstructionTarget
+): ScratchFileRuleState => {
+  assertExistingInstructionFile(target.path);
+  const source = readFileSync(target.path, "utf8");
+  let span: { end: number; start: number } | undefined;
+  try {
+    span = managedBlockSpans(source, target.path).get(SCRATCH_FILE_MARKERS);
+  } catch {
+    return "invalid";
+  }
+  if (!span) {
+    return "absent";
+  }
+  return source.slice(span.start, span.end) ===
+    formatWithNewline(source, renderScratchFileRule())
+    ? "current"
+    : "stale";
+};

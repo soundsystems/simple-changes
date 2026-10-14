@@ -326,9 +326,11 @@ keep the path. `loop start` binds the directory that holds its
 `--opening-remote-inventory` file to the run, or binds a new one, and reports it
 as `workDir`; `prepare-agent` binds and reports one for each author, which the
 author's own harness session claims on first use. Inside a run, `workdir`
-prints the directory bound to the run's controller or an author, binding one
-first for a controller that took over; a different harness session that reuses
-the agent ID gets a new directory of its own instead. Set
+prints the directory bound to the agent, binding a new one to the run for a
+controller that took over, an author, or any other agent of the run, such as
+a reviewer or check runner, so a clean close removes it too; a different
+harness session that reuses a bound agent ID gets a new directory of its own
+instead. Set
 `SIMPLE_CHANGES_WORK_ROOT` to an absolute path to move the root. The CLI
 refuses a root inside any registered checkout or the Git common directory, one
 that is a symlink, owned by another user, or writable by others, and one under

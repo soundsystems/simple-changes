@@ -379,6 +379,8 @@ simple-changes prepare-agent --run-id ID --agent-id ID --purpose SLUG
   [--json] [--repo PATH]
 simple-changes workdir --agent-id ID [--json] [--repo PATH]
 simple-changes workdir remove PATH [--json] [--repo PATH]
+simple-changes scratch-file-rule refresh --instruction-file PATH
+  [--json] [--repo PATH]
 simple-changes release-notes [--check] [--json] [--repo PATH] [--version VERSION]
 simple-changes negotiate-changelog CAPABILITIES_FILE [--json]
 simple-changes validate-changelog-transaction REQUEST_FILE RECEIPT_FILE [--prior-receipt FILE] [--json]
@@ -617,8 +619,9 @@ folder, never another agent's and never by pattern across a shared directory.
 During a run, `simple-changes workdir --agent-id ID` prints that folder for the
 files an agent passes to the CLI, `prepare-agent` reports one per delegated
 author, and a clean finalization removes them. The block's markers never
-change, so running setup with the flag again after an update rewrites an older
-rule in place.
+change, so `initialize` reports a block an earlier release wrote as `stale`,
+with a `scratch-file-rule refresh --instruction-file PATH` command that
+rewrites it in place; setup with the flag does the same.
 
 Even an automatic ship preference does not authorize remote migrations,
 backfills, secrets or environment changes, DNS changes, store releases, or

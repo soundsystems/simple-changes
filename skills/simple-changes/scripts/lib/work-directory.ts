@@ -459,8 +459,9 @@ const writeBinding = (
 /**
  * Records the run's work directory for this agent and returns it: the one
  * already bound, else `candidate` (the directory holding the opening
- * inventory), else a new one. Callers prove the agent is the run's current
- * controller or one of its authors, so the binding follows it to `session`.
+ * inventory), else a new one. Callers bind the run's controller and authors,
+ * and any other agent the run's `workdir` serves, so a clean close removes
+ * every directory the run used; the binding follows the agent to `session`.
  */
 export const bindRunWorkDirectory = (
   repository: WorkDirectoryRepository,

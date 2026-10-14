@@ -2788,6 +2788,112 @@ while (!existsSync(process.env.SIMPLE_CHANGES_TEST_RELEASE_PATH)) {
     expect(rejected.exitCode).toBe(EXIT_CODES.usage);
   });
 
+  test("initialize reports a stale scratch-file rule that refresh rewrites in place", () => {
+    const fixture = createTestRepository();
+    repositories.push(fixture);
+    const home = resolve(fixture.base, "home");
+    const globalPath = resolve(home, ".codex/AGENTS.md");
+    writeFixture(
+      home,
+      ".codex/AGENTS.md",
+      "# Global\n\n<!-- simple-changes:scratch-files:start -->\nDelete them when the task ends.\n<!-- simple-changes:scratch-files:end -->\n"
+    );
+    writeFixture(home, ".claude/CLAUDE.md", "# Claude global\n");
+    writeFixture(fixture.root, "AGENTS.md", "# Agent guidance\n");
+    const env = {
+      CLAUDE_CONFIG_DIR: resolve(home, ".claude"),
+      CODEX_HOME: resolve(home, ".codex"),
+      SIMPLE_CHANGES_HARNESS_ROOTS: home,
+    };
+    const cli = (args: string[]) =>
+      spawnSync(
+        [process.execPath, cliPath, ...args, "--json", "--repo", fixture.root],
+        { env, stderr: "pipe", stdout: "pipe" }
+      );
+    const reported = () =>
+      (
+        JSON.parse(
+          decoder.decode(cli(["initialize", "--mode", "preview"]).stdout)
+        ) as {
+          scratchFileRule: {
+            targets: {
+              path: string;
+              refreshCommand: string | null;
+              scope: string;
+              status: string;
+            }[];
+          };
+        }
+      ).scratchFileRule.targets;
+
+    const before = reported();
+    expect(before.map((target) => [target.scope, target.status])).toEqual([
+      ["repository", "absent"],
+      ["user", "stale"],
+      ["user", "absent"],
+    ]);
+    const [, stale] = before;
+    if (!stale) {
+      throw new Error("Expected the stale global target.");
+    }
+    expect(stale.path).toBe(globalPath);
+    expect(stale?.refreshCommand).toContain(
+      `scratch-file-rule refresh --instruction-file ${globalPath}`
+    );
+    expect(before.filter((target) => target.refreshCommand)).toEqual([stale]);
+
+    const refreshed = cli([
+      "scratch-file-rule",
+      "refresh",
+      "--instruction-file",
+      globalPath,
+    ]);
+    expect(refreshed.exitCode).toBe(0);
+    expect(JSON.parse(decoder.decode(refreshed.stdout))).toEqual({
+      changed: true,
+      path: globalPath,
+      scope: "user",
+      status: "stale",
+      written: true,
+    });
+    const contents = readFileSync(globalPath, "utf8");
+    expect(contents.startsWith("# Global\n\n")).toBe(true);
+    expect(contents).toContain("one scratch folder of your own");
+    expect(contents).not.toContain("Delete them when the task ends.");
+    expect(reported()[1]).toMatchObject({
+      refreshCommand: null,
+      status: "current",
+    });
+
+    // A second refresh changes nothing, and a file without the rule is
+    // refused rather than given one.
+    expect(
+      JSON.parse(
+        decoder.decode(
+          cli([
+            "scratch-file-rule",
+            "refresh",
+            "--instruction-file",
+            globalPath,
+          ]).stdout
+        )
+      )
+    ).toMatchObject({ changed: false, status: "current", written: false });
+    const absent = cli([
+      "scratch-file-rule",
+      "refresh",
+      "--instruction-file",
+      resolve(fixture.root, "AGENTS.md"),
+    ]);
+    expect(absent.exitCode).toBe(EXIT_CODES.usage);
+    expect(decoder.decode(absent.stderr)).toContain(
+      "setup --scratch-file-rule add"
+    );
+    expect(readFileSync(resolve(fixture.root, "AGENTS.md"), "utf8")).toBe(
+      "# Agent guidance\n"
+    );
+  });
+
   test("adds a confirmed instruction pointer and gates completed-work handoff", () => {
     const fixture = createTestRepository();
     repositories.push(fixture);

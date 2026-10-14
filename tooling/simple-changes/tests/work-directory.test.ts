@@ -578,6 +578,69 @@ describe("work directories through the CLI", () => {
     expect(existsSync(workDir)).toBe(false);
   });
 
+  test("workdir binds any other agent of the live run, and finalize removes it", () => {
+    const { fixture } = repository();
+    const started = run(
+      [
+        "loop",
+        "start",
+        "--mode",
+        "queue",
+        "--agent-id",
+        "controller",
+        "--json",
+      ],
+      fixture.root
+    );
+    expect(started.exitCode).toBe(0);
+    const { lease, workDir } = JSON.parse(started.stdout) as {
+      lease: { runId: string };
+      workDir: string;
+    };
+
+    // A reviewer or check runner the run never prepared still gets a
+    // directory bound to the run, kept across calls in the same session.
+    const helper = run(
+      ["workdir", "--agent-id", "reviewer", "--json"],
+      fixture.root
+    );
+    expect(helper.exitCode).toBe(0);
+    const bound = JSON.parse(helper.stdout) as {
+      bound: boolean;
+      workDir: string;
+    };
+    expect(bound.bound).toBe(true);
+    expect(bound.workDir).not.toBe(workDir);
+    expect(existsSync(bound.workDir)).toBe(true);
+    expect(
+      run(["workdir", "--agent-id", "reviewer"], fixture.root).stdout.trim()
+    ).toBe(bound.workDir);
+
+    const finalized = run(
+      [
+        "loop",
+        "finalize",
+        "--run-id",
+        lease.runId,
+        "--agent-id",
+        "controller",
+        "--reason",
+        "Nothing was ready to queue.",
+        "--json",
+      ],
+      fixture.root
+    );
+    expect(finalized.exitCode).toBe(0);
+    expect(JSON.parse(finalized.stdout)).toMatchObject({
+      outcome: "completed",
+      removedWorkDirectories: [bound.workDir, workDir].sort((left, right) =>
+        left.localeCompare(right)
+      ),
+    });
+    expect(existsSync(bound.workDir)).toBe(false);
+    expect(existsSync(workDir)).toBe(false);
+  });
+
   test("another session reusing the controller's agent ID gets its own directory", () => {
     const { fixture, location } = repository();
     // A session-bound start records the controller's session; keep that

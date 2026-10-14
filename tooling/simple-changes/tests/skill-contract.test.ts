@@ -1372,6 +1372,9 @@ describe("Simple Changes skill contract", () => {
       "It is persistent harness configuration, so ask first; declining changes nothing."
     );
     expect(normalizedSkill).toContain("`runtimeFreshness` as `behind-target`");
+    expect(normalizedSkill).toContain(
+      "When it reports `scratchFileRule` as `stale`, offer once to run its `refreshCommand`."
+    );
     expect(cleanup).toContain("## Turn-end guard");
     expect(normalizedCleanup).toContain(
       "if the agent tries to stop again, it only warns, so it never traps a session"

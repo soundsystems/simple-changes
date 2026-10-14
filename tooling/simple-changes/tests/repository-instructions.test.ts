@@ -9,7 +9,9 @@ import {
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import {
+  discoverGlobalInstructionTargets,
   discoverInstructionTargets,
+  inspectScratchFileRule,
   renderInstructionPointer,
   renderScratchFileRule,
   writeInstructionPointer,
@@ -21,6 +23,9 @@ import {
   type TestRepository,
   writeFixture,
 } from "./helpers.ts";
+
+const SCRATCH_FILE_BLOCK =
+  /<!-- simple-changes:scratch-files:start -->\n[\s\S]*?\n<!-- simple-changes:scratch-files:end -->/u;
 
 let repositories: TestRepository[] = [];
 
@@ -121,18 +126,111 @@ describe("repository instruction pointers", () => {
     // pattern and deleted the parent's drafts, so ownership is explicit.
     const rule = renderScratchFileRule();
     for (const phrase of [
-      "only inside one scratch folder of your own",
+      "only in one scratch folder of your own",
       "the folder your brief names, the work directory a Simple Changes run reports",
-      "a new folder you create with `mktemp -d`",
-      "nothing outside your folder is yours",
-      "give it a folder of its own, normally one you create inside yours, and name that path in its brief",
-      "leave your folder in place and report the path",
-      "delete exactly your own folder by its recorded path",
-      "never delete by pattern, extension, or age in a shared directory, and never a folder you did not create or receive",
+      "a new folder you create with `mktemp -d` under the session's scratch directory",
+      "give it a folder inside yours and name the path in its brief",
+      "delete exactly your own folder by its path",
+      "never delete by pattern, extension, or age in a directory other agents share",
     ]) {
       expect(rule).toContain(phrase);
     }
     expect(rule).not.toContain("Delete them when the task ends");
+  });
+
+  test("reports whether a scratch-file block is current, stale, or absent", () => {
+    const fixture = createTestRepository();
+    repositories.push(fixture);
+    writeFixture(fixture.root, "AGENTS.md", "# Agent guidance\n");
+    const [target] = discoverInstructionTargets("repository", fixture.root);
+    if (!target) {
+      throw new Error("Expected an instruction target");
+    }
+    expect(inspectScratchFileRule(target)).toBe("absent");
+    writeScratchFileRule(target);
+    expect(inspectScratchFileRule(target)).toBe("current");
+
+    // An earlier release's text between the same markers is stale exactly
+    // when the writer would change the file.
+    const current = readFileSync(target.path, "utf8");
+    const stale = current.replace(
+      SCRATCH_FILE_BLOCK,
+      "<!-- simple-changes:scratch-files:start -->\nDelete them when the task ends.\n<!-- simple-changes:scratch-files:end -->"
+    );
+    expect(stale).not.toBe(current);
+    writeFileSync(target.path, stale);
+    expect(inspectScratchFileRule(target)).toBe("stale");
+    expect(writeScratchFileRule(target)).toMatchObject({
+      changed: true,
+      written: true,
+    });
+    expect(inspectScratchFileRule(target)).toBe("current");
+
+    // CRLF files compare through the newline style the writer uses.
+    writeFileSync(
+      target.path,
+      readFileSync(target.path, "utf8").replaceAll("\n", "\r\n")
+    );
+    expect(inspectScratchFileRule(target)).toBe("current");
+
+    const block = renderScratchFileRule();
+    writeFileSync(target.path, `${block}\n\n${block}\n`);
+    expect(inspectScratchFileRule(target)).toBe("invalid");
+  });
+
+  test("finds the harnesses' global instruction files under the configured roots", () => {
+    const fixture = createTestRepository();
+    repositories.push(fixture);
+    const home = join(fixture.base, "home");
+    writeFixture(home, ".codex/AGENTS.md", "# Codex\n");
+    writeFixture(home, ".claude/CLAUDE.md", "# Claude\n");
+    const missingHome = join(fixture.base, "missing");
+    expect(
+      discoverGlobalInstructionTargets(
+        { SIMPLE_CHANGES_HARNESS_ROOTS: home },
+        missingHome
+      )
+    ).toEqual([
+      { path: resolve(home, ".codex/AGENTS.md"), scope: "user" },
+      { path: resolve(home, ".claude/CLAUDE.md"), scope: "user" },
+    ]);
+    // The home directory serves without the override, and the harnesses'
+    // own location variables win over it.
+    expect(discoverGlobalInstructionTargets({}, home)).toEqual([
+      { path: resolve(home, ".codex/AGENTS.md"), scope: "user" },
+      { path: resolve(home, ".claude/CLAUDE.md"), scope: "user" },
+    ]);
+    const codexHome = join(fixture.base, "codex-home");
+    writeFixture(codexHome, "AGENTS.md", "# Codex elsewhere\n");
+    expect(
+      discoverGlobalInstructionTargets(
+        { CODEX_HOME: codexHome, SIMPLE_CHANGES_HARNESS_ROOTS: home },
+        missingHome
+      )
+    ).toEqual([
+      { path: resolve(codexHome, "AGENTS.md"), scope: "user" },
+      { path: resolve(home, ".claude/CLAUDE.md"), scope: "user" },
+    ]);
+    // A linked file is skipped, never followed, and an empty root lists
+    // nothing.
+    const linkedHome = join(fixture.base, "linked-home");
+    writeFixture(linkedHome, ".codex/AGENTS.md", "# Codex\n");
+    writeFixture(linkedHome, ".claude/REAL.md", "# Real\n");
+    symlinkSync("REAL.md", resolve(linkedHome, ".claude/CLAUDE.md"));
+    expect(
+      discoverGlobalInstructionTargets(
+        { SIMPLE_CHANGES_HARNESS_ROOTS: linkedHome },
+        missingHome
+      )
+    ).toEqual([
+      { path: resolve(linkedHome, ".codex/AGENTS.md"), scope: "user" },
+    ]);
+    expect(
+      discoverGlobalInstructionTargets(
+        { SIMPLE_CHANGES_HARNESS_ROOTS: missingHome },
+        missingHome
+      )
+    ).toEqual([]);
   });
 
   test("refuses a duplicated scratch-file block", () => {

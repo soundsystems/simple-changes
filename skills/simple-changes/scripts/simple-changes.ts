@@ -177,7 +177,6 @@ import {
   discoverRepositoryInstructionTargets,
   type InstructionTarget,
   inspectScratchFileRule,
-  locateInstructionTarget,
   writeInstructionPointer,
   writeScratchFileRule,
 } from "./lib/repository-instructions.ts";
@@ -199,6 +198,7 @@ import {
   runtimeFreshness,
 } from "./lib/runtime-freshness.ts";
 import { SCHEMA_NAMES, validateSchema } from "./lib/schema.ts";
+import { refreshScratchFileRule } from "./lib/scratch-file-rule.ts";
 import {
   addShipHold,
   assertShipHoldsClear,
@@ -5265,34 +5265,8 @@ const runWorkDirectory = async (options: CliOptions): Promise<void> => {
   writeOutput({ agentId, bound, workDir: path }, options.json, `${path}\n`);
 };
 
-// Whether `path` is inside one of the repository's registered checkouts,
-// compared through real paths; a checkout that no longer exists holds nothing.
-const insideRegisteredCheckout = (
-  path: string,
-  checkouts: readonly string[]
-): boolean => {
-  const real = realpathSync(path);
-  return checkouts.some((checkout) => {
-    let root: string;
-    try {
-      root = realpathSync(checkout);
-    } catch {
-      return false;
-    }
-    const relativePath = relative(root, real);
-    return !(
-      relativePath === ".." ||
-      relativePath.startsWith(`..${sep}`) ||
-      isAbsolute(relativePath)
-    );
-  });
-};
-
-// Rewrites one stale scratch-file block in place, and nothing else: adding
-// the rule to a file without one stays a setup decision. While any run holds
-// a lease here, a file in one of the repository's checkouts is left alone:
-// the run preserves those checkouts, and a paused or relinquished run still
-// resumes against them. A global file outside every checkout stays free.
+// Rewrites one stale scratch-file block in place; `refreshScratchFileRule`
+// locates and classifies the target under the loop state lock.
 const runScratchFileRule = (options: CliOptions): void => {
   if (options.positional[0] !== "refresh") {
     throw new SimpleChangesError(
@@ -5300,46 +5274,9 @@ const runScratchFileRule = (options: CliOptions): void => {
       EXIT_CODES.usage
     );
   }
-  const file = requireCliOption(options.instructionFile, "--instruction-file");
-  const repository = locateWorkDirectoryRepository(options.repo);
-  const target = locateInstructionTarget(file, repository.checkouts[0] ?? null);
-  const result = withLoopStateLock(
-    repository.commonGitDirectory,
-    "scratch-file-rule refresh",
-    () => {
-      const lease = readLeaseFromCommonDirectory(repository.commonGitDirectory);
-      if (
-        lease &&
-        (target.scope === "repository" ||
-          insideRegisteredCheckout(target.path, repository.checkouts))
-      ) {
-        throw new SimpleChangesError(
-          `Simple Changes run ${lease.runId} holds this repository, and ${target.path} is in one of its checkouts; refresh it after the run ends.`,
-          EXIT_CODES.unsafe
-        );
-      }
-      const status = inspectScratchFileRule(target);
-      if (status === "absent") {
-        throw new SimpleChangesError(
-          `No Simple Changes scratch-file rule in ${target.path}; add one with setup --scratch-file-rule add.`,
-          EXIT_CODES.usage
-        );
-      }
-      if (status === "invalid") {
-        throw new SimpleChangesError(
-          `Instruction file has an invalid Simple Changes managed block; repair it by hand: ${target.path}`,
-          EXIT_CODES.unsafe
-        );
-      }
-      const written = status === "stale" ? writeScratchFileRule(target) : null;
-      return {
-        changed: written?.changed ?? false,
-        path: target.path,
-        scope: target.scope,
-        status,
-        written: written?.written ?? false,
-      };
-    }
+  const result = refreshScratchFileRule(
+    locateWorkDirectoryRepository(options.repo),
+    requireCliOption(options.instructionFile, "--instruction-file")
   );
   writeOutput(
     result,

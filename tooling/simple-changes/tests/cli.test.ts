@@ -22,6 +22,8 @@ import {
   SCHEMA_NAMES,
   validateSchema,
 } from "../../../skills/simple-changes/scripts/lib/schema.ts";
+import { refreshScratchFileRule } from "../../../skills/simple-changes/scripts/lib/scratch-file-rule.ts";
+import { locateWorkDirectoryRepository } from "../../../skills/simple-changes/scripts/lib/work-directory.ts";
 import {
   createTestRepository,
   git,
@@ -2953,6 +2955,46 @@ while (!existsSync(process.env.SIMPLE_CHANGES_TEST_RELEASE_PATH)) {
     expect(readFileSync(globalPath, "utf8")).toContain(
       "one scratch folder of your own"
     );
+  });
+
+  test("refresh reads the checkouts again under its lock", () => {
+    const fixture = createTestRepository();
+    repositories.push(fixture);
+    const stale =
+      "# Agent guidance\n\n<!-- simple-changes:scratch-files:start -->\nDelete them when the task ends.\n<!-- simple-changes:scratch-files:end -->\n";
+    writeFixture(fixture.root, "AGENTS.md", stale);
+    git(fixture.root, ["add", "AGENTS.md"]);
+    git(fixture.root, ["commit", "-q", "-m", "Add agent guidance"]);
+    expect(
+      spawnSync(
+        [
+          process.execPath,
+          cliPath,
+          "loop",
+          "start",
+          "--mode",
+          "queue",
+          "--agent-id",
+          "controller",
+          "--json",
+          "--repo",
+          fixture.root,
+        ],
+        { stderr: "pipe", stdout: "pipe" }
+      ).exitCode
+    ).toBe(0);
+
+    // Refresh locates the repository before its lock. A checkout registered
+    // after that, as prepare-agent registers one, must still be refused.
+    const located = locateWorkDirectoryRepository(fixture.root);
+    const linked = resolve(fixture.base, "linked");
+    git(fixture.root, ["worktree", "add", "-q", "-b", "linked", linked]);
+    expect(located.checkouts).toEqual([fixture.root]);
+    const linkedPath = resolve(linked, "AGENTS.md");
+    expect(() => refreshScratchFileRule(located, linkedPath)).toThrow(
+      "refresh it after the run ends"
+    );
+    expect(readFileSync(linkedPath, "utf8")).toBe(stale);
   });
 
   test("initialize reports a stale AGENTS.md rule beside a linked CLAUDE.md", () => {

@@ -67,13 +67,17 @@ export interface RunWorkDirectoryRemoval {
 
 const WORKTREE_LINE = /^worktree (.+)$/u;
 
+/** Every checkout Git has registered for the repository at `directory`. */
+export const registeredCheckouts = (directory: string): string[] =>
+  runGit(directory, ["worktree", "list", "--porcelain"])
+    .stdout.split("\n")
+    .map((line) => WORKTREE_LINE.exec(line)?.[1])
+    .filter((path): path is string => path !== undefined);
+
 export const locateWorkDirectoryRepository = (
   directory: string
 ): WorkDirectoryRepository => ({
-  checkouts: runGit(directory, ["worktree", "list", "--porcelain"])
-    .stdout.split("\n")
-    .map((line) => WORKTREE_LINE.exec(line)?.[1])
-    .filter((path): path is string => path !== undefined),
+  checkouts: registeredCheckouts(directory),
   commonGitDirectory: locateRepository(directory).repository.commonGitDirectory,
 });
 

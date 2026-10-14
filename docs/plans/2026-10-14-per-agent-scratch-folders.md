@@ -121,7 +121,8 @@ the removal of exactly that recorded path, never a selection of files.
 ### Cleanup
 
 - Delete exactly your own folder by its recorded path, after every agent you
-  started has returned, unless the user asked to keep it.
+  started has returned, unless the user asked to keep it or a Simple Changes
+  run reported it, which the run removes (see Retention).
 - Never `rm <dir>/*.<ext>`, `find <dir> -delete`, or any sweep by pattern,
   extension, or age over a shared directory; never a folder you did not
   create or receive. An agent with no folder of its own deletes nothing.
@@ -199,7 +200,7 @@ this work; it waits on the user's approval.**
  
  <!-- simple-changes:scratch-files:start -->
 -Write scratch files, captured command output, proof bundles, and handoff notes to the session's scratch directory or a private folder under the system temporary directory, never inside or next to a repository checkout. During a Simple Changes run, use the work directory it reports. Delete them when the task ends unless the user asks to keep them.
-+Write scratch files, captured command output, proof bundles, and handoff notes only in one scratch folder of your own, never inside or next to a repository checkout: the folder your brief names, the work directory a Simple Changes run reports, or a new folder you create with `mktemp -d` under the session's scratch directory or the system temporary directory. When you start another agent, give it a folder inside yours and name the path in its brief. When the task ends, delete exactly your own folder by its path, unless the user asks to keep it; never delete by pattern, extension, or age in a directory other agents share.
++Write scratch files, captured command output, proof bundles, and handoff notes only in one scratch folder of your own, never inside or next to a repository checkout: the folder your brief names, the work directory a Simple Changes run reports, or a new folder you create with `mktemp -d` under the session's scratch directory or the system temporary directory. When you start another agent, give it a folder inside yours and name the path in its brief. When the task ends, delete exactly your own folder by its path, unless the user asks to keep it or a Simple Changes run reported it, which the run removes; never delete by pattern, extension, or age in a directory other agents share.
  <!-- simple-changes:scratch-files:end -->
 ```
 
@@ -240,9 +241,9 @@ All on `feat/per-agent-scratch-folders` in the canonical repository.
 
 | File | Change |
 | --- | --- |
-| `skills/simple-changes/scripts/lib/repository-instructions.ts` | `SCRATCH_FILE_RULE` is the text in the diff above (627 bytes, up from 348). Markers unchanged, so `writeScratchFileRule` replaces an older block in place. New `inspectScratchFileRule` (`current`, `stale`, `absent`, `invalid`), `discoverGlobalInstructionTargets` (the global Codex and Claude files under the harness roots), and `locateInstructionTarget` for an explicit path. |
+| `skills/simple-changes/scripts/lib/repository-instructions.ts` | `SCRATCH_FILE_RULE` is the text in the diff above (686 bytes, up from 348). Markers unchanged, so `writeScratchFileRule` replaces an older block in place. New `inspectScratchFileRule` (`current`, `stale`, `absent`, `invalid`), `discoverGlobalInstructionTargets` (the global Codex and Claude files under the harness roots), `discoverRepositoryInstructionTargets` (the repository's `AGENTS.md` and `CLAUDE.md`, each checked on its own so an unsafe one never hides the other), and `locateInstructionTarget` for an explicit path. |
 | `skills/simple-changes/scripts/lib/initialization.ts`, `evals/schemas/initialization.schema.json` | Optional `scratchFileRule.targets[]` (`path`, `scope`, `status`, `refreshCommand` for a stale block). |
-| `skills/simple-changes/scripts/simple-changes.ts` | `initialize` fills `scratchFileRule` and names stale and invalid blocks in text output; new `scratch-file-rule refresh --instruction-file PATH` rewrites one stale block under the loop state lock and refuses an absent (exit 2) or invalid (exit 5) one; `workDirectoryFor` binds a directory to the live run for any agent without a same-session binding. |
+| `skills/simple-changes/scripts/simple-changes.ts` | `initialize` fills `scratchFileRule` and names stale and invalid blocks in text output; new `scratch-file-rule refresh --instruction-file PATH` rewrites one stale block under the loop state lock and refuses an absent (exit 2) or invalid (exit 5) one; `workDirectoryFor` binds a directory to the live run for any agent without a same-session binding, lets the first known session claim any unclaimed binding, and decides every bind and claim again under the loop state lock. |
 | `skills/simple-changes/scripts/lib/work-directory.ts` | `bindRunWorkDirectory` documents that any agent the run's `workdir` serves is bound, so a clean close removes it. |
 | `skills/simple-changes/scripts/lib/onboarding.ts` | The question and the **Add the rule** description say "one scratch folder of its own" and "deletes only that folder". |
 | `skills/simple-changes/SKILL.md` | "Keep every file you pass to the CLI, and your scratch files, in your own `simple-changes workdir --agent-id "$AGENT_ID"` directory; delete nothing outside it." To stay inside the 17,500-byte budget (the file was 7 bytes under it), "use the same invocation everywhere" is dropped and the parallel-agents opening clause is shortened. |
@@ -250,9 +251,9 @@ All on `feat/per-agent-scratch-folders` in the canonical repository.
 | `skills/simple-changes/references/setup-and-policy.md` | Describes the new rule, `scratchFileRule`, and the refresh command, which never adds the rule to a file without one. |
 | `skills/simple-changes/references/onboarding.md` | The rule "gives every agent one scratch folder of its own outside project folders, and lets it delete only that folder". |
 | `README.md` | The `--scratch-file-rule add` paragraph. |
-| `tooling/simple-changes/tests/repository-instructions.test.ts` | Pins the ownership phrases of the rule, rejects "Delete them when the task ends", and covers `inspectScratchFileRule` and `discoverGlobalInstructionTargets`. |
-| `tooling/simple-changes/tests/cli.test.ts` | `initialize` against a fixture home with a stale global block, the refresh, and the refusal for a file without the rule. |
-| `tooling/simple-changes/tests/work-directory.test.ts` | A reviewer's directory binds to the run and finalize removes it. |
+| `tooling/simple-changes/tests/repository-instructions.test.ts` | Pins the ownership and run-retention phrases of the rule, rejects "Delete them when the task ends", and covers `inspectScratchFileRule`, `discoverGlobalInstructionTargets`, and `discoverRepositoryInstructionTargets` with a linked `CLAUDE.md`. |
+| `tooling/simple-changes/tests/cli.test.ts` | `initialize` against a fixture home with a stale global block, the refresh, and the refusal for a file without the rule; a stale `AGENTS.md` beside a linked `CLAUDE.md` is still reported with its `refreshCommand`. |
+| `tooling/simple-changes/tests/work-directory.test.ts` | A reviewer's directory binds to the run and finalize removes it; the first known session claims a helper binding made without one; a held state lock refuses a new bind or claim but not a held directory; concurrent first requests leave one bound directory. |
 | `tooling/simple-changes/tests/skill-contract.test.ts` | Pins the SKILL.md sentence and the brief requirements. |
 | `CHANGELOG.md`, `DEVELOPER_CHANGELOG.md`, `skills/simple-changes/CHANGELOG.md` | `Unreleased` entries in the public and developer histories. The packaged copy is regenerated with `bun tooling/simple-changes/package-changelog.ts`, because the release-history test requires it to be the exact generated window of the root file, `Unreleased` included; the `release-notes` command omits that section when it renders. |
 
@@ -308,13 +309,16 @@ The user answered the six open questions on 2026-10-14:
    `invalid`, and offers a stale one's `refreshCommand` once.
 2. **Silent `0.29.2`, not guidance 30.** The stale-block report reaches users
    who added the old block, so no update notice is needed.
-3. **Length: shortened.** The rule is 627 bytes, down from a 960-byte first
+3. **Length: shortened.** The rule is 686 bytes, down from a 960-byte first
    draft (348 before). It keeps the four guarantees: one folder of your own,
    a folder inside yours for each child, deletion of exactly your own folder,
-   and no deletion by pattern, extension, or age in a shared directory. The
-   sentences on shared parents, hand-off files, and folders you did not
-   create moved to `references/inventory-and-concurrency.md`, since the
-   guarantees already imply them.
+   and no deletion by pattern, extension, or age in a shared directory. One
+   clause, added after review, leaves a folder a Simple Changes run reported
+   for the run to remove, as `references/inventory-and-concurrency.md`
+   requires of a run's agents. The sentences on shared parents, hand-off
+   files, and folders you did not create moved to
+   `references/inventory-and-concurrency.md`, since the guarantees already
+   imply them.
 4. **Helper agents: bound to the run.** `workdir --agent-id` inside a run
    binds any agent's directory, so a clean finalize removes reviewers' and
    check runners' directories with the rest.

@@ -263,7 +263,8 @@ reports, or a new folder it creates under the session's scratch directory or
 the system temporary directory. An agent that starts another agent gives it a
 folder of its own and names it in the brief, and when the task ends it deletes
 exactly its own folder, never another agent's and never by pattern across a
-shared directory, unless the user asks to keep it. Offer **Add the rule**
+shared directory, unless the user asks to keep it or a Simple Changes run
+reported it, which the run's clean finalization removes. Offer **Add the rule**
 first and **Leave it out** second. Non-interactive setup adds it only with
 `--scratch-file-rule add`; omitting the flag leaves the file as it is, and
 adding the rule needs exactly one target. The markers never change, so

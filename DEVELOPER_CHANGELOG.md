@@ -8,12 +8,15 @@
   or a `mktemp -d` folder under the session scratch directory or the system
   temporary directory), has a parent give each agent it starts a folder
   inside its own, and limits cleanup to that folder by its path, never by
-  pattern, extension, or age in a directory other agents share. The markers
-  are unchanged, so `writeScratchFileRule` replaces an older block in place.
-  The rule is 627 bytes, up from 348. The first draft was 960 bytes; its
-  sentences on shared parent directories, hand-off files, and folders you
-  did not create moved to `references/inventory-and-concurrency.md`, since
-  the rule's four guarantees imply them.
+  pattern, extension, or age in a directory other agents share. A folder a
+  Simple Changes run reported is left for the run to remove, as
+  `references/inventory-and-concurrency.md` requires of the run's agents.
+  The markers are unchanged, so `writeScratchFileRule` replaces an older
+  block in place. The rule is 686 bytes, up from 348. The first draft was
+  960 bytes; its sentences on shared parent directories, hand-off files,
+  and folders you did not create moved to
+  `references/inventory-and-concurrency.md`, since the rule's four
+  guarantees imply them.
 - Also in `lib/repository-instructions.ts`: `inspectScratchFileRule(target)`
   returns `current`, `stale`, `absent`, or `invalid`, comparing through the
   writer's newline formatting so `stale` means exactly that
@@ -21,7 +24,11 @@
   `discoverGlobalInstructionTargets(environment, home)` lists the existing,
   unlinked `$CODEX_HOME/AGENTS.md` and `$CLAUDE_CONFIG_DIR/CLAUDE.md`,
   defaulting to `.codex/` and `.claude/` under `SIMPLE_CHANGES_HARNESS_ROOTS`
-  or the home directory. `locateInstructionTarget(path, primaryCheckout)`
+  or the home directory. `discoverRepositoryInstructionTargets(primaryCheckout)`
+  lists the repository's `AGENTS.md` and `CLAUDE.md`, checking each on its
+  own, so a linked, escaping, or irregular one is left out without hiding
+  the other; setup keeps `discoverInstructionTargets`, which refuses the
+  whole repository scope. `locateInstructionTarget(path, primaryCheckout)`
   gives an explicit path repository scope inside the primary checkout and
   user scope elsewhere. `lib/onboarding.ts` rewords the setup question and
   the **Add the rule** description to match.
@@ -30,8 +37,10 @@
   instruction file: `targets[]` of `path`, `scope`, `status`, and, for a stale
   block, a `refreshCommand` that runs the running copy's
   `scratch-file-rule refresh --instruction-file <path> --repo <repo>`. Text
-  output names only stale and invalid blocks, and a file that cannot be
-  inspected is left out rather than failing initialization.
+  output names only stale and invalid blocks. Each file is discovered and
+  inspected on its own, so one that cannot be inspected, such as a
+  `CLAUDE.md` linked to `AGENTS.md`, is left out without hiding the other
+  or failing initialization.
 - New `scratch-file-rule refresh --instruction-file PATH`: locates the
   target, takes the loop state lock, rewrites a stale block through
   `writeScratchFileRule`, reports a current one unchanged, and refuses an
@@ -40,8 +49,16 @@
 - `workDirectoryFor` in `simple-changes.ts`: inside a run, any agent ID
   without a same-session binding now gets a directory bound to the run, not
   only the controller and prepared authors, so `removeRunWorkDirectories`
-  removes reviewers' and check runners' directories at a clean close. An ID
-  another session already bound still gets its own unbound directory.
+  removes reviewers' and check runners' directories at a clean close. The
+  first known session to use an unclaimed binding claims it for any agent,
+  so an ID another session already bound gets its own unbound directory;
+  only another session reusing the controller's agent ID never claims. A
+  directory the session already holds is returned without a lock. Every
+  bind and claim is decided again under the loop state lock (operation
+  `workdir`), after re-reading the lease and the binding, so two concurrent
+  first requests never each bind a directory and lose one, a caller that
+  meets the lock gets the usual busy error (exit 5) to retry, and nothing
+  binds to a run that closed in the meantime.
 - `SKILL.md` keeps scratch files in the agent's own `workdir` directory,
   deletes nothing outside it, and offers a stale block's `refreshCommand`
   once. To stay inside the 17,500-byte budget it drops "use the same
@@ -49,34 +66,44 @@
   drops the "Present update notices per" sentence, whose link the reference
   router already carries.
 - `references/inventory-and-concurrency.md`: "Agent work directories" says
-  `workdir` binds any agent of the run and adds the ownership rule: the
-  directory and its contents are the agent's alone, a harness scratch
-  directory is shared, only the run or the owner removes a work directory,
-  nothing is deleted by pattern, extension, or age in a shared directory,
-  and a file another agent reads stays until finalization.
+  `workdir` binds any agent of the run, that the first known session claims
+  any binding, and that binding and claiming take the loop state lock, so a
+  busy `workdir` is retried. It adds the ownership rule: the directory and
+  its contents are the agent's alone, a harness scratch directory is
+  shared, only the run or the owner removes a work directory, nothing is
+  deleted by pattern, extension, or age in a shared directory, and a file
+  another agent reads stays until finalization.
   "Parallel agents" step 2 adds the `workDir` to every brief and a second
   required clause (scratch only in that directory, delete nothing outside
   it, leave it in place); step 3 leaves the directory in place.
-  `references/setup-and-policy.md` documents `scratchFileRule` and the
-  refresh command, and `references/onboarding.md` and the README describe
-  the new rule and command.
+  `references/setup-and-policy.md` documents `scratchFileRule`, the refresh
+  command, and the rule's run-retention clause, and
+  `references/onboarding.md` and the README describe the new rule and
+  command.
 - Guidance stays at 29, with no guidance entry and no update notice: the
   stale-block report and refresh reach users who added the old block.
-- Tests: `repository-instructions.test.ts` pins the rule's ownership phrases,
-  rejects "Delete them when the task ends", and covers
-  `inspectScratchFileRule` (absent, current, stale, CRLF, invalid) and
+- Tests: `repository-instructions.test.ts` pins the rule's ownership and
+  run-retention phrases, rejects "Delete them when the task ends", and
+  covers `inspectScratchFileRule` (absent, current, stale, CRLF, invalid),
   `discoverGlobalInstructionTargets` (harness roots, the home directory,
-  `CODEX_HOME`, a linked file skipped, an empty root); `cli.test.ts` runs
-  `initialize` against a fixture home with a stale global block, refreshes
-  it, sees it current, and refuses a file without the rule;
-  `work-directory.test.ts` binds a reviewer's directory inside a run and sees
-  finalize remove it with the controller's; `skill-contract.test.ts` pins the
-  SKILL.md sentences and the brief requirements.
+  `CODEX_HOME`, a linked file skipped, an empty root), and
+  `discoverRepositoryInstructionTargets` (a linked `CLAUDE.md`, a directory
+  named `AGENTS.md`); `cli.test.ts` runs `initialize` against a fixture home
+  with a stale global block, refreshes it, sees it current, refuses a file
+  without the rule, and reports a stale `AGENTS.md` beside a linked
+  `CLAUDE.md` with its `refreshCommand`; `work-directory.test.ts` binds a
+  reviewer's directory inside a run and sees finalize remove it with the
+  controller's, lets the first known session claim a helper binding made
+  without one while a second session gets an unbound directory, refuses a
+  new bind or claim while the state lock is held but returns a held
+  directory, and keeps exactly one bound directory across four concurrent
+  first requests; `skill-contract.test.ts` pins the SKILL.md sentences and
+  the brief requirements.
 - `docs/plans/2026-10-14-per-agent-scratch-folders.md` records the incident,
   the root cause, the design, the exact replacement rule as a diff for the
   user's global AGENTS.md, the fork pickup path, and the decisions taken on
   its open questions.
-<!-- simple-changelogs-signature agent="Claude Opus 5.5 xhigh" at="2026-10-14T14:19:09-05:00" -->
+<!-- simple-changelogs-signature agent="Claude Opus 5.5 xhigh" at="2026-10-14T15:04:03-05:00" -->
 
 ## 0.29.1 - 2026-10-13
 

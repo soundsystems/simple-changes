@@ -324,11 +324,19 @@ system temporary directory and prints it; it needs no loop, so it serves the
 GitLab opening inventory that `loop start` requires. Call it once per task and
 keep the path. `loop start` binds the directory that holds its
 `--opening-remote-inventory` file to the run, or binds a new one, and reports it
-as `workDir`; `prepare-agent` binds and reports one for each author, which the
-author's own harness session claims on first use. Inside a run, `workdir`
-prints the directory bound to the run's controller or an author, binding one
-first for a controller that took over; a different harness session that reuses
-the agent ID gets a new directory of its own instead. Set
+as `workDir`; `prepare-agent` binds and reports one for each author. Inside a
+run, `workdir` prints the directory bound to the agent, binding a new one to
+the run for a controller that took over, an author, or any other agent of the
+run, such as a reviewer or check runner, so a clean close removes it too. The
+first known harness session to use a binding claims it, and a different
+session that reuses that agent ID gets a new directory of its own instead;
+another session on the controller's agent ID always does, even before the
+controller has bound or claimed one.
+Binding and claiming take the loop state lock, so two first requests never
+lose a directory. `workdir` waits up to 30 seconds for another holder, such as
+a controller's `loop exec`, and exits 5 only if the lock is still busy then:
+retry it once that operation ends, or keep using the `workDir` your brief
+names. Set
 `SIMPLE_CHANGES_WORK_ROOT` to an absolute path to move the root. The CLI
 refuses a root inside any registered checkout or the Git common directory, one
 that is a symlink, owned by another user, or writable by others, and one under
@@ -347,6 +355,19 @@ directories of runs that ended without a clean close, such as through `loop
 close-equivalent` or `loop archive-recorded`. Remove any other directory with
 `simple-changes workdir remove <path>`; the operating system's temporary-file
 cleanup eventually sweeps the rest.
+
+The directory is the agent's alone, and so is everything in it: scratch
+files, captured command output, proof bundles, review logs, and proposal
+drafts belong there too, never in a directory other agents share. A harness
+scratch directory is shared: a session's subagents inherit the same path, so
+a subagent that cleans up there by pattern deletes the controller's drafts
+and receipts with its own. Only the run removes a work directory, through its
+clean finalization, or the agent that owns it removes it with `workdir
+remove`; never delete by pattern, extension, or age in the work root, a
+harness scratch directory, or any other shared directory, and never a
+directory you did not create or receive. A file another agent reads after
+you finish stays where it is until finalization removes it: leave the
+directory in place and report the path.
 
 ## Parallel agents
 
@@ -378,8 +399,9 @@ branch onto the updated target through `loop exec`.
    Concurrent calls collide on the busy state lock, so agents gain nothing by
    preparing their own worktrees.
 2. Start the agents together. Give each one its exact prepared path, branch,
-   agent ID, and unit scope; the checks to run; and its boundary: edit,
-   generate, format, check, stage, and commit only inside that worktree. A
+   agent ID, and unit scope, and the `workDir` `prepare-agent` reported; the
+   checks to run; and its boundary: edit, generate, format, check, stage, and
+   commit only inside that worktree. A
    delegated agent runs no `initialize` or `loop` command, push, provider call,
    merge, release, deployment, or cleanup, and never touches another worktree,
    branch, stash, or tag. The runtime still lets any run-prepared author use
@@ -387,8 +409,14 @@ branch onto the updated target through `loop exec`.
    every brief: after every commit, run the `author attest` command
    `prepare-agent` printed as `afterEveryCommit`, beside `worktree claim` for
    a claimed checkout ([review ledger steps](change-requests.md#review-ledger-steps)).
+   Also required in every brief: the agent's scratch files, captured output,
+   and notes go only in its own `workDir`; it deletes nothing outside that
+   directory, including in a harness scratch directory it shares with the
+   controller, and leaves the directory in place when it returns, because the
+   run's clean finalization removes it.
 3. Each agent returns its final commit, the checks it ran with their results,
-   and any open question, leaving its worktree clean. Before treating the unit
+   and any open question, leaving its worktree clean and its work directory in
+   place. Before treating the unit
    as ready, the controller confirms that the registered branch head equals the
    reported commit and that no uncommitted changes remain. A unit with an open
    question or a failed check waits while the others continue.

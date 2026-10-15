@@ -67,13 +67,17 @@ export interface RunWorkDirectoryRemoval {
 
 const WORKTREE_LINE = /^worktree (.+)$/u;
 
+/** Every checkout Git has registered for the repository at `directory`. */
+export const registeredCheckouts = (directory: string): string[] =>
+  runGit(directory, ["worktree", "list", "--porcelain"])
+    .stdout.split("\n")
+    .map((line) => WORKTREE_LINE.exec(line)?.[1])
+    .filter((path): path is string => path !== undefined);
+
 export const locateWorkDirectoryRepository = (
   directory: string
 ): WorkDirectoryRepository => ({
-  checkouts: runGit(directory, ["worktree", "list", "--porcelain"])
-    .stdout.split("\n")
-    .map((line) => WORKTREE_LINE.exec(line)?.[1])
-    .filter((path): path is string => path !== undefined),
+  checkouts: registeredCheckouts(directory),
   commonGitDirectory: locateRepository(directory).repository.commonGitDirectory,
 });
 
@@ -459,8 +463,9 @@ const writeBinding = (
 /**
  * Records the run's work directory for this agent and returns it: the one
  * already bound, else `candidate` (the directory holding the opening
- * inventory), else a new one. Callers prove the agent is the run's current
- * controller or one of its authors, so the binding follows it to `session`.
+ * inventory), else a new one. Callers bind the run's controller and authors,
+ * and any other agent the run's `workdir` serves, so a clean close removes
+ * every directory the run used; the binding follows the agent to `session`.
  */
 export const bindRunWorkDirectory = (
   repository: WorkDirectoryRepository,

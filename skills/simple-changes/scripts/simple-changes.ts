@@ -76,6 +76,7 @@ import {
   OUTCOME_DRAFT_MARKER,
   prepareAgentWorktree,
   readControllerBinding,
+  readLeaseFromCommonDirectory,
   readLoopLease,
   rebaselineLoopWorktrees,
   recordEmergencyShipping,
@@ -95,6 +96,7 @@ import {
   verifyLoop,
   withLoopMutationLease,
   withLoopStateLock,
+  withLoopStateLockWaiting,
 } from "./lib/loop-lease.ts";
 import { auditMarkdown } from "./lib/markdown.ts";
 import {
@@ -170,7 +172,11 @@ import {
 } from "./lib/remote-inventory.ts";
 import { renderInventory, renderPlan } from "./lib/report.ts";
 import {
+  discoverGlobalInstructionTargets,
   discoverInstructionTargets,
+  discoverRepositoryInstructionTargets,
+  type InstructionTarget,
+  inspectScratchFileRule,
   writeInstructionPointer,
   writeScratchFileRule,
 } from "./lib/repository-instructions.ts";
@@ -192,6 +198,7 @@ import {
   runtimeFreshness,
 } from "./lib/runtime-freshness.ts";
 import { SCHEMA_NAMES, validateSchema } from "./lib/schema.ts";
+import { refreshScratchFileRule } from "./lib/scratch-file-rule.ts";
 import {
   addShipHold,
   assertShipHoldsClear,
@@ -278,7 +285,7 @@ import {
   standaloneWorktreeCleanup,
 } from "./lib/worktree-maintenance.ts";
 
-const VERSION = "0.29.1";
+const VERSION = "0.29.2";
 const SCRIPT_FILE = fileURLToPath(import.meta.url);
 const PLAIN_SHELL_WORD_PATTERN = /^[\w./-]+$/u;
 const PACKAGE_ROOT = resolve(dirname(SCRIPT_FILE), "..");
@@ -458,6 +465,8 @@ Usage:
     [--json] [--repo PATH]
   simple-changes workdir --agent-id ID [--json] [--repo PATH]
   simple-changes workdir remove PATH [--json] [--repo PATH]
+  simple-changes scratch-file-rule refresh --instruction-file PATH
+    [--json] [--repo PATH]
   simple-changes release-notes [--check] [--json] [--repo PATH] [--version VERSION]
   simple-changes negotiate-changelog CAPABILITIES_FILE [--json]
   simple-changes validate-changelog-transaction REQUEST_FILE RECEIPT_FILE [--prior-receipt FILE] [--json]
@@ -2404,6 +2413,23 @@ const requestedAuthoringFields = (status: InitializationStatus): string[] => {
   return fields;
 };
 
+// Names only the scratch-file blocks that need the user: a stale one with
+// its refresh command, a malformed one to repair by hand.
+const renderScratchFileRuleTargets = (status: InitializationStatus): string[] =>
+  (status.scratchFileRule?.targets ?? []).flatMap((target) => {
+    if (target.status === "stale") {
+      return [
+        `Scratch-file rule: stale in ${target.path}; with the user's agreement, run \`${target.refreshCommand}\``,
+      ];
+    }
+    if (target.status === "invalid") {
+      return [
+        `Scratch-file rule: malformed managed block in ${target.path}; repair it by hand`,
+      ];
+    }
+    return [];
+  });
+
 const renderInitialization = (status: InitializationStatus): string => {
   const lines = [
     "Simple Changes initialization",
@@ -2433,6 +2459,7 @@ const renderInitialization = (status: InitializationStatus): string => {
   if (status.turnEndGuard) {
     lines.push(renderTurnEndGuard(status.turnEndGuard));
   }
+  lines.push(...renderScratchFileRuleTargets(status));
   if (status.runtimeFreshness?.message) {
     lines.push(`Warning: ${status.runtimeFreshness.message}`);
   }
@@ -2490,6 +2517,49 @@ const initializationTurnEndGuard = (): InitializationStatus["turnEndGuard"] => {
   } catch {
     return null;
   }
+};
+
+type ScratchFileRuleTarget = NonNullable<
+  InitializationStatus["scratchFileRule"]
+>["targets"][number];
+
+const scratchFileRuleRefreshCommand = (
+  target: InstructionTarget,
+  repositoryPath: string
+): string =>
+  `${shellWord(process.execPath)} ${shellWord(SCRIPT_FILE)} scratch-file-rule refresh --instruction-file ${shellWord(target.path)} --repo ${shellWord(repositoryPath)}`;
+
+// Reported, never rewritten, by initialize: a block an older release wrote
+// keeps its text until the user agrees to the refresh. Each file is
+// discovered and inspected on its own, so one that cannot be inspected is
+// left out without hiding its siblings or failing initialization.
+const initializationScratchFileRule = (
+  primaryCheckout: string | null,
+  repositoryPath: string
+): InitializationStatus["scratchFileRule"] => {
+  const targets: InstructionTarget[] = [
+    ...discoverRepositoryInstructionTargets(primaryCheckout),
+    ...discoverGlobalInstructionTargets(),
+  ];
+  const inspected: ScratchFileRuleTarget[] = [];
+  for (const target of targets) {
+    let status: ReturnType<typeof inspectScratchFileRule>;
+    try {
+      status = inspectScratchFileRule(target);
+    } catch {
+      continue;
+    }
+    inspected.push({
+      path: target.path,
+      refreshCommand:
+        status === "stale"
+          ? scratchFileRuleRefreshCommand(target, repositoryPath)
+          : null,
+      scope: target.scope,
+      status,
+    });
+  }
+  return inspected.length > 0 ? { targets: inspected } : null;
 };
 
 const AUTHORING_MODES = new Set<InitializationMode>([
@@ -2648,6 +2718,10 @@ const runInitialize = async (options: CliOptions): Promise<void> => {
       },
       VERSION,
       SCRIPT_FILE
+    ),
+    scratchFileRule: initializationScratchFileRule(
+      inventory.repository.primaryCheckout,
+      options.repo
     ),
     turnEndGuard: initializationTurnEndGuard(),
   });
@@ -4990,11 +5064,26 @@ const runPrepareAgent = (options: CliOptions): void => {
   // An unsafe work root is refused before any worktree is prepared.
   const workRepository = locateWorkDirectoryRepository(options.repo);
   repositoryWorkDirectory(workRepository);
+  // Bound under preparation's own state lock, for a new or a reused
+  // preparation, so a concurrent `workdir` request for the same agent ID
+  // cannot bind a second directory, and a run that closes meanwhile is
+  // never bound to. The author may run in another session; its first use
+  // claims the binding.
+  let workDir: string | null = null;
   const prepared = prepareAgentWorktree(
     options.repo,
     requireCliOption(options.runId, "--run-id"),
     requireCliOption(options.agentId, "--agent-id"),
-    requireCliOption(options.purpose, "--purpose")
+    requireCliOption(options.purpose, "--purpose"),
+    (agent) => {
+      workDir = bindRunWorkDirectory(
+        workRepository,
+        agent.runId,
+        agent.agentId,
+        null,
+        null
+      );
+    }
   );
   // Commit attestation is a required step of every author's workflow: the
   // review ledger cannot reconstruct who wrote a commit after the fact.
@@ -5003,14 +5092,6 @@ const runPrepareAgent = (options: CliOptions): void => {
       ? value
       : `'${value.replaceAll("'", "'\\''")}'`;
   const afterEveryCommit = `simple-changes author attest --commit <sha> --agent-id ${shellWord(prepared.agentId)} --repo ${shellWord(prepared.path)} --json`;
-  // The author may run in another session; its first use claims the binding.
-  const workDir = bindRunWorkDirectory(
-    workRepository,
-    prepared.runId,
-    prepared.agentId,
-    null,
-    null
-  );
   writeOutput(
     { ...prepared, afterEveryCommit, workDir },
     options.json,
@@ -5018,51 +5099,127 @@ const runPrepareAgent = (options: CliOptions): void => {
   );
 };
 
-// The directory an agent should use: inside a run, the one bound to it when
-// it is the run's controller or one of its authors in the same session;
-// otherwise a new one of its own, so another session that reuses an agent ID
-// never shares, or has removed, the run's files.
-const workDirectoryFor = (
+type RunWorkDirectoryUse =
+  | { action: "bind" }
+  | { action: "unbound" }
+  | { action: "use"; path: string };
+
+// What the run's `workdir` does for this agent in this session: use the
+// directory bound to it, bind one (claiming an unclaimed binding, rebinding
+// the controller's, or creating one for the controller, an author, or any
+// other agent of the run, such as a reviewer or check runner, so a clean
+// close removes it), or hand out an unbound directory, so another session
+// that reuses an agent ID never shares, or has removed, the run's files.
+const runWorkDirectoryUse = (
+  repository: WorkDirectoryRepository,
+  lease: LoopLease,
+  agentId: string,
+  session: string | null
+): RunWorkDirectoryUse => {
+  // Another known session reusing the controller's agent ID never binds,
+  // claims, or uses the run's directory, even one the controller has not
+  // bound or claimed yet: the controller would later rebind that same path,
+  // and finalize would delete the other session's files with the run's.
+  if (
+    lease.ownerAgentId === agentId &&
+    !sameSession(
+      workSessionOf(readControllerBinding(lease)?.session ?? null),
+      session
+    )
+  ) {
+    return { action: "unbound" };
+  }
+  const controller = lease.ownerAgentId === agentId;
+  const binding = runWorkDirectoryBinding(repository, lease.runId, agentId);
+  if (binding && sameSession(binding.session, session)) {
+    // The first known session to use an unclaimed binding claims it, so a
+    // later session gets its own directory instead of sharing this one.
+    return binding.session === null && session !== null
+      ? { action: "bind" }
+      : { action: "use", path: binding.path };
+  }
+  return controller || !binding ? { action: "bind" } : { action: "unbound" };
+};
+
+// How long `workdir` waits for another holder of the loop state lock, such
+// as a controller's `loop exec`, before reporting it busy, and how often it
+// checks. Tests shorten the wait.
+const WORK_DIRECTORY_LOCK_WAIT_MS = 30_000;
+const WORK_DIRECTORY_LOCK_POLL_MS = 250;
+
+const workDirectoryLockWaitMs = (): number => {
+  const override =
+    process.env.NODE_ENV === "test"
+      ? Number(process.env.SIMPLE_CHANGES_TEST_WORKDIR_LOCK_WAIT_MS)
+      : Number.NaN;
+  return Number.isInteger(override) && override >= 0
+    ? override
+    : WORK_DIRECTORY_LOCK_WAIT_MS;
+};
+
+// The directory an agent should use, per `runWorkDirectoryUse` inside a run
+// and a new one of its own otherwise. A directory the session already holds
+// is returned without a lock. Binding and claiming are decided again under
+// the loop state lock, where loop start, prepare-agent, and finalize change
+// bindings too: two first requests for one agent ID never each bind a
+// directory and lose one, and none binds to a run that closed in the
+// meantime. A busy lock is waited out for a bounded time, so an author's
+// first claim outlasts a controller's short `loop exec`.
+const workDirectoryFor = async (
   repository: WorkDirectoryRepository,
   lease: LoopLease | null,
   agentId: string
-): { bound: boolean; path: string } => {
+): Promise<{ bound: boolean; path: string }> => {
   const session = workDirectorySession();
   if (lease) {
-    const binding = runWorkDirectoryBinding(repository, lease.runId, agentId);
-    const controller =
-      lease.ownerAgentId === agentId &&
-      sameSession(
-        workSessionOf(readControllerBinding(lease)?.session ?? null),
-        session
-      );
-    const author =
-      lease.preparations.some((entry) => entry.agentId === agentId) ||
-      lease.worktrees.some(
-        (worktree) => worktree.createdByRun && worktree.agentId === agentId
-      );
-    if (binding && sameSession(binding.session, session)) {
-      // The first session to use an unclaimed binding claims it.
-      if (
-        binding.session === null &&
-        session !== null &&
-        (controller || author)
-      ) {
-        bindRunWorkDirectory(repository, lease.runId, agentId, session, null);
-      }
-      return { bound: true, path: binding.path };
+    const use = runWorkDirectoryUse(repository, lease, agentId, session);
+    if (use.action === "use") {
+      return { bound: true, path: use.path };
     }
-    if (controller || (author && !binding)) {
-      return {
-        bound: true,
-        path: bindRunWorkDirectory(
-          repository,
-          lease.runId,
-          agentId,
-          session,
-          null
-        ),
-      };
+    if (use.action === "bind") {
+      const waitMs = workDirectoryLockWaitMs();
+      const path = await withLoopStateLockWaiting(
+        repository.commonGitDirectory,
+        "workdir",
+        () => {
+          const current = readLeaseFromCommonDirectory(
+            repository.commonGitDirectory
+          );
+          if (current?.runId !== lease.runId) {
+            return null;
+          }
+          const locked = runWorkDirectoryUse(
+            repository,
+            current,
+            agentId,
+            session
+          );
+          if (locked.action === "use") {
+            return locked.path;
+          }
+          return locked.action === "bind"
+            ? bindRunWorkDirectory(
+                repository,
+                current.runId,
+                agentId,
+                session,
+                null
+              )
+            : null;
+        },
+        {
+          intervalMs: WORK_DIRECTORY_LOCK_POLL_MS,
+          onWait: () => {
+            process.stderr.write(
+              `Active-loop state is busy; waiting up to ${waitMs / 1000}s to bind this work directory.\n`
+            );
+          },
+          waitMs,
+        }
+      );
+      if (path !== null) {
+        return { bound: true, path };
+      }
     }
   }
   return { bound: false, path: createWorkDirectory(repository, agentId) };
@@ -5070,7 +5227,7 @@ const workDirectoryFor = (
 
 // Plain output is the bare path, so `WORK_DIR=$(simple-changes workdir ...)`
 // works before a loop exists, as a GitLab opening inventory needs.
-const runWorkDirectory = (options: CliOptions): void => {
+const runWorkDirectory = async (options: CliOptions): Promise<void> => {
   const [action, target] = options.positional;
   const repository = locateWorkDirectoryRepository(options.repo);
   if (action === "remove") {
@@ -5100,12 +5257,34 @@ const runWorkDirectory = (options: CliOptions): void => {
     );
   }
   const agentId = requireCliOption(options.agentId, "--agent-id");
-  const { bound, path } = workDirectoryFor(
+  const { bound, path } = await workDirectoryFor(
     repository,
     readLoopLease(options.repo),
     agentId
   );
   writeOutput({ agentId, bound, workDir: path }, options.json, `${path}\n`);
+};
+
+// Rewrites one stale scratch-file block in place; `refreshScratchFileRule`
+// locates and classifies the target under the loop state lock.
+const runScratchFileRule = (options: CliOptions): void => {
+  if (options.positional[0] !== "refresh") {
+    throw new SimpleChangesError(
+      "scratch-file-rule takes the action refresh",
+      EXIT_CODES.usage
+    );
+  }
+  const result = refreshScratchFileRule(
+    locateWorkDirectoryRepository(options.repo),
+    requireCliOption(options.instructionFile, "--instruction-file")
+  );
+  writeOutput(
+    result,
+    options.json,
+    result.written
+      ? `Rewrote the scratch-file rule in ${result.path}\n`
+      : `The scratch-file rule in ${result.path} is current\n`
+  );
 };
 
 const runReleaseNotes = (options: CliOptions): number => {
@@ -5323,7 +5502,10 @@ const executeCommand = async (
       runPrepareAgent(options);
       return EXIT_CODES.success;
     case "workdir":
-      runWorkDirectory(options);
+      await runWorkDirectory(options);
+      return EXIT_CODES.success;
+    case "scratch-file-rule":
+      runScratchFileRule(options);
       return EXIT_CODES.success;
     case "author":
       runAuthorCommand(options);

@@ -42,6 +42,20 @@ it has no `installCommand`, as from a fork with no current global install, tell
 the user to install the guard from the globally installed Simple Changes; see
 [turn-end guard](cleanup-and-completion.md#turn-end-guard).
 
+When it reports `scratchFileRule`, each listed instruction file (the
+repository's `AGENTS.md` or `CLAUDE.md`, and the global `~/.codex/AGENTS.md`
+or `~/.claude/CLAUDE.md`) carries the scratch-file block as `current`,
+`stale`, `absent`, or `invalid`. A `stale` block was written by an earlier
+release. Offer once to run its `refreshCommand`
+(`simple-changes scratch-file-rule refresh --instruction-file <path>`), which
+rewrites exactly that block in place and nothing else; declining changes
+nothing. It never adds the rule to a file without one, which stays a setup
+choice, and an `invalid` block (duplicated or crossed markers) is repaired by
+hand. While a Simple Changes run holds the repository, even a paused one, it
+refuses a file in any of the repository's checkouts with exit 5, because the
+run preserves them: offer it again after the run ends. A global file outside
+every checkout can be refreshed at any time.
+
 Sync, queue, sweep, integrate, ship, reconcile, resume, and handoff are
 write-capable. Preview and pause are read-only or preservation-only. Sync uses
 fixed local-only preservation guardrails and does not start workflow-preference
@@ -246,11 +260,19 @@ rule, whatever the pointer answer was. It is a second managed block with its
 own `<!-- simple-changes:scratch-files:start -->` and `:end -->` markers, so
 rewriting the pointer never removes it. It tells every agent, not only Simple
 Changes runs, to keep scratch files, captured command output, proof bundles,
-and handoff notes in a private temporary directory, never inside or next to a
-checkout, and to delete them when the task ends unless the user asks to keep
-them. Offer **Add the rule** first and **Leave it out** second. Non-interactive
-setup adds it only with `--scratch-file-rule add`; omitting the flag leaves the
-file as it is, and adding the rule needs exactly one target.
+and handoff notes in one scratch folder of its own, never inside or next to a
+checkout: the folder its brief names, the work directory a Simple Changes run
+reports, or a new folder it creates under the session's scratch directory or
+the system temporary directory. An agent that starts another agent gives it a
+folder of its own and names it in the brief, and when the task ends it deletes
+exactly its own folder, never another agent's and never by pattern across a
+shared directory, unless the user asks to keep it or a Simple Changes run
+reported it, which the run's clean finalization removes. Offer **Add the rule**
+first and **Leave it out** second. Non-interactive setup adds it only with
+`--scratch-file-rule add`; omitting the flag leaves the file as it is, and
+adding the rule needs exactly one target. The markers never change, so
+`initialize` reports a block an earlier release wrote as `stale`, and
+`scratch-file-rule refresh`, or setup run again, rewrites it in place.
 
 The confirmation summary must
 show the exact target path and each proposed managed block. Apply an authorized edit

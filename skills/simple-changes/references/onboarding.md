@@ -436,9 +436,10 @@ After durable scope is known, offer an existing exact instruction file. Explain
 that the short managed pointer makes completed implementation discover Simple
 Changes automatically; it does not copy this skill's rules or grant new
 authority. Then offer the optional scratch-file rule for the same file, even
-when the user leaves the pointer out: it keeps every agent's scratch files,
-proof bundles, and handoff notes out of project folders. Never create an
-instruction file, follow a symlink, or duplicate either managed block.
+when the user leaves the pointer out: it gives every agent one scratch folder
+of its own outside project folders, and lets it delete only that folder. Never
+create an instruction file, follow a symlink, or duplicate either managed
+block.
 
 ## Confirm, apply, and continue
 

@@ -1,9 +1,13 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import {
   chmodSync,
+  closeSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
+  openSync,
+  readdirSync,
+  readFileSync,
   realpathSync,
   rmSync,
   statSync,
@@ -12,7 +16,12 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
-import { spawnSync } from "bun";
+import { sleepSync, spawn, spawnSync } from "bun";
+import { EXIT_CODES } from "../../../skills/simple-changes/scripts/lib/errors.ts";
+import {
+  prepareAgentWorktree,
+  withLoopStateLock,
+} from "../../../skills/simple-changes/scripts/lib/loop-lease.ts";
 import {
   bindRunWorkDirectory,
   createWorkDirectory,
@@ -578,6 +587,352 @@ describe("work directories through the CLI", () => {
     expect(existsSync(workDir)).toBe(false);
   });
 
+  test("workdir binds any other agent of the live run, and finalize removes it", () => {
+    const { fixture } = repository();
+    const started = run(
+      [
+        "loop",
+        "start",
+        "--mode",
+        "queue",
+        "--agent-id",
+        "controller",
+        "--json",
+      ],
+      fixture.root
+    );
+    expect(started.exitCode).toBe(0);
+    const { lease, workDir } = JSON.parse(started.stdout) as {
+      lease: { runId: string };
+      workDir: string;
+    };
+
+    // A reviewer or check runner the run never prepared still gets a
+    // directory bound to the run, kept across calls in the same session.
+    const helper = run(
+      ["workdir", "--agent-id", "reviewer", "--json"],
+      fixture.root
+    );
+    expect(helper.exitCode).toBe(0);
+    const bound = JSON.parse(helper.stdout) as {
+      bound: boolean;
+      workDir: string;
+    };
+    expect(bound.bound).toBe(true);
+    expect(bound.workDir).not.toBe(workDir);
+    expect(existsSync(bound.workDir)).toBe(true);
+    expect(
+      run(["workdir", "--agent-id", "reviewer"], fixture.root).stdout.trim()
+    ).toBe(bound.workDir);
+
+    const finalized = run(
+      [
+        "loop",
+        "finalize",
+        "--run-id",
+        lease.runId,
+        "--agent-id",
+        "controller",
+        "--reason",
+        "Nothing was ready to queue.",
+        "--json",
+      ],
+      fixture.root
+    );
+    expect(finalized.exitCode).toBe(0);
+    expect(JSON.parse(finalized.stdout)).toMatchObject({
+      outcome: "completed",
+      removedWorkDirectories: [bound.workDir, workDir].sort((left, right) =>
+        left.localeCompare(right)
+      ),
+    });
+    expect(existsSync(bound.workDir)).toBe(false);
+    expect(existsSync(workDir)).toBe(false);
+  });
+
+  const startQueueRun = (repositoryPath: string) => {
+    const started = run(
+      [
+        "loop",
+        "start",
+        "--mode",
+        "queue",
+        "--agent-id",
+        "controller",
+        "--json",
+      ],
+      repositoryPath
+    );
+    expect(started.exitCode).toBe(0);
+    return JSON.parse(started.stdout) as {
+      lease: { runId: string };
+      workDir: string;
+    };
+  };
+
+  const finalizeQueueRun = (repositoryPath: string, runId: string) => {
+    const finalized = run(
+      [
+        "loop",
+        "finalize",
+        "--run-id",
+        runId,
+        "--agent-id",
+        "controller",
+        "--reason",
+        "Nothing was ready to queue.",
+        "--json",
+      ],
+      repositoryPath
+    );
+    expect(finalized.exitCode).toBe(0);
+    return JSON.parse(finalized.stdout) as {
+      outcome: string;
+      removedWorkDirectories: string[];
+    };
+  };
+
+  const sessionEnvironment = () => {
+    const config = realpathSync(
+      mkdtempSync(join(tmpdir(), "work-directory-config-"))
+    );
+    scratch.push(config);
+    return (id: string) => ({
+      CLAUDE_CODE_SESSION_ID: id,
+      SIMPLE_CHANGES_CONFIG_DIR: config,
+    });
+  };
+
+  test("the first known session claims a helper binding made without one", () => {
+    const { fixture } = repository();
+    const { lease, workDir } = startQueueRun(fixture.root);
+    const session = sessionEnvironment();
+    const ask = (environment: Record<string, string> = {}) =>
+      JSON.parse(
+        run(
+          ["workdir", "--agent-id", "reviewer", "--json"],
+          fixture.root,
+          environment
+        ).stdout
+      ) as { agentId: string; bound: boolean; workDir: string };
+
+    // No session is detected, so the reviewer's new binding is unclaimed.
+    const created = ask();
+    expect(created.bound).toBe(true);
+
+    // The first known session claims it; a second session gets a separate
+    // directory the run does not hold, never the first session's.
+    expect(ask(session("reviewer-one"))).toEqual({
+      agentId: "reviewer",
+      bound: true,
+      workDir: created.workDir,
+    });
+    const other = ask(session("reviewer-two"));
+    expect(other.bound).toBe(false);
+    expect(other.workDir).not.toBe(created.workDir);
+    expect(ask(session("reviewer-one")).workDir).toBe(created.workDir);
+
+    expect(finalizeQueueRun(fixture.root, lease.runId)).toMatchObject({
+      outcome: "completed",
+      removedWorkDirectories: [created.workDir, workDir].sort(byPath),
+    });
+    expect(existsSync(created.workDir)).toBe(false);
+    // The unbound directory is its session's own to remove.
+    expect(existsSync(other.workDir)).toBe(true);
+    expect(
+      run(["workdir", "remove", other.workDir], fixture.root).exitCode
+    ).toBe(0);
+  }, 60_000);
+
+  test("workdir binds and claims under the loop state lock, and reads without it", () => {
+    const { fixture, location } = repository();
+    const { lease, workDir } = startQueueRun(fixture.root);
+    const session = sessionEnvironment();
+    const ask = (agentId: string, environment: Record<string, string> = {}) =>
+      run(
+        ["workdir", "--agent-id", agentId, "--json"],
+        fixture.root,
+        environment
+      );
+    const reviewer = (JSON.parse(ask("reviewer").stdout) as { workDir: string })
+      .workDir;
+
+    withLoopStateLock(location.commonGitDirectory, "test holder", () => {
+      // Binding a new directory and claiming an unclaimed one both wait for
+      // the lock, here for a shortened bound, and then report it busy and
+      // change nothing.
+      const shortWait = { SIMPLE_CHANGES_TEST_WORKDIR_LOCK_WAIT_MS: "400" };
+      for (const refused of [
+        ask("checker", shortWait),
+        ask("reviewer", { ...session("reviewer-session"), ...shortWait }),
+      ]) {
+        expect(refused.exitCode).toBe(EXIT_CODES.unsafe);
+        expect(refused.stderr).toContain("waiting up to 0.4s");
+        expect(refused.stderr).toContain("Active-loop state is busy at");
+      }
+      // A directory the caller already holds needs no lock.
+      const reused = ask("reviewer");
+      expect(reused.exitCode).toBe(0);
+      expect(JSON.parse(reused.stdout)).toMatchObject({
+        bound: true,
+        workDir: reviewer,
+      });
+    });
+    expect(
+      runWorkDirectoryBinding(location, lease.runId, "checker")
+    ).toBeNull();
+    expect(runWorkDirectoryBinding(location, lease.runId, "reviewer")).toEqual({
+      path: reviewer,
+      session: null,
+    });
+    expect(readdirSync(dirname(workDir)).sort()).toEqual(
+      [basename(workDir), basename(reviewer)].sort()
+    );
+
+    // Once the lock is free, the second request sees the first's binding.
+    const first = JSON.parse(ask("checker").stdout) as {
+      bound: boolean;
+      workDir: string;
+    };
+    expect(first.bound).toBe(true);
+    expect(JSON.parse(ask("checker").stdout)).toMatchObject({
+      bound: true,
+      workDir: first.workDir,
+    });
+  }, 60_000);
+
+  test("workdir waits out a busy lock that is released within its bound", async () => {
+    const { fixture, location } = repository();
+    const { lease } = startQueueRun(fixture.root);
+    const logs = realpathSync(
+      mkdtempSync(join(tmpdir(), "work-directory-log-"))
+    );
+    scratch.push(logs);
+    const stderrPath = join(logs, "stderr.txt");
+    const stderr = openSync(stderrPath, "w");
+    const children: ReturnType<typeof spawn>[] = [];
+    try {
+      // Hold the lock, as a controller's `loop exec` does, until the
+      // request reports that it is waiting, then release it.
+      withLoopStateLock(location.commonGitDirectory, "test holder", () => {
+        const child = spawn(
+          [
+            process.execPath,
+            cliPath,
+            "workdir",
+            "--agent-id",
+            "checker",
+            "--json",
+            "--repo",
+            fixture.root,
+          ],
+          {
+            env: { ...process.env, SIMPLE_CHANGES_SKILL_ROOTS: "" },
+            stderr,
+            stdout: "pipe",
+          }
+        );
+        children.push(child);
+        const deadline = Date.now() + 50_000;
+        while (
+          !readFileSync(stderrPath, "utf8").includes("waiting up to 30s")
+        ) {
+          if (Date.now() > deadline) {
+            throw new Error("workdir never reported waiting for the lock");
+          }
+          sleepSync(50);
+        }
+      });
+      const [child] = children;
+      if (!child) {
+        throw new Error("Expected the workdir request to start.");
+      }
+      const [exitCode, stdout] = await Promise.all([
+        child.exited,
+        new Response(child.stdout as ReadableStream).text(),
+      ]);
+      expect(exitCode).toBe(0);
+      const waited = JSON.parse(stdout) as { bound: boolean; workDir: string };
+      expect(waited.bound).toBe(true);
+      expect(runWorkDirectoryBinding(location, lease.runId, "checker")).toEqual(
+        { path: waited.workDir, session: null }
+      );
+    } finally {
+      await Promise.all(children.map((child) => child.exited));
+      closeSync(stderr);
+    }
+  }, 60_000);
+
+  test("concurrent first requests for one agent ID never lose a binding", async () => {
+    const { fixture } = repository();
+    const { lease, workDir } = startQueueRun(fixture.root);
+    const request = async () => {
+      const child = spawn(
+        [
+          process.execPath,
+          cliPath,
+          "workdir",
+          "--agent-id",
+          "reviewer",
+          "--json",
+          "--repo",
+          fixture.root,
+        ],
+        {
+          env: { ...process.env, SIMPLE_CHANGES_SKILL_ROOTS: "" },
+          stderr: "pipe",
+          stdout: "pipe",
+        }
+      );
+      const [exitCode, stdout, stderr] = await Promise.all([
+        child.exited,
+        new Response(child.stdout).text(),
+        new Response(child.stderr).text(),
+      ]);
+      return { exitCode, stderr, stdout };
+    };
+
+    const results = await Promise.all([
+      request(),
+      request(),
+      request(),
+      request(),
+    ]);
+    const reported = new Set<string>();
+    for (const result of results) {
+      if (result.exitCode === 0) {
+        const parsed = JSON.parse(result.stdout) as {
+          bound: boolean;
+          workDir: string;
+        };
+        expect(parsed.bound).toBe(true);
+        reported.add(parsed.workDir);
+      } else {
+        // A request waits out another's lock; past its bound it is asked to
+        // retry.
+        expect(result.exitCode).toBe(EXIT_CODES.unsafe);
+        expect(result.stderr).toContain("Active-loop state is busy");
+      }
+    }
+    expect(reported.size).toBeGreaterThan(0);
+    const retried = (
+      JSON.parse(
+        run(["workdir", "--agent-id", "reviewer", "--json"], fixture.root)
+          .stdout
+      ) as { workDir: string }
+    ).workDir;
+    expect([...reported]).toEqual([retried]);
+    // No request left a directory behind that the run does not hold.
+    expect(readdirSync(dirname(workDir)).sort()).toEqual(
+      [basename(workDir), basename(retried)].sort()
+    );
+    expect(finalizeQueueRun(fixture.root, lease.runId)).toMatchObject({
+      outcome: "completed",
+      removedWorkDirectories: [retried, workDir].sort(byPath),
+    });
+    expect(readdirSync(dirname(workDir))).toEqual([]);
+  }, 60_000);
+
   test("another session reusing the controller's agent ID gets its own directory", () => {
     const { fixture, location } = repository();
     // A session-bound start records the controller's session; keep that
@@ -642,6 +997,78 @@ describe("work directories through the CLI", () => {
     expect(ask("session-two").bound).toBe(false);
   });
 
+  test("another session on the controller's agent ID never takes a missing or unclaimed binding", () => {
+    const { fixture, location } = repository();
+    const session = sessionEnvironment();
+    const started = run(
+      [
+        "loop",
+        "start",
+        "--mode",
+        "queue",
+        "--agent-id",
+        "controller",
+        "--json",
+      ],
+      fixture.root,
+      session("session-one")
+    );
+    expect(started.exitCode).toBe(0);
+    const { lease } = JSON.parse(started.stdout) as {
+      lease: { runId: string };
+    };
+    const bindings = join(
+      location.commonGitDirectory,
+      "simple-changes",
+      "work-directories",
+      lease.runId
+    );
+    const ask = (id: string) =>
+      JSON.parse(
+        run(
+          ["workdir", "--agent-id", "controller", "--json"],
+          fixture.root,
+          session(id)
+        ).stdout
+      ) as { bound: boolean; workDir: string };
+
+    // The controller's binding is gone, as after a takeover: the other
+    // session asks first, and must not create the binding the controller
+    // would then rebind and share.
+    rmSync(bindings, { force: true, recursive: true });
+    const foreign = ask("session-two");
+    expect(foreign.bound).toBe(false);
+    expect(
+      runWorkDirectoryBinding(location, lease.runId, "controller")
+    ).toBeNull();
+    const rebound = ask("session-one");
+    expect(rebound).toMatchObject({ bound: true });
+    expect(rebound.workDir).not.toBe(foreign.workDir);
+
+    // Nor may it use or claim a binding no session has claimed yet.
+    rmSync(bindings, { force: true, recursive: true });
+    const unclaimed = bindRunWorkDirectory(
+      location,
+      lease.runId,
+      "controller",
+      null,
+      null
+    );
+    const refused = ask("session-two");
+    expect(refused.bound).toBe(false);
+    expect(refused.workDir).not.toBe(unclaimed);
+    expect(
+      runWorkDirectoryBinding(location, lease.runId, "controller")
+    ).toEqual({ path: unclaimed, session: null });
+    expect(ask("session-one")).toMatchObject({
+      bound: true,
+      workDir: unclaimed,
+    });
+    expect(
+      runWorkDirectoryBinding(location, lease.runId, "controller")?.session
+    ).toBe("claude-code:session-one");
+  }, 60_000);
+
   test("loop start removes the directories of runs that ended without a close", () => {
     const { fixture, location } = repository();
     const abandoned = bindRunWorkDirectory(
@@ -669,6 +1096,59 @@ describe("work directories through the CLI", () => {
     });
     expect(existsSync(abandoned)).toBe(false);
   });
+
+  test("prepare-agent binds under its own state lock, for a new or a reused preparation", () => {
+    const { fixture, location } = repository();
+    const { lease } = startQueueRun(fixture.root);
+    const bound: string[] = [];
+    const bindUnderLock = (agent: { agentId: string; runId: string }) => {
+      // Preparation still holds the lock, so no `workdir` request can bind
+      // a second directory for this agent in between.
+      expect(() =>
+        withLoopStateLock(location.commonGitDirectory, "probe", () => null)
+      ).toThrow("Active-loop state is busy");
+      bound.push(
+        bindRunWorkDirectory(location, agent.runId, agent.agentId, null, null)
+      );
+    };
+    const created = prepareAgentWorktree(
+      fixture.root,
+      lease.runId,
+      "author",
+      "unit",
+      bindUnderLock
+    );
+    const reused = prepareAgentWorktree(
+      fixture.root,
+      lease.runId,
+      "author",
+      "unit",
+      bindUnderLock
+    );
+    expect([created.created, reused.created]).toEqual([true, false]);
+    expect(bound).toHaveLength(2);
+    expect(bound[1]).toBe(bound[0]);
+
+    // The CLI reports that same binding as the author's work directory.
+    const prepared = run(
+      [
+        "prepare-agent",
+        "--run-id",
+        lease.runId,
+        "--agent-id",
+        "author",
+        "--purpose",
+        "unit",
+        "--json",
+      ],
+      fixture.root
+    );
+    expect(prepared.exitCode).toBe(0);
+    expect(JSON.parse(prepared.stdout)).toMatchObject({
+      created: false,
+      workDir: bound[0],
+    });
+  }, 60_000);
 
   test("a prepared author's own session claims its directory", () => {
     const { fixture } = repository();

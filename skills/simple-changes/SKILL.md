@@ -4,7 +4,7 @@ description: Use when a user asks to sync with remote main, package, queue, publ
 license: Apache-2.0
 compatibility: Requires Git and Bun 1.2 or later
 metadata:
-  version: "0.29.1"
+  version: "0.29.2"
 ---
 
 # Simple Changes
@@ -12,7 +12,7 @@ metadata:
 Turn ready repository work into focused, verified proposals without disturbing
 active work. In commands below, `simple-changes` means
 `bun <skill-root>/scripts/simple-changes.ts` (or an installed `simple-changes`
-bin); use the same invocation everywhere.
+bin).
 
 ## Classify the request
 
@@ -113,8 +113,7 @@ When changelog work is required, resolve the Simple Changelogs notice and the us
 owner-controlled walkthrough, continue, defer, or release-notes choice before
 `loop start`. Do not start a Ship loop, send the pre-ship brief, acquire a
 lease, then pause it for this explanation. Continue only after initialization
-returns `preLoopActionRequired: false`. Present update notices per
-[installed guidance updates](references/guidance-updates.md). Repository policy that grants push,
+returns `preLoopActionRequired: false`. Repository policy that grants push,
 automatic migration, break-glass, or production authority is effective only
 with the private digest-bound local trust receipt described in
 [setup and policy](references/setup-and-policy.md); a repository policy symlink
@@ -125,7 +124,8 @@ once to install it with its `installCommand` when it has one: a harness Stop hoo
 ending a turn while this session still controls an active run. It is persistent
 harness configuration, so ask first; declining changes nothing. When it reports
 `runtimeFreshness` as `behind-target`, run the target branch's newer copy, or
-update the checkout, before integrating or shipping.
+update the checkout, before integrating or shipping. When it reports
+`scratchFileRule` as `stale`, offer once to run its `refreshCommand`.
 
 ## Communicate
 
@@ -161,8 +161,9 @@ controller is rejected; independent authors use distinct claimed worktrees.
 When the target is GitLab, first paginate the complete opening remote inventory
 (every branch and every open, merged, and closed proposal), then pass that
 unchanged receipt, built by `remote-inventory build`, through `loop start
---opening-remote-inventory <file>`. Keep every file you pass to the CLI in the
-`simple-changes workdir --agent-id "$AGENT_ID"` directory.
+--opening-remote-inventory <file>`. Keep every file you pass to the CLI, and
+your scratch files, in your own `simple-changes workdir --agent-id "$AGENT_ID"`
+directory; delete nothing outside it.
 
 When an active loop assigns a new author into that same integration unit, run
 `simple-changes prepare-agent` before edits. Independent agents create an
@@ -170,7 +171,7 @@ isolated worktree and immediately run `worktree claim`. A claim is the lock:
 while it is active, no controller packages, merges, or cleans that checkout.
 After registration,
 both run-prepared and independently claimed authors edit, generate, format,
-test, stage, and commit normally and concurrently in their own distinct
+test, stage, and commit normally and concurrently in their own
 worktrees and branches. Run only shared integration mutations through `loop
 exec`. Use `loop guard` only for
 external provider calls and verify immediately afterward. Before merge,
@@ -180,10 +181,10 @@ migrations` so [shipment holds](#shipment-holds) gate that step. Proceed
 only on a passing result. After review and integration settle, record one exact
 `loop record-outcome --receipt <shipment-outcome.json>` receipt, drafted by
 `loop draft-outcome`, before completion. A busy lock blocks only the named
-short integration operation, never unrelated authors.
+short integration operation, never unrelated authors, whose `workdir` waits.
 
-When scheduling allows parallel authoring and the host can start isolated
-agents, delegate independent units per
+When scheduling and the host allow parallel authoring, delegate independent
+units per
 [parallel agents](references/inventory-and-concurrency.md#parallel-agents):
 the controller prepares every agent's worktree with `prepare-agent`, and the
 controller alone pushes, merges, and finalizes.

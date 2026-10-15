@@ -22,6 +22,8 @@ import {
   SCHEMA_NAMES,
   validateSchema,
 } from "../../../skills/simple-changes/scripts/lib/schema.ts";
+import { refreshScratchFileRule } from "../../../skills/simple-changes/scripts/lib/scratch-file-rule.ts";
+import { locateWorkDirectoryRepository } from "../../../skills/simple-changes/scripts/lib/work-directory.ts";
 import {
   createTestRepository,
   git,
@@ -2786,6 +2788,276 @@ while (!existsSync(process.env.SIMPLE_CHANGES_TEST_RELEASE_PATH)) {
 
     const rejected = setupWith(["--scratch-file-rule", "later"]);
     expect(rejected.exitCode).toBe(EXIT_CODES.usage);
+  });
+
+  test("initialize reports a stale scratch-file rule that refresh rewrites in place", () => {
+    const fixture = createTestRepository();
+    repositories.push(fixture);
+    const home = resolve(fixture.base, "home");
+    const globalPath = resolve(home, ".codex/AGENTS.md");
+    writeFixture(
+      home,
+      ".codex/AGENTS.md",
+      "# Global\n\n<!-- simple-changes:scratch-files:start -->\nDelete them when the task ends.\n<!-- simple-changes:scratch-files:end -->\n"
+    );
+    writeFixture(home, ".claude/CLAUDE.md", "# Claude global\n");
+    writeFixture(fixture.root, "AGENTS.md", "# Agent guidance\n");
+    const env = {
+      CLAUDE_CONFIG_DIR: resolve(home, ".claude"),
+      CODEX_HOME: resolve(home, ".codex"),
+      SIMPLE_CHANGES_HARNESS_ROOTS: home,
+    };
+    const cli = (args: string[]) =>
+      spawnSync(
+        [process.execPath, cliPath, ...args, "--json", "--repo", fixture.root],
+        { env, stderr: "pipe", stdout: "pipe" }
+      );
+    const reported = () =>
+      (
+        JSON.parse(
+          decoder.decode(cli(["initialize", "--mode", "preview"]).stdout)
+        ) as {
+          scratchFileRule: {
+            targets: {
+              path: string;
+              refreshCommand: string | null;
+              scope: string;
+              status: string;
+            }[];
+          };
+        }
+      ).scratchFileRule.targets;
+
+    const before = reported();
+    expect(before.map((target) => [target.scope, target.status])).toEqual([
+      ["repository", "absent"],
+      ["user", "stale"],
+      ["user", "absent"],
+    ]);
+    const [, stale] = before;
+    if (!stale) {
+      throw new Error("Expected the stale global target.");
+    }
+    expect(stale.path).toBe(globalPath);
+    expect(stale?.refreshCommand).toContain(
+      `scratch-file-rule refresh --instruction-file ${globalPath}`
+    );
+    expect(before.filter((target) => target.refreshCommand)).toEqual([stale]);
+
+    const refreshed = cli([
+      "scratch-file-rule",
+      "refresh",
+      "--instruction-file",
+      globalPath,
+    ]);
+    expect(refreshed.exitCode).toBe(0);
+    expect(JSON.parse(decoder.decode(refreshed.stdout))).toEqual({
+      changed: true,
+      path: globalPath,
+      scope: "user",
+      status: "stale",
+      written: true,
+    });
+    const contents = readFileSync(globalPath, "utf8");
+    expect(contents.startsWith("# Global\n\n")).toBe(true);
+    expect(contents).toContain("one scratch folder of your own");
+    expect(contents).not.toContain("Delete them when the task ends.");
+    expect(reported()[1]).toMatchObject({
+      refreshCommand: null,
+      status: "current",
+    });
+
+    // A second refresh changes nothing, and a file without the rule is
+    // refused rather than given one.
+    expect(
+      JSON.parse(
+        decoder.decode(
+          cli([
+            "scratch-file-rule",
+            "refresh",
+            "--instruction-file",
+            globalPath,
+          ]).stdout
+        )
+      )
+    ).toMatchObject({ changed: false, status: "current", written: false });
+    const absent = cli([
+      "scratch-file-rule",
+      "refresh",
+      "--instruction-file",
+      resolve(fixture.root, "AGENTS.md"),
+    ]);
+    expect(absent.exitCode).toBe(EXIT_CODES.usage);
+    expect(decoder.decode(absent.stderr)).toContain(
+      "setup --scratch-file-rule add"
+    );
+    expect(readFileSync(resolve(fixture.root, "AGENTS.md"), "utf8")).toBe(
+      "# Agent guidance\n"
+    );
+  });
+
+  test("refresh leaves a checkout's rule alone while a run holds the repository", () => {
+    const fixture = createTestRepository();
+    repositories.push(fixture);
+    const home = resolve(fixture.base, "home");
+    const stale =
+      "# Agent guidance\n\n<!-- simple-changes:scratch-files:start -->\nDelete them when the task ends.\n<!-- simple-changes:scratch-files:end -->\n";
+    writeFixture(fixture.root, "AGENTS.md", stale);
+    git(fixture.root, ["add", "AGENTS.md"]);
+    git(fixture.root, ["commit", "-q", "-m", "Add agent guidance"]);
+    // A linked checkout's file falls outside the primary checkout, so it has
+    // user scope, but the run preserves it all the same.
+    const linked = resolve(fixture.base, "linked");
+    git(fixture.root, ["worktree", "add", "-q", "-b", "linked", linked]);
+    const globalPath = resolve(home, ".codex/AGENTS.md");
+    writeFixture(home, ".codex/AGENTS.md", stale);
+    const cli = (args: string[]) =>
+      spawnSync(
+        [process.execPath, cliPath, ...args, "--json", "--repo", fixture.root],
+        {
+          env: {
+            CLAUDE_CONFIG_DIR: resolve(home, ".claude"),
+            CODEX_HOME: resolve(home, ".codex"),
+            SIMPLE_CHANGES_HARNESS_ROOTS: home,
+          },
+          stderr: "pipe",
+          stdout: "pipe",
+        }
+      );
+    const refresh = (path: string) =>
+      cli(["scratch-file-rule", "refresh", "--instruction-file", path]);
+
+    expect(
+      cli(["loop", "start", "--mode", "queue", "--agent-id", "controller"])
+        .exitCode
+    ).toBe(0);
+    for (const path of [
+      resolve(fixture.root, "AGENTS.md"),
+      resolve(linked, "AGENTS.md"),
+    ]) {
+      const refused = refresh(path);
+      expect(refused.exitCode).toBe(EXIT_CODES.unsafe);
+      expect(decoder.decode(refused.stderr)).toContain(
+        "refresh it after the run ends"
+      );
+      expect(readFileSync(path, "utf8")).toBe(stale);
+    }
+
+    // A global file outside every checkout is still refreshed.
+    const refreshed = refresh(globalPath);
+    expect(refreshed.exitCode).toBe(0);
+    expect(JSON.parse(decoder.decode(refreshed.stdout))).toMatchObject({
+      path: globalPath,
+      scope: "user",
+      status: "stale",
+      written: true,
+    });
+    expect(readFileSync(globalPath, "utf8")).toContain(
+      "one scratch folder of your own"
+    );
+  });
+
+  test("refresh reads the checkouts again under its lock", () => {
+    const fixture = createTestRepository();
+    repositories.push(fixture);
+    const stale =
+      "# Agent guidance\n\n<!-- simple-changes:scratch-files:start -->\nDelete them when the task ends.\n<!-- simple-changes:scratch-files:end -->\n";
+    writeFixture(fixture.root, "AGENTS.md", stale);
+    git(fixture.root, ["add", "AGENTS.md"]);
+    git(fixture.root, ["commit", "-q", "-m", "Add agent guidance"]);
+    expect(
+      spawnSync(
+        [
+          process.execPath,
+          cliPath,
+          "loop",
+          "start",
+          "--mode",
+          "queue",
+          "--agent-id",
+          "controller",
+          "--json",
+          "--repo",
+          fixture.root,
+        ],
+        { stderr: "pipe", stdout: "pipe" }
+      ).exitCode
+    ).toBe(0);
+
+    // Refresh locates the repository before its lock. A checkout registered
+    // after that, as prepare-agent registers one, must still be refused.
+    const located = locateWorkDirectoryRepository(fixture.root);
+    const linked = resolve(fixture.base, "linked");
+    git(fixture.root, ["worktree", "add", "-q", "-b", "linked", linked]);
+    expect(located.checkouts).toEqual([fixture.root]);
+    const linkedPath = resolve(linked, "AGENTS.md");
+    expect(() => refreshScratchFileRule(located, linkedPath)).toThrow(
+      "refresh it after the run ends"
+    );
+    expect(readFileSync(linkedPath, "utf8")).toBe(stale);
+  });
+
+  test("initialize reports a stale AGENTS.md rule beside a linked CLAUDE.md", () => {
+    const fixture = createTestRepository();
+    repositories.push(fixture);
+    const home = resolve(fixture.base, "home");
+    const agentsPath = resolve(fixture.root, "AGENTS.md");
+    writeFixture(
+      fixture.root,
+      "AGENTS.md",
+      "# Agent guidance\n\n<!-- simple-changes:scratch-files:start -->\nDelete them when the task ends.\n<!-- simple-changes:scratch-files:end -->\n"
+    );
+    // Many repositories link CLAUDE.md to AGENTS.md. The link is never
+    // inspected, and it must not hide the regular file beside it.
+    symlinkSync("AGENTS.md", resolve(fixture.root, "CLAUDE.md"));
+    const initialize = (json: boolean) =>
+      spawnSync(
+        [
+          process.execPath,
+          cliPath,
+          "initialize",
+          "--mode",
+          "preview",
+          ...(json ? ["--json"] : []),
+          "--repo",
+          fixture.root,
+        ],
+        {
+          env: {
+            CLAUDE_CONFIG_DIR: resolve(home, ".claude"),
+            CODEX_HOME: resolve(home, ".codex"),
+            SIMPLE_CHANGES_HARNESS_ROOTS: home,
+          },
+          stderr: "pipe",
+          stdout: "pipe",
+        }
+      );
+
+    const reported = initialize(true);
+    expect(reported.exitCode).toBe(0);
+    const { scratchFileRule } = JSON.parse(decoder.decode(reported.stdout)) as {
+      scratchFileRule: {
+        targets: {
+          path: string;
+          refreshCommand: string | null;
+          scope: string;
+          status: string;
+        }[];
+      } | null;
+    };
+    expect(scratchFileRule?.targets).toEqual([
+      {
+        path: agentsPath,
+        refreshCommand: expect.stringContaining(
+          `scratch-file-rule refresh --instruction-file ${agentsPath}`
+        ),
+        scope: "repository",
+        status: "stale",
+      },
+    ]);
+    expect(decoder.decode(initialize(false).stdout)).toContain(
+      `Scratch-file rule: stale in ${agentsPath}`
+    );
   });
 
   test("adds a confirmed instruction pointer and gates completed-work handoff", () => {

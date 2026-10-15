@@ -379,6 +379,8 @@ simple-changes prepare-agent --run-id ID --agent-id ID --purpose SLUG
   [--json] [--repo PATH]
 simple-changes workdir --agent-id ID [--json] [--repo PATH]
 simple-changes workdir remove PATH [--json] [--repo PATH]
+simple-changes scratch-file-rule refresh --instruction-file PATH
+  [--json] [--repo PATH]
 simple-changes release-notes [--check] [--json] [--repo PATH] [--version VERSION]
 simple-changes negotiate-changelog CAPABILITIES_FILE [--json]
 simple-changes validate-changelog-transaction REQUEST_FILE RECEIPT_FILE [--prior-receipt FILE] [--json]
@@ -607,11 +609,21 @@ For a task that will preserve multiple UI iterations, add `--ui-artifacts` and
 `--ui-versioning repository|number-and-date|date-only|number-only`.
 
 Add `--scratch-file-rule add` to also write an optional managed rule, in its
-own block, that tells every agent to keep scratch files, captured output, proof
-bundles, and handoff notes in a private temporary directory and delete them
-when the task ends. During a run, `simple-changes workdir --agent-id ID` prints
-that directory for the files an agent passes to the CLI, and a clean
-finalization removes it.
+own block, that gives every agent one scratch folder of its own for scratch
+files, captured output, proof bundles, and handoff notes, outside every project
+folder: the folder its brief names, the work directory a Simple Changes run
+reports, or a new folder under the session's scratch directory or the system
+temporary directory. An agent that starts another agent creates and names a
+folder for it, or names the one a Simple Changes run prepared for it, and when
+the task ends each agent deletes exactly its own folder, never another agent's
+and never by pattern across a shared directory, and leaves a folder a Simple
+Changes run reported for the run to remove.
+During a run, `simple-changes workdir --agent-id ID` prints that folder for the
+files an agent passes to the CLI, `prepare-agent` reports one per delegated
+author, and a clean finalization removes them. The block's markers never
+change, so `initialize` reports a block an earlier release wrote as `stale`,
+with a `scratch-file-rule refresh --instruction-file PATH` command that
+rewrites it in place; setup with the flag does the same.
 
 Even an automatic ship preference does not authorize remote migrations,
 backfills, secrets or environment changes, DNS changes, store releases, or

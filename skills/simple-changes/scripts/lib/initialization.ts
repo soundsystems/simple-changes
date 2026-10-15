@@ -91,6 +91,20 @@ export interface InitializationStatus {
     targetRef: string | null;
     targetVersion: string | null;
   };
+  /**
+   * The scratch-file managed block in each discovered instruction file: the
+   * repository's AGENTS.md or CLAUDE.md and the harnesses' global files. A
+   * `stale` block, written by an older release, carries the command that
+   * rewrites it in place with the user's agreement.
+   */
+  scratchFileRule?: {
+    targets: Array<{
+      path: string;
+      refreshCommand: string | null;
+      scope: "repository" | "user";
+      status: "absent" | "current" | "invalid" | "stale";
+    }>;
+  } | null;
   shippingMode: RepoPolicy["shippingMode"];
   /** The detected harness's turn-end Stop hook, or null outside a harness. */
   turnEndGuard?: {

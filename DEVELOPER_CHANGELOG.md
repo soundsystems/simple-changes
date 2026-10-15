@@ -72,7 +72,8 @@
   (xhigh) found no bypass; it corrected wording that said a reviewer in a
   completed record's session is always rejected (only the vetoes the record
   carried remain) and that every completion moves the digest, and asked for
-  the replay-veto and multi-commit refusal tests.
+  the replay-veto and multi-commit refusal tests. Round 3 (xhigh) was clean
+  apart from one code comment repeating the session claim, now corrected.
 <!-- simple-changelogs-signature agent="Claude Opus 5.5 high" at="2026-10-15T16:39:51-05:00" -->
 
 ## 0.29.2 - 2026-10-15

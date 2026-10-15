@@ -1842,8 +1842,8 @@ export interface AcceptanceDecision {
 }
 
 // A same-executor veto reads every recorded author, so a completion never
-// removes one: a reviewer sharing a completed record's session is still the
-// same executor. Unknown evidence and diversity read the effective authors,
+// removes one: any reviewer a completed record ruled out as the same
+// executor stays ruled out. Unknown evidence and diversity read the effective authors,
 // where a completion supplies the instance and model its record lacked.
 const identityFailure = (
   input: AcceptanceInput,

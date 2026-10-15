@@ -13,16 +13,17 @@
   review ledger, and a completion record names it, so it no longer leaves
   independence or model diversity unknown.
 - Completing an attestation never weakens independence. A reviewer that
-  shares the earlier attestation's session or instance is still rejected,
-  every other author still counts on its own, and a completion applies only
+  the earlier attestation ruled out as the same executor, such as one in
+  its session with no instance of its own, is still rejected, every other
+  author still counts on its own, and a completion applies only
   to its own commit, never to that commit's replay sources. It is refused
   for a replay, without an executing session, when nothing is missing, and
   when another instance or model already appears under that session and
   agent ID; such a record appearing later voids the completion. A
   replacement agent that reuses an agent ID attests without the flag and
   stays a separate author.
-- A recorded completion gives every proposal head that contains the commit
-  a new authors digest, so reviews recorded before it stop counting and the
+- When a completion changes a proposal head's authors, the head gets a new
+  authors digest, so reviews recorded before it stop counting and the
   proposal needs a fresh review.
 - A review ledger that holds a completion needs Simple Changes 0.30.0 or
   later. Earlier versions report it as malformed and block review until

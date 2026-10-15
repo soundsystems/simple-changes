@@ -3297,6 +3297,28 @@ describe("identity completion", () => {
     expect(validateReviewLedger(crossed).reason).toBe("ledger-malformed");
   });
 
+  test("a completed record's veto still reaches a head two replay links away", () => {
+    const D = fakeSha(23);
+    const ledger = emptyReviewLedger();
+    attestInMemory(ledger, S, partial());
+    attestInMemory(ledger, S, complete());
+    ledger.completions = { [S]: [completion(complete(), [partial()])] };
+    replayInMemory(ledger, C, [S], "verified");
+    replayInMemory(ledger, D, [C], "verified");
+    addHead(ledger, D, [D]);
+    const reason = (reviewer: RuntimeIdentity, adversarial: boolean) =>
+      decide(ledger, D, reviewer, { adversarial }).acceptanceReason;
+    for (const adversarial of [true, false]) {
+      expect(reason(REVIEWER, adversarial)).toBeNull();
+      expect(
+        reason(
+          { ...REVIEWER, instance: "sub", session: "thread-owner" },
+          adversarial
+        )
+      ).toBe("reviewer-not-independent");
+    }
+  });
+
   test("the packaged schema accepts a completion and refuses an unknown key in one", () => {
     const schema = JSON.parse(readFileSync(schemaPath, "utf8")) as Record<
       string,
@@ -3396,7 +3418,25 @@ describe("identity completion", () => {
         instance: "domain_db_preview",
       })
     ).toThrow("identity-completion-unanchored");
-    expect(readFileSync(path, "utf8")).toBe(unchanged);
+    // A second commit with nothing to complete refuses the whole command.
+    const second = commitFile(run.author, "b.txt", "b\n");
+    attestCommits({
+      ...owner,
+      agent: "GPT-6",
+      commits: [second],
+      instance: "domain_db_preview",
+    });
+    const withSecond = readFileSync(path, "utf8");
+    expect(() =>
+      attestCommits({
+        ...owner,
+        agent: "GPT-6",
+        commits: [commit, second],
+        completeIdentity: true,
+        instance: "domain_db_preview",
+      })
+    ).toThrow(`identity-completion-unmatched: ${second}`);
+    expect(readFileSync(path, "utf8")).toBe(withSecond);
     const completed = attestCommits({
       ...owner,
       agent: "GPT-6",

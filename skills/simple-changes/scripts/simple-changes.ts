@@ -3336,7 +3336,7 @@ const renderAttestation = (result: AuthorAttestResult): string => {
   );
   for (const { commit, completes, status } of result.completion ?? []) {
     lines.push(
-      `Identity completion (${status}): ${commit}: ${completes.length} earlier attestation${completes.length === 1 ? "" : "s"} from this session and agent id now count as this identity.${status === "recorded" ? " Reviews recorded before this no longer count for heads containing it." : ""}`
+      `Identity completion (${status}): ${commit}: ${completes.length} earlier attestation${completes.length === 1 ? "" : "s"} from this session and agent id now count as this identity.${status === "recorded" ? " A head whose authors this changes gets a new authors digest, and reviews recorded before no longer count for it." : ""}`
     );
   }
   const { replay } = result;

@@ -100,7 +100,7 @@ repairs it.
   anywhere in a commit's ancestry counts at once. An author may complete its
   own earlier attestation that lacked an instance or model
   (`--complete-identity`); the earlier record stays in the ledger and still
-  rules out a reviewer that shares its session or instance, but its missing
+  rules out any reviewer it ruled out as the same executor, but its missing
   instance or model no longer leaves independence or diversity unknown. No
   other commit or replay source changes.
 - **Coverage.** `proposal record-authors` binds a head to the effective

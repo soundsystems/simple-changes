@@ -33,8 +33,11 @@
   any recorded author is the same executor, then `independence-unproven`
   when any effective author is unknown; diversity, preflight
   `adversarialOutcome`, coverage, and the authors digest read the effective
-  authors, so a recorded completion moves the digest and earlier accepted
-  attempts fail approval with `authors-digest-changed`.
+  authors, so a completion that changes a head's effective authors moves
+  its digest and earlier accepted attempts fail approval with
+  `authors-digest-changed`. One that changes nothing (a replay source still
+  contributes the completed identity) leaves the digest, and approval still
+  rechecks the recorded vetoes.
 - Validation: `validateReviewLedger` accepts `completions` only when
   present, and `emptyReviewLedger` still omits it, so a ledger without a
   completion keeps the shape 0.29.x reads. `checkCompletions` requires each
@@ -58,13 +61,18 @@
   the sentinel, same instance, same session with or without a reviewer
   instance under both adversarial settings, same reported model, unknown
   reviewer executor, a replay source's author, a second author whose model
-  matches the reviewer, a later conflicting record, and refusals that leave
-  the ledger file byte-identical.
+  matches the reviewer, a later conflicting record, a recorded veto reached
+  through two replay links, and refusals, including one on the second of two
+  commits, that leave the ledger file byte-identical.
 - Guidance 30 adds one behavior change and one notice bullet, and needs no
   answer.
 - Review: GPT-6.1 Sol round 1 (high) found one blocking issue, a completion
   removing the session veto for a reviewer with its own instance, fixed
-  with `recordedAuthors`, plus a missing unknown-harness control.
+  with `recordedAuthors`, plus a missing unknown-harness control. Round 2
+  (xhigh) found no bypass; it corrected wording that said a reviewer in a
+  completed record's session is always rejected (only the vetoes the record
+  carried remain) and that every completion moves the digest, and asked for
+  the replay-veto and multi-commit refusal tests.
 <!-- simple-changelogs-signature agent="Claude Opus 5.5 high" at="2026-10-15T16:39:51-05:00" -->
 
 ## 0.29.2 - 2026-10-15

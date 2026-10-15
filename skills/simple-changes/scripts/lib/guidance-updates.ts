@@ -931,7 +931,7 @@ const GUIDANCE_UPDATES: GuidanceUpdateDefinition[] = [
       {
         kind: "behavior",
         summary:
-          "`author attest --complete-identity` lets the agent that made an attestation missing its instance or model complete it from the same executing session, harness, and agent id; the ledger keeps every attestation and adds an optional `completions` record naming the ones completed, which then stop leaving independence or diversity unknown, while a reviewer sharing their session or instance is still rejected. It is refused for a replay, without an executing session, when nothing is missing, and when another instance or model already appears under that session and agent id, and such a record appearing later voids it. Heads containing the commit get a new authors digest, so earlier reviews stop counting, and a runtime before 0.30.0 reads a ledger holding a completion as malformed.",
+          "`author attest --complete-identity` lets the agent that made an attestation missing its instance or model complete it from the same executing session, harness, and agent id; the ledger keeps every attestation and adds an optional `completions` record naming the ones completed, which then stop leaving independence or diversity unknown, while any reviewer they ruled out as the same executor stays ruled out. It is refused for a replay, without an executing session, when nothing is missing, and when another instance or model already appears under that session and agent id, and such a record appearing later voids it. A head whose effective authors change gets a new authors digest, so earlier reviews of it stop counting, and a runtime before 0.30.0 reads a ledger holding a completion as malformed.",
         version: 30,
       },
     ],

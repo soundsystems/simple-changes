@@ -3171,6 +3171,21 @@ describe("identity completion", () => {
     expect(outcome(ledger, { ...REVIEWER, instance: null })).toBe(
       "independence-unproven"
     );
+    // A reviewer sharing the completed record's session keeps that veto even
+    // with an instance of its own, under either setting.
+    for (const adversarial of [true, false]) {
+      expect(
+        outcome(
+          ledger,
+          {
+            ...REVIEWER,
+            instance: "subagent-instance",
+            session: "thread-owner",
+          },
+          adversarial
+        )
+      ).toBe("reviewer-not-independent");
+    }
     expect(outcome(ledger, { ...REVIEWER, agent: "GPT-6" })).toBe(
       "reviewer-not-distinct"
     );
@@ -3222,6 +3237,7 @@ describe("identity completion", () => {
       [partial({ session: "thread-other" }), complete()],
       [partial({ session: null }), complete({ session: null })],
       [partial({ harness: "claude-code" }), complete()],
+      [partial({ harness: null }), complete({ harness: null })],
       [partial({ logicalId: "someone-else" }), complete()],
       [partial({ logicalId: null }), complete({ logicalId: null })],
       [partial({ instance: "instance-x" }), complete()],

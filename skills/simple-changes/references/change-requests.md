@@ -196,8 +196,9 @@ nothing is reconstructed later. Record it whatever `proposalSignatures` says:
    session, with the same `--agent-id`, the values reported now, and
    `--complete-identity`. The ledger keeps every record and adds a
    completion naming the earlier ones, which then stop counting as separate
-   authors; heads containing the commit get a new authors digest, so reviews
-   recorded before stop counting. Only the agent that made the earlier
+   authors, though a reviewer sharing their session is still the same
+   executor; heads containing the commit get a new authors digest, so
+   reviews recorded before stop counting. Only the agent that made the earlier
    attestation may complete it: a replacement agent reusing the agent id
    attests without the flag and stays a separate author. It is refused for
    a replay, without an executing session, when no record from your

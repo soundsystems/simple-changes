@@ -1321,6 +1321,8 @@ interface LedgerResolver {
   authors: (commit: string) => Attestation[];
   gaps: (commit: string) => CommitGaps;
   ownGaps: (commit: string) => ReplayRecord["ownGaps"] | null;
+  /** Every attested author, records a completion names included. */
+  recordedAuthors: (commit: string) => Attestation[];
   /** Commits evaluated so far, each exactly once, in evaluation order. */
   visited: readonly string[];
 }
@@ -1339,6 +1341,7 @@ const sortedGaps = (
 interface ResolvedNode {
   authors: ReadonlyMap<string, Attestation>;
   own: ReplayRecord["ownGaps"] | null;
+  recorded: ReadonlyMap<string, Attestation>;
   uncovered: ReadonlySet<string>;
   unresolved: ReadonlySet<string>;
 }
@@ -1476,6 +1479,7 @@ const createResolver = (ledger: ReviewLedger): LedgerResolver => {
     const record = ownValue(ledger.replays, commit);
     // A completion never empties the list: its completer is kept.
     const own = effectiveOwnAttestations(ledger, commit);
+    const recordedOwn = ownValue(ledger.attestations, commit) ?? [];
     const sources = (record?.sources ?? []).map(
       (source) => memo.get(source) as ResolvedNode
     );
@@ -1483,10 +1487,20 @@ const createResolver = (ledger: ReviewLedger): LedgerResolver => {
       sources.map((source) => source.authors),
       own
     );
+    // Without a completion anywhere in the ancestry both maps are one.
+    const recorded =
+      own === recordedOwn &&
+      sources.every((source) => source.recorded === source.authors)
+        ? authors
+        : unionAuthors(
+            sources.map((source) => source.recorded),
+            recordedOwn
+          );
     if (!record) {
       return {
         authors,
         own: null,
+        recorded,
         uncovered: EMPTY_SET,
         unresolved: EMPTY_SET,
       };
@@ -1507,6 +1521,7 @@ const createResolver = (ledger: ReviewLedger): LedgerResolver => {
     return {
       authors,
       own: ownGaps,
+      recorded,
       uncovered: unionSets(
         sources.map((source) => source.uncovered),
         [...(ownGaps.uncoveredEdit ? [commit] : []), ...inheritedUncovered]
@@ -1518,23 +1533,32 @@ const createResolver = (ledger: ReviewLedger): LedgerResolver => {
     };
   };
   const sortedAuthors = new Map<string, Attestation[]>();
+  const sortedRecorded = new Map<string, Attestation[]>();
+  const sorted = (
+    cache: Map<string, Attestation[]>,
+    commit: string,
+    map: ReadonlyMap<string, Attestation>
+  ): Attestation[] => {
+    const known = cache.get(commit);
+    if (known) {
+      return known;
+    }
+    const list = [...map.entries()]
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([, attestation]) => attestation);
+    cache.set(commit, list);
+    return list;
+  };
   return {
-    authors: (commit) => {
-      const known = sortedAuthors.get(commit);
-      if (known) {
-        return known;
-      }
-      const sorted = [...resolveNode(commit).authors.entries()]
-        .sort(([left], [right]) => left.localeCompare(right))
-        .map(([, attestation]) => attestation);
-      sortedAuthors.set(commit, sorted);
-      return sorted;
-    },
+    authors: (commit) =>
+      sorted(sortedAuthors, commit, resolveNode(commit).authors),
     gaps: (commit) => {
       const node = resolveNode(commit);
       return sortedGaps(node.unresolved, node.uncovered);
     },
     ownGaps: (commit) => resolveNode(commit).own,
+    recordedAuthors: (commit) =>
+      sorted(sortedRecorded, commit, resolveNode(commit).recorded),
     visited,
   };
 };
@@ -1561,6 +1585,12 @@ export interface HeadCoverage {
   authorsDigest: string;
   fullyCovered: boolean;
   gaps: Record<string, CommitGaps>;
+  /**
+   * Every attested author per commit, records a completion names included.
+   * Same-executor vetoes read these; nothing else does, so the digest is
+   * unchanged by them.
+   */
+  recordedAuthors: Record<string, Attestation[]>;
   unattributed: string[];
 }
 
@@ -1584,11 +1614,13 @@ const computeCoverage = (
   commits: readonly string[]
 ): HeadCoverage => {
   const authors: Record<string, Attestation[]> = {};
+  const recordedAuthors: Record<string, Attestation[]> = {};
   const gaps: Record<string, CommitGaps> = {};
   const unattributed: string[] = [];
   for (const commit of commits) {
     const resolved = resolver.authors(commit);
     authors[commit] = resolved;
+    recordedAuthors[commit] = resolver.recordedAuthors(commit);
     if (resolved.length === 0) {
       unattributed.push(commit);
     }
@@ -1623,6 +1655,7 @@ const computeCoverage = (
     authorsDigest,
     fullyCovered: unattributed.length === 0 && Object.keys(gaps).length === 0,
     gaps,
+    recordedAuthors,
     unattributed: sortedUnattributed,
   };
 };
@@ -1773,9 +1806,12 @@ const diversity = (
   return sameModelName(reviewerModel, authorModel) ? "same" : "distinct";
 };
 
-const uniqueAuthors = (coverage: HeadCoverage): Attestation[] => {
+const uniqueAuthors = (
+  coverage: HeadCoverage,
+  lists: Record<string, Attestation[]> = coverage.authors
+): Attestation[] => {
   const unique = new Map<string, Attestation>();
-  for (const list of Object.values(coverage.authors)) {
+  for (const list of Object.values(lists)) {
     for (const author of list) {
       unique.set(identityKey(author), author);
     }
@@ -1805,18 +1841,26 @@ export interface AcceptanceDecision {
   coverageWaiverId: string | null;
 }
 
+// A same-executor veto reads every recorded author, so a completion never
+// removes one: a reviewer sharing a completed record's session is still the
+// same executor. Unknown evidence and diversity read the effective authors,
+// where a completion supplies the instance and model its record lacked.
 const identityFailure = (
   input: AcceptanceInput,
-  authors: Attestation[]
+  authors: Attestation[],
+  recorded: Attestation[]
 ): AcceptanceReason | null => {
   const reviewer = input.attempt.verified;
-  const executor = authors.map((author) =>
-    executorIndependence(reviewer, author)
-  );
-  if (executor.includes("same")) {
+  if (
+    recorded.some((author) => executorIndependence(reviewer, author) === "same")
+  ) {
     return "reviewer-not-independent";
   }
-  if (executor.includes("unknown")) {
+  if (
+    authors.some(
+      (author) => executorIndependence(reviewer, author) === "unknown"
+    )
+  ) {
     return "independence-unproven";
   }
   if (!input.adversarial) {
@@ -1878,7 +1922,11 @@ export const evaluateReviewAcceptance = (
   } else if (input.attempt.verdict === "failed") {
     reason = "review-failed";
   } else if (decision.covered) {
-    reason = identityFailure(input, uniqueAuthors(coverage));
+    reason = identityFailure(
+      input,
+      uniqueAuthors(coverage),
+      uniqueAuthors(coverage, coverage.recordedAuthors)
+    );
   } else {
     reason = "coverage-incomplete";
   }

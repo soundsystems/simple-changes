@@ -97,7 +97,11 @@ repairs it.
 - **Attestation.** Authors attest every commit, and replays link rewritten
   commits to their sources ([ledger steps](change-requests.md#review-ledger-steps)).
   Effective authors follow those links at read time, so a later attestation
-  anywhere in a commit's ancestry counts at once.
+  anywhere in a commit's ancestry counts at once. An author may complete its
+  own earlier attestation that lacked an instance or model
+  (`--complete-identity`); the earlier record stays in the ledger but no
+  longer counts as a separate author of that commit, and no other commit
+  or replay source changes.
 - **Coverage.** `proposal record-authors` binds a head to the effective
   authors of its range and computes `authorsDigest`. A commit with no author,
   a replay source with none, and an inconclusive replay nobody attested are

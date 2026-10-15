@@ -87,6 +87,23 @@ export interface Attestation extends RuntimeIdentity {
   recordedAt: string;
 }
 
+/** One attestation's identity, exactly as it was recorded. */
+export interface AttestedIdentity extends RuntimeIdentity {
+  logicalId: string | null;
+}
+
+/**
+ * The executing author's own statement that earlier attestations on this
+ * commit, recorded in the same session and harness under the same agent id,
+ * were its own and lacked an instance or model it now reports. The completer
+ * is itself an attestation on the commit; nothing is edited or removed.
+ */
+export interface IdentityCompletion extends RuntimeIdentity {
+  completes: AttestedIdentity[];
+  logicalId: string;
+  recordedAt: string;
+}
+
 export interface CommitGaps {
   uncoveredEdits: string[];
   unresolvedSources: string[];
@@ -151,6 +168,8 @@ export interface ProposalRecord {
 
 export interface ReviewLedger {
   attestations: Record<string, Attestation[]>;
+  /** Present only once a completion is recorded, so older readers still read other ledgers. */
+  completions?: Record<string, IdentityCompletion[]>;
   proposals: Record<string, ProposalRecord>;
   replays: Record<string, ReplayRecord>;
   schemaVersion: 1;
@@ -409,6 +428,124 @@ const checkAttestations = (checker: Checker, value: unknown): void => {
       const key = identityKey(entry as unknown as Attestation);
       checker.check(!seen.has(key), entryPath, "repeats an identity");
       seen.add(key);
+    }
+  }
+};
+
+// A completion is checked against the attestations it names: its completer
+// and every completed identity are attestations on the same commit, and the
+// completer refines each one. Shape errors stop the comparison for that
+// entry, so the comparison only ever reads valid identities.
+const checkCompletedIdentity = (
+  checker: Checker,
+  value: unknown,
+  path: string
+): value is AttestedIdentity => {
+  if (!checker.object(value, path)) {
+    return false;
+  }
+  const before = checker.errors.length;
+  checker.keys(value, [...IDENTITY_KEYS, "logicalId"], path);
+  checker.identity(value, path);
+  checker.check(
+    value.logicalId === null || isLogicalId(value.logicalId),
+    `${path}.logicalId`,
+    "must be an agent id or null"
+  );
+  return checker.errors.length === before;
+};
+
+const checkCompletion = (
+  checker: Checker,
+  entry: unknown,
+  path: string,
+  attested: ReadonlySet<string>
+): string | null => {
+  if (!checker.object(entry, path)) {
+    return null;
+  }
+  const before = checker.errors.length;
+  checker.keys(
+    entry,
+    [...IDENTITY_KEYS, "completes", "logicalId", "recordedAt"],
+    path
+  );
+  checker.identity(entry, path);
+  checker.check(
+    isLogicalId(entry.logicalId),
+    `${path}.logicalId`,
+    "must be an agent id"
+  );
+  checker.check(
+    isTimestamp(entry.recordedAt),
+    `${path}.recordedAt`,
+    "must be a date-time"
+  );
+  if (!Array.isArray(entry.completes) || entry.completes.length === 0) {
+    checker.check(false, `${path}.completes`, "must be a non-empty array");
+    return null;
+  }
+  if (checker.errors.length !== before) {
+    return null;
+  }
+  const completer = entry as unknown as IdentityCompletion;
+  checker.check(
+    attested.has(identityKey(completer)),
+    path,
+    "names a completer with no attestation on this commit"
+  );
+  const completed = new Set<string>();
+  for (const [index, item] of entry.completes.entries()) {
+    const itemPath = `${path}.completes[${index}]`;
+    if (!checkCompletedIdentity(checker, item, itemPath)) {
+      continue;
+    }
+    const key = identityKey(item);
+    checker.check(!completed.has(key), itemPath, "repeats an identity");
+    completed.add(key);
+    checker.check(
+      attested.has(key),
+      itemPath,
+      "names no attestation on this commit"
+    );
+    checker.check(
+      refinesIdentity(completer, item),
+      itemPath,
+      "is not completed by this identity: a completion keeps the same session, harness and agent id, keeps every instance and model already reported, and adds one"
+    );
+  }
+  return checker.errors.length === before ? completionKey(completer) : null;
+};
+
+const checkCompletions = (
+  checker: Checker,
+  value: unknown,
+  attestations: unknown
+): void => {
+  if (!checker.object(value, "completions")) {
+    return;
+  }
+  for (const [commit, list] of Object.entries(value)) {
+    const path = `completions.${commit}`;
+    checker.check(isCommitSha(commit), path, "is not keyed by a full SHA");
+    if (!Array.isArray(list) || list.length === 0) {
+      checker.check(false, path, "must be a non-empty array");
+      continue;
+    }
+    const own = isRecord(attestations) ? ownValue(attestations, commit) : [];
+    const attested = new Set(
+      (Array.isArray(own) ? own : [])
+        .filter(isRecord)
+        .map((item) => identityKey(item as unknown as Attestation))
+    );
+    const seen = new Set<string>();
+    for (const [index, entry] of list.entries()) {
+      const entryPath = `${path}[${index}]`;
+      const key = checkCompletion(checker, entry, entryPath, attested);
+      if (key !== null) {
+        checker.check(!seen.has(key), entryPath, "repeats a completion");
+        seen.add(key);
+      }
     }
   }
 };
@@ -825,13 +962,25 @@ export const validateReviewLedger = (
     };
   }
   const checker = new Checker();
+  // `completions` is optional: a ledger without one keeps the shape older
+  // copies read, and only a recorded completion needs a reader that knows it.
+  const hasCompletions = Object.hasOwn(value, "completions");
   checker.keys(
     value,
-    ["attestations", "proposals", "replays", "schemaVersion"],
+    [
+      "attestations",
+      ...(hasCompletions ? ["completions"] : []),
+      "proposals",
+      "replays",
+      "schemaVersion",
+    ],
     "ledger"
   );
   checker.check(value.schemaVersion === 1, "ledger.schemaVersion", "must be 1");
   checkAttestations(checker, value.attestations);
+  if (hasCompletions) {
+    checkCompletions(checker, value.completions, value.attestations);
+  }
   checkReplays(checker, value.replays);
   checkProposals(checker, value.proposals);
   if (checker.errors.length > 0) {
@@ -1065,6 +1214,109 @@ const identityKey = (
     identity.logicalId ?? null,
   ]);
 
+// ---------------------------------------------------------------------------
+// Identity completion
+//
+// An attestation that omitted an instance or model stays in the ledger
+// forever. Its executor may later state, with `author attest
+// --complete-identity`, that the record was its own; the completion names the
+// exact records it completes. A completed record then stops counting as a
+// separate author of that commit, and the completer counts in its place.
+// Nothing infers a completion: a replacement agent that reuses an agent id in
+// the same session attests normally and stays a separate author.
+
+/** The executor a completion may speak for: one session, harness and agent id, all known. */
+const completionAnchor = (identity: AttestedIdentity): string | null => {
+  const harness = reportedHarness(identity.harness);
+  return identity.session === null ||
+    harness === null ||
+    identity.logicalId === null
+    ? null
+    : JSON.stringify([identity.session, harness, identity.logicalId]);
+};
+
+/** Whether two identities could be one executor: no known instance or reported model disagrees. */
+const compatibleIdentities = (
+  left: AttestedIdentity,
+  right: AttestedIdentity
+): boolean => {
+  const leftModel = reportedModel(left.agent);
+  const rightModel = reportedModel(right.agent);
+  return (
+    (left.instance === null ||
+      right.instance === null ||
+      left.instance === right.instance) &&
+    (leftModel === null || rightModel === null || leftModel === rightModel)
+  );
+};
+
+/**
+ * Whether `completer` completes `earlier`: the same known session, harness
+ * and agent id, every instance and reported model `earlier` carried kept
+ * exactly, and a missing instance or reported model added. The planning
+ * sentinel and a blank name are not reported models, so they never count as
+ * the addition.
+ */
+const refinesIdentity = (
+  completer: AttestedIdentity,
+  earlier: AttestedIdentity
+): boolean => {
+  const anchor = completionAnchor(completer);
+  if (anchor === null || anchor !== completionAnchor(earlier)) {
+    return false;
+  }
+  const earlierModel = reportedModel(earlier.agent);
+  const completerModel = reportedModel(completer.agent);
+  const keeps =
+    (earlier.instance === null || earlier.instance === completer.instance) &&
+    (earlierModel === null || earlierModel === completerModel);
+  const adds =
+    (earlier.instance === null && completer.instance !== null) ||
+    (earlierModel === null && completerModel !== null);
+  return keeps && adds;
+};
+
+/**
+ * The attestations that count as a commit's own authors: every recorded one
+ * except those a standing completion on the same commit names. A completion
+ * stands only while no attestation from its anchor disagrees with the
+ * completer: a second known instance or model under one session and agent
+ * id means the anchor is shared, so the completed records count again. A
+ * completion on one commit never touches another commit or a replay source.
+ */
+const effectiveOwnAttestations = (
+  ledger: ReviewLedger,
+  commit: string
+): Attestation[] => {
+  const own = ownValue(ledger.attestations, commit) ?? [];
+  const completions = ledger.completions
+    ? (ownValue(ledger.completions, commit) ?? [])
+    : [];
+  if (completions.length === 0) {
+    return own;
+  }
+  const completed = new Set<string>();
+  for (const completion of completions) {
+    const anchor = completionAnchor(completion);
+    const stands =
+      anchor !== null &&
+      own.some((entry) => identityKey(entry) === identityKey(completion)) &&
+      own.every(
+        (entry) =>
+          completionAnchor(entry) !== anchor ||
+          compatibleIdentities(entry, completion)
+      );
+    if (stands) {
+      for (const identity of completion.completes) {
+        if (refinesIdentity(completion, identity)) {
+          completed.add(identityKey(identity));
+        }
+      }
+    }
+  }
+  return own.filter((entry) => !completed.has(identityKey(entry)));
+};
+
 interface LedgerResolver {
   authors: (commit: string) => Attestation[];
   gaps: (commit: string) => CommitGaps;
@@ -1222,7 +1474,8 @@ const createResolver = (ledger: ReviewLedger): LedgerResolver => {
   };
   const evaluate = (commit: string): ResolvedNode => {
     const record = ownValue(ledger.replays, commit);
-    const own = ownValue(ledger.attestations, commit) ?? [];
+    // A completion never empties the list: its completer is kept.
+    const own = effectiveOwnAttestations(ledger, commit);
     const sources = (record?.sources ?? []).map(
       (source) => memo.get(source) as ResolvedNode
     );
@@ -2087,6 +2340,12 @@ const executingIdentity = (
 
 export interface AuthorAttestInput extends ExecutingIdentityInput {
   commits: readonly string[];
+  /**
+   * `--complete-identity`: the executing agent states that earlier
+   * attestations on each commit from its own session, harness and agent id
+   * were its own, and completes them with what it reports now.
+   */
+  completeIdentity?: boolean;
   contribution?: "implementation";
   replays?: readonly string[];
   repositoryPath: string;
@@ -2105,6 +2364,12 @@ export interface AuthorAttestResult {
     commit: string;
     status: "recorded" | "unchanged" | "not-attested";
   }>;
+  /** Per commit, with `--complete-identity` only: the records completed. */
+  completion: Array<{
+    commit: string;
+    completes: AttestedIdentity[];
+    status: "recorded" | "unchanged";
+  }> | null;
   eligibility: {
     basis: "claim" | "registration" | "controller-replay";
     worktree: string;
@@ -2591,6 +2856,80 @@ const appendAttestation = (
   return "recorded";
 };
 
+const recordedIdentity = (identity: AttestedIdentity): AttestedIdentity => ({
+  agent: identity.agent,
+  harness: identity.harness,
+  instance: identity.instance,
+  logicalId: identity.logicalId,
+  session: identity.session,
+});
+
+/**
+ * The records `--complete-identity` completes on one commit. It refuses when
+ * the executing session, harness or agent id is unknown, when another record
+ * under that anchor reports a different instance or model (the anchor is
+ * then shared, so whose the incomplete record was cannot be shown), and when
+ * no record from the anchor lacks what the executing agent now reports.
+ */
+const completionTargets = (
+  ledger: ReviewLedger,
+  commit: string,
+  completer: AttestedIdentity
+): AttestedIdentity[] => {
+  const anchor = completionAnchor(completer);
+  if (anchor === null) {
+    throw new SimpleChangesError(
+      "identity-completion-unanchored: --complete-identity needs the executing session and harness, read from the executing process, and an agent id; this session reports none to bind the completion to.",
+      EXIT_CODES.unsafe
+    );
+  }
+  const own = ownValue(ledger.attestations, commit) ?? [];
+  const conflicting = own.filter(
+    (entry) =>
+      completionAnchor(entry) === anchor &&
+      !compatibleIdentities(entry, completer)
+  );
+  if (conflicting.length > 0) {
+    throw new SimpleChangesError(
+      `identity-completion-conflict: ${commit} already has an attestation from this session and agent id with a different instance or model (${conflicting.map((entry) => `${entry.instance ?? "no instance"}, ${entry.agent ?? "no model"}`).join("; ")}), so more than one executor used them and the incomplete record cannot be shown to be yours. Ask the owner; nothing was recorded.`,
+      EXIT_CODES.unsafe
+    );
+  }
+  const targets = own
+    .filter((entry) => refinesIdentity(completer, entry))
+    .map(recordedIdentity);
+  if (targets.length === 0) {
+    throw new SimpleChangesError(
+      `identity-completion-unmatched: ${commit} has no attestation from this session, harness and agent id that lacks the instance or model reported now. Attest normally; nothing was recorded.`,
+      EXIT_CODES.validation
+    );
+  }
+  return targets;
+};
+
+const completionKey = (completion: IdentityCompletion): string =>
+  JSON.stringify([
+    identityKey(completion),
+    completion.completes
+      .map((identity) => identityKey(identity))
+      .sort((left, right) => left.localeCompare(right)),
+  ]);
+
+const appendCompletion = (
+  ledger: ReviewLedger,
+  commit: string,
+  completion: IdentityCompletion
+): "recorded" | "unchanged" => {
+  ledger.completions ??= {};
+  const list = ownValue(ledger.completions, commit) ?? [];
+  const key = completionKey(completion);
+  if (list.some((existing) => completionKey(existing) === key)) {
+    return "unchanged";
+  }
+  ledger.completions[commit] = [...list, completion];
+  return "recorded";
+};
+
 const unionGaps = (...lists: CommitGaps[]): CommitGaps =>
   sortedGaps(
     lists.flatMap((gaps) => gaps.unresolvedSources),
@@ -2685,6 +3024,12 @@ const assertAttestInput = (input: AuthorAttestInput): void => {
       EXIT_CODES.usage
     );
   }
+  if (input.completeIdentity && input.replays !== undefined) {
+    throw new SimpleChangesError(
+      "--complete-identity completes your own attestation on the same commit; it never applies to a replay. Attest the replay separately.",
+      EXIT_CODES.usage
+    );
+  }
   if (input.worktreePath !== undefined && input.replays === undefined) {
     throw new SimpleChangesError(
       "--worktree is only for a controller replay: pass --replays with it.",
@@ -2747,6 +3092,13 @@ export const attestCommits = (input: AuthorAttestInput): AuthorAttestResult => {
           : null;
       const recordedAt = new Date().toISOString();
       const attestation: Attestation = { ...identity, logicalId, recordedAt };
+      // Every commit is checked before anything is appended, so a refused
+      // completion records nothing.
+      const targets = input.completeIdentity
+        ? commits.map((commit) =>
+            completionTargets(ledger, commit, { ...identity, logicalId })
+          )
+        : null;
       const attestations = commits.map((commit) => ({
         commit,
         status:
@@ -2763,9 +3115,28 @@ export const attestCommits = (input: AuthorAttestInput): AuthorAttestResult => {
               recordedAt
             )
           : null;
+      const completion = targets
+        ? commits.map((commit, index) => {
+            const completes = targets[index] as AttestedIdentity[];
+            return {
+              commit,
+              completes,
+              status: appendCompletion(ledger, commit, {
+                agent: identity.agent,
+                completes,
+                harness: identity.harness,
+                instance: identity.instance,
+                logicalId,
+                recordedAt,
+                session: identity.session,
+              }),
+            };
+          })
+        : null;
       const owner = owners[0] as EligibleWorktree;
       return {
         attestations,
+        completion,
         eligibility: { basis: owner.basis, worktree: owner.path },
         identity: { ...identity, logicalId },
         ledgerPath: reviewLedgerPath(commonGitDirectory),

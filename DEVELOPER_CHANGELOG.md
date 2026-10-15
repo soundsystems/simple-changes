@@ -1,6 +1,6 @@
 # Developer changelog
 
-## 0.29.2 - 2026-10-14
+## 0.29.2 - 2026-10-15
 
 - `lib/repository-instructions.ts`: `SCRATCH_FILE_RULE`, the body of the
   `simple-changes:scratch-files` managed block, now gives each agent one

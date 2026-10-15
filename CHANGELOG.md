@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.29.2 - 2026-10-14
+## 0.29.2 - 2026-10-15
 
 - **Bug Fixes & Improvements**:
   - The optional scratch-file rule that setup adds to AGENTS.md or

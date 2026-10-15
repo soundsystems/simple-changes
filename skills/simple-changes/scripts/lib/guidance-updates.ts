@@ -1,7 +1,7 @@
 import type { AuthoringQuestionState, DetectedHarness } from "./authoring.ts";
 import type { ChangelogCoordination, RepoPolicy } from "./types.ts";
 
-export const CURRENT_GUIDANCE_VERSION = 29;
+export const CURRENT_GUIDANCE_VERSION = 30;
 
 export type GuidanceUpdateAction =
   | "review-settings"
@@ -924,6 +924,25 @@ const GUIDANCE_UPDATES: GuidanceUpdateDefinition[] = [
       },
     ],
     version: 29,
+  },
+  {
+    changelogReviewRelevant: false,
+    changes: [
+      {
+        kind: "behavior",
+        summary:
+          "`author attest --complete-identity` lets the agent that made an attestation missing its instance or model complete it from the same executing session, harness, and agent id; the ledger keeps every attestation and adds an optional `completions` record naming the ones completed, which then stop leaving independence or diversity unknown, while a reviewer sharing their session or instance is still rejected. It is refused for a replay, without an executing session, when nothing is missing, and when another instance or model already appears under that session and agent id, and such a record appearing later voids it. Heads containing the commit get a new authors digest, so earlier reviews stop counting, and a runtime before 0.30.0 reads a ledger holding a completion as malformed.",
+        version: 30,
+      },
+    ],
+    noticeBullets: [
+      {
+        priority: 180,
+        summary:
+          "A review blocked because an author's earlier attestation left out its model or instance can now be unblocked: that same author completes the attestation with `author attest --complete-identity`.",
+      },
+    ],
+    version: 30,
   },
 ];
 

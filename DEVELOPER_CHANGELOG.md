@@ -1,5 +1,72 @@
 # Developer changelog
 
+## 0.30.0 - 2026-10-15
+
+- Identity completion (`lib/review-ledger.ts`, issue
+  soundsystems/simple-changes#2): `attestCommits` takes
+  `completeIdentity`, the CLI's `author attest --complete-identity`. For each
+  commit, `completionTargets` refuses an unknown anchor (session from the
+  executing process, harness, or agent id: `identity-completion-unanchored`),
+  any record under the anchor that disagrees with the completer on a known
+  instance or reported model (`identity-completion-conflict`), and a commit
+  with nothing to complete (`identity-completion-unmatched`), all before
+  anything is appended; `--replays` with it is a usage error. It then
+  appends the completer as an ordinary attestation (`recorded` or
+  `unchanged`) and an `IdentityCompletion` under the new optional top-level
+  `completions[<sha>]`, naming the exact `AttestedIdentity` records it
+  completes. The result gains `completion`, `null` without the flag.
+- `refinesIdentity(completer, earlier)` holds when both share one non-null
+  session, harness, and logical id, every instance and reported model of
+  `earlier` is kept exactly, and a missing instance or reported model is
+  added. `reportedModel` decides what counts as reported, so the
+  `most-capable` sentinel and blank names never count as the addition, and
+  two partial records are never merged into an identity nobody reported.
+- Resolution: `effectiveOwnAttestations` drops from a commit's own list the
+  records named by a standing completion on that commit. A completion
+  stands while its completer is attested there and every record under its
+  anchor is `compatibleIdentities` with it. Completions are applied per
+  commit before the replay union, so they never reach a source or a
+  destination. `ResolvedNode` and `HeadCoverage` also carry
+  `recorded`/`recordedAuthors`, every raw attestation unioned through the
+  same replay links and shared with the effective map when no completion is
+  in the ancestry. `identityFailure` returns `reviewer-not-independent` when
+  any recorded author is the same executor, then `independence-unproven`
+  when any effective author is unknown; diversity, preflight
+  `adversarialOutcome`, coverage, and the authors digest read the effective
+  authors, so a recorded completion moves the digest and earlier accepted
+  attempts fail approval with `authors-digest-changed`.
+- Validation: `validateReviewLedger` accepts `completions` only when
+  present, and `emptyReviewLedger` still omits it, so a ledger without a
+  completion keeps the shape 0.29.x reads. `checkCompletions` requires each
+  completer and completed identity to be an attestation on that commit,
+  `refinesIdentity` to hold for each, no repeated identity in an entry, and
+  no repeated completion. `evals/schemas/review-ledger.schema.json` adds
+  `completion` and `attestedIdentity`.
+- Why explicit: the suite already treats a second instance reusing an agent
+  id in one session as a replacement agent with its own identity, so a
+  derived rule would erase that agent's unknown-executor veto. Accepted
+  residual: the completion trusts the executing agent's own statement that
+  the earlier record was its own, bound to the session and harness read
+  from the process, its agent id, and the claim or registration `author
+  attest` already requires.
+- Tests (`review-ledger.test.ts`, "identity completion"): the issue's
+  reproducer through real `resolveReviewer` preflight and
+  `recordReviewAttempt`, before and after a completion, with a reviewer that
+  has a known distinct instance and no session; digest invalidation through
+  `reviewApproval`; the CLI flag; and negative controls for another or
+  unknown session, harness, or agent id, conflicting model or instance,
+  the sentinel, same instance, same session with or without a reviewer
+  instance under both adversarial settings, same reported model, unknown
+  reviewer executor, a replay source's author, a second author whose model
+  matches the reviewer, a later conflicting record, and refusals that leave
+  the ledger file byte-identical.
+- Guidance 30 adds one behavior change and one notice bullet, and needs no
+  answer.
+- Review: GPT-6.1 Sol round 1 (high) found one blocking issue, a completion
+  removing the session veto for a reviewer with its own instance, fixed
+  with `recordedAuthors`, plus a missing unknown-harness control.
+<!-- simple-changelogs-signature agent="Claude Opus 5.5 high" at="2026-10-15T16:39:51-05:00" -->
+
 ## 0.29.2 - 2026-10-15
 
 - `lib/repository-instructions.ts`: `SCRATCH_FILE_RULE`, the body of the

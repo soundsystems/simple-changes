@@ -3418,6 +3418,7 @@ describe("identity completion", () => {
         instance: "domain_db_preview",
       })
     ).toThrow("identity-completion-unanchored");
+    expect(readFileSync(path, "utf8")).toBe(unchanged);
     // A second commit with nothing to complete refuses the whole command.
     const second = commitFile(run.author, "b.txt", "b\n");
     attestCommits({

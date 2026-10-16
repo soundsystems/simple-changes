@@ -249,9 +249,9 @@ const effortParts = (word: string): string[] | null => {
 interface EffortWords {
   // Words that only describe effort, which every form drops.
   certain: number[];
-  // Standalone levels (`high`, `max`, `extra-high`), which may also be part
-  // of the name (`Max` in `Coder Max high`).
-  levels: number[];
+  // Words that may also be part of the name: standalone levels (`high`,
+  // `max`, `extra-high`) and helper words beside them (`mode`, `model`).
+  variable: number[];
 }
 
 const effortWords = (words: readonly string[]): EffortWords => {
@@ -260,36 +260,44 @@ const effortWords = (words: readonly string[]): EffortWords => {
     (wordParts) =>
       wordParts?.every((part) => EFFORT_LEVEL_PARTS.has(part)) === true
   );
-  const marked = parts.map(
-    (wordParts, index) =>
-      level[index] === true ||
-      (wordParts?.some((part) => EFFORT_MARKERS.has(part)) ?? false)
+  const marker = parts.map(
+    (wordParts) => wordParts?.some((part) => EFFORT_MARKERS.has(part)) === true
   );
   const certain: number[] = [];
-  const levels: number[] = [];
+  const variable: number[] = [];
   for (const [index, wordParts] of parts.entries()) {
-    if (level[index]) {
-      levels.push(index);
-    } else if (
-      marked[index] ||
-      (wordParts !== null &&
-        (marked[index - 1] === true || marked[index + 1] === true))
-    ) {
+    if (wordParts === null) {
+      continue;
+    }
+    if (marker[index]) {
       certain.push(index);
+    } else if (level[index]) {
+      variable.push(index);
+    } else if (marker[index - 1] === true || marker[index + 1] === true) {
+      certain.push(index);
+    } else if (level[index - 1] === true || level[index + 1] === true) {
+      variable.push(index);
     }
   }
-  return { certain, levels };
+  return { certain, variable };
 };
 
 // The choices of words to drop: every word that only describes effort, plus
-// the standalone levels except the first or last few, for every count, so a
-// level that is also part of the name is tried both kept and dropped
-// however many effort words surround it.
-const effortDrops = ({ certain, levels }: EffortWords): Set<number>[] =>
-  Array.from({ length: levels.length + 1 }, (_, kept) => [
-    new Set([...certain, ...levels.slice(kept)]),
-    new Set([...certain, ...levels.slice(0, levels.length - kept)]),
-  ]).flat();
+// every variable word outside one contiguous run of them, for every run
+// (none included), so a level that is also part of the name is tried kept
+// wherever it sits among other effort words.
+const effortDrops = ({ certain, variable }: EffortWords): Set<number>[] => {
+  const drops = [new Set([...certain, ...variable])];
+  for (let start = 0; start < variable.length; start += 1) {
+    for (let end = start + 1; end <= variable.length; end += 1) {
+      const kept = new Set(variable.slice(start, end));
+      drops.push(
+        new Set([...certain, ...variable.filter((index) => !kept.has(index))])
+      );
+    }
+  }
+  return drops;
+};
 
 interface ModelForms {
   // The whole name's tokens, then the tokens left without qualifiers and

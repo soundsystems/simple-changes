@@ -1093,6 +1093,8 @@ describe("model identity", () => {
         "gpt-5.1-codex-max",
       ],
       ["high max xhigh GPT-5.1 Codex Max high max", "gpt-5.1-codex-max"],
+      ["xhigh GPT-5.1 Codex Max high", "openai/gpt-5.1-codex-max"],
+      ["high Model 5.5 Max xhigh", "model-5-5-max"],
       // A version note keeps its version and drops its effort.
       ["Claude Opus (5.5 high)", "claude-opus-5-5"],
       ["Opus (version unknown)", "claude-opus-5-5"],

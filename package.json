@@ -38,7 +38,7 @@
     "format": "ultracite fix",
     "lint": "ultracite check",
     "simple-changes": "bun skills/simple-changes/scripts/simple-changes.ts",
-    "test": "bun test tooling/simple-changes/tests tooling/merge-gate/tests && bun tooling/publish-skill/scripts/test.ts && bun tooling/update-local-forks/scripts/test.ts",
+    "test": "bun tooling/simple-changes/test.ts && bun tooling/publish-skill/scripts/test.ts && bun tooling/update-local-forks/scripts/test.ts",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {

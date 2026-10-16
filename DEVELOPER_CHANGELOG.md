@@ -3,13 +3,14 @@
 ## 0.30.1 - 2026-10-16
 
 - Model identity (`lib/authoring.ts`, issue soundsystems/simple-changes#5):
-  `sameModelName` now compares the token forms `modelForms` derives from
-  each name (`ModelForms.tokens`). `modelTokens` lowercases a name and
+  `sameModelName` now compares the forms `modelForms` derives from each
+  name (`ModelForms.forms`). Each `ModelForm` holds its `tokens` and its
+  `words`, each word's key in order. `modelTokens` lowercases a name and
   splits it into alphanumeric runs, and a form's key is its tokens joined,
   which is what the removed `modelKey` computed. The forms are the whole
-  name's tokens, the tokens of its words once `withoutQualifiers` has
-  removed parenthesised qualifiers, and the tokens left by each choice of
-  effort words to drop (next bullet). `withoutQualifiers` strips
+  name, its words once `withoutQualifiers` has removed parenthesised
+  qualifiers, and the words left by each choice of effort words to drop
+  (next bullet). `withoutQualifiers` strips
   `MODEL_QUALIFIER` matches innermost first, repeating until none is left,
   so a nested note such as `(reasoning (high))` goes whole, then treats
   an unclosed `(` and the rest of the name (`MODEL_UNCLOSED_QUALIFIER`) as
@@ -17,8 +18,9 @@
   a fragment. Both a closed note and an unclosed tail go through
   `noteVersion`, which returns the leading run of the note's tokens that
   start with a digit (`MODEL_VERSION_TOKEN`), so a note that starts with a
-  version leaves only that version in the name and a note that does not
-  is stripped as a qualifier. So `(5.5)` and `(5.5 high)` leave `5 5`,
+  version leaves only that version in the name, as one dotted word so it
+  never ends a leading-words match early, and a note that does not is
+  stripped as a qualifier. So `(5.5)` and `(5.5 high)` leave `5.5`,
   `Claude Opus (5.5 high)` and `Claude Opus (5.5, budget 1000)` match
   `claude-opus-5-5`, `gpt-6.1-sol (reasoning: high, budget: 32768)`
   matches `gpt-6.1-sol`, and `Claude Opus (5)` and `Claude Opus (5.5)`
@@ -59,19 +61,33 @@
   `reasoning mode: high` can all go, while `gpt-5.1-codex-max` and
   `coder-max`, which have parts outside `EFFORT_PARTS`, the lone `Model`
   in `Example Model 5.5`, and the lone `model-max` in `vendor model-max`
-  stay.
-- Accepted tradeoff, now pinned by tests: a standalone level such as `Max`
-  reads as effort even where a display name means a variant, so
-  `GPT-5.1 Codex Max` matches `gpt-5.1-codex` as well as
-  `gpt-5.1-codex-max`, because by spelling alone it cannot be told from an
-  effort label such as `Claude Opus 5.5 max`. The hyphenated
-  `gpt-5.1-codex-max` stays distinct from `gpt-5.1-codex`. In the
-  diversity gate this only ever makes a review count as the same model,
-  which blocks it and never admits one. `reviewDisclosure` reads the same
-  comparison, so a reviewer reporting `gpt-5.1-codex` when
-  `GPT-5.1 Codex Max` was requested is not flagged as a `model` mismatch.
+  are never dropped as effort.
 - `formsMatch`: two forms match when their keys are equal or one ends with
-  the other, as before. Only a qualifier that is exactly
+  the other, as before, or through `leadingWordsMatch`, when one name's
+  first whole words, before at least one later word, spell the other's
+  full key, a family prefix allowed (the joined words end with that key).
+  The words after them read as notes, so
+  `gpt-6.1-sol reasoning: high, budget: 32768`,
+  `Claude Opus 5.5 temperature 0.2`, and `openai/gpt-6.1-sol ctx 200k`
+  match their base models without any list of runtime fields. A version is
+  part of its word, so `gpt-6 budget 100` against `gpt-6.1-sol`,
+  `Claude Opus 5 temperature 0.2` against `Claude Opus 5.5`, and
+  `gpt-5.1-codex budget 100` against `gpt-5.1-codex-max` stay distinct.
+- Accepted tradeoff, now pinned by tests: a variant written as a separate
+  word reads as a note on its base model. `Max` is also a standalone
+  level, so `GPT-5.1 Codex Max` matches `gpt-5.1-codex` (beside
+  `Claude Opus 5.5 max`, an effort label it cannot be told from by
+  spelling), and through `leadingWordsMatch` any trailing variant word
+  does too, so `vendor model-max` matches `vendor` (moved from the
+  distinct pairs) and `GPT-5.1 Codex Mini` matches `gpt-5.1-codex`. A bare
+  family name matches any name that starts with it, such as
+  `Claude Sonnet 5.5` against `claude`. Hyphenated IDs stay distinct:
+  `gpt-5.1-codex-max` against `gpt-5.1-codex`. In the diversity gate this
+  only ever makes a review count as the same model, which blocks it and
+  never admits one. `reviewDisclosure` reads the same comparison, so a
+  reviewer reporting `gpt-5.1-codex` when `GPT-5.1 Codex Max` was
+  requested is not flagged as a `model` mismatch.
+- `familyMatch`: only a qualifier that is exactly
   `(version unknown)` or `(unknown version)` after lowercasing, with any
   spacing inside the parentheses (the anchored `MODEL_UNKNOWN_QUALIFIER`),
   sets `versionUnknown`, and then `familyMatch` also lets that name match
@@ -149,7 +165,13 @@
   from `gpt-6.1-sol`; and only closed notes kept their version, so the
   unclosed `Claude Opus (5` and `Claude Opus (5.5` both lost theirs and
   matched (should-fix). `noteVersion` fixed both by keeping only a note's
-  leading version, closed or not.
+  leading version, closed or not. After round 7, the changelog writer's
+  check found that the same runtime field without parentheses,
+  `gpt-6.1-sol reasoning: high, budget: 32768`, still looked distinct
+  from `gpt-6.1-sol`, because `budget` and `32768` stayed in the name;
+  `leadingWordsMatch` fixed it structurally by reading words after a
+  complete model name as notes, and `noteVersion` now keeps a note's
+  version as one dotted word.
 - Every caller picks the new comparison up: `diversity` (acceptance in
   `record-review`), `targetDistinctness` in `resolveReviewer` before
   dispatch (now `reviewer-not-distinct` for a `gpt-6.1-sol xhigh` target
@@ -165,7 +187,7 @@
   `refinesIdentity` (0.30.0's identity completion,
   soundsystems/simple-changes!91) still compares reported models exactly
   and is unchanged.
-- Tests: `authoring.test.ts` "model identity" checks 35 same pairs and 23
+- Tests: `authoring.test.ts` "model identity" checks 39 same pairs and 25
   distinct pairs in both orders. The same pairs include
   `(unknown version)`, a nested note, an unclosed one, a stray `)`,
   `reasoning: high`, `, effort=xhigh.`, `reasoning_effort=high`,
@@ -180,21 +202,26 @@
   `xhigh GPT-5.1 Codex Max high` against `openai/gpt-5.1-codex-max`,
   `high Model 5.5 Max xhigh` against `model-5-5-max`,
   `Claude Opus (5.5 high)` against `claude-opus-5-5`,
-  `gpt-6.1-sol (reasoning: high, budget: 32768)` against `gpt-6.1-sol`,
-  `Claude Opus (5.5, budget 1000)` against `claude-opus-5-5`, and
+  `gpt-6.1-sol (reasoning: high, budget: 32768)` and
+  `gpt-6.1-sol reasoning: high, budget: 32768` against `gpt-6.1-sol`,
+  `Claude Opus (5.5, budget 1000)` and `Claude Opus 5.5 temperature 0.2`
+  against `claude-opus-5-5`, `openai/gpt-6.1-sol ctx 200k` against
+  `gpt-6.1-sol`, `vendor model-max` against `vendor`, and
   `Opus (version unknown)` against `claude-opus-5-5`. The distinct pairs
-  include `gpt-6 (reasoning unknown)`
-  and `gpt-6 (unknown effort)` against `gpt-6.1-sol`,
-  `gpt-5.1-codex (version unknown)` against `gpt-5.1-codex-max`,
-  `Claude Opus 5 (version unknown)` against `claude-opus-5-5`,
-  `Fable 5.1 (version unknown)` against `Fable 5.1.2`, `Claude Opus (5)`
-  against `Claude Opus (5.5)` and against `claude-opus-5-5`,
-  `Claude Opus (5 high)` against `Claude Opus (5.5 high)`,
-  `Claude Opus (5` against `Claude Opus (5.5`,
+  include `gpt-6 (reasoning unknown)` and `gpt-6 (unknown effort)` against
+  `gpt-6.1-sol`, `gpt-5.1-codex (version unknown)` against
+  `gpt-5.1-codex-max`, `Claude Opus 5 (version unknown)` against
+  `claude-opus-5-5`, `Fable 5.1 (version unknown)` against `Fable 5.1.2`,
+  `Claude Opus (5)` against `Claude Opus (5.5)` and against
+  `claude-opus-5-5`, `Claude Opus (5 high)` against
+  `Claude Opus (5.5 high)`, `Claude Opus (5` against `Claude Opus (5.5`,
+  `gpt-6 budget 100` against `gpt-6.1-sol`,
+  `Claude Opus 5 temperature 0.2` against `Claude Opus 5.5`,
+  `gpt-5.1-codex budget 100` against `gpt-5.1-codex-max`,
   `Fable (version unknown)` against `claude-fable-mini-5-1`,
   `gpt-5.1-codex-max high` against `gpt-5.1-codex xhigh`,
-  `Example Model 5.5` against `Example 5.5`, `vendor model-max` against
-  `vendor`, and `vendor coder-max high` against `vendor coder`.
+  `Example Model 5.5` against `Example 5.5`, and
+  `vendor coder-max high` against `vendor coder`.
 - Tests: `onboarding.test.ts` adds `author-model xhigh` and
   `Author Model (version unknown)` to the variants `reviewModelProblem`
   rejects. `review-ledger.test.ts` blocks the `gpt-6.1-sol xhigh` target
@@ -268,7 +295,7 @@
   naming both paths, record-outcome refuses it, and the CLI exits 0 with the
   `Warning:` line on stderr.
 - Guidance stays at 30, with no guidance entry and no update notice.
-<!-- simple-changelogs-signature agent="Claude Opus 5.5 xhigh" at="2026-10-16T15:09:29-05:00" -->
+<!-- simple-changelogs-signature agent="Claude Opus 5.5 xhigh" at="2026-10-16T15:17:28-05:00" -->
 
 ## 0.30.0 - 2026-10-15
 

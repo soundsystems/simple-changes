@@ -13,30 +13,39 @@
   `MODEL_QUALIFIER` matches innermost first, repeating until none is left,
   so a nested note such as `(reasoning (high))` goes whole, then drops
   everything from an unclosed `(` (`MODEL_UNCLOSED_QUALIFIER`) and any
-  stray `)`, so a malformed note never leaves a fragment. A note whose
-  tokens all start with a digit (`MODEL_VERSION_TOKEN`), such as `(5.5)`,
-  is not a qualifier: its contents stay in the name, so `Claude Opus (5)`
-  and `Claude Opus (5.5)` stay distinct. Words split on whitespace,
-  commas, semicolons, colons, and equals signs, and each loses the
-  punctuation around it (`MODEL_WORD_EDGES`) before the effort check.
-- Effort words (`effortIndices` and `effortDrops`, replacing
-  `EFFORT_WORDS` and its trailing-only pop): a word splits into parts on
-  `-`, `_`, and `.` (`EFFORT_PART_SEPARATORS`) and describes effort when
-  every part is in `EFFORT_PARTS` (`EFFORT_LEVELS` plus `extra`, `effort`,
-  `reasoning`, `thinking`, `think`, `mode`, `level`, and `model`) and
-  either one part is in `EFFORT_MARKERS` (`effort`, `reasoning`, and
-  `thinking`) or every part is in `EFFORT_LEVEL_PARTS` (`EFFORT_LEVELS`
-  plus `extra`), as in `high` and `extra-high`. A word made only of
-  `EFFORT_PARTS` that meets neither condition, such as `mode`, `level`,
-  `think`, or `model-max`, counts only beside an effort word.
-  `effortIndices` returns the positions of those words wherever they
-  appear, and `effortDrops` returns every nonempty subset of them to drop,
-  for up to `MAX_EFFORT_SUBSET_WORDS` (6) such words, so at most 63, and
-  past that only the set of all of them. Each drop that leaves at least
-  one word yields a form, so a level that is also part of the name is
-  tried both kept and dropped: `GPT-5.1 Codex Max high` matches
-  `gpt-5.1-codex-max`, and `GPT-5.1 Codex Max reasoning: xhigh` matches
-  `gpt-5.1-codex-max xhigh`. A drop that would leave no word yields no
+  stray `)`, so a malformed note never leaves a fragment. A note with any
+  token that starts with a digit (`MODEL_VERSION_TOKEN`), such as `(5.5)`
+  or `(5.5 high)`, is not a qualifier: its contents stay in the name and
+  any effort words in it drop like others, so `Claude Opus (5.5 high)`
+  matches `claude-opus-5-5`, while `Claude Opus (5)` and
+  `Claude Opus (5.5)` stay distinct, as do `Claude Opus (5 high)` and
+  `Claude Opus (5.5 high)`. Words split on whitespace, commas, semicolons,
+  colons, and equals signs, and each loses the punctuation around it
+  (`MODEL_WORD_EDGES`) before the effort check.
+- Effort words (`effortWords` and `effortDrops`, replacing `EFFORT_WORDS`
+  and its trailing-only pop): a word splits into parts on `-`, `_`, and
+  `.` (`EFFORT_PART_SEPARATORS`), and only a word whose every part is in
+  `EFFORT_PARTS` (`EFFORT_LEVELS` plus `extra`, `effort`, `reasoning`,
+  `thinking`, `think`, `mode`, `level`, and `model`) can be an effort word.
+  `effortWords` sorts those into two groups. `levels` holds standalone
+  levels, words made only of `EFFORT_LEVEL_PARTS` (`EFFORT_LEVELS` plus
+  `extra`), such as `high`, `max`, `extra`, and `extra-high`. `certain`
+  holds words with an `EFFORT_MARKERS` part (`effort`, `reasoning`, or
+  `thinking`), plus any other word of effort parts, such as `mode`,
+  `level`, `think`, or `model-max`, that sits next to a level or a marked
+  word. `effortDrops` returns, for each count k from 0 to the number of
+  levels, the certain words plus every level except the first k, and the
+  certain words plus every level except the last k, so a name yields a
+  linear number of forms with no cap. Every such form drops the certain
+  words, and each level is tried both kept and dropped:
+  `GPT-5.1 Codex Max high` matches `gpt-5.1-codex-max`, as do
+  `GPT-5.1 Codex Max model reasoning effort extra high mode` and
+  `high max xhigh GPT-5.1 Codex Max high max`, and
+  `GPT-5.1 Codex Max reasoning: xhigh` matches `gpt-5.1-codex-max xhigh`.
+  Levels are kept only as a leading or trailing run, so a variant level
+  with levels on both sides matches only through the suffix rule:
+  `xhigh GPT-5.1 Codex Max high` matches `gpt-5.1-codex-max` but not
+  `openai/gpt-5.1-codex-max`. A drop that would leave no word yields no
   form, so a name made only of effort words, such as `high` against `max`,
   still compares by its own words. So `reasoning_effort=high`,
   `reasoning-effort: high`, `model_reasoning_effort=high`, a leading
@@ -79,7 +88,7 @@
   so names that share no form, such as `Astra medium` and `gpt-6.1-sol`,
   stay distinct. A follow-up commit makes the examples in the code comments
   vendor-neutral (`Model 5`, `model-max`).
-- Review fixes, in five rounds. Round 1: the first version stripped
+- Review fixes, in six rounds. Round 1: the first version stripped
   qualifiers in one pass, so `gpt-6.1-sol (reasoning (high))` kept a
   `reasoning` fragment and looked distinct from `gpt-6.1-sol`, and any
   qualifier containing the word `unknown` widened a name, so
@@ -94,7 +103,7 @@
   block ends. Round 3: compound effort fields such as
   `reasoning_effort=high`, `reasoning-effort: high`, and
   `model_reasoning_effort=high` still made the same model look distinct,
-  fixed by `namingWords` (since split into `effortIndices` and
+  fixed by `namingWords` (since replaced by `effortWords` and
   `effortDrops`), which dropped every effort word wherever it appeared.
   That first round 3 rule counted every level as an effort marker,
   so `model-max`, split into the helper `model` and the level `max`, was
@@ -109,11 +118,19 @@
   the standalone level tradeoff with the `Claude Opus 5.5 max` and
   `GPT-5.1 Codex Max` pairs. Round 5 (blocking): `GPT-5.1 Codex Max high`
   dropped both `Max` and `high`, so it no longer matched its own ID
-  `gpt-5.1-codex-max` and a same-model review could pass, fixed by
-  `effortDrops` trying each choice of effort words. Round 5 also found
-  that a note of version numbers alone was removed like any qualifier, so
-  `Claude Opus (5)` matched `Claude Opus (5.5)`, fixed by keeping such a
-  note's contents in the name.
+  `gpt-5.1-codex-max` and a same-model review could pass, fixed by trying
+  every subset of effort words to drop, up to six such words. Round 5 also
+  found that a note of version numbers alone was removed like any
+  qualifier, so `Claude Opus (5)` matched `Claude Opus (5.5)`, fixed by
+  keeping such a note's contents in the name. Round 6: above six effort
+  words only dropping all of them was tried, so
+  `GPT-5.1 Codex Max model reasoning effort extra high mode` lost `Max`
+  and missed `gpt-5.1-codex-max`, fixed by always dropping the certain
+  words and varying only the levels, with no cap; and a note with a
+  version beside other words, such as `(5.5 high)`, was still stripped, so
+  `Claude Opus (5.5 high)` missed `claude-opus-5-5` and
+  `Claude Opus (5 high)` matched `Claude Opus (5.5 high)`, fixed by
+  keeping any note with a version token.
 - Every caller picks the new comparison up: `diversity` (acceptance in
   `record-review`), `targetDistinctness` in `resolveReviewer` before
   dispatch (now `reviewer-not-distinct` for a `gpt-6.1-sol xhigh` target
@@ -129,7 +146,7 @@
   `refinesIdentity` (0.30.0's identity completion,
   soundsystems/simple-changes!91) still compares reported models exactly
   and is unchanged.
-- Tests: `authoring.test.ts` "model identity" checks 28 same pairs and 21
+- Tests: `authoring.test.ts` "model identity" checks 31 same pairs and 22
   distinct pairs in both orders. The same pairs include
   `(unknown version)`, a nested note, an unclosed one, a stray `)`,
   `reasoning: high`, `, effort=xhigh.`, `reasoning_effort=high`,
@@ -138,13 +155,18 @@
   `reasoning mode: high`, `Claude Opus 5.5 max`, `GPT-5.1 Codex Max`
   against `gpt-5.1-codex`, `GPT-5.1 Codex Max high` against
   `gpt-5.1-codex-max`, `GPT-5.1 Codex Max reasoning: xhigh` against
-  `gpt-5.1-codex-max xhigh`, and `Opus (version unknown)` against
-  `claude-opus-5-5`. The distinct pairs include `gpt-6 (reasoning unknown)`
+  `gpt-5.1-codex-max xhigh`,
+  `GPT-5.1 Codex Max model reasoning effort extra high mode` and
+  `high max xhigh GPT-5.1 Codex Max high max` against `gpt-5.1-codex-max`,
+  `Claude Opus (5.5 high)` against `claude-opus-5-5`, and
+  `Opus (version unknown)` against `claude-opus-5-5`. The distinct pairs
+  include `gpt-6 (reasoning unknown)`
   and `gpt-6 (unknown effort)` against `gpt-6.1-sol`,
   `gpt-5.1-codex (version unknown)` against `gpt-5.1-codex-max`,
   `Claude Opus 5 (version unknown)` against `claude-opus-5-5`,
   `Fable 5.1 (version unknown)` against `Fable 5.1.2`, `Claude Opus (5)`
   against `Claude Opus (5.5)` and against `claude-opus-5-5`,
+  `Claude Opus (5 high)` against `Claude Opus (5.5 high)`,
   `Fable (version unknown)` against `claude-fable-mini-5-1`,
   `gpt-5.1-codex-max high` against `gpt-5.1-codex xhigh`,
   `Example Model 5.5` against `Example 5.5`, `vendor model-max` against
@@ -222,7 +244,7 @@
   naming both paths, record-outcome refuses it, and the CLI exits 0 with the
   `Warning:` line on stderr.
 - Guidance stays at 30, with no guidance entry and no update notice.
-<!-- simple-changelogs-signature agent="Claude Opus 5.5 xhigh" at="2026-10-16T14:44:56-05:00" -->
+<!-- simple-changelogs-signature agent="Claude Opus 5.5 xhigh" at="2026-10-16T14:55:37-05:00" -->
 
 ## 0.30.0 - 2026-10-15
 

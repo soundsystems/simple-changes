@@ -8,12 +8,14 @@
     name differently. Model names now match when they differ only by case,
     separators, words that only describe effort, or notes in parentheses
     such as `(reasoning: high)`, nested or unclosed ones included. A note
-    of version numbers alone, such as `(5.5)`, is kept as part of the name,
-    so `Model (5)` and `Model (5.5)` stay different. Effort words are whole
+    with a version number, such as `(5.5)` or `(5.5 high)`, keeps its
+    version as part of the name, and any effort words in it are dropped
+    like others, so `Model (5.5 high)` matches `model-5-5` while
+    `Model (5)` and `Model (5.5)` stay different. Effort words are whole
     words anywhere in the name, such as `high`, `xhigh`, `extra-high`,
-    `reasoning: high`, `reasoning_effort=high`, or `thinking mode`, and
-    each choice of dropping them is tried (for a name with up to six of
-    them), so a level that is also part of a name still matches:
+    `reasoning: high`, `reasoning_effort=high`, or `thinking mode`. They
+    are dropped, and a standalone level such as `max` is also tried kept,
+    so a level that is also part of a name still matches:
     `Model 5.5 Max high` matches `model-5-5-max`. A word with any other
     part, such as `model-mini`, stays part of the model's name, and a name
     made only of effort words keeps them. Only the note
@@ -81,7 +83,7 @@
     unless a reviewed primary-checkout result or an approved
     preserved-source override covered it, and still does; the warning just
     tells you sooner.
-<!-- simple-changelogs-signature agent="Claude Opus 5.5 xhigh" at="2026-10-16T14:44:56-05:00" -->
+<!-- simple-changelogs-signature agent="Claude Opus 5.5 xhigh" at="2026-10-16T14:55:37-05:00" -->
 
 ## 0.30.0 - 2026-10-15
 

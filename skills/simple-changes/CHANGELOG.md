@@ -13,12 +13,14 @@
     `thinking mode`, while a word with any other part, such as
     `model-mini`, stays part of the model's name, and a name made only of
     effort words keeps them. Only the note `(version unknown)` or
-    `(unknown version)` widens a name, and only to any version of the same
-    model, never another variant: `Model (version unknown)` matches
-    `model-5-5` and `vendor-model-5-5` but not `model-max`, and a note such
-    as `(reasoning unknown)` widens nothing. Before, an author labelled
-    `Model 5.5 high` and a reviewer reporting `model-5-5` counted as
-    different models, so the review was accepted.
+    `(unknown version)` widens a name, only when the name does not already
+    end in a version number, and only to any version of the same model,
+    never another variant: `Model (version unknown)` matches `model-5-5`
+    and `vendor-model-5-5` but not `model-max`, `Model 5 (version unknown)`
+    does not match `model-5-5`, and a note such as `(reasoning unknown)`
+    widens nothing. Before, an author labelled `Model 5.5 high` and a
+    reviewer reporting `model-5-5` counted as different models, so the
+    review was accepted.
   - The same comparison now also decides whether the configured reviewer
     is blocked before a review is dispatched, whether a stored review still
     counts, whether a reviewer reported the model it was asked for, and
@@ -28,10 +30,16 @@
     counts toward approval, and that proposal needs a review from a
     different model or coding agent.
   - Different versions and variants still count as different models, such
-    as `Model 5` and `Model 5.5`, or `model` and `model-max`. Names are
-    compared by spelling only, with no list of aliases, so two unrelated
-    names for one model, such as a codename and a model ID, still count as
-    different.
+    as `Model 5` and `Model 5.5`, or `model` and `model-max`. One
+    exception: a variant written as a separate word, such as `Max` in
+    `Model 5.5 Max`, counts as the base model `model-5-5`, because `max` is
+    also an effort level and spelling alone cannot tell the two apart. That
+    can block a review but never admits one, though a reviewer that reports
+    `model-5-5` when `Model 5.5 Max` was requested is not shown as a
+    mismatch. Use the hyphenated ID, such as `model-5-5-max`, when the
+    variant matters. Names are compared by spelling only, with no list of
+    aliases, so two unrelated names for one model, such as a codename and a
+    model ID, still count as different.
   - Handing an unchanged adopted checkout to a new owner, such as from a
     controller's bridge identity back to the author who must attest its
     commits, now has documented steps. A claim never moves between owners,
@@ -68,7 +76,7 @@
     unless a reviewed primary-checkout result or an approved
     preserved-source override covered it, and still does; the warning just
     tells you sooner.
-<!-- simple-changelogs-signature agent="Claude Opus 5.5 xhigh" at="2026-10-16T14:09:29-05:00" -->
+<!-- simple-changelogs-signature agent="Claude Opus 5.5 xhigh" at="2026-10-16T14:32:48-05:00" -->
 
 ## 0.30.0 - 2026-10-15
 

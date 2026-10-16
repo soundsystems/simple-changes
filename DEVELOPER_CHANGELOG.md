@@ -33,6 +33,15 @@
   `gpt-5.1-codex-max` and `coder-max`, which have parts outside
   `EFFORT_PARTS`, the lone `Model` in `Example Model 5.5`, and the lone
   `model-max` in `vendor model-max` stay.
+- Accepted tradeoff, now pinned by tests: a standalone level such as `Max`
+  reads as effort even where a display name means a variant, so
+  `GPT-5.1 Codex Max` matches `gpt-5.1-codex`, because by spelling alone it
+  cannot be told from an effort label such as `Claude Opus 5.5 max`. The
+  hyphenated `gpt-5.1-codex-max` stays distinct from `gpt-5.1-codex`. In
+  the diversity gate this only ever makes a review count as the same
+  model, which blocks it and never admits one. `reviewDisclosure` reads
+  the same comparison, so a reviewer reporting `gpt-5.1-codex` when
+  `GPT-5.1 Codex Max` was requested is not flagged as a `model` mismatch.
 - `formsMatch`: two forms match when their keys are equal or one ends with
   the other, as before. Only a qualifier that is exactly
   `(version unknown)` or `(unknown version)` after lowercasing, with any
@@ -40,11 +49,14 @@
   sets `versionUnknown`, and then `familyMatch` also lets that name match
   one whose tokens hold all of its tokens as a consecutive run, after any
   prefix such as a vendor name, followed only by tokens that start with a
-  digit (`MODEL_VERSION_TOKEN`). So `Opus (version unknown)` matches
-  `claude-opus-5-5`, while `gpt-5.1-codex (version unknown)` does not match
-  `gpt-5.1-codex-max` and `Fable (version unknown)` does not match
-  `claude-fable-mini-5-1`. Any matching pair of forms counts, so the
-  heuristic still fails toward "same".
+  digit (`MODEL_VERSION_TOKEN`). `familyMatch` never widens a name whose
+  last token is already a version token. So `Opus (version unknown)`
+  matches `claude-opus-5-5`, while `gpt-5.1-codex (version unknown)` does
+  not match `gpt-5.1-codex-max`, `Fable (version unknown)` does not match
+  `claude-fable-mini-5-1`, `Claude Opus 5 (version unknown)` does not match
+  `claude-opus-5-5`, and `Fable 5.1 (version unknown)` does not match
+  `Fable 5.1.2`. Any matching pair of forms counts, so the heuristic still
+  fails toward "same".
 - Before, an author's display label `GPT-6.1 Sol high` and a reviewer's
   `gpt-6.1-sol` had different keys, so `diversity` returned `distinct`
   within one harness and an adversarial `record-review` accepted a
@@ -55,7 +67,7 @@
   so names that share no form, such as `Astra medium` and `gpt-6.1-sol`,
   stay distinct. A follow-up commit makes the examples in the code comments
   vendor-neutral (`Model 5`, `model-max`).
-- Review fixes, in three rounds. Round 1: the first version stripped
+- Review fixes, in four rounds. Round 1: the first version stripped
   qualifiers in one pass, so `gpt-6.1-sol (reasoning (high))` kept a
   `reasoning` fragment and looked distinct from `gpt-6.1-sol`, and any
   qualifier containing the word `unknown` widened a name, so
@@ -77,7 +89,12 @@
   follow-up limited `EFFORT_MARKERS` to `effort`, `reasoning`, and
   `thinking` and added `EFFORT_LEVEL_PARTS` for words made only of levels.
   Round 3 also made `references/recovery.md` say that a claim alone
-  completes the handoff only for a checkout on its own branch.
+  completes the handoff only for a checkout on its own branch. Round 4:
+  `Claude Opus 5 (version unknown)` matched `claude-opus-5-5`, because the
+  written `5` counted as a family prefix of `5.5`, fixed by refusing to
+  widen a name that already ends in a version token; round 4 also pinned
+  the standalone level tradeoff with the `Claude Opus 5.5 max` and
+  `GPT-5.1 Codex Max` pairs.
 - Every caller picks the new comparison up: `diversity` (acceptance in
   `record-review`), `targetDistinctness` in `resolveReviewer` before
   dispatch (now `reviewer-not-distinct` for a `gpt-6.1-sol xhigh` target
@@ -93,16 +110,19 @@
   `refinesIdentity` (0.30.0's identity completion,
   soundsystems/simple-changes!91) still compares reported models exactly
   and is unchanged.
-- Tests: `authoring.test.ts` "model identity" checks 24 same pairs and 17
+- Tests: `authoring.test.ts` "model identity" checks 26 same pairs and 19
   distinct pairs in both orders. The same pairs include
   `(unknown version)`, a nested note, an unclosed one, a stray `)`,
   `reasoning: high`, `, effort=xhigh.`, `reasoning_effort=high`,
   `reasoning-effort: high`, `model_reasoning_effort=high` against
   `gpt-6.1-sol xhigh`, a leading `xhigh`, `Claude Opus 5.5 thinking mode`,
-  `reasoning mode: high`, and `Opus (version unknown)` against
+  `reasoning mode: high`, `Claude Opus 5.5 max`, `GPT-5.1 Codex Max`
+  against `gpt-5.1-codex`, and `Opus (version unknown)` against
   `claude-opus-5-5`. The distinct pairs include `gpt-6 (reasoning unknown)`
   and `gpt-6 (unknown effort)` against `gpt-6.1-sol`,
   `gpt-5.1-codex (version unknown)` against `gpt-5.1-codex-max`,
+  `Claude Opus 5 (version unknown)` against `claude-opus-5-5`,
+  `Fable 5.1 (version unknown)` against `Fable 5.1.2`,
   `Fable (version unknown)` against `claude-fable-mini-5-1`,
   `gpt-5.1-codex-max high` against `gpt-5.1-codex xhigh`,
   `Example Model 5.5` against `Example 5.5`, `vendor model-max` against
@@ -180,7 +200,7 @@
   naming both paths, record-outcome refuses it, and the CLI exits 0 with the
   `Warning:` line on stderr.
 - Guidance stays at 30, with no guidance entry and no update notice.
-<!-- simple-changelogs-signature agent="Claude Opus 5.5 xhigh" at="2026-10-16T14:12:36-05:00" -->
+<!-- simple-changelogs-signature agent="Claude Opus 5.5 xhigh" at="2026-10-16T14:32:48-05:00" -->
 
 ## 0.30.0 - 2026-10-15
 

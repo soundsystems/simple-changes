@@ -270,10 +270,11 @@ describe("Simple Changes skill contract", () => {
   test("keeps SKILL.md inside the post-compaction token budget", async () => {
     const skill = await readFile(skillPath);
     expect(skill.byteLength).toBeLessThanOrEqual(SKILL_BYTE_BUDGET);
-    // The table, invariants, and router lead, so they survive compaction.
+    // The table, the workflow steps, the invariants, and the router lead, so they survive compaction.
     const text = skill.toString("utf8");
     const order = [
       "## Classify the request",
+      "## Core workflow",
       "## Authority and invariants",
       "## Reference router",
     ].map((heading) => text.indexOf(heading));
@@ -674,6 +675,9 @@ describe("Simple Changes skill contract", () => {
     ]) {
       expect(normalizedCoordination).toContain(rule);
     }
+    expect(normalizedCoordination).toContain(
+      "Never move, replace, or delete a tag, and never tag from Sync or as a delegated author"
+    );
     expect(normalizedDeployment).toContain(
       "repository policy is effective only with its local trust receipt"
     );

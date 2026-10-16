@@ -35,6 +35,65 @@ authorizes exact-target fetch and a guarded local update only. Queue does not
 mean report-only: maintain an outstanding-work ledger for every discovered
 stable unit, including clean branches and separate worktrees.
 
+## Core workflow
+
+1. Read repository instructions and [setup and policy](references/setup-and-policy.md).
+2. Initialize, resolve companion notices, capture the canonical primary
+   checkout, capture the complete GitLab opening remote inventory when
+   applicable, then start the required controller lease with that evidence.
+   See [Initialize before mutation](#initialize-before-mutation) and
+   [Hold one controller lease](#hold-one-controller-lease).
+3. Refresh the intended target before diff-derived decisions. Preserve dirty,
+   conflicted, detached, mid-operation, active, and unclaimed state.
+4. Group stable work by outcome, dependency, data boundary, ownership, and
+   parity. For work that can affect separately released installed clients,
+   record the installed-client compatibility result from
+   [high-risk actions](references/migrations-and-high-risk-actions.md). Every
+   path belongs to one unit or an explicit preserved set. Before reapplying an
+   old local branch, run `branch audit` per
+   [replacement lineage](references/replacement-lineage.md).
+5. Run proportionate repository-native checks and distinguish introduced from
+   pre-existing failures; fix what an introduced failure reports and re-run
+   the checks until they pass.
+6. Coordinate changelog ownership without authoring release text. Negotiate
+   supported versions and features from the provider's declared marker when
+   present, and accept only current locally validated receipts.
+7. Create or update neutral proposals per
+   [change proposals](references/change-requests.md); resolve
+   checks, discussions, and review, and merge only the exact approved head.
+8. Audit every detected migration before any apply. Apply only through
+   `simple-changes migration decision` and `simple-changes migration apply`
+   per [high-risk actions](references/migrations-and-high-risk-actions.md).
+9. Treat every production Web deployment as a product release. Prepare release
+   reconciliation, refresh the canonical remote target branch (normally
+   `main`), require a read-only `verified` receipt, and deploy only that exact
+   finalized target. Verify the live deployment observes the same revision,
+   even when no deployment was created during this run. A Ship or resumed Ship
+   loop is incomplete when the live revision differs from the latest canonical
+   target revision. Tag only per
+   [release tags](references/changelog-coordination.md#release-tags).
+10. Run final local/provider inventory and clean only proven objects. For a target
+    GitLab remote, complete the remote-branch reconciliation gate across every
+    paginated branch before completion. Delete proven-obsolete remote branches
+    only after exact evidence; preserve uncertainty.
+11. Restore the exact original primary checkout clean at the refreshed target,
+    retain exact authorized exclusions, verify again, and finalize the lease.
+    Finalization automatically removes proven safe worktrees, stale metadata,
+    and merged local branches. An exact verified shipment may close with an
+    unchanged primary explicitly preserved in its scope; see
+    [cleanup and completion](references/cleanup-and-completion.md).
+
+For Ship, Integrate, and Reconcile, carry these steps as a checklist in the
+reply: list them once in plain language, tick a step only after its evidence
+exists, and leave a failed step unticked. Fix what the failure reports and run
+that step again until it passes. When the fix changed source, return to step 4
+(in Ship, record the fresh preview with `loop refresh-scope`); when the
+target, policy, controller checkout, or a scoped source worktree changed,
+return to step 3. Other modes follow the same order without the written
+checklist. Ship's pre-ship brief and permission checklist are in
+[Communicate](#communicate); multi-agent gates are in
+[Shipment holds](#shipment-holds).
+
 ## Authority and invariants
 
 Current user direction outranks repository and personal policy. Discovery is
@@ -52,11 +111,6 @@ An installed-client compatibility finding of `incompatible` or `unverified`
 blocks the affected migration, API, backend, or production deployment. A new
 client release alone does not make a breaking rollout safe because older
 binaries may remain installed.
-
-Create or push a Git tag only through `release-tag`, and only the tag a
-verified receipt names, under the release's existing approval and reviewed tag
-automation, to the run's own single-URL target remote. Never move, replace,
-or delete a tag, and never tag from Sync or as a delegated author.
 
 ## Reference router
 
@@ -150,10 +204,6 @@ a newly discovered boundary or invalidated target.
 
 ## Hold one controller lease
 
-Before reapplying an old local branch, run `branch audit` per
-[replacement lineage](references/replacement-lineage.md); a unique SHA or a
-missing MR on that branch name does not establish unshipped work.
-
 For Queue, Sweep, Integrate, Ship, Reconcile, and Resume, start one active loop
 only after initialization returns `preLoopActionRequired: false`. Start the
 loop before the first integration mutation and retain its run ID. A second
@@ -235,58 +285,6 @@ If confirmation is required, ask: **The implementation and checks are complete.
 Is this ready for Simple Changes, or do you want more changes first?** Continue
 only when `mutationAllowed` is true. Do not invoke it after planning, diagnosis,
 read-only work, or incomplete verification.
-
-## Core workflow
-
-1. Read repository instructions and [setup and policy](references/setup-and-policy.md).
-2. Initialize, resolve companion notices, capture the canonical primary
-   checkout, capture the complete GitLab opening remote inventory when
-   applicable, then start the required controller lease with that evidence.
-3. Refresh the intended target before diff-derived decisions. Preserve dirty,
-   conflicted, detached, mid-operation, active, and unclaimed state.
-4. Group stable work by outcome, dependency, data boundary, ownership, and
-   parity. For work that can affect separately released installed clients,
-   record the installed-client compatibility result from
-   [high-risk actions](references/migrations-and-high-risk-actions.md). Every
-   path belongs to one unit or an explicit preserved set.
-5. Run proportionate repository-native checks and distinguish introduced from
-   pre-existing failures; fix what an introduced failure reports and re-run
-   the checks until they pass.
-6. Coordinate changelog ownership without authoring release text. Negotiate
-   supported versions and features from the provider's declared marker when
-   present, and accept only current locally validated receipts.
-7. Create or update neutral proposals per
-   [change proposals](references/change-requests.md); resolve
-   checks, discussions, and review, and merge only the exact approved head.
-8. Audit every detected migration before any apply. Apply only through
-   `simple-changes migration decision` and `simple-changes migration apply`
-   per [high-risk actions](references/migrations-and-high-risk-actions.md).
-9. Treat every production Web deployment as a product release. Prepare release
-   reconciliation, refresh the canonical remote target branch (normally
-   `main`), require a read-only `verified` receipt, and deploy only that exact
-   finalized target. Verify the live deployment observes the same revision,
-   even when no deployment was created during this run. A Ship or resumed Ship
-   loop is incomplete when the live revision differs from the latest canonical
-   target revision.
-10. Run final local/provider inventory and clean only proven objects. For a target
-    GitLab remote, complete the remote-branch reconciliation gate across every
-    paginated branch before completion. Delete proven-obsolete remote branches
-    only after exact evidence; preserve uncertainty.
-11. Restore the exact original primary checkout clean at the refreshed target,
-    retain exact authorized exclusions, verify again, and finalize the lease.
-    Finalization automatically removes proven safe worktrees, stale metadata,
-    and merged local branches. An exact verified shipment may close with an
-    unchanged primary explicitly preserved in its scope; see
-    [cleanup and completion](references/cleanup-and-completion.md).
-
-For Ship, Integrate, and Reconcile, carry these steps as a checklist in the
-reply: list them once in plain language, tick a step only after its evidence
-exists, and leave a failed step unticked. Fix what the failure reports and run
-that step again until it passes. When the fix changed source, return to step 4
-(in Ship, record the fresh preview with `loop refresh-scope`); when the
-target, policy, controller checkout, or a scoped source worktree changed,
-return to step 3. Other modes follow the same order without the written
-checklist.
 
 ## Reports
 

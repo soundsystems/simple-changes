@@ -257,6 +257,11 @@ release gate decides when it may be published; `release-tag` creates,
 pushes, and verifies it. Simple Changes never reads the tag setting and never
 chooses a name.
 
+Create or push a Git tag only through `release-tag`, and only the tag a
+verified receipt names, under the release's existing approval and reviewed tag
+automation, to the run's own single-URL target remote. Never move, replace,
+or delete a tag, and never tag from Sync or as a delegated author.
+
 When the receipt names a release tag, run `release-tag
 --dry-run` before the release merge, publish it with `release-tag` before
 any deployment, and require `already-present` at final verification, even

@@ -1100,6 +1100,12 @@ describe("model identity", () => {
       // A runtime note with numbers in it is still only a note.
       ["gpt-6.1-sol (reasoning: high, budget: 32768)", "gpt-6.1-sol"],
       ["Claude Opus (5.5, budget 1000)", "claude-opus-5-5"],
+      // Words after a whole model name read as notes, with or without
+      // parentheses, so a separate variant word does too.
+      ["gpt-6.1-sol reasoning: high, budget: 32768", "gpt-6.1-sol"],
+      ["Claude Opus 5.5 temperature 0.2", "claude-opus-5-5"],
+      ["openai/gpt-6.1-sol ctx 200k", "gpt-6.1-sol"],
+      ["vendor model-max", "vendor"],
       ["Opus (version unknown)", "claude-opus-5-5"],
       ["Example Model 5.5", "example-model-5-5"],
       ["Sonnet 5.5", "claude-sonnet-5-5"],
@@ -1135,11 +1141,14 @@ describe("model identity", () => {
       ["Claude Opus (5)", "claude-opus-5-5"],
       ["Claude Opus (5 high)", "Claude Opus (5.5 high)"],
       ["Claude Opus (5", "Claude Opus (5.5"],
+      // A version is part of its word, so it never ends a leading match.
+      ["gpt-6 budget 100", "gpt-6.1-sol"],
+      ["Claude Opus 5 temperature 0.2", "Claude Opus 5.5"],
+      ["gpt-5.1-codex budget 100", "gpt-5.1-codex-max"],
       ["Fable (version unknown)", "claude-fable-mini-5-1"],
       // A hyphenated part that is not effort keeps the whole word.
       ["gpt-5.1-codex-max high", "gpt-5.1-codex xhigh"],
       ["Example Model 5.5", "Example 5.5"],
-      ["vendor model-max", "vendor"],
       ["vendor coder-max high", "vendor coder"],
       ["Astra medium", "gpt-6.1-sol"],
       ["model-alpha", "model-beta"],

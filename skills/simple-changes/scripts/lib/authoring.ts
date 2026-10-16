@@ -299,10 +299,17 @@ const effortDrops = ({ certain, variable }: EffortWords): Set<number>[] => {
   return drops;
 };
 
+interface ModelForm {
+  // The form's tokens; its key is them joined.
+  tokens: string[];
+  // Each word's key in order, so a match can end on a word boundary.
+  words: string[];
+}
+
 interface ModelForms {
-  // The whole name's tokens, then the tokens left without qualifiers and
-  // each choice of effort words; a name's key is its tokens joined.
-  tokens: string[][];
+  // The whole name, then the name without qualifiers and each choice of
+  // effort words.
+  forms: ModelForm[];
   versionUnknown: boolean;
 }
 
@@ -319,7 +326,7 @@ const modelTokens = (value: string): string[] =>
 // a fragment that makes the same model look distinct. A note that starts with
 // a version, closed or not, leaves that version in the name.
 // The version a note gives, if it starts with one: the leading run of its
-// version tokens, so `(5.5)` and `(5.5 high)` give `5 5`, while a runtime
+// version tokens, so `(5.5)` and `(5.5 high)` give `5.5`, while a runtime
 // note such as `(reasoning: high, budget: 32768)` gives nothing.
 const noteVersion = (note: string): string[] => {
   const tokens = modelTokens(note);
@@ -336,7 +343,8 @@ const withoutQualifiers = (
     if (version.length === 0) {
       qualifiers.push(note);
     }
-    return ` ${version.join(" ")} `;
+    // One word, so a version never ends a leading-words match early.
+    return ` ${version.join(".")} `;
   };
   let rest = value;
   let previous: string | null = null;
@@ -366,17 +374,28 @@ const modelForms = (value: string): ModelForms => {
   const named = effortDrops(effortWords(words))
     .map((dropped) => words.filter((_word, index) => !dropped.has(index)))
     .filter((kept) => kept.length > 0);
-  const tokens = [
-    modelTokens(value),
-    modelTokens(words.join(" ")),
-    ...named.map((kept) => modelTokens(kept.join(" "))),
+  const form = (formWords: readonly string[]): ModelForm => {
+    const wordTokens = formWords
+      .map(modelTokens)
+      .filter((tokens) => tokens.length > 0);
+    return {
+      tokens: wordTokens.flat(),
+      words: wordTokens.map((tokens) => tokens.join("")),
+    };
+  };
+  const forms = [
+    form(value.toLowerCase().split(MODEL_WORD_SEPARATORS)),
+    form(words),
+    ...named.map(form),
   ].filter(
-    (form, index, all) =>
-      form.length > 0 &&
-      all.findIndex((other) => other.join("") === form.join("")) === index
+    (candidate, index, all) =>
+      candidate.tokens.length > 0 &&
+      all.findIndex(
+        (other) => other.words.join(" ") === candidate.words.join(" ")
+      ) === index
   );
   return {
-    tokens,
+    forms,
     versionUnknown: qualifiers.some((qualifier) =>
       MODEL_UNKNOWN_QUALIFIER.test(qualifier)
     ),
@@ -398,17 +417,34 @@ const familyMatch = (family: string[], other: string[]): boolean =>
         .every((token) => MODEL_VERSION_TOKEN.test(token))
   );
 
+// Whether a name's first whole words, before some later word, spell the
+// other name, a family prefix allowed: the words after it read as notes,
+// such as `budget: 32768`. A version is part of its word, so `gpt-6` never
+// spells the start of `gpt-6.1-sol`, nor `Model 5` of `Model 5.5`.
+const leadingWordsMatch = (name: ModelForm, other: ModelForm): boolean => {
+  const otherKey = other.tokens.join("");
+  return name.words.slice(0, -1).some((_, index) =>
+    name.words
+      .slice(0, index + 1)
+      .join("")
+      .endsWith(otherKey)
+  );
+};
+
 const formsMatch = (left: ModelForms, right: ModelForms): boolean =>
-  left.tokens.some((leftTokens) =>
-    right.tokens.some((rightTokens) => {
-      const leftKey = leftTokens.join("");
-      const rightKey = rightTokens.join("");
+  left.forms.some((leftForm) =>
+    right.forms.some((rightForm) => {
+      const leftKey = leftForm.tokens.join("");
+      const rightKey = rightForm.tokens.join("");
       return (
         leftKey === rightKey ||
         leftKey.endsWith(rightKey) ||
         rightKey.endsWith(leftKey) ||
-        (left.versionUnknown && familyMatch(leftTokens, rightTokens)) ||
-        (right.versionUnknown && familyMatch(rightTokens, leftTokens))
+        leadingWordsMatch(leftForm, rightForm) ||
+        leadingWordsMatch(rightForm, leftForm) ||
+        (left.versionUnknown &&
+          familyMatch(leftForm.tokens, rightForm.tokens)) ||
+        (right.versionUnknown && familyMatch(rightForm.tokens, leftForm.tokens))
       );
     })
   );
@@ -417,20 +453,24 @@ const formsMatch = (left: ModelForms, right: ModelForms): boolean =>
  * Whether two reported model names may name the same model. Harnesses and
  * people report names in different shapes (a display name with a family
  * prefix, an id with hyphens, an appended effort such as `high` or
- * `xhigh effort`, or a parenthesised note such as `(version unknown)`), so
- * names compare case-insensitively without separators, with and without
- * those qualifiers and whole words that only describe effort (such as
- * `reasoning_effort=high`), and a name that ends with the
- * other counts as the same. A name whose qualifier is exactly
- * `(version unknown)` matches any version of its family, never another
- * variant. Any matching form counts, so this heuristic fails toward "same",
- * and a possible match never passes a diversity check. Different versions (`Model 5` and `Model 5.5`) and
- * hyphenated variants (`model` and `model-max`) stay distinct.
+ * `xhigh effort`, or a note such as `(version unknown)` or
+ * `budget: 32768`), so names compare case-insensitively without
+ * separators, with and without those qualifiers and whole words that only
+ * describe effort (such as `reasoning_effort=high`). A name that ends with
+ * the other counts as the same, and so does a name whose first whole words
+ * spell the other, the words after them read as notes. A name whose
+ * qualifier is exactly `(version unknown)` matches any version of its
+ * family, never another variant. Any matching form counts, so this
+ * heuristic fails toward "same", and a possible match never passes a
+ * diversity check. A version is part of its word, so different versions
+ * (`Model 5` and `Model 5.5`) and hyphenated variants (`model` and
+ * `model-max`) stay distinct, while a variant written as a separate word
+ * (`Model Max`) matches its base model.
  */
 export const sameModelName = (left: string, right: string): boolean => {
   const leftForms = modelForms(left);
   const rightForms = modelForms(right);
-  if (leftForms.tokens.length === 0 || rightForms.tokens.length === 0) {
+  if (leftForms.forms.length === 0 || rightForms.forms.length === 0) {
     return left.trim().toLowerCase() === right.trim().toLowerCase();
   }
   return formsMatch(leftForms, rightForms);

@@ -67,6 +67,9 @@ const ENVIRONMENT_NAME_PATTERN = /^[A-Z_][A-Z0-9_]*$/u;
 const HARNESS_NAME_MAX_LENGTH = 60;
 const ESCALATION_LEVELS = ["high", "xhigh"] as const;
 const MODEL_KEY_SEPARATORS = /[^a-z0-9]+/gu;
+const MODEL_QUALIFIER = /\([^()]*\)/gu;
+const MODEL_UNKNOWN_QUALIFIER = /\bunknown\b/u;
+const MODEL_WORD_SEPARATORS = /[\s,;]+/u;
 
 type Environment = Record<string, string | undefined>;
 
@@ -194,23 +197,79 @@ export const isModelName = (value: unknown): value is string =>
 const modelKey = (value: string): string =>
   value.toLowerCase().replace(MODEL_KEY_SEPARATORS, "");
 
+// Words a harness or a person appends to a model name to say how hard it
+// ran, not which model it is. They are stripped only as whole trailing words,
+// so a hyphenated id such as `codex-max` keeps its suffix.
+const EFFORT_WORDS: readonly string[] = [
+  ...EFFORT_LEVELS,
+  "extra-high",
+  "effort",
+  "reasoning",
+];
+
+interface ModelForms {
+  keys: string[];
+  versionUnknown: boolean;
+}
+
+// The keys a reported name may mean: the whole name, and the name without
+// parenthesised qualifiers and trailing effort words.
+const modelForms = (value: string): ModelForms => {
+  const lowered = value.toLowerCase();
+  const qualifiers = lowered.match(MODEL_QUALIFIER) ?? [];
+  const words = lowered
+    .replace(MODEL_QUALIFIER, " ")
+    .split(MODEL_WORD_SEPARATORS)
+    .filter((word) => word !== "");
+  while (words.length > 1 && EFFORT_WORDS.includes(words.at(-1) ?? "")) {
+    words.pop();
+  }
+  const keys = [modelKey(value), modelKey(words.join(" "))].filter(
+    (key, index, all) => key !== "" && all.indexOf(key) === index
+  );
+  return {
+    keys,
+    versionUnknown: qualifiers.some((qualifier) =>
+      MODEL_UNKNOWN_QUALIFIER.test(qualifier)
+    ),
+  };
+};
+
+const keysMatch = (
+  left: string,
+  right: string,
+  leftVersionUnknown: boolean
+): boolean =>
+  left === right ||
+  left.endsWith(right) ||
+  right.endsWith(left) ||
+  (leftVersionUnknown && right.includes(left));
+
 /**
- * Whether two reported model names may name the same model. Harnesses report
- * names in different shapes (a display name with a family prefix, or an id
- * with hyphens), so names compare case-insensitively without separators, and
- * a name that ends with the other counts as the same. This heuristic fails
- * toward "same": a possible match never passes a diversity check.
+ * Whether two reported model names may name the same model. Harnesses and
+ * people report names in different shapes (a display name with a family
+ * prefix, an id with hyphens, an appended effort such as `high` or
+ * `xhigh effort`, or a parenthesised note such as `(version unknown)`), so
+ * names compare case-insensitively without separators, with and without
+ * those qualifiers and trailing effort words, and a name that ends with the
+ * other counts as the same. A name whose qualifier says its version is
+ * unknown matches any name in its family. Any matching form counts, so this
+ * heuristic fails toward "same", and a possible match never passes a
+ * diversity check. Different versions (`Opus 5` and `Opus 5.5`) and
+ * hyphenated variants (`codex` and `codex-max`) stay distinct.
  */
 export const sameModelName = (left: string, right: string): boolean => {
-  const leftKey = modelKey(left);
-  const rightKey = modelKey(right);
-  if (!(leftKey && rightKey)) {
+  const leftForms = modelForms(left);
+  const rightForms = modelForms(right);
+  if (leftForms.keys.length === 0 || rightForms.keys.length === 0) {
     return left.trim().toLowerCase() === right.trim().toLowerCase();
   }
-  return (
-    leftKey === rightKey ||
-    leftKey.endsWith(rightKey) ||
-    rightKey.endsWith(leftKey)
+  return leftForms.keys.some((leftKey) =>
+    rightForms.keys.some(
+      (rightKey) =>
+        keysMatch(leftKey, rightKey, leftForms.versionUnknown) ||
+        keysMatch(rightKey, leftKey, rightForms.versionUnknown)
+    )
   );
 };
 

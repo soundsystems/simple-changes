@@ -1611,6 +1611,8 @@ describe("authoring and review questions", () => {
       "author_model",
       "Author Model",
       "vendor/author-model",
+      "author-model xhigh",
+      "Author Model (version unknown)",
     ]) {
       expect(reviewModelProblem(variant, { model: "author-model" })).toContain(
         "review its own work"

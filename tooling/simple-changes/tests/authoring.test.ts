@@ -40,6 +40,7 @@ import {
   resolveAuthoringRole,
   resolveRepositoryAuthoring,
   resolveRequestedRole,
+  sameModelName,
   validateAuthoringSidecar,
   writeAuthoringSidecar,
 } from "../../../skills/simple-changes/scripts/lib/authoring.ts";
@@ -1049,6 +1050,54 @@ describe("the 5.1.4 truth table", () => {
       models: "answered",
       review: "pending",
     });
+  });
+});
+
+describe("model identity", () => {
+  test("an effort word or a qualifier never makes the same model look distinct", () => {
+    const same: [string, string][] = [
+      ["GPT-6.1 Sol high", "gpt-6.1-sol"],
+      ["gpt-6.1-sol xhigh", "gpt-6.1-sol"],
+      ["GPT-6.1 Sol high", "gpt-6.1-sol xhigh"],
+      ["Claude Opus 5.5 xhigh", "claude-opus-5-5"],
+      ["Opus 5.5 high effort", "claude-opus-5-5"],
+      ["Claude Opus 5.5 extra-high", "claude-opus-5-5 max"],
+      ["gpt-6.1-sol (reasoning: high)", "GPT 6.1 Sol"],
+      ["Fable 5.1 (version unknown)", "Fable 5.1"],
+      ["Fable (version unknown)", "claude-fable-5-1"],
+      ["Example Model 5.5", "example-model-5-5"],
+      ["Sonnet 5.5", "claude-sonnet-5-5"],
+    ];
+    for (const [left, right] of same) {
+      expect([left, right, sameModelName(left, right)]).toEqual([
+        left,
+        right,
+        true,
+      ]);
+      expect(sameModelName(right, left)).toBe(true);
+    }
+  });
+
+  test("a real version or variant difference stays distinct", () => {
+    const distinct: [string, string][] = [
+      ["Claude Opus 5", "Claude Opus 5.5"],
+      ["claude-opus-5 high", "claude-opus-5-5"],
+      ["gpt-6", "gpt-6.1-sol"],
+      ["gpt-6-sol high", "gpt-6.1-sol"],
+      ["gpt-5.1-codex-max", "gpt-5.1-codex"],
+      ["Fable 5.1 (version unknown)", "Fable 5"],
+      ["Astra medium", "gpt-6.1-sol"],
+      ["model-alpha", "model-beta"],
+      ["high", "max"],
+    ];
+    for (const [left, right] of distinct) {
+      expect([left, right, sameModelName(left, right)]).toEqual([
+        left,
+        right,
+        false,
+      ]);
+      expect(sameModelName(right, left)).toBe(false);
+    }
   });
 });
 

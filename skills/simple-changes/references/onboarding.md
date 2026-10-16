@@ -365,7 +365,9 @@ in data-file order then unknown ids alphabetically, the first recommended; a
 single candidate skips the question. If that agent has no entry yet, ask its
 model question worded "which model should review". After option 2, ask **Which
 model in `<agent>` should review?** and an effort; reject a name equal to the
-model recorded for that agent. Options 1 and 2 record `adversarial: true` and
+model recorded for that agent, where case, separators, a trailing effort word
+such as `high`, and a parenthesised note such as `(version unknown)` do not
+make a name different. Options 1 and 2 record `adversarial: true` and
 then ask **After a review finds problems, how should later reviews of that
 change run?** with **At xhigh effort (Recommended)** (`escalateOnFindings:
 "xhigh"`) or **Same effort as before** (`null`).

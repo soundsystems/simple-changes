@@ -246,42 +246,50 @@ const effortParts = (word: string): string[] | null => {
 // display name means a variant (`Coder Max`): by spelling alone it cannot be
 // told from an effort label (`Model 5.5 max`), and reading it as effort only
 // ever blocks a review, never admits one.
-const effortIndices = (words: readonly string[]): number[] => {
-  const marked = words.map((word) => {
-    const parts = effortParts(word);
-    return (
-      parts !== null &&
-      (parts.some((part) => EFFORT_MARKERS.has(part)) ||
-        parts.every((part) => EFFORT_LEVEL_PARTS.has(part)))
-    );
-  });
-  return words.flatMap((word, index) =>
-    marked[index] ||
-    (effortParts(word) !== null &&
-      (marked[index - 1] === true || marked[index + 1] === true))
-      ? [index]
-      : []
-  );
-};
+interface EffortWords {
+  // Words that only describe effort, which every form drops.
+  certain: number[];
+  // Standalone levels (`high`, `max`, `extra-high`), which may also be part
+  // of the name (`Max` in `Coder Max high`).
+  levels: number[];
+}
 
-// Every nonempty choice of those words to drop, so a level that is also part
-// of the name (`Max` in `Coder Max high`) is tried both kept and dropped.
-// Past the cap, only dropping all of them is tried besides dropping none.
-const MAX_EFFORT_SUBSET_WORDS = 6;
-const effortDrops = (indices: readonly number[]): Set<number>[] => {
-  if (indices.length > MAX_EFFORT_SUBSET_WORDS) {
-    return [new Set(indices)];
-  }
-  const choices: number[][] = [[]];
-  for (const index of indices) {
-    for (const subset of choices.slice()) {
-      choices.push([...subset, index]);
+const effortWords = (words: readonly string[]): EffortWords => {
+  const parts = words.map(effortParts);
+  const level = parts.map(
+    (wordParts) =>
+      wordParts?.every((part) => EFFORT_LEVEL_PARTS.has(part)) === true
+  );
+  const marked = parts.map(
+    (wordParts, index) =>
+      level[index] === true ||
+      (wordParts?.some((part) => EFFORT_MARKERS.has(part)) ?? false)
+  );
+  const certain: number[] = [];
+  const levels: number[] = [];
+  for (const [index, wordParts] of parts.entries()) {
+    if (level[index]) {
+      levels.push(index);
+    } else if (
+      marked[index] ||
+      (wordParts !== null &&
+        (marked[index - 1] === true || marked[index + 1] === true))
+    ) {
+      certain.push(index);
     }
   }
-  return choices
-    .filter((choice) => choice.length > 0)
-    .map((choice) => new Set(choice));
+  return { certain, levels };
 };
+
+// The choices of words to drop: every word that only describes effort, plus
+// the standalone levels except the first or last few, for every count, so a
+// level that is also part of the name is tried both kept and dropped
+// however many effort words surround it.
+const effortDrops = ({ certain, levels }: EffortWords): Set<number>[] =>
+  Array.from({ length: levels.length + 1 }, (_, kept) => [
+    new Set([...certain, ...levels.slice(kept)]),
+    new Set([...certain, ...levels.slice(0, levels.length - kept)]),
+  ]).flat();
 
 interface ModelForms {
   // The whole name's tokens, then the tokens left without qualifiers and
@@ -300,8 +308,8 @@ const modelTokens = (value: string): string[] =>
 // The name without its parenthesised qualifiers, innermost first so nested
 // ones go whole, and every qualifier removed. An unclosed `(` drops the rest
 // of the name and a stray `)` drops itself, so a malformed note never leaves
-// a fragment that makes the same model look distinct. A note of version
-// numbers alone stays in the name.
+// a fragment that makes the same model look distinct. A note with a version
+// number stays in the name.
 const withoutQualifiers = (
   value: string
 ): { qualifiers: string[]; rest: string } => {
@@ -311,11 +319,11 @@ const withoutQualifiers = (
   while (rest !== previous) {
     previous = rest;
     rest = rest.replace(MODEL_QUALIFIER, (qualifier) => {
-      const inner = modelTokens(qualifier);
-      // A note of version numbers alone, such as `(5.5)`, names the version.
+      // A note with a version number, such as `(5.5)` or `(5.5 high)`,
+      // names the version, so its words stay and any effort among them
+      // drops like any other effort word.
       if (
-        inner.length > 0 &&
-        inner.every((token) => MODEL_VERSION_TOKEN.test(token))
+        modelTokens(qualifier).some((token) => MODEL_VERSION_TOKEN.test(token))
       ) {
         return ` ${qualifier.slice(1, -1)} `;
       }
@@ -340,7 +348,7 @@ const modelForms = (value: string): ModelForms => {
     .split(MODEL_WORD_SEPARATORS)
     .map((word) => word.replace(MODEL_WORD_EDGES, ""))
     .filter((word) => word !== "");
-  const named = effortDrops(effortIndices(words))
+  const named = effortDrops(effortWords(words))
     .map((dropped) => words.filter((_word, index) => !dropped.has(index)))
     .filter((kept) => kept.length > 0);
   const tokens = [

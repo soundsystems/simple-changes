@@ -191,6 +191,20 @@ nothing is reconstructed later. Record it whatever `proposalSignatures` says:
    attest --commit <sha> --agent-id <id> [--instance <id>] [--agent "<model>
    <version>"]` in its own session. `--instance` and `--agent` are what the
    harness reports for this agent; omit what it does not report.
+   If an earlier attestation of yours on that commit lacked an instance or
+   model your harness reports now, run the same command again from the same
+   session, with the same `--agent-id`, the values reported now, and
+   `--complete-identity`. The ledger keeps every record and adds a
+   completion naming the earlier ones, which then stop counting as separate
+   authors, though any reviewer they ruled out as the same executor stays
+   ruled out; a head whose authors change gets a new authors digest, so
+   reviews recorded before stop counting. Only the agent that made the earlier
+   attestation may complete it: a replacement agent reusing the agent id
+   attests without the flag and stays a separate author. It is refused for
+   a replay, without an executing session, when no record from your
+   session, harness, and agent id lacks what you report, and when one of
+   them names a different instance or model. Such a record appearing later
+   voids the completion.
 2. **After every rebase, cherry-pick, or squash**, attest each new commit with
    `--replays <old sha>[,<old sha>...]`. Add `--contribution implementation`
    whenever you changed the implementation while replaying; nothing infers

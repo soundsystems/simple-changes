@@ -1,5 +1,43 @@
 # Changelog
 
+## 0.30.0 - 2026-10-15
+
+- A review no longer stays blocked after an author fixes its own incomplete
+  attestation. When an author's first `author attest` on a commit left out
+  the model or instance its harness reports, attesting again with them did
+  not help: review planning still reported `author-identity-missing`, and a
+  reviewer whose session ID was not exposed was still rejected as
+  `independence-unproven`. That same author can now run `author attest`
+  again from the same session, with the same `--agent-id`, the values it
+  reports, and `--complete-identity`. The earlier attestation stays in the
+  review ledger, and a completion record names it, so it no longer leaves
+  independence or model diversity unknown.
+- Completing an attestation never weakens independence. A reviewer that
+  the earlier attestation ruled out as the same executor, such as one in
+  its session with no instance of its own, is still rejected, every other
+  author still counts on its own, and a completion applies only
+  to its own commit, never to that commit's replay sources. It is refused
+  for a replay, without an executing session, when nothing is missing, and
+  when another instance or model already appears under that session and
+  agent ID; such a record appearing later voids the completion. A
+  replacement agent that reuses an agent ID attests without the flag and
+  stays a separate author.
+- When a completion changes a proposal head's authors, the head gets a new
+  authors digest, so reviews recorded before it stop counting and the
+  proposal needs a fresh review.
+- A review ledger that holds a completion needs Simple Changes 0.30.0 or
+  later. Earlier versions report it as malformed and block review until
+  they are updated; ledgers without a completion are unchanged.
+- `SKILL.md` now puts the core workflow steps right after the table of
+  modes, ahead of the authority rules and the reference router, so an agent
+  reaches the steps first. The rule that only `release-tag` creates or pushes
+  tags moved to the changelog coordination reference under "Release tags",
+  and a repeated paragraph about auditing a branch before reapplying its work
+  was removed; the replacement lineage reference still has it. How runs
+  behave is unchanged.
+- The guidance 30 update notice describes the new step and needs no answer.
+<!-- simple-changelogs-signature agent="Claude Opus 5.5 high" at="2026-10-16T11:26:43-05:00" -->
+
 ## 0.29.2 - 2026-10-15
 
 - **Bug Fixes & Improvements**:

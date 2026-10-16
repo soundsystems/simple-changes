@@ -1,7 +1,7 @@
 import type { AuthoringQuestionState, DetectedHarness } from "./authoring.ts";
 import type { ChangelogCoordination, RepoPolicy } from "./types.ts";
 
-export const CURRENT_GUIDANCE_VERSION = 29;
+export const CURRENT_GUIDANCE_VERSION = 30;
 
 export type GuidanceUpdateAction =
   | "review-settings"
@@ -924,6 +924,31 @@ const GUIDANCE_UPDATES: GuidanceUpdateDefinition[] = [
       },
     ],
     version: 29,
+  },
+  {
+    changelogReviewRelevant: false,
+    changes: [
+      {
+        kind: "behavior",
+        summary:
+          "`author attest --complete-identity` lets the agent that made an attestation missing its instance or model complete it from the same executing session, harness, and agent id; the ledger keeps every attestation and adds an optional `completions` record naming the ones completed, which then stop leaving independence or diversity unknown, while any reviewer they ruled out as the same executor stays ruled out. It is refused for a replay, without an executing session, when nothing is missing, and when another instance or model already appears under that session and agent id, and such a record appearing later voids it. A head whose effective authors change gets a new authors digest, so earlier reviews of it stop counting, and a runtime before 0.30.0 reads a ledger holding a completion as malformed.",
+        version: 30,
+      },
+      {
+        kind: "integration",
+        summary:
+          "`SKILL.md` puts `## Core workflow` directly after the mode table; the `release-tag` rule moved to `references/changelog-coordination.md` under Release tags, and a branch-audit paragraph that repeated `references/replacement-lineage.md` was removed. Forks that edit SKILL.md see a conflict on their next update and should drop their own copies of those two paragraphs while merging.",
+        version: 30,
+      },
+    ],
+    noticeBullets: [
+      {
+        priority: 180,
+        summary:
+          "A review blocked because an author's earlier attestation left out its model or instance can now be unblocked: that same author completes the attestation with `author attest --complete-identity`.",
+      },
+    ],
+    version: 30,
   },
 ];
 

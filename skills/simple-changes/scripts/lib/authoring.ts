@@ -199,7 +199,7 @@ const modelKey = (value: string): string =>
 
 // Words a harness or a person appends to a model name to say how hard it
 // ran, not which model it is. They are stripped only as whole trailing words,
-// so a hyphenated id such as `codex-max` keeps its suffix.
+// so a hyphenated id such as `model-max` keeps its suffix.
 const EFFORT_WORDS: readonly string[] = [
   ...EFFORT_LEVELS,
   "extra-high",
@@ -255,8 +255,8 @@ const keysMatch = (
  * other counts as the same. A name whose qualifier says its version is
  * unknown matches any name in its family. Any matching form counts, so this
  * heuristic fails toward "same", and a possible match never passes a
- * diversity check. Different versions (`Opus 5` and `Opus 5.5`) and
- * hyphenated variants (`codex` and `codex-max`) stay distinct.
+ * diversity check. Different versions (`Model 5` and `Model 5.5`) and
+ * hyphenated variants (`model` and `model-max`) stay distinct.
  */
 export const sameModelName = (left: string, right: string): boolean => {
   const leftForms = modelForms(left);

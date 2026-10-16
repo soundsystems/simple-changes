@@ -1097,6 +1097,9 @@ describe("model identity", () => {
       ["high Model 5.5 Max xhigh", "model-5-5-max"],
       // A version note keeps its version and drops its effort.
       ["Claude Opus (5.5 high)", "claude-opus-5-5"],
+      // A runtime note with numbers in it is still only a note.
+      ["gpt-6.1-sol (reasoning: high, budget: 32768)", "gpt-6.1-sol"],
+      ["Claude Opus (5.5, budget 1000)", "claude-opus-5-5"],
       ["Opus (version unknown)", "claude-opus-5-5"],
       ["Example Model 5.5", "example-model-5-5"],
       ["Sonnet 5.5", "claude-sonnet-5-5"],
@@ -1131,6 +1134,7 @@ describe("model identity", () => {
       ["Claude Opus (5)", "Claude Opus (5.5)"],
       ["Claude Opus (5)", "claude-opus-5-5"],
       ["Claude Opus (5 high)", "Claude Opus (5.5 high)"],
+      ["Claude Opus (5", "Claude Opus (5.5"],
       ["Fable (version unknown)", "claude-fable-mini-5-1"],
       // A hyphenated part that is not effort keeps the whole word.
       ["gpt-5.1-codex-max high", "gpt-5.1-codex xhigh"],

@@ -316,32 +316,39 @@ const modelTokens = (value: string): string[] =>
 // The name without its parenthesised qualifiers, innermost first so nested
 // ones go whole, and every qualifier removed. An unclosed `(` drops the rest
 // of the name and a stray `)` drops itself, so a malformed note never leaves
-// a fragment that makes the same model look distinct. A note with a version
-// number stays in the name.
+// a fragment that makes the same model look distinct. A note that starts with
+// a version, closed or not, leaves that version in the name.
+// The version a note gives, if it starts with one: the leading run of its
+// version tokens, so `(5.5)` and `(5.5 high)` give `5 5`, while a runtime
+// note such as `(reasoning: high, budget: 32768)` gives nothing.
+const noteVersion = (note: string): string[] => {
+  const tokens = modelTokens(note);
+  const end = tokens.findIndex((token) => !MODEL_VERSION_TOKEN.test(token));
+  return end === -1 ? tokens : tokens.slice(0, end);
+};
+
 const withoutQualifiers = (
   value: string
 ): { qualifiers: string[]; rest: string } => {
   const qualifiers: string[] = [];
+  const replaceNote = (note: string): string => {
+    const version = noteVersion(note);
+    if (version.length === 0) {
+      qualifiers.push(note);
+    }
+    return ` ${version.join(" ")} `;
+  };
   let rest = value;
   let previous: string | null = null;
   while (rest !== previous) {
     previous = rest;
-    rest = rest.replace(MODEL_QUALIFIER, (qualifier) => {
-      // A note with a version number, such as `(5.5)` or `(5.5 high)`,
-      // names the version, so its words stay and any effort among them
-      // drops like any other effort word.
-      if (
-        modelTokens(qualifier).some((token) => MODEL_VERSION_TOKEN.test(token))
-      ) {
-        return ` ${qualifier.slice(1, -1)} `;
-      }
-      qualifiers.push(qualifier);
-      return " ";
-    });
+    rest = rest.replace(MODEL_QUALIFIER, replaceNote);
   }
   return {
     qualifiers,
-    rest: rest.replace(MODEL_UNCLOSED_QUALIFIER, " ").replaceAll(")", " "),
+    rest: rest
+      .replace(MODEL_UNCLOSED_QUALIFIER, replaceNote)
+      .replaceAll(")", " "),
   };
 };
 

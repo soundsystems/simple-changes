@@ -1,6 +1,7 @@
 import { readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { spawn } from "bun";
+import { resolveTestTimeoutMs } from "../../test-timeout.ts";
 
 const testsDirectory = join(import.meta.dir, "tests");
 const testFiles = (await readdir(testsDirectory))
@@ -13,7 +14,13 @@ if (testFiles.length === 0) {
 }
 
 const subprocess = spawn({
-  cmd: [process.execPath, "test", ...testFiles],
+  cmd: [
+    process.execPath,
+    "test",
+    "--timeout",
+    String(resolveTestTimeoutMs()),
+    ...testFiles,
+  ],
   stderr: "inherit",
   stdin: "inherit",
   stdout: "inherit",

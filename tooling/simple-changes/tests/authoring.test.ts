@@ -1065,6 +1065,11 @@ describe("model identity", () => {
       ["gpt-6.1-sol (reasoning: high)", "GPT 6.1 Sol"],
       ["Fable 5.1 (version unknown)", "Fable 5.1"],
       ["Fable (version unknown)", "claude-fable-5-1"],
+      ["Fable (unknown version)", "claude-fable-5-1"],
+      // A nested or unclosed note goes whole, never leaving a fragment.
+      ["gpt-6.1-sol (reasoning (high))", "gpt-6.1-sol"],
+      ["gpt-6.1-sol (reasoning: high", "gpt-6.1-sol"],
+      ["gpt-6.1-sol high)", "gpt-6.1-sol"],
       ["Example Model 5.5", "example-model-5-5"],
       ["Sonnet 5.5", "claude-sonnet-5-5"],
     ];
@@ -1086,6 +1091,9 @@ describe("model identity", () => {
       ["gpt-6-sol high", "gpt-6.1-sol"],
       ["gpt-5.1-codex-max", "gpt-5.1-codex"],
       ["Fable 5.1 (version unknown)", "Fable 5"],
+      // Only a note that the version is unknown widens a name to its family.
+      ["gpt-6 (reasoning unknown)", "gpt-6.1-sol"],
+      ["gpt-6 (unknown effort)", "gpt-6.1-sol"],
       ["Astra medium", "gpt-6.1-sol"],
       ["model-alpha", "model-beta"],
       ["high", "max"],

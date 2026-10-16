@@ -68,7 +68,9 @@ const HARNESS_NAME_MAX_LENGTH = 60;
 const ESCALATION_LEVELS = ["high", "xhigh"] as const;
 const MODEL_KEY_SEPARATORS = /[^a-z0-9]+/gu;
 const MODEL_QUALIFIER = /\([^()]*\)/gu;
-const MODEL_UNKNOWN_QUALIFIER = /\bunknown\b/u;
+const MODEL_UNCLOSED_QUALIFIER = /\(.*$/u;
+const MODEL_UNKNOWN_QUALIFIER =
+  /^\(\s*(?:version\s+unknown|unknown\s+version)\s*\)$/u;
 const MODEL_WORD_SEPARATORS = /[\s,;]+/u;
 
 type Environment = Record<string, string | undefined>;
@@ -212,15 +214,35 @@ interface ModelForms {
   versionUnknown: boolean;
 }
 
+// The name without its parenthesised qualifiers, innermost first so nested
+// ones go whole, and every qualifier removed. An unclosed `(` drops the rest
+// of the name and a stray `)` drops itself, so a malformed note never leaves
+// a fragment that makes the same model look distinct.
+const withoutQualifiers = (
+  value: string
+): { qualifiers: string[]; rest: string } => {
+  const qualifiers: string[] = [];
+  let rest = value;
+  let previous: string | null = null;
+  while (rest !== previous) {
+    previous = rest;
+    rest = rest.replace(MODEL_QUALIFIER, (qualifier) => {
+      qualifiers.push(qualifier);
+      return " ";
+    });
+  }
+  return {
+    qualifiers,
+    rest: rest.replace(MODEL_UNCLOSED_QUALIFIER, " ").replaceAll(")", " "),
+  };
+};
+
 // The keys a reported name may mean: the whole name, and the name without
-// parenthesised qualifiers and trailing effort words.
+// parenthesised qualifiers and trailing effort words. Only a qualifier that
+// says exactly that the version is unknown widens a name to its family.
 const modelForms = (value: string): ModelForms => {
-  const lowered = value.toLowerCase();
-  const qualifiers = lowered.match(MODEL_QUALIFIER) ?? [];
-  const words = lowered
-    .replace(MODEL_QUALIFIER, " ")
-    .split(MODEL_WORD_SEPARATORS)
-    .filter((word) => word !== "");
+  const { qualifiers, rest } = withoutQualifiers(value.toLowerCase());
+  const words = rest.split(MODEL_WORD_SEPARATORS).filter((word) => word !== "");
   while (words.length > 1 && EFFORT_WORDS.includes(words.at(-1) ?? "")) {
     words.pop();
   }
@@ -252,8 +274,8 @@ const keysMatch = (
  * `xhigh effort`, or a parenthesised note such as `(version unknown)`), so
  * names compare case-insensitively without separators, with and without
  * those qualifiers and trailing effort words, and a name that ends with the
- * other counts as the same. A name whose qualifier says its version is
- * unknown matches any name in its family. Any matching form counts, so this
+ * other counts as the same. A name whose qualifier is exactly
+ * `(version unknown)` matches any name in its family. Any matching form counts, so this
  * heuristic fails toward "same", and a possible match never passes a
  * diversity check. Different versions (`Model 5` and `Model 5.5`) and
  * hyphenated variants (`model` and `model-max`) stay distinct.

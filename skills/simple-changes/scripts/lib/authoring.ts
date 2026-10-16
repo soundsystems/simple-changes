@@ -200,19 +200,58 @@ export const isModelName = (value: unknown): value is string =>
   characterCount(value) <= MODEL_MAX_LENGTH &&
   !hasControlCharacter(value);
 
-// Words a harness or a person appends to a model name to say how hard it
-// ran, not which model it is. They are stripped only as whole trailing words,
-// so a hyphenated id such as `model-max` keeps its suffix.
-const EFFORT_WORDS: readonly string[] = [
+// Parts of the words a harness or a person adds to a model name to say how
+// hard it ran, not which model it is, such as `high`, `extra-high`, or
+// `model_reasoning_effort`.
+const EFFORT_PARTS: ReadonlySet<string> = new Set([
   ...EFFORT_LEVELS,
-  "extra-high",
+  "extra",
   "effort",
   "reasoning",
-];
+  "thinking",
+  "think",
+  "mode",
+  "level",
+  "model",
+]);
+const EFFORT_MARKERS: ReadonlySet<string> = new Set([
+  ...EFFORT_LEVELS,
+  "effort",
+  "reasoning",
+  "thinking",
+]);
+const EFFORT_PART_SEPARATORS = /[-_.]+/u;
+
+const effortParts = (word: string): string[] | null => {
+  const parts = word.split(EFFORT_PART_SEPARATORS).filter((part) => part);
+  return parts.length > 0 && parts.every((part) => EFFORT_PARTS.has(part))
+    ? parts
+    : null;
+};
+
+// The words that name the model: every word but those that describe effort.
+// An effort word is made only of effort parts, at least one of which says
+// effort (`high`, `reasoning_effort`); a word of helper parts alone
+// (`mode`, `level`) goes only beside one. A word with any other part, such
+// as the hyphenated id `model-max`, is part of the model's name.
+const namingWords = (words: readonly string[]): string[] => {
+  const marked = words.map(
+    (word) =>
+      effortParts(word)?.some((part) => EFFORT_MARKERS.has(part)) === true
+  );
+  return words.filter(
+    (word, index) =>
+      !(
+        marked[index] ||
+        (effortParts(word) !== null &&
+          (marked[index - 1] === true || marked[index + 1] === true))
+      )
+  );
+};
 
 interface ModelForms {
   // The whole name's tokens, then the tokens left without qualifiers and
-  // trailing effort words; a name's key is its tokens joined.
+  // effort words; a name's key is its tokens joined.
   tokens: string[][];
   versionUnknown: boolean;
 }
@@ -248,8 +287,8 @@ const withoutQualifiers = (
 };
 
 // The forms a reported name may mean: the whole name, and the name without
-// parenthesised qualifiers and trailing effort words, punctuation around a
-// word aside. Only a qualifier that says exactly that the version is unknown
+// parenthesised qualifiers and effort words, punctuation around a word
+// aside; a name made only of effort words keeps them. Only a qualifier that says exactly that the version is unknown
 // widens a name to its family.
 const modelForms = (value: string): ModelForms => {
   const { qualifiers, rest } = withoutQualifiers(value.toLowerCase());
@@ -257,10 +296,9 @@ const modelForms = (value: string): ModelForms => {
     .split(MODEL_WORD_SEPARATORS)
     .map((word) => word.replace(MODEL_WORD_EDGES, ""))
     .filter((word) => word !== "");
-  while (words.length > 1 && EFFORT_WORDS.includes(words.at(-1) ?? "")) {
-    words.pop();
-  }
-  const tokens = [modelTokens(value), modelTokens(words.join(" "))].filter(
+  const named = namingWords(words);
+  const kept = named.length > 0 ? named : words;
+  const tokens = [modelTokens(value), modelTokens(kept.join(" "))].filter(
     (form, index, all) =>
       form.length > 0 &&
       all.findIndex((other) => other.join("") === form.join("")) === index
@@ -307,7 +345,8 @@ const formsMatch = (left: ModelForms, right: ModelForms): boolean =>
  * prefix, an id with hyphens, an appended effort such as `high` or
  * `xhigh effort`, or a parenthesised note such as `(version unknown)`), so
  * names compare case-insensitively without separators, with and without
- * those qualifiers and trailing effort words, and a name that ends with the
+ * those qualifiers and whole words that only describe effort (such as
+ * `reasoning_effort=high`), and a name that ends with the
  * other counts as the same. A name whose qualifier is exactly
  * `(version unknown)` matches any version of its family, never another
  * variant. Any matching form counts, so this heuristic fails toward "same",

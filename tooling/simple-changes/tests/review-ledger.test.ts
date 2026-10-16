@@ -1429,6 +1429,16 @@ describe("reviewer resolution before dispatch", () => {
       )
     ).toMatchObject({ reason: "reviewer-not-distinct", status: "blocked" });
     expect(
+      resolve(
+        {
+          adversarial: true,
+          harness: "codex",
+          model: "gpt-6.1-sol reasoning_effort=high",
+        },
+        { harness: "codex", model: "gpt-6.1-sol" }
+      )
+    ).toMatchObject({ reason: "reviewer-not-distinct", status: "blocked" });
+    expect(
       resolve({ adversarial: true, harness: "codex", model: "gpt-6-sol" }, sol)
         .status
     ).toBe("resolved");
@@ -1742,7 +1752,24 @@ describe("proposal ledger commands", () => {
       currentValidity: { reason: "reviewer-not-distinct", valid: false },
       status: "unchanged",
     });
-    // A new attempt by the same model at another effort is rejected.
+    // A new attempt by the same model at another effort is rejected, however
+    // the effort is spelled.
+    const fielded = recordReviewAttempt({
+      attemptId: randomUUID(),
+      head,
+      proposalId: PROPOSAL,
+      receipt: reviewReceipt({
+        agent: "gpt-6.1-sol model_reasoning_effort=xhigh",
+        harness: "claude-code",
+        instance: "reviewer-w",
+        session: "session-w",
+      }),
+      repositoryPath: run.author,
+    });
+    expect(fielded.attempt).toMatchObject({
+      acceptanceReason: "reviewer-not-distinct",
+      accepted: false,
+    });
     const rejected = recordReviewAttempt({
       attemptId: randomUUID(),
       head,

@@ -1073,6 +1073,13 @@ describe("model identity", () => {
       // Punctuation around an effort word does not keep it.
       ["gpt-6.1-sol reasoning: high", "gpt-6.1-sol"],
       ["gpt-6.1-sol, effort=xhigh.", "gpt-6.1-sol"],
+      // So does a compound effort field, wherever it appears.
+      ["gpt-6.1-sol reasoning_effort=high", "gpt-6.1-sol"],
+      ["gpt-6.1-sol reasoning-effort: high", "gpt-6.1-sol"],
+      ["gpt-6.1-sol model_reasoning_effort=high", "gpt-6.1-sol xhigh"],
+      ["xhigh gpt-6.1-sol", "gpt-6.1-sol"],
+      ["Claude Opus 5.5 thinking mode", "claude-opus-5-5"],
+      ["gpt-6.1-sol reasoning mode: high", "gpt-6.1-sol"],
       ["Opus (version unknown)", "claude-opus-5-5"],
       ["Example Model 5.5", "example-model-5-5"],
       ["Sonnet 5.5", "claude-sonnet-5-5"],
@@ -1101,6 +1108,9 @@ describe("model identity", () => {
       // An unknown version never absorbs another variant.
       ["gpt-5.1-codex (version unknown)", "gpt-5.1-codex-max"],
       ["Fable (version unknown)", "claude-fable-mini-5-1"],
+      // A hyphenated part that is not effort keeps the whole word.
+      ["gpt-5.1-codex-max high", "gpt-5.1-codex xhigh"],
+      ["Example Model 5.5", "Example 5.5"],
       ["Astra medium", "gpt-6.1-sol"],
       ["model-alpha", "model-beta"],
       ["high", "max"],

@@ -123,11 +123,12 @@ former owner and saying the new owner may run the same steps instead, and
 every guarded mutation of the run, unrelated ones included, stays blocked until
 the link is current again, so finish the handoff before other work. Under
 `allow-claimed` with the shipment scope still open, the new owner's valid claim
-registers it as a concurrent author, which completes the handoff. Otherwise,
-including after the scope froze when a controller relinquished or handed off,
-verification now names the new owner, who runs `worktree pause --disposition
-preserve-in-place`, and the controller runs `loop accept-paused-change` with
-that receipt. The pause binds the exact path, branch, HEAD, and digest, so a
+on a checkout on its own branch (not detached, and not the primary or target
+branch) registers it as a concurrent author, which completes the handoff.
+Otherwise, including for a detached checkout and after the scope froze when a
+controller relinquished or handed off, verification now names the new owner,
+who runs `worktree pause --disposition preserve-in-place`, and the controller
+runs `loop accept-paused-change` with that receipt. The pause binds the exact path, branch, HEAD, and digest, so a
 checkout that changed after its pause, a claim released before acceptance,
 another owner's live claim, and the former owner's old receipt are all refused.
 

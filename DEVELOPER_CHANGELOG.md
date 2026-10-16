@@ -27,32 +27,34 @@
   `.` (`EFFORT_PART_SEPARATORS`), and only a word whose every part is in
   `EFFORT_PARTS` (`EFFORT_LEVELS` plus `extra`, `effort`, `reasoning`,
   `thinking`, `think`, `mode`, `level`, and `model`) can be an effort word.
-  `effortWords` sorts those into two groups. `levels` holds standalone
-  levels, words made only of `EFFORT_LEVEL_PARTS` (`EFFORT_LEVELS` plus
-  `extra`), such as `high`, `max`, `extra`, and `extra-high`. `certain`
+  `effortWords` sorts those into two groups (`EffortWords`). `certain`
   holds words with an `EFFORT_MARKERS` part (`effort`, `reasoning`, or
-  `thinking`), plus any other word of effort parts, such as `mode`,
-  `level`, `think`, or `model-max`, that sits next to a level or a marked
-  word. `effortDrops` returns, for each count k from 0 to the number of
-  levels, the certain words plus every level except the first k, and the
-  certain words plus every level except the last k, so a name yields a
-  linear number of forms with no cap. Every such form drops the certain
-  words, and each level is tried both kept and dropped:
-  `GPT-5.1 Codex Max high` matches `gpt-5.1-codex-max`, as do
+  `thinking`) and helper words, such as `mode`, `level`, `think`, or
+  `model-max`, next to one; every drop includes them. `variable` holds
+  standalone levels, words made only of `EFFORT_LEVEL_PARTS`
+  (`EFFORT_LEVELS` plus `extra`), such as `high`, `max`, `extra`, and
+  `extra-high`, plus helper words next to a level but not next to a
+  marker word, such as `Model` in `high Model 5.5 Max xhigh`. A helper
+  word next to neither stays in the name. `effortDrops` returns a drop of
+  every certain and variable word and, for each contiguous run of the
+  variable words, a drop of the certain words and every variable word
+  outside that run, so a name yields a quadratic number of forms with no
+  cap, and a level that is also part of the name is tried kept wherever
+  it sits among other effort words: `GPT-5.1 Codex Max high` matches
+  `gpt-5.1-codex-max`, as do
   `GPT-5.1 Codex Max model reasoning effort extra high mode` and
-  `high max xhigh GPT-5.1 Codex Max high max`, and
+  `high max xhigh GPT-5.1 Codex Max high max`;
+  `xhigh GPT-5.1 Codex Max high` matches `openai/gpt-5.1-codex-max`;
+  `high Model 5.5 Max xhigh` matches `model-5-5-max`; and
   `GPT-5.1 Codex Max reasoning: xhigh` matches `gpt-5.1-codex-max xhigh`.
-  Levels are kept only as a leading or trailing run, so a variant level
-  with levels on both sides matches only through the suffix rule:
-  `xhigh GPT-5.1 Codex Max high` matches `gpt-5.1-codex-max` but not
-  `openai/gpt-5.1-codex-max`. A drop that would leave no word yields no
-  form, so a name made only of effort words, such as `high` against `max`,
-  still compares by its own words. So `reasoning_effort=high`,
-  `reasoning-effort: high`, `model_reasoning_effort=high`, a leading
-  `xhigh`, `thinking mode`, and `reasoning mode: high` can all go, while
-  `gpt-5.1-codex-max` and `coder-max`, which have parts outside
-  `EFFORT_PARTS`, the lone `Model` in `Example Model 5.5`, and the lone
-  `model-max` in `vendor model-max` stay.
+  A drop that would leave no word yields no form, so a name made only of
+  effort words, such as `high` against `max`, still compares by its own
+  words. So `reasoning_effort=high`, `reasoning-effort: high`,
+  `model_reasoning_effort=high`, a leading `xhigh`, `thinking mode`, and
+  `reasoning mode: high` can all go, while `gpt-5.1-codex-max` and
+  `coder-max`, which have parts outside `EFFORT_PARTS`, the lone `Model`
+  in `Example Model 5.5`, and the lone `model-max` in `vendor model-max`
+  stay.
 - Accepted tradeoff, now pinned by tests: a standalone level such as `Max`
   reads as effort even where a display name means a variant, so
   `GPT-5.1 Codex Max` matches `gpt-5.1-codex` as well as
@@ -130,7 +132,13 @@
   version beside other words, such as `(5.5 high)`, was still stripped, so
   `Claude Opus (5.5 high)` missed `claude-opus-5-5` and
   `Claude Opus (5 high)` matched `Claude Opus (5.5 high)`, fixed by
-  keeping any note with a version token.
+  keeping any note with a version token. After round 6, the changelog
+  writer's check against the round 5 code found that levels were kept
+  only as a leading or trailing run, so `xhigh GPT-5.1 Codex Max high`, a
+  match for `openai/gpt-5.1-codex-max` under round 5, no longer matched
+  it; the fix tries every contiguous run of variable words kept and makes
+  a helper word beside only a level, such as `Model` in
+  `high Model 5.5 Max xhigh`, variable instead of always dropped.
 - Every caller picks the new comparison up: `diversity` (acceptance in
   `record-review`), `targetDistinctness` in `resolveReviewer` before
   dispatch (now `reviewer-not-distinct` for a `gpt-6.1-sol xhigh` target
@@ -146,7 +154,7 @@
   `refinesIdentity` (0.30.0's identity completion,
   soundsystems/simple-changes!91) still compares reported models exactly
   and is unchanged.
-- Tests: `authoring.test.ts` "model identity" checks 31 same pairs and 22
+- Tests: `authoring.test.ts` "model identity" checks 33 same pairs and 22
   distinct pairs in both orders. The same pairs include
   `(unknown version)`, a nested note, an unclosed one, a stray `)`,
   `reasoning: high`, `, effort=xhigh.`, `reasoning_effort=high`,
@@ -158,6 +166,8 @@
   `gpt-5.1-codex-max xhigh`,
   `GPT-5.1 Codex Max model reasoning effort extra high mode` and
   `high max xhigh GPT-5.1 Codex Max high max` against `gpt-5.1-codex-max`,
+  `xhigh GPT-5.1 Codex Max high` against `openai/gpt-5.1-codex-max`,
+  `high Model 5.5 Max xhigh` against `model-5-5-max`,
   `Claude Opus (5.5 high)` against `claude-opus-5-5`, and
   `Opus (version unknown)` against `claude-opus-5-5`. The distinct pairs
   include `gpt-6 (reasoning unknown)`
@@ -244,7 +254,7 @@
   naming both paths, record-outcome refuses it, and the CLI exits 0 with the
   `Warning:` line on stderr.
 - Guidance stays at 30, with no guidance entry and no update notice.
-<!-- simple-changelogs-signature agent="Claude Opus 5.5 xhigh" at="2026-10-16T14:55:37-05:00" -->
+<!-- simple-changelogs-signature agent="Claude Opus 5.5 xhigh" at="2026-10-16T15:00:09-05:00" -->
 
 ## 0.30.0 - 2026-10-15
 

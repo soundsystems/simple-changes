@@ -7,13 +7,16 @@
     model in the same coding agent just because the two spell the model's
     name differently. Model names now match when they differ only by case,
     separators, trailing effort words (`low`, `medium`, `high`, `xhigh`,
-    `max`, `extra-high`, `effort`, or `reasoning`), or notes in
+    `max`, `extra-high`, `effort`, or `reasoning`), even with punctuation
+    around them as in `reasoning: high` or `effort=xhigh`, or notes in
     parentheses such as `(reasoning: high)`, nested or unclosed ones
     included. Only the note `(version unknown)` or `(unknown version)`
-    widens a name to any version of its model, so `Model (version unknown)`
-    matches `model-5-5`, but a note such as `(reasoning unknown)` does not.
-    Before, an author labelled `Model 5.5 high` and a reviewer reporting
-    `model-5-5` counted as different models, so the review was accepted.
+    widens a name, and only to any version of the same model, never
+    another variant: `Model (version unknown)` matches `model-5-5` and
+    `vendor-model-5-5` but not `model-max`, and a note such as
+    `(reasoning unknown)` widens nothing. Before, an author labelled
+    `Model 5.5 high` and a reviewer reporting `model-5-5` counted as
+    different models, so the review was accepted.
   - The same comparison now also decides whether the configured reviewer
     is blocked before a review is dispatched, whether a stored review still
     counts, whether a reviewer reported the model it was asked for, and
@@ -31,11 +34,11 @@
     controller's bridge identity back to the author who must attest its
     commits, now has documented steps. A claim never moves between owners,
     so the former owner releases its claim and the new owner claims the
-    checkout right away with its own agent ID and adapter. Until the run
-    registers the new owner, `loop verify` reports
-    `coordination-claim-stale` for the checkout and every guarded step of
-    the run, unrelated ones included, stays blocked, so finish the handoff
-    before other work. When the former owner released with
+    checkout right away with its own agent ID and adapter. Until the new
+    owner's claim is registered or its pause is accepted, `loop verify`
+    reports `coordination-claim-stale` for the checkout and every guarded
+    step of the run, unrelated ones included, stays blocked, so finish the
+    handoff before other work. When the former owner released with
     `worktree release` or a handoff and nothing else holds the checkout,
     the recovery that `loop verify` and `loop status` print now adds that
     the new owner may run the same claim and pause instead.
@@ -61,7 +64,7 @@
     unless a reviewed primary-checkout result or an approved
     preserved-source override covered it, and still does; the warning just
     tells you sooner.
-<!-- simple-changelogs-signature agent="Claude Opus 5.5 xhigh" at="2026-10-16T13:46:32-05:00" -->
+<!-- simple-changelogs-signature agent="Claude Opus 5.5 xhigh" at="2026-10-16T13:56:12-05:00" -->
 
 ## 0.30.0 - 2026-10-15
 

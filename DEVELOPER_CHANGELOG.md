@@ -1,5 +1,114 @@
 # Developer changelog
 
+## 0.30.1 - 2026-10-16
+
+- Model identity (`lib/authoring.ts`, issue soundsystems/simple-changes#5):
+  `sameModelName` now compares every form `modelForms` derives from each
+  name: the whole name's `modelKey`, and the key left after removing
+  parenthesised qualifiers (`MODEL_QUALIFIER`) and popping trailing
+  `EFFORT_WORDS` (`EFFORT_LEVELS` plus `extra-high`, `effort`, and
+  `reasoning`). Words split only on whitespace, commas, and semicolons, an
+  effort word goes only as a whole word, and the last word never goes, so
+  `codex-max` and a bare `high` keep their keys. Two keys match when equal
+  or when one ends with the other, as before, and a name with a qualifier
+  containing the word `unknown` (`versionUnknown`) also matches any key
+  that contains one of its keys. Any matching pair counts, so the heuristic
+  still fails toward "same".
+- Before, an author's display label `GPT-6.1 Sol high` and a reviewer's
+  `gpt-6.1-sol` had different keys, so `diversity` returned `distinct`
+  within one harness and an adversarial `record-review` accepted a
+  same-model review. Pairs that stay distinct include `Claude Opus 5` and
+  `Claude Opus 5.5`, `gpt-6-sol high` and `gpt-6.1-sol`,
+  `gpt-5.1-codex-max` and `gpt-5.1-codex`, and
+  `Fable 5.1 (version unknown)` and `Fable 5`. There is no alias registry,
+  so names that share no form, such as `Astra medium` and `gpt-6.1-sol`,
+  stay distinct. A follow-up commit makes the examples in the code comments
+  vendor-neutral (`Model 5`, `model-max`).
+- Every caller picks the new comparison up: `diversity` (acceptance in
+  `record-review`), `targetDistinctness` in `resolveReviewer` before
+  dispatch (now `reviewer-not-distinct` for a `gpt-6.1-sol xhigh` target
+  against a `GPT-6.1 Sol high` author in one harness), current validity of
+  stored attempts, `reviewDisclosure` (a reported name that differs from
+  the requested one only by effort or qualifier is no longer a `model`
+  mismatch), and `reviewModelProblem` in `lib/authoring-onboarding.ts`, the
+  onboarding R3' check that rejects a reviewer model equal to the agent's
+  recorded one; `references/onboarding.md` adds one clause saying so. A
+  stored attempt keeps its recorded `accepted: true` and
+  `acceptanceReason: null`, but `currentValidity` re-judges it as
+  `reviewer-not-distinct`, so it is no longer an approval candidate.
+  `refinesIdentity` (0.30.0's identity completion,
+  soundsystems/simple-changes!91) still compares reported models exactly
+  and is unchanged.
+- Tests: `authoring.test.ts` "model identity" checks 11 same pairs and 9
+  distinct pairs in both orders; `onboarding.test.ts` adds
+  `author-model xhigh` and `Author Model (version unknown)` to the variants
+  `reviewModelProblem` rejects; `review-ledger.test.ts` blocks the
+  `gpt-6.1-sol xhigh` target and resolves `gpt-6-sol` in reviewer
+  resolution, and records a same-model attempt accepted without
+  adversarial review, sees it keep its acceptance but fail current validity
+  once adversarial review is on, rejects a new same-model attempt at
+  another effort with `reviewer-not-distinct`, and accepts `Astra medium`.
+- Adopted checkout handoff (`lib/loop-lease-verify.ts`, issue
+  soundsystems/simple-changes#3): `staleClaimRecovery` appends
+  `handoffHint(primary, linkedClaim, liveClaim)` to the
+  `coordination-claim-stale` text. For a checkout other than the primary
+  one, with no live claim, whose linked claim is `released` for a
+  `COMPLETED_RELEASE_REASONS` reason (`owner-release` from
+  `worktree release`, or `handoff`), the hint says the new owner may run
+  the same claim and pause with its own agent ID and adapter, and the
+  controller accepts that receipt. `nextCommands` still name the former
+  owner; once a new owner holds a live claim, the hint is gone and the
+  commands name the new owner. No state, schema, or command changes.
+- `references/recovery.md` ("Released claims and paused changes") adds the
+  handoff: a claim never moves, so the former owner releases and the new
+  owner claims; while the link is stale every guarded mutation of the run,
+  unrelated ones included, stays blocked; under `allow-claimed` with the
+  shipment scope open, the new owner's valid claim registers it as a
+  concurrent author, which completes the handoff; otherwise, including
+  after the scope froze when a controller relinquished or handed off, the
+  new owner pauses with `preserve-in-place` and the controller runs
+  `loop accept-paused-change`; and a checkout changed after its pause, a
+  claim released before acceptance, another owner's live claim, and the
+  former owner's old receipt are refused.
+  `references/inventory-and-concurrency.md` says to release an adopted
+  checkout's claim only to hand it to a new owner who claims it right
+  away.
+- Tests: `loop-lease.test.ts` "hands an unchanged adopted checkout from a
+  released bridge owner to a new owner" runs with the scope open and again
+  after a relinquish froze it and a new controller resumed. Releasing the
+  bridge claim yields one `coordination-claim-stale` with the hint and the
+  bridge owner in the first command, the bridge receipt is refused, and a
+  third agent cannot claim over the new owner's live claim. With the scope
+  open, verification passes with the new owner registered as
+  `concurrent-author`. After the freeze, the recovery names the new owner
+  without the hint, a pause whose claim was released before acceptance and
+  a receipt whose checkout changed after the pause are refused, and the
+  unchanged checkout is accepted as `adopted-preserved` and `preserved`
+  with its opening HEAD and change digest.
+- Draft warning (`lib/shipment-outcome-draft.ts`, part a of issue
+  soundsystems/simple-changes#4): `buildDraft` computes each unit's
+  disposition and `finalPaths` once and passes them to the new
+  `sourceMismatchWarning(unit, disposition, finalPaths, openingChanges)`.
+  It flags each final path unless exactly one `shipmentScope.openingChanges`
+  record for the unit's `sourceWorktree` and that path has a `sourceEntry`
+  equal to the final target entry, the case `loop record-outcome` refuses
+  without a reviewed primary-checkout result or an approved preserved-source
+  override. The warning names up to `MISMATCH_PATH_LIMIT` (5) paths, counts
+  the rest, and joins the existing `warnings` array, which
+  `runLoopDraftOutcome` already emits in JSON and as `Warning:` lines.
+  Suggested dispositions and `record-outcome` are unchanged.
+  `references/focused-units.md` adds one sentence describing the warning.
+- Tests: `shipment-outcome-draft.test.ts` expects no warning when the
+  shipped bytes are the opening source result, and the warning naming
+  `notes.md` plus record-outcome's refusal when a revision never reached the
+  target. The new "warns when a suggested delivery is not the scoped source
+  result" has a held unit edit `CHANGELOG.md` and `held.ts` while unrelated
+  merged work changes `CHANGELOG.md`: the draft suggests `delivered`, warns
+  naming both paths, record-outcome refuses it, and the CLI exits 0 with the
+  `Warning:` line on stderr.
+- Guidance stays at 30, with no guidance entry and no update notice.
+<!-- simple-changelogs-signature agent="Claude Opus 5.5 xhigh" at="2026-10-16T13:32:51-05:00" -->
+
 ## 0.30.0 - 2026-10-15
 
 - Identity completion (`lib/review-ledger.ts`, issue

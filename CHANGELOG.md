@@ -1,5 +1,67 @@
 # Changelog
 
+## 0.30.1 - 2026-10-16
+
+- **Bug Fixes & Improvements**:
+  - Adversarial review no longer accepts a review by the author's own
+    model in the same coding agent just because the two spell the model's
+    name differently. Model names now match when they differ only by case,
+    separators, trailing effort words (`low`, `medium`, `high`, `xhigh`,
+    `max`, `extra-high`, `effort`, or `reasoning`), or a note in
+    parentheses such as `(version unknown)`, and a name whose note says its
+    version is unknown, such as `Model (version unknown)`, matches any
+    version of that model. Before, an author labelled `Model 5.5 high` and
+    a reviewer reporting `model-5-5` counted as different models, so the
+    review was accepted.
+  - The same comparison now also decides whether the configured reviewer
+    is blocked before a review is dispatched, whether a stored review still
+    counts, whether a reviewer reported the model it was asked for, and
+    which reviewer model setup refuses as the author's own. A review
+    accepted before this release keeps its record, but if its reviewer now
+    matches the author's model while adversarial review is on, it no longer
+    counts toward approval, and that proposal needs a review from a
+    different model or coding agent.
+  - Different versions and variants still count as different models, such
+    as `Model 5` and `Model 5.5`, or `model` and `model-max`. Names are
+    compared by spelling only, with no list of aliases, so two unrelated
+    names for one model, such as a codename and a model ID, still count as
+    different.
+  - Handing an unchanged adopted checkout to a new owner, such as from a
+    controller's bridge identity back to the author who must attest its
+    commits, now has documented steps. A claim never moves between owners,
+    so the former owner releases its claim and the new owner claims the
+    checkout right away with its own agent ID and adapter. Until the run
+    registers the new owner, `loop verify` reports
+    `coordination-claim-stale` for the checkout and every guarded step of
+    the run, unrelated ones included, stays blocked, so finish the handoff
+    before other work. When the former owner released with
+    `worktree release` or a handoff and nothing else holds the checkout,
+    the recovery that `loop verify` and `loop status` print now adds that
+    the new owner may run the same claim and pause instead.
+  - Under the default `concurrentWork: "allow-claimed"` policy, while the
+    run's shipment scope is still open, the new owner's claim registers it
+    as a concurrent author, which completes the handoff. Otherwise,
+    including after the scope froze, the new owner pauses the checkout with
+    `preserve-in-place` and the controller runs `loop accept-paused-change`
+    with that receipt. A checkout changed after its pause, a pause whose
+    claim was released before it was accepted, a claim on a checkout
+    another owner holds, and the former owner's old receipt are all
+    refused. Only the printed recovery and the references are new; claims,
+    pauses, and acceptance work as before.
+  - `loop draft-outcome` now warns when it suggests a disposition that
+    `loop record-outcome` will refuse as drafted. It suggests `delivered`
+    or `target-equivalent` from whether a unit's paths changed on the
+    target, which alone proves neither: unrelated work may have edited a
+    shared changelog, or the unit's change may never have arrived. When a
+    unit's final target entry differs from the opening source result its
+    scope recorded, the draft names up to five such paths in its JSON
+    `warnings` and as `Warning:` lines, so you can check that unit before
+    recording. `loop record-outcome` refused such a disposition before
+    unless a reviewed primary-checkout result or an approved
+    preserved-source override covered it, and still does; the warning just
+    tells you sooner.
+<!-- simple-changelogs-signature agent="Claude Opus 5.5 xhigh" at="2026-10-16T13:32:51-05:00" -->
+
 ## 0.30.0 - 2026-10-15
 
 - A review no longer stays blocked after an author fixes its own incomplete

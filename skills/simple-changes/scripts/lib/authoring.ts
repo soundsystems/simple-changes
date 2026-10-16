@@ -72,6 +72,10 @@ const MODEL_UNCLOSED_QUALIFIER = /\(.*$/u;
 const MODEL_UNKNOWN_QUALIFIER =
   /^\(\s*(?:version\s+unknown|unknown\s+version)\s*\)$/u;
 const MODEL_WORD_SEPARATORS = /[\s,;:=]+/u;
+// A `key:` or `key=` field label, where runtime settings such as
+// `budget: 32768` begin.
+const MODEL_FIELD_LABEL = /(?:^|[\s,;])[a-z][a-z0-9_-]*\s*[:=]/u;
+const MODEL_DIGIT = /\d/u;
 // Punctuation around a word, such as the colon in `reasoning: high`.
 const MODEL_WORD_EDGES = /^[^a-z0-9]+|[^a-z0-9]+$/gu;
 // A token that starts like a version number, such as `5`, `1`, or `4o`.
@@ -365,15 +369,50 @@ const withoutQualifiers = (
 // words, punctuation around a word aside; a name made only of effort words
 // keeps them. Only a qualifier that says exactly that the version is unknown
 // widens a name to its family.
-const modelForms = (value: string): ModelForms => {
-  const { qualifiers, rest } = withoutQualifiers(value.toLowerCase());
-  const words = rest
+const splitWords = (value: string): string[] =>
+  value
     .split(MODEL_WORD_SEPARATORS)
     .map((word) => word.replace(MODEL_WORD_EDGES, ""))
     .filter((word) => word !== "");
-  const named = effortDrops(effortWords(words))
-    .map((dropped) => words.filter((_word, index) => !dropped.has(index)))
-    .filter((kept) => kept.length > 0);
+
+// The name without trailing setting pairs, such as `budget 32768` or
+// `temperature 0.2`: a word without digits, then a value that starts with
+// one. Each pair goes only while a word with a digit is left, so
+// `Claude Opus 5` never shrinks to `claude`.
+const withoutTrailingSettings = (words: readonly string[]): string[][] => {
+  const shorter: string[][] = [];
+  let kept = [...words];
+  while (
+    kept.length >= 3 &&
+    MODEL_VERSION_TOKEN.test(kept.at(-1) ?? "") &&
+    !MODEL_DIGIT.test(kept.at(-2) ?? "") &&
+    kept.slice(0, -2).some((word) => MODEL_DIGIT.test(word))
+  ) {
+    kept = kept.slice(0, -2);
+    shorter.push(kept);
+  }
+  return shorter;
+};
+
+const modelForms = (value: string): ModelForms => {
+  const { qualifiers, rest } = withoutQualifiers(value.toLowerCase());
+  const words = splitWords(rest);
+  // Everything from the first field label on is a runtime setting.
+  const field = MODEL_FIELD_LABEL.exec(rest);
+  const bases = [
+    words,
+    ...(field && field.index > 0
+      ? [splitWords(rest.slice(0, field.index))]
+      : []),
+  ].filter((base) => base.length > 0);
+  const named = [...bases, ...bases.flatMap(withoutTrailingSettings)].flatMap(
+    (base) => [
+      base,
+      ...effortDrops(effortWords(base))
+        .map((dropped) => base.filter((_word, index) => !dropped.has(index)))
+        .filter((kept) => kept.length > 0),
+    ]
+  );
   const form = (formWords: readonly string[]): ModelForm => {
     const wordTokens = formWords
       .map(modelTokens)
@@ -385,7 +424,6 @@ const modelForms = (value: string): ModelForms => {
   };
   const forms = [
     form(value.toLowerCase().split(MODEL_WORD_SEPARATORS)),
-    form(words),
     ...named.map(form),
   ].filter(
     (candidate, index, all) =>

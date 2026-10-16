@@ -1106,6 +1106,10 @@ describe("model identity", () => {
       ["Claude Opus 5.5 temperature 0.2", "claude-opus-5-5"],
       ["openai/gpt-6.1-sol ctx 200k", "gpt-6.1-sol"],
       ["vendor model-max", "vendor"],
+      // Two names with different settings are still one model.
+      ["gpt-6.1-sol budget: 32768", "gpt-6.1-sol budget: 65536"],
+      ["gpt-6.1-sol, reasoning=high", "GPT-6.1 Sol thinking: 4000"],
+      ["Claude Opus 5.5 temperature 0.2", "claude-opus-5-5 budget 100"],
       ["Opus (version unknown)", "claude-opus-5-5"],
       ["Example Model 5.5", "example-model-5-5"],
       ["Sonnet 5.5", "claude-sonnet-5-5"],
@@ -1145,6 +1149,10 @@ describe("model identity", () => {
       ["gpt-6 budget 100", "gpt-6.1-sol"],
       ["Claude Opus 5 temperature 0.2", "Claude Opus 5.5"],
       ["gpt-5.1-codex budget 100", "gpt-5.1-codex-max"],
+      // A model word after a version is a name, never a setting.
+      ["Claude 3 Opus", "Claude 3 Sonnet"],
+      ["Claude Opus 5", "Claude Sonnet 5"],
+      ["Claude Opus 5 budget 100", "Claude Sonnet 5 budget 100"],
       ["Fable (version unknown)", "claude-fable-mini-5-1"],
       // A hyphenated part that is not effort keeps the whole word.
       ["gpt-5.1-codex-max high", "gpt-5.1-codex xhigh"],

@@ -6,15 +6,17 @@
   - Adversarial review no longer accepts a review by the author's own
     model in the same coding agent just because the two spell the model's
     name differently. Model names now match when they differ only by case,
-    separators, trailing effort words (`low`, `medium`, `high`, `xhigh`,
-    `max`, `extra-high`, `effort`, or `reasoning`), even with punctuation
-    around them as in `reasoning: high` or `effort=xhigh`, or notes in
-    parentheses such as `(reasoning: high)`, nested or unclosed ones
-    included. Only the note `(version unknown)` or `(unknown version)`
-    widens a name, and only to any version of the same model, never
-    another variant: `Model (version unknown)` matches `model-5-5` and
-    `vendor-model-5-5` but not `model-max`, and a note such as
-    `(reasoning unknown)` widens nothing. Before, an author labelled
+    separators, words that only describe effort, or notes in parentheses
+    such as `(reasoning: high)`, nested or unclosed ones included. Effort
+    words are dropped as whole words anywhere in the name, such as `high`,
+    `xhigh`, `extra-high`, `reasoning: high`, `reasoning_effort=high`, or
+    `thinking mode`, while a word with any other part, such as
+    `model-mini`, stays part of the model's name, and a name made only of
+    effort words keeps them. Only the note `(version unknown)` or
+    `(unknown version)` widens a name, and only to any version of the same
+    model, never another variant: `Model (version unknown)` matches
+    `model-5-5` and `vendor-model-5-5` but not `model-max`, and a note such
+    as `(reasoning unknown)` widens nothing. Before, an author labelled
     `Model 5.5 high` and a reviewer reporting `model-5-5` counted as
     different models, so the review was accepted.
   - The same comparison now also decides whether the configured reviewer
@@ -43,15 +45,17 @@
     the recovery that `loop verify` and `loop status` print now adds that
     the new owner may run the same claim and pause instead.
   - Under the default `concurrentWork: "allow-claimed"` policy, while the
-    run's shipment scope is still open, the new owner's claim registers it
-    as a concurrent author, which completes the handoff. Otherwise,
-    including after the scope froze, the new owner pauses the checkout with
-    `preserve-in-place` and the controller runs `loop accept-paused-change`
-    with that receipt. A checkout changed after its pause, a pause whose
-    claim was released before it was accepted, a claim on a checkout
-    another owner holds, and the former owner's old receipt are all
-    refused. Only the printed recovery and the references are new; claims,
-    pauses, and acceptance work as before.
+    run's shipment scope is still open, the new owner's claim on a checkout
+    on its own branch (not detached, and not the primary or target branch)
+    registers it as a concurrent author, which completes the handoff.
+    Otherwise, including for a detached checkout and after the scope froze,
+    the new owner pauses the checkout with `preserve-in-place` and the
+    controller runs `loop accept-paused-change` with that receipt. A
+    checkout changed after its pause, a pause whose claim was released
+    before it was accepted, a claim on a checkout another owner holds, and
+    the former owner's old receipt are all refused. Only the printed
+    recovery and the references are new; claims, pauses, and acceptance
+    work as before.
   - `loop draft-outcome` now warns when it suggests a disposition that
     `loop record-outcome` will refuse as drafted. It suggests `delivered`
     or `target-equivalent` from whether a unit's paths changed on the
@@ -64,7 +68,7 @@
     unless a reviewed primary-checkout result or an approved
     preserved-source override covered it, and still does; the warning just
     tells you sooner.
-<!-- simple-changelogs-signature agent="Claude Opus 5.5 xhigh" at="2026-10-16T13:56:12-05:00" -->
+<!-- simple-changelogs-signature agent="Claude Opus 5.5 xhigh" at="2026-10-16T14:09:29-05:00" -->
 
 ## 0.30.0 - 2026-10-15
 

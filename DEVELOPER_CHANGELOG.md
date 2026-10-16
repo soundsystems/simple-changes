@@ -7,19 +7,29 @@
   each name (`ModelForms.tokens`). `modelTokens` lowercases a name and
   splits it into alphanumeric runs, and a form's key is its tokens joined,
   which is what the removed `modelKey` computed. The forms are the whole
-  name's tokens and the tokens left once `withoutQualifiers` has removed
-  parenthesised qualifiers and trailing `EFFORT_WORDS` (`EFFORT_LEVELS`
-  plus `extra-high`, `effort`, and `reasoning`) have been popped.
-  `withoutQualifiers` strips `MODEL_QUALIFIER` matches innermost first,
-  repeating until none is left, so a nested note such as
-  `(reasoning (high))` goes whole, then drops everything from an unclosed
-  `(` (`MODEL_UNCLOSED_QUALIFIER`) and any stray `)`, so a malformed note
-  never leaves a fragment. Words split on whitespace, commas, semicolons,
-  colons, and equals signs, and each loses the punctuation around it
-  (`MODEL_WORD_EDGES`) before the effort check, so `reasoning: high` and
-  `, effort=xhigh.` go too. An effort word goes only as a whole word and
-  the last word never goes, so `codex-max` and a bare `high` keep their
-  tokens.
+  name's tokens and the tokens of the words left once `withoutQualifiers`
+  has removed parenthesised qualifiers and `namingWords` has dropped the
+  words that only describe effort. `withoutQualifiers` strips
+  `MODEL_QUALIFIER` matches innermost first, repeating until none is left,
+  so a nested note such as `(reasoning (high))` goes whole, then drops
+  everything from an unclosed `(` (`MODEL_UNCLOSED_QUALIFIER`) and any
+  stray `)`, so a malformed note never leaves a fragment. Words split on
+  whitespace, commas, semicolons, colons, and equals signs, and each loses
+  the punctuation around it (`MODEL_WORD_EDGES`) before the effort check.
+- Effort words (`namingWords`, replacing `EFFORT_WORDS` and its
+  trailing-only pop): a word is an effort word when every part it splits
+  into on `-`, `_`, and `.` (`EFFORT_PART_SEPARATORS`) is in `EFFORT_PARTS`
+  (`EFFORT_LEVELS` plus `extra`, `effort`, `reasoning`, `thinking`,
+  `think`, `mode`, `level`, and `model`) and at least one is in
+  `EFFORT_MARKERS` (`EFFORT_LEVELS` plus `effort`, `reasoning`, and
+  `thinking`). Effort words are dropped wherever they appear. A word made
+  only of the other parts (`extra`, `think`, `mode`, `level`, `model`) is
+  dropped only beside an effort word, and a name made only of effort words
+  keeps them all, so `high` and `max` stay distinct. So
+  `reasoning_effort=high`, `reasoning-effort: high`,
+  `model_reasoning_effort=high`, a leading `xhigh`, `thinking mode`, and
+  `reasoning mode: high` all go, while `gpt-5.1-codex-max`, which has parts
+  outside `EFFORT_PARTS`, and the lone `Model` in `Example Model 5.5` stay.
 - `formsMatch`: two forms match when their keys are equal or one ends with
   the other, as before. Only a qualifier that is exactly
   `(version unknown)` or `(unknown version)` after lowercasing, with any
@@ -42,7 +52,7 @@
   so names that share no form, such as `Astra medium` and `gpt-6.1-sol`,
   stay distinct. A follow-up commit makes the examples in the code comments
   vendor-neutral (`Model 5`, `model-max`).
-- Review fixes, in two rounds. Round 1: the first version stripped
+- Review fixes, in three rounds. Round 1: the first version stripped
   qualifiers in one pass, so `gpt-6.1-sol (reasoning (high))` kept a
   `reasoning` fragment and looked distinct from `gpt-6.1-sol`, and any
   qualifier containing the word `unknown` widened a name, so
@@ -54,7 +64,12 @@
   so `gpt-5.1-codex (version unknown)` matched `gpt-5.1-codex-max`, fixed
   by the token forms and `familyMatch`. Round 2 also made
   `references/inventory-and-concurrency.md` say exactly when the handoff's
-  block ends.
+  block ends. Round 3: compound effort fields such as
+  `reasoning_effort=high`, `reasoning-effort: high`, and
+  `model_reasoning_effort=high` still made the same model look distinct,
+  fixed by `namingWords`, which drops every effort word wherever it
+  appears. Round 3 also made `references/recovery.md` say that a claim
+  alone completes the handoff only for a checkout on its own branch.
 - Every caller picks the new comparison up: `diversity` (acceptance in
   `record-review`), `targetDistinctness` in `resolveReviewer` before
   dispatch (now `reviewer-not-distinct` for a `gpt-6.1-sol xhigh` target
@@ -70,22 +85,30 @@
   `refinesIdentity` (0.30.0's identity completion,
   soundsystems/simple-changes!91) still compares reported models exactly
   and is unchanged.
-- Tests: `authoring.test.ts` "model identity" checks 18 same pairs,
-  including `(unknown version)`, a nested note, an unclosed one, a stray
-  `)`, `reasoning: high`, `, effort=xhigh.`, and `Opus (version unknown)`
-  against `claude-opus-5-5`, and 13 distinct pairs, including
-  `gpt-6 (reasoning unknown)` and `gpt-6 (unknown effort)` against
-  `gpt-6.1-sol`, `gpt-5.1-codex (version unknown)` against
-  `gpt-5.1-codex-max`, and `Fable (version unknown)` against
-  `claude-fable-mini-5-1`, in both orders; `onboarding.test.ts` adds
-  `author-model xhigh` and `Author Model (version unknown)` to the
-  variants `reviewModelProblem` rejects; `review-ledger.test.ts` blocks the
-  `gpt-6.1-sol xhigh` target and resolves `gpt-6-sol` in reviewer
-  resolution, and records a same-model attempt accepted without
-  adversarial review, sees it keep its acceptance but fail current
-  validity once adversarial review is on, rejects a new same-model attempt
-  at another effort with `reviewer-not-distinct`, and accepts
-  `Astra medium`.
+- Tests: `authoring.test.ts` "model identity" checks 24 same pairs and 15
+  distinct pairs in both orders. The same pairs include
+  `(unknown version)`, a nested note, an unclosed one, a stray `)`,
+  `reasoning: high`, `, effort=xhigh.`, `reasoning_effort=high`,
+  `reasoning-effort: high`, `model_reasoning_effort=high` against
+  `gpt-6.1-sol xhigh`, a leading `xhigh`, `Claude Opus 5.5 thinking mode`,
+  `reasoning mode: high`, and `Opus (version unknown)` against
+  `claude-opus-5-5`. The distinct pairs include `gpt-6 (reasoning unknown)`
+  and `gpt-6 (unknown effort)` against `gpt-6.1-sol`,
+  `gpt-5.1-codex (version unknown)` against `gpt-5.1-codex-max`,
+  `Fable (version unknown)` against `claude-fable-mini-5-1`,
+  `gpt-5.1-codex-max high` against `gpt-5.1-codex xhigh`, and
+  `Example Model 5.5` against `Example 5.5`.
+- Tests: `onboarding.test.ts` adds `author-model xhigh` and
+  `Author Model (version unknown)` to the variants `reviewModelProblem`
+  rejects. `review-ledger.test.ts` blocks the `gpt-6.1-sol xhigh` target
+  against a `GPT-6.1 Sol high` author and a
+  `gpt-6.1-sol reasoning_effort=high` target against a `gpt-6.1-sol` author
+  in reviewer resolution, and resolves `gpt-6-sol`. It records a
+  same-model attempt accepted without adversarial review and sees it keep
+  its acceptance but fail current validity once adversarial review is on,
+  rejects new same-model attempts reported as
+  `gpt-6.1-sol model_reasoning_effort=xhigh` and `gpt-6.1-sol xhigh` with
+  `reviewer-not-distinct`, and accepts `Astra medium`.
 - Adopted checkout handoff (`lib/loop-lease-verify.ts`, issue
   soundsystems/simple-changes#3): `staleClaimRecovery` appends
   `handoffHint(primary, linkedClaim, liveClaim)` to the
@@ -101,10 +124,12 @@
   handoff: a claim never moves, so the former owner releases and the new
   owner claims; while the link is stale every guarded mutation of the run,
   unrelated ones included, stays blocked; under `allow-claimed` with the
-  shipment scope open, the new owner's valid claim registers it as a
-  concurrent author, which completes the handoff; otherwise, including
-  after the scope froze when a controller relinquished or handed off, the
-  new owner pauses with `preserve-in-place` and the controller runs
+  shipment scope open, the new owner's valid claim on a checkout on its own
+  branch (not detached, and not the primary or target branch) registers it
+  as a concurrent author, which completes the handoff; otherwise,
+  including for a detached checkout and after the scope froze when a
+  controller relinquished or handed off, the new owner pauses with
+  `preserve-in-place` and the controller runs
   `loop accept-paused-change`; and a checkout changed after its pause, a
   claim released before acceptance, another owner's live claim, and the
   former owner's old receipt are refused.
@@ -146,7 +171,7 @@
   naming both paths, record-outcome refuses it, and the CLI exits 0 with the
   `Warning:` line on stderr.
 - Guidance stays at 30, with no guidance entry and no update notice.
-<!-- simple-changelogs-signature agent="Claude Opus 5.5 xhigh" at="2026-10-16T13:56:12-05:00" -->
+<!-- simple-changelogs-signature agent="Claude Opus 5.5 xhigh" at="2026-10-16T14:09:29-05:00" -->
 
 ## 0.30.0 - 2026-10-15
 

@@ -64,8 +64,22 @@
   matches the reviewer, a later conflicting record, a recorded veto reached
   through two replay links, and refusals, including one on the second of two
   commits, that leave the ledger file byte-identical.
-- Guidance 30 adds one behavior change and one notice bullet, and needs no
-  answer.
+- SKILL.md reorder, written in the "Split Simple Changes SKILL.md by tier"
+  session and copied byte for byte: `## Core workflow` moved verbatim to
+  directly after the mode table (Classify, Core workflow, Authority,
+  Router, Initialize, ...). The Authority section's `release-tag` paragraph
+  moved verbatim to `references/changelog-coordination.md` `## Release
+  tags`, and the Lease section's branch-audit paragraph, a verbatim
+  duplicate of `references/replacement-lineage.md` `## Audit before
+  reapplying`, is gone. Four pointer sentences are the only new text.
+  SKILL.md is 306 lines and 17,479 bytes, inside the 17,500-byte budget.
+  `skill-contract.test.ts` pins four headings in order and expects the tag
+  rule in changelog-coordination.md. Forks that edit SKILL.md heavily (Hash,
+  Secure) get an `update-local-forks` conflict with a `.upstream-merge`
+  sidecar that shows Core workflow as a move; drop their own copies of the
+  tag and branch-audit paragraphs while merging.
+- Guidance 30 adds one behavior change, one integration change for the
+  SKILL.md reorder, and one notice bullet, and needs no answer.
 - Review: GPT-6.1 Sol round 1 (high) found one blocking issue, a completion
   removing the session veto for a reviewer with its own instance, fixed
   with `recordedAuthors`, plus a missing unknown-harness control. Round 2
@@ -74,7 +88,7 @@
   carried remain) and that every completion moves the digest, and asked for
   the replay-veto and multi-commit refusal tests. Round 3 (xhigh) was clean
   apart from one code comment repeating the session claim, now corrected.
-<!-- simple-changelogs-signature agent="Claude Opus 5.5 high" at="2026-10-15T16:39:51-05:00" -->
+<!-- simple-changelogs-signature agent="Claude Opus 5.5 high" at="2026-10-16T11:26:43-05:00" -->
 
 ## 0.29.2 - 2026-10-15
 

@@ -73,7 +73,7 @@ describe("first-run initialization", () => {
     );
     expect(from19.changes.map((item) => item.version)).toEqual([
       20, 20, 21, 21, 21, 22, 22, 22, 22, 23, 23, 24, 24, 24, 25, 25, 25, 26,
-      26, 26, 27, 27, 27, 28, 28, 28, 28, 28, 28, 28, 29, 29, 29, 29, 30,
+      26, 26, 27, 27, 27, 28, 28, 28, 28, 28, 28, 28, 29, 29, 29, 29, 30, 30,
     ]);
     expect(
       from19.changes.filter((item) => item.version === 27).at(-1)?.summary
@@ -88,8 +88,11 @@ describe("first-run initialization", () => {
     ).toContain(
       "`scripts/lib/loop-lease.ts` is split into ten command-group modules"
     );
+    expect(
+      from19.changes.find((item) => item.version === 30)?.summary
+    ).toContain("`author attest --complete-identity`");
     expect(from19.changes.at(-1)?.summary).toContain(
-      "`author attest --complete-identity`"
+      "`SKILL.md` puts `## Core workflow` directly after the mode table"
     );
     const from29 = inspectGuidanceUpdate(
       {
@@ -98,7 +101,7 @@ describe("first-run initialization", () => {
       },
       changelogCoordination
     );
-    expect(from29.changes.map((item) => item.version)).toEqual([30]);
+    expect(from29.changes.map((item) => item.version)).toEqual([30, 30]);
     expect(from29.summaryBullets.join(" ")).toContain(
       "`author attest --complete-identity`"
     );

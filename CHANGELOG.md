@@ -28,8 +28,15 @@
 - A review ledger that holds a completion needs Simple Changes 0.30.0 or
   later. Earlier versions report it as malformed and block review until
   they are updated; ledgers without a completion are unchanged.
+- `SKILL.md` now puts the core workflow steps right after the table of
+  modes, ahead of the authority rules and the reference router, so an agent
+  reaches the steps first. The rule that only `release-tag` creates or pushes
+  tags moved to the changelog coordination reference under "Release tags",
+  and a repeated paragraph about auditing a branch before reapplying its work
+  was removed; the replacement lineage reference still has it. How runs
+  behave is unchanged.
 - The guidance 30 update notice describes the new step and needs no answer.
-<!-- simple-changelogs-signature agent="Claude Opus 5.5 high" at="2026-10-15T16:39:51-05:00" -->
+<!-- simple-changelogs-signature agent="Claude Opus 5.5 high" at="2026-10-16T11:26:43-05:00" -->
 
 ## 0.29.2 - 2026-10-15
 

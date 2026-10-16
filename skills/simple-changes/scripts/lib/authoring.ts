@@ -214,11 +214,18 @@ const EFFORT_PARTS: ReadonlySet<string> = new Set([
   "level",
   "model",
 ]);
+// Parts that say effort by themselves: a word of any effort parts with one
+// of these, such as `model_reasoning_effort`, describes effort.
 const EFFORT_MARKERS: ReadonlySet<string> = new Set([
-  ...EFFORT_LEVELS,
   "effort",
   "reasoning",
   "thinking",
+]);
+// Parts that name a level, as `high` or `extra-high` do when the whole word
+// is made of them.
+const EFFORT_LEVEL_PARTS: ReadonlySet<string> = new Set([
+  ...EFFORT_LEVELS,
+  "extra",
 ]);
 const EFFORT_PART_SEPARATORS = /[-_.]+/u;
 
@@ -230,15 +237,21 @@ const effortParts = (word: string): string[] | null => {
 };
 
 // The words that name the model: every word but those that describe effort.
-// An effort word is made only of effort parts, at least one of which says
-// effort (`high`, `reasoning_effort`); a word of helper parts alone
-// (`mode`, `level`) goes only beside one. A word with any other part, such
-// as the hyphenated id `model-max`, is part of the model's name.
+// An effort word is made only of effort parts and either has a part that
+// says effort (`reasoning_effort`) or is made only of levels (`high`,
+// `extra-high`); a word of helper parts alone (`mode`, `level`) goes only
+// beside one. Any other word is part of the model's name, including a
+// hyphenated id with a part outside these (`coder-max`) or a level beside a
+// helper part (`model-max`).
 const namingWords = (words: readonly string[]): string[] => {
-  const marked = words.map(
-    (word) =>
-      effortParts(word)?.some((part) => EFFORT_MARKERS.has(part)) === true
-  );
+  const marked = words.map((word) => {
+    const parts = effortParts(word);
+    return (
+      parts !== null &&
+      (parts.some((part) => EFFORT_MARKERS.has(part)) ||
+        parts.every((part) => EFFORT_LEVEL_PARTS.has(part)))
+    );
+  });
   return words.filter(
     (word, index) =>
       !(

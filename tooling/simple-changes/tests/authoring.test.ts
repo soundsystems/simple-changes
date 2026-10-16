@@ -1111,6 +1111,8 @@ describe("model identity", () => {
       // A hyphenated part that is not effort keeps the whole word.
       ["gpt-5.1-codex-max high", "gpt-5.1-codex xhigh"],
       ["Example Model 5.5", "Example 5.5"],
+      ["vendor model-max", "vendor"],
+      ["vendor coder-max high", "vendor coder"],
       ["Astra medium", "gpt-6.1-sol"],
       ["model-alpha", "model-beta"],
       ["high", "max"],

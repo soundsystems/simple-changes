@@ -242,7 +242,10 @@ const effortParts = (word: string): string[] | null => {
 // `extra-high`); a word of helper parts alone (`mode`, `level`) goes only
 // beside one. Any other word is part of the model's name, including a
 // hyphenated id with a part outside these (`coder-max`) or a level beside a
-// helper part (`model-max`).
+// helper part (`model-max`). A standalone level reads as effort even where a
+// display name means a variant (`Coder Max`): by spelling alone it cannot be
+// told from an effort label (`Model 5.5 max`), and reading it as effort only
+// ever blocks a review, never admits one.
 const namingWords = (words: readonly string[]): string[] => {
   const marked = words.map((word) => {
     const parts = effortParts(word);
@@ -327,8 +330,10 @@ const modelForms = (value: string): ModelForms => {
 // A name of unknown version names its family: its tokens appear in the other
 // name in order, after any family prefix, and only version tokens follow, so
 // `model (version unknown)` matches `vendor-model-5-5` but never
-// `model-max`.
+// `model-max`. A name that already ends in a version names that version, so
+// `model 5 (version unknown)` never widens to `model-5-5`.
 const familyMatch = (family: string[], other: string[]): boolean =>
+  !MODEL_VERSION_TOKEN.test(family.at(-1) ?? "") &&
   other.some(
     (_, start) =>
       family.every((token, offset) => other[start + offset] === token) &&

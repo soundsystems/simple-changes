@@ -1080,6 +1080,10 @@ describe("model identity", () => {
       ["xhigh gpt-6.1-sol", "gpt-6.1-sol"],
       ["Claude Opus 5.5 thinking mode", "claude-opus-5-5"],
       ["gpt-6.1-sol reasoning mode: high", "gpt-6.1-sol"],
+      // A standalone level reads as effort, even in a display name that
+      // means a variant, so the ambiguity only ever blocks a review.
+      ["Claude Opus 5.5 max", "claude-opus-5-5"],
+      ["GPT-5.1 Codex Max", "gpt-5.1-codex"],
       ["Opus (version unknown)", "claude-opus-5-5"],
       ["Example Model 5.5", "example-model-5-5"],
       ["Sonnet 5.5", "claude-sonnet-5-5"],
@@ -1107,6 +1111,9 @@ describe("model identity", () => {
       ["gpt-6 (unknown effort)", "gpt-6.1-sol"],
       // An unknown version never absorbs another variant.
       ["gpt-5.1-codex (version unknown)", "gpt-5.1-codex-max"],
+      // A name that already carries a version never widens past it.
+      ["Claude Opus 5 (version unknown)", "claude-opus-5-5"],
+      ["Fable 5.1 (version unknown)", "Fable 5.1.2"],
       ["Fable (version unknown)", "claude-fable-mini-5-1"],
       // A hyphenated part that is not effort keeps the whole word.
       ["gpt-5.1-codex-max high", "gpt-5.1-codex xhigh"],

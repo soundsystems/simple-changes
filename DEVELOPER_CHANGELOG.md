@@ -8,9 +8,17 @@
   `words`, each word's key in order. `modelTokens` lowercases a name and
   splits it into alphanumeric runs, and a form's key is its tokens joined,
   which is what the removed `modelKey` computed. The forms are the whole
-  name, its words once `withoutQualifiers` has removed parenthesised
-  qualifiers, and the words left by each choice of effort words to drop
-  (next bullet). `withoutQualifiers` strips
+  name and, for each base, the base itself and the words left by each
+  choice of effort words to drop (next bullet). The bases are the words
+  (`splitWords`) once `withoutQualifiers` has removed parenthesised
+  qualifiers; the words before the first `key:` or `key=` field label
+  (`MODEL_FIELD_LABEL`), when it comes after at least one word; and each of
+  those without trailing setting pairs (`withoutTrailingSettings`), a
+  digit-free word followed by a value that starts with a digit, such as
+  `budget 32768` or `temperature 0.2`, stripped from the end one pair at a
+  time while at least three words remain and a word with a digit
+  (`MODEL_DIGIT`) is left before the pair, so `Claude Opus 5` never
+  shrinks to `claude`. `withoutQualifiers` strips
   `MODEL_QUALIFIER` matches innermost first, repeating until none is left,
   so a nested note such as `(reasoning (high))` goes whole, then treats
   an unclosed `(` and the rest of the name (`MODEL_UNCLOSED_QUALIFIER`) as
@@ -73,6 +81,17 @@
   part of its word, so `gpt-6 budget 100` against `gpt-6.1-sol`,
   `Claude Opus 5 temperature 0.2` against `Claude Opus 5.5`, and
   `gpt-5.1-codex budget 100` against `gpt-5.1-codex-max` stay distinct.
+  The field-label and trailing-settings bases let two names that both
+  carry settings match: `gpt-6.1-sol budget: 32768` and
+  `gpt-6.1-sol budget: 65536`, and `Claude Opus 5.5 temperature 0.2` and
+  `claude-opus-5-5 budget 100`. A model word after a version is a name,
+  never a setting, so `Claude 3 Opus` and `Claude 3 Sonnet`,
+  `Claude Opus 5` and `Claude Sonnet 5`, and `Claude Opus 5 budget 100`
+  and `Claude Sonnet 5 budget 100` stay distinct. Two notes that are
+  plain words, such as `gpt-6.1-sol fast` against `gpt-6.1-sol preview`,
+  and settings on a name with no digit, such as
+  `Claude Opus temperature 0.2` against `Claude Opus budget 100`, still
+  look distinct.
 - Accepted tradeoff, now pinned by tests: a variant written as a separate
   word reads as a note on its base model. `Max` is also a standalone
   level, so `GPT-5.1 Codex Max` matches `gpt-5.1-codex` (beside
@@ -111,7 +130,7 @@
   so names that share no form, such as `Astra medium` and `gpt-6.1-sol`,
   stay distinct. A follow-up commit makes the examples in the code comments
   vendor-neutral (`Model 5`, `model-max`).
-- Review fixes, in seven rounds. Round 1: the first version stripped
+- Review fixes, in eight rounds. Round 1: the first version stripped
   qualifiers in one pass, so `gpt-6.1-sol (reasoning (high))` kept a
   `reasoning` fragment and looked distinct from `gpt-6.1-sol`, and any
   qualifier containing the word `unknown` widened a name, so
@@ -171,7 +190,12 @@
   from `gpt-6.1-sol`, because `budget` and `32768` stayed in the name;
   `leadingWordsMatch` fixed it structurally by reading words after a
   complete model name as notes, and `noteVersion` now keeps a note's
-  version as one dotted word.
+  version as one dotted word. Round 8 (blocking):
+  `gpt-6.1-sol budget: 32768` and `gpt-6.1-sol budget: 65536` looked
+  distinct, because `leadingWordsMatch` only compared an annotated name
+  against a bare one, fixed by giving each name its field-label and
+  trailing-settings bases, each passed through `effortDrops` like any
+  other.
 - Every caller picks the new comparison up: `diversity` (acceptance in
   `record-review`), `targetDistinctness` in `resolveReviewer` before
   dispatch (now `reviewer-not-distinct` for a `gpt-6.1-sol xhigh` target
@@ -187,7 +211,7 @@
   `refinesIdentity` (0.30.0's identity completion,
   soundsystems/simple-changes!91) still compares reported models exactly
   and is unchanged.
-- Tests: `authoring.test.ts` "model identity" checks 39 same pairs and 25
+- Tests: `authoring.test.ts` "model identity" checks 42 same pairs and 28
   distinct pairs in both orders. The same pairs include
   `(unknown version)`, a nested note, an unclosed one, a stray `)`,
   `reasoning: high`, `, effort=xhigh.`, `reasoning_effort=high`,
@@ -206,8 +230,12 @@
   `gpt-6.1-sol reasoning: high, budget: 32768` against `gpt-6.1-sol`,
   `Claude Opus (5.5, budget 1000)` and `Claude Opus 5.5 temperature 0.2`
   against `claude-opus-5-5`, `openai/gpt-6.1-sol ctx 200k` against
-  `gpt-6.1-sol`, `vendor model-max` against `vendor`, and
-  `Opus (version unknown)` against `claude-opus-5-5`. The distinct pairs
+  `gpt-6.1-sol`, `vendor model-max` against `vendor`,
+  `gpt-6.1-sol budget: 32768` against `gpt-6.1-sol budget: 65536`,
+  `gpt-6.1-sol, reasoning=high` against `GPT-6.1 Sol thinking: 4000`,
+  `Claude Opus 5.5 temperature 0.2` against `claude-opus-5-5 budget 100`,
+  and `Opus (version unknown)` against `claude-opus-5-5`. The distinct
+  pairs
   include `gpt-6 (reasoning unknown)` and `gpt-6 (unknown effort)` against
   `gpt-6.1-sol`, `gpt-5.1-codex (version unknown)` against
   `gpt-5.1-codex-max`, `Claude Opus 5 (version unknown)` against
@@ -218,6 +246,9 @@
   `gpt-6 budget 100` against `gpt-6.1-sol`,
   `Claude Opus 5 temperature 0.2` against `Claude Opus 5.5`,
   `gpt-5.1-codex budget 100` against `gpt-5.1-codex-max`,
+  `Claude 3 Opus` against `Claude 3 Sonnet`, `Claude Opus 5` against
+  `Claude Sonnet 5`, `Claude Opus 5 budget 100` against
+  `Claude Sonnet 5 budget 100`,
   `Fable (version unknown)` against `claude-fable-mini-5-1`,
   `gpt-5.1-codex-max high` against `gpt-5.1-codex xhigh`,
   `Example Model 5.5` against `Example 5.5`, and
@@ -295,7 +326,7 @@
   naming both paths, record-outcome refuses it, and the CLI exits 0 with the
   `Warning:` line on stderr.
 - Guidance stays at 30, with no guidance entry and no update notice.
-<!-- simple-changelogs-signature agent="Claude Opus 5.5 xhigh" at="2026-10-16T15:17:28-05:00" -->
+<!-- simple-changelogs-signature agent="Claude Opus 5.5 xhigh" at="2026-10-16T15:27:21-05:00" -->
 
 ## 0.30.0 - 2026-10-15
 

@@ -9,20 +9,23 @@
     separators, words that only describe effort, notes in parentheses such
     as `(reasoning: high, budget: 32768)`, nested or unclosed ones
     included, or words after a complete model name, which are read as
-    notes, such as `temperature 0.2` in `Model 5.5 temperature 0.2`. Only
-    whole words count, and a version such as `5.5` is one word, so
-    `Model 5 temperature 0.2` still differs from `Model 5.5`. A note that
-    starts with a version number, such as `(5.5)` or `(5.5 high)`, keeps
-    that version as part of the name, closed or not, and the rest of the
-    note is dropped, so `Model (5.5 high)` matches `model-5-5` while
-    `Model (5)` and `Model (5.5)` stay different. Effort words are whole
-    words anywhere in the name, such as `high`, `xhigh`, `extra-high`,
-    `reasoning: high`, `reasoning_effort=high`, or `thinking mode`. They
-    are dropped, and a standalone level such as `max` is also tried kept,
-    so a level that is also part of a name still matches:
-    `Model 5.5 Max high` matches `model-5-5-max`. A word with any other
-    part, such as `model-mini`, is not an effort word, and a name made only
-    of effort words keeps them. Only the note
+    notes, such as `temperature 0.2` in `Model 5.5 temperature 0.2`. Two
+    names that both carry notes also match when those notes are labelled
+    fields such as `budget: 32768`, or settings such as `temperature 0.2`
+    that follow a version number, so `Model 5.5 temperature 0.2` matches
+    `model-5-5 budget 100`. Only whole words count, and a version such as
+    `5.5` is one word, so `Model 5 temperature 0.2` still differs from
+    `Model 5.5`. A note that starts with a version number, such as `(5.5)`
+    or `(5.5 high)`, keeps that version as part of the name, closed or not,
+    and the rest of the note is dropped, so `Model (5.5 high)` matches
+    `model-5-5` while `Model (5)` and `Model (5.5)` stay different. Effort
+    words are whole words anywhere in the name, such as `high`, `xhigh`,
+    `extra-high`, `reasoning: high`, `reasoning_effort=high`, or
+    `thinking mode`. They are dropped, and a standalone level such as `max`
+    is also tried kept, so a level that is also part of a name still
+    matches: `Model 5.5 Max high` matches `model-5-5-max`. A word with any
+    other part, such as `model-mini`, is not an effort word, and a name
+    made only of effort words keeps them. Only the note
     `(version unknown)` or `(unknown version)` widens a name, only when the
     name does not already end in a version number, and only to any version
     of the same model, never another variant: `Model (version unknown)`
@@ -87,7 +90,7 @@
     unless a reviewed primary-checkout result or an approved
     preserved-source override covered it, and still does; the warning just
     tells you sooner.
-<!-- simple-changelogs-signature agent="Claude Opus 5.5 xhigh" at="2026-10-16T15:17:28-05:00" -->
+<!-- simple-changelogs-signature agent="Claude Opus 5.5 xhigh" at="2026-10-16T15:27:21-05:00" -->
 
 ## 0.30.0 - 2026-10-15
 

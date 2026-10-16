@@ -237,11 +237,13 @@ describe("loop draft-outcome", () => {
     writeFixture(root, "unrelated.md", "Arrived from elsewhere.\n");
     commitAll(root, "External change");
 
-    const { draft, placeholders, summary } = draftShipmentOutcome(
+    const { draft, placeholders, summary, warnings } = draftShipmentOutcome(
       root,
       lease.runId
     );
 
+    // The shipped bytes are the opening source result, so nothing warns.
+    expect(warnings).toEqual([]);
     expect(summary).toMatchObject({ additionalPaths: 1, units: 1 });
     expect(placeholders).toBe(4);
     const [unit] = draft.units;
@@ -408,12 +410,72 @@ describe("loop draft-outcome", () => {
     const lease = startLoop(root, "controller", "ship");
     recordCurrentScope(root, lease.runId);
 
-    const { draft } = draftShipmentOutcome(root, lease.runId);
+    const { draft, warnings } = draftShipmentOutcome(root, lease.runId);
 
     expect(draft.units.map((unit) => unit.disposition)).toEqual([
       "target-equivalent",
     ]);
     expect(draft.additionalPaths).toEqual([]);
+    // The revision never reached the target, so the suggestion cannot be
+    // recorded as drafted, and the draft says so.
+    expect(warnings).toEqual([
+      expect.stringContaining(
+        `Unit ${draft.units[0]?.unitId} is suggested as target-equivalent, but the final target entry for notes.md differs from the opening source result its scope recorded`
+      ),
+    ]);
+    expect(() =>
+      recordShipmentOutcome(root, lease.runId, "controller", reviewed(draft))
+    ).toThrow("does not match its exact opening source result for notes.md");
+  });
+
+  test("warns when a suggested delivery is not the scoped source result", () => {
+    const fixture = repository();
+    const { root } = fixture;
+    writeFixture(root, "CHANGELOG.md", "# Changelog\n");
+    writeFixture(root, "held.ts", "export const held = 0;\n");
+    commitAll(root, "Base fixture");
+    // A held unit edits a shared changelog and its own file.
+    writeFixture(root, "CHANGELOG.md", "# Changelog\n\n- Held work.\n");
+    writeFixture(root, "held.ts", "export const held = 1;\n");
+    const lease = startLoop(root, "controller", "ship");
+    recordCurrentScope(root, lease.runId);
+    // Unrelated merged work changes the shared changelog while the held
+    // implementation never reaches the target.
+    writeFixture(root, "CHANGELOG.md", "# Changelog\n\n- Other work.\n");
+    git(root, ["commit", "-m", "Unrelated merged work", "--", "CHANGELOG.md"]);
+
+    const { draft, warnings } = draftShipmentOutcome(root, lease.runId);
+
+    const [unit] = draft.units;
+    expect(unit?.disposition).toBe("delivered");
+    expect(warnings).toEqual([
+      expect.stringContaining(
+        `Unit ${unit?.unitId} is suggested as delivered, but the final target entry for CHANGELOG.md, held.ts differs from the opening source result its scope recorded, so loop record-outcome refuses this disposition`
+      ),
+    ]);
+    expect(() =>
+      recordShipmentOutcome(root, lease.runId, "controller", reviewed(draft))
+    ).toThrow("does not match its exact opening source result");
+    const cli = spawnSync(
+      [
+        process.execPath,
+        cliPath,
+        "loop",
+        "draft-outcome",
+        "--run-id",
+        lease.runId,
+      ],
+      {
+        cwd: root,
+        env: { ...process.env, SIMPLE_CHANGES_SKILL_ROOTS: "" },
+        stderr: "pipe",
+        stdout: "pipe",
+      }
+    );
+    expect(cli.exitCode).toBe(0);
+    expect(new TextDecoder().decode(cli.stderr)).toContain(
+      `Warning: Unit ${unit?.unitId} is suggested as delivered`
+    );
   });
 
   test("refuses to draft an unreadable scoped file as deleted", () => {

@@ -22,6 +22,7 @@ import type { ShipmentOutcomeReceipt } from "./types.ts";
  */
 
 const COMMIT_CONTEXT_LIMIT = 6;
+const MISMATCH_PATH_LIMIT = 5;
 const LS_TREE_DIRECTORY_PATTERN = /^\d+\s+tree\s/u;
 
 /**
@@ -160,6 +161,42 @@ export const releasePathsFromChangelogReceipt = (value: unknown): string[] => {
   return (paths as Array<{ path: string }>).map((item) => item.path);
 };
 
+/**
+ * The warning for a unit whose suggested disposition `loop record-outcome`
+ * would refuse as drafted: a final target entry differs from the opening
+ * source result its scope recorded. The disposition comes from path movement
+ * alone, and an edit to a shared file or an absent path proves neither
+ * delivery nor equivalence. Only a reviewed primary result or an approved
+ * preserved-source override lets the recorder accept such an entry.
+ */
+const sourceMismatchWarning = (
+  unit: { id: string; sourceWorktree: string },
+  disposition: "delivered" | "target-equivalent",
+  finalPaths: ReadonlyArray<{ entry: string | null; path: string }>,
+  openingChanges: ReadonlyArray<{
+    path: string;
+    sourceEntry: string | null;
+    worktreePath: string;
+  }>
+): string | null => {
+  const mismatched = finalPaths
+    .filter((item) => {
+      const sources = openingChanges.filter(
+        (change) =>
+          change.worktreePath === unit.sourceWorktree &&
+          change.path === item.path
+      );
+      return !(sources.length === 1 && sources[0]?.sourceEntry === item.entry);
+    })
+    .map((item) => item.path);
+  if (mismatched.length === 0) {
+    return null;
+  }
+  const shown = mismatched.slice(0, MISMATCH_PATH_LIMIT).join(", ");
+  const more = mismatched.length - MISMATCH_PATH_LIMIT;
+  return `Unit ${unit.id} is suggested as ${disposition}, but the final target entry for ${shown}${more > 0 ? ` and ${more} more path(s)` : ""} differs from the opening source result its scope recorded, so loop record-outcome refuses this disposition unless a reviewed primary-checkout result or an approved preserved-source override covers it. A changed shared file or an absent path does not show that the unit shipped; check it before recording.`;
+};
+
 export const draftShipmentOutcome = (
   repositoryPath: string,
   runId: string,
@@ -205,6 +242,7 @@ const buildDraft = (
       `This run already recorded an outcome at ${lease.shipmentOutcome.recordedAt}; recording again replaces it.`
     );
   }
+  const openingChanges = lease.shipmentScope?.openingChanges ?? [];
   const units = (lease.shipmentScope?.plan.units ?? []).map((unit) => {
     const originals = [
       ...new Set(
@@ -216,19 +254,30 @@ const buildDraft = (
       ),
     ].sort((left, right) => left.localeCompare(right));
     const moved = unit.paths.some((path) => deltaSet.has(path));
+    // Scoped paths that did not change since loop start were already in the
+    // target; changed ones arrived during the run.
+    const disposition = moved
+      ? ("delivered" as const)
+      : ("target-equivalent" as const);
+    const finalPaths = unit.paths.map((path) => ({ entry: entry(path), path }));
+    const warning = sourceMismatchWarning(
+      unit,
+      disposition,
+      finalPaths,
+      openingChanges
+    );
+    if (warning) {
+      warnings.push(warning);
+    }
     return {
-      // Scoped paths that did not change since loop start were already in
-      // the target; changed ones arrived during the run.
-      disposition: moved
-        ? ("delivered" as const)
-        : ("target-equivalent" as const),
+      disposition,
       evidence: [
         `${OUTCOME_DRAFT_MARKER} replace with the review and verification evidence for this unit (${context(unit.paths)}).`.slice(
           0,
           500
         ),
       ],
-      finalPaths: unit.paths.map((path) => ({ entry: entry(path), path })),
+      finalPaths,
       originalPaths: originals.map((path) => ({ entry: entry(path), path })),
       summary:
         `${OUTCOME_DRAFT_MARKER} replace with what unit ${unit.id} delivered: ${unit.title}`.slice(

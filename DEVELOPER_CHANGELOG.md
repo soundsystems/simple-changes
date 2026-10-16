@@ -11,15 +11,20 @@
   removed parenthesised qualifiers, and the tokens left by each choice of
   effort words to drop (next bullet). `withoutQualifiers` strips
   `MODEL_QUALIFIER` matches innermost first, repeating until none is left,
-  so a nested note such as `(reasoning (high))` goes whole, then drops
-  everything from an unclosed `(` (`MODEL_UNCLOSED_QUALIFIER`) and any
-  stray `)`, so a malformed note never leaves a fragment. A note with any
-  token that starts with a digit (`MODEL_VERSION_TOKEN`), such as `(5.5)`
-  or `(5.5 high)`, is not a qualifier: its contents stay in the name and
-  any effort words in it drop like others, so `Claude Opus (5.5 high)`
-  matches `claude-opus-5-5`, while `Claude Opus (5)` and
-  `Claude Opus (5.5)` stay distinct, as do `Claude Opus (5 high)` and
-  `Claude Opus (5.5 high)`. Words split on whitespace, commas, semicolons,
+  so a nested note such as `(reasoning (high))` goes whole, then treats
+  an unclosed `(` and the rest of the name (`MODEL_UNCLOSED_QUALIFIER`) as
+  one more note and drops any stray `)`, so a malformed note never leaves
+  a fragment. Both a closed note and an unclosed tail go through
+  `noteVersion`, which returns the leading run of the note's tokens that
+  start with a digit (`MODEL_VERSION_TOKEN`), so a note that starts with a
+  version leaves only that version in the name and a note that does not
+  is stripped as a qualifier. So `(5.5)` and `(5.5 high)` leave `5 5`,
+  `Claude Opus (5.5 high)` and `Claude Opus (5.5, budget 1000)` match
+  `claude-opus-5-5`, `gpt-6.1-sol (reasoning: high, budget: 32768)`
+  matches `gpt-6.1-sol`, and `Claude Opus (5)` and `Claude Opus (5.5)`
+  stay distinct, as do `Claude Opus (5 high)` and
+  `Claude Opus (5.5 high)`, and the unclosed `Claude Opus (5` and
+  `Claude Opus (5.5`. Words split on whitespace, commas, semicolons,
   colons, and equals signs, and each loses the punctuation around it
   (`MODEL_WORD_EDGES`) before the effort check.
 - Effort words (`effortWords` and `effortDrops`, replacing `EFFORT_WORDS`
@@ -90,7 +95,7 @@
   so names that share no form, such as `Astra medium` and `gpt-6.1-sol`,
   stay distinct. A follow-up commit makes the examples in the code comments
   vendor-neutral (`Model 5`, `model-max`).
-- Review fixes, in six rounds. Round 1: the first version stripped
+- Review fixes, in seven rounds. Round 1: the first version stripped
   qualifiers in one pass, so `gpt-6.1-sol (reasoning (high))` kept a
   `reasoning` fragment and looked distinct from `gpt-6.1-sol`, and any
   qualifier containing the word `unknown` widened a name, so
@@ -138,7 +143,13 @@
   match for `openai/gpt-5.1-codex-max` under round 5, no longer matched
   it; the fix tries every contiguous run of variable words kept and makes
   a helper word beside only a level, such as `Model` in
-  `high Model 5.5 Max xhigh`, variable instead of always dropped.
+  `high Model 5.5 Max xhigh`, variable instead of always dropped. Round 7
+  (blocking): keeping any note with a number left runtime notes in the
+  name, so `gpt-6.1-sol (reasoning: high, budget: 32768)` looked distinct
+  from `gpt-6.1-sol`; and only closed notes kept their version, so the
+  unclosed `Claude Opus (5` and `Claude Opus (5.5` both lost theirs and
+  matched (should-fix). `noteVersion` fixed both by keeping only a note's
+  leading version, closed or not.
 - Every caller picks the new comparison up: `diversity` (acceptance in
   `record-review`), `targetDistinctness` in `resolveReviewer` before
   dispatch (now `reviewer-not-distinct` for a `gpt-6.1-sol xhigh` target
@@ -154,7 +165,7 @@
   `refinesIdentity` (0.30.0's identity completion,
   soundsystems/simple-changes!91) still compares reported models exactly
   and is unchanged.
-- Tests: `authoring.test.ts` "model identity" checks 33 same pairs and 22
+- Tests: `authoring.test.ts` "model identity" checks 35 same pairs and 23
   distinct pairs in both orders. The same pairs include
   `(unknown version)`, a nested note, an unclosed one, a stray `)`,
   `reasoning: high`, `, effort=xhigh.`, `reasoning_effort=high`,
@@ -168,7 +179,9 @@
   `high max xhigh GPT-5.1 Codex Max high max` against `gpt-5.1-codex-max`,
   `xhigh GPT-5.1 Codex Max high` against `openai/gpt-5.1-codex-max`,
   `high Model 5.5 Max xhigh` against `model-5-5-max`,
-  `Claude Opus (5.5 high)` against `claude-opus-5-5`, and
+  `Claude Opus (5.5 high)` against `claude-opus-5-5`,
+  `gpt-6.1-sol (reasoning: high, budget: 32768)` against `gpt-6.1-sol`,
+  `Claude Opus (5.5, budget 1000)` against `claude-opus-5-5`, and
   `Opus (version unknown)` against `claude-opus-5-5`. The distinct pairs
   include `gpt-6 (reasoning unknown)`
   and `gpt-6 (unknown effort)` against `gpt-6.1-sol`,
@@ -177,6 +190,7 @@
   `Fable 5.1 (version unknown)` against `Fable 5.1.2`, `Claude Opus (5)`
   against `Claude Opus (5.5)` and against `claude-opus-5-5`,
   `Claude Opus (5 high)` against `Claude Opus (5.5 high)`,
+  `Claude Opus (5` against `Claude Opus (5.5`,
   `Fable (version unknown)` against `claude-fable-mini-5-1`,
   `gpt-5.1-codex-max high` against `gpt-5.1-codex xhigh`,
   `Example Model 5.5` against `Example 5.5`, `vendor model-max` against
@@ -254,7 +268,7 @@
   naming both paths, record-outcome refuses it, and the CLI exits 0 with the
   `Warning:` line on stderr.
 - Guidance stays at 30, with no guidance entry and no update notice.
-<!-- simple-changelogs-signature agent="Claude Opus 5.5 xhigh" at="2026-10-16T15:00:09-05:00" -->
+<!-- simple-changelogs-signature agent="Claude Opus 5.5 xhigh" at="2026-10-16T15:09:29-05:00" -->
 
 ## 0.30.0 - 2026-10-15
 

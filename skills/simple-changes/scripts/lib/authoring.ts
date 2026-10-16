@@ -272,11 +272,15 @@ const effortDrops = (indices: readonly number[]): Set<number>[] => {
   if (indices.length > MAX_EFFORT_SUBSET_WORDS) {
     return [new Set(indices)];
   }
-  return Array.from(
-    { length: 2 ** indices.length - 1 },
-    (_, mask) =>
-      new Set(indices.filter((_index, bit) => ((mask + 1) >> bit) & 1))
-  );
+  const choices: number[][] = [[]];
+  for (const index of indices) {
+    for (const subset of choices.slice()) {
+      choices.push([...subset, index]);
+    }
+  }
+  return choices
+    .filter((choice) => choice.length > 0)
+    .map((choice) => new Set(choice));
 };
 
 interface ModelForms {

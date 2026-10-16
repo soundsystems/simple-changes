@@ -71,7 +71,11 @@ const MODEL_QUALIFIER = /\([^()]*\)/gu;
 const MODEL_UNCLOSED_QUALIFIER = /\(.*$/u;
 const MODEL_UNKNOWN_QUALIFIER =
   /^\(\s*(?:version\s+unknown|unknown\s+version)\s*\)$/u;
-const MODEL_WORD_SEPARATORS = /[\s,;]+/u;
+const MODEL_WORD_SEPARATORS = /[\s,;:=]+/u;
+// Punctuation around a word, such as the colon in `reasoning: high`.
+const MODEL_WORD_EDGES = /^[^a-z0-9]+|[^a-z0-9]+$/gu;
+// A token that starts like a version number, such as `5`, `1`, or `4o`.
+const MODEL_VERSION_TOKEN = /^\d/u;
 
 type Environment = Record<string, string | undefined>;
 
@@ -196,9 +200,6 @@ export const isModelName = (value: unknown): value is string =>
   characterCount(value) <= MODEL_MAX_LENGTH &&
   !hasControlCharacter(value);
 
-const modelKey = (value: string): string =>
-  value.toLowerCase().replace(MODEL_KEY_SEPARATORS, "");
-
 // Words a harness or a person appends to a model name to say how hard it
 // ran, not which model it is. They are stripped only as whole trailing words,
 // so a hyphenated id such as `model-max` keeps its suffix.
@@ -210,9 +211,18 @@ const EFFORT_WORDS: readonly string[] = [
 ];
 
 interface ModelForms {
-  keys: string[];
+  // The whole name's tokens, then the tokens left without qualifiers and
+  // trailing effort words; a name's key is its tokens joined.
+  tokens: string[][];
   versionUnknown: boolean;
 }
+
+// Lowercase alphanumeric runs, the pieces a model key is made of.
+const modelTokens = (value: string): string[] =>
+  value
+    .toLowerCase()
+    .split(MODEL_KEY_SEPARATORS)
+    .filter((token) => token !== "");
 
 // The name without its parenthesised qualifiers, innermost first so nested
 // ones go whole, and every qualifier removed. An unclosed `(` drops the rest
@@ -237,35 +247,59 @@ const withoutQualifiers = (
   };
 };
 
-// The keys a reported name may mean: the whole name, and the name without
-// parenthesised qualifiers and trailing effort words. Only a qualifier that
-// says exactly that the version is unknown widens a name to its family.
+// The forms a reported name may mean: the whole name, and the name without
+// parenthesised qualifiers and trailing effort words, punctuation around a
+// word aside. Only a qualifier that says exactly that the version is unknown
+// widens a name to its family.
 const modelForms = (value: string): ModelForms => {
   const { qualifiers, rest } = withoutQualifiers(value.toLowerCase());
-  const words = rest.split(MODEL_WORD_SEPARATORS).filter((word) => word !== "");
+  const words = rest
+    .split(MODEL_WORD_SEPARATORS)
+    .map((word) => word.replace(MODEL_WORD_EDGES, ""))
+    .filter((word) => word !== "");
   while (words.length > 1 && EFFORT_WORDS.includes(words.at(-1) ?? "")) {
     words.pop();
   }
-  const keys = [modelKey(value), modelKey(words.join(" "))].filter(
-    (key, index, all) => key !== "" && all.indexOf(key) === index
+  const tokens = [modelTokens(value), modelTokens(words.join(" "))].filter(
+    (form, index, all) =>
+      form.length > 0 &&
+      all.findIndex((other) => other.join("") === form.join("")) === index
   );
   return {
-    keys,
+    tokens,
     versionUnknown: qualifiers.some((qualifier) =>
       MODEL_UNKNOWN_QUALIFIER.test(qualifier)
     ),
   };
 };
 
-const keysMatch = (
-  left: string,
-  right: string,
-  leftVersionUnknown: boolean
-): boolean =>
-  left === right ||
-  left.endsWith(right) ||
-  right.endsWith(left) ||
-  (leftVersionUnknown && right.includes(left));
+// A name of unknown version names its family: its tokens appear in the other
+// name in order, after any family prefix, and only version tokens follow, so
+// `model (version unknown)` matches `vendor-model-5-5` but never
+// `model-max`.
+const familyMatch = (family: string[], other: string[]): boolean =>
+  other.some(
+    (_, start) =>
+      family.every((token, offset) => other[start + offset] === token) &&
+      other
+        .slice(start + family.length)
+        .every((token) => MODEL_VERSION_TOKEN.test(token))
+  );
+
+const formsMatch = (left: ModelForms, right: ModelForms): boolean =>
+  left.tokens.some((leftTokens) =>
+    right.tokens.some((rightTokens) => {
+      const leftKey = leftTokens.join("");
+      const rightKey = rightTokens.join("");
+      return (
+        leftKey === rightKey ||
+        leftKey.endsWith(rightKey) ||
+        rightKey.endsWith(leftKey) ||
+        (left.versionUnknown && familyMatch(leftTokens, rightTokens)) ||
+        (right.versionUnknown && familyMatch(rightTokens, leftTokens))
+      );
+    })
+  );
 
 /**
  * Whether two reported model names may name the same model. Harnesses and
@@ -275,24 +309,18 @@ const keysMatch = (
  * names compare case-insensitively without separators, with and without
  * those qualifiers and trailing effort words, and a name that ends with the
  * other counts as the same. A name whose qualifier is exactly
- * `(version unknown)` matches any name in its family. Any matching form counts, so this
- * heuristic fails toward "same", and a possible match never passes a
- * diversity check. Different versions (`Model 5` and `Model 5.5`) and
+ * `(version unknown)` matches any version of its family, never another
+ * variant. Any matching form counts, so this heuristic fails toward "same",
+ * and a possible match never passes a diversity check. Different versions (`Model 5` and `Model 5.5`) and
  * hyphenated variants (`model` and `model-max`) stay distinct.
  */
 export const sameModelName = (left: string, right: string): boolean => {
   const leftForms = modelForms(left);
   const rightForms = modelForms(right);
-  if (leftForms.keys.length === 0 || rightForms.keys.length === 0) {
+  if (leftForms.tokens.length === 0 || rightForms.tokens.length === 0) {
     return left.trim().toLowerCase() === right.trim().toLowerCase();
   }
-  return leftForms.keys.some((leftKey) =>
-    rightForms.keys.some(
-      (rightKey) =>
-        keysMatch(leftKey, rightKey, leftForms.versionUnknown) ||
-        keysMatch(rightKey, leftKey, rightForms.versionUnknown)
-    )
-  );
+  return formsMatch(leftForms, rightForms);
 };
 
 /** The higher of two effort levels on the shared ladder. */

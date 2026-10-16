@@ -1070,6 +1070,10 @@ describe("model identity", () => {
       ["gpt-6.1-sol (reasoning (high))", "gpt-6.1-sol"],
       ["gpt-6.1-sol (reasoning: high", "gpt-6.1-sol"],
       ["gpt-6.1-sol high)", "gpt-6.1-sol"],
+      // Punctuation around an effort word does not keep it.
+      ["gpt-6.1-sol reasoning: high", "gpt-6.1-sol"],
+      ["gpt-6.1-sol, effort=xhigh.", "gpt-6.1-sol"],
+      ["Opus (version unknown)", "claude-opus-5-5"],
       ["Example Model 5.5", "example-model-5-5"],
       ["Sonnet 5.5", "claude-sonnet-5-5"],
     ];
@@ -1094,6 +1098,9 @@ describe("model identity", () => {
       // Only a note that the version is unknown widens a name to its family.
       ["gpt-6 (reasoning unknown)", "gpt-6.1-sol"],
       ["gpt-6 (unknown effort)", "gpt-6.1-sol"],
+      // An unknown version never absorbs another variant.
+      ["gpt-5.1-codex (version unknown)", "gpt-5.1-codex-max"],
+      ["Fable (version unknown)", "claude-fable-mini-5-1"],
       ["Astra medium", "gpt-6.1-sol"],
       ["model-alpha", "model-beta"],
       ["high", "max"],

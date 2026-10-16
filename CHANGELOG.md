@@ -7,12 +7,13 @@
     model in the same coding agent just because the two spell the model's
     name differently. Model names now match when they differ only by case,
     separators, trailing effort words (`low`, `medium`, `high`, `xhigh`,
-    `max`, `extra-high`, `effort`, or `reasoning`), or a note in
-    parentheses such as `(version unknown)`, and a name whose note says its
-    version is unknown, such as `Model (version unknown)`, matches any
-    version of that model. Before, an author labelled `Model 5.5 high` and
-    a reviewer reporting `model-5-5` counted as different models, so the
-    review was accepted.
+    `max`, `extra-high`, `effort`, or `reasoning`), or notes in
+    parentheses such as `(reasoning: high)`, nested or unclosed ones
+    included. Only the note `(version unknown)` or `(unknown version)`
+    widens a name to any version of its model, so `Model (version unknown)`
+    matches `model-5-5`, but a note such as `(reasoning unknown)` does not.
+    Before, an author labelled `Model 5.5 high` and a reviewer reporting
+    `model-5-5` counted as different models, so the review was accepted.
   - The same comparison now also decides whether the configured reviewer
     is blocked before a review is dispatched, whether a stored review still
     counts, whether a reviewer reported the model it was asked for, and
@@ -60,7 +61,7 @@
     unless a reviewed primary-checkout result or an approved
     preserved-source override covered it, and still does; the warning just
     tells you sooner.
-<!-- simple-changelogs-signature agent="Claude Opus 5.5 xhigh" at="2026-10-16T13:32:51-05:00" -->
+<!-- simple-changelogs-signature agent="Claude Opus 5.5 xhigh" at="2026-10-16T13:46:32-05:00" -->
 
 ## 0.30.0 - 2026-10-15
 

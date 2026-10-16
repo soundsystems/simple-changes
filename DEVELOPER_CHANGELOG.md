@@ -4,15 +4,22 @@
 
 - Model identity (`lib/authoring.ts`, issue soundsystems/simple-changes#5):
   `sameModelName` now compares every form `modelForms` derives from each
-  name: the whole name's `modelKey`, and the key left after removing
-  parenthesised qualifiers (`MODEL_QUALIFIER`) and popping trailing
+  name: the whole name's `modelKey`, and the key left once
+  `withoutQualifiers` has removed parenthesised qualifiers and trailing
   `EFFORT_WORDS` (`EFFORT_LEVELS` plus `extra-high`, `effort`, and
-  `reasoning`). Words split only on whitespace, commas, and semicolons, an
-  effort word goes only as a whole word, and the last word never goes, so
-  `codex-max` and a bare `high` keep their keys. Two keys match when equal
-  or when one ends with the other, as before, and a name with a qualifier
-  containing the word `unknown` (`versionUnknown`) also matches any key
-  that contains one of its keys. Any matching pair counts, so the heuristic
+  `reasoning`) have been popped. `withoutQualifiers` strips
+  `MODEL_QUALIFIER` matches innermost first, repeating until none is left,
+  so a nested note such as `(reasoning (high))` goes whole, then drops
+  everything from an unclosed `(` (`MODEL_UNCLOSED_QUALIFIER`) and any
+  stray `)`, so a malformed note never leaves a fragment. Words split only
+  on whitespace, commas, and semicolons, an effort word goes only as a
+  whole word, and the last word never goes, so `codex-max` and a bare
+  `high` keep their keys. Two keys match when equal or when one ends with
+  the other, as before. Only a qualifier that is exactly
+  `(version unknown)` or `(unknown version)` after lowercasing, with any
+  spacing inside the parentheses (the anchored `MODEL_UNKNOWN_QUALIFIER`),
+  sets `versionUnknown`, which also lets the name match any key that
+  contains one of its keys. Any matching pair counts, so the heuristic
   still fails toward "same".
 - Before, an author's display label `GPT-6.1 Sol high` and a reviewer's
   `gpt-6.1-sol` had different keys, so `diversity` returned `distinct`
@@ -24,6 +31,12 @@
   so names that share no form, such as `Astra medium` and `gpt-6.1-sol`,
   stay distinct. A follow-up commit makes the examples in the code comments
   vendor-neutral (`Model 5`, `model-max`).
+- Review fix: the first version stripped qualifiers in one pass, so
+  `gpt-6.1-sol (reasoning (high))` kept a `reasoning` fragment and looked
+  distinct from `gpt-6.1-sol`, and it let any qualifier containing the word
+  `unknown` widen a name, so `gpt-6 (reasoning unknown)` matched
+  `gpt-6.1-sol`. `withoutQualifiers` and the anchored
+  `MODEL_UNKNOWN_QUALIFIER` fix both.
 - Every caller picks the new comparison up: `diversity` (acceptance in
   `record-review`), `targetDistinctness` in `resolveReviewer` before
   dispatch (now `reviewer-not-distinct` for a `gpt-6.1-sol xhigh` target
@@ -39,15 +52,18 @@
   `refinesIdentity` (0.30.0's identity completion,
   soundsystems/simple-changes!91) still compares reported models exactly
   and is unchanged.
-- Tests: `authoring.test.ts` "model identity" checks 11 same pairs and 9
-  distinct pairs in both orders; `onboarding.test.ts` adds
-  `author-model xhigh` and `Author Model (version unknown)` to the variants
-  `reviewModelProblem` rejects; `review-ledger.test.ts` blocks the
-  `gpt-6.1-sol xhigh` target and resolves `gpt-6-sol` in reviewer
-  resolution, and records a same-model attempt accepted without
-  adversarial review, sees it keep its acceptance but fail current validity
-  once adversarial review is on, rejects a new same-model attempt at
-  another effort with `reviewer-not-distinct`, and accepts `Astra medium`.
+- Tests: `authoring.test.ts` "model identity" checks 15 same pairs,
+  including `(unknown version)` and a nested note, an unclosed one, and a
+  stray `)`, and 11 distinct pairs, including `gpt-6 (reasoning unknown)`
+  and `gpt-6 (unknown effort)` against `gpt-6.1-sol`, in both orders;
+  `onboarding.test.ts` adds `author-model xhigh` and
+  `Author Model (version unknown)` to the variants `reviewModelProblem`
+  rejects; `review-ledger.test.ts` blocks the `gpt-6.1-sol xhigh` target
+  and resolves `gpt-6-sol` in reviewer resolution, and records a
+  same-model attempt accepted without adversarial review, sees it keep its
+  acceptance but fail current validity once adversarial review is on,
+  rejects a new same-model attempt at another effort with
+  `reviewer-not-distinct`, and accepts `Astra medium`.
 - Adopted checkout handoff (`lib/loop-lease-verify.ts`, issue
   soundsystems/simple-changes#3): `staleClaimRecovery` appends
   `handoffHint(primary, linkedClaim, liveClaim)` to the
@@ -107,7 +123,7 @@
   naming both paths, record-outcome refuses it, and the CLI exits 0 with the
   `Warning:` line on stderr.
 - Guidance stays at 30, with no guidance entry and no update notice.
-<!-- simple-changelogs-signature agent="Claude Opus 5.5 xhigh" at="2026-10-16T13:32:51-05:00" -->
+<!-- simple-changelogs-signature agent="Claude Opus 5.5 xhigh" at="2026-10-16T13:46:32-05:00" -->
 
 ## 0.30.0 - 2026-10-15
 

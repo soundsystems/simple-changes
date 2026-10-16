@@ -17,19 +17,22 @@
   whitespace, commas, semicolons, colons, and equals signs, and each loses
   the punctuation around it (`MODEL_WORD_EDGES`) before the effort check.
 - Effort words (`namingWords`, replacing `EFFORT_WORDS` and its
-  trailing-only pop): a word is an effort word when every part it splits
-  into on `-`, `_`, and `.` (`EFFORT_PART_SEPARATORS`) is in `EFFORT_PARTS`
-  (`EFFORT_LEVELS` plus `extra`, `effort`, `reasoning`, `thinking`,
-  `think`, `mode`, `level`, and `model`) and at least one is in
-  `EFFORT_MARKERS` (`EFFORT_LEVELS` plus `effort`, `reasoning`, and
-  `thinking`). Effort words are dropped wherever they appear. A word made
-  only of the other parts (`extra`, `think`, `mode`, `level`, `model`) is
-  dropped only beside an effort word, and a name made only of effort words
-  keeps them all, so `high` and `max` stay distinct. So
-  `reasoning_effort=high`, `reasoning-effort: high`,
-  `model_reasoning_effort=high`, a leading `xhigh`, `thinking mode`, and
-  `reasoning mode: high` all go, while `gpt-5.1-codex-max`, which has parts
-  outside `EFFORT_PARTS`, and the lone `Model` in `Example Model 5.5` stay.
+  trailing-only pop): a word splits into parts on `-`, `_`, and `.`
+  (`EFFORT_PART_SEPARATORS`) and describes effort when every part is in
+  `EFFORT_PARTS` (`EFFORT_LEVELS` plus `extra`, `effort`, `reasoning`,
+  `thinking`, `think`, `mode`, `level`, and `model`) and either one part
+  is in `EFFORT_MARKERS` (`effort`, `reasoning`, and `thinking`) or every
+  part is in `EFFORT_LEVEL_PARTS` (`EFFORT_LEVELS` plus `extra`), as in
+  `high` and `extra-high`. Such words are dropped wherever they appear. A
+  word made only of `EFFORT_PARTS` that meets neither condition, such as
+  `mode`, `level`, `think`, or `model-max`, is dropped only beside an
+  effort word, and a name whose every word would be dropped keeps them
+  all, so `high` and `max` stay distinct. So `reasoning_effort=high`,
+  `reasoning-effort: high`, `model_reasoning_effort=high`, a leading
+  `xhigh`, `thinking mode`, and `reasoning mode: high` all go, while
+  `gpt-5.1-codex-max` and `coder-max`, which have parts outside
+  `EFFORT_PARTS`, the lone `Model` in `Example Model 5.5`, and the lone
+  `model-max` in `vendor model-max` stay.
 - `formsMatch`: two forms match when their keys are equal or one ends with
   the other, as before. Only a qualifier that is exactly
   `(version unknown)` or `(unknown version)` after lowercasing, with any
@@ -68,8 +71,13 @@
   `reasoning_effort=high`, `reasoning-effort: high`, and
   `model_reasoning_effort=high` still made the same model look distinct,
   fixed by `namingWords`, which drops every effort word wherever it
-  appears. Round 3 also made `references/recovery.md` say that a claim
-  alone completes the handoff only for a checkout on its own branch.
+  appears. That first round 3 rule counted every level as an effort marker,
+  so `model-max`, split into the helper `model` and the level `max`, was
+  dropped as its own word and `vendor model-max` matched `vendor`; a
+  follow-up limited `EFFORT_MARKERS` to `effort`, `reasoning`, and
+  `thinking` and added `EFFORT_LEVEL_PARTS` for words made only of levels.
+  Round 3 also made `references/recovery.md` say that a claim alone
+  completes the handoff only for a checkout on its own branch.
 - Every caller picks the new comparison up: `diversity` (acceptance in
   `record-review`), `targetDistinctness` in `resolveReviewer` before
   dispatch (now `reviewer-not-distinct` for a `gpt-6.1-sol xhigh` target
@@ -85,7 +93,7 @@
   `refinesIdentity` (0.30.0's identity completion,
   soundsystems/simple-changes!91) still compares reported models exactly
   and is unchanged.
-- Tests: `authoring.test.ts` "model identity" checks 24 same pairs and 15
+- Tests: `authoring.test.ts` "model identity" checks 24 same pairs and 17
   distinct pairs in both orders. The same pairs include
   `(unknown version)`, a nested note, an unclosed one, a stray `)`,
   `reasoning: high`, `, effort=xhigh.`, `reasoning_effort=high`,
@@ -96,8 +104,9 @@
   and `gpt-6 (unknown effort)` against `gpt-6.1-sol`,
   `gpt-5.1-codex (version unknown)` against `gpt-5.1-codex-max`,
   `Fable (version unknown)` against `claude-fable-mini-5-1`,
-  `gpt-5.1-codex-max high` against `gpt-5.1-codex xhigh`, and
-  `Example Model 5.5` against `Example 5.5`.
+  `gpt-5.1-codex-max high` against `gpt-5.1-codex xhigh`,
+  `Example Model 5.5` against `Example 5.5`, `vendor model-max` against
+  `vendor`, and `vendor coder-max high` against `vendor coder`.
 - Tests: `onboarding.test.ts` adds `author-model xhigh` and
   `Author Model (version unknown)` to the variants `reviewModelProblem`
   rejects. `review-ledger.test.ts` blocks the `gpt-6.1-sol xhigh` target
@@ -171,7 +180,7 @@
   naming both paths, record-outcome refuses it, and the CLI exits 0 with the
   `Warning:` line on stderr.
 - Guidance stays at 30, with no guidance entry and no update notice.
-<!-- simple-changelogs-signature agent="Claude Opus 5.5 xhigh" at="2026-10-16T14:09:29-05:00" -->
+<!-- simple-changelogs-signature agent="Claude Opus 5.5 xhigh" at="2026-10-16T14:12:36-05:00" -->
 
 ## 0.30.0 - 2026-10-15
 

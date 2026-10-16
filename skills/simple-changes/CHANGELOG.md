@@ -1,5 +1,43 @@
 # Changelog
 
+## 0.30.0 - 2026-10-15
+
+- A review no longer stays blocked after an author fixes its own incomplete
+  attestation. When an author's first `author attest` on a commit left out
+  the model or instance its harness reports, attesting again with them did
+  not help: review planning still reported `author-identity-missing`, and a
+  reviewer whose session ID was not exposed was still rejected as
+  `independence-unproven`. That same author can now run `author attest`
+  again from the same session, with the same `--agent-id`, the values it
+  reports, and `--complete-identity`. The earlier attestation stays in the
+  review ledger, and a completion record names it, so it no longer leaves
+  independence or model diversity unknown.
+- Completing an attestation never weakens independence. A reviewer that
+  the earlier attestation ruled out as the same executor, such as one in
+  its session with no instance of its own, is still rejected, every other
+  author still counts on its own, and a completion applies only
+  to its own commit, never to that commit's replay sources. It is refused
+  for a replay, without an executing session, when nothing is missing, and
+  when another instance or model already appears under that session and
+  agent ID; such a record appearing later voids the completion. A
+  replacement agent that reuses an agent ID attests without the flag and
+  stays a separate author.
+- When a completion changes a proposal head's authors, the head gets a new
+  authors digest, so reviews recorded before it stop counting and the
+  proposal needs a fresh review.
+- A review ledger that holds a completion needs Simple Changes 0.30.0 or
+  later. Earlier versions report it as malformed and block review until
+  they are updated; ledgers without a completion are unchanged.
+- `SKILL.md` now puts the core workflow steps right after the table of
+  modes, ahead of the authority rules and the reference router, so an agent
+  reaches the steps first. The rule that only `release-tag` creates or pushes
+  tags moved to the changelog coordination reference under "Release tags",
+  and a repeated paragraph about auditing a branch before reapplying its work
+  was removed; the replacement lineage reference still has it. How runs
+  behave is unchanged.
+- The guidance 30 update notice describes the new step and needs no answer.
+<!-- simple-changelogs-signature agent="Claude Opus 5.5 high" at="2026-10-16T11:26:43-05:00" -->
+
 ## 0.29.2 - 2026-10-15
 
 - **Bug Fixes & Improvements**:
@@ -367,347 +405,3 @@
   checkout and a changed retained checkout still block, and every scoped
   source worktree now has to be proven before the close.
 <!-- simple-changelogs-signature agent="Claude Opus 5.5 xhigh" at="2026-10-05T15:08:28-05:00" -->
-
-## 0.23.1 - 2026-10-03
-
-- The changelog coordination reference now names the only source of each
-  `release-gate` flag. The gate takes its flags on trust and grants no
-  authority, so no printed action, including `deploy`, is permission.
-  `--production` starts from the `productionDeploy` that
-  `simple-changes initialize --json` now reports, which already applies the
-  trust rule (a repository `allow` without its local trust receipt is
-  `ask`); current user direction may lower it, for example to `deny`, and
-  never raises it above `ask`, and a user's production approval goes in
-  `--production-authorized`, which is explicit production authority for this
-  exact target from the current request under SKILL.md's
-  production-authority rules and the ship-communication reference, never the
-  agent's own inference. `--version-authorized` is an explicit user version
-  decision bound to the receipt's decision digest, and `--already-live` is
-  fresh provider evidence that the exact verified finalized target is live.
-  Route on the printed `action`, not the exit code: every decision,
-  including `block`, exits 0, and a nonzero exit means the inputs were
-  rejected and nothing was decided, which blocks the boundary. The gate's
-  behavior is unchanged; `initialize` gains the `productionDeploy` field
-  (default `ask`; text output prints "Production deploy: <value>"), and its
-  schema adds the field as optional, so output from earlier releases still
-  validates.
-- The shared version lines guidance is corrected: request v2 and receipt v3
-  are enabled by the negotiated versions alone, and the `shared-version-lines`
-  feature is optional and informational, so nothing gates on it and a
-  changelog provider may leave it out until it gates real behavior. 0.23.0
-  said a provider advertises v2 and v3 together with the feature. Simple
-  Changes 0.13.0 and later ignore unknown protocol versions, and earlier
-  releases reject them, so advertising request v2 or receipt v3 needs every
-  controller at 0.13.0 or later; from 0.13.0 through 0.22.x only an unknown
-  feature breaks negotiation, so a provider still must not advertise
-  `shared-version-lines` in a repository until every Simple Changes copy
-  there, including fork copies, is 0.23.0 or later.
-<!-- simple-changelogs-signature agent="Fable 5.1" at="2026-10-03T14:27:10-05:00" -->
-
-## 0.23.0 - 2026-10-03
-
-- The changelog companion protocol can now carry a shared version line, so a
-  monorepo can keep two or more release trains (for example web, iOS, and
-  Android) on one public version number. The changelog workflow still owns the
-  policy and picks the number; Simple Changes adds a backward-compatible
-  protocol revision that carries and checks the decision, which the workflow
-  will adopt in a later release. Request v2 names every train released
-  together from one input target revision as `releaseSetTrains`, including the
-  request's own train, under one `releaseSetId`; request v1 is unchanged.
-  Receipt v3 echoes that list and adds `versionDecision.versionLine`: whether
-  the train is catching up to the line or bumping it, the line's members, each
-  member's latest stable public version, the line head and the trains holding
-  it, and the outcome. A train that skips a number releases nothing and has no
-  receipt. `validate-changelog-transaction` checks a v3 receipt beyond the
-  schema: it recomputes the head and its holders from the member versions; a
-  catch-up must take exactly the head, and only a train below it may catch up;
-  an advance must exceed the head, or the head is empty, and a shared bump
-  always advances; the proposed version (the suggestion while a decision is
-  required, the selection once one is made) must exceed the train's own
-  previous public version and must not fall below a stable current version;
-  and the decision digest must cover the line state, so a partner's release
-  invalidates an outstanding approval, a later phase whose line state changed
-  under the same digest fails closed, and a train that reclassifies after a
-  partner released must advance past it or start a new release set, while an
-  approved direction may still turn a catch-up into an advance. Versions
-  compare as one to three dotted numbers, zero-padded (1.2 equals 1.2.0),
-  with `+build` ignored, and anything else on a line fails closed. Blocked and
-  not-applicable receipts keep their usual closed-code routing. The new
-  `validate-changelog-release-set RECEIPT_FILE RECEIPT_FILE...` command then
-  checks one release set's receipts together: they must share the release
-  set, input target, and train list, in any order, with one receipt per train
-  and each train on at most one line, carried by its own receipt, and every
-  line must agree on one state and publish one identical version string.
-  Trains with no receipt yet are reported as missing, not refused, because a
-  multi-train release set stays non-atomic. The changelog coordination
-  reference describes all of this.
-- Capability negotiation is now open: Simple Changes ignores features and
-  protocol versions it does not know and keeps the provider's order, so later
-  additions no longer need a lockstep upgrade. It advertises request versions
-  1 and 2, receipt versions 1 through 3, and the new `shared-version-lines`
-  feature. Simple Changes before 0.23.0 rejects any unknown feature, so a
-  changelog provider must not advertise `shared-version-lines` in a repository
-  until every Simple Changes copy there, including fork copies, is 0.23.0 or
-  later; older providers keep working unchanged at request v1 and receipt v2.
-  Release delivery and the deployment adapter accept a v3 receipt alongside
-  v2 and refuse a legacy v1 receipt with a clear message instead of crashing,
-  and an invalid request still gets field-level errors whichever schema
-  version it claims.
-<!-- simple-changelogs-signature agent="Fable 5.1" at="2026-10-02T18:50:32-05:00" -->
-
-## 0.22.5 - 2026-10-02
-
-- The turn-end guard now credits a Claude Code background subagent that drives
-  a Ship run through a shell variable the same command assigned, such as
-  `R=run-…; … loop exec --run-id $R` or `W=/path; cd $W`. 0.22.2 treated every
-  value containing `$` as unknown, so a subagent that passed its agent id
-  literally but kept the run id and directory in variables it had just
-  assigned was never credited, and the guard kept telling the parent session
-  to finalize a run the subagent was still driving; that is what happened in
-  the hash 0.22.4 sync, and replaying its transcript, 0.22.4 credits nobody
-  while 0.22.5 credits the subagent. A `$NAME` value counts as the literal
-  only when the same command assigns NAME exactly once, as a plain token with
-  no space, quote, shell operator, or leading `-`, as its own unconditional
-  top-level statement, before using it. Anything else stays a variable: a
-  prefix, subshell, chained, or conditional assignment, `+=`, a builtin that
-  assigns (`for`, `read`, `unset`, `printf -v`, and the like), any command
-  containing `eval` or an `if`, `while`, `until`, `case`, or `{ }` block, an
-  assignment or use in a comment or heredoc, a `$(…)` value, or a value set by
-  an earlier command. This is a conservative reading, not a shell, so pass ids
-  literally when in doubt. When a running subagent used the run's owner agent
-  id but still is not credited, the blocking message now names the exact
-  cause: a shared id, a different run named, a failed command, no command in
-  the run's repository, a later command by the session itself, or a later
-  write to the run. Unless the evidence shows control moved away from that
-  agent, it also asks the session to wait for the agent instead of finalizing.
-- `loop refresh-scope` now accepts a changed path the first scope never
-  recorded when the refreshed plan preserves it in a worktree that is not a
-  scoped unit's source, such as another agent's actively changing checkout.
-  Before, a refresh refused every unrecorded path, even one the plan
-  preserved, so in the hash 0.22.4 sync, where main moved after review, the
-  shipped changelog needed a merge resolution, and two Codex worktrees kept
-  adding files, the refresh could never succeed and the run had to close as
-  already-in-target instead of shipped. Outside scoped source worktrees, every
-  path preserved earlier stays preserved while it is still changed, whatever
-  the refreshed preview proposes for it, so recording a raw preview can no
-  longer drop your preserved primary work, and a file-name-only exclusion
-  keeps excluding only the worktree it originally covered. The scoped units
-  and exclusions are unchanged: a new path in a scoped source worktree, or one
-  only excluded elsewhere, still needs a new shipment run. A refresh does not
-  excuse the change itself: `loop verify` still reports a changed registered
-  worktree, so each change still needs a user-approved exact-state
-  `loop allow`, and a worktree that appeared after loop start is still an
-  `unregistered-worktree` violation. The concurrency reference describes all
-  of this.
-<!-- simple-changelogs-signature agent="Fable 5.1" at="2026-10-02T17:59:47-05:00" -->
-
-## 0.22.4 - 2026-10-02
-
-- A GitLab Ship, Integrate, or Reconcile run can no longer record a deleted
-  closed-unmerged or no-merge-request branch as proven obsolete because the
-  target contains its head unless Git confirms that it does. Before, that
-  proof in the final remote-branch reconciliation receipt was taken on the
-  agent's word, so a mistaken receipt could close a run over a deleted branch's
-  unique work with nobody approving it. Now `loop reconcile-remote-branches`
-  requires the deleted head to be present locally and proves the target
-  contains it, either by exact ancestry or by matching each of its unique
-  commits to a patch-equivalent commit in the target: the same proof local
-  cleanup already uses, which ignores whitespace as `git cherry` does, never
-  matches a merge or empty commit, and gives up past 200 unique commits. When
-  the check fails, the refusal names the next step: fetch the head at full
-  depth (GitLab keeps a merge request's head at
-  `refs/merge-requests/<iid>/head` after its branch is deleted); in a shallow
-  clone, run `git fetch --unshallow` rather than being told the work was lost;
-  if the branch is already gone and its work shipped another way, record your
-  supersession approval from 0.22.3; otherwise report the branch to you. An
-  empty provider diff stays provider evidence that Git cannot check, recorded
-  only from GitLab's own compare result. The check runs where the receipt is
-  recorded, not again when the run ends, so a run whose receipt an earlier
-  version recorded still ends; the check that a supersession approval is
-  unnecessary now uses the same containment proof at record time, so an
-  approval cannot stand in for proof Git already has, while a 0.22.3 run that
-  superseded a cherry-picked head still ends. `SPEC.md` and the cleanup
-  reference now describe all three remote-branch deletion proofs: the
-  merged-head ancestry proof from 0.22.1, the Git-verified
-  target-contains-head proof, and the user-approved supersession from 0.22.3.
-<!-- simple-changelogs-signature agent="Fable 5.1" at="2026-10-02T16:17:10-05:00" -->
-
-## 0.22.3 - 2026-10-02
-
-- Every Simple Changes reference longer than a hundred lines, and `SKILL.md`
-  itself, now opens with a short contents list naming its sections, so an
-  agent that reads only the first hundred lines of a file still learns which
-  rules it holds and where to find them. `SKILL.md` also records in its
-  frontmatter that the skill is written for and run on Claude Opus 5.5 and
-  Claude Fable 5.1.
-- Ship, Integrate, and Reconcile runs now carry the core workflow as a
-  checklist in the reply: each step is ticked only once its evidence exists,
-  a failed step stays unticked while the agent fixes what the failure reports
-  and runs the step again, a fix that changed source sends the run back to
-  grouping (with a fresh scope preview in Ship), and a moved target or a
-  changed policy, controller checkout, or source worktree sends it back to the
-  target refresh. Repository checks and `loop verify` are stated as
-  fix-and-re-run loops rather than one-shot checks. Other modes keep the same
-  order without the written checklist, and no setting or default changed.
-<!-- simple-changelogs-signature agent="claude-fable-5-1" at="2026-10-02T13:39:48-05:00" -->
-- A GitLab Ship, Integrate, or Reconcile run can now close when a branch it
-  listed at the start was deleted, by anyone or outside the run, while the
-  target did not contain its head. Before, a closed-unmerged or
-  no-merge-request branch in that state had no valid entry in the remote-branch
-  reconciliation receipt, so the run could never end; the real case was a hash
-  fork branch whose closed merge request's work had already shipped the same
-  day as a differently packaged commit, so its patches did not match. Now, once
-  you confirm the branch was superseded, the agent records it as deleted and
-  proven obsolete with a `supersession` entry naming the deleted head, the
-  target commits that replaced its work, you as the approver, and the reason.
-  The agent must show you the branch, its deleted head, and the replacement
-  commits and never make that judgment itself, and the entry is only for a
-  branch that is already gone or that you explicitly asked to delete.
-  `loop reconcile-remote-branches` checks with Git that the clone is not
-  shallow, that the deleted head is still present locally (GitLab keeps merge
-  request heads at `refs/merge-requests/<iid>/head`), shares history with the
-  target, and is not already in it, and that every replacement is in the
-  target and is not an ancestor of the deleted head; `loop end` checks again.
-  The deleted head is pinned at `refs/simple-changes/superseded/<run-id>/<head>`
-  so Git's garbage collection cannot lose the work or strand the run, and you
-  can restore the branch from the pin. The approval is kept in a separate file,
-  `simple-changes/remote-branch-supersession/<runId>.json` beside the run's
-  lease under the repository's Git directory, so a 0.22.0 client can still
-  read the lease; an older client cannot end a run whose receipt relies on it
-  and stops instead.
-<!-- simple-changelogs-signature agent="Fable 5.1" at="2026-10-02T15:10:30-05:00" -->
-
-## 0.22.2 - 2026-10-02
-
-- The turn-end guard now also lets a Claude Code session end when its
-  still-running background subagent drives a Ship run through a shell variable,
-  such as `--run-id "$R"`. 0.22.1 only credited the subagent when one of its
-  `loop` commands named the run literally or printed its id, so a subagent that
-  kept the run id in a variable still blocked the parent. Now the subagent's
-  successful Simple Changes `loop` owner commands count when they carry a
-  literal `--agent-id` equal to the run's recorded owner, this session never
-  used that agent id, no other running subagent uses it, at least one of those
-  commands ran in the run's repository (by `--repo`, a literal `cd`, or the
-  shell's own directory), and the run's record was not written after the
-  subagent's last command finished. A value that contains `$` is a variable,
-  not an id. Everything else still blocks. Give each agent its own agent id so
-  the guard can tell them apart.
-<!-- simple-changelogs-signature agent="Fable 5.1" at="2026-10-02T13:46:03-05:00" -->
-
-## 0.22.1 - 2026-10-02
-
-- A branch that GitLab deleted after its merge request merged can now be
-  recorded as merged and deleted, even when the Ship run moved it. Before, a
-  branch whose merge request was already open when the run started, which the
-  run fast-forwarded (or left as it was) before the request merged and GitLab
-  removed the branch, could not be recorded at all, so the run could not end
-  cleanly. Add `mergedHeadAncestry` to that branch in the reconciliation
-  receipt, naming the merge request, the branch head when the run opened, and
-  the head that merged; `loop reconcile-remote-branches` checks with Git that
-  the merged head is the opening head or descends from it and that the target
-  contains it, and `loop end` checks again. Squash merges and rebased merges
-  still cannot be recorded: the tool stops and asks you to report the branch,
-  its opening head, and the merge request.
-- The proof is kept in a separate file,
-  `simple-changes/remote-branch-ancestry/<runId>.json` beside the run's lease
-  under the repository's Git directory, so a 0.22.0 client can still read the
-  lease. A 0.22.0 client cannot end a run whose receipt relies on this proof,
-  though: it reports a misleading "an open proposal branch cannot be deleted"
-  error. Upgrade to 0.22.1 to end such runs.
-- The turn-end guard no longer blocks a Claude Code session whose still-running
-  background subagent is driving a Ship loop. A background subagent shares its
-  parent's session identity, so the 0.21.1 Stop hook blocked the parent as if
-  it controlled the run itself. Now, when Claude Code reports the subagent as
-  still running, the subagent's own transcript issued the Simple Changes `loop`
-  command that took the run, and nothing shows control moving back to the
-  parent, the hook lets the turn end and shows you a note naming the run and
-  the agent instead. Everything uncertain still blocks: a run the session
-  controls itself, a subagent that has finished, workflow agents, a run that has
-  gone stale, a transcript that is unreadable, larger than 64 MB, or slower
-  than five seconds to scan, and loop commands that failed or did not take
-  control.
-<!-- simple-changelogs-signature agent="Fable 5.1" at="2026-10-02T12:50:14-05:00" -->
-
-## 0.22.0 - 2026-10-01
-
-- Create a repository-specific fork of Simple Changes with one command. From
-  the repository that will own it, run
-  `simple-changes fork create --name <name> --deltas "<what you intend to
-  customize>"`: the complete installed skill is copied into
-  `.agents/skills/<name>` (or the path you pass with `--destination`), its
-  skill identity is renamed, and a provenance line below its title records the
-  exact upstream commit together with your customization notes, so
-  `update-local-forks` can find and refresh it later. The global install is
-  never touched, and the new copy is left uncommitted for you to customize,
-  verify, and commit in its repository.
-- The recorded upstream commit is verified, not guessed. The command compares
-  every installed file byte for byte with upstream history (over the network
-  by default, or offline with `--upstream /path/to/simple-changes`) and refuses
-  to fork a modified or incomplete install, naming the files that differ;
-  Finder `.DS_Store` files are ignored. A `SKILL.md` with Windows line endings
-  is explained as such instead of being reported as a mismatch.
-- Forks always land inside their repository. The destination is anchored at the
-  Git repository root of the working directory or `--repo`, and the command
-  refuses to run outside a repository, to overwrite an existing destination, to
-  reuse the name of an installed sibling skill such as `update-local-forks`, and
-  to write through traversal, symlinks, or a differently cased path that
-  resolves into the source install. `--json` returns the destination, upstream
-  commit, and file count for scripts.
-- The README now explains when to adjust `.simple-changes.json` or repository
-  instructions instead of forking, how to create, customize, commit, and update
-  a fork, and that Claude Code loads project skills from `.claude/skills`, so a
-  fork for Claude Code is created with `--destination .claude/skills/<name>`
-  or linked there. The skill's own instructions carry the same guidance.
-<!-- simple-changelogs-signature agent="Fable 5.1" at="2026-10-01T22:17:12-05:00" -->
-
-## 0.21.1 - 2026-10-01
-
-- A controller that stops to ask the user something no longer leaves a
-  live-looking run behind. When a shipment needs a decision, such as a
-  migration, deployment, or cleanup approval, the controller runs
-  `loop finalize --awaiting-user "<question>"` (once per question, up to ten):
-  the run pauses and releases its controller even when nothing else blocks
-  closure, the questions are recorded beside the lease and in the finalization
-  receipt, and the command exits successfully. `loop status` shows what the run
-  is waiting on, and `loop start --mode resume` hands the questions to the next
-  controller as `inheritedAwaitingUser` so it confirms the answer first.
-- An optional turn-end guard keeps a Claude Code or Codex session from ending
-  its turn while it still controls an active run. `harness stop-hook` reports
-  whether the user-level Stop hook is installed for the current harness, and
-  `--write`, only after the user agrees, merges it into `~/.claude/settings.json`
-  or `~/.codex/hooks.json` without touching other settings. The hook blocks the
-  turn once with the exact finalize command, then only warns, so it can never
-  trap a session; it lets the turn end when its script is missing or too old,
-  never points into a linked worktree, and leaves another copy's hook alone
-  while that copy is at least as new. `initialize` reports the guard as
-  `turnEndGuard`, and `loop guard`, `loop exec`, and `loop verify` print the
-  finalize step for the run (`turnEnd` in JSON).
-- Abandoned runs go stale sooner. A run whose recorded harness session process
-  has exited is stale after ten quiet minutes, and a run whose owner cannot be
-  proven alive is stale after two quiet hours instead of four. `loop status`
-  says when the owner's session has exited, and `loop recover --stale-lease`
-  now archives the complete lease as `stale-lease-recovery-lease.json` beside
-  its receipt, so the run's scope, outcome, and paused questions survive.
-- `initialize`, `loop start`, and `loop status` warn with
-  `runtimeFreshness: behind-target` when the running copy of Simple Changes is
-  older than the copy on the target branch, so a stale checkout's guidance does
-  not drive a shipment.
-- Shipment holds withdraw and republish cleanly across clones. `hold release`
-  counts a published ref as already withdrawn only when Git reports that exact
-  ref absent, so a broken ref or a permission failure is still reported as a
-  failure. When a release races `hold publish` and the clean-up delete fails,
-  the withdrawal is reopened so the next `hold release` retries instead of
-  trusting a withdrawal the push undid. `hold status`, `hold check`, and
-  `loop verify --for` now tell an owner when a hold that still blocks here was
-  withdrawn from another clone (`unpublishedElsewhere`), with the release
-  command, and the owner can publish that hold again.
-- `publish-skill` is now a maintainer-internal workflow: its frontmatter marks
-  it `internal`, and the README no longer tells repository maintainers or skill
-  repositories to install it project-locally. The `simple-changes` and
-  `update-local-forks` packages the README installs are unchanged, and an
-  existing project-local copy keeps working.
-- Existing installations keep working. The session binding and paused
-  questions live in a new file beside the lease, so 0.21.0 clients sharing a
-  repository still read every lease and receipt. Simple Changes guidance moves
-  to version 24 to explain the new abilities.
-<!-- simple-changelogs-signature agent="Fable 5.1" at="2026-10-01T20:10:14-05:00" -->

@@ -1,5 +1,98 @@
 # Developer changelog
 
+## 0.30.0 - 2026-10-15
+
+- Identity completion (`lib/review-ledger.ts`, issue
+  soundsystems/simple-changes#2): `attestCommits` takes
+  `completeIdentity`, the CLI's `author attest --complete-identity`. For each
+  commit, `completionTargets` refuses an unknown anchor (session from the
+  executing process, harness, or agent id: `identity-completion-unanchored`),
+  any record under the anchor that disagrees with the completer on a known
+  instance or reported model (`identity-completion-conflict`), and a commit
+  with nothing to complete (`identity-completion-unmatched`), all before
+  anything is appended; `--replays` with it is a usage error. It then
+  appends the completer as an ordinary attestation (`recorded` or
+  `unchanged`) and an `IdentityCompletion` under the new optional top-level
+  `completions[<sha>]`, naming the exact `AttestedIdentity` records it
+  completes. The result gains `completion`, `null` without the flag.
+- `refinesIdentity(completer, earlier)` holds when both share one non-null
+  session, harness, and logical id, every instance and reported model of
+  `earlier` is kept exactly, and a missing instance or reported model is
+  added. `reportedModel` decides what counts as reported, so the
+  `most-capable` sentinel and blank names never count as the addition, and
+  two partial records are never merged into an identity nobody reported.
+- Resolution: `effectiveOwnAttestations` drops from a commit's own list the
+  records named by a standing completion on that commit. A completion
+  stands while its completer is attested there and every record under its
+  anchor is `compatibleIdentities` with it. Completions are applied per
+  commit before the replay union, so they never reach a source or a
+  destination. `ResolvedNode` and `HeadCoverage` also carry
+  `recorded`/`recordedAuthors`, every raw attestation unioned through the
+  same replay links and shared with the effective map when no completion is
+  in the ancestry. `identityFailure` returns `reviewer-not-independent` when
+  any recorded author is the same executor, then `independence-unproven`
+  when any effective author is unknown; diversity, preflight
+  `adversarialOutcome`, coverage, and the authors digest read the effective
+  authors, so a completion that changes a head's effective authors moves
+  its digest and earlier accepted attempts fail approval with
+  `authors-digest-changed`. One that changes nothing (a replay source still
+  contributes the completed identity) leaves the digest, and approval still
+  rechecks the recorded vetoes.
+- Validation: `validateReviewLedger` accepts `completions` only when
+  present, and `emptyReviewLedger` still omits it, so a ledger without a
+  completion keeps the shape 0.29.x reads. `checkCompletions` requires each
+  completer and completed identity to be an attestation on that commit,
+  `refinesIdentity` to hold for each, no repeated identity in an entry, and
+  no repeated completion. `evals/schemas/review-ledger.schema.json` adds
+  `completion` and `attestedIdentity`.
+- Why explicit: the suite already treats a second instance reusing an agent
+  id in one session as a replacement agent with its own identity, so a
+  derived rule would erase that agent's unknown-executor veto. Accepted
+  residual: the completion trusts the executing agent's own statement that
+  the earlier record was its own, bound to the session and harness read
+  from the process, its agent id, and the claim or registration `author
+  attest` already requires.
+- Tests (`review-ledger.test.ts`, "identity completion"): the issue's
+  reproducer through real `resolveReviewer` preflight and
+  `recordReviewAttempt`, before and after a completion, with a reviewer that
+  has a known distinct instance and no session; digest invalidation through
+  `reviewApproval`; the CLI flag; and negative controls for another or
+  unknown session, harness, or agent id, conflicting model or instance,
+  the sentinel, same instance, same session with or without a reviewer
+  instance under both adversarial settings, same reported model, unknown
+  reviewer executor, a replay source's author, a second author whose model
+  matches the reviewer, a later conflicting record, a recorded veto reached
+  through two replay links, and refusals, including one on the second of two
+  commits, that leave the ledger file byte-identical.
+- SKILL.md reorder, written in the "Split Simple Changes SKILL.md by tier"
+  session and copied byte for byte: `## Core workflow` moved verbatim to
+  directly after the mode table (Classify, Core workflow, Authority,
+  Router, Initialize, ...). The Authority section's `release-tag` paragraph
+  moved verbatim to `references/changelog-coordination.md` `## Release
+  tags`, and the Lease section's branch-audit paragraph, a summary of the
+  rule `references/replacement-lineage.md` `## Audit before
+  reapplying` states in full, is gone. Four pointer sentences are the only new text.
+  SKILL.md is 306 lines and 17,479 bytes, inside the 17,500-byte budget.
+  `skill-contract.test.ts` pins four headings in order and expects the tag
+  rule in changelog-coordination.md. Forks that edit SKILL.md heavily (Hash,
+  Secure) get an `update-local-forks` conflict with a `.upstream-merge`
+  sidecar that shows Core workflow as a move; drop their own copies of the
+  tag and branch-audit paragraphs while merging.
+- Guidance 30 adds one behavior change, one integration change for the
+  SKILL.md reorder, and one notice bullet, and needs no answer.
+- Review of the reorder: GPT-6.1 Sol round 5 (xhigh, 5b02ae1) was clean
+  apart from one nit, that the removed paragraph summarized the
+  replacement-lineage rule rather than repeating it word for word.
+- Review: GPT-6.1 Sol round 1 (high) found one blocking issue, a completion
+  removing the session veto for a reviewer with its own instance, fixed
+  with `recordedAuthors`, plus a missing unknown-harness control. Round 2
+  (xhigh) found no bypass; it corrected wording that said a reviewer in a
+  completed record's session is always rejected (only the vetoes the record
+  carried remain) and that every completion moves the digest, and asked for
+  the replay-veto and multi-commit refusal tests. Round 3 (xhigh) was clean
+  apart from one code comment repeating the session claim, now corrected.
+<!-- simple-changelogs-signature agent="Claude Opus 5.5 high" at="2026-10-16T11:26:43-05:00" -->
+
 ## 0.29.2 - 2026-10-15
 
 - `lib/repository-instructions.ts`: `SCRATCH_FILE_RULE`, the body of the

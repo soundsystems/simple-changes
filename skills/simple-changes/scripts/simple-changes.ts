@@ -285,7 +285,7 @@ import {
   standaloneWorktreeCleanup,
 } from "./lib/worktree-maintenance.ts";
 
-const VERSION = "0.29.2";
+const VERSION = "0.30.0";
 const SCRIPT_FILE = fileURLToPath(import.meta.url);
 const PLAIN_SHELL_WORD_PATTERN = /^[\w./-]+$/u;
 const PACKAGE_ROOT = resolve(dirname(SCRIPT_FILE), "..");
@@ -493,7 +493,8 @@ Usage:
     --authors-digest SHA256 --receipt WAIVER_FILE [--json] [--repo PATH]
   simple-changes author attest --commit SHA [--commit SHA ...] [--agent-id ID]
     [--contribution implementation] [--replays SHA[,SHA ...]]
-    [--worktree PATH] [--instance ID] [--agent NAME] [--json] [--repo PATH]
+    [--worktree PATH] [--instance ID] [--agent NAME] [--complete-identity]
+    [--json] [--repo PATH]
   simple-changes skill check [--skill-dir PATH] [--json]
   simple-changes validate KIND FILE [--json]
   simple-changes verify-markdown FILE [--json]
@@ -533,6 +534,7 @@ interface CliOptions {
   check: boolean;
   claimId?: string;
   commits: string[];
+  completeIdentity: boolean;
   concurrentWork?: RepoPolicy["concurrentWork"];
   contribution?: "implementation";
   decisionsPath?: string;
@@ -713,6 +715,7 @@ const BOOLEAN_OPTIONS = new Set([
   "--acknowledge-push-scope",
   "--changelog-required",
   "--check",
+  "--complete-identity",
   "--dry-run",
   "--hook",
   "--json",
@@ -1387,6 +1390,8 @@ const applyBooleanOption = (options: CliOptions, option: string): void => {
     options.changelogRequired = true;
   } else if (option === "--check") {
     options.check = true;
+  } else if (option === "--complete-identity") {
+    options.completeIdentity = true;
   } else if (option === "--dry-run") {
     options.dryRun = true;
   } else if (option === "--stale-lease") {
@@ -1413,6 +1418,7 @@ const parseOptions = (args: string[]): CliOptions => {
     changelogRequired: false,
     check: false,
     commits: [],
+    completeIdentity: false,
     dryRun: false,
     evidencePaths: [],
     help: false,
@@ -3328,6 +3334,11 @@ const renderAttestation = (result: AuthorAttestResult): string => {
     ({ commit, status }) =>
       `${status === "not-attested" ? "Not attested (replay only)" : `Attested (${status})`}: ${commit} for ${who}`
   );
+  for (const { commit, completes, status } of result.completion ?? []) {
+    lines.push(
+      `Identity completion (${status}): ${commit}: ${completes.length} earlier attestation${completes.length === 1 ? "" : "s"} from this session and agent id now count as this identity.${status === "recorded" ? " A head whose authors this changes gets a new authors digest, and reviews recorded before no longer count for it." : ""}`
+    );
+  }
   const { replay } = result;
   if (replay) {
     lines.push(
@@ -3367,6 +3378,7 @@ const runAuthorCommand = (options: CliOptions): void => {
       ? {}
       : { contribution: options.contribution }),
     ...(options.replays === undefined ? {} : { replays: options.replays }),
+    ...(options.completeIdentity ? { completeIdentity: true } : {}),
     ...(options.worktreePath === undefined
       ? {}
       : { worktreePath: options.worktreePath }),

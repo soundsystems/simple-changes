@@ -23,6 +23,7 @@ import { fileURLToPath } from "node:url";
 import { spawnSync } from "bun";
 import {
   type AuthoringSidecar,
+  MOST_CAPABLE,
   type RepositoryAuthoring,
   type ResolvedAuthoringRole,
   type ResolvedReviewRole,
@@ -56,6 +57,7 @@ import {
   evaluateReviewAcceptance,
   headCoverage,
   heldLoopLock,
+  type IdentityCompletion,
   loadReviewLedgerForResume,
   type ReplayCheck,
   type ReviewLedger,
@@ -3071,5 +3073,540 @@ describe("schema parity and the command line", () => {
     expect(usage.stderr).toContain(
       "proposal requires audit, record-authors, record-review, or waive-coverage"
     );
+  });
+});
+
+describe("identity completion", () => {
+  const C = fakeSha(21);
+  const S = fakeSha(22);
+  // The issue's shapes: an owner's first attestation without model or
+  // instance, its truthful repeat, and a codex reviewer whose session id was
+  // not exposed.
+  const partial = (overrides: Partial<Attestation> = {}): Attestation => ({
+    agent: null,
+    harness: "codex",
+    instance: null,
+    logicalId: "owner",
+    recordedAt: STAMP,
+    session: "thread-owner",
+    ...overrides,
+  });
+  const complete = (overrides: Partial<Attestation> = {}): Attestation =>
+    partial({ agent: "GPT-6", instance: "domain_db_preview", ...overrides });
+  const identityOf = ({ recordedAt: _, ...identity }: Attestation) => identity;
+  const completion = (
+    completer: Attestation,
+    completes: Attestation[]
+  ): IdentityCompletion => ({
+    ...identityOf(completer),
+    completes: completes.map(identityOf),
+    logicalId: completer.logicalId as string,
+    recordedAt: STAMP,
+  });
+  const REVIEWER: RuntimeIdentity = {
+    agent: "gpt-6-astra",
+    harness: "codex",
+    instance: "domain_spec_review",
+    session: null,
+  };
+  const ledgerWith = (
+    attestations: Attestation[],
+    completions: IdentityCompletion[] = [],
+    commit = C
+  ): ReviewLedger => {
+    const ledger = emptyReviewLedger();
+    for (const attestation of attestations) {
+      attestInMemory(ledger, commit, attestation);
+    }
+    if (completions.length > 0) {
+      ledger.completions = { [commit]: completions };
+    }
+    expect(validateReviewLedger(ledger).reason).toBeNull();
+    addHead(ledger, C, [C]);
+    return ledger;
+  };
+  const outcome = (
+    ledger: ReviewLedger,
+    reviewer: RuntimeIdentity = REVIEWER,
+    adversarial = true
+  ) => decide(ledger, C, reviewer, { adversarial }).acceptanceReason;
+
+  test("without a completion the incomplete record stays an author, and a replacement agent's plain attestation never completes it", () => {
+    const ledger = ledgerWith([partial(), complete()]);
+    expect(resolveEffectiveAuthors(ledger, C).authors).toHaveLength(2);
+    expect(outcome(ledger)).toBe("independence-unproven");
+    expect(outcome(ledger, REVIEWER, false)).toBe("independence-unproven");
+  });
+
+  test("a standing completion counts the completer in place of the records it names and keeps them in the raw ledger", () => {
+    const before = ledgerWith([partial(), complete()]);
+    const ledger = ledgerWith(
+      [partial(), complete()],
+      [completion(complete(), [partial()])]
+    );
+    expect(resolveEffectiveAuthors(ledger, C).authors).toEqual([complete()]);
+    expect(ledger.attestations[C]).toEqual([partial(), complete()]);
+    // Post-return: a distinct instance with no exposed session is
+    // independent of the completed identity, and its model is distinct.
+    expect(outcome(ledger)).toBeNull();
+    expect(outcome(ledger, REVIEWER, false)).toBeNull();
+    // The digest moves with the effective authors.
+    expect(headCoverage(ledger, [C]).authorsDigest).not.toBe(
+      headCoverage(before, [C]).authorsDigest
+    );
+  });
+
+  test("every same-executor veto, an unknown reviewer, the same model, and a second author's model still reject", () => {
+    const ledger = ledgerWith(
+      [partial(), complete()],
+      [completion(complete(), [partial()])]
+    );
+    expect(
+      outcome(ledger, { ...REVIEWER, instance: "domain_db_preview" })
+    ).toBe("reviewer-not-independent");
+    // The owner's session vetoes a reviewer whose instance is unknown.
+    expect(
+      outcome(ledger, { ...REVIEWER, instance: null, session: "thread-owner" })
+    ).toBe("reviewer-not-independent");
+    expect(outcome(ledger, { ...REVIEWER, instance: null })).toBe(
+      "independence-unproven"
+    );
+    // A reviewer sharing the completed record's session keeps that veto even
+    // with an instance of its own, under either setting.
+    for (const adversarial of [true, false]) {
+      expect(
+        outcome(
+          ledger,
+          {
+            ...REVIEWER,
+            instance: "subagent-instance",
+            session: "thread-owner",
+          },
+          adversarial
+        )
+      ).toBe("reviewer-not-independent");
+    }
+    expect(outcome(ledger, { ...REVIEWER, agent: "GPT-6" })).toBe(
+      "reviewer-not-distinct"
+    );
+    const coAuthored = ledgerWith(
+      [
+        partial(),
+        complete(),
+        author("second", {
+          agent: "gpt-6-astra",
+          harness: "codex",
+          instance: "second-instance",
+          session: "thread-second",
+        }),
+      ],
+      [completion(complete(), [partial()])]
+    );
+    expect(resolveEffectiveAuthors(coAuthored, C).authors).toHaveLength(2);
+    expect(outcome(coAuthored)).toBe("reviewer-not-distinct");
+  });
+
+  test("a completion stops standing once another instance or model appears under its session and agent id", () => {
+    for (const conflict of [
+      complete({ instance: "another-instance" }),
+      complete({ agent: "GPT-6.1" }),
+    ]) {
+      const ledger = ledgerWith(
+        [partial(), complete(), conflict],
+        [completion(complete(), [partial()])]
+      );
+      expect(resolveEffectiveAuthors(ledger, C).authors).toHaveLength(3);
+      expect(outcome(ledger)).toBe("independence-unproven");
+    }
+  });
+
+  test("the validator refuses a completion across sessions, harnesses, agent ids, commits, conflicting or sentinel identities, or one that adds nothing", () => {
+    const refused = (
+      attestations: Attestation[],
+      completer: Attestation,
+      completes: Attestation[]
+    ) => {
+      const ledger = emptyReviewLedger();
+      for (const attestation of attestations) {
+        attestInMemory(ledger, C, attestation);
+      }
+      ledger.completions = { [C]: [completion(completer, completes)] };
+      return validateReviewLedger(ledger).reason;
+    };
+    const cases: [Attestation, Attestation][] = [
+      [partial({ session: "thread-other" }), complete()],
+      [partial({ session: null }), complete({ session: null })],
+      [partial({ harness: "claude-code" }), complete()],
+      [partial({ harness: null }), complete({ harness: null })],
+      [partial({ logicalId: "someone-else" }), complete()],
+      [partial({ logicalId: null }), complete({ logicalId: null })],
+      [partial({ instance: "instance-x" }), complete()],
+      [partial({ agent: "GPT-5" }), complete()],
+      // The sentinel is a plan, never the reported model a completion adds.
+      [
+        partial({ instance: "domain_db_preview" }),
+        complete({ agent: MOST_CAPABLE }),
+      ],
+      [complete(), complete()],
+    ];
+    for (const [earlier, completer] of cases) {
+      expect(refused([earlier, completer], completer, [earlier])).toBe(
+        "ledger-malformed"
+      );
+    }
+    // The completer and each completed identity must be attested here.
+    expect(refused([partial()], complete(), [partial()])).toBe(
+      "ledger-malformed"
+    );
+    expect(refused([complete()], complete(), [partial()])).toBe(
+      "ledger-malformed"
+    );
+    // Two partial records are never merged into an identity nobody reported.
+    const modelOnly = partial({ agent: "GPT-6" });
+    const instanceOnly = partial({ instance: "domain_db_preview" });
+    expect(refused([modelOnly, instanceOnly], instanceOnly, [modelOnly])).toBe(
+      "ledger-malformed"
+    );
+    const unmerged = ledgerWith([modelOnly, instanceOnly]);
+    expect(resolveEffectiveAuthors(unmerged, C).authors).toHaveLength(2);
+    expect(outcome(unmerged)).toBe("independence-unproven");
+  });
+
+  test("a completion on one commit never reaches its replay source, nor a source's author the destination", () => {
+    const ledger = emptyReviewLedger();
+    attestInMemory(ledger, S, partial());
+    attestInMemory(ledger, C, partial());
+    attestInMemory(ledger, C, complete());
+    replayInMemory(ledger, C, [S], "verified");
+    ledger.completions = {
+      [C]: [completion(complete(), [partial()])],
+    };
+    expect(validateReviewLedger(ledger).reason).toBeNull();
+    addHead(ledger, C, [C]);
+    // The source's own incomplete record still reaches the destination.
+    expect(resolveEffectiveAuthors(ledger, C).authors).toEqual([
+      complete(),
+      partial(),
+    ]);
+    expect(outcome(ledger)).toBe("independence-unproven");
+    // A completion naming a source's record from the destination is refused.
+    const crossed = emptyReviewLedger();
+    attestInMemory(crossed, S, partial());
+    attestInMemory(crossed, C, complete());
+    crossed.completions = { [C]: [completion(complete(), [partial()])] };
+    expect(validateReviewLedger(crossed).reason).toBe("ledger-malformed");
+  });
+
+  test("a completed record's veto still reaches a head two replay links away", () => {
+    const D = fakeSha(23);
+    const ledger = emptyReviewLedger();
+    attestInMemory(ledger, S, partial());
+    attestInMemory(ledger, S, complete());
+    ledger.completions = { [S]: [completion(complete(), [partial()])] };
+    replayInMemory(ledger, C, [S], "verified");
+    replayInMemory(ledger, D, [C], "verified");
+    addHead(ledger, D, [D]);
+    const reason = (reviewer: RuntimeIdentity, adversarial: boolean) =>
+      decide(ledger, D, reviewer, { adversarial }).acceptanceReason;
+    for (const adversarial of [true, false]) {
+      expect(reason(REVIEWER, adversarial)).toBeNull();
+      expect(
+        reason(
+          { ...REVIEWER, instance: "sub", session: "thread-owner" },
+          adversarial
+        )
+      ).toBe("reviewer-not-independent");
+    }
+  });
+
+  test("the packaged schema accepts a completion and refuses an unknown key in one", () => {
+    const schema = JSON.parse(readFileSync(schemaPath, "utf8")) as Record<
+      string,
+      unknown
+    >;
+    const ledger = ledgerWith(
+      [partial(), complete()],
+      [completion(complete(), [partial()])]
+    );
+    expect(() =>
+      validateSchemaDocument("review-ledger", schema, ledger)
+    ).not.toThrow();
+    const extra = structuredClone(ledger);
+    Object.assign(extra.completions?.[C]?.[0] ?? {}, { reason: "late" });
+    expect(() =>
+      validateSchemaDocument("review-ledger", schema, extra)
+    ).toThrow();
+    expect(validateReviewLedger(extra).reason).toBe("ledger-malformed");
+    // A ledger without completions keeps the shape older copies read.
+    expect(Object.keys(emptyReviewLedger())).not.toContain("completions");
+  });
+
+  test("the owner's completion recovers verified preflight and post-return acceptance, and records nothing when refused", () => {
+    const run = preparedRun();
+    const commit = commitFile(run.author, "a.txt", "a\n");
+    const owner = {
+      commits: [commit],
+      environment: { CODEX_THREAD_ID: "thread-owner" },
+      logicalId: "author-a",
+      repositoryPath: run.author,
+    };
+    attestCommits(owner);
+    attestCommits({ ...owner, agent: "GPT-6", instance: "domain_db_preview" });
+    recordProposalAuthors({
+      base: run.base,
+      environment: ENV_A,
+      head: commit,
+      proposalId: PROPOSAL,
+      repositoryPath: run.author,
+    });
+    const authoring = stubAuthoring({
+      adversarial: true,
+      harness: "codex",
+      model: "gpt-6-astra",
+    });
+    const preflight = () =>
+      resolveReviewer({
+        authoring,
+        head: commit,
+        proposalId: PROPOSAL,
+        repositoryRoot: run.author,
+      });
+    const review = () =>
+      recordReviewAttempt({
+        attemptId: randomUUID(),
+        authoring,
+        head: commit,
+        proposalId: PROPOSAL,
+        receipt: reviewReceipt(REVIEWER, {
+          requested: {
+            effort: "xhigh",
+            harness: "codex",
+            model: "gpt-6-astra",
+          },
+        }),
+        repositoryPath: run.author,
+      }).attempt;
+    expect(preflight()).toMatchObject({
+      reason: "author-identity-missing",
+      status: "unresolved",
+    });
+    expect(review()).toMatchObject({
+      acceptanceReason: "independence-unproven",
+      accepted: false,
+    });
+    const path = reviewLedgerPath(commonDirectory(run.root));
+    const unchanged = readFileSync(path, "utf8");
+    // Refusals record nothing: a replay, another session, no session.
+    expect(() =>
+      attestCommits({ ...owner, completeIdentity: true, replays: [run.base] })
+    ).toThrow("never applies to a replay");
+    expect(() =>
+      attestCommits({
+        ...owner,
+        agent: "GPT-6",
+        completeIdentity: true,
+        environment: { CODEX_THREAD_ID: "thread-other" },
+        instance: "domain_db_preview",
+      })
+    ).toThrow("identity-completion-unmatched");
+    expect(() =>
+      attestCommits({
+        ...owner,
+        agent: "GPT-6",
+        completeIdentity: true,
+        environment: {},
+        instance: "domain_db_preview",
+      })
+    ).toThrow("identity-completion-unanchored");
+    expect(readFileSync(path, "utf8")).toBe(unchanged);
+    // A second commit with nothing to complete refuses the whole command.
+    const second = commitFile(run.author, "b.txt", "b\n");
+    attestCommits({
+      ...owner,
+      agent: "GPT-6",
+      commits: [second],
+      instance: "domain_db_preview",
+    });
+    const withSecond = readFileSync(path, "utf8");
+    expect(() =>
+      attestCommits({
+        ...owner,
+        agent: "GPT-6",
+        commits: [commit, second],
+        completeIdentity: true,
+        instance: "domain_db_preview",
+      })
+    ).toThrow(`identity-completion-unmatched: ${second}`);
+    expect(readFileSync(path, "utf8")).toBe(withSecond);
+    const completed = attestCommits({
+      ...owner,
+      agent: "GPT-6",
+      completeIdentity: true,
+      instance: "domain_db_preview",
+    });
+    expect(completed.attestations).toEqual([{ commit, status: "unchanged" }]);
+    expect(completed.completion).toEqual([
+      {
+        commit,
+        completes: [
+          {
+            agent: null,
+            harness: "codex",
+            instance: null,
+            logicalId: "author-a",
+            session: "thread-owner",
+          },
+        ],
+        status: "recorded",
+      },
+    ]);
+    expect(preflight()).toMatchObject({ reason: null, status: "resolved" });
+    expect(review()).toMatchObject({ acceptanceReason: null, accepted: true });
+    const { ledger } = readReviewLedger(commonDirectory(run.root));
+    expect(ledger.attestations[commit]).toHaveLength(2);
+    expect(ledger.completions?.[commit]).toHaveLength(1);
+    expect(
+      attestCommits({
+        ...owner,
+        agent: "GPT-6",
+        completeIdentity: true,
+        instance: "domain_db_preview",
+      }).completion
+    ).toMatchObject([{ status: "unchanged" }]);
+    // A replacement agent attesting under the same session and agent id
+    // makes the anchor shared: the completion stops standing, and a new
+    // one is refused.
+    attestCommits({ ...owner, agent: "GPT-6", instance: "replacement-1" });
+    expect(preflight()).toMatchObject({
+      reason: "author-identity-missing",
+      status: "unresolved",
+    });
+    const before = readFileSync(path, "utf8");
+    expect(() =>
+      attestCommits({
+        ...owner,
+        agent: "GPT-6",
+        completeIdentity: true,
+        instance: "domain_db_preview",
+      })
+    ).toThrow("identity-completion-conflict");
+    expect(readFileSync(path, "utf8")).toBe(before);
+  });
+
+  test("a recorded completion invalidates an approval recorded against the earlier digest", () => {
+    const run = preparedRun();
+    const commit = commitFile(run.author, "a.txt", "a\n");
+    const owner = {
+      commits: [commit],
+      environment: { CODEX_THREAD_ID: "thread-owner" },
+      logicalId: "author-a",
+      repositoryPath: run.author,
+    };
+    attestCommits(owner);
+    recordProposalAuthors({
+      base: run.base,
+      environment: ENV_A,
+      head: commit,
+      proposalId: PROPOSAL,
+      repositoryPath: run.author,
+    });
+    // A reviewer in another known session is independent of either record.
+    const accepted = recordReviewAttempt({
+      attemptId: randomUUID(),
+      authoring: stubAuthoring(),
+      head: commit,
+      proposalId: PROPOSAL,
+      receipt: reviewReceipt(REVIEWER_B),
+      repositoryPath: run.author,
+    }).attempt;
+    expect(accepted.accepted).toBe(true);
+    const approval = () =>
+      reviewApproval({
+        adversarial: false,
+        currentHead: commit,
+        freshEvidence: {
+          checks: true,
+          discussions: true,
+          providerApproval: true,
+        },
+        ledger: readReviewLedger(commonDirectory(run.root)).ledger,
+        proposalId: PROPOSAL,
+        repairRequired: false,
+      });
+    expect(approval()).toMatchObject({ approved: true });
+    attestCommits({
+      ...owner,
+      agent: "GPT-6",
+      completeIdentity: true,
+      instance: "domain_db_preview",
+    });
+    expect(approval()).toMatchObject({
+      approved: false,
+      reasons: ["authors-digest-changed"],
+    });
+  });
+
+  test("the command line takes --complete-identity and reports the completion", () => {
+    const run = preparedRun();
+    const commit = commitFile(run.author, "a.txt", "a\n");
+    const config = mkdtempSync(join(tmpdir(), "simple-changes-ledger-config-"));
+    const cli = (args: string[]) => {
+      const result = spawnSync(
+        [
+          process.execPath,
+          cliPath,
+          "author",
+          "attest",
+          "--commit",
+          commit,
+          "--agent-id",
+          "author-a",
+          "--repo",
+          run.author,
+          ...args,
+        ],
+        {
+          cwd: run.root,
+          env: {
+            ...process.env,
+            CODEX_THREAD_ID: "thread-owner",
+            SIMPLE_CHANGES_CONFIG_DIR: config,
+            SIMPLE_CHANGES_HARNESS_ROOTS: config,
+            SIMPLE_CHANGES_SKILL_ROOTS: "",
+          },
+          stderr: "pipe",
+          stdout: "pipe",
+        }
+      );
+      return {
+        exitCode: result.exitCode,
+        stderr: decoder.decode(result.stderr),
+        stdout: decoder.decode(result.stdout),
+      };
+    };
+    expect(cli(["--json"]).exitCode).toBe(0);
+    const completed = cli([
+      "--agent",
+      "GPT-6",
+      "--instance",
+      "domain_db_preview",
+      "--complete-identity",
+    ]);
+    expect(completed.exitCode).toBe(0);
+    expect(completed.stdout).toContain(
+      `Identity completion (recorded): ${commit}: 1 earlier attestation from this session and agent id now count as this identity.`
+    );
+    const again = cli([
+      "--agent",
+      "GPT-6",
+      "--instance",
+      "domain_db_preview",
+      "--complete-identity",
+      "--json",
+    ]);
+    expect(again.exitCode).toBe(0);
+    expect(JSON.parse(again.stdout)).toMatchObject({
+      completion: [{ commit, status: "unchanged" }],
+    });
   });
 });

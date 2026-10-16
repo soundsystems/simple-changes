@@ -1084,6 +1084,9 @@ describe("model identity", () => {
       // means a variant, so the ambiguity only ever blocks a review.
       ["Claude Opus 5.5 max", "claude-opus-5-5"],
       ["GPT-5.1 Codex Max", "gpt-5.1-codex"],
+      // A level that is also part of the name is tried both kept and dropped.
+      ["GPT-5.1 Codex Max high", "gpt-5.1-codex-max"],
+      ["GPT-5.1 Codex Max reasoning: xhigh", "gpt-5.1-codex-max xhigh"],
       ["Opus (version unknown)", "claude-opus-5-5"],
       ["Example Model 5.5", "example-model-5-5"],
       ["Sonnet 5.5", "claude-sonnet-5-5"],
@@ -1114,6 +1117,9 @@ describe("model identity", () => {
       // A name that already carries a version never widens past it.
       ["Claude Opus 5 (version unknown)", "claude-opus-5-5"],
       ["Fable 5.1 (version unknown)", "Fable 5.1.2"],
+      // A note of version numbers alone names the version.
+      ["Claude Opus (5)", "Claude Opus (5.5)"],
+      ["Claude Opus (5)", "claude-opus-5-5"],
       ["Fable (version unknown)", "claude-fable-mini-5-1"],
       // A hyphenated part that is not effort keeps the whole word.
       ["gpt-5.1-codex-max high", "gpt-5.1-codex xhigh"],

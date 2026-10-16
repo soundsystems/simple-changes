@@ -236,8 +236,8 @@ const effortParts = (word: string): string[] | null => {
     : null;
 };
 
-// The words that name the model: every word but those that describe effort.
-// An effort word is made only of effort parts and either has a part that
+// The words that may describe effort rather than name the model. An effort
+// word is made only of effort parts and either has a part that
 // says effort (`reasoning_effort`) or is made only of levels (`high`,
 // `extra-high`); a word of helper parts alone (`mode`, `level`) goes only
 // beside one. Any other word is part of the model's name, including a
@@ -246,7 +246,7 @@ const effortParts = (word: string): string[] | null => {
 // display name means a variant (`Coder Max`): by spelling alone it cannot be
 // told from an effort label (`Model 5.5 max`), and reading it as effort only
 // ever blocks a review, never admits one.
-const namingWords = (words: readonly string[]): string[] => {
+const effortIndices = (words: readonly string[]): number[] => {
   const marked = words.map((word) => {
     const parts = effortParts(word);
     return (
@@ -255,19 +255,33 @@ const namingWords = (words: readonly string[]): string[] => {
         parts.every((part) => EFFORT_LEVEL_PARTS.has(part)))
     );
   });
-  return words.filter(
-    (word, index) =>
-      !(
-        marked[index] ||
-        (effortParts(word) !== null &&
-          (marked[index - 1] === true || marked[index + 1] === true))
-      )
+  return words.flatMap((word, index) =>
+    marked[index] ||
+    (effortParts(word) !== null &&
+      (marked[index - 1] === true || marked[index + 1] === true))
+      ? [index]
+      : []
+  );
+};
+
+// Every nonempty choice of those words to drop, so a level that is also part
+// of the name (`Max` in `Coder Max high`) is tried both kept and dropped.
+// Past the cap, only dropping all of them is tried besides dropping none.
+const MAX_EFFORT_SUBSET_WORDS = 6;
+const effortDrops = (indices: readonly number[]): Set<number>[] => {
+  if (indices.length > MAX_EFFORT_SUBSET_WORDS) {
+    return [new Set(indices)];
+  }
+  return Array.from(
+    { length: 2 ** indices.length - 1 },
+    (_, mask) =>
+      new Set(indices.filter((_index, bit) => ((mask + 1) >> bit) & 1))
   );
 };
 
 interface ModelForms {
   // The whole name's tokens, then the tokens left without qualifiers and
-  // effort words; a name's key is its tokens joined.
+  // each choice of effort words; a name's key is its tokens joined.
   tokens: string[][];
   versionUnknown: boolean;
 }
@@ -282,7 +296,8 @@ const modelTokens = (value: string): string[] =>
 // The name without its parenthesised qualifiers, innermost first so nested
 // ones go whole, and every qualifier removed. An unclosed `(` drops the rest
 // of the name and a stray `)` drops itself, so a malformed note never leaves
-// a fragment that makes the same model look distinct.
+// a fragment that makes the same model look distinct. A note of version
+// numbers alone stays in the name.
 const withoutQualifiers = (
   value: string
 ): { qualifiers: string[]; rest: string } => {
@@ -292,6 +307,14 @@ const withoutQualifiers = (
   while (rest !== previous) {
     previous = rest;
     rest = rest.replace(MODEL_QUALIFIER, (qualifier) => {
+      const inner = modelTokens(qualifier);
+      // A note of version numbers alone, such as `(5.5)`, names the version.
+      if (
+        inner.length > 0 &&
+        inner.every((token) => MODEL_VERSION_TOKEN.test(token))
+      ) {
+        return ` ${qualifier.slice(1, -1)} `;
+      }
       qualifiers.push(qualifier);
       return " ";
     });
@@ -302,9 +325,10 @@ const withoutQualifiers = (
   };
 };
 
-// The forms a reported name may mean: the whole name, and the name without
-// parenthesised qualifiers and effort words, punctuation around a word
-// aside; a name made only of effort words keeps them. Only a qualifier that says exactly that the version is unknown
+// The forms a reported name may mean: the whole name, the name without
+// parenthesised qualifiers, and that name without each choice of its effort
+// words, punctuation around a word aside; a name made only of effort words
+// keeps them. Only a qualifier that says exactly that the version is unknown
 // widens a name to its family.
 const modelForms = (value: string): ModelForms => {
   const { qualifiers, rest } = withoutQualifiers(value.toLowerCase());
@@ -312,9 +336,14 @@ const modelForms = (value: string): ModelForms => {
     .split(MODEL_WORD_SEPARATORS)
     .map((word) => word.replace(MODEL_WORD_EDGES, ""))
     .filter((word) => word !== "");
-  const named = namingWords(words);
-  const kept = named.length > 0 ? named : words;
-  const tokens = [modelTokens(value), modelTokens(kept.join(" "))].filter(
+  const named = effortDrops(effortIndices(words))
+    .map((dropped) => words.filter((_word, index) => !dropped.has(index)))
+    .filter((kept) => kept.length > 0);
+  const tokens = [
+    modelTokens(value),
+    modelTokens(words.join(" ")),
+    ...named.map((kept) => modelTokens(kept.join(" "))),
+  ].filter(
     (form, index, all) =>
       form.length > 0 &&
       all.findIndex((other) => other.join("") === form.join("")) === index

@@ -69,9 +69,9 @@
   directly after the mode table (Classify, Core workflow, Authority,
   Router, Initialize, ...). The Authority section's `release-tag` paragraph
   moved verbatim to `references/changelog-coordination.md` `## Release
-  tags`, and the Lease section's branch-audit paragraph, a verbatim
-  duplicate of `references/replacement-lineage.md` `## Audit before
-  reapplying`, is gone. Four pointer sentences are the only new text.
+  tags`, and the Lease section's branch-audit paragraph, a summary of the
+  rule `references/replacement-lineage.md` `## Audit before
+  reapplying` states in full, is gone. Four pointer sentences are the only new text.
   SKILL.md is 306 lines and 17,479 bytes, inside the 17,500-byte budget.
   `skill-contract.test.ts` pins four headings in order and expects the tag
   rule in changelog-coordination.md. Forks that edit SKILL.md heavily (Hash,
@@ -80,6 +80,9 @@
   tag and branch-audit paragraphs while merging.
 - Guidance 30 adds one behavior change, one integration change for the
   SKILL.md reorder, and one notice bullet, and needs no answer.
+- Review of the reorder: GPT-6.1 Sol round 5 (xhigh, 5b02ae1) was clean
+  apart from one nit, that the removed paragraph summarized the
+  replacement-lineage rule rather than repeating it word for word.
 - Review: GPT-6.1 Sol round 1 (high) found one blocking issue, a completion
   removing the session veto for a reviewer with its own instance, fixed
   with `recordedAuthors`, plus a missing unknown-harness control. Round 2

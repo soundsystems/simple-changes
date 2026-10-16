@@ -41,8 +41,8 @@ describe("test timeout", () => {
   test("bun run test goes only through runners that pass the timeout", () => {
     const manifest = JSON.parse(
       readFileSync(join(root, "package.json"), "utf8")
-    ) as { scripts: Record<string, string> };
-    const runners = (manifest.scripts.test ?? "").split(" && ");
+    ) as { scripts: { test: string } };
+    const runners = manifest.scripts.test.split(" && ");
     expect(runners).toEqual([
       "bun tooling/simple-changes/test.ts",
       "bun tooling/publish-skill/scripts/test.ts",

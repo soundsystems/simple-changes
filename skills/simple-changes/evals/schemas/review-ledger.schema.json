@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://simple-changes.dev/schemas/review-ledger.schema.json",
   "title": "Simple Changes review ledger",
-  "description": "The proposal-scoped review ledger at <common git dir>/simple-changes/review-ledger.json. The runtime validates it by hand (scripts/lib/review-ledger.ts) with the same rules. Map keys are constrained here with propertyNames (full commit SHAs, proposal ids). `completions` is optional and appears only once a completion is recorded. What a JSON schema cannot express is checked by hand only: identities are unique per commit, a completion's completer and every identity it completes are attestations on the same commit and the completer refines each one, a replay never names its own destination and its own gaps name only its sources, range-scoped lists name only commits in the range, attempt ids are unique across proposals, and replay links are acyclic.",
+  "description": "The proposal-scoped review ledger at <common git dir>/simple-changes/review-ledger.json. The runtime validates it by hand (scripts/lib/review-ledger.ts) with the same rules. Map keys are constrained here with propertyNames (full commit SHAs, proposal ids). `completions` and an attempt's `severities` are optional and appears only once a completion is recorded. What a JSON schema cannot express is checked by hand only: identities are unique per commit, a completion's completer and every identity it completes are attestations on the same commit and the completer refines each one, a replay never names its own destination and its own gaps name only its sources, range-scoped lists name only commits in the range, attempt ids are unique across proposals, and replay links are acyclic.",
   "type": "object",
   "additionalProperties": false,
   "required": ["attestations", "proposals", "replays", "schemaVersion"],
@@ -361,7 +361,18 @@
         "coverageWaiverId": {
           "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/uuid" }]
         },
-        "recordedAt": { "$ref": "#/$defs/timestamp" }
+        "recordedAt": { "$ref": "#/$defs/timestamp" },
+        "severities": {
+          "description": "Optional: how many findings were blocking, should-fix, or nits, adding up to findingsCount, for a findings verdict only. Runtimes before 0.31.0 read a ledger holding it as malformed.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["blocking", "nit", "shouldFix"],
+          "properties": {
+            "blocking": { "type": "integer", "minimum": 0 },
+            "nit": { "type": "integer", "minimum": 0 },
+            "shouldFix": { "type": "integer", "minimum": 0 }
+          }
+        }
       },
       "allOf": [
         {

@@ -23,6 +23,8 @@ import {
   MOST_CAPABLE,
   modelNameTooComplex,
   type RepositoryAuthoring,
+  type ResolvedReviewLoop,
+  type ReviewEscalationTrigger,
   resolveRepositoryAuthoring,
   sameModelName,
 } from "./authoring.ts";
@@ -147,6 +149,18 @@ export interface ProposalHead {
 export type ReviewEffortSource = "configured" | "escalation" | "request";
 export type ReviewVerdict = "findings" | "clean" | "failed";
 
+/**
+ * How many of a review's findings are blocking, should-fix, or nits; the
+ * three always add up to the attempt's `findingsCount`.
+ */
+export interface FindingSeverities {
+  blocking: number;
+  nit: number;
+  shouldFix: number;
+}
+
+const SEVERITY_KEYS = ["blocking", "nit", "shouldFix"] as const;
+
 export interface ReviewAttempt {
   acceptanceReason: string | null;
   accepted: boolean;
@@ -159,6 +173,11 @@ export interface ReviewAttempt {
   headRevision: string;
   recordedAt: string;
   requested: { effort: AuthoringEffort; harness: string; model: string };
+  /**
+   * Present only when the reviewer graded its findings, so a ledger without
+   * one keeps the shape runtimes before 0.31.0 read.
+   */
+  severities?: FindingSeverities;
   verdict: ReviewVerdict;
   verified: RuntimeIdentity;
 }
@@ -230,11 +249,30 @@ export interface ReviewerResolution {
   effort: AuthoringEffort | null;
   effortSource: "configured" | "escalation" | null;
   harness: string | null;
+  // The proposal's review rounds so far; null before a proposal is named.
+  loop: ReviewLoopStatus | null;
   mode: "provisional" | "verified";
   model: string | null;
   proposal: ReviewerProposalEvidence | null;
   reason: ReviewerReason | null;
   status: "resolved" | "unresolved" | "blocked";
+}
+
+/**
+ * Where a proposal's review loop stands since its last clean review. The
+ * runtime counts rounds; deciding whether findings sit in the same area is
+ * the controller's, so these only tell it when to stop and ask.
+ */
+export interface ReviewLoopStatus {
+  consecutiveEscalatingRounds: number;
+  // Due when that many rounds in a row found blocking or should-fix
+  // problems: question the approach before the next fix.
+  convergenceCheck: "due" | "not-due" | "off";
+  message: string | null;
+  // Reached when that many rounds ran after the first blocking or
+  // should-fix finding without a clean result: ask the user how to proceed.
+  roundCap: "reached" | "not-reached" | "off";
+  roundsSinceEscalation: number;
 }
 
 /** Proof that the caller holds the loop lock; writers refuse without it. */
@@ -803,29 +841,63 @@ const checkAttemptOutcome = (
   );
 };
 
+// Severities are graded only for findings, and they account for every one.
+const checkSeverities = (
+  checker: Checker,
+  value: Record<string, unknown>,
+  path: string
+): void => {
+  if (!Object.hasOwn(value, "severities")) {
+    return;
+  }
+  const severities = value.severities;
+  if (!checker.object(severities, `${path}.severities`)) {
+    return;
+  }
+  checker.keys(severities, SEVERITY_KEYS, `${path}.severities`);
+  const counts = SEVERITY_KEYS.map((key) => severities[key]);
+  checker.check(
+    counts.every(
+      (count) =>
+        typeof count === "number" && Number.isInteger(count) && count >= 0
+    ) &&
+      value.verdict === "findings" &&
+      (counts as number[]).reduce((sum, count) => sum + count, 0) ===
+        value.findingsCount,
+    `${path}.severities`,
+    "must count blocking, shouldFix, and nit findings that add up to findingsCount, for a findings verdict only"
+  );
+};
+
+const ATTEMPT_KEYS = [
+  "acceptanceReason",
+  "accepted",
+  "attemptId",
+  "authorsDigest",
+  "coverageWaiverId",
+  "effort",
+  "effortSource",
+  "findingsCount",
+  "headRevision",
+  "recordedAt",
+  "requested",
+  "verdict",
+  "verified",
+];
+
+// The keys an attempt or receipt carries, with `severities` only when it is
+// there, since it is optional and every other key is required.
+const withOptionalSeverities = (
+  value: Record<string, unknown>,
+  keys: readonly string[]
+): string[] =>
+  Object.hasOwn(value, "severities") ? [...keys, "severities"] : [...keys];
+
 const checkAttempt = (checker: Checker, value: unknown, path: string): void => {
   if (!checker.object(value, path)) {
     return;
   }
-  checker.keys(
-    value,
-    [
-      "acceptanceReason",
-      "accepted",
-      "attemptId",
-      "authorsDigest",
-      "coverageWaiverId",
-      "effort",
-      "effortSource",
-      "findingsCount",
-      "headRevision",
-      "recordedAt",
-      "requested",
-      "verdict",
-      "verified",
-    ],
-    path
-  );
+  checker.keys(value, withOptionalSeverities(value, ATTEMPT_KEYS), path);
   checker.check(isUuid(value.attemptId), `${path}.attemptId`, "must be a UUID");
   checker.check(
     isCommitSha(value.headRevision),
@@ -853,6 +925,7 @@ const checkAttempt = (checker: Checker, value: unknown, path: string): void => {
     "must be configured, request, or escalation (high or xhigh only)"
   );
   checkAttemptOutcome(checker, value, path);
+  checkSeverities(checker, value, path);
   checker.check(
     isTimestamp(value.recordedAt),
     `${path}.recordedAt`,
@@ -2021,21 +2094,39 @@ export const reviewApproval = (
 // ---------------------------------------------------------------------------
 // Escalation and reviewer resolution before dispatch
 
+type GradedAttempt = Pick<ReviewAttempt, "severities" | "verdict">;
+
+/**
+ * Whether an attempt's findings escalate later reviews: any finding under
+ * `escalateOn: "any"`; otherwise a blocking or should-fix one, or findings
+ * the reviewer did not grade, which keeps ungraded ledgers escalating as
+ * they did before severities existed.
+ */
+export const escalatingAttempt = (
+  attempt: GradedAttempt,
+  escalateOn: ReviewEscalationTrigger
+): boolean =>
+  attempt.verdict === "findings" &&
+  (escalateOn === "any" ||
+    attempt.severities === undefined ||
+    attempt.severities.blocking + attempt.severities.shouldFix > 0);
+
 /**
  * Escalation as a floor: after any attempt on the proposal reported
- * findings (accepted or not), later attempts run at the higher of the role's
- * effort and `escalateOnFindings`. It never lowers an effort and never
- * reaches `max` by itself; a request `max` is the agent's own choice.
+ * escalating findings (accepted or not), later attempts run at the higher of
+ * the role's effort and `escalateOnFindings`. It never lowers an effort and
+ * never reaches `max` by itself; a request `max` is the agent's own choice.
  */
 export const escalatedEffort = (
   roleEffort: AuthoringEffort,
   escalateOnFindings: "high" | "xhigh" | null,
-  attempts: readonly Pick<ReviewAttempt, "verdict">[]
+  attempts: readonly GradedAttempt[],
+  escalateOn: ReviewEscalationTrigger = "blocking-or-should-fix"
 ): { effort: AuthoringEffort; effortSource: "configured" | "escalation" } => {
   if (
     !(
       escalateOnFindings &&
-      attempts.some((attempt) => attempt.verdict === "findings")
+      attempts.some((attempt) => escalatingAttempt(attempt, escalateOn))
     )
   ) {
     return { effort: roleEffort, effortSource: "configured" };
@@ -2044,6 +2135,68 @@ export const escalatedEffort = (
   return {
     effort,
     effortSource: effort === roleEffort ? "configured" : "escalation",
+  };
+};
+
+/**
+ * The loop since the proposal's last clean review, over its attempts in the
+ * order they were recorded. A failed review is no round; a round whose
+ * findings do not escalate (nits only) ends a run of escalating rounds.
+ */
+export const reviewLoopStatus = (
+  attempts: readonly (GradedAttempt & Pick<ReviewAttempt, "recordedAt">)[],
+  loop: ResolvedReviewLoop
+): ReviewLoopStatus => {
+  const rounds = [...attempts]
+    .filter((attempt) => attempt.verdict !== "failed")
+    .sort((left, right) => left.recordedAt.localeCompare(right.recordedAt));
+  let lastClean = -1;
+  for (const [index, attempt] of rounds.entries()) {
+    if (attempt.verdict === "clean") {
+      lastClean = index;
+    }
+  }
+  const open = rounds.slice(lastClean + 1);
+  let consecutive = 0;
+  for (const attempt of [...open].reverse()) {
+    if (!escalatingAttempt(attempt, loop.escalateOn)) {
+      break;
+    }
+    consecutive += 1;
+  }
+  const firstEscalation = open.findIndex((attempt) =>
+    escalatingAttempt(attempt, loop.escalateOn)
+  );
+  const sinceEscalation =
+    firstEscalation === -1 ? 0 : open.length - firstEscalation - 1;
+  let convergenceCheck: ReviewLoopStatus["convergenceCheck"] = "off";
+  if (loop.convergenceRounds !== null) {
+    convergenceCheck =
+      consecutive >= loop.convergenceRounds ? "due" : "not-due";
+  }
+  let roundCap: ReviewLoopStatus["roundCap"] = "off";
+  if (loop.roundCap !== null) {
+    roundCap = sinceEscalation >= loop.roundCap ? "reached" : "not-reached";
+  }
+  const kind =
+    loop.escalateOn === "any" ? "findings" : "blocking or should-fix findings";
+  const messages: string[] = [];
+  if (roundCap === "reached") {
+    messages.push(
+      `${sinceEscalation} review round(s) ran after the first ${kind} without a clean result: stop and ask the user whether to ship with the open findings filed as issues, change the design, or keep reviewing.`
+    );
+  }
+  if (convergenceCheck === "due") {
+    messages.push(
+      `${consecutive} review rounds in a row reported ${kind}: if they sit in the same area, stop patching, say whether the approach itself is the problem, and propose an alternative before the next fix.`
+    );
+  }
+  return {
+    consecutiveEscalatingRounds: consecutive,
+    convergenceCheck,
+    message: messages.length > 0 ? messages.join(" ") : null,
+    roundCap,
+    roundsSinceEscalation: sinceEscalation,
   };
 };
 
@@ -2225,6 +2378,7 @@ export const resolveReviewer = (input: {
     effort: null,
     effortSource: null,
     harness: null,
+    loop: null,
     mode,
     model: null,
     proposal: null,
@@ -2248,8 +2402,12 @@ export const resolveReviewer = (input: {
   const effort = escalatedEffort(
     review.effort,
     review.escalateOnFindings,
-    verified?.attempts ?? []
+    verified?.attempts ?? [],
+    review.reviewLoop.escalateOn
   );
+  if (verified) {
+    resolution.loop = reviewLoopStatus(verified.attempts, review.reviewLoop);
+  }
   resolution.effort = effort.effort;
   resolution.effortSource = effort.effortSource;
   resolution.model = review.model;
@@ -3480,6 +3638,7 @@ type AttemptPayload = Pick<
   | "effortSource"
   | "findingsCount"
   | "requested"
+  | "severities"
   | "verdict"
   | "verified"
 >;
@@ -3501,7 +3660,11 @@ const parseAttemptReceipt = (receipt: unknown): AttemptPayload => {
       EXIT_CODES.validation
     );
   }
-  checker.keys(receipt, ATTEMPT_RECEIPT_KEYS, "receipt");
+  checker.keys(
+    receipt,
+    withOptionalSeverities(receipt, ATTEMPT_RECEIPT_KEYS),
+    "receipt"
+  );
   checkRequested(checker, receipt.requested, "receipt.requested");
   if (checker.object(receipt.verified, "receipt.verified")) {
     checker.keys(receipt.verified, IDENTITY_KEYS, "receipt.verified");
@@ -3526,6 +3689,7 @@ const parseAttemptReceipt = (receipt: unknown): AttemptPayload => {
     },
     "receipt"
   );
+  checkSeverities(checker, receipt, "receipt");
   if (checker.errors.length > 0) {
     throw new SimpleChangesError(
       `Invalid record-review receipt: ${checker.errors.join("; ")}`,
@@ -3538,6 +3702,9 @@ const parseAttemptReceipt = (receipt: unknown): AttemptPayload => {
     effortSource: receipt.effortSource as ReviewEffortSource,
     findingsCount: receipt.findingsCount as number,
     requested: receipt.requested as ReviewAttempt["requested"],
+    ...(Object.hasOwn(receipt, "severities")
+      ? { severities: receipt.severities as FindingSeverities }
+      : {}),
     verdict: receipt.verdict as ReviewVerdict,
     verified: {
       agent: verified.agent as string | null,
@@ -3567,6 +3734,10 @@ const attemptPayloadKey = (
     payload.effortSource,
     payload.verdict,
     payload.findingsCount,
+    // Absent and graded findings are different payloads.
+    payload.severities
+      ? SEVERITY_KEYS.map((key) => payload.severities?.[key])
+      : null,
   ]);
 
 /**

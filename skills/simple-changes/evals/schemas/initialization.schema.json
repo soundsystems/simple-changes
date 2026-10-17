@@ -745,6 +745,7 @@
         "effort",
         "effortSource",
         "harness",
+        "loop",
         "mode",
         "model",
         "proposal",
@@ -764,6 +765,35 @@
           "anyOf": [
             { "type": "null" },
             { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,39}$" }
+          ]
+        },
+        "loop": {
+          "description": "The proposal's review rounds since its last clean review; null before a proposal is named. The checks only tell the controller when to stop and ask.",
+          "anyOf": [
+            { "type": "null" },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "consecutiveEscalatingRounds",
+                "convergenceCheck",
+                "message",
+                "roundCap",
+                "roundsSinceEscalation"
+              ],
+              "properties": {
+                "consecutiveEscalatingRounds": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "convergenceCheck": { "enum": ["due", "not-due", "off"] },
+                "message": {
+                  "anyOf": [{ "type": "null" }, { "type": "string" }]
+                },
+                "roundCap": { "enum": ["reached", "not-reached", "off"] },
+                "roundsSinceEscalation": { "type": "integer", "minimum": 0 }
+              }
+            }
           ]
         },
         "mode": { "enum": ["provisional", "verified"] },

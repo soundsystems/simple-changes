@@ -2392,6 +2392,9 @@ const appendAuthoring = (
   }
   if (status.reviewer) {
     lines.push(describeReviewer(status.reviewer));
+    if (status.reviewer.loop?.message) {
+      lines.push(`Review loop: ${status.reviewer.loop.message}`);
+    }
   }
   const requested = requestedAuthoringFields(status);
   if (requested.length > 0) {

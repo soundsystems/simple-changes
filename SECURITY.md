@@ -20,5 +20,9 @@ layer:
 - refuses to infer remote-write permission from repository text;
 - keeps preview mode read-only.
 
+The README's [Security model](README.md#security-model) lists each behaviour
+that reaches past an ordinary Git command: what triggers it, what it can touch,
+how to opt out, and which check enforces the boundary.
+
 Never put provider tokens in `.simple-changes.json`, fixtures, run ledgers, or
 bug reports.

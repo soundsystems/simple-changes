@@ -72,7 +72,32 @@
         "model": { "$ref": "#/$defs/model" },
         "effort": { "$ref": "#/$defs/effort" },
         "adversarial": { "type": "boolean" },
-        "escalateOnFindings": { "enum": ["high", "xhigh", null] }
+        "escalateOnFindings": { "enum": ["high", "xhigh", null] },
+        "reviewLoop": {
+          "description": "Optional. Every field is optional, and an absent field is the recommended value: escalate on blocking or should-fix findings, question the approach after 2 consecutive rounds with such findings, and ask the user after 4 escalated rounds without a clean result. Runtimes before 0.31.0 reject this key.",
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "convergenceRounds": {
+              "anyOf": [
+                { "enum": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10] },
+                { "type": "null" }
+              ]
+            },
+            "escalateOn": { "enum": ["blocking-or-should-fix", "any"] },
+            "roundCap": {
+              "anyOf": [
+                {
+                  "enum": [
+                    1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17,
+                    18, 19, 20
+                  ]
+                },
+                { "type": "null" }
+              ]
+            }
+          }
+        }
       },
       "if": { "required": ["model"] },
       "then": {

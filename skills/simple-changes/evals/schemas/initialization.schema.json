@@ -65,7 +65,7 @@
       }
     },
     "authoringReviewSource": {
-      "description": "The review role's provenance. adversarial and escalateOnFindings may come from a lower layer than the rest of the role: a request only tightens them (design 2.3 rule 6).",
+      "description": "The review role's provenance. adversarial, escalateOnFindings, and reviewLoop may come from a lower layer than the rest of the role: a request only tightens them (design 2.3 rule 6).",
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -74,7 +74,8 @@
         "escalateOnFindings",
         "harness",
         "model",
-        "path"
+        "path",
+        "reviewLoop"
       ],
       "properties": {
         "adversarial": { "$ref": "#/$defs/authoringLayer" },
@@ -82,7 +83,34 @@
         "escalateOnFindings": { "$ref": "#/$defs/authoringLayer" },
         "harness": { "$ref": "#/$defs/authoringLayer" },
         "model": { "$ref": "#/$defs/authoringLayer" },
-        "path": { "anyOf": [{ "type": "null" }, { "type": "string" }] }
+        "path": { "anyOf": [{ "type": "null" }, { "type": "string" }] },
+        "reviewLoop": { "$ref": "#/$defs/authoringLayer" }
+      }
+    },
+    "resolvedReviewLoop": {
+      "description": "How the review loop escalates and when it stops to ask, with every field at the value in force; an absent sidecar field is the recommended value.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["convergenceRounds", "escalateOn", "roundCap"],
+      "properties": {
+        "convergenceRounds": {
+          "anyOf": [
+            { "enum": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10] },
+            { "type": "null" }
+          ]
+        },
+        "escalateOn": { "enum": ["blocking-or-should-fix", "any"] },
+        "roundCap": {
+          "anyOf": [
+            {
+              "enum": [
+                1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18,
+                19, 20
+              ]
+            },
+            { "type": "null" }
+          ]
+        }
       }
     },
     "authoringLayer": {
@@ -680,7 +708,8 @@
                     "model",
                     "status",
                     "adversarial",
-                    "escalateOnFindings"
+                    "escalateOnFindings",
+                    "reviewLoop"
                   ],
                   "properties": {
                     "effort": {},
@@ -688,7 +717,8 @@
                     "model": {},
                     "status": {},
                     "adversarial": { "type": "boolean" },
-                    "escalateOnFindings": { "enum": ["high", "xhigh", null] }
+                    "escalateOnFindings": { "enum": ["high", "xhigh", null] },
+                    "reviewLoop": { "$ref": "#/$defs/resolvedReviewLoop" }
                   }
                 }
               ]

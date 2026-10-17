@@ -10,10 +10,11 @@
   `modelNameTooComplex`, and `MODEL_NAME_TOO_COMPLEX`. In their place,
   `canonicalModelId(value)` trims and lowercases a reported name, strips one
   provider segment (`MODEL_ID_PROVIDER_PREFIX`), and returns it only when it
-  matches `MODEL_ID_PATTERN` (`^[a-z0-9][a-z0-9._-]*$`) and is not the
-  `most-capable` sentinel, so a display name, an effort label, a note, or a
-  blank name is null. `MODEL_ID_ALIASES` maps one spelling to another and
-  is empty; each future entry needs a stated reason. `MODEL_ID_REQUIRED` is
+  matches `MODEL_ID_PATTERN` (`^[a-z0-9][a-z0-9._-]*$`) and is neither the
+  `most-capable` sentinel nor a bare effort level from `EFFORT_LEVELS`, so a
+  display name, an effort label, a note, or a blank name is null.
+  `MODEL_ID_ALIASES` maps one spelling to another and is empty; each future
+  entry needs a stated reason. `MODEL_ID_REQUIRED` is
   the shared next step for a name that is not an ID.
 - Review identity (`lib/review-ledger.ts`): `reportedModelId` reads the ID
   out of a reported identity. `diversity` now returns `distinct`, `same`,
@@ -163,8 +164,10 @@
   `proposal record-authors` uses, and reports `status` (`covered`,
   `incomplete`, `ledger-unreadable`), `outstanding` `CoverageItem`s (`kind`
   `unattributed`, `unresolved-source`, or `uncovered-edit`, with
-  `carriedBy` and `replaySources`), `incompleteIdentities`, and the
-  `authorsDigest`. `readyRangeCoverage(cwd, targetRef, head)` refuses an
+  `carriedBy` and `replaySources`), `incompleteIdentities` (attestations
+  without a model ID, so display names and effort labels count), and the
+  `authorsDigest`; the owner's completion command asks for
+  `--agent <model ID>`. `readyRangeCoverage(cwd, targetRef, head)` refuses an
   unresolvable target (exit 4) and unrelated history (exit 3).
   `assertReadyCoverage(coverage, owner, leaveUncovered)` refuses a
   malformed ledger (exit 5) even with `--leave-uncovered`, an abbreviated or

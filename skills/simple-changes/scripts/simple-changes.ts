@@ -3470,7 +3470,7 @@ const renderCoverageReport = (report: AuthorCoverage): string => {
   ];
   const identities =
     missingModel.length > 0
-      ? `Attestations reporting no model: ${missingModel.join(", ")}. Their author can complete them from the same session with \`author attest --complete-identity\` while it still holds the checkout's claim.\n`
+      ? `Attestations reporting no model ID: ${missingModel.join(", ")}. Their author can complete them from the same session with \`author attest --agent <model ID> --complete-identity\` while it still holds the checkout's claim.\n`
       : "";
   if (report.status === "covered") {
     return `${range}: complete.\nAuthors digest: ${report.authorsDigest}\n${identities}`;

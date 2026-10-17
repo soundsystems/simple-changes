@@ -1279,6 +1279,12 @@ describe("model identity", () => {
       "",
       "   ",
       "most-capable",
+      // An effort setting alone is never a model, in any case or prefix.
+      "high",
+      "XHigh",
+      "provider/max",
+      "low",
+      "medium",
       null,
       undefined,
     ]) {

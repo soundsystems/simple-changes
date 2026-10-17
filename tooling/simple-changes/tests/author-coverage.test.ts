@@ -433,11 +433,31 @@ describe("ready-work author coverage preflight", () => {
     expect(message).toContain(`- ${second}: no attested author`);
     expect(message).not.toContain(`- ${first}:`);
     expect(message).toContain(
-      `Attestations under your agent id on ${first} report no model.`
+      `Attestations under your agent id on ${first} report no model ID.`
     );
     expect(message).toContain(
-      `simple-changes author attest --commit ${first} --agent-id author --repo ${path} --agent "<model> <version>" [--instance <id>] --complete-identity`
+      `simple-changes author attest --commit ${first} --agent-id author --repo ${path} --agent <model ID> [--instance <id>] --complete-identity`
     );
+
+    // A display name or an effort label is not a model ID either, so its
+    // attestation is listed for completion too (#10).
+    for (const agent of ["Model 5.5 high", "high"]) {
+      const named = commitFile(path, `${agent.length}.txt`, `${agent}\n`);
+      attestCommits({
+        agent,
+        commits: [named],
+        environment: { CLAUDE_CODE_SESSION_ID: "session-a" },
+        logicalId: "author",
+        repositoryPath: path,
+      });
+      expect(
+        authorCoverage(path, "main", named).incompleteIdentities
+      ).toContainEqual({
+        commit: named,
+        completable: true,
+        logicalId: "author",
+      });
+    }
 
     writeFileSync(reviewLedgerPath(commonDirectory(path)), "{ not json");
     expect(() => recordReadyWork(path, "author", claimId, READY)).toThrow(

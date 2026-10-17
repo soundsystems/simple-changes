@@ -1,4 +1,4 @@
-import { MOST_CAPABLE } from "./authoring.ts";
+import { canonicalModelId } from "./authoring.ts";
 import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
 import { locateRepository } from "./inventory.ts";
 import { runGit } from "./process.ts";
@@ -40,7 +40,7 @@ export interface CoverageItem {
   sha: string;
 }
 
-/** An effective attestation that names no reported model. */
+/** An effective attestation that names no model ID. */
 export interface IncompleteAttestation {
   commit: string;
   /** Whether its session, harness and agent id are known, so `--complete-identity` can apply. */
@@ -184,8 +184,10 @@ const outstandingItems = (
   return [...items.values()];
 };
 
-const hasReportedModel = (agent: string | null): boolean =>
-  agent !== null && agent.trim() !== "" && agent.trim() !== MOST_CAPABLE;
+// Adversarial review compares model IDs, so a display name, an effort label,
+// the planning sentinel, or a blank name leaves the attestation incomplete.
+const hasModelId = (agent: string | null): boolean =>
+  canonicalModelId(agent) !== null;
 
 // Only a commit's own attestations that still count are listed: one a
 // destination inherits from a replay source belongs to that source, and
@@ -199,7 +201,7 @@ const incompleteIdentities = (
   const own = headCoverage({ ...ledger, replays: {} }, commits).authors;
   return commits.flatMap((commit) =>
     (Object.hasOwn(own, commit) ? (own[commit] ?? []) : [])
-      .filter((author) => !hasReportedModel(author.agent))
+      .filter((author) => !hasModelId(author.agent))
       .map((author) => ({
         commit,
         completable:
@@ -335,7 +337,7 @@ const ownerCommands = (
   worktreePath: string
 ): string[] => {
   const suffix = `--agent-id ${shellWord(agentId)} --repo ${shellWord(worktreePath)}`;
-  const identity = '[--instance <id>] [--agent "<model> <version>"]';
+  const identity = "[--instance <id>] [--agent <model ID>]";
   const lines: string[] = [];
   const unattributed = items.filter((item) => item.kind === "unattributed");
   if (unattributed.length > 0) {
@@ -360,8 +362,8 @@ const ownerCommands = (
   ];
   if (own.length > 0) {
     lines.push(
-      `Attestations under your agent id on ${own.join(", ")} report no model. If you made them in this same session and your harness reports a model now, complete them:`,
-      `  simple-changes author attest ${own.map((commit) => `--commit ${commit}`).join(" ")} ${suffix} --agent "<model> <version>" [--instance <id>] --complete-identity`
+      `Attestations under your agent id on ${own.join(", ")} report no model ID. If you made them in this same session, complete them with the model ID your harness reports, such as \`model-5-5\`, and \`--instance\` whenever the earlier record has one:`,
+      `  simple-changes author attest ${own.map((commit) => `--commit ${commit}`).join(" ")} ${suffix} --agent <model ID> [--instance <id>] --complete-identity`
     );
   }
   return lines;

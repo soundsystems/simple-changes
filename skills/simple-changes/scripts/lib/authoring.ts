@@ -261,7 +261,12 @@ export const canonicalModelId = (
   }
   const lowered = value.trim().toLowerCase();
   const id = lowered.replace(MODEL_ID_PROVIDER_PREFIX, "");
-  if (!MODEL_ID_PATTERN.test(id) || id === MOST_CAPABLE) {
+  // An effort setting on its own is not a model, however it is spelled.
+  if (
+    !MODEL_ID_PATTERN.test(id) ||
+    id === MOST_CAPABLE ||
+    (EFFORT_LEVELS as readonly string[]).includes(id)
+  ) {
     return null;
   }
   return Object.hasOwn(MODEL_ID_ALIASES, id)

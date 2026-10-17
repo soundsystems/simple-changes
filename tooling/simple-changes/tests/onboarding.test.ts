@@ -1901,10 +1901,10 @@ describe("authoring and review questions", () => {
         model: "review-model",
       })
     ).toBe(
-      "Independent reviews: review-model at high in Alpha Agent, never the author's model. The agent questions the approach after 2 rounds in a row with blocking or should-fix findings and asks you after 4 rounds without a clean review."
+      "Independent reviews: review-model at high in Alpha Agent, never the author's model. The agent questions the approach after 2 rounds in a row with blocking or should-fix findings and asks you when 4 rounds after the first such finding pass without a clean review."
     );
     expect(reviewLine({ adversarial: true, harness: "beta-agent" })).toBe(
-      "Independent reviews: Beta Agent, an agent other than the author's. The agent questions the approach after 2 rounds in a row with blocking or should-fix findings and asks you after 4 rounds without a clean review."
+      "Independent reviews: Beta Agent, an agent other than the author's. The agent questions the approach after 2 rounds in a row with blocking or should-fix findings and asks you when 4 rounds after the first such finding pass without a clean review."
     );
     expect(
       reviewLine({

@@ -1358,10 +1358,12 @@ export const resolveRequestedRole = (
     loosensAdversarial || requestRole?.adversarial === undefined;
   const keepsFloor =
     loosensFloor || requestRole?.escalateOnFindings === undefined;
-  const reviewLoop = stricterReviewLoop(
-    saved.effective.reviewLoop,
-    requested.effective.reviewLoop
-  );
+  // A request tightens only the loop fields it names; an omitted field, or
+  // an omitted loop, leaves the saved value as it is.
+  const reviewLoop = stricterReviewLoop(saved.effective.reviewLoop, {
+    ...saved.effective.reviewLoop,
+    ...requestRole?.reviewLoop,
+  } as ResolvedReviewLoop);
   // The request's loop is in force only where it tightened the saved one.
   const keepsReviewLoop =
     requestRole?.reviewLoop === undefined ||

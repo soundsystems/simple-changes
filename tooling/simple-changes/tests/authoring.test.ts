@@ -687,6 +687,25 @@ describe("the review loop settings", () => {
       roundCap: null,
     });
     expect(none.source.reviewLoop).toBe("repository");
+    // A request that names no loop, or only one of its fields, keeps the
+    // saved value of every field it leaves out.
+    const omitted = resolveRequestedRole(
+      "review",
+      [saved],
+      sidecar({}, { review: { effort: "high", harness: "running" } }),
+      "alpha-agent"
+    );
+    expect(omitted.effective.reviewLoop).toEqual({
+      convergenceRounds: 3,
+      escalateOn: "blocking-or-should-fix",
+      roundCap: null,
+    });
+    expect(omitted.source.reviewLoop).toBe("repository");
+    expect(request({ escalateOn: "any" }).effective.reviewLoop).toEqual({
+      convergenceRounds: 3,
+      escalateOn: "any",
+      roundCap: null,
+    });
   });
 });
 

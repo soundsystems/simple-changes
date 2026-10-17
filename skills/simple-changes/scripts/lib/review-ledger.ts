@@ -2140,7 +2140,8 @@ export const escalatedEffort = (
 
 /**
  * The loop since the proposal's last accepted clean review, over its rounds
- * in the order they were recorded. A round is a review that carries
+ * in the order the ledger recorded them, which appends each attempt; a
+ * timestamp is never used to reorder them. A round is a review that carries
  * evidence: findings, whether or not the gate accepted the attempt, or an
  * accepted clean result, which ends the loop. A failed review and a clean
  * review the gate rejected (a self-review, a stale head) carry none, so they
@@ -2148,17 +2149,14 @@ export const escalatedEffort = (
  * escalate (nits only) ends a run of escalating rounds.
  */
 export const reviewLoopStatus = (
-  attempts: readonly (GradedAttempt &
-    Pick<ReviewAttempt, "accepted" | "recordedAt">)[],
+  attempts: readonly (GradedAttempt & Pick<ReviewAttempt, "accepted">)[],
   loop: ResolvedReviewLoop
 ): ReviewLoopStatus => {
-  const rounds = [...attempts]
-    .filter(
-      (attempt) =>
-        attempt.verdict === "findings" ||
-        (attempt.verdict === "clean" && attempt.accepted)
-    )
-    .sort((left, right) => left.recordedAt.localeCompare(right.recordedAt));
+  const rounds = attempts.filter(
+    (attempt) =>
+      attempt.verdict === "findings" ||
+      (attempt.verdict === "clean" && attempt.accepted)
+  );
   let lastClean = -1;
   for (const [index, attempt] of rounds.entries()) {
     if (attempt.verdict === "clean") {

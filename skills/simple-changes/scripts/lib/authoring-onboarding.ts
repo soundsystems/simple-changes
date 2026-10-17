@@ -340,7 +340,7 @@ export const loopCheckChoices = (
 ): AuthoringChoice[] => [
   {
     description: `Two rounds in a row with ${escalateOn === "any" ? "findings" : "blocking or should-fix findings"} make the agent question the approach before fixing again; four rounds after the first such finding without a clean review make it ask you whether to ship with the findings filed as issues, change the design, or keep going.`,
-    label: "After 2 rounds in a row, or 4 rounds without a clean review",
+    label: "After 2 rounds in a row, or 4 more without a clean review",
     recommended: true,
     value: "recommended",
   },
@@ -752,7 +752,9 @@ const reviewLoopSummary = (
         ]),
     ...(loop.roundCap === null
       ? []
-      : [`asks you after ${loop.roundCap} rounds without a clean review`]),
+      : [
+          `asks you when ${loop.roundCap} rounds after the first such finding pass without a clean review`,
+        ]),
   ];
   return {
     checks:

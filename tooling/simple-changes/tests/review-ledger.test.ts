@@ -1462,10 +1462,25 @@ describe("post-return gate and approval", () => {
     expect(reviewLoopStatus(capped, loop).message).toContain(
       "ask the user whether to ship with the open findings filed as issues, change the design, or keep reviewing"
     );
-    // Input order does not matter; recordedAt does.
-    expect(reviewLoopStatus([...capped].reverse(), loop)).toEqual(
-      reviewLoopStatus(capped, loop)
-    );
+    // The ledger's append order decides, never the timestamps: rounds
+    // recorded after a clean review count even when their recordedAt, in
+    // another valid format, sorts before it.
+    const appended = [
+      { ...round("clean"), recordedAt: "2026-10-17T10:00:00Z" },
+      {
+        ...round("findings", blocking),
+        recordedAt: "2026-10-17T10:00:00.100Z",
+      },
+      {
+        ...round("findings", blocking),
+        recordedAt: "2026-10-17T10:00:00.200Z",
+      },
+    ];
+    expect(reviewLoopStatus(appended, loop)).toMatchObject({
+      consecutiveEscalatingRounds: 2,
+      convergenceCheck: "due",
+      roundsSinceEscalation: 1,
+    });
     // A clean review the gate rejected (a self-review, a stale head) carries
     // no evidence: it is no round, so every count and check stays as it was.
     expect(

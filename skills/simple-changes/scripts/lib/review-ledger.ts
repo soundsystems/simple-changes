@@ -1326,11 +1326,34 @@ const compatibleIdentities = (
 };
 
 /**
+ * Whether `completer` keeps every instance and model `earlier` carried, as
+ * `model` reads them, and adds a missing one.
+ */
+const keepsAndAdds = (
+  completer: AttestedIdentity,
+  earlier: AttestedIdentity,
+  model: (agent: string | null) => string | null
+): boolean => {
+  const earlierModel = model(earlier.agent);
+  const completerModel = model(completer.agent);
+  const keeps =
+    (earlier.instance === null || earlier.instance === completer.instance) &&
+    (earlierModel === null || earlierModel === completerModel);
+  const adds =
+    (earlier.instance === null && completer.instance !== null) ||
+    (earlierModel === null && completerModel !== null);
+  return keeps && adds;
+};
+
+/**
  * Whether `completer` completes `earlier`: the same known session, harness
- * and agent id, every instance and model ID `earlier` carried kept exactly,
- * and a missing instance or model ID added. A display name, the planning
- * sentinel, and a blank name are not model IDs, so a completion may supply
- * the ID such a record lacked, and they never count as the addition.
+ * and agent id, every instance and model `earlier` carried kept exactly, and
+ * a missing instance or model added. Two readings qualify. By model ID, a
+ * display name, the planning sentinel, and a blank name are not IDs, so a
+ * completion may supply the ID such a record lacked. By reported name, the
+ * rule earlier runtimes wrote completions under still holds, so a ledger
+ * they wrote stays readable. The sentinel and a blank name never count as
+ * the addition under either reading.
  */
 const refinesIdentity = (
   completer: AttestedIdentity,
@@ -1340,15 +1363,10 @@ const refinesIdentity = (
   if (anchor === null || anchor !== completionAnchor(earlier)) {
     return false;
   }
-  const earlierModel = reportedModelId(earlier.agent);
-  const completerModel = reportedModelId(completer.agent);
-  const keeps =
-    (earlier.instance === null || earlier.instance === completer.instance) &&
-    (earlierModel === null || earlierModel === completerModel);
-  const adds =
-    (earlier.instance === null && completer.instance !== null) ||
-    (earlierModel === null && completerModel !== null);
-  return keeps && adds;
+  return (
+    keepsAndAdds(completer, earlier, reportedModelId) ||
+    keepsAndAdds(completer, earlier, reportedModel)
+  );
 };
 
 /**

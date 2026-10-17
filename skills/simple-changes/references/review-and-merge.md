@@ -110,7 +110,9 @@ repairs it.
   ledger and still rules out any reviewer it ruled out as the same executor,
   but its missing instance or model ID no longer leaves independence or
   diversity unknown. No
-  other commit or replay source changes.
+  other commit or replay source changes. A completion an earlier runtime
+  wrote under its rule, which compared reported names, stays valid; a
+  display name it added is still not a model ID.
 - **Coverage.** `proposal record-authors` binds a head to the effective
   authors of its range and computes `authorsDigest`. A commit with no author,
   a replay source with none, and an inconclusive replay nobody attested are

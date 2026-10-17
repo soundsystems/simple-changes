@@ -3716,6 +3716,16 @@ describe("identity completion", () => {
     }
   });
 
+  test("a completion an earlier runtime wrote with a display name keeps the ledger readable, and the name still fails closed in one harness", () => {
+    const named = complete({ agent: "GPT-6.1 Sol" });
+    const ledger = ledgerWith(
+      [partial(), named],
+      [completion(named, [partial()])]
+    );
+    expect(resolveEffectiveAuthors(ledger, C).authors).toEqual([named]);
+    expect(outcome(ledger)).toBe("author-identity-missing");
+  });
+
   test("the validator refuses a completion across sessions, harnesses, agent ids, commits, conflicting or sentinel identities, or one that adds nothing", () => {
     const refused = (
       attestations: Attestation[],

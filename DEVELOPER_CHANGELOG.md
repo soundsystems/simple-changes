@@ -1,5 +1,122 @@
 # Developer changelog
 
+## 0.31.1 - 2026-10-17
+
+- Exact takeover evidence (`lib/worktree-coordination.ts`, issue
+  soundsystems/simple-changes#15): `takeoverEvidence` no longer runs the
+  approval through `requiredText`, which trimmed it and capped HEAD and the
+  digest at 64 characters. The new `exactEvidence(value, name, shape?)`
+  returns each value as given: an empty one is "<name> is required."
+  (exit 2), and `--head` and `--status-digest` must match `SHA_PATTERN` and
+  the new `STATUS_DIGEST_PATTERN` (`^[0-9a-f]{64}$`) untrimmed, or the
+  refusal says the value "must be the checkout's full commit ID" or "must
+  be the checkout's status digest", "exactly as Git reports it, with no
+  surrounding space" (exit 2). Before, both were trimmed, and a digest of
+  another shape within 64 characters reached the comparison and failed as
+  a changed worktree (exit 5). The branch keeps no shape or length rule,
+  and a whitespace-only `--branch` is now compared instead of refused as
+  missing. `exactEvidence` keeps `requiredText`'s secret check (734e6b7):
+  after the empty and shape checks, a value `redactSecrets` would change is
+  refused with "<name> must not contain credentials or secrets." (exit 5),
+  because the receipt records it. Only the branch can trip it, since HEAD
+  and the digest must already be hex.
+- Observed branch (`lib/inventory.ts`): the new `withoutLineEnds` removes
+  only trailing `\r` and `\n` (`TRAILING_LINE_ENDS`). `parseWorktreeList`
+  uses it in place of `output.trim()`, which ran over the whole
+  `git worktree list --porcelain` output and so reached only the last
+  listed worktree's last line, its `branch` line unless that worktree is
+  locked or prunable. `captureInventory` reads `repository.branch`, the
+  branch of the checkout inventory runs in, from
+  `git symbolic-ref --quiet --short HEAD` the same way. With the approved
+  side trimmed and the observed side sometimes trimmed, an approval could
+  match a checkout whose branch differed only by a trailing U+00A0, and an
+  exact approval of a branch Git listed untrimmed was refused. Other Git
+  reads in inventory still trim, among them the remote HEAD and
+  `branch.<name>.merge` in `resolveTargetRef`.
+- Invalid UTF-8 branch names (ad4828f, from review round 1, and 734e6b7):
+  `process.ts` decodes Git output with a non-fatal `TextDecoder`, so
+  `release/\x80` and `release/\x81` both read `release/\uFFFD`.
+  `approvedTakeoverState` now refuses a reassign (exit 5) when the observed
+  branch from `claimTakeoverState` or the approved one contains
+  `REPLACEMENT_CHARACTER` (U+FFFD), after the release-only reassign check
+  and before the comparison. The message names the branch as a JSON
+  string, asks for a UTF-8 name and fresh evidence, and adds "or release
+  the claim with `--release`". A `--release` is not refused: it adopts
+  nothing, and once the checkout is gone the claim keeps its recorded lossy
+  name, which renaming the branch cannot change, so a release is the only
+  takeover that can retire it. A release still compares the lossy names
+  and retires only the claim its `--claim-id` names. A name that really
+  contains U+FFFD reads the same and is refused for a reassign too.
+- Ready-work refusal (`lib/ready-work.ts`): `readyClaim` passes
+  `claimTakeoverState(inventory, claim)` to `assertClaimSession` instead of
+  the listed worktree or null, as attach and release already did, so
+  `claimSessionRefusal` prints exact values for a checkout Git no longer
+  lists. A release-only state prints the claim's recorded branch and
+  digest, the branch's tip or, once the branch is gone, the recorded HEAD,
+  `--release`, and the route "which retires the claim: its checkout is
+  gone"; a `detached` or `resume-ready` claim whose preserved branch still
+  points at the recorded HEAD prints the reassign. Before, the null state
+  made `takeoverCommand` print `<sha>`, `--branch <name>`, and `<digest>`,
+  and the route advised a reassign, which `approvedTakeoverState` refuses
+  for a release-only state.
+- Hold pushes (`lib/ship-holds.ts`): `publishShipHold` and
+  `deleteRemoteRef`, which withdraws a hold ref on `hold release` and after
+  a release that raced a publish, now run `git push --no-follow-tags`, as
+  `release-tag` does. The hold commit is a parentless `commit-tree` object,
+  so under `push.followTags` only an annotated tag on that commit could
+  have gone along. This resolves the push caveat 0.31.0 deferred. The
+  README Security model ("Git and `glab` with the user's existing
+  credentials") now says both pushes pass the flag, so `push.followTags`
+  never adds another tag. The manual removal command printed under
+  `gitPushAuthorization: never` is unchanged.
+- Known limit (issue soundsystems/simple-changes#16, from review round 2):
+  the U+FFFD refusal covers a takeover's reassign only. The other
+  comparisons of a recorded branch with an observed one, in claims, pause
+  and ready receipts, lease registrations, preserved-source overrides, and
+  finalization, still see lossy names. For example, after a claim and pause
+  receipt on `release/\x80`, switching the checkout to `release/\x81` at
+  the same commit and status leaves `assertCurrentEvidence` accepting the
+  receipt and `coordinationLinkIsCurrent` true. This predates 0.31.1. On
+  macOS such a name can exist only as a packed ref, because the file system
+  refuses it as a loose ref's file name. The issue proposes refusing to
+  record evidence on a non-UTF-8 branch at one shared boundary, or reading
+  Git's raw bytes losslessly.
+- Tests: `claim-sessions.test.ts` adds five. "an approved takeover compares
+  the branch, HEAD, and status digest exactly, untrimmed" checks out
+  `release/long` plus U+00A0, sees inventory report the name whole,
+  refuses an approval of `release/long` as a changed worktree, refuses a
+  HEAD with a leading space and a digest with a trailing newline with their
+  shape messages and an empty branch as missing, then accepts the exact
+  name and records it. "an approval of a branch with trailing U+00A0 does
+  not match the branch without it" covers the reverse. "an approved
+  takeover refuses a branch name that is not valid UTF-8" appends
+  `refs/heads/release/\x80` to `packed-refs`, points HEAD at it with
+  `git symbolic-ref`, sees inventory report `release/\uFFFD`, and expects
+  the reassign refusal; then it force-removes and prunes the worktree and
+  releases the claim with a takeover naming its recorded state.
+  "an approved takeover refuses evidence that carries a credential"
+  expects the secret refusal for a `ghp_` branch name. "ready work
+  refused from another session for a removed
+  checkout prints the release takeover" force-removes and prunes the
+  worktree and expects the recorded HEAD and digest, `--release`, "its
+  checkout is gone", and no placeholder. `ship-holds.test.ts` adds "publish
+  and withdraw without following tags, whatever push.followTags says": with
+  an annotated tag on the hold commit and `push.followTags` true, a
+  republish lands the hold ref and no tag, and a release leaves no tag on
+  the remote. No new test covers `repository.branch` ending in U+00A0.
+- Reviews, both GPT-6.1 Sol: round 1 at high on 10e41ee found one
+  should-fix, the raw-byte branch collision, fixed in ad4828f; round 2 at
+  xhigh on ad4828f found one should-fix in the same area that predates the
+  patch, the pause-receipt comparison above. Two rounds in a row in one
+  area tripped the convergence check, and the reviewer proposed a central
+  fix; the user chose to ship 0.31.1 with it filed as #16. After round 2,
+  the changelog writer's check of ad4828f found that the UTF-8 guard also
+  refused `--release`, so a claim recorded under a lossy branch could never
+  be retired once its checkout was gone, and that `exactEvidence` had
+  dropped `requiredText`'s secret check; 734e6b7 fixed both.
+- Guidance stays at 31, with no guidance entry and no update notice.
+<!-- simple-changelogs-signature agent="Claude Opus 5.5 xhigh" at="2026-10-17T16:31:06-05:00" -->
+
 ## 0.31.0 - 2026-10-17
 
 - Canonical model IDs (`lib/authoring.ts`, issue

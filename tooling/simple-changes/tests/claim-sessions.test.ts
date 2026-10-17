@@ -415,6 +415,60 @@ describe("claims belong to the session that made them", () => {
     expect(receipt.branch).toBe(branch);
   });
 
+  test("an approved takeover compares the branch, HEAD, and status digest exactly, untrimmed", () => {
+    const fixture = repository();
+    const path = addWorktree(fixture, "nbsp-branch-work");
+    // Git accepts a branch name ending in U+00A0, which trim() drops.
+    const branch = "release/long\u00a0";
+    git(path, ["checkout", "-b", branch]);
+    const claim = as(SESSION_A, () =>
+      claimWorktree(fixture.root, "author-1", path, "claude-code")
+    );
+    const current = worktreeAt(fixture.root, path);
+    expect(current.branch).toBe(branch);
+    const take = (overrides: Partial<WorktreeTakeoverOptions>) =>
+      as(SESSION_B, () =>
+        takeoverWorktreeClaim({
+          ...takeoverOptions(fixture, claim.claimId, current, "author-1"),
+          ...overrides,
+        })
+      );
+    // The trimmed name is another branch, so its approval does not match.
+    expect(() => take({ expectedBranch: "release/long" })).toThrow(
+      "The worktree changed since it was observed"
+    );
+    // Surrounding space on the commit or digest is refused, never trimmed.
+    expect(() => take({ expectedHeadSha: ` ${current.headSha}` })).toThrow(
+      "expected HEAD must be the checkout's exact value"
+    );
+    expect(() =>
+      take({ expectedStatusDigest: `${current.changeDigest}\n` })
+    ).toThrow("expected status digest must be the checkout's exact value");
+    expect(() => take({ expectedBranch: "" })).toThrow(
+      "expected branch is required"
+    );
+    // The exact name matches and is recorded as given.
+    expect(take({}).receipt.branch).toBe(branch);
+  });
+
+  test("an approval of a branch with trailing U+00A0 does not match the branch without it", () => {
+    const fixture = repository();
+    const path = addWorktree(fixture, "plain-branch-work");
+    git(path, ["checkout", "-b", "release/long"]);
+    const claim = as(SESSION_A, () =>
+      claimWorktree(fixture.root, "author-1", path, "claude-code")
+    );
+    const current = worktreeAt(fixture.root, path);
+    expect(() =>
+      as(SESSION_B, () =>
+        takeoverWorktreeClaim({
+          ...takeoverOptions(fixture, claim.claimId, current, "author-1"),
+          expectedBranch: "release/long\u00a0",
+        })
+      )
+    ).toThrow("The worktree changed since it was observed");
+  });
+
   test("ready work refused from another session prints the takeover for the checkout as it is", () => {
     const fixture = repository();
     const path = addWorktree(fixture, "ready-elsewhere");
@@ -442,6 +496,39 @@ describe("claims belong to the session that made them", () => {
     expect(message).toContain(`--status-digest ${current.changeDigest}`);
     expect(message).not.toContain("<sha>");
     expect(message).not.toContain("<digest>");
+  });
+
+  test("ready work refused from another session for a removed checkout prints the release takeover", () => {
+    const fixture = repository();
+    const path = addWorktree(fixture, "ready-removed");
+    const claim = as(SESSION_A, () =>
+      claimWorktree(fixture.root, "author-1", path, "claude-code")
+    );
+    git(fixture.root, ["worktree", "remove", "--force", path]);
+    git(fixture.root, ["worktree", "prune"]);
+    const input = parseReadyWorkInput({
+      checks: [{ command: "bun test", result: "passed" }],
+      deploymentConstraints: [],
+      migrations: [],
+      releaseImpact: "patch",
+      scope: "Adds the feature module.",
+    });
+    let message = "";
+    try {
+      as(SESSION_B, () =>
+        recordReadyWork(fixture.root, "author-1", claim.claimId, input)
+      );
+    } catch (error) {
+      ({ message } = error as Error);
+    }
+    expect(message).toContain(ANOTHER_SESSION);
+    expect(message).toContain(`--head ${claim.headSha}`);
+    expect(message).toContain(`--status-digest ${claim.changeDigest}`);
+    expect(message).toContain("--release");
+    expect(message).toContain("its checkout is gone");
+    for (const placeholder of ["<sha>", "<name>", "<digest>"]) {
+      expect(message).not.toContain(placeholder);
+    }
   });
 
   test("only the latest claim on a checkout decides, so an approved takeover's history counts", () => {

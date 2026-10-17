@@ -2120,39 +2120,51 @@ const approvedTakeoverState = (
   return current;
 };
 
-// The exact checkout state the approval names, validated.
-const takeoverEvidence = (
-  options: WorktreeTakeoverOptions
-): TakeoverEvidence => {
-  const expected: TakeoverEvidence = {
-    // Git and claims bound no branch length, and the value must equal the
-    // observed branch exactly, so no length cap applies here.
-    branch:
-      options.expectedBranch === null
-        ? null
-        : requiredText(
-            options.expectedBranch,
-            "expected branch",
-            Number.POSITIVE_INFINITY
-          ),
-    changeDigest: requiredText(
-      options.expectedStatusDigest,
-      "expected status digest",
-      64
-    ),
-    headSha:
-      options.expectedHeadSha === null
-        ? null
-        : requiredText(options.expectedHeadSha, "expected HEAD", 64),
-  };
-  if (expected.headSha !== null && !SHA_PATTERN.test(expected.headSha)) {
+const STATUS_DIGEST_PATTERN = /^[0-9a-f]{64}$/u;
+
+/**
+ * One value of the approval's evidence, kept exactly as given. Each must
+ * equal what Git reports byte for byte, so nothing is trimmed: Git allows a
+ * branch name that ends in non-ASCII whitespace such as U+00A0, which
+ * `trim()` would drop, letting an approval of one branch match another.
+ */
+const exactEvidence = (
+  value: string,
+  name: string,
+  pattern?: RegExp
+): string => {
+  if (value === "") {
+    throw new SimpleChangesError(`${name} is required.`, EXIT_CODES.usage);
+  }
+  if (pattern && !pattern.test(value)) {
     throw new SimpleChangesError(
-      "expected HEAD must be the checkout's full commit ID.",
+      `${name} must be the checkout's exact value as Git reports it, with no surrounding space.`,
       EXIT_CODES.usage
     );
   }
-  return expected;
+  return value;
 };
+
+// The exact checkout state the approval names, validated and compared
+// untrimmed.
+const takeoverEvidence = (
+  options: WorktreeTakeoverOptions
+): TakeoverEvidence => ({
+  // Git and claims bound no branch length either, so none applies here.
+  branch:
+    options.expectedBranch === null
+      ? null
+      : exactEvidence(options.expectedBranch, "expected branch"),
+  changeDigest: exactEvidence(
+    options.expectedStatusDigest,
+    "expected status digest",
+    STATUS_DIGEST_PATTERN
+  ),
+  headSha:
+    options.expectedHeadSha === null
+      ? null
+      : exactEvidence(options.expectedHeadSha, "expected HEAD", SHA_PATTERN),
+});
 
 export const takeoverWorktreeClaim = (
   options: WorktreeTakeoverOptions

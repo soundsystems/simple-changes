@@ -40,6 +40,7 @@ interface RawWorktree {
 
 const ZERO_SHA_PATTERN = /^0+$/u;
 const WORKTREE_BLOCK_PATTERN = /\n\n+/u;
+const TRAILING_LINE_ENDS = /[\r\n]+$/u;
 const AHEAD_PATTERN = /ahead ([0-9]+)/u;
 const BEHIND_PATTERN = /behind ([0-9]+)/u;
 const HTTP_REMOTE_CREDENTIAL_PATTERN = /^(https?:\/\/)[^/@]+@/iu;
@@ -57,9 +58,14 @@ const nullableSha = (value: string | undefined): string | null => {
 const absoluteGitPath = (root: string, value: string): string =>
   realpathSync(isAbsolute(value) ? value : resolve(root, value));
 
+// Git output ends in line breaks; only those are removed. `trim()` would also
+// drop non-ASCII whitespace such as U+00A0, which Git allows at the end of a
+// branch name, and report a different branch than the checkout's.
+const withoutLineEnds = (output: string): string =>
+  output.replace(TRAILING_LINE_ENDS, "");
+
 const parseWorktreeList = (output: string): RawWorktree[] =>
-  output
-    .trim()
+  withoutLineEnds(output)
     .split(WORKTREE_BLOCK_PATTERN)
     .filter(Boolean)
     .map((block) => {
@@ -829,10 +835,9 @@ export const captureInventory = (
   );
   const headSha =
     headResult.exitCode === 0 ? nullableSha(headResult.stdout.trim()) : null;
+  const branchName = withoutLineEnds(branchResult.stdout);
   const branch =
-    branchResult.exitCode === 0 && branchResult.stdout.trim()
-      ? branchResult.stdout.trim()
-      : null;
+    branchResult.exitCode === 0 && branchName !== "" ? branchName : null;
   const branches = inventoryBranches(root);
   const stashes = inventoryStashes(root);
   const localChanges = worktrees.flatMap((worktree) => worktree.changes);

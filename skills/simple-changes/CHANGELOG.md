@@ -98,7 +98,10 @@
 - The new read-only `author coverage --base <target> --head <sha>` reports
   that coverage before any proposal exists, with the authors digest
   `proposal record-authors` would record, and exits 3 until it is complete.
-  Keep a proposal a draft until then.
+  Open the proposal as a draft while gaps remain, and mark it ready for review
+  only once each gap is attested by its author or waived by the owner with
+  `proposal waive-coverage` on that exact draft head. A waiver never counts in
+  `author coverage`, which keeps exiting 3.
 - `worktree request` now says plainly that it sends nothing: its request
   carries `state: "constructed"`, `capabilityProbe.automatic` is always
   false, and an owner profile that could be automated returns a

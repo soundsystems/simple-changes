@@ -1414,11 +1414,14 @@ describe("post-return gate and approval", () => {
     const round = (
       verdict: "clean" | "findings" | "failed",
       severities?: { blocking: number; nit: number; shouldFix: number }
-    ) => ({
-      recordedAt: `2026-10-17T10:${String(minute++).padStart(2, "0")}:00.000Z`,
-      verdict,
-      ...(severities ? { severities } : {}),
-    });
+    ) => {
+      minute += 1;
+      return {
+        recordedAt: `2026-10-17T10:${String(minute).padStart(2, "0")}:00.000Z`,
+        verdict,
+        ...(severities ? { severities } : {}),
+      };
+    };
     const blocking = { blocking: 1, nit: 0, shouldFix: 0 };
     const nits = { blocking: 0, nit: 2, shouldFix: 0 };
     const loop = REVIEW_LOOP_DEFAULTS;
@@ -2364,8 +2367,10 @@ describe("proposal ledger commands", () => {
     });
     // The grading is part of the payload: a retry must carry the same one.
     expect(record(graded, attemptId).status).toBe("unchanged");
-    const ungraded = { ...graded } as Record<string, unknown>;
-    delete ungraded.severities;
+    const { severities: _graded, ...ungraded } = graded as Record<
+      string,
+      unknown
+    >;
     expect(() => record(ungraded, attemptId)).toThrow("different payload");
     const ledger = readReviewLedger(commonDirectory(run.root));
     expect(ledger.state).toBe("valid");

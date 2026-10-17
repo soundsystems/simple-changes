@@ -850,7 +850,7 @@ const checkSeverities = (
   if (!Object.hasOwn(value, "severities")) {
     return;
   }
-  const severities = value.severities;
+  const { severities } = value;
   if (!checker.object(severities, `${path}.severities`)) {
     return;
   }

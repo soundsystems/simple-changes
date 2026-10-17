@@ -2277,24 +2277,26 @@ export const reviewLoopStatus = (
 };
 
 /**
- * The next step for a reason that means a model ID is missing, so a refusal
- * never only names a code. The step depends on where the missing ID came
- * from: before a proposal is named, the provisional author is the configured
- * `proposals` target, so only `setup --authoring` can change it; a verified
- * author is a recorded attestation, which the author completes. Null for
- * every other reason.
+ * The next step for a reason that means identity evidence is missing, so a
+ * refusal never only names a code. One reason has several causes (an
+ * unknown harness or session, no reported model, a name that is not a model
+ * ID), so each hint states what is needed and when each recovery applies
+ * rather than guessing the cause. Before a proposal is named, the
+ * provisional author is the configured `proposals` target, which only
+ * `setup --authoring` changes; a verified author is a recorded attestation.
+ * Null for every other reason.
  */
-export const modelIdReasonHint = (
+export const identityReasonHint = (
   reason: string | null,
   mode: ReviewerResolution["mode"] = "verified"
 ): string | null => {
   switch (reason) {
     case "author-identity-missing":
       return mode === "provisional"
-        ? `The configured \`proposals\` model is not a model ID, so diversity from it cannot be shown in the reviewer's harness. ${MODEL_ID_REQUIRED} Record it with \`simple-changes setup --authoring\`.`
-        : "An author of this head has no recorded model ID. That author runs `simple-changes author attest --commit <sha> --agent-id <id> --agent <model ID> [--instance <instance>] --complete-identity` from the same session, with the model ID its agent reports, such as `model-5-5`, and `--instance` whenever its earlier attestation recorded one, since a completion keeps every instance already recorded.";
+        ? `The configured \`proposals\` target lacks a harness or model, or, in the reviewer's harness, a model ID. ${MODEL_ID_REQUIRED} Record it with \`simple-changes setup --authoring\`.`
+        : "An author of this head lacks identity evidence adversarial review needs: a reported harness and model, and, in the reviewer's harness, a model ID such as `model-5-5`. An author whose attestation recorded its session, harness and agent id completes it from that session with `simple-changes author attest --commit <sha> --agent-id <id> --agent <model ID> [--instance <instance>] --complete-identity`, passing `--instance` whenever the earlier record has one. A record without a session, harness or agent id cannot be completed; ask the owner how to proceed.";
     case "reviewer-identity-missing":
-      return "The reviewer reported no model ID. Review again, recording in `verified.agent` the model ID the reviewer's agent reports, such as `model-5-5`, not a display name or an effort label.";
+      return "The reviewer's receipt lacks identity evidence adversarial review needs: a harness and a reported model, and, in an author's harness, a model ID such as `model-5-5`, not a display name or an effort label. Review again with a receipt that records them.";
     case "reviewer-model-id-missing":
       return `The configured reviewer model is not a model ID. ${MODEL_ID_REQUIRED} Record it with \`simple-changes setup --authoring\`.`;
     default:

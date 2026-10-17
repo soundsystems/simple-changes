@@ -186,7 +186,7 @@ import {
   type AuthorAttestResult,
   attestCommits,
   type CommitGaps,
-  modelIdReasonHint,
+  identityReasonHint,
   type RecordAuthorsResult,
   type RecordReviewResult,
   type ReviewLedgerResumeState,
@@ -2390,7 +2390,7 @@ const describeReviewer = (
     ? `${reviewer.model ?? "unknown model"} in ${reviewer.harness} at ${reviewer.effort ?? "unknown effort"}${reviewer.effortSource === "escalation" ? " (escalated after findings)" : ""}`
     : "no target";
   const reason = reviewer.reason ? `, ${reviewer.reason}` : "";
-  const hint = modelIdReasonHint(reviewer.reason, reviewer.mode);
+  const hint = identityReasonHint(reviewer.reason, reviewer.mode);
   return `Reviewer (${reviewer.mode}${reviewer.adversarial ? ", different author model or agent required" : ""}): ${reviewer.status}, ${target}${reason}${hint ? `\n${hint}` : ""}`;
 };
 
@@ -3328,7 +3328,7 @@ const renderRecordedReview = (result: RecordReviewResult): string => {
   } else if (result.approvalCandidate) {
     now = "Now: counts toward approval of this head.";
   }
-  const hint = modelIdReasonHint(
+  const hint = identityReasonHint(
     currentValidity.valid ? null : currentValidity.reason
   );
   return `${recorded}\n${now}\n${hint ? `${hint}\n` : ""}${result.disclosure.message ? `Disclosure: ${result.disclosure.message}\n` : ""}`;
@@ -3968,8 +3968,9 @@ const runLoopStart = (options: CliOptions): void => {
   );
 };
 
-// Accepted reviews that no longer pass the gate on resume need a fresh review.
-const renderResumedReviews = (
+// Accepted reviews that no longer pass the gate on resume need a fresh review,
+// after any identity repair the reason calls for.
+export const renderResumedReviews = (
   state: ReviewLedgerResumeState | null
 ): string => {
   if (!state) {
@@ -3982,10 +3983,10 @@ const renderResumedReviews = (
     .flatMap((proposal) =>
       proposal.attempts
         .filter((attempt) => attempt.accepted && !attempt.revalidated)
-        .map(
-          (attempt) =>
-            `Review ${attempt.attemptId} of ${proposal.proposalId} no longer counts (${attempt.revalidationReason}); request a fresh review.\n`
-        )
+        .map((attempt) => {
+          const hint = identityReasonHint(attempt.revalidationReason);
+          return `Review ${attempt.attemptId} of ${proposal.proposalId} no longer counts (${attempt.revalidationReason}); ${hint ? `${hint} Then request` : "request"} a fresh review.\n`;
+        })
     )
     .join("");
 };

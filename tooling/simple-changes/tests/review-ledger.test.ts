@@ -60,8 +60,8 @@ import {
   headCoverage,
   heldLoopLock,
   type IdentityCompletion,
+  identityReasonHint,
   loadReviewLedgerForResume,
-  modelIdReasonHint,
   type ReplayCheck,
   type ReviewLedger,
   type ReviewLedgerResumeState,
@@ -90,6 +90,7 @@ import {
   releaseWorktreeClaim,
   worktreeCoordinationPath,
 } from "../../../skills/simple-changes/scripts/lib/worktree-coordination.ts";
+import { renderResumedReviews } from "../../../skills/simple-changes/scripts/simple-changes.ts";
 import {
   createTestRepository,
   git,
@@ -1662,12 +1663,39 @@ describe("reviewer resolution before dispatch", () => {
     });
     // Before a proposal the author is the configured model, so the hint
     // names setup, never a completion that cannot change it.
-    const provisionalHint = modelIdReasonHint(
+    const provisionalHint = identityReasonHint(
       "author-identity-missing",
       "provisional"
     );
     expect(provisionalHint).toContain("setup --authoring");
     expect(provisionalHint).not.toContain("--complete-identity");
+    // After it, the hint says when completion applies and when it cannot,
+    // since one reason covers an unknown harness or session too.
+    const verifiedHint = identityReasonHint("author-identity-missing");
+    expect(verifiedHint).toContain("--complete-identity");
+    expect(verifiedHint).toContain(
+      "A record without a session, harness or agent id cannot be completed"
+    );
+    // Resume names the same repair before asking for a fresh review.
+    const resumed = renderResumedReviews({
+      proposals: [
+        {
+          attempts: [
+            {
+              accepted: true,
+              attemptId: "attempt-1",
+              headRevision: fakeSha(1),
+              revalidated: false,
+              revalidationReason: "author-identity-missing",
+              verdict: "clean",
+            },
+          ],
+        },
+      ],
+      state: "valid",
+    } as unknown as Parameters<typeof renderResumedReviews>[0]);
+    expect(resumed).toContain("--complete-identity");
+    expect(resumed).toContain("Then request a fresh review.");
     const concrete = { harness: "unknown", model: "model-gamma" };
     expect(resolve(concrete)).toMatchObject({
       harness: "unknown",
@@ -1956,10 +1984,10 @@ describe("proposal ledger commands", () => {
       acceptanceReason: "author-identity-missing",
       accepted: false,
     });
-    expect(modelIdReasonHint("author-identity-missing")).toContain(
+    expect(identityReasonHint("author-identity-missing")).toContain(
       "--complete-identity"
     );
-    expect(modelIdReasonHint("author-identity-missing")).toContain(
+    expect(identityReasonHint("author-identity-missing")).toContain(
       "--instance"
     );
     // Following the hint without the recorded instance completes nothing.

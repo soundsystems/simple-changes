@@ -54,9 +54,10 @@
   word next to neither stays in the name. `effortDrops` returns a drop of
   every certain and variable word and, for each contiguous run of the
   variable words, a drop of the certain words and every variable word
-  outside that run, so a name yields a quadratic number of forms with no
-  cap, and a level that is also part of the name is tried kept wherever
-  it sits among other effort words: `GPT-5.1 Codex Max high` matches
+  outside that run, so a name yields a quadratic number of forms, within
+  the 128-reading limit (`MAX_MODEL_FORMS`, under "Cost bound" below), and
+  a level that is also part of the name is tried kept wherever it sits
+  among other effort words: `GPT-5.1 Codex Max high` matches
   `gpt-5.1-codex-max`, as do
   `GPT-5.1 Codex Max model reasoning effort extra high mode` and
   `high max xhigh GPT-5.1 Codex Max high max`;
@@ -125,12 +126,19 @@
   one for the whole name plus, for each base, two and one per contiguous
   run of its variable words. A name past `MAX_MODEL_FORMS` (128) sets
   `overflow`, and `sameModelName` then returns true against any other
-  name. That only ever blocks a review, though `reviewDisclosure` then
-  flags no model mismatch for such a name; real names have a handful of
-  readings. `leadingWordsMatch` scans the precomputed `prefixes`, and
-  forms are deduplicated on their key and prefixes. Two valid names of 114
-  and 110 characters packed with effort words and setting pairs took about
-  17 seconds to compare on the previous code; they now take milliseconds.
+  name, so the diversity gate treats it as the same model, which only
+  ever blocks a review; real names have a handful of readings. Checks
+  that must not accept on "same" use the new exports
+  `modelNameTooComplex` and `MODEL_NAME_TOO_COMPLEX` instead:
+  `reviewDisclosure` flags `model` when the requested or the reported
+  name is over the cap and appends "The model label is too complex to
+  compare; pass the model ID the harness reports.", and
+  `reviewModelProblem` (onboarding R3') refuses an over-cap reviewer name
+  with the same message. `leadingWordsMatch` scans the precomputed
+  `prefixes`, and forms are deduplicated on their key and prefixes. Two
+  valid names of 114 and 110 characters packed with effort words and
+  setting pairs took about 17 seconds to compare on the previous code;
+  they now take milliseconds.
 - Before, an author's display label `GPT-6.1 Sol high` and a reviewer's
   `gpt-6.1-sol` had different keys, so `diversity` returned `distinct`
   within one harness and an adversarial `record-review` accepted a
@@ -179,8 +187,9 @@
   words only dropping all of them was tried, so
   `GPT-5.1 Codex Max model reasoning effort extra high mode` lost `Max`
   and missed `gpt-5.1-codex-max`, fixed by always dropping the certain
-  words and varying only the levels, with no cap; and a note with a
-  version beside other words, such as `(5.5 high)`, was still stripped, so
+  words and varying only the levels, without the six-word cap; and a note
+  with a version beside other words, such as `(5.5 high)`, was still
+  stripped, so
   `Claude Opus (5.5 high)` missed `claude-opus-5-5` and
   `Claude Opus (5 high)` matched `Claude Opus (5.5 high)`, fixed by
   keeping any note with a version token. After round 6, the changelog
@@ -210,7 +219,11 @@
   names packed with effort words and setting pairs took seconds to
   compare, because their readings multiplied and every pair rebuilt word
   prefixes, fixed by the reading count, `overflow`, and the precomputed
-  `key` and `prefixes`.
+  `key` and `prefixes`. A coordinator follow-up stopped an over-cap name
+  from hiding a requested-versus-reported mismatch: `reviewDisclosure`
+  now discloses it with the next step, and `reviewModelProblem` refuses
+  it. Round 10 found one doc nit in this entry, which said `effortDrops`
+  had no cap, now fixed.
 - Every caller picks the new comparison up: `diversity` (acceptance in
   `record-review`), `targetDistinctness` in `resolveReviewer` before
   dispatch (now `reviewer-not-distinct` for a `gpt-6.1-sol xhigh` target
@@ -274,8 +287,11 @@
   `model-5` and not `model-6`, all within one second.
 - Tests: `onboarding.test.ts` adds `author-model xhigh` and
   `Author Model (version unknown)` to the variants `reviewModelProblem`
-  rejects. `review-ledger.test.ts` blocks the `gpt-6.1-sol xhigh` target
-  against a `GPT-6.1 Sol high` author and a
+  rejects, and checks that it refuses the over-cap round 9 name with the
+  model ID message. `review-ledger.test.ts` checks that `reviewDisclosure`
+  flags `model` with that message when either the requested or the
+  reported name is over the cap. It also blocks the `gpt-6.1-sol xhigh`
+  target against a `GPT-6.1 Sol high` author and a
   `gpt-6.1-sol reasoning_effort=high` target against a `gpt-6.1-sol` author
   in reviewer resolution, and resolves `gpt-6-sol`. It records a
   same-model attempt accepted without adversarial review and sees it keep
@@ -351,7 +367,7 @@
   naming both paths, record-outcome refuses it, and the CLI exits 0 with the
   `Warning:` line on stderr.
 - Guidance stays at 30, with no guidance entry and no update notice.
-<!-- simple-changelogs-signature agent="Claude Opus 5.5 xhigh" at="2026-10-16T20:47:06-05:00" -->
+<!-- simple-changelogs-signature agent="Claude Opus 5.5 xhigh" at="2026-10-16T21:18:19-05:00" -->
 
 ## 0.30.0 - 2026-10-15
 

@@ -334,7 +334,7 @@ describe("repository instruction pointers", () => {
       "In Simple Changes runs, review in rounds at the exact head",
       "from the authoring preferences that `simple-changes initialize` reports",
       "grade each finding blocking, should-fix, or nit",
-      "only blocking and should-fix findings escalate later reviews",
+      "which findings escalate later reviews follows the preferences (by default only blocking and should-fix ones)",
       "review the fixes, the boundary they protect, and what they touched, then run one full review at the final head before merge",
       "Tell the reviewer which findings the user deferred or accepted",
       "stop patching and question the approach",

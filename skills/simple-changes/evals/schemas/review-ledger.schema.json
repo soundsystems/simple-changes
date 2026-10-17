@@ -376,6 +376,10 @@
       },
       "allOf": [
         {
+          "if": { "required": ["severities"] },
+          "then": { "properties": { "verdict": { "const": "findings" } } }
+        },
+        {
           "if": {
             "required": ["verdict"],
             "properties": { "verdict": { "const": "clean" } }

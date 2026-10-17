@@ -1413,10 +1413,12 @@ describe("post-return gate and approval", () => {
     let minute = 0;
     const round = (
       verdict: "clean" | "findings" | "failed",
-      severities?: { blocking: number; nit: number; shouldFix: number }
+      severities?: { blocking: number; nit: number; shouldFix: number },
+      accepted = true
     ) => {
       minute += 1;
       return {
+        accepted,
         recordedAt: `2026-10-17T10:${String(minute).padStart(2, "0")}:00.000Z`,
         verdict,
         ...(severities ? { severities } : {}),
@@ -1464,7 +1466,15 @@ describe("post-return gate and approval", () => {
     expect(reviewLoopStatus([...capped].reverse(), loop)).toEqual(
       reviewLoopStatus(capped, loop)
     );
-    // A clean review starts over, and either check can be off.
+    // A clean review the gate rejected (a self-review, a stale head) proves
+    // nothing and keeps the loop's counts.
+    expect(
+      reviewLoopStatus([...capped, round("clean", undefined, false)], loop)
+    ).toMatchObject({
+      roundCap: "reached",
+      roundsSinceEscalation: 5,
+    });
+    // An accepted clean review starts over, and either check can be off.
     expect(reviewLoopStatus([...capped, round("clean")], loop)).toMatchObject({
       consecutiveEscalatingRounds: 0,
       roundCap: "not-reached",
@@ -2381,6 +2391,22 @@ describe("proposal ledger commands", () => {
     expect(() =>
       validateSchemaDocument("review-ledger", schema, ledger.ledger)
     ).not.toThrow();
+    // The schema, like the runtime, grades findings only: a clean attempt
+    // carrying severities is refused by both.
+    const cleanGraded = structuredClone(ledger.ledger);
+    const [stored] = cleanGraded.proposals[PROPOSAL]?.attempts ?? [];
+    if (!stored) {
+      throw new Error("Expected the graded attempt.");
+    }
+    Object.assign(stored, {
+      findingsCount: 0,
+      severities: { blocking: 0, nit: 0, shouldFix: 0 },
+      verdict: "clean",
+    });
+    expect(() =>
+      validateSchemaDocument("review-ledger", schema, cleanGraded)
+    ).toThrow();
+    expect(validateReviewLedger(cleanGraded).reason).toBe("ledger-malformed");
     // A should-fix finding escalates the next review and starts the loop.
     const next = resolveReviewer({
       authoring: stubAuthoring({

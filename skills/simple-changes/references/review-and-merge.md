@@ -154,8 +154,9 @@ Run review as a loop at the exact head, rounds counted per proposal:
 
 - Ask the reviewer to give each finding a severity, **blocking**,
   **should-fix**, or **nit**, with its file and line, the inputs, and the wrong
-  result, and record them as `severities`. Fix nits too; only blocking and
-  should-fix findings escalate.
+  result, and record them as `severities`. Fix nits too; by default only
+  blocking and should-fix findings escalate (`reviewLoop.escalateOn: "any"`
+  escalates on every finding).
 - After the first round, scope each re-review to the fixes, the boundary they
   protect (what must never break), and what they touched. Before merge, run
   one full-range review at the final head. A clean review counts only for the
@@ -166,7 +167,7 @@ Run review as a loop at the exact head, rounds counted per proposal:
   `consecutiveEscalatingRounds`, `roundsSinceEscalation`, the
   `convergenceCheck` (`due` at `reviewLoop.convergenceRounds`, default 2), and
   the `roundCap` (`reached` at `reviewLoop.roundCap`, default 4), with a
-  `message`. When the check is due and those findings sit in one area, stop
+  `message`; only an accepted clean review starts a loop over. When the check is due and those findings sit in one area, stop
   patching: say whether the approach is the problem and propose an
   alternative before the next fix. When the cap is reached, stop and ask the
   user whether to ship with the open findings filed as issues, change the

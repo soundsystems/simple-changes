@@ -282,7 +282,7 @@ Then offer the optional review-loop rule for the same file, in its own
 only to reviews in Simple Changes runs and names no agent or model: review in
 rounds at the exact head with the reviewer, efforts, and limits from the
 authoring preferences; have the reviewer grade findings blocking, should-fix,
-or nit; review the fixes and what they touched, then one full review at the
+or nit, escalating as the preferences set; review the fixes and what they touched, then one full review at the
 final head before merge; pass on findings the user deferred or accepted; and
 question the approach or ask the user when `initialize` says the convergence
 check is due or the round cap is reached (see

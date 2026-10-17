@@ -2390,7 +2390,7 @@ const describeReviewer = (
     ? `${reviewer.model ?? "unknown model"} in ${reviewer.harness} at ${reviewer.effort ?? "unknown effort"}${reviewer.effortSource === "escalation" ? " (escalated after findings)" : ""}`
     : "no target";
   const reason = reviewer.reason ? `, ${reviewer.reason}` : "";
-  const hint = modelIdReasonHint(reviewer.reason);
+  const hint = modelIdReasonHint(reviewer.reason, reviewer.mode);
   return `Reviewer (${reviewer.mode}${reviewer.adversarial ? ", different author model or agent required" : ""}): ${reviewer.status}, ${target}${reason}${hint ? `\n${hint}` : ""}`;
 };
 

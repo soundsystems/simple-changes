@@ -1660,6 +1660,14 @@ describe("reviewer resolution before dispatch", () => {
       reason: "author-identity-missing",
       status: "unresolved",
     });
+    // Before a proposal the author is the configured model, so the hint
+    // names setup, never a completion that cannot change it.
+    const provisionalHint = modelIdReasonHint(
+      "author-identity-missing",
+      "provisional"
+    );
+    expect(provisionalHint).toContain("setup --authoring");
+    expect(provisionalHint).not.toContain("--complete-identity");
     const concrete = { harness: "unknown", model: "model-gamma" };
     expect(resolve(concrete)).toMatchObject({
       harness: "unknown",

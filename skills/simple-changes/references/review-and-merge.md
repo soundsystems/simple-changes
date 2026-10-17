@@ -92,7 +92,10 @@ prefix; a display name, an effort label, or a note is not an ID. Within one
 harness a missing or non-ID name on either side fails closed
 (`author-identity-missing`, `reviewer-identity-missing`, or, before
 dispatch, `reviewer-model-id-missing`) with the next step; across harnesses
-a reported name is enough. Diversity adds to executor independence and never
+a reported name is enough. Before a proposal is named, the author is the
+configured `proposals` model, so a missing author ID there is fixed with
+`setup --authoring`; after, it is a recorded attestation, which its author
+completes. Diversity adds to executor independence and never
 replaces it.
 
 The evidence lives in `review-ledger.json` under `<common git

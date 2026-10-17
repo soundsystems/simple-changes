@@ -2278,12 +2278,21 @@ export const reviewLoopStatus = (
 
 /**
  * The next step for a reason that means a model ID is missing, so a refusal
- * never only names a code. Null for every other reason.
+ * never only names a code. The step depends on where the missing ID came
+ * from: before a proposal is named, the provisional author is the configured
+ * `proposals` target, so only `setup --authoring` can change it; a verified
+ * author is a recorded attestation, which the author completes. Null for
+ * every other reason.
  */
-export const modelIdReasonHint = (reason: string | null): string | null => {
+export const modelIdReasonHint = (
+  reason: string | null,
+  mode: ReviewerResolution["mode"] = "verified"
+): string | null => {
   switch (reason) {
     case "author-identity-missing":
-      return "An author of this head has no recorded model ID. That author runs `simple-changes author attest --commit <sha> --agent-id <id> --agent <model ID> [--instance <instance>] --complete-identity` from the same session, with the model ID its agent reports, such as `model-5-5`, and `--instance` whenever its earlier attestation recorded one, since a completion keeps every instance already recorded.";
+      return mode === "provisional"
+        ? `The configured \`proposals\` model is not a model ID, so diversity from it cannot be shown in the reviewer's harness. ${MODEL_ID_REQUIRED} Record it with \`simple-changes setup --authoring\`.`
+        : "An author of this head has no recorded model ID. That author runs `simple-changes author attest --commit <sha> --agent-id <id> --agent <model ID> [--instance <instance>] --complete-identity` from the same session, with the model ID its agent reports, such as `model-5-5`, and `--instance` whenever its earlier attestation recorded one, since a completion keeps every instance already recorded.";
     case "reviewer-identity-missing":
       return "The reviewer reported no model ID. Review again, recording in `verified.agent` the model ID the reviewer's agent reports, such as `model-5-5`, not a display name or an effort label.";
     case "reviewer-model-id-missing":

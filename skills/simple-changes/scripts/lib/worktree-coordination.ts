@@ -2109,11 +2109,13 @@ const approvedTakeoverState = (
   }
   // Git output is decoded as UTF-8 with replacement, so two branch names made
   // of different invalid bytes read the same; such a name cannot be shown to
-  // be the approved one, and the takeover fails closed.
+  // be the approved one, so a reassign, which hands that state on, fails
+  // closed. A release adopts nothing and is the only way to retire such a
+  // claim once its checkout is gone, so it stays allowed.
   for (const branch of [current.branch, expected.branch]) {
-    if (branch?.includes(REPLACEMENT_CHARACTER)) {
+    if (action === "reassign" && branch?.includes(REPLACEMENT_CHARACTER)) {
       throw new SimpleChangesError(
-        `Branch ${JSON.stringify(branch)} is not valid UTF-8, so Simple Changes cannot name it exactly and no approval can be matched to it. Rename the branch to a UTF-8 name, re-observe the worktree, and retry the takeover.`,
+        `Branch ${JSON.stringify(branch)} is not valid UTF-8, so Simple Changes cannot name it exactly and no approval can be matched to it. Rename the branch to a UTF-8 name, re-observe the worktree, and retry the takeover, or release the claim with \`--release\`.`,
         EXIT_CODES.unsafe
       );
     }
@@ -2152,6 +2154,14 @@ const exactEvidence = (
     throw new SimpleChangesError(
       `${name} must be ${shape.what}, exactly as Git reports it, with no surrounding space.`,
       EXIT_CODES.usage
+    );
+  }
+  // The receipt records the evidence, so a value that carries a credential
+  // is refused, as every other takeover field is.
+  if (redactSecrets(value) !== value) {
+    throw new SimpleChangesError(
+      `${name} must not contain credentials or secrets.`,
+      EXIT_CODES.unsafe
     );
   }
   return value;

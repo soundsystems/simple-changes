@@ -496,6 +496,34 @@ describe("claims belong to the session that made them", () => {
         )
       )
     ).toThrow("is not valid UTF-8");
+    // A release adopts nothing, so it still retires the claim once the
+    // checkout is gone, naming the recorded state.
+    git(fixture.root, ["worktree", "remove", "--force", path]);
+    git(fixture.root, ["worktree", "prune"]);
+    const { claim: released } = as(SESSION_B, () =>
+      takeoverWorktreeClaim({
+        ...takeoverOptions(fixture, claim.claimId, claim, "author-1"),
+        action: "release",
+      })
+    );
+    expect(released.state).toBe("released");
+  });
+
+  test("an approved takeover refuses evidence that carries a credential", () => {
+    const fixture = repository();
+    const path = addWorktree(fixture, "secret-branch-work");
+    const claim = as(SESSION_A, () =>
+      claimWorktree(fixture.root, "author-1", path, "claude-code")
+    );
+    const current = worktreeAt(fixture.root, path);
+    expect(() =>
+      as(SESSION_B, () =>
+        takeoverWorktreeClaim({
+          ...takeoverOptions(fixture, claim.claimId, current, "author-1"),
+          expectedBranch: "ghp_abcdefghijklmnopqrstuvwxyz0123456789",
+        })
+      )
+    ).toThrow("expected branch must not contain credentials or secrets");
   });
 
   test("an approval of a branch with trailing U+00A0 does not match the branch without it", () => {

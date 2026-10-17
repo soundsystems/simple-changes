@@ -1115,7 +1115,7 @@ const deleteRemoteRef = (
 ): ShipHoldWithdrawal => {
   const pushed = runGitRemote(
     root,
-    ["push", remote, `:${ref}`],
+    ["push", "--no-follow-tags", remote, `:${ref}`],
     PUSH_TIMEOUT_MS
   );
   const detail = pushed.stderr || pushed.stdout;
@@ -1422,7 +1422,7 @@ export const publishShipHold = (
   });
   const pushed = runGitRemote(
     primaryCheckout,
-    ["push", remote, `${commitSha}:${ref}`],
+    ["push", "--no-follow-tags", remote, `${commitSha}:${ref}`],
     PUSH_TIMEOUT_MS
   );
   if (pushed.exitCode !== 0) {

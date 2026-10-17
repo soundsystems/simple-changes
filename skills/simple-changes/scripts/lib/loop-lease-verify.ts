@@ -281,8 +281,7 @@ const concurrentTakeoverHint = (
     primary ||
     registered.role !== "concurrent-author" ||
     !liveClaim ||
-    liveClaim.owner.agentId === lease.ownerAgentId ||
-    !worktree.headSha
+    liveClaim.owner.agentId === lease.ownerAgentId
   ) {
     return "";
   }

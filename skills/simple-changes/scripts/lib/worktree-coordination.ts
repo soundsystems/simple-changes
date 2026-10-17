@@ -2125,10 +2125,16 @@ const takeoverEvidence = (
   options: WorktreeTakeoverOptions
 ): TakeoverEvidence => {
   const expected: TakeoverEvidence = {
+    // Git and claims bound no branch length, and the value must equal the
+    // observed branch exactly, so no length cap applies here.
     branch:
       options.expectedBranch === null
         ? null
-        : requiredText(options.expectedBranch, "expected branch", 255),
+        : requiredText(
+            options.expectedBranch,
+            "expected branch",
+            Number.POSITIVE_INFINITY
+          ),
     changeDigest: requiredText(
       options.expectedStatusDigest,
       "expected status digest",

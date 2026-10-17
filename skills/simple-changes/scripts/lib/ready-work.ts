@@ -290,7 +290,8 @@ export interface ReadyWorkRecordResult {
 const readyClaim = (
   commonGitDirectory: string,
   agentId: string,
-  claimId: string
+  claimId: string,
+  inventory: RepositoryInventory
 ): WorktreeClaim => {
   const document =
     readCoordinationDocumentFromCommonDirectory(commonGitDirectory);
@@ -301,7 +302,12 @@ const readyClaim = (
       EXIT_CODES.unsafe
     );
   }
-  assertClaimSession(document, claim, null);
+  // The refusal prints the exact takeover for the checkout as it is now.
+  assertClaimSession(
+    document,
+    claim,
+    inventory.worktrees.find((item) => item.path === claim.path) ?? null
+  );
   if (!READY_CLAIM_STATES.has(claim.state)) {
     throw new SimpleChangesError(
       `Claim ${claimId} is ${claim.state}; ready work requires an active claim on a present checkout.`,
@@ -329,8 +335,8 @@ export const recordReadyWork = (
     commonGitDirectory,
     "worktree ready",
     () => {
-      const claim = readyClaim(commonGitDirectory, agentId, claimId);
       const inventory = captureInventory(repositoryPath);
+      const claim = readyClaim(commonGitDirectory, agentId, claimId, inventory);
       const current = inventory.worktrees.find(
         (item) => item.path === claim.path
       );

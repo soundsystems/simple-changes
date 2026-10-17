@@ -110,7 +110,7 @@ interface StaleAuthor {
  * remains to refresh it.
  */
 const staleConcurrentAuthor = (
-  shape: "switched-branch" | "detached-contained"
+  shape: "switched-branch" | "detached-contained" | "unborn"
 ): StaleAuthor => {
   const fixture = repository();
   const authorPath = join(fixture.base, "vanished-author");
@@ -138,6 +138,8 @@ const staleConcurrentAuthor = (
   );
   if (shape === "detached-contained") {
     git(authorPath, ["checkout", "--detach"]);
+  } else if (shape === "unborn") {
+    git(authorPath, ["checkout", "--orphan", "author-unborn"]);
   } else {
     git(authorPath, ["checkout", "-b", "author-work-continued"]);
     commit(authorPath, "feature.ts", "export const feature = 2;\n");
@@ -285,6 +287,18 @@ describe("active-controller recovery of a vanished concurrent author", () => {
     expect(
       prepareAgentWorktree(fixture.root, runId, "next-author", "follow-up")
     ).toMatchObject({ agentId: "next-author" });
+  });
+
+  test("names the takeover for a checkout with no commit, with --head none", () => {
+    const author = staleConcurrentAuthor("unborn");
+    const { authorPath, fixture } = author;
+    const current = captureInventory(fixture.root).worktrees.find(
+      (worktree) => worktree.path === authorPath
+    );
+    expect(current?.headSha).toBeNull();
+    expect(staleViolation(fixture.root, authorPath)?.message).toContain(
+      `--agent-id controller --head none --branch author-unborn --status-digest ${current?.changeDigest}`
+    );
   });
 
   test("recovers a clean detached checkout whose work the target already contains", () => {

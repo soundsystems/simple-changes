@@ -8,6 +8,10 @@ import {
   startLoop,
   verifyLoop,
 } from "../../../skills/simple-changes/scripts/lib/loop-lease.ts";
+import {
+  parseReadyWorkInput,
+  recordReadyWork,
+} from "../../../skills/simple-changes/scripts/lib/ready-work.ts";
 import { attestCommits } from "../../../skills/simple-changes/scripts/lib/review-ledger.ts";
 import type { WorktreeInventory } from "../../../skills/simple-changes/scripts/lib/types.ts";
 import {
@@ -391,6 +395,53 @@ describe("claims belong to the session that made them", () => {
         ).ownerAgentId
       ).toBe("author-1");
     });
+  });
+
+  test("an approved takeover reassigns a claim whose branch name is longer than 255 characters", () => {
+    const fixture = repository();
+    const path = addWorktree(fixture, "long-branch-work");
+    const branch = `${"a".repeat(200)}/${"b".repeat(100)}`;
+    git(path, ["checkout", "-b", branch]);
+    const claim = as(SESSION_A, () =>
+      claimWorktree(fixture.root, "author-1", path, "claude-code")
+    );
+    const current = worktreeAt(fixture.root, path);
+    expect(current.branch).toBe(branch);
+    const { receipt } = as(SESSION_B, () =>
+      takeoverWorktreeClaim(
+        takeoverOptions(fixture, claim.claimId, current, "author-1")
+      )
+    );
+    expect(receipt.branch).toBe(branch);
+  });
+
+  test("ready work refused from another session prints the takeover for the checkout as it is", () => {
+    const fixture = repository();
+    const path = addWorktree(fixture, "ready-elsewhere");
+    const claim = as(SESSION_A, () =>
+      claimWorktree(fixture.root, "author-1", path, "claude-code")
+    );
+    const current = worktreeAt(fixture.root, path);
+    const input = parseReadyWorkInput({
+      checks: [{ command: "bun test", result: "passed" }],
+      deploymentConstraints: [],
+      migrations: [],
+      releaseImpact: "patch",
+      scope: "Adds the feature module.",
+    });
+    let message = "";
+    try {
+      as(SESSION_B, () =>
+        recordReadyWork(fixture.root, "author-1", claim.claimId, input)
+      );
+    } catch (error) {
+      ({ message } = error as Error);
+    }
+    expect(message).toContain(ANOTHER_SESSION);
+    expect(message).toContain(`--head ${current.headSha}`);
+    expect(message).toContain(`--status-digest ${current.changeDigest}`);
+    expect(message).not.toContain("<sha>");
+    expect(message).not.toContain("<digest>");
   });
 
   test("only the latest claim on a checkout decides, so an approved takeover's history counts", () => {

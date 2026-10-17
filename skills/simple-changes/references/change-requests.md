@@ -26,11 +26,14 @@ Before creation:
 - refresh the base when mutation mode allows remote reads;
 - verify exact base and head/revision IDs;
 - confirm the proposal paths match one validated unit;
-- confirm every commit in the range is attested
+- check that every commit in the range is attested
   ([review ledger steps](#review-ledger-steps)): `simple-changes author
   coverage --base <target> --head <sha>` lists each commit with no attested
   author, each replay source with none, and each inconclusive replay nobody
-  attested an edit on, and exits non-zero until none is left;
+  attested an edit on, and exits non-zero until none is left. While any is
+  left, create the proposal only as a draft and say which gaps remain in its
+  description, so their authors can attest or the owner can waive them on
+  that draft head (below);
 - render the description to a file or structured API field using real newline
   characters.
 

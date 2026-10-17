@@ -304,18 +304,28 @@ const effortDrops = ({ certain, variable }: EffortWords): Set<number>[] => {
 };
 
 interface ModelForm {
-  // The form's tokens; its key is them joined.
+  // The form's tokens joined.
+  key: string;
+  // The keys of its leading whole words, short of the full form, so a match
+  // can end on a word boundary.
+  prefixes: string[];
   tokens: string[];
-  // Each word's key in order, so a match can end on a word boundary.
-  words: string[];
 }
 
 interface ModelForms {
   // The whole name, then the name without qualifiers and each choice of
   // effort words.
   forms: ModelForm[];
+  // The name has more readings than can be compared cheaply.
+  overflow: boolean;
   versionUnknown: boolean;
 }
+
+// Readings past this many make a name too costly to compare, and such a name
+// counts as the same as any other, which only ever blocks a review. Real
+// names have a handful; a valid 120-character name can otherwise have
+// thousands.
+const MAX_MODEL_FORMS = 128;
 
 // Lowercase alphanumeric runs, the pieces a model key is made of.
 const modelTokens = (value: string): string[] =>
@@ -405,35 +415,54 @@ const modelForms = (value: string): ModelForms => {
       ? [splitWords(rest.slice(0, field.index))]
       : []),
   ].filter((base) => base.length > 0);
-  const named = [...bases, ...bases.flatMap(withoutTrailingSettings)].flatMap(
-    (base) => [
-      base,
-      ...effortDrops(effortWords(base))
-        .map((dropped) => base.filter((_word, index) => !dropped.has(index)))
-        .filter((kept) => kept.length > 0),
-    ]
+  const expanded = [...bases, ...bases.flatMap(withoutTrailingSettings)].map(
+    (base) => ({ base, effort: effortWords(base) })
   );
+  const readings = expanded.reduce(
+    (total, { effort }) =>
+      total + 2 + (effort.variable.length * (effort.variable.length + 1)) / 2,
+    1
+  );
+  if (readings > MAX_MODEL_FORMS) {
+    return { forms: [], overflow: true, versionUnknown: false };
+  }
+  const named = expanded.flatMap(({ base, effort }) => [
+    base,
+    ...effortDrops(effort)
+      .map((dropped) => base.filter((_word, index) => !dropped.has(index)))
+      .filter((kept) => kept.length > 0),
+  ]);
   const form = (formWords: readonly string[]): ModelForm => {
-    const wordTokens = formWords
-      .map(modelTokens)
-      .filter((tokens) => tokens.length > 0);
+    const wordKeys = formWords
+      .map((word) => modelTokens(word))
+      .filter((tokens) => tokens.length > 0)
+      .map((tokens) => tokens.join(""));
+    const prefixes: string[] = [];
+    for (const word of wordKeys.slice(0, -1)) {
+      prefixes.push(`${prefixes.at(-1) ?? ""}${word}`);
+    }
     return {
-      tokens: wordTokens.flat(),
-      words: wordTokens.map((tokens) => tokens.join("")),
+      key: wordKeys.join(""),
+      prefixes,
+      tokens: formWords.flatMap((word) => modelTokens(word)),
     };
   };
-  const forms = [
-    form(value.toLowerCase().split(MODEL_WORD_SEPARATORS)),
-    ...named.map(form),
-  ].filter(
-    (candidate, index, all) =>
-      candidate.tokens.length > 0 &&
-      all.findIndex(
-        (other) => other.words.join(" ") === candidate.words.join(" ")
-      ) === index
-  );
+  const seen = new Set<string>();
+  const forms: ModelForm[] = [];
+  for (const formWords of [
+    value.toLowerCase().split(MODEL_WORD_SEPARATORS),
+    ...named,
+  ]) {
+    const candidate = form(formWords);
+    const identity = `${candidate.prefixes.length}:${candidate.key}:${candidate.prefixes.join(" ")}`;
+    if (candidate.key !== "" && !seen.has(identity)) {
+      seen.add(identity);
+      forms.push(candidate);
+    }
+  }
   return {
     forms,
+    overflow: false,
     versionUnknown: qualifiers.some((qualifier) =>
       MODEL_UNKNOWN_QUALIFIER.test(qualifier)
     ),
@@ -459,21 +488,14 @@ const familyMatch = (family: string[], other: string[]): boolean =>
 // other name, a family prefix allowed: the words after it read as notes,
 // such as `budget: 32768`. A version is part of its word, so `gpt-6` never
 // spells the start of `gpt-6.1-sol`, nor `Model 5` of `Model 5.5`.
-const leadingWordsMatch = (name: ModelForm, other: ModelForm): boolean => {
-  const otherKey = other.tokens.join("");
-  return name.words.slice(0, -1).some((_, index) =>
-    name.words
-      .slice(0, index + 1)
-      .join("")
-      .endsWith(otherKey)
-  );
-};
+const leadingWordsMatch = (name: ModelForm, other: ModelForm): boolean =>
+  name.prefixes.some((prefix) => prefix.endsWith(other.key));
 
 const formsMatch = (left: ModelForms, right: ModelForms): boolean =>
   left.forms.some((leftForm) =>
     right.forms.some((rightForm) => {
-      const leftKey = leftForm.tokens.join("");
-      const rightKey = rightForm.tokens.join("");
+      const leftKey = leftForm.key;
+      const rightKey = rightForm.key;
       return (
         leftKey === rightKey ||
         leftKey.endsWith(rightKey) ||
@@ -508,6 +530,9 @@ const formsMatch = (left: ModelForms, right: ModelForms): boolean =>
 export const sameModelName = (left: string, right: string): boolean => {
   const leftForms = modelForms(left);
   const rightForms = modelForms(right);
+  if (leftForms.overflow || rightForms.overflow) {
+    return true;
+  }
   if (leftForms.forms.length === 0 || rightForms.forms.length === 0) {
     return left.trim().toLowerCase() === right.trim().toLowerCase();
   }

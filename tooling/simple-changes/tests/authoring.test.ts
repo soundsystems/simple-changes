@@ -1124,6 +1124,21 @@ describe("model identity", () => {
     }
   });
 
+  test("a name with too many readings to compare cheaply counts as the same, fast", () => {
+    const left =
+      "id-5 low max high low high max max low high high low max high max low low max high low max a 1 a 1 a 1 a 1 a 1 a 1";
+    const right =
+      "xx-5 low max high low high max max low high high low max high max low low max high low max a 1 a 1 a 1 a 1 a 1";
+    const started = performance.now();
+    expect(sameModelName(left, right)).toBe(true);
+    expect(sameModelName(right, left)).toBe(true);
+    // Just under the cap, a name is still compared, and quickly.
+    const near = `model-5 ${Array.from({ length: 14 }, () => "high").join(" ")}`;
+    expect(sameModelName(near, "model-6")).toBe(false);
+    expect(sameModelName(near, "model-5")).toBe(true);
+    expect(performance.now() - started).toBeLessThan(1000);
+  });
+
   test("a real version or variant difference stays distinct", () => {
     const distinct: [string, string][] = [
       ["Claude Opus 5", "Claude Opus 5.5"],

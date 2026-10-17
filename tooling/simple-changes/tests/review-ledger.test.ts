@@ -1951,6 +1951,18 @@ describe("proposal ledger commands", () => {
     expect(modelIdReasonHint("author-identity-missing")).toContain(
       "--complete-identity"
     );
+    expect(modelIdReasonHint("author-identity-missing")).toContain(
+      "--instance"
+    );
+    // Following the hint without the recorded instance completes nothing.
+    const { instance: _, ...withoutInstance } = owner;
+    expect(() =>
+      attestCommits({
+        ...withoutInstance,
+        agent: "gpt-6.1-sol",
+        completeIdentity: true,
+      })
+    ).toThrow("identity-completion-unmatched");
     // A reviewer label is refused too, with its own reason.
     attestCommits({ ...owner, agent: "gpt-6.1-sol", completeIdentity: true });
     recordAuthors();

@@ -197,7 +197,8 @@ nothing is reconstructed later. Record it whatever `proposalSignatures` says:
    If an earlier attestation of yours on that commit lacked an instance or
    model ID your harness reports now, a display name included, run the same
    command again from the same
-   session, with the same `--agent-id`, the values reported now, and
+   session, with the same `--agent-id`, the values reported now (with
+   `--instance` whenever the earlier record has one), and
    `--complete-identity`. The ledger keeps every record and adds a
    completion naming the earlier ones, which then stop counting as separate
    authors, though any reviewer they ruled out as the same executor stays

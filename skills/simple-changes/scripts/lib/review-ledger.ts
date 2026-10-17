@@ -2283,7 +2283,7 @@ export const reviewLoopStatus = (
 export const modelIdReasonHint = (reason: string | null): string | null => {
   switch (reason) {
     case "author-identity-missing":
-      return "An author of this head has no recorded model ID. That author runs `simple-changes author attest --commit <sha> --agent-id <id> --agent <model ID> --complete-identity` from the same session, with the model ID its agent reports, such as `model-5-5`.";
+      return "An author of this head has no recorded model ID. That author runs `simple-changes author attest --commit <sha> --agent-id <id> --agent <model ID> [--instance <instance>] --complete-identity` from the same session, with the model ID its agent reports, such as `model-5-5`, and `--instance` whenever its earlier attestation recorded one, since a completion keeps every instance already recorded.";
     case "reviewer-identity-missing":
       return "The reviewer reported no model ID. Review again, recording in `verified.agent` the model ID the reviewer's agent reports, such as `model-5-5`, not a display name or an effort label.";
     case "reviewer-model-id-missing":

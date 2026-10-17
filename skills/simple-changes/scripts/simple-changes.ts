@@ -4432,16 +4432,15 @@ const runLoopCommand = async (options: CliOptions): Promise<void> => {
   );
 };
 
-const automationSummary = (probe: CoordinationCapabilityProbe): string => {
-  if (!probe.automatic) {
-    return "manual fallback required";
-  }
-  if (probe.capabilities.conditions.length > 0) {
-    return "available once the host verifies the probe conditions";
-  }
-  return "available";
-};
+// The runtime never delivers: an automatable profile only means a controller
+// may use a delivery tool its own host verifiably has for this owner.
+const automationSummary = (probe: CoordinationCapabilityProbe): string =>
+  probe.adapterSupportsAutomation
+    ? "never by this runtime; a controller may deliver requests only through a delivery tool its own host verifiably has for this owner, after checking every probe condition"
+    : "manual fallback required";
 
+// The request is constructed here and never sent; the output says so in
+// both forms, with the next step for the host or the user.
 const runWorktreeRequest = (options: CliOptions): void => {
   const state = readWorktreeCoordination(options.repo);
   const claimId = requireCliOption(options.claimId, "--claim-id");
@@ -4466,14 +4465,15 @@ const runWorktreeRequest = (options: CliOptions): void => {
   const request = buildCoordinationRequest(
     requestAction,
     claim,
-    requireCliOption(options.runId, "--run-id")
+    requireCliOption(options.runId, "--run-id"),
+    readLeaseFromCommonDirectory(
+      locateRepository(options.repo).repository.commonGitDirectory
+    )
   );
   writeOutput(
     { capabilityProbe, request },
     options.json,
-    capabilityProbe.automatic
-      ? `${request.safeMessage}\n`
-      : `${capabilityProbe.blocker?.manualNextAction}\n`
+    `Constructed, not sent: ${request.safeMessage}\nNext: ${capabilityProbe.blocker.manualNextAction}\n`
   );
 };
 

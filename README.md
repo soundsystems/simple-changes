@@ -439,12 +439,17 @@ force while retaining its branch at the exact HEAD, and `worktree attach`
 recreates only that recorded branch and path.
 
 Host integrations must probe their capabilities before automating owner
-contact. `worktree request` returns the portable bounded request, a capability
-profile listing the exact conditions the host layer must verify before
-automating, and any structured manual blocker, without changing coordination or
-Git state. Codex desktop task tooling and qualifying same-host Claude Code
-installations (cross-session messaging enabled on macOS or Linux) can support
-exact discovery, delivery, and waiting once every probe condition is verified;
+contact. `worktree request` returns the portable bounded request in state
+`constructed`, the owner adapter's capability profile listing the exact
+conditions the host layer must verify before automating, and a structured
+blocker, without sending anything or changing coordination or Git state. The
+runtime cannot see the executing host's delivery tools, so `automatic` is
+always false and an automatable profile returns a `host-transport-unverified`
+blocker: deliver through a tool your own host verifiably has for that exact
+owner, or relay the message, then wait for the owner's exact pause receipt.
+Codex desktop task tooling and qualifying same-host Claude Code installations
+(cross-session messaging enabled on macOS or Linux) can support exact
+discovery, delivery, and waiting once the host verifies every probe condition;
 native-Windows and cross-machine Claude Code sessions return a manual blocker.
 Cursor Cloud/SDK, Hermes TUI gateway, and controller-owned Grok Build sessions
 are supported only within their proven scopes. Every other mode returns a

@@ -244,7 +244,12 @@
 - Harness automation is capability-gated. An unsupported discovery, delivery,
   wait, scope, or owner-reference requirement produces a structured manual
   blocker and no repository mutation. Vendor APIs and credentials never enter
-  the upstream runtime or durable coordination metadata.
+  the upstream runtime or durable coordination metadata. A coordination
+  request is only ever constructed: the runtime cannot see the executing
+  host's delivery tools, so its probe is never automatic, an automatable
+  owner profile carries a `host-transport-unverified` blocker, delivery is
+  never recorded, and only the owner's exact pause receipt acknowledges a
+  request, which is built only for the active run.
 - Missing onboarding defaults to checked proposal creation and confirmation
   before completed-work handoff.
 - A meaningful guidance-version change blocks the next write-capable mutation

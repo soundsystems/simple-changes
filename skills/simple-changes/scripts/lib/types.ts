@@ -1172,12 +1172,27 @@ export interface CoordinationRequest {
   };
   runId: string;
   safeMessage: string;
+  /**
+   * Always `constructed`: the runtime builds the request and sends nothing.
+   * Delivery is the executing host's own act, never recorded here, and only
+   * the owner's exact pause receipt acknowledges a pause or detach request.
+   */
+  state: "constructed";
 }
 
 export interface CoordinationBlocker {
   adapter: string;
-  capability: "discovery" | "delivery" | "wait" | "scope" | "owner-ref";
-  code: "manual-coordination-required" | "unsupported-capability";
+  capability:
+    | "discovery"
+    | "delivery"
+    | "wait"
+    | "scope"
+    | "owner-ref"
+    | "transport";
+  code:
+    | "manual-coordination-required"
+    | "unsupported-capability"
+    | "host-transport-unverified";
   manualNextAction: string;
   scope: CoordinationScope;
 }

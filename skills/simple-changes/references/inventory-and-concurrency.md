@@ -670,7 +670,7 @@ inventory smaller; release it because the work is complete, verified, and
 committed on its branch. `worktree status --json` lists every claim, pause
 receipt, and recorded release reason; `worktree request` builds the
 adapter-shaped pause, detach, or resume message for one exact owner and sends
-nothing by itself.
+nothing by itself: the request's `state` is always `constructed`.
 
 Finalization also releases claims by evidence, never by elapsed time: the
 controller's own active claim on a clean checkout whose exact head the
@@ -709,6 +709,21 @@ Harness support is not uniform. The host orchestration layer must probe exact
 discovery, delivery, waiting, scope, and worktree-identity capabilities before
 sending a request. Missing capability returns the structured manual next step;
 it never selects an owner from a title or weak hint.
+
+The probe reports the owner adapter's nominal profile, never the executing
+host's tools, which the runtime cannot see. It is never `automatic`. A profile
+that could be automated returns `adapterSupportsAutomation: true` with a
+`host-transport-unverified` blocker, so a constructed request is not evidence
+that the owner received anything. Deliver it only through a delivery tool
+your own host actually has for that exact owner, after verifying every listed
+condition, or relay it yourself or through the user. Report a missing,
+refused, or held delivery as a blocker; never retry it automatically.
+Delivery is never recorded. Only the owner's exact pause receipt acknowledges
+a pause or detach request, binding the claim, run, path, branch, HEAD, and
+digest, and a request is built only for the active run that will accept it.
+While you wait, keep shipping unrelated units. No fallback edits another
+session's checkout, restores its branch, writes a pause receipt for it, or
+weakens a guard.
 
 ## Exact overrides
 

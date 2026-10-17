@@ -385,6 +385,25 @@ describe("ready-work author coverage preflight", () => {
       replays: [source],
       repositoryPath: path,
     });
+    // The destination's own identical record, completed there, stays
+    // completed even though the source still carries the same identity.
+    attestCommits({
+      commits: [replayed],
+      environment: { CLAUDE_CODE_SESSION_ID: "session-a" },
+      logicalId: "author",
+      repositoryPath: path,
+    });
+    expect(
+      authorCoverage(path, "main", replayed).incompleteIdentities
+    ).toMatchObject([{ commit: replayed, completable: true }]);
+    attestCommits({
+      agent: "model-alpha",
+      commits: [replayed],
+      completeIdentity: true,
+      environment: { CLAUDE_CODE_SESSION_ID: "session-a" },
+      logicalId: "author",
+      repositoryPath: path,
+    });
     const later = commitFile(path, "b.txt", "b\n");
     expect(authorCoverage(path, "main", later)).toMatchObject({
       incompleteIdentities: [],

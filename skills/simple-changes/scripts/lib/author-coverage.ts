@@ -3,7 +3,6 @@ import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
 import { locateRepository } from "./inventory.ts";
 import { runGit } from "./process.ts";
 import {
-  type Attestation,
   type CommitGaps,
   type HeadCoverage,
   headCoverage,
@@ -188,38 +187,19 @@ const outstandingItems = (
 const hasReportedModel = (agent: string | null): boolean =>
   agent !== null && agent.trim() !== "" && agent.trim() !== MOST_CAPABLE;
 
-const identityKey = (attestation: Attestation): string =>
-  JSON.stringify([
-    attestation.instance,
-    attestation.session,
-    attestation.harness,
-    attestation.agent,
-    attestation.logicalId,
-  ]);
-
 // Only a commit's own attestations that still count are listed: one a
 // destination inherits from a replay source belongs to that source, and
-// `--complete-identity` applies only on the commit that carries it.
+// `--complete-identity` applies only on the commit that carries it. Resolving
+// the ledger without its replay links leaves each commit's own effective
+// authors, with every recorded completion already applied.
 const incompleteIdentities = (
   ledger: ReviewLedger,
-  commits: readonly string[],
-  coverage: HeadCoverage
-): IncompleteAttestation[] =>
-  commits.flatMap((commit) => {
-    const effective = new Set(
-      (Object.hasOwn(coverage.authors, commit)
-        ? (coverage.authors[commit] ?? [])
-        : []
-      ).map(identityKey)
-    );
-    const own = Object.hasOwn(ledger.attestations, commit)
-      ? (ledger.attestations[commit] ?? [])
-      : [];
-    return own
-      .filter(
-        (author) =>
-          effective.has(identityKey(author)) && !hasReportedModel(author.agent)
-      )
+  commits: readonly string[]
+): IncompleteAttestation[] => {
+  const own = headCoverage({ ...ledger, replays: {} }, commits).authors;
+  return commits.flatMap((commit) =>
+    (Object.hasOwn(own, commit) ? (own[commit] ?? []) : [])
+      .filter((author) => !hasReportedModel(author.agent))
       .map((author) => ({
         commit,
         completable:
@@ -227,8 +207,9 @@ const incompleteIdentities = (
           author.harness !== null &&
           author.logicalId !== null,
         logicalId: author.logicalId,
-      }));
-  });
+      }))
+  );
+};
 
 const coverageOf = (
   cwd: string,
@@ -261,7 +242,7 @@ const coverageOf = (
     commits,
     gaps: coverage.gaps,
     head,
-    incompleteIdentities: incompleteIdentities(state.ledger, commits, coverage),
+    incompleteIdentities: incompleteIdentities(state.ledger, commits),
     ledger,
     outstanding,
     status: outstanding.length === 0 ? "covered" : "incomplete",

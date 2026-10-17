@@ -1749,11 +1749,18 @@ const recoverAppliedTakeoverIntent = (
   if (!intent) {
     return null;
   }
+  // An earlier takeover by the same agent and approver leaves the same owner,
+  // so a reassign counts as applied only when the claim also records this
+  // intent's exact checkout state, and a release only when a takeover
+  // released it. Anything else runs the full checks again.
   const applied =
     intent.action === "release"
-      ? claim.state === "released"
+      ? claim.state === "released" && claim.releaseReason === "takeover"
       : claim.owner.agentId === intent.newAgentId &&
-        claim.owner.ownerRef === `takeover:${intent.approvedBy}`;
+        claim.owner.ownerRef === `takeover:${intent.approvedBy}` &&
+        claim.branch === intent.branch &&
+        claim.headSha === intent.headSha &&
+        claim.changeDigest === intent.changeDigest;
   if (!applied) {
     return null;
   }

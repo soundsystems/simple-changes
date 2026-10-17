@@ -22,6 +22,7 @@ import {
   pauseClaimedWorktree,
   readWorktreeCoordination,
   readWorktreeTakeovers,
+  releaseWorktreeClaim,
   takeoverWorktreeClaim,
   type WorktreeTakeoverOptions,
 } from "../../../skills/simple-changes/scripts/lib/worktree-coordination.ts";
@@ -456,6 +457,125 @@ describe("active-controller recovery of a vanished concurrent author", () => {
     claimPauseAccept(author);
     expect(verifyLoop(fixture.root).ok).toBe(true);
     expectScopeOpenAndOneController(author);
+  });
+});
+
+describe("takeover intent recovery", () => {
+  test("a second takeover by the same agent and approver is not mistaken for the first", () => {
+    const fixture = repository();
+    const worktree = join(fixture.base, "taken-twice");
+    git(fixture.root, ["worktree", "add", "-b", "taken-twice", worktree]);
+    const claim = claimWorktree(
+      fixture.root,
+      "vanished-owner",
+      worktree,
+      "codex",
+      "gone-thread"
+    );
+    const optionsAt = (
+      current: WorktreeInventory
+    ): WorktreeTakeoverOptions => ({
+      action: "reassign",
+      approvedBy: "the-user",
+      claimId: claim.claimId,
+      expectedBranch: current.branch,
+      expectedHeadSha: current.headSha ?? "",
+      expectedStatusDigest: current.changeDigest,
+      newAgentId: "rescuer",
+      reason: "The owner no longer exists.",
+      repositoryPath: fixture.root,
+    });
+    const first = worktreeAt(fixture.root, worktree);
+    takeoverWorktreeClaim(optionsAt(first));
+
+    // The checkout moves, and a second approved takeover of the new state is
+    // interrupted after its durable intent.
+    commit(worktree, "later.ts", "export const later = true;\n");
+    const second = worktreeAt(fixture.root, worktree);
+    process.env.SIMPLE_CHANGES_TEST_FAIL_AFTER_TAKEOVER_INTENT = claim.claimId;
+    try {
+      expect(() => takeoverWorktreeClaim(optionsAt(second))).toThrow(
+        "durable takeover intent"
+      );
+    } finally {
+      Reflect.deleteProperty(
+        process.env,
+        "SIMPLE_CHANGES_TEST_FAIL_AFTER_TAKEOVER_INTENT"
+      );
+    }
+
+    // If the checkout moves again, the retry is refused: the earlier
+    // takeover's owner marker does not prove this one applied.
+    commit(worktree, "again.ts", "export const again = true;\n");
+    expect(() => takeoverWorktreeClaim(optionsAt(second))).toThrow(
+      "re-observe the worktree"
+    );
+    git(worktree, ["reset", "--hard", "HEAD~1"]);
+
+    const retried = takeoverWorktreeClaim(optionsAt(second));
+    expect(retried.receipt).toMatchObject({
+      headSha: second.headSha,
+      phase: "completed",
+    });
+    expect(
+      readWorktreeCoordination(fixture.root).claims.find(
+        (item) => item.claimId === claim.claimId
+      )
+    ).toMatchObject({ headSha: second.headSha, owner: { agentId: "rescuer" } });
+    expect(
+      readWorktreeTakeovers(
+        captureInventory(fixture.root).repository.commonGitDirectory
+      ).map((receipt) => [receipt.headSha, receipt.phase])
+    ).toEqual([
+      [first.headSha, "completed"],
+      [second.headSha, "completed"],
+    ]);
+  });
+
+  test("a release intent completes only when a takeover released the claim", () => {
+    const fixture = repository();
+    const worktree = join(fixture.base, "released-meanwhile");
+    git(fixture.root, [
+      "worktree",
+      "add",
+      "-b",
+      "released-meanwhile",
+      worktree,
+    ]);
+    const claim = claimWorktree(fixture.root, "owner", worktree, "codex");
+    const current = worktreeAt(fixture.root, worktree);
+    const options: WorktreeTakeoverOptions = {
+      action: "release",
+      approvedBy: "the-user",
+      claimId: claim.claimId,
+      expectedBranch: current.branch,
+      expectedHeadSha: current.headSha ?? "",
+      expectedStatusDigest: current.changeDigest,
+      newAgentId: "rescuer",
+      reason: "The owner no longer exists.",
+      repositoryPath: fixture.root,
+    };
+    process.env.SIMPLE_CHANGES_TEST_FAIL_AFTER_TAKEOVER_INTENT = claim.claimId;
+    try {
+      expect(() => takeoverWorktreeClaim(options)).toThrow(
+        "durable takeover intent"
+      );
+    } finally {
+      Reflect.deleteProperty(
+        process.env,
+        "SIMPLE_CHANGES_TEST_FAIL_AFTER_TAKEOVER_INTENT"
+      );
+    }
+    // The owner turned out to be alive and released the claim itself.
+    releaseWorktreeClaim(fixture.root, "owner", claim.claimId);
+    expect(() => takeoverWorktreeClaim(options)).toThrow(
+      "only a live claim can be taken over"
+    );
+    expect(
+      readWorktreeTakeovers(
+        captureInventory(fixture.root).repository.commonGitDirectory
+      ).map((receipt) => receipt.phase)
+    ).toEqual(["intent"]);
   });
 });
 

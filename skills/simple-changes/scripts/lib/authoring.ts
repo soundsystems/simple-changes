@@ -88,12 +88,51 @@ export interface AuthoringHarnessEntry {
   model: string;
 }
 
+/** Which review findings move later reviews of a change to the escalation effort. */
+export type ReviewEscalationTrigger = "blocking-or-should-fix" | "any";
+
+/**
+ * How a review loop escalates and when it stops to ask. Every field is
+ * optional in a sidecar, and an absent field is the recommended value, so a
+ * setup that keeps the recommendations writes no key a runtime before 0.31.0
+ * rejects.
+ */
+export interface ReviewLoopSettings {
+  // Consecutive rounds with blocking or should-fix findings before the
+  // controller questions the approach; null turns the check off.
+  convergenceRounds?: number | null;
+  escalateOn?: ReviewEscalationTrigger;
+  // Escalated rounds without a clean result before the controller asks the
+  // user how to proceed; null means no cap.
+  roundCap?: number | null;
+}
+
+export interface ResolvedReviewLoop {
+  convergenceRounds: number | null;
+  escalateOn: ReviewEscalationTrigger;
+  roundCap: number | null;
+}
+
+export const REVIEW_LOOP_DEFAULTS: ResolvedReviewLoop = {
+  convergenceRounds: 2,
+  escalateOn: "blocking-or-should-fix",
+  roundCap: 4,
+};
+const REVIEW_ESCALATION_TRIGGERS: readonly ReviewEscalationTrigger[] = [
+  "blocking-or-should-fix",
+  "any",
+];
+const REVIEW_LOOP_KEYS = ["convergenceRounds", "escalateOn", "roundCap"];
+const CONVERGENCE_ROUNDS_MAX = 10;
+const ROUND_CAP_MAX = 20;
+
 export interface AuthoringRoleEntry {
   adversarial?: boolean;
   effort?: AuthoringEffort;
   escalateOnFindings?: "high" | "xhigh" | null;
   harness: string;
   model?: string;
+  reviewLoop?: ReviewLoopSettings;
 }
 
 export interface AuthoringSidecar {
@@ -136,6 +175,7 @@ export interface ResolvedAuthoringRole {
 export interface ResolvedReviewRole extends ResolvedAuthoringRole {
   adversarial: boolean;
   escalateOnFindings: "high" | "xhigh" | null;
+  reviewLoop: ResolvedReviewLoop;
 }
 
 export interface AuthoringFieldSource {
@@ -152,6 +192,7 @@ export interface AuthoringFieldSource {
 export interface AuthoringReviewFieldSource extends AuthoringFieldSource {
   adversarial: AuthoringLayer;
   escalateOnFindings: AuthoringLayer;
+  reviewLoop: AuthoringLayer;
 }
 
 export interface RepositoryAuthoring {
@@ -604,7 +645,14 @@ const roleErrors = (
     ...unknownKeys(
       value,
       review
-        ? ["harness", "model", "effort", "adversarial", "escalateOnFindings"]
+        ? [
+            "harness",
+            "model",
+            "effort",
+            "adversarial",
+            "escalateOnFindings",
+            "reviewLoop",
+          ]
         : ["harness", "model", "effort"],
       path
     ),
@@ -642,8 +690,99 @@ const roleErrors = (
   ) {
     errors.push(`${path}.escalateOnFindings must be high, xhigh, or null`);
   }
+  if (review && Object.hasOwn(value, "reviewLoop")) {
+    errors.push(...reviewLoopErrors(value.reviewLoop, `${path}.reviewLoop`));
+  }
   return errors;
 };
+
+const roundsError = (value: unknown, max: number, path: string): string[] =>
+  value === null ||
+  (Number.isInteger(value) &&
+    (value as number) >= 1 &&
+    (value as number) <= max)
+    ? []
+    : [`${path} must be a whole number from 1 to ${max}, or null`];
+
+const reviewLoopErrors = (value: unknown, path: string): string[] => {
+  if (!isRecord(value)) {
+    return [`${path} must be an object`];
+  }
+  const errors = unknownKeys(value, REVIEW_LOOP_KEYS, path);
+  if (
+    Object.hasOwn(value, "escalateOn") &&
+    !(REVIEW_ESCALATION_TRIGGERS as readonly unknown[]).includes(
+      value.escalateOn
+    )
+  ) {
+    errors.push(`${path}.escalateOn must be blocking-or-should-fix or any`);
+  }
+  if (Object.hasOwn(value, "convergenceRounds")) {
+    errors.push(
+      ...roundsError(
+        value.convergenceRounds,
+        CONVERGENCE_ROUNDS_MAX,
+        `${path}.convergenceRounds`
+      )
+    );
+  }
+  if (Object.hasOwn(value, "roundCap")) {
+    errors.push(
+      ...roundsError(value.roundCap, ROUND_CAP_MAX, `${path}.roundCap`)
+    );
+  }
+  return errors;
+};
+
+/** A review loop's settings with every absent field at its recommended value. */
+export const resolveReviewLoop = (
+  value: ReviewLoopSettings | undefined
+): ResolvedReviewLoop => ({
+  convergenceRounds:
+    value?.convergenceRounds === undefined
+      ? REVIEW_LOOP_DEFAULTS.convergenceRounds
+      : value.convergenceRounds,
+  escalateOn: value?.escalateOn ?? REVIEW_LOOP_DEFAULTS.escalateOn,
+  roundCap:
+    value?.roundCap === undefined
+      ? REVIEW_LOOP_DEFAULTS.roundCap
+      : value.roundCap,
+});
+
+// The stricter of two review loops: any finding escalates over severity
+// alone, and a smaller threshold stops sooner than a larger one or none.
+const stricterRounds = (
+  left: number | null,
+  right: number | null
+): number | null => {
+  if (left === null) {
+    return right;
+  }
+  return right === null ? left : Math.min(left, right);
+};
+
+const stricterReviewLoop = (
+  saved: ResolvedReviewLoop,
+  requested: ResolvedReviewLoop
+): ResolvedReviewLoop => ({
+  convergenceRounds: stricterRounds(
+    saved.convergenceRounds,
+    requested.convergenceRounds
+  ),
+  escalateOn:
+    saved.escalateOn === "any" || requested.escalateOn === "any"
+      ? "any"
+      : "blocking-or-should-fix",
+  roundCap: stricterRounds(saved.roundCap, requested.roundCap),
+});
+
+const sameReviewLoop = (
+  left: ResolvedReviewLoop,
+  right: ResolvedReviewLoop
+): boolean =>
+  left.convergenceRounds === right.convergenceRounds &&
+  left.escalateOn === right.escalateOn &&
+  left.roundCap === right.roundCap;
 
 const harnessEntryErrors = (id: string, value: unknown): string[] => {
   const path = `harnesses.${id}`;
@@ -1164,6 +1303,7 @@ export const resolveAuthoringRole = (
     escalateOnFindings: entry.escalateOnFindings ?? null,
     harness,
     model,
+    reviewLoop: resolveReviewLoop(entry.reviewLoop),
     status,
   };
   return {
@@ -1175,6 +1315,7 @@ export const resolveAuthoringRole = (
       harness: roleSource.layer,
       model: modelSource.layer,
       path: highestPath([effortSource, roleSource, modelSource]),
+      reviewLoop: entry.reviewLoop === undefined ? "default" : roleSource.layer,
     },
   };
 };
@@ -1217,6 +1358,16 @@ export const resolveRequestedRole = (
     loosensAdversarial || requestRole?.adversarial === undefined;
   const keepsFloor =
     loosensFloor || requestRole?.escalateOnFindings === undefined;
+  // A request tightens only the loop fields it names; an omitted field, or
+  // an omitted loop, leaves the saved value as it is.
+  const reviewLoop = stricterReviewLoop(saved.effective.reviewLoop, {
+    ...saved.effective.reviewLoop,
+    ...requestRole?.reviewLoop,
+  } as ResolvedReviewLoop);
+  // The request's loop is in force only where it tightened the saved one.
+  const keepsReviewLoop =
+    requestRole?.reviewLoop === undefined ||
+    sameReviewLoop(reviewLoop, saved.effective.reviewLoop);
   const source = {
     ...requested.source,
     adversarial: keepsAdversarial
@@ -1225,6 +1376,9 @@ export const resolveRequestedRole = (
     escalateOnFindings: keepsFloor
       ? saved.source.escalateOnFindings
       : requested.source.escalateOnFindings,
+    reviewLoop: keepsReviewLoop
+      ? saved.source.reviewLoop
+      : requested.source.reviewLoop,
   };
   // The file named is the highest file layer among the fields in force; the
   // gate fields count for the review role only.
@@ -1233,7 +1387,7 @@ export const resolveRequestedRole = (
     source.harness,
     source.model,
     ...(role === "review"
-      ? [source.adversarial, source.escalateOnFindings]
+      ? [source.adversarial, source.escalateOnFindings, source.reviewLoop]
       : []),
   ];
   return {
@@ -1244,6 +1398,7 @@ export const resolveRequestedRole = (
       escalateOnFindings: loosensFloor
         ? saved.effective.escalateOnFindings
         : requested.effective.escalateOnFindings,
+      reviewLoop,
     },
     source: { ...source, path: highestFilePath(inForce, fileLayers) },
   };

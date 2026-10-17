@@ -31,6 +31,19 @@ export type HandoffAction =
 
 export type PolicyTrust = "not-required" | "trusted" | "untrusted";
 
+/**
+ * Where an optional instruction-file rule stands in the repository's AGENTS.md
+ * or CLAUDE.md and the harnesses' global files.
+ */
+export interface InstructionRuleReport {
+  targets: Array<{
+    path: string;
+    refreshCommand: string | null;
+    scope: "repository" | "user";
+    status: "absent" | "current" | "invalid" | "stale";
+  }>;
+}
+
 export interface InitializationStatus {
   /** Effective authoring roles with each field's layer (design 2.3). */
   authoring?: {
@@ -82,6 +95,11 @@ export interface InitializationStatus {
   resolvedMode: RequestMode | null;
   /** The review role resolved before dispatch (provisional or verified). */
   reviewer?: ReviewerResolution;
+  /**
+   * The optional review-loop rule, reported like `scratchFileRule`: a
+   * `stale` block carries the command that rewrites it in place.
+   */
+  reviewLoopRule?: InstructionRuleReport | null;
   /** Whether the running runtime is older than the target branch's copy. */
   runtimeFreshness?: {
     message: string | null;
@@ -97,14 +115,7 @@ export interface InitializationStatus {
    * `stale` block, written by an older release, carries the command that
    * rewrites it in place with the user's agreement.
    */
-  scratchFileRule?: {
-    targets: Array<{
-      path: string;
-      refreshCommand: string | null;
-      scope: "repository" | "user";
-      status: "absent" | "current" | "invalid" | "stale";
-    }>;
-  } | null;
+  scratchFileRule?: InstructionRuleReport | null;
   shippingMode: RepoPolicy["shippingMode"];
   /** The detected harness's turn-end Stop hook, or null outside a harness. */
   turnEndGuard?: {

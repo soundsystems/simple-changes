@@ -175,9 +175,11 @@ import {
   discoverGlobalInstructionTargets,
   discoverInstructionTargets,
   discoverRepositoryInstructionTargets,
+  type InstructionRule,
   type InstructionTarget,
-  inspectScratchFileRule,
+  inspectInstructionRule,
   writeInstructionPointer,
+  writeInstructionRule,
   writeScratchFileRule,
 } from "./lib/repository-instructions.ts";
 import {
@@ -198,7 +200,7 @@ import {
   runtimeFreshness,
 } from "./lib/runtime-freshness.ts";
 import { SCHEMA_NAMES, validateSchema } from "./lib/schema.ts";
-import { refreshScratchFileRule } from "./lib/scratch-file-rule.ts";
+import { refreshInstructionRule } from "./lib/scratch-file-rule.ts";
 import {
   addShipHold,
   assertShipHoldsClear,
@@ -314,7 +316,7 @@ Usage:
     [--proposal-signatures agent-and-version|none]
     [--handoff ask|automatic|user-signaled]
     [--instruction-pointer add|leave] [--instruction-file PATH]
-    [--scratch-file-rule add|leave]
+    [--scratch-file-rule add|leave] [--review-loop-rule add|leave]
     [--ui-artifacts]
     [--ui-versioning repository|number-and-date|date-only|number-only]
     [--production ask|allow|deny]
@@ -334,7 +336,7 @@ Usage:
     [--proposal-signatures agent-and-version|none]
     [--handoff ask|automatic|user-signaled]
     [--instruction-pointer add|leave] [--instruction-file PATH]
-    [--scratch-file-rule add|leave]
+    [--scratch-file-rule add|leave] [--review-loop-rule add|leave]
     [--ui-artifacts]
     [--ui-versioning repository|number-and-date|date-only|number-only]
     [--production ask|allow|deny]
@@ -467,6 +469,8 @@ Usage:
   simple-changes workdir remove PATH [--json] [--repo PATH]
   simple-changes scratch-file-rule refresh --instruction-file PATH
     [--json] [--repo PATH]
+  simple-changes review-loop-rule refresh --instruction-file PATH
+    [--json] [--repo PATH]
   simple-changes release-notes [--check] [--json] [--repo PATH] [--version VERSION]
   simple-changes negotiate-changelog CAPABILITIES_FILE [--json]
   simple-changes validate-changelog-transaction REQUEST_FILE RECEIPT_FILE [--prior-receipt FILE] [--json]
@@ -596,6 +600,7 @@ interface CliOptions {
   repoProvided: boolean;
   requestAction?: "request-pause" | "request-detach" | "notify-resume";
   requestPath?: string;
+  reviewLoopRule?: "add" | "leave";
   roots: string[];
   runId?: string;
   scope?: SetupScope;
@@ -657,6 +662,7 @@ const VALUED_OPTIONS = new Set([
   "--instruction-file",
   "--instruction-pointer",
   "--scratch-file-rule",
+  "--review-loop-rule",
   "--manifest-digest",
   "--migration-handling",
   "--migration-target",
@@ -854,6 +860,7 @@ const applyHandoffOption = (
 // Each managed instruction block is added or left alone.
 const INSTRUCTION_BLOCK_OPTIONS = {
   "--instruction-pointer": "instructionPointer",
+  "--review-loop-rule": "reviewLoopRule",
   "--scratch-file-rule": "scratchFileRule",
 } as const;
 
@@ -1745,7 +1752,9 @@ const setupNeedsPrompt = (
       (instructionTargetCount === 1 &&
         options.instructionPointer === "add" &&
         options.handoffTiming)) &&
-    (instructionTargetCount <= 1 || options.scratchFileRule !== "add") &&
+    (instructionTargetCount <= 1 ||
+      (options.scratchFileRule !== "add" &&
+        options.reviewLoopRule !== "add")) &&
     options.yes
   );
 
@@ -1844,6 +1853,7 @@ const SETUP_INPUT_KEYS = [
   "proposalSignatures",
   "productionDeploy",
   "questions",
+  "reviewLoopRule",
   "scope",
   "scratchFileRule",
   "shippingMode",
@@ -1873,6 +1883,9 @@ const buildOnboardingInputs = (
   // Optional: automation that never names it keeps its instructions as-is.
   if (!(inputs.scratchFileRule || needsPrompt)) {
     inputs.scratchFileRule = "leave";
+  }
+  if (!(inputs.reviewLoopRule || needsPrompt)) {
+    inputs.reviewLoopRule = "leave";
   }
   return inputs;
 };
@@ -2066,6 +2079,8 @@ const runSetup = async (options: CliOptions): Promise<void> => {
     const applyWrites = (): {
       instructionPointerChanged: boolean;
       instructionPointerWritten: boolean;
+      reviewLoopRuleChanged: boolean;
+      reviewLoopRuleWritten: boolean;
       scratchFileRuleChanged: boolean;
       scratchFileRuleWritten: boolean;
     } => {
@@ -2103,6 +2118,20 @@ const runSetup = async (options: CliOptions): Promise<void> => {
         scratchFileRuleWritten = ruleResult.written;
         scratchFileRuleChanged = ruleResult.changed;
       }
+      let reviewLoopRuleWritten = false;
+      let reviewLoopRuleChanged = false;
+      if (
+        selection.confirmed &&
+        selection.reviewLoopRule.action === "add" &&
+        selection.reviewLoopRule.target
+      ) {
+        const ruleResult = writeInstructionRule(
+          selection.reviewLoopRule.target,
+          "review-loop"
+        );
+        reviewLoopRuleWritten = ruleResult.written;
+        reviewLoopRuleChanged = ruleResult.changed;
+      }
       if (written && path) {
         writePolicyFile(path, policy, selection.scope === "user");
         if (selection.scope === "repository" && context.primaryCheckout) {
@@ -2118,6 +2147,8 @@ const runSetup = async (options: CliOptions): Promise<void> => {
       return {
         instructionPointerChanged,
         instructionPointerWritten,
+        reviewLoopRuleChanged,
+        reviewLoopRuleWritten,
         scratchFileRuleChanged,
         scratchFileRuleWritten,
       };
@@ -2166,6 +2197,11 @@ const runSetup = async (options: CliOptions): Promise<void> => {
       },
       path,
       policy,
+      reviewLoopRule: {
+        ...selection.reviewLoopRule,
+        changed: writeResult.reviewLoopRuleChanged,
+        written: writeResult.reviewLoopRuleWritten,
+      },
       scope: selection.scope,
       scratchFileRule: {
         ...selection.scratchFileRule,
@@ -2392,6 +2428,9 @@ const appendAuthoring = (
   }
   if (status.reviewer) {
     lines.push(describeReviewer(status.reviewer));
+    if (status.reviewer.loop?.message) {
+      lines.push(`Review loop: ${status.reviewer.loop.message}`);
+    }
   }
   const requested = requestedAuthoringFields(status);
   if (requested.length > 0) {
@@ -2419,22 +2458,32 @@ const requestedAuthoringFields = (status: InitializationStatus): string[] => {
   return fields;
 };
 
-// Names only the scratch-file blocks that need the user: a stale one with
-// its refresh command, a malformed one to repair by hand.
-const renderScratchFileRuleTargets = (status: InitializationStatus): string[] =>
-  (status.scratchFileRule?.targets ?? []).flatMap((target) => {
+// Names only the rule blocks that need the user: a stale one with its
+// refresh command, a malformed one to repair by hand.
+const renderInstructionRuleTargets = (
+  label: string,
+  report: InitializationStatus["scratchFileRule"]
+): string[] =>
+  (report?.targets ?? []).flatMap((target) => {
     if (target.status === "stale") {
       return [
-        `Scratch-file rule: stale in ${target.path}; with the user's agreement, run \`${target.refreshCommand}\``,
+        `${label}: stale in ${target.path}; with the user's agreement, run \`${target.refreshCommand}\``,
       ];
     }
     if (target.status === "invalid") {
       return [
-        `Scratch-file rule: malformed managed block in ${target.path}; repair it by hand`,
+        `${label}: malformed managed block in ${target.path}; repair it by hand`,
       ];
     }
     return [];
   });
+
+const renderScratchFileRuleTargets = (
+  status: InitializationStatus
+): string[] => [
+  ...renderInstructionRuleTargets("Scratch-file rule", status.scratchFileRule),
+  ...renderInstructionRuleTargets("Review-loop rule", status.reviewLoopRule),
+];
 
 const renderInitialization = (status: InitializationStatus): string => {
   const lines = [
@@ -2529,17 +2578,24 @@ type ScratchFileRuleTarget = NonNullable<
   InitializationStatus["scratchFileRule"]
 >["targets"][number];
 
-const scratchFileRuleRefreshCommand = (
+const RULE_REFRESH_COMMANDS: Record<InstructionRule, string> = {
+  "review-loop": "review-loop-rule",
+  "scratch-files": "scratch-file-rule",
+};
+
+const instructionRuleRefreshCommand = (
+  rule: InstructionRule,
   target: InstructionTarget,
   repositoryPath: string
 ): string =>
-  `${shellWord(process.execPath)} ${shellWord(SCRIPT_FILE)} scratch-file-rule refresh --instruction-file ${shellWord(target.path)} --repo ${shellWord(repositoryPath)}`;
+  `${shellWord(process.execPath)} ${shellWord(SCRIPT_FILE)} ${RULE_REFRESH_COMMANDS[rule]} refresh --instruction-file ${shellWord(target.path)} --repo ${shellWord(repositoryPath)}`;
 
 // Reported, never rewritten, by initialize: a block an older release wrote
 // keeps its text until the user agrees to the refresh. Each file is
 // discovered and inspected on its own, so one that cannot be inspected is
 // left out without hiding its siblings or failing initialization.
-const initializationScratchFileRule = (
+const initializationInstructionRule = (
+  rule: InstructionRule,
   primaryCheckout: string | null,
   repositoryPath: string
 ): InitializationStatus["scratchFileRule"] => {
@@ -2549,9 +2605,9 @@ const initializationScratchFileRule = (
   ];
   const inspected: ScratchFileRuleTarget[] = [];
   for (const target of targets) {
-    let status: ReturnType<typeof inspectScratchFileRule>;
+    let status: ReturnType<typeof inspectInstructionRule>;
     try {
-      status = inspectScratchFileRule(target);
+      status = inspectInstructionRule(target, rule);
     } catch {
       continue;
     }
@@ -2559,7 +2615,7 @@ const initializationScratchFileRule = (
       path: target.path,
       refreshCommand:
         status === "stale"
-          ? scratchFileRuleRefreshCommand(target, repositoryPath)
+          ? instructionRuleRefreshCommand(rule, target, repositoryPath)
           : null,
       scope: target.scope,
       status,
@@ -2717,6 +2773,11 @@ const runInitialize = async (options: CliOptions): Promise<void> => {
       ? { claimId: handoffClaimRelease.claimId, path: handoffClaimRelease.path }
       : null,
     reviewer,
+    reviewLoopRule: initializationInstructionRule(
+      "review-loop",
+      inventory.repository.primaryCheckout,
+      options.repo
+    ),
     runtimeFreshness: runtimeFreshness(
       {
         targetRef: inventory.targetRef,
@@ -2725,7 +2786,8 @@ const runInitialize = async (options: CliOptions): Promise<void> => {
       VERSION,
       SCRIPT_FILE
     ),
-    scratchFileRule: initializationScratchFileRule(
+    scratchFileRule: initializationInstructionRule(
+      "scratch-files",
       inventory.repository.primaryCheckout,
       options.repo
     ),
@@ -5277,25 +5339,32 @@ const runWorkDirectory = async (options: CliOptions): Promise<void> => {
   writeOutput({ agentId, bound, workDir: path }, options.json, `${path}\n`);
 };
 
-// Rewrites one stale scratch-file block in place; `refreshScratchFileRule`
-// locates and classifies the target under the loop state lock.
-const runScratchFileRule = (options: CliOptions): void => {
+// Rewrites one stale rule block in place; `refreshInstructionRule` locates
+// and classifies the target under the loop state lock.
+const runInstructionRule = (
+  options: CliOptions,
+  rule: InstructionRule
+): void => {
+  const command = RULE_REFRESH_COMMANDS[rule];
+  const name =
+    rule === "review-loop" ? "review-loop rule" : "scratch-file rule";
   if (options.positional[0] !== "refresh") {
     throw new SimpleChangesError(
-      "scratch-file-rule takes the action refresh",
+      `${command} takes the action refresh`,
       EXIT_CODES.usage
     );
   }
-  const result = refreshScratchFileRule(
+  const result = refreshInstructionRule(
     locateWorkDirectoryRepository(options.repo),
-    requireCliOption(options.instructionFile, "--instruction-file")
+    requireCliOption(options.instructionFile, "--instruction-file"),
+    rule
   );
   writeOutput(
     result,
     options.json,
     result.written
-      ? `Rewrote the scratch-file rule in ${result.path}\n`
-      : `The scratch-file rule in ${result.path} is current\n`
+      ? `Rewrote the ${name} in ${result.path}\n`
+      : `The ${name} in ${result.path} is current\n`
   );
 };
 
@@ -5517,7 +5586,10 @@ const executeCommand = async (
       await runWorkDirectory(options);
       return EXIT_CODES.success;
     case "scratch-file-rule":
-      runScratchFileRule(options);
+      runInstructionRule(options, "scratch-files");
+      return EXIT_CODES.success;
+    case "review-loop-rule":
+      runInstructionRule(options, "review-loop");
       return EXIT_CODES.success;
     case "author":
       runAuthorCommand(options);

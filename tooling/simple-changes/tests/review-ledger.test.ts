@@ -24,6 +24,7 @@ import { spawnSync } from "bun";
 import {
   type AuthoringSidecar,
   MOST_CAPABLE,
+  REVIEW_LOOP_DEFAULTS,
   type RepositoryAuthoring,
   type ResolvedAuthoringRole,
   type ResolvedReviewRole,
@@ -54,6 +55,7 @@ import {
   type CoverageWaiver,
   emptyReviewLedger,
   escalatedEffort,
+  escalatingAttempt,
   evaluateReviewAcceptance,
   headCoverage,
   heldLoopLock,
@@ -71,6 +73,7 @@ import {
   reviewApproval,
   reviewDisclosure,
   reviewLedgerPath,
+  reviewLoopStatus,
   reviewSignatureAgent,
   validateReviewLedger,
   verifyReplay,
@@ -279,6 +282,7 @@ const stubAuthoring = (
         escalateOnFindings: null,
         harness: "codex",
         model: "model-beta",
+        reviewLoop: REVIEW_LOOP_DEFAULTS,
         status: "resolved",
         ...review,
       },
@@ -1370,6 +1374,154 @@ describe("post-return gate and approval", () => {
     expect(validateReviewLedger(ledger).reason).toBeNull();
   });
 
+  test("only blocking or should-fix findings escalate, and ungraded findings still do", () => {
+    const graded = (blocking: number, shouldFix: number, nit: number) => ({
+      severities: { blocking, nit, shouldFix },
+      verdict: "findings" as const,
+    });
+    expect(escalatingAttempt(graded(0, 0, 2), "blocking-or-should-fix")).toBe(
+      false
+    );
+    expect(escalatingAttempt(graded(0, 1, 2), "blocking-or-should-fix")).toBe(
+      true
+    );
+    expect(escalatingAttempt(graded(1, 0, 0), "blocking-or-should-fix")).toBe(
+      true
+    );
+    expect(escalatingAttempt(graded(0, 0, 2), "any")).toBe(true);
+    // A reviewer that did not grade its findings escalates as before.
+    expect(
+      escalatingAttempt({ verdict: "findings" }, "blocking-or-should-fix")
+    ).toBe(true);
+    expect(
+      escalatingAttempt({ verdict: "clean" }, "blocking-or-should-fix")
+    ).toBe(false);
+    expect(escalatedEffort("high", "xhigh", [graded(0, 0, 3)])).toEqual({
+      effort: "high",
+      effortSource: "configured",
+    });
+    expect(escalatedEffort("high", "xhigh", [graded(0, 0, 3)], "any")).toEqual({
+      effort: "xhigh",
+      effortSource: "escalation",
+    });
+    expect(
+      escalatedEffort("high", "xhigh", [graded(0, 0, 3), graded(0, 1, 0)])
+    ).toEqual({ effort: "xhigh", effortSource: "escalation" });
+  });
+
+  test("the loop status counts rounds since the last clean review and only says when to ask", () => {
+    let minute = 0;
+    const round = (
+      verdict: "clean" | "findings" | "failed",
+      severities?: { blocking: number; nit: number; shouldFix: number },
+      accepted = true
+    ) => {
+      minute += 1;
+      return {
+        accepted,
+        recordedAt: `2026-10-17T10:${String(minute).padStart(2, "0")}:00.000Z`,
+        verdict,
+        ...(severities ? { severities } : {}),
+      };
+    };
+    const blocking = { blocking: 1, nit: 0, shouldFix: 0 };
+    const nits = { blocking: 0, nit: 2, shouldFix: 0 };
+    const loop = REVIEW_LOOP_DEFAULTS;
+    expect(reviewLoopStatus([], loop)).toEqual({
+      consecutiveEscalatingRounds: 0,
+      convergenceCheck: "not-due",
+      message: null,
+      roundCap: "not-reached",
+      roundsSinceEscalation: 0,
+    });
+    // Two escalating rounds in a row: question the approach.
+    const twice = [round("findings", blocking), round("findings")];
+    expect(reviewLoopStatus(twice, loop)).toMatchObject({
+      consecutiveEscalatingRounds: 2,
+      convergenceCheck: "due",
+      roundCap: "not-reached",
+      roundsSinceEscalation: 1,
+    });
+    expect(reviewLoopStatus(twice, loop).message).toContain(
+      "stop patching, say whether the approach itself is the problem"
+    );
+    // A nit-only round ends the run; a failed review is no round.
+    const broken = [...twice, round("failed"), round("findings", nits)];
+    expect(reviewLoopStatus(broken, loop)).toMatchObject({
+      consecutiveEscalatingRounds: 0,
+      convergenceCheck: "not-due",
+      roundsSinceEscalation: 2,
+    });
+    // Four rounds after the first escalating finding reach the cap.
+    const capped = [...broken, round("findings", blocking), round("findings")];
+    expect(reviewLoopStatus(capped, loop)).toMatchObject({
+      convergenceCheck: "due",
+      roundCap: "reached",
+      roundsSinceEscalation: 4,
+    });
+    expect(reviewLoopStatus(capped, loop).message).toContain(
+      "ask the user whether to ship with the open findings filed as issues, change the design, or keep reviewing"
+    );
+    // The ledger's append order decides, never the timestamps: rounds
+    // recorded after a clean review count even when their recordedAt, in
+    // another valid format, sorts before it.
+    const appended = [
+      { ...round("clean"), recordedAt: "2026-10-17T10:00:00Z" },
+      {
+        ...round("findings", blocking),
+        recordedAt: "2026-10-17T10:00:00.100Z",
+      },
+      {
+        ...round("findings", blocking),
+        recordedAt: "2026-10-17T10:00:00.200Z",
+      },
+    ];
+    expect(reviewLoopStatus(appended, loop)).toMatchObject({
+      consecutiveEscalatingRounds: 2,
+      convergenceCheck: "due",
+      roundsSinceEscalation: 1,
+    });
+    // A clean review the gate rejected (a self-review, a stale head) carries
+    // no evidence: it is no round, so every count and check stays as it was.
+    expect(
+      reviewLoopStatus([...capped, round("clean", undefined, false)], loop)
+    ).toEqual(reviewLoopStatus(capped, loop));
+    expect(
+      reviewLoopStatus([...twice, round("clean", undefined, false)], loop)
+    ).toEqual(reviewLoopStatus(twice, loop));
+    // A rejected review with findings still counts: the findings are real.
+    expect(
+      reviewLoopStatus([...twice, round("findings", blocking, false)], loop)
+    ).toMatchObject({ consecutiveEscalatingRounds: 3 });
+    // An accepted clean review starts over, and either check can be off.
+    expect(reviewLoopStatus([...capped, round("clean")], loop)).toMatchObject({
+      consecutiveEscalatingRounds: 0,
+      roundCap: "not-reached",
+      roundsSinceEscalation: 0,
+    });
+    expect(
+      reviewLoopStatus(capped, {
+        ...loop,
+        convergenceRounds: null,
+        roundCap: null,
+      })
+    ).toMatchObject({
+      convergenceCheck: "off",
+      message: null,
+      roundCap: "off",
+    });
+    // Under escalateOn "any", nits escalate and keep the run going, and the
+    // message says findings, not blocking or should-fix ones.
+    const anyFinding = reviewLoopStatus(broken, { ...loop, escalateOn: "any" });
+    expect(anyFinding).toMatchObject({
+      consecutiveEscalatingRounds: 3,
+      convergenceCheck: "due",
+    });
+    expect(anyFinding.message).toStartWith(
+      "3 review rounds in a row reported findings:"
+    );
+  });
+
   test("escalation is a floor driven by verdict, never above xhigh by itself", () => {
     const findings = [{ verdict: "findings" as const }];
     expect(escalatedEffort("xhigh", "high", findings)).toEqual({
@@ -2186,6 +2338,167 @@ describe("proposal ledger commands", () => {
     expect(
       readFileSync(reviewLedgerPath(commonDirectory(run.root)), "utf8")
     ).toBe(ledgerBefore);
+  });
+
+  test("record-review stores graded findings, refuses severities that do not add up, and reports the loop", () => {
+    const run = preparedRun();
+    const commit = commitFile(run.author, "a.txt", "a\n");
+    attestAsA(run.author, [commit]);
+    recordProposalAuthors({
+      base: run.base,
+      environment: ENV_A,
+      head: commit,
+      proposalId: PROPOSAL,
+      repositoryPath: run.author,
+    });
+    const graded = reviewReceipt(REVIEWER_B, {
+      effort: "high",
+      findingsCount: 3,
+      requested: { effort: "high", harness: "codex", model: "model-beta" },
+      severities: { blocking: 0, nit: 2, shouldFix: 1 },
+      verdict: "findings",
+    });
+    const record = (body: unknown, id = randomUUID()) =>
+      recordReviewAttempt({
+        attemptId: id,
+        authoring: stubAuthoring({ adversarial: true }),
+        head: commit,
+        proposalId: PROPOSAL,
+        receipt: body,
+        repositoryPath: run.author,
+      });
+    for (const [body, error] of [
+      [
+        { ...graded, severities: { blocking: 0, nit: 1, shouldFix: 1 } },
+        "add up to findingsCount",
+      ],
+      [
+        {
+          ...reviewReceipt(REVIEWER_B),
+          severities: { blocking: 0, nit: 0, shouldFix: 0 },
+        },
+        "for a findings verdict only",
+      ],
+      [
+        { ...graded, severities: { blocking: 0, nit: 2, shouldFix: 1, x: 0 } },
+        "receipt.severities.x",
+      ],
+      [{ ...graded, severities: { nit: 3 } }, "receipt.severities.blocking"],
+    ] as const) {
+      expect(() => record(body)).toThrow(error);
+    }
+    const attemptId = randomUUID();
+    const first = record(graded, attemptId);
+    expect(first.attempt.severities).toEqual({
+      blocking: 0,
+      nit: 2,
+      shouldFix: 1,
+    });
+    // The grading is part of the payload: a retry must carry the same one.
+    expect(record(graded, attemptId).status).toBe("unchanged");
+    const { severities: _graded, ...ungraded } = graded as Record<
+      string,
+      unknown
+    >;
+    expect(() => record(ungraded, attemptId)).toThrow("different payload");
+    const ledger = readReviewLedger(commonDirectory(run.root));
+    expect(ledger.state).toBe("valid");
+    const schema = JSON.parse(readFileSync(schemaPath, "utf8")) as Record<
+      string,
+      unknown
+    >;
+    expect(() =>
+      validateSchemaDocument("review-ledger", schema, ledger.ledger)
+    ).not.toThrow();
+    // The schema, like the runtime, grades findings only: a clean attempt
+    // carrying severities is refused by both.
+    const cleanGraded = structuredClone(ledger.ledger);
+    const [stored] = cleanGraded.proposals[PROPOSAL]?.attempts ?? [];
+    if (!stored) {
+      throw new Error("Expected the graded attempt.");
+    }
+    Object.assign(stored, {
+      findingsCount: 0,
+      severities: { blocking: 0, nit: 0, shouldFix: 0 },
+      verdict: "clean",
+    });
+    expect(() =>
+      validateSchemaDocument("review-ledger", schema, cleanGraded)
+    ).toThrow();
+    expect(validateReviewLedger(cleanGraded).reason).toBe("ledger-malformed");
+    // A should-fix finding escalates the next review and starts the loop.
+    const next = resolveReviewer({
+      authoring: stubAuthoring({
+        adversarial: true,
+        effort: "high",
+        escalateOnFindings: "xhigh",
+      }),
+      head: commit,
+      proposalId: PROPOSAL,
+      repositoryRoot: run.author,
+    });
+    expect(next).toMatchObject({
+      effort: "xhigh",
+      effortSource: "escalation",
+      loop: {
+        consecutiveEscalatingRounds: 1,
+        convergenceCheck: "not-due",
+        roundCap: "not-reached",
+        roundsSinceEscalation: 0,
+      },
+    });
+  });
+
+  test("a nit-only review does not escalate the next one", () => {
+    const run = preparedRun();
+    const commit = commitFile(run.author, "a.txt", "a\n");
+    attestAsA(run.author, [commit]);
+    recordProposalAuthors({
+      base: run.base,
+      environment: ENV_A,
+      head: commit,
+      proposalId: PROPOSAL,
+      repositoryPath: run.author,
+    });
+    recordReviewAttempt({
+      attemptId: randomUUID(),
+      authoring: stubAuthoring({ adversarial: true }),
+      head: commit,
+      proposalId: PROPOSAL,
+      receipt: reviewReceipt(REVIEWER_B, {
+        effort: "high",
+        findingsCount: 1,
+        requested: { effort: "high", harness: "codex", model: "model-beta" },
+        severities: { blocking: 0, nit: 1, shouldFix: 0 },
+        verdict: "findings",
+      }),
+      repositoryPath: run.author,
+    });
+    const settings = {
+      adversarial: true,
+      effort: "high" as const,
+      escalateOnFindings: "xhigh" as const,
+    };
+    expect(
+      resolveReviewer({
+        authoring: stubAuthoring(settings),
+        head: commit,
+        proposalId: PROPOSAL,
+        repositoryRoot: run.author,
+      })
+    ).toMatchObject({ effort: "high", effortSource: "configured" });
+    // Under escalateOn "any" the same nit escalates.
+    expect(
+      resolveReviewer({
+        authoring: stubAuthoring({
+          ...settings,
+          reviewLoop: { ...REVIEW_LOOP_DEFAULTS, escalateOn: "any" },
+        }),
+        head: commit,
+        proposalId: PROPOSAL,
+        repositoryRoot: run.author,
+      })
+    ).toMatchObject({ effort: "xhigh", effortSource: "escalation" });
   });
 
   test("record-review is idempotent on attemptId, refuses a conflicting payload, and keeps requested and verified apart", () => {

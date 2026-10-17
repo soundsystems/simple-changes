@@ -1377,7 +1377,7 @@ describe("Simple Changes skill contract", () => {
     );
     expect(normalizedSkill).toContain("`runtimeFreshness` as `behind-target`");
     expect(normalizedSkill).toContain(
-      "When it reports `scratchFileRule` as `stale`, offer once to run its `refreshCommand`."
+      "When it reports `scratchFileRule` or `reviewLoopRule` as `stale`, offer once to run its `refreshCommand`."
     );
     expect(cleanup).toContain("## Turn-end guard");
     expect(normalizedCleanup).toContain(

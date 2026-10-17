@@ -31,6 +31,9 @@ import {
   writeFixture,
 } from "./helpers.ts";
 
+const REVIEW_LOOP_BLOCK =
+  /<!-- simple-changes:review-loop:start -->[\s\S]*<!-- simple-changes:review-loop:end -->/u;
+
 const decoder = new TextDecoder();
 setDefaultTimeout(30_000);
 const testDirectory = dirname(fileURLToPath(import.meta.url));
@@ -2894,6 +2897,116 @@ while (!existsSync(process.env.SIMPLE_CHANGES_TEST_RELEASE_PATH)) {
     expect(readFileSync(resolve(fixture.root, "AGENTS.md"), "utf8")).toBe(
       "# Agent guidance\n"
     );
+  });
+
+  test("adds the review-loop rule only when setup names it, and initialize reports and refreshes it", () => {
+    const fixture = createTestRepository();
+    repositories.push(fixture);
+    writeFixture(fixture.root, "AGENTS.md", "# Agent guidance\n");
+    const home = resolve(fixture.base, "home");
+    writeFixture(home, ".codex/AGENTS.md", "# Global\n");
+    const env = {
+      ...process.env,
+      CLAUDE_CONFIG_DIR: resolve(home, ".claude"),
+      CODEX_HOME: resolve(home, ".codex"),
+      SIMPLE_CHANGES_HARNESS_ROOTS: home,
+    };
+    const cli = (args: string[]) =>
+      spawnSync(
+        [process.execPath, cliPath, ...args, "--json", "--repo", fixture.root],
+        { env, stderr: "pipe", stdout: "pipe" }
+      );
+    const setupWith = (extra: string[]) =>
+      cli([
+        "setup",
+        "--finish",
+        "review",
+        "--git-push-authorization",
+        "ask",
+        "--questions",
+        "blocking-only",
+        "--scope",
+        "repository",
+        "--instruction-pointer",
+        "leave",
+        ...extra,
+        "--yes",
+      ]);
+    const agentsPath = resolve(fixture.root, "AGENTS.md");
+    const omitted = setupWith([]);
+    expect(omitted.exitCode).toBe(0);
+    expect(JSON.parse(decoder.decode(omitted.stdout))).toMatchObject({
+      reviewLoopRule: { action: "leave", written: false },
+    });
+    expect(readFileSync(agentsPath, "utf8")).toBe("# Agent guidance\n");
+    const added = setupWith(["--review-loop-rule", "add"]);
+    expect(added.exitCode).toBe(0);
+    expect(JSON.parse(decoder.decode(added.stdout))).toMatchObject({
+      reviewLoopRule: { action: "add", changed: true, written: true },
+      scratchFileRule: { action: "leave", written: false },
+    });
+    expect(readFileSync(agentsPath, "utf8")).toContain(
+      "<!-- simple-changes:review-loop:start -->"
+    );
+    expect(setupWith(["--review-loop-rule", "later"]).exitCode).toBe(
+      EXIT_CODES.usage
+    );
+
+    // An older copy of the rule is reported with its refresh command.
+    writeFileSync(
+      agentsPath,
+      readFileSync(agentsPath, "utf8").replace(
+        REVIEW_LOOP_BLOCK,
+        "<!-- simple-changes:review-loop:start -->\nReview until clean.\n<!-- simple-changes:review-loop:end -->"
+      )
+    );
+    const reported = () =>
+      (
+        JSON.parse(
+          decoder.decode(cli(["initialize", "--mode", "preview"]).stdout)
+        ) as {
+          reviewLoopRule: {
+            targets: {
+              path: string;
+              refreshCommand: string | null;
+              status: string;
+            }[];
+          } | null;
+        }
+      ).reviewLoopRule?.targets ?? [];
+    const stale = reported().find((target) => target.path === agentsPath);
+    expect(stale).toMatchObject({ status: "stale" });
+    expect(stale?.refreshCommand).toContain(
+      `review-loop-rule refresh --instruction-file ${agentsPath}`
+    );
+    const refreshed = cli([
+      "review-loop-rule",
+      "refresh",
+      "--instruction-file",
+      agentsPath,
+    ]);
+    expect(refreshed.exitCode).toBe(0);
+    expect(JSON.parse(decoder.decode(refreshed.stdout))).toMatchObject({
+      changed: true,
+      status: "stale",
+      written: true,
+    });
+    expect(
+      reported().find((target) => target.path === agentsPath)
+    ).toMatchObject({ refreshCommand: null, status: "current" });
+    // A file without the rule is refused, never given one.
+    const globalPath = resolve(home, ".codex/AGENTS.md");
+    const absent = cli([
+      "review-loop-rule",
+      "refresh",
+      "--instruction-file",
+      globalPath,
+    ]);
+    expect(absent.exitCode).toBe(EXIT_CODES.usage);
+    expect(decoder.decode(absent.stderr)).toContain(
+      "setup --review-loop-rule add"
+    );
+    expect(readFileSync(globalPath, "utf8")).toBe("# Global\n");
   });
 
   test("refresh leaves a checkout's rule alone while a run holds the repository", () => {

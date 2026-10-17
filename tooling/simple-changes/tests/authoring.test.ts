@@ -36,6 +36,7 @@ import {
   loadHarnessDefinitions,
   packagedHarnessDataPath,
   parseAuthoringRequest,
+  REVIEW_LOOP_DEFAULTS,
   readAuthoringFile,
   resolveAuthoringRole,
   resolveRepositoryAuthoring,
@@ -167,6 +168,85 @@ const VALIDATION_TABLE: { name: string; valid: boolean; value: unknown }[] = [
     value: loose(
       {},
       { review: { escalateOnFindings: null, harness: "running" } }
+    ),
+  },
+  {
+    name: "a full review loop",
+    valid: true,
+    value: loose(
+      {},
+      {
+        review: {
+          harness: "running",
+          reviewLoop: { convergenceRounds: 3, escalateOn: "any", roundCap: 6 },
+        },
+      }
+    ),
+  },
+  {
+    name: "a review loop with its checks off",
+    valid: true,
+    value: loose(
+      {},
+      {
+        review: {
+          harness: "running",
+          reviewLoop: { convergenceRounds: null, roundCap: null },
+        },
+      }
+    ),
+  },
+  {
+    name: "an empty review loop",
+    valid: true,
+    value: loose({}, { review: { harness: "running", reviewLoop: {} } }),
+  },
+  {
+    name: "a review loop on proposals",
+    valid: false,
+    value: loose(
+      {},
+      { proposals: { harness: "running", reviewLoop: { escalateOn: "any" } } }
+    ),
+  },
+  {
+    name: "an unknown escalation trigger",
+    valid: false,
+    value: loose(
+      {},
+      { review: { harness: "running", reviewLoop: { escalateOn: "nit" } } }
+    ),
+  },
+  {
+    name: "a zero convergence check",
+    valid: false,
+    value: loose(
+      {},
+      { review: { harness: "running", reviewLoop: { convergenceRounds: 0 } } }
+    ),
+  },
+  {
+    name: "a round cap past the limit",
+    valid: false,
+    value: loose(
+      {},
+      { review: { harness: "running", reviewLoop: { roundCap: 21 } } }
+    ),
+  },
+  {
+    name: "a fractional round cap",
+    valid: false,
+    value: loose(
+      {},
+      { review: { harness: "running", reviewLoop: { roundCap: 2.5 } } }
+    ),
+  },
+  {
+    name: "an unknown review loop key",
+    valid: false,
+    value: loose(
+      {},
+      { review: { harness: "running", reviewLoop: { rounds: 2 } } }
     ),
   },
   {
@@ -413,6 +493,7 @@ describe("authoring resolution", () => {
       harness: "repository",
       model: "personal",
       path: "/repository/authoring.json",
+      reviewLoop: "default",
     });
     // The repository entry for beta-agent replaces the personal one whole.
     const review = resolveAuthoringRole(
@@ -426,6 +507,7 @@ describe("authoring resolution", () => {
       escalateOnFindings: "xhigh",
       harness: "beta-agent",
       model: "repo-beta",
+      reviewLoop: REVIEW_LOOP_DEFAULTS,
       status: "resolved",
     });
     expect(review.source).toEqual({
@@ -435,6 +517,7 @@ describe("authoring resolution", () => {
       harness: "personal",
       model: "repository",
       path: "/repository/authoring.json",
+      reviewLoop: "default",
     });
     // The same sidecars read from another running harness.
     expect(
@@ -515,6 +598,117 @@ describe("authoring resolution", () => {
   });
 });
 
+describe("the review loop settings", () => {
+  test("an absent field is the recommended value, and the role names its layer", () => {
+    const unset = resolveAuthoringRole(
+      "review",
+      [layer("repository", sidecar({}, { review: { harness: "running" } }))],
+      "alpha-agent"
+    );
+    expect(unset.effective.reviewLoop).toEqual({
+      convergenceRounds: 2,
+      escalateOn: "blocking-or-should-fix",
+      roundCap: 4,
+    });
+    expect(unset.source.reviewLoop).toBe("default");
+    const partial = resolveAuthoringRole(
+      "review",
+      [
+        layer(
+          "repository",
+          sidecar(
+            {},
+            {
+              review: {
+                harness: "running",
+                reviewLoop: { escalateOn: "any", roundCap: null },
+              },
+            }
+          )
+        ),
+      ],
+      "alpha-agent"
+    );
+    expect(partial.effective.reviewLoop).toEqual({
+      convergenceRounds: 2,
+      escalateOn: "any",
+      roundCap: null,
+    });
+    expect(partial.source.reviewLoop).toBe("repository");
+  });
+
+  test("a request only tightens the review loop", () => {
+    const saved = layer(
+      "repository",
+      sidecar(
+        {},
+        {
+          review: {
+            harness: "running",
+            reviewLoop: { convergenceRounds: 3, roundCap: null },
+          },
+        }
+      )
+    );
+    const request = (reviewLoop: Record<string, unknown>) =>
+      resolveRequestedRole(
+        "review",
+        [saved],
+        sidecar({}, {
+          review: { harness: "running", reviewLoop },
+        } as AuthoringSidecar["roles"]),
+        "alpha-agent"
+      );
+    // A smaller threshold, a cap where there was none, and "any" all tighten.
+    const tighter = request({
+      convergenceRounds: 5,
+      escalateOn: "any",
+      roundCap: 4,
+    });
+    expect(tighter.effective.reviewLoop).toEqual({
+      convergenceRounds: 3,
+      escalateOn: "any",
+      roundCap: 4,
+    });
+    expect(tighter.source.reviewLoop).toBe("request");
+    // Turning a check off or raising it never loosens the saved loop.
+    const looser = request({ convergenceRounds: null, roundCap: 20 });
+    expect(looser.effective.reviewLoop).toEqual({
+      convergenceRounds: 3,
+      escalateOn: "blocking-or-should-fix",
+      roundCap: 20,
+    });
+    // Only the cap, which the saved loop left unset, tightened.
+    expect(looser.source.reviewLoop).toBe("request");
+    const none = request({ convergenceRounds: null, roundCap: null });
+    expect(none.effective.reviewLoop).toEqual({
+      convergenceRounds: 3,
+      escalateOn: "blocking-or-should-fix",
+      roundCap: null,
+    });
+    expect(none.source.reviewLoop).toBe("repository");
+    // A request that names no loop, or only one of its fields, keeps the
+    // saved value of every field it leaves out.
+    const omitted = resolveRequestedRole(
+      "review",
+      [saved],
+      sidecar({}, { review: { effort: "high", harness: "running" } }),
+      "alpha-agent"
+    );
+    expect(omitted.effective.reviewLoop).toEqual({
+      convergenceRounds: 3,
+      escalateOn: "blocking-or-should-fix",
+      roundCap: null,
+    });
+    expect(omitted.source.reviewLoop).toBe("repository");
+    expect(request({ escalateOn: "any" }).effective.reviewLoop).toEqual({
+      convergenceRounds: 3,
+      escalateOn: "any",
+      roundCap: null,
+    });
+  });
+});
+
 describe("the request layer", () => {
   test("applies the request on top and only tightens the review gate", () => {
     const repository = layer(
@@ -552,6 +746,7 @@ describe("the request layer", () => {
       escalateOnFindings: "xhigh",
       harness: "beta-agent",
       model: "request-beta",
+      reviewLoop: REVIEW_LOOP_DEFAULTS,
       status: "resolved",
     });
     expect(tightened.source).toEqual({
@@ -561,6 +756,7 @@ describe("the request layer", () => {
       harness: "request",
       model: "request",
       path: null,
+      reviewLoop: "default",
     });
     // A request never loosens: a saved adversarial review and floor stay in
     // force, with their own layer, while the rest of the role is replaced.
@@ -599,6 +795,7 @@ describe("the request layer", () => {
       escalateOnFindings: "xhigh",
       harness: "beta-agent",
       model: "request-model",
+      reviewLoop: REVIEW_LOOP_DEFAULTS,
       status: "resolved",
     });
     expect(kept.source).toEqual({
@@ -608,6 +805,7 @@ describe("the request layer", () => {
       harness: "request",
       model: "request",
       path: "/repository/authoring.json",
+      reviewLoop: "default",
     });
     // Floors combine by the higher value in both directions.
     const floor = (
@@ -668,6 +866,7 @@ describe("the request layer", () => {
       harness: "request",
       model: "request",
       path: "/repository/authoring.json",
+      reviewLoop: "default",
     });
     expect(
       resolveRequestedRole(
@@ -721,6 +920,7 @@ describe("the request layer", () => {
       harness: "request",
       model: "personal",
       path: "/repository/authoring.json",
+      reviewLoop: "default",
     });
     expect(
       resolveRequestedRole(
@@ -1718,6 +1918,7 @@ describe("setup --authoring and initialize", () => {
       escalateOnFindings: "xhigh",
       harness: "claude-code",
       model: "review-model",
+      reviewLoop: REVIEW_LOOP_DEFAULTS,
       status: "resolved",
     });
     expect(withRequest.authoring.source.review).toEqual({
@@ -1727,6 +1928,7 @@ describe("setup --authoring and initialize", () => {
       harness: "request",
       model: "request",
       path: null,
+      reviewLoop: "default",
     });
     expect(withRequest.authoring.effective.proposals).toMatchObject({
       harness: "claude-code",

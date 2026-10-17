@@ -296,7 +296,7 @@ import {
   standaloneWorktreeCleanup,
 } from "./lib/worktree-maintenance.ts";
 
-const VERSION = "0.30.1";
+const VERSION = "0.31.0";
 const SCRIPT_FILE = fileURLToPath(import.meta.url);
 const PLAIN_SHELL_WORD_PATTERN = /^[\w./-]+$/u;
 const PACKAGE_ROOT = resolve(dirname(SCRIPT_FILE), "..");
@@ -498,7 +498,7 @@ Usage:
     [--base REF --head REF] [--changelog-receipt FILE] [--json] [--repo PATH]
   simple-changes proposal audit --file FILE [--template FILE] [--json]
   simple-changes proposal record-authors --proposal ID --base SHA --head SHA
-    [--receipt COPY_AUTHORS_FILE] [--instance ID] [--agent NAME]
+    [--receipt COPY_AUTHORS_FILE] [--instance ID] [--agent MODEL_ID]
     [--json] [--repo PATH]
   simple-changes proposal record-review --proposal ID --head SHA
     --attempt-id UUID --receipt ATTEMPT_FILE [--authoring-request JSON|@FILE]

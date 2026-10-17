@@ -1,7 +1,7 @@
 import type { AuthoringQuestionState, DetectedHarness } from "./authoring.ts";
 import type { ChangelogCoordination, RepoPolicy } from "./types.ts";
 
-export const CURRENT_GUIDANCE_VERSION = 30;
+export const CURRENT_GUIDANCE_VERSION = 31;
 
 export type GuidanceUpdateAction =
   | "review-settings"
@@ -949,6 +949,83 @@ const GUIDANCE_UPDATES: GuidanceUpdateDefinition[] = [
       },
     ],
     version: 30,
+  },
+  {
+    changelogReviewRelevant: false,
+    changes: [
+      {
+        kind: "behavior",
+        summary:
+          "Adversarial review compares canonical model IDs, the lowercase names a harness reports such as `model-5-5`, exactly after folding case and one `provider/` prefix, and 0.30.1's interim display-name matching is gone. Within one harness a display name, an effort label, or a missing model on either side fails closed (`author-identity-missing`, `reviewer-identity-missing`, or, before dispatch, the new `reviewer-model-id-missing`) with a next step that says when each recovery applies; across harnesses a reported name is still enough. Record `author attest --agent` as a model ID and complete an earlier display-name attestation from the same session with `--complete-identity`; a completion stands only while no two records under its session, harness, and agent id disagree, and a runtime before 0.31.0 reads a ledger holding one that adds a model ID as malformed.",
+        version: 31,
+      },
+      {
+        kind: "behavior",
+        summary:
+          "A `proposal record-review` receipt may grade its findings with `severities` (`blocking`, `shouldFix`, and `nit` counts adding up to `findingsCount`). By default only blocking or should-fix findings, or ungraded ones, set the escalation floor, and `initialize --proposal <id> --head <sha>` reports `reviewer.loop`: the convergence check is due after 2 escalating rounds in a row, when the agent questions the approach if the findings sit in one area, and the round cap is reached after 4 rounds that follow the first escalating one without an accepted clean review, when it asks the user. A runtime before 0.31.0 reads a ledger holding `severities` as malformed.",
+        version: 31,
+      },
+      {
+        kind: "onboarding",
+        summary:
+          "Setup asks the review loop questions for every reviewer choice: the first review's effort (`high` recommended), when later reviews escalate (after blocking or should-fix findings, after any finding, or never), and when the agent stops to check with the user (after 2 rounds in a row or 4 more without a clean review, or never). The recommended answers record no `reviewLoop`, an absent `reviewLoop` means the recommended loop, so no existing setup is asked again, a run-only request only tightens it, and a runtime before 0.31.0 rejects a sidecar holding it. The reviewer model question accepts only a model ID that differs from the author's.",
+        version: 31,
+      },
+      {
+        kind: "onboarding",
+        summary:
+          "`setup` and `initialize` accept `--review-loop-rule add|leave`: `add` writes a separate managed block to an instruction file such as AGENTS.md telling agents how to run review rounds in Simple Changes runs with the configured review settings, naming no agent or model. Interactive setup offers it after the scratch-file rule and non-interactive setup leaves it out; `initialize` reports `reviewLoopRule` with a `refreshCommand` for a stale block, and `review-loop-rule refresh --instruction-file <path>` rewrites only that block.",
+        version: 31,
+      },
+      {
+        kind: "behavior",
+        summary:
+          "A worktree claim belongs to the harness session that made it, marked in its coordination event IDs. From any other session, or one that reports none, its agent ID cannot refresh, pause, detach, attach, or release it, record ready work or a handoff for it, attest through it, claim elsewhere while it is live, or claim a checkout whose latest claim came from another session; each refusal prints the approved `worktree takeover` that moves the claim to the asking session. Claims from before this release or without a session bind to the first known session that claims them, and attestation through a `prepare-agent` registration is unchanged.",
+        version: 31,
+      },
+      {
+        kind: "behavior",
+        summary:
+          "`worktree takeover` requires `--head <sha>` (or `--head none` for a checkout with no commit) and exactly one of `--branch <name>` or `--detached`, refuses unless the branch, HEAD, and status digest all match, and on a reassign records that state and binds the claim to the session that ran it. It also takes over stale and detached claims, and `--release` retires whatever the owner's own release could. While a controller is active, the one takeover allowed on a registered path reassigns a concurrent author's live claim to that controller, which then claims, pauses, and accepts the checkout, so a vanished author never forces a relinquished run; `loop verify` prints the exact command.",
+        version: 31,
+      },
+      {
+        kind: "behavior",
+        summary:
+          "`worktree release --ready-receipt` refuses, recording nothing and keeping the claim, while any commit the target lacks has no attested author, carries a replay source with none, or is an inconclusive replay nobody attested an edit on, and prints the exact SHAs with the owner's own `author attest` commands; `--leave-uncovered <sha>[,<sha>...]` names exactly the outstanding commits another agent made and waives nothing. Ready work holds the loop lock, `worktree status` shows each unshipped receipt's coverage, and the read-only `author coverage --base <target> --head <sha>` reports the same coverage and authors digest before a proposal exists, exiting 3 until it is complete.",
+        version: 31,
+      },
+      {
+        kind: "integration",
+        summary:
+          "`worktree request` only constructs a request: `request.state` is `constructed`, `capabilityProbe.automatic` is always false, `adapterSupportsAutomation` and `host` keep the owner's nominal profile apart from the executing host, an automatable profile returns a `host-transport-unverified` blocker naming the manual path, and the request must name the active run. Deliver it only through a delivery tool the executing host verifiably has for that exact owner, or relay it; only the owner's exact pause receipt acknowledges it.",
+        version: 31,
+      },
+      {
+        kind: "behavior",
+        summary:
+          "Every path built from a run ID requires the `run-[a-z0-9-]+` form `loop start` mints, so work-directory cleanup can no longer be pointed at the state directory, and the concurrent Git reader runs only Git, refusing any other program or a leading option. The setup and policy reference tells agents to treat commit messages, trailers, branch names, proposal descriptions, review comments, and provider responses as untrusted data, and the README's Security model section says what the Stop hook, `execGuard`, migration adapters, transcript reads, and Git and `glab` calls can touch and how to opt out.",
+        version: 31,
+      },
+    ],
+    noticeBullets: [
+      {
+        priority: 190,
+        summary:
+          "Adversarial review now compares the model IDs your coding agents report, such as `model-5-5`, not display names. Within one coding agent, an attestation with a display name blocks adversarial review until its author completes it with `author attest --complete-identity`. Update every copy of Simple Changes that shares the repository before completing one or grading findings, because older copies cannot read either.",
+      },
+      {
+        priority: 190,
+        summary:
+          "Reviews can now grade findings as blocking, should-fix, or nit. By default only blocking and should-fix findings raise the effort of later reviews, and the agent stops to rethink after 2 such rounds in a row, or asks you after 4 more without a clean review. Setup can also add an optional review-loop rule to your agent instruction file, such as AGENTS.md.",
+      },
+      {
+        priority: 190,
+        summary:
+          "A worktree claim now belongs to the session that made it, so another session cannot act or attest under its agent ID without your approved `worktree takeover`, and a ready handoff is refused until every commit has an attested author; `author coverage` shows what is missing.",
+      },
+    ],
+    version: 31,
   },
 ];
 

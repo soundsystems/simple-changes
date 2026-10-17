@@ -4,12 +4,13 @@
 
 - Model identity (`lib/authoring.ts`, issue soundsystems/simple-changes#5):
   `sameModelName` now compares the forms `modelForms` derives from each
-  name (`ModelForms.forms`). Each `ModelForm` holds its `tokens` and its
-  `words`, each word's key in order. `modelTokens` lowercases a name and
-  splits it into alphanumeric runs, and a form's key is its tokens joined,
-  which is what the removed `modelKey` computed. The forms are the whole
-  name and, for each base, the base itself and the words left by each
-  choice of effort words to drop (next bullet). The bases are the words
+  name (`ModelForms.forms`). Each `ModelForm` holds its `tokens`, its
+  `key`, and its word `prefixes`, the keys of its leading whole words
+  short of the full form, both built once. `modelTokens` lowercases a name
+  and splits it into alphanumeric runs, and a form's key is its tokens
+  joined, which is what the removed `modelKey` computed. The forms are the
+  whole name and, for each base, the base itself and the words left by
+  each choice of effort words to drop (next bullet). The bases are the words
   (`splitWords`) once `withoutQualifiers` has removed parenthesised
   qualifiers; the words before the first `key:` or `key=` field label
   (`MODEL_FIELD_LABEL`), when it comes after at least one word; and each of
@@ -120,6 +121,16 @@
   `claude-opus-5-5`, and `Fable 5.1 (version unknown)` does not match
   `Fable 5.1.2`. Any matching pair of forms counts, so the heuristic still
   fails toward "same".
+- Cost bound: `modelForms` counts a name's readings before building them,
+  one for the whole name plus, for each base, two and one per contiguous
+  run of its variable words. A name past `MAX_MODEL_FORMS` (128) sets
+  `overflow`, and `sameModelName` then returns true against any other
+  name. That only ever blocks a review, though `reviewDisclosure` then
+  flags no model mismatch for such a name; real names have a handful of
+  readings. `leadingWordsMatch` scans the precomputed `prefixes`, and
+  forms are deduplicated on their key and prefixes. Two valid names of 114
+  and 110 characters packed with effort words and setting pairs took about
+  17 seconds to compare on the previous code; they now take milliseconds.
 - Before, an author's display label `GPT-6.1 Sol high` and a reviewer's
   `gpt-6.1-sol` had different keys, so `diversity` returned `distinct`
   within one harness and an adversarial `record-review` accepted a
@@ -130,7 +141,7 @@
   so names that share no form, such as `Astra medium` and `gpt-6.1-sol`,
   stay distinct. A follow-up commit makes the examples in the code comments
   vendor-neutral (`Model 5`, `model-max`).
-- Review fixes, in eight rounds. Round 1: the first version stripped
+- Review fixes, in nine rounds. Round 1: the first version stripped
   qualifiers in one pass, so `gpt-6.1-sol (reasoning (high))` kept a
   `reasoning` fragment and looked distinct from `gpt-6.1-sol`, and any
   qualifier containing the word `unknown` widened a name, so
@@ -195,7 +206,11 @@
   distinct, because `leadingWordsMatch` only compared an annotated name
   against a bare one, fixed by giving each name its field-label and
   trailing-settings bases, each passed through `effortDrops` like any
-  other.
+  other. Round 9 (should-fix, cost), the final review at xhigh: two valid
+  names packed with effort words and setting pairs took seconds to
+  compare, because their readings multiplied and every pair rebuilt word
+  prefixes, fixed by the reading count, `overflow`, and the precomputed
+  `key` and `prefixes`.
 - Every caller picks the new comparison up: `diversity` (acceptance in
   `record-review`), `targetDistinctness` in `resolveReviewer` before
   dispatch (now `reviewer-not-distinct` for a `gpt-6.1-sol xhigh` target
@@ -252,7 +267,11 @@
   `Fable (version unknown)` against `claude-fable-mini-5-1`,
   `gpt-5.1-codex-max high` against `gpt-5.1-codex xhigh`,
   `Example Model 5.5` against `Example 5.5`, and
-  `vendor coder-max high` against `vendor coder`.
+  `vendor coder-max high` against `vendor coder`. A separate test, "a name
+  with too many readings to compare cheaply counts as the same, fast",
+  checks that the round 9 names match in both orders and that a name just
+  under the cap, `model-5` with fourteen `high` words, still matches
+  `model-5` and not `model-6`, all within one second.
 - Tests: `onboarding.test.ts` adds `author-model xhigh` and
   `Author Model (version unknown)` to the variants `reviewModelProblem`
   rejects. `review-ledger.test.ts` blocks the `gpt-6.1-sol xhigh` target
@@ -332,7 +351,7 @@
   naming both paths, record-outcome refuses it, and the CLI exits 0 with the
   `Warning:` line on stderr.
 - Guidance stays at 30, with no guidance entry and no update notice.
-<!-- simple-changelogs-signature agent="Claude Opus 5.5 xhigh" at="2026-10-16T19:35:19-05:00" -->
+<!-- simple-changelogs-signature agent="Claude Opus 5.5 xhigh" at="2026-10-16T20:47:06-05:00" -->
 
 ## 0.30.0 - 2026-10-15
 

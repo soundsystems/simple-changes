@@ -1310,18 +1310,59 @@ const completionAnchor = (identity: AttestedIdentity): string | null => {
     : JSON.stringify([identity.session, harness, identity.logicalId]);
 };
 
+/**
+ * Whether two reported models could be one: equal model IDs when both carry
+ * one, and otherwise equal names when neither carries an ID. A display name
+ * beside an ID cannot be compared, so it never disagrees.
+ */
+const compatibleModels = (
+  left: string | null,
+  right: string | null
+): boolean => {
+  const leftId = reportedModelId(left);
+  const rightId = reportedModelId(right);
+  if (leftId !== null && rightId !== null) {
+    return leftId === rightId;
+  }
+  const leftName = reportedModel(left);
+  const rightName = reportedModel(right);
+  return (
+    leftId !== null ||
+    rightId !== null ||
+    leftName === null ||
+    rightName === null ||
+    leftName === rightName
+  );
+};
+
 /** Whether two identities could be one executor: no known instance or reported model disagrees. */
 const compatibleIdentities = (
   left: AttestedIdentity,
   right: AttestedIdentity
-): boolean => {
-  const leftModel = reportedModelId(left.agent);
-  const rightModel = reportedModelId(right.agent);
-  return (
-    (left.instance === null ||
-      right.instance === null ||
-      left.instance === right.instance) &&
-    (leftModel === null || rightModel === null || leftModel === rightModel)
+): boolean =>
+  (left.instance === null ||
+    right.instance === null ||
+    left.instance === right.instance) &&
+  compatibleModels(left.agent, right.agent);
+
+/**
+ * The records under the completer's anchor that disagree with the completer
+ * or with another record under it. Any disagreement means more than one
+ * executor used the anchor, so no record under it can be shown to be the
+ * completer's. Comparing each record only with the completer would miss two
+ * records that disagree with each other while the completer reports too
+ * little to disagree with either.
+ */
+const anchorConflicts = (
+  own: readonly Attestation[],
+  completer: AttestedIdentity
+): Attestation[] => {
+  const anchor = completionAnchor(completer);
+  const group = own.filter((entry) => completionAnchor(entry) === anchor);
+  return group.filter(
+    (entry) =>
+      !compatibleIdentities(entry, completer) ||
+      group.some((other) => !compatibleIdentities(entry, other))
   );
 };
 
@@ -1372,9 +1413,9 @@ const refinesIdentity = (
 /**
  * The attestations that count as a commit's own authors: every recorded one
  * except those a standing completion on the same commit names. A completion
- * stands only while no attestation from its anchor disagrees with the
- * completer: a second known instance or model under one session and agent
- * id means the anchor is shared, so the completed records count again. A
+ * stands only while no two records from its anchor, the completer included,
+ * disagree: a second known instance or model under one session and agent id
+ * means the anchor is shared, so the completed records count again. A
  * completion on one commit never touches another commit or a replay source.
  */
 const effectiveOwnAttestations = (
@@ -1394,11 +1435,7 @@ const effectiveOwnAttestations = (
     const stands =
       anchor !== null &&
       own.some((entry) => identityKey(entry) === identityKey(completion)) &&
-      own.every(
-        (entry) =>
-          completionAnchor(entry) !== anchor ||
-          compatibleIdentities(entry, completion)
-      );
+      anchorConflicts(own, completion).length === 0;
     if (stands) {
       for (const identity of completion.completes) {
         if (refinesIdentity(completion, identity)) {
@@ -3147,9 +3184,10 @@ const recordedIdentity = (identity: AttestedIdentity): AttestedIdentity => ({
 
 /**
  * The records `--complete-identity` completes on one commit. It refuses when
- * the executing session, harness or agent id is unknown, when another record
- * under that anchor reports a different instance or model (the anchor is
- * then shared, so whose the incomplete record was cannot be shown), and when
+ * the executing session, harness or agent id is unknown, when any two records
+ * under that anchor, the completer included, report a different instance or
+ * model (the anchor is then shared, so whose the incomplete record was cannot
+ * be shown), and when
  * no record from the anchor lacks what the executing agent now reports.
  */
 const completionTargets = (
@@ -3165,14 +3203,10 @@ const completionTargets = (
     );
   }
   const own = ownValue(ledger.attestations, commit) ?? [];
-  const conflicting = own.filter(
-    (entry) =>
-      completionAnchor(entry) === anchor &&
-      !compatibleIdentities(entry, completer)
-  );
+  const conflicting = anchorConflicts(own, completer);
   if (conflicting.length > 0) {
     throw new SimpleChangesError(
-      `identity-completion-conflict: ${commit} already has an attestation from this session and agent id with a different instance or model (${conflicting.map((entry) => `${entry.instance ?? "no instance"}, ${entry.agent ?? "no model"}`).join("; ")}), so more than one executor used them and the incomplete record cannot be shown to be yours. Ask the owner; nothing was recorded.`,
+      `identity-completion-conflict: ${commit} has attestations from this session and agent id that disagree on instance or model (${conflicting.map((entry) => `${entry.instance ?? "no instance"}, ${entry.agent ?? "no model"}`).join("; ")}), so more than one executor used them and the incomplete record cannot be shown to be yours. Ask the owner; nothing was recorded.`,
       EXIT_CODES.unsafe
     );
   }

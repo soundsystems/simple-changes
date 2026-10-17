@@ -206,9 +206,11 @@ nothing is reconstructed later. Record it whatever `proposalSignatures` says:
    attestation may complete it: a replacement agent reusing the agent id
    attests without the flag and stays a separate author. It is refused for
    a replay, without an executing session, when no record from your
-   session, harness, and agent id lacks what you report, and when one of
-   them names a different instance or model ID. Such a record appearing later
-   voids the completion.
+   session, harness, and agent id lacks what you report, and when any two
+   of those records, yours included, name a different instance or model.
+   Two model IDs differ when they are not equal, and two names without an ID
+   differ when they are not identical. Such a record appearing later voids
+   the completion.
 2. **After every rebase, cherry-pick, or squash**, attest each new commit with
    `--replays <old sha>[,<old sha>...]`. Add `--contribution implementation`
    whenever you changed the implementation while replaying; nothing infers

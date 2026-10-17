@@ -3716,6 +3716,43 @@ describe("identity completion", () => {
     }
   });
 
+  test("a completion stops standing when two other records under its anchor disagree, even though each agrees with a completer that reports little", () => {
+    const named = complete({ agent: "GPT-6.1 Sol", instance: null });
+    const cases: [Attestation, Attestation][] = [
+      [
+        complete({ agent: "gpt-6-sol", instance: "instance-a" }),
+        complete({ agent: "gpt-6-astra", instance: "instance-b" }),
+      ],
+      // Two names without IDs that differ are two reported models too.
+      [
+        complete({ agent: "Model A", instance: null }),
+        complete({ agent: "Model B", instance: null }),
+      ],
+    ];
+    const crossHarness: RuntimeIdentity = {
+      agent: "claude-opus-5-5",
+      harness: "claude-code",
+      instance: "reviewer-i",
+      session: "reviewer-s",
+    };
+    for (const [left, right] of cases) {
+      const ledger = ledgerWith(
+        [partial(), named, left, right],
+        [completion(named, [partial()])]
+      );
+      expect(resolveEffectiveAuthors(ledger, C).authors).toHaveLength(4);
+      expect(outcome(ledger, crossHarness)).toBe("author-identity-missing");
+    }
+    // A display name beside the ID it is completed with never disagrees.
+    const display = partial({ agent: "GPT-6 high" });
+    const byId = complete({ agent: "gpt-6" });
+    const recovered = ledgerWith(
+      [display, byId],
+      [completion(byId, [display])]
+    );
+    expect(resolveEffectiveAuthors(recovered, C).authors).toEqual([byId]);
+  });
+
   test("a completion an earlier runtime wrote with a display name keeps the ledger readable, and the name still fails closed in one harness", () => {
     const named = complete({ agent: "GPT-6.1 Sol" });
     const ledger = ledgerWith(
@@ -3995,6 +4032,26 @@ describe("identity completion", () => {
         completeIdentity: true,
         instance: "domain_db_preview",
       })
+    ).toThrow("identity-completion-conflict");
+    expect(readFileSync(path, "utf8")).toBe(before);
+  });
+
+  test("a completion is refused when two other records under the anchor disagree, though each agrees with what the completer reports", () => {
+    const run = preparedRun();
+    const commit = commitFile(run.author, "a.txt", "a\n");
+    const owner = {
+      commits: [commit],
+      environment: { CODEX_THREAD_ID: "thread-owner" },
+      logicalId: "author-a",
+      repositoryPath: run.author,
+    };
+    attestCommits(owner);
+    attestCommits({ ...owner, agent: "gpt-6-sol", instance: "instance-a" });
+    attestCommits({ ...owner, agent: "gpt-6-astra", instance: "instance-b" });
+    const path = reviewLedgerPath(commonDirectory(run.root));
+    const before = readFileSync(path, "utf8");
+    expect(() =>
+      attestCommits({ ...owner, agent: "GPT-6.1 Sol", completeIdentity: true })
     ).toThrow("identity-completion-conflict");
     expect(readFileSync(path, "utf8")).toBe(before);
   });

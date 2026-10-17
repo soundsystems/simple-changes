@@ -8,6 +8,7 @@ import { locateRepository } from "../../../skills/simple-changes/scripts/lib/inv
 import {
   startLoop,
   verifyLoop,
+  withLoopStateLock,
 } from "../../../skills/simple-changes/scripts/lib/loop-lease.ts";
 import {
   parseReadyWorkInput,
@@ -348,6 +349,54 @@ describe("ready-work author coverage preflight", () => {
     expect(verifyLoop(fixture.root).ok).toBe(true);
   });
 
+  test("holds the loop lock every ledger write takes, so no attestation lands between the check and the release", () => {
+    const fixture = repository();
+    const { claimId, path } = claimedCheckout(fixture, "locked", "author");
+    attest(path, "author", [commitFile(path, "a.txt", "a\n")]);
+    const common = commonDirectory(path);
+    withLoopStateLock(common, "author attest", () => {
+      expect(() => recordReadyWork(path, "author", claimId, READY)).toThrow(
+        "Active-loop state is busy"
+      );
+    });
+    expect(existsSync(readyReceiptsPath(common))).toBe(false);
+    expect(claimState(path, claimId)).toBe("active");
+    expect(recordReadyWork(path, "author", claimId, READY).claim.state).toBe(
+      "released"
+    );
+  });
+
+  test("never suggests completing an attestation a replay inherits from its source", () => {
+    const fixture = repository();
+    const { claimId, path } = claimedCheckout(fixture, "inherited", "author");
+    const source = commitFile(path, "a.txt", "a\n");
+    attestCommits({
+      commits: [source],
+      environment: { CLAUDE_CODE_SESSION_ID: "session-a" },
+      logicalId: "author",
+      repositoryPath: path,
+    });
+    git(path, ["commit", "--amend", "-m", "Reworded"]);
+    const replayed = git(path, ["rev-parse", "HEAD"]);
+    attestCommits({
+      commits: [replayed],
+      environment: { CLAUDE_CODE_SESSION_ID: "session-a" },
+      logicalId: "author",
+      replays: [source],
+      repositoryPath: path,
+    });
+    const later = commitFile(path, "b.txt", "b\n");
+    expect(authorCoverage(path, "main", later)).toMatchObject({
+      incompleteIdentities: [],
+      outstanding: [{ kind: "unattributed", sha: later }],
+    });
+    const message = refusal(() =>
+      recordReadyWork(path, "author", claimId, READY)
+    );
+    expect(message).toContain(`- ${later}: no attested author`);
+    expect(message).not.toContain("--complete-identity");
+  });
+
   test("suggests completing the owner's own model-less attestations and refuses a malformed ledger", () => {
     const fixture = repository();
     const { claimId, path } = claimedCheckout(fixture, "identity", "author");
@@ -364,7 +413,9 @@ describe("ready-work author coverage preflight", () => {
     );
     expect(message).toContain(`- ${second}: no attested author`);
     expect(message).not.toContain(`- ${first}:`);
-    expect(message).toContain(`Your attestations on ${first} report no model.`);
+    expect(message).toContain(
+      `Attestations under your agent id on ${first} report no model.`
+    );
     expect(message).toContain(
       `simple-changes author attest --commit ${first} --agent-id author --repo ${path} --agent "<model> <version>" [--instance <id>] --complete-identity`
     );

@@ -16,6 +16,7 @@ import {
 import { revisionContainmentMethod } from "./cleanup-core.ts";
 import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
 import { captureInventory, locateRepository } from "./inventory.ts";
+import { withLoopStateLock } from "./loop-lease-core.ts";
 import { runGit } from "./process.ts";
 import { redactSecrets } from "./redact.ts";
 import { validateSchema } from "./schema.ts";
@@ -348,10 +349,11 @@ export const recordReadyWork = (
   const agentId = agentIdInput.trim();
   const claimId = claimIdInput.trim();
   const { commonGitDirectory } = locateRepository(repositoryPath).repository;
-  return withWorktreeCoordinationLock(
-    commonGitDirectory,
-    "worktree ready",
-    () => {
+  // Every review-ledger write holds the loop lock, so holding it here (loop
+  // lock, then coordination lock, the established order) keeps an attestation
+  // from landing between the coverage check and the release it allows.
+  return withLoopStateLock(commonGitDirectory, "worktree ready", () =>
+    withWorktreeCoordinationLock(commonGitDirectory, "worktree ready", () => {
       const claim = readyClaim(commonGitDirectory, agentId, claimId);
       const inventory = captureInventory(repositoryPath);
       const current = inventory.worktrees.find(
@@ -420,7 +422,7 @@ export const recordReadyWork = (
         }
       );
       return { claim: released, coverage, leftUncovered, receipt };
-    }
+    })
   );
 };
 

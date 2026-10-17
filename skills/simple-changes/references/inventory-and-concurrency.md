@@ -525,7 +525,9 @@ own session. To hand off anyway, name exactly those SHAs with
 `--leave-uncovered <sha>[,<sha>...]`. That is not a waiver and records
 nothing: each receipt's `coverage` in `worktree status` keeps showing them,
 and review stays blocked until they are attested or the owner waives them on
-the proposal.
+the proposal. The check and the release hold the loop lock every ledger write
+takes, so, like `author attest`, it reports the lock busy while another
+command holds it, such as a running `loop exec`: retry after that returns.
 
 `worktree status --json` lists every receipt under `readyWork` with its
 freshness: `current` while the branch is still at the receipted head and the

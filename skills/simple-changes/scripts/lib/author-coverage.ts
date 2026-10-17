@@ -3,6 +3,7 @@ import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
 import { locateRepository } from "./inventory.ts";
 import { runGit } from "./process.ts";
 import {
+  type Attestation,
   type CommitGaps,
   type HeadCoverage,
   headCoverage,
@@ -187,16 +188,38 @@ const outstandingItems = (
 const hasReportedModel = (agent: string | null): boolean =>
   agent !== null && agent.trim() !== "" && agent.trim() !== MOST_CAPABLE;
 
+const identityKey = (attestation: Attestation): string =>
+  JSON.stringify([
+    attestation.instance,
+    attestation.session,
+    attestation.harness,
+    attestation.agent,
+    attestation.logicalId,
+  ]);
+
+// Only a commit's own attestations that still count are listed: one a
+// destination inherits from a replay source belongs to that source, and
+// `--complete-identity` applies only on the commit that carries it.
 const incompleteIdentities = (
+  ledger: ReviewLedger,
   commits: readonly string[],
   coverage: HeadCoverage
 ): IncompleteAttestation[] =>
-  commits.flatMap((commit) =>
-    (Object.hasOwn(coverage.authors, commit)
-      ? (coverage.authors[commit] ?? [])
-      : []
-    )
-      .filter((author) => !hasReportedModel(author.agent))
+  commits.flatMap((commit) => {
+    const effective = new Set(
+      (Object.hasOwn(coverage.authors, commit)
+        ? (coverage.authors[commit] ?? [])
+        : []
+      ).map(identityKey)
+    );
+    const own = Object.hasOwn(ledger.attestations, commit)
+      ? (ledger.attestations[commit] ?? [])
+      : [];
+    return own
+      .filter(
+        (author) =>
+          effective.has(identityKey(author)) && !hasReportedModel(author.agent)
+      )
       .map((author) => ({
         commit,
         completable:
@@ -204,8 +227,8 @@ const incompleteIdentities = (
           author.harness !== null &&
           author.logicalId !== null,
         logicalId: author.logicalId,
-      }))
-  );
+      }));
+  });
 
 const coverageOf = (
   cwd: string,
@@ -238,7 +261,7 @@ const coverageOf = (
     commits,
     gaps: coverage.gaps,
     head,
-    incompleteIdentities: incompleteIdentities(commits, coverage),
+    incompleteIdentities: incompleteIdentities(state.ledger, commits, coverage),
     ledger,
     outstanding,
     status: outstanding.length === 0 ? "covered" : "incomplete",
@@ -356,7 +379,7 @@ const ownerCommands = (
   ];
   if (own.length > 0) {
     lines.push(
-      `Your attestations on ${own.join(", ")} report no model. If your harness reports one now, complete them from this same session:`,
+      `Attestations under your agent id on ${own.join(", ")} report no model. If you made them in this same session and your harness reports a model now, complete them:`,
       `  simple-changes author attest ${own.map((commit) => `--commit ${commit}`).join(" ")} ${suffix} --agent "<model> <version>" [--instance <id>] --complete-identity`
     );
   }

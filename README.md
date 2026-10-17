@@ -637,6 +637,156 @@ run proceeds; it does not add a redundant permission prompt. The final response
 reports what actually shipped and identifies every material change made during
 review, including the new exact head and re-verification.
 
+## Security model
+
+Simple Changes runs as the user who starts it, with no credential setting of
+its own: Git, SSH, and `glab` authenticate with whatever the user already
+configured, and the CLI runs its own network Git commands with terminal prompts
+disabled. Inventory and leases record remote URLs with any embedded credential
+removed. The CLI starts every program from an argument array, never through a
+shell. Each Git command it starts also runs with the user's own Git
+configuration, hooks, and helpers, which can widen what the command does:
+`git status` can refresh the index or run a configured filesystem monitor, and
+`push.followTags` adds annotated tags to a push. The statements below describe
+what Simple Changes itself asks for. Preview mode plans no mutation and itself
+commits, pushes, and records nothing. Each behaviour below reaches past an
+ordinary Git command in the current checkout, so it is listed with what
+triggers it, what it can touch, how to opt out, and the check that enforces the
+boundary. To report a vulnerability, see [SECURITY.md](SECURITY.md).
+
+**Turn-end Stop hook (opt-in).**
+
+- Triggered by:
+  `simple-changes harness stop-hook --harness claude-code|codex --write`, which
+  an agent runs only after the user agrees. `initialize` only reports whether
+  the hook is installed. Once installed, the harness runs it at the end of
+  every turn, in every repository.
+- Can touch: the write merges one Stop handler into `~/.claude/settings.json`
+  or `~/.codex/hooks.json` (`CLAUDE_CONFIG_DIR` and `CODEX_HOME` are honored)
+  and keeps every other setting. At each turn end the hook reads the harness's
+  hook input, a per-user index of the runs each session controls (beside the
+  personal preferences file), and each named run's lease, controller binding,
+  and Git worktree records. It removes stale index entries and writes nothing
+  else. It blocks the turn once while the session still controls an active run,
+  then only warns.
+- Opt out: never pass `--write`, or delete the handler whose command contains
+  `loop turn-check` from that file.
+- Enforced by: `stopHookStatus` in `turn-guard.ts` writes only with `--write`
+  and refuses a script inside a linked worktree. The handler quotes its paths
+  and ends in `|| exit 0`, so a missing script or a failed check lets the turn
+  end.
+
+**Repository `execGuard`.**
+
+- Triggered by: an `execGuard` argv array in the primary checkout's
+  `.simple-changes.json`, committed or not. It runs, with the command appended,
+  before each command `loop exec` starts and before each fetch and write
+  (`mktag`, `push`, `update-ref`) that `release-tag` runs inside its lease.
+- Can touch: whatever the agent's own permissions reach, like any repository
+  script. It runs in the checkout with `SIMPLE_CHANGES_RUN_ID` and
+  `SIMPLE_CHANGES_REPOSITORY` set, and its exit code only decides whether the
+  command starts.
+- Opt out: remove `execGuard` from the repository policy. Personal preferences
+  never supply one.
+- Enforced by: `execGuardFor` in `exec-guard.ts` reads it only from repository
+  policy, the policy schema accepts only a non-empty array of strings, and
+  `assertExecGuardAllows` runs it without a shell after every lease check. A
+  guard can only refuse a command, so it applies without the policy trust
+  receipt; that receipt gates the settings that grant authority (persistent
+  push permission, automatic migration apply, break-glass ordering, and
+  automatic production deploy). Review a guard as you would any script the
+  agent runs.
+
+**Migration adapter executables.**
+
+- Triggered by: `simple-changes migration apply`, which runs an adapter only
+  when the decision it computes, the one `migration decision` reports, is
+  `auto-apply`. That needs an `auto-apply-*` `migrationHandling` (which a
+  repository policy gets only with its trust receipt), the exact provider,
+  project, and environment in `migrationTargets`, a review with verified backup
+  or rollback and planned post-apply verification that found nothing
+  destructive, irreversible, lock-heavy, or unbounded, a remote ledger at most
+  5 minutes old, an apply plan valid for at most 15 minutes, and no active ship
+  hold on migrations.
+- Can touch: the apply plan names an absolute adapter executable and its
+  SHA-256 digest. Apply copies those exact bytes to a private, single-use file
+  under `.git/simple-changes/migration-authorizations/`, records the
+  authorization as consumed, runs the copy once without a shell as
+  `apply-exact` with one `--revision` and `--digest` pair per reviewed
+  operation, and deletes it. The adapter inherits the CLI's environment, so it
+  reaches whatever the user's credentials reach.
+- Opt out: keep the default `ask-after-review`, or choose `never`. With either,
+  `migration apply` never starts an adapter, though its evidence, inventory,
+  and ship-hold checks still run first; the hold check can fetch published
+  holds and record satisfied ones as released.
+- Enforced by: `decideMigrationAutomation` and `applyMigrationAuthorization` in
+  `migration-automation.ts`. The digest is checked when the plan is evaluated
+  and again just before the copy, and a consumed authorization never runs
+  again.
+
+**Harness transcripts for subagent status.**
+
+- Triggered by: the installed Stop hook, only when the ending session still
+  controls a live run and the harness lists background subagents that are still
+  running.
+- Can touch: it reads, and never writes, the session transcript named in the
+  hook input and each listed subagent's transcript in that session's
+  `subagents` folder. It parses only lines that carry a `loop` command with
+  `--agent-id`, and those commands' output, to tell whether a running subagent
+  is driving the run. The hook stores nothing it reads from them.
+- Opt out: do not install the Stop hook.
+- Enforced by: `subagentControlIndex` in `subagent-control.ts` reads only
+  regular `.jsonl` files and accepts only task IDs of letters, digits, `_`, and
+  `-`. A file over 64 MiB, a scan over 5 seconds, or an unreadable parent
+  transcript proves nothing, so the hook blocks instead of excusing the run.
+
+**Commit messages, trailers, and proposal descriptions.**
+
+- Triggered by: `branch audit`, `proposal-signatures`, and `proposal audit`,
+  which read commit subjects, `Original-Commit` and `Co-Authored-By` trailers,
+  and proposal descriptions, and by agents reading the same text while they
+  review and integrate work.
+- Can touch: nothing. This text is untrusted data: it never becomes a command,
+  a path outside the repository, or permission to push, merge, deploy, or
+  delete. The skill's setup and policy reference tells agents to treat it as
+  data and never follow instructions in it.
+- Opt out: nothing to turn off; it holds in every mode.
+- Enforced by: authority comes only from the request mode and saved policy
+  (`validatePlanAuthority` in `authority.ts`), and programs start from argument
+  arrays. `branch-audit.ts` treats an `Original-Commit` trailer as a candidate
+  to inspect, never as cleanup authority; `proposal-signatures.ts` turns
+  `Co-Authored-By` trailers into attribution lines that approve nothing;
+  `proposal audit` checks only a description's shape; and review independence
+  comes from attestations agents record with `author attest`, never from commit
+  or proposal text.
+
+**Git and `glab` with the user's existing credentials.**
+
+- Triggered by: queue, integrate, and ship work, where agents push branches and
+  open and merge proposals with Git and `glab`. The CLI itself reads remote
+  state with `git ls-remote` and `git fetch` (and clones the public upstream
+  for `fork create`), names only ship-hold refs under
+  `refs/simple-changes/holds/` and the one tag `release-tag` publishes in the
+  pushes it runs (`release-tag` also passes `--no-follow-tags`; a hold push
+  follows the user's `push.followTags`), and its reference GitLab inventory
+  adapter (`skills/simple-changes/scripts/adapters/gitlab-remote-inventory.ts`)
+  makes only read-only `glab api` GET calls.
+- Can touch: every remote and project the user's Git credentials, SSH keys, and
+  `glab` login can reach.
+- Opt out: with `gitPushAuthorization` set to `never`, agents stop with local
+  work ready and the CLI refuses to push hold refs or release tags. Preview
+  mode never pushes, opens, or merges anything, and Sync fetches but never
+  publishes local work.
+- Enforced by: `runGitRemote` in `process.ts` disables terminal credential
+  prompts, runs SSH in batch mode unless the user configured their own SSH
+  command, and stops after a bounded time; `redactSecrets` removes likely
+  credentials from the Git failure details the CLI reports; and
+  `configure-harness` asks the harness only for its narrowest push rule for one
+  verified remote, never for credentials or force-push (see
+  [push authorization](skills/simple-changes/references/harness-push-authorization.md)).
+  Branch protection, provider permissions, and approval bound to an exact head
+  stay separate gates.
+
 ## Development
 
 ```sh

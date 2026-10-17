@@ -728,6 +728,34 @@ const describeEntry = (
 };
 
 /** One receipt line per role, in plain language. */
+// The escalation and stop-check sentences of the setup summary.
+const reviewLoopSummary = (
+  review: AuthoringRoleEntry
+): { checks: string; floor: string } => {
+  const loop = resolveReviewLoop(review.reviewLoop);
+  const any = loop.escalateOn === "any";
+  const floor = review.escalateOnFindings
+    ? ` After ${any ? "any finding" : "blocking or should-fix findings"}, later reviews run at least at ${review.escalateOnFindings}.`
+    : "";
+  const stops = [
+    ...(loop.convergenceRounds === null
+      ? []
+      : [
+          `questions the approach after ${loop.convergenceRounds} rounds in a row with ${any ? "findings" : "blocking or should-fix findings"}`,
+        ]),
+    ...(loop.roundCap === null
+      ? []
+      : [`asks you after ${loop.roundCap} rounds without a clean review`]),
+  ];
+  return {
+    checks:
+      stops.length === 0
+        ? " Reviews repeat until clean without stopping to check."
+        : ` The agent ${stops.join(" and ")}.`,
+    floor,
+  };
+};
+
 export const renderAuthoringSummary = (
   answer: AuthoringSidecar,
   definitions: readonly HarnessDefinition[]
@@ -752,28 +780,7 @@ export const renderAuthoringSummary = (
     } else if (review.adversarial) {
       reviewer = `${harnessLabel(review.harness, definitions)}${effort}, an agent other than the author's`;
     }
-    const loop = resolveReviewLoop(review.reviewLoop);
-    const trigger =
-      loop.escalateOn === "any"
-        ? "any finding"
-        : "blocking or should-fix findings";
-    const floor = review.escalateOnFindings
-      ? ` After ${trigger}, later reviews run at least at ${review.escalateOnFindings}.`
-      : "";
-    const stops = [
-      ...(loop.convergenceRounds === null
-        ? []
-        : [
-            `questions the approach after ${loop.convergenceRounds} rounds in a row with ${loop.escalateOn === "any" ? "findings" : trigger}`,
-          ]),
-      ...(loop.roundCap === null
-        ? []
-        : [`asks you after ${loop.roundCap} rounds without a clean review`]),
-    ];
-    const checks =
-      stops.length === 0
-        ? " Reviews repeat until clean without stopping to check."
-        : ` The agent ${stops.join(" and ")}.`;
+    const { checks, floor } = reviewLoopSummary(review);
     lines.push(`Independent reviews: ${reviewer}.${floor}${checks}`);
   }
   lines.push(AUTHORING_PREFERENCE_NOTE);

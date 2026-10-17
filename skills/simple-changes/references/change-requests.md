@@ -188,11 +188,15 @@ Review independence is checked against what agents record at the time;
 nothing is reconstructed later. Record it whatever `proposalSignatures` says:
 
 1. **After every commit**, the agent that made it runs `simple-changes author
-   attest --commit <sha> --agent-id <id> [--instance <id>] [--agent "<model>
-   <version>"]` in its own session. `--instance` and `--agent` are what the
-   harness reports for this agent; omit what it does not report.
+   attest --commit <sha> --agent-id <id> [--instance <id>] [--agent <model
+   ID>]` in its own session. `--instance` and `--agent` are what the harness
+   reports for this agent; omit what it does not report. `--agent` is the
+   model ID the harness reports, such as `model-5-5`: lowercase, no spaces,
+   with no effort word or note. Adversarial review compares model IDs only,
+   so a display name such as `Model 5.5 high` is missing evidence there.
    If an earlier attestation of yours on that commit lacked an instance or
-   model your harness reports now, run the same command again from the same
+   model ID your harness reports now, a display name included, run the same
+   command again from the same
    session, with the same `--agent-id`, the values reported now, and
    `--complete-identity`. The ledger keeps every record and adds a
    completion naming the earlier ones, which then stop counting as separate
@@ -203,7 +207,7 @@ nothing is reconstructed later. Record it whatever `proposalSignatures` says:
    attests without the flag and stays a separate author. It is refused for
    a replay, without an executing session, when no record from your
    session, harness, and agent id lacks what you report, and when one of
-   them names a different instance or model. Such a record appearing later
+   them names a different instance or model ID. Such a record appearing later
    voids the completion.
 2. **After every rebase, cherry-pick, or squash**, attest each new commit with
    `--replays <old sha>[,<old sha>...]`. Add `--contribution implementation`

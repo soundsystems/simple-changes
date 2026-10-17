@@ -364,10 +364,11 @@ except the author's (the running one; none is excluded when it is unknown),
 in data-file order then unknown ids alphabetically, the first recommended; a
 single candidate skips the question. If that agent has no entry yet, ask its
 model question worded "which model should review". After option 2, ask **Which
-model in `<agent>` should review?** and an effort (`high` recommended); reject
-a name equal to the model recorded for that agent, where case, separators, a
-trailing effort word such as `high`, and a parenthesised note such as
-`(version unknown)` do not make a name different. Options 1 and 2 record
+model in `<agent>` should review?** and an effort (`high` recommended). The
+name must be the model ID the agent reports, such as `model-5-5`; ask again
+for a display name or an effort label, for the model ID recorded for that
+agent (compared after folding case and one `provider/` prefix), and when the
+recorded model is itself not an ID. Options 1 and 2 record
 `adversarial: true`.
 
 Every option then sets the review loop. Unless the model question already

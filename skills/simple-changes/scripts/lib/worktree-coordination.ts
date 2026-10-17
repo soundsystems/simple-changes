@@ -2107,6 +2107,17 @@ const approvedTakeoverState = (
       EXIT_CODES.unsafe
     );
   }
+  // Git output is decoded as UTF-8 with replacement, so two branch names made
+  // of different invalid bytes read the same; such a name cannot be shown to
+  // be the approved one, and the takeover fails closed.
+  for (const branch of [current.branch, expected.branch]) {
+    if (branch?.includes(REPLACEMENT_CHARACTER)) {
+      throw new SimpleChangesError(
+        `Branch ${JSON.stringify(branch)} is not valid UTF-8, so Simple Changes cannot name it exactly and no approval can be matched to it. Rename the branch to a UTF-8 name, re-observe the worktree, and retry the takeover.`,
+        EXIT_CODES.unsafe
+      );
+    }
+  }
   if (
     current.changeDigest !== expected.changeDigest ||
     current.headSha !== expected.headSha ||
@@ -2121,6 +2132,7 @@ const approvedTakeoverState = (
 };
 
 const STATUS_DIGEST_PATTERN = /^[0-9a-f]{64}$/u;
+const REPLACEMENT_CHARACTER = "\uFFFD";
 
 /**
  * One value of the approval's evidence, kept exactly as given. Each must
@@ -2131,14 +2143,14 @@ const STATUS_DIGEST_PATTERN = /^[0-9a-f]{64}$/u;
 const exactEvidence = (
   value: string,
   name: string,
-  pattern?: RegExp
+  shape?: { pattern: RegExp; what: string }
 ): string => {
   if (value === "") {
     throw new SimpleChangesError(`${name} is required.`, EXIT_CODES.usage);
   }
-  if (pattern && !pattern.test(value)) {
+  if (shape && !shape.pattern.test(value)) {
     throw new SimpleChangesError(
-      `${name} must be the checkout's exact value as Git reports it, with no surrounding space.`,
+      `${name} must be ${shape.what}, exactly as Git reports it, with no surrounding space.`,
       EXIT_CODES.usage
     );
   }
@@ -2158,12 +2170,15 @@ const takeoverEvidence = (
   changeDigest: exactEvidence(
     options.expectedStatusDigest,
     "expected status digest",
-    STATUS_DIGEST_PATTERN
+    { pattern: STATUS_DIGEST_PATTERN, what: "the checkout's status digest" }
   ),
   headSha:
     options.expectedHeadSha === null
       ? null
-      : exactEvidence(options.expectedHeadSha, "expected HEAD", SHA_PATTERN),
+      : exactEvidence(options.expectedHeadSha, "expected HEAD", {
+          pattern: SHA_PATTERN,
+          what: "the checkout's full commit ID",
+        }),
 });
 
 export const takeoverWorktreeClaim = (

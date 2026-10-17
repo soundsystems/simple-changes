@@ -1,5 +1,11 @@
 import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  appendFileSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "bun";
@@ -439,16 +445,57 @@ describe("claims belong to the session that made them", () => {
     );
     // Surrounding space on the commit or digest is refused, never trimmed.
     expect(() => take({ expectedHeadSha: ` ${current.headSha}` })).toThrow(
-      "expected HEAD must be the checkout's exact value"
+      "expected HEAD must be the checkout's full commit ID, exactly as Git reports it"
     );
     expect(() =>
       take({ expectedStatusDigest: `${current.changeDigest}\n` })
-    ).toThrow("expected status digest must be the checkout's exact value");
+    ).toThrow(
+      "expected status digest must be the checkout's status digest, exactly as Git reports it"
+    );
     expect(() => take({ expectedBranch: "" })).toThrow(
       "expected branch is required"
     );
     // The exact name matches and is recorded as given.
     expect(take({}).receipt.branch).toBe(branch);
+  });
+
+  test("an approved takeover refuses a branch name that is not valid UTF-8", () => {
+    const fixture = repository();
+    const path = addWorktree(fixture, "raw-byte-branch-work");
+    // Git accepts raw bytes in a branch name; `release/\x80` and
+    // `release/\x81` would both decode to `release/\uFFFD`. A file system
+    // may refuse such a loose ref, so the ref is packed.
+    const sha = git(path, ["rev-parse", "HEAD"]);
+    const common = resolve(path, git(path, ["rev-parse", "--git-common-dir"]));
+    appendFileSync(
+      join(common, "packed-refs"),
+      Buffer.concat([
+        Buffer.from(`${sha} refs/heads/release/`),
+        Buffer.from([0x80]),
+        Buffer.from("\n"),
+      ])
+    );
+    const made = spawnSync(
+      [
+        "sh",
+        "-c",
+        "git symbolic-ref HEAD \"$(printf 'refs/heads/release/\\200')\"",
+      ],
+      { cwd: path, stderr: "pipe", stdout: "pipe" }
+    );
+    expect(decoder.decode(made.stderr)).toBe("");
+    const claim = as(SESSION_A, () =>
+      claimWorktree(fixture.root, "author-1", path, "claude-code")
+    );
+    const current = worktreeAt(fixture.root, path);
+    expect(current.branch).toBe("release/\uFFFD");
+    expect(() =>
+      as(SESSION_B, () =>
+        takeoverWorktreeClaim(
+          takeoverOptions(fixture, claim.claimId, current, "author-1")
+        )
+      )
+    ).toThrow("is not valid UTF-8");
   });
 
   test("an approval of a branch with trailing U+00A0 does not match the branch without it", () => {

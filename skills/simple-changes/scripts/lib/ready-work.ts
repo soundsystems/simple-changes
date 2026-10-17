@@ -21,6 +21,7 @@ import type {
   WorktreeClaim,
 } from "./types.ts";
 import {
+  assertClaimSession,
   assertNoGitOperation,
   readCoordinationDocumentFromCommonDirectory,
   releaseClaimUnderLock,
@@ -300,6 +301,7 @@ const readyClaim = (
       EXIT_CODES.unsafe
     );
   }
+  assertClaimSession(document, claim, null);
   if (!READY_CLAIM_STATES.has(claim.state)) {
     throw new SimpleChangesError(
       `Claim ${claimId} is ${claim.state}; ready work requires an active claim on a present checkout.`,

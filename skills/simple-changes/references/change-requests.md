@@ -190,7 +190,10 @@ nothing is reconstructed later. Record it whatever `proposalSignatures` says:
 1. **After every commit**, the agent that made it runs `simple-changes author
    attest --commit <sha> --agent-id <id> [--instance <id>] [--agent "<model>
    <version>"]` in its own session. `--instance` and `--agent` are what the
-   harness reports for this agent; omit what it does not report.
+   harness reports for this agent; omit what it does not report. A worktree
+   claim makes an agent eligible only from the session that holds it, so
+   another session, or one that reports none, cannot attest under that
+   agent ID; a replacement session first takes the claim over with approval.
    If an earlier attestation of yours on that commit lacked an instance or
    model your harness reports now, run the same command again from the same
    session, with the same `--agent-id`, the values reported now, and

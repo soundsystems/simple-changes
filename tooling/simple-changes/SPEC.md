@@ -358,7 +358,10 @@
   exception under an active controller is a registered concurrent author's
   live claim, which may be reassigned to that controller itself, so a
   vanished author is recorded through pause and accept without relinquishing
-  the run or freezing its shipment scope.
+  the run or freezing its shipment scope. A claim belongs to the harness
+  session that made it, marked in its coordination event IDs: its agent ID
+  acts on it, and attests through it, only from that session, and a
+  reassigning takeover moves it to the session that runs the takeover.
 - A repository `execGuard` (an argv array in `.simple-changes.json`, never in
   personal preferences) runs as `[...execGuard, ...command]` inside the lease of
   every `loop exec`, after all other lease checks and immediately before the

@@ -4957,7 +4957,7 @@ describe("active integration-loop lease", () => {
         violation.path === preservedPath
     );
     expect(stale?.message).toStartWith(
-      "The worktree lease has an incomplete coordination linkage. Owner <owner> runs"
+      "The worktree lease has an incomplete coordination linkage. Ask owner <owner> to run"
     );
     expect(stale?.nextCommands).toEqual([
       `simple-changes worktree claim --agent-id <owner> --worktree ${preservedPath} --adapter <adapter> --repo ${fixture.root}`,

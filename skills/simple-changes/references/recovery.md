@@ -211,7 +211,9 @@ checkout has the same status digest, so the takeover refuses when the
 worktree's branch, HEAD, or status digest differs from the one named:
 re-observe and confirm the current state with the approver. It either
 reassigns ownership, recording that state on the claim, or releases the
-claim. It refuses claims a loop still requires, judged by lifecycle rather
+claim. A reassigned claim belongs to the harness session that ran the
+takeover, which is how a replacement session continues an ended session's
+claim, under the same agent ID or its own. It refuses claims a loop still requires, judged by lifecycle rather
 than bare path membership: an active loop protects every registered path, but
 a relinquished loop preserves work through the worktrees themselves, so its
 registered paths no longer freeze takeover; only an adopted coordination

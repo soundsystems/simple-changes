@@ -234,7 +234,7 @@ const staleClaimRecovery = (
     const release = `simple-changes worktree release --agent-id ${commandWord(liveClaim.owner.agentId)} --claim-id ${liveClaim.claimId} --repo ${repo}`;
     return {
       commands: [release, verify],
-      text: `Only the active controller ${controller} may claim the primary checkout, which ${liveClaim.owner.agentId} still holds: run \`${release}\`, then re-run \`${verify}\` for its exact recovery steps.`,
+      text: `Only the active controller ${controller} may claim the primary checkout, which ${liveClaim.owner.agentId} still holds: ask ${liveClaim.owner.agentId} to run \`${release}\` from its own session, then re-run \`${verify}\` for its exact recovery steps. Do not run it under that agent ID from another session.`,
     };
   }
   const candidate = liveClaim?.owner ?? linkedClaim?.owner;
@@ -255,9 +255,15 @@ const staleClaimRecovery = (
   ].join(" ");
   const pause = `simple-changes worktree pause --agent-id ${agent} --worktree ${path} --run-id ${lease.runId} --disposition preserve-in-place --reason <why> --repo ${repo}`;
   const accept = `${ACCEPT_PAUSED_CHANGE} --run-id ${lease.runId} --agent-id ${controller} --pause-receipt <pause-receipt-id> --repo ${repo}`;
+  // The owner's steps run only from the owner's own session, so the text
+  // asks the owner instead of suggesting anyone run them under its ID.
+  const steps =
+    ownerId === lease.ownerAgentId
+      ? `Controller ${controller} runs \`${claim}\`, then \`${pause}\`, then \`${accept}\` with the receipt ID the pause prints.`
+      : `Ask owner ${agent} to run \`${claim}\`, then \`${pause}\`, from its own session; controller ${controller} then runs \`${accept}\` with the receipt ID the pause prints. Do not run the owner's steps under its agent ID from another session.`;
   return {
     commands: [claim, pause, accept],
-    text: `Owner ${agent} runs \`${claim}\`, then \`${pause}\`; controller ${controller} then runs \`${accept}\` with the receipt ID the pause prints.${handoffHint(primary, linkedClaim, liveClaim)}${concurrentTakeoverHint(lease, registered, worktree, liveClaim, primary)}`,
+    text: `${steps}${handoffHint(lease, primary, ownerId, linkedClaim, liveClaim)}${concurrentTakeoverHint(lease, registered, worktree, liveClaim, primary)}`,
   };
 };
 
@@ -291,21 +297,32 @@ const concurrentTakeoverHint = (
   return ` If ${liveClaim.owner.agentId} no longer exists, ask the user to approve \`${takeover}\`, which hands that exact claim and checkout state to controller ${controller} without relinquishing the run, then re-run \`${LOOP_VERIFY} --run-id ${lease.runId} --repo ${repo}\` for the controller's own claim, pause, and accept steps.`;
 };
 
-// A completed release with nothing holding the checkout may be an ownership
-// handoff: no command moves a claim, so the new owner runs the same claim and
-// pause under its own identity, and verification then names it.
+// With nothing holding the checkout, no command moves a claim: a new owner
+// runs the same claim and pause under its own identity, and verification then
+// names it. A completed release may be an ownership handoff; any other
+// unheld checkout whose owner vanished passes the same way, never by acting
+// under the vanished owner's agent ID.
 const handoffHint = (
+  lease: LoopLease,
   primary: boolean,
+  ownerId: string | null,
   linkedClaim: WorktreeClaim | undefined,
   liveClaim: WorktreeClaim | undefined
-): string =>
-  !primary &&
-  liveClaim === undefined &&
-  linkedClaim?.state === "released" &&
-  linkedClaim.releaseReason !== undefined &&
-  COMPLETED_RELEASE_REASONS.has(linkedClaim.releaseReason)
-    ? " If the checkout is passing to a new owner, the new owner runs the same claim and pause with its own agent ID and adapter instead, and the controller accepts that receipt."
-    : "";
+): string => {
+  if (primary || liveClaim !== undefined) {
+    return "";
+  }
+  if (
+    linkedClaim?.state === "released" &&
+    linkedClaim.releaseReason !== undefined &&
+    COMPLETED_RELEASE_REASONS.has(linkedClaim.releaseReason)
+  ) {
+    return " If the checkout is passing to a new owner, the new owner runs the same claim and pause with its own agent ID and adapter instead, and the controller accepts that receipt.";
+  }
+  return ownerId === lease.ownerAgentId
+    ? ""
+    : ` If ${ownerId ?? "the owner"} no longer exists, a new owner, such as controller ${commandWord(lease.ownerAgentId)}, runs the same claim and pause with its own agent ID and adapter instead, and the controller accepts that receipt.`;
+};
 
 // A completed release that recorded its checkout's exact state: that state
 // is the unit's recorded head, whoever holds the checkout now.

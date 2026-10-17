@@ -639,6 +639,21 @@ adapter slug, and opaque `ownerRef`, and is written atomically with mode `0600`.
 Do not put titles, prompts, message bodies, credentials, or tokens in the owner
 reference.
 
+A claim belongs to the harness session that made it, read from the session
+variables `agents/harnesses.json` lists. From any other session, including one
+that reports none, its agent ID cannot refresh, pause, detach, attach, or
+release the claim, record ready work or a handoff for it, attest through it,
+claim another checkout while it is live, or claim the same checkout again
+after its release. The refusal prints the approved `worktree takeover` that
+moves the claim to the asking session. Never act under another agent's ID: a
+new owner claims under its own agent ID, and a replacement session that
+continues the work under the same ID takes the claim over with the user's
+approval. A claim made without a session, or before this rule, binds to the
+first known session that claims it. Subagents that share their parent's
+session share its claims, and a harness without a session variable binds
+nothing. The session comes from the environment, so this stops mistakes and
+misread recovery steps, not deliberate impersonation.
+
 When the work is complete and verified, the same owner unlocks it with
 `worktree release`, or with `initialize --mode handoff`, which releases the
 author's own claim on that checkout as it proceeds; released work becomes an

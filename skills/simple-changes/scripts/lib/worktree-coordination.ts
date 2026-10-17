@@ -11,6 +11,7 @@ import {
 import { hostname } from "node:os";
 import { dirname, resolve } from "node:path";
 import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
+import { currentHarnessSession } from "./harness-session.ts";
 import { sha256, sha256Json } from "./hash.ts";
 import { captureInventory, locateRepository } from "./inventory.ts";
 import { runGit } from "./process.ts";
@@ -388,6 +389,197 @@ const replaceClaim = (
   ],
 });
 
+// ---------------------------------------------------------------------------
+// Claim sessions
+//
+// An agent ID acts on its claims only from the harness session that holds
+// them. The claim record is closed to new fields, so older clients that share
+// this file can still read it; the session is marked instead in the ID of the
+// event that created, refreshed, or reassigned the claim, as a digest of
+// `harness:sessionId`. A claim without such an event (one made before this
+// marker existed, or with no harness session) is unbound and refuses no one.
+// The session comes from the harness environment, so this stops mistakes and
+// recovery steps from acting under another agent's ID; it is not
+// authentication.
+
+const SESSION_EVENT_PREFIX = "event-session-";
+const UNBOUND_SESSION_MARK = "unbound";
+const SESSION_DIGEST_LENGTH = 32;
+
+/** The executing harness session as `harness:sessionId`, or null. */
+export const executingClaimSession = (
+  environment: Record<string, string | undefined> = process.env
+): string | null => {
+  const session = currentHarnessSession(environment);
+  return session ? `${session.harness}:${session.sessionId}` : null;
+};
+
+const claimSessionDigest = (session: string): string =>
+  sha256(`claim-session:${session}`).slice(0, SESSION_DIGEST_LENGTH);
+
+// The ID of an event that binds its claim to `session`, or that unbinds it.
+const sessionEventId = (session: string | null): string =>
+  `${SESSION_EVENT_PREFIX}${session ? claimSessionDigest(session) : UNBOUND_SESSION_MARK}-${randomUUID()}`;
+
+// A claim or refresh event binds the claim to a known session; without one
+// it is an ordinary event that leaves the binding as it was.
+const claimEventId = (session: string | null): string =>
+  session ? sessionEventId(session) : `event-${randomUUID()}`;
+
+// A reassigned claim belongs to the session that took it over; one taken
+// over without a session is unbound. A release leaves the binding alone.
+const takeoverEventId = (
+  action: "reassign" | "release",
+  session: string | null
+): string =>
+  action === "reassign" ? sessionEventId(session) : `event-${randomUUID()}`;
+
+// A claim's latest session mark: a session digest, or null when unbound.
+// Every marked event is written by the claim's owner at that moment, so a
+// mark whose actor no longer owns the claim predates an ownership change that
+// recorded none (a takeover by an older client), and binds nothing.
+const claimSessionBinding = (
+  document: WorktreeCoordinationDocument,
+  claim: Pick<WorktreeClaim, "claimId" | "owner">
+): string | null => {
+  for (let index = document.events.length - 1; index >= 0; index -= 1) {
+    const event = document.events[index];
+    if (
+      event?.claimId === claim.claimId &&
+      event.eventId.startsWith(SESSION_EVENT_PREFIX)
+    ) {
+      const [mark = UNBOUND_SESSION_MARK] = event.eventId
+        .slice(SESSION_EVENT_PREFIX.length)
+        .split("-");
+      return mark === UNBOUND_SESSION_MARK ||
+        event.actorAgentId !== claim.owner.agentId
+        ? null
+        : mark;
+    }
+  }
+  return null;
+};
+
+/**
+ * Whether a claim belongs to a harness session other than `session`: it is
+ * bound to one, and the command reports no session or a different one.
+ */
+export const claimHeldByAnotherSession = (
+  document: WorktreeCoordinationDocument,
+  claim: Pick<WorktreeClaim, "claimId" | "owner">,
+  session: string | null
+): boolean => {
+  const binding = claimSessionBinding(document, claim);
+  return (
+    binding !== null &&
+    (session === null || claimSessionDigest(session) !== binding)
+  );
+};
+
+/**
+ * The refusal for a command that would act on another session's claim under
+ * its agent ID, with the approved takeover that moves the claim instead.
+ */
+export const claimSessionRefusal = (
+  claim: WorktreeClaim,
+  current: WorktreeInventory | null,
+  session: string | null
+): string => {
+  const takeover = takeoverCommand({
+    agentId: null,
+    claimId: claim.claimId,
+    current,
+  });
+  return `Claim ${claim.claimId} on ${claim.path} belongs to another harness session of ${claim.owner.agentId}${session ? "" : ", and this command reports no harness session"}, so it cannot act under that agent ID here: an agent ID acts only from the session that holds its claim. Ask ${claim.owner.agentId} to run this from its own session. If that session has ended, ask the user to approve \`${takeover}\`, naming your own agent ID (or the same one to continue its work), which reassigns the claim to this session.`;
+};
+
+/** Refuses when `claim` belongs to another harness session. */
+export const assertClaimSession = (
+  document: WorktreeCoordinationDocument,
+  claim: WorktreeClaim,
+  current: WorktreeInventory | null,
+  session: string | null = executingClaimSession()
+): void => {
+  if (claimHeldByAnotherSession(document, claim, session)) {
+    throw new SimpleChangesError(
+      claimSessionRefusal(claim, current, session),
+      EXIT_CODES.unsafe
+    );
+  }
+};
+
+// The owner's own claim refreshes only from its own session; a new claim
+// needs the agent ID free of every other session.
+const assertClaimantSession = (
+  document: WorktreeCoordinationDocument,
+  inventory: RepositoryInventory,
+  existing: WorktreeClaim | undefined,
+  agentId: string,
+  worktree: WorktreeInventory,
+  session: string | null
+): void => {
+  if (existing) {
+    assertClaimSession(document, existing, worktree, session);
+    return;
+  }
+  assertAgentSessionFree(document, inventory, agentId, worktree.path, session);
+};
+
+// Whether re-claiming changes the claim: its checkout moved, it is not
+// active, or the first known session to claim an unbound claim binds it.
+const claimNeedsRefresh = (
+  document: WorktreeCoordinationDocument,
+  existing: WorktreeClaim,
+  worktree: WorktreeInventory,
+  session: string | null
+): boolean =>
+  existing.branch !== worktree.branch ||
+  existing.headSha !== worktree.headSha ||
+  existing.changeDigest !== worktree.changeDigest ||
+  existing.state !== "active" ||
+  (session !== null && claimSessionBinding(document, existing) === null);
+
+/**
+ * Refuses a new claim under `agentId` when another session still uses that
+ * agent ID: a live claim of it elsewhere belongs to another session, or its
+ * latest earlier claim on this same checkout does. A checkout another
+ * session claimed passes to this session under this session's own agent ID.
+ */
+const assertAgentSessionFree = (
+  document: WorktreeCoordinationDocument,
+  inventory: RepositoryInventory,
+  agentId: string,
+  path: string,
+  session: string | null
+): void => {
+  const owned = document.claims.filter(
+    (claim) =>
+      claim.owner.agentId === agentId &&
+      claimHeldByAnotherSession(document, claim, session)
+  );
+  const live = owned.find((claim) => claim.state !== "released");
+  if (live) {
+    throw new SimpleChangesError(
+      `Agent ${agentId} still holds claim ${live.claimId} on ${live.path} in another harness session. ${claimSessionRefusal(
+        live,
+        inventory.worktrees.find((worktree) => worktree.path === live.path) ??
+          null,
+        session
+      )} Otherwise claim this checkout under an agent ID of your own.`,
+      EXIT_CODES.unsafe
+    );
+  }
+  const [earlier] = owned
+    .filter((claim) => claim.path === path)
+    .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+  if (earlier) {
+    throw new SimpleChangesError(
+      `Agent ${agentId}'s earlier claim ${earlier.claimId} on ${path} (released: ${earlier.releaseReason ?? "unrecorded"}) belongs to another harness session, so this session cannot claim the checkout under that agent ID. A new session records the checkout under its own agent ID, with its own claim and pause.`,
+      EXIT_CODES.unsafe
+    );
+  }
+};
+
 const worktreeAt = (
   inventory: ReturnType<typeof captureInventory>,
   pathInput: string
@@ -652,6 +844,15 @@ export const claimWorktree = (
           EXIT_CODES.unsafe
         );
       }
+      const session = executingClaimSession();
+      assertClaimantSession(
+        document,
+        inventory,
+        existing,
+        agentId,
+        worktree,
+        session
+      );
       if (
         existing &&
         (existing.owner.adapter !== adapter ||
@@ -663,12 +864,7 @@ export const claimWorktree = (
         );
       }
       if (existing) {
-        if (
-          existing.branch === worktree.branch &&
-          existing.headSha === worktree.headSha &&
-          existing.changeDigest === worktree.changeDigest &&
-          existing.state === "active"
-        ) {
+        if (!claimNeedsRefresh(document, existing, worktree, session)) {
           return existing;
         }
         const refreshed: WorktreeClaim = {
@@ -684,7 +880,8 @@ export const claimWorktree = (
           refreshed.claimId,
           agentId,
           "active",
-          now
+          now,
+          claimEventId(session)
         );
         writeCoordinationDocument(
           inventory.repository.commonGitDirectory,
@@ -711,7 +908,8 @@ export const claimWorktree = (
         claim.claimId,
         agentId,
         "active",
-        now
+        now,
+        claimEventId(session)
       );
       writeCoordinationDocument(
         inventory.repository.commonGitDirectory,
@@ -778,6 +976,7 @@ export const pauseClaimedWorktree = (
           EXIT_CODES.unsafe
         );
       }
+      assertClaimSession(document, claim, current);
       if (
         claim.branch !== current.branch ||
         claim.headSha !== current.headSha ||
@@ -1017,6 +1216,7 @@ export const detachClaimedWorktree = (
           EXIT_CODES.unsafe
         );
       }
+      assertClaimSession(document, claim, current);
       if (
         claim.state !== "paused" ||
         receipt.disposition !== "detach-clean-checkout"
@@ -1139,6 +1339,7 @@ export const attachClaimedWorktree = (
           EXIT_CODES.unsafe
         );
       }
+      assertClaimSession(document, claim, null);
       if (
         !(
           ["detached", "resume-ready"].includes(claim.state) &&
@@ -1264,6 +1465,11 @@ export const releaseWorktreeClaim = (
         EXIT_CODES.unsafe
       );
     }
+    assertClaimSession(
+      document,
+      claim,
+      inventory.worktrees.find((item) => item.path === claim.path) ?? null
+    );
     if (!LIVE_STATES.has(claim.state)) {
       throw new SimpleChangesError(
         `Claim ${claimId} cannot transition from ${claim.state} to released.`,
@@ -1428,6 +1634,11 @@ export const releaseHandoffWorktreeClaim = (
     if (!claim) {
       return null;
     }
+    assertClaimSession(
+      document,
+      claim,
+      opening.worktrees.find((item) => item.path === claim.path) ?? null
+    );
     return releaseClaimUnderLock(
       commonGitDirectory,
       claim.claimId,
@@ -1743,16 +1954,18 @@ const matchingTakeoverIntent = (
 const recoverAppliedTakeoverIntent = (
   commonGitDirectory: string,
   history: WorktreeTakeoverReceipt[],
+  document: WorktreeCoordinationDocument,
   claim: WorktreeClaim,
-  intent: WorktreeTakeoverReceipt | undefined
+  intent: WorktreeTakeoverReceipt | undefined,
+  session: string | null
 ): WorktreeTakeoverResult | null => {
   if (!intent) {
     return null;
   }
   // An earlier takeover by the same agent and approver leaves the same owner,
   // so a reassign counts as applied only when the claim also records this
-  // intent's exact checkout state, and a release only when a takeover
-  // released it. Anything else runs the full checks again.
+  // intent's exact checkout state and belongs to this session, and a release
+  // only when a takeover released it. Anything else runs every check again.
   const applied =
     intent.action === "release"
       ? claim.state === "released" && claim.releaseReason === "takeover"
@@ -1760,7 +1973,9 @@ const recoverAppliedTakeoverIntent = (
         claim.owner.ownerRef === `takeover:${intent.approvedBy}` &&
         claim.branch === intent.branch &&
         claim.headSha === intent.headSha &&
-        claim.changeDigest === intent.changeDigest;
+        claim.changeDigest === intent.changeDigest &&
+        claimSessionBinding(document, claim) ===
+          (session ? claimSessionDigest(session) : null);
   if (!applied) {
     return null;
   }
@@ -1795,13 +2010,10 @@ const persistTakeoverIntent = (
   }
 };
 
-export const takeoverWorktreeClaim = (
+// The exact checkout state the approval names, validated.
+const takeoverEvidence = (
   options: WorktreeTakeoverOptions
-): WorktreeTakeoverResult => {
-  const claimId = requiredText(options.claimId, "claim ID", 128);
-  const newAgentId = requiredText(options.newAgentId, "new agent ID", 128);
-  const approvedBy = requiredText(options.approvedBy, "approver", 128);
-  const reason = requiredText(options.reason, "takeover reason");
+): TakeoverEvidence => {
   const expected: TakeoverEvidence = {
     branch:
       options.expectedBranch === null
@@ -1820,6 +2032,17 @@ export const takeoverWorktreeClaim = (
       EXIT_CODES.usage
     );
   }
+  return expected;
+};
+
+export const takeoverWorktreeClaim = (
+  options: WorktreeTakeoverOptions
+): WorktreeTakeoverResult => {
+  const claimId = requiredText(options.claimId, "claim ID", 128);
+  const newAgentId = requiredText(options.newAgentId, "new agent ID", 128);
+  const approvedBy = requiredText(options.approvedBy, "approver", 128);
+  const reason = requiredText(options.reason, "takeover reason");
+  const expected = takeoverEvidence(options);
   if (options.action !== "reassign" && options.action !== "release") {
     throw new SimpleChangesError(
       'takeover action must be "reassign" or "release".',
@@ -1848,11 +2071,14 @@ export const takeoverWorktreeClaim = (
         { ...options, approvedBy, claimId, newAgentId, reason },
         expected
       );
+      const session = executingClaimSession();
       const recovered = recoverAppliedTakeoverIntent(
         commonGitDirectory,
         takeoverHistory,
+        document,
         claim,
-        pendingIntent
+        pendingIntent,
+        session
       );
       if (recovered) {
         return recovered;
@@ -1924,7 +2150,8 @@ export const takeoverWorktreeClaim = (
         claimId,
         newAgentId,
         updated.state,
-        takenOverAt
+        takenOverAt,
+        takeoverEventId(options.action, session)
       );
       persistTakeoverIntent(
         commonGitDirectory,

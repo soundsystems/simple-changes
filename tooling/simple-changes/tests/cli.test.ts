@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { createHash } from "node:crypto";
 import {
+  chmodSync,
   existsSync,
+  mkdirSync,
   readFileSync,
   realpathSync,
   symlinkSync,
@@ -24,6 +26,7 @@ import {
 } from "../../../skills/simple-changes/scripts/lib/schema.ts";
 import { refreshScratchFileRule } from "../../../skills/simple-changes/scripts/lib/scratch-file-rule.ts";
 import { locateWorkDirectoryRepository } from "../../../skills/simple-changes/scripts/lib/work-directory.ts";
+import { worktreeCoordinationPath } from "../../../skills/simple-changes/scripts/lib/worktree-coordination.ts";
 import {
   createTestRepository,
   git,
@@ -1143,7 +1146,11 @@ while (!existsSync(process.env.SIMPLE_CHANGES_TEST_RELEASE_PATH)) {
     );
     expect(claimed.exitCode).toBe(0);
     expect(JSON.parse(decoder.decode(claimed.stdout))).toMatchObject({
-      capabilityProbe: { automatic: true },
+      capabilityProbe: {
+        adapterSupportsAutomation: true,
+        automatic: false,
+        blocker: { code: "host-transport-unverified" },
+      },
       claim: { owner: { ownerRef: "session-123" } },
     });
     const claimedOutput = JSON.parse(decoder.decode(claimed.stdout)) as {
@@ -1170,12 +1177,16 @@ while (!existsSync(process.env.SIMPLE_CHANGES_TEST_RELEASE_PATH)) {
     );
     expect(requested.exitCode).toBe(0);
     expect(JSON.parse(decoder.decode(requested.stdout))).toMatchObject({
-      capabilityProbe: { automatic: true },
+      capabilityProbe: {
+        automatic: false,
+        blocker: { capability: "transport", code: "host-transport-unverified" },
+      },
       request: {
         action: "request-pause",
         claimId: claimedOutput.claim.claimId,
         owner: { ownerRef: "session-123" },
         runId: startedOutput.lease.runId,
+        state: "constructed",
       },
     });
 
@@ -1236,6 +1247,127 @@ while (!existsSync(process.env.SIMPLE_CHANGES_TEST_RELEASE_PATH)) {
         ]),
       },
     });
+  }, 30_000);
+
+  test("constructs a cross-harness request without calling it delivered or running the owner's binary", () => {
+    const fixture = createTestRepository();
+    repositories.push(fixture);
+    // A capable owner binary is installed, but the executing host is another
+    // harness with no callable transport to that owner.
+    const bin = resolve(fixture.base, "bin");
+    mkdirSync(bin);
+    const marker = resolve(fixture.base, "owner-binary-ran");
+    writeFileSync(
+      resolve(bin, "claude"),
+      `#!/bin/sh\necho ran >> '${marker}'\necho '2.1.300 (Claude Code)'\n`
+    );
+    chmodSync(resolve(bin, "claude"), 0o755);
+    const hostEnv = {
+      CODEX_THREAD_ID: "thread-controller",
+      PATH: `${bin}:${process.env.PATH ?? ""}`,
+    };
+    const cli = (args: string[]) => {
+      const result = spawnSync([process.execPath, cliPath, ...args], {
+        env: hostEnv,
+        stderr: "pipe",
+        stdout: "pipe",
+      });
+      return {
+        exitCode: result.exitCode,
+        stderr: decoder.decode(result.stderr),
+        stdout: decoder.decode(result.stdout),
+      };
+    };
+    const started = JSON.parse(
+      cli([
+        "loop",
+        "start",
+        "--mode",
+        "integrate",
+        "--agent-id",
+        "controller",
+        "--json",
+        "--repo",
+        fixture.root,
+      ]).stdout
+    ) as { lease: { runId: string } };
+    const owned = resolve(fixture.base, "owned");
+    git(fixture.root, ["worktree", "add", "-b", "owned", owned]);
+    const claimed = JSON.parse(
+      cli([
+        "worktree",
+        "claim",
+        "--agent-id",
+        "owner",
+        "--worktree",
+        owned,
+        "--adapter",
+        "claude-code",
+        "--owner-ref",
+        "session-owner",
+        "--json",
+        "--repo",
+        owned,
+      ]).stdout
+    ) as { claim: { claimId: string } };
+    const coordinationPath = worktreeCoordinationPath(
+      captureInventory(fixture.root).repository.commonGitDirectory
+    );
+    const before = readFileSync(coordinationPath, "utf8");
+    const requestArgs = (runId: string, json: boolean) => [
+      "worktree",
+      "request",
+      "--claim-id",
+      claimed.claim.claimId,
+      "--run-id",
+      runId,
+      "--request-action",
+      "request-pause",
+      ...(json ? ["--json"] : []),
+      "--repo",
+      fixture.root,
+    ];
+
+    const requested = cli(requestArgs(started.lease.runId, true));
+    expect(requested.exitCode).toBe(0);
+    const output = JSON.parse(requested.stdout) as {
+      capabilityProbe: Record<string, unknown>;
+      request: Record<string, unknown>;
+    };
+    expect(output).toMatchObject({
+      capabilityProbe: {
+        adapterSupportsAutomation: true,
+        automatic: false,
+        blocker: {
+          adapter: "claude-code",
+          capability: "transport",
+          code: "host-transport-unverified",
+          manualNextAction: expect.stringContaining("Nothing was sent"),
+        },
+        capabilities: { delivery: "live-bidirectional" },
+        host: { harness: "codex", transport: "unverified" },
+      },
+      request: {
+        claimId: claimed.claim.claimId,
+        repository: { worktreePath: owned },
+        runId: started.lease.runId,
+        state: "constructed",
+      },
+    });
+    expect(JSON.stringify(output)).not.toContain("delivered");
+    const text = cli(requestArgs(started.lease.runId, false));
+    expect(text.exitCode).toBe(0);
+    expect(text.stdout).toStartWith(
+      `Constructed, not sent: Pause at a safe boundary and return the exact Simple Changes pause receipt ID. Claim ${claimed.claim.claimId}; run ${started.lease.runId}; worktree ${owned}.\nNext: Nothing was sent, and this runtime cannot see`
+    );
+    // Nothing was sent, run, recorded, or retried.
+    expect(existsSync(marker)).toBe(false);
+    expect(readFileSync(coordinationPath, "utf8")).toBe(before);
+
+    // A run that is not the active loop gets no request at all.
+    const stale = cli(requestArgs("run-not-active", true));
+    expect(stale.exitCode).toBe(EXIT_CODES.unsafe);
+    expect(stale.stderr).toContain("is not the active loop");
   }, 30_000);
 
   test("records an audited opening-worktree removal disposition", () => {

@@ -23,6 +23,7 @@ import {
   readyWorkStatus,
   recordReadyWork,
 } from "../../../skills/simple-changes/scripts/lib/ready-work.ts";
+import { attestCommits } from "../../../skills/simple-changes/scripts/lib/review-ledger.ts";
 import {
   addShipHold,
   checkShipHolds,
@@ -86,6 +87,16 @@ const featureWorktree = (
   return { branch, path };
 };
 
+// Ready work needs every commit the target lacks attested by its author,
+// from the author's own claim, before the claim is released.
+const attestBranch = (path: string, agentId: string): void => {
+  attestCommits({
+    commits: git(path, ["rev-list", "main..HEAD"]).split("\n").filter(Boolean),
+    logicalId: agentId,
+    repositoryPath: path,
+  });
+};
+
 const withOrigin = (fixture: TestRepository): string => {
   const origin = join(fixture.base, "origin.git");
   git(fixture.base, ["init", "--bare", origin]);
@@ -125,6 +136,7 @@ describe("ready-work receipts", () => {
       recordReadyWork(path, "codex-author", claim.claimId, input)
     ).toThrow("commit every change first");
     git(path, ["checkout", "--", "ready.ts"]);
+    attestBranch(path, "codex-author");
 
     const { claim: released, receipt } = recordReadyWork(
       path,
@@ -174,6 +186,7 @@ describe("ready-work receipts", () => {
     const fixture = repository();
     const { branch, path } = featureWorktree(fixture, "squashed");
     const claim = claimWorktree(path, "author", path, "codex-desktop");
+    attestBranch(path, "author");
     recordReadyWork(
       path,
       "author",
@@ -196,6 +209,7 @@ describe("ready-work receipts", () => {
     writeFixture(path, "midloop.ts", "export const midloop = 2;\n");
     git(path, ["commit", "-am", "Finish midloop"]);
     expect(verifyLoop(fixture.root).ok).toBe(true);
+    attestBranch(path, "late-author");
 
     recordReadyWork(
       path,
@@ -972,6 +986,7 @@ exit 0
     const fixture = repository();
     const { path } = featureWorktree(fixture, "cli");
     const claim = claimWorktree(path, "author", path, "cursor-cloud");
+    attestBranch(path, "author");
     const inputPath = join(fixture.base, "ready.json");
     writeFileSync(inputPath, `${JSON.stringify(READY_INPUT)}\n`);
     const released = runCli([

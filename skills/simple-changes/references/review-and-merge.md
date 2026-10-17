@@ -107,7 +107,9 @@ repairs it.
 - **Coverage.** `proposal record-authors` binds a head to the effective
   authors of its range and computes `authorsDigest`. A commit with no author,
   a replay source with none, and an inconclusive replay nobody attested are
-  gaps; a head with no gaps is fully covered.
+  gaps; a head with no gaps is fully covered. `author coverage --base
+  <target> --head <sha>` reads the same coverage and digest before any
+  proposal exists, writes nothing, and never counts a waiver.
 - **Before dispatch.** `initialize --proposal <id> --head <sha>
   [--authoring-request <json-or-@path>]` resolves the reviewer against that
   head, with the current request's answer on top when one is passed;

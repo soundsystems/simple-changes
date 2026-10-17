@@ -27,7 +27,10 @@ Before creation:
 - verify exact base and head/revision IDs;
 - confirm the proposal paths match one validated unit;
 - confirm every commit in the range is attested
-  ([review ledger steps](#review-ledger-steps));
+  ([review ledger steps](#review-ledger-steps)): `simple-changes author
+  coverage --base <target> --head <sha>` lists each commit with no attested
+  author, each replay source with none, and each inconclusive replay nobody
+  attested an edit on, and exits non-zero until none is left;
 - render the description to a file or structured API field using real newline
   characters.
 
@@ -49,7 +52,12 @@ After creation or update, fetch and re-read:
 - current state and draft status.
 
 Then run `proposal record-authors` for that head before presenting the
-proposal as ready for review.
+proposal as ready for review. While coverage is incomplete, keep the proposal
+a draft: ask each commit's author to attest from its own session and record
+the authors again. A gap no author can close, such as a commit from a session
+that has ended, needs the owner's exact `proposal waive-coverage` on that
+draft head. Mark it ready for review only after that, and never attest
+another agent's commits to fill a gap.
 
 Save the fetched source body to a file in the agent's
 [work directory](inventory-and-concurrency.md#agent-work-directories) and audit
@@ -204,7 +212,9 @@ nothing is reconstructed later. Record it whatever `proposalSignatures` says:
    a replay, without an executing session, when no record from your
    session, harness, and agent id lacks what you report, and when one of
    them names a different instance or model. Such a record appearing later
-   voids the completion.
+   voids the completion. Attest and complete before releasing your claim or
+   handing the work off: once the claim ends, nothing can be attested
+   through it.
 2. **After every rebase, cherry-pick, or squash**, attest each new commit with
    `--replays <old sha>[,<old sha>...]`. Add `--contribution implementation`
    whenever you changed the implementation while replaying; nothing infers

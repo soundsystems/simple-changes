@@ -198,7 +198,11 @@
   digest, and releases the claim as a completed-work handoff carrying that
   exact evidence so an active loop keeps integrating. A receipt reads `stale`
   once its branch or checkout moves and `shipped` once the target contains it,
-  and it grants no merge, deploy, migration, or cleanup authority.
+  and it grants no merge, deploy, migration, or cleanup authority. It is
+  recorded only while every commit the target lacks from its head has an
+  attested author, every replay source has one, and every inconclusive replay
+  has an attested edit, or the owner names exactly the outstanding commits
+  another agent made; naming them records nothing and waives nothing.
 - Shipment holds are local records beside the claims, optionally published as
   `refs/simple-changes/holds/<id>` for other clones. A `ship` hold covers
   merges, deployments, and migrations; `deploy` and `migrations` holds cover
@@ -240,7 +244,12 @@
 - Harness automation is capability-gated. An unsupported discovery, delivery,
   wait, scope, or owner-reference requirement produces a structured manual
   blocker and no repository mutation. Vendor APIs and credentials never enter
-  the upstream runtime or durable coordination metadata.
+  the upstream runtime or durable coordination metadata. A coordination
+  request is only ever constructed: the runtime cannot see the executing
+  host's delivery tools, so its probe is never automatic, an automatable
+  owner profile carries a `host-transport-unverified` blocker, delivery is
+  never recorded, and only the owner's exact pause receipt acknowledges a
+  request, which is built only for the active run.
 - Missing onboarding defaults to checked proposal creation and confirmation
   before completed-work handoff.
 - A meaningful guidance-version change blocks the next write-capable mutation

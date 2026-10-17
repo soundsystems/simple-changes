@@ -510,6 +510,19 @@ const formsMatch = (left: ModelForms, right: ModelForms): boolean =>
   );
 
 /**
+ * Whether a model name has too many readings to compare cheaply. Such a name
+ * counts as the same as any other, which only blocks an adversarial review;
+ * a check that must not accept on "same", such as whether a reviewer
+ * reported the model it was asked for, refuses it instead.
+ */
+export const modelNameTooComplex = (value: string): boolean =>
+  modelForms(value).overflow;
+
+/** The next step when a model name is too complex to compare. */
+export const MODEL_NAME_TOO_COMPLEX =
+  "The model label is too complex to compare; pass the model ID the harness reports.";
+
+/**
  * Whether two reported model names may name the same model. Harnesses and
  * people report names in different shapes (a display name with a family
  * prefix, an id with hyphens, an appended effort such as `high` or
@@ -527,19 +540,6 @@ const formsMatch = (left: ModelForms, right: ModelForms): boolean =>
  * `model-max`) stay distinct, while a variant written as a separate word
  * (`Model Max`) matches its base model.
  */
-/**
- * Whether a model name has too many readings to compare cheaply. Such a name
- * counts as the same as any other, which only blocks an adversarial review;
- * a check that must not accept on "same", such as whether a reviewer
- * reported the model it was asked for, refuses it instead.
- */
-export const modelNameTooComplex = (value: string): boolean =>
-  modelForms(value).overflow;
-
-/** The next step when a model name is too complex to compare. */
-export const MODEL_NAME_TOO_COMPLEX =
-  "The model label is too complex to compare; pass the model ID the harness reports.";
-
 export const sameModelName = (left: string, right: string): boolean => {
   const leftForms = modelForms(left);
   const rightForms = modelForms(right);

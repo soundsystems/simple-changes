@@ -53,7 +53,13 @@
     mismatch. Use the hyphenated ID, such as `model-5-5-mini`, when the
     variant matters. Names are compared by spelling only, with no list of
     aliases, so two unrelated names for one model, such as a codename and a
-    model ID, still count as different.
+    model ID, still count as different. This name matching is an interim
+    measure: 0.31.0 replaces it with a comparison of the canonical model
+    IDs coding agents report, treating display labels and effort as
+    metadata only and failing closed when identity is missing or ambiguous.
+    Until then, for adversarial review to work reliably, pass the model ID
+    your coding agent reports, such as `model-5-5`, to
+    `author attest --agent` rather than a display label.
   - Handing an unchanged adopted checkout to a new owner, such as from a
     controller's bridge identity back to the author who must attest its
     commits, now has documented steps. A claim never moves between owners,
@@ -90,7 +96,7 @@
     unless a reviewed primary-checkout result or an approved
     preserved-source override covered it, and still does; the warning just
     tells you sooner.
-<!-- simple-changelogs-signature agent="Claude Opus 5.5 xhigh" at="2026-10-16T15:27:21-05:00" -->
+<!-- simple-changelogs-signature agent="Claude Opus 5.5 xhigh" at="2026-10-16T19:35:19-05:00" -->
 
 ## 0.30.0 - 2026-10-15
 

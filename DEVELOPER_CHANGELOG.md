@@ -264,6 +264,12 @@
   rejects new same-model attempts reported as
   `gpt-6.1-sol model_reasoning_effort=xhigh` and `gpt-6.1-sol xhigh` with
   `reviewer-not-distinct`, and accepts `Astra medium`.
+- Interim: 0.30.1 ships this name matching as it stands, and 0.31.0
+  replaces it with a comparison of the canonical model IDs the harness
+  reports, with display labels and effort as metadata only and missing or
+  ambiguous identity failing closed. Until then, authors who want
+  adversarial review to hold should pass the harness-reported model ID,
+  such as `author attest --agent model-5-5`, rather than a display label.
 - Adopted checkout handoff (`lib/loop-lease-verify.ts`, issue
   soundsystems/simple-changes#3): `staleClaimRecovery` appends
   `handoffHint(primary, linkedClaim, liveClaim)` to the
@@ -326,7 +332,7 @@
   naming both paths, record-outcome refuses it, and the CLI exits 0 with the
   `Warning:` line on stderr.
 - Guidance stays at 30, with no guidance entry and no update notice.
-<!-- simple-changelogs-signature agent="Claude Opus 5.5 xhigh" at="2026-10-16T15:27:21-05:00" -->
+<!-- simple-changelogs-signature agent="Claude Opus 5.5 xhigh" at="2026-10-16T19:35:19-05:00" -->
 
 ## 0.30.0 - 2026-10-15
 

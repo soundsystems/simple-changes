@@ -379,7 +379,7 @@ of that change run?** with **At xhigh, after blocking or should-fix findings
 finding** (the same plus `reviewLoop.escalateOn: "any"`), or **Same effort as
 before** (`null`). Last, ask **When review rounds keep finding problems, when
 should the agent stop and check with you?** with **After 2 rounds in a row, or
-4 rounds without a clean review (Recommended)** or **Never; review until
+4 more without a clean review (Recommended)** or **Never; review until
 clean** (`reviewLoop` with `convergenceRounds` and `roundCap` both `null`). A
 recommended answer records no `reviewLoop` key, so a file that keeps the
 recommendations stays readable by runtimes before 0.31.0; see

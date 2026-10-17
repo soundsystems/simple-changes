@@ -485,19 +485,30 @@ export const claimSessionRefusal = (
   current: TakeoverState | null,
   session: string | null
 ): string => {
+  const releaseOnly = current?.releaseOnly === true;
   const takeover = takeoverCommand({
     agentId: null,
     claimId: claim.claimId,
     current,
+    release: releaseOnly,
   });
-  return `Claim ${claim.claimId} on ${claim.path} belongs to another harness session of ${claim.owner.agentId}${session ? "" : ", and this command reports no harness session"}, so it cannot act under that agent ID here: an agent ID acts only from the session that holds its claim. Ask ${claim.owner.agentId} to run this from its own session. If that session has ended, ask the user to approve \`${takeover}\`, naming your own agent ID (or the same one to continue its work), which reassigns the claim to this session.`;
+  const route = releaseOnly
+    ? "which retires the claim: its checkout is gone and its recorded state can no longer be reattached, so it cannot be reassigned"
+    : "naming your own agent ID (or the same one to continue its work), which reassigns the claim to this session";
+  return `Claim ${claim.claimId} on ${claim.path} belongs to another harness session of ${claim.owner.agentId}${session ? "" : ", and this command reports no harness session"}, so it cannot act under that agent ID here: an agent ID acts only from the session that holds its claim. Ask ${claim.owner.agentId} to run this from its own session. If that session has ended, ask the user to approve \`${takeover}\`, ${route}.`;
 };
 
 /** The checkout state a takeover approval names. */
-export type TakeoverState = Pick<
-  WorktreeInventory,
-  "branch" | "changeDigest" | "headSha"
->;
+export interface TakeoverState {
+  branch: string | null;
+  changeDigest: string;
+  headSha: string | null;
+  /**
+   * The checkout is gone and its recorded state cannot be reattached, so
+   * only a release can name this state.
+   */
+  releaseOnly?: boolean;
+}
 
 // Claims whose owner removed the checkout through the detach protocol and
 // kept its branch for reattachment.
@@ -506,35 +517,56 @@ const PRESERVED_BRANCH_STATES = new Set<WorktreeCoordinationState>([
   "resume-ready",
 ]);
 
-// A detached claim's checkout is absent by design: its state is the branch
-// and HEAD it recorded, which the preserved branch must still match.
-const detachedClaimState = (
+const branchTip = (
   inventory: RepositoryInventory,
-  claim: WorktreeClaim
-): TakeoverState | null =>
-  PRESERVED_BRANCH_STATES.has(claim.state) &&
-  claim.branch &&
-  claim.headSha &&
-  !inventory.worktrees.some((worktree) => worktree.path === claim.path) &&
-  !existsSync(claim.path)
-    ? {
-        branch: claim.branch,
-        changeDigest: claim.changeDigest,
-        headSha: claim.headSha,
-      }
-    : null;
+  branch: string
+): string | null =>
+  runGit(
+    inventory.repository.primaryCheckout,
+    ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}^{commit}`],
+    true
+  ).stdout.trim() || null;
 
 /**
- * The state a takeover of `claim` must name, for printing it: the present
- * checkout, or a detached claim's recorded branch and HEAD; null when
- * neither applies.
+ * What a takeover of `claim` compares with its approval, and what a printed
+ * takeover names. A reassign continues the work, so it needs the exact state:
+ * the present checkout, or, for a claim whose owner detached the checkout and
+ * kept its branch, the recorded state while that branch still points at the
+ * recorded HEAD. A release only retires the claim and touches nothing, so
+ * with the checkout gone it names the state as observed now: the claim's
+ * branch at its current tip, or the recorded HEAD once the branch is gone.
+ * That state is release-only. Null when a directory that is not one of this
+ * repository's worktrees occupies the path, or no commit can be named.
  */
 export const claimTakeoverState = (
   inventory: RepositoryInventory,
   claim: WorktreeClaim
-): TakeoverState | null =>
-  inventory.worktrees.find((worktree) => worktree.path === claim.path) ??
-  detachedClaimState(inventory, claim);
+): TakeoverState | null => {
+  const present = inventory.worktrees.find(
+    (worktree) => worktree.path === claim.path
+  );
+  if (present) {
+    return present;
+  }
+  if (existsSync(claim.path)) {
+    return null;
+  }
+  const tip = claim.branch ? branchTip(inventory, claim.branch) : null;
+  const headSha = tip ?? claim.headSha;
+  if (!headSha) {
+    return null;
+  }
+  const reattachable =
+    PRESERVED_BRANCH_STATES.has(claim.state) &&
+    tip !== null &&
+    tip === claim.headSha;
+  return {
+    branch: claim.branch,
+    changeDigest: claim.changeDigest,
+    headSha,
+    ...(reattachable ? {} : { releaseOnly: true }),
+  };
+};
 
 /** Refuses when `claim` belongs to another harness session. */
 export const assertClaimSession = (
@@ -2061,35 +2093,37 @@ const TAKEOVER_STATES = new Set<WorktreeCoordinationState>([
 ]);
 
 /**
- * The state a takeover compares with its approval: the present checkout, or,
- * for a claim whose owner detached it and kept its branch, the recorded state,
- * once the preserved branch is proven to still point at the recorded HEAD.
+ * The state the takeover covers, once it is proven to be the one the
+ * approval names. A reassign never covers a release-only state.
  */
-const takeoverState = (
+const approvedTakeoverState = (
   inventory: RepositoryInventory,
-  claim: WorktreeClaim
+  claim: WorktreeClaim,
+  action: "reassign" | "release",
+  newAgentId: string,
+  expected: TakeoverEvidence
 ): TakeoverState => {
-  const detached = detachedClaimState(inventory, claim);
-  if (!detached) {
-    return worktreeAt(inventory, claim.path);
-  }
-  const branchSha = runGit(
-    inventory.repository.primaryCheckout,
-    [
-      "rev-parse",
-      "--verify",
-      "--quiet",
-      `refs/heads/${detached.branch}^{commit}`,
-    ],
-    true
-  ).stdout.trim();
-  if (branchSha !== detached.headSha) {
+  const current: TakeoverState =
+    claimTakeoverState(inventory, claim) ?? worktreeAt(inventory, claim.path);
+  if (current.releaseOnly && action === "reassign") {
     throw new SimpleChangesError(
-      `Detached claim ${claim.claimId} recorded branch ${detached.branch} at ${detached.headSha}, but the branch ${branchSha ? `now points at ${branchSha}` : "no longer exists"}; a takeover covers only the recorded state.`,
+      `Claim ${claim.claimId}'s checkout ${claim.path} is gone and its recorded state can no longer be reattached, so it can only be released: ask the user to approve \`${takeoverCommand(
+        { agentId: newAgentId, claimId: claim.claimId, current, release: true }
+      )}\`.`,
       EXIT_CODES.unsafe
     );
   }
-  return detached;
+  if (
+    current.changeDigest !== expected.changeDigest ||
+    current.headSha !== expected.headSha ||
+    current.branch !== expected.branch
+  ) {
+    throw new SimpleChangesError(
+      `The worktree changed since it was observed: it is now ${current.branch ? `on branch ${current.branch}` : "detached"} at ${current.headSha ?? "no commit"} with status digest ${current.changeDigest}. The approval names one exact branch, HEAD, and status digest, so re-observe the worktree, confirm the current state with the approver, and retry the takeover with fresh evidence.`,
+      EXIT_CODES.unsafe
+    );
+  }
+  return current;
 };
 
 // The exact checkout state the approval names, validated.
@@ -2171,17 +2205,13 @@ export const takeoverWorktreeClaim = (
           EXIT_CODES.unsafe
         );
       }
-      const current = takeoverState(inventory, claim);
-      if (
-        current.changeDigest !== expected.changeDigest ||
-        current.headSha !== expected.headSha ||
-        current.branch !== expected.branch
-      ) {
-        throw new SimpleChangesError(
-          `The worktree changed since it was observed: it is now ${current.branch ? `on branch ${current.branch}` : "detached"} at ${current.headSha ?? "no commit"} with status digest ${current.changeDigest}. The approval names one exact branch, HEAD, and status digest, so re-observe the worktree, confirm the current state with the approver, and retry the takeover with fresh evidence.`,
-          EXIT_CODES.unsafe
-        );
-      }
+      const current = approvedTakeoverState(
+        inventory,
+        claim,
+        options.action,
+        newAgentId,
+        expected
+      );
       const loopRefusal = activeLoopTakeoverRefusal(
         commonGitDirectory,
         claim.path,

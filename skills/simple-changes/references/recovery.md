@@ -215,9 +215,14 @@ claim. A reassigned claim belongs to the harness session that ran the
 takeover, which is how a replacement session continues an ended session's
 claim, under the same agent ID or its own. A stale claim, whose owner's pause
 found the checkout moved, can be taken over the same way. So can a detached
-one: its checkout is absent by design, so the approval names the preserved
+one: its checkout is absent by design, so a reassign names the preserved
 branch with the HEAD and status digest the claim recorded, and the branch must
-still point at that HEAD. It refuses claims a loop still requires, judged by lifecycle rather
+still point at that HEAD. A release only retires a claim and touches no file
+or ref, so when the checkout is gone and the recorded state can no longer be
+reattached (the preserved branch moved or was deleted, or a stale claim's
+checkout was removed), `--release` names the claim's branch at its current
+tip, or the recorded HEAD once the branch is gone, with the recorded digest.
+Every refusal prints the takeover form that would be accepted. It refuses claims a loop still requires, judged by lifecycle rather
 than bare path membership: an active loop protects every registered path, but
 a relinquished loop preserves work through the worktrees themselves, so its
 registered paths no longer freeze takeover; only an adopted coordination

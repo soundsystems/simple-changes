@@ -86,8 +86,17 @@ Two requirements apply. **Executor independence** is the rule above: the
 reviewer is a separate agent or session from every author of the change.
 When the review role sets `adversarial: true`, review also needs
 **diversity**: a different harness, or the same harness with a different
-reported model, from every author. Diversity adds to executor independence
-and never replaces it.
+model ID, from every author. Model IDs are what harnesses report, such as
+`model-5-5`, compared exactly after folding case and one `provider/`
+prefix; a display name, an effort label, or a note is not an ID. Within one
+harness a missing or non-ID name on either side fails closed
+(`author-identity-missing`, `reviewer-identity-missing`, or, before
+dispatch, `reviewer-model-id-missing`) with the next step; across harnesses
+a reported name is enough. Before a proposal is named, the author is the
+configured `proposals` model, so a missing author ID there is fixed with
+`setup --authoring`; after, it is a recorded attestation, which its author
+completes. Diversity adds to executor independence and never
+replaces it.
 
 The evidence lives in `review-ledger.json` under `<common git
 dir>/simple-changes/`, beside the loop lease. Each write takes the loop lock,
@@ -99,11 +108,17 @@ repairs it.
   commits to their sources ([ledger steps](change-requests.md#review-ledger-steps)).
   Effective authors follow those links at read time, so a later attestation
   anywhere in a commit's ancestry counts at once. An author may complete its
-  own earlier attestation that lacked an instance or model
-  (`--complete-identity`); the earlier record stays in the ledger and still
-  rules out any reviewer it ruled out as the same executor, but its missing
-  instance or model no longer leaves independence or diversity unknown. No
-  other commit or replay source changes.
+  own earlier attestation that lacked an instance or model ID, a display
+  name included (`--complete-identity`); the earlier record stays in the
+  ledger and still rules out any reviewer it ruled out as the same executor,
+  but its missing instance or model ID no longer leaves independence or
+  diversity unknown. No
+  other commit or replay source changes. A completion an earlier runtime
+  wrote under its rule, which compared reported names, stays valid; a
+  display name it added is still not a model ID.
+  A runtime before 0.31.0 reads a ledger holding a completion that adds a
+  model ID to a display-name record as malformed, so update every runtime
+  that shares the repository before completing one.
 - **Coverage.** `proposal record-authors` binds a head to the effective
   authors of its range and computes `authorsDigest`. A commit with no author,
   a replay source with none, and an inconclusive replay nobody attested are

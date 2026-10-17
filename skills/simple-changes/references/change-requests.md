@@ -196,12 +196,17 @@ Review independence is checked against what agents record at the time;
 nothing is reconstructed later. Record it whatever `proposalSignatures` says:
 
 1. **After every commit**, the agent that made it runs `simple-changes author
-   attest --commit <sha> --agent-id <id> [--instance <id>] [--agent "<model>
-   <version>"]` in its own session. `--instance` and `--agent` are what the
-   harness reports for this agent; omit what it does not report.
+   attest --commit <sha> --agent-id <id> [--instance <id>] [--agent <model
+   ID>]` in its own session. `--instance` and `--agent` are what the harness
+   reports for this agent; omit what it does not report. `--agent` is the
+   model ID the harness reports, such as `model-5-5`: lowercase, no spaces,
+   with no effort word or note. Adversarial review compares model IDs only,
+   so a display name such as `Model 5.5 high` is missing evidence there.
    If an earlier attestation of yours on that commit lacked an instance or
-   model your harness reports now, run the same command again from the same
-   session, with the same `--agent-id`, the values reported now, and
+   model ID your harness reports now, a display name included, run the same
+   command again from the same
+   session, with the same `--agent-id`, the values reported now (with
+   `--instance` whenever the earlier record has one), and
    `--complete-identity`. The ledger keeps every record and adds a
    completion naming the earlier ones, which then stop counting as separate
    authors, though any reviewer they ruled out as the same executor stays
@@ -210,9 +215,11 @@ nothing is reconstructed later. Record it whatever `proposalSignatures` says:
    attestation may complete it: a replacement agent reusing the agent id
    attests without the flag and stays a separate author. It is refused for
    a replay, without an executing session, when no record from your
-   session, harness, and agent id lacks what you report, and when one of
-   them names a different instance or model. Such a record appearing later
-   voids the completion. Attest and complete before releasing your claim or
+   session, harness, and agent id lacks what you report, and when any two
+   of those records, yours included, name a different instance or model.
+   Two model IDs differ when they are not equal, and two names without an ID
+   differ when they are not identical. Such a record appearing later voids
+   the completion. Attest and complete before releasing your claim or
    handing the work off: once the claim ends, nothing can be attested
    through it.
 2. **After every rebase, cherry-pick, or squash**, attest each new commit with

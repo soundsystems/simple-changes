@@ -60,6 +60,7 @@ import {
   headCoverage,
   heldLoopLock,
   type IdentityCompletion,
+  identityReasonHint,
   loadReviewLedgerForResume,
   type ReplayCheck,
   type ReviewLedger,
@@ -89,6 +90,7 @@ import {
   releaseWorktreeClaim,
   worktreeCoordinationPath,
 } from "../../../skills/simple-changes/scripts/lib/worktree-coordination.ts";
+import { renderResumedReviews } from "../../../skills/simple-changes/scripts/simple-changes.ts";
 import {
   createTestRepository,
   git,
@@ -1190,13 +1192,12 @@ describe("post-return gate and approval", () => {
         verified: sentinelReviewer,
       }).fields
     ).toEqual(["model"]);
-    // A label too complex to compare would read as the requested model, so
-    // it is disclosed as a mismatch with the next step instead.
-    const complex =
-      "xx-5 low max high low high max max low high high low max high max low low max high low max a 1 a 1 a 1 a 1 a 1";
+    // A name that is not a model ID on either side cannot show the reviewer
+    // ran the requested model, so it is disclosed with the next step.
     for (const [requested, reported] of [
-      ["model-b", complex],
-      [complex, "model-b"],
+      ["model-b", "Model B"],
+      ["Model B", "model-b"],
+      ["model-b", "model-b high"],
     ] as const) {
       expect(
         reviewDisclosure({
@@ -1210,7 +1211,7 @@ describe("post-return gate and approval", () => {
       ).toMatchObject({
         fields: ["model"],
         message: expect.stringContaining(
-          "too complex to compare; pass the model ID the harness reports"
+          "Record the model ID the agent reports, in lowercase with no spaces"
         ),
         mismatch: true,
       });
@@ -1240,21 +1241,51 @@ describe("post-return gate and approval", () => {
         { adversarial: true }
       ).acceptanceReason
     ).toBe("author-identity-missing");
-    const named = emptyReviewLedger();
-    attestInMemory(named, C1, author("alpha", { agent: "Example Model 5.5" }));
-    addHead(named, C1, [C1]);
-    const variant = {
+    // In one harness only model IDs tell models apart: a display name on the
+    // author is missing evidence, an equal ID is the same model, and another
+    // harness is distinct whatever the names.
+    const reviewer = {
       agent: "example-model-5-5",
       harness: "claude-code",
       instance: null,
       session: "session-other",
     };
+    const authoredBy = (agent: string) => {
+      const authored = emptyReviewLedger();
+      attestInMemory(authored, C1, author("alpha", { agent }));
+      addHead(authored, C1, [C1]);
+      return authored;
+    };
     expect(
-      decide(named, C1, variant, { adversarial: true }).acceptanceReason
+      decide(authoredBy("Example Model 5.5"), C1, reviewer, {
+        adversarial: true,
+      }).acceptanceReason
+    ).toBe("author-identity-missing");
+    expect(
+      decide(authoredBy("Example-Model-5-5"), C1, reviewer, {
+        adversarial: true,
+      }).acceptanceReason
     ).toBe("reviewer-not-distinct");
     expect(
-      decide(named, C1, { ...variant, harness: "codex" }, { adversarial: true })
-        .accepted
+      decide(
+        authoredBy("example-model-5-5"),
+        C1,
+        { ...reviewer, agent: "Example Model 5.5" },
+        { adversarial: true }
+      ).acceptanceReason
+    ).toBe("reviewer-identity-missing");
+    expect(
+      decide(authoredBy("example-model-5"), C1, reviewer, {
+        adversarial: true,
+      }).accepted
+    ).toBe(true);
+    expect(
+      decide(
+        authoredBy("Example Model 5.5"),
+        C1,
+        { ...reviewer, harness: "codex" },
+        { adversarial: true }
+      ).accepted
     ).toBe(true);
   });
 
@@ -1596,29 +1627,75 @@ describe("reviewer resolution before dispatch", () => {
     expect(resolve({ status: "no-delegation" }).reason).toBe("no-delegation");
     // A concrete harness id may be spelled "unknown"; only the status says
     // that detection failed.
-    // An effort word on the author's model does not make the same model
-    // distinct (#5), while a different version stays distinct.
-    const sol = { harness: "codex", model: "GPT-6.1 Sol high" };
+    // Before dispatch, too, only model IDs are compared (#10): an equal ID is
+    // the same model, a different ID is distinct, and a configured name
+    // that is not an ID fails closed with its own reason.
+    const solAuthor = { harness: "codex", model: "gpt-6.1-sol" };
+    expect(
+      resolve(
+        { adversarial: true, harness: "codex", model: "GPT-6.1-Sol" },
+        solAuthor
+      )
+    ).toMatchObject({ reason: "reviewer-not-distinct", status: "blocked" });
+    expect(
+      resolve(
+        { adversarial: true, harness: "codex", model: "gpt-6-sol" },
+        solAuthor
+      ).status
+    ).toBe("resolved");
     expect(
       resolve(
         { adversarial: true, harness: "codex", model: "gpt-6.1-sol xhigh" },
-        sol
+        solAuthor
       )
-    ).toMatchObject({ reason: "reviewer-not-distinct", status: "blocked" });
+    ).toMatchObject({
+      reason: "reviewer-model-id-missing",
+      status: "unresolved",
+    });
     expect(
       resolve(
-        {
-          adversarial: true,
-          harness: "codex",
-          model: "gpt-6.1-sol reasoning_effort=high",
-        },
-        { harness: "codex", model: "gpt-6.1-sol" }
+        { adversarial: true, harness: "codex", model: "gpt-6-sol" },
+        { harness: "codex", model: "GPT-6.1 Sol high" }
       )
-    ).toMatchObject({ reason: "reviewer-not-distinct", status: "blocked" });
-    expect(
-      resolve({ adversarial: true, harness: "codex", model: "gpt-6-sol" }, sol)
-        .status
-    ).toBe("resolved");
+    ).toMatchObject({
+      reason: "author-identity-missing",
+      status: "unresolved",
+    });
+    // Before a proposal the author is the configured model, so the hint
+    // names setup, never a completion that cannot change it.
+    const provisionalHint = identityReasonHint(
+      "author-identity-missing",
+      "provisional"
+    );
+    expect(provisionalHint).toContain("setup --authoring");
+    expect(provisionalHint).not.toContain("--complete-identity");
+    // After it, the hint says when completion applies and when it cannot,
+    // since one reason covers an unknown harness or session too.
+    const verifiedHint = identityReasonHint("author-identity-missing");
+    expect(verifiedHint).toContain("--complete-identity");
+    expect(verifiedHint).toContain(
+      "A record without a session, harness or agent id cannot be completed"
+    );
+    // Resume names the same repair before asking for a fresh review.
+    const resumed = renderResumedReviews({
+      proposals: [
+        {
+          attempts: [
+            {
+              accepted: true,
+              attemptId: "attempt-1",
+              headRevision: fakeSha(1),
+              revalidated: false,
+              revalidationReason: "author-identity-missing",
+              verdict: "clean",
+            },
+          ],
+        },
+      ],
+      state: "valid",
+    } as unknown as Parameters<typeof renderResumedReviews>[0]);
+    expect(resumed).toContain("--complete-identity");
+    expect(resumed).toContain("Then request a fresh review.");
     const concrete = { harness: "unknown", model: "model-gamma" };
     expect(resolve(concrete)).toMatchObject({
       harness: "unknown",
@@ -1867,12 +1944,87 @@ describe("proposal ledger commands", () => {
     });
   });
 
-  test("an effort word on the author's model never makes a same-model review distinct, and a stored acceptance is re-judged without rewriting it", () => {
+  test("a display name on the author fails closed in one harness until the author completes it with its model ID", () => {
     const run = preparedRun();
     const head = commitFile(run.author, "a.txt", "a\n");
-    // The author's truthful display label carries its effort (#5).
+    const owner = {
+      commits: [head],
+      environment: ENV_A,
+      instance: "instance-a",
+      logicalId: "author-a",
+      repositoryPath: run.author,
+    };
+    // The author recorded a display label, as 0.30 guidance asked (#10).
+    attestCommits({ ...owner, agent: "GPT-6.1 Sol high" });
+    const recordAuthors = () =>
+      recordProposalAuthors({
+        base: run.base,
+        environment: ENV_A,
+        head,
+        proposalId: PROPOSAL,
+        repositoryPath: run.author,
+      });
+    recordAuthors();
+    const review = (agent: string, instance: string) =>
+      recordReviewAttempt({
+        attemptId: randomUUID(),
+        authoring: stubAuthoring({ adversarial: true }),
+        head,
+        proposalId: PROPOSAL,
+        receipt: reviewReceipt({
+          agent,
+          harness: "claude-code",
+          instance,
+          session: `session-${instance}`,
+        }),
+        repositoryPath: run.author,
+      });
+    // In the author's harness a label proves nothing: refused, not accepted.
+    expect(review("gpt-6.1-sol", "z").attempt).toMatchObject({
+      acceptanceReason: "author-identity-missing",
+      accepted: false,
+    });
+    expect(identityReasonHint("author-identity-missing")).toContain(
+      "--complete-identity"
+    );
+    expect(identityReasonHint("author-identity-missing")).toContain(
+      "--instance"
+    );
+    // Following the hint without the recorded instance completes nothing.
+    const { instance: _, ...withoutInstance } = owner;
+    expect(() =>
+      attestCommits({
+        ...withoutInstance,
+        agent: "gpt-6.1-sol",
+        completeIdentity: true,
+      })
+    ).toThrow("identity-completion-unmatched");
+    // A reviewer label is refused too, with its own reason.
+    attestCommits({ ...owner, agent: "gpt-6.1-sol", completeIdentity: true });
+    recordAuthors();
+    expect(review("GPT-6.1 Sol", "y").attempt).toMatchObject({
+      acceptanceReason: "reviewer-identity-missing",
+      accepted: false,
+    });
+    // Completed with its model ID, the author counts as that ID: the same
+    // ID is the same model and a different ID is distinct.
+    expect(review("GPT-6.1-Sol", "x").attempt).toMatchObject({
+      acceptanceReason: "reviewer-not-distinct",
+      accepted: false,
+    });
+    const distinct = review("astra", "w");
+    expect(distinct.attempt).toMatchObject({
+      acceptanceReason: null,
+      accepted: true,
+    });
+    expect(distinct.currentValidity).toMatchObject({ valid: true });
+  });
+
+  test("a display name across harnesses still counts, since the harness differs", () => {
+    const run = preparedRun();
+    const head = commitFile(run.author, "a.txt", "a\n");
     attestCommits({
-      agent: "GPT-6.1 Sol high",
+      agent: "Claude Opus 5.5",
       commits: [head],
       environment: ENV_A,
       instance: "instance-a",
@@ -1880,108 +2032,22 @@ describe("proposal ledger commands", () => {
       repositoryPath: run.author,
     });
     recordProposalAuthors({
-      agent: "GPT-6.1 Sol high",
       base: run.base,
       environment: ENV_A,
       head,
       proposalId: PROPOSAL,
       repositoryPath: run.author,
     });
-    const sameModel = reviewReceipt({
-      agent: "gpt-6.1-sol",
-      harness: "claude-code",
-      instance: "reviewer-z",
-      session: "session-z",
-    });
-    // Without adversarial review the same model may review, so the attempt
-    // is accepted and stored as such.
-    const stored = recordReviewAttempt({
-      attemptId: randomUUID(),
-      head,
-      proposalId: PROPOSAL,
-      receipt: sameModel,
-      repositoryPath: run.author,
-    });
-    expect(stored.attempt).toMatchObject({
-      acceptanceReason: null,
-      accepted: true,
-    });
-    writeFileSync(
-      join(run.root, ".simple-changes-authoring.json"),
-      `${JSON.stringify({
-        harnesses: {},
-        roles: { review: { adversarial: true, harness: "running" } },
-        schemaVersion: 1,
-      })}\n`
-    );
-    // Once adversarial review is on, the stored attempt keeps its recorded
-    // acceptance but no longer counts.
-    const revalidated = recordReviewAttempt({
-      attemptId: stored.attempt.attemptId,
-      head,
-      proposalId: PROPOSAL,
-      receipt: sameModel,
-      repositoryPath: run.author,
-    });
-    expect(revalidated).toMatchObject({
-      approvalCandidate: false,
-      attempt: { acceptanceReason: null, accepted: true },
-      currentValidity: { reason: "reviewer-not-distinct", valid: false },
-      status: "unchanged",
-    });
-    // A new attempt by the same model at another effort is rejected, however
-    // the effort is spelled.
-    const fielded = recordReviewAttempt({
-      attemptId: randomUUID(),
-      head,
-      proposalId: PROPOSAL,
-      receipt: reviewReceipt({
-        agent: "gpt-6.1-sol model_reasoning_effort=xhigh",
-        harness: "claude-code",
-        instance: "reviewer-w",
-        session: "session-w",
-      }),
-      repositoryPath: run.author,
-    });
-    expect(fielded.attempt).toMatchObject({
-      acceptanceReason: "reviewer-not-distinct",
-      accepted: false,
-    });
-    const rejected = recordReviewAttempt({
-      attemptId: randomUUID(),
-      head,
-      proposalId: PROPOSAL,
-      receipt: reviewReceipt({
-        agent: "gpt-6.1-sol xhigh",
-        harness: "claude-code",
-        instance: "reviewer-y",
-        session: "session-y",
-      }),
-      repositoryPath: run.author,
-    });
-    expect(rejected.attempt).toMatchObject({
-      acceptanceReason: "reviewer-not-distinct",
-      accepted: false,
-    });
-    expect(rejected.approvalCandidate).toBe(false);
-    // A distinct model on the same harness passes every other gate.
-    const distinct = recordReviewAttempt({
-      attemptId: randomUUID(),
-      head,
-      proposalId: PROPOSAL,
-      receipt: reviewReceipt({
-        agent: "Astra medium",
-        harness: "claude-code",
-        instance: "reviewer-x",
-        session: "session-x",
-      }),
-      repositoryPath: run.author,
-    });
-    expect(distinct.attempt).toMatchObject({
-      acceptanceReason: null,
-      accepted: true,
-    });
-    expect(distinct.currentValidity).toMatchObject({ valid: true });
+    expect(
+      recordReviewAttempt({
+        attemptId: randomUUID(),
+        authoring: stubAuthoring({ adversarial: true }),
+        head,
+        proposalId: PROPOSAL,
+        receipt: reviewReceipt(REVIEWER_B),
+        repositoryPath: run.author,
+      }).attempt
+    ).toMatchObject({ acceptanceReason: null, accepted: true });
   });
 
   test("a request layer tightens the gate for one acceptance and never loosens the saved settings", () => {
@@ -3698,6 +3764,53 @@ describe("identity completion", () => {
     }
   });
 
+  test("a completion stops standing when two other records under its anchor disagree, even though each agrees with a completer that reports little", () => {
+    const named = complete({ agent: "GPT-6.1 Sol", instance: null });
+    const cases: [Attestation, Attestation][] = [
+      [
+        complete({ agent: "gpt-6-sol", instance: "instance-a" }),
+        complete({ agent: "gpt-6-astra", instance: "instance-b" }),
+      ],
+      // Two names without IDs that differ are two reported models too.
+      [
+        complete({ agent: "Model A", instance: null }),
+        complete({ agent: "Model B", instance: null }),
+      ],
+    ];
+    const crossHarness: RuntimeIdentity = {
+      agent: "claude-opus-5-5",
+      harness: "claude-code",
+      instance: "reviewer-i",
+      session: "reviewer-s",
+    };
+    for (const [left, right] of cases) {
+      const ledger = ledgerWith(
+        [partial(), named, left, right],
+        [completion(named, [partial()])]
+      );
+      expect(resolveEffectiveAuthors(ledger, C).authors).toHaveLength(4);
+      expect(outcome(ledger, crossHarness)).toBe("author-identity-missing");
+    }
+    // A display name beside the ID it is completed with never disagrees.
+    const display = partial({ agent: "GPT-6 high" });
+    const byId = complete({ agent: "gpt-6" });
+    const recovered = ledgerWith(
+      [display, byId],
+      [completion(byId, [display])]
+    );
+    expect(resolveEffectiveAuthors(recovered, C).authors).toEqual([byId]);
+  });
+
+  test("a completion an earlier runtime wrote with a display name keeps the ledger readable, and the name still fails closed in one harness", () => {
+    const named = complete({ agent: "GPT-6.1 Sol" });
+    const ledger = ledgerWith(
+      [partial(), named],
+      [completion(named, [partial()])]
+    );
+    expect(resolveEffectiveAuthors(ledger, C).authors).toEqual([named]);
+    expect(outcome(ledger)).toBe("author-identity-missing");
+  });
+
   test("the validator refuses a completion across sessions, harnesses, agent ids, commits, conflicting or sentinel identities, or one that adds nothing", () => {
     const refused = (
       attestations: Attestation[],
@@ -3967,6 +4080,26 @@ describe("identity completion", () => {
         completeIdentity: true,
         instance: "domain_db_preview",
       })
+    ).toThrow("identity-completion-conflict");
+    expect(readFileSync(path, "utf8")).toBe(before);
+  });
+
+  test("a completion is refused when two other records under the anchor disagree, though each agrees with what the completer reports", () => {
+    const run = preparedRun();
+    const commit = commitFile(run.author, "a.txt", "a\n");
+    const owner = {
+      commits: [commit],
+      environment: { CODEX_THREAD_ID: "thread-owner" },
+      logicalId: "author-a",
+      repositoryPath: run.author,
+    };
+    attestCommits(owner);
+    attestCommits({ ...owner, agent: "gpt-6-sol", instance: "instance-a" });
+    attestCommits({ ...owner, agent: "gpt-6-astra", instance: "instance-b" });
+    const path = reviewLedgerPath(commonDirectory(run.root));
+    const before = readFileSync(path, "utf8");
+    expect(() =>
+      attestCommits({ ...owner, agent: "GPT-6.1 Sol", completeIdentity: true })
     ).toThrow("identity-completion-conflict");
     expect(readFileSync(path, "utf8")).toBe(before);
   });

@@ -194,6 +194,7 @@ import {
   type AuthorAttestResult,
   attestCommits,
   type CommitGaps,
+  identityReasonHint,
   type RecordAuthorsResult,
   type RecordReviewResult,
   type ReviewLedgerResumeState,
@@ -506,7 +507,7 @@ Usage:
     --authors-digest SHA256 --receipt WAIVER_FILE [--json] [--repo PATH]
   simple-changes author attest --commit SHA [--commit SHA ...] [--agent-id ID]
     [--contribution implementation] [--replays SHA[,SHA ...]]
-    [--worktree PATH] [--instance ID] [--agent NAME] [--complete-identity]
+    [--worktree PATH] [--instance ID] [--agent MODEL_ID] [--complete-identity]
     [--json] [--repo PATH]
   simple-changes author coverage --base REF --head REF [--json] [--repo PATH]
   simple-changes skill check [--skill-dir PATH] [--json]
@@ -2411,7 +2412,8 @@ const describeReviewer = (
     ? `${reviewer.model ?? "unknown model"} in ${reviewer.harness} at ${reviewer.effort ?? "unknown effort"}${reviewer.effortSource === "escalation" ? " (escalated after findings)" : ""}`
     : "no target";
   const reason = reviewer.reason ? `, ${reviewer.reason}` : "";
-  return `Reviewer (${reviewer.mode}${reviewer.adversarial ? ", different author model or agent required" : ""}): ${reviewer.status}, ${target}${reason}`;
+  const hint = identityReasonHint(reviewer.reason, reviewer.mode);
+  return `Reviewer (${reviewer.mode}${reviewer.adversarial ? ", different author model or agent required" : ""}): ${reviewer.status}, ${target}${reason}${hint ? `\n${hint}` : ""}`;
 };
 
 // The authoring preference state: pending questions, a sidecar to repair, and
@@ -3348,7 +3350,10 @@ const renderRecordedReview = (result: RecordReviewResult): string => {
   } else if (result.approvalCandidate) {
     now = "Now: counts toward approval of this head.";
   }
-  return `${recorded}\n${now}\n${result.disclosure.message ? `Disclosure: ${result.disclosure.message}\n` : ""}`;
+  const hint = identityReasonHint(
+    currentValidity.valid ? null : currentValidity.reason
+  );
+  return `${recorded}\n${now}\n${hint ? `${hint}\n` : ""}${result.disclosure.message ? `Disclosure: ${result.disclosure.message}\n` : ""}`;
 };
 
 const renderWaiver = (result: WaiveCoverageResult): string =>
@@ -4030,8 +4035,9 @@ const runLoopStart = (options: CliOptions): void => {
   );
 };
 
-// Accepted reviews that no longer pass the gate on resume need a fresh review.
-const renderResumedReviews = (
+// Accepted reviews that no longer pass the gate on resume need a fresh review,
+// after any identity repair the reason calls for.
+export const renderResumedReviews = (
   state: ReviewLedgerResumeState | null
 ): string => {
   if (!state) {
@@ -4044,10 +4050,10 @@ const renderResumedReviews = (
     .flatMap((proposal) =>
       proposal.attempts
         .filter((attempt) => attempt.accepted && !attempt.revalidated)
-        .map(
-          (attempt) =>
-            `Review ${attempt.attemptId} of ${proposal.proposalId} no longer counts (${attempt.revalidationReason}); request a fresh review.\n`
-        )
+        .map((attempt) => {
+          const hint = identityReasonHint(attempt.revalidationReason);
+          return `Review ${attempt.attemptId} of ${proposal.proposalId} no longer counts (${attempt.revalidationReason}); ${hint ? `${hint} Then request` : "request"} a fresh review.\n`;
+        })
     )
     .join("");
 };

@@ -4186,6 +4186,185 @@ describe("active integration-loop lease", () => {
     });
   }, 120_000);
 
+  for (const frozen of [false, true]) {
+    test(`hands an unchanged adopted checkout from a released bridge owner to a new owner${frozen ? " after the scope froze" : ""}`, () => {
+      const fixture = repository();
+      const path = join(fixture.base, "bridged");
+      git(fixture.root, ["worktree", "add", "-b", "bridged-work", path]);
+      writeFixture(path, "history.ts", "export const history = 1;\n");
+      git(path, ["add", "history.ts"]);
+      git(path, ["commit", "-m", "Historical author work"]);
+      const lease = startLoop(fixture.root, "first-controller", "ship");
+      let controller = "first-controller";
+      const bridge = claimWorktree(path, "bridge-owner", path, "codex");
+      const bridgeReceipt = pauseClaimedWorktree(
+        path,
+        "bridge-owner",
+        path,
+        lease.runId,
+        "preserve-in-place",
+        "Bridge the checkout for its authors."
+      );
+      acceptPausedWorktreeChange(
+        fixture.root,
+        lease.runId,
+        controller,
+        bridgeReceipt.receiptId
+      );
+      if (frozen) {
+        stampFirstMutation(fixture.root);
+        expect(
+          finalizeLoop(
+            fixture.root,
+            lease.runId,
+            controller,
+            "Agent turn finished before the handoff."
+          )
+        ).toMatchObject({
+          lease: { shipmentScopeFrozenAt: expect.any(String) },
+          outcome: "relinquished",
+        });
+        controller = "next-controller";
+        startLoop(fixture.root, controller, "resume");
+      }
+      expect(verifyLoop(fixture.root)).toMatchObject({ ok: true });
+      const opening = captureInventory(fixture.root).worktrees.find(
+        (worktree) => worktree.path === path
+      );
+      const stale = () =>
+        verifyLoop(fixture.root).violations.filter(
+          (violation) => violation.path === path
+        );
+
+      // Releasing the bridge claim reopens the link; nothing holds the
+      // checkout, so the hint names the bridge owner and the new-owner route.
+      releaseWorktreeClaim(fixture.root, "bridge-owner", bridge.claimId);
+      const released = stale();
+      expect(released.map(({ code }) => code)).toEqual([
+        "coordination-claim-stale",
+      ]);
+      expect(released[0]?.message).toContain(
+        "If the checkout is passing to a new owner, the new owner runs the same claim and pause with its own agent ID and adapter instead"
+      );
+      expect(released[0]?.nextCommands?.[0]).toContain(
+        "--agent-id bridge-owner"
+      );
+      // The released bridge receipt can no longer be accepted.
+      expect(() =>
+        acceptPausedWorktreeChange(
+          fixture.root,
+          lease.runId,
+          controller,
+          bridgeReceipt.receiptId
+        )
+      ).toThrow("does not belong to this active loop and paused claim");
+
+      // The new owner claims, and another agent cannot take its live claim.
+      const author = claimWorktree(
+        path,
+        "original-author",
+        path,
+        "claude-code"
+      );
+      expect(() =>
+        claimWorktree(path, "someone-else", path, "codex")
+      ).toThrow();
+      const registration = () =>
+        readLoopLease(fixture.root)?.worktrees.find(
+          (worktree) => worktree.path === path
+        );
+      if (!frozen) {
+        // Before the scope freezes, the claim registers the new owner as a
+        // concurrent author, which is the whole handoff.
+        expect(verifyLoop(fixture.root)).toMatchObject({
+          ok: true,
+          violations: [],
+        });
+        expect(registration()).toMatchObject({
+          agentId: "original-author",
+          claimId: author.claimId,
+          role: "concurrent-author",
+        });
+        return;
+      }
+      // Once it froze, the printed recovery names the new owner, without the
+      // hint, and the checkout is paused and accepted again.
+      const held = stale();
+      expect(held[0]?.message).not.toContain("passing to a new owner");
+      expect(staleClaimRecoveryCommands(held)).toEqual([
+        `simple-changes worktree claim --agent-id original-author --worktree ${path} --adapter claude-code --repo ${fixture.root}`,
+        `simple-changes worktree pause --agent-id original-author --worktree ${path} --run-id ${lease.runId} --disposition preserve-in-place --reason <why> --repo ${fixture.root}`,
+        `simple-changes loop accept-paused-change --run-id ${lease.runId} --agent-id ${controller} --pause-receipt <pause-receipt-id> --repo ${fixture.root}`,
+      ]);
+
+      // A pause released before acceptance is not accepted.
+      const early = pauseClaimedWorktree(
+        path,
+        "original-author",
+        path,
+        lease.runId,
+        "preserve-in-place",
+        "Hand the checkout back to its author."
+      );
+      releaseWorktreeClaim(fixture.root, "original-author", author.claimId);
+      expect(() =>
+        acceptPausedWorktreeChange(
+          fixture.root,
+          lease.runId,
+          controller,
+          early.receiptId
+        )
+      ).toThrow("does not belong to this active loop and paused claim");
+
+      // A receipt whose checkout changed after the pause is stale.
+      const again = claimWorktree(path, "original-author", path, "claude-code");
+      const receipt = pauseClaimedWorktree(
+        path,
+        "original-author",
+        path,
+        lease.runId,
+        "preserve-in-place",
+        "Hand the checkout back to its author."
+      );
+      writeFixture(path, "drift.ts", "export const drift = true;\n");
+      expect(() =>
+        acceptPausedWorktreeChange(
+          fixture.root,
+          lease.runId,
+          controller,
+          receipt.receiptId
+        )
+      ).toThrow("no longer matches current worktree evidence");
+      rmSync(join(path, "drift.ts"));
+
+      // The unchanged checkout is accepted under the new owner's claim.
+      acceptPausedWorktreeChange(
+        fixture.root,
+        lease.runId,
+        controller,
+        receipt.receiptId
+      );
+      expect(verifyLoop(fixture.root)).toMatchObject({
+        ok: true,
+        violations: [],
+      });
+      const current = captureInventory(fixture.root).worktrees.find(
+        (worktree) => worktree.path === path
+      );
+      expect(current).toMatchObject({
+        changeDigest: opening?.changeDigest,
+        headSha: opening?.headSha,
+      });
+      expect(registration()).toMatchObject({
+        claimId: again.claimId,
+        coordinationState: "adopted-preserved",
+        mutationAllowed: false,
+        pauseReceiptId: receipt.receiptId,
+        role: "preserved",
+      });
+    }, 60_000);
+  }
+
   test("pauses and accepts an author whose own claim went inactive, who may then claim again", () => {
     const fixture = repository();
     const authorPath = join(fixture.base, "inactive-author");

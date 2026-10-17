@@ -113,6 +113,25 @@ A released claim is never refreshed, so `loop verify` and `loop
 status` then print the exact recovery: the owner claims and pauses the checkout
 with `preserve-in-place`, and the controller runs `loop accept-paused-change`.
 
+A claim never moves from one owner to another, so a handoff of an unchanged
+adopted (`adopted-preserved`) checkout, such as from a controller's bridge
+identity back to the author who must attest its commits, is a release and a
+new claim. The former owner releases its claim, and the new owner claims the
+checkout with its own agent ID and adapter. The release reopens the link:
+`loop verify` reports `coordination-claim-stale` for that path, naming the
+former owner and saying the new owner may run the same steps instead, and
+every guarded mutation of the run, unrelated ones included, stays blocked until
+the link is current again, so finish the handoff before other work. Under
+`allow-claimed` with the shipment scope still open, the new owner's valid claim
+on a checkout on its own branch (not detached, and not the primary or target
+branch) registers it as a concurrent author, which completes the handoff.
+Otherwise, including for a detached checkout and after the scope froze when a
+controller relinquished or handed off, verification now names the new owner,
+who runs `worktree pause --disposition preserve-in-place`, and the controller
+runs `loop accept-paused-change` with that receipt. The pause binds the exact path, branch, HEAD, and digest, so a
+checkout that changed after its pause, a claim released before acceptance,
+another owner's live claim, and the former owner's old receipt are all refused.
+
 Use `loop adopt-worktree` for a paused worktree that appeared after loop start.
 Use `loop accept-paused-change` for an opening preserved worktree whose owner
 changed it before pausing. Both commands require the receipt's run, repository,

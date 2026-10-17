@@ -1,5 +1,103 @@
 # Changelog
 
+## 0.30.1 - 2026-10-16
+
+- **Bug Fixes & Improvements**:
+  - Adversarial review no longer accepts a review by the author's own
+    model in the same coding agent just because the two spell the model's
+    name differently. Model names now match when they differ only by case,
+    separators, words that only describe effort, notes in parentheses such
+    as `(reasoning: high, budget: 32768)`, nested or unclosed ones
+    included, or words after a complete model name, which are read as
+    notes, such as `temperature 0.2` in `Model 5.5 temperature 0.2`. Two
+    names that both carry notes also match when those notes are labelled
+    fields such as `budget: 32768`, or settings such as `temperature 0.2`
+    that follow a version number, so `Model 5.5 temperature 0.2` matches
+    `model-5-5 budget 100`. Only whole words count, and a version such as
+    `5.5` is one word, so `Model 5 temperature 0.2` still differs from
+    `Model 5.5`. A note that starts with a version number, such as `(5.5)`
+    or `(5.5 high)`, keeps that version as part of the name, closed or not,
+    and the rest of the note is dropped, so `Model (5.5 high)` matches
+    `model-5-5` while `Model (5)` and `Model (5.5)` stay different. Effort
+    words are whole words anywhere in the name, such as `high`, `xhigh`,
+    `extra-high`, `reasoning: high`, `reasoning_effort=high`, or
+    `thinking mode`. They are dropped, and a standalone level such as `max`
+    is also tried kept, so a level that is also part of a name still
+    matches: `Model 5.5 Max high` matches `model-5-5-max`. A word with any
+    other part, such as `model-mini`, is not an effort word, and a name
+    made only of effort words keeps them. Only the note
+    `(version unknown)` or `(unknown version)` widens a name, only when the
+    name does not already end in a version number, and only to any version
+    of the same model, never another variant: `Model (version unknown)`
+    matches `model-5-5` and `vendor-model-5-5` but not `model-max`,
+    `Model 5 (version unknown)` does not match `model-5-5`, and a note such
+    as `(reasoning unknown)` widens nothing. Before, an author labelled
+    `Model 5.5 high` and a reviewer reporting `model-5-5` counted as
+    different models, so the review was accepted.
+  - The same comparison now also decides whether the configured reviewer
+    is blocked before a review is dispatched, whether a stored review still
+    counts, whether a reviewer reported the model it was asked for, and
+    which reviewer model setup refuses as the author's own. A review
+    accepted before this release keeps its record, but if its reviewer now
+    matches the author's model while adversarial review is on, it no longer
+    counts toward approval, and that proposal needs a review from a
+    different model or coding agent.
+  - Different versions and variants still count as different models, such
+    as `Model 5` and `Model 5.5`, or `model` and `model-max`. One
+    exception follows from reading later words as notes: a variant written
+    as a separate word, such as `Mini` in `Model 5.5 Mini` or `Max` in
+    `Model 5.5 Max`, counts as the base model `model-5-5`, and a bare
+    family name such as `Model` matches `Model 5.5`. That can block a
+    review but never admits one, though a reviewer that reports
+    `model-5-5` when `Model 5.5 Mini` was requested is not shown as a
+    mismatch. Use the hyphenated ID, such as `model-5-5-mini`, when the
+    variant matters. Names are compared by spelling only, with no list of
+    aliases, so two unrelated names for one model, such as a codename and a
+    model ID, still count as different. This name matching is an interim
+    measure: 0.31.0 replaces it with a comparison of the canonical model
+    IDs coding agents report, treating display labels and effort as
+    metadata only and failing closed when identity is missing or ambiguous.
+    Until then, for adversarial review to work reliably, pass the model ID
+    your coding agent reports, such as `model-5-5`, to
+    `author attest --agent` rather than a display label.
+  - Handing an unchanged adopted checkout to a new owner, such as from a
+    controller's bridge identity back to the author who must attest its
+    commits, now has documented steps. A claim never moves between owners,
+    so the former owner releases its claim and the new owner claims the
+    checkout right away with its own agent ID and adapter. Until the new
+    owner's claim is registered or its pause is accepted, `loop verify`
+    reports `coordination-claim-stale` for the checkout and every guarded
+    step of the run, unrelated ones included, stays blocked, so finish the
+    handoff before other work. When the former owner released with
+    `worktree release` or a handoff and nothing else holds the checkout,
+    the recovery that `loop verify` and `loop status` print now adds that
+    the new owner may run the same claim and pause instead.
+  - Under the default `concurrentWork: "allow-claimed"` policy, while the
+    run's shipment scope is still open, the new owner's claim on a checkout
+    on its own branch (not detached, and not the primary or target branch)
+    registers it as a concurrent author, which completes the handoff.
+    Otherwise, including for a detached checkout and after the scope froze,
+    the new owner pauses the checkout with `preserve-in-place` and the
+    controller runs `loop accept-paused-change` with that receipt. A
+    checkout changed after its pause, a pause whose claim was released
+    before it was accepted, a claim on a checkout another owner holds, and
+    the former owner's old receipt are all refused. Only the printed
+    recovery and the references are new; claims, pauses, and acceptance
+    work as before.
+  - `loop draft-outcome` now warns when it suggests a disposition that
+    `loop record-outcome` will refuse as drafted. It suggests `delivered`
+    or `target-equivalent` from whether a unit's paths changed on the
+    target, which alone proves neither: unrelated work may have edited a
+    shared changelog, or the unit's change may never have arrived. When a
+    unit's final target entry differs from the opening source result its
+    scope recorded, the draft names up to five such paths in its JSON
+    `warnings` and as `Warning:` lines, so you can check that unit before
+    recording. `loop record-outcome` refused such a disposition before
+    unless a reviewed primary-checkout result or an approved
+    preserved-source override covered it, and still does; the warning just
+    tells you sooner.
+<!-- simple-changelogs-signature agent="Claude Opus 5.5 xhigh" at="2026-10-16T19:35:19-05:00" -->
+
 ## 0.30.0 - 2026-10-15
 
 - A review no longer stays blocked after an author fixes its own incomplete

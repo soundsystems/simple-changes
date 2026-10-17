@@ -1,5 +1,374 @@
 # Developer changelog
 
+## 0.30.1 - 2026-10-16
+
+- Model identity (`lib/authoring.ts`, issue soundsystems/simple-changes#5):
+  `sameModelName` now compares the forms `modelForms` derives from each
+  name (`ModelForms.forms`). Each `ModelForm` holds its `tokens`, its
+  `key`, and its word `prefixes`, the keys of its leading whole words
+  short of the full form, both built once. `modelTokens` lowercases a name
+  and splits it into alphanumeric runs, and a form's key is its tokens
+  joined, which is what the removed `modelKey` computed. The forms are the
+  whole name and, for each base, the base itself and the words left by
+  each choice of effort words to drop (next bullet). The bases are the words
+  (`splitWords`) once `withoutQualifiers` has removed parenthesised
+  qualifiers; the words before the first `key:` or `key=` field label
+  (`MODEL_FIELD_LABEL`), when it comes after at least one word; and each of
+  those without trailing setting pairs (`withoutTrailingSettings`), a
+  digit-free word followed by a value that starts with a digit, such as
+  `budget 32768` or `temperature 0.2`, stripped from the end one pair at a
+  time while at least three words remain and a word with a digit
+  (`MODEL_DIGIT`) is left before the pair, so `Claude Opus 5` never
+  shrinks to `claude`. `withoutQualifiers` strips
+  `MODEL_QUALIFIER` matches innermost first, repeating until none is left,
+  so a nested note such as `(reasoning (high))` goes whole, then treats
+  an unclosed `(` and the rest of the name (`MODEL_UNCLOSED_QUALIFIER`) as
+  one more note and drops any stray `)`, so a malformed note never leaves
+  a fragment. Both a closed note and an unclosed tail go through
+  `noteVersion`, which returns the leading run of the note's tokens that
+  start with a digit (`MODEL_VERSION_TOKEN`), so a note that starts with a
+  version leaves only that version in the name, as one dotted word so it
+  never ends a leading-words match early, and a note that does not is
+  stripped as a qualifier. So `(5.5)` and `(5.5 high)` leave `5.5`,
+  `Claude Opus (5.5 high)` and `Claude Opus (5.5, budget 1000)` match
+  `claude-opus-5-5`, `gpt-6.1-sol (reasoning: high, budget: 32768)`
+  matches `gpt-6.1-sol`, and `Claude Opus (5)` and `Claude Opus (5.5)`
+  stay distinct, as do `Claude Opus (5 high)` and
+  `Claude Opus (5.5 high)`, and the unclosed `Claude Opus (5` and
+  `Claude Opus (5.5`. Words split on whitespace, commas, semicolons,
+  colons, and equals signs, and each loses the punctuation around it
+  (`MODEL_WORD_EDGES`) before the effort check.
+- Effort words (`effortWords` and `effortDrops`, replacing `EFFORT_WORDS`
+  and its trailing-only pop): a word splits into parts on `-`, `_`, and
+  `.` (`EFFORT_PART_SEPARATORS`), and only a word whose every part is in
+  `EFFORT_PARTS` (`EFFORT_LEVELS` plus `extra`, `effort`, `reasoning`,
+  `thinking`, `think`, `mode`, `level`, and `model`) can be an effort word.
+  `effortWords` sorts those into two groups (`EffortWords`). `certain`
+  holds words with an `EFFORT_MARKERS` part (`effort`, `reasoning`, or
+  `thinking`) and helper words, such as `mode`, `level`, `think`, or
+  `model-max`, next to one; every drop includes them. `variable` holds
+  standalone levels, words made only of `EFFORT_LEVEL_PARTS`
+  (`EFFORT_LEVELS` plus `extra`), such as `high`, `max`, `extra`, and
+  `extra-high`, plus helper words next to a level but not next to a
+  marker word, such as `Model` in `high Model 5.5 Max xhigh`. A helper
+  word next to neither stays in the name. `effortDrops` returns a drop of
+  every certain and variable word and, for each contiguous run of the
+  variable words, a drop of the certain words and every variable word
+  outside that run, so a name yields a quadratic number of forms, within
+  the 128-reading limit (`MAX_MODEL_FORMS`, under "Cost bound" below), and
+  a level that is also part of the name is tried kept wherever it sits
+  among other effort words: `GPT-5.1 Codex Max high` matches
+  `gpt-5.1-codex-max`, as do
+  `GPT-5.1 Codex Max model reasoning effort extra high mode` and
+  `high max xhigh GPT-5.1 Codex Max high max`;
+  `xhigh GPT-5.1 Codex Max high` matches `openai/gpt-5.1-codex-max`;
+  `high Model 5.5 Max xhigh` matches `model-5-5-max`; and
+  `GPT-5.1 Codex Max reasoning: xhigh` matches `gpt-5.1-codex-max xhigh`.
+  A drop that would leave no word yields no form, so a name made only of
+  effort words, such as `high` against `max`, still compares by its own
+  words. So `reasoning_effort=high`, `reasoning-effort: high`,
+  `model_reasoning_effort=high`, a leading `xhigh`, `thinking mode`, and
+  `reasoning mode: high` can all go, while `gpt-5.1-codex-max` and
+  `coder-max`, which have parts outside `EFFORT_PARTS`, the lone `Model`
+  in `Example Model 5.5`, and the lone `model-max` in `vendor model-max`
+  are never dropped as effort.
+- `formsMatch`: two forms match when their keys are equal or one ends with
+  the other, as before, or through `leadingWordsMatch`, when one name's
+  first whole words, before at least one later word, spell the other's
+  full key, a family prefix allowed (the joined words end with that key).
+  The words after them read as notes, so
+  `gpt-6.1-sol reasoning: high, budget: 32768`,
+  `Claude Opus 5.5 temperature 0.2`, and `openai/gpt-6.1-sol ctx 200k`
+  match their base models without any list of runtime fields. A version is
+  part of its word, so `gpt-6 budget 100` against `gpt-6.1-sol`,
+  `Claude Opus 5 temperature 0.2` against `Claude Opus 5.5`, and
+  `gpt-5.1-codex budget 100` against `gpt-5.1-codex-max` stay distinct.
+  The field-label and trailing-settings bases let two names that both
+  carry settings match: `gpt-6.1-sol budget: 32768` and
+  `gpt-6.1-sol budget: 65536`, and `Claude Opus 5.5 temperature 0.2` and
+  `claude-opus-5-5 budget 100`. A model word after a version is a name,
+  never a setting, so `Claude 3 Opus` and `Claude 3 Sonnet`,
+  `Claude Opus 5` and `Claude Sonnet 5`, and `Claude Opus 5 budget 100`
+  and `Claude Sonnet 5 budget 100` stay distinct. Two notes that are
+  plain words, such as `gpt-6.1-sol fast` against `gpt-6.1-sol preview`,
+  and settings on a name with no digit, such as
+  `Claude Opus temperature 0.2` against `Claude Opus budget 100`, still
+  look distinct.
+- Accepted tradeoff, now pinned by tests: a variant written as a separate
+  word reads as a note on its base model. `Max` is also a standalone
+  level, so `GPT-5.1 Codex Max` matches `gpt-5.1-codex` (beside
+  `Claude Opus 5.5 max`, an effort label it cannot be told from by
+  spelling), and through `leadingWordsMatch` any trailing variant word
+  does too, so `vendor model-max` matches `vendor` (moved from the
+  distinct pairs) and `GPT-5.1 Codex Mini` matches `gpt-5.1-codex`. A bare
+  family name matches any name that starts with it, such as
+  `Claude Sonnet 5.5` against `claude`. Hyphenated IDs stay distinct:
+  `gpt-5.1-codex-max` against `gpt-5.1-codex`. In the diversity gate this
+  only ever makes a review count as the same model, which blocks it and
+  never admits one. `reviewDisclosure` reads the same comparison, so a
+  reviewer reporting `gpt-5.1-codex` when `GPT-5.1 Codex Max` was
+  requested is not flagged as a `model` mismatch.
+- `familyMatch`: only a qualifier that is exactly
+  `(version unknown)` or `(unknown version)` after lowercasing, with any
+  spacing inside the parentheses (the anchored `MODEL_UNKNOWN_QUALIFIER`),
+  sets `versionUnknown`, and then `familyMatch` also lets that name match
+  one whose tokens hold all of its tokens as a consecutive run, after any
+  prefix such as a vendor name, followed only by tokens that start with a
+  digit (`MODEL_VERSION_TOKEN`). `familyMatch` never widens a name whose
+  last token is already a version token. So `Opus (version unknown)`
+  matches `claude-opus-5-5`, while `gpt-5.1-codex (version unknown)` does
+  not match `gpt-5.1-codex-max`, `Fable (version unknown)` does not match
+  `claude-fable-mini-5-1`, `Claude Opus 5 (version unknown)` does not match
+  `claude-opus-5-5`, and `Fable 5.1 (version unknown)` does not match
+  `Fable 5.1.2`. Any matching pair of forms counts, so the heuristic still
+  fails toward "same".
+- Cost bound: `modelForms` counts a name's readings before building them,
+  one for the whole name plus, for each base, two and one per contiguous
+  run of its variable words. A name past `MAX_MODEL_FORMS` (128) sets
+  `overflow`, and `sameModelName` then returns true against any other
+  name, so the diversity gate treats it as the same model, which only
+  ever blocks a review; real names have a handful of readings. Checks
+  that must not accept on "same" use the new exports
+  `modelNameTooComplex` and `MODEL_NAME_TOO_COMPLEX` instead:
+  `reviewDisclosure` flags `model` when the requested or the reported
+  name is over the cap and appends "The model label is too complex to
+  compare; pass the model ID the harness reports.", and
+  `reviewModelProblem` (onboarding R3') refuses an over-cap reviewer name
+  with the same message. `leadingWordsMatch` scans the precomputed
+  `prefixes`, and forms are deduplicated on their key and prefixes. Two
+  valid names of 114 and 110 characters packed with effort words and
+  setting pairs took about 17 seconds to compare on the previous code;
+  they now take milliseconds.
+- Before, an author's display label `GPT-6.1 Sol high` and a reviewer's
+  `gpt-6.1-sol` had different keys, so `diversity` returned `distinct`
+  within one harness and an adversarial `record-review` accepted a
+  same-model review. Pairs that stay distinct include `Claude Opus 5` and
+  `Claude Opus 5.5`, `gpt-6-sol high` and `gpt-6.1-sol`,
+  `gpt-5.1-codex-max` and `gpt-5.1-codex`, and
+  `Fable 5.1 (version unknown)` and `Fable 5`. There is no alias registry,
+  so names that share no form, such as `Astra medium` and `gpt-6.1-sol`,
+  stay distinct. A follow-up commit makes the examples in the code comments
+  vendor-neutral (`Model 5`, `model-max`).
+- Review fixes, in nine rounds. Round 1: the first version stripped
+  qualifiers in one pass, so `gpt-6.1-sol (reasoning (high))` kept a
+  `reasoning` fragment and looked distinct from `gpt-6.1-sol`, and any
+  qualifier containing the word `unknown` widened a name, so
+  `gpt-6 (reasoning unknown)` matched `gpt-6.1-sol`; `withoutQualifiers`
+  and the anchored `MODEL_UNKNOWN_QUALIFIER` fixed both. Round 2:
+  `gpt-6.1-sol reasoning: high` kept `reasoning:` and looked distinct,
+  fixed by the colon and equals separators and `MODEL_WORD_EDGES`, and a
+  `(version unknown)` name matched any name whose key contained its own,
+  so `gpt-5.1-codex (version unknown)` matched `gpt-5.1-codex-max`, fixed
+  by the token forms and `familyMatch`. Round 2 also made
+  `references/inventory-and-concurrency.md` say exactly when the handoff's
+  block ends. Round 3: compound effort fields such as
+  `reasoning_effort=high`, `reasoning-effort: high`, and
+  `model_reasoning_effort=high` still made the same model look distinct,
+  fixed by `namingWords` (since replaced by `effortWords` and
+  `effortDrops`), which dropped every effort word wherever it appeared.
+  That first round 3 rule counted every level as an effort marker,
+  so `model-max`, split into the helper `model` and the level `max`, was
+  dropped as its own word and `vendor model-max` matched `vendor`; a
+  follow-up limited `EFFORT_MARKERS` to `effort`, `reasoning`, and
+  `thinking` and added `EFFORT_LEVEL_PARTS` for words made only of levels.
+  Round 3 also made `references/recovery.md` say that a claim alone
+  completes the handoff only for a checkout on its own branch. Round 4:
+  `Claude Opus 5 (version unknown)` matched `claude-opus-5-5`, because the
+  written `5` counted as a family prefix of `5.5`, fixed by refusing to
+  widen a name that already ends in a version token; round 4 also pinned
+  the standalone level tradeoff with the `Claude Opus 5.5 max` and
+  `GPT-5.1 Codex Max` pairs. Round 5 (blocking): `GPT-5.1 Codex Max high`
+  dropped both `Max` and `high`, so it no longer matched its own ID
+  `gpt-5.1-codex-max` and a same-model review could pass, fixed by trying
+  every subset of effort words to drop, up to six such words. Round 5 also
+  found that a note of version numbers alone was removed like any
+  qualifier, so `Claude Opus (5)` matched `Claude Opus (5.5)`, fixed by
+  keeping such a note's contents in the name. Round 6: above six effort
+  words only dropping all of them was tried, so
+  `GPT-5.1 Codex Max model reasoning effort extra high mode` lost `Max`
+  and missed `gpt-5.1-codex-max`, fixed by always dropping the certain
+  words and varying only the levels, without the six-word cap; and a note
+  with a version beside other words, such as `(5.5 high)`, was still
+  stripped, so
+  `Claude Opus (5.5 high)` missed `claude-opus-5-5` and
+  `Claude Opus (5 high)` matched `Claude Opus (5.5 high)`, fixed by
+  keeping any note with a version token. After round 6, the changelog
+  writer's check against the round 5 code found that levels were kept
+  only as a leading or trailing run, so `xhigh GPT-5.1 Codex Max high`, a
+  match for `openai/gpt-5.1-codex-max` under round 5, no longer matched
+  it; the fix tries every contiguous run of variable words kept and makes
+  a helper word beside only a level, such as `Model` in
+  `high Model 5.5 Max xhigh`, variable instead of always dropped. Round 7
+  (blocking): keeping any note with a number left runtime notes in the
+  name, so `gpt-6.1-sol (reasoning: high, budget: 32768)` looked distinct
+  from `gpt-6.1-sol`; and only closed notes kept their version, so the
+  unclosed `Claude Opus (5` and `Claude Opus (5.5` both lost theirs and
+  matched (should-fix). `noteVersion` fixed both by keeping only a note's
+  leading version, closed or not. After round 7, the changelog writer's
+  check found that the same runtime field without parentheses,
+  `gpt-6.1-sol reasoning: high, budget: 32768`, still looked distinct
+  from `gpt-6.1-sol`, because `budget` and `32768` stayed in the name;
+  `leadingWordsMatch` fixed it structurally by reading words after a
+  complete model name as notes, and `noteVersion` now keeps a note's
+  version as one dotted word. Round 8 (blocking):
+  `gpt-6.1-sol budget: 32768` and `gpt-6.1-sol budget: 65536` looked
+  distinct, because `leadingWordsMatch` only compared an annotated name
+  against a bare one, fixed by giving each name its field-label and
+  trailing-settings bases, each passed through `effortDrops` like any
+  other. Round 9 (should-fix, cost), the final review at xhigh: two valid
+  names packed with effort words and setting pairs took seconds to
+  compare, because their readings multiplied and every pair rebuilt word
+  prefixes, fixed by the reading count, `overflow`, and the precomputed
+  `key` and `prefixes`. A coordinator follow-up stopped an over-cap name
+  from hiding a requested-versus-reported mismatch: `reviewDisclosure`
+  now discloses it with the next step, and `reviewModelProblem` refuses
+  it. Round 10 found one doc nit in this entry, which said `effortDrops`
+  had no cap, now fixed.
+- Every caller picks the new comparison up: `diversity` (acceptance in
+  `record-review`), `targetDistinctness` in `resolveReviewer` before
+  dispatch (now `reviewer-not-distinct` for a `gpt-6.1-sol xhigh` target
+  against a `GPT-6.1 Sol high` author in one harness), current validity of
+  stored attempts, `reviewDisclosure` (a reported name that differs from
+  the requested one only by effort or qualifier is no longer a `model`
+  mismatch), and `reviewModelProblem` in `lib/authoring-onboarding.ts`, the
+  onboarding R3' check that rejects a reviewer model equal to the agent's
+  recorded one; `references/onboarding.md` adds one clause saying so. A
+  stored attempt keeps its recorded `accepted: true` and
+  `acceptanceReason: null`, but `currentValidity` re-judges it as
+  `reviewer-not-distinct`, so it is no longer an approval candidate.
+  `refinesIdentity` (0.30.0's identity completion,
+  soundsystems/simple-changes!91) still compares reported models exactly
+  and is unchanged.
+- Tests: `authoring.test.ts` "model identity" checks 42 same pairs and 28
+  distinct pairs in both orders. The same pairs include
+  `(unknown version)`, a nested note, an unclosed one, a stray `)`,
+  `reasoning: high`, `, effort=xhigh.`, `reasoning_effort=high`,
+  `reasoning-effort: high`, `model_reasoning_effort=high` against
+  `gpt-6.1-sol xhigh`, a leading `xhigh`, `Claude Opus 5.5 thinking mode`,
+  `reasoning mode: high`, `Claude Opus 5.5 max`, `GPT-5.1 Codex Max`
+  against `gpt-5.1-codex`, `GPT-5.1 Codex Max high` against
+  `gpt-5.1-codex-max`, `GPT-5.1 Codex Max reasoning: xhigh` against
+  `gpt-5.1-codex-max xhigh`,
+  `GPT-5.1 Codex Max model reasoning effort extra high mode` and
+  `high max xhigh GPT-5.1 Codex Max high max` against `gpt-5.1-codex-max`,
+  `xhigh GPT-5.1 Codex Max high` against `openai/gpt-5.1-codex-max`,
+  `high Model 5.5 Max xhigh` against `model-5-5-max`,
+  `Claude Opus (5.5 high)` against `claude-opus-5-5`,
+  `gpt-6.1-sol (reasoning: high, budget: 32768)` and
+  `gpt-6.1-sol reasoning: high, budget: 32768` against `gpt-6.1-sol`,
+  `Claude Opus (5.5, budget 1000)` and `Claude Opus 5.5 temperature 0.2`
+  against `claude-opus-5-5`, `openai/gpt-6.1-sol ctx 200k` against
+  `gpt-6.1-sol`, `vendor model-max` against `vendor`,
+  `gpt-6.1-sol budget: 32768` against `gpt-6.1-sol budget: 65536`,
+  `gpt-6.1-sol, reasoning=high` against `GPT-6.1 Sol thinking: 4000`,
+  `Claude Opus 5.5 temperature 0.2` against `claude-opus-5-5 budget 100`,
+  and `Opus (version unknown)` against `claude-opus-5-5`. The distinct
+  pairs
+  include `gpt-6 (reasoning unknown)` and `gpt-6 (unknown effort)` against
+  `gpt-6.1-sol`, `gpt-5.1-codex (version unknown)` against
+  `gpt-5.1-codex-max`, `Claude Opus 5 (version unknown)` against
+  `claude-opus-5-5`, `Fable 5.1 (version unknown)` against `Fable 5.1.2`,
+  `Claude Opus (5)` against `Claude Opus (5.5)` and against
+  `claude-opus-5-5`, `Claude Opus (5 high)` against
+  `Claude Opus (5.5 high)`, `Claude Opus (5` against `Claude Opus (5.5`,
+  `gpt-6 budget 100` against `gpt-6.1-sol`,
+  `Claude Opus 5 temperature 0.2` against `Claude Opus 5.5`,
+  `gpt-5.1-codex budget 100` against `gpt-5.1-codex-max`,
+  `Claude 3 Opus` against `Claude 3 Sonnet`, `Claude Opus 5` against
+  `Claude Sonnet 5`, `Claude Opus 5 budget 100` against
+  `Claude Sonnet 5 budget 100`,
+  `Fable (version unknown)` against `claude-fable-mini-5-1`,
+  `gpt-5.1-codex-max high` against `gpt-5.1-codex xhigh`,
+  `Example Model 5.5` against `Example 5.5`, and
+  `vendor coder-max high` against `vendor coder`. A separate test, "a name
+  with too many readings to compare cheaply counts as the same, fast",
+  checks that the round 9 names match in both orders and that a name just
+  under the cap, `model-5` with fourteen `high` words, still matches
+  `model-5` and not `model-6`, all within one second.
+- Tests: `onboarding.test.ts` adds `author-model xhigh` and
+  `Author Model (version unknown)` to the variants `reviewModelProblem`
+  rejects, and checks that it refuses the over-cap round 9 name with the
+  model ID message. `review-ledger.test.ts` checks that `reviewDisclosure`
+  flags `model` with that message when either the requested or the
+  reported name is over the cap. It also blocks the `gpt-6.1-sol xhigh`
+  target against a `GPT-6.1 Sol high` author and a
+  `gpt-6.1-sol reasoning_effort=high` target against a `gpt-6.1-sol` author
+  in reviewer resolution, and resolves `gpt-6-sol`. It records a
+  same-model attempt accepted without adversarial review and sees it keep
+  its acceptance but fail current validity once adversarial review is on,
+  rejects new same-model attempts reported as
+  `gpt-6.1-sol model_reasoning_effort=xhigh` and `gpt-6.1-sol xhigh` with
+  `reviewer-not-distinct`, and accepts `Astra medium`.
+- Interim: 0.30.1 ships this name matching as it stands, and 0.31.0
+  replaces it with a comparison of the canonical model IDs the harness
+  reports, with display labels and effort as metadata only and missing or
+  ambiguous identity failing closed. Until then, authors who want
+  adversarial review to hold should pass the harness-reported model ID,
+  such as `author attest --agent model-5-5`, rather than a display label.
+- Adopted checkout handoff (`lib/loop-lease-verify.ts`, issue
+  soundsystems/simple-changes#3): `staleClaimRecovery` appends
+  `handoffHint(primary, linkedClaim, liveClaim)` to the
+  `coordination-claim-stale` text. For a checkout other than the primary
+  one, with no live claim, whose linked claim is `released` for a
+  `COMPLETED_RELEASE_REASONS` reason (`owner-release` from
+  `worktree release`, or `handoff`), the hint says the new owner may run
+  the same claim and pause with its own agent ID and adapter, and the
+  controller accepts that receipt. `nextCommands` still name the former
+  owner; once a new owner holds a live claim, the hint is gone and the
+  commands name the new owner. No state, schema, or command changes.
+- `references/recovery.md` ("Released claims and paused changes") adds the
+  handoff: a claim never moves, so the former owner releases and the new
+  owner claims; while the link is stale every guarded mutation of the run,
+  unrelated ones included, stays blocked; under `allow-claimed` with the
+  shipment scope open, the new owner's valid claim on a checkout on its own
+  branch (not detached, and not the primary or target branch) registers it
+  as a concurrent author, which completes the handoff; otherwise,
+  including for a detached checkout and after the scope froze when a
+  controller relinquished or handed off, the new owner pauses with
+  `preserve-in-place` and the controller runs
+  `loop accept-paused-change`; and a checkout changed after its pause, a
+  claim released before acceptance, another owner's live claim, and the
+  former owner's old receipt are refused.
+  `references/inventory-and-concurrency.md` says the release blocks the
+  run's guarded mutations until the new owner's claim is registered or its
+  pause is accepted, so an adopted checkout's claim is released only to
+  hand it to a new owner who claims it right away.
+- Tests: `loop-lease.test.ts` "hands an unchanged adopted checkout from a
+  released bridge owner to a new owner" runs with the scope open and again
+  after a relinquish froze it and a new controller resumed. Releasing the
+  bridge claim yields one `coordination-claim-stale` with the hint and the
+  bridge owner in the first command, the bridge receipt is refused, and a
+  third agent cannot claim over the new owner's live claim. With the scope
+  open, verification passes with the new owner registered as
+  `concurrent-author`. After the freeze, the recovery names the new owner
+  without the hint, a pause whose claim was released before acceptance and
+  a receipt whose checkout changed after the pause are refused, and the
+  unchanged checkout is accepted as `adopted-preserved` and `preserved`
+  with its opening HEAD and change digest.
+- Draft warning (`lib/shipment-outcome-draft.ts`, part a of issue
+  soundsystems/simple-changes#4): `buildDraft` computes each unit's
+  disposition and `finalPaths` once and passes them to the new
+  `sourceMismatchWarning(unit, disposition, finalPaths, openingChanges)`.
+  It flags each final path unless exactly one `shipmentScope.openingChanges`
+  record for the unit's `sourceWorktree` and that path has a `sourceEntry`
+  equal to the final target entry, the case `loop record-outcome` refuses
+  without a reviewed primary-checkout result or an approved preserved-source
+  override. The warning names up to `MISMATCH_PATH_LIMIT` (5) paths, counts
+  the rest, and joins the existing `warnings` array, which
+  `runLoopDraftOutcome` already emits in JSON and as `Warning:` lines.
+  Suggested dispositions and `record-outcome` are unchanged.
+  `references/focused-units.md` adds one sentence describing the warning.
+- Tests: `shipment-outcome-draft.test.ts` expects no warning when the
+  shipped bytes are the opening source result, and the warning naming
+  `notes.md` plus record-outcome's refusal when a revision never reached the
+  target. The new "warns when a suggested delivery is not the scoped source
+  result" has a held unit edit `CHANGELOG.md` and `held.ts` while unrelated
+  merged work changes `CHANGELOG.md`: the draft suggests `delivered`, warns
+  naming both paths, record-outcome refuses it, and the CLI exits 0 with the
+  `Warning:` line on stderr.
+- Guidance stays at 30, with no guidance entry and no update notice.
+<!-- simple-changelogs-signature agent="Claude Opus 5.5 xhigh" at="2026-10-16T21:18:19-05:00" -->
+
 ## 0.30.0 - 2026-10-15
 
 - Identity completion (`lib/review-ledger.ts`, issue

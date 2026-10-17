@@ -88,7 +88,11 @@ pre-fills each scoped unit's final paths and rename originals, and adds the
 rest as `additionalPaths`: `release-generated` when the changelog receipt's
 `paths` names the path, otherwise `external-target-change`. A unit is
 suggested as `delivered` when a scoped path changed on the target during the
-run and `target-equivalent` when none did. Every reason, unit summary, and
+run and `target-equivalent` when none did. Path movement alone proves
+neither, so the draft warns, naming the paths, when a unit's final target entry
+differs from the opening source result its scope recorded, which
+`loop record-outcome` refuses unless a reviewed primary result or an approved
+preserved-source override covers it. Every reason, unit summary, and
 evidence item is a `SIMPLE-CHANGES-DRAFT:` placeholder that names the commits
 that touched the path, and the draft carries a `draftReview` field. These are
 drafts, not findings: review each classification and disposition, replace

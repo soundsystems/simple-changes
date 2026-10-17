@@ -256,9 +256,25 @@ const staleClaimRecovery = (
   const accept = `${ACCEPT_PAUSED_CHANGE} --run-id ${lease.runId} --agent-id ${controller} --pause-receipt <pause-receipt-id> --repo ${repo}`;
   return {
     commands: [claim, pause, accept],
-    text: `Owner ${agent} runs \`${claim}\`, then \`${pause}\`; controller ${controller} then runs \`${accept}\` with the receipt ID the pause prints.`,
+    text: `Owner ${agent} runs \`${claim}\`, then \`${pause}\`; controller ${controller} then runs \`${accept}\` with the receipt ID the pause prints.${handoffHint(primary, linkedClaim, liveClaim)}`,
   };
 };
+
+// A completed release with nothing holding the checkout may be an ownership
+// handoff: no command moves a claim, so the new owner runs the same claim and
+// pause under its own identity, and verification then names it.
+const handoffHint = (
+  primary: boolean,
+  linkedClaim: WorktreeClaim | undefined,
+  liveClaim: WorktreeClaim | undefined
+): string =>
+  !primary &&
+  liveClaim === undefined &&
+  linkedClaim?.state === "released" &&
+  linkedClaim.releaseReason !== undefined &&
+  COMPLETED_RELEASE_REASONS.has(linkedClaim.releaseReason)
+    ? " If the checkout is passing to a new owner, the new owner runs the same claim and pause with its own agent ID and adapter instead, and the controller accepts that receipt."
+    : "";
 
 // A completed release that recorded its checkout's exact state: that state
 // is the unit's recorded head, whoever holds the checkout now.

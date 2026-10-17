@@ -1606,6 +1606,12 @@ describe("authoring and review questions", () => {
     expect(
       reviewModelProblem("reviewer-model", { model: "author-model" })
     ).toBeNull();
+    expect(
+      reviewModelProblem(
+        "xx-5 low max high low high max max low high high low max high max low low max high low max a 1 a 1 a 1 a 1 a 1",
+        { model: "author-model" }
+      )
+    ).toContain("pass the model ID the harness reports");
     for (const variant of [
       "AUTHOR-MODEL",
       "author_model",

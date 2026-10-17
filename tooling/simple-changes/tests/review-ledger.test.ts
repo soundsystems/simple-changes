@@ -1186,6 +1186,31 @@ describe("post-return gate and approval", () => {
         verified: sentinelReviewer,
       }).fields
     ).toEqual(["model"]);
+    // A label too complex to compare would read as the requested model, so
+    // it is disclosed as a mismatch with the next step instead.
+    const complex =
+      "xx-5 low max high low high max max low high high low max high max low low max high low max a 1 a 1 a 1 a 1 a 1";
+    for (const [requested, reported] of [
+      ["model-b", complex],
+      [complex, "model-b"],
+    ] as const) {
+      expect(
+        reviewDisclosure({
+          requested: {
+            effort: "xhigh",
+            harness: "claude-code",
+            model: requested,
+          },
+          verified: { ...concreteReviewer, agent: reported },
+        })
+      ).toMatchObject({
+        fields: ["model"],
+        message: expect.stringContaining(
+          "too complex to compare; pass the model ID the harness reports"
+        ),
+        mismatch: true,
+      });
+    }
   });
 
   test("diversity applies only under adversarial review, and missing model identity rejects only there", () => {

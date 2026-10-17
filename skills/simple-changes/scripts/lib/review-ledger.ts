@@ -19,7 +19,9 @@ import {
   higherEffort,
   isHarnessId,
   isModelName,
+  MODEL_NAME_TOO_COMPLEX,
   MOST_CAPABLE,
+  modelNameTooComplex,
   type RepositoryAuthoring,
   resolveRepositoryAuthoring,
   sameModelName,
@@ -3579,9 +3581,15 @@ export const reviewDisclosure = (
   if (attempt.verified.harness !== attempt.requested.harness) {
     fields.push("harness");
   }
+  // A name too complex to compare would read as the same model, which here
+  // would hide a mismatch, so it is disclosed as one instead.
+  const tooComplex =
+    modelNameTooComplex(attempt.requested.model) ||
+    (reported !== null && modelNameTooComplex(reported));
   if (
     reported === null ||
     attempt.requested.model === MOST_CAPABLE ||
+    tooComplex ||
     !sameModelName(attempt.requested.model, reported)
   ) {
     fields.push("model");
@@ -3591,7 +3599,7 @@ export const reviewDisclosure = (
     message:
       fields.length === 0
         ? null
-        : `Requested ${attempt.requested.model} in ${attempt.requested.harness}; the reviewer reported ${attempt.verified.agent ?? "no model"} in ${attempt.verified.harness ?? "no harness"}.`,
+        : `Requested ${attempt.requested.model} in ${attempt.requested.harness}; the reviewer reported ${attempt.verified.agent ?? "no model"} in ${attempt.verified.harness ?? "no harness"}.${tooComplex ? ` ${MODEL_NAME_TOO_COMPLEX}` : ""}`,
     mismatch: fields.length > 0,
   };
 };

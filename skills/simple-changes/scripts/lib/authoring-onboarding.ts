@@ -7,7 +7,9 @@ import {
   EFFORT_LEVELS,
   type HarnessDefinition,
   isModelName,
+  MODEL_NAME_TOO_COMPLEX,
   MOST_CAPABLE,
+  modelNameTooComplex,
   RUNNING_HARNESS,
   sameModelName,
 } from "./authoring.ts";
@@ -277,6 +279,9 @@ export const reviewModelProblem = (
 ): string | null => {
   if (!isModelName(name)) {
     return "Name a model of 1 to 120 characters without control characters.";
+  }
+  if (modelNameTooComplex(name)) {
+    return MODEL_NAME_TOO_COMPLEX;
   }
   const authorModel = recorded?.model ?? MOST_CAPABLE;
   // The gate's own comparison: case, separators, effort words, qualifiers,

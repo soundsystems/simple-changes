@@ -31,6 +31,9 @@ import {
   writeFixture,
 } from "./helpers.ts";
 
+const REVIEW_LOOP_BLOCK =
+  /<!-- simple-changes:review-loop:start -->[\s\S]*<!-- simple-changes:review-loop:end -->/u;
+
 const decoder = new TextDecoder();
 setDefaultTimeout(30_000);
 const testDirectory = dirname(fileURLToPath(import.meta.url));
@@ -2953,7 +2956,7 @@ while (!existsSync(process.env.SIMPLE_CHANGES_TEST_RELEASE_PATH)) {
     writeFileSync(
       agentsPath,
       readFileSync(agentsPath, "utf8").replace(
-        /<!-- simple-changes:review-loop:start -->[\s\S]*<!-- simple-changes:review-loop:end -->/u,
+        REVIEW_LOOP_BLOCK,
         "<!-- simple-changes:review-loop:start -->\nReview until clean.\n<!-- simple-changes:review-loop:end -->"
       )
     );

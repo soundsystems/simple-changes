@@ -28,6 +28,10 @@ import {
   writeFixture,
 } from "./helpers.ts";
 
+const REVIEW_LOOP_BLOCK =
+  /<!-- simple-changes:review-loop:start -->[\s\S]*<!-- simple-changes:review-loop:end -->/u;
+const VENDOR_NAMES = /claude|codex|gpt|opus|sonnet|sol\b/iu;
+
 const SCRATCH_FILE_BLOCK =
   /<!-- simple-changes:scratch-files:start -->\n[\s\S]*?\n<!-- simple-changes:scratch-files:end -->/u;
 
@@ -313,7 +317,7 @@ describe("repository instruction pointers", () => {
     expect(inspectInstructionRule(target, "review-loop")).toBe("current");
     expect(inspectScratchFileRule(target)).toBe("current");
     const stale = contents.replace(
-      /<!-- simple-changes:review-loop:start -->[\s\S]*<!-- simple-changes:review-loop:end -->/u,
+      REVIEW_LOOP_BLOCK,
       "<!-- simple-changes:review-loop:start -->\nReview until clean.\n<!-- simple-changes:review-loop:end -->"
     );
     writeFileSync(target.path, stale);
@@ -338,7 +342,7 @@ describe("repository instruction pointers", () => {
     ]) {
       expect(rule).toContain(phrase);
     }
-    expect(rule).not.toMatch(/claude|codex|gpt|opus|sonnet|sol\b/iu);
+    expect(rule).not.toMatch(VENDOR_NAMES);
   });
 
   test("refuses a third block that nests in or crosses another", () => {

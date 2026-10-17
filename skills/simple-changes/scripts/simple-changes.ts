@@ -437,7 +437,7 @@ Usage:
   simple-changes worktree release --agent-id ID --claim-id ID
     [--ready-receipt FILE] [--json] [--repo PATH]
   simple-changes worktree takeover --claim-id ID --agent-id NEW_OWNER
-    --head SHA (--branch NAME | --detached) --status-digest SHA256
+    --head SHA|none (--branch NAME | --detached) --status-digest SHA256
     --approved-by ID --reason TEXT [--release] [--json] [--repo PATH]
   simple-changes branch audit --head REF --target REF [--json] [--repo PATH]
   simple-changes worktree equivalence --worktree PATH [--target REF]
@@ -4538,6 +4538,12 @@ const takeoverBranch = (options: CliOptions): string | null => {
   return options.branchName ?? null;
 };
 
+// `--head none` names a checkout that has no commit yet.
+const takeoverHead = (options: CliOptions): string | null => {
+  const head = requireCliOption(options.headRef, "--head");
+  return head === "none" ? null : head;
+};
+
 const runWorktreeCommand = (options: CliOptions): void => {
   const [action] = options.positional;
   if (!action) {
@@ -4656,7 +4662,7 @@ const runWorktreeCommand = (options: CliOptions): void => {
       approvedBy: requireCliOption(options.approvedBy, "--approved-by"),
       claimId: requireCliOption(options.claimId, "--claim-id"),
       expectedBranch: takeoverBranch(options),
-      expectedHeadSha: requireCliOption(options.headRef, "--head"),
+      expectedHeadSha: takeoverHead(options),
       expectedStatusDigest: requireCliOption(
         options.statusDigest,
         "--status-digest"

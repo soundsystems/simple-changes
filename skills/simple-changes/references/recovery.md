@@ -206,7 +206,7 @@ target-equivalent close is never reported as shipped.
 `worktree takeover --claim-id <id> --agent-id <new-owner> --head <sha>
 --branch <name> --status-digest <digest> --approved-by <who> --reason <why>
 [--release]`, with `--detached` in place of `--branch` for a detached
-checkout. The approval names one exact checkout state, and every clean
+checkout and `--head none` for a checkout that has no commit yet. The approval names one exact checkout state, and every clean
 checkout has the same status digest, so the takeover refuses when the
 worktree's branch, HEAD, or status digest differs from the one named:
 re-observe and confirm the current state with the approver. It either
@@ -218,11 +218,13 @@ found the checkout moved, can be taken over the same way. So can a detached
 one: its checkout is absent by design, so a reassign names the preserved
 branch with the HEAD and status digest the claim recorded, and the branch must
 still point at that HEAD. A release only retires a claim and touches no file
-or ref, so when the checkout is gone and the recorded state can no longer be
-reattached (the preserved branch moved or was deleted, or a stale claim's
-checkout was removed), `--release` names the claim's branch at its current
-tip, or the recorded HEAD once the branch is gone, with the recorded digest.
-Every refusal prints the takeover form that would be accepted. It refuses claims a loop still requires, judged by lifecycle rather
+or ref, so it can release whatever the owner's own release could: when Git
+lists no worktree at the claim's path and the recorded state cannot be
+reattached (the preserved branch moved or was deleted, the checkout was
+removed, or something else now occupies the path), `--release` names the
+claim's branch at its current tip, or the recorded HEAD once the branch is
+gone, with the recorded digest. Every refusal prints the takeover form that
+would be accepted. It refuses claims a loop still requires, judged by lifecycle rather
 than bare path membership: an active loop protects every registered path, but
 a relinquished loop preserves work through the worktrees themselves, so its
 registered paths no longer freeze takeover; only an adopted coordination

@@ -530,40 +530,35 @@ const branchTip = (
 /**
  * What a takeover of `claim` compares with its approval, and what a printed
  * takeover names. A reassign continues the work, so it needs the exact state:
- * the present checkout, or, for a claim whose owner detached the checkout and
- * kept its branch, the recorded state while that branch still points at the
- * recorded HEAD. A release only retires the claim and touches nothing, so
- * with the checkout gone it names the state as observed now: the claim's
- * branch at its current tip, or the recorded HEAD once the branch is gone.
- * That state is release-only. Null when a directory that is not one of this
- * repository's worktrees occupies the path, or no commit can be named.
+ * the worktree Git lists at the path, or, for a claim whose owner detached the
+ * checkout and kept its branch, the recorded state while the path is absent
+ * and that branch still points at the recorded HEAD. A release only retires
+ * the claim and touches no file or ref, so it may name any state the owner's
+ * own release could leave behind: without a listed worktree, the claim's
+ * branch at its current tip, or the recorded HEAD once the branch is gone,
+ * with the recorded digest, whatever now occupies the path. That state is
+ * release-only.
  */
 export const claimTakeoverState = (
   inventory: RepositoryInventory,
   claim: WorktreeClaim
-): TakeoverState | null => {
+): TakeoverState => {
   const present = inventory.worktrees.find(
     (worktree) => worktree.path === claim.path
   );
   if (present) {
     return present;
   }
-  if (existsSync(claim.path)) {
-    return null;
-  }
   const tip = claim.branch ? branchTip(inventory, claim.branch) : null;
-  const headSha = tip ?? claim.headSha;
-  if (!headSha) {
-    return null;
-  }
   const reattachable =
     PRESERVED_BRANCH_STATES.has(claim.state) &&
     tip !== null &&
-    tip === claim.headSha;
+    tip === claim.headSha &&
+    !existsSync(claim.path);
   return {
     branch: claim.branch,
     changeDigest: claim.changeDigest,
-    headSha,
+    headSha: tip ?? claim.headSha,
     ...(reattachable ? {} : { releaseOnly: true }),
   };
 };
@@ -1895,8 +1890,8 @@ export interface WorktreeTakeoverOptions {
    * exact branch and HEAD it covers.
    */
   expectedBranch: string | null;
-  /** The exact HEAD commit the approval names. */
-  expectedHeadSha: string;
+  /** The exact HEAD commit the approval names, or null for none yet. */
+  expectedHeadSha: string | null;
   expectedStatusDigest: string;
   newAgentId: string;
   reason: string;
@@ -1907,7 +1902,7 @@ export interface WorktreeTakeoverOptions {
 interface TakeoverEvidence {
   branch: string | null;
   changeDigest: string;
-  headSha: string;
+  headSha: string | null;
 }
 
 const SAFE_COMMAND_WORD_PATTERN = /^[A-Za-z0-9._:/@%+=,-]+$/u;
@@ -1948,7 +1943,7 @@ export const takeoverCommand = (input: TakeoverCommandInput): string => {
   return [
     `simple-changes worktree takeover --claim-id ${input.claimId}`,
     `--agent-id ${input.agentId ? commandWord(input.agentId) : "<you>"}`,
-    `--head ${current?.headSha ?? "<sha>"}`,
+    `--head ${current ? (current.headSha ?? "none") : "<sha>"}`,
     branch,
     `--status-digest ${current?.changeDigest ?? "<digest>"}`,
     "--approved-by <user> --reason <why>",
@@ -2103,8 +2098,7 @@ const approvedTakeoverState = (
   newAgentId: string,
   expected: TakeoverEvidence
 ): TakeoverState => {
-  const current: TakeoverState =
-    claimTakeoverState(inventory, claim) ?? worktreeAt(inventory, claim.path);
+  const current = claimTakeoverState(inventory, claim);
   if (current.releaseOnly && action === "reassign") {
     throw new SimpleChangesError(
       `Claim ${claim.claimId}'s checkout ${claim.path} is gone and its recorded state can no longer be reattached, so it can only be released: ask the user to approve \`${takeoverCommand(
@@ -2140,9 +2134,12 @@ const takeoverEvidence = (
       "expected status digest",
       64
     ),
-    headSha: requiredText(options.expectedHeadSha, "expected HEAD", 64),
+    headSha:
+      options.expectedHeadSha === null
+        ? null
+        : requiredText(options.expectedHeadSha, "expected HEAD", 64),
   };
-  if (!SHA_PATTERN.test(expected.headSha)) {
+  if (expected.headSha !== null && !SHA_PATTERN.test(expected.headSha)) {
     throw new SimpleChangesError(
       "expected HEAD must be the checkout's full commit ID.",
       EXIT_CODES.usage

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
-import { readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "bun";
@@ -42,6 +42,9 @@ const cliPath = resolve(
 );
 const SESSION_VARIABLES = ["CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID"];
 const ANOTHER_SESSION = "belongs to another harness session of author-1";
+// The takeover a session refusal prints, with the values it names.
+const PRINTED_TAKEOVER_PATTERN =
+  /`simple-changes worktree takeover --claim-id (claim-[a-z0-9-]+) --agent-id <you> --head (\S+) (?:--branch (\S+)|--detached) --status-digest ([0-9a-f]{64}) --approved-by <user> --reason <why>( --release)?`/u;
 // The old recovery wording, which read as an instruction to run the owner's
 // steps under its agent ID.
 const OWNER_RUNS_PATTERN = /(?:^|\. )Owner author-1 runs/u;
@@ -153,6 +156,29 @@ const detachedClaim = (fixture: TestRepository, name: string) => {
     return made;
   });
   return { claim, path };
+};
+
+// Session A claims a checkout, the checkout moves, and A's pause marks the
+// claim stale.
+const staleClaim = (fixture: TestRepository, name: string) => {
+  const path = addWorktree(fixture, name);
+  const { claimId } = as(SESSION_A, () =>
+    claimWorktree(fixture.root, "author-1", path, "codex")
+  );
+  commit(path, "moved.ts", "export const moved = true;\n");
+  expect(() =>
+    as(SESSION_A, () =>
+      pauseClaimedWorktree(
+        fixture.root,
+        "author-1",
+        path,
+        "run-stale",
+        "preserve-in-place",
+        "Safe boundary."
+      )
+    )
+  ).toThrow("The claim is stale");
+  return { claimId, path };
 };
 
 describe("claims belong to the session that made them", () => {
@@ -687,6 +713,247 @@ describe("claims belong to the session that made them", () => {
       expect(
         releaseWorktreeClaim(fixture.root, "rescuer", claim.claimId).state
       ).toBe("released")
+    );
+  });
+});
+
+// Every claim condition a vanished owner can leave behind. Each builds the
+// claim in session A and returns its ID.
+const RELEASE_CONDITIONS: {
+  build: (fixture: TestRepository, name: string) => string;
+  name: string;
+}[] = [
+  {
+    build: (fixture, name) =>
+      as(
+        SESSION_A,
+        () =>
+          claimWorktree(
+            fixture.root,
+            "author-1",
+            addWorktree(fixture, name),
+            "codex"
+          ).claimId
+      ),
+    name: "a present active checkout",
+  },
+  {
+    build: (fixture, name) => {
+      const path = addWorktree(fixture, name);
+      return as(SESSION_A, () => {
+        claimWorktree(fixture.root, "author-1", path, "codex");
+        return pauseClaimedWorktree(
+          fixture.root,
+          "author-1",
+          path,
+          "run-matrix",
+          "preserve-in-place",
+          "Safe boundary."
+        ).claimId;
+      });
+    },
+    name: "a paused checkout",
+  },
+  {
+    build: (fixture, name) => staleClaim(fixture, name).claimId,
+    name: "a stale checkout",
+  },
+  {
+    build: (fixture, name) => {
+      const path = addWorktree(fixture, name);
+      git(path, ["checkout", "--orphan", `${name}-draft`]);
+      return as(
+        SESSION_A,
+        () => claimWorktree(fixture.root, "author-1", path, "codex").claimId
+      );
+    },
+    name: "an unborn checkout with no commit",
+  },
+  {
+    build: (fixture, name) => {
+      const path = addWorktree(fixture, name);
+      const { claimId } = as(SESSION_A, () =>
+        claimWorktree(fixture.root, "author-1", path, "codex")
+      );
+      rmSync(path, { force: true, recursive: true });
+      return claimId;
+    },
+    name: "a deleted directory Git still lists",
+  },
+  {
+    build: (fixture, name) => {
+      const path = addWorktree(fixture, name);
+      const { claimId } = as(SESSION_A, () =>
+        claimWorktree(fixture.root, "author-1", path, "codex")
+      );
+      git(fixture.root, ["worktree", "remove", "--force", path]);
+      return claimId;
+    },
+    name: "a removed worktree",
+  },
+  {
+    build: (fixture, name) => {
+      const { claimId, path } = staleClaim(fixture, name);
+      git(fixture.root, ["worktree", "remove", "--force", path]);
+      return claimId;
+    },
+    name: "a stale claim whose worktree was removed",
+  },
+  {
+    build: (fixture, name) => detachedClaim(fixture, name).claim.claimId,
+    name: "a detached checkout",
+  },
+  {
+    build: (fixture, name) => {
+      const { claim } = detachedClaim(fixture, name);
+      const tip = commit(fixture.root, `${name}.ts`, "export const x = 1;\n");
+      git(fixture.root, ["branch", "-f", name, tip]);
+      return claim.claimId;
+    },
+    name: "a detached checkout whose branch moved",
+  },
+  {
+    build: (fixture, name) => {
+      const { claim } = detachedClaim(fixture, name);
+      git(fixture.root, ["branch", "-D", name]);
+      return claim.claimId;
+    },
+    name: "a detached checkout whose branch was deleted",
+  },
+  {
+    build: (fixture, name) => {
+      const { claim, path } = detachedClaim(fixture, name);
+      mkdirSync(path);
+      writeFileSync(join(path, "unrelated.txt"), "not a checkout\n");
+      return claim.claimId;
+    },
+    name: "a detached checkout whose path is now an ordinary directory",
+  },
+];
+
+describe("an approved takeover releases whatever the owner could release", () => {
+  for (const [index, condition] of RELEASE_CONDITIONS.entries()) {
+    test(`from another session, for ${condition.name}`, () => {
+      const name = `matrix-${index}`;
+      // What the vanished owner's own session could do.
+      const ownerFixture = repository();
+      const ownerClaim = condition.build(ownerFixture, name);
+      let ownerReleased = false;
+      try {
+        as(SESSION_A, () =>
+          releaseWorktreeClaim(ownerFixture.root, "author-1", ownerClaim)
+        );
+        ownerReleased = true;
+      } catch {
+        ownerReleased = false;
+      }
+
+      const fixture = repository();
+      const claimId = condition.build(fixture, name);
+      let refusal = "";
+      try {
+        as(SESSION_B, () =>
+          releaseWorktreeClaim(fixture.root, "author-1", claimId)
+        );
+      } catch (error) {
+        refusal = (error as Error).message;
+      }
+      expect(refusal).toContain(ANOTHER_SESSION);
+      const printed = PRINTED_TAKEOVER_PATTERN.exec(refusal);
+      expect(printed?.[1]).toBe(claimId);
+      const [, , head = "", branch, digest = ""] = printed ?? [];
+      const refs = git(fixture.root, [
+        "for-each-ref",
+        "--format=%(refname) %(objectname)",
+      ]);
+      const released = as(SESSION_B, () =>
+        takeoverWorktreeClaim({
+          action: "release",
+          approvedBy: "the-user",
+          claimId,
+          expectedBranch: branch ?? null,
+          expectedHeadSha: head === "none" ? null : head,
+          expectedStatusDigest: digest,
+          newAgentId: "rescuer",
+          reason: "The owner's session ended.",
+          repositoryPath: fixture.root,
+        })
+      );
+      // The approved release is never narrower than the owner's own, and it
+      // moves no ref.
+      expect({ ownerReleased, state: released.claim.state }).toEqual({
+        ownerReleased,
+        state: "released",
+      });
+      expect(
+        git(fixture.root, ["for-each-ref", "--format=%(refname) %(objectname)"])
+      ).toBe(refs);
+    });
+  }
+
+  test("an unborn checkout is reassigned with --head none", () => {
+    const fixture = repository();
+    const path = addWorktree(fixture, "unborn-work");
+    git(path, ["checkout", "--orphan", "unborn-draft"]);
+    const claim = as(SESSION_A, () =>
+      claimWorktree(fixture.root, "author-1", path, "codex")
+    );
+    const current = worktreeAt(fixture.root, path);
+    expect(current.headSha).toBeNull();
+    const result = spawnSync(
+      [
+        "bun",
+        cliPath,
+        "worktree",
+        "takeover",
+        "--claim-id",
+        claim.claimId,
+        "--agent-id",
+        "author-1",
+        "--head",
+        "none",
+        "--branch",
+        "unborn-draft",
+        "--status-digest",
+        current.changeDigest,
+        "--approved-by",
+        "the-user",
+        "--reason",
+        "The first session ended.",
+        "--repo",
+        fixture.root,
+        "--json",
+      ],
+      {
+        cwd: fixture.root,
+        env: {
+          ...Object.fromEntries(
+            Object.entries(process.env).filter(
+              ([variable]) => !SESSION_VARIABLES.includes(variable)
+            )
+          ),
+          ...SESSION_B,
+          SIMPLE_CHANGES_SKILL_ROOTS: "",
+        },
+        stderr: "pipe",
+        stdout: "pipe",
+      }
+    );
+    expect(decoder.decode(result.stderr)).toBe("");
+    expect(JSON.parse(decoder.decode(result.stdout))).toMatchObject({
+      claim: { headSha: null, owner: { agentId: "author-1" } },
+      receipt: { branch: "unborn-draft", headSha: null },
+    });
+    as(SESSION_B, () =>
+      expect(
+        claimWorktree(
+          fixture.root,
+          "author-1",
+          path,
+          "codex",
+          "takeover:the-user"
+        ).claimId
+      ).toBe(claim.claimId)
     );
   });
 });

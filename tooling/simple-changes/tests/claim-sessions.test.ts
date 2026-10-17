@@ -11,7 +11,9 @@ import {
 import { attestCommits } from "../../../skills/simple-changes/scripts/lib/review-ledger.ts";
 import type { WorktreeInventory } from "../../../skills/simple-changes/scripts/lib/types.ts";
 import {
+  attachClaimedWorktree,
   claimWorktree,
+  detachClaimedWorktree,
   pauseClaimedWorktree,
   readWorktreeCoordination,
   readWorktreeTakeovers,
@@ -343,6 +345,158 @@ describe("claims belong to the session that made them", () => {
         ).ownerAgentId
       ).toBe("author-1");
     });
+  });
+
+  test("only the latest claim on a checkout decides, so an approved takeover's history counts", () => {
+    const fixture = repository();
+    const path = addWorktree(fixture, "history-work");
+    const second = as(SESSION_A, () => {
+      const first = claimWorktree(
+        fixture.root,
+        "author-1",
+        path,
+        "claude-code"
+      );
+      releaseWorktreeClaim(fixture.root, "author-1", first.claimId);
+      return claimWorktree(fixture.root, "author-1", path, "claude-code");
+    });
+    const current = worktreeAt(fixture.root, path);
+    as(SESSION_B, () => {
+      takeoverWorktreeClaim(
+        takeoverOptions(fixture, second.claimId, current, "author-1")
+      );
+      releaseWorktreeClaim(fixture.root, "author-1", second.claimId);
+      // Session A's older released claim on this checkout does not count.
+      expect(
+        claimWorktree(fixture.root, "author-1", path, "claude-code").owner
+          .agentId
+      ).toBe("author-1");
+    });
+  });
+
+  test("a stale claim passes to a replacement session only through an approved takeover", () => {
+    const fixture = repository();
+    const path = addWorktree(fixture, "stale-work");
+    const releasable = addWorktree(fixture, "stale-releasable");
+    const [claim, other] = as(SESSION_A, () => [
+      claimWorktree(fixture.root, "author-1", path, "claude-code"),
+      claimWorktree(fixture.root, "author-1", releasable, "claude-code"),
+    ]);
+    // The owner's pause finds its checkouts moved and marks the claims
+    // stale, then its session ends.
+    for (const checkout of [path, releasable]) {
+      commit(checkout, "moved.ts", "export const moved = true;\n");
+      expect(() =>
+        as(SESSION_A, () =>
+          pauseClaimedWorktree(
+            fixture.root,
+            "author-1",
+            checkout,
+            "run-stale",
+            "preserve-in-place",
+            "Safe boundary."
+          )
+        )
+      ).toThrow("The claim is stale");
+    }
+    expect(claimOf(fixture.root, claim.claimId)?.state).toBe("stale");
+    expect(() =>
+      as(SESSION_B, () =>
+        claimWorktree(fixture.root, "author-1", path, "claude-code")
+      )
+    ).toThrow(ANOTHER_SESSION);
+
+    const current = worktreeAt(fixture.root, path);
+    as(SESSION_B, () => {
+      takeoverWorktreeClaim(
+        takeoverOptions(fixture, claim.claimId, current, "author-1")
+      );
+      expect(
+        claimWorktree(
+          fixture.root,
+          "author-1",
+          path,
+          "claude-code",
+          "takeover:the-user"
+        ).state
+      ).toBe("active");
+      expect(
+        pauseClaimedWorktree(
+          fixture.root,
+          "author-1",
+          path,
+          "run-stale",
+          "preserve-in-place",
+          "Safe boundary."
+        ).headSha
+      ).toBe(current.headSha);
+      expect(
+        takeoverWorktreeClaim({
+          ...takeoverOptions(
+            fixture,
+            other.claimId,
+            worktreeAt(fixture.root, releasable),
+            "rescuer"
+          ),
+          action: "release",
+        }).claim.state
+      ).toBe("released");
+    });
+  });
+
+  test("a detached claim passes to a replacement session through a takeover of its recorded branch", () => {
+    const fixture = repository();
+    const path = addWorktree(fixture, "detached-work");
+    const claim = as(SESSION_A, () => {
+      const made = claimWorktree(fixture.root, "author-1", path, "claude-code");
+      const receipt = pauseClaimedWorktree(
+        fixture.root,
+        "author-1",
+        path,
+        "run-detach",
+        "detach-clean-checkout",
+        "Detach to free the disk."
+      );
+      detachClaimedWorktree(fixture.root, "author-1", path, receipt.receiptId);
+      return made;
+    });
+    const recorded = {
+      branch: "detached-work",
+      changeDigest: claim.changeDigest,
+      headSha: claim.headSha,
+    };
+
+    expect(() =>
+      as(SESSION_B, () =>
+        attachClaimedWorktree(fixture.root, "author-1", claim.claimId)
+      )
+    ).toThrow(
+      `--head ${claim.headSha} --branch detached-work --status-digest ${claim.changeDigest}`
+    );
+    const options = takeoverOptions(
+      fixture,
+      claim.claimId,
+      recorded as WorktreeInventory,
+      "author-1"
+    );
+    // The preserved branch moved after detach: the approval no longer covers it.
+    const moved = commit(fixture.root, "main-only.ts", "export const x = 1;\n");
+    git(fixture.root, ["branch", "-f", "detached-work", moved]);
+    expect(() => as(SESSION_B, () => takeoverWorktreeClaim(options))).toThrow(
+      `but the branch now points at ${moved}`
+    );
+    git(fixture.root, ["branch", "-f", "detached-work", claim.headSha ?? ""]);
+
+    as(SESSION_B, () => {
+      expect(takeoverWorktreeClaim(options).claim).toMatchObject({
+        owner: { agentId: "author-1", ownerRef: "takeover:the-user" },
+        state: "detached",
+      });
+      expect(
+        attachClaimedWorktree(fixture.root, "author-1", claim.claimId).state
+      ).toBe("attached");
+    });
+    expect(worktreeAt(fixture.root, path).headSha).toBe(claim.headSha);
   });
 
   test("a takeover recorded by an older client leaves the claim unbound for its new owner", () => {

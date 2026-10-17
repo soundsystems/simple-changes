@@ -45,6 +45,7 @@ import type {
 import {
   claimHeldByAnotherSession,
   claimSessionRefusal,
+  claimTakeoverState,
   readCoordinationDocumentFromCommonDirectory,
 } from "./worktree-coordination.ts";
 
@@ -2592,8 +2593,7 @@ const authorWorktrees = (
     throw new SimpleChangesError(
       `Attest from the session that made the commits. ${claimSessionRefusal(
         held,
-        inventory.worktrees.find((worktree) => worktree.path === held.path) ??
-          null,
+        claimTakeoverState(inventory, held),
         session
       )}`,
       EXIT_CODES.unsafe

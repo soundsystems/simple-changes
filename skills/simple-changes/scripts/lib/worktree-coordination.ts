@@ -482,7 +482,7 @@ export const claimHeldByAnotherSession = (
  */
 export const claimSessionRefusal = (
   claim: WorktreeClaim,
-  current: WorktreeInventory | null,
+  current: TakeoverState | null,
   session: string | null
 ): string => {
   const takeover = takeoverCommand({
@@ -493,11 +493,54 @@ export const claimSessionRefusal = (
   return `Claim ${claim.claimId} on ${claim.path} belongs to another harness session of ${claim.owner.agentId}${session ? "" : ", and this command reports no harness session"}, so it cannot act under that agent ID here: an agent ID acts only from the session that holds its claim. Ask ${claim.owner.agentId} to run this from its own session. If that session has ended, ask the user to approve \`${takeover}\`, naming your own agent ID (or the same one to continue its work), which reassigns the claim to this session.`;
 };
 
+/** The checkout state a takeover approval names. */
+export type TakeoverState = Pick<
+  WorktreeInventory,
+  "branch" | "changeDigest" | "headSha"
+>;
+
+// Claims whose owner removed the checkout through the detach protocol and
+// kept its branch for reattachment.
+const PRESERVED_BRANCH_STATES = new Set<WorktreeCoordinationState>([
+  "detached",
+  "resume-ready",
+]);
+
+// A detached claim's checkout is absent by design: its state is the branch
+// and HEAD it recorded, which the preserved branch must still match.
+const detachedClaimState = (
+  inventory: RepositoryInventory,
+  claim: WorktreeClaim
+): TakeoverState | null =>
+  PRESERVED_BRANCH_STATES.has(claim.state) &&
+  claim.branch &&
+  claim.headSha &&
+  !inventory.worktrees.some((worktree) => worktree.path === claim.path) &&
+  !existsSync(claim.path)
+    ? {
+        branch: claim.branch,
+        changeDigest: claim.changeDigest,
+        headSha: claim.headSha,
+      }
+    : null;
+
+/**
+ * The state a takeover of `claim` must name, for printing it: the present
+ * checkout, or a detached claim's recorded branch and HEAD; null when
+ * neither applies.
+ */
+export const claimTakeoverState = (
+  inventory: RepositoryInventory,
+  claim: WorktreeClaim
+): TakeoverState | null =>
+  inventory.worktrees.find((worktree) => worktree.path === claim.path) ??
+  detachedClaimState(inventory, claim);
+
 /** Refuses when `claim` belongs to another harness session. */
 export const assertClaimSession = (
   document: WorktreeCoordinationDocument,
   claim: WorktreeClaim,
-  current: WorktreeInventory | null,
+  current: TakeoverState | null,
   session: string | null = executingClaimSession()
 ): void => {
   if (claimHeldByAnotherSession(document, claim, session)) {
@@ -553,26 +596,29 @@ const assertAgentSessionFree = (
   session: string | null
 ): void => {
   const owned = document.claims.filter(
+    (claim) => claim.owner.agentId === agentId
+  );
+  const live = owned.find(
     (claim) =>
-      claim.owner.agentId === agentId &&
+      claim.state !== "released" &&
       claimHeldByAnotherSession(document, claim, session)
   );
-  const live = owned.find((claim) => claim.state !== "released");
   if (live) {
     throw new SimpleChangesError(
       `Agent ${agentId} still holds claim ${live.claimId} on ${live.path} in another harness session. ${claimSessionRefusal(
         live,
-        inventory.worktrees.find((worktree) => worktree.path === live.path) ??
-          null,
+        claimTakeoverState(inventory, live),
         session
       )} Otherwise claim this checkout under an agent ID of your own.`,
       EXIT_CODES.unsafe
     );
   }
+  // Only the latest earlier claim on this checkout decides: a later approved
+  // takeover moves the checkout's history to the session that took it.
   const [earlier] = owned
     .filter((claim) => claim.path === path)
     .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
-  if (earlier) {
+  if (earlier && claimHeldByAnotherSession(document, earlier, session)) {
     throw new SimpleChangesError(
       `Agent ${agentId}'s earlier claim ${earlier.claimId} on ${path} (released: ${earlier.releaseReason ?? "unrecorded"}) belongs to another harness session, so this session cannot claim the checkout under that agent ID. A new session records the checkout under its own agent ID, with its own claim and pause.`,
       EXIT_CODES.unsafe
@@ -1339,7 +1385,7 @@ export const attachClaimedWorktree = (
           EXIT_CODES.unsafe
         );
       }
-      assertClaimSession(document, claim, null);
+      assertClaimSession(document, claim, claimTakeoverState(inventory, claim));
       if (
         !(
           ["detached", "resume-ready"].includes(claim.state) &&
@@ -1465,11 +1511,7 @@ export const releaseWorktreeClaim = (
         EXIT_CODES.unsafe
       );
     }
-    assertClaimSession(
-      document,
-      claim,
-      inventory.worktrees.find((item) => item.path === claim.path) ?? null
-    );
+    assertClaimSession(document, claim, claimTakeoverState(inventory, claim));
     if (!LIVE_STATES.has(claim.state)) {
       throw new SimpleChangesError(
         `Claim ${claimId} cannot transition from ${claim.state} to released.`,
@@ -2010,6 +2052,46 @@ const persistTakeoverIntent = (
   }
 };
 
+// A stale claim is still unreleased and holds its checkout: its owner's
+// pause found the checkout moved. Only an approved takeover moves it to
+// another session, so it can be taken over like a live claim.
+const TAKEOVER_STATES = new Set<WorktreeCoordinationState>([
+  ...LIVE_STATES,
+  "stale",
+]);
+
+/**
+ * The state a takeover compares with its approval: the present checkout, or,
+ * for a claim whose owner detached it and kept its branch, the recorded state,
+ * once the preserved branch is proven to still point at the recorded HEAD.
+ */
+const takeoverState = (
+  inventory: RepositoryInventory,
+  claim: WorktreeClaim
+): TakeoverState => {
+  const detached = detachedClaimState(inventory, claim);
+  if (!detached) {
+    return worktreeAt(inventory, claim.path);
+  }
+  const branchSha = runGit(
+    inventory.repository.primaryCheckout,
+    [
+      "rev-parse",
+      "--verify",
+      "--quiet",
+      `refs/heads/${detached.branch}^{commit}`,
+    ],
+    true
+  ).stdout.trim();
+  if (branchSha !== detached.headSha) {
+    throw new SimpleChangesError(
+      `Detached claim ${claim.claimId} recorded branch ${detached.branch} at ${detached.headSha}, but the branch ${branchSha ? `now points at ${branchSha}` : "no longer exists"}; a takeover covers only the recorded state.`,
+      EXIT_CODES.unsafe
+    );
+  }
+  return detached;
+};
+
 // The exact checkout state the approval names, validated.
 const takeoverEvidence = (
   options: WorktreeTakeoverOptions
@@ -2083,13 +2165,13 @@ export const takeoverWorktreeClaim = (
       if (recovered) {
         return recovered;
       }
-      if (!LIVE_STATES.has(claim.state)) {
+      if (!TAKEOVER_STATES.has(claim.state)) {
         throw new SimpleChangesError(
           `Claim ${claimId} is ${claim.state}; only a live claim can be taken over.`,
           EXIT_CODES.unsafe
         );
       }
-      const current = worktreeAt(inventory, claim.path);
+      const current = takeoverState(inventory, claim);
       if (
         current.changeDigest !== expected.changeDigest ||
         current.headSha !== expected.headSha ||

@@ -54,7 +54,10 @@ choice, and an `invalid` block (duplicated or crossed markers) is repaired by
 hand. While a Simple Changes run holds the repository, even a paused one, it
 refuses a file in any of the repository's checkouts with exit 5, because the
 run preserves them: offer it again after the run ends. A global file outside
-every checkout can be refreshed at any time.
+every checkout can be refreshed at any time. `reviewLoopRule` reports the
+optional review-loop block the same way, refreshed with
+`simple-changes review-loop-rule refresh --instruction-file <path>` under the
+same rules.
 
 Sync, queue, sweep, integrate, ship, reconcile, resume, and handoff are
 write-capable. Preview and pause are read-only or preservation-only. Sync uses
@@ -274,6 +277,21 @@ adding the rule needs exactly one target. The markers never change, so
 `initialize` reports a block an earlier release wrote as `stale`, and
 `scratch-file-rule refresh`, or setup run again, rewrites it in place.
 
+Then offer the optional review-loop rule for the same file, in its own
+`<!-- simple-changes:review-loop:start -->` and `:end -->` markers. It applies
+only to reviews in Simple Changes runs and names no agent or model: review in
+rounds at the exact head with the reviewer, efforts, and limits from the
+authoring preferences; have the reviewer grade findings blocking, should-fix,
+or nit; review the fixes and what they touched, then one full review at the
+final head before merge; pass on findings the user deferred or accepted; and
+question the approach or ask the user when `initialize` says the convergence
+check is due or the round cap is reached (see
+[review rounds](review-and-merge.md#review-rounds)). Declining it changes
+nothing, and Simple Changes still applies the review settings in its own runs.
+Offer **Add the rule** first and **Leave it out** second; non-interactive
+setup adds it only with `--review-loop-rule add`, and
+`review-loop-rule refresh` rewrites a `stale` copy in place.
+
 The confirmation summary must
 show the exact target path and each proposed managed block. Apply an authorized edit
 atomically, preserve existing content and newline style, and re-read it after
@@ -291,6 +309,7 @@ simple-changes setup \
   --instruction-pointer add \
   --handoff ask \
   --scratch-file-rule add \
+  --review-loop-rule add \
   --yes
 ```
 

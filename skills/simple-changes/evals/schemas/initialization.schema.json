@@ -610,6 +610,39 @@
         }
       ]
     },
+    "reviewLoopRule": {
+      "anyOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["targets"],
+          "properties": {
+            "targets": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["path", "refreshCommand", "scope", "status"],
+                "properties": {
+                  "path": { "type": "string", "minLength": 1 },
+                  "refreshCommand": {
+                    "anyOf": [
+                      { "type": "string", "minLength": 1 },
+                      { "type": "null" }
+                    ]
+                  },
+                  "scope": { "enum": ["repository", "user"] },
+                  "status": {
+                    "enum": ["absent", "current", "invalid", "stale"]
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
     "shippingMode": {
       "enum": ["standard", "expedited", "break-glass"]
     },

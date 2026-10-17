@@ -1131,6 +1131,9 @@ describe("onboarding conversation", () => {
     const scratchQuestion = ONBOARDING_QUESTIONS.scratchFileRule(
       resolve(fixture.root, "AGENTS.md")
     );
+    const reviewLoopQuestion = ONBOARDING_QUESTIONS.reviewLoopRule(
+      resolve(fixture.root, "AGENTS.md")
+    );
     const answers = new Map<string, string>([
       [ONBOARDING_QUESTIONS.finish, "open-change-request"],
       [ONBOARDING_QUESTIONS.gitPushAuthorization, "ask"],
@@ -1139,6 +1142,7 @@ describe("onboarding conversation", () => {
       [pointerQuestion, "add"],
       [ONBOARDING_QUESTIONS.handoff, "confirm-ready"],
       [scratchQuestion, "leave"],
+      [reviewLoopQuestion, "leave"],
     ]);
     const selection = await collectOnboardingSelection(
       DEFAULT_POLICY,
@@ -1163,8 +1167,10 @@ describe("onboarding conversation", () => {
       pointerQuestion,
       ONBOARDING_QUESTIONS.handoff,
       scratchQuestion,
+      reviewLoopQuestion,
     ]);
-    expect(defaults.at(-2)).toBe("confirm-ready");
+    expect(defaults.at(-3)).toBe("confirm-ready");
+    expect(defaults.at(-2)).toBe("add");
     expect(defaults.at(-1)).toBe("add");
     expect(HANDOFF_CHOICES.map((choice) => choice.value)).toEqual([
       "confirm-ready",
@@ -1184,6 +1190,8 @@ describe("onboarding conversation", () => {
     );
     expect(selection.scratchFileRule.action).toBe("leave");
     expect(selection.summary).toContain("Scratch-file rule: not added.");
+    expect(selection.reviewLoopRule.action).toBe("leave");
+    expect(selection.summary).toContain("Review-loop rule: not added.");
   });
 
   test("skips handoff timing when instructions remain unchanged", async () => {
@@ -1204,6 +1212,10 @@ describe("onboarding conversation", () => {
         ONBOARDING_QUESTIONS.scratchFileRule(
           resolve(fixture.root, "AGENTS.md")
         ),
+        "add",
+      ],
+      [
+        ONBOARDING_QUESTIONS.reviewLoopRule(resolve(fixture.root, "AGENTS.md")),
         "add",
       ],
     ]);
@@ -1233,6 +1245,17 @@ describe("onboarding conversation", () => {
       "<!-- simple-changes:scratch-files:start -->"
     );
     expect(selection.summary).toContain("Proposed managed rule:");
+    // So is the review-loop rule, in a block of its own.
+    expect(selection.reviewLoopRule).toMatchObject({
+      action: "add",
+      target: { path: resolve(fixture.root, "AGENTS.md") },
+    });
+    expect(selection.reviewLoopRule.block).toStartWith(
+      "<!-- simple-changes:review-loop:start -->\nIn Simple Changes runs, review in rounds at the exact head"
+    );
+    expect(selection.summary).toContain(
+      `Review-loop rule: update repository file ${resolve(fixture.root, "AGENTS.md")}.`
+    );
   });
 
   test("asks nothing about the scratch-file rule without an instruction file", async () => {

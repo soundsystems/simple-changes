@@ -452,9 +452,10 @@ that the short managed pointer makes completed implementation discover Simple
 Changes automatically; it does not copy this skill's rules or grant new
 authority. Then offer the optional scratch-file rule for the same file, even
 when the user leaves the pointer out: it gives every agent one scratch folder
-of its own outside project folders, and lets it delete only that folder. Never
-create an instruction file, follow a symlink, or duplicate either managed
-block.
+of its own outside project folders, and lets it delete only that folder. Then
+offer the optional review-loop rule, which tells agents how to run review
+rounds in Simple Changes runs with your review settings. Never create an
+instruction file, follow a symlink, or duplicate a managed block.
 
 ## Confirm, apply, and continue
 
@@ -470,7 +471,8 @@ Before writing, show a plain-language receipt containing:
 - when the user will be interrupted;
 - the exact preference path, or that no file will be written;
 - the exact instruction-pointer target and managed block, when selected;
-- the scratch-file rule block, when selected; and
+- the scratch-file rule block, when selected;
+- the review-loop rule block, when selected; and
 - the high-risk operations that still require explicit exact-target authority.
 
 Ask for confirmation only after displaying the receipt. If confirmed, apply the

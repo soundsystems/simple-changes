@@ -845,6 +845,7 @@
             "most-capable-unresolved",
             "no-delegation",
             "no-effective-authors",
+            "reviewer-model-id-missing",
             "reviewer-not-distinct",
             "running-harness-unknown"
           ]

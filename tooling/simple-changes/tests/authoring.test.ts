@@ -29,11 +29,13 @@ import {
   type AuthoringSidecar,
   authoringPaths,
   authoringQuestionState,
+  canonicalModelId,
   changelogsHarnessPrefill,
   changelogsPersonalAuthoringPath,
   detectHarnesses,
   type HarnessDefinition,
   loadHarnessDefinitions,
+  MODEL_ID_ALIASES,
   packagedHarnessDataPath,
   parseAuthoringRequest,
   REVIEW_LOOP_DEFAULTS,
@@ -41,7 +43,6 @@ import {
   resolveAuthoringRole,
   resolveRepositoryAuthoring,
   resolveRequestedRole,
-  sameModelName,
   validateAuthoringSidecar,
   writeAuthoringSidecar,
 } from "../../../skills/simple-changes/scripts/lib/authoring.ts";
@@ -1254,136 +1255,45 @@ describe("the 5.1.4 truth table", () => {
 });
 
 describe("model identity", () => {
-  test("an effort word or a qualifier never makes the same model look distinct", () => {
-    const same: [string, string][] = [
-      ["GPT-6.1 Sol high", "gpt-6.1-sol"],
-      ["gpt-6.1-sol xhigh", "gpt-6.1-sol"],
-      ["GPT-6.1 Sol high", "gpt-6.1-sol xhigh"],
-      ["Claude Opus 5.5 xhigh", "claude-opus-5-5"],
-      ["Opus 5.5 high effort", "claude-opus-5-5"],
-      ["Claude Opus 5.5 extra-high", "claude-opus-5-5 max"],
-      ["gpt-6.1-sol (reasoning: high)", "GPT 6.1 Sol"],
-      ["Fable 5.1 (version unknown)", "Fable 5.1"],
-      ["Fable (version unknown)", "claude-fable-5-1"],
-      ["Fable (unknown version)", "claude-fable-5-1"],
-      // A nested or unclosed note goes whole, never leaving a fragment.
-      ["gpt-6.1-sol (reasoning (high))", "gpt-6.1-sol"],
-      ["gpt-6.1-sol (reasoning: high", "gpt-6.1-sol"],
-      ["gpt-6.1-sol high)", "gpt-6.1-sol"],
-      // Punctuation around an effort word does not keep it.
-      ["gpt-6.1-sol reasoning: high", "gpt-6.1-sol"],
-      ["gpt-6.1-sol, effort=xhigh.", "gpt-6.1-sol"],
-      // So does a compound effort field, wherever it appears.
-      ["gpt-6.1-sol reasoning_effort=high", "gpt-6.1-sol"],
-      ["gpt-6.1-sol reasoning-effort: high", "gpt-6.1-sol"],
-      ["gpt-6.1-sol model_reasoning_effort=high", "gpt-6.1-sol xhigh"],
-      ["xhigh gpt-6.1-sol", "gpt-6.1-sol"],
-      ["Claude Opus 5.5 thinking mode", "claude-opus-5-5"],
-      ["gpt-6.1-sol reasoning mode: high", "gpt-6.1-sol"],
-      // A standalone level reads as effort, even in a display name that
-      // means a variant, so the ambiguity only ever blocks a review.
-      ["Claude Opus 5.5 max", "claude-opus-5-5"],
-      ["GPT-5.1 Codex Max", "gpt-5.1-codex"],
-      // A level that is also part of the name is tried both kept and dropped.
-      ["GPT-5.1 Codex Max high", "gpt-5.1-codex-max"],
-      ["GPT-5.1 Codex Max reasoning: xhigh", "gpt-5.1-codex-max xhigh"],
-      // However many effort words surround it.
-      [
-        "GPT-5.1 Codex Max model reasoning effort extra high mode",
-        "gpt-5.1-codex-max",
-      ],
-      ["high max xhigh GPT-5.1 Codex Max high max", "gpt-5.1-codex-max"],
-      ["xhigh GPT-5.1 Codex Max high", "openai/gpt-5.1-codex-max"],
-      ["high Model 5.5 Max xhigh", "model-5-5-max"],
-      // A version note keeps its version and drops its effort.
-      ["Claude Opus (5.5 high)", "claude-opus-5-5"],
-      // A runtime note with numbers in it is still only a note.
-      ["gpt-6.1-sol (reasoning: high, budget: 32768)", "gpt-6.1-sol"],
-      ["Claude Opus (5.5, budget 1000)", "claude-opus-5-5"],
-      // Words after a whole model name read as notes, with or without
-      // parentheses, so a separate variant word does too.
-      ["gpt-6.1-sol reasoning: high, budget: 32768", "gpt-6.1-sol"],
-      ["Claude Opus 5.5 temperature 0.2", "claude-opus-5-5"],
-      ["openai/gpt-6.1-sol ctx 200k", "gpt-6.1-sol"],
-      ["vendor model-max", "vendor"],
-      // Two names with different settings are still one model.
-      ["gpt-6.1-sol budget: 32768", "gpt-6.1-sol budget: 65536"],
-      ["gpt-6.1-sol, reasoning=high", "GPT-6.1 Sol thinking: 4000"],
-      ["Claude Opus 5.5 temperature 0.2", "claude-opus-5-5 budget 100"],
-      ["Opus (version unknown)", "claude-opus-5-5"],
-      ["Example Model 5.5", "example-model-5-5"],
-      ["Sonnet 5.5", "claude-sonnet-5-5"],
-    ];
-    for (const [left, right] of same) {
-      expect([left, right, sameModelName(left, right)]).toEqual([
-        left,
-        right,
-        true,
-      ]);
-      expect(sameModelName(right, left)).toBe(true);
+  test("a model ID is an ID-shaped name, folded for case and one provider prefix", () => {
+    for (const [value, id] of [
+      ["model-5-5", "model-5-5"],
+      ["Model-5-5", "model-5-5"],
+      ["  model-5.5  ", "model-5.5"],
+      ["vendor/model-5-5", "model-5-5"],
+      ["model_5_5", "model_5_5"],
+    ] as const) {
+      expect([value, canonicalModelId(value)]).toEqual([value, id]);
     }
   });
 
-  test("a name with too many readings to compare cheaply counts as the same, fast", () => {
-    const left =
-      "id-5 low max high low high max max low high high low max high max low low max high low max a 1 a 1 a 1 a 1 a 1 a 1";
-    const right =
-      "xx-5 low max high low high max max low high high low max high max low low max high low max a 1 a 1 a 1 a 1 a 1";
-    const started = performance.now();
-    expect(sameModelName(left, right)).toBe(true);
-    expect(sameModelName(right, left)).toBe(true);
-    // Just under the cap, a name is still compared, and quickly.
-    const near = `model-5 ${Array.from({ length: 14 }, () => "high").join(" ")}`;
-    expect(sameModelName(near, "model-6")).toBe(false);
-    expect(sameModelName(near, "model-5")).toBe(true);
-    expect(performance.now() - started).toBeLessThan(1000);
+  test("a display name, an effort label, a note, or the sentinel is not an ID", () => {
+    for (const value of [
+      "Model 5.5",
+      "model-5-5 high",
+      "model-5-5 (version unknown)",
+      "model-5-5, reasoning: high",
+      "model-5-5=high",
+      "a/b/model-5-5",
+      "-model",
+      "",
+      "   ",
+      "most-capable",
+      null,
+      undefined,
+    ]) {
+      expect([value, canonicalModelId(value)]).toEqual([value, null]);
+    }
   });
 
-  test("a real version or variant difference stays distinct", () => {
-    const distinct: [string, string][] = [
-      ["Claude Opus 5", "Claude Opus 5.5"],
-      ["claude-opus-5 high", "claude-opus-5-5"],
-      ["gpt-6", "gpt-6.1-sol"],
-      ["gpt-6-sol high", "gpt-6.1-sol"],
-      ["gpt-5.1-codex-max", "gpt-5.1-codex"],
-      ["Fable 5.1 (version unknown)", "Fable 5"],
-      // Only a note that the version is unknown widens a name to its family.
-      ["gpt-6 (reasoning unknown)", "gpt-6.1-sol"],
-      ["gpt-6 (unknown effort)", "gpt-6.1-sol"],
-      // An unknown version never absorbs another variant.
-      ["gpt-5.1-codex (version unknown)", "gpt-5.1-codex-max"],
-      // A name that already carries a version never widens past it.
-      ["Claude Opus 5 (version unknown)", "claude-opus-5-5"],
-      ["Fable 5.1 (version unknown)", "Fable 5.1.2"],
-      // A note of version numbers alone names the version.
-      ["Claude Opus (5)", "Claude Opus (5.5)"],
-      ["Claude Opus (5)", "claude-opus-5-5"],
-      ["Claude Opus (5 high)", "Claude Opus (5.5 high)"],
-      ["Claude Opus (5", "Claude Opus (5.5"],
-      // A version is part of its word, so it never ends a leading match.
-      ["gpt-6 budget 100", "gpt-6.1-sol"],
-      ["Claude Opus 5 temperature 0.2", "Claude Opus 5.5"],
-      ["gpt-5.1-codex budget 100", "gpt-5.1-codex-max"],
-      // A model word after a version is a name, never a setting.
-      ["Claude 3 Opus", "Claude 3 Sonnet"],
-      ["Claude Opus 5", "Claude Sonnet 5"],
-      ["Claude Opus 5 budget 100", "Claude Sonnet 5 budget 100"],
-      ["Fable (version unknown)", "claude-fable-mini-5-1"],
-      // A hyphenated part that is not effort keeps the whole word.
-      ["gpt-5.1-codex-max high", "gpt-5.1-codex xhigh"],
-      ["Example Model 5.5", "Example 5.5"],
-      ["vendor coder-max high", "vendor coder"],
-      ["Astra medium", "gpt-6.1-sol"],
-      ["model-alpha", "model-beta"],
-      ["high", "max"],
-    ];
-    for (const [left, right] of distinct) {
-      expect([left, right, sameModelName(left, right)]).toEqual([
-        left,
-        right,
-        false,
-      ]);
-      expect(sameModelName(right, left)).toBe(false);
+  test("different IDs stay different, and no alias is assumed", () => {
+    expect(MODEL_ID_ALIASES).toEqual({});
+    for (const [left, right] of [
+      ["model-5", "model-5-5"],
+      ["coder", "coder-max"],
+      ["model_5_5", "model-5-5"],
+    ] as const) {
+      expect(canonicalModelId(left)).not.toBe(canonicalModelId(right));
     }
   });
 });

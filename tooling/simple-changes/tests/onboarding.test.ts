@@ -1678,24 +1678,33 @@ describe("authoring and review questions", () => {
     expect(
       reviewModelProblem("reviewer-model", { model: "author-model" })
     ).toBeNull();
-    expect(
-      reviewModelProblem(
-        "xx-5 low max high low high max max low high high low max high max low low max high low max a 1 a 1 a 1 a 1 a 1",
-        { model: "author-model" }
-      )
-    ).toContain("pass the model ID the harness reports");
-    for (const variant of [
-      "AUTHOR-MODEL",
-      "author_model",
-      "Author Model",
-      "vendor/author-model",
-      "author-model xhigh",
-      "Author Model (version unknown)",
-    ]) {
+    // The author's own model ID, however it is cased or prefixed.
+    for (const variant of ["AUTHOR-MODEL", "vendor/author-model"]) {
       expect(reviewModelProblem(variant, { model: "author-model" })).toContain(
         "review its own work"
       );
     }
+    // A name that is not a model ID is refused with the next step, since
+    // only IDs can be told apart.
+    for (const label of [
+      "Author Model",
+      "author-model xhigh",
+      "Author Model (version unknown)",
+    ]) {
+      expect(reviewModelProblem(label, { model: "author-model" })).toBe(
+        "That is not a model ID. Record the model ID the agent reports, in lowercase with no spaces, such as `model-5-5`, not a display name or an effort label."
+      );
+    }
+    // A different ID is accepted, even one that differs only in punctuation.
+    expect(
+      reviewModelProblem("author_model", { model: "author-model" })
+    ).toBeNull();
+    // An agent whose recorded model is not an ID cannot be told apart.
+    expect(
+      reviewModelProblem("reviewer-model", { model: "Author Model" })
+    ).toContain(
+      "is not a model ID, so a different reviewer cannot be confirmed"
+    );
     const { asked, prompter } = scripted(
       ["found", "specific", "high", "different-model", "max", "xhigh"],
       ["author-model", "author-model", "reviewer-model"]

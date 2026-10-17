@@ -186,6 +186,7 @@ import {
   type AuthorAttestResult,
   attestCommits,
   type CommitGaps,
+  modelIdReasonHint,
   type RecordAuthorsResult,
   type RecordReviewResult,
   type ReviewLedgerResumeState,
@@ -497,7 +498,7 @@ Usage:
     --authors-digest SHA256 --receipt WAIVER_FILE [--json] [--repo PATH]
   simple-changes author attest --commit SHA [--commit SHA ...] [--agent-id ID]
     [--contribution implementation] [--replays SHA[,SHA ...]]
-    [--worktree PATH] [--instance ID] [--agent NAME] [--complete-identity]
+    [--worktree PATH] [--instance ID] [--agent MODEL_ID] [--complete-identity]
     [--json] [--repo PATH]
   simple-changes skill check [--skill-dir PATH] [--json]
   simple-changes validate KIND FILE [--json]
@@ -2389,7 +2390,8 @@ const describeReviewer = (
     ? `${reviewer.model ?? "unknown model"} in ${reviewer.harness} at ${reviewer.effort ?? "unknown effort"}${reviewer.effortSource === "escalation" ? " (escalated after findings)" : ""}`
     : "no target";
   const reason = reviewer.reason ? `, ${reviewer.reason}` : "";
-  return `Reviewer (${reviewer.mode}${reviewer.adversarial ? ", different author model or agent required" : ""}): ${reviewer.status}, ${target}${reason}`;
+  const hint = modelIdReasonHint(reviewer.reason);
+  return `Reviewer (${reviewer.mode}${reviewer.adversarial ? ", different author model or agent required" : ""}): ${reviewer.status}, ${target}${reason}${hint ? `\n${hint}` : ""}`;
 };
 
 // The authoring preference state: pending questions, a sidecar to repair, and
@@ -3326,7 +3328,10 @@ const renderRecordedReview = (result: RecordReviewResult): string => {
   } else if (result.approvalCandidate) {
     now = "Now: counts toward approval of this head.";
   }
-  return `${recorded}\n${now}\n${result.disclosure.message ? `Disclosure: ${result.disclosure.message}\n` : ""}`;
+  const hint = modelIdReasonHint(
+    currentValidity.valid ? null : currentValidity.reason
+  );
+  return `${recorded}\n${now}\n${hint ? `${hint}\n` : ""}${result.disclosure.message ? `Disclosure: ${result.disclosure.message}\n` : ""}`;
 };
 
 const renderWaiver = (result: WaiveCoverageResult): string =>

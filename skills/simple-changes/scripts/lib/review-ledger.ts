@@ -15,18 +15,17 @@ import { spawnSync } from "bun";
 import {
   type AuthoringEffort,
   type AuthoringSidecar,
+  canonicalModelId,
   EFFORT_LEVELS,
   higherEffort,
   isHarnessId,
   isModelName,
-  MODEL_NAME_TOO_COMPLEX,
+  MODEL_ID_REQUIRED,
   MOST_CAPABLE,
-  modelNameTooComplex,
   type RepositoryAuthoring,
   type ResolvedReviewLoop,
   type ReviewEscalationTrigger,
   resolveRepositoryAuthoring,
-  sameModelName,
 } from "./authoring.ts";
 import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
 import { currentHarnessSession } from "./harness-session.ts";
@@ -216,6 +215,7 @@ export type ReviewerReason =
   | "most-capable-unresolved"
   | "no-delegation"
   | "no-effective-authors"
+  | "reviewer-model-id-missing"
   | "reviewer-not-distinct"
   | "running-harness-unknown";
 
@@ -1315,8 +1315,8 @@ const compatibleIdentities = (
   left: AttestedIdentity,
   right: AttestedIdentity
 ): boolean => {
-  const leftModel = reportedModel(left.agent);
-  const rightModel = reportedModel(right.agent);
+  const leftModel = reportedModelId(left.agent);
+  const rightModel = reportedModelId(right.agent);
   return (
     (left.instance === null ||
       right.instance === null ||
@@ -1327,10 +1327,10 @@ const compatibleIdentities = (
 
 /**
  * Whether `completer` completes `earlier`: the same known session, harness
- * and agent id, every instance and reported model `earlier` carried kept
- * exactly, and a missing instance or reported model added. The planning
- * sentinel and a blank name are not reported models, so they never count as
- * the addition.
+ * and agent id, every instance and model ID `earlier` carried kept exactly,
+ * and a missing instance or model ID added. A display name, the planning
+ * sentinel, and a blank name are not model IDs, so a completion may supply
+ * the ID such a record lacked, and they never count as the addition.
  */
 const refinesIdentity = (
   completer: AttestedIdentity,
@@ -1340,8 +1340,8 @@ const refinesIdentity = (
   if (anchor === null || anchor !== completionAnchor(earlier)) {
     return false;
   }
-  const earlierModel = reportedModel(earlier.agent);
-  const completerModel = reportedModel(completer.agent);
+  const earlierModel = reportedModelId(earlier.agent);
+  const completerModel = reportedModelId(completer.agent);
   const keeps =
     (earlier.instance === null || earlier.instance === completer.instance) &&
     (earlierModel === null || earlierModel === completerModel);
@@ -1859,26 +1859,44 @@ const reportedHarness = (harness: string | null): string | null =>
   harness === null || harness.trim() === "" ? null : harness;
 
 /**
+ * The canonical model ID a reported identity carries, or null. Identity
+ * checks compare IDs only; a display name or effort label is missing
+ * evidence, never a different model.
+ */
+const reportedModelId = (agent: string | null): string | null =>
+  canonicalModelId(reportedModel(agent));
+
+/**
  * Adversarial diversity between two reported identities: a different
- * harness id, or the same harness with a different reported model, is
- * distinct. Missing harness or model evidence on either side, the sentinel
- * included, is unknown, never distinct.
+ * harness id, or the same harness with a different model ID, is distinct.
+ * Within one harness only model IDs can tell models apart, so a display
+ * name or the sentinel on either side is missing evidence there, never a
+ * different model; across harnesses the model is not what differs.
  */
 const diversity = (
   reviewer: { agent: string | null; harness: string | null },
   author: { agent: string | null; harness: string | null }
-): "distinct" | "same" | "unknown" => {
-  const reviewerModel = reportedModel(reviewer.agent);
-  const authorModel = reportedModel(author.agent);
+): "distinct" | "same" | "unknown-author" | "unknown-reviewer" => {
   const reviewerHarness = reportedHarness(reviewer.harness);
   const authorHarness = reportedHarness(author.harness);
-  if (!(reviewerHarness && reviewerModel && authorHarness && authorModel)) {
-    return "unknown";
+  if (!(reviewerHarness && reportedModel(reviewer.agent))) {
+    return "unknown-reviewer";
+  }
+  if (!(authorHarness && reportedModel(author.agent))) {
+    return "unknown-author";
   }
   if (reviewerHarness !== authorHarness) {
     return "distinct";
   }
-  return sameModelName(reviewerModel, authorModel) ? "same" : "distinct";
+  const reviewerModel = reportedModelId(reviewer.agent);
+  if (reviewerModel === null) {
+    return "unknown-reviewer";
+  }
+  const authorModel = reportedModelId(author.agent);
+  if (authorModel === null) {
+    return "unknown-author";
+  }
+  return reviewerModel === authorModel ? "same" : "distinct";
 };
 
 const uniqueAuthors = (
@@ -1944,18 +1962,14 @@ const identityFailure = (
   if (authors.length === 0) {
     return "no-effective-authors";
   }
-  if (!(reportedHarness(reviewer.harness) && reportedModel(reviewer.agent))) {
+  const verdicts = authors.map((author) => diversity(reviewer, author));
+  if (verdicts.includes("unknown-reviewer")) {
     return "reviewer-identity-missing";
   }
-  if (
-    authors.some(
-      (author) =>
-        !(reportedHarness(author.harness) && reportedModel(author.agent))
-    )
-  ) {
+  if (verdicts.includes("unknown-author")) {
     return "author-identity-missing";
   }
-  return authors.every((author) => diversity(reviewer, author) === "distinct")
+  return verdicts.every((verdict) => verdict === "distinct")
     ? null
     : "reviewer-not-distinct";
 };
@@ -2207,6 +2221,23 @@ export const reviewLoopStatus = (
   };
 };
 
+/**
+ * The next step for a reason that means a model ID is missing, so a refusal
+ * never only names a code. Null for every other reason.
+ */
+export const modelIdReasonHint = (reason: string | null): string | null => {
+  switch (reason) {
+    case "author-identity-missing":
+      return "An author of this head has no recorded model ID. That author runs `simple-changes author attest --commit <sha> --agent-id <id> --agent <model ID> --complete-identity` from the same session, with the model ID its agent reports, such as `model-5-5`.";
+    case "reviewer-identity-missing":
+      return "The reviewer reported no model ID. Review again, recording in `verified.agent` the model ID the reviewer's agent reports, such as `model-5-5`, not a display name or an effort label.";
+    case "reviewer-model-id-missing":
+      return `The configured reviewer model is not a model ID. ${MODEL_ID_REQUIRED} Record it with \`simple-changes setup --authoring\`.`;
+    default:
+      return null;
+  }
+};
+
 interface ReviewerTarget {
   agent: string | null;
   harness: string | null;
@@ -2216,7 +2247,12 @@ const targetDistinctness = (
   target: { harness: string; model: string },
   author: ReviewerTarget,
   provisional: boolean
-): "distinct" | "same" | "unknown-author" | "unknown-model" => {
+):
+  | "distinct"
+  | "same"
+  | "unknown-author"
+  | "unknown-model"
+  | "unknown-target" => {
   // A provisional author is the configured `proposals` target, a plan that
   // may name the sentinel; a verified author is a reported runtime identity,
   // where the sentinel or a blank name is missing evidence.
@@ -2236,7 +2272,16 @@ const targetDistinctness = (
       ? "same"
       : "unknown-model";
   }
-  return sameModelName(target.model, authorModel) ? "same" : "distinct";
+  // In one harness only model IDs can tell the two apart.
+  const targetId = canonicalModelId(target.model);
+  if (targetId === null) {
+    return "unknown-target";
+  }
+  const authorId = canonicalModelId(authorModel);
+  if (authorId === null) {
+    return "unknown-author";
+  }
+  return targetId === authorId ? "same" : "distinct";
 };
 
 const adversarialOutcome = (
@@ -2252,6 +2297,9 @@ const adversarialOutcome = (
   }
   if (verdicts.includes("unknown-author")) {
     return { reason: "author-identity-missing", status: "unresolved" };
+  }
+  if (verdicts.includes("unknown-target")) {
+    return { reason: "reviewer-model-id-missing", status: "unresolved" };
   }
   if (verdicts.includes("unknown-model")) {
     return { reason: "most-capable-unresolved", status: "unresolved" };
@@ -3759,16 +3807,19 @@ export const reviewDisclosure = (
   if (attempt.verified.harness !== attempt.requested.harness) {
     fields.push("harness");
   }
-  // A name too complex to compare would read as the same model, which here
-  // would hide a mismatch, so it is disclosed as one instead.
-  const tooComplex =
-    modelNameTooComplex(attempt.requested.model) ||
-    (reported !== null && modelNameTooComplex(reported));
+  // Only matching model IDs show that the reviewer ran the requested model;
+  // a name that is not an ID on either side is disclosed as a mismatch.
+  const requestedId = canonicalModelId(attempt.requested.model);
+  const reportedId = canonicalModelId(reported);
+  const notAnId =
+    attempt.requested.model !== MOST_CAPABLE &&
+    (requestedId === null || (reported !== null && reportedId === null));
   if (
     reported === null ||
     attempt.requested.model === MOST_CAPABLE ||
-    tooComplex ||
-    !sameModelName(attempt.requested.model, reported)
+    requestedId === null ||
+    reportedId === null ||
+    requestedId !== reportedId
   ) {
     fields.push("model");
   }
@@ -3777,7 +3828,7 @@ export const reviewDisclosure = (
     message:
       fields.length === 0
         ? null
-        : `Requested ${attempt.requested.model} in ${attempt.requested.harness}; the reviewer reported ${attempt.verified.agent ?? "no model"} in ${attempt.verified.harness ?? "no harness"}.${tooComplex ? ` ${MODEL_NAME_TOO_COMPLEX}` : ""}`,
+        : `Requested ${attempt.requested.model} in ${attempt.requested.harness}; the reviewer reported ${attempt.verified.agent ?? "no model"} in ${attempt.verified.harness ?? "no harness"}.${notAnId ? ` ${MODEL_ID_REQUIRED}` : ""}`,
     mismatch: fields.length > 0,
   };
 };

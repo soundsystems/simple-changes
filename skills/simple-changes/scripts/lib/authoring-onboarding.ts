@@ -3,18 +3,17 @@ import {
   type AuthoringRoleEntry,
   type AuthoringSetupStyle,
   type AuthoringSidecar,
+  canonicalModelId,
   type DetectedHarness,
   EFFORT_LEVELS,
   type HarnessDefinition,
   isModelName,
-  MODEL_NAME_TOO_COMPLEX,
+  MODEL_ID_REQUIRED,
   MOST_CAPABLE,
-  modelNameTooComplex,
   type ReviewEscalationTrigger,
   type ReviewLoopSettings,
   RUNNING_HARNESS,
   resolveReviewLoop,
-  sameModelName,
 } from "./authoring.ts";
 
 // The onboarding questions for authoring and review preferences (design
@@ -296,14 +295,20 @@ export const reviewModelProblem = (
   if (!isModelName(name)) {
     return "Name a model of 1 to 120 characters without control characters.";
   }
-  if (modelNameTooComplex(name)) {
-    return MODEL_NAME_TOO_COMPLEX;
-  }
   const authorModel = recorded?.model ?? MOST_CAPABLE;
-  // The gate's own comparison: case, separators, effort words, qualifiers,
-  // and a shared suffix count as the same model, so onboarding never saves a
-  // reviewer the gate blocks.
-  return sameModelName(name, authorModel)
+  const sentinel = name.trim().toLowerCase() === MOST_CAPABLE;
+  // The gate's own comparison: model IDs, compared exactly, so onboarding
+  // never saves a reviewer the gate cannot tell apart from the author.
+  const reviewId = sentinel ? MOST_CAPABLE : canonicalModelId(name);
+  if (reviewId === null) {
+    return `That is not a model ID. ${MODEL_ID_REQUIRED}`;
+  }
+  const authorId =
+    authorModel === MOST_CAPABLE ? MOST_CAPABLE : canonicalModelId(authorModel);
+  if (authorId === null) {
+    return `The model recorded for this agent, ${authorModel}, is not a model ID, so a different reviewer cannot be confirmed; record the agent's model ID first.`;
+  }
+  return reviewId === authorId
     ? "That is the model recorded for this agent, so it would review its own work; name a different model."
     : null;
 };

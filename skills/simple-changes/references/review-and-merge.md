@@ -116,6 +116,9 @@ repairs it.
   other commit or replay source changes. A completion an earlier runtime
   wrote under its rule, which compared reported names, stays valid; a
   display name it added is still not a model ID.
+  A runtime before 0.31.0 reads a ledger holding a completion that adds a
+  model ID to a display-name record as malformed, so update every runtime
+  that shares the repository before completing one.
 - **Coverage.** `proposal record-authors` binds a head to the effective
   authors of its range and computes `authorsDigest`. A commit with no author,
   a replay source with none, and an inconclusive replay nobody attested are

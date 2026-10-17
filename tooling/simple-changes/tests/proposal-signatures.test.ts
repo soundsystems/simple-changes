@@ -175,19 +175,25 @@ describe("proposal signatures", () => {
       fields: ["harness", "model"],
       mismatch: true,
     });
-    expect(
+    const gate = (verified: typeof attempt.verified) =>
       evaluateReviewAcceptance({
         adversarial: true,
-        attempt: {
-          headRevision: commit,
-          verdict: "clean",
-          verified: attempt.verified,
-        },
+        attempt: { headRevision: commit, verdict: "clean", verified },
         currentHead: commit,
         ledger,
         proposalId: "group/project!1",
         repairRequired: false,
-      }).acceptanceReason
-    ).toBe("reviewer-not-distinct");
+      }).acceptanceReason;
+    // In one harness a display name is missing evidence, never a match
+    // (#10), so the gate fails closed on the reviewer first.
+    expect(gate(attempt.verified)).toBe("reviewer-identity-missing");
+    // With model IDs on both sides, the same model is refused as such.
+    const [authored] = ledger.attestations[commit] ?? [];
+    if (authored) {
+      authored.agent = "fable-5-1";
+    }
+    expect(gate({ ...attempt.verified, agent: "fable-5-1" })).toBe(
+      "reviewer-not-distinct"
+    );
   });
 });

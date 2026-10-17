@@ -207,21 +207,25 @@ describe("stale-claim takeover on lease-registered paths", () => {
       claimedWorktree,
       "claude-code"
     );
-    const digestFor = (): string => {
+    const currentFor = () => {
       const current = captureInventory(fixture.root).worktrees.find(
         (worktree) => worktree.path === claimedWorktree
       );
       if (!current) {
         throw new Error("claimed worktree missing from inventory");
       }
-      return current.changeDigest;
+      return current;
     };
+    const digestFor = (): string => currentFor().changeDigest;
+    const headFor = (): string => currentFor().headSha ?? "";
 
     expect(() =>
       takeoverWorktreeClaim({
         action: "release",
         approvedBy: "the-user",
         claimId: claim.claimId,
+        expectedBranch: "stale-claimed-unit",
+        expectedHeadSha: headFor(),
         expectedStatusDigest: digestFor(),
         newAgentId: "rescuer",
         reason: "The recorded owner no longer exists.",
@@ -243,6 +247,8 @@ describe("stale-claim takeover on lease-registered paths", () => {
       action: "release",
       approvedBy: "the-user",
       claimId: claim.claimId,
+      expectedBranch: "stale-claimed-unit",
+      expectedHeadSha: headFor(),
       expectedStatusDigest: digestFor(),
       newAgentId: "rescuer",
       reason: "The recorded owner no longer exists.",
@@ -524,7 +530,12 @@ describe("standalone worktree cleanup", () => {
       "claimed-unit",
       claimedWorktree,
     ]);
-    claimWorktree(fixture.root, "other-agent", claimedWorktree, "claude-code");
+    const claim = claimWorktree(
+      fixture.root,
+      "other-agent",
+      claimedWorktree,
+      "claude-code"
+    );
 
     const receipt = standaloneWorktreeCleanup({
       agentId: "cleaner",
@@ -536,7 +547,11 @@ describe("standalone worktree cleanup", () => {
     expect(receipt.removed).toHaveLength(0);
     expect(receipt.preserved).toHaveLength(1);
     expect(receipt.preserved[0]?.reason).toContain("live worktree claim");
-    expect(receipt.preserved[0]?.nextCommand).toContain("worktree takeover");
+    // The printed takeover names the exact claim and checkout state, so the
+    // approval it asks for covers one branch, HEAD, and status digest.
+    expect(receipt.preserved[0]?.nextCommand).toBe(
+      `simple-changes worktree takeover --claim-id ${claim.claimId} --agent-id <you> --head ${claim.headSha} --branch claimed-unit --status-digest ${claim.changeDigest} --approved-by <user> --reason <why> --release`
+    );
     expect(existsSync(claimedWorktree)).toBe(true);
   });
 

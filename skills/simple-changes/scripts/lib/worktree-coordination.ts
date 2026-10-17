@@ -436,6 +436,41 @@ const activeLoopNeedsPath = (
   return registered.role === "preserved" && Boolean(registered.claimId);
 };
 
+/**
+ * Why a loop that still requires this claim's path refuses its takeover, or
+ * null when nothing refuses it. A path the loop requires stays protected,
+ * with one exception: while the controller is active, the live claim on a
+ * checkout the run registered as a concurrent author may be reassigned to
+ * that controller itself. The controller then claims, pauses, and accepts
+ * the checkout's exact state as the printed recovery says, so a vanished
+ * author never forces the run to relinquish and freeze its shipment scope.
+ */
+const activeLoopTakeoverRefusal = (
+  commonGitDirectory: string,
+  claimPath: string,
+  action: "reassign" | "release",
+  newAgentId: string
+): string | null => {
+  if (!activeLoopNeedsPath(commonGitDirectory, claimPath)) {
+    return null;
+  }
+  const lease = activeLoop(commonGitDirectory);
+  const registered = lease?.worktrees.find((item) => item.path === claimPath);
+  if (
+    !(
+      lease &&
+      (!lease.controller || lease.controller.status === "active") &&
+      registered?.role === "concurrent-author"
+    )
+  ) {
+    return "An active loop lease still requires this claimed worktree; takeover is refused until the lease releases it.";
+  }
+  if (action === "reassign" && newAgentId === lease.ownerAgentId) {
+    return null;
+  }
+  return `Run ${lease.runId} registers ${claimPath} as a concurrent author, so while its controller is active this claim may only be reassigned to that controller: pass --agent-id ${lease.ownerAgentId} without --release, then claim, pause, and accept the checkout as the controller.`;
+};
+
 export const assertNoGitOperation = (worktreePath: string): void => {
   const gitDirectory = realpathSync(
     runGit(worktreePath, ["rev-parse", "--absolute-git-dir"]).stdout.trim()
@@ -1569,11 +1604,73 @@ export interface WorktreeTakeoverOptions {
   action: "reassign" | "release";
   approvedBy: string;
   claimId: string;
+  /**
+   * The branch the approval names, or null for a detached checkout. Every
+   * clean checkout has the same status digest, so an approval also names the
+   * exact branch and HEAD it covers.
+   */
+  expectedBranch: string | null;
+  /** The exact HEAD commit the approval names. */
+  expectedHeadSha: string;
   expectedStatusDigest: string;
   newAgentId: string;
   reason: string;
   repositoryPath: string;
 }
+
+/** The exact checkout state a takeover approval names. */
+interface TakeoverEvidence {
+  branch: string | null;
+  changeDigest: string;
+  headSha: string;
+}
+
+const SAFE_COMMAND_WORD_PATTERN = /^[A-Za-z0-9._:/@%+=,-]+$/u;
+
+// Quote a value only when a POSIX shell would split or expand it.
+const commandWord = (value: string): string =>
+  SAFE_COMMAND_WORD_PATTERN.test(value)
+    ? value
+    : `'${value.replaceAll("'", "'\\''")}'`;
+
+export interface TakeoverCommandInput {
+  /** The new owner, or null for a `<you>` placeholder. */
+  agentId: string | null;
+  claimId: string;
+  /** The checkout as observed now; placeholders stand in when it is gone. */
+  current: Pick<
+    WorktreeInventory,
+    "branch" | "changeDigest" | "headSha"
+  > | null;
+  release?: boolean;
+  /** Already quoted for the shell. */
+  repo?: string;
+}
+
+/**
+ * The approved `worktree takeover` for one claim, naming the checkout's exact
+ * branch (or `--detached`), HEAD, and status digest for the approval to
+ * cover. Only the approver and reason are left to fill in.
+ */
+export const takeoverCommand = (input: TakeoverCommandInput): string => {
+  const { current } = input;
+  let branch = "--branch <name>";
+  if (current) {
+    branch = current.branch
+      ? `--branch ${commandWord(current.branch)}`
+      : "--detached";
+  }
+  return [
+    `simple-changes worktree takeover --claim-id ${input.claimId}`,
+    `--agent-id ${input.agentId ? commandWord(input.agentId) : "<you>"}`,
+    `--head ${current?.headSha ?? "<sha>"}`,
+    branch,
+    `--status-digest ${current?.changeDigest ?? "<digest>"}`,
+    "--approved-by <user> --reason <why>",
+    ...(input.release ? ["--release"] : []),
+    ...(input.repo ? [`--repo ${input.repo}`] : []),
+  ].join(" ");
+};
 
 export interface WorktreeTakeoverResult {
   claim: WorktreeClaim;
@@ -1623,7 +1720,7 @@ const matchingTakeoverIntent = (
     WorktreeTakeoverOptions,
     "action" | "approvedBy" | "claimId" | "newAgentId" | "reason"
   >,
-  expectedStatusDigest: string
+  expected: TakeoverEvidence
 ): WorktreeTakeoverReceipt | undefined => {
   for (let index = history.length - 1; index >= 0; index -= 1) {
     const item = history[index];
@@ -1632,7 +1729,9 @@ const matchingTakeoverIntent = (
       item.claimId === options.claimId &&
       item.action === options.action &&
       item.newAgentId === options.newAgentId &&
-      item.changeDigest === expectedStatusDigest &&
+      item.changeDigest === expected.changeDigest &&
+      item.branch === expected.branch &&
+      item.headSha === expected.headSha &&
       item.approvedBy === options.approvedBy &&
       item.reason === options.reason
     ) {
@@ -1696,11 +1795,24 @@ export const takeoverWorktreeClaim = (
   const newAgentId = requiredText(options.newAgentId, "new agent ID", 128);
   const approvedBy = requiredText(options.approvedBy, "approver", 128);
   const reason = requiredText(options.reason, "takeover reason");
-  const expectedStatusDigest = requiredText(
-    options.expectedStatusDigest,
-    "expected status digest",
-    64
-  );
+  const expected: TakeoverEvidence = {
+    branch:
+      options.expectedBranch === null
+        ? null
+        : requiredText(options.expectedBranch, "expected branch", 255),
+    changeDigest: requiredText(
+      options.expectedStatusDigest,
+      "expected status digest",
+      64
+    ),
+    headSha: requiredText(options.expectedHeadSha, "expected HEAD", 64),
+  };
+  if (!SHA_PATTERN.test(expected.headSha)) {
+    throw new SimpleChangesError(
+      "expected HEAD must be the checkout's full commit ID.",
+      EXIT_CODES.usage
+    );
+  }
   if (options.action !== "reassign" && options.action !== "release") {
     throw new SimpleChangesError(
       'takeover action must be "reassign" or "release".',
@@ -1727,7 +1839,7 @@ export const takeoverWorktreeClaim = (
       const pendingIntent = matchingTakeoverIntent(
         takeoverHistory,
         { ...options, approvedBy, claimId, newAgentId, reason },
-        expectedStatusDigest
+        expected
       );
       const recovered = recoverAppliedTakeoverIntent(
         commonGitDirectory,
@@ -1745,17 +1857,24 @@ export const takeoverWorktreeClaim = (
         );
       }
       const current = worktreeAt(inventory, claim.path);
-      if (current.changeDigest !== expectedStatusDigest) {
+      if (
+        current.changeDigest !== expected.changeDigest ||
+        current.headSha !== expected.headSha ||
+        current.branch !== expected.branch
+      ) {
         throw new SimpleChangesError(
-          "The worktree status digest changed since it was observed; re-observe the worktree and retry the takeover with fresh evidence.",
+          `The worktree changed since it was observed: it is now ${current.branch ? `on branch ${current.branch}` : "detached"} at ${current.headSha ?? "no commit"} with status digest ${current.changeDigest}. The approval names one exact branch, HEAD, and status digest, so re-observe the worktree, confirm the current state with the approver, and retry the takeover with fresh evidence.`,
           EXIT_CODES.unsafe
         );
       }
-      if (activeLoopNeedsPath(commonGitDirectory, claim.path)) {
-        throw new SimpleChangesError(
-          "An active loop lease still requires this claimed worktree; takeover is refused until the lease releases it.",
-          EXIT_CODES.unsafe
-        );
+      const loopRefusal = activeLoopTakeoverRefusal(
+        commonGitDirectory,
+        claim.path,
+        options.action,
+        newAgentId
+      );
+      if (loopRefusal) {
+        throw new SimpleChangesError(loopRefusal, EXIT_CODES.unsafe);
       }
       const takenOverAt = new Date().toISOString();
       const receipt =
@@ -1776,10 +1895,15 @@ export const takeoverWorktreeClaim = (
           takenOverAt,
           takeoverId: `takeover-${randomUUID()}`,
         } satisfies WorktreeTakeoverReceipt);
+      // A reassigned claim records the exact state the approval named, so the
+      // new owner's claim and pause bind that state without a refresh step.
       const updated: WorktreeClaim =
         options.action === "reassign"
           ? {
               ...claim,
+              branch: current.branch,
+              changeDigest: current.changeDigest,
+              headSha: current.headSha,
               owner: {
                 adapter: claim.owner.adapter,
                 agentId: newAgentId,

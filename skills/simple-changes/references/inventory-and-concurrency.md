@@ -667,7 +667,12 @@ untouched.
 A claim whose recorded owner no longer exists and whose worktree is still
 present is not released by guessing the owner identity; use the audited
 `worktree takeover` recovery in
-[recovery](recovery.md#inherited-or-broken-state).
+[recovery](recovery.md#inherited-or-broken-state). Its approval names the
+checkout's exact branch, HEAD, and status digest. When the vanished owner is
+a concurrent author of an active run, the controller takes the claim over
+itself with that approval and records the checkout through its own pause and
+`loop accept-paused-change`; the run keeps its controller and its shipment
+scope, so do not relinquish it to recover.
 
 Under `allow-claimed`, a healthy distinct active claim does not block the loop;
 its owner keeps working and the controller excludes it. A valid active claim

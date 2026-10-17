@@ -437,8 +437,8 @@ Usage:
   simple-changes worktree release --agent-id ID --claim-id ID
     [--ready-receipt FILE] [--json] [--repo PATH]
   simple-changes worktree takeover --claim-id ID --agent-id NEW_OWNER
-    --status-digest SHA256 --approved-by ID --reason TEXT [--release]
-    [--json] [--repo PATH]
+    --head SHA (--branch NAME | --detached) --status-digest SHA256
+    --approved-by ID --reason TEXT [--release] [--json] [--repo PATH]
   simple-changes branch audit --head REF --target REF [--json] [--repo PATH]
   simple-changes worktree equivalence --worktree PATH [--target REF]
     [--json] [--repo PATH]
@@ -527,6 +527,8 @@ interface CliOptions {
   authorsDigest?: string;
   awaitingUser: string[];
   baseRef?: string;
+  // worktree takeover --branch: the branch the approval names.
+  branchName?: string;
   changelogHandling?: RepoPolicy["changelogHandling"];
   changelogInstall?: ChangelogInstallDecision;
   changelogReceiptPath?: string;
@@ -539,6 +541,7 @@ interface CliOptions {
   contribution?: "implementation";
   decisionsPath?: string;
   defaultFinish?: "open-change-request" | "integrate" | "ship";
+  detached: boolean;
   disposition?: "preserve-in-place" | "detach-clean-checkout";
   dryRun: boolean;
   evidencePaths: string[];
@@ -639,6 +642,7 @@ const VALUED_OPTIONS = new Set([
   "--decisions",
   "--agent",
   "--base",
+  "--branch",
   "--changelog-receipt",
   "--claim-id",
   "--head",
@@ -716,6 +720,7 @@ const BOOLEAN_OPTIONS = new Set([
   "--changelog-required",
   "--check",
   "--complete-identity",
+  "--detached",
   "--dry-run",
   "--hook",
   "--json",
@@ -1096,6 +1101,7 @@ const applyLoopValuedOption = (
     "--approved-by": "approvedBy",
     "--authoring-request": "authoringRequest",
     "--base": "baseRef",
+    "--branch": "branchName",
     "--changelog-receipt": "changelogReceiptPath",
     "--claim-id": "claimId",
     "--decisions": "decisionsPath",
@@ -1394,6 +1400,8 @@ const applyBooleanOption = (options: CliOptions, option: string): void => {
     options.completeIdentity = true;
   } else if (option === "--dry-run") {
     options.dryRun = true;
+  } else if (option === "--detached") {
+    options.detached = true;
   } else if (option === "--stale-lease") {
     options.staleLease = true;
   } else if (option === "--tag-automation-authorized") {
@@ -1419,6 +1427,7 @@ const parseOptions = (args: string[]): CliOptions => {
     check: false,
     commits: [],
     completeIdentity: false,
+    detached: false,
     dryRun: false,
     evidencePaths: [],
     help: false,
@@ -4517,6 +4526,18 @@ const runWorktreeRelease = (options: CliOptions, agentId: string): void => {
   );
 };
 
+// A takeover approval names the checkout's branch, or that it is detached:
+// exactly one of `--branch` and `--detached`.
+const takeoverBranch = (options: CliOptions): string | null => {
+  if (options.detached === (options.branchName !== undefined)) {
+    throw new SimpleChangesError(
+      "worktree takeover needs exactly one of --branch NAME or --detached, naming the checkout's state the approval covers.",
+      EXIT_CODES.usage
+    );
+  }
+  return options.branchName ?? null;
+};
+
 const runWorktreeCommand = (options: CliOptions): void => {
   const [action] = options.positional;
   if (!action) {
@@ -4634,6 +4655,8 @@ const runWorktreeCommand = (options: CliOptions): void => {
       action: options.releaseClaim ? "release" : "reassign",
       approvedBy: requireCliOption(options.approvedBy, "--approved-by"),
       claimId: requireCliOption(options.claimId, "--claim-id"),
+      expectedBranch: takeoverBranch(options),
+      expectedHeadSha: requireCliOption(options.headRef, "--head"),
       expectedStatusDigest: requireCliOption(
         options.statusDigest,
         "--status-digest"

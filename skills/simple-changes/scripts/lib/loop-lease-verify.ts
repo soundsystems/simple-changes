@@ -45,6 +45,7 @@ import {
   pauseBlocker,
   readCoordinationDocumentFromCommonDirectory,
   releaseRecordedState,
+  takeoverCommand,
 } from "./worktree-coordination.ts";
 
 const removalDispositionForPath = (
@@ -256,8 +257,38 @@ const staleClaimRecovery = (
   const accept = `${ACCEPT_PAUSED_CHANGE} --run-id ${lease.runId} --agent-id ${controller} --pause-receipt <pause-receipt-id> --repo ${repo}`;
   return {
     commands: [claim, pause, accept],
-    text: `Owner ${agent} runs \`${claim}\`, then \`${pause}\`; controller ${controller} then runs \`${accept}\` with the receipt ID the pause prints.${handoffHint(primary, linkedClaim, liveClaim)}`,
+    text: `Owner ${agent} runs \`${claim}\`, then \`${pause}\`; controller ${controller} then runs \`${accept}\` with the receipt ID the pause prints.${handoffHint(primary, linkedClaim, liveClaim)}${concurrentTakeoverHint(lease, registered, worktree, liveClaim, primary)}`,
   };
+};
+
+// A concurrent author whose owner has vanished keeps its live claim, and
+// only the active controller may take that claim over, with the user's
+// approval of the exact checkout state; the run is never relinquished for it.
+const concurrentTakeoverHint = (
+  lease: LoopLease,
+  registered: LoopWorktreeLease,
+  worktree: WorktreeInventory,
+  liveClaim: WorktreeClaim | undefined,
+  primary: boolean
+): string => {
+  if (
+    primary ||
+    registered.role !== "concurrent-author" ||
+    !liveClaim ||
+    liveClaim.owner.agentId === lease.ownerAgentId ||
+    !worktree.headSha
+  ) {
+    return "";
+  }
+  const repo = controllerRepo(lease);
+  const controller = commandWord(lease.ownerAgentId);
+  const takeover = takeoverCommand({
+    agentId: lease.ownerAgentId,
+    claimId: liveClaim.claimId,
+    current: worktree,
+    repo,
+  });
+  return ` If ${liveClaim.owner.agentId} no longer exists, ask the user to approve \`${takeover}\`, which hands that exact claim and checkout state to controller ${controller} without relinquishing the run, then re-run \`${LOOP_VERIFY} --run-id ${lease.runId} --repo ${repo}\` for the controller's own claim, pause, and accept steps.`;
 };
 
 // A completed release with nothing holding the checkout may be an ownership

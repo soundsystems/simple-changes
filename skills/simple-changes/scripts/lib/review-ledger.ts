@@ -15,16 +15,17 @@ import { spawnSync } from "bun";
 import {
   type AuthoringEffort,
   type AuthoringSidecar,
+  canonicalModelId,
   EFFORT_LEVELS,
   higherEffort,
   isHarnessId,
   isModelName,
-  MODEL_NAME_TOO_COMPLEX,
+  MODEL_ID_REQUIRED,
   MOST_CAPABLE,
-  modelNameTooComplex,
   type RepositoryAuthoring,
+  type ResolvedReviewLoop,
+  type ReviewEscalationTrigger,
   resolveRepositoryAuthoring,
-  sameModelName,
 } from "./authoring.ts";
 import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
 import { currentHarnessSession } from "./harness-session.ts";
@@ -39,9 +40,15 @@ import { gitExecutable, runGit, runGitWithInput } from "./process.ts";
 import type {
   LoopLease,
   RepositoryInventory,
+  WorktreeClaim,
   WorktreeCoordinationDocument,
 } from "./types.ts";
-import { readCoordinationDocumentFromCommonDirectory } from "./worktree-coordination.ts";
+import {
+  claimHeldByAnotherSession,
+  claimSessionRefusal,
+  claimTakeoverState,
+  readCoordinationDocumentFromCommonDirectory,
+} from "./worktree-coordination.ts";
 
 // The review ledger: durable, proposal-scoped evidence of who wrote each
 // commit and who reviewed each proposal head, kept in its own versioned file
@@ -147,6 +154,18 @@ export interface ProposalHead {
 export type ReviewEffortSource = "configured" | "escalation" | "request";
 export type ReviewVerdict = "findings" | "clean" | "failed";
 
+/**
+ * How many of a review's findings are blocking, should-fix, or nits; the
+ * three always add up to the attempt's `findingsCount`.
+ */
+export interface FindingSeverities {
+  blocking: number;
+  nit: number;
+  shouldFix: number;
+}
+
+const SEVERITY_KEYS = ["blocking", "nit", "shouldFix"] as const;
+
 export interface ReviewAttempt {
   acceptanceReason: string | null;
   accepted: boolean;
@@ -159,6 +178,11 @@ export interface ReviewAttempt {
   headRevision: string;
   recordedAt: string;
   requested: { effort: AuthoringEffort; harness: string; model: string };
+  /**
+   * Present only when the reviewer graded its findings, so a ledger without
+   * one keeps the shape runtimes before 0.31.0 read.
+   */
+  severities?: FindingSeverities;
   verdict: ReviewVerdict;
   verified: RuntimeIdentity;
 }
@@ -197,6 +221,7 @@ export type ReviewerReason =
   | "most-capable-unresolved"
   | "no-delegation"
   | "no-effective-authors"
+  | "reviewer-model-id-missing"
   | "reviewer-not-distinct"
   | "running-harness-unknown";
 
@@ -230,11 +255,30 @@ export interface ReviewerResolution {
   effort: AuthoringEffort | null;
   effortSource: "configured" | "escalation" | null;
   harness: string | null;
+  // The proposal's review rounds so far; null before a proposal is named.
+  loop: ReviewLoopStatus | null;
   mode: "provisional" | "verified";
   model: string | null;
   proposal: ReviewerProposalEvidence | null;
   reason: ReviewerReason | null;
   status: "resolved" | "unresolved" | "blocked";
+}
+
+/**
+ * Where a proposal's review loop stands since its last clean review. The
+ * runtime counts rounds; deciding whether findings sit in the same area is
+ * the controller's, so these only tell it when to stop and ask.
+ */
+export interface ReviewLoopStatus {
+  consecutiveEscalatingRounds: number;
+  // Due when that many rounds in a row found blocking or should-fix
+  // problems: question the approach before the next fix.
+  convergenceCheck: "due" | "not-due" | "off";
+  message: string | null;
+  // Reached when that many rounds ran after the first blocking or
+  // should-fix finding without a clean result: ask the user how to proceed.
+  roundCap: "reached" | "not-reached" | "off";
+  roundsSinceEscalation: number;
 }
 
 /** Proof that the caller holds the loop lock; writers refuse without it. */
@@ -803,29 +847,63 @@ const checkAttemptOutcome = (
   );
 };
 
+// Severities are graded only for findings, and they account for every one.
+const checkSeverities = (
+  checker: Checker,
+  value: Record<string, unknown>,
+  path: string
+): void => {
+  if (!Object.hasOwn(value, "severities")) {
+    return;
+  }
+  const { severities } = value;
+  if (!checker.object(severities, `${path}.severities`)) {
+    return;
+  }
+  checker.keys(severities, SEVERITY_KEYS, `${path}.severities`);
+  const counts = SEVERITY_KEYS.map((key) => severities[key]);
+  checker.check(
+    counts.every(
+      (count) =>
+        typeof count === "number" && Number.isInteger(count) && count >= 0
+    ) &&
+      value.verdict === "findings" &&
+      (counts as number[]).reduce((sum, count) => sum + count, 0) ===
+        value.findingsCount,
+    `${path}.severities`,
+    "must count blocking, shouldFix, and nit findings that add up to findingsCount, for a findings verdict only"
+  );
+};
+
+const ATTEMPT_KEYS = [
+  "acceptanceReason",
+  "accepted",
+  "attemptId",
+  "authorsDigest",
+  "coverageWaiverId",
+  "effort",
+  "effortSource",
+  "findingsCount",
+  "headRevision",
+  "recordedAt",
+  "requested",
+  "verdict",
+  "verified",
+];
+
+// The keys an attempt or receipt carries, with `severities` only when it is
+// there, since it is optional and every other key is required.
+const withOptionalSeverities = (
+  value: Record<string, unknown>,
+  keys: readonly string[]
+): string[] =>
+  Object.hasOwn(value, "severities") ? [...keys, "severities"] : [...keys];
+
 const checkAttempt = (checker: Checker, value: unknown, path: string): void => {
   if (!checker.object(value, path)) {
     return;
   }
-  checker.keys(
-    value,
-    [
-      "acceptanceReason",
-      "accepted",
-      "attemptId",
-      "authorsDigest",
-      "coverageWaiverId",
-      "effort",
-      "effortSource",
-      "findingsCount",
-      "headRevision",
-      "recordedAt",
-      "requested",
-      "verdict",
-      "verified",
-    ],
-    path
-  );
+  checker.keys(value, withOptionalSeverities(value, ATTEMPT_KEYS), path);
   checker.check(isUuid(value.attemptId), `${path}.attemptId`, "must be a UUID");
   checker.check(
     isCommitSha(value.headRevision),
@@ -853,6 +931,7 @@ const checkAttempt = (checker: Checker, value: unknown, path: string): void => {
     "must be configured, request, or escalation (high or xhigh only)"
   );
   checkAttemptOutcome(checker, value, path);
+  checkSeverities(checker, value, path);
   checker.check(
     isTimestamp(value.recordedAt),
     `${path}.recordedAt`,
@@ -1237,38 +1316,73 @@ const completionAnchor = (identity: AttestedIdentity): string | null => {
     : JSON.stringify([identity.session, harness, identity.logicalId]);
 };
 
+/**
+ * Whether two reported models could be one: equal model IDs when both carry
+ * one, and otherwise equal names when neither carries an ID. A display name
+ * beside an ID cannot be compared, so it never disagrees.
+ */
+const compatibleModels = (
+  left: string | null,
+  right: string | null
+): boolean => {
+  const leftId = reportedModelId(left);
+  const rightId = reportedModelId(right);
+  if (leftId !== null && rightId !== null) {
+    return leftId === rightId;
+  }
+  const leftName = reportedModel(left);
+  const rightName = reportedModel(right);
+  return (
+    leftId !== null ||
+    rightId !== null ||
+    leftName === null ||
+    rightName === null ||
+    leftName === rightName
+  );
+};
+
 /** Whether two identities could be one executor: no known instance or reported model disagrees. */
 const compatibleIdentities = (
   left: AttestedIdentity,
   right: AttestedIdentity
-): boolean => {
-  const leftModel = reportedModel(left.agent);
-  const rightModel = reportedModel(right.agent);
-  return (
-    (left.instance === null ||
-      right.instance === null ||
-      left.instance === right.instance) &&
-    (leftModel === null || rightModel === null || leftModel === rightModel)
+): boolean =>
+  (left.instance === null ||
+    right.instance === null ||
+    left.instance === right.instance) &&
+  compatibleModels(left.agent, right.agent);
+
+/**
+ * The records under the completer's anchor that disagree with the completer
+ * or with another record under it. Any disagreement means more than one
+ * executor used the anchor, so no record under it can be shown to be the
+ * completer's. Comparing each record only with the completer would miss two
+ * records that disagree with each other while the completer reports too
+ * little to disagree with either.
+ */
+const anchorConflicts = (
+  own: readonly Attestation[],
+  completer: AttestedIdentity
+): Attestation[] => {
+  const anchor = completionAnchor(completer);
+  const group = own.filter((entry) => completionAnchor(entry) === anchor);
+  return group.filter(
+    (entry) =>
+      !compatibleIdentities(entry, completer) ||
+      group.some((other) => !compatibleIdentities(entry, other))
   );
 };
 
 /**
- * Whether `completer` completes `earlier`: the same known session, harness
- * and agent id, every instance and reported model `earlier` carried kept
- * exactly, and a missing instance or reported model added. The planning
- * sentinel and a blank name are not reported models, so they never count as
- * the addition.
+ * Whether `completer` keeps every instance and model `earlier` carried, as
+ * `model` reads them, and adds a missing one.
  */
-const refinesIdentity = (
+const keepsAndAdds = (
   completer: AttestedIdentity,
-  earlier: AttestedIdentity
+  earlier: AttestedIdentity,
+  model: (agent: string | null) => string | null
 ): boolean => {
-  const anchor = completionAnchor(completer);
-  if (anchor === null || anchor !== completionAnchor(earlier)) {
-    return false;
-  }
-  const earlierModel = reportedModel(earlier.agent);
-  const completerModel = reportedModel(completer.agent);
+  const earlierModel = model(earlier.agent);
+  const completerModel = model(completer.agent);
   const keeps =
     (earlier.instance === null || earlier.instance === completer.instance) &&
     (earlierModel === null || earlierModel === completerModel);
@@ -1279,11 +1393,35 @@ const refinesIdentity = (
 };
 
 /**
+ * Whether `completer` completes `earlier`: the same known session, harness
+ * and agent id, every instance and model `earlier` carried kept exactly, and
+ * a missing instance or model added. Two readings qualify. By model ID, a
+ * display name, the planning sentinel, and a blank name are not IDs, so a
+ * completion may supply the ID such a record lacked. By reported name, the
+ * rule earlier runtimes wrote completions under still holds, so a ledger
+ * they wrote stays readable. The sentinel and a blank name never count as
+ * the addition under either reading.
+ */
+const refinesIdentity = (
+  completer: AttestedIdentity,
+  earlier: AttestedIdentity
+): boolean => {
+  const anchor = completionAnchor(completer);
+  if (anchor === null || anchor !== completionAnchor(earlier)) {
+    return false;
+  }
+  return (
+    keepsAndAdds(completer, earlier, reportedModelId) ||
+    keepsAndAdds(completer, earlier, reportedModel)
+  );
+};
+
+/**
  * The attestations that count as a commit's own authors: every recorded one
  * except those a standing completion on the same commit names. A completion
- * stands only while no attestation from its anchor disagrees with the
- * completer: a second known instance or model under one session and agent
- * id means the anchor is shared, so the completed records count again. A
+ * stands only while no two records from its anchor, the completer included,
+ * disagree: a second known instance or model under one session and agent id
+ * means the anchor is shared, so the completed records count again. A
  * completion on one commit never touches another commit or a replay source.
  */
 const effectiveOwnAttestations = (
@@ -1303,11 +1441,7 @@ const effectiveOwnAttestations = (
     const stands =
       anchor !== null &&
       own.some((entry) => identityKey(entry) === identityKey(completion)) &&
-      own.every(
-        (entry) =>
-          completionAnchor(entry) !== anchor ||
-          compatibleIdentities(entry, completion)
-      );
+      anchorConflicts(own, completion).length === 0;
     if (stands) {
       for (const identity of completion.completes) {
         if (refinesIdentity(completion, identity)) {
@@ -1786,26 +1920,44 @@ const reportedHarness = (harness: string | null): string | null =>
   harness === null || harness.trim() === "" ? null : harness;
 
 /**
+ * The canonical model ID a reported identity carries, or null. Identity
+ * checks compare IDs only; a display name or effort label is missing
+ * evidence, never a different model.
+ */
+const reportedModelId = (agent: string | null): string | null =>
+  canonicalModelId(reportedModel(agent));
+
+/**
  * Adversarial diversity between two reported identities: a different
- * harness id, or the same harness with a different reported model, is
- * distinct. Missing harness or model evidence on either side, the sentinel
- * included, is unknown, never distinct.
+ * harness id, or the same harness with a different model ID, is distinct.
+ * Within one harness only model IDs can tell models apart, so a display
+ * name or the sentinel on either side is missing evidence there, never a
+ * different model; across harnesses the model is not what differs.
  */
 const diversity = (
   reviewer: { agent: string | null; harness: string | null },
   author: { agent: string | null; harness: string | null }
-): "distinct" | "same" | "unknown" => {
-  const reviewerModel = reportedModel(reviewer.agent);
-  const authorModel = reportedModel(author.agent);
+): "distinct" | "same" | "unknown-author" | "unknown-reviewer" => {
   const reviewerHarness = reportedHarness(reviewer.harness);
   const authorHarness = reportedHarness(author.harness);
-  if (!(reviewerHarness && reviewerModel && authorHarness && authorModel)) {
-    return "unknown";
+  if (!(reviewerHarness && reportedModel(reviewer.agent))) {
+    return "unknown-reviewer";
+  }
+  if (!(authorHarness && reportedModel(author.agent))) {
+    return "unknown-author";
   }
   if (reviewerHarness !== authorHarness) {
     return "distinct";
   }
-  return sameModelName(reviewerModel, authorModel) ? "same" : "distinct";
+  const reviewerModel = reportedModelId(reviewer.agent);
+  if (reviewerModel === null) {
+    return "unknown-reviewer";
+  }
+  const authorModel = reportedModelId(author.agent);
+  if (authorModel === null) {
+    return "unknown-author";
+  }
+  return reviewerModel === authorModel ? "same" : "distinct";
 };
 
 const uniqueAuthors = (
@@ -1871,18 +2023,14 @@ const identityFailure = (
   if (authors.length === 0) {
     return "no-effective-authors";
   }
-  if (!(reportedHarness(reviewer.harness) && reportedModel(reviewer.agent))) {
+  const verdicts = authors.map((author) => diversity(reviewer, author));
+  if (verdicts.includes("unknown-reviewer")) {
     return "reviewer-identity-missing";
   }
-  if (
-    authors.some(
-      (author) =>
-        !(reportedHarness(author.harness) && reportedModel(author.agent))
-    )
-  ) {
+  if (verdicts.includes("unknown-author")) {
     return "author-identity-missing";
   }
-  return authors.every((author) => diversity(reviewer, author) === "distinct")
+  return verdicts.every((verdict) => verdict === "distinct")
     ? null
     : "reviewer-not-distinct";
 };
@@ -2021,21 +2169,39 @@ export const reviewApproval = (
 // ---------------------------------------------------------------------------
 // Escalation and reviewer resolution before dispatch
 
+type GradedAttempt = Pick<ReviewAttempt, "severities" | "verdict">;
+
+/**
+ * Whether an attempt's findings escalate later reviews: any finding under
+ * `escalateOn: "any"`; otherwise a blocking or should-fix one, or findings
+ * the reviewer did not grade, which keeps ungraded ledgers escalating as
+ * they did before severities existed.
+ */
+export const escalatingAttempt = (
+  attempt: GradedAttempt,
+  escalateOn: ReviewEscalationTrigger
+): boolean =>
+  attempt.verdict === "findings" &&
+  (escalateOn === "any" ||
+    attempt.severities === undefined ||
+    attempt.severities.blocking + attempt.severities.shouldFix > 0);
+
 /**
  * Escalation as a floor: after any attempt on the proposal reported
- * findings (accepted or not), later attempts run at the higher of the role's
- * effort and `escalateOnFindings`. It never lowers an effort and never
- * reaches `max` by itself; a request `max` is the agent's own choice.
+ * escalating findings (accepted or not), later attempts run at the higher of
+ * the role's effort and `escalateOnFindings`. It never lowers an effort and
+ * never reaches `max` by itself; a request `max` is the agent's own choice.
  */
 export const escalatedEffort = (
   roleEffort: AuthoringEffort,
   escalateOnFindings: "high" | "xhigh" | null,
-  attempts: readonly Pick<ReviewAttempt, "verdict">[]
+  attempts: readonly GradedAttempt[],
+  escalateOn: ReviewEscalationTrigger = "blocking-or-should-fix"
 ): { effort: AuthoringEffort; effortSource: "configured" | "escalation" } => {
   if (
     !(
       escalateOnFindings &&
-      attempts.some((attempt) => attempt.verdict === "findings")
+      attempts.some((attempt) => escalatingAttempt(attempt, escalateOn))
     )
   ) {
     return { effort: roleEffort, effortSource: "configured" };
@@ -2047,6 +2213,103 @@ export const escalatedEffort = (
   };
 };
 
+/**
+ * The loop since the proposal's last accepted clean review, over its rounds
+ * in the order the ledger recorded them, which appends each attempt; a
+ * timestamp is never used to reorder them. A round is a review that carries
+ * evidence: findings, whether or not the gate accepted the attempt, or an
+ * accepted clean result, which ends the loop. A failed review and a clean
+ * review the gate rejected (a self-review, a stale head) carry none, so they
+ * are no round at all and change no count. A round whose findings do not
+ * escalate (nits only) ends a run of escalating rounds.
+ */
+export const reviewLoopStatus = (
+  attempts: readonly (GradedAttempt & Pick<ReviewAttempt, "accepted">)[],
+  loop: ResolvedReviewLoop
+): ReviewLoopStatus => {
+  const rounds = attempts.filter(
+    (attempt) =>
+      attempt.verdict === "findings" ||
+      (attempt.verdict === "clean" && attempt.accepted)
+  );
+  let lastClean = -1;
+  for (const [index, attempt] of rounds.entries()) {
+    if (attempt.verdict === "clean") {
+      lastClean = index;
+    }
+  }
+  const open = rounds.slice(lastClean + 1);
+  let consecutive = 0;
+  for (const attempt of [...open].reverse()) {
+    if (!escalatingAttempt(attempt, loop.escalateOn)) {
+      break;
+    }
+    consecutive += 1;
+  }
+  const firstEscalation = open.findIndex((attempt) =>
+    escalatingAttempt(attempt, loop.escalateOn)
+  );
+  const sinceEscalation =
+    firstEscalation === -1 ? 0 : open.length - firstEscalation - 1;
+  let convergenceCheck: ReviewLoopStatus["convergenceCheck"] = "off";
+  if (loop.convergenceRounds !== null) {
+    convergenceCheck =
+      consecutive >= loop.convergenceRounds ? "due" : "not-due";
+  }
+  let roundCap: ReviewLoopStatus["roundCap"] = "off";
+  if (loop.roundCap !== null) {
+    roundCap = sinceEscalation >= loop.roundCap ? "reached" : "not-reached";
+  }
+  const kind =
+    loop.escalateOn === "any" ? "findings" : "blocking or should-fix findings";
+  const messages: string[] = [];
+  if (roundCap === "reached") {
+    messages.push(
+      `${sinceEscalation} review round(s) ran after the first ${kind} without a clean result: stop and ask the user whether to ship with the open findings filed as issues, change the design, or keep reviewing.`
+    );
+  }
+  if (convergenceCheck === "due") {
+    messages.push(
+      `${consecutive} review rounds in a row reported ${kind}: if they sit in the same area, stop patching, say whether the approach itself is the problem, and propose an alternative before the next fix.`
+    );
+  }
+  return {
+    consecutiveEscalatingRounds: consecutive,
+    convergenceCheck,
+    message: messages.length > 0 ? messages.join(" ") : null,
+    roundCap,
+    roundsSinceEscalation: sinceEscalation,
+  };
+};
+
+/**
+ * The next step for a reason that means identity evidence is missing, so a
+ * refusal never only names a code. One reason has several causes (an
+ * unknown harness or session, no reported model, a name that is not a model
+ * ID), so each hint states what is needed and when each recovery applies
+ * rather than guessing the cause. Before a proposal is named, the
+ * provisional author is the configured `proposals` target, which only
+ * `setup --authoring` changes; a verified author is a recorded attestation.
+ * Null for every other reason.
+ */
+export const identityReasonHint = (
+  reason: string | null,
+  mode: ReviewerResolution["mode"] = "verified"
+): string | null => {
+  switch (reason) {
+    case "author-identity-missing":
+      return mode === "provisional"
+        ? `The configured \`proposals\` target lacks a harness or model, or, in the reviewer's harness, a model ID. ${MODEL_ID_REQUIRED} Record it with \`simple-changes setup --authoring\`.`
+        : "An author of this head lacks identity evidence adversarial review needs: a reported harness and model, and, in the reviewer's harness, a model ID such as `model-5-5`. An author whose attestation recorded its session, harness and agent id completes it from that session with `simple-changes author attest --commit <sha> --agent-id <id> --agent <model ID> [--instance <instance>] --complete-identity`, passing `--instance` whenever the earlier record has one. A record without a session, harness or agent id cannot be completed; ask the owner how to proceed.";
+    case "reviewer-identity-missing":
+      return "The reviewer's receipt lacks identity evidence adversarial review needs: a harness and a reported model, and, in an author's harness, a model ID such as `model-5-5`, not a display name or an effort label. Review again with a receipt that records them.";
+    case "reviewer-model-id-missing":
+      return `The configured reviewer model is not a model ID. ${MODEL_ID_REQUIRED} Record it with \`simple-changes setup --authoring\`.`;
+    default:
+      return null;
+  }
+};
+
 interface ReviewerTarget {
   agent: string | null;
   harness: string | null;
@@ -2056,7 +2319,12 @@ const targetDistinctness = (
   target: { harness: string; model: string },
   author: ReviewerTarget,
   provisional: boolean
-): "distinct" | "same" | "unknown-author" | "unknown-model" => {
+):
+  | "distinct"
+  | "same"
+  | "unknown-author"
+  | "unknown-model"
+  | "unknown-target" => {
   // A provisional author is the configured `proposals` target, a plan that
   // may name the sentinel; a verified author is a reported runtime identity,
   // where the sentinel or a blank name is missing evidence.
@@ -2076,7 +2344,16 @@ const targetDistinctness = (
       ? "same"
       : "unknown-model";
   }
-  return sameModelName(target.model, authorModel) ? "same" : "distinct";
+  // In one harness only model IDs can tell the two apart.
+  const targetId = canonicalModelId(target.model);
+  if (targetId === null) {
+    return "unknown-target";
+  }
+  const authorId = canonicalModelId(authorModel);
+  if (authorId === null) {
+    return "unknown-author";
+  }
+  return targetId === authorId ? "same" : "distinct";
 };
 
 const adversarialOutcome = (
@@ -2092,6 +2369,9 @@ const adversarialOutcome = (
   }
   if (verdicts.includes("unknown-author")) {
     return { reason: "author-identity-missing", status: "unresolved" };
+  }
+  if (verdicts.includes("unknown-target")) {
+    return { reason: "reviewer-model-id-missing", status: "unresolved" };
   }
   if (verdicts.includes("unknown-model")) {
     return { reason: "most-capable-unresolved", status: "unresolved" };
@@ -2225,6 +2505,7 @@ export const resolveReviewer = (input: {
     effort: null,
     effortSource: null,
     harness: null,
+    loop: null,
     mode,
     model: null,
     proposal: null,
@@ -2248,8 +2529,12 @@ export const resolveReviewer = (input: {
   const effort = escalatedEffort(
     review.effort,
     review.escalateOnFindings,
-    verified?.attempts ?? []
+    verified?.attempts ?? [],
+    review.reviewLoop.escalateOn
   );
+  if (verified) {
+    resolution.loop = reviewLoopStatus(verified.attempts, review.reviewLoop);
+  }
   resolution.effort = effort.effort;
   resolution.effortSource = effort.effortSource;
   resolution.model = review.model;
@@ -2524,24 +2809,49 @@ const controllerReplayWorktree = (
   return { basis: "controller-replay", path, tip };
 };
 
+// The agent's live claims, split into those this session holds and those
+// another session holds: a claim counts only from its own session, so
+// another session cannot attest under the claim owner's agent ID.
+const claimWorktreesFor = (
+  inventory: RepositoryInventory,
+  coordination: WorktreeCoordinationDocument,
+  logicalId: string,
+  session: string | null
+): { eligible: EligibleWorktree[]; heldElsewhere: WorktreeClaim[] } => {
+  const eligible: EligibleWorktree[] = [];
+  const heldElsewhere: WorktreeClaim[] = [];
+  for (const claim of coordination.claims) {
+    if (
+      claim.owner.agentId !== logicalId ||
+      ENDED_CLAIM_STATES.has(claim.state)
+    ) {
+      continue;
+    }
+    if (claimHeldByAnotherSession(coordination, claim, session)) {
+      heldElsewhere.push(claim);
+      continue;
+    }
+    const tip = worktreeTip(inventory, claim.path, claim.branch);
+    if (tip) {
+      eligible.push({ basis: "claim", path: claim.path, tip });
+    }
+  }
+  return { eligible, heldElsewhere };
+};
+
 const authorWorktrees = (
   inventory: RepositoryInventory,
   lease: LoopLease | null,
   coordination: WorktreeCoordinationDocument,
-  logicalId: string
+  logicalId: string,
+  session: string | null
 ): EligibleWorktree[] => {
-  const eligible: EligibleWorktree[] = [];
-  for (const claim of coordination.claims) {
-    if (
-      claim.owner.agentId === logicalId &&
-      !ENDED_CLAIM_STATES.has(claim.state)
-    ) {
-      const tip = worktreeTip(inventory, claim.path, claim.branch);
-      if (tip) {
-        eligible.push({ basis: "claim", path: claim.path, tip });
-      }
-    }
-  }
+  const { eligible, heldElsewhere } = claimWorktreesFor(
+    inventory,
+    coordination,
+    logicalId,
+    session
+  );
   for (const registration of lease?.worktrees ?? []) {
     if (
       registration.agentId === logicalId &&
@@ -2556,6 +2866,17 @@ const authorWorktrees = (
         eligible.push({ basis: "registration", path: registration.path, tip });
       }
     }
+  }
+  const [held] = heldElsewhere;
+  if (eligible.length === 0 && held) {
+    throw new SimpleChangesError(
+      `Attest from the session that made the commits. ${claimSessionRefusal(
+        held,
+        claimTakeoverState(inventory, held),
+        session
+      )}`,
+      EXIT_CODES.unsafe
+    );
   }
   if (eligible.length === 0) {
     throw new SimpleChangesError(
@@ -2916,9 +3237,10 @@ const recordedIdentity = (identity: AttestedIdentity): AttestedIdentity => ({
 
 /**
  * The records `--complete-identity` completes on one commit. It refuses when
- * the executing session, harness or agent id is unknown, when another record
- * under that anchor reports a different instance or model (the anchor is
- * then shared, so whose the incomplete record was cannot be shown), and when
+ * the executing session, harness or agent id is unknown, when any two records
+ * under that anchor, the completer included, report a different instance or
+ * model (the anchor is then shared, so whose the incomplete record was cannot
+ * be shown), and when
  * no record from the anchor lacks what the executing agent now reports.
  */
 const completionTargets = (
@@ -2934,14 +3256,10 @@ const completionTargets = (
     );
   }
   const own = ownValue(ledger.attestations, commit) ?? [];
-  const conflicting = own.filter(
-    (entry) =>
-      completionAnchor(entry) === anchor &&
-      !compatibleIdentities(entry, completer)
-  );
+  const conflicting = anchorConflicts(own, completer);
   if (conflicting.length > 0) {
     throw new SimpleChangesError(
-      `identity-completion-conflict: ${commit} already has an attestation from this session and agent id with a different instance or model (${conflicting.map((entry) => `${entry.instance ?? "no instance"}, ${entry.agent ?? "no model"}`).join("; ")}), so more than one executor used them and the incomplete record cannot be shown to be yours. Ask the owner; nothing was recorded.`,
+      `identity-completion-conflict: ${commit} has attestations from this session and agent id that disagree on instance or model (${conflicting.map((entry) => `${entry.instance ?? "no instance"}, ${entry.agent ?? "no model"}`).join("; ")}), so more than one executor used them and the incomplete record cannot be shown to be yours. Ask the owner; nothing was recorded.`,
       EXIT_CODES.unsafe
     );
   }
@@ -3121,7 +3439,15 @@ export const attestCommits = (input: AuthorAttestInput): AuthorAttestResult => {
       ];
       const candidates =
         input.worktreePath === undefined
-          ? authorWorktrees(inventory, lease, coordination, logicalId)
+          ? authorWorktrees(
+              inventory,
+              lease,
+              coordination,
+              logicalId,
+              identity.harness && identity.session
+                ? `${identity.harness}:${identity.session}`
+                : null
+            )
           : [
               controllerReplayWorktree(
                 inventory,
@@ -3480,6 +3806,7 @@ type AttemptPayload = Pick<
   | "effortSource"
   | "findingsCount"
   | "requested"
+  | "severities"
   | "verdict"
   | "verified"
 >;
@@ -3501,7 +3828,11 @@ const parseAttemptReceipt = (receipt: unknown): AttemptPayload => {
       EXIT_CODES.validation
     );
   }
-  checker.keys(receipt, ATTEMPT_RECEIPT_KEYS, "receipt");
+  checker.keys(
+    receipt,
+    withOptionalSeverities(receipt, ATTEMPT_RECEIPT_KEYS),
+    "receipt"
+  );
   checkRequested(checker, receipt.requested, "receipt.requested");
   if (checker.object(receipt.verified, "receipt.verified")) {
     checker.keys(receipt.verified, IDENTITY_KEYS, "receipt.verified");
@@ -3526,6 +3857,7 @@ const parseAttemptReceipt = (receipt: unknown): AttemptPayload => {
     },
     "receipt"
   );
+  checkSeverities(checker, receipt, "receipt");
   if (checker.errors.length > 0) {
     throw new SimpleChangesError(
       `Invalid record-review receipt: ${checker.errors.join("; ")}`,
@@ -3538,6 +3870,9 @@ const parseAttemptReceipt = (receipt: unknown): AttemptPayload => {
     effortSource: receipt.effortSource as ReviewEffortSource,
     findingsCount: receipt.findingsCount as number,
     requested: receipt.requested as ReviewAttempt["requested"],
+    ...(Object.hasOwn(receipt, "severities")
+      ? { severities: receipt.severities as FindingSeverities }
+      : {}),
     verdict: receipt.verdict as ReviewVerdict,
     verified: {
       agent: verified.agent as string | null,
@@ -3567,6 +3902,10 @@ const attemptPayloadKey = (
     payload.effortSource,
     payload.verdict,
     payload.findingsCount,
+    // Absent and graded findings are different payloads.
+    payload.severities
+      ? SEVERITY_KEYS.map((key) => payload.severities?.[key])
+      : null,
   ]);
 
 /**
@@ -3581,16 +3920,19 @@ export const reviewDisclosure = (
   if (attempt.verified.harness !== attempt.requested.harness) {
     fields.push("harness");
   }
-  // A name too complex to compare would read as the same model, which here
-  // would hide a mismatch, so it is disclosed as one instead.
-  const tooComplex =
-    modelNameTooComplex(attempt.requested.model) ||
-    (reported !== null && modelNameTooComplex(reported));
+  // Only matching model IDs show that the reviewer ran the requested model;
+  // a name that is not an ID on either side is disclosed as a mismatch.
+  const requestedId = canonicalModelId(attempt.requested.model);
+  const reportedId = canonicalModelId(reported);
+  const notAnId =
+    attempt.requested.model !== MOST_CAPABLE &&
+    (requestedId === null || (reported !== null && reportedId === null));
   if (
     reported === null ||
     attempt.requested.model === MOST_CAPABLE ||
-    tooComplex ||
-    !sameModelName(attempt.requested.model, reported)
+    requestedId === null ||
+    reportedId === null ||
+    requestedId !== reportedId
   ) {
     fields.push("model");
   }
@@ -3599,7 +3941,7 @@ export const reviewDisclosure = (
     message:
       fields.length === 0
         ? null
-        : `Requested ${attempt.requested.model} in ${attempt.requested.harness}; the reviewer reported ${attempt.verified.agent ?? "no model"} in ${attempt.verified.harness ?? "no harness"}.${tooComplex ? ` ${MODEL_NAME_TOO_COMPLEX}` : ""}`,
+        : `Requested ${attempt.requested.model} in ${attempt.requested.harness}; the reviewer reported ${attempt.verified.agent ?? "no model"} in ${attempt.verified.harness ?? "no harness"}.${notAnId ? ` ${MODEL_ID_REQUIRED}` : ""}`,
     mismatch: fields.length > 0,
   };
 };

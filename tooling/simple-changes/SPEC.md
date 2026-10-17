@@ -198,7 +198,11 @@
   digest, and releases the claim as a completed-work handoff carrying that
   exact evidence so an active loop keeps integrating. A receipt reads `stale`
   once its branch or checkout moves and `shipped` once the target contains it,
-  and it grants no merge, deploy, migration, or cleanup authority.
+  and it grants no merge, deploy, migration, or cleanup authority. It is
+  recorded only while every commit the target lacks from its head has an
+  attested author, every replay source has one, and every inconclusive replay
+  has an attested edit, or the owner names exactly the outstanding commits
+  another agent made; naming them records nothing and waives nothing.
 - Shipment holds are local records beside the claims, optionally published as
   `refs/simple-changes/holds/<id>` for other clones. A `ship` hold covers
   merges, deployments, and migrations; `deploy` and `migrations` holds cover
@@ -240,7 +244,12 @@
 - Harness automation is capability-gated. An unsupported discovery, delivery,
   wait, scope, or owner-reference requirement produces a structured manual
   blocker and no repository mutation. Vendor APIs and credentials never enter
-  the upstream runtime or durable coordination metadata.
+  the upstream runtime or durable coordination metadata. A coordination
+  request is only ever constructed: the runtime cannot see the executing
+  host's delivery tools, so its probe is never automatic, an automatable
+  owner profile carries a `host-transport-unverified` blocker, delivery is
+  never recorded, and only the owner's exact pause receipt acknowledges a
+  request, which is built only for the active run.
 - Missing onboarding defaults to checked proposal creation and confirmation
   before completed-work handoff.
 - A meaningful guidance-version change blocks the next write-capable mutation
@@ -291,8 +300,8 @@
   the sanctioned path for lease-registered state.
 - Inherited broken state has explicit audited recovery paths instead of
   dead ends: `worktree takeover` reassigns or releases a stale claim only with
-  a named approver, reason, and exact current status digest, and never mutates
-  the worktree; `worktree equivalence` produces read-only patch-id and byte
+  a named approver, reason, and the exact current branch, HEAD, and status
+  digest, and never mutates the worktree; `worktree equivalence` produces read-only patch-id and byte
   containment evidence and never asserts semantic equivalence; and
   `loop close-equivalent` closes a relinquished, frozen-scope, or legacy
   close-only loop only when every obligated worktree is proven contained in
@@ -354,7 +363,14 @@
   the classification. Claim protection under `worktree takeover` follows the
   controller lifecycle: an active loop protects every registered path, while
   a relinquished loop protects only adopted claim-and-pause linkages, so a
-  dead run's own registrations cannot freeze stale-claim recovery.
+  dead run's own registrations cannot freeze stale-claim recovery. The one
+  exception under an active controller is a registered concurrent author's
+  live claim, which may be reassigned to that controller itself, so a
+  vanished author is recorded through pause and accept without relinquishing
+  the run or freezing its shipment scope. A claim belongs to the harness
+  session that made it, marked in its coordination event IDs: its agent ID
+  acts on it, and attests through it, only from that session, and a
+  reassigning takeover moves it to the session that runs the takeover.
 - A repository `execGuard` (an argv array in `.simple-changes.json`, never in
   personal preferences) runs as `[...execGuard, ...command]` inside the lease of
   every `loop exec`, after all other lease checks and immediately before the

@@ -4,7 +4,7 @@ description: Use when a user asks to sync with remote main, package, queue, publ
 license: Apache-2.0
 compatibility: Requires Git and Bun 1.2 or later
 metadata:
-  version: "0.30.1"
+  version: "0.31.0"
 ---
 
 # Simple Changes
@@ -179,7 +179,8 @@ ending a turn while this session still controls an active run. It is persistent
 harness configuration, so ask first; declining changes nothing. When it reports
 `runtimeFreshness` as `behind-target`, run the target branch's newer copy, or
 update the checkout, before integrating or shipping. When it reports
-`scratchFileRule` as `stale`, offer once to run its `refreshCommand`.
+`scratchFileRule` or `reviewLoopRule` as `stale`, offer once to run its
+`refreshCommand`.
 
 ## Communicate
 

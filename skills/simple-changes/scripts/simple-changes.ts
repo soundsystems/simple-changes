@@ -15,6 +15,12 @@ import { createInterface } from "node:readline/promises";
 import { fileURLToPath } from "node:url";
 import { sleep, stdin } from "bun";
 import {
+  type AuthorCoverage,
+  authorCoverage,
+  COVERAGE_NEXT_STEP,
+  describeOutstanding,
+} from "./lib/author-coverage.ts";
+import {
   type AuthoringSidecar,
   authoringPaths,
   changelogsHarnessPrefill,
@@ -141,6 +147,8 @@ import {
 import { withReadOnlyGit } from "./lib/read-only-git.ts";
 import {
   parseReadyWorkInput,
+  type ReadyWorkCoverage,
+  type ReadyWorkRecordResult,
   type ReadyWorkStatus,
   readyWorkStatus,
   recordReadyWork,
@@ -175,15 +183,18 @@ import {
   discoverGlobalInstructionTargets,
   discoverInstructionTargets,
   discoverRepositoryInstructionTargets,
+  type InstructionRule,
   type InstructionTarget,
-  inspectScratchFileRule,
+  inspectInstructionRule,
   writeInstructionPointer,
+  writeInstructionRule,
   writeScratchFileRule,
 } from "./lib/repository-instructions.ts";
 import {
   type AuthorAttestResult,
   attestCommits,
   type CommitGaps,
+  identityReasonHint,
   type RecordAuthorsResult,
   type RecordReviewResult,
   type ReviewLedgerResumeState,
@@ -198,7 +209,7 @@ import {
   runtimeFreshness,
 } from "./lib/runtime-freshness.ts";
 import { SCHEMA_NAMES, validateSchema } from "./lib/schema.ts";
-import { refreshScratchFileRule } from "./lib/scratch-file-rule.ts";
+import { refreshInstructionRule } from "./lib/scratch-file-rule.ts";
 import {
   addShipHold,
   assertShipHoldsClear,
@@ -285,7 +296,7 @@ import {
   standaloneWorktreeCleanup,
 } from "./lib/worktree-maintenance.ts";
 
-const VERSION = "0.30.1";
+const VERSION = "0.31.0";
 const SCRIPT_FILE = fileURLToPath(import.meta.url);
 const PLAIN_SHELL_WORD_PATTERN = /^[\w./-]+$/u;
 const PACKAGE_ROOT = resolve(dirname(SCRIPT_FILE), "..");
@@ -314,7 +325,7 @@ Usage:
     [--proposal-signatures agent-and-version|none]
     [--handoff ask|automatic|user-signaled]
     [--instruction-pointer add|leave] [--instruction-file PATH]
-    [--scratch-file-rule add|leave]
+    [--scratch-file-rule add|leave] [--review-loop-rule add|leave]
     [--ui-artifacts]
     [--ui-versioning repository|number-and-date|date-only|number-only]
     [--production ask|allow|deny]
@@ -334,7 +345,7 @@ Usage:
     [--proposal-signatures agent-and-version|none]
     [--handoff ask|automatic|user-signaled]
     [--instruction-pointer add|leave] [--instruction-file PATH]
-    [--scratch-file-rule add|leave]
+    [--scratch-file-rule add|leave] [--review-loop-rule add|leave]
     [--ui-artifacts]
     [--ui-versioning repository|number-and-date|date-only|number-only]
     [--production ask|allow|deny]
@@ -435,10 +446,11 @@ Usage:
   simple-changes worktree resume-ready --run-id ID --agent-id ID --claim-id ID
     [--json] [--repo PATH]
   simple-changes worktree release --agent-id ID --claim-id ID
-    [--ready-receipt FILE] [--json] [--repo PATH]
-  simple-changes worktree takeover --claim-id ID --agent-id NEW_OWNER
-    --status-digest SHA256 --approved-by ID --reason TEXT [--release]
+    [--ready-receipt FILE [--leave-uncovered SHA[,SHA ...]]]
     [--json] [--repo PATH]
+  simple-changes worktree takeover --claim-id ID --agent-id NEW_OWNER
+    --head SHA|none (--branch NAME | --detached) --status-digest SHA256
+    --approved-by ID --reason TEXT [--release] [--json] [--repo PATH]
   simple-changes branch audit --head REF --target REF [--json] [--repo PATH]
   simple-changes worktree equivalence --worktree PATH [--target REF]
     [--json] [--repo PATH]
@@ -467,6 +479,8 @@ Usage:
   simple-changes workdir remove PATH [--json] [--repo PATH]
   simple-changes scratch-file-rule refresh --instruction-file PATH
     [--json] [--repo PATH]
+  simple-changes review-loop-rule refresh --instruction-file PATH
+    [--json] [--repo PATH]
   simple-changes release-notes [--check] [--json] [--repo PATH] [--version VERSION]
   simple-changes negotiate-changelog CAPABILITIES_FILE [--json]
   simple-changes validate-changelog-transaction REQUEST_FILE RECEIPT_FILE [--prior-receipt FILE] [--json]
@@ -484,7 +498,7 @@ Usage:
     [--base REF --head REF] [--changelog-receipt FILE] [--json] [--repo PATH]
   simple-changes proposal audit --file FILE [--template FILE] [--json]
   simple-changes proposal record-authors --proposal ID --base SHA --head SHA
-    [--receipt COPY_AUTHORS_FILE] [--instance ID] [--agent NAME]
+    [--receipt COPY_AUTHORS_FILE] [--instance ID] [--agent MODEL_ID]
     [--json] [--repo PATH]
   simple-changes proposal record-review --proposal ID --head SHA
     --attempt-id UUID --receipt ATTEMPT_FILE [--authoring-request JSON|@FILE]
@@ -493,8 +507,9 @@ Usage:
     --authors-digest SHA256 --receipt WAIVER_FILE [--json] [--repo PATH]
   simple-changes author attest --commit SHA [--commit SHA ...] [--agent-id ID]
     [--contribution implementation] [--replays SHA[,SHA ...]]
-    [--worktree PATH] [--instance ID] [--agent NAME] [--complete-identity]
+    [--worktree PATH] [--instance ID] [--agent MODEL_ID] [--complete-identity]
     [--json] [--repo PATH]
+  simple-changes author coverage --base REF --head REF [--json] [--repo PATH]
   simple-changes skill check [--skill-dir PATH] [--json]
   simple-changes validate KIND FILE [--json]
   simple-changes verify-markdown FILE [--json]
@@ -527,6 +542,8 @@ interface CliOptions {
   authorsDigest?: string;
   awaitingUser: string[];
   baseRef?: string;
+  // worktree takeover --branch: the branch the approval names.
+  branchName?: string;
   changelogHandling?: RepoPolicy["changelogHandling"];
   changelogInstall?: ChangelogInstallDecision;
   changelogReceiptPath?: string;
@@ -539,6 +556,7 @@ interface CliOptions {
   contribution?: "implementation";
   decisionsPath?: string;
   defaultFinish?: "open-change-request" | "integrate" | "ship";
+  detached: boolean;
   disposition?: "preserve-in-place" | "detach-clean-checkout";
   dryRun: boolean;
   evidencePaths: string[];
@@ -562,6 +580,7 @@ interface CliOptions {
   instructionFile?: string;
   instructionPointer?: "add" | "leave";
   json: boolean;
+  leaveUncovered: string[];
   localOnly: boolean;
   manifestDigest?: string;
   migrationHandling?: RepoPolicy["migrationHandling"];
@@ -596,6 +615,7 @@ interface CliOptions {
   repoProvided: boolean;
   requestAction?: "request-pause" | "request-detach" | "notify-resume";
   requestPath?: string;
+  reviewLoopRule?: "add" | "leave";
   roots: string[];
   runId?: string;
   scope?: SetupScope;
@@ -639,6 +659,7 @@ const VALUED_OPTIONS = new Set([
   "--decisions",
   "--agent",
   "--base",
+  "--branch",
   "--changelog-receipt",
   "--claim-id",
   "--head",
@@ -657,6 +678,7 @@ const VALUED_OPTIONS = new Set([
   "--instruction-file",
   "--instruction-pointer",
   "--scratch-file-rule",
+  "--review-loop-rule",
   "--manifest-digest",
   "--migration-handling",
   "--migration-target",
@@ -702,6 +724,7 @@ const VALUED_OPTIONS = new Set([
   "--commit",
   "--contribution",
   "--instance",
+  "--leave-uncovered",
   "--proposal",
   "--replays",
   "--session",
@@ -716,6 +739,7 @@ const BOOLEAN_OPTIONS = new Set([
   "--changelog-required",
   "--check",
   "--complete-identity",
+  "--detached",
   "--dry-run",
   "--hook",
   "--json",
@@ -854,6 +878,7 @@ const applyHandoffOption = (
 // Each managed instruction block is added or left alone.
 const INSTRUCTION_BLOCK_OPTIONS = {
   "--instruction-pointer": "instructionPointer",
+  "--review-loop-rule": "reviewLoopRule",
   "--scratch-file-rule": "scratchFileRule",
 } as const;
 
@@ -1096,6 +1121,7 @@ const applyLoopValuedOption = (
     "--approved-by": "approvedBy",
     "--authoring-request": "authoringRequest",
     "--base": "baseRef",
+    "--branch": "branchName",
     "--changelog-receipt": "changelogReceiptPath",
     "--claim-id": "claimId",
     "--decisions": "decisionsPath",
@@ -1254,6 +1280,15 @@ const applyLedgerValuedOption = (
     ];
     return true;
   }
+  if (option === "--leave-uncovered") {
+    options.leaveUncovered.push(
+      ...value
+        .split(",")
+        .map((sha) => sha.trim())
+        .filter(Boolean)
+    );
+    return true;
+  }
   if (option === "--contribution") {
     if (value !== "implementation") {
       throw new SimpleChangesError(
@@ -1394,6 +1429,8 @@ const applyBooleanOption = (options: CliOptions, option: string): void => {
     options.completeIdentity = true;
   } else if (option === "--dry-run") {
     options.dryRun = true;
+  } else if (option === "--detached") {
+    options.detached = true;
   } else if (option === "--stale-lease") {
     options.staleLease = true;
   } else if (option === "--tag-automation-authorized") {
@@ -1419,11 +1456,13 @@ const parseOptions = (args: string[]): CliOptions => {
     check: false,
     commits: [],
     completeIdentity: false,
+    detached: false,
     dryRun: false,
     evidencePaths: [],
     help: false,
     hook: false,
     json: false,
+    leaveUncovered: [],
     localOnly: false,
     migrationTargets: [],
     overrideHalt: false,
@@ -1745,7 +1784,9 @@ const setupNeedsPrompt = (
       (instructionTargetCount === 1 &&
         options.instructionPointer === "add" &&
         options.handoffTiming)) &&
-    (instructionTargetCount <= 1 || options.scratchFileRule !== "add") &&
+    (instructionTargetCount <= 1 ||
+      (options.scratchFileRule !== "add" &&
+        options.reviewLoopRule !== "add")) &&
     options.yes
   );
 
@@ -1844,6 +1885,7 @@ const SETUP_INPUT_KEYS = [
   "proposalSignatures",
   "productionDeploy",
   "questions",
+  "reviewLoopRule",
   "scope",
   "scratchFileRule",
   "shippingMode",
@@ -1873,6 +1915,9 @@ const buildOnboardingInputs = (
   // Optional: automation that never names it keeps its instructions as-is.
   if (!(inputs.scratchFileRule || needsPrompt)) {
     inputs.scratchFileRule = "leave";
+  }
+  if (!(inputs.reviewLoopRule || needsPrompt)) {
+    inputs.reviewLoopRule = "leave";
   }
   return inputs;
 };
@@ -2066,6 +2111,8 @@ const runSetup = async (options: CliOptions): Promise<void> => {
     const applyWrites = (): {
       instructionPointerChanged: boolean;
       instructionPointerWritten: boolean;
+      reviewLoopRuleChanged: boolean;
+      reviewLoopRuleWritten: boolean;
       scratchFileRuleChanged: boolean;
       scratchFileRuleWritten: boolean;
     } => {
@@ -2103,6 +2150,20 @@ const runSetup = async (options: CliOptions): Promise<void> => {
         scratchFileRuleWritten = ruleResult.written;
         scratchFileRuleChanged = ruleResult.changed;
       }
+      let reviewLoopRuleWritten = false;
+      let reviewLoopRuleChanged = false;
+      if (
+        selection.confirmed &&
+        selection.reviewLoopRule.action === "add" &&
+        selection.reviewLoopRule.target
+      ) {
+        const ruleResult = writeInstructionRule(
+          selection.reviewLoopRule.target,
+          "review-loop"
+        );
+        reviewLoopRuleWritten = ruleResult.written;
+        reviewLoopRuleChanged = ruleResult.changed;
+      }
       if (written && path) {
         writePolicyFile(path, policy, selection.scope === "user");
         if (selection.scope === "repository" && context.primaryCheckout) {
@@ -2118,6 +2179,8 @@ const runSetup = async (options: CliOptions): Promise<void> => {
       return {
         instructionPointerChanged,
         instructionPointerWritten,
+        reviewLoopRuleChanged,
+        reviewLoopRuleWritten,
         scratchFileRuleChanged,
         scratchFileRuleWritten,
       };
@@ -2166,6 +2229,11 @@ const runSetup = async (options: CliOptions): Promise<void> => {
       },
       path,
       policy,
+      reviewLoopRule: {
+        ...selection.reviewLoopRule,
+        changed: writeResult.reviewLoopRuleChanged,
+        written: writeResult.reviewLoopRuleWritten,
+      },
       scope: selection.scope,
       scratchFileRule: {
         ...selection.scratchFileRule,
@@ -2353,7 +2421,8 @@ const describeReviewer = (
     ? `${reviewer.model ?? "unknown model"} in ${reviewer.harness} at ${reviewer.effort ?? "unknown effort"}${reviewer.effortSource === "escalation" ? " (escalated after findings)" : ""}`
     : "no target";
   const reason = reviewer.reason ? `, ${reviewer.reason}` : "";
-  return `Reviewer (${reviewer.mode}${reviewer.adversarial ? ", different author model or agent required" : ""}): ${reviewer.status}, ${target}${reason}`;
+  const hint = identityReasonHint(reviewer.reason, reviewer.mode);
+  return `Reviewer (${reviewer.mode}${reviewer.adversarial ? ", different author model or agent required" : ""}): ${reviewer.status}, ${target}${reason}${hint ? `\n${hint}` : ""}`;
 };
 
 // The authoring preference state: pending questions, a sidecar to repair, and
@@ -2392,6 +2461,9 @@ const appendAuthoring = (
   }
   if (status.reviewer) {
     lines.push(describeReviewer(status.reviewer));
+    if (status.reviewer.loop?.message) {
+      lines.push(`Review loop: ${status.reviewer.loop.message}`);
+    }
   }
   const requested = requestedAuthoringFields(status);
   if (requested.length > 0) {
@@ -2419,22 +2491,32 @@ const requestedAuthoringFields = (status: InitializationStatus): string[] => {
   return fields;
 };
 
-// Names only the scratch-file blocks that need the user: a stale one with
-// its refresh command, a malformed one to repair by hand.
-const renderScratchFileRuleTargets = (status: InitializationStatus): string[] =>
-  (status.scratchFileRule?.targets ?? []).flatMap((target) => {
+// Names only the rule blocks that need the user: a stale one with its
+// refresh command, a malformed one to repair by hand.
+const renderInstructionRuleTargets = (
+  label: string,
+  report: InitializationStatus["scratchFileRule"]
+): string[] =>
+  (report?.targets ?? []).flatMap((target) => {
     if (target.status === "stale") {
       return [
-        `Scratch-file rule: stale in ${target.path}; with the user's agreement, run \`${target.refreshCommand}\``,
+        `${label}: stale in ${target.path}; with the user's agreement, run \`${target.refreshCommand}\``,
       ];
     }
     if (target.status === "invalid") {
       return [
-        `Scratch-file rule: malformed managed block in ${target.path}; repair it by hand`,
+        `${label}: malformed managed block in ${target.path}; repair it by hand`,
       ];
     }
     return [];
   });
+
+const renderScratchFileRuleTargets = (
+  status: InitializationStatus
+): string[] => [
+  ...renderInstructionRuleTargets("Scratch-file rule", status.scratchFileRule),
+  ...renderInstructionRuleTargets("Review-loop rule", status.reviewLoopRule),
+];
 
 const renderInitialization = (status: InitializationStatus): string => {
   const lines = [
@@ -2529,17 +2611,24 @@ type ScratchFileRuleTarget = NonNullable<
   InitializationStatus["scratchFileRule"]
 >["targets"][number];
 
-const scratchFileRuleRefreshCommand = (
+const RULE_REFRESH_COMMANDS: Record<InstructionRule, string> = {
+  "review-loop": "review-loop-rule",
+  "scratch-files": "scratch-file-rule",
+};
+
+const instructionRuleRefreshCommand = (
+  rule: InstructionRule,
   target: InstructionTarget,
   repositoryPath: string
 ): string =>
-  `${shellWord(process.execPath)} ${shellWord(SCRIPT_FILE)} scratch-file-rule refresh --instruction-file ${shellWord(target.path)} --repo ${shellWord(repositoryPath)}`;
+  `${shellWord(process.execPath)} ${shellWord(SCRIPT_FILE)} ${RULE_REFRESH_COMMANDS[rule]} refresh --instruction-file ${shellWord(target.path)} --repo ${shellWord(repositoryPath)}`;
 
 // Reported, never rewritten, by initialize: a block an older release wrote
 // keeps its text until the user agrees to the refresh. Each file is
 // discovered and inspected on its own, so one that cannot be inspected is
 // left out without hiding its siblings or failing initialization.
-const initializationScratchFileRule = (
+const initializationInstructionRule = (
+  rule: InstructionRule,
   primaryCheckout: string | null,
   repositoryPath: string
 ): InitializationStatus["scratchFileRule"] => {
@@ -2549,9 +2638,9 @@ const initializationScratchFileRule = (
   ];
   const inspected: ScratchFileRuleTarget[] = [];
   for (const target of targets) {
-    let status: ReturnType<typeof inspectScratchFileRule>;
+    let status: ReturnType<typeof inspectInstructionRule>;
     try {
-      status = inspectScratchFileRule(target);
+      status = inspectInstructionRule(target, rule);
     } catch {
       continue;
     }
@@ -2559,7 +2648,7 @@ const initializationScratchFileRule = (
       path: target.path,
       refreshCommand:
         status === "stale"
-          ? scratchFileRuleRefreshCommand(target, repositoryPath)
+          ? instructionRuleRefreshCommand(rule, target, repositoryPath)
           : null,
       scope: target.scope,
       status,
@@ -2717,6 +2806,11 @@ const runInitialize = async (options: CliOptions): Promise<void> => {
       ? { claimId: handoffClaimRelease.claimId, path: handoffClaimRelease.path }
       : null,
     reviewer,
+    reviewLoopRule: initializationInstructionRule(
+      "review-loop",
+      inventory.repository.primaryCheckout,
+      options.repo
+    ),
     runtimeFreshness: runtimeFreshness(
       {
         targetRef: inventory.targetRef,
@@ -2725,7 +2819,8 @@ const runInitialize = async (options: CliOptions): Promise<void> => {
       VERSION,
       SCRIPT_FILE
     ),
-    scratchFileRule: initializationScratchFileRule(
+    scratchFileRule: initializationInstructionRule(
+      "scratch-files",
       inventory.repository.primaryCheckout,
       options.repo
     ),
@@ -3264,7 +3359,10 @@ const renderRecordedReview = (result: RecordReviewResult): string => {
   } else if (result.approvalCandidate) {
     now = "Now: counts toward approval of this head.";
   }
-  return `${recorded}\n${now}\n${result.disclosure.message ? `Disclosure: ${result.disclosure.message}\n` : ""}`;
+  const hint = identityReasonHint(
+    currentValidity.valid ? null : currentValidity.reason
+  );
+  return `${recorded}\n${now}\n${hint ? `${hint}\n` : ""}${result.disclosure.message ? `Disclosure: ${result.disclosure.message}\n` : ""}`;
 };
 
 const renderWaiver = (result: WaiveCoverageResult): string =>
@@ -3358,11 +3456,55 @@ const renderAttestation = (result: AuthorAttestResult): string => {
   return `${lines.join("\n")}\n`;
 };
 
+const renderCoverageReport = (report: AuthorCoverage): string => {
+  const range = `Author coverage of ${report.base}..${report.head} (${report.commits.length} commit${report.commits.length === 1 ? "" : "s"})`;
+  if (report.status === "ledger-unreadable") {
+    return `${range}: unknown; the review ledger at ${report.ledger.path} is malformed (${report.ledger.errors.join("; ")}). Ask the owner to repair it.\n`;
+  }
+  const missingModel = [
+    ...new Set(
+      report.incompleteIdentities
+        .filter((entry) => entry.completable)
+        .map((entry) => entry.commit)
+    ),
+  ];
+  const identities =
+    missingModel.length > 0
+      ? `Attestations reporting no model ID: ${missingModel.join(", ")}. Their author can complete them from the same session with \`author attest --agent <model ID> --complete-identity\` while it still holds the checkout's claim.\n`
+      : "";
+  if (report.status === "covered") {
+    return `${range}: complete.\nAuthors digest: ${report.authorsDigest}\n${identities}`;
+  }
+  return `${range}: incomplete; not ready for review.\n${describeOutstanding(report.outstanding).join("\n")}\n${COVERAGE_NEXT_STEP}\n${identities}`;
+};
+
+// A check, like `proposal audit`: the report goes to stdout either way, and
+// incomplete or unreadable coverage exits with the validation code.
+const runAuthorCoverage = (options: CliOptions): number => {
+  const report = withReadOnlyGit(() =>
+    authorCoverage(
+      options.repo,
+      requireCliOption(options.baseRef, "--base"),
+      requireCliOption(options.headRef, "--head")
+    )
+  );
+  writeOutput(report, options.json, renderCoverageReport(report));
+  return report.status === "covered"
+    ? EXIT_CODES.success
+    : EXIT_CODES.validation;
+};
+
 // `author attest` is a public command that takes the loop lock itself, so it
 // runs after `loop exec` returns and never inside it.
-const runAuthorCommand = (options: CliOptions): void => {
+const runAuthorCommand = (options: CliOptions): number => {
+  if (options.positional.length === 1 && options.positional[0] === "coverage") {
+    return runAuthorCoverage(options);
+  }
   if (options.positional.length !== 1 || options.positional[0] !== "attest") {
-    throw new SimpleChangesError("author requires attest", EXIT_CODES.usage);
+    throw new SimpleChangesError(
+      "author requires attest or coverage",
+      EXIT_CODES.usage
+    );
   }
   const result = attestCommits({
     commits: options.commits,
@@ -3384,6 +3526,7 @@ const runAuthorCommand = (options: CliOptions): void => {
       : { worktreePath: options.worktreePath }),
   });
   writeOutput(result, options.json, renderAttestation(result));
+  return EXIT_CODES.success;
 };
 
 const PROPOSAL_LEDGER_ACTIONS = new Set([
@@ -3901,8 +4044,9 @@ const runLoopStart = (options: CliOptions): void => {
   );
 };
 
-// Accepted reviews that no longer pass the gate on resume need a fresh review.
-const renderResumedReviews = (
+// Accepted reviews that no longer pass the gate on resume need a fresh review,
+// after any identity repair the reason calls for.
+export const renderResumedReviews = (
   state: ReviewLedgerResumeState | null
 ): string => {
   if (!state) {
@@ -3915,10 +4059,10 @@ const renderResumedReviews = (
     .flatMap((proposal) =>
       proposal.attempts
         .filter((attempt) => attempt.accepted && !attempt.revalidated)
-        .map(
-          (attempt) =>
-            `Review ${attempt.attemptId} of ${proposal.proposalId} no longer counts (${attempt.revalidationReason}); request a fresh review.\n`
-        )
+        .map((attempt) => {
+          const hint = identityReasonHint(attempt.revalidationReason);
+          return `Review ${attempt.attemptId} of ${proposal.proposalId} no longer counts (${attempt.revalidationReason}); ${hint ? `${hint} Then request` : "request"} a fresh review.\n`;
+        })
     )
     .join("");
 };
@@ -4365,16 +4509,15 @@ const runLoopCommand = async (options: CliOptions): Promise<void> => {
   );
 };
 
-const automationSummary = (probe: CoordinationCapabilityProbe): string => {
-  if (!probe.automatic) {
-    return "manual fallback required";
-  }
-  if (probe.capabilities.conditions.length > 0) {
-    return "available once the host verifies the probe conditions";
-  }
-  return "available";
-};
+// The runtime never delivers: an automatable profile only means a controller
+// may use a delivery tool its own host verifiably has for this owner.
+const automationSummary = (probe: CoordinationCapabilityProbe): string =>
+  probe.adapterSupportsAutomation
+    ? "never by this runtime; a controller may deliver requests only through a delivery tool its own host verifiably has for this owner, after checking every probe condition"
+    : "manual fallback required";
 
+// The request is constructed here and never sent; the output says so in
+// both forms, with the next step for the host or the user.
 const runWorktreeRequest = (options: CliOptions): void => {
   const state = readWorktreeCoordination(options.repo);
   const claimId = requireCliOption(options.claimId, "--claim-id");
@@ -4399,14 +4542,15 @@ const runWorktreeRequest = (options: CliOptions): void => {
   const request = buildCoordinationRequest(
     requestAction,
     claim,
-    requireCliOption(options.runId, "--run-id")
+    requireCliOption(options.runId, "--run-id"),
+    readLeaseFromCommonDirectory(
+      locateRepository(options.repo).repository.commonGitDirectory
+    )
   );
   writeOutput(
     { capabilityProbe, request },
     options.json,
-    capabilityProbe.automatic
-      ? `${request.safeMessage}\n`
-      : `${capabilityProbe.blocker?.manualNextAction}\n`
+    `Constructed, not sent: ${request.safeMessage}\nNext: ${capabilityProbe.blocker.manualNextAction}\n`
   );
 };
 
@@ -4491,19 +4635,35 @@ const runWorktreeReadyRelease = (
     options.repo,
     agentId,
     requireCliOption(options.claimId, "--claim-id"),
-    parseReadyWorkInput(readJsonFile(readyReceiptPath))
+    parseReadyWorkInput(readJsonFile(readyReceiptPath)),
+    { leaveUncovered: options.leaveUncovered }
   );
   writeOutput(
     result,
     options.json,
-    `Released ${result.claim.claimId} as ready work ${result.receipt.receiptId} on ${result.receipt.branch} at ${result.receipt.headSha}.\n`
+    `Released ${result.claim.claimId} as ready work ${result.receipt.receiptId} on ${result.receipt.branch} at ${result.receipt.headSha}.\n${renderReadyCoverage(result)}`
   );
+};
+
+const renderReadyCoverage = (result: ReadyWorkRecordResult): string => {
+  const count = result.coverage.commits.length;
+  const commits = `${count} commit${count === 1 ? "" : "s"}`;
+  if (result.leftUncovered.length === 0) {
+    return `Author coverage: complete (${commits} the target lacks).\n`;
+  }
+  return `Author coverage: ${result.leftUncovered.length} outstanding of ${commits} left uncovered for their author or the owner; review stays blocked until they are attested or waived:\n${describeOutstanding(result.leftUncovered).join("\n")}\n`;
 };
 
 const runWorktreeRelease = (options: CliOptions, agentId: string): void => {
   if (options.readyReceiptPath) {
     runWorktreeReadyRelease(options, agentId);
     return;
+  }
+  if (options.leaveUncovered.length > 0) {
+    throw new SimpleChangesError(
+      "--leave-uncovered applies only with --ready-receipt.",
+      EXIT_CODES.usage
+    );
   }
   const claim = releaseWorktreeClaim(
     options.repo,
@@ -4515,6 +4675,24 @@ const runWorktreeRelease = (options: CliOptions, agentId: string): void => {
     options.json,
     `Released ${claim.claimId} without deleting work.\n`
   );
+};
+
+// A takeover approval names the checkout's branch, or that it is detached:
+// exactly one of `--branch` and `--detached`.
+const takeoverBranch = (options: CliOptions): string | null => {
+  if (options.detached === (options.branchName !== undefined)) {
+    throw new SimpleChangesError(
+      "worktree takeover needs exactly one of --branch NAME or --detached, naming the checkout's state the approval covers.",
+      EXIT_CODES.usage
+    );
+  }
+  return options.branchName ?? null;
+};
+
+// `--head none` names a checkout that has no commit yet.
+const takeoverHead = (options: CliOptions): string | null => {
+  const head = requireCliOption(options.headRef, "--head");
+  return head === "none" ? null : head;
 };
 
 const runWorktreeCommand = (options: CliOptions): void => {
@@ -4634,6 +4812,8 @@ const runWorktreeCommand = (options: CliOptions): void => {
       action: options.releaseClaim ? "release" : "reassign",
       approvedBy: requireCliOption(options.approvedBy, "--approved-by"),
       claimId: requireCliOption(options.claimId, "--claim-id"),
+      expectedBranch: takeoverBranch(options),
+      expectedHeadSha: takeoverHead(options),
       expectedStatusDigest: requireCliOption(
         options.statusDigest,
         "--status-digest"
@@ -4657,6 +4837,30 @@ const runWorktreeCommand = (options: CliOptions): void => {
   );
 };
 
+// Controller-facing: it names the outstanding commits and who decides, never
+// a command to attest them.
+const renderReadyWorkCoverage = (
+  coverage: ReadyWorkCoverage | null
+): string => {
+  if (coverage === null) {
+    return "";
+  }
+  if (coverage.status === "unknown") {
+    return `\n  author coverage: unknown (${coverage.detail})`;
+  }
+  if (coverage.status === "ledger-unreadable") {
+    return `\n  author coverage: unknown (the review ledger at ${coverage.ledger.path} is malformed)`;
+  }
+  if (coverage.status === "covered") {
+    return "\n  author coverage: complete";
+  }
+  return `\n  author coverage: incomplete; ask each commit's author to attest it, or the owner to decide:\n${describeOutstanding(
+    coverage.outstanding
+  )
+    .map((line) => `  ${line}`)
+    .join("\n")}`;
+};
+
 const renderReadyWork = (
   readyWork: readonly ReadyWorkStatus[] | { error: string }
 ): string =>
@@ -4666,7 +4870,7 @@ const renderReadyWork = (
         `Ready-work receipts: ${readyWork.length}`,
         ...readyWork.map(
           (item) =>
-            `- ${item.receipt.branch} (${item.receipt.owner.agentId}) ${item.freshness}: ${item.receipt.scope}`
+            `- ${item.receipt.branch} (${item.receipt.owner.agentId}) ${item.freshness}: ${item.receipt.scope}${renderReadyWorkCoverage(item.coverage)}`
         ),
         "",
       ].join("\n");
@@ -5277,25 +5481,32 @@ const runWorkDirectory = async (options: CliOptions): Promise<void> => {
   writeOutput({ agentId, bound, workDir: path }, options.json, `${path}\n`);
 };
 
-// Rewrites one stale scratch-file block in place; `refreshScratchFileRule`
-// locates and classifies the target under the loop state lock.
-const runScratchFileRule = (options: CliOptions): void => {
+// Rewrites one stale rule block in place; `refreshInstructionRule` locates
+// and classifies the target under the loop state lock.
+const runInstructionRule = (
+  options: CliOptions,
+  rule: InstructionRule
+): void => {
+  const command = RULE_REFRESH_COMMANDS[rule];
+  const name =
+    rule === "review-loop" ? "review-loop rule" : "scratch-file rule";
   if (options.positional[0] !== "refresh") {
     throw new SimpleChangesError(
-      "scratch-file-rule takes the action refresh",
+      `${command} takes the action refresh`,
       EXIT_CODES.usage
     );
   }
-  const result = refreshScratchFileRule(
+  const result = refreshInstructionRule(
     locateWorkDirectoryRepository(options.repo),
-    requireCliOption(options.instructionFile, "--instruction-file")
+    requireCliOption(options.instructionFile, "--instruction-file"),
+    rule
   );
   writeOutput(
     result,
     options.json,
     result.written
-      ? `Rewrote the scratch-file rule in ${result.path}\n`
-      : `The scratch-file rule in ${result.path} is current\n`
+      ? `Rewrote the ${name} in ${result.path}\n`
+      : `The ${name} in ${result.path} is current\n`
   );
 };
 
@@ -5517,11 +5728,13 @@ const executeCommand = async (
       await runWorkDirectory(options);
       return EXIT_CODES.success;
     case "scratch-file-rule":
-      runScratchFileRule(options);
+      runInstructionRule(options, "scratch-files");
+      return EXIT_CODES.success;
+    case "review-loop-rule":
+      runInstructionRule(options, "review-loop");
       return EXIT_CODES.success;
     case "author":
-      runAuthorCommand(options);
-      return EXIT_CODES.success;
+      return runAuthorCommand(options);
     case "release-notes":
       return runReleaseNotes(options);
     case "negotiate-changelog":

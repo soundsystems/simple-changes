@@ -239,9 +239,11 @@ describe("worktree coordination", () => {
       throw new Error("Expected the resume-ready claim");
     }
     expect(
-      buildCoordinationRequest("notify-resume", resumeClaim, lease.runId)
-        .safeMessage
-    ).toContain(resume.targetSha);
+      buildCoordinationRequest("notify-resume", resumeClaim, lease.runId, lease)
+    ).toMatchObject({
+      safeMessage: expect.stringContaining(resume.targetSha),
+      state: "constructed",
+    });
 
     writeFixture(concurrent, "owned.ts", "export const owned = false;\n");
     expect(verifyLoop(fixture.root).violations).toEqual(
@@ -393,33 +395,112 @@ describe("worktree coordination", () => {
       throw new Error("Expected the released claim");
     }
     expect(() =>
-      buildCoordinationRequest("request-pause", released, lease.runId)
+      buildCoordinationRequest("request-pause", released, lease.runId, lease)
     ).toThrow("released claim");
   });
 
-  test("reports full and capability-gated harness profiles without guessing", () => {
+  test("builds a request only for the active run that will accept the receipt", () => {
+    const fixture = repository();
+    const concurrent = join(fixture.base, "request-run");
+    git(fixture.root, ["worktree", "add", "-b", "request-run", concurrent]);
+    const claim = claimWorktree(
+      concurrent,
+      "owner",
+      concurrent,
+      "claude-code",
+      "session-1"
+    );
+    expect(() =>
+      buildCoordinationRequest("request-pause", claim, "run-none", null)
+    ).toThrow("No loop lease is recorded");
+    const lease = startLoop(fixture.root, "controller", "integrate");
+    expect(() =>
+      buildCoordinationRequest("request-pause", claim, "run-other", lease)
+    ).toThrow(`the recorded lease is ${lease.runId}`);
+    expect(() =>
+      buildCoordinationRequest("request-pause", claim, lease.runId, {
+        ...lease,
+        controller: {
+          acquiredAt: lease.createdAt,
+          handoffs: [],
+          reason: "Handed back to the user.",
+          relinquishedAt: lease.createdAt,
+          status: "relinquished",
+        },
+      })
+    ).toThrow("controller relinquished");
+    expect(
+      buildCoordinationRequest("request-pause", claim, lease.runId, lease)
+    ).toEqual({
+      action: "request-pause",
+      claimId: claim.claimId,
+      owner: claim.owner,
+      repository: {
+        commonGitDirectory: claim.commonGitDirectory,
+        worktreePath: concurrent,
+      },
+      runId: lease.runId,
+      safeMessage: `Pause at a safe boundary and return the exact Simple Changes pause receipt ID. Claim ${claim.claimId}; run ${lease.runId}; worktree ${concurrent}.`,
+      state: "constructed",
+    });
+  });
+
+  test("never calls an adapter profile automatic, and keeps the owner's nominal profile apart from the host", () => {
+    const transport = {
+      adapterSupportsAutomation: true,
+      automatic: false,
+      blocker: {
+        capability: "transport",
+        code: "host-transport-unverified",
+        manualNextAction: expect.stringContaining("Nothing was sent"),
+      },
+    };
     expect(probeCoordinationAdapter("codex-desktop", "task-1")).toMatchObject({
-      automatic: true,
+      ...transport,
       capabilities: {
         conditions: [expect.stringContaining("task tools")],
+        delivery: "live-bidirectional",
         wait: "event",
       },
+      host: { harness: null, transport: "unverified" },
     });
+    // A host in another harness: the owner's profile still reads as
+    // live-bidirectional, yet nothing is delivered or deliverable from here.
     expect(
-      probeCoordinationAdapter("claude-code", "session-1", "darwin")
+      probeCoordinationAdapter("claude-code", "session-1", "darwin", {
+        CODEX_THREAD_ID: "thread-host",
+      })
     ).toMatchObject({
-      automatic: true,
+      ...transport,
+      blocker: {
+        ...transport.blocker,
+        manualNextAction: expect.stringContaining(
+          "never retry it automatically"
+        ),
+      },
       capabilities: {
         conditions: expect.arrayContaining([
           expect.stringContaining("cross-session messaging"),
           expect.stringContaining("same macOS or Linux host"),
         ]),
+        delivery: "live-bidirectional",
         scope: "same-host",
       },
+      host: { harness: "codex", transport: "unverified" },
+    });
+    // The same harness on both sides is no more verified.
+    expect(
+      probeCoordinationAdapter("claude-code", "session-1", "darwin", {
+        CLAUDE_CODE_SESSION_ID: "session-host",
+      })
+    ).toMatchObject({
+      ...transport,
+      host: { harness: "claude-code", transport: "unverified" },
     });
     expect(
       probeCoordinationAdapter("claude-code", "session-1", "win32")
     ).toMatchObject({
+      adapterSupportsAutomation: false,
       automatic: false,
       blocker: {
         capability: "scope",
@@ -428,11 +509,18 @@ describe("worktree coordination", () => {
       },
     });
     expect(probeCoordinationAdapter("cursor-cloud", null)).toMatchObject({
+      adapterSupportsAutomation: false,
       automatic: false,
       blocker: { capability: "owner-ref" },
     });
+    expect(probeCoordinationAdapter("cursor-cloud", "agent-1")).toMatchObject({
+      adapterSupportsAutomation: true,
+      automatic: false,
+      blocker: { code: "host-transport-unverified" },
+    });
     expect(probeCoordinationAdapter("cursor-local", "session-1")).toMatchObject(
       {
+        adapterSupportsAutomation: false,
         automatic: false,
         blocker: { code: "unsupported-capability" },
         capabilities: { conditions: [] },
@@ -483,6 +571,8 @@ describe("worktree claim takeover", () => {
         action: "reassign",
         approvedBy: "jaay",
         claimId: "claim-does-not-exist",
+        expectedBranch: current.branch,
+        expectedHeadSha: current.headSha ?? "",
         expectedStatusDigest: current.changeDigest,
         newAgentId: "admin-agent",
         reason: "Owner agent no longer exists",
@@ -494,6 +584,8 @@ describe("worktree claim takeover", () => {
         action: "reassign",
         approvedBy: "jaay",
         claimId: claim.claimId,
+        expectedBranch: current.branch,
+        expectedHeadSha: current.headSha ?? "",
         expectedStatusDigest: "0".repeat(64),
         newAgentId: "admin-agent",
         reason: "Owner agent no longer exists",
@@ -505,6 +597,8 @@ describe("worktree claim takeover", () => {
         action: "reassign",
         approvedBy: "  ",
         claimId: claim.claimId,
+        expectedBranch: current.branch,
+        expectedHeadSha: current.headSha ?? "",
         expectedStatusDigest: current.changeDigest,
         newAgentId: "admin-agent",
         reason: "Owner agent no longer exists",
@@ -516,6 +610,8 @@ describe("worktree claim takeover", () => {
         action: "reassign",
         approvedBy: "jaay",
         claimId: claim.claimId,
+        expectedBranch: current.branch,
+        expectedHeadSha: current.headSha ?? "",
         expectedStatusDigest: current.changeDigest,
         newAgentId: "admin-agent",
         reason: "",
@@ -527,6 +623,8 @@ describe("worktree claim takeover", () => {
       action: "reassign",
       approvedBy: "jaay",
       claimId: claim.claimId,
+      expectedBranch: current.branch,
+      expectedHeadSha: current.headSha ?? "",
       expectedStatusDigest: current.changeDigest,
       newAgentId: "admin-agent",
       reason: "Owner agent no longer exists",
@@ -601,6 +699,8 @@ describe("worktree claim takeover", () => {
       action: "release",
       approvedBy: "jaay",
       claimId: claim.claimId,
+      expectedBranch: current?.branch ?? null,
+      expectedHeadSha: current?.headSha ?? "",
       expectedStatusDigest: current?.changeDigest ?? "",
       newAgentId: "admin-agent",
       reason: "Abandoned claim blocks cleanup",
@@ -623,6 +723,8 @@ describe("worktree claim takeover", () => {
         action: "release",
         approvedBy: "jaay",
         claimId: claim.claimId,
+        expectedBranch: current?.branch ?? null,
+        expectedHeadSha: current?.headSha ?? "",
         expectedStatusDigest: current?.changeDigest ?? "",
         newAgentId: "admin-agent",
         reason: "Repeated takeover of a released claim",
@@ -652,6 +754,8 @@ describe("worktree claim takeover", () => {
       action: "reassign" as const,
       approvedBy: "jaay",
       claimId: claim.claimId,
+      expectedBranch: current.branch,
+      expectedHeadSha: current.headSha ?? "",
       expectedStatusDigest: current.changeDigest,
       newAgentId: "admin-agent",
       reason: "Owner agent no longer exists",
@@ -720,6 +824,8 @@ describe("worktree claim takeover", () => {
         action: "reassign",
         approvedBy: "jaay",
         claimId: claim.claimId,
+        expectedBranch: current?.branch ?? null,
+        expectedHeadSha: current?.headSha ?? "",
         expectedStatusDigest: current?.changeDigest ?? "",
         newAgentId: "admin-agent",
         reason: "Owner disappeared mid-loop",

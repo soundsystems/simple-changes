@@ -418,7 +418,9 @@ branch onto the updated target through `loop exec`.
    and any open question, leaving its worktree clean and its work directory in
    place. Before treating the unit
    as ready, the controller confirms that the registered branch head equals the
-   reported commit and that no uncommitted changes remain. A unit with an open
+   reported commit, that no uncommitted changes remain, and that `author
+   coverage --base <pinned target> --head <commit>` reports complete. For a
+   gap, it asks that agent to attest, never attesting for it. A unit with an open
    question or a failed check waits while the others continue.
 4. The controller alone pushes, opens or updates proposals, and merges each
    unit through the ordinary serialized path, refreshing and re-verifying
@@ -511,6 +513,21 @@ itself, rejects those fields in the input, and refuses secrets.
 same lock interval it releases the claim as a completed-work `handoff` that
 records the receipted evidence, so an active loop that admitted the author
 keeps integrating instead of reporting a stale claim.
+
+The runtime first checks author coverage of every commit the target lacks
+from the head, the same check `author coverage` makes. While a commit has no
+attested author, carries a replay source with none, or is an inconclusive
+replay nobody attested an edit on, it records nothing, keeps the claim the
+owner's so the owner can still attest, and prints the exact SHAs with the
+owner's own `author attest` commands. A commit another agent made, such as
+unmerged work this branch is stacked on, is that agent's to attest from its
+own session. To hand off anyway, name exactly those SHAs with
+`--leave-uncovered <sha>[,<sha>...]`. That is not a waiver and records
+nothing: each receipt's `coverage` in `worktree status` keeps showing them,
+and review stays blocked until they are attested or the owner waives them on
+the proposal. The check and the release hold the loop lock every ledger write
+takes, so, like `author attest`, it reports the lock busy while another
+command holds it, such as a running `loop exec`: retry after that returns.
 
 `worktree status --json` lists every receipt under `readyWork` with its
 freshness: `current` while the branch is still at the receipted head and the
@@ -639,12 +656,28 @@ adapter slug, and opaque `ownerRef`, and is written atomically with mode `0600`.
 Do not put titles, prompts, message bodies, credentials, or tokens in the owner
 reference.
 
+A claim belongs to the harness session that made it, read from the session
+variables `agents/harnesses.json` lists. From any other session, including one
+that reports none, its agent ID cannot refresh, pause, detach, attach, or
+release the claim, record ready work or a handoff for it, attest through it,
+claim another checkout while it is live, or claim the same checkout again
+after its release. The refusal prints the approved `worktree takeover` that
+moves the claim to the asking session. Never act under another agent's ID: a
+new owner claims under its own agent ID, and a replacement session that
+continues the work under the same ID takes the claim over with the user's
+approval. A claim made without a session, or before this rule, binds to the
+first known session that claims it. Subagents that share their parent's
+session share its claims, and a harness without a session variable binds
+nothing. The session comes from the environment, so this stops mistakes and
+misread recovery steps, not deliberate impersonation.
+
 When the work is complete and verified, the same owner unlocks it with
 `worktree release`, or with `initialize --mode handoff`, which releases the
 author's own claim on that checkout as it proceeds; released work becomes an
 ordinary stable unit that this or any later controller may ship.
 
-Release the claim when the work is done. An active claim excludes its
+Release the claim when the work is done, after attesting every commit on it:
+a released claim can attest nothing. An active claim excludes its
 checkout from packaging, merge, and cleanup, so a finished branch stays
 unshippable until its owner runs `worktree release --claim-id <id>` or hands
 the work off with `initialize --mode handoff --agent-id <owner>`, which
@@ -654,7 +687,7 @@ inventory smaller; release it because the work is complete, verified, and
 committed on its branch. `worktree status --json` lists every claim, pause
 receipt, and recorded release reason; `worktree request` builds the
 adapter-shaped pause, detach, or resume message for one exact owner and sends
-nothing by itself.
+nothing by itself: the request's `state` is always `constructed`.
 
 Finalization also releases claims by evidence, never by elapsed time: the
 controller's own active claim on a clean checkout whose exact head the
@@ -667,7 +700,12 @@ untouched.
 A claim whose recorded owner no longer exists and whose worktree is still
 present is not released by guessing the owner identity; use the audited
 `worktree takeover` recovery in
-[recovery](recovery.md#inherited-or-broken-state).
+[recovery](recovery.md#inherited-or-broken-state). Its approval names the
+checkout's exact branch, HEAD, and status digest. When the vanished owner is
+a concurrent author of an active run, the controller takes the claim over
+itself with that approval and records the checkout through its own pause and
+`loop accept-paused-change`; the run keeps its controller and its shipment
+scope, so do not relinquish it to recover.
 
 Under `allow-claimed`, a healthy distinct active claim does not block the loop;
 its owner keeps working and the controller excludes it. A valid active claim
@@ -693,6 +731,21 @@ Harness support is not uniform. The host orchestration layer must probe exact
 discovery, delivery, waiting, scope, and worktree-identity capabilities before
 sending a request. Missing capability returns the structured manual next step;
 it never selects an owner from a title or weak hint.
+
+The probe reports the owner adapter's nominal profile, never the executing
+host's tools, which the runtime cannot see. It is never `automatic`. A profile
+that could be automated returns `adapterSupportsAutomation: true` with a
+`host-transport-unverified` blocker, so a constructed request is not evidence
+that the owner received anything. Deliver it only through a delivery tool
+your own host actually has for that exact owner, after verifying every listed
+condition, or relay it yourself or through the user. Report a missing,
+refused, or held delivery as a blocker; never retry it automatically.
+Delivery is never recorded. Only the owner's exact pause receipt acknowledges
+a pause or detach request, binding the claim, run, path, branch, HEAD, and
+digest, and a request is built only for the active run that will accept it.
+While you wait, keep shipping unrelated units. No fallback edits another
+session's checkout, restores its branch, writes a pause receipt for it, or
+weakens a guard.
 
 ## Exact overrides
 

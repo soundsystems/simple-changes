@@ -4,6 +4,7 @@ Contents:
 
 - What an agent review examines
 - Review identity and the review ledger
+- Review rounds
 - Signing reviews and merges
 
 Review eligibility comes from fresh provider and repository evidence:
@@ -85,8 +86,17 @@ Two requirements apply. **Executor independence** is the rule above: the
 reviewer is a separate agent or session from every author of the change.
 When the review role sets `adversarial: true`, review also needs
 **diversity**: a different harness, or the same harness with a different
-reported model, from every author. Diversity adds to executor independence
-and never replaces it.
+model ID, from every author. Model IDs are what harnesses report, such as
+`model-5-5`, compared exactly after folding case and one `provider/`
+prefix; a display name, an effort label, or a note is not an ID. Within one
+harness a missing or non-ID name on either side fails closed
+(`author-identity-missing`, `reviewer-identity-missing`, or, before
+dispatch, `reviewer-model-id-missing`) with the next step; across harnesses
+a reported name is enough. Before a proposal is named, the author is the
+configured `proposals` model, so a missing author ID there is fixed with
+`setup --authoring`; after, it is a recorded attestation, which its author
+completes. Diversity adds to executor independence and never
+replaces it.
 
 The evidence lives in `review-ledger.json` under `<common git
 dir>/simple-changes/`, beside the loop lease. Each write takes the loop lock,
@@ -98,15 +108,23 @@ repairs it.
   commits to their sources ([ledger steps](change-requests.md#review-ledger-steps)).
   Effective authors follow those links at read time, so a later attestation
   anywhere in a commit's ancestry counts at once. An author may complete its
-  own earlier attestation that lacked an instance or model
-  (`--complete-identity`); the earlier record stays in the ledger and still
-  rules out any reviewer it ruled out as the same executor, but its missing
-  instance or model no longer leaves independence or diversity unknown. No
-  other commit or replay source changes.
+  own earlier attestation that lacked an instance or model ID, a display
+  name included (`--complete-identity`); the earlier record stays in the
+  ledger and still rules out any reviewer it ruled out as the same executor,
+  but its missing instance or model ID no longer leaves independence or
+  diversity unknown. No
+  other commit or replay source changes. A completion an earlier runtime
+  wrote under its rule, which compared reported names, stays valid; a
+  display name it added is still not a model ID.
+  A runtime before 0.31.0 reads a ledger holding a completion that adds a
+  model ID to a display-name record as malformed, so update every runtime
+  that shares the repository before completing one.
 - **Coverage.** `proposal record-authors` binds a head to the effective
   authors of its range and computes `authorsDigest`. A commit with no author,
   a replay source with none, and an inconclusive replay nobody attested are
-  gaps; a head with no gaps is fully covered.
+  gaps; a head with no gaps is fully covered. `author coverage --base
+  <target> --head <sha>` reads the same coverage and digest before any
+  proposal exists, writes nothing, and never counts a waiver.
 - **Before dispatch.** `initialize --proposal <id> --head <sha>
   [--authoring-request <json-or-@path>]` resolves the reviewer against that
   head, with the current request's answer on top when one is passed;
@@ -124,7 +142,9 @@ repairs it.
   <attempt.json>` holding `requested` (`harness`, `model`, `effort`),
   `verified` (`instance`, `session`, `harness`, `agent` as the delegate
   reported them, `null` when not), `effort`, `effortSource`, `verdict`
-  (`findings`, `clean`, `failed`), and `findingsCount`. Pass the same
+  (`findings`, `clean`, `failed`), and `findingsCount`, plus `severities`
+  (`blocking`, `shouldFix`, `nit` counts adding up to `findingsCount`) when
+  the reviewer graded its findings. Pass the same
   `--authoring-request` as `initialize`: a request can make the gate
   adversarial for this run and never loosens a saved setting. It is accepted
   only when the head is covered or waived, the reviewer's instance or
@@ -137,11 +157,41 @@ repairs it.
   (`loop start --mode resume`, with the run's `--authoring-request`)
   revalidates accepted attempts under the run's gate; one that no longer
   passes needs a fresh review.
-- **Escalation as a floor.** With `escalateOnFindings` set, once any review
-  of a proposal reports findings, later reviews of it, replacement revisions
-  included, run at least at that effort. It never lowers an effort and never
-  reaches `max` by itself; a `max` the user asks for is recorded with
-  `effortSource: "request"`.
+- **Escalation as a floor.** With `escalateOnFindings` set, once a review of
+  a proposal reports escalating findings, later reviews of it, replacement
+  revisions included, run at least at that effort. Escalating findings are
+  blocking or should-fix ones, or any finding under `reviewLoop.escalateOn:
+  "any"`; findings recorded without `severities` always escalate. It never
+  lowers an effort and never reaches `max` by itself; a `max` the user asks
+  for is recorded with `effortSource: "request"`.
+
+## Review rounds
+
+Run review as a loop at the exact head, rounds counted per proposal:
+
+- Ask the reviewer to give each finding a severity, **blocking**,
+  **should-fix**, or **nit**, with its file and line, the inputs, and the wrong
+  result, and record them as `severities`. Fix nits too; by default only
+  blocking and should-fix findings escalate (`reviewLoop.escalateOn: "any"`
+  escalates on every finding).
+- After the first round, scope each re-review to the fixes, the boundary they
+  protect (what must never break), and what they touched. Before merge, run
+  one full-range review at the final head. A clean review counts only for the
+  head it read.
+- Tell the reviewer which findings the user deferred or accepted, so it does
+  not report them again.
+- `initialize --proposal <id> --head <sha>` reports `reviewer.loop`:
+  `consecutiveEscalatingRounds`, `roundsSinceEscalation`, the
+  `convergenceCheck` (`due` at `reviewLoop.convergenceRounds`, default 2), and
+  the `roundCap` (`reached` at `reviewLoop.roundCap`, default 4), with a
+  `message`. A round is a review with findings, accepted or not, or an
+  accepted clean review, which starts the loop over; failed reviews and clean
+  reviews the gate rejected are no round. When the check is due and those findings sit in one area, stop
+  patching: say whether the approach is the problem and propose an
+  alternative before the next fix. When the cap is reached, stop and ask the
+  user whether to ship with the open findings filed as issues, change the
+  design, or keep reviewing. The runtime counts rounds; judging the area is
+  yours, and neither signal approves or skips a review.
 
 ## Signing reviews and merges
 

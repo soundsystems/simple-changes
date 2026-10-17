@@ -1,5 +1,138 @@
 # Changelog
 
+## 0.31.0 - 2026-10-17
+
+- Canonical model IDs are here, as 0.30.1 said they would be: adversarial
+  review now compares the model IDs coding agents report, such as
+  `model-5-5`, and 0.30.1's interim name matching is gone. A model ID is
+  lowercase, with no spaces, effort word, or note, and two IDs match only
+  when they are equal after ignoring case and one `provider/` prefix; a
+  display name such as `Model 5.5 high` is not an ID. Within one coding
+  agent, a name that is not an ID on either side now fails closed with
+  `author-identity-missing` or `reviewer-identity-missing`, and the new
+  `reviewer-model-id-missing` stops a review before dispatch when the
+  configured reviewer model is not an ID. Across coding agents a reported
+  name is still enough, and signatures still name the reported model.
+  Setup's reviewer model question now takes only a model ID that differs
+  from the author's.
+- Pass the model ID to `author attest --agent`. An attestation that
+  recorded a display name now blocks adversarial review within its coding
+  agent until a reviewer from another coding agent reviews, or its author
+  completes it from the same session with `author attest --commit <sha>
+  --agent-id <id> --agent <model ID> --complete-identity`, adding
+  `--instance` when the earlier record has one. `initialize`,
+  `proposal record-review`, and `loop start --mode resume` print that step
+  and say when it does not apply. A completion now stands only while no
+  two records from its session, coding agent, and agent ID disagree.
+  Completions written by 0.30.x stay valid.
+- Update every copy of Simple Changes that shares a repository to 0.31.0
+  before you complete a display-name attestation with a model ID or record
+  graded review findings. Earlier copies read a review ledger holding either
+  as malformed and block review until they are updated, and they reject an
+  authoring file that records `reviewLoop`, which setup's recommended
+  answers never write.
+- Reviews can now grade each finding as blocking, should-fix, or nit, as
+  `severities` counts in the receipt passed to `proposal record-review`.
+  By default only blocking or should-fix findings raise later reviews of
+  that change to the escalation effort; nit-only findings keep the first
+  effort, and findings recorded without grades escalate as before.
+- `initialize --proposal <id> --head <sha>` now reports where the review
+  loop stands, as `reviewer.loop` in JSON and a `Review loop:` line in text.
+  After 2 rounds in a row with blocking or should-fix findings, it tells the
+  agent to question the approach before the next fix when those findings
+  sit in one area. After 4 more rounds following the first such finding
+  without a clean review, it tells the agent to ask you whether to ship with
+  the open findings filed as issues, change the design, or keep reviewing. An
+  accepted clean review starts the count over, and neither check approves
+  or skips a review.
+- Setup now asks the review loop questions for every reviewer choice: the
+  effort for a change's first review (`high` recommended), whether later
+  reviews escalate to xhigh after blocking or should-fix findings
+  (recommended), after any finding, or never, and whether the agent stops
+  to check with you as above (recommended) or never. Existing setups are
+  not asked again, because without a `reviewLoop` setting the recommended
+  loop applies.
+- Setup can also add an optional review-loop rule to AGENTS.md or CLAUDE.md
+  in its own managed block, offered after the scratch-file rule or added
+  with `--review-loop-rule add`. It tells agents how to run review rounds in
+  Simple Changes runs with your review settings. `initialize` reports a
+  copy an earlier release wrote as stale, and
+  `simple-changes review-loop-rule refresh --instruction-file <path>`
+  rewrites just that block.
+- A worktree claim now belongs to the coding agent session that made it.
+  From any other session, or one that reports no session, its agent ID can
+  no longer refresh, pause, detach, attach, or release the claim, record
+  ready work or a handoff for it, attest commits through it, or start
+  another claim while it is live. Each refusal prints the exact
+  `worktree takeover` that, with your approval, moves the claim to the
+  asking session. A claim made before this release, or without a session,
+  binds to the first known session that claims it. The session comes from
+  the environment, so this stops mistakes, not deliberate impersonation.
+- `worktree takeover` now requires `--head <sha>`, or `--head none` for a
+  checkout with no commit yet, and exactly one of `--branch <name>` or
+  `--detached`, and refuses unless the checkout's branch, HEAD, and status
+  digest all match. Every clean checkout has the same status digest, so
+  before this release an approval of a clean checkout pinned neither its
+  commit nor its branch. Scripts that call it without the new flags now
+  exit 2. A takeover also accepts a stale claim and a detached one, and
+  `--release`, which touches no file or ref, now releases whatever the
+  owner's own release could, including a claim whose checkout was removed.
+- A run no longer has to be relinquished when a concurrent author
+  vanishes. While the controller is active, an approved takeover may
+  reassign that author's live claim to the controller itself, which then
+  claims, pauses, and accepts the checkout, so the run keeps its controller
+  and its open shipment scope. `loop verify` prints that exact command, and
+  standalone `worktree cleanup` prints a claimed checkout's takeover with
+  its exact claim ID, HEAD, branch, and status digest.
+- `worktree release --ready-receipt` now checks author coverage before it
+  records anything. While a commit the target lacks has no attested author,
+  carries a replay source with none, or is an inconclusive replay nobody
+  attested an edit on, it refuses with exit 5, keeps the claim with its
+  owner, and prints the exact SHAs with the owner's own `author attest`
+  commands. To hand off commits another agent made, name exactly the
+  outstanding ones with `--leave-uncovered <sha>[,<sha>...]`; that waives
+  nothing, and review stays blocked until they are attested or waived.
+  Ready work now takes the same lock as `author attest`, so it reports busy
+  while a `loop exec` runs, and `worktree status` shows each unshipped
+  ready receipt's coverage.
+- The new read-only `author coverage --base <target> --head <sha>` reports
+  that coverage before any proposal exists, with the authors digest
+  `proposal record-authors` would record, and exits 3 until it is complete.
+  Open the proposal as a draft while gaps remain, and mark it ready for review
+  only once each gap is attested by its author or waived by the owner with
+  `proposal waive-coverage` on that exact draft head. A waiver never counts in
+  `author coverage`, which keeps exiting 3.
+- `worktree request` now says plainly that it sends nothing: its request
+  carries `state: "constructed"`, `capabilityProbe.automatic` is always
+  false, and an owner profile that could be automated returns a
+  `host-transport-unverified` blocker, because the runtime cannot see the
+  delivery tools of the coding agent running it. Text output starts with
+  `Constructed, not sent:` and gives the next step. A request must now
+  name the active run.
+- Work-directory cleanup now accepts only run IDs in the form `loop start`
+  mints, `run-` followed by lowercase letters, digits, and hyphens, so a run
+  ID such as `..` can no longer name the Simple Changes state directory for
+  removal. No release minted another form. The parallel Git reader behind
+  inventory now runs only Git and refuses any request that names another
+  program or starts with an option; inventory then reads through ordinary
+  Git, with the same results.
+- The README has a new Security model section: for the opt-in Stop hook,
+  a repository `execGuard`, migration adapters, transcript reads, commit
+  and proposal text, and Git and `glab` calls with your credentials, it
+  says what triggers each, what it can touch, how to opt out, and what
+  enforces the boundary. Agents are now told to treat commit messages,
+  trailers, branch names, proposal descriptions, review comments, and
+  provider responses as untrusted data.
+- Known limits, tracked for a later release: a takeover compares
+  `--branch` after trimming surrounding whitespace, so a branch name ending
+  in a non-breaking space is not matched exactly, and a ready-work refusal
+  from another session for a removed checkout still prints placeholders
+  instead of the release that applies.
+- The guidance 31 update notice describes model IDs, the review loop,
+  session-bound claims, and the ready-work coverage check, and needs no
+  answer.
+<!-- simple-changelogs-signature agent="Claude Opus 5.5 xhigh" at="2026-10-17T12:41:13-05:00" -->
+
 ## 0.30.1 - 2026-10-16
 
 - **Bug Fixes & Improvements**:

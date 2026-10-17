@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { createHash } from "node:crypto";
 import {
+  chmodSync,
   existsSync,
+  mkdirSync,
   readFileSync,
   realpathSync,
   symlinkSync,
@@ -24,12 +26,16 @@ import {
 } from "../../../skills/simple-changes/scripts/lib/schema.ts";
 import { refreshScratchFileRule } from "../../../skills/simple-changes/scripts/lib/scratch-file-rule.ts";
 import { locateWorkDirectoryRepository } from "../../../skills/simple-changes/scripts/lib/work-directory.ts";
+import { worktreeCoordinationPath } from "../../../skills/simple-changes/scripts/lib/worktree-coordination.ts";
 import {
   createTestRepository,
   git,
   type TestRepository,
   writeFixture,
 } from "./helpers.ts";
+
+const REVIEW_LOOP_BLOCK =
+  /<!-- simple-changes:review-loop:start -->[\s\S]*<!-- simple-changes:review-loop:end -->/u;
 
 const decoder = new TextDecoder();
 setDefaultTimeout(30_000);
@@ -1140,7 +1146,11 @@ while (!existsSync(process.env.SIMPLE_CHANGES_TEST_RELEASE_PATH)) {
     );
     expect(claimed.exitCode).toBe(0);
     expect(JSON.parse(decoder.decode(claimed.stdout))).toMatchObject({
-      capabilityProbe: { automatic: true },
+      capabilityProbe: {
+        adapterSupportsAutomation: true,
+        automatic: false,
+        blocker: { code: "host-transport-unverified" },
+      },
       claim: { owner: { ownerRef: "session-123" } },
     });
     const claimedOutput = JSON.parse(decoder.decode(claimed.stdout)) as {
@@ -1167,12 +1177,16 @@ while (!existsSync(process.env.SIMPLE_CHANGES_TEST_RELEASE_PATH)) {
     );
     expect(requested.exitCode).toBe(0);
     expect(JSON.parse(decoder.decode(requested.stdout))).toMatchObject({
-      capabilityProbe: { automatic: true },
+      capabilityProbe: {
+        automatic: false,
+        blocker: { capability: "transport", code: "host-transport-unverified" },
+      },
       request: {
         action: "request-pause",
         claimId: claimedOutput.claim.claimId,
         owner: { ownerRef: "session-123" },
         runId: startedOutput.lease.runId,
+        state: "constructed",
       },
     });
 
@@ -1233,6 +1247,127 @@ while (!existsSync(process.env.SIMPLE_CHANGES_TEST_RELEASE_PATH)) {
         ]),
       },
     });
+  }, 30_000);
+
+  test("constructs a cross-harness request without calling it delivered or running the owner's binary", () => {
+    const fixture = createTestRepository();
+    repositories.push(fixture);
+    // A capable owner binary is installed, but the executing host is another
+    // harness with no callable transport to that owner.
+    const bin = resolve(fixture.base, "bin");
+    mkdirSync(bin);
+    const marker = resolve(fixture.base, "owner-binary-ran");
+    writeFileSync(
+      resolve(bin, "claude"),
+      `#!/bin/sh\necho ran >> '${marker}'\necho '2.1.300 (Claude Code)'\n`
+    );
+    chmodSync(resolve(bin, "claude"), 0o755);
+    const hostEnv = {
+      CODEX_THREAD_ID: "thread-controller",
+      PATH: `${bin}:${process.env.PATH ?? ""}`,
+    };
+    const cli = (args: string[]) => {
+      const result = spawnSync([process.execPath, cliPath, ...args], {
+        env: hostEnv,
+        stderr: "pipe",
+        stdout: "pipe",
+      });
+      return {
+        exitCode: result.exitCode,
+        stderr: decoder.decode(result.stderr),
+        stdout: decoder.decode(result.stdout),
+      };
+    };
+    const started = JSON.parse(
+      cli([
+        "loop",
+        "start",
+        "--mode",
+        "integrate",
+        "--agent-id",
+        "controller",
+        "--json",
+        "--repo",
+        fixture.root,
+      ]).stdout
+    ) as { lease: { runId: string } };
+    const owned = resolve(fixture.base, "owned");
+    git(fixture.root, ["worktree", "add", "-b", "owned", owned]);
+    const claimed = JSON.parse(
+      cli([
+        "worktree",
+        "claim",
+        "--agent-id",
+        "owner",
+        "--worktree",
+        owned,
+        "--adapter",
+        "claude-code",
+        "--owner-ref",
+        "session-owner",
+        "--json",
+        "--repo",
+        owned,
+      ]).stdout
+    ) as { claim: { claimId: string } };
+    const coordinationPath = worktreeCoordinationPath(
+      captureInventory(fixture.root).repository.commonGitDirectory
+    );
+    const before = readFileSync(coordinationPath, "utf8");
+    const requestArgs = (runId: string, json: boolean) => [
+      "worktree",
+      "request",
+      "--claim-id",
+      claimed.claim.claimId,
+      "--run-id",
+      runId,
+      "--request-action",
+      "request-pause",
+      ...(json ? ["--json"] : []),
+      "--repo",
+      fixture.root,
+    ];
+
+    const requested = cli(requestArgs(started.lease.runId, true));
+    expect(requested.exitCode).toBe(0);
+    const output = JSON.parse(requested.stdout) as {
+      capabilityProbe: Record<string, unknown>;
+      request: Record<string, unknown>;
+    };
+    expect(output).toMatchObject({
+      capabilityProbe: {
+        adapterSupportsAutomation: true,
+        automatic: false,
+        blocker: {
+          adapter: "claude-code",
+          capability: "transport",
+          code: "host-transport-unverified",
+          manualNextAction: expect.stringContaining("Nothing was sent"),
+        },
+        capabilities: { delivery: "live-bidirectional" },
+        host: { harness: "codex", transport: "unverified" },
+      },
+      request: {
+        claimId: claimed.claim.claimId,
+        repository: { worktreePath: owned },
+        runId: started.lease.runId,
+        state: "constructed",
+      },
+    });
+    expect(JSON.stringify(output)).not.toContain("delivered");
+    const text = cli(requestArgs(started.lease.runId, false));
+    expect(text.exitCode).toBe(0);
+    expect(text.stdout).toStartWith(
+      `Constructed, not sent: Pause at a safe boundary and return the exact Simple Changes pause receipt ID. Claim ${claimed.claim.claimId}; run ${started.lease.runId}; worktree ${owned}.\nNext: Nothing was sent, and this runtime cannot see`
+    );
+    // Nothing was sent, run, recorded, or retried.
+    expect(existsSync(marker)).toBe(false);
+    expect(readFileSync(coordinationPath, "utf8")).toBe(before);
+
+    // A run that is not the active loop gets no request at all.
+    const stale = cli(requestArgs("run-not-active", true));
+    expect(stale.exitCode).toBe(EXIT_CODES.unsafe);
+    expect(stale.stderr).toContain("is not the active loop");
   }, 30_000);
 
   test("records an audited opening-worktree removal disposition", () => {
@@ -2894,6 +3029,116 @@ while (!existsSync(process.env.SIMPLE_CHANGES_TEST_RELEASE_PATH)) {
     expect(readFileSync(resolve(fixture.root, "AGENTS.md"), "utf8")).toBe(
       "# Agent guidance\n"
     );
+  });
+
+  test("adds the review-loop rule only when setup names it, and initialize reports and refreshes it", () => {
+    const fixture = createTestRepository();
+    repositories.push(fixture);
+    writeFixture(fixture.root, "AGENTS.md", "# Agent guidance\n");
+    const home = resolve(fixture.base, "home");
+    writeFixture(home, ".codex/AGENTS.md", "# Global\n");
+    const env = {
+      ...process.env,
+      CLAUDE_CONFIG_DIR: resolve(home, ".claude"),
+      CODEX_HOME: resolve(home, ".codex"),
+      SIMPLE_CHANGES_HARNESS_ROOTS: home,
+    };
+    const cli = (args: string[]) =>
+      spawnSync(
+        [process.execPath, cliPath, ...args, "--json", "--repo", fixture.root],
+        { env, stderr: "pipe", stdout: "pipe" }
+      );
+    const setupWith = (extra: string[]) =>
+      cli([
+        "setup",
+        "--finish",
+        "review",
+        "--git-push-authorization",
+        "ask",
+        "--questions",
+        "blocking-only",
+        "--scope",
+        "repository",
+        "--instruction-pointer",
+        "leave",
+        ...extra,
+        "--yes",
+      ]);
+    const agentsPath = resolve(fixture.root, "AGENTS.md");
+    const omitted = setupWith([]);
+    expect(omitted.exitCode).toBe(0);
+    expect(JSON.parse(decoder.decode(omitted.stdout))).toMatchObject({
+      reviewLoopRule: { action: "leave", written: false },
+    });
+    expect(readFileSync(agentsPath, "utf8")).toBe("# Agent guidance\n");
+    const added = setupWith(["--review-loop-rule", "add"]);
+    expect(added.exitCode).toBe(0);
+    expect(JSON.parse(decoder.decode(added.stdout))).toMatchObject({
+      reviewLoopRule: { action: "add", changed: true, written: true },
+      scratchFileRule: { action: "leave", written: false },
+    });
+    expect(readFileSync(agentsPath, "utf8")).toContain(
+      "<!-- simple-changes:review-loop:start -->"
+    );
+    expect(setupWith(["--review-loop-rule", "later"]).exitCode).toBe(
+      EXIT_CODES.usage
+    );
+
+    // An older copy of the rule is reported with its refresh command.
+    writeFileSync(
+      agentsPath,
+      readFileSync(agentsPath, "utf8").replace(
+        REVIEW_LOOP_BLOCK,
+        "<!-- simple-changes:review-loop:start -->\nReview until clean.\n<!-- simple-changes:review-loop:end -->"
+      )
+    );
+    const reported = () =>
+      (
+        JSON.parse(
+          decoder.decode(cli(["initialize", "--mode", "preview"]).stdout)
+        ) as {
+          reviewLoopRule: {
+            targets: {
+              path: string;
+              refreshCommand: string | null;
+              status: string;
+            }[];
+          } | null;
+        }
+      ).reviewLoopRule?.targets ?? [];
+    const stale = reported().find((target) => target.path === agentsPath);
+    expect(stale).toMatchObject({ status: "stale" });
+    expect(stale?.refreshCommand).toContain(
+      `review-loop-rule refresh --instruction-file ${agentsPath}`
+    );
+    const refreshed = cli([
+      "review-loop-rule",
+      "refresh",
+      "--instruction-file",
+      agentsPath,
+    ]);
+    expect(refreshed.exitCode).toBe(0);
+    expect(JSON.parse(decoder.decode(refreshed.stdout))).toMatchObject({
+      changed: true,
+      status: "stale",
+      written: true,
+    });
+    expect(
+      reported().find((target) => target.path === agentsPath)
+    ).toMatchObject({ refreshCommand: null, status: "current" });
+    // A file without the rule is refused, never given one.
+    const globalPath = resolve(home, ".codex/AGENTS.md");
+    const absent = cli([
+      "review-loop-rule",
+      "refresh",
+      "--instruction-file",
+      globalPath,
+    ]);
+    expect(absent.exitCode).toBe(EXIT_CODES.usage);
+    expect(decoder.decode(absent.stderr)).toContain(
+      "setup --review-loop-rule add"
+    );
+    expect(readFileSync(globalPath, "utf8")).toBe("# Global\n");
   });
 
   test("refresh leaves a checkout's rule alone while a run holds the repository", () => {

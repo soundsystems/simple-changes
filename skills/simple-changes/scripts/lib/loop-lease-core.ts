@@ -25,6 +25,7 @@ import { sha256, sha256Json } from "./hash.ts";
 import { captureInventory, locateRepository } from "./inventory.ts";
 import { assertNoSymlinkAncestors } from "./path-safety.ts";
 import { runGit } from "./process.ts";
+import { RUN_ID_PATTERN } from "./run-id.ts";
 import { validateSchema } from "./schema.ts";
 import type {
   LoopControllerBinding,
@@ -58,8 +59,6 @@ const REMOTE_BRANCH_ANCESTRY_DIRECTORY = "remote-branch-ancestry";
 const REMOTE_BRANCH_SUPERSESSION_DIRECTORY = "remote-branch-supersession";
 
 const PRESERVED_SOURCE_OVERRIDE_DIRECTORY = "preserved-source-override";
-
-const RUN_ID_PATTERN = /^run-[a-z0-9-]+$/u;
 
 const DIGEST_PATTERN = /^[0-9a-f]{64}$/u;
 

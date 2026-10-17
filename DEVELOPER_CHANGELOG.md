@@ -1,5 +1,399 @@
 # Developer changelog
 
+## 0.31.0 - 2026-10-17
+
+- Canonical model IDs (`lib/authoring.ts`, issue
+  soundsystems/simple-changes#10): the interim display-name matching that
+  0.30.1 shipped and promised to replace in this release is removed
+  entirely, with `sameModelName`, `modelForms`, `effortDrops`,
+  `leadingWordsMatch`, `familyMatch`, `MAX_MODEL_FORMS`,
+  `modelNameTooComplex`, and `MODEL_NAME_TOO_COMPLEX`. In their place,
+  `canonicalModelId(value)` trims and lowercases a reported name, strips one
+  provider segment (`MODEL_ID_PROVIDER_PREFIX`), and returns it only when it
+  matches `MODEL_ID_PATTERN` (`^[a-z0-9][a-z0-9._-]*$`) and is neither the
+  `most-capable` sentinel nor a bare effort level from `EFFORT_LEVELS`, so a
+  display name, an effort label, a note, or a blank name is null.
+  `MODEL_ID_ALIASES` maps one spelling to another and is empty; each future
+  entry needs a stated reason. `MODEL_ID_REQUIRED` is
+  the shared next step for a name that is not an ID.
+- Review identity (`lib/review-ledger.ts`): `reportedModelId` reads the ID
+  out of a reported identity. `diversity` now returns `distinct`, `same`,
+  `unknown-author`, or `unknown-reviewer`: a different harness is distinct
+  on reported names alone, and within one harness only equal or unequal IDs
+  decide, so a non-ID on either side is missing evidence, never a different
+  model. `targetDistinctness` adds `unknown-target`, which
+  `adversarialOutcome` maps to the new `ReviewerReason`
+  `"reviewer-model-id-missing"` after `reviewer-not-distinct` and
+  `author-identity-missing` and before `most-capable-unresolved`.
+  `reviewDisclosure` flags `model` unless both IDs are present and equal,
+  appending `MODEL_ID_REQUIRED` when either name is not an ID.
+  `reviewSignatureAgent` still signs with the reported name.
+- Identity hints: the exported `identityReasonHint(reason, mode)` gives
+  each missing-identity reason a next step that states its condition, since
+  one reason has several causes. A provisional `author-identity-missing`
+  points to `setup --authoring` for the configured `proposals` target; a
+  verified one prints the `--complete-identity` command, with `--instance`
+  whenever the earlier record has one, and says a record without a
+  session, harness, or agent id cannot be completed and the owner decides.
+  `describeReviewer` in `initialize` text, `renderRecordedReview`, and the
+  now exported `renderResumedReviews` (resume asks for the repair before a
+  fresh review) all print it.
+- Completion compatibility: `refinesIdentity` holds under either of two
+  readings through `keepsAndAdds(completer, earlier, model)`, by model ID
+  (`reportedModelId`, so a completion may add the ID a display-name record
+  lacked) or by reported name (`reportedModel`, the rule 0.30.x wrote
+  completions under, so those ledgers stay readable). `compatibleModels`
+  treats two IDs as compatible when equal, two non-IDs when identical, and
+  an ID beside a non-ID as compatible. `anchorConflicts(own, completer)`
+  returns every record under the completer's anchor that disagrees with the
+  completer or with another record under it; `completionTargets` refuses
+  when it is nonempty and `effectiveOwnAttestations` lets a completion
+  stand only while it is empty. Before, each record was compared only with
+  the completer, so two records that disagreed with each other could both
+  pass a completer that reported too little to contradict either.
+- Onboarding R3' (`reviewModelProblem` in `lib/authoring-onboarding.ts`)
+  compares canonical IDs: it refuses a reviewer name that is not an ID, an
+  ID equal to the author's recorded one, and any name while the recorded
+  author model is not an ID. `initialization.schema.json` adds
+  `reviewer-model-id-missing` to the reviewer reason enum; no ledger or
+  sidecar key was added for #10. References: `change-requests.md`
+  (`--agent <model ID>` replaces 0.30's `"<model> <version>"`, completion
+  conflict rules), `review-and-merge.md` (diversity by ID, the fail-closed
+  reasons, hint sources, completion compatibility, the runtime boundary),
+  and `onboarding.md` (R3').
+- Tests for #10: `authoring.test.ts` replaces the 0.30.1 "model identity"
+  pair tables with `canonicalModelId` cases (ID-shaped names folded for
+  case and one provider prefix; display names, effort labels, notes, and
+  the sentinel are not IDs; different IDs stay different with no alias
+  assumed). `review-ledger.test.ts` covers a display-name author failing
+  closed in one harness until completed with its model ID, display names
+  across harnesses still counting, a completion 0.30.x wrote with a display
+  name keeping the ledger readable while the name still fails closed, a
+  completion refused and one voided when two other records under its anchor
+  disagree, provisional and verified hints, the resume hint, and the CLI
+  refusal on a conflicting anchor. `onboarding.test.ts` covers R3' with
+  cased and prefixed author IDs and a non-ID recorded author model.
+  `proposal-signatures.test.ts` (19f0e8c) now expects a same-harness
+  display name to fail closed as `reviewer-identity-missing` and the same
+  model ID on both sides as `reviewer-not-distinct`, while signatures and
+  disclosure still read the reported name.
+- Severity-aware review loop (`lib/authoring.ts`, issue
+  soundsystems/simple-changes#12): the review role may carry `reviewLoop`
+  (`ReviewLoopSettings`: `escalateOn` of type `ReviewEscalationTrigger`,
+  `"blocking-or-should-fix"` or `"any"`; `convergenceRounds` 1 to 10 or
+  null; `roundCap` 1 to 20 or null), allowed on the review role only and
+  checked by `reviewLoopErrors`. `resolveReviewLoop` fills each absent
+  field from `REVIEW_LOOP_DEFAULTS` (2, `blocking-or-should-fix`, 4), and
+  the field source is `"default"` when the key is absent.
+  `stricterReviewLoop` combines a request with the saved loop field by
+  field, keeping saved fields a request omits: `any` wins, the smaller
+  number wins, and null loses, so `--authoring-request` only tightens it.
+  `authoring.schema.json` lists the rounds as enums because the hand
+  validator has no `maximum`.
+- Ledger (`lib/review-ledger.ts`): an attempt and a `record-review` receipt
+  may carry `severities` (`FindingSeverities`: `blocking`, `shouldFix`,
+  `nit`), which `checkSeverities` requires to be non-negative integers that
+  add up to `findingsCount` on a findings verdict only;
+  `review-ledger.schema.json` adds the optional key with an `if`/`then` on
+  the verdict, and `attemptPayloadKey` treats absent and graded findings
+  as different payloads. `escalatingAttempt(attempt, escalateOn)`
+  is any finding under `any`, otherwise a blocking or should-fix one or an
+  ungraded findings verdict, so ledgers written before severities keep
+  escalating. `escalatedEffort` takes `escalateOn` and uses it.
+- Loop status: `reviewLoopStatus(attempts, loop)` reads attempts in ledger
+  append order and never sorts by timestamp. A round is a findings attempt,
+  accepted or not, or an accepted clean one, which ends the loop; failed
+  attempts and rejected clean ones are no round. It reports
+  `consecutiveEscalatingRounds`, `roundsSinceEscalation` (rounds after the
+  first escalating one since the last accepted clean review),
+  `convergenceCheck` (`due`, `not-due`, `off`), `roundCap` (`reached`,
+  `not-reached`, `off`), and a `message` that tells the controller to
+  question the approach when the findings sit in one area or to ask the
+  user; judging the area stays the controller's. `ReviewerResolution.loop`
+  is set only in verified mode (`--proposal --head`) and null otherwise.
+  `initialization.schema.json` adds `$defs.resolvedReviewLoop`,
+  `reviewer.loop`, `effective.review.reviewLoop`,
+  `authoringReviewSource.reviewLoop`, and `reviewLoopRule`; `initialize`
+  text adds a `Review loop:` line when a message is set.
+- Setup (`lib/authoring-onboarding.ts`): new questions `reviewEffort`
+  (asked unless the model question already asked an effort) and
+  `loopChecks` (R5), and every reviewer choice, including **Any independent
+  reviewer**, now goes through `askReviewLoop`. `reviewEffortChoices`
+  recommends `high` through the new `effortChoices(recommended)` parameter;
+  `DEFAULT_EFFORT` stays xhigh. `escalationChoices` gains
+  `xhigh-any`; `loopCheckChoices(escalateOn)` words R5 for the chosen
+  trigger. `reviewLoopAnswer` records `escalateOn: "any"` for `xhigh-any`
+  and null rounds for **Never; review until clean**, and nothing for the
+  recommended answers, so a sidecar that keeps the recommendations stays
+  readable by 0.30.x. `reviewLoopSummary` adds the escalation and stop
+  sentences to `renderAuthoringSummary`.
+- Review-loop rule (`lib/repository-instructions.ts`): a third managed
+  block, `REVIEW_LOOP_MARKERS` (`simple-changes:review-loop`) with
+  `REVIEW_LOOP_RULE`, which names no agent or model. An `InstructionRule`
+  registry (`review-loop`, `scratch-files`) backs `renderInstructionRule`,
+  `writeInstructionRule`, and `inspectInstructionRule`, with the
+  scratch-file wrappers kept. `managedBlockSpans` now refuses any nested or
+  crossed pair among all three blocks. `lib/scratch-file-rule.ts` exports
+  `refreshInstructionRule(repository, file, rule)` under the same run-held
+  refusal as the scratch-file refresh. `lib/onboarding.ts` and
+  `simple-changes.ts` add `--review-loop-rule add|leave` to `setup` and
+  `initialize` (non-interactive default `leave`, interactive offer after the
+  scratch-file rule with **Add the rule** pre-selected), the
+  `review-loop-rule refresh` command, `initializationInstructionRule`,
+  `RULE_REFRESH_COMMANDS`, and `InstructionRuleReport`. SKILL.md changed
+  one sentence so a stale `reviewLoopRule` is offered its refresh once, like
+  `scratchFileRule` (17,499 of 17,500 bytes).
+- References for #12: `review-and-merge.md` adds "Review rounds" and
+  rewords "Escalation as a floor", `onboarding.md` adds the loop questions
+  and the rule offer, `setup-and-policy.md` documents `reviewLoop`, its
+  stricter-value rule, the 0.31.0 boundary, and the rule block. Tests:
+  `authoring.test.ts` ("the review loop settings": absent fields are
+  defaults with their layer, a request only tightens),
+  `review-ledger.test.ts` (only blocking or should-fix findings escalate
+  and ungraded ones still do, a nit-only review does not escalate the next,
+  loop status counts rounds since the last clean review, `record-review`
+  stores graded findings, refuses counts that do not add up, and reports
+  the loop), `onboarding.test.ts`, `repository-instructions.test.ts` (third
+  block beside the other two, rule names no agent or model, nested or
+  crossed third block refused), and `cli.test.ts` (the rule is added only
+  when setup names it, and initialize reports and refreshes it).
+- Author coverage preflight (new `lib/author-coverage.ts`, issue
+  soundsystems/simple-changes#6): `authorCoverage(repositoryPath, base,
+  head)` backs the read-only `author coverage` command over
+  `merge-base(base, head)..head`, the range and order
+  `proposal record-authors` uses, and reports `status` (`covered`,
+  `incomplete`, `ledger-unreadable`), `outstanding` `CoverageItem`s (`kind`
+  `unattributed`, `unresolved-source`, or `uncovered-edit`, with
+  `carriedBy` and `replaySources`), `incompleteIdentities` (attestations
+  without a model ID, so display names and effort labels count), and the
+  `authorsDigest`; the owner's completion command asks for
+  `--agent <model ID>`. `readyRangeCoverage(cwd, targetRef, head)` refuses an
+  unresolvable target (exit 4) and unrelated history (exit 3).
+  `assertReadyCoverage(coverage, owner, leaveUncovered)` refuses a
+  malformed ledger (exit 5) even with `--leave-uncovered`, an abbreviated or
+  malformed SHA (exit 2), a named SHA that is not outstanding (exit 3), and
+  otherwise anything outstanding left unnamed (exit 5) with the owner's own
+  commands, including `--replays ... --contribution implementation` for an
+  inconclusive replay and `--complete-identity` only for model-less
+  attestations among a commit's own effective attestations, never ones a
+  replay inherits. The module only imports existing `review-ledger.ts`
+  exports.
+- Ready work (`lib/ready-work.ts`): `recordReadyWork(..., options)` takes
+  `leaveUncovered` and now runs `withLoopStateLock` around the existing
+  coordination lock, the established order, so no attestation lands
+  between the coverage check and the release; it reports busy while
+  another loop command holds the lock. `ReadyWorkRecordResult` adds
+  `coverage` and `leftUncovered`; `ReadyWorkStatus.coverage` is derived at
+  read time (`AuthorCoverage`, `{ status: "unknown", detail }`, or null
+  once shipped), so the receipt schema is unchanged. `simple-changes.ts`:
+  `author coverage` (`runAuthorCommand` now returns an exit code; 0
+  covered, 3 incomplete or unreadable; the usage error now reads "author
+  requires attest or coverage"), `--leave-uncovered` (comma list,
+  repeatable, a usage error without `--ready-receipt`), an "Author
+  coverage:" line on ready release, and an indented "author coverage:" line
+  per receipt in `worktree status`, which names who decides and never an
+  attest command. References: `change-requests.md` (draft until covered,
+  attest and complete before releasing a claim),
+  `inventory-and-concurrency.md` (delegated-unit check, ready-receipt
+  preflight), `review-and-merge.md` (Coverage), and SPEC.md.
+- Tests for #6: new `author-coverage.test.ts` (9 tests): the exact SHA and
+  owner command on refusal with nothing recorded and the claim still
+  active, then self-attestation; replay source and inconclusive replay
+  gaps; `--leave-uncovered` exact naming with a byte-identical ledger and
+  the gap still in status; one refusal leaving an active loop and other
+  owners' ready work alone; the loop lock held across check and release;
+  completion hints only for a commit's own attestations; a malformed
+  ledger; and `author coverage` exit codes, JSON, read-only behavior, and a
+  digest equal to `record-authors`. `ship-holds.test.ts` and
+  `status-all.test.ts` ready-work fixtures now attest their commits first.
+- Constructed coordination requests (`lib/coordination-adapter.ts`,
+  `lib/types.ts`, issue soundsystems/simple-changes#7):
+  `probeCoordinationAdapter(adapter, ownerRef, platform, environment)`
+  returns `automatic: false` always, a `blocker` that is never null,
+  `adapterSupportsAutomation`, and `host` (`harness` from
+  `currentHarnessSession` only, `transport: "unverified"`); an automatable
+  profile gets `{ capability: "transport", code:
+  "host-transport-unverified" }` with a next step that says nothing was
+  sent. Nothing probes host tools or binaries, and the profile table is
+  unchanged. `CoordinationRequest.state` is always `"constructed"`.
+  `buildCoordinationRequest` takes a required `lease` and refuses (exit 5)
+  unless it is the active lease for the run. `runWorktreeRequest` prints
+  `Constructed, not sent: <message>` and `Next: <step>`, and
+  `automationSummary` in `worktree claim` text no longer says automation is
+  available. Tests: `worktree-coordination.test.ts` (never automatic,
+  owner profile kept apart from the host, active-run requirement) and a
+  `cli.test.ts` cross-harness case in which a capable fake owner binary on
+  PATH never runs and the coordination document stays byte-identical.
+- Vanished concurrent author (`lib/worktree-coordination.ts`, issue
+  soundsystems/simple-changes#8): `activeLoopTakeoverRefusal` replaces the
+  bare `activeLoopNeedsPath` refusal in `takeoverWorktreeClaim`. Under an
+  active controller, the live claim on a registered `concurrent-author`
+  path may be reassigned to that controller only (never `--release`, never
+  another agent, exit 5 with the exact rule); every other registered path,
+  adopted preserved ones included, keeps the old refusal.
+  `WorktreeTakeoverOptions` gains `expectedBranch` and `expectedHeadSha`;
+  `takeoverEvidence` validates them, `approvedTakeoverState` compares
+  branch, HEAD, and digest, and the mismatch message prints the current
+  state. A reassign writes the approved branch, HEAD, and digest onto the
+  claim. `matchingTakeoverIntent` also matches `branch` and `headSha`, and
+  `recoverAppliedTakeoverIntent` counts a reassign as applied only when the
+  claim records the intent's exact state (and, after #9, belongs to the
+  retrying session), and a release only when a takeover released it; before,
+  a second takeover of a moved checkout by the same agent and approver
+  completed without recording the new HEAD (review round 1).
+- Recovery text: `loop-lease-verify.ts` `concurrentTakeoverHint` appends
+  the exact takeover to `coordination-claim-stale` for a non-primary
+  concurrent author whose live claim the controller does not own, including
+  a checkout with no commit (`--head none`, 29d4168); `nextCommands` are
+  unchanged because it needs approval. `worktree-maintenance.ts`
+  `liveClaimPaths` returns a claim-ID map and standalone cleanup prints
+  `takeoverCommand(...)` with exact values. CLI: `--branch` (valued),
+  `--detached` (boolean), `takeoverBranch` (exactly one, else exit 2),
+  `takeoverHead` (`none` maps to null). Docs: `recovery.md` ("Stale claim
+  takeover", new "Vanished concurrent author"),
+  `inventory-and-concurrency.md`, README usage, SPEC.md. Tests: new
+  `claim-recovery.test.ts` (9 tests: current-branch recovery end to end with
+  the scope proven open by `prepare-agent`, `--head none` hint, clean
+  detached checkout, refusal of another agent, `--release`, a commit or
+  branch switch after approval with the same clean digest, protection of
+  other registered paths, interrupted intent including a retry naming
+  another HEAD, CLI flag rules); existing takeover tests pass the new
+  fields and the cleanup test pins the exact command.
+- Session-bound claims (`lib/worktree-coordination.ts`, issue
+  soundsystems/simple-changes#9): a claim is bound to the harness session
+  (`executingClaimSession`, `harness:sessionId` from the session variables
+  `agents/harnesses.json` lists) through its coordination event IDs:
+  `event-session-<32 hex>-<uuid>`, the first 32 hex of
+  `sha256("claim-session:" + session)`, or `event-session-unbound-<uuid>`,
+  both inside the existing `^event-[a-z0-9-]+$` pattern, so no schema
+  changed. `claimSessionBinding` reads the latest marked event and ignores a
+  mark whose actor no longer owns the claim, so a takeover by an older
+  client leaves the claim unbound for its new owner. `claimWorktree`
+  checks the session (`assertClaimantSession`, then `assertAgentSessionFree`
+  for a new claim) before the adapter and owner-reference check, binds an
+  unchanged unbound claim with one refresh event, and decides by the latest
+  earlier claim on the checkout only (review round 2). Pause, detach,
+  attach, release, handoff release, and `readyClaim` call
+  `assertClaimSession`; `claimSessionRefusal` prints the takeover that would
+  be accepted. A reassigning takeover writes a session mark for the session
+  that ran it.
+- Takeover states: `claimTakeoverState(inventory, claim)` returns the
+  listed worktree, or for an absent checkout the recorded state, which is
+  reassignable only for a `detached` or `resume-ready` claim whose
+  preserved branch still points at the recorded HEAD and whose path is
+  absent, and otherwise `releaseOnly` (the branch at its current tip, or
+  the recorded HEAD once the branch is gone, with the recorded digest).
+  `TAKEOVER_STATES` adds `stale`. Reassigning a release-only state is
+  refused with the release that would be accepted. The takeover and the
+  attach, release, claim-elsewhere, and attestation refusals read this
+  state, so each prints the form that would be accepted; the claim, pause,
+  and detach refusals, the `loop verify` hint, and cleanup print the listed
+  worktree, which is what it returns for a present checkout. This rule
+  (014f668) replaced the per-condition fixes of review rounds 2 to 4 after
+  the convergence check. `expectedHeadSha` is `string | null`
+  and printed takeovers show `--head none` for null. 29d4168 removed the
+  255-character cap on the expected branch, which no Git branch or claim
+  has, and made `readyClaim` pass the observed worktree so its refusal
+  prints the real state.
+- Attestation (`lib/review-ledger.ts`): `claimWorktreesFor` skips claims
+  `claimHeldByAnotherSession` reports, and when no eligible basis remains
+  and one was held elsewhere, `authorWorktrees` throws "Attest from the
+  session that made the commits." with the takeover; `attestCommits` passes
+  `harness:session` or null. Registration eligibility (`prepare-agent`
+  authors, the controller) and controller replays are unchanged.
+  `loop-lease-verify.ts` `staleClaimRecovery` addresses the owner's steps to
+  the owner's own session, the controller's steps to the controller, and
+  `handoffHint` also covers an unheld checkout whose owner vanished. Docs:
+  `inventory-and-concurrency.md`, `recovery.md`, `change-requests.md`,
+  SPEC.md. Tests: new `claim-sessions.test.ts` (same-session refresh,
+  pause, release; other sessions and no session refused for each action
+  with nothing recorded; agent ID reuse elsewhere; unbound claims;
+  takeover to a replacement session; branch names over 255 characters;
+  the ready-work refusal printing the real state; latest-claim rule;
+  stale, detached, moved or deleted branch, and removed checkout recovery;
+  older-client takeover; retry from another session; an eleven-condition
+  release matrix; an unborn checkout through the CLI; attestation; the
+  issue's reproducer; real session environment variables in the CLI).
+  `loop-lease.test.ts` expects the reworded recovery text.
+- Security hardening (issue soundsystems/simple-changes#13): new
+  `lib/run-id.ts` exports `RUN_ID_PATTERN` (`^run-[a-z0-9-]+$`, the
+  loop-lease schema's `runId`). `work-directory.ts` drops its
+  `/^[\w.-]+$/u`, so `bindingsDirectory` refuses any other ID (error text
+  now `Invalid run ID "<id>": it must match run-[a-z0-9-]+.`, still exit 3)
+  and `boundRuns` skips other directory names in the finished-run sweep;
+  `..` had named the Simple Changes state directory, which closing such a
+  run would have removed recursively. `loop-lease-core.ts` and
+  `harness-session.ts` import the shared pattern, and at integration
+  (39d0ee2) so do `coordination-adapter.ts` and `worktree-coordination.ts`,
+  so every run-ID check reads one grammar. New `lib/git-worker-request.ts`
+  (imports only `node:path`): `isGitExecutable(executable, platform)`
+  accepts bare `git` or an absolute path ending in `git` (on win32
+  case-insensitive, `.exe` allowed), and `gitWorkerRefusal` also requires a
+  positive integer `concurrency`, a request list, and per request a
+  non-empty `cwd` and string `args` whose first entry is not an option.
+  `git-worker.ts` checks first and on refusal writes the reason to stderr
+  and exits 2 having started nothing; `runGitConcurrently` already falls
+  back to `runGit` on a nonzero worker exit. `process.ts` types its payload
+  with `satisfies GitWorkerInput`, and `GitRequest` aliases
+  `GitWorkerRequest`.
+- Security docs and tests: README `## Security model` (Stop hook,
+  `execGuard`, migration adapters, transcript reads, commit and proposal
+  text, Git and `glab` with the user's credentials), a `setup-and-policy.md`
+  "Security model" section with the untrusted-data rule and an unanchored
+  absolute README link (the contract test resolves anchored links as local
+  files), and a SECURITY.md pointer. The README states the real `execGuard`
+  rule (`execGuardFor` applies a repository guard without the trust
+  receipt, since a guard can only refuse), correcting the issue text.
+  Tests: `work-directory.test.ts` (dot-only and malformed IDs refused before
+  any binding is touched; the sweep skips non-run-ID entries),
+  `security.test.ts` "run IDs in paths", and `process.test.ts` "Git worker
+  requests", including a spawned worker that refuses another program, a
+  relative `bin/git`, a leading `-c core.fsmonitor=...`, and a leading `-C`
+  without running a marker script. Deferred: hold publish and withdrawal
+  pushes in `ship-holds.ts` do not pass `--no-follow-tags` (the README states
+  the caveat); recheck the skills.sh audit after the release installs.
+- Compatibility (issue soundsystems/simple-changes#14, accepted by the
+  user as this release's boundary after the #10 review cap): a runtime
+  before 0.31.0 reads a ledger holding a completion that adds a model ID to
+  a display-name record, or an attempt with `severities`, as
+  `ledger-malformed` and refuses every ledger operation, and rejects a
+  sidecar holding `reviewLoop`. Recommended setup answers write no
+  `reviewLoop` and an ungraded review writes no `severities`;
+  `review-and-merge.md`, the schemas, and the guidance 31 notice state the
+  boundary. A later fix may keep new state in files older runtimes never
+  read, following the ship-holds precedent, or bump the ledger
+  `schemaVersion`. Claims, takeovers, receipts, and coordination documents
+  keep their shapes; an older runtime does not enforce session binding and
+  still accepts a digest-only takeover.
+- Open from the last #8/#9 review (issue soundsystems/simple-changes#15):
+  `takeoverEvidence` passes `--branch` through `requiredText`, which trims,
+  so a branch ending in U+00A0 is not compared exactly (a wrong match or a
+  wrong refusal; should-fix), and a ready-work refusal from another session
+  for a checkout Git no longer lists still prints placeholders and
+  reassign advice instead of the release-only takeover (nit); the fix
+  resolves that evidence through `claimTakeoverState`.
+- Reviews, all GPT-6.1 Sol: #12 round 1 high and rounds 2 to 4 xhigh,
+  round 4 clean, approach changed once under the convergence check
+  (evidence-only rounds in append order). #10 round 1 high and rounds 2 to
+  7 xhigh, approach changed twice (anchor-wide consistency;
+  condition-stating hints); round 7 hit the cap with one open finding,
+  which the user chose to document and ship (#14). #6 and #7 round 1 high
+  (should-fix: the coverage check raced ledger writes, fixed with the loop
+  lock; nit: inherited identity hints), round 2 xhigh (one nit, fixed), and
+  round 3 xhigh full range clean. #8 and #9 round 1 high (interrupted
+  takeover), rounds 2 to 5 xhigh (session recovery for stale, detached,
+  reused, and unborn checkouts; the branch cap and two nits in round 5,
+  fixed in 29d4168), then one more xhigh review of that fix at the user's
+  choice, whose findings are #15. #13 round 1 high and rounds 2 to 5 xhigh,
+  round 5 a full-range review at the final head, clean.
+- Guidance 31 adds behavior, onboarding, and integration changes for
+  model IDs, the review loop and its rule, coverage preflight, constructed
+  requests, controller recovery, session-bound claims, and the security
+  hardening, with three notice bullets, and needs no answer: an absent
+  `reviewLoop` means the recommended loop, so no existing setup has a
+  pending question.
+<!-- simple-changelogs-signature agent="Claude Opus 5.5 xhigh" at="2026-10-17T12:41:13-05:00" -->
+
 ## 0.30.1 - 2026-10-16
 
 - Model identity (`lib/authoring.ts`, issue soundsystems/simple-changes#5):

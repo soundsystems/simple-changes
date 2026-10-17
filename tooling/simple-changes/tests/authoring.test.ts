@@ -29,18 +29,20 @@ import {
   type AuthoringSidecar,
   authoringPaths,
   authoringQuestionState,
+  canonicalModelId,
   changelogsHarnessPrefill,
   changelogsPersonalAuthoringPath,
   detectHarnesses,
   type HarnessDefinition,
   loadHarnessDefinitions,
+  MODEL_ID_ALIASES,
   packagedHarnessDataPath,
   parseAuthoringRequest,
+  REVIEW_LOOP_DEFAULTS,
   readAuthoringFile,
   resolveAuthoringRole,
   resolveRepositoryAuthoring,
   resolveRequestedRole,
-  sameModelName,
   validateAuthoringSidecar,
   writeAuthoringSidecar,
 } from "../../../skills/simple-changes/scripts/lib/authoring.ts";
@@ -167,6 +169,85 @@ const VALIDATION_TABLE: { name: string; valid: boolean; value: unknown }[] = [
     value: loose(
       {},
       { review: { escalateOnFindings: null, harness: "running" } }
+    ),
+  },
+  {
+    name: "a full review loop",
+    valid: true,
+    value: loose(
+      {},
+      {
+        review: {
+          harness: "running",
+          reviewLoop: { convergenceRounds: 3, escalateOn: "any", roundCap: 6 },
+        },
+      }
+    ),
+  },
+  {
+    name: "a review loop with its checks off",
+    valid: true,
+    value: loose(
+      {},
+      {
+        review: {
+          harness: "running",
+          reviewLoop: { convergenceRounds: null, roundCap: null },
+        },
+      }
+    ),
+  },
+  {
+    name: "an empty review loop",
+    valid: true,
+    value: loose({}, { review: { harness: "running", reviewLoop: {} } }),
+  },
+  {
+    name: "a review loop on proposals",
+    valid: false,
+    value: loose(
+      {},
+      { proposals: { harness: "running", reviewLoop: { escalateOn: "any" } } }
+    ),
+  },
+  {
+    name: "an unknown escalation trigger",
+    valid: false,
+    value: loose(
+      {},
+      { review: { harness: "running", reviewLoop: { escalateOn: "nit" } } }
+    ),
+  },
+  {
+    name: "a zero convergence check",
+    valid: false,
+    value: loose(
+      {},
+      { review: { harness: "running", reviewLoop: { convergenceRounds: 0 } } }
+    ),
+  },
+  {
+    name: "a round cap past the limit",
+    valid: false,
+    value: loose(
+      {},
+      { review: { harness: "running", reviewLoop: { roundCap: 21 } } }
+    ),
+  },
+  {
+    name: "a fractional round cap",
+    valid: false,
+    value: loose(
+      {},
+      { review: { harness: "running", reviewLoop: { roundCap: 2.5 } } }
+    ),
+  },
+  {
+    name: "an unknown review loop key",
+    valid: false,
+    value: loose(
+      {},
+      { review: { harness: "running", reviewLoop: { rounds: 2 } } }
     ),
   },
   {
@@ -413,6 +494,7 @@ describe("authoring resolution", () => {
       harness: "repository",
       model: "personal",
       path: "/repository/authoring.json",
+      reviewLoop: "default",
     });
     // The repository entry for beta-agent replaces the personal one whole.
     const review = resolveAuthoringRole(
@@ -426,6 +508,7 @@ describe("authoring resolution", () => {
       escalateOnFindings: "xhigh",
       harness: "beta-agent",
       model: "repo-beta",
+      reviewLoop: REVIEW_LOOP_DEFAULTS,
       status: "resolved",
     });
     expect(review.source).toEqual({
@@ -435,6 +518,7 @@ describe("authoring resolution", () => {
       harness: "personal",
       model: "repository",
       path: "/repository/authoring.json",
+      reviewLoop: "default",
     });
     // The same sidecars read from another running harness.
     expect(
@@ -515,6 +599,117 @@ describe("authoring resolution", () => {
   });
 });
 
+describe("the review loop settings", () => {
+  test("an absent field is the recommended value, and the role names its layer", () => {
+    const unset = resolveAuthoringRole(
+      "review",
+      [layer("repository", sidecar({}, { review: { harness: "running" } }))],
+      "alpha-agent"
+    );
+    expect(unset.effective.reviewLoop).toEqual({
+      convergenceRounds: 2,
+      escalateOn: "blocking-or-should-fix",
+      roundCap: 4,
+    });
+    expect(unset.source.reviewLoop).toBe("default");
+    const partial = resolveAuthoringRole(
+      "review",
+      [
+        layer(
+          "repository",
+          sidecar(
+            {},
+            {
+              review: {
+                harness: "running",
+                reviewLoop: { escalateOn: "any", roundCap: null },
+              },
+            }
+          )
+        ),
+      ],
+      "alpha-agent"
+    );
+    expect(partial.effective.reviewLoop).toEqual({
+      convergenceRounds: 2,
+      escalateOn: "any",
+      roundCap: null,
+    });
+    expect(partial.source.reviewLoop).toBe("repository");
+  });
+
+  test("a request only tightens the review loop", () => {
+    const saved = layer(
+      "repository",
+      sidecar(
+        {},
+        {
+          review: {
+            harness: "running",
+            reviewLoop: { convergenceRounds: 3, roundCap: null },
+          },
+        }
+      )
+    );
+    const request = (reviewLoop: Record<string, unknown>) =>
+      resolveRequestedRole(
+        "review",
+        [saved],
+        sidecar({}, {
+          review: { harness: "running", reviewLoop },
+        } as AuthoringSidecar["roles"]),
+        "alpha-agent"
+      );
+    // A smaller threshold, a cap where there was none, and "any" all tighten.
+    const tighter = request({
+      convergenceRounds: 5,
+      escalateOn: "any",
+      roundCap: 4,
+    });
+    expect(tighter.effective.reviewLoop).toEqual({
+      convergenceRounds: 3,
+      escalateOn: "any",
+      roundCap: 4,
+    });
+    expect(tighter.source.reviewLoop).toBe("request");
+    // Turning a check off or raising it never loosens the saved loop.
+    const looser = request({ convergenceRounds: null, roundCap: 20 });
+    expect(looser.effective.reviewLoop).toEqual({
+      convergenceRounds: 3,
+      escalateOn: "blocking-or-should-fix",
+      roundCap: 20,
+    });
+    // Only the cap, which the saved loop left unset, tightened.
+    expect(looser.source.reviewLoop).toBe("request");
+    const none = request({ convergenceRounds: null, roundCap: null });
+    expect(none.effective.reviewLoop).toEqual({
+      convergenceRounds: 3,
+      escalateOn: "blocking-or-should-fix",
+      roundCap: null,
+    });
+    expect(none.source.reviewLoop).toBe("repository");
+    // A request that names no loop, or only one of its fields, keeps the
+    // saved value of every field it leaves out.
+    const omitted = resolveRequestedRole(
+      "review",
+      [saved],
+      sidecar({}, { review: { effort: "high", harness: "running" } }),
+      "alpha-agent"
+    );
+    expect(omitted.effective.reviewLoop).toEqual({
+      convergenceRounds: 3,
+      escalateOn: "blocking-or-should-fix",
+      roundCap: null,
+    });
+    expect(omitted.source.reviewLoop).toBe("repository");
+    expect(request({ escalateOn: "any" }).effective.reviewLoop).toEqual({
+      convergenceRounds: 3,
+      escalateOn: "any",
+      roundCap: null,
+    });
+  });
+});
+
 describe("the request layer", () => {
   test("applies the request on top and only tightens the review gate", () => {
     const repository = layer(
@@ -552,6 +747,7 @@ describe("the request layer", () => {
       escalateOnFindings: "xhigh",
       harness: "beta-agent",
       model: "request-beta",
+      reviewLoop: REVIEW_LOOP_DEFAULTS,
       status: "resolved",
     });
     expect(tightened.source).toEqual({
@@ -561,6 +757,7 @@ describe("the request layer", () => {
       harness: "request",
       model: "request",
       path: null,
+      reviewLoop: "default",
     });
     // A request never loosens: a saved adversarial review and floor stay in
     // force, with their own layer, while the rest of the role is replaced.
@@ -599,6 +796,7 @@ describe("the request layer", () => {
       escalateOnFindings: "xhigh",
       harness: "beta-agent",
       model: "request-model",
+      reviewLoop: REVIEW_LOOP_DEFAULTS,
       status: "resolved",
     });
     expect(kept.source).toEqual({
@@ -608,6 +806,7 @@ describe("the request layer", () => {
       harness: "request",
       model: "request",
       path: "/repository/authoring.json",
+      reviewLoop: "default",
     });
     // Floors combine by the higher value in both directions.
     const floor = (
@@ -668,6 +867,7 @@ describe("the request layer", () => {
       harness: "request",
       model: "request",
       path: "/repository/authoring.json",
+      reviewLoop: "default",
     });
     expect(
       resolveRequestedRole(
@@ -721,6 +921,7 @@ describe("the request layer", () => {
       harness: "request",
       model: "personal",
       path: "/repository/authoring.json",
+      reviewLoop: "default",
     });
     expect(
       resolveRequestedRole(
@@ -1054,136 +1255,51 @@ describe("the 5.1.4 truth table", () => {
 });
 
 describe("model identity", () => {
-  test("an effort word or a qualifier never makes the same model look distinct", () => {
-    const same: [string, string][] = [
-      ["GPT-6.1 Sol high", "gpt-6.1-sol"],
-      ["gpt-6.1-sol xhigh", "gpt-6.1-sol"],
-      ["GPT-6.1 Sol high", "gpt-6.1-sol xhigh"],
-      ["Claude Opus 5.5 xhigh", "claude-opus-5-5"],
-      ["Opus 5.5 high effort", "claude-opus-5-5"],
-      ["Claude Opus 5.5 extra-high", "claude-opus-5-5 max"],
-      ["gpt-6.1-sol (reasoning: high)", "GPT 6.1 Sol"],
-      ["Fable 5.1 (version unknown)", "Fable 5.1"],
-      ["Fable (version unknown)", "claude-fable-5-1"],
-      ["Fable (unknown version)", "claude-fable-5-1"],
-      // A nested or unclosed note goes whole, never leaving a fragment.
-      ["gpt-6.1-sol (reasoning (high))", "gpt-6.1-sol"],
-      ["gpt-6.1-sol (reasoning: high", "gpt-6.1-sol"],
-      ["gpt-6.1-sol high)", "gpt-6.1-sol"],
-      // Punctuation around an effort word does not keep it.
-      ["gpt-6.1-sol reasoning: high", "gpt-6.1-sol"],
-      ["gpt-6.1-sol, effort=xhigh.", "gpt-6.1-sol"],
-      // So does a compound effort field, wherever it appears.
-      ["gpt-6.1-sol reasoning_effort=high", "gpt-6.1-sol"],
-      ["gpt-6.1-sol reasoning-effort: high", "gpt-6.1-sol"],
-      ["gpt-6.1-sol model_reasoning_effort=high", "gpt-6.1-sol xhigh"],
-      ["xhigh gpt-6.1-sol", "gpt-6.1-sol"],
-      ["Claude Opus 5.5 thinking mode", "claude-opus-5-5"],
-      ["gpt-6.1-sol reasoning mode: high", "gpt-6.1-sol"],
-      // A standalone level reads as effort, even in a display name that
-      // means a variant, so the ambiguity only ever blocks a review.
-      ["Claude Opus 5.5 max", "claude-opus-5-5"],
-      ["GPT-5.1 Codex Max", "gpt-5.1-codex"],
-      // A level that is also part of the name is tried both kept and dropped.
-      ["GPT-5.1 Codex Max high", "gpt-5.1-codex-max"],
-      ["GPT-5.1 Codex Max reasoning: xhigh", "gpt-5.1-codex-max xhigh"],
-      // However many effort words surround it.
-      [
-        "GPT-5.1 Codex Max model reasoning effort extra high mode",
-        "gpt-5.1-codex-max",
-      ],
-      ["high max xhigh GPT-5.1 Codex Max high max", "gpt-5.1-codex-max"],
-      ["xhigh GPT-5.1 Codex Max high", "openai/gpt-5.1-codex-max"],
-      ["high Model 5.5 Max xhigh", "model-5-5-max"],
-      // A version note keeps its version and drops its effort.
-      ["Claude Opus (5.5 high)", "claude-opus-5-5"],
-      // A runtime note with numbers in it is still only a note.
-      ["gpt-6.1-sol (reasoning: high, budget: 32768)", "gpt-6.1-sol"],
-      ["Claude Opus (5.5, budget 1000)", "claude-opus-5-5"],
-      // Words after a whole model name read as notes, with or without
-      // parentheses, so a separate variant word does too.
-      ["gpt-6.1-sol reasoning: high, budget: 32768", "gpt-6.1-sol"],
-      ["Claude Opus 5.5 temperature 0.2", "claude-opus-5-5"],
-      ["openai/gpt-6.1-sol ctx 200k", "gpt-6.1-sol"],
-      ["vendor model-max", "vendor"],
-      // Two names with different settings are still one model.
-      ["gpt-6.1-sol budget: 32768", "gpt-6.1-sol budget: 65536"],
-      ["gpt-6.1-sol, reasoning=high", "GPT-6.1 Sol thinking: 4000"],
-      ["Claude Opus 5.5 temperature 0.2", "claude-opus-5-5 budget 100"],
-      ["Opus (version unknown)", "claude-opus-5-5"],
-      ["Example Model 5.5", "example-model-5-5"],
-      ["Sonnet 5.5", "claude-sonnet-5-5"],
-    ];
-    for (const [left, right] of same) {
-      expect([left, right, sameModelName(left, right)]).toEqual([
-        left,
-        right,
-        true,
-      ]);
-      expect(sameModelName(right, left)).toBe(true);
+  test("a model ID is an ID-shaped name, folded for case and one provider prefix", () => {
+    for (const [value, id] of [
+      ["model-5-5", "model-5-5"],
+      ["Model-5-5", "model-5-5"],
+      ["  model-5.5  ", "model-5.5"],
+      ["vendor/model-5-5", "model-5-5"],
+      ["model_5_5", "model_5_5"],
+    ] as const) {
+      expect([value, canonicalModelId(value)]).toEqual([value, id]);
     }
   });
 
-  test("a name with too many readings to compare cheaply counts as the same, fast", () => {
-    const left =
-      "id-5 low max high low high max max low high high low max high max low low max high low max a 1 a 1 a 1 a 1 a 1 a 1";
-    const right =
-      "xx-5 low max high low high max max low high high low max high max low low max high low max a 1 a 1 a 1 a 1 a 1";
-    const started = performance.now();
-    expect(sameModelName(left, right)).toBe(true);
-    expect(sameModelName(right, left)).toBe(true);
-    // Just under the cap, a name is still compared, and quickly.
-    const near = `model-5 ${Array.from({ length: 14 }, () => "high").join(" ")}`;
-    expect(sameModelName(near, "model-6")).toBe(false);
-    expect(sameModelName(near, "model-5")).toBe(true);
-    expect(performance.now() - started).toBeLessThan(1000);
+  test("a display name, an effort label, a note, or the sentinel is not an ID", () => {
+    for (const value of [
+      "Model 5.5",
+      "model-5-5 high",
+      "model-5-5 (version unknown)",
+      "model-5-5, reasoning: high",
+      "model-5-5=high",
+      "a/b/model-5-5",
+      "-model",
+      "",
+      "   ",
+      "most-capable",
+      // An effort setting alone is never a model, in any case or prefix.
+      "high",
+      "XHigh",
+      "provider/max",
+      "low",
+      "medium",
+      null,
+      undefined,
+    ]) {
+      expect([value, canonicalModelId(value)]).toEqual([value, null]);
+    }
   });
 
-  test("a real version or variant difference stays distinct", () => {
-    const distinct: [string, string][] = [
-      ["Claude Opus 5", "Claude Opus 5.5"],
-      ["claude-opus-5 high", "claude-opus-5-5"],
-      ["gpt-6", "gpt-6.1-sol"],
-      ["gpt-6-sol high", "gpt-6.1-sol"],
-      ["gpt-5.1-codex-max", "gpt-5.1-codex"],
-      ["Fable 5.1 (version unknown)", "Fable 5"],
-      // Only a note that the version is unknown widens a name to its family.
-      ["gpt-6 (reasoning unknown)", "gpt-6.1-sol"],
-      ["gpt-6 (unknown effort)", "gpt-6.1-sol"],
-      // An unknown version never absorbs another variant.
-      ["gpt-5.1-codex (version unknown)", "gpt-5.1-codex-max"],
-      // A name that already carries a version never widens past it.
-      ["Claude Opus 5 (version unknown)", "claude-opus-5-5"],
-      ["Fable 5.1 (version unknown)", "Fable 5.1.2"],
-      // A note of version numbers alone names the version.
-      ["Claude Opus (5)", "Claude Opus (5.5)"],
-      ["Claude Opus (5)", "claude-opus-5-5"],
-      ["Claude Opus (5 high)", "Claude Opus (5.5 high)"],
-      ["Claude Opus (5", "Claude Opus (5.5"],
-      // A version is part of its word, so it never ends a leading match.
-      ["gpt-6 budget 100", "gpt-6.1-sol"],
-      ["Claude Opus 5 temperature 0.2", "Claude Opus 5.5"],
-      ["gpt-5.1-codex budget 100", "gpt-5.1-codex-max"],
-      // A model word after a version is a name, never a setting.
-      ["Claude 3 Opus", "Claude 3 Sonnet"],
-      ["Claude Opus 5", "Claude Sonnet 5"],
-      ["Claude Opus 5 budget 100", "Claude Sonnet 5 budget 100"],
-      ["Fable (version unknown)", "claude-fable-mini-5-1"],
-      // A hyphenated part that is not effort keeps the whole word.
-      ["gpt-5.1-codex-max high", "gpt-5.1-codex xhigh"],
-      ["Example Model 5.5", "Example 5.5"],
-      ["vendor coder-max high", "vendor coder"],
-      ["Astra medium", "gpt-6.1-sol"],
-      ["model-alpha", "model-beta"],
-      ["high", "max"],
-    ];
-    for (const [left, right] of distinct) {
-      expect([left, right, sameModelName(left, right)]).toEqual([
-        left,
-        right,
-        false,
-      ]);
-      expect(sameModelName(right, left)).toBe(false);
+  test("different IDs stay different, and no alias is assumed", () => {
+    expect(MODEL_ID_ALIASES).toEqual({});
+    for (const [left, right] of [
+      ["model-5", "model-5-5"],
+      ["coder", "coder-max"],
+      ["model_5_5", "model-5-5"],
+    ] as const) {
+      expect(canonicalModelId(left)).not.toBe(canonicalModelId(right));
     }
   });
 });
@@ -1718,6 +1834,7 @@ describe("setup --authoring and initialize", () => {
       escalateOnFindings: "xhigh",
       harness: "claude-code",
       model: "review-model",
+      reviewLoop: REVIEW_LOOP_DEFAULTS,
       status: "resolved",
     });
     expect(withRequest.authoring.source.review).toEqual({
@@ -1727,6 +1844,7 @@ describe("setup --authoring and initialize", () => {
       harness: "request",
       model: "request",
       path: null,
+      reviewLoop: "default",
     });
     expect(withRequest.authoring.effective.proposals).toMatchObject({
       harness: "claude-code",

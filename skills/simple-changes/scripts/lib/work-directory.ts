@@ -26,6 +26,7 @@ import { sha256 } from "./hash.ts";
 import { locateRepository } from "./inventory.ts";
 import { assertNoSymlinkAncestors } from "./path-safety.ts";
 import { runGit } from "./process.ts";
+import { RUN_ID_PATTERN } from "./run-id.ts";
 
 // Agents write provider pages, receipts, proposal bodies, and decision files
 // that the CLI reads once. A checkout is the wrong home (untracked files make
@@ -39,7 +40,6 @@ import { runGit } from "./process.ts";
 export const WORK_ROOT_ENVIRONMENT = "SIMPLE_CHANGES_WORK_ROOT";
 
 const BINDINGS_DIRECTORY = join("simple-changes", "work-directories");
-const RUN_ID_PATTERN = /^[\w.-]+$/u;
 
 export interface WorkDirectoryRepository {
   /** Every registered checkout; a work directory is never inside one. */
@@ -357,13 +357,16 @@ export const workDirectoryContaining = (
 const bindingsRoot = (commonGitDirectory: string): string =>
   assertNoSymlinkAncestors(commonGitDirectory, BINDINGS_DIRECTORY);
 
+// A run's bindings directory is removed recursively when the run closes, so
+// its ID must name exactly one entry under the bindings root: `..` would
+// name the Simple Changes state directory itself, and `.` every run's.
 const bindingsDirectory = (
   commonGitDirectory: string,
   runId: string
 ): string => {
   if (!RUN_ID_PATTERN.test(runId)) {
     throw new SimpleChangesError(
-      `Invalid run ID: ${runId}`,
+      `Invalid run ID ${JSON.stringify(runId)}: it must match run-[a-z0-9-]+.`,
       EXIT_CODES.validation
     );
   }

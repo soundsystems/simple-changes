@@ -24,6 +24,7 @@ import { spawnSync } from "bun";
 import {
   type AuthoringSidecar,
   MOST_CAPABLE,
+  REVIEW_LOOP_DEFAULTS,
   type RepositoryAuthoring,
   type ResolvedAuthoringRole,
   type ResolvedReviewRole,
@@ -54,10 +55,12 @@ import {
   type CoverageWaiver,
   emptyReviewLedger,
   escalatedEffort,
+  escalatingAttempt,
   evaluateReviewAcceptance,
   headCoverage,
   heldLoopLock,
   type IdentityCompletion,
+  identityReasonHint,
   loadReviewLedgerForResume,
   type ReplayCheck,
   type ReviewLedger,
@@ -71,6 +74,7 @@ import {
   reviewApproval,
   reviewDisclosure,
   reviewLedgerPath,
+  reviewLoopStatus,
   reviewSignatureAgent,
   validateReviewLedger,
   verifyReplay,
@@ -86,6 +90,7 @@ import {
   releaseWorktreeClaim,
   worktreeCoordinationPath,
 } from "../../../skills/simple-changes/scripts/lib/worktree-coordination.ts";
+import { renderResumedReviews } from "../../../skills/simple-changes/scripts/simple-changes.ts";
 import {
   createTestRepository,
   git,
@@ -279,6 +284,7 @@ const stubAuthoring = (
         escalateOnFindings: null,
         harness: "codex",
         model: "model-beta",
+        reviewLoop: REVIEW_LOOP_DEFAULTS,
         status: "resolved",
         ...review,
       },
@@ -1186,13 +1192,12 @@ describe("post-return gate and approval", () => {
         verified: sentinelReviewer,
       }).fields
     ).toEqual(["model"]);
-    // A label too complex to compare would read as the requested model, so
-    // it is disclosed as a mismatch with the next step instead.
-    const complex =
-      "xx-5 low max high low high max max low high high low max high max low low max high low max a 1 a 1 a 1 a 1 a 1";
+    // A name that is not a model ID on either side cannot show the reviewer
+    // ran the requested model, so it is disclosed with the next step.
     for (const [requested, reported] of [
-      ["model-b", complex],
-      [complex, "model-b"],
+      ["model-b", "Model B"],
+      ["Model B", "model-b"],
+      ["model-b", "model-b high"],
     ] as const) {
       expect(
         reviewDisclosure({
@@ -1206,7 +1211,7 @@ describe("post-return gate and approval", () => {
       ).toMatchObject({
         fields: ["model"],
         message: expect.stringContaining(
-          "too complex to compare; pass the model ID the harness reports"
+          "Record the model ID the agent reports, in lowercase with no spaces"
         ),
         mismatch: true,
       });
@@ -1236,21 +1241,51 @@ describe("post-return gate and approval", () => {
         { adversarial: true }
       ).acceptanceReason
     ).toBe("author-identity-missing");
-    const named = emptyReviewLedger();
-    attestInMemory(named, C1, author("alpha", { agent: "Example Model 5.5" }));
-    addHead(named, C1, [C1]);
-    const variant = {
+    // In one harness only model IDs tell models apart: a display name on the
+    // author is missing evidence, an equal ID is the same model, and another
+    // harness is distinct whatever the names.
+    const reviewer = {
       agent: "example-model-5-5",
       harness: "claude-code",
       instance: null,
       session: "session-other",
     };
+    const authoredBy = (agent: string) => {
+      const authored = emptyReviewLedger();
+      attestInMemory(authored, C1, author("alpha", { agent }));
+      addHead(authored, C1, [C1]);
+      return authored;
+    };
     expect(
-      decide(named, C1, variant, { adversarial: true }).acceptanceReason
+      decide(authoredBy("Example Model 5.5"), C1, reviewer, {
+        adversarial: true,
+      }).acceptanceReason
+    ).toBe("author-identity-missing");
+    expect(
+      decide(authoredBy("Example-Model-5-5"), C1, reviewer, {
+        adversarial: true,
+      }).acceptanceReason
     ).toBe("reviewer-not-distinct");
     expect(
-      decide(named, C1, { ...variant, harness: "codex" }, { adversarial: true })
-        .accepted
+      decide(
+        authoredBy("example-model-5-5"),
+        C1,
+        { ...reviewer, agent: "Example Model 5.5" },
+        { adversarial: true }
+      ).acceptanceReason
+    ).toBe("reviewer-identity-missing");
+    expect(
+      decide(authoredBy("example-model-5"), C1, reviewer, {
+        adversarial: true,
+      }).accepted
+    ).toBe(true);
+    expect(
+      decide(
+        authoredBy("Example Model 5.5"),
+        C1,
+        { ...reviewer, harness: "codex" },
+        { adversarial: true }
+      ).accepted
     ).toBe(true);
   });
 
@@ -1370,6 +1405,154 @@ describe("post-return gate and approval", () => {
     expect(validateReviewLedger(ledger).reason).toBeNull();
   });
 
+  test("only blocking or should-fix findings escalate, and ungraded findings still do", () => {
+    const graded = (blocking: number, shouldFix: number, nit: number) => ({
+      severities: { blocking, nit, shouldFix },
+      verdict: "findings" as const,
+    });
+    expect(escalatingAttempt(graded(0, 0, 2), "blocking-or-should-fix")).toBe(
+      false
+    );
+    expect(escalatingAttempt(graded(0, 1, 2), "blocking-or-should-fix")).toBe(
+      true
+    );
+    expect(escalatingAttempt(graded(1, 0, 0), "blocking-or-should-fix")).toBe(
+      true
+    );
+    expect(escalatingAttempt(graded(0, 0, 2), "any")).toBe(true);
+    // A reviewer that did not grade its findings escalates as before.
+    expect(
+      escalatingAttempt({ verdict: "findings" }, "blocking-or-should-fix")
+    ).toBe(true);
+    expect(
+      escalatingAttempt({ verdict: "clean" }, "blocking-or-should-fix")
+    ).toBe(false);
+    expect(escalatedEffort("high", "xhigh", [graded(0, 0, 3)])).toEqual({
+      effort: "high",
+      effortSource: "configured",
+    });
+    expect(escalatedEffort("high", "xhigh", [graded(0, 0, 3)], "any")).toEqual({
+      effort: "xhigh",
+      effortSource: "escalation",
+    });
+    expect(
+      escalatedEffort("high", "xhigh", [graded(0, 0, 3), graded(0, 1, 0)])
+    ).toEqual({ effort: "xhigh", effortSource: "escalation" });
+  });
+
+  test("the loop status counts rounds since the last clean review and only says when to ask", () => {
+    let minute = 0;
+    const round = (
+      verdict: "clean" | "findings" | "failed",
+      severities?: { blocking: number; nit: number; shouldFix: number },
+      accepted = true
+    ) => {
+      minute += 1;
+      return {
+        accepted,
+        recordedAt: `2026-10-17T10:${String(minute).padStart(2, "0")}:00.000Z`,
+        verdict,
+        ...(severities ? { severities } : {}),
+      };
+    };
+    const blocking = { blocking: 1, nit: 0, shouldFix: 0 };
+    const nits = { blocking: 0, nit: 2, shouldFix: 0 };
+    const loop = REVIEW_LOOP_DEFAULTS;
+    expect(reviewLoopStatus([], loop)).toEqual({
+      consecutiveEscalatingRounds: 0,
+      convergenceCheck: "not-due",
+      message: null,
+      roundCap: "not-reached",
+      roundsSinceEscalation: 0,
+    });
+    // Two escalating rounds in a row: question the approach.
+    const twice = [round("findings", blocking), round("findings")];
+    expect(reviewLoopStatus(twice, loop)).toMatchObject({
+      consecutiveEscalatingRounds: 2,
+      convergenceCheck: "due",
+      roundCap: "not-reached",
+      roundsSinceEscalation: 1,
+    });
+    expect(reviewLoopStatus(twice, loop).message).toContain(
+      "stop patching, say whether the approach itself is the problem"
+    );
+    // A nit-only round ends the run; a failed review is no round.
+    const broken = [...twice, round("failed"), round("findings", nits)];
+    expect(reviewLoopStatus(broken, loop)).toMatchObject({
+      consecutiveEscalatingRounds: 0,
+      convergenceCheck: "not-due",
+      roundsSinceEscalation: 2,
+    });
+    // Four rounds after the first escalating finding reach the cap.
+    const capped = [...broken, round("findings", blocking), round("findings")];
+    expect(reviewLoopStatus(capped, loop)).toMatchObject({
+      convergenceCheck: "due",
+      roundCap: "reached",
+      roundsSinceEscalation: 4,
+    });
+    expect(reviewLoopStatus(capped, loop).message).toContain(
+      "ask the user whether to ship with the open findings filed as issues, change the design, or keep reviewing"
+    );
+    // The ledger's append order decides, never the timestamps: rounds
+    // recorded after a clean review count even when their recordedAt, in
+    // another valid format, sorts before it.
+    const appended = [
+      { ...round("clean"), recordedAt: "2026-10-17T10:00:00Z" },
+      {
+        ...round("findings", blocking),
+        recordedAt: "2026-10-17T10:00:00.100Z",
+      },
+      {
+        ...round("findings", blocking),
+        recordedAt: "2026-10-17T10:00:00.200Z",
+      },
+    ];
+    expect(reviewLoopStatus(appended, loop)).toMatchObject({
+      consecutiveEscalatingRounds: 2,
+      convergenceCheck: "due",
+      roundsSinceEscalation: 1,
+    });
+    // A clean review the gate rejected (a self-review, a stale head) carries
+    // no evidence: it is no round, so every count and check stays as it was.
+    expect(
+      reviewLoopStatus([...capped, round("clean", undefined, false)], loop)
+    ).toEqual(reviewLoopStatus(capped, loop));
+    expect(
+      reviewLoopStatus([...twice, round("clean", undefined, false)], loop)
+    ).toEqual(reviewLoopStatus(twice, loop));
+    // A rejected review with findings still counts: the findings are real.
+    expect(
+      reviewLoopStatus([...twice, round("findings", blocking, false)], loop)
+    ).toMatchObject({ consecutiveEscalatingRounds: 3 });
+    // An accepted clean review starts over, and either check can be off.
+    expect(reviewLoopStatus([...capped, round("clean")], loop)).toMatchObject({
+      consecutiveEscalatingRounds: 0,
+      roundCap: "not-reached",
+      roundsSinceEscalation: 0,
+    });
+    expect(
+      reviewLoopStatus(capped, {
+        ...loop,
+        convergenceRounds: null,
+        roundCap: null,
+      })
+    ).toMatchObject({
+      convergenceCheck: "off",
+      message: null,
+      roundCap: "off",
+    });
+    // Under escalateOn "any", nits escalate and keep the run going, and the
+    // message says findings, not blocking or should-fix ones.
+    const anyFinding = reviewLoopStatus(broken, { ...loop, escalateOn: "any" });
+    expect(anyFinding).toMatchObject({
+      consecutiveEscalatingRounds: 3,
+      convergenceCheck: "due",
+    });
+    expect(anyFinding.message).toStartWith(
+      "3 review rounds in a row reported findings:"
+    );
+  });
+
   test("escalation is a floor driven by verdict, never above xhigh by itself", () => {
     const findings = [{ verdict: "findings" as const }];
     expect(escalatedEffort("xhigh", "high", findings)).toEqual({
@@ -1444,29 +1627,75 @@ describe("reviewer resolution before dispatch", () => {
     expect(resolve({ status: "no-delegation" }).reason).toBe("no-delegation");
     // A concrete harness id may be spelled "unknown"; only the status says
     // that detection failed.
-    // An effort word on the author's model does not make the same model
-    // distinct (#5), while a different version stays distinct.
-    const sol = { harness: "codex", model: "GPT-6.1 Sol high" };
+    // Before dispatch, too, only model IDs are compared (#10): an equal ID is
+    // the same model, a different ID is distinct, and a configured name
+    // that is not an ID fails closed with its own reason.
+    const solAuthor = { harness: "codex", model: "gpt-6.1-sol" };
+    expect(
+      resolve(
+        { adversarial: true, harness: "codex", model: "GPT-6.1-Sol" },
+        solAuthor
+      )
+    ).toMatchObject({ reason: "reviewer-not-distinct", status: "blocked" });
+    expect(
+      resolve(
+        { adversarial: true, harness: "codex", model: "gpt-6-sol" },
+        solAuthor
+      ).status
+    ).toBe("resolved");
     expect(
       resolve(
         { adversarial: true, harness: "codex", model: "gpt-6.1-sol xhigh" },
-        sol
+        solAuthor
       )
-    ).toMatchObject({ reason: "reviewer-not-distinct", status: "blocked" });
+    ).toMatchObject({
+      reason: "reviewer-model-id-missing",
+      status: "unresolved",
+    });
     expect(
       resolve(
-        {
-          adversarial: true,
-          harness: "codex",
-          model: "gpt-6.1-sol reasoning_effort=high",
-        },
-        { harness: "codex", model: "gpt-6.1-sol" }
+        { adversarial: true, harness: "codex", model: "gpt-6-sol" },
+        { harness: "codex", model: "GPT-6.1 Sol high" }
       )
-    ).toMatchObject({ reason: "reviewer-not-distinct", status: "blocked" });
-    expect(
-      resolve({ adversarial: true, harness: "codex", model: "gpt-6-sol" }, sol)
-        .status
-    ).toBe("resolved");
+    ).toMatchObject({
+      reason: "author-identity-missing",
+      status: "unresolved",
+    });
+    // Before a proposal the author is the configured model, so the hint
+    // names setup, never a completion that cannot change it.
+    const provisionalHint = identityReasonHint(
+      "author-identity-missing",
+      "provisional"
+    );
+    expect(provisionalHint).toContain("setup --authoring");
+    expect(provisionalHint).not.toContain("--complete-identity");
+    // After it, the hint says when completion applies and when it cannot,
+    // since one reason covers an unknown harness or session too.
+    const verifiedHint = identityReasonHint("author-identity-missing");
+    expect(verifiedHint).toContain("--complete-identity");
+    expect(verifiedHint).toContain(
+      "A record without a session, harness or agent id cannot be completed"
+    );
+    // Resume names the same repair before asking for a fresh review.
+    const resumed = renderResumedReviews({
+      proposals: [
+        {
+          attempts: [
+            {
+              accepted: true,
+              attemptId: "attempt-1",
+              headRevision: fakeSha(1),
+              revalidated: false,
+              revalidationReason: "author-identity-missing",
+              verdict: "clean",
+            },
+          ],
+        },
+      ],
+      state: "valid",
+    } as unknown as Parameters<typeof renderResumedReviews>[0]);
+    expect(resumed).toContain("--complete-identity");
+    expect(resumed).toContain("Then request a fresh review.");
     const concrete = { harness: "unknown", model: "model-gamma" };
     expect(resolve(concrete)).toMatchObject({
       harness: "unknown",
@@ -1715,12 +1944,87 @@ describe("proposal ledger commands", () => {
     });
   });
 
-  test("an effort word on the author's model never makes a same-model review distinct, and a stored acceptance is re-judged without rewriting it", () => {
+  test("a display name on the author fails closed in one harness until the author completes it with its model ID", () => {
     const run = preparedRun();
     const head = commitFile(run.author, "a.txt", "a\n");
-    // The author's truthful display label carries its effort (#5).
+    const owner = {
+      commits: [head],
+      environment: ENV_A,
+      instance: "instance-a",
+      logicalId: "author-a",
+      repositoryPath: run.author,
+    };
+    // The author recorded a display label, as 0.30 guidance asked (#10).
+    attestCommits({ ...owner, agent: "GPT-6.1 Sol high" });
+    const recordAuthors = () =>
+      recordProposalAuthors({
+        base: run.base,
+        environment: ENV_A,
+        head,
+        proposalId: PROPOSAL,
+        repositoryPath: run.author,
+      });
+    recordAuthors();
+    const review = (agent: string, instance: string) =>
+      recordReviewAttempt({
+        attemptId: randomUUID(),
+        authoring: stubAuthoring({ adversarial: true }),
+        head,
+        proposalId: PROPOSAL,
+        receipt: reviewReceipt({
+          agent,
+          harness: "claude-code",
+          instance,
+          session: `session-${instance}`,
+        }),
+        repositoryPath: run.author,
+      });
+    // In the author's harness a label proves nothing: refused, not accepted.
+    expect(review("gpt-6.1-sol", "z").attempt).toMatchObject({
+      acceptanceReason: "author-identity-missing",
+      accepted: false,
+    });
+    expect(identityReasonHint("author-identity-missing")).toContain(
+      "--complete-identity"
+    );
+    expect(identityReasonHint("author-identity-missing")).toContain(
+      "--instance"
+    );
+    // Following the hint without the recorded instance completes nothing.
+    const { instance: _, ...withoutInstance } = owner;
+    expect(() =>
+      attestCommits({
+        ...withoutInstance,
+        agent: "gpt-6.1-sol",
+        completeIdentity: true,
+      })
+    ).toThrow("identity-completion-unmatched");
+    // A reviewer label is refused too, with its own reason.
+    attestCommits({ ...owner, agent: "gpt-6.1-sol", completeIdentity: true });
+    recordAuthors();
+    expect(review("GPT-6.1 Sol", "y").attempt).toMatchObject({
+      acceptanceReason: "reviewer-identity-missing",
+      accepted: false,
+    });
+    // Completed with its model ID, the author counts as that ID: the same
+    // ID is the same model and a different ID is distinct.
+    expect(review("GPT-6.1-Sol", "x").attempt).toMatchObject({
+      acceptanceReason: "reviewer-not-distinct",
+      accepted: false,
+    });
+    const distinct = review("astra", "w");
+    expect(distinct.attempt).toMatchObject({
+      acceptanceReason: null,
+      accepted: true,
+    });
+    expect(distinct.currentValidity).toMatchObject({ valid: true });
+  });
+
+  test("a display name across harnesses still counts, since the harness differs", () => {
+    const run = preparedRun();
+    const head = commitFile(run.author, "a.txt", "a\n");
     attestCommits({
-      agent: "GPT-6.1 Sol high",
+      agent: "Claude Opus 5.5",
       commits: [head],
       environment: ENV_A,
       instance: "instance-a",
@@ -1728,108 +2032,22 @@ describe("proposal ledger commands", () => {
       repositoryPath: run.author,
     });
     recordProposalAuthors({
-      agent: "GPT-6.1 Sol high",
       base: run.base,
       environment: ENV_A,
       head,
       proposalId: PROPOSAL,
       repositoryPath: run.author,
     });
-    const sameModel = reviewReceipt({
-      agent: "gpt-6.1-sol",
-      harness: "claude-code",
-      instance: "reviewer-z",
-      session: "session-z",
-    });
-    // Without adversarial review the same model may review, so the attempt
-    // is accepted and stored as such.
-    const stored = recordReviewAttempt({
-      attemptId: randomUUID(),
-      head,
-      proposalId: PROPOSAL,
-      receipt: sameModel,
-      repositoryPath: run.author,
-    });
-    expect(stored.attempt).toMatchObject({
-      acceptanceReason: null,
-      accepted: true,
-    });
-    writeFileSync(
-      join(run.root, ".simple-changes-authoring.json"),
-      `${JSON.stringify({
-        harnesses: {},
-        roles: { review: { adversarial: true, harness: "running" } },
-        schemaVersion: 1,
-      })}\n`
-    );
-    // Once adversarial review is on, the stored attempt keeps its recorded
-    // acceptance but no longer counts.
-    const revalidated = recordReviewAttempt({
-      attemptId: stored.attempt.attemptId,
-      head,
-      proposalId: PROPOSAL,
-      receipt: sameModel,
-      repositoryPath: run.author,
-    });
-    expect(revalidated).toMatchObject({
-      approvalCandidate: false,
-      attempt: { acceptanceReason: null, accepted: true },
-      currentValidity: { reason: "reviewer-not-distinct", valid: false },
-      status: "unchanged",
-    });
-    // A new attempt by the same model at another effort is rejected, however
-    // the effort is spelled.
-    const fielded = recordReviewAttempt({
-      attemptId: randomUUID(),
-      head,
-      proposalId: PROPOSAL,
-      receipt: reviewReceipt({
-        agent: "gpt-6.1-sol model_reasoning_effort=xhigh",
-        harness: "claude-code",
-        instance: "reviewer-w",
-        session: "session-w",
-      }),
-      repositoryPath: run.author,
-    });
-    expect(fielded.attempt).toMatchObject({
-      acceptanceReason: "reviewer-not-distinct",
-      accepted: false,
-    });
-    const rejected = recordReviewAttempt({
-      attemptId: randomUUID(),
-      head,
-      proposalId: PROPOSAL,
-      receipt: reviewReceipt({
-        agent: "gpt-6.1-sol xhigh",
-        harness: "claude-code",
-        instance: "reviewer-y",
-        session: "session-y",
-      }),
-      repositoryPath: run.author,
-    });
-    expect(rejected.attempt).toMatchObject({
-      acceptanceReason: "reviewer-not-distinct",
-      accepted: false,
-    });
-    expect(rejected.approvalCandidate).toBe(false);
-    // A distinct model on the same harness passes every other gate.
-    const distinct = recordReviewAttempt({
-      attemptId: randomUUID(),
-      head,
-      proposalId: PROPOSAL,
-      receipt: reviewReceipt({
-        agent: "Astra medium",
-        harness: "claude-code",
-        instance: "reviewer-x",
-        session: "session-x",
-      }),
-      repositoryPath: run.author,
-    });
-    expect(distinct.attempt).toMatchObject({
-      acceptanceReason: null,
-      accepted: true,
-    });
-    expect(distinct.currentValidity).toMatchObject({ valid: true });
+    expect(
+      recordReviewAttempt({
+        attemptId: randomUUID(),
+        authoring: stubAuthoring({ adversarial: true }),
+        head,
+        proposalId: PROPOSAL,
+        receipt: reviewReceipt(REVIEWER_B),
+        repositoryPath: run.author,
+      }).attempt
+    ).toMatchObject({ acceptanceReason: null, accepted: true });
   });
 
   test("a request layer tightens the gate for one acceptance and never loosens the saved settings", () => {
@@ -2186,6 +2404,167 @@ describe("proposal ledger commands", () => {
     expect(
       readFileSync(reviewLedgerPath(commonDirectory(run.root)), "utf8")
     ).toBe(ledgerBefore);
+  });
+
+  test("record-review stores graded findings, refuses severities that do not add up, and reports the loop", () => {
+    const run = preparedRun();
+    const commit = commitFile(run.author, "a.txt", "a\n");
+    attestAsA(run.author, [commit]);
+    recordProposalAuthors({
+      base: run.base,
+      environment: ENV_A,
+      head: commit,
+      proposalId: PROPOSAL,
+      repositoryPath: run.author,
+    });
+    const graded = reviewReceipt(REVIEWER_B, {
+      effort: "high",
+      findingsCount: 3,
+      requested: { effort: "high", harness: "codex", model: "model-beta" },
+      severities: { blocking: 0, nit: 2, shouldFix: 1 },
+      verdict: "findings",
+    });
+    const record = (body: unknown, id = randomUUID()) =>
+      recordReviewAttempt({
+        attemptId: id,
+        authoring: stubAuthoring({ adversarial: true }),
+        head: commit,
+        proposalId: PROPOSAL,
+        receipt: body,
+        repositoryPath: run.author,
+      });
+    for (const [body, error] of [
+      [
+        { ...graded, severities: { blocking: 0, nit: 1, shouldFix: 1 } },
+        "add up to findingsCount",
+      ],
+      [
+        {
+          ...reviewReceipt(REVIEWER_B),
+          severities: { blocking: 0, nit: 0, shouldFix: 0 },
+        },
+        "for a findings verdict only",
+      ],
+      [
+        { ...graded, severities: { blocking: 0, nit: 2, shouldFix: 1, x: 0 } },
+        "receipt.severities.x",
+      ],
+      [{ ...graded, severities: { nit: 3 } }, "receipt.severities.blocking"],
+    ] as const) {
+      expect(() => record(body)).toThrow(error);
+    }
+    const attemptId = randomUUID();
+    const first = record(graded, attemptId);
+    expect(first.attempt.severities).toEqual({
+      blocking: 0,
+      nit: 2,
+      shouldFix: 1,
+    });
+    // The grading is part of the payload: a retry must carry the same one.
+    expect(record(graded, attemptId).status).toBe("unchanged");
+    const { severities: _graded, ...ungraded } = graded as Record<
+      string,
+      unknown
+    >;
+    expect(() => record(ungraded, attemptId)).toThrow("different payload");
+    const ledger = readReviewLedger(commonDirectory(run.root));
+    expect(ledger.state).toBe("valid");
+    const schema = JSON.parse(readFileSync(schemaPath, "utf8")) as Record<
+      string,
+      unknown
+    >;
+    expect(() =>
+      validateSchemaDocument("review-ledger", schema, ledger.ledger)
+    ).not.toThrow();
+    // The schema, like the runtime, grades findings only: a clean attempt
+    // carrying severities is refused by both.
+    const cleanGraded = structuredClone(ledger.ledger);
+    const [stored] = cleanGraded.proposals[PROPOSAL]?.attempts ?? [];
+    if (!stored) {
+      throw new Error("Expected the graded attempt.");
+    }
+    Object.assign(stored, {
+      findingsCount: 0,
+      severities: { blocking: 0, nit: 0, shouldFix: 0 },
+      verdict: "clean",
+    });
+    expect(() =>
+      validateSchemaDocument("review-ledger", schema, cleanGraded)
+    ).toThrow();
+    expect(validateReviewLedger(cleanGraded).reason).toBe("ledger-malformed");
+    // A should-fix finding escalates the next review and starts the loop.
+    const next = resolveReviewer({
+      authoring: stubAuthoring({
+        adversarial: true,
+        effort: "high",
+        escalateOnFindings: "xhigh",
+      }),
+      head: commit,
+      proposalId: PROPOSAL,
+      repositoryRoot: run.author,
+    });
+    expect(next).toMatchObject({
+      effort: "xhigh",
+      effortSource: "escalation",
+      loop: {
+        consecutiveEscalatingRounds: 1,
+        convergenceCheck: "not-due",
+        roundCap: "not-reached",
+        roundsSinceEscalation: 0,
+      },
+    });
+  });
+
+  test("a nit-only review does not escalate the next one", () => {
+    const run = preparedRun();
+    const commit = commitFile(run.author, "a.txt", "a\n");
+    attestAsA(run.author, [commit]);
+    recordProposalAuthors({
+      base: run.base,
+      environment: ENV_A,
+      head: commit,
+      proposalId: PROPOSAL,
+      repositoryPath: run.author,
+    });
+    recordReviewAttempt({
+      attemptId: randomUUID(),
+      authoring: stubAuthoring({ adversarial: true }),
+      head: commit,
+      proposalId: PROPOSAL,
+      receipt: reviewReceipt(REVIEWER_B, {
+        effort: "high",
+        findingsCount: 1,
+        requested: { effort: "high", harness: "codex", model: "model-beta" },
+        severities: { blocking: 0, nit: 1, shouldFix: 0 },
+        verdict: "findings",
+      }),
+      repositoryPath: run.author,
+    });
+    const settings = {
+      adversarial: true,
+      effort: "high" as const,
+      escalateOnFindings: "xhigh" as const,
+    };
+    expect(
+      resolveReviewer({
+        authoring: stubAuthoring(settings),
+        head: commit,
+        proposalId: PROPOSAL,
+        repositoryRoot: run.author,
+      })
+    ).toMatchObject({ effort: "high", effortSource: "configured" });
+    // Under escalateOn "any" the same nit escalates.
+    expect(
+      resolveReviewer({
+        authoring: stubAuthoring({
+          ...settings,
+          reviewLoop: { ...REVIEW_LOOP_DEFAULTS, escalateOn: "any" },
+        }),
+        head: commit,
+        proposalId: PROPOSAL,
+        repositoryRoot: run.author,
+      })
+    ).toMatchObject({ effort: "xhigh", effortSource: "escalation" });
   });
 
   test("record-review is idempotent on attemptId, refuses a conflicting payload, and keeps requested and verified apart", () => {
@@ -3385,6 +3764,53 @@ describe("identity completion", () => {
     }
   });
 
+  test("a completion stops standing when two other records under its anchor disagree, even though each agrees with a completer that reports little", () => {
+    const named = complete({ agent: "GPT-6.1 Sol", instance: null });
+    const cases: [Attestation, Attestation][] = [
+      [
+        complete({ agent: "gpt-6-sol", instance: "instance-a" }),
+        complete({ agent: "gpt-6-astra", instance: "instance-b" }),
+      ],
+      // Two names without IDs that differ are two reported models too.
+      [
+        complete({ agent: "Model A", instance: null }),
+        complete({ agent: "Model B", instance: null }),
+      ],
+    ];
+    const crossHarness: RuntimeIdentity = {
+      agent: "claude-opus-5-5",
+      harness: "claude-code",
+      instance: "reviewer-i",
+      session: "reviewer-s",
+    };
+    for (const [left, right] of cases) {
+      const ledger = ledgerWith(
+        [partial(), named, left, right],
+        [completion(named, [partial()])]
+      );
+      expect(resolveEffectiveAuthors(ledger, C).authors).toHaveLength(4);
+      expect(outcome(ledger, crossHarness)).toBe("author-identity-missing");
+    }
+    // A display name beside the ID it is completed with never disagrees.
+    const display = partial({ agent: "GPT-6 high" });
+    const byId = complete({ agent: "gpt-6" });
+    const recovered = ledgerWith(
+      [display, byId],
+      [completion(byId, [display])]
+    );
+    expect(resolveEffectiveAuthors(recovered, C).authors).toEqual([byId]);
+  });
+
+  test("a completion an earlier runtime wrote with a display name keeps the ledger readable, and the name still fails closed in one harness", () => {
+    const named = complete({ agent: "GPT-6.1 Sol" });
+    const ledger = ledgerWith(
+      [partial(), named],
+      [completion(named, [partial()])]
+    );
+    expect(resolveEffectiveAuthors(ledger, C).authors).toEqual([named]);
+    expect(outcome(ledger)).toBe("author-identity-missing");
+  });
+
   test("the validator refuses a completion across sessions, harnesses, agent ids, commits, conflicting or sentinel identities, or one that adds nothing", () => {
     const refused = (
       attestations: Attestation[],
@@ -3654,6 +4080,26 @@ describe("identity completion", () => {
         completeIdentity: true,
         instance: "domain_db_preview",
       })
+    ).toThrow("identity-completion-conflict");
+    expect(readFileSync(path, "utf8")).toBe(before);
+  });
+
+  test("a completion is refused when two other records under the anchor disagree, though each agrees with what the completer reports", () => {
+    const run = preparedRun();
+    const commit = commitFile(run.author, "a.txt", "a\n");
+    const owner = {
+      commits: [commit],
+      environment: { CODEX_THREAD_ID: "thread-owner" },
+      logicalId: "author-a",
+      repositoryPath: run.author,
+    };
+    attestCommits(owner);
+    attestCommits({ ...owner, agent: "gpt-6-sol", instance: "instance-a" });
+    attestCommits({ ...owner, agent: "gpt-6-astra", instance: "instance-b" });
+    const path = reviewLedgerPath(commonDirectory(run.root));
+    const before = readFileSync(path, "utf8");
+    expect(() =>
+      attestCommits({ ...owner, agent: "GPT-6.1 Sol", completeIdentity: true })
     ).toThrow("identity-completion-conflict");
     expect(readFileSync(path, "utf8")).toBe(before);
   });

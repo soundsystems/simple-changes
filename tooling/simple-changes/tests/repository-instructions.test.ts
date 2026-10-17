@@ -12,10 +12,13 @@ import {
   discoverGlobalInstructionTargets,
   discoverInstructionTargets,
   discoverRepositoryInstructionTargets,
+  inspectInstructionRule,
   inspectScratchFileRule,
   renderInstructionPointer,
+  renderInstructionRule,
   renderScratchFileRule,
   writeInstructionPointer,
+  writeInstructionRule,
   writeScratchFileRule,
 } from "../../../skills/simple-changes/scripts/lib/repository-instructions.ts";
 import { runningSkillName } from "../../../skills/simple-changes/scripts/lib/skill-roots.ts";
@@ -24,6 +27,10 @@ import {
   type TestRepository,
   writeFixture,
 } from "./helpers.ts";
+
+const REVIEW_LOOP_BLOCK =
+  /<!-- simple-changes:review-loop:start -->[\s\S]*<!-- simple-changes:review-loop:end -->/u;
+const VENDOR_NAMES = /claude|codex|gpt|opus|sonnet|sol\b/iu;
 
 const SCRATCH_FILE_BLOCK =
   /<!-- simple-changes:scratch-files:start -->\n[\s\S]*?\n<!-- simple-changes:scratch-files:end -->/u;
@@ -279,6 +286,91 @@ describe("repository instruction pointers", () => {
     expect(() => writeScratchFileRule(target)).toThrow(
       "invalid Simple Changes managed block"
     );
+  });
+
+  test("keeps the review-loop rule in a third block beside the pointer and the scratch-file rule", () => {
+    const fixture = createTestRepository();
+    repositories.push(fixture);
+    writeFixture(fixture.root, "AGENTS.md", "# Agent guidance\n");
+    const [target] = discoverInstructionTargets("repository", fixture.root);
+    if (!target) {
+      throw new Error("Expected an instruction target");
+    }
+    expect(inspectInstructionRule(target, "review-loop")).toBe("absent");
+    writeInstructionPointer(target, "automatic");
+    writeScratchFileRule(target);
+    expect(writeInstructionRule(target, "review-loop")).toMatchObject({
+      changed: true,
+      written: true,
+    });
+    // Rewriting either neighbour leaves it, and it is never repeated.
+    writeInstructionPointer(target, "confirm-ready");
+    writeScratchFileRule(target);
+    expect(writeInstructionRule(target, "review-loop")).toMatchObject({
+      changed: false,
+      written: false,
+    });
+    const contents = readFileSync(target.path, "utf8");
+    expect(
+      contents.match(/<!-- simple-changes:review-loop:start -->/gu)
+    ).toHaveLength(1);
+    expect(inspectInstructionRule(target, "review-loop")).toBe("current");
+    expect(inspectScratchFileRule(target)).toBe("current");
+    const stale = contents.replace(
+      REVIEW_LOOP_BLOCK,
+      "<!-- simple-changes:review-loop:start -->\nReview until clean.\n<!-- simple-changes:review-loop:end -->"
+    );
+    writeFileSync(target.path, stale);
+    expect(inspectInstructionRule(target, "review-loop")).toBe("stale");
+    // A stale review-loop block leaves the scratch-file rule current.
+    expect(inspectScratchFileRule(target)).toBe("current");
+    writeInstructionRule(target, "review-loop");
+    expect(inspectInstructionRule(target, "review-loop")).toBe("current");
+  });
+
+  test("states the review loop for Simple Changes runs and names no agent or model", () => {
+    const rule = renderInstructionRule("review-loop");
+    for (const phrase of [
+      "In Simple Changes runs, review in rounds at the exact head",
+      "from the authoring preferences that `simple-changes initialize` reports",
+      "grade each finding blocking, should-fix, or nit",
+      "which findings escalate later reviews follows the preferences (by default only blocking and should-fix ones)",
+      "review the fixes, the boundary they protect, and what they touched, then run one full review at the final head before merge",
+      "Tell the reviewer which findings the user deferred or accepted",
+      "stop patching and question the approach",
+      "ship with the open findings filed as issues, change the design, or keep reviewing",
+    ]) {
+      expect(rule).toContain(phrase);
+    }
+    expect(rule).not.toMatch(VENDOR_NAMES);
+  });
+
+  test("refuses a third block that nests in or crosses another", () => {
+    const fixture = createTestRepository();
+    repositories.push(fixture);
+    const scratch = renderScratchFileRule();
+    const loop = renderInstructionRule("review-loop");
+    const [scratchStart = "", , scratchEnd = ""] = scratch.split("\n");
+    const [loopStart = "", , loopEnd = ""] = loop.split("\n");
+    const pointer = renderInstructionPointer("repository", "automatic");
+    for (const contents of [
+      `${scratchStart}\n${loop}\n${scratchEnd}\n`,
+      `${scratchStart}\n${loopStart}\n${scratchEnd}\n${loopEnd}\n`,
+      // The third block crossing the last of three, which a check of only
+      // the first two spans would miss.
+      `${pointer}\n${scratchStart}\n${loopStart}\n${scratchEnd}\n${loopEnd}\n`,
+    ]) {
+      writeFixture(fixture.root, "AGENTS.md", contents);
+      const [target] = discoverInstructionTargets("repository", fixture.root);
+      if (!target) {
+        throw new Error("Expected an instruction target");
+      }
+      expect(() => writeInstructionRule(target, "review-loop")).toThrow(
+        "invalid Simple Changes managed block"
+      );
+      expect(inspectInstructionRule(target, "review-loop")).toBe("invalid");
+      expect(readFileSync(target.path, "utf8")).toBe(contents);
+    }
   });
 
   test("refuses managed blocks that nest or cross", () => {

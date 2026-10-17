@@ -442,6 +442,95 @@ describe("work directory identity and paths", () => {
     }
   });
 
+  test("refuses a dot-only or malformed run ID before touching any binding", () => {
+    const { environment } = workRoot();
+    const { location } = repository();
+    const own = bindRunWorkDirectory(
+      location,
+      "run-a",
+      "controller",
+      null,
+      null,
+      environment
+    );
+    const state = join(location.commonGitDirectory, "simple-changes");
+    const sentinel = join(state, "sentinel.json");
+    writeFileSync(sentinel, "{}\n");
+
+    // `..` would name the state directory itself and `.` every run's
+    // bindings, so a close bound to either would remove far more than one
+    // run's files.
+    for (const runId of [".", "..", "...", "run.a", "run_a", "RUN-A", ""]) {
+      expect(() =>
+        bindRunWorkDirectory(
+          location,
+          runId,
+          "controller",
+          null,
+          null,
+          environment
+        )
+      ).toThrow("Invalid run ID");
+      expect(() =>
+        runWorkDirectoryBinding(location, runId, "controller")
+      ).toThrow("Invalid run ID");
+      expect(() => removeRunWorkDirectories(location, runId)).toThrow(
+        "Invalid run ID"
+      );
+    }
+    expect(existsSync(sentinel)).toBe(true);
+    expect(readdirSync(join(state, "work-directories"))).toEqual(["run-a"]);
+    expect(readdirSync(dirname(own))).toEqual([basename(own)]);
+
+    // An ordinary run ID binds and removes as before.
+    expect(runWorkDirectoryBinding(location, "run-a", "controller")?.path).toBe(
+      own
+    );
+    expect(removeRunWorkDirectories(location, "run-a")).toEqual({
+      kept: [],
+      removed: [own],
+    });
+  });
+
+  test("a sweep of finished runs skips entries that are not run IDs", () => {
+    const { environment } = workRoot();
+    const { location } = repository();
+    const finished = bindRunWorkDirectory(
+      location,
+      "run-old",
+      "controller",
+      null,
+      null,
+      environment
+    );
+    const bindings = join(
+      location.commonGitDirectory,
+      "simple-changes",
+      "work-directories"
+    );
+    // Distinct from `run-old` even on a case-insensitive file system.
+    const strays = ["...", "....", "run.old", "run_old", "RUN-STRAY"].map(
+      (name) => {
+        const path = createWorkDirectory(location, "stray", environment);
+        mkdirSync(join(bindings, name), { mode: 0o700 });
+        writeFileSync(
+          join(bindings, name, "stray.json"),
+          `${JSON.stringify({ agentId: "stray", path, schemaVersion: 1 })}\n`
+        );
+        return { binding: join(bindings, name, "stray.json"), path };
+      }
+    );
+
+    expect(removeFinishedRunWorkDirectories(location, "run-live")).toEqual({
+      kept: [],
+      removed: [finished],
+    });
+    for (const { binding, path } of strays) {
+      expect(existsSync(path)).toBe(true);
+      expect(existsSync(binding)).toBe(true);
+    }
+  });
+
   test("refuses a root inside any registered worktree", () => {
     const { fixture, location } = repository();
     const worktree = join(fixture.base, "linked");

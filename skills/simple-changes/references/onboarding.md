@@ -364,13 +364,27 @@ except the author's (the running one; none is excluded when it is unknown),
 in data-file order then unknown ids alphabetically, the first recommended; a
 single candidate skips the question. If that agent has no entry yet, ask its
 model question worded "which model should review". After option 2, ask **Which
-model in `<agent>` should review?** and an effort; reject a name equal to the
-model recorded for that agent, where case, separators, a trailing effort word
-such as `high`, and a parenthesised note such as `(version unknown)` do not
-make a name different. Options 1 and 2 record `adversarial: true` and
-then ask **After a review finds problems, how should later reviews of that
-change run?** with **At xhigh effort (Recommended)** (`escalateOnFindings:
-"xhigh"`) or **Same effort as before** (`null`).
+model in `<agent>` should review?** and an effort (`high` recommended). The
+name must be the model ID the agent reports, such as `model-5-5`; ask again
+for a display name or an effort label, for the model ID recorded for that
+agent (compared after folding case and one `provider/` prefix), and when the
+recorded model is itself not an ID. Options 1 and 2 record
+`adversarial: true`.
+
+Every option then sets the review loop. Unless the model question already
+asked it, ask **Which effort should the first review of a change use?** with
+`high` recommended, so a review that finds problems has somewhere to
+escalate. Then ask **After a review finds problems, how should later reviews
+of that change run?** with **At xhigh, after blocking or should-fix findings
+(Recommended)** (`escalateOnFindings: "xhigh"`), **At xhigh, after any
+finding** (the same plus `reviewLoop.escalateOn: "any"`), or **Same effort as
+before** (`null`). Last, ask **When review rounds keep finding problems, when
+should the agent stop and check with you?** with **After 2 rounds in a row, or
+4 more without a clean review (Recommended)** or **Never; review until
+clean** (`reviewLoop` with `convergenceRounds` and `roundCap` both `null`). A
+recommended answer records no `reviewLoop` key, so a file that keeps the
+recommendations stays readable by runtimes before 0.31.0; see
+[review rounds](review-and-merge.md#review-rounds).
 
 While `authoringQuestion.review` is `pending`, `initialize` also prints the
 question itself as `authoringReviewQuestion`; ask it once in each write-capable
@@ -439,9 +453,10 @@ that the short managed pointer makes completed implementation discover Simple
 Changes automatically; it does not copy this skill's rules or grant new
 authority. Then offer the optional scratch-file rule for the same file, even
 when the user leaves the pointer out: it gives every agent one scratch folder
-of its own outside project folders, and lets it delete only that folder. Never
-create an instruction file, follow a symlink, or duplicate either managed
-block.
+of its own outside project folders, and lets it delete only that folder. Then
+offer the optional review-loop rule, which tells agents how to run review
+rounds in Simple Changes runs with your review settings. Never create an
+instruction file, follow a symlink, or duplicate a managed block.
 
 ## Confirm, apply, and continue
 
@@ -457,7 +472,8 @@ Before writing, show a plain-language receipt containing:
 - when the user will be interrupted;
 - the exact preference path, or that no file will be written;
 - the exact instruction-pointer target and managed block, when selected;
-- the scratch-file rule block, when selected; and
+- the scratch-file rule block, when selected;
+- the review-loop rule block, when selected; and
 - the high-risk operations that still require explicit exact-target authority.
 
 Ask for confirmation only after displaying the receipt. If confirmed, apply the

@@ -49,6 +49,10 @@ const SCRATCH_FILE_MARKERS: ManagedBlockMarkers = {
   end: "<!-- simple-changes:scratch-files:end -->",
   start: "<!-- simple-changes:scratch-files:start -->",
 };
+const REVIEW_LOOP_MARKERS: ManagedBlockMarkers = {
+  end: "<!-- simple-changes:review-loop:end -->",
+  start: "<!-- simple-changes:review-loop:start -->",
+};
 const REPOSITORY_CANDIDATES = ["AGENTS.md", "CLAUDE.md"] as const;
 
 let runningSkill: string | undefined;
@@ -291,12 +295,30 @@ export const renderInstructionPointer = (
 const SCRATCH_FILE_RULE =
   "Write scratch files, captured command output, proof bundles, and handoff notes only in one scratch folder of your own, never inside or next to a repository checkout: the folder your brief names, the work directory a Simple Changes run reports, or a new folder you create with `mktemp -d` under the session's scratch directory or the system temporary directory. When you start another agent, give it a folder inside yours, or the one a Simple Changes run prepared for it, and name the path in its brief. When the task ends, delete exactly your own folder by its path, unless the user asks to keep it or a Simple Changes run reported it, which the run removes; never delete by pattern, extension, or age in a directory other agents share.";
 
+// How Simple Changes runs review: the loop its runtime counts and the steps
+// it leaves to the agent. It names no agent or model; those come from the
+// authoring preferences.
+const REVIEW_LOOP_RULE =
+  "In Simple Changes runs, review in rounds at the exact head, with the reviewer, efforts, and limits from the authoring preferences that `simple-changes initialize` reports. Have the reviewer grade each finding blocking, should-fix, or nit, and record the grades; which findings escalate later reviews follows the preferences (by default only blocking and should-fix ones). After the first round, review the fixes, the boundary they protect, and what they touched, then run one full review at the final head before merge. Tell the reviewer which findings the user deferred or accepted. When `initialize` says the convergence check is due and the findings sit in one area, stop patching and question the approach; when it says the round cap is reached, ask the user whether to ship with the open findings filed as issues, change the design, or keep reviewing.";
+
+/** An optional rule setup can add to an instruction file as its own block. */
+export type InstructionRule = "review-loop" | "scratch-files";
+
+const RULES: Record<
+  InstructionRule,
+  { markers: ManagedBlockMarkers; text: string }
+> = {
+  "review-loop": { markers: REVIEW_LOOP_MARKERS, text: REVIEW_LOOP_RULE },
+  "scratch-files": { markers: SCRATCH_FILE_MARKERS, text: SCRATCH_FILE_RULE },
+};
+
+export const renderInstructionRule = (rule: InstructionRule): string =>
+  [RULES[rule].markers.start, RULES[rule].text, RULES[rule].markers.end].join(
+    "\n"
+  );
+
 export const renderScratchFileRule = (): string =>
-  [
-    SCRATCH_FILE_MARKERS.start,
-    SCRATCH_FILE_RULE,
-    SCRATCH_FILE_MARKERS.end,
-  ].join("\n");
+  renderInstructionRule("scratch-files");
 
 const markerCount = (source: string, marker: string): number =>
   source.split(marker).length - 1;
@@ -307,7 +329,7 @@ const formatWithNewline = (source: string, value: string): string => {
 };
 
 // Each block appears at most once, ends after it starts, and never overlaps
-// or nests in the other, so replacing one can never cut into the other.
+// or nests in another, so replacing one can never cut into another.
 const managedBlockSpans = (
   source: string,
   path: string
@@ -318,7 +340,11 @@ const managedBlockSpans = (
       EXIT_CODES.unsafe
     );
   const spans = new Map<ManagedBlockMarkers, { end: number; start: number }>();
-  for (const markers of [POINTER_MARKERS, SCRATCH_FILE_MARKERS]) {
+  for (const markers of [
+    POINTER_MARKERS,
+    SCRATCH_FILE_MARKERS,
+    REVIEW_LOOP_MARKERS,
+  ]) {
     const startCount = markerCount(source, markers.start);
     const endCount = markerCount(source, markers.end);
     if (startCount > 1 || endCount > 1 || startCount !== endCount) {
@@ -333,10 +359,14 @@ const managedBlockSpans = (
       spans.set(markers, { end: end + markers.end.length, start });
     }
   }
-  const [first, second] = [...spans.values()].sort(
+  const ordered = [...spans.values()].sort(
     (left, right) => left.start - right.start
   );
-  if (first && second && second.start < first.end) {
+  if (
+    ordered.some(
+      (span, index) => index > 0 && span.start < (ordered[index - 1]?.end ?? 0)
+    )
+  ) {
     throw invalid();
   }
   return spans;
@@ -434,27 +464,34 @@ export const writeInstructionPointer = (
     renderInstructionPointer(target.scope, timing, skillName)
   );
 
+export const writeInstructionRule = (
+  target: InstructionTarget,
+  rule: InstructionRule
+): InstructionPointerResult =>
+  writeManagedBlock(target, RULES[rule].markers, renderInstructionRule(rule));
+
 export const writeScratchFileRule = (
   target: InstructionTarget
-): InstructionPointerResult =>
-  writeManagedBlock(target, SCRATCH_FILE_MARKERS, renderScratchFileRule());
+): InstructionPointerResult => writeInstructionRule(target, "scratch-files");
 
-export type ScratchFileRuleState = "absent" | "current" | "invalid" | "stale";
+export type InstructionRuleState = "absent" | "current" | "invalid" | "stale";
+export type ScratchFileRuleState = InstructionRuleState;
 
 /**
- * The state of the scratch-file block in `target`: `current` when it reads
- * exactly as this runtime renders it, `stale` when its markers wrap older
- * text that `writeScratchFileRule` would replace in place, `invalid` when
- * the markers are malformed (nothing rewrites that), else `absent`.
+ * The state of a rule's block in `target`: `current` when it reads exactly
+ * as this runtime renders it, `stale` when its markers wrap older text that
+ * `writeInstructionRule` would replace in place, `invalid` when any managed
+ * markers are malformed (nothing rewrites that), else `absent`.
  */
-export const inspectScratchFileRule = (
-  target: InstructionTarget
-): ScratchFileRuleState => {
+export const inspectInstructionRule = (
+  target: InstructionTarget,
+  rule: InstructionRule
+): InstructionRuleState => {
   assertExistingInstructionFile(target.path);
   const source = readFileSync(target.path, "utf8");
   let span: { end: number; start: number } | undefined;
   try {
-    span = managedBlockSpans(source, target.path).get(SCRATCH_FILE_MARKERS);
+    span = managedBlockSpans(source, target.path).get(RULES[rule].markers);
   } catch {
     return "invalid";
   }
@@ -462,7 +499,11 @@ export const inspectScratchFileRule = (
     return "absent";
   }
   return source.slice(span.start, span.end) ===
-    formatWithNewline(source, renderScratchFileRule())
+    formatWithNewline(source, renderInstructionRule(rule))
     ? "current"
     : "stale";
 };
+
+export const inspectScratchFileRule = (
+  target: InstructionTarget
+): ScratchFileRuleState => inspectInstructionRule(target, "scratch-files");

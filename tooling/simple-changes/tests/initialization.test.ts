@@ -74,6 +74,7 @@ describe("first-run initialization", () => {
     expect(from19.changes.map((item) => item.version)).toEqual([
       20, 20, 21, 21, 21, 22, 22, 22, 22, 23, 23, 24, 24, 24, 25, 25, 25, 26,
       26, 26, 27, 27, 27, 28, 28, 28, 28, 28, 28, 28, 29, 29, 29, 29, 30, 30,
+      31, 31, 31, 31, 31, 31, 31, 31, 31,
     ]);
     expect(
       from19.changes.filter((item) => item.version === 27).at(-1)?.summary
@@ -91,8 +92,16 @@ describe("first-run initialization", () => {
     expect(
       from19.changes.find((item) => item.version === 30)?.summary
     ).toContain("`author attest --complete-identity`");
-    expect(from19.changes.at(-1)?.summary).toContain(
+    expect(
+      from19.changes.filter((item) => item.version === 30).at(-1)?.summary
+    ).toContain(
       "`SKILL.md` puts `## Core workflow` directly after the mode table"
+    );
+    expect(
+      from19.changes.find((item) => item.version === 31)?.summary
+    ).toContain("Adversarial review compares canonical model IDs");
+    expect(from19.changes.at(-1)?.summary).toContain(
+      "Every path built from a run ID requires the `run-[a-z0-9-]+` form"
     );
     const from29 = inspectGuidanceUpdate(
       {
@@ -101,9 +110,25 @@ describe("first-run initialization", () => {
       },
       changelogCoordination
     );
-    expect(from29.changes.map((item) => item.version)).toEqual([30, 30]);
+    expect(from29.changes.map((item) => item.version)).toEqual([
+      30, 30, 31, 31, 31, 31, 31, 31, 31, 31, 31,
+    ]);
     expect(from29.summaryBullets.join(" ")).toContain(
       "`author attest --complete-identity`"
+    );
+    const from30 = inspectGuidanceUpdate(
+      {
+        ...DEFAULT_POLICY,
+        guidance: { disposition: "accepted", version: 30 },
+      },
+      changelogCoordination
+    );
+    expect(from30.changes.map((item) => item.version)).toEqual([
+      31, 31, 31, 31, 31, 31, 31, 31, 31,
+    ]);
+    expect(from30.requiredAnswers).toEqual([]);
+    expect(from30.summaryBullets.join(" ")).toContain(
+      "compares the model IDs your coding agents report"
     );
   });
   test("propagates the saved shipping preference into emergency classification", () => {
@@ -324,7 +349,7 @@ describe("first-run initialization", () => {
           available: true,
           owner: "simple-changelogs",
         },
-        currentVersion: 30,
+        currentVersion: 31,
         headline: "**Simple Changes has recently been updated.**",
         presentationOrder: [
           "required-answers",
@@ -344,13 +369,13 @@ describe("first-run initialization", () => {
     });
     expect(status.guidanceUpdate.summaryBullets).toHaveLength(3);
     expect(status.guidanceUpdate.summaryBullets.join(" ")).toContain(
-      "keep the files they pass to Simple Changes in a private temporary work directory"
+      "compares the model IDs your coding agents report"
     );
     expect(status.guidanceUpdate.summaryBullets.join(" ")).toContain(
-      "add an optional rule to AGENTS.md or CLAUDE.md"
+      "Reviews can now grade findings as blocking, should-fix, or nit"
     );
     expect(status.guidanceUpdate.summaryBullets.join(" ")).toContain(
-      "choose which model writes proposals and who reviews them"
+      "A worktree claim now belongs to the session that made it"
     );
     expect(status.guidanceUpdate.recommendedChanges[0]).toMatchObject({
       question: "How should changelog work be handled?",

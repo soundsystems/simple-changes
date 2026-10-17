@@ -15,8 +15,13 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { sleepSync, spawnSync } from "bun";
 import {
+  gitWorkerRefusal,
+  isGitExecutable,
+} from "../../../skills/simple-changes/scripts/lib/git-worker-request.ts";
+import {
   type GitExecutableProbe,
   GuardedProcessGroupStillAliveError,
+  gitExecutable,
   PROCESS_GROUP_CONTROL,
   type ProcessGroupControl,
   type ProcessGroupRunDependencies,
@@ -425,6 +430,199 @@ describe("Concurrent Git reads", () => {
       (sequentialError as Error).message
     );
   });
+});
+
+describe("Git worker requests", () => {
+  const workerPath = fileURLToPath(
+    new URL(
+      "../../../skills/simple-changes/scripts/lib/git-worker.ts",
+      import.meta.url
+    )
+  );
+
+  const runWorker = (input: unknown, cwd: string) => {
+    const result = spawnSync([process.execPath, workerPath], {
+      cwd,
+      stderr: "pipe",
+      stdin: Buffer.from(JSON.stringify(input)),
+      stdout: "pipe",
+    });
+    return {
+      exitCode: result.exitCode,
+      stderr: result.stderr.toString(),
+      stdout: result.stdout.toString(),
+    };
+  };
+
+  test("accept every Git name the caller resolves, on each platform", () => {
+    // What `gitExecutable` returns: plain `git` everywhere, or on macOS the
+    // developer Git behind the xcrun shim.
+    for (const platform of ["darwin", "linux", "win32"] as const) {
+      expect(
+        isGitExecutable(resolveGitExecutable(probe({ platform })), platform)
+      ).toBe(true);
+    }
+    expect(isGitExecutable(gitExecutable())).toBe(true);
+
+    const accepted: [NodeJS.Platform, string][] = [
+      ["darwin", "git"],
+      ["darwin", DEVELOPER_GIT],
+      ["darwin", "/Library/Developer/CommandLineTools/usr/bin/git"],
+      ["linux", "git"],
+      ["linux", "/usr/bin/git"],
+      ["win32", "git"],
+      ["win32", "git.exe"],
+      ["win32", "GIT.EXE"],
+      ["win32", "C:\\Program Files\\Git\\cmd\\git.exe"],
+      ["win32", "C:/Program Files/Git/bin/git.exe"],
+      ["win32", "\\\\?\\C:\\Git\\cmd\\git.exe"],
+    ];
+    for (const [platform, executable] of accepted) {
+      expect([
+        platform,
+        executable,
+        isGitExecutable(executable, platform),
+      ]).toEqual([platform, executable, true]);
+    }
+
+    const refused: [NodeJS.Platform, string][] = [
+      ["linux", ""],
+      ["linux", "sh"],
+      ["linux", "/bin/sh"],
+      ["linux", "./git"],
+      ["linux", "bin/git"],
+      ["linux", "/usr/bin/gitk"],
+      ["linux", "/usr/bin/git-upload-pack"],
+      ["linux", "/usr/bin/git/"],
+      ["linux", "/usr/bin/git\0"],
+      ["linux", "git.exe"],
+      ["darwin", "GIT"],
+      // A backslash is part of a POSIX file name, not a separator.
+      ["darwin", "/opt/evil\\git"],
+      ["win32", "C:\\tools\\evil.exe"],
+      ["win32", "C:git.exe"],
+      ["win32", "cmd\\git.exe"],
+      ["win32", "git.cmd"],
+      ["win32", "C:\\Git\\cmd\\git.exe\\"],
+    ];
+    for (const [platform, executable] of refused) {
+      expect([
+        platform,
+        executable,
+        isGitExecutable(executable, platform),
+      ]).toEqual([platform, executable, false]);
+    }
+  });
+
+  test("refuse any request but a Git read in the shape the caller sends", () => {
+    const valid = {
+      concurrency: 8,
+      executable: "git",
+      requests: [{ args: ["rev-parse", "HEAD"], cwd: "/repository" }],
+    };
+    expect(gitWorkerRefusal(valid, "linux")).toBe(null);
+    for (const [input, reason] of [
+      [{ ...valid, executable: "/bin/sh" }, "is not Git"],
+      [{ ...valid, executable: 7 }, "is not Git"],
+      [{ ...valid, concurrency: 0 }, "concurrency"],
+      [{ ...valid, concurrency: 1.5 }, "concurrency"],
+      [{ ...valid, requests: "status" }, "not a list"],
+      [
+        { ...valid, requests: [{ args: [], cwd: "/repository" }] },
+        "no Git arguments",
+      ],
+      [
+        { ...valid, requests: [{ args: ["status", 1], cwd: "/repository" }] },
+        "no Git arguments",
+      ],
+      [
+        { ...valid, requests: [{ args: ["status"], cwd: "" }] },
+        "no working directory",
+      ],
+      [
+        {
+          ...valid,
+          requests: [
+            {
+              args: ["-c", "core.fsmonitor=touch ran", "status"],
+              cwd: "/repository",
+            },
+          ],
+        },
+        "instead of a Git subcommand",
+      ],
+      [
+        {
+          ...valid,
+          requests: [
+            { args: ["--exec-path=/tmp", "status"], cwd: "/repository" },
+          ],
+        },
+        "instead of a Git subcommand",
+      ],
+      [null, "is not Git"],
+    ] as const) {
+      expect(gitWorkerRefusal(input, "linux")).toContain(reason);
+    }
+  });
+
+  test.skipIf(process.platform === "win32")(
+    "run nothing when the request names another program or a leading option",
+    () => {
+      const fixture = createTestRepository();
+      repositories.push(fixture);
+      const marker = join(fixture.base, "ran");
+      const bin = join(fixture.base, "bin");
+      mkdirSync(bin);
+      const script = `#!/bin/sh\ntouch '${marker}'\n`;
+      for (const name of ["not-git", "git"]) {
+        writeFileSync(join(bin, name), script);
+        chmodSync(join(bin, name), 0o755);
+      }
+      const request = (executable: string, args: string[]) => ({
+        concurrency: 8,
+        executable,
+        requests: [{ args, cwd: fixture.root }],
+      });
+
+      for (const input of [
+        request(join(bin, "not-git"), ["status"]),
+        // Relative to the worker's directory, which the caller never sends.
+        request("bin/git", ["status"]),
+        request(gitExecutable(), [
+          "-c",
+          `core.fsmonitor=${join(bin, "not-git")}`,
+          "status",
+        ]),
+        request(gitExecutable(), ["-C", bin, "status"]),
+      ]) {
+        const refused = runWorker(input, fixture.base);
+        expect(refused.exitCode).toBe(2);
+        expect(refused.stdout).toBe("");
+        expect(refused.stderr).toContain("Git worker refused its request");
+        expect(existsSync(marker)).toBe(false);
+      }
+
+      // The request the caller sends still runs.
+      const accepted = runWorker(
+        request(gitExecutable(), ["rev-parse", "HEAD"]),
+        fixture.base
+      );
+      expect(accepted.exitCode).toBe(0);
+      const [result] = JSON.parse(accepted.stdout) as {
+        exitCode: number;
+        stdout: string;
+      }[];
+      expect(result?.exitCode).toBe(0);
+      expect(
+        Buffer.from(result?.stdout ?? "", "base64")
+          .toString()
+          .trim()
+      ).toBe(git(fixture.root, ["rev-parse", "HEAD"]));
+      expect(existsSync(marker)).toBe(false);
+    },
+    FRESH_PROCESS_TIMEOUT_MS
+  );
 });
 
 describe("Guarded process groups", () => {

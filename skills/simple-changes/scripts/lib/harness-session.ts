@@ -11,12 +11,12 @@ import { hostname } from "node:os";
 import { dirname, resolve } from "node:path";
 import { sha256 } from "./hash.ts";
 import { resolvePersonalPolicyPath } from "./policy.ts";
+import { RUN_ID_PATTERN } from "./run-id.ts";
 import type { LoopControllerSession } from "./types.ts";
 
 type Environment = Record<string, string | undefined>;
 
 const SESSION_ID_PATTERN = /^[A-Za-z0-9._:-]{1,128}$/u;
-const RUN_ID_PATTERN = /^run-[a-z0-9-]+$/u;
 
 const positiveInteger = (value: string | undefined): number | null => {
   const parsed = Number.parseInt(value?.trim() ?? "", 10);

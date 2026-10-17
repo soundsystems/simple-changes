@@ -2,27 +2,34 @@
 // `runGitConcurrently` in process.ts starts this file with the current Bun
 // executable, writes one JSON request to stdin, and reads one JSON reply. The
 // reply carries raw stdout bytes so the caller decodes them exactly as it
-// decodes its own Git output. It imports only Bun to keep startup cheap.
+// decodes its own Git output. It imports only Bun and the request checks to
+// keep startup cheap.
 
 import { spawn, stdin } from "bun";
-
-interface GitWorkerRequest {
-  args: string[];
-  cwd: string;
-}
-
-interface GitWorkerInput {
-  concurrency: number;
-  executable: string;
-  requests: GitWorkerRequest[];
-}
+import { type GitWorkerInput, gitWorkerRefusal } from "./git-worker-request.ts";
 
 interface GitWorkerResult {
   exitCode: number;
   stdout: string;
 }
 
-const input = (await stdin.json()) as GitWorkerInput;
+// The worker runs only Git, as `git -C <cwd> <subcommand> ...`. A request
+// that names another program, or puts an option where the subcommand
+// belongs, runs nothing: the worker exits 2, and the caller runs every
+// request through `runGit` instead.
+const received: unknown = await stdin.json();
+const refusal = gitWorkerRefusal(received);
+if (refusal) {
+  // Exit only once the reason is written: a pipe may not flush otherwise.
+  await new Promise((written) =>
+    process.stderr.write(
+      `Git worker refused its request: ${refusal}.\n`,
+      written
+    )
+  );
+  process.exit(2);
+}
+const input = received as GitWorkerInput;
 const results: GitWorkerResult[] = Array.from<GitWorkerResult>({
   length: input.requests.length,
 });

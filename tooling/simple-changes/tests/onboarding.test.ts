@@ -8,6 +8,7 @@ import {
   authoringReviewNoticeQuestion,
   collectAuthoringAnswers,
   effortChoices,
+  loopCheckChoices,
   REVIEW_QUESTION_WAITS,
   recommendedAuthoringAnswer,
   renderAuthoringSummary,
@@ -1131,6 +1132,9 @@ describe("onboarding conversation", () => {
     const scratchQuestion = ONBOARDING_QUESTIONS.scratchFileRule(
       resolve(fixture.root, "AGENTS.md")
     );
+    const reviewLoopQuestion = ONBOARDING_QUESTIONS.reviewLoopRule(
+      resolve(fixture.root, "AGENTS.md")
+    );
     const answers = new Map<string, string>([
       [ONBOARDING_QUESTIONS.finish, "open-change-request"],
       [ONBOARDING_QUESTIONS.gitPushAuthorization, "ask"],
@@ -1139,6 +1143,7 @@ describe("onboarding conversation", () => {
       [pointerQuestion, "add"],
       [ONBOARDING_QUESTIONS.handoff, "confirm-ready"],
       [scratchQuestion, "leave"],
+      [reviewLoopQuestion, "leave"],
     ]);
     const selection = await collectOnboardingSelection(
       DEFAULT_POLICY,
@@ -1163,8 +1168,10 @@ describe("onboarding conversation", () => {
       pointerQuestion,
       ONBOARDING_QUESTIONS.handoff,
       scratchQuestion,
+      reviewLoopQuestion,
     ]);
-    expect(defaults.at(-2)).toBe("confirm-ready");
+    expect(defaults.at(-3)).toBe("confirm-ready");
+    expect(defaults.at(-2)).toBe("add");
     expect(defaults.at(-1)).toBe("add");
     expect(HANDOFF_CHOICES.map((choice) => choice.value)).toEqual([
       "confirm-ready",
@@ -1184,6 +1191,8 @@ describe("onboarding conversation", () => {
     );
     expect(selection.scratchFileRule.action).toBe("leave");
     expect(selection.summary).toContain("Scratch-file rule: not added.");
+    expect(selection.reviewLoopRule.action).toBe("leave");
+    expect(selection.summary).toContain("Review-loop rule: not added.");
   });
 
   test("skips handoff timing when instructions remain unchanged", async () => {
@@ -1204,6 +1213,10 @@ describe("onboarding conversation", () => {
         ONBOARDING_QUESTIONS.scratchFileRule(
           resolve(fixture.root, "AGENTS.md")
         ),
+        "add",
+      ],
+      [
+        ONBOARDING_QUESTIONS.reviewLoopRule(resolve(fixture.root, "AGENTS.md")),
         "add",
       ],
     ]);
@@ -1233,6 +1246,17 @@ describe("onboarding conversation", () => {
       "<!-- simple-changes:scratch-files:start -->"
     );
     expect(selection.summary).toContain("Proposed managed rule:");
+    // So is the review-loop rule, in a block of its own.
+    expect(selection.reviewLoopRule).toMatchObject({
+      action: "add",
+      target: { path: resolve(fixture.root, "AGENTS.md") },
+    });
+    expect(selection.reviewLoopRule.block).toStartWith(
+      "<!-- simple-changes:review-loop:start -->\nIn Simple Changes runs, review in rounds at the exact head"
+    );
+    expect(selection.summary).toContain(
+      `Review-loop rule: update repository file ${resolve(fixture.root, "AGENTS.md")}.`
+    );
   });
 
   test("asks nothing about the scratch-file rule without an instruction file", async () => {
@@ -1315,8 +1339,8 @@ describe("authoring and review questions", () => {
     ) => {
       const { asked, prompter } = scripted(
         setupStyle === "customize" || setupStyle === "walkthrough"
-          ? ["running", "most-capable", "any"]
-          : ["any"]
+          ? ["running", "most-capable", "any", "high", "xhigh", "recommended"]
+          : ["any", "high", "xhigh", "recommended"]
       );
       const answer = await collectAuthoringAnswers(
         {
@@ -1339,16 +1363,28 @@ describe("authoring and review questions", () => {
       expect(asked.map(({ question }) => question)).toContain(
         AUTHORING_QUESTIONS.reviewer
       );
+      // Every reviewer choice now sets the loop: first effort, R4, R5.
       expect(answer.roles.review).toEqual({
         adversarial: false,
+        effort: "high",
+        escalateOnFindings: "xhigh",
         harness: "running",
       });
+      expect(asked.map(({ question }) => question).slice(-3)).toEqual([
+        AUTHORING_QUESTIONS.reviewEffort,
+        AUTHORING_QUESTIONS.escalation,
+        AUTHORING_QUESTIONS.loopChecks,
+      ]);
     }
     // "Only the agent running now" records one harness, so option 1 is gone.
     expect(runs[2]?.answer.harnesses).toEqual({
       "alpha-agent": { effort: "xhigh", model: "most-capable" },
     });
-    expect(runs[2]?.asked.at(-1)?.choices).toEqual(["different-model", "any"]);
+    expect(
+      runs[2]?.asked.find(
+        ({ question }) => question === AUTHORING_QUESTIONS.reviewer
+      )?.choices
+    ).toEqual(["different-model", "any"]);
   });
 
   test("asks the review questions with one harness only in Customize and the walkthrough", async () => {
@@ -1436,7 +1472,15 @@ describe("authoring and review questions", () => {
       })
     );
     // Once the running agent is identified, R1 has two options and is asked.
-    const identified = scripted(["found", "most-capable", "any"]);
+    // Declining escalation and the loop checks records them explicitly.
+    const identified = scripted([
+      "found",
+      "most-capable",
+      "any",
+      "high",
+      "same",
+      "never",
+    ]);
     const recorded = await collectAuthoringAnswers(
       {
         definitions,
@@ -1454,7 +1498,10 @@ describe("authoring and review questions", () => {
     ).toEqual(["different-model", "any"]);
     expect(recorded.roles.review).toEqual({
       adversarial: false,
+      effort: "high",
+      escalateOnFindings: null,
       harness: "running",
+      reviewLoop: { convergenceRounds: null, roundCap: null },
     });
   });
 
@@ -1554,7 +1601,12 @@ describe("authoring and review questions", () => {
       }).map(({ value }) => value)
     ).toEqual(["alpha-agent", "beta-agent"]);
     // One candidate skips R2; three recorded harnesses ask it.
-    const single = scripted(["different-agent", "xhigh"]);
+    const single = scripted([
+      "different-agent",
+      "high",
+      "xhigh-any",
+      "recommended",
+    ]);
     const skipped = await collectAuthoringAnswers(
       {
         definitions,
@@ -1567,14 +1619,33 @@ describe("authoring and review questions", () => {
     );
     expect(single.asked.map(({ question }) => question)).toEqual([
       AUTHORING_QUESTIONS.reviewer,
+      AUTHORING_QUESTIONS.reviewEffort,
       AUTHORING_QUESTIONS.escalation,
+      AUTHORING_QUESTIONS.loopChecks,
     ]);
+    // R5 is worded for the findings R4 chose to escalate on.
+    expect(loopCheckChoices("any")[0]?.description).toStartWith(
+      "Two rounds in a row with findings make"
+    );
+    expect(loopCheckChoices()[0]?.description).toStartWith(
+      "Two rounds in a row with blocking or should-fix findings make"
+    );
+    // Escalating on any finding is the one escalation answer that records a
+    // review loop key.
     expect(skipped.roles.review).toEqual({
       adversarial: true,
+      effort: "high",
       escalateOnFindings: "xhigh",
       harness: "beta-agent",
+      reviewLoop: { escalateOn: "any" },
     });
-    const three = scripted(["different-agent", "gamma", "same"]);
+    const three = scripted([
+      "different-agent",
+      "gamma",
+      "xhigh",
+      "same",
+      "recommended",
+    ]);
     const chosen = await collectAuthoringAnswers(
       {
         definitions,
@@ -1591,6 +1662,7 @@ describe("authoring and review questions", () => {
     });
     expect(chosen.roles.review).toEqual({
       adversarial: true,
+      effort: "xhigh",
       escalateOnFindings: null,
       harness: "gamma",
     });
@@ -1606,24 +1678,33 @@ describe("authoring and review questions", () => {
     expect(
       reviewModelProblem("reviewer-model", { model: "author-model" })
     ).toBeNull();
-    expect(
-      reviewModelProblem(
-        "xx-5 low max high low high max max low high high low max high max low low max high low max a 1 a 1 a 1 a 1 a 1",
-        { model: "author-model" }
-      )
-    ).toContain("pass the model ID the harness reports");
-    for (const variant of [
-      "AUTHOR-MODEL",
-      "author_model",
-      "Author Model",
-      "vendor/author-model",
-      "author-model xhigh",
-      "Author Model (version unknown)",
-    ]) {
+    // The author's own model ID, however it is cased or prefixed.
+    for (const variant of ["AUTHOR-MODEL", "vendor/author-model"]) {
       expect(reviewModelProblem(variant, { model: "author-model" })).toContain(
         "review its own work"
       );
     }
+    // A name that is not a model ID is refused with the next step, since
+    // only IDs can be told apart.
+    for (const label of [
+      "Author Model",
+      "author-model xhigh",
+      "Author Model (version unknown)",
+    ]) {
+      expect(reviewModelProblem(label, { model: "author-model" })).toBe(
+        "That is not a model ID. Record the model ID the agent reports, in lowercase with no spaces, such as `model-5-5`, not a display name or an effort label."
+      );
+    }
+    // A different ID is accepted, even one that differs only in punctuation.
+    expect(
+      reviewModelProblem("author_model", { model: "author-model" })
+    ).toBeNull();
+    // An agent whose recorded model is not an ID cannot be told apart.
+    expect(
+      reviewModelProblem("reviewer-model", { model: "Author Model" })
+    ).toContain(
+      "is not a model ID, so a different reviewer cannot be confirmed"
+    );
     const { asked, prompter } = scripted(
       ["found", "specific", "high", "different-model", "max", "xhigh"],
       ["author-model", "author-model", "reviewer-model"]
@@ -1661,7 +1742,15 @@ describe("authoring and review questions", () => {
 
   test("a different-model choice without an acceptable name asks R1 again, never recording any reviewer silently", async () => {
     const retried = scripted(
-      ["found", "most-capable", "different-model", "any"],
+      [
+        "found",
+        "most-capable",
+        "different-model",
+        "any",
+        "high",
+        "xhigh",
+        "recommended",
+      ],
       ["most-capable", "most-capable", "most-capable"]
     );
     const answer = await collectAuthoringAnswers(
@@ -1681,6 +1770,8 @@ describe("authoring and review questions", () => {
     ).toHaveLength(2);
     expect(answer.roles.review).toEqual({
       adversarial: false,
+      effort: "high",
+      escalateOnFindings: "xhigh",
       harness: "running",
     });
     const exhausted = scripted(
@@ -1707,7 +1798,13 @@ describe("authoring and review questions", () => {
   });
 
   test("reusing personal defaults still asks the review question with two detected harnesses", async () => {
-    const { asked, prompter } = scripted(["use", "any"]);
+    const { asked, prompter } = scripted([
+      "use",
+      "any",
+      "high",
+      "xhigh",
+      "recommended",
+    ]);
     const selection = await collectOnboardingSelection(
       configuredPolicy(),
       {},
@@ -1734,6 +1831,8 @@ describe("authoring and review questions", () => {
     );
     expect(selection.authoring?.roles.review).toEqual({
       adversarial: false,
+      effort: "high",
+      escalateOnFindings: "xhigh",
       harness: "running",
     });
   });
@@ -1811,10 +1910,21 @@ describe("authoring and review questions", () => {
         model: "review-model",
       })
     ).toBe(
-      "Independent reviews: review-model at high in Alpha Agent, never the author's model."
+      "Independent reviews: review-model at high in Alpha Agent, never the author's model. The agent questions the approach after 2 rounds in a row with blocking or should-fix findings and asks you when 4 rounds after the first such finding pass without a clean review."
     );
     expect(reviewLine({ adversarial: true, harness: "beta-agent" })).toBe(
-      "Independent reviews: Beta Agent, an agent other than the author's."
+      "Independent reviews: Beta Agent, an agent other than the author's. The agent questions the approach after 2 rounds in a row with blocking or should-fix findings and asks you when 4 rounds after the first such finding pass without a clean review."
+    );
+    expect(
+      reviewLine({
+        adversarial: false,
+        effort: "high",
+        escalateOnFindings: "xhigh",
+        harness: "running",
+        reviewLoop: { escalateOn: "any", roundCap: null },
+      })
+    ).toBe(
+      "Independent reviews: any independent reviewer at high, as today. After any finding, later reviews run at least at xhigh. The agent questions the approach after 2 rounds in a row with findings."
     );
   });
 });

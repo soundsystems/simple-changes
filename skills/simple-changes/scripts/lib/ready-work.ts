@@ -7,9 +7,16 @@ import {
   writeFileSync,
 } from "node:fs";
 import { resolve } from "node:path";
+import {
+  type AuthorCoverage,
+  assertReadyCoverage,
+  type CoverageItem,
+  readyRangeCoverage,
+} from "./author-coverage.ts";
 import { revisionContainmentMethod } from "./cleanup-core.ts";
 import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
 import { captureInventory, locateRepository } from "./inventory.ts";
+import { withLoopStateLock } from "./loop-lease-core.ts";
 import { runGit } from "./process.ts";
 import { redactSecrets } from "./redact.ts";
 import { validateSchema } from "./schema.ts";
@@ -21,6 +28,7 @@ import type {
   WorktreeClaim,
 } from "./types.ts";
 import {
+  assertClaimSession,
   assertNoGitOperation,
   readCoordinationDocumentFromCommonDirectory,
   releaseClaimUnderLock,
@@ -223,7 +231,14 @@ export const parseReadyWorkInput = (value: unknown): ReadyWorkInput => {
 
 export type ReadyWorkFreshness = "current" | "stale" | "shipped";
 
+/** Coverage derived at read time; never stored in the receipt. */
+export type ReadyWorkCoverage =
+  | AuthorCoverage
+  | { detail: string; status: "unknown" };
+
 export interface ReadyWorkStatus {
+  /** Author coverage of what the target lacks from the receipted head; null once shipped. */
+  coverage: ReadyWorkCoverage | null;
   detail: string;
   freshness: ReadyWorkFreshness;
   receipt: ReadyWorkReceipt;
@@ -241,7 +256,7 @@ const resolveCommit = (root: string, ref: string): string | null => {
 const readyFreshness = (
   inventory: RepositoryInventory,
   receipt: ReadyWorkReceipt
-): Omit<ReadyWorkStatus, "receipt"> => {
+): Pick<ReadyWorkStatus, "detail" | "freshness"> => {
   const root = inventory.repository.primaryCheckout;
   const target = resolveCommit(root, inventory.targetRef);
   const method = target
@@ -283,13 +298,22 @@ const readyFreshness = (
 
 export interface ReadyWorkRecordResult {
   claim: WorktreeClaim;
+  coverage: AuthorCoverage;
+  /** Outstanding commits the owner named with `--leave-uncovered`. */
+  leftUncovered: CoverageItem[];
   receipt: ReadyWorkReceipt;
+}
+
+export interface ReadyWorkOptions {
+  /** `--leave-uncovered`: exactly the outstanding commits another agent made. */
+  leaveUncovered?: readonly string[];
 }
 
 const readyClaim = (
   commonGitDirectory: string,
   agentId: string,
-  claimId: string
+  claimId: string,
+  inventory: RepositoryInventory
 ): WorktreeClaim => {
   const document =
     readCoordinationDocumentFromCommonDirectory(commonGitDirectory);
@@ -300,6 +324,12 @@ const readyClaim = (
       EXIT_CODES.unsafe
     );
   }
+  // The refusal prints the exact takeover for the checkout as it is now.
+  assertClaimSession(
+    document,
+    claim,
+    inventory.worktrees.find((item) => item.path === claim.path) ?? null
+  );
   if (!READY_CLAIM_STATES.has(claim.state)) {
     throw new SimpleChangesError(
       `Claim ${claimId} is ${claim.state}; ready work requires an active claim on a present checkout.`,
@@ -312,23 +342,28 @@ const readyClaim = (
 /**
  * Record a ready-work receipt for the owner's clean, committed checkout and
  * hand its claim off in the same coordination-lock interval, so a controller
- * never sees a released claim without the receipt that explains it.
+ * never sees a released claim without the receipt that explains it. Every
+ * commit the target lacks must be covered by an attested author first, while
+ * the owner still holds the claim it attests through; the refusal names the
+ * exact commits and the owner's own commands.
  */
 export const recordReadyWork = (
   repositoryPath: string,
   agentIdInput: string,
   claimIdInput: string,
-  input: ReadyWorkInput
+  input: ReadyWorkInput,
+  options: ReadyWorkOptions = {}
 ): ReadyWorkRecordResult => {
   const agentId = agentIdInput.trim();
   const claimId = claimIdInput.trim();
   const { commonGitDirectory } = locateRepository(repositoryPath).repository;
-  return withWorktreeCoordinationLock(
-    commonGitDirectory,
-    "worktree ready",
-    () => {
-      const claim = readyClaim(commonGitDirectory, agentId, claimId);
+  // Every review-ledger write holds the loop lock, so holding it here (loop
+  // lock, then coordination lock, the established order) keeps an attestation
+  // from landing between the coverage check and the release it allows.
+  return withLoopStateLock(commonGitDirectory, "worktree ready", () =>
+    withWorktreeCoordinationLock(commonGitDirectory, "worktree ready", () => {
       const inventory = captureInventory(repositoryPath);
+      const claim = readyClaim(commonGitDirectory, agentId, claimId, inventory);
       const current = inventory.worktrees.find(
         (item) => item.path === claim.path
       );
@@ -343,6 +378,16 @@ export const recordReadyWork = (
         );
       }
       assertNoGitOperation(current.path);
+      const { coverage, leftUncovered } = assertReadyCoverage(
+        readyRangeCoverage(current.path, inventory.targetRef, current.headSha),
+        {
+          agentId,
+          branch: current.branch,
+          claimId: claim.claimId,
+          path: current.path,
+        },
+        options.leaveUncovered ?? []
+      );
       const receipt = validateSchema<ReadyWorkReceipt>("ready-work-receipt", {
         branch: current.branch,
         changeDigest: current.changeDigest,
@@ -384,16 +429,41 @@ export const recordReadyWork = (
           headSha: current.headSha,
         }
       );
-      return { claim: released, receipt };
-    }
+      return { claim: released, coverage, leftUncovered, receipt };
+    })
   );
 };
 
-/** Evaluate every recorded receipt against fresh Git evidence. */
+const readyCoverage = (
+  inventory: RepositoryInventory,
+  receipt: ReadyWorkReceipt
+): ReadyWorkCoverage => {
+  try {
+    return readyRangeCoverage(
+      inventory.repository.primaryCheckout,
+      inventory.targetRef,
+      receipt.headSha
+    );
+  } catch (error) {
+    return { detail: (error as Error).message, status: "unknown" };
+  }
+};
+
+/**
+ * Evaluate every recorded receipt against fresh Git evidence, with the
+ * author coverage of each unshipped head read from the ledger as it is now.
+ */
 export const readyWorkStatus = (
   inventory: RepositoryInventory
 ): ReadyWorkStatus[] =>
-  readReadyReceipts(inventory.repository.commonGitDirectory).map((receipt) => ({
-    ...readyFreshness(inventory, receipt),
-    receipt,
-  }));
+  readReadyReceipts(inventory.repository.commonGitDirectory).map((receipt) => {
+    const freshness = readyFreshness(inventory, receipt);
+    return {
+      ...freshness,
+      coverage:
+        freshness.freshness === "shipped"
+          ? null
+          : readyCoverage(inventory, receipt),
+      receipt,
+    };
+  });

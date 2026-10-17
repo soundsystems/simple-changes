@@ -3,15 +3,17 @@ import {
   type AuthoringRoleEntry,
   type AuthoringSetupStyle,
   type AuthoringSidecar,
+  canonicalModelId,
   type DetectedHarness,
   EFFORT_LEVELS,
   type HarnessDefinition,
   isModelName,
-  MODEL_NAME_TOO_COMPLEX,
+  MODEL_ID_REQUIRED,
   MOST_CAPABLE,
-  modelNameTooComplex,
+  type ReviewEscalationTrigger,
+  type ReviewLoopSettings,
   RUNNING_HARNESS,
-  sameModelName,
+  resolveReviewLoop,
 } from "./authoring.ts";
 
 // The onboarding questions for authoring and review preferences (design
@@ -54,12 +56,16 @@ export const AUTHORING_QUESTIONS = {
     `Which effort should that model use in ${agent}? Choose one:`,
   escalation:
     "After a review finds problems, how should later reviews of that change run? Choose one:",
+  loopChecks:
+    "When review rounds keep finding problems, when should the agent stop and check with you? Choose one:",
   model: (agent: string, purpose: string) =>
     `In ${agent}, which model should ${purpose}? Choose one:`,
   modelName: (agent: string) => `Which model in ${agent}? Name it.`,
   prefill: (names: string) =>
     `Simple Changelogs already lists your agents: ${names}. Use the same list here? Choose one:`,
   reviewAgent: "Which agent should review? Choose one:",
+  reviewEffort:
+    "Which effort should the first review of a change use? Choose one:",
   reviewer: "Who should perform independent reviews? Choose one:",
   reviewModel: (agent: string) => `Which model in ${agent} should review?`,
 } as const;
@@ -167,13 +173,22 @@ const EFFORT_DESCRIPTIONS: Record<AuthoringEffort, string> = {
 };
 
 /** Efforts with `xhigh` recommended; `max` is offered with its cost, never pre-selected. */
-export const effortChoices = (): AuthoringChoice[] =>
+export const effortChoices = (
+  recommended: AuthoringEffort = "xhigh"
+): AuthoringChoice[] =>
   EFFORT_LEVELS.map((effort) => ({
     description: EFFORT_DESCRIPTIONS[effort],
     label: effort,
-    recommended: effort === "xhigh",
+    recommended: effort === recommended,
     value: effort,
   }));
+
+/**
+ * A first review's effort, with `high` recommended: the review loop starts
+ * there and escalates when a review finds real problems.
+ */
+export const reviewEffortChoices = (): AuthoringChoice[] =>
+  effortChoices("high");
 
 const concreteModels = (
   sidecar: Pick<AuthoringSidecar, "harnesses" | "roles">
@@ -280,14 +295,20 @@ export const reviewModelProblem = (
   if (!isModelName(name)) {
     return "Name a model of 1 to 120 characters without control characters.";
   }
-  if (modelNameTooComplex(name)) {
-    return MODEL_NAME_TOO_COMPLEX;
-  }
   const authorModel = recorded?.model ?? MOST_CAPABLE;
-  // The gate's own comparison: case, separators, effort words, qualifiers,
-  // and a shared suffix count as the same model, so onboarding never saves a
-  // reviewer the gate blocks.
-  return sameModelName(name, authorModel)
+  const sentinel = name.trim().toLowerCase() === MOST_CAPABLE;
+  // The gate's own comparison: model IDs, compared exactly, so onboarding
+  // never saves a reviewer the gate cannot tell apart from the author.
+  const reviewId = sentinel ? MOST_CAPABLE : canonicalModelId(name);
+  if (reviewId === null) {
+    return `That is not a model ID. ${MODEL_ID_REQUIRED}`;
+  }
+  const authorId =
+    authorModel === MOST_CAPABLE ? MOST_CAPABLE : canonicalModelId(authorModel);
+  if (authorId === null) {
+    return `The model recorded for this agent, ${authorModel}, is not a model ID, so a different reviewer cannot be confirmed; record the agent's model ID first.`;
+  }
+  return reviewId === authorId
     ? "That is the model recorded for this agent, so it would review its own work; name a different model."
     : null;
 };
@@ -296,10 +317,16 @@ export const reviewModelProblem = (
 export const escalationChoices = (): AuthoringChoice[] => [
   {
     description:
-      "A change that already needed fixes gets at least the most careful review the agent offers short of max.",
-    label: "At xhigh effort",
+      "A change whose review found blocking or should-fix problems gets the most careful review short of max from then on; findings that are only nits keep the first effort.",
+    label: "At xhigh, after blocking or should-fix findings",
     recommended: true,
     value: "xhigh",
+  },
+  {
+    description: "Any finding, even a nit, raises later reviews to xhigh.",
+    label: "At xhigh, after any finding",
+    recommended: false,
+    value: "xhigh-any",
   },
   {
     description: "No escalation.",
@@ -308,6 +335,42 @@ export const escalationChoices = (): AuthoringChoice[] => [
     value: "same",
   },
 ];
+
+/**
+ * Question R5: when a review loop that keeps finding problems stops to ask,
+ * worded for the findings R4 chose to escalate on.
+ */
+export const loopCheckChoices = (
+  escalateOn: ReviewEscalationTrigger = "blocking-or-should-fix"
+): AuthoringChoice[] => [
+  {
+    description: `Two rounds in a row with ${escalateOn === "any" ? "findings" : "blocking or should-fix findings"} make the agent question the approach before fixing again; four rounds after the first such finding without a clean review make it ask you whether to ship with the findings filed as issues, change the design, or keep going.`,
+    label: "After 2 rounds in a row, or 4 more without a clean review",
+    recommended: true,
+    value: "recommended",
+  },
+  {
+    description:
+      "The agent keeps fixing and reviewing until a review is clean, without stopping to check.",
+    label: "Never; review until clean",
+    recommended: false,
+    value: "never",
+  },
+];
+
+// The review loop answers as sidecar settings: the recommended answers are
+// the defaults and record nothing, which keeps the file readable by
+// runtimes before 0.31.0.
+const reviewLoopAnswer = (
+  escalation: string,
+  checks: string
+): ReviewLoopSettings | undefined => {
+  const loop: ReviewLoopSettings = {
+    ...(escalation === "xhigh-any" ? { escalateOn: "any" as const } : {}),
+    ...(checks === "never" ? { convergenceRounds: null, roundCap: null } : {}),
+  };
+  return Object.keys(loop).length > 0 ? loop : undefined;
+};
 
 /** The recommended answer: every listed harness at most-capable, xhigh. */
 export const recommendedAuthoringAnswer = (
@@ -519,7 +582,7 @@ const askDifferentModel = async (
   const effort = (await ask(
     prompter,
     AUTHORING_QUESTIONS.effort(agent),
-    effortChoices()
+    reviewEffortChoices()
   )) as AuthoringEffort;
   return { adversarial: true, effort, harness: running, model };
 };
@@ -559,27 +622,52 @@ const askReview = async (
     return null;
   }
   const reviewer = await ask(prompter, AUTHORING_QUESTIONS.reviewer, choices);
-  if (reviewer === "any") {
-    return ANY_REVIEWER;
+  let role: AuthoringRoleEntry | null = ANY_REVIEWER;
+  if (reviewer === "different-agent") {
+    role = await askDifferentAgent(context, prompter, answer);
+  } else if (reviewer !== "any") {
+    role = await askDifferentModel(context, prompter, answer);
   }
-  const role =
-    reviewer === "different-agent"
-      ? await askDifferentAgent(context, prompter, answer)
-      : await askDifferentModel(context, prompter, answer);
   if (!role) {
     prompter.present?.(
       "No different reviewer model was named; choose again, or pick Any independent reviewer."
     );
     return askReview(context, prompter, answer, roundsLeft - 1);
   }
+  return askReviewLoop(prompter, role);
+};
+
+// The review loop questions every reviewer choice shares: the first review's
+// effort (unless the model question already asked it), R4, and R5.
+const askReviewLoop = async (
+  prompter: AuthoringPrompter,
+  role: AuthoringRoleEntry
+): Promise<AuthoringRoleEntry> => {
+  const effort =
+    role.effort ??
+    ((await ask(
+      prompter,
+      AUTHORING_QUESTIONS.reviewEffort,
+      reviewEffortChoices()
+    )) as AuthoringEffort);
   const escalation = await ask(
     prompter,
     AUTHORING_QUESTIONS.escalation,
     escalationChoices()
   );
+  const checks = await ask(
+    prompter,
+    AUTHORING_QUESTIONS.loopChecks,
+    loopCheckChoices(
+      escalation === "xhigh-any" ? "any" : "blocking-or-should-fix"
+    )
+  );
+  const reviewLoop = reviewLoopAnswer(escalation, checks);
   return {
     ...role,
-    escalateOnFindings: escalation === "xhigh" ? "xhigh" : null,
+    effort,
+    escalateOnFindings: escalation === "same" ? null : "xhigh",
+    ...(reviewLoop ? { reviewLoop } : {}),
   };
 };
 
@@ -652,6 +740,36 @@ const describeEntry = (
 };
 
 /** One receipt line per role, in plain language. */
+// The escalation and stop-check sentences of the setup summary.
+const reviewLoopSummary = (
+  review: AuthoringRoleEntry
+): { checks: string; floor: string } => {
+  const loop = resolveReviewLoop(review.reviewLoop);
+  const any = loop.escalateOn === "any";
+  const floor = review.escalateOnFindings
+    ? ` After ${any ? "any finding" : "blocking or should-fix findings"}, later reviews run at least at ${review.escalateOnFindings}.`
+    : "";
+  const stops = [
+    ...(loop.convergenceRounds === null
+      ? []
+      : [
+          `questions the approach after ${loop.convergenceRounds} rounds in a row with ${any ? "findings" : "blocking or should-fix findings"}`,
+        ]),
+    ...(loop.roundCap === null
+      ? []
+      : [
+          `asks you when ${loop.roundCap} rounds after the first such finding pass without a clean review`,
+        ]),
+  ];
+  return {
+    checks:
+      stops.length === 0
+        ? " Reviews repeat until clean without stopping to check."
+        : ` The agent ${stops.join(" and ")}.`,
+    floor,
+  };
+};
+
 export const renderAuthoringSummary = (
   answer: AuthoringSidecar,
   definitions: readonly HarnessDefinition[]
@@ -676,10 +794,8 @@ export const renderAuthoringSummary = (
     } else if (review.adversarial) {
       reviewer = `${harnessLabel(review.harness, definitions)}${effort}, an agent other than the author's`;
     }
-    const floor = review.escalateOnFindings
-      ? ` After findings, later reviews run at least at ${review.escalateOnFindings}.`
-      : "";
-    lines.push(`Independent reviews: ${reviewer}.${floor}`);
+    const { checks, floor } = reviewLoopSummary(review);
+    lines.push(`Independent reviews: ${reviewer}.${floor}${checks}`);
   }
   lines.push(AUTHORING_PREFERENCE_NOTE);
   return lines.join("\n");

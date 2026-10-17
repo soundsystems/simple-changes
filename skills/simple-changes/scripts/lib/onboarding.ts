@@ -10,6 +10,7 @@ import {
   discoverInstructionTargets,
   type InstructionTarget,
   renderInstructionPointer,
+  renderInstructionRule,
   renderScratchFileRule,
 } from "./repository-instructions.ts";
 import type {
@@ -55,6 +56,7 @@ export interface OnboardingInputs {
   proposalScheduling?: RepoPolicy["proposalScheduling"];
   proposalSignatures?: RepoPolicy["proposalSignatures"];
   questions?: RepoPolicy["questions"];
+  reviewLoopRule?: "add" | "leave";
   scope?: SetupScope;
   scratchFileRule?: "add" | "leave";
   shippingMode?: RepoPolicy["shippingMode"];
@@ -76,6 +78,8 @@ export interface OnboardingSelection {
   confirmed: boolean;
   instructionPointer: InstructionBlockSelection;
   policy: RepoPolicy;
+  /** The optional review-loop rule, a managed block of its own. */
+  reviewLoopRule: InstructionBlockSelection;
   scope: SetupScope;
   /** The optional scratch-file rule, a managed block of its own. */
   scratchFileRule: InstructionBlockSelection;
@@ -123,6 +127,8 @@ export const ONBOARDING_QUESTIONS = {
     "When there are multiple independent change proposals, what should I optimize for?",
   proposalSignatures:
     "Should agents sign the change proposals they author, review, or merge?",
+  reviewLoopRule: (path: string) =>
+    `Should I also add a rule to \`${path}\` that tells agents how to run review rounds in Simple Changes runs?`,
   scope: "Where should these preferences live?",
   scratchFileRule: (path: string) =>
     `Should I also add a rule to \`${path}\` that gives each agent one scratch folder of its own, outside your project folders?`,
@@ -682,6 +688,21 @@ const SCRATCH_FILE_RULE_CHOICES = [
   },
 ] as const satisfies readonly OnboardingChoice[];
 
+const REVIEW_LOOP_RULE_CHOICES = [
+  {
+    description:
+      "Add or update one managed rule for Simple Changes runs: reviewers grade findings blocking, should-fix, or nit; re-reviews cover the fixes, with one full review before merge; and the agent questions the approach or asks you when rounds keep finding problems, using your review settings.",
+    label: "Add the rule",
+    value: "add",
+  },
+  {
+    description:
+      "Do not add the rule; Simple Changes still applies your review settings in its own runs.",
+    label: "Leave it out",
+    value: "leave",
+  },
+] as const satisfies readonly OnboardingChoice[];
+
 export const HANDOFF_CHOICES = [
   {
     description:
@@ -906,6 +927,17 @@ const scratchFileRuleSummary = (
     : null;
 };
 
+const reviewLoopRuleSummary = (
+  reviewLoopRule: InstructionBlockSelection
+): string | null => {
+  if (reviewLoopRule.action === "add" && reviewLoopRule.target) {
+    return `Review-loop rule: update ${reviewLoopRule.target.scope} file ${reviewLoopRule.target.path}.\nProposed managed rule:\n${reviewLoopRule.block}`;
+  }
+  return reviewLoopRule.action === "leave"
+    ? "Review-loop rule: not added."
+    : null;
+};
+
 const instructionPointerSummary = (
   instructionPointer: OnboardingSelection["instructionPointer"]
 ): string => {
@@ -930,7 +962,8 @@ export const renderOnboardingSummary = (
   uiArtifactsRelevant = false,
   forgeProvider?: string | null,
   changelogInstall?: ChangelogInstallOffer | null,
-  scratchFileRule: InstructionBlockSelection = UNAVAILABLE_INSTRUCTION_BLOCK
+  scratchFileRule: InstructionBlockSelection = UNAVAILABLE_INSTRUCTION_BLOCK,
+  reviewLoopRule: InstructionBlockSelection = UNAVAILABLE_INSTRUCTION_BLOCK
 ): string => {
   const actions = finishActionSummary(policy, forgeProvider);
   const { production, shippingMode } = shippingSummary(policy);
@@ -964,6 +997,7 @@ export const renderOnboardingSummary = (
       ? `Completed-work handoff: ${handoffLabel(policy.handoffTiming)}.`
       : null,
     scope === "run" ? null : scratchFileRuleSummary(scratchFileRule),
+    scope === "run" ? null : reviewLoopRuleSummary(reviewLoopRule),
     "Every migration is reviewed before apply. Destructive, irreversible, unbounded, lock-heavy, target-mismatched, or unprotected migrations still require explicit exact-target authorization; backfills, secrets, DNS changes, store releases, and history rewrites remain separately gated.",
   ]
     .filter((line): line is string => line !== null)
@@ -978,6 +1012,7 @@ const selectInstructionPointer = async (
 ): Promise<{
   handoffTiming: RepoPolicy["handoffTiming"];
   instructionPointer: OnboardingSelection["instructionPointer"];
+  reviewLoopRule: InstructionBlockSelection;
   scratchFileRule: InstructionBlockSelection;
 }> => {
   const targets = discoverInstructionTargets(
@@ -987,7 +1022,9 @@ const selectInstructionPointer = async (
   );
   let target: InstructionTarget | null = targets[0] ?? null;
   const mayEditInstructions = !(
-    inputs.instructionPointer === "leave" && inputs.scratchFileRule === "leave"
+    inputs.instructionPointer === "leave" &&
+    inputs.scratchFileRule === "leave" &&
+    inputs.reviewLoopRule === "leave"
   );
   if (targets.length > 1 && mayEditInstructions) {
     const firstTarget = targets[0] as InstructionTarget;
@@ -1052,11 +1089,35 @@ const selectInstructionPointer = async (
   } else {
     instructionPointer = { action: "leave", block: null, target };
   }
-  return {
-    handoffTiming,
-    instructionPointer,
-    scratchFileRule: await selectScratchFileRule(inputs, prompter, target),
-  };
+  // Asked in this order: the review-loop rule after the scratch-file rule,
+  // which keeps its place in the questions.
+  const scratchFileRule = await selectScratchFileRule(inputs, prompter, target);
+  const reviewLoopRule = await selectReviewLoopRule(inputs, prompter, target);
+  return { handoffTiming, instructionPointer, reviewLoopRule, scratchFileRule };
+};
+
+const selectReviewLoopRule = async (
+  inputs: OnboardingInputs,
+  prompter: OnboardingPrompter,
+  target: InstructionTarget | null
+): Promise<InstructionBlockSelection> => {
+  if (!target) {
+    return UNAVAILABLE_INSTRUCTION_BLOCK;
+  }
+  const choice =
+    inputs.reviewLoopRule ??
+    choiceValue<"add" | "leave">(
+      await prompter.choose(
+        ONBOARDING_QUESTIONS.reviewLoopRule(target.path),
+        REVIEW_LOOP_RULE_CHOICES,
+        "add"
+      ),
+      REVIEW_LOOP_RULE_CHOICES,
+      ONBOARDING_QUESTIONS.reviewLoopRule(target.path)
+    );
+  return choice === "add"
+    ? { action: "add", block: renderInstructionRule("review-loop"), target }
+    : { action: "leave", block: null, target };
 };
 
 const selectScratchFileRule = async (
@@ -1590,6 +1651,7 @@ const reuseExistingPersonalDefaults = async (
       confirmed: await prompter.confirm(summary),
       instructionPointer,
       policy: existingPersonalDefaults,
+      reviewLoopRule: UNAVAILABLE_INSTRUCTION_BLOCK,
       scope: "run",
       scratchFileRule: UNAVAILABLE_INSTRUCTION_BLOCK,
       setupStyle: "run",
@@ -1728,7 +1790,7 @@ export const collectOnboardingSelection = async (
     conversation.showFirstScreen ?? false,
     Boolean(existingPersonalDefaults)
   );
-  const { handoffTiming, instructionPointer, scratchFileRule } =
+  const { handoffTiming, instructionPointer, reviewLoopRule, scratchFileRule } =
     await selectInstructionPointer(inputs, scope, prompter, primaryCheckout);
   const policy: RepoPolicy = {
     changelogHandling,
@@ -1760,7 +1822,8 @@ export const collectOnboardingSelection = async (
       uiArtifactsRelevant,
       conversation.forgeProvider,
       changelogInstall,
-      scratchFileRule
+      scratchFileRule,
+      reviewLoopRule
     ),
     authoring
       ? renderAuthoringSummary(
@@ -1777,6 +1840,7 @@ export const collectOnboardingSelection = async (
     confirmed: await prompter.confirm(summary),
     instructionPointer,
     policy,
+    reviewLoopRule,
     scope,
     scratchFileRule,
     setupStyle,

@@ -66,20 +66,12 @@ const HOME_ROOT = /^(?![/\\])(?![A-Za-z]:)(?!(?:.*[/\\])?\.\.(?:[/\\]|$)).+$/u;
 const ENVIRONMENT_NAME_PATTERN = /^[A-Z_][A-Z0-9_]*$/u;
 const HARNESS_NAME_MAX_LENGTH = 60;
 const ESCALATION_LEVELS = ["high", "xhigh"] as const;
-const MODEL_KEY_SEPARATORS = /[^a-z0-9]+/gu;
-const MODEL_QUALIFIER = /\([^()]*\)/gu;
-const MODEL_UNCLOSED_QUALIFIER = /\(.*$/u;
-const MODEL_UNKNOWN_QUALIFIER =
-  /^\(\s*(?:version\s+unknown|unknown\s+version)\s*\)$/u;
-const MODEL_WORD_SEPARATORS = /[\s,;:=]+/u;
-// A `key:` or `key=` field label, where runtime settings such as
-// `budget: 32768` begin.
-const MODEL_FIELD_LABEL = /(?:^|[\s,;])[a-z][a-z0-9_-]*\s*[:=]/u;
-const MODEL_DIGIT = /\d/u;
-// Punctuation around a word, such as the colon in `reasoning: high`.
-const MODEL_WORD_EDGES = /^[^a-z0-9]+|[^a-z0-9]+$/gu;
-// A token that starts like a version number, such as `5`, `1`, or `4o`.
-const MODEL_VERSION_TOKEN = /^\d/u;
+// A canonical model ID: lowercase letters, digits, dots, underscores and
+// hyphens, as harnesses report model IDs; display names, effort words and
+// notes are not IDs.
+const MODEL_ID_PATTERN = /^[a-z0-9][a-z0-9._-]*$/u;
+// One provider segment a harness may put in front of the ID.
+const MODEL_ID_PROVIDER_PREFIX = /^[a-z0-9][a-z0-9._-]*\//u;
 
 type Environment = Record<string, string | undefined>;
 
@@ -88,12 +80,51 @@ export interface AuthoringHarnessEntry {
   model: string;
 }
 
+/** Which review findings move later reviews of a change to the escalation effort. */
+export type ReviewEscalationTrigger = "blocking-or-should-fix" | "any";
+
+/**
+ * How a review loop escalates and when it stops to ask. Every field is
+ * optional in a sidecar, and an absent field is the recommended value, so a
+ * setup that keeps the recommendations writes no key a runtime before 0.31.0
+ * rejects.
+ */
+export interface ReviewLoopSettings {
+  // Consecutive rounds with blocking or should-fix findings before the
+  // controller questions the approach; null turns the check off.
+  convergenceRounds?: number | null;
+  escalateOn?: ReviewEscalationTrigger;
+  // Escalated rounds without a clean result before the controller asks the
+  // user how to proceed; null means no cap.
+  roundCap?: number | null;
+}
+
+export interface ResolvedReviewLoop {
+  convergenceRounds: number | null;
+  escalateOn: ReviewEscalationTrigger;
+  roundCap: number | null;
+}
+
+export const REVIEW_LOOP_DEFAULTS: ResolvedReviewLoop = {
+  convergenceRounds: 2,
+  escalateOn: "blocking-or-should-fix",
+  roundCap: 4,
+};
+const REVIEW_ESCALATION_TRIGGERS: readonly ReviewEscalationTrigger[] = [
+  "blocking-or-should-fix",
+  "any",
+];
+const REVIEW_LOOP_KEYS = ["convergenceRounds", "escalateOn", "roundCap"];
+const CONVERGENCE_ROUNDS_MAX = 10;
+const ROUND_CAP_MAX = 20;
+
 export interface AuthoringRoleEntry {
   adversarial?: boolean;
   effort?: AuthoringEffort;
   escalateOnFindings?: "high" | "xhigh" | null;
   harness: string;
   model?: string;
+  reviewLoop?: ReviewLoopSettings;
 }
 
 export interface AuthoringSidecar {
@@ -136,6 +167,7 @@ export interface ResolvedAuthoringRole {
 export interface ResolvedReviewRole extends ResolvedAuthoringRole {
   adversarial: boolean;
   escalateOnFindings: "high" | "xhigh" | null;
+  reviewLoop: ResolvedReviewLoop;
 }
 
 export interface AuthoringFieldSource {
@@ -152,6 +184,7 @@ export interface AuthoringFieldSource {
 export interface AuthoringReviewFieldSource extends AuthoringFieldSource {
   adversarial: AuthoringLayer;
   escalateOnFindings: AuthoringLayer;
+  reviewLoop: AuthoringLayer;
 }
 
 export interface RepositoryAuthoring {
@@ -204,353 +237,46 @@ export const isModelName = (value: unknown): value is string =>
   characterCount(value) <= MODEL_MAX_LENGTH &&
   !hasControlCharacter(value);
 
-// Parts of the words a harness or a person adds to a model name to say how
-// hard it ran, not which model it is, such as `high`, `extra-high`, or
-// `model_reasoning_effort`.
-const EFFORT_PARTS: ReadonlySet<string> = new Set([
-  ...EFFORT_LEVELS,
-  "extra",
-  "effort",
-  "reasoning",
-  "thinking",
-  "think",
-  "mode",
-  "level",
-  "model",
-]);
-// Parts that say effort by themselves: a word of any effort parts with one
-// of these, such as `model_reasoning_effort`, describes effort.
-const EFFORT_MARKERS: ReadonlySet<string> = new Set([
-  "effort",
-  "reasoning",
-  "thinking",
-]);
-// Parts that name a level, as `high` or `extra-high` do when the whole word
-// is made of them.
-const EFFORT_LEVEL_PARTS: ReadonlySet<string> = new Set([
-  ...EFFORT_LEVELS,
-  "extra",
-]);
-const EFFORT_PART_SEPARATORS = /[-_.]+/u;
+/**
+ * Explicit aliases from one spelling of a model ID to the canonical one.
+ * Each entry needs a reason beside it, such as a provider that reports two
+ * IDs for one model; an ID not listed is only ever equal to itself. It is
+ * empty because no alias has been justified yet.
+ */
+export const MODEL_ID_ALIASES: Readonly<Record<string, string>> = {};
 
-const effortParts = (word: string): string[] | null => {
-  const parts = word.split(EFFORT_PART_SEPARATORS).filter((part) => part);
-  return parts.length > 0 && parts.every((part) => EFFORT_PARTS.has(part))
-    ? parts
-    : null;
-};
-
-// The words that may describe effort rather than name the model. An effort
-// word is made only of effort parts and either has a part that
-// says effort (`reasoning_effort`) or is made only of levels (`high`,
-// `extra-high`); a word of helper parts alone (`mode`, `level`) goes only
-// beside one. Any other word is part of the model's name, including a
-// hyphenated id with a part outside these (`coder-max`) or a level beside a
-// helper part (`model-max`). A standalone level reads as effort even where a
-// display name means a variant (`Coder Max`): by spelling alone it cannot be
-// told from an effort label (`Model 5.5 max`), and reading it as effort only
-// ever blocks a review, never admits one.
-interface EffortWords {
-  // Words that only describe effort, which every form drops.
-  certain: number[];
-  // Words that may also be part of the name: standalone levels (`high`,
-  // `max`, `extra-high`) and helper words beside them (`mode`, `model`).
-  variable: number[];
-}
-
-const effortWords = (words: readonly string[]): EffortWords => {
-  const parts = words.map(effortParts);
-  const level = parts.map(
-    (wordParts) =>
-      wordParts?.every((part) => EFFORT_LEVEL_PARTS.has(part)) === true
-  );
-  const marker = parts.map(
-    (wordParts) => wordParts?.some((part) => EFFORT_MARKERS.has(part)) === true
-  );
-  const certain: number[] = [];
-  const variable: number[] = [];
-  for (const [index, wordParts] of parts.entries()) {
-    if (wordParts === null) {
-      continue;
-    }
-    if (marker[index]) {
-      certain.push(index);
-    } else if (level[index]) {
-      variable.push(index);
-    } else if (marker[index - 1] === true || marker[index + 1] === true) {
-      certain.push(index);
-    } else if (level[index - 1] === true || level[index + 1] === true) {
-      variable.push(index);
-    }
+/**
+ * The canonical model ID a reported name stands for, or null when it is not
+ * an ID. A harness reports an ID such as `model-5-5`; case and one
+ * `provider/` prefix do not change it, and an explicit alias maps it.
+ * Anything else, a display name (`Model 5.5`), an effort label
+ * (`model-5-5 high`), a note, a blank name, or the `most-capable` planning
+ * sentinel, is not an ID, so a check that needs one fails closed.
+ */
+export const canonicalModelId = (
+  value: string | null | undefined
+): string | null => {
+  if (typeof value !== "string") {
+    return null;
   }
-  return { certain, variable };
-};
-
-// The choices of words to drop: every word that only describes effort, plus
-// every variable word outside one contiguous run of them, for every run
-// (none included), so a level that is also part of the name is tried kept
-// wherever it sits among other effort words.
-const effortDrops = ({ certain, variable }: EffortWords): Set<number>[] => {
-  const drops = [new Set([...certain, ...variable])];
-  for (let start = 0; start < variable.length; start += 1) {
-    for (let end = start + 1; end <= variable.length; end += 1) {
-      const kept = new Set(variable.slice(start, end));
-      drops.push(
-        new Set([...certain, ...variable.filter((index) => !kept.has(index))])
-      );
-    }
-  }
-  return drops;
-};
-
-interface ModelForm {
-  // The form's tokens joined.
-  key: string;
-  // The keys of its leading whole words, short of the full form, so a match
-  // can end on a word boundary.
-  prefixes: string[];
-  tokens: string[];
-}
-
-interface ModelForms {
-  // The whole name, then the name without qualifiers and each choice of
-  // effort words.
-  forms: ModelForm[];
-  // The name has more readings than can be compared cheaply.
-  overflow: boolean;
-  versionUnknown: boolean;
-}
-
-// Readings past this many make a name too costly to compare, and such a name
-// counts as the same as any other, which only ever blocks a review. Real
-// names have a handful; a valid 120-character name can otherwise have
-// thousands.
-const MAX_MODEL_FORMS = 128;
-
-// Lowercase alphanumeric runs, the pieces a model key is made of.
-const modelTokens = (value: string): string[] =>
-  value
-    .toLowerCase()
-    .split(MODEL_KEY_SEPARATORS)
-    .filter((token) => token !== "");
-
-// The name without its parenthesised qualifiers, innermost first so nested
-// ones go whole, and every qualifier removed. An unclosed `(` drops the rest
-// of the name and a stray `)` drops itself, so a malformed note never leaves
-// a fragment that makes the same model look distinct. A note that starts with
-// a version, closed or not, leaves that version in the name.
-// The version a note gives, if it starts with one: the leading run of its
-// version tokens, so `(5.5)` and `(5.5 high)` give `5.5`, while a runtime
-// note such as `(reasoning: high, budget: 32768)` gives nothing.
-const noteVersion = (note: string): string[] => {
-  const tokens = modelTokens(note);
-  const end = tokens.findIndex((token) => !MODEL_VERSION_TOKEN.test(token));
-  return end === -1 ? tokens : tokens.slice(0, end);
-};
-
-const withoutQualifiers = (
-  value: string
-): { qualifiers: string[]; rest: string } => {
-  const qualifiers: string[] = [];
-  const replaceNote = (note: string): string => {
-    const version = noteVersion(note);
-    if (version.length === 0) {
-      qualifiers.push(note);
-    }
-    // One word, so a version never ends a leading-words match early.
-    return ` ${version.join(".")} `;
-  };
-  let rest = value;
-  let previous: string | null = null;
-  while (rest !== previous) {
-    previous = rest;
-    rest = rest.replace(MODEL_QUALIFIER, replaceNote);
-  }
-  return {
-    qualifiers,
-    rest: rest
-      .replace(MODEL_UNCLOSED_QUALIFIER, replaceNote)
-      .replaceAll(")", " "),
-  };
-};
-
-// The forms a reported name may mean: the whole name, the name without
-// parenthesised qualifiers, and that name without each choice of its effort
-// words, punctuation around a word aside; a name made only of effort words
-// keeps them. Only a qualifier that says exactly that the version is unknown
-// widens a name to its family.
-const splitWords = (value: string): string[] =>
-  value
-    .split(MODEL_WORD_SEPARATORS)
-    .map((word) => word.replace(MODEL_WORD_EDGES, ""))
-    .filter((word) => word !== "");
-
-// The name without trailing setting pairs, such as `budget 32768` or
-// `temperature 0.2`: a word without digits, then a value that starts with
-// one. Each pair goes only while a word with a digit is left, so
-// `Claude Opus 5` never shrinks to `claude`.
-const withoutTrailingSettings = (words: readonly string[]): string[][] => {
-  const shorter: string[][] = [];
-  let kept = [...words];
-  while (
-    kept.length >= 3 &&
-    MODEL_VERSION_TOKEN.test(kept.at(-1) ?? "") &&
-    !MODEL_DIGIT.test(kept.at(-2) ?? "") &&
-    kept.slice(0, -2).some((word) => MODEL_DIGIT.test(word))
+  const lowered = value.trim().toLowerCase();
+  const id = lowered.replace(MODEL_ID_PROVIDER_PREFIX, "");
+  // An effort setting on its own is not a model, however it is spelled.
+  if (
+    !MODEL_ID_PATTERN.test(id) ||
+    id === MOST_CAPABLE ||
+    (EFFORT_LEVELS as readonly string[]).includes(id)
   ) {
-    kept = kept.slice(0, -2);
-    shorter.push(kept);
+    return null;
   }
-  return shorter;
+  return Object.hasOwn(MODEL_ID_ALIASES, id)
+    ? (MODEL_ID_ALIASES[id] as string)
+    : id;
 };
 
-const modelForms = (value: string): ModelForms => {
-  const { qualifiers, rest } = withoutQualifiers(value.toLowerCase());
-  const words = splitWords(rest);
-  // Everything from the first field label on is a runtime setting.
-  const field = MODEL_FIELD_LABEL.exec(rest);
-  const bases = [
-    words,
-    ...(field && field.index > 0
-      ? [splitWords(rest.slice(0, field.index))]
-      : []),
-  ].filter((base) => base.length > 0);
-  const expanded = [...bases, ...bases.flatMap(withoutTrailingSettings)].map(
-    (base) => ({ base, effort: effortWords(base) })
-  );
-  const readings = expanded.reduce(
-    (total, { effort }) =>
-      total + 2 + (effort.variable.length * (effort.variable.length + 1)) / 2,
-    1
-  );
-  if (readings > MAX_MODEL_FORMS) {
-    return { forms: [], overflow: true, versionUnknown: false };
-  }
-  const named = expanded.flatMap(({ base, effort }) => [
-    base,
-    ...effortDrops(effort)
-      .map((dropped) => base.filter((_word, index) => !dropped.has(index)))
-      .filter((kept) => kept.length > 0),
-  ]);
-  const form = (formWords: readonly string[]): ModelForm => {
-    const wordKeys = formWords
-      .map((word) => modelTokens(word))
-      .filter((tokens) => tokens.length > 0)
-      .map((tokens) => tokens.join(""));
-    const prefixes: string[] = [];
-    for (const word of wordKeys.slice(0, -1)) {
-      prefixes.push(`${prefixes.at(-1) ?? ""}${word}`);
-    }
-    return {
-      key: wordKeys.join(""),
-      prefixes,
-      tokens: formWords.flatMap((word) => modelTokens(word)),
-    };
-  };
-  const seen = new Set<string>();
-  const forms: ModelForm[] = [];
-  for (const formWords of [
-    value.toLowerCase().split(MODEL_WORD_SEPARATORS),
-    ...named,
-  ]) {
-    const candidate = form(formWords);
-    const identity = `${candidate.prefixes.length}:${candidate.key}:${candidate.prefixes.join(" ")}`;
-    if (candidate.key !== "" && !seen.has(identity)) {
-      seen.add(identity);
-      forms.push(candidate);
-    }
-  }
-  return {
-    forms,
-    overflow: false,
-    versionUnknown: qualifiers.some((qualifier) =>
-      MODEL_UNKNOWN_QUALIFIER.test(qualifier)
-    ),
-  };
-};
-
-// A name of unknown version names its family: its tokens appear in the other
-// name in order, after any family prefix, and only version tokens follow, so
-// `model (version unknown)` matches `vendor-model-5-5` but never
-// `model-max`. A name that already ends in a version names that version, so
-// `model 5 (version unknown)` never widens to `model-5-5`.
-const familyMatch = (family: string[], other: string[]): boolean =>
-  !MODEL_VERSION_TOKEN.test(family.at(-1) ?? "") &&
-  other.some(
-    (_, start) =>
-      family.every((token, offset) => other[start + offset] === token) &&
-      other
-        .slice(start + family.length)
-        .every((token) => MODEL_VERSION_TOKEN.test(token))
-  );
-
-// Whether a name's first whole words, before some later word, spell the
-// other name, a family prefix allowed: the words after it read as notes,
-// such as `budget: 32768`. A version is part of its word, so `gpt-6` never
-// spells the start of `gpt-6.1-sol`, nor `Model 5` of `Model 5.5`.
-const leadingWordsMatch = (name: ModelForm, other: ModelForm): boolean =>
-  name.prefixes.some((prefix) => prefix.endsWith(other.key));
-
-const formsMatch = (left: ModelForms, right: ModelForms): boolean =>
-  left.forms.some((leftForm) =>
-    right.forms.some((rightForm) => {
-      const leftKey = leftForm.key;
-      const rightKey = rightForm.key;
-      return (
-        leftKey === rightKey ||
-        leftKey.endsWith(rightKey) ||
-        rightKey.endsWith(leftKey) ||
-        leadingWordsMatch(leftForm, rightForm) ||
-        leadingWordsMatch(rightForm, leftForm) ||
-        (left.versionUnknown &&
-          familyMatch(leftForm.tokens, rightForm.tokens)) ||
-        (right.versionUnknown && familyMatch(rightForm.tokens, leftForm.tokens))
-      );
-    })
-  );
-
-/**
- * Whether a model name has too many readings to compare cheaply. Such a name
- * counts as the same as any other, which only blocks an adversarial review;
- * a check that must not accept on "same", such as whether a reviewer
- * reported the model it was asked for, refuses it instead.
- */
-export const modelNameTooComplex = (value: string): boolean =>
-  modelForms(value).overflow;
-
-/** The next step when a model name is too complex to compare. */
-export const MODEL_NAME_TOO_COMPLEX =
-  "The model label is too complex to compare; pass the model ID the harness reports.";
-
-/**
- * Whether two reported model names may name the same model. Harnesses and
- * people report names in different shapes (a display name with a family
- * prefix, an id with hyphens, an appended effort such as `high` or
- * `xhigh effort`, or a note such as `(version unknown)` or
- * `budget: 32768`), so names compare case-insensitively without
- * separators, with and without those qualifiers and whole words that only
- * describe effort (such as `reasoning_effort=high`). A name that ends with
- * the other counts as the same, and so does a name whose first whole words
- * spell the other, the words after them read as notes. A name whose
- * qualifier is exactly `(version unknown)` matches any version of its
- * family, never another variant. Any matching form counts, so this
- * heuristic fails toward "same", and a possible match never passes a
- * diversity check. A version is part of its word, so different versions
- * (`Model 5` and `Model 5.5`) and hyphenated variants (`model` and
- * `model-max`) stay distinct, while a variant written as a separate word
- * (`Model Max`) matches its base model.
- */
-export const sameModelName = (left: string, right: string): boolean => {
-  const leftForms = modelForms(left);
-  const rightForms = modelForms(right);
-  if (leftForms.overflow || rightForms.overflow) {
-    return true;
-  }
-  if (leftForms.forms.length === 0 || rightForms.forms.length === 0) {
-    return left.trim().toLowerCase() === right.trim().toLowerCase();
-  }
-  return formsMatch(leftForms, rightForms);
-};
+/** The next step when a check needs a model ID and got a name that is not one. */
+export const MODEL_ID_REQUIRED =
+  "Record the model ID the agent reports, in lowercase with no spaces, such as `model-5-5`, not a display name or an effort label.";
 
 /** The higher of two effort levels on the shared ladder. */
 export const higherEffort = (
@@ -604,7 +330,14 @@ const roleErrors = (
     ...unknownKeys(
       value,
       review
-        ? ["harness", "model", "effort", "adversarial", "escalateOnFindings"]
+        ? [
+            "harness",
+            "model",
+            "effort",
+            "adversarial",
+            "escalateOnFindings",
+            "reviewLoop",
+          ]
         : ["harness", "model", "effort"],
       path
     ),
@@ -642,8 +375,99 @@ const roleErrors = (
   ) {
     errors.push(`${path}.escalateOnFindings must be high, xhigh, or null`);
   }
+  if (review && Object.hasOwn(value, "reviewLoop")) {
+    errors.push(...reviewLoopErrors(value.reviewLoop, `${path}.reviewLoop`));
+  }
   return errors;
 };
+
+const roundsError = (value: unknown, max: number, path: string): string[] =>
+  value === null ||
+  (Number.isInteger(value) &&
+    (value as number) >= 1 &&
+    (value as number) <= max)
+    ? []
+    : [`${path} must be a whole number from 1 to ${max}, or null`];
+
+const reviewLoopErrors = (value: unknown, path: string): string[] => {
+  if (!isRecord(value)) {
+    return [`${path} must be an object`];
+  }
+  const errors = unknownKeys(value, REVIEW_LOOP_KEYS, path);
+  if (
+    Object.hasOwn(value, "escalateOn") &&
+    !(REVIEW_ESCALATION_TRIGGERS as readonly unknown[]).includes(
+      value.escalateOn
+    )
+  ) {
+    errors.push(`${path}.escalateOn must be blocking-or-should-fix or any`);
+  }
+  if (Object.hasOwn(value, "convergenceRounds")) {
+    errors.push(
+      ...roundsError(
+        value.convergenceRounds,
+        CONVERGENCE_ROUNDS_MAX,
+        `${path}.convergenceRounds`
+      )
+    );
+  }
+  if (Object.hasOwn(value, "roundCap")) {
+    errors.push(
+      ...roundsError(value.roundCap, ROUND_CAP_MAX, `${path}.roundCap`)
+    );
+  }
+  return errors;
+};
+
+/** A review loop's settings with every absent field at its recommended value. */
+export const resolveReviewLoop = (
+  value: ReviewLoopSettings | undefined
+): ResolvedReviewLoop => ({
+  convergenceRounds:
+    value?.convergenceRounds === undefined
+      ? REVIEW_LOOP_DEFAULTS.convergenceRounds
+      : value.convergenceRounds,
+  escalateOn: value?.escalateOn ?? REVIEW_LOOP_DEFAULTS.escalateOn,
+  roundCap:
+    value?.roundCap === undefined
+      ? REVIEW_LOOP_DEFAULTS.roundCap
+      : value.roundCap,
+});
+
+// The stricter of two review loops: any finding escalates over severity
+// alone, and a smaller threshold stops sooner than a larger one or none.
+const stricterRounds = (
+  left: number | null,
+  right: number | null
+): number | null => {
+  if (left === null) {
+    return right;
+  }
+  return right === null ? left : Math.min(left, right);
+};
+
+const stricterReviewLoop = (
+  saved: ResolvedReviewLoop,
+  requested: ResolvedReviewLoop
+): ResolvedReviewLoop => ({
+  convergenceRounds: stricterRounds(
+    saved.convergenceRounds,
+    requested.convergenceRounds
+  ),
+  escalateOn:
+    saved.escalateOn === "any" || requested.escalateOn === "any"
+      ? "any"
+      : "blocking-or-should-fix",
+  roundCap: stricterRounds(saved.roundCap, requested.roundCap),
+});
+
+const sameReviewLoop = (
+  left: ResolvedReviewLoop,
+  right: ResolvedReviewLoop
+): boolean =>
+  left.convergenceRounds === right.convergenceRounds &&
+  left.escalateOn === right.escalateOn &&
+  left.roundCap === right.roundCap;
 
 const harnessEntryErrors = (id: string, value: unknown): string[] => {
   const path = `harnesses.${id}`;
@@ -1164,6 +988,7 @@ export const resolveAuthoringRole = (
     escalateOnFindings: entry.escalateOnFindings ?? null,
     harness,
     model,
+    reviewLoop: resolveReviewLoop(entry.reviewLoop),
     status,
   };
   return {
@@ -1175,6 +1000,7 @@ export const resolveAuthoringRole = (
       harness: roleSource.layer,
       model: modelSource.layer,
       path: highestPath([effortSource, roleSource, modelSource]),
+      reviewLoop: entry.reviewLoop === undefined ? "default" : roleSource.layer,
     },
   };
 };
@@ -1217,6 +1043,16 @@ export const resolveRequestedRole = (
     loosensAdversarial || requestRole?.adversarial === undefined;
   const keepsFloor =
     loosensFloor || requestRole?.escalateOnFindings === undefined;
+  // A request tightens only the loop fields it names; an omitted field, or
+  // an omitted loop, leaves the saved value as it is.
+  const reviewLoop = stricterReviewLoop(saved.effective.reviewLoop, {
+    ...saved.effective.reviewLoop,
+    ...requestRole?.reviewLoop,
+  } as ResolvedReviewLoop);
+  // The request's loop is in force only where it tightened the saved one.
+  const keepsReviewLoop =
+    requestRole?.reviewLoop === undefined ||
+    sameReviewLoop(reviewLoop, saved.effective.reviewLoop);
   const source = {
     ...requested.source,
     adversarial: keepsAdversarial
@@ -1225,6 +1061,9 @@ export const resolveRequestedRole = (
     escalateOnFindings: keepsFloor
       ? saved.source.escalateOnFindings
       : requested.source.escalateOnFindings,
+    reviewLoop: keepsReviewLoop
+      ? saved.source.reviewLoop
+      : requested.source.reviewLoop,
   };
   // The file named is the highest file layer among the fields in force; the
   // gate fields count for the review role only.
@@ -1233,7 +1072,7 @@ export const resolveRequestedRole = (
     source.harness,
     source.model,
     ...(role === "review"
-      ? [source.adversarial, source.escalateOnFindings]
+      ? [source.adversarial, source.escalateOnFindings, source.reviewLoop]
       : []),
   ];
   return {
@@ -1244,6 +1083,7 @@ export const resolveRequestedRole = (
       escalateOnFindings: loosensFloor
         ? saved.effective.escalateOnFindings
         : requested.effective.escalateOnFindings,
+      reviewLoop,
     },
     source: { ...source, path: highestFilePath(inForce, fileLayers) },
   };

@@ -28,6 +28,7 @@ import {
 import { runGit } from "../../../skills/simple-changes/scripts/lib/process.ts";
 import { withReadOnlyGit } from "../../../skills/simple-changes/scripts/lib/read-only-git.ts";
 import { recordReadyWork } from "../../../skills/simple-changes/scripts/lib/ready-work.ts";
+import { attestCommits } from "../../../skills/simple-changes/scripts/lib/review-ledger.ts";
 import {
   addShipHold,
   evaluateShipHolds,
@@ -552,6 +553,11 @@ describe("simple-changes status --all", () => {
       writeFixture(path, `${name}.txt`, "finished\n");
       git(path, ["add", `${name}.txt`]);
       git(path, ["commit", "-q", "-m", `Finish ${name}`]);
+      attestCommits({
+        commits: [git(path, ["rev-parse", "HEAD"])],
+        logicalId: `${name}-agent`,
+        repositoryPath: path,
+      });
       recordReadyWork(path, `${name}-agent`, claim.claimId, {
         checks: [{ command: "bun run check", note: null, result: "passed" }],
         deploymentConstraints: [],
@@ -711,6 +717,11 @@ describe("simple-changes status --all", () => {
     git(path, ["add", "ready.txt"]);
     git(path, ["commit", "-q", "-m", "Finish"]);
     const head = git(path, ["rev-parse", "HEAD"]);
+    attestCommits({
+      commits: [git(path, ["rev-parse", "HEAD"])],
+      logicalId: "ready-agent",
+      repositoryPath: path,
+    });
     recordReadyWork(path, "ready-agent", claim.claimId, {
       checks: [{ command: "bun run check", note: null, result: "passed" }],
       deploymentConstraints: [],
@@ -755,6 +766,11 @@ describe("simple-changes status --all", () => {
     writeFixture(path, "ready.txt", "finished\n");
     git(path, ["add", "ready.txt"]);
     git(path, ["commit", "-q", "-m", "Finish"]);
+    attestCommits({
+      commits: [git(path, ["rev-parse", "HEAD"])],
+      logicalId: "ready-agent",
+      repositoryPath: path,
+    });
     recordReadyWork(path, "ready-agent", claim.claimId, {
       checks: [{ command: "bun run check", note: null, result: "passed" }],
       deploymentConstraints: [],
@@ -812,6 +828,11 @@ describe("simple-changes status --all", () => {
     writeFixture(path, "ready.txt", "finished\n");
     git(path, ["add", "ready.txt"]);
     git(path, ["commit", "-q", "-m", "Finish"]);
+    attestCommits({
+      commits: [git(path, ["rev-parse", "HEAD"])],
+      logicalId: "ready-agent",
+      repositoryPath: path,
+    });
     recordReadyWork(path, "ready-agent", claim.claimId, {
       checks: [{ command: "bun run check", note: null, result: "passed" }],
       deploymentConstraints: [],
@@ -974,6 +995,11 @@ describe("simple-changes status --all", () => {
     writeFixture(path, "ready.txt", "finished\n");
     git(path, ["add", "ready.txt"]);
     git(path, ["commit", "-q", "-m", "Finish"]);
+    attestCommits({
+      commits: [git(path, ["rev-parse", "HEAD"])],
+      logicalId: "ready-agent",
+      repositoryPath: path,
+    });
     recordReadyWork(path, "ready-agent", claim.claimId, {
       checks: [{ command: "bun run check", note: null, result: "passed" }],
       deploymentConstraints: [],

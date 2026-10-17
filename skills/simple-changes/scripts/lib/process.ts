@@ -9,6 +9,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { spawnSync, which } from "bun";
 import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
+import type { GitWorkerInput, GitWorkerRequest } from "./git-worker-request.ts";
 import { redactSecrets } from "./redact.ts";
 
 export interface CommandResult {
@@ -596,10 +597,7 @@ export const runGit = (
     environment
   );
 
-export interface GitRequest {
-  args: readonly string[];
-  cwd: string;
-}
+export type GitRequest = GitWorkerRequest;
 
 // Below this many requests the worker's own startup costs more than it saves.
 const CONCURRENT_GIT_MINIMUM = 4;
@@ -617,12 +615,14 @@ const concurrentGitResults = (
       LC_ALL: "C",
     },
     stderr: "pipe",
+    // The worker refuses, and runs nothing, unless the executable is Git
+    // and each request starts with a subcommand; a refusal exits nonzero.
     stdin: Buffer.from(
       JSON.stringify({
         concurrency: CONCURRENT_GIT_LIMIT,
         executable: gitExecutable(),
         requests,
-      })
+      } satisfies GitWorkerInput)
     ),
     stdout: "pipe",
   });

@@ -364,13 +364,26 @@ except the author's (the running one; none is excluded when it is unknown),
 in data-file order then unknown ids alphabetically, the first recommended; a
 single candidate skips the question. If that agent has no entry yet, ask its
 model question worded "which model should review". After option 2, ask **Which
-model in `<agent>` should review?** and an effort; reject a name equal to the
-model recorded for that agent, where case, separators, a trailing effort word
-such as `high`, and a parenthesised note such as `(version unknown)` do not
-make a name different. Options 1 and 2 record `adversarial: true` and
-then ask **After a review finds problems, how should later reviews of that
-change run?** with **At xhigh effort (Recommended)** (`escalateOnFindings:
-"xhigh"`) or **Same effort as before** (`null`).
+model in `<agent>` should review?** and an effort (`high` recommended); reject
+a name equal to the model recorded for that agent, where case, separators, a
+trailing effort word such as `high`, and a parenthesised note such as
+`(version unknown)` do not make a name different. Options 1 and 2 record
+`adversarial: true`.
+
+Every option then sets the review loop. Unless the model question already
+asked it, ask **Which effort should the first review of a change use?** with
+`high` recommended, so a review that finds problems has somewhere to
+escalate. Then ask **After a review finds problems, how should later reviews
+of that change run?** with **At xhigh, after blocking or should-fix findings
+(Recommended)** (`escalateOnFindings: "xhigh"`), **At xhigh, after any
+finding** (the same plus `reviewLoop.escalateOn: "any"`), or **Same effort as
+before** (`null`). Last, ask **When review rounds keep finding problems, when
+should the agent stop and check with you?** with **After 2 rounds in a row, or
+4 rounds without a clean review (Recommended)** or **Never; review until
+clean** (`reviewLoop` with `convergenceRounds` and `roundCap` both `null`). A
+recommended answer records no `reviewLoop` key, so a file that keeps the
+recommendations stays readable by runtimes before 0.31.0; see
+[review rounds](review-and-merge.md#review-rounds).
 
 While `authoringQuestion.review` is `pending`, `initialize` also prints the
 question itself as `authoringReviewQuestion`; ask it once in each write-capable

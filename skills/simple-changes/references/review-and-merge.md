@@ -4,6 +4,7 @@ Contents:
 
 - What an agent review examines
 - Review identity and the review ledger
+- Review rounds
 - Signing reviews and merges
 
 Review eligibility comes from fresh provider and repository evidence:
@@ -124,7 +125,9 @@ repairs it.
   <attempt.json>` holding `requested` (`harness`, `model`, `effort`),
   `verified` (`instance`, `session`, `harness`, `agent` as the delegate
   reported them, `null` when not), `effort`, `effortSource`, `verdict`
-  (`findings`, `clean`, `failed`), and `findingsCount`. Pass the same
+  (`findings`, `clean`, `failed`), and `findingsCount`, plus `severities`
+  (`blocking`, `shouldFix`, `nit` counts adding up to `findingsCount`) when
+  the reviewer graded its findings. Pass the same
   `--authoring-request` as `initialize`: a request can make the gate
   adversarial for this run and never loosens a saved setting. It is accepted
   only when the head is covered or waived, the reviewer's instance or
@@ -137,11 +140,38 @@ repairs it.
   (`loop start --mode resume`, with the run's `--authoring-request`)
   revalidates accepted attempts under the run's gate; one that no longer
   passes needs a fresh review.
-- **Escalation as a floor.** With `escalateOnFindings` set, once any review
-  of a proposal reports findings, later reviews of it, replacement revisions
-  included, run at least at that effort. It never lowers an effort and never
-  reaches `max` by itself; a `max` the user asks for is recorded with
-  `effortSource: "request"`.
+- **Escalation as a floor.** With `escalateOnFindings` set, once a review of
+  a proposal reports escalating findings, later reviews of it, replacement
+  revisions included, run at least at that effort. Escalating findings are
+  blocking or should-fix ones, or any finding under `reviewLoop.escalateOn:
+  "any"`; findings recorded without `severities` always escalate. It never
+  lowers an effort and never reaches `max` by itself; a `max` the user asks
+  for is recorded with `effortSource: "request"`.
+
+## Review rounds
+
+Run review as a loop at the exact head, rounds counted per proposal:
+
+- Ask the reviewer to give each finding a severity, **blocking**,
+  **should-fix**, or **nit**, with its file and line, the inputs, and the wrong
+  result, and record them as `severities`. Fix nits too; only blocking and
+  should-fix findings escalate.
+- After the first round, scope each re-review to the fixes, the boundary they
+  protect (what must never break), and what they touched. Before merge, run
+  one full-range review at the final head. A clean review counts only for the
+  head it read.
+- Tell the reviewer which findings the user deferred or accepted, so it does
+  not report them again.
+- `initialize --proposal <id> --head <sha>` reports `reviewer.loop`:
+  `consecutiveEscalatingRounds`, `roundsSinceEscalation`, the
+  `convergenceCheck` (`due` at `reviewLoop.convergenceRounds`, default 2), and
+  the `roundCap` (`reached` at `reviewLoop.roundCap`, default 4), with a
+  `message`. When the check is due and those findings sit in one area, stop
+  patching: say whether the approach is the problem and propose an
+  alternative before the next fix. When the cap is reached, stop and ask the
+  user whether to ship with the open findings filed as issues, change the
+  design, or keep reviewing. The runtime counts rounds; judging the area is
+  yours, and neither signal approves or skips a review.
 
 ## Signing reviews and merges
 

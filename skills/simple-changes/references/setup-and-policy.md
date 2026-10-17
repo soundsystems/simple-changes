@@ -380,10 +380,10 @@ The current request reaches the CLI as `--authoring-request <json-or-@path>`
 (a complete sidecar object) on `initialize`, `proposal record-review`, and
 `loop start --mode resume`: validated like a file, applied to that invocation,
 never written, never an answer. It replaces roles and agent entries like any
-layer, except that `review.adversarial` and `review.escalateOnFindings`
-combine with the saved result by the stricter value, so a request tightens
-the review gate and never loosens it; pass the same request to every one of
-those commands in a run. Roles and agent entries replace whole; an empty
+layer, except that `review.adversarial`, `review.escalateOnFindings`, and
+`review.reviewLoop` combine with the saved result by the stricter value, so a
+request tightens the review gate and never loosens it; pass the same request
+to every one of those commands in a run. Roles and agent entries replace whole; an empty
 sidecar answers the models question and defines nothing; a role-level
 `model` needs an agent id, never `running`; `null` means "do not guide this
 agent". `initialize` reports `authoring.effective` with each field's layer
@@ -392,6 +392,18 @@ and the `reviewer` it resolves. A reviewer `model` of `most-capable` is resolved
 what the target agent reports before dispatch; if that is impossible, treat
 the reviewer as unresolved and ask the owner. `max` effort comes only from an explicit owner choice
 and is never reached by a default, `most-capable`, or escalation.
+
+The review role may also carry `reviewLoop`, whose fields are all optional and
+default to the recommended loop: `escalateOn` (`blocking-or-should-fix`, or
+`any` to escalate on nits too), `convergenceRounds` (consecutive rounds with
+escalating findings before the approach is questioned, 1 to 10, default 2, or
+`null` for no check), and `roundCap` (rounds after the first escalating
+finding without a clean review before the owner is asked, 1 to 20, default 4,
+or `null` for no cap). For the stricter value, `any` beats
+`blocking-or-should-fix` and a smaller number beats a larger one or `null`.
+Runtimes before 0.31.0 reject a sidecar holding `reviewLoop`, so it is written
+only for answers other than the recommended ones. See
+[review rounds](review-and-merge.md#review-rounds).
 
 Before writing, resolve the role; `most-capable` is the most capable model the
 target agent itself reports, never ranked from memory. Use the nearest effort

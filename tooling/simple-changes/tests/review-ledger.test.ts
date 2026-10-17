@@ -1466,14 +1466,18 @@ describe("post-return gate and approval", () => {
     expect(reviewLoopStatus([...capped].reverse(), loop)).toEqual(
       reviewLoopStatus(capped, loop)
     );
-    // A clean review the gate rejected (a self-review, a stale head) proves
-    // nothing and keeps the loop's counts.
+    // A clean review the gate rejected (a self-review, a stale head) carries
+    // no evidence: it is no round, so every count and check stays as it was.
     expect(
       reviewLoopStatus([...capped, round("clean", undefined, false)], loop)
-    ).toMatchObject({
-      roundCap: "reached",
-      roundsSinceEscalation: 5,
-    });
+    ).toEqual(reviewLoopStatus(capped, loop));
+    expect(
+      reviewLoopStatus([...twice, round("clean", undefined, false)], loop)
+    ).toEqual(reviewLoopStatus(twice, loop));
+    // A rejected review with findings still counts: the findings are real.
+    expect(
+      reviewLoopStatus([...twice, round("findings", blocking, false)], loop)
+    ).toMatchObject({ consecutiveEscalatingRounds: 3 });
     // An accepted clean review starts over, and either check can be off.
     expect(reviewLoopStatus([...capped, round("clean")], loop)).toMatchObject({
       consecutiveEscalatingRounds: 0,

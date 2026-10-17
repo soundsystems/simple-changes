@@ -2139,11 +2139,13 @@ export const escalatedEffort = (
 };
 
 /**
- * The loop since the proposal's last accepted clean review, over its
- * attempts in the order they were recorded. Only an accepted clean review
- * ends a loop: one the gate rejected, such as a self-review or a review of a
- * stale head, proves nothing. A failed review is no round; a round whose
- * findings do not escalate (nits only) ends a run of escalating rounds.
+ * The loop since the proposal's last accepted clean review, over its rounds
+ * in the order they were recorded. A round is a review that carries
+ * evidence: findings, whether or not the gate accepted the attempt, or an
+ * accepted clean result, which ends the loop. A failed review and a clean
+ * review the gate rejected (a self-review, a stale head) carry none, so they
+ * are no round at all and change no count. A round whose findings do not
+ * escalate (nits only) ends a run of escalating rounds.
  */
 export const reviewLoopStatus = (
   attempts: readonly (GradedAttempt &
@@ -2151,11 +2153,15 @@ export const reviewLoopStatus = (
   loop: ResolvedReviewLoop
 ): ReviewLoopStatus => {
   const rounds = [...attempts]
-    .filter((attempt) => attempt.verdict !== "failed")
+    .filter(
+      (attempt) =>
+        attempt.verdict === "findings" ||
+        (attempt.verdict === "clean" && attempt.accepted)
+    )
     .sort((left, right) => left.recordedAt.localeCompare(right.recordedAt));
   let lastClean = -1;
   for (const [index, attempt] of rounds.entries()) {
-    if (attempt.verdict === "clean" && attempt.accepted) {
+    if (attempt.verdict === "clean") {
       lastClean = index;
     }
   }

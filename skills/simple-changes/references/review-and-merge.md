@@ -167,7 +167,9 @@ Run review as a loop at the exact head, rounds counted per proposal:
   `consecutiveEscalatingRounds`, `roundsSinceEscalation`, the
   `convergenceCheck` (`due` at `reviewLoop.convergenceRounds`, default 2), and
   the `roundCap` (`reached` at `reviewLoop.roundCap`, default 4), with a
-  `message`; only an accepted clean review starts a loop over. When the check is due and those findings sit in one area, stop
+  `message`. A round is a review with findings, accepted or not, or an
+  accepted clean review, which starts the loop over; failed reviews and clean
+  reviews the gate rejected are no round. When the check is due and those findings sit in one area, stop
   patching: say whether the approach is the problem and propose an
   alternative before the next fix. When the cap is reached, stop and ask the
   user whether to ship with the open findings filed as issues, change the

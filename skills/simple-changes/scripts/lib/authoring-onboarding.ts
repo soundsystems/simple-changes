@@ -10,6 +10,7 @@ import {
   MODEL_NAME_TOO_COMPLEX,
   MOST_CAPABLE,
   modelNameTooComplex,
+  type ReviewEscalationTrigger,
   type ReviewLoopSettings,
   RUNNING_HARNESS,
   resolveReviewLoop,
@@ -330,11 +331,15 @@ export const escalationChoices = (): AuthoringChoice[] => [
   },
 ];
 
-/** Question R5: when a review loop that keeps finding problems stops to ask. */
-export const loopCheckChoices = (): AuthoringChoice[] => [
+/**
+ * Question R5: when a review loop that keeps finding problems stops to ask,
+ * worded for the findings R4 chose to escalate on.
+ */
+export const loopCheckChoices = (
+  escalateOn: ReviewEscalationTrigger = "blocking-or-should-fix"
+): AuthoringChoice[] => [
   {
-    description:
-      "Two rounds in a row with blocking or should-fix findings make the agent question the approach before fixing again; four rounds after the first such finding without a clean review make it ask you whether to ship with the findings filed as issues, change the design, or keep going.",
+    description: `Two rounds in a row with ${escalateOn === "any" ? "findings" : "blocking or should-fix findings"} make the agent question the approach before fixing again; four rounds after the first such finding without a clean review make it ask you whether to ship with the findings filed as issues, change the design, or keep going.`,
     label: "After 2 rounds in a row, or 4 rounds without a clean review",
     recommended: true,
     value: "recommended",
@@ -648,7 +653,9 @@ const askReviewLoop = async (
   const checks = await ask(
     prompter,
     AUTHORING_QUESTIONS.loopChecks,
-    loopCheckChoices()
+    loopCheckChoices(
+      escalation === "xhigh-any" ? "any" : "blocking-or-should-fix"
+    )
   );
   const reviewLoop = reviewLoopAnswer(escalation, checks);
   return {

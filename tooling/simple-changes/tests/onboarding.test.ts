@@ -8,6 +8,7 @@ import {
   authoringReviewNoticeQuestion,
   collectAuthoringAnswers,
   effortChoices,
+  loopCheckChoices,
   REVIEW_QUESTION_WAITS,
   recommendedAuthoringAnswer,
   renderAuthoringSummary,
@@ -1622,6 +1623,13 @@ describe("authoring and review questions", () => {
       AUTHORING_QUESTIONS.escalation,
       AUTHORING_QUESTIONS.loopChecks,
     ]);
+    // R5 is worded for the findings R4 chose to escalate on.
+    expect(loopCheckChoices("any")[0]?.description).toStartWith(
+      "Two rounds in a row with findings make"
+    );
+    expect(loopCheckChoices()[0]?.description).toStartWith(
+      "Two rounds in a row with blocking or should-fix findings make"
+    );
     // Escalating on any finding is the one escalation answer that records a
     // review loop key.
     expect(skipped.roles.review).toEqual({

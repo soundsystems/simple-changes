@@ -40,9 +40,15 @@ import { gitExecutable, runGit, runGitWithInput } from "./process.ts";
 import type {
   LoopLease,
   RepositoryInventory,
+  WorktreeClaim,
   WorktreeCoordinationDocument,
 } from "./types.ts";
-import { readCoordinationDocumentFromCommonDirectory } from "./worktree-coordination.ts";
+import {
+  claimHeldByAnotherSession,
+  claimSessionRefusal,
+  claimTakeoverState,
+  readCoordinationDocumentFromCommonDirectory,
+} from "./worktree-coordination.ts";
 
 // The review ledger: durable, proposal-scoped evidence of who wrote each
 // commit and who reviewed each proposal head, kept in its own versioned file
@@ -2803,24 +2809,49 @@ const controllerReplayWorktree = (
   return { basis: "controller-replay", path, tip };
 };
 
+// The agent's live claims, split into those this session holds and those
+// another session holds: a claim counts only from its own session, so
+// another session cannot attest under the claim owner's agent ID.
+const claimWorktreesFor = (
+  inventory: RepositoryInventory,
+  coordination: WorktreeCoordinationDocument,
+  logicalId: string,
+  session: string | null
+): { eligible: EligibleWorktree[]; heldElsewhere: WorktreeClaim[] } => {
+  const eligible: EligibleWorktree[] = [];
+  const heldElsewhere: WorktreeClaim[] = [];
+  for (const claim of coordination.claims) {
+    if (
+      claim.owner.agentId !== logicalId ||
+      ENDED_CLAIM_STATES.has(claim.state)
+    ) {
+      continue;
+    }
+    if (claimHeldByAnotherSession(coordination, claim, session)) {
+      heldElsewhere.push(claim);
+      continue;
+    }
+    const tip = worktreeTip(inventory, claim.path, claim.branch);
+    if (tip) {
+      eligible.push({ basis: "claim", path: claim.path, tip });
+    }
+  }
+  return { eligible, heldElsewhere };
+};
+
 const authorWorktrees = (
   inventory: RepositoryInventory,
   lease: LoopLease | null,
   coordination: WorktreeCoordinationDocument,
-  logicalId: string
+  logicalId: string,
+  session: string | null
 ): EligibleWorktree[] => {
-  const eligible: EligibleWorktree[] = [];
-  for (const claim of coordination.claims) {
-    if (
-      claim.owner.agentId === logicalId &&
-      !ENDED_CLAIM_STATES.has(claim.state)
-    ) {
-      const tip = worktreeTip(inventory, claim.path, claim.branch);
-      if (tip) {
-        eligible.push({ basis: "claim", path: claim.path, tip });
-      }
-    }
-  }
+  const { eligible, heldElsewhere } = claimWorktreesFor(
+    inventory,
+    coordination,
+    logicalId,
+    session
+  );
   for (const registration of lease?.worktrees ?? []) {
     if (
       registration.agentId === logicalId &&
@@ -2835,6 +2866,17 @@ const authorWorktrees = (
         eligible.push({ basis: "registration", path: registration.path, tip });
       }
     }
+  }
+  const [held] = heldElsewhere;
+  if (eligible.length === 0 && held) {
+    throw new SimpleChangesError(
+      `Attest from the session that made the commits. ${claimSessionRefusal(
+        held,
+        claimTakeoverState(inventory, held),
+        session
+      )}`,
+      EXIT_CODES.unsafe
+    );
   }
   if (eligible.length === 0) {
     throw new SimpleChangesError(
@@ -3397,7 +3439,15 @@ export const attestCommits = (input: AuthorAttestInput): AuthorAttestResult => {
       ];
       const candidates =
         input.worktreePath === undefined
-          ? authorWorktrees(inventory, lease, coordination, logicalId)
+          ? authorWorktrees(
+              inventory,
+              lease,
+              coordination,
+              logicalId,
+              identity.harness && identity.session
+                ? `${identity.harness}:${identity.session}`
+                : null
+            )
           : [
               controllerReplayWorktree(
                 inventory,

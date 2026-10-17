@@ -34,6 +34,7 @@ import type {
 import {
   readCoordinationDocumentFromCommonDirectory,
   releaseAbsentWorktreeClaimsUnderLock,
+  takeoverCommand,
   withWorktreeCoordinationLock,
 } from "./worktree-coordination.ts";
 
@@ -203,13 +204,14 @@ const containmentFor = (
     targetPatchIdCache
   ).method;
 
-const liveClaimPaths = (commonGitDirectory: string): Set<string> => {
+// Each live claim's path, mapped to its claim ID.
+const liveClaimPaths = (commonGitDirectory: string): Map<string, string> => {
   const document =
     readCoordinationDocumentFromCommonDirectory(commonGitDirectory);
-  return new Set(
+  return new Map(
     document.claims
       .filter((claim) => CLEANUP_LIVE_CLAIM_STATES.has(claim.state))
-      .map((claim) => claim.path)
+      .map((claim) => [claim.path, claim.claimId] as const)
   );
 };
 
@@ -267,10 +269,15 @@ const classifyCleanupCandidates = (
       });
       continue;
     }
-    if (claimed.has(worktree.path)) {
+    const claimId = claimed.get(worktree.path);
+    if (claimId) {
       classification.preserved.push({
-        nextCommand:
-          "simple-changes worktree takeover --claim-id <id> --agent-id <you> --status-digest <digest> --approved-by <user> --reason <why> --release",
+        nextCommand: takeoverCommand({
+          agentId: null,
+          claimId,
+          current: worktree,
+          release: true,
+        }),
         path: worktree.path,
         reason:
           "A live worktree claim protects this checkout; only its owner or an approved takeover may release it.",

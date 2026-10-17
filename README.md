@@ -368,8 +368,8 @@ simple-changes worktree resume-ready --run-id ID --agent-id ID --claim-id ID
   [--json] [--repo PATH]
 simple-changes worktree release --agent-id ID --claim-id ID [--json] [--repo PATH]
 simple-changes worktree takeover --claim-id ID --agent-id NEW_OWNER
-  --status-digest SHA256 --approved-by ID --reason TEXT [--release]
-  [--json] [--repo PATH]
+  --head SHA|none (--branch NAME | --detached) --status-digest SHA256
+  --approved-by ID --reason TEXT [--release] [--json] [--repo PATH]
 simple-changes worktree equivalence --worktree PATH [--target REF]
   [--json] [--repo PATH]
 simple-changes branch audit --head REF --target REF [--json] [--repo PATH]

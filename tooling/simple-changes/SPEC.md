@@ -300,8 +300,8 @@
   the sanctioned path for lease-registered state.
 - Inherited broken state has explicit audited recovery paths instead of
   dead ends: `worktree takeover` reassigns or releases a stale claim only with
-  a named approver, reason, and exact current status digest, and never mutates
-  the worktree; `worktree equivalence` produces read-only patch-id and byte
+  a named approver, reason, and the exact current branch, HEAD, and status
+  digest, and never mutates the worktree; `worktree equivalence` produces read-only patch-id and byte
   containment evidence and never asserts semantic equivalence; and
   `loop close-equivalent` closes a relinquished, frozen-scope, or legacy
   close-only loop only when every obligated worktree is proven contained in
@@ -363,7 +363,14 @@
   the classification. Claim protection under `worktree takeover` follows the
   controller lifecycle: an active loop protects every registered path, while
   a relinquished loop protects only adopted claim-and-pause linkages, so a
-  dead run's own registrations cannot freeze stale-claim recovery.
+  dead run's own registrations cannot freeze stale-claim recovery. The one
+  exception under an active controller is a registered concurrent author's
+  live claim, which may be reassigned to that controller itself, so a
+  vanished author is recorded through pause and accept without relinquishing
+  the run or freezing its shipment scope. A claim belongs to the harness
+  session that made it, marked in its coordination event IDs: its agent ID
+  acts on it, and attests through it, only from that session, and a
+  reassigning takeover moves it to the session that runs the takeover.
 - A repository `execGuard` (an argv array in `.simple-changes.json`, never in
   personal preferences) runs as `[...execGuard, ...command]` inside the lease of
   every `loop exec`, after all other lease checks and immediately before the

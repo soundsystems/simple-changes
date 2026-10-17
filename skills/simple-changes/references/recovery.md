@@ -203,16 +203,47 @@ cleanup` for one audited standalone pass when no loop record exists. A
 target-equivalent close is never reported as shipped.
 
 **Stale claim takeover.** When a claim's recorded owner no longer exists, use
-`worktree takeover --claim-id <id> --agent-id <new-owner> --approved-by <who>
---reason <why> [--release]`. It binds to the worktree's exact current status
-digest (re-observe on mismatch), and either reassigns ownership or releases
-the claim. It refuses claims a loop still requires, judged by lifecycle rather
+`worktree takeover --claim-id <id> --agent-id <new-owner> --head <sha>
+--branch <name> --status-digest <digest> --approved-by <who> --reason <why>
+[--release]`, with `--detached` in place of `--branch` for a detached
+checkout and `--head none` for a checkout that has no commit yet. The approval names one exact checkout state, and every clean
+checkout has the same status digest, so the takeover refuses when the
+worktree's branch, HEAD, or status digest differs from the one named:
+re-observe and confirm the current state with the approver. It either
+reassigns ownership, recording that state on the claim, or releases the
+claim. A reassigned claim belongs to the harness session that ran the
+takeover, which is how a replacement session continues an ended session's
+claim, under the same agent ID or its own. A stale claim, whose owner's pause
+found the checkout moved, can be taken over the same way. So can a detached
+one: its checkout is absent by design, so a reassign names the preserved
+branch with the HEAD and status digest the claim recorded, and the branch must
+still point at that HEAD. A release only retires a claim and touches no file
+or ref, so it can release whatever the owner's own release could: when Git
+lists no worktree at the claim's path and the recorded state cannot be
+reattached (the preserved branch moved or was deleted, the checkout was
+removed, or something else now occupies the path), `--release` names the
+claim's branch at its current tip, or the recorded HEAD once the branch is
+gone, with the recorded digest. Every refusal prints the takeover form that
+would be accepted. It refuses claims a loop still requires, judged by lifecycle rather
 than bare path membership: an active loop protects every registered path, but
 a relinquished loop preserves work through the worktrees themselves, so its
 registered paths no longer freeze takeover; only an adopted coordination
 linkage (a preserved registration bound to a claim and pause receipt) stays
 protected for the resumed controller to verify. It never edits, removes, or
 repairs the worktree itself.
+
+**Vanished concurrent author.** While a run's controller is active, the one
+takeover it allows on a registered path reassigns the live claim on a
+concurrent-author checkout to that controller itself: never `--release`, and
+never to another agent. `loop verify` prints the exact command, with the
+checkout's current branch, HEAD, and digest, beside the owner's claim and
+pause steps. With the user's approval the controller runs it, runs `loop
+verify` again, and follows its own claim, pause, and `loop
+accept-paused-change` steps, which record the checkout as adopted preserved
+work. Do not relinquish the run for this: relinquishing freezes its shipment
+scope, while this route keeps the planned scope, the controller, and every
+registered author as they were. It never attests the vanished author's
+commits and relaxes no review, check, deployment, or migration gate.
 
 **Equivalence evidence.** `worktree equivalence --worktree <path>
 [--target <ref>] --json` is read-only: it compares each commit ahead of the

@@ -201,7 +201,11 @@ nothing is reconstructed later. Record it whatever `proposalSignatures` says:
    reports for this agent; omit what it does not report. `--agent` is the
    model ID the harness reports, such as `model-5-5`: lowercase, no spaces,
    with no effort word or note. Adversarial review compares model IDs only,
-   so a display name such as `Model 5.5 high` is missing evidence there.
+   so a display name such as `Model 5.5 high` is missing evidence there. A
+   worktree claim makes an agent eligible only from the session that holds
+   it, so another session, or one that reports none, cannot attest under
+   that agent ID; a replacement session first takes the claim over with
+   approval.
    If an earlier attestation of yours on that commit lacked an instance or
    model ID your harness reports now, a display name included, run the same
    command again from the same

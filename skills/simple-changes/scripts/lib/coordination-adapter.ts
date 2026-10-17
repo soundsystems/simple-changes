@@ -1,5 +1,6 @@
 import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
 import { currentHarnessSession } from "./harness-session.ts";
+import { RUN_ID_PATTERN } from "./run-id.ts";
 import type {
   CoordinationAdapterCapabilities,
   CoordinationBlocker,
@@ -11,7 +12,6 @@ import type {
 type Environment = Record<string, string | undefined>;
 
 const ADAPTER_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/u;
-const RUN_ID_PATTERN = /^run-[a-z0-9-]+$/u;
 
 const PROFILES: Record<string, CoordinationAdapterCapabilities> = {
   "claude-code": {

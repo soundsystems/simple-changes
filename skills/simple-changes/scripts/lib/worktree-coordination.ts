@@ -16,6 +16,7 @@ import { sha256, sha256Json } from "./hash.ts";
 import { captureInventory, locateRepository } from "./inventory.ts";
 import { runGit } from "./process.ts";
 import { redactSecrets } from "./redact.ts";
+import { RUN_ID_PATTERN } from "./run-id.ts";
 import { validateSchema } from "./schema.ts";
 import type {
   LoopLease,
@@ -41,7 +42,6 @@ const ACTIVE_LOOP_FILENAME = "active-loop.json";
 const ACTIVE_LOOP_LOCK_DIRECTORY = "active-loop.lock";
 const STALE_LOCK_MINIMUM_AGE_MS = 5000;
 const ADAPTER_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/u;
-const RUN_ID_PATTERN = /^run-[a-z0-9-]+$/u;
 const SHA_PATTERN = /^[0-9a-f]{40,64}$/u;
 const PERMISSION_DENIED_CODES = new Set(["EACCES", "EPERM", "EROFS"]);
 const LIVE_STATES = new Set<WorktreeCoordinationState>([

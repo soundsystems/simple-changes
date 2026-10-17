@@ -198,7 +198,11 @@
   digest, and releases the claim as a completed-work handoff carrying that
   exact evidence so an active loop keeps integrating. A receipt reads `stale`
   once its branch or checkout moves and `shipped` once the target contains it,
-  and it grants no merge, deploy, migration, or cleanup authority.
+  and it grants no merge, deploy, migration, or cleanup authority. It is
+  recorded only while every commit the target lacks from its head has an
+  attested author, every replay source has one, and every inconclusive replay
+  has an attested edit, or the owner names exactly the outstanding commits
+  another agent made; naming them records nothing and waives nothing.
 - Shipment holds are local records beside the claims, optionally published as
   `refs/simple-changes/holds/<id>` for other clones. A `ship` hold covers
   merges, deployments, and migrations; `deploy` and `migrations` holds cover

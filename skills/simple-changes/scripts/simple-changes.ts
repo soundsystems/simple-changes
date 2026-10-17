@@ -15,6 +15,12 @@ import { createInterface } from "node:readline/promises";
 import { fileURLToPath } from "node:url";
 import { sleep, stdin } from "bun";
 import {
+  type AuthorCoverage,
+  authorCoverage,
+  COVERAGE_NEXT_STEP,
+  describeOutstanding,
+} from "./lib/author-coverage.ts";
+import {
   type AuthoringSidecar,
   authoringPaths,
   changelogsHarnessPrefill,
@@ -141,6 +147,8 @@ import {
 import { withReadOnlyGit } from "./lib/read-only-git.ts";
 import {
   parseReadyWorkInput,
+  type ReadyWorkCoverage,
+  type ReadyWorkRecordResult,
   type ReadyWorkStatus,
   readyWorkStatus,
   recordReadyWork,
@@ -435,7 +443,8 @@ Usage:
   simple-changes worktree resume-ready --run-id ID --agent-id ID --claim-id ID
     [--json] [--repo PATH]
   simple-changes worktree release --agent-id ID --claim-id ID
-    [--ready-receipt FILE] [--json] [--repo PATH]
+    [--ready-receipt FILE [--leave-uncovered SHA[,SHA ...]]]
+    [--json] [--repo PATH]
   simple-changes worktree takeover --claim-id ID --agent-id NEW_OWNER
     --status-digest SHA256 --approved-by ID --reason TEXT [--release]
     [--json] [--repo PATH]
@@ -495,6 +504,7 @@ Usage:
     [--contribution implementation] [--replays SHA[,SHA ...]]
     [--worktree PATH] [--instance ID] [--agent NAME] [--complete-identity]
     [--json] [--repo PATH]
+  simple-changes author coverage --base REF --head REF [--json] [--repo PATH]
   simple-changes skill check [--skill-dir PATH] [--json]
   simple-changes validate KIND FILE [--json]
   simple-changes verify-markdown FILE [--json]
@@ -562,6 +572,7 @@ interface CliOptions {
   instructionFile?: string;
   instructionPointer?: "add" | "leave";
   json: boolean;
+  leaveUncovered: string[];
   localOnly: boolean;
   manifestDigest?: string;
   migrationHandling?: RepoPolicy["migrationHandling"];
@@ -702,6 +713,7 @@ const VALUED_OPTIONS = new Set([
   "--commit",
   "--contribution",
   "--instance",
+  "--leave-uncovered",
   "--proposal",
   "--replays",
   "--session",
@@ -1254,6 +1266,15 @@ const applyLedgerValuedOption = (
     ];
     return true;
   }
+  if (option === "--leave-uncovered") {
+    options.leaveUncovered.push(
+      ...value
+        .split(",")
+        .map((sha) => sha.trim())
+        .filter(Boolean)
+    );
+    return true;
+  }
   if (option === "--contribution") {
     if (value !== "implementation") {
       throw new SimpleChangesError(
@@ -1424,6 +1445,7 @@ const parseOptions = (args: string[]): CliOptions => {
     help: false,
     hook: false,
     json: false,
+    leaveUncovered: [],
     localOnly: false,
     migrationTargets: [],
     overrideHalt: false,
@@ -3358,11 +3380,55 @@ const renderAttestation = (result: AuthorAttestResult): string => {
   return `${lines.join("\n")}\n`;
 };
 
+const renderCoverageReport = (report: AuthorCoverage): string => {
+  const range = `Author coverage of ${report.base}..${report.head} (${report.commits.length} commit${report.commits.length === 1 ? "" : "s"})`;
+  if (report.status === "ledger-unreadable") {
+    return `${range}: unknown; the review ledger at ${report.ledger.path} is malformed (${report.ledger.errors.join("; ")}). Ask the owner to repair it.\n`;
+  }
+  const missingModel = [
+    ...new Set(
+      report.incompleteIdentities
+        .filter((entry) => entry.completable)
+        .map((entry) => entry.commit)
+    ),
+  ];
+  const identities =
+    missingModel.length > 0
+      ? `Attestations reporting no model: ${missingModel.join(", ")}. Their author can complete them from the same session with \`author attest --complete-identity\` while it still holds the checkout's claim.\n`
+      : "";
+  if (report.status === "covered") {
+    return `${range}: complete.\nAuthors digest: ${report.authorsDigest}\n${identities}`;
+  }
+  return `${range}: incomplete; not ready for review.\n${describeOutstanding(report.outstanding).join("\n")}\n${COVERAGE_NEXT_STEP}\n${identities}`;
+};
+
+// A check, like `proposal audit`: the report goes to stdout either way, and
+// incomplete or unreadable coverage exits with the validation code.
+const runAuthorCoverage = (options: CliOptions): number => {
+  const report = withReadOnlyGit(() =>
+    authorCoverage(
+      options.repo,
+      requireCliOption(options.baseRef, "--base"),
+      requireCliOption(options.headRef, "--head")
+    )
+  );
+  writeOutput(report, options.json, renderCoverageReport(report));
+  return report.status === "covered"
+    ? EXIT_CODES.success
+    : EXIT_CODES.validation;
+};
+
 // `author attest` is a public command that takes the loop lock itself, so it
 // runs after `loop exec` returns and never inside it.
-const runAuthorCommand = (options: CliOptions): void => {
+const runAuthorCommand = (options: CliOptions): number => {
+  if (options.positional.length === 1 && options.positional[0] === "coverage") {
+    return runAuthorCoverage(options);
+  }
   if (options.positional.length !== 1 || options.positional[0] !== "attest") {
-    throw new SimpleChangesError("author requires attest", EXIT_CODES.usage);
+    throw new SimpleChangesError(
+      "author requires attest or coverage",
+      EXIT_CODES.usage
+    );
   }
   const result = attestCommits({
     commits: options.commits,
@@ -3384,6 +3450,7 @@ const runAuthorCommand = (options: CliOptions): void => {
       : { worktreePath: options.worktreePath }),
   });
   writeOutput(result, options.json, renderAttestation(result));
+  return EXIT_CODES.success;
 };
 
 const PROPOSAL_LEDGER_ACTIONS = new Set([
@@ -4491,19 +4558,35 @@ const runWorktreeReadyRelease = (
     options.repo,
     agentId,
     requireCliOption(options.claimId, "--claim-id"),
-    parseReadyWorkInput(readJsonFile(readyReceiptPath))
+    parseReadyWorkInput(readJsonFile(readyReceiptPath)),
+    { leaveUncovered: options.leaveUncovered }
   );
   writeOutput(
     result,
     options.json,
-    `Released ${result.claim.claimId} as ready work ${result.receipt.receiptId} on ${result.receipt.branch} at ${result.receipt.headSha}.\n`
+    `Released ${result.claim.claimId} as ready work ${result.receipt.receiptId} on ${result.receipt.branch} at ${result.receipt.headSha}.\n${renderReadyCoverage(result)}`
   );
+};
+
+const renderReadyCoverage = (result: ReadyWorkRecordResult): string => {
+  const count = result.coverage.commits.length;
+  const commits = `${count} commit${count === 1 ? "" : "s"}`;
+  if (result.leftUncovered.length === 0) {
+    return `Author coverage: complete (${commits} the target lacks).\n`;
+  }
+  return `Author coverage: ${result.leftUncovered.length} outstanding of ${commits} left uncovered for their author or the owner; review stays blocked until they are attested or waived:\n${describeOutstanding(result.leftUncovered).join("\n")}\n`;
 };
 
 const runWorktreeRelease = (options: CliOptions, agentId: string): void => {
   if (options.readyReceiptPath) {
     runWorktreeReadyRelease(options, agentId);
     return;
+  }
+  if (options.leaveUncovered.length > 0) {
+    throw new SimpleChangesError(
+      "--leave-uncovered applies only with --ready-receipt.",
+      EXIT_CODES.usage
+    );
   }
   const claim = releaseWorktreeClaim(
     options.repo,
@@ -4657,6 +4740,30 @@ const runWorktreeCommand = (options: CliOptions): void => {
   );
 };
 
+// Controller-facing: it names the outstanding commits and who decides, never
+// a command to attest them.
+const renderReadyWorkCoverage = (
+  coverage: ReadyWorkCoverage | null
+): string => {
+  if (coverage === null) {
+    return "";
+  }
+  if (coverage.status === "unknown") {
+    return `\n  author coverage: unknown (${coverage.detail})`;
+  }
+  if (coverage.status === "ledger-unreadable") {
+    return `\n  author coverage: unknown (the review ledger at ${coverage.ledger.path} is malformed)`;
+  }
+  if (coverage.status === "covered") {
+    return "\n  author coverage: complete";
+  }
+  return `\n  author coverage: incomplete; ask each commit's author to attest it, or the owner to decide:\n${describeOutstanding(
+    coverage.outstanding
+  )
+    .map((line) => `  ${line}`)
+    .join("\n")}`;
+};
+
 const renderReadyWork = (
   readyWork: readonly ReadyWorkStatus[] | { error: string }
 ): string =>
@@ -4666,7 +4773,7 @@ const renderReadyWork = (
         `Ready-work receipts: ${readyWork.length}`,
         ...readyWork.map(
           (item) =>
-            `- ${item.receipt.branch} (${item.receipt.owner.agentId}) ${item.freshness}: ${item.receipt.scope}`
+            `- ${item.receipt.branch} (${item.receipt.owner.agentId}) ${item.freshness}: ${item.receipt.scope}${renderReadyWorkCoverage(item.coverage)}`
         ),
         "",
       ].join("\n");
@@ -5520,8 +5627,7 @@ const executeCommand = async (
       runScratchFileRule(options);
       return EXIT_CODES.success;
     case "author":
-      runAuthorCommand(options);
-      return EXIT_CODES.success;
+      return runAuthorCommand(options);
     case "release-notes":
       return runReleaseNotes(options);
     case "negotiate-changelog":

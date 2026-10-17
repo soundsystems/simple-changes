@@ -418,7 +418,9 @@ branch onto the updated target through `loop exec`.
    and any open question, leaving its worktree clean and its work directory in
    place. Before treating the unit
    as ready, the controller confirms that the registered branch head equals the
-   reported commit and that no uncommitted changes remain. A unit with an open
+   reported commit, that no uncommitted changes remain, and that `author
+   coverage --base <pinned target> --head <commit>` reports complete. For a
+   gap, it asks that agent to attest, never attesting for it. A unit with an open
    question or a failed check waits while the others continue.
 4. The controller alone pushes, opens or updates proposals, and merges each
    unit through the ordinary serialized path, refreshing and re-verifying
@@ -511,6 +513,19 @@ itself, rejects those fields in the input, and refuses secrets.
 same lock interval it releases the claim as a completed-work `handoff` that
 records the receipted evidence, so an active loop that admitted the author
 keeps integrating instead of reporting a stale claim.
+
+The runtime first checks author coverage of every commit the target lacks
+from the head, the same check `author coverage` makes. While a commit has no
+attested author, carries a replay source with none, or is an inconclusive
+replay nobody attested an edit on, it records nothing, keeps the claim the
+owner's so the owner can still attest, and prints the exact SHAs with the
+owner's own `author attest` commands. A commit another agent made, such as
+unmerged work this branch is stacked on, is that agent's to attest from its
+own session. To hand off anyway, name exactly those SHAs with
+`--leave-uncovered <sha>[,<sha>...]`. That is not a waiver and records
+nothing: each receipt's `coverage` in `worktree status` keeps showing them,
+and review stays blocked until they are attested or the owner waives them on
+the proposal.
 
 `worktree status --json` lists every receipt under `readyWork` with its
 freshness: `current` while the branch is still at the receipted head and the
@@ -644,7 +659,8 @@ When the work is complete and verified, the same owner unlocks it with
 author's own claim on that checkout as it proceeds; released work becomes an
 ordinary stable unit that this or any later controller may ship.
 
-Release the claim when the work is done. An active claim excludes its
+Release the claim when the work is done, after attesting every commit on it:
+a released claim can attest nothing. An active claim excludes its
 checkout from packaging, merge, and cleanup, so a finished branch stays
 unshippable until its owner runs `worktree release --claim-id <id>` or hands
 the work off with `initialize --mode handoff --agent-id <owner>`, which

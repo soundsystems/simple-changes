@@ -1211,7 +1211,10 @@ describe("Simple Changes skill contract", () => {
       "The disposition permits only that opening worktree's absence"
     );
     expect(normalizedConcurrency).toContain(
-      "target ref or revision differs from the active lease"
+      "target ref differs from the active lease's or, until finalization records the removal as completed, when its recorded target revision differs"
+    );
+    expect(normalizedConcurrency).toContain(
+      "A removal recorded as completed keeps accepting the absence after the target moves"
     );
   });
 

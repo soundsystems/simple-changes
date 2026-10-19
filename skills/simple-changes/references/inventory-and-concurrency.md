@@ -807,9 +807,13 @@ zero-unique-commit result before deletion.
 The disposition permits only that opening worktree's absence. It does not
 remove the path, authorize `--force`, delete its branch, suppress other
 violations, survive an intervening worktree change, or match when its recorded
-target ref or revision differs from the active lease. Run the exact removal
-through `loop exec` so preflight sees the recorded disposition and postflight
-proves only the authorized path disappeared.
+target ref differs from the active lease's or, until finalization records the
+removal as completed, when its recorded target revision differs. Run the exact
+removal through `loop exec` so preflight sees the recorded disposition and
+postflight proves only the authorized path disappeared. A removal recorded as
+completed keeps accepting the absence after the target moves, such as through
+a guarded fetch in a resumed run, so the run does not report its own finished
+removal as `missing-preserved-worktree`.
 
 If a preserved worktree the run did not create has already disappeared
 because its owning task removed it, `loop retire-absent-worktree` records the

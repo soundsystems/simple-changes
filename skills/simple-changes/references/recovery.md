@@ -151,7 +151,9 @@ only after proving it clean with zero unique commits. When a preserved checkout,
 including one registered by `loop rebaseline`, has been removed by its owning
 task, record that absence with `loop retire-absent-worktree` on named approval;
 it requires the path to be gone from disk and from Git's worktree list, deletes
-nothing, and proves no delivery.
+nothing, and proves no delivery. A worktree the run's own finalization removed
+needs no retirement: its completed removal disposition keeps accepting the
+absence after a resume, even once a guarded fetch moves the target.
 
 If a preserved worktree the run did not create, whether registered at loop
 start, adopted, or added by `loop rebaseline`, has already disappeared because

@@ -46,6 +46,7 @@ import {
   validateAuthoringSidecar,
   writeAuthoringSidecar,
 } from "../../../skills/simple-changes/scripts/lib/authoring.ts";
+import { recommendedAuthoringAnswer } from "../../../skills/simple-changes/scripts/lib/authoring-onboarding.ts";
 import { captureInventory } from "../../../skills/simple-changes/scripts/lib/inventory.ts";
 import { resolveReviewer } from "../../../skills/simple-changes/scripts/lib/review-ledger.ts";
 import { createTestRepository, git, type TestRepository } from "./helpers.ts";
@@ -303,6 +304,51 @@ const VALIDATION_TABLE: { name: string; valid: boolean; value: unknown }[] = [
     valid: false,
     value: loose({ constructor: { extra: true, model: 42 } }),
   },
+  {
+    name: "extensions on each role",
+    valid: true,
+    value: loose(
+      {},
+      {
+        proposals: {
+          extensions: { future: { list: [1, null, "kept"] } },
+          harness: "running",
+        },
+        review: { extensions: {}, harness: "running" },
+      }
+    ),
+  },
+  ...[[], null, "kept", 1].map((extensions) => ({
+    name: `role extensions of ${JSON.stringify(extensions)}`,
+    valid: false,
+    value: loose({}, { review: { extensions, harness: "running" } }),
+  })),
+  {
+    name: "an unknown role key beside extensions",
+    valid: false,
+    value: loose(
+      {},
+      { review: { extensions: {}, graded: 1, harness: "running" } }
+    ),
+  },
+  {
+    name: "extensions on the sidecar",
+    valid: false,
+    value: { ...EMPTY, extensions: {} },
+  },
+  {
+    name: "extensions in an agent entry",
+    valid: false,
+    value: loose({ gamma: { extensions: {}, model: "y" } }),
+  },
+  {
+    name: "extensions in a review loop",
+    valid: false,
+    value: loose(
+      {},
+      { review: { harness: "running", reviewLoop: { extensions: {} } } }
+    ),
+  },
   { name: "unknown top-level key", valid: false, value: { ...EMPTY, x: 1 } },
   {
     name: "schema version 2",
@@ -350,6 +396,84 @@ describe("authoring sidecar validation", () => {
     };
     for (const { name, valid, value } of VALIDATION_TABLE) {
       expect({ name, valid: schemaValid(value) }).toEqual({ name, valid });
+    }
+  });
+});
+
+describe("authoring extensions", () => {
+  const HINT =
+    "is not allowed (a newer Simple Changes may have written it; update this runtime)";
+
+  test("an unknown role key names a newer runtime, other unknown keys do not, and a Simple Changelogs role has no extensions", () => {
+    expect(
+      validateAuthoringSidecar(
+        loose(
+          { gamma: { command: "x", model: "y" } },
+          {
+            proposals: { extensions: [], harness: "running" },
+            review: { graded: true, harness: "running" },
+          }
+        )
+      ).errors
+    ).toEqual([
+      "roles.proposals.extensions must be an object",
+      `roles.review.graded ${HINT}`,
+      "harnesses.gamma.command is not allowed",
+    ]);
+    expect(validateAuthoringSidecar({ ...EMPTY, graded: true }).errors).toEqual(
+      ["sidecar.graded is not allowed"]
+    );
+    expect(
+      validateAuthoringSidecar(
+        loose({}, { "release-notes": { extensions: {}, harness: "running" } }),
+        "simple-changelogs"
+      ).errors
+    ).toEqual(["roles.release-notes.extensions is not allowed"]);
+  });
+
+  test("extensions are written byte for byte, never read, and absent from a fresh answer", () => {
+    const directory = temporary("extensions");
+    const path = join(directory, "authoring.json");
+    // A fresh answer, as setup records it, carries no extensions.
+    const fresh = recommendedAuthoringAnswer(["alpha-agent", "beta-agent"]);
+    expect(writeAuthoringSidecar(path, fresh, true).written).toBe(true);
+    expect(readFileSync(path, "utf8")).not.toContain('"extensions"');
+    const members = JSON.parse(
+      '{"__proto__":{"polluted":true},"constructor":"kept","future":1.5,"nested":{"list":[1,null,"\u00e9",{"flag":false}]}}'
+    ) as Record<string, unknown>;
+    const plain = sidecar(
+      { "alpha-agent": { effort: "high", model: "alpha-model" } },
+      {
+        proposals: { harness: "running" },
+        review: {
+          adversarial: true,
+          escalateOnFindings: "xhigh",
+          harness: "alpha-agent",
+          reviewLoop: { roundCap: 3 },
+        },
+      }
+    );
+    const extended = structuredClone(plain);
+    for (const role of Object.values(extended.roles)) {
+      role.extensions = structuredClone(members);
+    }
+    const text = `${JSON.stringify(extended, null, 2)}\n`;
+    expect(writeAuthoringSidecar(path, extended, true).written).toBe(true);
+    expect(readFileSync(path, "utf8")).toBe(text);
+    const read = readAuthoringFile(path);
+    expect(read.state).toBe("valid");
+    expect(JSON.stringify(read.value)).toBe(JSON.stringify(extended));
+    // Writing back what was read changes nothing on disk.
+    expect(writeAuthoringSidecar(path, read.value, true).written).toBe(false);
+    expect(readFileSync(path, "utf8")).toBe(text);
+    // Resolution reads the same roles with and without them.
+    const at = (value: AuthoringSidecar) => [
+      { layer: "repository" as const, path, value },
+    ];
+    for (const role of ["proposals", "review"] as const) {
+      expect(resolveAuthoringRole(role, at(extended), "alpha-agent")).toEqual(
+        resolveAuthoringRole(role, at(plain), "alpha-agent")
+      );
     }
   });
 });

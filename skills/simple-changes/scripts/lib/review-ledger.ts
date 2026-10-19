@@ -28,6 +28,11 @@ import {
   resolveRepositoryAuthoring,
 } from "./authoring.ts";
 import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
+import {
+  EXTENSIONS_KEY,
+  type RecordExtensions,
+  unknownKeyMessage,
+} from "./extensions.ts";
 import { currentHarnessSession } from "./harness-session.ts";
 import { sha256 } from "./hash.ts";
 import { captureInventory, locateRepository } from "./inventory.ts";
@@ -58,6 +63,10 @@ import {
 // membership and baseline checks, never proof of where a commit was made.
 // This module names no harness: the session and harness come only from the
 // session adapter, and preferences come from the authoring sidecar resolver.
+//
+// The ledger root, each attestation, completion and review attempt may carry
+// an `extensions` object (see extensions.ts): this runtime accepts any members
+// in it, never reads them, and keeps them byte for byte on every write.
 
 type Environment = Record<string, string | undefined>;
 
@@ -92,6 +101,8 @@ export interface RuntimeIdentity {
 
 /** One agent's attested contribution to a commit's implementation. */
 export interface Attestation extends RuntimeIdentity {
+  /** Members a newer runtime recorded; kept on every write and never read. */
+  extensions?: RecordExtensions;
   logicalId: string | null;
   recordedAt: string;
 }
@@ -109,6 +120,8 @@ export interface AttestedIdentity extends RuntimeIdentity {
  */
 export interface IdentityCompletion extends RuntimeIdentity {
   completes: AttestedIdentity[];
+  /** Members a newer runtime recorded; kept on every write and never read. */
+  extensions?: RecordExtensions;
   logicalId: string;
   recordedAt: string;
 }
@@ -174,6 +187,8 @@ export interface ReviewAttempt {
   coverageWaiverId: string | null;
   effort: AuthoringEffort;
   effortSource: ReviewEffortSource;
+  /** Members a newer runtime recorded; kept on every write and never read. */
+  extensions?: RecordExtensions;
   findingsCount: number;
   headRevision: string;
   recordedAt: string;
@@ -196,6 +211,11 @@ export interface ReviewLedger {
   attestations: Record<string, Attestation[]>;
   /** Present only once a completion is recorded, so older readers still read other ledgers. */
   completions?: Record<string, IdentityCompletion[]>;
+  /**
+   * Members a newer runtime recorded; kept on every write and never read. A
+   * new ledger has none, so older readers still read it.
+   */
+  extensions?: RecordExtensions;
   proposals: Record<string, ProposalRecord>;
   replays: Record<string, ReplayRecord>;
   schemaVersion: 1;
@@ -361,13 +381,27 @@ class Checker {
     return isRecord(value);
   }
 
+  /**
+   * Exactly `keys`. An extensible record may also carry `extensions`, an
+   * object whose members are accepted and never read; an unknown key beside
+   * it may be one a newer runtime wrote, and its error says so.
+   */
   keys(
     value: Record<string, unknown>,
     keys: readonly string[],
-    path: string
+    path: string,
+    extensible = false
   ): void {
     for (const key of Object.keys(value)) {
-      this.check(keys.includes(key), `${path}.${key}`, "is not allowed");
+      if (extensible && key === EXTENSIONS_KEY) {
+        this.check(isRecord(value[key]), `${path}.${key}`, "must be an object");
+        continue;
+      }
+      this.check(
+        keys.includes(key),
+        `${path}.${key}`,
+        unknownKeyMessage(extensible)
+      );
     }
     for (const key of keys) {
       this.check(Object.hasOwn(value, key), `${path}.${key}`, "is required");
@@ -458,7 +492,8 @@ const checkAttestations = (checker: Checker, value: unknown): void => {
       checker.keys(
         entry,
         [...IDENTITY_KEYS, "logicalId", "recordedAt"],
-        entryPath
+        entryPath,
+        true
       );
       checker.identity(entry, entryPath);
       checker.check(
@@ -514,7 +549,8 @@ const checkCompletion = (
   checker.keys(
     entry,
     [...IDENTITY_KEYS, "completes", "logicalId", "recordedAt"],
-    path
+    path,
+    true
   );
   checker.identity(entry, path);
   checker.check(
@@ -903,7 +939,7 @@ const checkAttempt = (checker: Checker, value: unknown, path: string): void => {
   if (!checker.object(value, path)) {
     return;
   }
-  checker.keys(value, withOptionalSeverities(value, ATTEMPT_KEYS), path);
+  checker.keys(value, withOptionalSeverities(value, ATTEMPT_KEYS), path, true);
   checker.check(isUuid(value.attemptId), `${path}.attemptId`, "must be a UUID");
   checker.check(
     isCommitSha(value.headRevision),
@@ -1032,7 +1068,11 @@ export interface ReviewLedgerValidation {
   reason: LedgerProblem | null;
 }
 
-/** Validates a whole ledger: exact keys at every level, then acyclicity. */
+/**
+ * Validates a whole ledger: exact keys at every level, then acyclicity. The
+ * root, attestations, completions and attempts may also carry `extensions`,
+ * whose members are never checked.
+ */
 export const validateReviewLedger = (
   value: unknown
 ): ReviewLedgerValidation => {
@@ -1055,7 +1095,8 @@ export const validateReviewLedger = (
       "replays",
       "schemaVersion",
     ],
-    "ledger"
+    "ledger",
+    true
   );
   checker.check(value.schemaVersion === 1, "ledger.schemaVersion", "must be 1");
   checkAttestations(checker, value.attestations);
@@ -1082,6 +1123,7 @@ export const validateReviewLedger = (
 export const reviewLedgerPath = (commonGitDirectory: string): string =>
   resolve(commonGitDirectory, STATE_DIRECTORY, LEDGER_FILENAME);
 
+// A new ledger carries no `extensions` key, so a runtime before 0.32.0 reads it.
 export const emptyReviewLedger = (): ReviewLedger => ({
   attestations: {},
   proposals: {},
@@ -1252,8 +1294,10 @@ const assertOutsideLoopExec = (commonGitDirectory: string): void => {
  * One public ledger write: take the loop lock, read and validate the whole
  * ledger (refusing a malformed one), apply the change to a copy, recompute
  * the derived coverage fields, and write atomically only when something
- * changed. Lock order stays loop lock, then coordination lock; this never
- * takes the coordination lock.
+ * changed. The copy is the whole parsed ledger and changes edit it in place,
+ * so every `extensions` member is written back as it was read. Lock order
+ * stays loop lock, then coordination lock; this never takes the
+ * coordination lock.
  */
 const withLedgerTransaction = <T>(
   commonGitDirectory: string,

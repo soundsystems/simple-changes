@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://simple-changes.dev/schemas/authoring.schema.json",
   "title": "Simple Changes authoring preferences",
-  "description": "The .simple-changes-authoring.json repository sidecar and the personal authoring.json beside preferences.json. A preference for which agent and model write proposal text and perform reviews; never authority or identity.",
+  "description": "The .simple-changes-authoring.json repository sidecar and the personal authoring.json beside preferences.json. A preference for which agent and model write proposal text and perform reviews; never authority or identity. Each role may carry `extensions` (see $defs.extensions).",
   "type": "object",
   "additionalProperties": false,
   "required": ["schemaVersion", "roles", "harnesses"],
@@ -40,6 +40,10 @@
       "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]+$"
     },
     "effort": { "enum": ["low", "medium", "high", "xhigh", "max"] },
+    "extensions": {
+      "description": "Optional, on each role: members a newer Simple Changes recorded beside the role. A reader accepts any members without interpreting them, and a write keeps them byte for byte as the answer holds them. A field belongs here only when a reader that ignores it, or finds it absent, can only be stricter, never looser; a field that could loosen a gate goes outside extensions, where a reader that does not know it refuses the sidecar, and its error says a newer Simple Changes may have written it. Setup never writes extensions itself. Runtimes before 0.32.0 reject it.",
+      "type": "object"
+    },
     "harnessEntry": {
       "type": "object",
       "additionalProperties": false,
@@ -56,7 +60,8 @@
       "properties": {
         "harness": { "$ref": "#/$defs/target" },
         "model": { "$ref": "#/$defs/model" },
-        "effort": { "$ref": "#/$defs/effort" }
+        "effort": { "$ref": "#/$defs/effort" },
+        "extensions": { "$ref": "#/$defs/extensions" }
       },
       "if": { "required": ["model"] },
       "then": {
@@ -97,7 +102,8 @@
               ]
             }
           }
-        }
+        },
+        "extensions": { "$ref": "#/$defs/extensions" }
       },
       "if": { "required": ["model"] },
       "then": {

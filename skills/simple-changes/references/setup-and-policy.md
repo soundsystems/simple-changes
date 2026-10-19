@@ -437,6 +437,15 @@ Runtimes before 0.31.0 reject a sidecar holding `reviewLoop`, so it is written
 only for answers other than the recommended ones. See
 [review rounds](review-and-merge.md#review-rounds).
 
+Each role may also carry an `extensions` object for fields a newer Simple
+Changes adds, under the
+[review ledger's rule](review-and-merge.md#review-identity-and-the-review-ledger):
+only a field whose absence leaves a reader stricter goes there, and an unknown
+key beside it fails with a hint to update the runtime. A reader accepts its
+members without interpreting them, and a write keeps them byte for byte. An
+answer replaces the whole file, so it keeps only the extensions it holds;
+setup never writes one itself. Runtimes before 0.32.0 reject it.
+
 Before writing, resolve the role; `most-capable` is the most capable model the
 target agent itself reports, never ranked from memory. Use the nearest effort
 the target offers, never above the configured level. Write directly when the

@@ -14,6 +14,11 @@ import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
 import {
+  EXTENSIONS_KEY,
+  type RecordExtensions,
+  unknownKeyMessage,
+} from "./extensions.ts";
+import {
   currentHarnessSession,
   SESSION_HARNESS_IDS,
 } from "./harness-session.ts";
@@ -25,6 +30,8 @@ import { resolvePersonalPolicyPath } from "./policy.ts";
 // the policy file (whose closed schema older copies enforce), stores no model
 // list and no launch mechanics, and names no harness: the harnesses this
 // package knows, and how to detect them, are data in agents/harnesses.json.
+// Each role may carry an `extensions` object (see extensions.ts): accepted,
+// never read, and written exactly as the answer holds it.
 
 export type AuthoringEffort = "low" | "medium" | "high" | "xhigh" | "max";
 // `request`: the current request (`--authoring-request`), applied for one
@@ -122,6 +129,8 @@ export interface AuthoringRoleEntry {
   adversarial?: boolean;
   effort?: AuthoringEffort;
   escalateOnFindings?: "high" | "xhigh" | null;
+  /** Members a newer runtime recorded; kept as written and never read. */
+  extensions?: RecordExtensions;
   harness: string;
   model?: string;
   reviewLoop?: ReviewLoopSettings;
@@ -285,14 +294,20 @@ export const higherEffort = (
 ): AuthoringEffort =>
   EFFORT_LEVELS.indexOf(left) >= EFFORT_LEVELS.indexOf(right) ? left : right;
 
+// An extensible record also allows `extensions`, and says that an unknown
+// key beside it may be one a newer runtime wrote.
 const unknownKeys = (
   value: Record<string, unknown>,
   allowed: readonly string[],
-  path: string
+  path: string,
+  extensible = false
 ): string[] =>
   Object.keys(value)
-    .filter((key) => !allowed.includes(key))
-    .map((key) => `${path}.${key} is not allowed`);
+    .filter(
+      (key) =>
+        !(allowed.includes(key) || (extensible && key === EXTENSIONS_KEY))
+    )
+    .map((key) => `${path}.${key} ${unknownKeyMessage(extensible)}`);
 
 const missingKeys = (
   value: Record<string, unknown>,
@@ -325,6 +340,9 @@ const roleErrors = (
     return [`${path} must be an object`];
   }
   const review = reviewFlags && role === "review";
+  // Only a Simple Changes sidecar's roles are extensible; a Simple
+  // Changelogs sidecar keeps that skill's exact keys.
+  const extensible = reviewFlags;
   const errors = [
     ...missingKeys(value, ["harness"], path),
     ...unknownKeys(
@@ -339,9 +357,17 @@ const roleErrors = (
             "reviewLoop",
           ]
         : ["harness", "model", "effort"],
-      path
+      path,
+      extensible
     ),
   ];
+  if (
+    extensible &&
+    Object.hasOwn(value, EXTENSIONS_KEY) &&
+    !isRecord(value[EXTENSIONS_KEY])
+  ) {
+    errors.push(`${path}.${EXTENSIONS_KEY} must be an object`);
+  }
   const { harness } = value;
   if (
     Object.hasOwn(value, "harness") &&
@@ -525,7 +551,8 @@ const harnessesErrors = (value: Record<string, unknown>): string[] => {
  * Validates one sidecar on its own (section 6.3 of the design): exact keys at
  * every level, closed role ids for the skill, harness ids by pattern, model
  * shape only, the effort enum (an explicitly chosen `max` included), and the
- * review-only flags. Every error names its path.
+ * review-only flags. A Simple Changes role may also carry `extensions`, an
+ * object whose members are never checked. Every error names its path.
  */
 export const validateAuthoringSidecar = (
   value: unknown,
@@ -1375,7 +1402,9 @@ const writeLockedSidecar = (
  * a malformed file (the owner repairs or removes it), never through a symlink,
  * through a temporary file renamed into place, and never over a file that
  * changed after the writer read it. Writers of one path are serialized by a
- * lock beside it. A failed write leaves the existing file untouched.
+ * lock beside it. A failed write leaves the existing file untouched. The text
+ * is the answer exactly as validated, so every `extensions` member in it is
+ * written as given.
  */
 export const writeAuthoringSidecar = (
   path: string,

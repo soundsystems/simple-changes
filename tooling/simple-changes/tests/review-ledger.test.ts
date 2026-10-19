@@ -4221,3 +4221,357 @@ describe("identity completion", () => {
     });
   });
 });
+
+describe("forward-compatible extensions", () => {
+  const C = fakeSha(31);
+  const HINT =
+    "is not allowed (a newer Simple Changes may have written it; update this runtime)";
+  // Members of every JSON kind, nested, under names that are also inherited
+  // object properties. Nothing reads them.
+  const membersFor = (level: string): Record<string, unknown> =>
+    JSON.parse(
+      `{"__proto__":{"polluted":true},"constructor":"kept","future":1.5,"${level}":{"list":[1,null,"é",{"flag":false}],"note":"kept"}}`
+    ) as Record<string, unknown>;
+  type Level = "root" | "attestation" | "completion" | "attempt";
+  const LEVELS: Level[] = ["root", "attestation", "completion", "attempt"];
+  const PATHS: Record<Level, string> = {
+    attempt: `proposals.${PROPOSAL}.attempts[0]`,
+    attestation: `attestations.${C}[1]`,
+    completion: `completions.${C}[0]`,
+    root: "ledger",
+  };
+  // Fresh records for every ledger, so a change to one never reaches another.
+  const partial = () => author("alpha", { agent: null, instance: null });
+  const full = () => author("alpha");
+  // The record at one level, in the shapes the builders below produce.
+  const recordAt = (ledger: ReviewLedger, level: Level) => {
+    const records: Record<Level, Record<string, unknown> | undefined> = {
+      attempt: ledger.proposals[PROPOSAL]?.attempts[0] as
+        | Record<string, unknown>
+        | undefined,
+      attestation: ledger.attestations[C]?.[1] as
+        | Record<string, unknown>
+        | undefined,
+      completion: ledger.completions?.[C]?.[0] as
+        | Record<string, unknown>
+        | undefined,
+      root: ledger as unknown as Record<string, unknown>,
+    };
+    const record = records[level];
+    if (!record) {
+      throw new Error(`no ${level} record`);
+    }
+    return record;
+  };
+  // A ledger with a record at every level that has extension points.
+  const plain = (): ReviewLedger => {
+    const ledger = emptyReviewLedger();
+    attestInMemory(ledger, C, partial());
+    attestInMemory(ledger, C, full());
+    const { recordedAt: _, ...completer } = full();
+    const { recordedAt: __, ...completed } = partial();
+    ledger.completions = {
+      [C]: [
+        {
+          ...completer,
+          completes: [completed],
+          logicalId: "agent-alpha",
+          recordedAt: STAMP,
+        },
+      ],
+    };
+    addHead(ledger, C, [C]);
+    ledger.proposals[PROPOSAL]?.attempts.push({
+      acceptanceReason: null,
+      accepted: true,
+      attemptId: randomUUID(),
+      authorsDigest: headCoverage(ledger, [C]).authorsDigest,
+      coverageWaiverId: null,
+      effort: "xhigh",
+      effortSource: "configured",
+      findingsCount: 1,
+      headRevision: C,
+      recordedAt: STAMP,
+      requested: { effort: "xhigh", harness: "codex", model: "model-beta" },
+      severities: { blocking: 0, nit: 1, shouldFix: 0 },
+      verdict: "findings",
+      verified: REVIEWER_B,
+    });
+    return ledger;
+  };
+  const extended = (): ReviewLedger => {
+    const ledger = plain();
+    for (const level of LEVELS) {
+      recordAt(ledger, level).extensions = membersFor(level);
+    }
+    return ledger;
+  };
+  const schema = (): Record<string, unknown> =>
+    JSON.parse(readFileSync(schemaPath, "utf8")) as Record<string, unknown>;
+  const both = (value: unknown): [boolean, boolean] => {
+    let schemaValid = true;
+    try {
+      validateSchemaDocument("review-ledger", schema(), value);
+    } catch {
+      schemaValid = false;
+    }
+    return [schemaValid, validateReviewLedger(value).reason === null];
+  };
+
+  test("the root, attestations, completions and attempts accept any extensions, which nothing reads, and the schema agrees", () => {
+    const ledger = extended();
+    expect(both(plain())).toEqual([true, true]);
+    expect(both(ledger)).toEqual([true, true]);
+    // An empty object is an extension point too.
+    for (const level of LEVELS) {
+      const empty = plain();
+      recordAt(empty, level).extensions = {};
+      expect({ level, verdicts: both(empty) }).toEqual({
+        level,
+        verdicts: [true, true],
+      });
+    }
+    // Nothing interprets them: coverage, the digest, the completion and the
+    // acceptance gate read the same with and without them.
+    const gate = (value: ReviewLedger) => {
+      const { authorsDigest, fullyCovered, gaps, unattributed } = headCoverage(
+        value,
+        [C]
+      );
+      return { authorsDigest, fullyCovered, gaps, unattributed };
+    };
+    expect(gate(ledger)).toEqual(gate(plain()));
+    expect(resolveEffectiveAuthors(ledger, C).authors).toHaveLength(1);
+    for (const adversarial of [false, true]) {
+      const verdict = (value: ReviewLedger) => {
+        const { coverage: _, ...decision } = decide(value, C, REVIEWER_B, {
+          adversarial,
+        });
+        return decision;
+      };
+      expect(verdict(ledger)).toEqual(verdict(plain()));
+    }
+    expect(
+      escalatingAttempt(
+        ledger.proposals[PROPOSAL]?.attempts[0] as Parameters<
+          typeof escalatingAttempt
+        >[0],
+        "blocking-or-should-fix"
+      )
+    ).toBe(false);
+  });
+
+  test("an unknown key beside extensions still fails with an update hint, and a non-object extensions fails", () => {
+    for (const level of LEVELS) {
+      const unknown = extended();
+      recordAt(unknown, level).graded = true;
+      expect({ level, verdicts: both(unknown) }).toEqual({
+        level,
+        verdicts: [false, false],
+      });
+      expect(validateReviewLedger(unknown).errors).toEqual([
+        `${PATHS[level]}.graded ${HINT}`,
+      ]);
+      for (const value of [[], null, "kept", 1, true]) {
+        const broken = plain();
+        recordAt(broken, level).extensions = value;
+        expect({ level, value, verdicts: both(broken) }).toEqual({
+          level,
+          value,
+          verdicts: [false, false],
+        });
+        expect(validateReviewLedger(broken).errors).toContain(
+          `${PATHS[level]}.extensions must be an object`
+        );
+      }
+    }
+  });
+
+  test("records without extension points refuse an extensions key and give no update hint", () => {
+    const ledger = plain();
+    replayInMemory(ledger, fakeSha(32), [C], "verified");
+    const head = ledger.proposals[PROPOSAL]?.heads[C] as unknown as Record<
+      string,
+      unknown
+    >;
+    const attempt = recordAt(ledger, "attempt");
+    const completion = recordAt(ledger, "completion");
+    const targets: [string, () => Record<string, unknown>][] = [
+      [`proposals.${PROPOSAL}.heads.${C}`, () => head],
+      [`proposals.${PROPOSAL}`, () => ledger.proposals[PROPOSAL] as never],
+      [`replays.${fakeSha(32)}`, () => ledger.replays[fakeSha(32)] as never],
+      [`${PATHS.attempt}.verified`, () => attempt.verified as never],
+      [`${PATHS.attempt}.requested`, () => attempt.requested as never],
+      [`${PATHS.attempt}.severities`, () => attempt.severities as never],
+      [
+        `${PATHS.completion}.completes[0]`,
+        () => (completion.completes as never[])[0] as never,
+      ],
+    ];
+    for (const [path, target] of targets) {
+      const record = target();
+      record.extensions = { future: 1 };
+      expect({ path, verdicts: both(ledger) }).toEqual({
+        path,
+        verdicts: [false, false],
+      });
+      expect(validateReviewLedger(ledger).errors).toContain(
+        `${path}.extensions is not allowed`
+      );
+      Reflect.deleteProperty(record, "extensions");
+    }
+    expect(both(ledger)).toEqual([true, true]);
+  });
+
+  test("every write keeps extensions byte for byte through a read-modify-write, and a new ledger writes none", () => {
+    expect(Object.hasOwn(emptyReviewLedger(), "extensions")).toBe(false);
+    const run = preparedRun();
+    const commit = commitFile(run.author, "a.txt", "a\n");
+    const owner = {
+      commits: [commit],
+      environment: { CODEX_THREAD_ID: "thread-owner" },
+      logicalId: "author-a",
+      repositoryPath: run.author,
+    };
+    const recordAuthors = (head: string) =>
+      recordProposalAuthors({
+        base: run.base,
+        environment: ENV_A,
+        head,
+        proposalId: PROPOSAL,
+        repositoryPath: run.author,
+      });
+    const review = (head: string) =>
+      recordReviewAttempt({
+        attemptId: randomUUID(),
+        authoring: stubAuthoring(),
+        head,
+        proposalId: PROPOSAL,
+        receipt: reviewReceipt(REVIEWER_B, {
+          findingsCount: 2,
+          severities: { blocking: 0, nit: 1, shouldFix: 1 },
+          verdict: "findings",
+        }),
+        repositoryPath: run.author,
+      });
+    attestCommits(owner);
+    attestCommits({ ...owner, agent: "GPT-6", instance: "domain_db_preview" });
+    attestCommits({
+      ...owner,
+      agent: "GPT-6",
+      completeIdentity: true,
+      instance: "domain_db_preview",
+    });
+    recordAuthors(commit);
+    review(commit);
+    const common = commonDirectory(run.root);
+    const path = reviewLedgerPath(common);
+    // Written end to end by this runtime: no extensions anywhere.
+    expect(readFileSync(path, "utf8")).not.toContain('"extensions"');
+    // A newer runtime adds extensions at every level and writes the file.
+    const fresh = readReviewLedger(common).ledger;
+    const attestation = fresh.attestations[commit]?.[1] as Attestation;
+    const completion = fresh.completions?.[commit]?.[0] as IdentityCompletion;
+    const attempt = fresh.proposals[PROPOSAL]?.attempts[0];
+    if (!attempt) {
+      throw new Error("no attempt recorded");
+    }
+    attestation.extensions = membersFor("attestation");
+    completion.extensions = membersFor("completion");
+    attempt.extensions = membersFor("attempt");
+    const seeded = { extensions: membersFor("root"), ...fresh };
+    const seededText = `${JSON.stringify(seeded, null, 2)}\n`;
+    writeFileSync(path, seededText);
+    const reread = readReviewLedger(common);
+    expect(reread.state).toBe("valid");
+    expect(JSON.stringify(reread.ledger)).toBe(JSON.stringify(seeded));
+    // Rewriting what was read reproduces the file byte for byte.
+    withLoopStateLock(common, "test", () => {
+      writeReviewLedger(heldLoopLock(common, "test"), reread.ledger);
+    });
+    expect(readFileSync(path, "utf8")).toBe(seededText);
+    // A transaction that changes nothing writes nothing.
+    expect(attestCommits(owner).attestations).toEqual([
+      { commit, status: "unchanged" },
+    ]);
+    expect(recordAuthors(commit).status).toBe("unchanged");
+    expect(readFileSync(path, "utf8")).toBe(seededText);
+    // Transactions that change the ledger, including the derived records
+    // every write refreshes, keep every extension and every record holding
+    // one exactly as it was.
+    const second = commitFile(run.author, "b.txt", "b\n");
+    attestCommits({
+      ...owner,
+      agent: "GPT-6",
+      commits: [second],
+      instance: "domain_db_preview",
+    });
+    recordAuthors(second);
+    review(second);
+    const afterText = readFileSync(path, "utf8");
+    expect(afterText).not.toBe(seededText);
+    const after = readReviewLedger(common);
+    expect(after.state).toBe("valid");
+    const kept = after.ledger;
+    expect(Object.keys(kept)).toEqual(Object.keys(seeded));
+    expect(JSON.stringify(kept.extensions)).toBe(
+      JSON.stringify(seeded.extensions)
+    );
+    expect(JSON.stringify(kept.attestations[commit])).toBe(
+      JSON.stringify(seeded.attestations[commit])
+    );
+    expect(JSON.stringify(kept.completions?.[commit])).toBe(
+      JSON.stringify(seeded.completions?.[commit])
+    );
+    expect(JSON.stringify(kept.proposals[PROPOSAL]?.attempts[0])).toBe(
+      JSON.stringify(attempt)
+    );
+    expect(kept.proposals[PROPOSAL]?.attempts).toHaveLength(2);
+    // The new records carry none.
+    expect(
+      Object.hasOwn(kept.attestations[second]?.[0] ?? {}, "extensions")
+    ).toBe(false);
+    expect(
+      Object.hasOwn(kept.proposals[PROPOSAL]?.attempts[1] ?? {}, "extensions")
+    ).toBe(false);
+    // The file is exactly what was read and kept, so each member's bytes are
+    // the ones the newer runtime wrote.
+    expect(afterText).toBe(`${JSON.stringify(kept, null, 2)}\n`);
+  });
+
+  test("a refused ledger names the newer runtime as a likely writer, only at a record with extension points", () => {
+    const run = preparedRun();
+    const commit = commitFile(run.author, "a.txt", "a\n");
+    attestAsA(run.author, [commit]);
+    const common = commonDirectory(run.root);
+    const path = reviewLedgerPath(common);
+    const original = readReviewLedger(common).ledger;
+    const write = (ledger: unknown) =>
+      writeFileSync(path, `${JSON.stringify(ledger, null, 2)}\n`);
+    write({ ...original, graded: true });
+    expect(readReviewLedger(common)).toMatchObject({
+      errors: [`ledger.graded ${HINT}`],
+      reason: "ledger-malformed",
+      state: "malformed",
+    });
+    expect(() => attestAsA(run.author, [commit])).toThrow(
+      `ledger.graded ${HINT}`
+    );
+    write({
+      ...original,
+      replays: {
+        [commit]: {
+          graded: true,
+          inheritedGaps: { uncoveredEdits: [], unresolvedSources: [] },
+          ownGaps: { uncoveredEdit: false, unresolvedSources: [] },
+          recordedAt: STAMP,
+          sources: [run.base],
+          verification: "verified",
+        },
+      },
+    });
+    expect(readReviewLedger(common).errors).toEqual([
+      `replays.${commit}.graded is not allowed`,
+    ]);
+  });
+});

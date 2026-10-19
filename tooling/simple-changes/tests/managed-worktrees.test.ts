@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import {
+  chmodSync,
   existsSync,
   lstatSync,
   mkdirSync,
@@ -381,6 +382,31 @@ describe("managed worktree directory removal", () => {
     expect(cleanup.notes).toEqual([expect.stringContaining("is unreadable")]);
     expect(existsSync(fixture.repository)).toBe(true);
   });
+
+  test.skipIf(process.getuid?.() === 0)(
+    "reports a managed level it cannot inspect instead of throwing",
+    () => {
+      const fixture = managedFixture();
+      mkdirSync(fixture.repository, { recursive: true });
+      chmodSync(fixture.root, 0o000);
+      let cleanup: ReturnType<typeof clean>;
+      try {
+        cleanup = clean(fixture);
+      } finally {
+        chmodSync(fixture.root, 0o755);
+      }
+      expect(cleanup.removed).toEqual([]);
+      expect(cleanup.notes).toEqual([
+        expect.stringContaining(
+          `Kept ${fixture.repository}: it could not be inspected`
+        ),
+        expect.stringContaining(
+          `Kept ${fixture.root}: it could not be inspected`
+        ),
+      ]);
+      expect(existsSync(fixture.repository)).toBe(true);
+    }
+  );
 
   test("restores the working directory it started in", () => {
     const fixture = created();

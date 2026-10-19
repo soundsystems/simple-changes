@@ -557,17 +557,18 @@ const removeRecordedLevel = (
 
 // An empty managed directory without a record stays; say so, because it
 // looks like one cleanup should have removed.
+// Never throws: a level it cannot inspect is a note too.
 const unrecordedEmptyNote = (directory: string): string | null => {
-  const stats = lstatOrNull(directory);
-  if (!stats?.isDirectory()) {
-    return null;
-  }
   try {
+    const stats = lstatOrNull(directory);
+    if (!stats?.isDirectory()) {
+      return null;
+    }
     return readdirSync(directory).length === 0
       ? `Kept empty ${directory}: this repository has no record that Simple Changes created it, so only whoever made it should remove it (with rmdir).`
       : null;
-  } catch {
-    return null;
+  } catch (error) {
+    return `Kept ${directory}: it could not be inspected: ${errorMessage(error)}`;
   }
 };
 

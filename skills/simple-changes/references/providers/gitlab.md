@@ -1,5 +1,11 @@
 # GitLab adapter
 
+Contents:
+
+- Remote inventory fetcher
+- Gate merges on hosted CI
+- Recover a passed pipeline whose publication failed
+
 Support tier: **beta target**.
 
 Discover project identity, target branch, and actor through an authenticated
@@ -89,3 +95,23 @@ merge <iid> --sha <head>` merges only after the guard exits 0. A refusal leaves
 the merge unstarted. A real guard also binds the pipeline to the exact `--sha`
 being merged and decides how to treat skipped or manual jobs; it never replaces
 the provider's own merge checks.
+
+## Recover a passed pipeline whose publication failed
+
+A repository adapter that runs hosted CI for an exact candidate and then
+publishes the result, such as an external commit status, has two phases:
+compute and publication. When compute passed but publication or the final
+provider read failed, the adapter records a `forge` provider receipt with
+`status: partial`, never `failed`. The receipt names the pipeline id and attempt
+in `immutableResultId`, and the exact `headRevision` and `baseRevision` it ran
+for. `failed` means the computed result failed.
+
+Recovery retries publication only. It reads that exact pipeline again and
+re-checks the project, the merge request, the source and base revisions, the
+owned pipeline id and attempt, every required job, and the current head
+pipeline. It then publishes idempotently, without dispatching another run.
+Source or base movement, a different run, a missing required job, or an
+ambiguous dispatch invalidates the recovery, and the adapter starts a fresh
+verification instead. Recovery never adopts an unrelated green pipeline,
+changes review requirements, bypasses holds, or edits a ledger or receipt by
+hand.

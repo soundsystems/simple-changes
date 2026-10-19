@@ -772,8 +772,8 @@ boundary. To report a vulnerability, see [SECURITY.md](SECURITY.md).
   state with `git ls-remote` and `git fetch` (and clones the public upstream
   for `fork create`), names only ship-hold refs under
   `refs/simple-changes/holds/` and the one tag `release-tag` publishes in the
-  pushes it runs (`release-tag` also passes `--no-follow-tags`; a hold push
-  follows the user's `push.followTags`), and its reference GitLab inventory
+  pushes it runs (both pass `--no-follow-tags`, so `push.followTags` never
+  adds another tag), and its reference GitLab inventory
   adapter (`skills/simple-changes/scripts/adapters/gitlab-remote-inventory.ts`)
   makes only read-only `glab api` GET calls.
 - Can touch: every remote and project the user's Git credentials, SSH keys, and

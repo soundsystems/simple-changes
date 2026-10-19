@@ -97,6 +97,8 @@ const attestBranch = (path: string, agentId: string): void => {
   });
 };
 
+const FULL_SHA = /^[0-9a-f]{40}$/u;
+
 const withOrigin = (fixture: TestRepository): string => {
   const origin = join(fixture.base, "origin.git");
   git(fixture.base, ["init", "--bare", origin]);
@@ -476,6 +478,37 @@ describe("shipment holds", () => {
       git(fixture.root, ["ls-remote", "origin", `${HOLD_REF_PREFIX}*`])
     ).toBe("");
     expect(checkShipHolds(other, { action: "merge" }).clear).toBe(true);
+  });
+
+  test("publish and withdraw without following tags, whatever push.followTags says", () => {
+    const fixture = repository();
+    withOrigin(fixture);
+    const hold = addShipHold(fixture.root, {
+      adapter: "claude-code",
+      agentId: "owner",
+      reason: "Hold every shipment during the schema cutover.",
+      scope: "ship",
+      severity: "halt",
+    });
+    const ref = `${HOLD_REF_PREFIX}${hold.holdId}`;
+    const first = publishShipHold(fixture.root, {
+      agentId: "owner",
+      holdId: hold.holdId,
+    });
+    const commit = first.publication?.commitSha ?? "";
+    expect(commit).toMatch(FULL_SHA);
+    // An annotated tag on the pushed commit is what push.followTags would
+    // send along; take the ref off the remote so the hold is pushed again.
+    git(fixture.root, ["tag", "-a", "unrelated", "-m", "Not a hold.", commit]);
+    git(fixture.root, ["config", "push.followTags", "true"]);
+    git(fixture.root, ["push", "--no-follow-tags", "origin", `:${ref}`]);
+    publishShipHold(fixture.root, { agentId: "owner", holdId: hold.holdId });
+    expect(git(fixture.root, ["ls-remote", "origin", ref])).toContain(ref);
+    expect(git(fixture.root, ["ls-remote", "--tags", "origin"])).toBe("");
+    releaseShipHold(fixture.root, { agentId: "owner", holdId: hold.holdId });
+    expect(git(fixture.root, ["ls-remote", "origin"])).not.toContain(
+      "refs/tags/"
+    );
   });
 
   test("fail closed for a gate when published holds cannot be read", () => {

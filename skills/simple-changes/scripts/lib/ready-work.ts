@@ -30,6 +30,7 @@ import type {
 import {
   assertClaimSession,
   assertNoGitOperation,
+  claimTakeoverState,
   readCoordinationDocumentFromCommonDirectory,
   releaseClaimUnderLock,
   withWorktreeCoordinationLock,
@@ -324,12 +325,9 @@ const readyClaim = (
       EXIT_CODES.unsafe
     );
   }
-  // The refusal prints the exact takeover for the checkout as it is now.
-  assertClaimSession(
-    document,
-    claim,
-    inventory.worktrees.find((item) => item.path === claim.path) ?? null
-  );
+  // The refusal prints the exact takeover for the checkout as it is now, or
+  // the release-only takeover when the checkout is gone.
+  assertClaimSession(document, claim, claimTakeoverState(inventory, claim));
   if (!READY_CLAIM_STATES.has(claim.state)) {
     throw new SimpleChangesError(
       `Claim ${claimId} is ${claim.state}; ready work requires an active claim on a present checkout.`,

@@ -1,5 +1,48 @@
 # Changelog
 
+## 0.31.1 - 2026-10-17
+
+- **Bug Fixes & Improvements**:
+  - `worktree takeover` now compares the branch, HEAD, and status digest an
+    approval names exactly as given, which fixes the first takeover limit
+    0.31.0 listed. Before, it trimmed `--branch`, and inventory could drop
+    the same trailing space from the branch it observed, so a branch name
+    ending in a non-breaking space (U+00A0), which Git allows, was not
+    matched exactly: an approval could match a branch that differed from it
+    only by that space, or refuse the exact branch. `--head` must now be
+    `none` or the full commit ID, and `--status-digest` the status digest,
+    exactly, with no surrounding space, or the command exits 2. Before,
+    surrounding space on either was trimmed away, and a digest of the wrong
+    shape was refused as a changed worktree.
+  - A takeover that reassigns a claim now refuses, with exit 5, when the
+    approved or the observed branch name is not valid UTF-8. Simple Changes
+    reads such a name with its invalid bytes replaced, so two different
+    names can read the same, and an approval of one could have matched the
+    other. Rename the branch to a UTF-8 name, observe the checkout again,
+    and retry. A takeover with `--release` still retires such a claim,
+    including after its checkout is gone, and the refusal says so.
+  - A ready-work refusal from another session for a removed checkout now
+    prints the exact takeover that would be accepted, with the claim's
+    recorded branch and status digest, such as the `--release` form for a
+    checkout that can no longer be reattached. This fixes the other
+    takeover limit 0.31.0 listed. Before, it printed `<sha>`, `<name>`, and
+    `<digest>` placeholders, and for a checkout that could only be released
+    it offered a reassign that would be refused.
+  - Publishing and withdrawing a shipment hold now push with
+    `--no-follow-tags`, as `release-tag` already did, so your
+    `push.followTags` setting can no longer send a tag along with a hold
+    ref. Before, a publish followed that setting, so an annotated tag on the
+    hold's commit could be pushed with it. The README's Security model now
+    says both pushes pass the flag.
+  - Known limit, tracked for a later release: other checks that compare a
+    recorded branch with the one Git reports, such as claims, pause and
+    ready receipts, and the checkouts a run registers, still read a branch
+    name that is not valid UTF-8 with its invalid bytes replaced, so two
+    such names can look the same. This predates 0.31.1, and such names are
+    rare: on macOS the file system refuses them as ref files, so Git can
+    keep them only as packed refs.
+<!-- simple-changelogs-signature agent="Claude Opus 5.5 xhigh" at="2026-10-17T16:31:06-05:00" -->
+
 ## 0.31.0 - 2026-10-17
 
 - Canonical model IDs are here, as 0.30.1 said they would be: adversarial

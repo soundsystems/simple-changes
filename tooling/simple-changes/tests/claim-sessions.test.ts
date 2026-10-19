@@ -1,5 +1,11 @@
 import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  appendFileSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "bun";
@@ -415,6 +421,129 @@ describe("claims belong to the session that made them", () => {
     expect(receipt.branch).toBe(branch);
   });
 
+  test("an approved takeover compares the branch, HEAD, and status digest exactly, untrimmed", () => {
+    const fixture = repository();
+    const path = addWorktree(fixture, "nbsp-branch-work");
+    // Git accepts a branch name ending in U+00A0, which trim() drops.
+    const branch = "release/long\u00a0";
+    git(path, ["checkout", "-b", branch]);
+    const claim = as(SESSION_A, () =>
+      claimWorktree(fixture.root, "author-1", path, "claude-code")
+    );
+    const current = worktreeAt(fixture.root, path);
+    expect(current.branch).toBe(branch);
+    const take = (overrides: Partial<WorktreeTakeoverOptions>) =>
+      as(SESSION_B, () =>
+        takeoverWorktreeClaim({
+          ...takeoverOptions(fixture, claim.claimId, current, "author-1"),
+          ...overrides,
+        })
+      );
+    // The trimmed name is another branch, so its approval does not match.
+    expect(() => take({ expectedBranch: "release/long" })).toThrow(
+      "The worktree changed since it was observed"
+    );
+    // Surrounding space on the commit or digest is refused, never trimmed.
+    expect(() => take({ expectedHeadSha: ` ${current.headSha}` })).toThrow(
+      "expected HEAD must be the checkout's full commit ID, exactly as Git reports it"
+    );
+    expect(() =>
+      take({ expectedStatusDigest: `${current.changeDigest}\n` })
+    ).toThrow(
+      "expected status digest must be the checkout's status digest, exactly as Git reports it"
+    );
+    expect(() => take({ expectedBranch: "" })).toThrow(
+      "expected branch is required"
+    );
+    // The exact name matches and is recorded as given.
+    expect(take({}).receipt.branch).toBe(branch);
+  });
+
+  test("an approved takeover refuses a branch name that is not valid UTF-8", () => {
+    const fixture = repository();
+    const path = addWorktree(fixture, "raw-byte-branch-work");
+    // Git accepts raw bytes in a branch name; `release/\x80` and
+    // `release/\x81` would both decode to `release/\uFFFD`. A file system
+    // may refuse such a loose ref, so the ref is packed.
+    const sha = git(path, ["rev-parse", "HEAD"]);
+    const common = resolve(path, git(path, ["rev-parse", "--git-common-dir"]));
+    appendFileSync(
+      join(common, "packed-refs"),
+      Buffer.concat([
+        Buffer.from(`${sha} refs/heads/release/`),
+        Buffer.from([0x80]),
+        Buffer.from("\n"),
+      ])
+    );
+    const made = spawnSync(
+      [
+        "sh",
+        "-c",
+        "git symbolic-ref HEAD \"$(printf 'refs/heads/release/\\200')\"",
+      ],
+      { cwd: path, stderr: "pipe", stdout: "pipe" }
+    );
+    expect(decoder.decode(made.stderr)).toBe("");
+    const claim = as(SESSION_A, () =>
+      claimWorktree(fixture.root, "author-1", path, "claude-code")
+    );
+    const current = worktreeAt(fixture.root, path);
+    expect(current.branch).toBe("release/\uFFFD");
+    expect(() =>
+      as(SESSION_B, () =>
+        takeoverWorktreeClaim(
+          takeoverOptions(fixture, claim.claimId, current, "author-1")
+        )
+      )
+    ).toThrow("is not valid UTF-8");
+    // A release adopts nothing, so it still retires the claim once the
+    // checkout is gone, naming the recorded state.
+    git(fixture.root, ["worktree", "remove", "--force", path]);
+    git(fixture.root, ["worktree", "prune"]);
+    const { claim: released } = as(SESSION_B, () =>
+      takeoverWorktreeClaim({
+        ...takeoverOptions(fixture, claim.claimId, claim, "author-1"),
+        action: "release",
+      })
+    );
+    expect(released.state).toBe("released");
+  });
+
+  test("an approved takeover refuses evidence that carries a credential", () => {
+    const fixture = repository();
+    const path = addWorktree(fixture, "secret-branch-work");
+    const claim = as(SESSION_A, () =>
+      claimWorktree(fixture.root, "author-1", path, "claude-code")
+    );
+    const current = worktreeAt(fixture.root, path);
+    expect(() =>
+      as(SESSION_B, () =>
+        takeoverWorktreeClaim({
+          ...takeoverOptions(fixture, claim.claimId, current, "author-1"),
+          expectedBranch: "ghp_abcdefghijklmnopqrstuvwxyz0123456789",
+        })
+      )
+    ).toThrow("expected branch must not contain credentials or secrets");
+  });
+
+  test("an approval of a branch with trailing U+00A0 does not match the branch without it", () => {
+    const fixture = repository();
+    const path = addWorktree(fixture, "plain-branch-work");
+    git(path, ["checkout", "-b", "release/long"]);
+    const claim = as(SESSION_A, () =>
+      claimWorktree(fixture.root, "author-1", path, "claude-code")
+    );
+    const current = worktreeAt(fixture.root, path);
+    expect(() =>
+      as(SESSION_B, () =>
+        takeoverWorktreeClaim({
+          ...takeoverOptions(fixture, claim.claimId, current, "author-1"),
+          expectedBranch: "release/long\u00a0",
+        })
+      )
+    ).toThrow("The worktree changed since it was observed");
+  });
+
   test("ready work refused from another session prints the takeover for the checkout as it is", () => {
     const fixture = repository();
     const path = addWorktree(fixture, "ready-elsewhere");
@@ -442,6 +571,39 @@ describe("claims belong to the session that made them", () => {
     expect(message).toContain(`--status-digest ${current.changeDigest}`);
     expect(message).not.toContain("<sha>");
     expect(message).not.toContain("<digest>");
+  });
+
+  test("ready work refused from another session for a removed checkout prints the release takeover", () => {
+    const fixture = repository();
+    const path = addWorktree(fixture, "ready-removed");
+    const claim = as(SESSION_A, () =>
+      claimWorktree(fixture.root, "author-1", path, "claude-code")
+    );
+    git(fixture.root, ["worktree", "remove", "--force", path]);
+    git(fixture.root, ["worktree", "prune"]);
+    const input = parseReadyWorkInput({
+      checks: [{ command: "bun test", result: "passed" }],
+      deploymentConstraints: [],
+      migrations: [],
+      releaseImpact: "patch",
+      scope: "Adds the feature module.",
+    });
+    let message = "";
+    try {
+      as(SESSION_B, () =>
+        recordReadyWork(fixture.root, "author-1", claim.claimId, input)
+      );
+    } catch (error) {
+      ({ message } = error as Error);
+    }
+    expect(message).toContain(ANOTHER_SESSION);
+    expect(message).toContain(`--head ${claim.headSha}`);
+    expect(message).toContain(`--status-digest ${claim.changeDigest}`);
+    expect(message).toContain("--release");
+    expect(message).toContain("its checkout is gone");
+    for (const placeholder of ["<sha>", "<name>", "<digest>"]) {
+      expect(message).not.toContain(placeholder);
+    }
   });
 
   test("only the latest claim on a checkout decides, so an approved takeover's history counts", () => {

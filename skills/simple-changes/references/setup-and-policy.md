@@ -443,10 +443,11 @@ Changes adds, under the
 only a field whose absence leaves a reader stricter goes there, and an unknown
 key beside it fails with a hint to update the runtime. A reader accepts its
 members without interpreting them. A sidecar or answer holding extensions must
-spell its JSON as Simple Changes writes it, apart from whitespace, so the file
-keeps them exactly; a number, escape, key order, or repeated key spelled
-otherwise, or a byte that is not valid UTF-8, makes the sidecar malformed and
-the answer refused. An answer replaces the whole file, so it keeps only the
+spell its JSON as Simple Changes writes it, apart from whitespace, so every
+member keeps its exact value; a number, escape, key order, or repeated key
+spelled otherwise, or a byte that is not valid UTF-8, makes the sidecar
+malformed and the answer refused. A write keeps every value but may change the
+file's spacing, as it does for a sidecar without extensions. An answer replaces the whole file, so it keeps only the
 extensions it holds; setup never writes one itself. Runtimes before 0.32.0
 reject it.
 

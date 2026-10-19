@@ -16,7 +16,6 @@ import {
   rebaselineLoopWorktrees,
   startLoop,
 } from "../../../skills/simple-changes/scripts/lib/loop-lease.ts";
-import { createWorktreeParent } from "../../../skills/simple-changes/scripts/lib/managed-worktrees.ts";
 import {
   claimWorktree,
   readWorktreeCoordination,
@@ -399,11 +398,10 @@ describe("standalone worktree cleanup", () => {
     expect(history[1]?.cleanupId).toBe(receipt.cleanupId);
   });
 
-  test("keeps managed directories no record shows Simple Changes created", () => {
+  test("keeps managed worktree folders and names the empty ones", () => {
     const fixture = repository();
     const managedRoot = join(fixture.base, ".simple-changes-worktrees");
     const managedDirectory = join(managedRoot, "repo");
-    // Plain Git makes the managed folders, not Simple Changes.
     const managedWorktree = join(managedDirectory, "run-delivery-agent");
     git(fixture.root, [
       "worktree",
@@ -431,17 +429,15 @@ describe("standalone worktree cleanup", () => {
     expect(existsSync(managedDirectory)).toBe(true);
     expect(existsSync(adHocWorktree)).toBe(false);
     expect(existsSync(adHocParent)).toBe(true);
-    expect(receipt.removedManagedDirectories).toEqual([]);
     expect(receipt.notes).toEqual([
       expect.stringContaining(
-        `Kept empty ${managedDirectory}: this repository has no record that Simple Changes created it`
+        `Kept the empty managed worktree folders ${managedDirectory} and ${managedRoot}:`
       ),
     ]);
     expect(receipt.errors).toEqual([]);
     // The receipt history keeps only the fields older runtimes validate.
     const history = readWorktreeCleanups(commonGitDirectory(fixture.root));
     expect(history.at(-1)).not.toHaveProperty("notes");
-    expect(history.at(-1)).not.toHaveProperty("removedManagedDirectories");
   });
 
   test("never removes a folder outside a symbolically linked managed root", () => {
@@ -469,30 +465,17 @@ describe("standalone worktree cleanup", () => {
     expect(receipt.removed.map((item) => item.path)).toEqual([
       join(sharedRepository, "example"),
     ]);
-    expect(receipt.removedManagedDirectories).toEqual([]);
     expect(existsSync(sharedRepository)).toBe(true);
     expect(lstatSync(linkedRoot).isSymbolicLink()).toBe(true);
+    expect(receipt.notes).toEqual([]);
   });
 
-  test("prune removes the empty managed directories Simple Changes recorded", () => {
+  test("prune keeps the managed folders it empties and names them", () => {
     const fixture = repository();
     const managedRoot = join(fixture.base, ".simple-changes-worktrees");
     const managedDirectory = join(managedRoot, "repo");
-    createWorktreeParent(
-      commonGitDirectory(fixture.root),
-      fixture.root,
-      managedDirectory,
-      "run-test-prune"
-    );
     const managedWorktree = join(managedDirectory, "unit");
     git(fixture.root, ["worktree", "add", "-b", "unit", managedWorktree]);
-
-    const dryRun = pruneRepository({
-      dryRun: true,
-      repositoryPath: fixture.root,
-    });
-    expect(dryRun.removedManagedDirectories).toEqual([]);
-    expect(existsSync(managedDirectory)).toBe(true);
 
     const report = pruneRepository({
       approvedBy: "the-user",
@@ -502,11 +485,12 @@ describe("standalone worktree cleanup", () => {
     });
 
     expect(report.removed.map((item) => item.path)).toEqual([managedWorktree]);
-    expect(report.removedManagedDirectories).toEqual([
-      managedDirectory,
-      managedRoot,
-    ]);
-    expect(existsSync(managedRoot)).toBe(false);
+    expect(existsSync(managedDirectory)).toBe(true);
+    expect(report.notes).toContainEqual(
+      expect.stringContaining(
+        `Kept the empty managed worktree folders ${managedDirectory} and ${managedRoot}:`
+      )
+    );
   });
 
   test("preserves the local branch represented by a remote target ref", () => {

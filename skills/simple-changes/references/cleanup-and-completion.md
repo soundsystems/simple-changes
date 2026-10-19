@@ -429,23 +429,13 @@ run-created and opening worktree removals remain in the historical audit.
 Because Git prunes stale registrations together, finalization defers all
 metadata pruning if any missing checkout is outside the freshly audited set.
 Unique work, retained checkouts, and active claims keep their registrations.
-Once its removals leave them empty, finalization also removes the managed
-`.simple-changes-worktrees/<repository>/` directory and its root, but only one
-`prepare-agent` recorded creating. For each level it makes itself, and never
-for one that already existed, it writes a `.simple-changes-directory` marker
-holding a random token inside, and records the path, device, inode, and token
-in `managed-worktree-directories.json` in the Simple Changes state directory
-under the Git common directory. A level counts as empty when the marker is its
-only entry. Cleanup walks down from the folder holding the managed root, enters
-each level, and checks it is the real directory it just inspected before
-acting on the next name inside it, so no symbolic link, present or swapped in
-during the pass, can redirect a removal. A directory without a matching record,
-identity, and marker stays: one a person, plain Git, or an older runtime made,
-one `prepare-agent` reused, one reached through a symbolic link at any level,
-and one replaced or recreated since it was made. Cleanup reports what it
-removed as `removedManagedDirectories` and a kept or unremovable directory in
-`notes`, which never block completion. It never removes any other parent
-directory.
+Finalization never removes a worktree's parent folder, including the managed
+`.simple-changes-worktrees/<repository>/` folder and its root that
+`prepare-agent` creates: a folder's name does not prove who made it, and no
+removal by name can be bound to the folder it checked. When its removals leave
+the managed folders empty, finalization names them in the cleanup's `notes`,
+with the `rmdir` command, so whoever made them can remove them. It never names
+a folder reached through a symbolic link, and a note never blocks completion.
 Before synchronizing a clean preserved primary, finalization records its old
 baseline and exact expected result. A retry can reconcile that intent only when
 the primary is clean at the same target branch and commit; unrelated edits

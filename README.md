@@ -416,8 +416,8 @@ simple-changes help
 `migration-review`, `migration-pending`, `migration-apply-plan`,
 `post-cleanup-recovery`, `shipment-outcome`, `stale-lease-recovery`,
 `worktree-cleanup`, `worktree-coordination`, `worktree-takeover`,
-`worktree-equivalence`, `managed-worktree-directories`, or `branch-audit`
-(the schema filenames under `skills/simple-changes/evals/schemas/`).
+`worktree-equivalence`, or `branch-audit` (the schema filenames under
+`skills/simple-changes/evals/schemas/`).
 
 Before reapplying an old branch, use `branch audit` from the primary checkout
 to discover possible rebased or squashed replacements already reachable from

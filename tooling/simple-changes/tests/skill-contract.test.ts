@@ -1288,13 +1288,13 @@ describe("Simple Changes skill contract", () => {
     expect(normalizedConcurrency).toContain(
       "prove the target or a pushed branch contains the copied work"
     );
-    // Independent worktrees use the managed directory; cleanup removes only
-    // the managed directories Simple Changes recorded creating.
+    // Independent worktrees use the managed directory; Simple Changes never
+    // removes a parent folder, it only names empty managed ones.
     expect(normalizedConcurrency).toContain(
       "Create it under the managed `.simple-changes-worktrees/<repository>/` directory beside the primary checkout"
     );
     expect(normalizedConcurrency).toContain(
-      "Cleanup removes a managed directory once it is empty only when Simple Changes recorded creating it"
+      "Simple Changes never removes a worktree's parent folder; cleanup names an empty managed folder in its notes"
     );
     expect(normalizedConcurrency).toContain(
       "only when it is empty and you created it"

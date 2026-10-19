@@ -516,7 +516,6 @@ describe("active integration-loop lease", () => {
       prunedWorktreeMetadata: 0,
       releasedClaims: [],
       removedBranches: [],
-      removedManagedDirectories: [],
       removedWorktrees: [],
     });
   });

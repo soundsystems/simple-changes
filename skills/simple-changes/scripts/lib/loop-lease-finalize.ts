@@ -57,7 +57,7 @@ import {
   unmutatedCloseReady,
   verificationAgainst,
 } from "./loop-lease-verify.ts";
-import { removeEmptyManagedWorktreeDirectories } from "./managed-worktrees.ts";
+import { emptyManagedWorktreeFolderNotes } from "./managed-worktrees.ts";
 import { recordedPreservedSourceOverrides } from "./preserved-source-override.ts";
 import { primaryDeliveryProof } from "./primary-delivery-proof.ts";
 import { runGit } from "./process.ts";
@@ -106,8 +106,6 @@ export interface FinalizationCleanupResult {
   prunedWorktreeMetadata: number;
   releasedClaims: FinalizationReleasedClaim[];
   removedBranches: FinalizationRemovedBranch[];
-  /** Empty managed worktree directories Simple Changes created and removed. */
-  removedManagedDirectories: string[];
   removedWorktrees: string[];
 }
 
@@ -119,7 +117,6 @@ const emptyFinalizationCleanup = (): FinalizationCleanupResult => ({
   prunedWorktreeMetadata: 0,
   releasedClaims: [],
   removedBranches: [],
-  removedManagedDirectories: [],
   removedWorktrees: [],
 });
 
@@ -680,22 +677,6 @@ const pruneAutomaticWorktreeMetadata = (
   return { lease: currentLease, removed };
 };
 
-// The managed directories `prepare-agent` recorded creating go once the
-// removals above leave them empty; a failure to remove one is a note, never a
-// blocker, because nothing in it can be lost.
-const removeEmptyManagedDirectories = (
-  lease: LoopLease,
-  primaryCheckout: string,
-  cleanup: FinalizationCleanupResult
-): void => {
-  const { notes, removed } = removeEmptyManagedWorktreeDirectories(
-    lease.commonGitDirectory,
-    primaryCheckout
-  );
-  cleanup.notes.push(...notes);
-  cleanup.removedManagedDirectories.push(...removed);
-};
-
 const removeTargetContainedBranches = (
   lease: LoopLease,
   repositoryPath: string,
@@ -1205,7 +1186,8 @@ const automaticFinalizationCleanup = (
     cleanup
   );
   ({ lease } = staleRemoval);
-  removeEmptyManagedDirectories(lease, repositoryPath, cleanup);
+  // Parent folders stay; the removals above may have emptied managed ones.
+  cleanup.notes.push(...emptyManagedWorktreeFolderNotes(repositoryPath));
   removeTargetContainedBranches(
     lease,
     repositoryPath,

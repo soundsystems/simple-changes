@@ -48,7 +48,6 @@ export const SCHEMA_NAMES = [
   "worktree-equivalence",
   "worktree-cleanup",
   "stale-lease-recovery",
-  "managed-worktree-directories",
 ] as const;
 export type SchemaName = (typeof SCHEMA_NAMES)[number];
 const schemas = new Map<string, JsonSchema>();

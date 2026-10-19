@@ -511,10 +511,12 @@ describe("active integration-loop lease", () => {
     expect(finalized.cleanup).toEqual({
       cleanedPrimaryPaths: [],
       errors: [],
+      notes: [],
       primaryUpdated: false,
       prunedWorktreeMetadata: 0,
       releasedClaims: [],
       removedBranches: [],
+      removedManagedDirectories: [],
       removedWorktrees: [],
     });
   });

@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://simple-changes.dev/schemas/managed-worktree-directories.schema.json",
+  "title": "Simple Changes managed worktree directories it created",
+  "description": "Each managed .simple-changes-worktrees directory prepare-agent created for this repository, bound to the device and inode it had then. Cleanup removes an empty managed directory only when it matches a record here.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "directories"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "directories": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "device", "inode", "createdAt", "runId"],
+        "properties": {
+          "path": { "type": "string", "minLength": 1 },
+          "device": { "type": "string", "pattern": "^[0-9]+$" },
+          "inode": { "type": "string", "pattern": "^[0-9]+$" },
+          "createdAt": { "type": "string", "format": "date-time" },
+          "runId": { "type": "string", "pattern": "^run-[a-z0-9-]+$" }
+        }
+      }
+    }
+  }
+}

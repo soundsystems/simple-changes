@@ -1,6 +1,16 @@
 import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { spawn } from "node:child_process";
-import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
@@ -19,6 +29,7 @@ import {
   recoverLoopLock,
   startLoop,
 } from "../../../skills/simple-changes/scripts/lib/loop-lease.ts";
+import { managedDirectoryRecordsPath } from "../../../skills/simple-changes/scripts/lib/managed-worktrees.ts";
 import { buildPreviewPlan } from "../../../skills/simple-changes/scripts/lib/planner.ts";
 import type {
   ChangePlan,
@@ -28,6 +39,7 @@ import {
   claimWorktree,
   readWorktreeCoordination,
 } from "../../../skills/simple-changes/scripts/lib/worktree-coordination.ts";
+import { standaloneWorktreeCleanup } from "../../../skills/simple-changes/scripts/lib/worktree-maintenance.ts";
 import {
   createTestRepository,
   git,
@@ -44,10 +56,22 @@ afterEach(() => {
   fixtures.length = 0;
 });
 
+const recordsFile = (root: string): string =>
+  managedDirectoryRecordsPath(
+    captureInventory(root).repository.commonGitDirectory
+  );
+
+const managedRecords = (
+  root: string
+): { device: string; inode: string; path: string; runId: string }[] =>
+  JSON.parse(readFileSync(recordsFile(root), "utf8")).directories;
+
 function deliveredFixture(
   squash = false,
   excludePrimary = false,
-  runCreated = false
+  runCreated = false,
+  // Runs just before `prepare-agent`, to set up its managed parent folders.
+  beforePrepare?: (base: string) => void
 ) {
   const fixture = createTestRepository();
   fixtures.push(fixture);
@@ -108,6 +132,7 @@ function deliveredFixture(
       })),
   };
   recordShipmentScope(author, lease.runId, "controller", plan);
+  beforePrepare?.(fixture.base);
   const prepared = runCreated
     ? prepareAgentWorktree(author, lease.runId, "delivery-author", "delivery")
     : null;
@@ -516,6 +541,17 @@ describe("shipment finalization", () => {
     const repositoryDirectory = dirname(fixture.prepared.path);
     const managedRoot = dirname(repositoryDirectory);
     expect(managedRoot).toBe(join(fixture.base, ".simple-changes-worktrees"));
+    const records = managedRecords(fixture.root);
+    expect(records.map((record) => record.path)).toEqual([
+      managedRoot,
+      repositoryDirectory,
+    ]);
+    for (const record of records) {
+      const identity = lstatSync(record.path, { bigint: true });
+      expect(record.device).toBe(identity.dev.toString());
+      expect(record.inode).toBe(identity.ino.toString());
+      expect(record.runId).toBe(fixture.lease.runId);
+    }
     const result = finalizeLoop(
       fixture.root,
       fixture.lease.runId,
@@ -524,8 +560,14 @@ describe("shipment finalization", () => {
     );
     expect(result.outcome).toBe("completed");
     expect(result.cleanup.removedWorktrees).toContain(fixture.prepared.path);
+    expect(result.cleanup.removedManagedDirectories).toEqual([
+      repositoryDirectory,
+      managedRoot,
+    ]);
+    expect(result.cleanup.notes).toEqual([]);
     expect(existsSync(repositoryDirectory)).toBe(false);
     expect(existsSync(managedRoot)).toBe(false);
+    expect(existsSync(recordsFile(fixture.root))).toBe(false);
   });
 
   test("keeps a managed directory that still holds anything else", () => {
@@ -545,10 +587,231 @@ describe("shipment finalization", () => {
     expect(result.outcome).toBe("completed");
     expect(existsSync(fixture.prepared.path)).toBe(false);
     expect(existsSync(repositoryDirectory)).toBe(false);
+    expect(result.cleanup.removedManagedDirectories).toEqual([
+      repositoryDirectory,
+    ]);
     expect(
       readFileSync(join(managedRoot, "other-repository/notes.txt"), "utf8")
     ).toBe("keep\n");
+    // The root keeps its record, so a later cleanup removes it once empty.
+    expect(managedRecords(fixture.root).map((record) => record.path)).toEqual([
+      managedRoot,
+    ]);
   });
+
+  test("keeps a managed root that existed before prepare-agent reused it", () => {
+    const fixture = deliveredFixture(false, true, true, (base) => {
+      mkdirSync(join(base, ".simple-changes-worktrees"));
+    });
+    if (!fixture.prepared) {
+      throw new Error("Missing run-created delivery author fixture");
+    }
+    const repositoryDirectory = dirname(fixture.prepared.path);
+    const managedRoot = dirname(repositoryDirectory);
+    // Only the level prepare-agent made is recorded.
+    expect(managedRecords(fixture.root).map((record) => record.path)).toEqual([
+      repositoryDirectory,
+    ]);
+    const result = finalizeLoop(
+      fixture.root,
+      fixture.lease.runId,
+      "controller",
+      "Close and remove the prepared author."
+    );
+    expect(result.outcome).toBe("completed");
+    expect(result.cleanup.removedManagedDirectories).toEqual([
+      repositoryDirectory,
+    ]);
+    expect(existsSync(managedRoot)).toBe(true);
+    expect(result.cleanup.notes).toEqual([
+      expect.stringContaining(
+        `Kept empty ${managedRoot}: this repository has no record that Simple Changes created it`
+      ),
+    ]);
+  });
+
+  test("keeps both managed directories when a person made them first", () => {
+    const fixture = deliveredFixture(false, true, true, (base) => {
+      mkdirSync(join(base, ".simple-changes-worktrees", "repo"), {
+        recursive: true,
+      });
+    });
+    if (!fixture.prepared) {
+      throw new Error("Missing run-created delivery author fixture");
+    }
+    const repositoryDirectory = dirname(fixture.prepared.path);
+    const managedRoot = dirname(repositoryDirectory);
+    expect(existsSync(recordsFile(fixture.root))).toBe(false);
+    const result = finalizeLoop(
+      fixture.root,
+      fixture.lease.runId,
+      "controller",
+      "Close and remove the prepared author."
+    );
+    expect(result.outcome).toBe("completed");
+    expect(existsSync(fixture.prepared.path)).toBe(false);
+    expect(result.cleanup.removedManagedDirectories).toEqual([]);
+    expect(existsSync(repositoryDirectory)).toBe(true);
+    expect(existsSync(managedRoot)).toBe(true);
+  });
+
+  test("never removes anything through a symbolically linked managed root", () => {
+    const fixture = deliveredFixture(false, true, true, (base) => {
+      mkdirSync(join(base, "shared"));
+      symlinkSync(
+        join(base, "shared"),
+        join(base, ".simple-changes-worktrees")
+      );
+    });
+    if (!fixture.prepared) {
+      throw new Error("Missing run-created delivery author fixture");
+    }
+    const linkedRoot = join(fixture.base, ".simple-changes-worktrees");
+    const sharedRepository = join(fixture.base, "shared", "repo");
+    expect(dirname(fixture.prepared.path)).toBe(sharedRepository);
+    const result = finalizeLoop(
+      fixture.root,
+      fixture.lease.runId,
+      "controller",
+      "Close and remove the prepared author."
+    );
+    expect(result.outcome).toBe("completed");
+    expect(existsSync(fixture.prepared.path)).toBe(false);
+    expect(result.cleanup.removedManagedDirectories).toEqual([]);
+    expect(existsSync(sharedRepository)).toBe(true);
+    expect(lstatSync(linkedRoot).isSymbolicLink()).toBe(true);
+    expect(result.cleanup.notes).toEqual([
+      expect.stringContaining(`${linkedRoot} is a symbolic link`),
+    ]);
+  });
+
+  test("keeps a managed directory replaced after Simple Changes created it", () => {
+    const fixture = deliveredFixture(false, true, true);
+    if (!fixture.prepared) {
+      throw new Error("Missing run-created delivery author fixture");
+    }
+    const repositoryDirectory = dirname(fixture.prepared.path);
+    const managedRoot = dirname(repositoryDirectory);
+    writeFixture(repositoryDirectory, "hold.txt", "hold\n");
+    expect(
+      finalizeLoop(
+        fixture.root,
+        fixture.lease.runId,
+        "controller",
+        "Close and remove the prepared author."
+      ).outcome
+    ).toBe("completed");
+    expect(existsSync(repositoryDirectory)).toBe(true);
+    // A person swaps in a folder of their own and puts a worktree in it.
+    rmSync(join(repositoryDirectory, "hold.txt"));
+    const original = join(fixture.base, "original-repository");
+    renameSync(repositoryDirectory, original);
+    mkdirSync(repositoryDirectory);
+    const plain = join(repositoryDirectory, "plain-unit");
+    git(fixture.root, ["worktree", "add", "-b", "plain-unit", plain]);
+
+    const receipt = standaloneWorktreeCleanup({
+      agentId: "cleaner",
+      approvedBy: "the-user",
+      reason: "Reconcile orphaned worktrees with no loop record.",
+      repositoryPath: fixture.root,
+    });
+
+    expect(receipt.removed.map((item) => item.path)).toContain(plain);
+    expect(receipt.removedManagedDirectories).toEqual([]);
+    expect(existsSync(repositoryDirectory)).toBe(true);
+    expect(existsSync(managedRoot)).toBe(true);
+    expect(existsSync(original)).toBe(true);
+    expect(receipt.notes).toEqual([
+      expect.stringContaining(
+        `Kept ${repositoryDirectory}: ${repositoryDirectory} is no longer the directory Simple Changes created there`
+      ),
+    ]);
+    expect(managedRecords(fixture.root).map((record) => record.path)).toEqual([
+      managedRoot,
+    ]);
+  });
+
+  test("a later standalone cleanup removes the recorded directories once empty", () => {
+    const fixture = deliveredFixture(false, true, true);
+    if (!fixture.prepared) {
+      throw new Error("Missing run-created delivery author fixture");
+    }
+    const repositoryDirectory = dirname(fixture.prepared.path);
+    const managedRoot = dirname(repositoryDirectory);
+    writeFixture(repositoryDirectory, "hold.txt", "hold\n");
+    finalizeLoop(
+      fixture.root,
+      fixture.lease.runId,
+      "controller",
+      "Close and remove the prepared author."
+    );
+    rmSync(join(repositoryDirectory, "hold.txt"));
+    const plain = join(repositoryDirectory, "plain-unit");
+    git(fixture.root, ["worktree", "add", "-b", "plain-unit", plain]);
+
+    const receipt = standaloneWorktreeCleanup({
+      agentId: "cleaner",
+      approvedBy: "the-user",
+      reason: "Reconcile orphaned worktrees with no loop record.",
+      repositoryPath: fixture.root,
+    });
+
+    expect(receipt.removed.map((item) => item.path)).toContain(plain);
+    expect(receipt.removedManagedDirectories).toEqual([
+      repositoryDirectory,
+      managedRoot,
+    ]);
+    expect(receipt.notes).toEqual([]);
+    expect(existsSync(managedRoot)).toBe(false);
+  });
+
+  test.skipIf(process.getuid?.() === 0)(
+    "reports a managed directory it cannot remove without blocking completion",
+    () => {
+      const fixture = deliveredFixture(false, true, true);
+      if (!fixture.prepared) {
+        throw new Error("Missing run-created delivery author fixture");
+      }
+      const repositoryDirectory = dirname(fixture.prepared.path);
+      const managedRoot = dirname(repositoryDirectory);
+      chmodSync(managedRoot, 0o555);
+      let result: ReturnType<typeof finalizeLoop>;
+      try {
+        result = finalizeLoop(
+          fixture.root,
+          fixture.lease.runId,
+          "controller",
+          "Close and remove the prepared author."
+        );
+      } finally {
+        chmodSync(managedRoot, 0o755);
+      }
+      expect(result.outcome).toBe("completed");
+      expect(result.blockers).toEqual([]);
+      expect(result.cleanup.errors).toEqual([]);
+      expect(result.cleanup.removedManagedDirectories).toEqual([]);
+      expect(result.cleanup.notes).toEqual([
+        expect.stringContaining(
+          `Could not remove the empty managed worktree directory ${repositoryDirectory}:`
+        ),
+      ]);
+      // The records stay, so the next cleanup retries.
+      expect(managedRecords(fixture.root).map((record) => record.path)).toEqual(
+        [managedRoot, repositoryDirectory]
+      );
+      const retry = standaloneWorktreeCleanup({
+        agentId: "cleaner",
+        approvedBy: "the-user",
+        reason: "Retry the managed directory removal.",
+        repositoryPath: fixture.root,
+      });
+      expect(retry.removedManagedDirectories).toEqual([
+        repositoryDirectory,
+        managedRoot,
+      ]);
+    }
+  );
 
   test("explicit exclusions do not excuse a missing source without removal evidence", () => {
     const fixture = deliveredFixture(false, true);

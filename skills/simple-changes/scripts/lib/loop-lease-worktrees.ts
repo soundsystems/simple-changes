@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, realpathSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import {
   PATCH_EQUIVALENCE_MAX_COMMITS,
@@ -25,7 +25,11 @@ import {
   writeLease,
 } from "./loop-lease-core.ts";
 import { verificationAgainst } from "./loop-lease-verify.ts";
-import { managedWorktreeDirectories, slug } from "./managed-worktrees.ts";
+import {
+  createWorktreeParent,
+  managedWorktreeDirectories,
+  slug,
+} from "./managed-worktrees.ts";
 import { runGit } from "./process.ts";
 import type {
   LoopLease,
@@ -232,7 +236,14 @@ export const prepareAgentWorktree = (
             EXIT_CODES.unsafe
           );
         }
-        mkdirSync(dirname(preparation.path), { recursive: true });
+        // Records exactly the managed directories this call makes, so cleanup
+        // can tell them from ones a person or another tool made.
+        createWorktreeParent(
+          opening.repository.commonGitDirectory,
+          currentLease.primaryCheckout,
+          dirname(preparation.path),
+          currentLease.runId
+        );
         if (branchResult.exitCode === 0) {
           runGit(currentLease.primaryCheckout, [
             "worktree",

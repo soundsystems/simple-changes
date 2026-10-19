@@ -57,10 +57,7 @@ import {
   unmutatedCloseReady,
   verificationAgainst,
 } from "./loop-lease-verify.ts";
-import {
-  isManagedWorktreePath,
-  removeEmptyManagedWorktreeDirectories,
-} from "./managed-worktrees.ts";
+import { removeEmptyManagedWorktreeDirectories } from "./managed-worktrees.ts";
 import { recordedPreservedSourceOverrides } from "./preserved-source-override.ts";
 import { primaryDeliveryProof } from "./primary-delivery-proof.ts";
 import { runGit } from "./process.ts";
@@ -103,20 +100,26 @@ export interface FinalizationReleasedClaim {
 export interface FinalizationCleanupResult {
   cleanedPrimaryPaths: string[];
   errors: string[];
+  /** Non-fatal: unlike `errors`, a note never blocks completion. */
+  notes: string[];
   primaryUpdated: boolean;
   prunedWorktreeMetadata: number;
   releasedClaims: FinalizationReleasedClaim[];
   removedBranches: FinalizationRemovedBranch[];
+  /** Empty managed worktree directories Simple Changes created and removed. */
+  removedManagedDirectories: string[];
   removedWorktrees: string[];
 }
 
 const emptyFinalizationCleanup = (): FinalizationCleanupResult => ({
   cleanedPrimaryPaths: [],
   errors: [],
+  notes: [],
   primaryUpdated: false,
   prunedWorktreeMetadata: 0,
   releasedClaims: [],
   removedBranches: [],
+  removedManagedDirectories: [],
   removedWorktrees: [],
 });
 
@@ -677,23 +680,20 @@ const pruneAutomaticWorktreeMetadata = (
   return { lease: currentLease, removed };
 };
 
-// A run that prepared worktrees made the managed directories that held them;
-// once its removals leave them empty, they go too.
-const removeRunManagedWorktreeDirectories = (
+// The managed directories `prepare-agent` recorded creating go once the
+// removals above leave them empty; a failure to remove one is a note, never a
+// blocker, because nothing in it can be lost.
+const removeEmptyManagedDirectories = (
   lease: LoopLease,
-  primaryCheckout: string
+  primaryCheckout: string,
+  cleanup: FinalizationCleanupResult
 ): void => {
-  const preparedPaths = [
-    ...lease.worktrees
-      .filter((worktree) => worktree.createdByRun)
-      .map((worktree) => worktree.path),
-    ...lease.preparations.map((preparation) => preparation.path),
-  ];
-  if (
-    preparedPaths.some((path) => isManagedWorktreePath(primaryCheckout, path))
-  ) {
-    removeEmptyManagedWorktreeDirectories(primaryCheckout);
-  }
+  const { notes, removed } = removeEmptyManagedWorktreeDirectories(
+    lease.commonGitDirectory,
+    primaryCheckout
+  );
+  cleanup.notes.push(...notes);
+  cleanup.removedManagedDirectories.push(...removed);
 };
 
 const removeTargetContainedBranches = (
@@ -1205,7 +1205,7 @@ const automaticFinalizationCleanup = (
     cleanup
   );
   ({ lease } = staleRemoval);
-  removeRunManagedWorktreeDirectories(lease, repositoryPath);
+  removeEmptyManagedDirectories(lease, repositoryPath, cleanup);
   removeTargetContainedBranches(
     lease,
     repositoryPath,

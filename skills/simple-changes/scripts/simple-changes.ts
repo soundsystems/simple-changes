@@ -3724,6 +3724,22 @@ const renderRemovedWorkDirectories = (removed: readonly string[]): string =>
     ? `Removed ${removed.length} agent work director${removed.length === 1 ? "y" : "ies"}.\n`
     : "";
 
+// Empty managed worktree directories a cleanup removed, and its non-fatal notes.
+const renderManagedDirectoryCleanup = (
+  removed: readonly string[],
+  notes: readonly string[]
+): string =>
+  [
+    ...(removed.length > 0
+      ? [
+          `Removed ${removed.length} empty managed worktree director${removed.length === 1 ? "y" : "ies"}.`,
+        ]
+      : []),
+    ...notes.map((note) => `Note: ${note}`),
+  ]
+    .map((line) => `${line}\n`)
+    .join("");
+
 const runLoopFinalizationAction = (
   action: string,
   options: CliOptions,
@@ -3838,7 +3854,7 @@ const runLoopFinalizationAction = (
         removedWorkDirectories,
       },
       options.json,
-      `Completed and released ${runId}. Normalized ${result.cleanup.cleanedPrimaryPaths.length} target-equivalent primary path(s), removed ${result.cleanup.removedWorktrees.length} worktree(s) and ${result.cleanup.removedBranches.length} branch(es); pruned ${result.cleanup.prunedWorktreeMetadata} stale worktree record(s); released ${result.cleanup.releasedClaims.length} finished or orphaned worktree claim(s).\n${renderRemovedWorkDirectories(removedWorkDirectories)}`
+      `Completed and released ${runId}. Normalized ${result.cleanup.cleanedPrimaryPaths.length} target-equivalent primary path(s), removed ${result.cleanup.removedWorktrees.length} worktree(s) and ${result.cleanup.removedBranches.length} branch(es); pruned ${result.cleanup.prunedWorktreeMetadata} stale worktree record(s); released ${result.cleanup.releasedClaims.length} finished or orphaned worktree claim(s).\n${renderManagedDirectoryCleanup(result.cleanup.removedManagedDirectories, result.cleanup.notes)}${renderRemovedWorkDirectories(removedWorkDirectories)}`
     );
     return true;
   }
@@ -4598,7 +4614,7 @@ const runWorktreeMaintenance = (
     writeOutput(
       receipt,
       options.json,
-      `Standalone cleanup ${receipt.cleanupId} vs ${receipt.targetRef}: removed ${receipt.removed.length} proven worktree(s), pruned ${receipt.prunedPaths.length} stale record(s), released ${(receipt.releasedClaims ?? []).length} orphaned claim(s), preserved ${receipt.preserved.length}.\n${receipt.preserved.map((entry) => `- preserved ${entry.path}: ${entry.reason}`).join("\n")}${receipt.preserved.length > 0 ? "\n" : ""}`
+      `Standalone cleanup ${receipt.cleanupId} vs ${receipt.targetRef}: removed ${receipt.removed.length} proven worktree(s), pruned ${receipt.prunedPaths.length} stale record(s), released ${(receipt.releasedClaims ?? []).length} orphaned claim(s), preserved ${receipt.preserved.length}.\n${receipt.preserved.map((entry) => `- preserved ${entry.path}: ${entry.reason}`).join("\n")}${receipt.preserved.length > 0 ? "\n" : ""}${renderManagedDirectoryCleanup(receipt.removedManagedDirectories, receipt.notes)}`
     );
     return true;
   }
@@ -5104,6 +5120,9 @@ const renderPrune = (report: PruneReport): string => {
     lines.push(
       `Applied: removed ${report.removed.length} worktree(s), pruned ${report.prunedPaths.length} stale record(s), deleted ${report.removedBranches.length} branch(es).`
     );
+    for (const path of report.removedManagedDirectories) {
+      lines.push(`- Removed empty managed worktree directory ${path}`);
+    }
   }
   for (const entry of report.preserved) {
     lines.push(`- preserved ${entry.path}: ${entry.reason}`);

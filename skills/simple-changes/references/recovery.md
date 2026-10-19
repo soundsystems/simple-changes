@@ -310,8 +310,13 @@ shipment. It removes only what is proven safe right now: an unclaimed clean
 worktree whose head the refreshed target contains by exact ancestry or
 complete per-commit patch equivalence, and stale metadata whose directory no
 longer exists; it then releases orphaned claims whose worktree is gone and
-records them as `releasedClaims` on the receipt. A removal that empties the
-managed `.simple-changes-worktrees` directories removes them too. Every live claim on an
+records them as `releasedClaims` on the receipt. It also removes the managed
+`.simple-changes-worktrees` directories left empty that `prepare-agent`
+recorded creating, by the rule
+[finalization follows](cleanup-and-completion.md#complete-and-finalize), and
+reports them as `removedManagedDirectories`, with any kept or unremovable one
+in `notes`; the receipt history keeps neither field, because older runtimes
+validate it strictly. Every live claim on an
 existing checkout, dirty checkout, or unmatched head is
 preserved and named with the exact next command (equivalence audit, claim
 takeover, or loop lifecycle). The whole pass is recorded as an append-only
@@ -349,8 +354,10 @@ released claim is not removal authority. For registered cleanup, use the
 controller's exact disposition and guarded removal or wait for closure; never
 fall back to raw Git removal or filesystem deletion. `--dry-run`
 changes nothing; the destructive form still reports the exact plan before
-applying it. Prune never edits lease state, worktree claims, or recorded
-receipts, and unlike `worktree cleanup` it does not release claims.
+applying it. It removes empty managed worktree directories by the same
+creation-record rule as `worktree cleanup`. Prune never edits lease state,
+worktree claims, or recorded receipts, and unlike `worktree cleanup` it does
+not release claims.
 Cleanup and metadata refresh take the same short integration lock before the
 coordination lock, then re-read inventory and registrations. If an integration
 operation is busy, retry cleanup after it finishes; leave the shipment running.

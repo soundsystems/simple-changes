@@ -24,10 +24,7 @@ import {
   readLoopLease,
   withLoopStateLock,
 } from "./loop-lease.ts";
-import {
-  isManagedWorktreePath,
-  removeEmptyManagedWorktreeDirectories,
-} from "./managed-worktrees.ts";
+import { removeEmptyManagedWorktreeDirectories } from "./managed-worktrees.ts";
 import { runGit } from "./process.ts";
 import { validateSchema } from "./schema.ts";
 import type {
@@ -106,6 +103,17 @@ export interface WorktreeCleanupReceipt {
   schemaVersion: 1 | 2;
   targetRef: string;
   targetRevision: string;
+}
+
+/**
+ * A standalone cleanup's result: its receipt plus what happened to the
+ * managed worktree directories. Those two fields are reported but not written
+ * to the receipt history, which older runtimes validate strictly.
+ */
+export interface WorktreeCleanupResult extends WorktreeCleanupReceipt {
+  /** Non-fatal notes, such as a managed directory kept or not removable. */
+  notes: string[];
+  removedManagedDirectories: string[];
 }
 
 export interface WorktreeCleanupOptions {
@@ -410,9 +418,6 @@ const removeProvenWorktrees = (
     const {
       repository: { primaryCheckout },
     } = captureInventory(repositoryPath);
-    if (isManagedWorktreePath(primaryCheckout, candidate.worktree.path)) {
-      removeEmptyManagedWorktreeDirectories(primaryCheckout);
-    }
     const branchDeleted = deleteContainedBranch(
       primaryCheckout,
       candidate.worktree.branch,
@@ -467,8 +472,9 @@ const pruneStaleWorktreeMetadata = (
     );
     return [];
   }
-  const after = captureInventory(repositoryPath);
-  const remaining = new Set(after.worktrees.map((worktree) => worktree.path));
+  const remaining = new Set(
+    captureInventory(repositoryPath).worktrees.map((worktree) => worktree.path)
+  );
   const pruned: string[] = [];
   for (const worktree of prunable) {
     if (remaining.has(worktree.path)) {
@@ -478,10 +484,6 @@ const pruneStaleWorktreeMetadata = (
       continue;
     }
     pruned.push(worktree.path);
-  }
-  const { primaryCheckout } = after.repository;
-  if (pruned.some((path) => isManagedWorktreePath(primaryCheckout, path))) {
-    removeEmptyManagedWorktreeDirectories(primaryCheckout);
   }
   return pruned.sort((left, right) => left.localeCompare(right));
 };
@@ -496,7 +498,7 @@ const pruneStaleWorktreeMetadata = (
  */
 export const standaloneWorktreeCleanup = (
   options: WorktreeCleanupOptions
-): WorktreeCleanupReceipt => {
+): WorktreeCleanupResult => {
   const agentId = requiredText(options.agentId, "agent ID");
   const approvedBy = requiredText(options.approvedBy, "approver");
   const reason = requiredText(options.reason, "cleanup reason");
@@ -567,6 +569,10 @@ export const standaloneWorktreeCleanup = (
         classification.prunable,
         errors
       );
+      const managed = removeEmptyManagedWorktreeDirectories(
+        commonGitDirectory,
+        inventory.repository.primaryCheckout
+      );
       // A claim whose checkout is gone (removed above, pruned above, or already
       // absent) protects nothing; release it so it stops demanding a takeover.
       const releasedClaims = releaseAbsentWorktreeClaimsUnderLock(
@@ -604,7 +610,11 @@ export const standaloneWorktreeCleanup = (
         } satisfies WorktreeCleanupReceipt
       );
       appendWorktreeCleanup(commonGitDirectory, receipt);
-      return receipt;
+      return {
+        ...receipt,
+        notes: managed.notes,
+        removedManagedDirectories: managed.removed,
+      };
     }
   );
 };
@@ -648,6 +658,8 @@ export interface PruneReport {
   reason: string | null;
   removed: WorktreeCleanupRemoval[];
   removedBranches: ContainedBranchRemoval[];
+  /** Empty managed worktree directories Simple Changes created and removed. */
+  removedManagedDirectories: string[];
   targetRef: string;
   targetRevision: string;
 }
@@ -841,6 +853,7 @@ export const pruneRepository = (options: PruneOptions): PruneReport => {
       reason,
       removed: [],
       removedBranches: [],
+      removedManagedDirectories: [],
       targetRef,
       targetRevision,
     };
@@ -860,6 +873,12 @@ export const pruneRepository = (options: PruneOptions): PruneReport => {
       classification.prunable,
       errors
     );
+    const managed = removeEmptyManagedWorktreeDirectories(
+      commonGitDirectory,
+      inventory.repository.primaryCheckout
+    );
+    notes.push(...managed.notes);
+    report.removedManagedDirectories = managed.removed;
     const refreshed = captureInventory(options.repositoryPath);
     const finalBranches = prunableBranchCandidates(
       refreshed,

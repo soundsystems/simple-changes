@@ -11,6 +11,7 @@ import {
 import {
   concurrentClaimFor,
   controllerLifecycle,
+  exactWorktreeLease,
   gitLabProjectForTargetRef,
   leaseLiveness,
   readLeaseFromCommonDirectory,
@@ -22,7 +23,6 @@ import {
   targetUsesGitLab,
   transferController,
   withStateLock,
-  worktreeLease,
   writeControllerBinding,
   writeLease,
 } from "./loop-lease-core.ts";
@@ -229,9 +229,12 @@ export const startLoop = (
             targetBranch,
             targetRevision
           );
+          // Each registration, and the opening inventory below, records the
+          // worktree's branch, so a branch that is not exact refuses the start
+          // and names the worktree.
           const worktrees = inventory.worktrees.map((worktree) => {
             if (worktree.path === currentPath) {
-              return worktreeLease(worktree, "controller", agentId, false);
+              return exactWorktreeLease(worktree, "controller", agentId, false);
             }
             const claim = concurrentClaimFor(
               {
@@ -246,7 +249,7 @@ export const startLoop = (
             );
             if (claim) {
               return {
-                ...worktreeLease(
+                ...exactWorktreeLease(
                   worktree,
                   "concurrent-author",
                   claim.owner.agentId,
@@ -255,7 +258,7 @@ export const startLoop = (
                 claimId: claim.claimId,
               };
             }
-            return worktreeLease(worktree, "preserved", null, false);
+            return exactWorktreeLease(worktree, "preserved", null, false);
           });
           const lease: LoopLease = {
             baselineDigest: inventory.baselineDigest,

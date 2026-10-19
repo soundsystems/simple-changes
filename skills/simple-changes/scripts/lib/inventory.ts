@@ -12,6 +12,7 @@ import {
 } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
 import { inspectChangelogCoordination } from "./changelog-coordination.ts";
+import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
 import { sha256 } from "./hash.ts";
 import { assertSafeRelativePath } from "./path-safety.ts";
 import { loadPolicy } from "./policy.ts";
@@ -57,6 +58,36 @@ const nullableSha = (value: string | undefined): string | null => {
 
 const absoluteGitPath = (root: string, value: string): string =>
   realpathSync(isAbsolute(value) ? value : resolve(root, value));
+
+// Git output is decoded as UTF-8 with replacement (process.ts), so each byte
+// that is not valid UTF-8 reads as U+FFFD, and names made of different such
+// bytes, such as `release/\x80` and `release/\x81`, read the same. A name
+// that really holds U+FFFD reads the same way, so no decoded name holding it
+// can be shown to be one exact name.
+export const LOSSY_NAME_CHARACTER = "\uFFFD";
+
+/** Whether a decoded Git name may stand for more than one exact name. */
+export const isLossyName = (name: string | null): boolean =>
+  name?.includes(LOSSY_NAME_CHARACTER) === true;
+
+/**
+ * Refuses to record `branch` as evidence in `what` unless its decoded name is
+ * the branch's exact name. Evidence is compared with what Git reports as
+ * text, so recording only exact names means a lossy observation can never
+ * equal a recorded branch. A detached checkout (null) is exact.
+ */
+export const assertExactBranch = (
+  branch: string | null,
+  what: string,
+  next = "Rename the branch to a valid UTF-8 name without U+FFFD, then retry."
+): void => {
+  if (isLossyName(branch)) {
+    throw new SimpleChangesError(
+      `Branch ${JSON.stringify(branch)} is not valid UTF-8 or contains the replacement character U+FFFD, so Simple Changes cannot name it exactly and will not record it in ${what}. ${next}`,
+      EXIT_CODES.unsafe
+    );
+  }
+};
 
 // Git output ends in line breaks; only those are removed. `trim()` would also
 // drop non-ASCII whitespace such as U+00A0, which Git allows at the end of a
@@ -207,7 +238,7 @@ const PATHSPEC_LISTING_BYTES = 64 * 1024;
 // decoded replacement character, a name Git would normalize to another form,
 // or a name `rev-parse` may read as revision syntax.
 const needsRevisionLookup = (path: string): boolean =>
-  path.includes("\uFFFD") ||
+  path.includes(LOSSY_NAME_CHARACTER) ||
   path.normalize("NFC") !== path ||
   REVISION_STAGE_PREFIX_PATTERN.test(path) ||
   REVISION_SYNTAX_PATTERN.test(path);

@@ -22,7 +22,12 @@ import {
   recordControllerSession,
 } from "./harness-session.ts";
 import { sha256, sha256Json } from "./hash.ts";
-import { captureInventory, locateRepository } from "./inventory.ts";
+import {
+  assertExactBranch,
+  captureInventory,
+  isLossyName,
+  locateRepository,
+} from "./inventory.ts";
 import { assertNoSymlinkAncestors } from "./path-safety.ts";
 import { runGit } from "./process.ts";
 import { RUN_ID_PATTERN } from "./run-id.ts";
@@ -906,6 +911,25 @@ const worktreeLease = (
   role,
 });
 
+/**
+ * `worktreeLease` for a registration that records an observed branch, which
+ * must be the branch's exact name. Loop start, admission, rebaseline,
+ * adoption, and acceptance register through it; the registrations that
+ * prepare-agent, retain-worktree, and finalization write do not yet.
+ */
+const exactWorktreeLease = (
+  worktree: WorktreeInventory,
+  role: LoopWorktreeLease["role"],
+  agentId: string | null,
+  createdByRun: boolean
+): LoopWorktreeLease => {
+  assertExactBranch(
+    worktree.branch,
+    `the loop registration of ${worktree.path}`
+  );
+  return worktreeLease(worktree, role, agentId, createdByRun);
+};
+
 const assertMatchingRun = (lease: LoopLease, runId: string): void => {
   if (lease.runId !== requiredRunId(runId)) {
     throw new SimpleChangesError(
@@ -1247,7 +1271,12 @@ const withConcurrentAuthorAdmissions = (
       primaryBranch,
       targetBranch
     );
-    if (!claim) {
+    // Only a runtime before 0.32.0 could record a claim on a branch that is
+    // not exact. Admission would record it again, and every loop command and
+    // status read admits, so the claim is left unadmitted instead of refused:
+    // the worktree keeps its registration or stays unregistered, and
+    // verification refuses it by path.
+    if (!claim || isLossyName(worktree.branch)) {
       continue;
     }
     const registered = registeredByPath.get(worktree.path);
@@ -1259,7 +1288,7 @@ const withConcurrentAuthorAdmissions = (
       continue;
     }
     admissions.set(worktree.path, {
-      ...worktreeLease(
+      ...exactWorktreeLease(
         worktree,
         "concurrent-author",
         claim.owner.agentId,
@@ -1366,6 +1395,7 @@ export {
   currentTargetRevision,
   DIGEST_PATTERN,
   effectiveShipmentScopeFrozenAt,
+  exactWorktreeLease,
   forgetLeaseSession,
   gitLabProjectForTargetRef,
   MISSING_OPENING_REMOTE_INVENTORY_BLOCKER,

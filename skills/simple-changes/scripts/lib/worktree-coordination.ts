@@ -13,7 +13,12 @@ import { dirname, resolve } from "node:path";
 import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
 import { currentHarnessSession } from "./harness-session.ts";
 import { sha256, sha256Json } from "./hash.ts";
-import { captureInventory, locateRepository } from "./inventory.ts";
+import {
+  assertExactBranch,
+  captureInventory,
+  isLossyName,
+  locateRepository,
+} from "./inventory.ts";
 import { runGit } from "./process.ts";
 import { redactSecrets } from "./redact.ts";
 import { RUN_ID_PATTERN } from "./run-id.ts";
@@ -936,6 +941,9 @@ export const claimWorktree = (
           EXIT_CODES.unsafe
         );
       }
+      // A claim records the branch, and a re-claim affirms that the claim
+      // still names it, so neither may stand on a name that is not exact.
+      assertExactBranch(worktree.branch, `a claim on ${worktree.path}`);
       if (existing) {
         if (!claimNeedsRefresh(document, existing, worktree, session)) {
           return existing;
@@ -1077,6 +1085,9 @@ export const pauseClaimedWorktree = (
           EXIT_CODES.unsafe
         );
       }
+      // A claim recorded before 0.32.0 may name a lossy branch, which the
+      // comparison above cannot tell from another one.
+      assertExactBranch(current.branch, `a pause receipt for ${current.path}`);
       const acknowledgedAt = new Date().toISOString();
       const receipt: WorktreePauseReceipt = {
         acknowledgedAt,
@@ -1498,7 +1509,9 @@ export const attachClaimedWorktree = (
  * claim is never refreshed, so recording the released state lets an active
  * loop admit exactly that state and fail closed on any later change. Git does
  * not mark a locked worktree prunable when its directory is deleted, so the
- * directory itself must exist.
+ * directory itself must exist. A branch Simple Changes cannot name exactly
+ * records nothing: the release still happens, but no loop can admit that
+ * state as the one the owner handed off.
  */
 const releasedEvidence = (
   inventory: RepositoryInventory,
@@ -1508,7 +1521,7 @@ const releasedEvidence = (
     (worktree) =>
       worktree.path === path && !worktree.prunable && existsSync(worktree.path)
   );
-  return current
+  return current && !isLossyName(current.branch)
     ? {
         branch: current.branch,
         changeDigest: current.changeDigest,
@@ -2107,16 +2120,16 @@ const approvedTakeoverState = (
       EXIT_CODES.unsafe
     );
   }
-  // Git output is decoded as UTF-8 with replacement, so two branch names made
-  // of different invalid bytes read the same; such a name cannot be shown to
-  // be the approved one, so a reassign, which hands that state on, fails
-  // closed. A release adopts nothing and is the only way to retire such a
-  // claim once its checkout is gone, so it stays allowed.
-  for (const branch of [current.branch, expected.branch]) {
-    if (action === "reassign" && branch?.includes(REPLACEMENT_CHARACTER)) {
-      throw new SimpleChangesError(
-        `Branch ${JSON.stringify(branch)} is not valid UTF-8, so Simple Changes cannot name it exactly and no approval can be matched to it. Rename the branch to a UTF-8 name, re-observe the worktree, and retry the takeover, or release the claim with \`--release\`.`,
-        EXIT_CODES.unsafe
+  // A lossy branch name cannot be shown to be the approved one, so a
+  // reassign, which hands that state on, fails closed. A release adopts
+  // nothing and is the only way to retire such a claim once its checkout is
+  // gone, so it stays allowed.
+  if (action === "reassign") {
+    for (const branch of [current.branch, expected.branch]) {
+      assertExactBranch(
+        branch,
+        "a takeover, and no approval can be matched to it",
+        "Rename the branch to a valid UTF-8 name without U+FFFD, re-observe the worktree, and retry the takeover, or release the claim with `--release`."
       );
     }
   }
@@ -2134,7 +2147,6 @@ const approvedTakeoverState = (
 };
 
 const STATUS_DIGEST_PATTERN = /^[0-9a-f]{64}$/u;
-const REPLACEMENT_CHARACTER = "\uFFFD";
 
 /**
  * One value of the approval's evidence, kept exactly as given. Each must

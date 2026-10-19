@@ -390,9 +390,12 @@ and timestamp. Then make it read-only:
 `loop end`, and the next `loop start`, keep a work directory that holds
 `preservation-copy` and warn with its path instead of removing it; the CLI
 checks only that the directory is there, not what it holds or where else you
-copied work. Read-only, the copy also survives a recursive delete that does
-not make it writable first, such as an older runtime's cleanup. Once you prove
-the target or a pushed branch contains the copied work, run
+copied work. Read-only, the copy also survives a recursive delete by a process
+that honors file permissions, such as an older runtime's cleanup run as an
+ordinary user. It does not stop a process running as root: when a runtime
+running as root may close the run, commit the work to its own branch instead,
+because a file copy has no protection then. Once you prove the target or a
+pushed branch contains the copied work, run
 `chmod -R u+w "$WORK_DIR/preservation-copy"` and remove the directory with
 `simple-changes workdir remove <path>`.
 

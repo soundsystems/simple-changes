@@ -66,6 +66,13 @@ export interface RunWorkDirectoryRemoval {
 }
 
 const WORKTREE_LINE = /^worktree (.+)$/u;
+const PLAIN_SHELL_WORD_PATTERN = /^[\w./-]+$/u;
+
+// One shell word, quoted unless it is plainly safe as it is.
+const shellWord = (value: string): string =>
+  PLAIN_SHELL_WORD_PATTERN.test(value)
+    ? value
+    : `'${value.replaceAll("'", "'\\''")}'`;
 
 /**
  * The directory, at the top of a work directory, that holds a file-level copy
@@ -532,7 +539,7 @@ const assertNoPreservationCopy = (path: string): void => {
     throw error;
   }
   throw new SimpleChangesError(
-    `It holds ${PRESERVATION_COPY}, so it may hold the only copy of uncommitted work. Once the target or a pushed branch is proven to contain that work, run \`chmod -R u+w ${copy}\` and \`simple-changes workdir remove ${path}\`.`,
+    `It holds ${PRESERVATION_COPY}, so it may hold the only copy of uncommitted work. Once the target or a pushed branch is proven to contain that work, run \`chmod -R u+w ${shellWord(copy)}\` and \`simple-changes workdir remove ${shellWord(path)}\`.`,
     EXIT_CODES.unsafe
   );
 };

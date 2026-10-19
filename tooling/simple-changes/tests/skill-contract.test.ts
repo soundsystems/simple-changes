@@ -1286,6 +1286,9 @@ describe("Simple Changes skill contract", () => {
       "keep a work directory that holds `preservation-copy` and warn with its path instead of removing it; the CLI checks only that the directory is there, not what it holds"
     );
     expect(normalizedConcurrency).toContain(
+      "It does not stop a process running as root: when a runtime running as root may close the run, commit the work to its own branch instead"
+    );
+    expect(normalizedConcurrency).toContain(
       "prove the target or a pushed branch contains the copied work"
     );
     // Independent worktrees use the managed directory; Simple Changes never

@@ -597,6 +597,33 @@ describe("work directory safety", () => {
     expect(existsSync(preserving)).toBe(false);
   });
 
+  test("quotes the paths in the commands a kept preservation copy names", () => {
+    const { base } = workRoot();
+    const { location } = repository();
+    const root = join(base, "it's a $(root)");
+    const directory = bindRunWorkDirectory(
+      location,
+      "run-a",
+      "preserving",
+      null,
+      null,
+      {
+        [WORK_ROOT_ENVIRONMENT]: root,
+      }
+    );
+    const copy = join(directory, PRESERVATION_COPY);
+    mkdirSync(copy);
+    const quote = (value: string): string =>
+      `'${value.replaceAll("'", "'\\''")}'`;
+
+    const [kept] = removeRunWorkDirectories(location, "run-a").kept;
+
+    expect(kept?.reason).toContain(
+      `run \`chmod -R u+w ${quote(copy)}\` and \`simple-changes workdir remove ${quote(directory)}\``
+    );
+    expect(existsSync(copy)).toBe(true);
+  });
+
   test.skipIf(process.getuid?.() === 0)(
     "a read-only preservation copy survives a recursive delete",
     () => {

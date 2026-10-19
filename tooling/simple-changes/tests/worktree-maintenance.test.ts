@@ -431,7 +431,7 @@ describe("standalone worktree cleanup", () => {
     expect(existsSync(adHocParent)).toBe(true);
     expect(receipt.notes).toEqual([
       expect.stringContaining(
-        `Kept the empty managed worktree folders ${managedDirectory} and ${managedRoot}:`
+        `Kept the empty managed worktree folder ${managedDirectory} and its parent ${managedRoot}, which holds only that folder:`
       ),
     ]);
     expect(receipt.errors).toEqual([]);
@@ -488,7 +488,7 @@ describe("standalone worktree cleanup", () => {
     expect(existsSync(managedDirectory)).toBe(true);
     expect(report.notes).toContainEqual(
       expect.stringContaining(
-        `Kept the empty managed worktree folders ${managedDirectory} and ${managedRoot}:`
+        `Kept the empty managed worktree folder ${managedDirectory} and its parent ${managedRoot}, which holds only that folder:`
       )
     );
   });

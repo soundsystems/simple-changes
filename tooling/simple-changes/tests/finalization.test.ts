@@ -538,7 +538,7 @@ describe("shipment finalization", () => {
     expect(readdirSync(managedRoot)).toEqual(["repo"]);
     expect(result.cleanup.errors).toEqual([]);
     expect(result.cleanup.notes).toEqual([
-      `Kept the empty managed worktree folders ${repositoryDirectory} and ${managedRoot}: Simple Changes never removes a worktree's parent folder.`,
+      `Kept the empty managed worktree folder ${repositoryDirectory} and its parent ${managedRoot}, which holds only that folder: Simple Changes never removes a worktree's parent folder.`,
     ]);
   });
 

@@ -37,7 +37,7 @@ describe("empty managed worktree folder notes", () => {
     const both = managedFixture();
     mkdirSync(both.repository, { recursive: true });
     expect(emptyManagedWorktreeFolderNotes(both.primary)).toEqual([
-      `Kept the empty managed worktree folders ${both.repository} and ${both.root}: Simple Changes never removes a worktree's parent folder.`,
+      `Kept the empty managed worktree folder ${both.repository} and its parent ${both.root}, which holds only that folder: Simple Changes never removes a worktree's parent folder.`,
     ]);
     expect(existsSync(both.repository)).toBe(true);
 

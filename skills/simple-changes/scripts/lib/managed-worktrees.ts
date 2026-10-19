@@ -42,8 +42,9 @@ const realDirectoryEntries = (directory: string): string[] | null => {
   }
 };
 
-// The managed folders that hold nothing, deepest first. A folder seen behind a
-// symbolic link is skipped; the result only reports what was seen.
+// The empty managed folder, then the managed root when that folder is all it
+// holds. A folder seen behind a symbolic link is skipped; the result only
+// reports what was seen.
 const emptyManagedFolders = (primaryCheckout: string): string[] => {
   const { repository, root } = managedWorktreeDirectories(primaryCheckout);
   const anchor = dirname(root);
@@ -87,7 +88,8 @@ export const emptyManagedWorktreeFolderNotes = (
   if (folders.length === 0) {
     return [];
   }
+  const [empty, parent] = folders;
   return [
-    `Kept the empty managed worktree folder${folders.length === 1 ? "" : "s"} ${folders.join(" and ")}: Simple Changes never removes a worktree's parent folder.`,
+    `Kept the empty managed worktree folder ${empty}${parent ? ` and its parent ${parent}, which holds only that folder` : ""}: Simple Changes never removes a worktree's parent folder.`,
   ];
 };

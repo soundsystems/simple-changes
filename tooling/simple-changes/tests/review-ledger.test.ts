@@ -4236,6 +4236,15 @@ describe("forward-compatible extensions", () => {
     ) as Record<string, unknown>;
   type Level = "root" | "attestation" | "completion" | "attempt";
   const LEVELS: Level[] = ["root", "attestation", "completion", "attempt"];
+  // The message a call throws, or "accepted".
+  const refusalOf = (call: () => unknown): string => {
+    try {
+      call();
+    } catch (error) {
+      return (error as Error).message;
+    }
+    return "accepted";
+  };
   const PATHS: Record<Level, string> = {
     attempt: `proposals.${PROPOSAL}.attempts[0]`,
     attestation: `attestations.${C}[1]`,
@@ -4624,7 +4633,29 @@ describe("forward-compatible extensions", () => {
     ).toBe(false);
   });
 
-  test("a write is refused, and the file kept, while extensions are spelled in a way a rewrite would change; reads still accept them", () => {
+  // An extensions object of one or more member lines, inside text otherwise
+  // exactly as written.
+  const member =
+    (...memberLines: string[]) =>
+    (indent: string): string =>
+      [
+        "{",
+        ...memberLines.map((line) => `${indent}  ${line}`),
+        `${indent}}`,
+      ].join("\n");
+  const RESPELLED_TEXT: [string, (indent: string) => string][] = [
+    ["an integer past 2^53", member('"n": 9007199254740993')],
+    ["an overflowing number", member('"n": 1e400')],
+    ["a trailing zero", member('"n": 1.0')],
+    ["negative zero", member('"n": -0')],
+    ["an optional escape", member('"n": "\\u0061"')],
+    ["integer-like keys out of order", member('"2": "two",', '"1": "one"')],
+    ["a repeated key", member('"n": 1,', '"n": 2')],
+  ];
+  const RESPELLED_ERROR =
+    "holds extensions spelled otherwise than Simple Changes writes JSON (a number, string escape, key order or repeated key differs), so they could not be kept exactly";
+
+  test("a ledger holding extensions a rewrite would respell reads as malformed, one that differs only in spacing is never rewritten, and the file is kept", () => {
     const { commit, common, owner, path, run } = recordedRun();
     const base = readReviewLedger(common).ledger;
     const second = commitFile(run.author, "b.txt", "b\n");
@@ -4635,29 +4666,10 @@ describe("forward-compatible extensions", () => {
         commits: [second],
         instance: "domain_db_preview",
       });
-    // One member line each, inside text otherwise exactly as written.
-    const member =
-      (...memberLines: string[]) =>
-      (indent: string): string =>
-        [
-          "{",
-          ...memberLines.map((line) => `${indent}  ${line}`),
-          `${indent}}`,
-        ].join("\n");
-    const respelled: [string, (indent: string) => string][] = [
-      ["an integer past 2^53", member('"n": 9007199254740993')],
-      ["an overflowing number", member('"n": 1e400')],
-      ["a trailing zero", member('"n": 1.0')],
-      ["negative zero", member('"n": -0')],
-      ["an optional escape", member('"n": "\\u0061"')],
-      ["integer-like keys out of order", member('"2": "two",', '"1": "one"')],
-      ["a repeated key", member('"n": 1,', '"n": 2')],
-      ["other spacing", member('"n":  1')],
-    ];
     // Every spelling at one level, and one at each other level: the check
     // reads the whole file whichever record holds the extensions.
     const cases: [Level, string, (indent: string) => string][] = [
-      ...respelled.map(
+      ...RESPELLED_TEXT.map(
         ([name, literal]): [Level, string, (indent: string) => string] => [
           "attempt",
           name,
@@ -4675,21 +4687,39 @@ describe("forward-compatible extensions", () => {
     for (const [level, name, literal] of cases) {
       const { text } = spliced(base, commit, literal, [level]);
       writeFileSync(path, text);
-      expect({ level, name, state: readReviewLedger(common).state }).toEqual({
+      const read = readReviewLedger(common);
+      expect({ errors: read.errors, level, name, state: read.state }).toEqual({
+        errors: [
+          `${path} ${RESPELLED_ERROR}; restore the file as a Simple Changes runtime wrote it`,
+        ],
         level,
         name,
+        state: "malformed",
+      });
+      expect(change).toThrow(RESPELLED_ERROR);
+      expect({ level, name, text: readFileSync(path, "utf8") }).toEqual({
+        level,
+        name,
+        text,
+      });
+    }
+    // Other spacing loses nothing, so the ledger reads, and a transaction
+    // that changes nothing succeeds, but nothing rewrites it.
+    for (const level of LEVELS) {
+      const { text } = spliced(base, commit, member('"n":  1'), [level]);
+      writeFileSync(path, text);
+      expect({ level, state: readReviewLedger(common).state }).toEqual({
+        level,
         state: "valid",
       });
-      // A transaction that changes nothing still succeeds.
       expect(attestCommits(owner).attestations).toEqual([
         { commit, status: "unchanged" },
       ]);
       expect(change).toThrow(
-        "holds extensions but is not exactly the text Simple Changes writes"
+        "holds extensions but is not exactly the text Simple Changes writes (its spacing differs)"
       );
-      expect({ level, name, text: readFileSync(path, "utf8") }).toEqual({
+      expect({ level, text: readFileSync(path, "utf8") }).toEqual({
         level,
-        name,
         text,
       });
     }
@@ -4703,12 +4733,12 @@ describe("forward-compatible extensions", () => {
       readReviewLedger(common).ledger.proposals[PROPOSAL]?.attempts[0]
         ?.extensions
     ).toEqual({ n: 1 });
-    // Without extensions, a respelled file is written as before.
+    // Without extensions, a respelled file is read and written as before.
     const plainText = readFileSync(path, "utf8").replace(ONE_MEMBER, "");
     expect(plainText).not.toContain('"extensions"');
     writeFileSync(
       path,
-      plainText.replace('"schemaVersion": 1', '"schemaVersion":  1')
+      plainText.replace('"schemaVersion": 1', '"schemaVersion":  1.0')
     );
     expect(readReviewLedger(common).state).toBe("valid");
     const third = commitFile(run.author, "c.txt", "c\n");
@@ -4720,6 +4750,107 @@ describe("forward-compatible extensions", () => {
         instance: "domain_db_preview",
       }).attestations
     ).toEqual([{ commit: third, status: "recorded" }]);
+  });
+
+  test("the exported writer refuses to replace a malformed ledger or to drop or change an extensions object the file holds", () => {
+    const { commit, common, path } = recordedRun();
+    const base = readReviewLedger(common).ledger;
+    const { indents, text: seededText } = spliced(
+      base,
+      commit,
+      canonicalMembers
+    );
+    const write = (ledger: ReviewLedger) =>
+      withLoopStateLock(common, "test", () =>
+        writeReviewLedger(heldLoopLock(common, "test"), ledger)
+      );
+    const attempt = `proposals.${PROPOSAL}.attempts[0].extensions`;
+    const edits: [string, (ledger: ReviewLedger) => void, string][] = [
+      [
+        "drops the root's",
+        (ledger) => Reflect.deleteProperty(ledger, "extensions"),
+        "ledger.extensions",
+      ],
+      [
+        "changes an attestation's",
+        (ledger) => {
+          const record = ledger.attestations[commit]?.[1] as Attestation;
+          record.extensions = { ...record.extensions, future: 1 };
+        },
+        `attestations.${commit}[1].extensions`,
+      ],
+      [
+        "removes a completion holding them",
+        (ledger) => {
+          Reflect.deleteProperty(ledger, "completions");
+        },
+        `completions.${commit}[0].extensions`,
+      ],
+      [
+        "drops an attempt's",
+        (ledger) =>
+          Reflect.deleteProperty(
+            ledger.proposals[PROPOSAL]?.attempts[0] ?? {},
+            "extensions"
+          ),
+        attempt,
+      ],
+    ];
+    for (const [name, edit, lost] of edits) {
+      writeFileSync(path, seededText);
+      const ledger = structuredClone(readReviewLedger(common).ledger);
+      edit(ledger);
+      expect({ name, refusal: refusalOf(() => write(ledger)) }).toEqual({
+        name,
+        refusal: expect.stringContaining(
+          `Refusing to write a review ledger that drops or changes ${lost}`
+        ),
+      });
+      expect(readFileSync(path, "utf8")).toBe(seededText);
+    }
+    // Adding a record keeps every extensions object, so it is written.
+    writeFileSync(path, seededText);
+    const added = structuredClone(readReviewLedger(common).ledger);
+    attestInMemory(added, commit, author("late"));
+    write(added);
+    const addedText = readFileSync(path, "utf8");
+    for (const level of LEVELS) {
+      const indent = indents[level] as string;
+      expect({
+        kept: addedText.includes(
+          `${indent}"extensions": ${canonicalMembers(indent)}`
+        ),
+        level,
+      }).toEqual({ kept: true, level });
+    }
+    // A respelled file is malformed, so neither its parsed value nor an
+    // empty ledger replaces it.
+    const { text: respelledText } = spliced(
+      base,
+      commit,
+      member('"n": 9007199254740993'),
+      ["attempt"]
+    );
+    writeFileSync(path, respelledText);
+    for (const ledger of [
+      JSON.parse(respelledText) as ReviewLedger,
+      readReviewLedger(common).ledger,
+      emptyReviewLedger(),
+    ]) {
+      expect(refusalOf(() => write(ledger))).toContain(
+        `Refusing to replace the malformed review ledger at ${path} (ledger-malformed): ${path} ${RESPELLED_ERROR}`
+      );
+      expect(readFileSync(path, "utf8")).toBe(respelledText);
+    }
+    // Neither does its parsed value over a file that differs only in spacing.
+    const { text: spacedText } = spliced(base, commit, member('"n":  1'), [
+      "attempt",
+    ]);
+    writeFileSync(path, spacedText);
+    expect(
+      refusalOf(() => write(JSON.parse(spacedText) as ReviewLedger))
+    ).toContain("(its spacing differs)");
+    expect(readFileSync(path, "utf8")).toBe(spacedText);
   });
 
   test("a refused ledger names the newer runtime as a likely writer, only at a record with extension points", () => {

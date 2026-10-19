@@ -30,7 +30,9 @@ import {
 import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
 import {
   EXTENSIONS_KEY,
+  RESPELLED,
   type RecordExtensions,
+  spelledAsSerialized,
   unknownKeyMessage,
 } from "./extensions.ts";
 import { currentHarnessSession } from "./harness-session.ts";
@@ -67,8 +69,9 @@ import {
 // The ledger root, each attestation, completion and review attempt may carry
 // an `extensions` object (see extensions.ts): this runtime accepts any members
 // in it, never reads them, and keeps them byte for byte on every write. A
-// write is refused while a ledger holding extensions is not exactly the text
-// this runtime writes, since rewriting it could change them.
+// ledger holding extensions in JSON this runtime would respell reads as
+// malformed; one that differs only in spacing reads, but is never replaced;
+// and no write drops or changes an extensions object already in the file.
 
 type Environment = Record<string, string | undefined>;
 
@@ -1151,6 +1154,15 @@ interface LedgerFile {
   text: string | null;
 }
 
+// Whether any record in a valid ledger carries `extensions`.
+const holdsExtensions = (ledger: ReviewLedger): boolean =>
+  [
+    ledger,
+    ...Object.values(ledger.attestations).flat(),
+    ...Object.values(ledger.completions ?? {}).flat(),
+    ...Object.values(ledger.proposals).flatMap((record) => record.attempts),
+  ].some((record) => Object.hasOwn(record, EXTENSIONS_KEY));
+
 const readLedgerFile = (
   commonGitDirectory: string,
   options: ReadReviewLedgerOptions
@@ -1211,6 +1223,16 @@ const readLedgerFile = (
   if (validation.reason) {
     return malformed(validation.errors, validation.reason);
   }
+  // A value parsed from text JSON.stringify would spell differently would be
+  // respelled by the next write, so it never leaves the reader.
+  if (
+    holdsExtensions(parsed as ReviewLedger) &&
+    !spelledAsSerialized(text, parsed)
+  ) {
+    return malformed([
+      `${path} holds extensions ${RESPELLED}, so they could not be kept exactly; restore the file as a Simple Changes runtime wrote it`,
+    ]);
+  }
   return {
     state: {
       errors: [],
@@ -1235,36 +1257,89 @@ export const readReviewLedger = (
   options: ReadReviewLedgerOptions = {}
 ): ReviewLedgerState => readLedgerFile(commonGitDirectory, options).state;
 
-// Whether any record in a valid ledger carries `extensions`.
-const holdsExtensions = (ledger: ReviewLedger): boolean =>
-  [
-    ledger,
-    ...Object.values(ledger.attestations).flat(),
-    ...Object.values(ledger.completions ?? {}).flat(),
-    ...Object.values(ledger.proposals).flatMap((record) => record.attempts),
-  ].some((record) => Object.hasOwn(record, EXTENSIONS_KEY));
+// Every extensions object a ledger holds, keyed by the record that holds it
+// (records are never edited or removed), with its path and its JSON text.
+const extensionsByRecord = (
+  ledger: ReviewLedger
+): Map<string, { path: string; text: string }> => {
+  const found = new Map<string, { path: string; text: string }>();
+  const note = (key: string, path: string, record: object): void => {
+    if (Object.hasOwn(record, EXTENSIONS_KEY)) {
+      found.set(key, {
+        path: `${path}.${EXTENSIONS_KEY}`,
+        text: JSON.stringify((record as Record<string, unknown>).extensions),
+      });
+    }
+  };
+  note("ledger", "ledger", ledger);
+  for (const [commit, list] of Object.entries(ledger.attestations)) {
+    for (const [index, entry] of list.entries()) {
+      note(
+        JSON.stringify(["attestation", commit, identityKey(entry)]),
+        `attestations.${commit}[${index}]`,
+        entry
+      );
+    }
+  }
+  for (const [commit, list] of Object.entries(ledger.completions ?? {})) {
+    for (const [index, entry] of list.entries()) {
+      note(
+        JSON.stringify(["completion", commit, completionKey(entry)]),
+        `completions.${commit}[${index}]`,
+        entry
+      );
+    }
+  }
+  for (const [proposalId, record] of Object.entries(ledger.proposals)) {
+    for (const [index, attempt] of record.attempts.entries()) {
+      note(
+        JSON.stringify(["attempt", attempt.attemptId]),
+        `proposals.${proposalId}.attempts[${index}]`,
+        attempt
+      );
+    }
+  }
+  return found;
+};
 
 /**
- * A write stores the whole ledger as `serializeLedger` spells it, which keeps
- * every `extensions` member byte for byte only when the file already is that
- * text. A ledger holding extensions in any other spelling (an integer past
- * 2^53, `1e400`, `1.0`, an optional escape, integer-like keys out of order, a
- * repeated key, or other spacing) could change on a write, so the write is
- * refused and the file is left as it is. Reading it stays allowed.
+ * The writer's own boundary: a write replaces the file only when that keeps
+ * every `extensions` object in it byte for byte. It refuses to replace a
+ * malformed ledger, which it could not read back, a ledger holding
+ * extensions whose text is not exactly what `serializeLedger` writes (other
+ * spacing; a reader already refuses other spellings), and a new ledger that
+ * drops or changes an extensions object the file holds.
  */
-const assertKeepsExtensions = (file: LedgerFile): void => {
-  const { ledger, path } = file.state;
-  if (
-    file.text === null ||
-    !holdsExtensions(ledger) ||
-    file.text === serializeLedger(ledger)
-  ) {
+const assertReplaceable = (previous: LedgerFile, next: ReviewLedger): void => {
+  const { state } = previous;
+  if (state.state === "absent") {
     return;
   }
-  throw new SimpleChangesError(
-    `The review ledger at ${path} holds extensions but is not exactly the text Simple Changes writes (a number, string escape, key order, repeated key or spacing differs), so rewriting it could change them. Nothing was written. Restore the file exactly as a Simple Changes runtime wrote it.`,
-    EXIT_CODES.validation
-  );
+  if (state.state === "malformed") {
+    throw new SimpleChangesError(
+      `Refusing to replace the malformed review ledger at ${state.path} (${state.reason}): ${state.errors.join("; ")}. Repair or remove it; it is never repaired silently.`,
+      EXIT_CODES.validation
+    );
+  }
+  if (!holdsExtensions(state.ledger)) {
+    return;
+  }
+  if (previous.text !== serializeLedger(state.ledger)) {
+    throw new SimpleChangesError(
+      `The review ledger at ${state.path} holds extensions but is not exactly the text Simple Changes writes (its spacing differs), so rewriting it could change them. Nothing was written. Restore the file exactly as a Simple Changes runtime wrote it.`,
+      EXIT_CODES.validation
+    );
+  }
+  const kept = extensionsByRecord(next);
+  const lost = [...extensionsByRecord(state.ledger)]
+    .filter(([key, recorded]) => kept.get(key)?.text !== recorded.text)
+    .map(([, recorded]) => recorded.path);
+  if (lost.length > 0) {
+    throw new SimpleChangesError(
+      `Refusing to write a review ledger that drops or changes ${lost.join(", ")}; a write keeps every extensions object exactly as it was read. Nothing was written.`,
+      EXIT_CODES.validation
+    );
+  }
 };
 
 const lockOwner = (
@@ -1305,11 +1380,13 @@ export const heldLoopLock = (
 /**
  * Validates the whole ledger, writes a temporary file in the same directory,
  * and renames it over the ledger. A failed write leaves the previous ledger
- * unchanged and removes the temporary file.
+ * unchanged and removes the temporary file. `previous` is the file as read
+ * under the same lock hold.
  */
-export const writeReviewLedger = (
+const writeLedger = (
   lock: HeldLoopLock,
-  ledger: ReviewLedger
+  ledger: ReviewLedger,
+  previous: LedgerFile
 ): void => {
   heldLoopLock(lock.commonGitDirectory, lock.operation);
   const validation = validateReviewLedger(ledger);
@@ -1319,6 +1396,7 @@ export const writeReviewLedger = (
       EXIT_CODES.validation
     );
   }
+  assertReplaceable(previous, ledger);
   const path = reviewLedgerPath(lock.commonGitDirectory);
   mkdirSync(dirname(path), { mode: 0o700, recursive: true });
   const temporary = `${path}.${process.pid}.${randomUUID()}.tmp`;
@@ -1339,6 +1417,19 @@ export const writeReviewLedger = (
   }
 };
 
+/**
+ * Writes the whole ledger while the caller holds the loop lock, after
+ * reading the file it replaces: a write never replaces a malformed ledger or
+ * loses an extensions object the file holds.
+ */
+export const writeReviewLedger = (
+  lock: HeldLoopLock,
+  ledger: ReviewLedger
+): void => {
+  heldLoopLock(lock.commonGitDirectory, lock.operation);
+  writeLedger(lock, ledger, readLedgerFile(lock.commonGitDirectory, {}));
+};
+
 const assertOutsideLoopExec = (commonGitDirectory: string): void => {
   if (lockOwner(commonGitDirectory)?.operation === "loop exec") {
     throw new SimpleChangesError(
@@ -1353,9 +1444,9 @@ const assertOutsideLoopExec = (commonGitDirectory: string): void => {
  * ledger (refusing a malformed one), apply the change to a copy, recompute
  * the derived coverage fields, and write atomically only when something
  * changed. The copy is the whole parsed ledger and changes edit it in place,
- * so every `extensions` member is written back as it was read, and a write
- * that could not keep them byte for byte is refused. Lock order stays loop
- * lock, then coordination lock; this never takes the coordination lock.
+ * so every `extensions` member is written back as it was read; the writer
+ * refuses a write that could not keep them byte for byte. Lock order stays
+ * loop lock, then coordination lock; this never takes the coordination lock.
  */
 const withLedgerTransaction = <T>(
   commonGitDirectory: string,
@@ -1378,8 +1469,7 @@ const withLedgerTransaction = <T>(
     const result = mutate(ledger, lock);
     refreshDerivedRecords(ledger);
     if (JSON.stringify(ledger) !== before) {
-      assertKeepsExtensions(file);
-      writeReviewLedger(lock, ledger);
+      writeLedger(lock, ledger, file);
     }
     return result;
   });

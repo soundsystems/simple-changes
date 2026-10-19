@@ -15,6 +15,7 @@ import { fileURLToPath } from "node:url";
 import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
 import {
   EXTENSIONS_KEY,
+  RESPELLED,
   type RecordExtensions,
   spelledAsSerialized,
   unknownKeyMessage,
@@ -32,7 +33,8 @@ import { resolvePersonalPolicyPath } from "./policy.ts";
 // list and no launch mechanics, and names no harness: the harnesses this
 // package knows, and how to detect them, are data in agents/harnesses.json.
 // Each role may carry an `extensions` object (see extensions.ts): accepted,
-// never read, and written exactly as the answer spells it.
+// never read, and written exactly as the answer spells it. A sidecar or an
+// answer holding extensions in JSON this runtime would respell is refused.
 
 export type AuthoringEffort = "low" | "medium" | "high" | "xhigh" | "max";
 // `request`: the current request (`--authoring-request`), applied for one
@@ -577,7 +579,19 @@ export const validateAuthoringSidecar = (
     : { errors };
 };
 
-/** Reads and validates one sidecar; a symlink or other non-file is malformed. */
+// Whether any role of a parsed sidecar carries `extensions`.
+const holdsRoleExtensions = (value: unknown): boolean =>
+  isRecord(value) &&
+  isRecord(value.roles) &&
+  Object.values(value.roles).some(
+    (role) => isRecord(role) && Object.hasOwn(role, EXTENSIONS_KEY)
+  );
+
+/**
+ * Reads and validates one sidecar; a symlink or other non-file is malformed,
+ * and so is one holding extensions in JSON that writing its value back would
+ * respell, so no parsed value that would change ever reaches a writer.
+ */
 export const readAuthoringFile = (
   path: string,
   skill: "simple-changes" | "simple-changelogs" = "simple-changes"
@@ -603,13 +617,22 @@ export const readAuthoringFile = (
     };
   }
   try {
-    const result = validateAuthoringSidecar(
-      JSON.parse(readFileSync(path, "utf8")),
-      skill
-    );
-    return result.value
-      ? { errors: [], path, state: "valid", value: result.value }
-      : { errors: result.errors, path, state: "malformed" };
+    const text = readFileSync(path, "utf8");
+    const parsed: unknown = JSON.parse(text);
+    const result = validateAuthoringSidecar(parsed, skill);
+    if (!result.value) {
+      return { errors: result.errors, path, state: "malformed" };
+    }
+    if (holdsRoleExtensions(parsed) && !spelledAsSerialized(text, parsed)) {
+      return {
+        errors: [
+          `${path} holds extensions ${RESPELLED}, so they could not be kept exactly; write it as JSON.stringify writes JSON`,
+        ],
+        path,
+        state: "malformed",
+      };
+    }
+    return { errors: [], path, state: "valid", value: result.value };
   } catch (error) {
     return {
       errors: [`Could not parse ${path}: ${(error as Error).message}`],
@@ -1437,14 +1460,6 @@ export const writeAuthoringSidecar = (
 // that honors the sidecar.
 export const AUTHORING_GUIDANCE = 28;
 
-// Whether any role of a parsed sidecar carries `extensions`.
-const holdsRoleExtensions = (value: unknown): boolean =>
-  isRecord(value) &&
-  isRecord(value.roles) &&
-  Object.values(value.roles).some(
-    (role) => isRecord(role) && Object.hasOwn(role, EXTENSIONS_KEY)
-  );
-
 /**
  * Parses `setup --authoring`: JSON text, or `@path` to a JSON file. The
  * sidecar is written from the parsed value, so an answer holding extensions
@@ -1473,7 +1488,7 @@ export const parseAuthoringAnswer = (
   }
   if (holdsRoleExtensions(parsed) && !spelledAsSerialized(source, parsed)) {
     throw new SimpleChangesError(
-      `${option} holds extensions but spells its JSON differently from how Simple Changes writes it (a number, string escape, key order or repeated key differs), so they would not be kept exactly. Spell the answer as JSON.stringify writes it.`,
+      `${option} holds extensions ${RESPELLED}, so they would not be kept exactly. Spell the answer as JSON.stringify writes it.`,
       EXIT_CODES.usage
     );
   }

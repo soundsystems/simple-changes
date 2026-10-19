@@ -12,17 +12,23 @@
 // qualify. A field that could loosen a gate must sit outside `extensions`,
 // where a reader that does not know it refuses the whole record.
 //
-// A writer serializes what it parsed, so members are kept exactly only when
-// their text is already spelled the way JSON.stringify spells it. Every
-// Simple Changes runtime writes JSON that way; text spelled otherwise (an
+// A writer serializes what a reader parsed, so members are kept exactly only
+// when their text is already spelled the way JSON.stringify spells it. Every
+// Simple Changes runtime writes JSON that way. Text spelled otherwise (an
 // integer past 2^53, `1e400`, `1.0`, `-0`, an optional escape, integer-like
-// keys out of order, a repeated key) would change on a write, so writers
-// refuse it instead.
+// keys out of order, a repeated key) would change on the way back, so a
+// reader reports a file holding extensions in such text as malformed, and an
+// answer in such text is refused: no parsed value that would be respelled
+// ever reaches a writer.
 
 export const EXTENSIONS_KEY = "extensions";
 
 /** Members a newer runtime recorded beside a record; kept and never read. */
 export type RecordExtensions = Record<string, unknown>;
+
+/** What differs in JSON text that a write would respell. */
+export const RESPELLED =
+  "spelled otherwise than Simple Changes writes JSON (a number, string escape, key order or repeated key differs)";
 
 /** Why an unknown key beside an `extensions` object may be there. */
 export const NEWER_RUNTIME_HINT =

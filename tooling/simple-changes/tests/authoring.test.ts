@@ -48,6 +48,7 @@ import {
   writeAuthoringSidecar,
 } from "../../../skills/simple-changes/scripts/lib/authoring.ts";
 import { recommendedAuthoringAnswer } from "../../../skills/simple-changes/scripts/lib/authoring-onboarding.ts";
+import { RESPELLED } from "../../../skills/simple-changes/scripts/lib/extensions.ts";
 import { captureInventory } from "../../../skills/simple-changes/scripts/lib/inventory.ts";
 import { resolveReviewer } from "../../../skills/simple-changes/scripts/lib/review-ledger.ts";
 import { createTestRepository, git, type TestRepository } from "./helpers.ts";
@@ -526,7 +527,7 @@ describe("authoring extensions", () => {
     }
   });
 
-  test("an answer or request whose extensions would be respelled on the way to the file is refused", () => {
+  test("an answer, request or sidecar file whose extensions would be respelled is refused, and the file is never replaced", () => {
     const respelled: [string, string][] = [
       ["an integer past 2^53", '"future": 9007199254740993'],
       ["an overflowing number", '"future": 1e400'],
@@ -557,7 +558,7 @@ describe("authoring extensions", () => {
         }).toEqual({
           name,
           refusal: expect.stringContaining(
-            "--authoring holds extensions but spells its JSON differently from how Simple Changes writes it"
+            `--authoring holds extensions ${RESPELLED}, so they would not be kept exactly`
           ),
         });
       }
@@ -567,20 +568,49 @@ describe("authoring extensions", () => {
       }).toEqual({
         name,
         refusal: expect.stringContaining(
-          "--authoring-request holds extensions but spells its JSON differently"
+          `--authoring-request holds extensions ${RESPELLED}`
         ),
       });
+      // The same text as a saved sidecar is malformed, so it hands out no
+      // value to write back, and no answer replaces it.
+      const saved = join(directory, "authoring.json");
+      writeFileSync(saved, text);
+      expect({ name, read: readAuthoringFile(saved) }).toEqual({
+        name,
+        read: {
+          errors: [
+            `${saved} holds extensions ${RESPELLED}, so they could not be kept exactly; write it as JSON.stringify writes JSON`,
+          ],
+          path: saved,
+          state: "malformed",
+        },
+      });
+      expect({
+        name,
+        refusal: refusal(() =>
+          writeAuthoringSidecar(saved, JSON.parse(text), true)
+        ),
+      }).toEqual({
+        name,
+        refusal: expect.stringContaining(`Refusing to overwrite ${saved}`),
+      });
+      expect(readFileSync(saved, "utf8")).toBe(text);
     }
+    // Other spacing loses nothing, so such a sidecar reads.
+    const spaced = join(directory, "spaced.json");
+    writeFileSync(spaced, LITERAL_ANSWER.replaceAll("  ", "    "));
+    expect(readAuthoringFile(spaced).state).toBe("valid");
     // Without extensions, other spellings are accepted as before.
-    expect(
-      parseAuthoringAnswer(
-        '{"harnesses":{},"roles":{"review":{"harness":"\\u0072unning","reviewLoop":{"roundCap":3.0}}},"schemaVersion":1}'
-      )
-    ).toEqual({
+    const plain =
+      '{"harnesses":{},"roles":{"review":{"harness":"\\u0072unning","reviewLoop":{"roundCap":3.0}}},"schemaVersion":1}';
+    expect(parseAuthoringAnswer(plain)).toEqual({
       harnesses: {},
       roles: { review: { harness: "running", reviewLoop: { roundCap: 3 } } },
       schemaVersion: 1,
     });
+    const plainFile = join(directory, "plain.json");
+    writeFileSync(plainFile, plain);
+    expect(readAuthoringFile(plainFile).state).toBe("valid");
   });
 });
 

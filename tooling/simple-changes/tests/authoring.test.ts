@@ -37,6 +37,7 @@ import {
   loadHarnessDefinitions,
   MODEL_ID_ALIASES,
   packagedHarnessDataPath,
+  parseAuthoringAnswer,
   parseAuthoringRequest,
   REVIEW_LOOP_DEFAULTS,
   readAuthoringFile,
@@ -431,42 +432,90 @@ describe("authoring extensions", () => {
     ).toEqual(["roles.release-notes.extensions is not allowed"]);
   });
 
-  test("extensions are written byte for byte, never read, and absent from a fresh answer", () => {
+  // An answer a newer runtime could pass, as literal text spelled and
+  // indented exactly as Simple Changes writes JSON: an exponent, escapes,
+  // a raw non-ASCII character, and names that are inherited properties.
+  const LITERAL_ANSWER = [
+    "{",
+    '  "harnesses": {',
+    '    "alpha-agent": {',
+    '      "effort": "high",',
+    '      "model": "alpha-model"',
+    "    }",
+    "  },",
+    '  "roles": {',
+    '    "proposals": {',
+    '      "extensions": {',
+    '        "__proto__": {',
+    '          "polluted": true',
+    "        },",
+    '        "constructor": "kept",',
+    '        "future": 1e+21,',
+    '        "nested": {',
+    '          "list": [',
+    "            1.5,",
+    "            null,",
+    '            "é \\"q\\" \\\\ \\u0001",',
+    "            []",
+    "          ],",
+    '          "empty": {}',
+    "        }",
+    "      },",
+    '      "harness": "running"',
+    "    },",
+    '    "review": {',
+    '      "adversarial": true,',
+    '      "escalateOnFindings": "xhigh",',
+    '      "extensions": {},',
+    '      "harness": "alpha-agent",',
+    '      "reviewLoop": {',
+    '        "roundCap": 3',
+    "      }",
+    "    }",
+    "  },",
+    '  "schemaVersion": 1',
+    "}",
+    "",
+  ].join("\n");
+  // The same answer on one line, the way a command line passes it.
+  const compact = (text: string): string =>
+    text.replace(/"(?:[^"\\]|\\.)*"|\s+/gsu, (token) =>
+      token.startsWith('"') ? token : ""
+    );
+
+  test("an answer's literal extensions are written byte for byte, never read, and a fresh answer writes none", () => {
     const directory = temporary("extensions");
     const path = join(directory, "authoring.json");
     // A fresh answer, as setup records it, carries no extensions.
     const fresh = recommendedAuthoringAnswer(["alpha-agent", "beta-agent"]);
     expect(writeAuthoringSidecar(path, fresh, true).written).toBe(true);
     expect(readFileSync(path, "utf8")).not.toContain('"extensions"');
-    const members = JSON.parse(
-      '{"__proto__":{"polluted":true},"constructor":"kept","future":1.5,"nested":{"list":[1,null,"\u00e9",{"flag":false}]}}'
-    ) as Record<string, unknown>;
-    const plain = sidecar(
-      { "alpha-agent": { effort: "high", model: "alpha-model" } },
-      {
-        proposals: { harness: "running" },
-        review: {
-          adversarial: true,
-          escalateOnFindings: "xhigh",
-          harness: "alpha-agent",
-          reviewLoop: { roundCap: 3 },
-        },
-      }
-    );
-    const extended = structuredClone(plain);
-    for (const role of Object.values(extended.roles)) {
-      role.extensions = structuredClone(members);
+    // The literal answer, inline, on one line, or from a file, is written as
+    // exactly that text.
+    const answerFile = join(directory, "answer.json");
+    writeFileSync(answerFile, LITERAL_ANSWER);
+    for (const text of [
+      LITERAL_ANSWER,
+      compact(LITERAL_ANSWER),
+      `@${answerFile}`,
+    ]) {
+      rmSync(path, { force: true });
+      const answer = parseAuthoringAnswer(text);
+      expect(writeAuthoringSidecar(path, answer, true).written).toBe(true);
+      expect(readFileSync(path, "utf8")).toBe(LITERAL_ANSWER);
     }
-    const text = `${JSON.stringify(extended, null, 2)}\n`;
-    expect(writeAuthoringSidecar(path, extended, true).written).toBe(true);
-    expect(readFileSync(path, "utf8")).toBe(text);
     const read = readAuthoringFile(path);
     expect(read.state).toBe("valid");
-    expect(JSON.stringify(read.value)).toBe(JSON.stringify(extended));
+    expect(read.value?.roles.proposals?.extensions?.future).toBe(1e21);
     // Writing back what was read changes nothing on disk.
     expect(writeAuthoringSidecar(path, read.value, true).written).toBe(false);
-    expect(readFileSync(path, "utf8")).toBe(text);
+    expect(readFileSync(path, "utf8")).toBe(LITERAL_ANSWER);
     // Resolution reads the same roles with and without them.
+    const extended = read.value as AuthoringSidecar;
+    const plain = structuredClone(extended);
+    for (const role of Object.values(plain.roles)) {
+      Reflect.deleteProperty(role, "extensions");
+    }
     const at = (value: AuthoringSidecar) => [
       { layer: "repository" as const, path, value },
     ];
@@ -475,6 +524,63 @@ describe("authoring extensions", () => {
         resolveAuthoringRole(role, at(plain), "alpha-agent")
       );
     }
+  });
+
+  test("an answer or request whose extensions would be respelled on the way to the file is refused", () => {
+    const respelled: [string, string][] = [
+      ["an integer past 2^53", '"future": 9007199254740993'],
+      ["an overflowing number", '"future": 1e400'],
+      ["a trailing zero", '"future": 1.0'],
+      ["negative zero", '"future": -0'],
+      ["an optional escape", '"future": "\\u0061"'],
+      ["integer-like keys out of order", '"future": {"2": "two", "1": "one"}'],
+      ["a repeated key", '"future": 1, "future": 2'],
+    ];
+    const directory = temporary("respelled");
+    const refusal = (parse: () => unknown): string => {
+      try {
+        parse();
+      } catch (error) {
+        return (error as Error).message;
+      }
+      return "accepted";
+    };
+    for (const [name, member] of respelled) {
+      const text = LITERAL_ANSWER.replace('"future": 1e+21', member);
+      expect(text).not.toBe(LITERAL_ANSWER);
+      const file = join(directory, "answer.json");
+      writeFileSync(file, text);
+      for (const answer of [text, `@${file}`]) {
+        expect({
+          name,
+          refusal: refusal(() => parseAuthoringAnswer(answer)),
+        }).toEqual({
+          name,
+          refusal: expect.stringContaining(
+            "--authoring holds extensions but spells its JSON differently from how Simple Changes writes it"
+          ),
+        });
+      }
+      expect({
+        name,
+        refusal: refusal(() => parseAuthoringRequest(text)),
+      }).toEqual({
+        name,
+        refusal: expect.stringContaining(
+          "--authoring-request holds extensions but spells its JSON differently"
+        ),
+      });
+    }
+    // Without extensions, other spellings are accepted as before.
+    expect(
+      parseAuthoringAnswer(
+        '{"harnesses":{},"roles":{"review":{"harness":"\\u0072unning","reviewLoop":{"roundCap":3.0}}},"schemaVersion":1}'
+      )
+    ).toEqual({
+      harnesses: {},
+      roles: { review: { harness: "running", reviewLoop: { roundCap: 3 } } },
+      schemaVersion: 1,
+    });
   });
 });
 

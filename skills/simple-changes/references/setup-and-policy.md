@@ -442,7 +442,9 @@ Changes adds, under the
 [review ledger's rule](review-and-merge.md#review-identity-and-the-review-ledger):
 only a field whose absence leaves a reader stricter goes there, and an unknown
 key beside it fails with a hint to update the runtime. A reader accepts its
-members without interpreting them, and a write keeps them byte for byte. An
+members without interpreting them. An answer holding extensions must spell its
+JSON as Simple Changes writes it, apart from whitespace, so the file keeps them
+exactly; a number, escape, or key order spelled otherwise is refused. An
 answer replaces the whole file, so it keeps only the extensions it holds;
 setup never writes one itself. Runtimes before 0.32.0 reject it.
 

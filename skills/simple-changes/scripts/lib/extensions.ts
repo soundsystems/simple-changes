@@ -11,6 +11,13 @@
 // example, an ungraded finding still escalates, so graded severities would
 // qualify. A field that could loosen a gate must sit outside `extensions`,
 // where a reader that does not know it refuses the whole record.
+//
+// A writer serializes what it parsed, so members are kept exactly only when
+// their text is already spelled the way JSON.stringify spells it. Every
+// Simple Changes runtime writes JSON that way; text spelled otherwise (an
+// integer past 2^53, `1e400`, `1.0`, `-0`, an optional escape, integer-like
+// keys out of order, a repeated key) would change on a write, so writers
+// refuse it instead.
 
 export const EXTENSIONS_KEY = "extensions";
 
@@ -28,3 +35,17 @@ export const NEWER_RUNTIME_HINT =
  */
 export const unknownKeyMessage = (extensible: boolean): string =>
   extensible ? `is not allowed (${NEWER_RUNTIME_HINT})` : "is not allowed";
+
+// A JSON string token, or a run of whitespace between tokens.
+const STRING_OR_WHITESPACE = /"(?:[^"\\]|\\.)*"|[\t\n\r ]+/gsu;
+
+/**
+ * Whether `text`, which parses to `value`, spells it exactly as
+ * JSON.stringify does, apart from whitespace between tokens. Serializing the
+ * parsed value then reproduces every number, string, key and key order the
+ * text holds.
+ */
+export const spelledAsSerialized = (text: string, value: unknown): boolean =>
+  text.replace(STRING_OR_WHITESPACE, (token) =>
+    token.startsWith('"') ? token : ""
+  ) === JSON.stringify(value);

@@ -66,7 +66,9 @@ import {
 //
 // The ledger root, each attestation, completion and review attempt may carry
 // an `extensions` object (see extensions.ts): this runtime accepts any members
-// in it, never reads them, and keeps them byte for byte on every write.
+// in it, never reads them, and keeps them byte for byte on every write. A
+// write is refused while a ledger holding extensions is not exactly the text
+// this runtime writes, since rewriting it could change them.
 
 type Environment = Record<string, string | undefined>;
 
@@ -1139,27 +1141,33 @@ export interface ReadReviewLedgerOptions {
 const errorCode = (error: unknown): string =>
   (error as NodeJS.ErrnoException | undefined)?.code ?? "unknown error";
 
-/**
- * Reads and validates the ledger without a lock. Only a missing file is
- * absence. A malformed ledger, or one that cannot be inspected or read, is
- * reported with its errors and an empty ledger in its place; it is never
- * repaired here, it blocks acceptance, and every write transaction refuses
- * it, so an inspection failure can never replace recorded history.
- */
-export const readReviewLedger = (
+/** The exact text every ledger write stores. */
+const serializeLedger = (ledger: ReviewLedger): string =>
+  `${JSON.stringify(ledger, null, 2)}\n`;
+
+interface LedgerFile {
+  state: ReviewLedgerState;
+  // The file's text when it was read and validated; null otherwise.
+  text: string | null;
+}
+
+const readLedgerFile = (
   commonGitDirectory: string,
-  options: ReadReviewLedgerOptions = {}
-): ReviewLedgerState => {
+  options: ReadReviewLedgerOptions
+): LedgerFile => {
   const path = reviewLedgerPath(commonGitDirectory);
   const malformed = (
     errors: string[],
     reason: LedgerProblem = "ledger-malformed"
-  ): ReviewLedgerState => ({
-    errors,
-    ledger: emptyReviewLedger(),
-    path,
-    reason,
-    state: "malformed",
+  ): LedgerFile => ({
+    state: {
+      errors,
+      ledger: emptyReviewLedger(),
+      path,
+      reason,
+      state: "malformed",
+    },
+    text: null,
   });
   const inspect = options.inspect ?? lstatSync;
   let isFile: boolean;
@@ -1168,11 +1176,14 @@ export const readReviewLedger = (
   } catch (error) {
     if (errorCode(error) === "ENOENT") {
       return {
-        errors: [],
-        ledger: emptyReviewLedger(),
-        path,
-        reason: null,
-        state: "absent",
+        state: {
+          errors: [],
+          ledger: emptyReviewLedger(),
+          path,
+          reason: null,
+          state: "absent",
+        },
+        text: null,
       };
     }
     return malformed([
@@ -1201,12 +1212,59 @@ export const readReviewLedger = (
     return malformed(validation.errors, validation.reason);
   }
   return {
-    errors: [],
-    ledger: parsed as ReviewLedger,
-    path,
-    reason: null,
-    state: "valid",
+    state: {
+      errors: [],
+      ledger: parsed as ReviewLedger,
+      path,
+      reason: null,
+      state: "valid",
+    },
+    text,
   };
+};
+
+/**
+ * Reads and validates the ledger without a lock. Only a missing file is
+ * absence. A malformed ledger, or one that cannot be inspected or read, is
+ * reported with its errors and an empty ledger in its place; it is never
+ * repaired here, it blocks acceptance, and every write transaction refuses
+ * it, so an inspection failure can never replace recorded history.
+ */
+export const readReviewLedger = (
+  commonGitDirectory: string,
+  options: ReadReviewLedgerOptions = {}
+): ReviewLedgerState => readLedgerFile(commonGitDirectory, options).state;
+
+// Whether any record in a valid ledger carries `extensions`.
+const holdsExtensions = (ledger: ReviewLedger): boolean =>
+  [
+    ledger,
+    ...Object.values(ledger.attestations).flat(),
+    ...Object.values(ledger.completions ?? {}).flat(),
+    ...Object.values(ledger.proposals).flatMap((record) => record.attempts),
+  ].some((record) => Object.hasOwn(record, EXTENSIONS_KEY));
+
+/**
+ * A write stores the whole ledger as `serializeLedger` spells it, which keeps
+ * every `extensions` member byte for byte only when the file already is that
+ * text. A ledger holding extensions in any other spelling (an integer past
+ * 2^53, `1e400`, `1.0`, an optional escape, integer-like keys out of order, a
+ * repeated key, or other spacing) could change on a write, so the write is
+ * refused and the file is left as it is. Reading it stays allowed.
+ */
+const assertKeepsExtensions = (file: LedgerFile): void => {
+  const { ledger, path } = file.state;
+  if (
+    file.text === null ||
+    !holdsExtensions(ledger) ||
+    file.text === serializeLedger(ledger)
+  ) {
+    return;
+  }
+  throw new SimpleChangesError(
+    `The review ledger at ${path} holds extensions but is not exactly the text Simple Changes writes (a number, string escape, key order, repeated key or spacing differs), so rewriting it could change them. Nothing was written. Restore the file exactly as a Simple Changes runtime wrote it.`,
+    EXIT_CODES.validation
+  );
 };
 
 const lockOwner = (
@@ -1265,7 +1323,7 @@ export const writeReviewLedger = (
   mkdirSync(dirname(path), { mode: 0o700, recursive: true });
   const temporary = `${path}.${process.pid}.${randomUUID()}.tmp`;
   try {
-    writeFileSync(temporary, `${JSON.stringify(ledger, null, 2)}\n`, {
+    writeFileSync(temporary, serializeLedger(ledger), {
       encoding: "utf8",
       flag: "wx",
       mode: 0o600,
@@ -1295,9 +1353,9 @@ const assertOutsideLoopExec = (commonGitDirectory: string): void => {
  * ledger (refusing a malformed one), apply the change to a copy, recompute
  * the derived coverage fields, and write atomically only when something
  * changed. The copy is the whole parsed ledger and changes edit it in place,
- * so every `extensions` member is written back as it was read. Lock order
- * stays loop lock, then coordination lock; this never takes the
- * coordination lock.
+ * so every `extensions` member is written back as it was read, and a write
+ * that could not keep them byte for byte is refused. Lock order stays loop
+ * lock, then coordination lock; this never takes the coordination lock.
  */
 const withLedgerTransaction = <T>(
   commonGitDirectory: string,
@@ -1307,7 +1365,8 @@ const withLedgerTransaction = <T>(
   assertOutsideLoopExec(commonGitDirectory);
   return withLoopStateLock(commonGitDirectory, operation, () => {
     const lock = heldLoopLock(commonGitDirectory, operation);
-    const current = readReviewLedger(commonGitDirectory);
+    const file = readLedgerFile(commonGitDirectory, {});
+    const current = file.state;
     if (current.state === "malformed") {
       throw new SimpleChangesError(
         `The review ledger at ${current.path} is malformed (${current.reason}): ${current.errors.join("; ")}. Repair or remove it; it is never repaired silently.`,
@@ -1319,6 +1378,7 @@ const withLedgerTransaction = <T>(
     const result = mutate(ledger, lock);
     refreshDerivedRecords(ledger);
     if (JSON.stringify(ledger) !== before) {
+      assertKeepsExtensions(file);
       writeReviewLedger(lock, ledger);
     }
     return result;

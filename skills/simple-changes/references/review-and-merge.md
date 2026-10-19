@@ -107,12 +107,15 @@ repairs it.
 The ledger root, each attestation, each completion, and each review attempt
 may carry an `extensions` object for fields a newer Simple Changes adds. A
 reader accepts any members in it without interpreting them, every write keeps
-them byte for byte, and a new ledger has none. A field goes there only when a
-reader that ignores it can only be stricter, never looser, the way findings
-without `severities` still escalate. A field that could loosen a gate goes
-outside `extensions`: a runtime that does not know it reads the ledger as
-malformed and says a newer Simple Changes may have written it, so update that
-runtime. Runtimes before 0.32.0 reject `extensions` too.
+them byte for byte, and a new ledger has none. While a ledger holding
+extensions is not exactly the text Simple Changes writes, for example after a
+hand edit, writes are refused and the file is left as it is, since rewriting
+it could change them. A field goes there only when a reader that ignores it
+can only be stricter, never looser, the way findings without `severities`
+still escalate. A field that could loosen a gate goes outside `extensions`: a
+runtime that does not know it reads the ledger as malformed and says a newer
+Simple Changes may have written it, so update that runtime. Runtimes before
+0.32.0 reject `extensions` too.
 
 - **Attestation.** Authors attest every commit, and replays link rewritten
   commits to their sources ([ledger steps](change-requests.md#review-ledger-steps)).

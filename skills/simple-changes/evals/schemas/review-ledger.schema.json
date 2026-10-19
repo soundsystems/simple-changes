@@ -40,7 +40,7 @@
   },
   "$defs": {
     "extensions": {
-      "description": "Optional, at the ledger root, an attestation, a completion and a review attempt: members a newer Simple Changes recorded beside the record. A reader accepts any members without interpreting them, and every write keeps them byte for byte. A field belongs here only when a reader that ignores it, or finds it absent, can only be stricter, never looser; for example, an ungraded finding still escalates. A field that could loosen a gate goes outside extensions, where a reader that does not know it refuses the record, and its error says a newer Simple Changes may have written it. A new ledger writes no extensions key. Runtimes before 0.32.0 reject it.",
+      "description": "Optional, at the ledger root, an attestation, a completion and a review attempt: members a newer Simple Changes recorded beside the record. A reader accepts any members without interpreting them, and every write keeps them byte for byte; while a ledger holding extensions is not exactly the text Simple Changes writes, writes are refused (checked by hand). A field belongs here only when a reader that ignores it, or finds it absent, can only be stricter, never looser; for example, an ungraded finding still escalates. A field that could loosen a gate goes outside extensions, where a reader that does not know it refuses the record, and its error says a newer Simple Changes may have written it. A new ledger writes no extensions key. Runtimes before 0.32.0 reject it.",
       "type": "object"
     },
     "sha": {

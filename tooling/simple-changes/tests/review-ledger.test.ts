@@ -142,6 +142,8 @@ const reviewerShape = <T>(value: T): T => {
 };
 const STAMP = "2026-10-08T12:00:00.000Z";
 const PROPOSAL = "group/project!42";
+// A one-member extensions object at the end of a record, as a ledger holds it.
+const ONE_MEMBER = /,\n *"extensions": \{\n *"n": 1\n *\}/u;
 
 // Harness sessions the adapter recognizes; the test harness strips the real
 // ones in its preload, so each test names the session it runs as.
@@ -4423,8 +4425,9 @@ describe("forward-compatible extensions", () => {
     expect(both(ledger)).toEqual([true, true]);
   });
 
-  test("every write keeps extensions byte for byte through a read-modify-write, and a new ledger writes none", () => {
-    expect(Object.hasOwn(emptyReviewLedger(), "extensions")).toBe(false);
+  // A repository whose ledger holds an attestation, a completion and a graded
+  // review, written end to end by this runtime.
+  const recordedRun = () => {
     const run = preparedRun();
     const commit = commitFile(run.author, "a.txt", "a\n");
     const owner = {
@@ -4465,26 +4468,105 @@ describe("forward-compatible extensions", () => {
     recordAuthors(commit);
     review(commit);
     const common = commonDirectory(run.root);
-    const path = reviewLedgerPath(common);
+    return {
+      commit,
+      common,
+      owner,
+      path: reviewLedgerPath(common),
+      recordAuthors,
+      review,
+      run,
+    };
+  };
+  const PLACEHOLDER = /^( *)"extensions": "@@(\w+)@@"/gmu;
+  // The ledger text with the literal `extensions` text `literal(indent)`
+  // spliced in at each level, as a newer runtime would write it. The rest of
+  // the file is exactly what this runtime wrote.
+  const spliced = (
+    ledger: ReviewLedger,
+    commit: string,
+    literal: (indent: string) => string,
+    levels: Level[] = LEVELS
+  ): { indents: Record<string, string>; text: string } => {
+    const marked = structuredClone(ledger) as unknown as Record<
+      string,
+      unknown
+    >;
+    const markers: Record<Level, Record<string, unknown> | undefined> = {
+      attempt: (marked as unknown as ReviewLedger).proposals[PROPOSAL]
+        ?.attempts[0] as Record<string, unknown> | undefined,
+      attestation: (marked as unknown as ReviewLedger).attestations[
+        commit
+      ]?.[1] as Record<string, unknown> | undefined,
+      completion: (marked as unknown as ReviewLedger).completions?.[
+        commit
+      ]?.[0] as Record<string, unknown> | undefined,
+      root: marked,
+    };
+    for (const level of levels) {
+      const record = markers[level];
+      if (!record) {
+        throw new Error(`no ${level} record`);
+      }
+      record.extensions = `@@${level}@@`;
+    }
+    const root = Object.hasOwn(marked, "extensions")
+      ? { extensions: marked.extensions, ...marked }
+      : marked;
+    const indents: Record<string, string> = {};
+    const text = `${JSON.stringify(root, null, 2)}\n`.replace(
+      PLACEHOLDER,
+      (_match, indent: string, level: string) => {
+        indents[level] = indent;
+        return `${indent}"extensions": ${literal(indent)}`;
+      }
+    );
+    return { indents, text };
+  };
+  // Members of every JSON kind, spelled and indented exactly as Simple
+  // Changes writes JSON, as literal text: an exponent, an escaped quote,
+  // backslash and control character, a raw non-ASCII character, and names
+  // that are inherited object properties.
+  const canonicalMembers = (indent: string): string =>
+    [
+      "{",
+      `${indent}  "__proto__": {`,
+      `${indent}    "polluted": true`,
+      `${indent}  },`,
+      `${indent}  "constructor": "kept",`,
+      `${indent}  "future": 1e+21,`,
+      `${indent}  "nested": {`,
+      `${indent}    "list": [`,
+      `${indent}      1.5,`,
+      `${indent}      null,`,
+      `${indent}      "é \\"quoted\\" \\\\ \\u0001",`,
+      `${indent}      []`,
+      `${indent}    ],`,
+      `${indent}    "empty": {}`,
+      `${indent}  }`,
+      `${indent}}`,
+    ].join("\n");
+
+  test("every write keeps literal extensions byte for byte through a read-modify-write, and a new ledger writes none", () => {
+    expect(Object.hasOwn(emptyReviewLedger(), "extensions")).toBe(false);
+    const { commit, common, owner, path, recordAuthors, review, run } =
+      recordedRun();
     // Written end to end by this runtime: no extensions anywhere.
     expect(readFileSync(path, "utf8")).not.toContain('"extensions"');
-    // A newer runtime adds extensions at every level and writes the file.
-    const fresh = readReviewLedger(common).ledger;
-    const attestation = fresh.attestations[commit]?.[1] as Attestation;
-    const completion = fresh.completions?.[commit]?.[0] as IdentityCompletion;
-    const attempt = fresh.proposals[PROPOSAL]?.attempts[0];
-    if (!attempt) {
-      throw new Error("no attempt recorded");
-    }
-    attestation.extensions = membersFor("attestation");
-    completion.extensions = membersFor("completion");
-    attempt.extensions = membersFor("attempt");
-    const seeded = { extensions: membersFor("root"), ...fresh };
-    const seededText = `${JSON.stringify(seeded, null, 2)}\n`;
+    // A newer runtime's file: literal extensions at every level.
+    const { indents, text: seededText } = spliced(
+      readReviewLedger(common).ledger,
+      commit,
+      canonicalMembers
+    );
+    expect(Object.keys(indents).sort()).toEqual([...LEVELS].sort());
     writeFileSync(path, seededText);
     const reread = readReviewLedger(common);
     expect(reread.state).toBe("valid");
-    expect(JSON.stringify(reread.ledger)).toBe(JSON.stringify(seeded));
+    expect(reread.ledger.extensions?.future).toBe(1e21);
+    expect(Object.hasOwn(reread.ledger.extensions ?? {}, "__proto__")).toBe(
+      true
+    );
     // Rewriting what was read reproduces the file byte for byte.
     withLoopStateLock(common, "test", () => {
       writeReviewLedger(heldLoopLock(common, "test"), reread.ledger);
@@ -4497,8 +4579,9 @@ describe("forward-compatible extensions", () => {
     expect(recordAuthors(commit).status).toBe("unchanged");
     expect(readFileSync(path, "utf8")).toBe(seededText);
     // Transactions that change the ledger, including the derived records
-    // every write refreshes, keep every extension and every record holding
-    // one exactly as it was.
+    // every write refreshes, keep every record holding extensions and the
+    // literal text of each.
+    const before = reread.ledger;
     const second = commitFile(run.author, "b.txt", "b\n");
     attestCommits({
       ...owner,
@@ -4510,33 +4593,133 @@ describe("forward-compatible extensions", () => {
     review(second);
     const afterText = readFileSync(path, "utf8");
     expect(afterText).not.toBe(seededText);
-    const after = readReviewLedger(common);
-    expect(after.state).toBe("valid");
-    const kept = after.ledger;
-    expect(Object.keys(kept)).toEqual(Object.keys(seeded));
-    expect(JSON.stringify(kept.extensions)).toBe(
-      JSON.stringify(seeded.extensions)
-    );
+    for (const level of LEVELS) {
+      const indent = indents[level] as string;
+      expect({
+        kept: afterText.includes(
+          `${indent}"extensions": ${canonicalMembers(indent)}`
+        ),
+        level,
+      }).toEqual({ kept: true, level });
+    }
+    expect(afterText.split('"extensions"')).toHaveLength(LEVELS.length + 1);
+    const kept = readReviewLedger(common).ledger;
+    expect(Object.keys(kept)).toEqual(Object.keys(before));
     expect(JSON.stringify(kept.attestations[commit])).toBe(
-      JSON.stringify(seeded.attestations[commit])
+      JSON.stringify(before.attestations[commit])
     );
     expect(JSON.stringify(kept.completions?.[commit])).toBe(
-      JSON.stringify(seeded.completions?.[commit])
+      JSON.stringify(before.completions?.[commit])
     );
     expect(JSON.stringify(kept.proposals[PROPOSAL]?.attempts[0])).toBe(
-      JSON.stringify(attempt)
+      JSON.stringify(before.proposals[PROPOSAL]?.attempts[0])
     );
-    expect(kept.proposals[PROPOSAL]?.attempts).toHaveLength(2);
     // The new records carry none.
+    expect(kept.proposals[PROPOSAL]?.attempts).toHaveLength(2);
     expect(
       Object.hasOwn(kept.attestations[second]?.[0] ?? {}, "extensions")
     ).toBe(false);
     expect(
       Object.hasOwn(kept.proposals[PROPOSAL]?.attempts[1] ?? {}, "extensions")
     ).toBe(false);
-    // The file is exactly what was read and kept, so each member's bytes are
-    // the ones the newer runtime wrote.
-    expect(afterText).toBe(`${JSON.stringify(kept, null, 2)}\n`);
+  });
+
+  test("a write is refused, and the file kept, while extensions are spelled in a way a rewrite would change; reads still accept them", () => {
+    const { commit, common, owner, path, run } = recordedRun();
+    const base = readReviewLedger(common).ledger;
+    const second = commitFile(run.author, "b.txt", "b\n");
+    const change = () =>
+      attestCommits({
+        ...owner,
+        agent: "GPT-6",
+        commits: [second],
+        instance: "domain_db_preview",
+      });
+    // One member line each, inside text otherwise exactly as written.
+    const member =
+      (...memberLines: string[]) =>
+      (indent: string): string =>
+        [
+          "{",
+          ...memberLines.map((line) => `${indent}  ${line}`),
+          `${indent}}`,
+        ].join("\n");
+    const respelled: [string, (indent: string) => string][] = [
+      ["an integer past 2^53", member('"n": 9007199254740993')],
+      ["an overflowing number", member('"n": 1e400')],
+      ["a trailing zero", member('"n": 1.0')],
+      ["negative zero", member('"n": -0')],
+      ["an optional escape", member('"n": "\\u0061"')],
+      ["integer-like keys out of order", member('"2": "two",', '"1": "one"')],
+      ["a repeated key", member('"n": 1,', '"n": 2')],
+      ["other spacing", member('"n":  1')],
+    ];
+    // Every spelling at one level, and one at each other level: the check
+    // reads the whole file whichever record holds the extensions.
+    const cases: [Level, string, (indent: string) => string][] = [
+      ...respelled.map(
+        ([name, literal]): [Level, string, (indent: string) => string] => [
+          "attempt",
+          name,
+          literal,
+        ]
+      ),
+      ...LEVELS.filter((level) => level !== "attempt").map(
+        (level): [Level, string, (indent: string) => string] => [
+          level,
+          "an integer past 2^53",
+          member('"n": 9007199254740993'),
+        ]
+      ),
+    ];
+    for (const [level, name, literal] of cases) {
+      const { text } = spliced(base, commit, literal, [level]);
+      writeFileSync(path, text);
+      expect({ level, name, state: readReviewLedger(common).state }).toEqual({
+        level,
+        name,
+        state: "valid",
+      });
+      // A transaction that changes nothing still succeeds.
+      expect(attestCommits(owner).attestations).toEqual([
+        { commit, status: "unchanged" },
+      ]);
+      expect(change).toThrow(
+        "holds extensions but is not exactly the text Simple Changes writes"
+      );
+      expect({ level, name, text: readFileSync(path, "utf8") }).toEqual({
+        level,
+        name,
+        text,
+      });
+    }
+    // The same member spelled as Simple Changes writes it is written.
+    const { text } = spliced(base, commit, member('"n": 1'), ["attempt"]);
+    writeFileSync(path, text);
+    expect(change().attestations).toEqual([
+      { commit: second, status: "recorded" },
+    ]);
+    expect(
+      readReviewLedger(common).ledger.proposals[PROPOSAL]?.attempts[0]
+        ?.extensions
+    ).toEqual({ n: 1 });
+    // Without extensions, a respelled file is written as before.
+    const plainText = readFileSync(path, "utf8").replace(ONE_MEMBER, "");
+    expect(plainText).not.toContain('"extensions"');
+    writeFileSync(
+      path,
+      plainText.replace('"schemaVersion": 1', '"schemaVersion":  1')
+    );
+    expect(readReviewLedger(common).state).toBe("valid");
+    const third = commitFile(run.author, "c.txt", "c\n");
+    expect(
+      attestCommits({
+        ...owner,
+        agent: "GPT-6",
+        commits: [third],
+        instance: "domain_db_preview",
+      }).attestations
+    ).toEqual([{ commit: third, status: "recorded" }]);
   });
 
   test("a refused ledger names the newer runtime as a likely writer, only at a record with extension points", () => {

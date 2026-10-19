@@ -16,6 +16,7 @@ import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
 import {
   EXTENSIONS_KEY,
   type RecordExtensions,
+  spelledAsSerialized,
   unknownKeyMessage,
 } from "./extensions.ts";
 import {
@@ -31,7 +32,7 @@ import { resolvePersonalPolicyPath } from "./policy.ts";
 // list and no launch mechanics, and names no harness: the harnesses this
 // package knows, and how to detect them, are data in agents/harnesses.json.
 // Each role may carry an `extensions` object (see extensions.ts): accepted,
-// never read, and written exactly as the answer holds it.
+// never read, and written exactly as the answer spells it.
 
 export type AuthoringEffort = "low" | "medium" | "high" | "xhigh" | "max";
 // `request`: the current request (`--authoring-request`), applied for one
@@ -1404,7 +1405,7 @@ const writeLockedSidecar = (
  * changed after the writer read it. Writers of one path are serialized by a
  * lock beside it. A failed write leaves the existing file untouched. The text
  * is the answer exactly as validated, so every `extensions` member in it is
- * written as given.
+ * written as given; `parseAuthoringAnswer` refuses one it would respell.
  */
 export const writeAuthoringSidecar = (
   path: string,
@@ -1436,15 +1437,33 @@ export const writeAuthoringSidecar = (
 // that honors the sidecar.
 export const AUTHORING_GUIDANCE = 28;
 
-/** Parses `setup --authoring`: JSON text, or `@path` to a JSON file. */
+// Whether any role of a parsed sidecar carries `extensions`.
+const holdsRoleExtensions = (value: unknown): boolean =>
+  isRecord(value) &&
+  isRecord(value.roles) &&
+  Object.values(value.roles).some(
+    (role) => isRecord(role) && Object.hasOwn(role, EXTENSIONS_KEY)
+  );
+
+/**
+ * Parses `setup --authoring`: JSON text, or `@path` to a JSON file. The
+ * sidecar is written from the parsed value, so an answer holding extensions
+ * must spell its JSON as JSON.stringify does, apart from whitespace; any
+ * other spelling (an integer past 2^53, `1e400`, `1.0`, an optional escape,
+ * integer-like keys out of order, a repeated key) would change on the way to
+ * the file and is refused.
+ */
 export const parseAuthoringAnswer = (
   text: string,
   option = "--authoring"
 ): unknown => {
+  let source: string;
+  let parsed: unknown;
   try {
-    return JSON.parse(
-      text.startsWith("@") ? readFileSync(resolve(text.slice(1)), "utf8") : text
-    ) as unknown;
+    source = text.startsWith("@")
+      ? readFileSync(resolve(text.slice(1)), "utf8")
+      : text;
+    parsed = JSON.parse(source) as unknown;
   } catch (error) {
     throw SimpleChangesError.withCause(
       `${option} must be JSON or @path to a JSON file: ${(error as Error).message}`,
@@ -1452,6 +1471,13 @@ export const parseAuthoringAnswer = (
       error
     );
   }
+  if (holdsRoleExtensions(parsed) && !spelledAsSerialized(source, parsed)) {
+    throw new SimpleChangesError(
+      `${option} holds extensions but spells its JSON differently from how Simple Changes writes it (a number, string escape, key order or repeated key differs), so they would not be kept exactly. Spell the answer as JSON.stringify writes it.`,
+      EXIT_CODES.usage
+    );
+  }
+  return parsed;
 };
 
 /**

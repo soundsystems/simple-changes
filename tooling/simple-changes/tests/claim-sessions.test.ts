@@ -11,15 +11,24 @@ import { fileURLToPath } from "node:url";
 import { spawnSync } from "bun";
 import { captureInventory } from "../../../skills/simple-changes/scripts/lib/inventory.ts";
 import {
+  acceptPausedWorktreeChange,
+  adoptPausedWorktree,
+  loopStatus,
+  readLoopLease,
+  rebaselineLoopWorktrees,
   startLoop,
   verifyLoop,
 } from "../../../skills/simple-changes/scripts/lib/loop-lease.ts";
 import {
   parseReadyWorkInput,
+  readReadyReceipts,
   recordReadyWork,
 } from "../../../skills/simple-changes/scripts/lib/ready-work.ts";
 import { attestCommits } from "../../../skills/simple-changes/scripts/lib/review-ledger.ts";
-import type { WorktreeInventory } from "../../../skills/simple-changes/scripts/lib/types.ts";
+import type {
+  WorktreeCoordinationDocument,
+  WorktreeInventory,
+} from "../../../skills/simple-changes/scripts/lib/types.ts";
 import {
   attachClaimedWorktree,
   claimWorktree,
@@ -28,6 +37,7 @@ import {
   readWorktreeCoordination,
   readWorktreeTakeovers,
   releaseHandoffWorktreeClaim,
+  releaseRecordedState,
   releaseWorktreeClaim,
   takeoverWorktreeClaim,
   type WorktreeTakeoverOptions,
@@ -166,6 +176,86 @@ const detachedClaim = (fixture: TestRepository, name: string) => {
     return made;
   });
   return { claim, path };
+};
+
+// Git accepts raw bytes in a branch name, and inventory decodes Git output as
+// UTF-8 with replacement, so `release/\x80` and `release/\x81` both read as
+// this one name (#16).
+const LOSSY_BRANCH = "release/\uFFFD";
+const NOT_EXACT =
+  "is not valid UTF-8 or contains the replacement character U+FFFD";
+
+// Points the checkout's HEAD, at its current commit, at `release/` plus the
+// raw byte `byte`. A file system may refuse such a loose ref, so the ref is
+// packed.
+const checkOutRawByteBranch = (path: string, byte = 0x80): void => {
+  const sha = git(path, ["rev-parse", "HEAD"]);
+  const common = resolve(path, git(path, ["rev-parse", "--git-common-dir"]));
+  appendFileSync(
+    join(common, "packed-refs"),
+    Buffer.concat([
+      Buffer.from(`${sha} refs/heads/release/`),
+      Buffer.from([byte]),
+      Buffer.from("\n"),
+    ])
+  );
+  const made = spawnSync(
+    [
+      "sh",
+      "-c",
+      `git symbolic-ref HEAD "$(printf 'refs/heads/release/\\${byte.toString(8)}')"`,
+    ],
+    { cwd: path, stderr: "pipe", stdout: "pipe" }
+  );
+  expect(decoder.decode(made.stderr)).toBe("");
+};
+
+// Rewrites the stored claim and its pause receipts to name `branch`, as a
+// runtime before 0.32.0 recorded the lossy name of a raw-byte branch.
+const recordUnderOldRule = (
+  root: string,
+  claimId: string,
+  branch: string
+): void => {
+  const path = worktreeCoordinationPath(
+    captureInventory(root).repository.commonGitDirectory
+  );
+  const document = JSON.parse(
+    readFileSync(path, "utf8")
+  ) as WorktreeCoordinationDocument;
+  for (const item of [...document.claims, ...document.receipts]) {
+    if (item.claimId === claimId) {
+      item.branch = branch;
+    }
+  }
+  writeFileSync(path, `${JSON.stringify(document, null, 2)}\n`);
+};
+
+// Session A claims a checkout that then moves to a raw-byte branch at the
+// same commit and status; the claim names the lossy branch, as a runtime
+// before 0.32.0 recorded it.
+const oldRuleLossyClaim = (fixture: TestRepository, name: string) => {
+  const path = addWorktree(fixture, name);
+  const { claimId } = as(SESSION_A, () =>
+    claimWorktree(fixture.root, "author-1", path, "claude-code")
+  );
+  checkOutRawByteBranch(path);
+  recordUnderOldRule(fixture.root, claimId, LOSSY_BRANCH);
+  expect(worktreeAt(fixture.root, path).branch).toBe(LOSSY_BRANCH);
+  const claim = claimOf(fixture.root, claimId);
+  if (!claim) {
+    throw new Error(`Expected claim ${claimId}`);
+  }
+  return { claim, path };
+};
+
+const refusalOf = (step: () => unknown): string => {
+  try {
+    step();
+  } catch (error) {
+    return (error as Error).message;
+  }
+  throw new Error("Expected the step to be refused");
 };
 
 // Session A claims a checkout, the checkout moves, and A's pause marks the
@@ -461,34 +551,9 @@ describe("claims belong to the session that made them", () => {
 
   test("an approved takeover refuses a branch name that is not valid UTF-8", () => {
     const fixture = repository();
-    const path = addWorktree(fixture, "raw-byte-branch-work");
-    // Git accepts raw bytes in a branch name; `release/\x80` and
-    // `release/\x81` would both decode to `release/\uFFFD`. A file system
-    // may refuse such a loose ref, so the ref is packed.
-    const sha = git(path, ["rev-parse", "HEAD"]);
-    const common = resolve(path, git(path, ["rev-parse", "--git-common-dir"]));
-    appendFileSync(
-      join(common, "packed-refs"),
-      Buffer.concat([
-        Buffer.from(`${sha} refs/heads/release/`),
-        Buffer.from([0x80]),
-        Buffer.from("\n"),
-      ])
-    );
-    const made = spawnSync(
-      [
-        "sh",
-        "-c",
-        "git symbolic-ref HEAD \"$(printf 'refs/heads/release/\\200')\"",
-      ],
-      { cwd: path, stderr: "pipe", stdout: "pipe" }
-    );
-    expect(decoder.decode(made.stderr)).toBe("");
-    const claim = as(SESSION_A, () =>
-      claimWorktree(fixture.root, "author-1", path, "claude-code")
-    );
+    const { claim, path } = oldRuleLossyClaim(fixture, "raw-byte-branch-work");
     const current = worktreeAt(fixture.root, path);
-    expect(current.branch).toBe("release/\uFFFD");
+    expect(current.branch).toBe(LOSSY_BRANCH);
     expect(() =>
       as(SESSION_B, () =>
         takeoverWorktreeClaim(
@@ -1294,5 +1359,291 @@ describe("the reproducer from #9", () => {
     expect(claimOf(fixture.root, claim?.claimId ?? "")?.owner.agentId).toBe(
       "author-1"
     );
+  });
+});
+
+// A recorded branch is compared with the observed one as text, so evidence is
+// recorded only on a name that is the branch's exact name (#16). A release
+// records nothing new and stays allowed.
+describe("evidence is recorded only on a branch Simple Changes can name exactly", () => {
+  const readyInput = () =>
+    parseReadyWorkInput({
+      checks: [{ command: "bun test", result: "passed" }],
+      deploymentConstraints: [],
+      migrations: [],
+      releaseImpact: "patch",
+      scope: "Adds the feature module.",
+    });
+
+  test("a claim, new or refreshed, is refused on a branch that is not valid UTF-8", () => {
+    const fixture = repository();
+    const fresh = addWorktree(fixture, "raw-claim-work");
+    checkOutRawByteBranch(fresh);
+    expect(worktreeAt(fixture.root, fresh).branch).toBe(LOSSY_BRANCH);
+    const refused = refusalOf(() =>
+      as(SESSION_A, () =>
+        claimWorktree(fixture.root, "author-1", fresh, "claude-code")
+      )
+    );
+    expect(refused).toContain(
+      `Branch ${JSON.stringify(LOSSY_BRANCH)} ${NOT_EXACT}`
+    );
+    expect(refused).toContain(fresh);
+    expect(refused).toContain("Rename the branch");
+    expect(readWorktreeCoordination(fixture.root).claims).toEqual([]);
+
+    // A claim made on a UTF-8 branch is not refreshed onto a raw-byte one.
+    const moved = addWorktree(fixture, "raw-refresh-work");
+    const claim = as(SESSION_A, () =>
+      claimWorktree(fixture.root, "author-2", moved, "claude-code")
+    );
+    checkOutRawByteBranch(moved, 0x81);
+    expect(() =>
+      as(SESSION_A, () =>
+        claimWorktree(fixture.root, "author-2", moved, "claude-code")
+      )
+    ).toThrow(NOT_EXACT);
+    expect(claimOf(fixture.root, claim.claimId)).toMatchObject({
+      branch: "raw-refresh-work",
+      state: "active",
+    });
+  });
+
+  test("a pause is refused on a claim recorded on such a branch under the old rule", () => {
+    const fixture = repository();
+    const { claim, path } = oldRuleLossyClaim(fixture, "raw-pause-work");
+    expect(() =>
+      as(SESSION_A, () =>
+        pauseClaimedWorktree(
+          fixture.root,
+          "author-1",
+          path,
+          "run-raw-pause",
+          "preserve-in-place",
+          "Safe boundary."
+        )
+      )
+    ).toThrow(NOT_EXACT);
+    expect(readWorktreeCoordination(fixture.root).receipts).toEqual([]);
+    expect(claimOf(fixture.root, claim.claimId)?.state).toBe("active");
+  });
+
+  test("ready work is refused on such a branch", () => {
+    const fixture = repository();
+    const { claim } = oldRuleLossyClaim(fixture, "raw-ready-work");
+    expect(() =>
+      as(SESSION_A, () =>
+        recordReadyWork(fixture.root, "author-1", claim.claimId, readyInput())
+      )
+    ).toThrow(NOT_EXACT);
+    expect(
+      readReadyReceipts(
+        captureInventory(fixture.root).repository.commonGitDirectory
+      )
+    ).toEqual([]);
+    expect(claimOf(fixture.root, claim.claimId)?.state).toBe("active");
+  });
+
+  test("loop start refuses a preserved worktree on such a branch and names its path", () => {
+    const fixture = repository();
+    const path = addWorktree(fixture, "raw-preserved-work");
+    checkOutRawByteBranch(path);
+    const refused = refusalOf(() =>
+      startLoop(fixture.root, "controller", "integrate")
+    );
+    expect(refused).toContain(NOT_EXACT);
+    expect(refused).toContain(path);
+    expect(readLoopLease(fixture.root)).toBeNull();
+  });
+
+  test("a loop registers no late worktree on such a branch by rebaseline, adoption, or acceptance", () => {
+    const fixture = repository();
+    // Registered at loop start on a UTF-8 branch, then moved.
+    const opening = addWorktree(fixture, "raw-accept-work");
+    const lease = startLoop(fixture.root, "controller", "integrate");
+    const accepted = as(SESSION_A, () => {
+      const made = claimWorktree(
+        fixture.root,
+        "author-1",
+        opening,
+        "claude-code"
+      );
+      writeFixture(opening, "change.ts", "export const change = true;\n");
+      claimWorktree(fixture.root, "author-1", opening, "claude-code");
+      const receipt = pauseClaimedWorktree(
+        fixture.root,
+        "author-1",
+        opening,
+        lease.runId,
+        "preserve-in-place",
+        "Paused after an edit."
+      );
+      return { claimId: made.claimId, receipt };
+    });
+    checkOutRawByteBranch(opening);
+    recordUnderOldRule(fixture.root, accepted.claimId, LOSSY_BRANCH);
+    expect(() =>
+      acceptPausedWorktreeChange(
+        fixture.root,
+        lease.runId,
+        "controller",
+        accepted.receipt.receiptId
+      )
+    ).toThrow(NOT_EXACT);
+
+    // A late arrival, claimed and paused on a UTF-8 branch, then moved.
+    const late = addWorktree(fixture, "raw-adopt-work");
+    const adopted = as(SESSION_B, () => {
+      const made = claimWorktree(fixture.root, "author-2", late, "codex");
+      const receipt = pauseClaimedWorktree(
+        fixture.root,
+        "author-2",
+        late,
+        lease.runId,
+        "preserve-in-place",
+        "Safe boundary."
+      );
+      return { claimId: made.claimId, receipt };
+    });
+    checkOutRawByteBranch(late, 0x81);
+    recordUnderOldRule(fixture.root, adopted.claimId, LOSSY_BRANCH);
+    expect(() =>
+      adoptPausedWorktree(
+        fixture.root,
+        lease.runId,
+        "controller",
+        adopted.receipt.receiptId
+      )
+    ).toThrow(NOT_EXACT);
+
+    // An unclaimed late arrival on a raw-byte branch.
+    const stranger = addWorktree(fixture, "raw-rebaseline-work");
+    checkOutRawByteBranch(stranger, 0x82);
+    const refused = refusalOf(() =>
+      rebaselineLoopWorktrees(
+        fixture.root,
+        lease.runId,
+        "controller",
+        "the-user",
+        "Other agents opened worktrees after loop start."
+      )
+    );
+    expect(refused).toContain(NOT_EXACT);
+    const registered = readLoopLease(fixture.root)?.worktrees ?? [];
+    expect(registered.find((item) => item.path === opening)?.branch).toBe(
+      "raw-accept-work"
+    );
+    for (const path of [late, stranger]) {
+      expect(registered.some((item) => item.path === path)).toBe(false);
+    }
+  });
+
+  test("a loop does not admit an old claim on such a branch, and verification names the worktree", () => {
+    const fixture = repository();
+    const lease = startLoop(fixture.root, "controller", "integrate");
+    // A late arrival whose active claim names a lossy branch, as a runtime
+    // before 0.32.0 recorded it.
+    const { path } = oldRuleLossyClaim(fixture, "raw-admission-work");
+    // Status and verification admit claimed authors as they read, so a read
+    // must neither register the lossy name nor fail.
+    const status = loopStatus(fixture.root);
+    expect(status.lease?.worktrees.some((item) => item.path === path)).toBe(
+      false
+    );
+    expect(verifyLoop(fixture.root).violations).toContainEqual(
+      expect.objectContaining({ code: "unregistered-worktree", path })
+    );
+    expect(
+      readLoopLease(fixture.root)?.worktrees.some((item) => item.path === path)
+    ).toBe(false);
+    expect(readLoopLease(fixture.root)?.runId).toBe(lease.runId);
+  });
+
+  test("an old claim on such a branch can still be released, and the release records no lossy state", () => {
+    const fixture = repository();
+    const { claim, path } = oldRuleLossyClaim(fixture, "raw-release-work");
+    const released = as(SESSION_A, () =>
+      releaseWorktreeClaim(fixture.root, "author-1", claim.claimId)
+    );
+    expect(released).toMatchObject({
+      branch: LOSSY_BRANCH,
+      path,
+      releaseReason: "owner-release",
+      state: "released",
+    });
+    expect(
+      releaseRecordedState(
+        readWorktreeCoordination(fixture.root),
+        claim.claimId
+      )
+    ).toBe(false);
+  });
+
+  test("a branch ending in U+00A0 is claimed, paused, made ready, and registered by its exact name", () => {
+    const fixture = repository();
+    const paused = addWorktree(fixture, "nbsp-pause-work");
+    const pausedBranch = "release/paused ";
+    git(paused, ["checkout", "-b", pausedBranch]);
+    const ready = addWorktree(fixture, "nbsp-ready-work");
+    const readyBranch = "release/ready ";
+    git(ready, ["checkout", "-b", readyBranch]);
+    as(SESSION_A, () => {
+      expect(
+        claimWorktree(fixture.root, "author-1", paused, "claude-code").branch
+      ).toBe(pausedBranch);
+      expect(
+        pauseClaimedWorktree(
+          fixture.root,
+          "author-1",
+          paused,
+          "run-nbsp",
+          "preserve-in-place",
+          "Safe boundary."
+        ).branch
+      ).toBe(pausedBranch);
+      const claim = claimWorktree(
+        fixture.root,
+        "author-2",
+        ready,
+        "claude-code"
+      );
+      expect(claim.branch).toBe(readyBranch);
+      const result = recordReadyWork(
+        fixture.root,
+        "author-2",
+        claim.claimId,
+        readyInput()
+      );
+      expect(result.receipt.branch).toBe(readyBranch);
+      expect(result.claim.branch).toBe(readyBranch);
+    });
+    const lease = startLoop(fixture.root, "controller", "integrate");
+    for (const [path, branch] of [
+      [paused, pausedBranch],
+      [ready, readyBranch],
+    ]) {
+      expect(lease.worktrees.find((item) => item.path === path)?.branch).toBe(
+        branch
+      );
+      expect(
+        lease.openingWorktrees?.find((item) => item.path === path)?.branch
+      ).toBe(branch);
+    }
+  });
+
+  test("a branch that really contains U+FFFD is refused, and the message says so", () => {
+    const fixture = repository();
+    const path = addWorktree(fixture, "real-replacement-work");
+    const branch = "release/real�";
+    git(path, ["checkout", "-b", branch]);
+    expect(worktreeAt(fixture.root, path).branch).toBe(branch);
+    const refused = refusalOf(() =>
+      as(SESSION_A, () =>
+        claimWorktree(fixture.root, "author-1", path, "claude-code")
+      )
+    );
+    expect(refused).toContain(`Branch ${JSON.stringify(branch)}`);
+    expect(refused).toContain("contains the replacement character U+FFFD");
+    expect(readWorktreeCoordination(fixture.root).claims).toEqual([]);
   });
 });

@@ -1355,7 +1355,7 @@ const resumeReadyRefusal = (
   runId: string
 ): string => {
   const claim = document.claims.find((item) => item.claimId === claimId);
-  const base = `Resume-ready requires an owner pause receipt for this exact run, or an earlier receipt that still describes claim ${claimId} exactly and that run ${runId}'s lease, or the archived lease of a run an approved \`loop replan\` replaced, registered for this claim.`;
+  const base = `Resume-ready requires an owner pause receipt for this exact run. An earlier receipt counts only while it still records claim ${claimId}'s exact state and run ${runId}'s lease, or the archived lease of a run that an approved \`loop replan\` replaced, registers it for the claim.`;
   if (!claim || claim.state === "detached") {
     return base;
   }

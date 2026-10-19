@@ -355,7 +355,7 @@ describe("worktree coordination", () => {
     ).toThrow("completely clean");
   });
 
-  test("invalidates a linked lease after release", () => {
+  test("keeps a linked lease current only for the exact state its owner released", () => {
     const fixture = repository();
     const concurrent = join(fixture.base, "release-linked");
     const lease = startLoop(fixture.root, "controller", "integrate");
@@ -382,6 +382,11 @@ describe("worktree coordination", () => {
       receipt.receiptId
     );
     releaseWorktreeClaim(concurrent, "owner", claim.claimId);
+    expect(verifyLoop(fixture.root)).toMatchObject({
+      ok: true,
+      violations: [],
+    });
+    writeFixture(concurrent, "late.ts", "export const late = true;\n");
     expect(verifyLoop(fixture.root).violations).toContainEqual(
       expect.objectContaining({ code: "coordination-claim-stale" })
     );

@@ -354,7 +354,8 @@ run used, including those of authors who finished and of controllers who
 handed off. A `loop finalize` that completes or closes without mutation, and a
 successful `loop end`, remove exactly those directories and report them as
 `removedWorkDirectories`; the CLI keeps what it ingested in its own state. A
-directory that holds a registered checkout is kept and reported instead. A
+directory that holds a registered checkout or a preservation copy's manifest
+is kept and reported instead. A
 paused or relinquished run keeps them for the resume. Because every directory
 is unique, two runs, or two sessions sharing an agent ID, never share or remove
 each other's files. Under the loop locks, the next `loop start` removes the
@@ -382,11 +383,15 @@ branch, and have its owner record the
 ([paused changes](recovery.md#released-claims-and-paused-changes)). Never
 snapshot a checkout as patches or loose files beside it, in the folder that
 holds your repositories, or anywhere else outside Git. When a file-level copy
-is unavoidable, it goes only in your work directory, with a `manifest.json`
-recording the repository path, remote URL, HEAD SHA, branch, `git status
---porcelain` output, reason, and timestamp. A clean finalization removes the
-work directory, so before the run closes, prove the target or a pushed branch
-contains the copied work; then remove the copy with the directory.
+is unavoidable, it goes only in your work directory, with a
+`preservation-manifest.json` at the top of that directory recording the
+repository path, remote URL, HEAD SHA, branch, `git status --porcelain`
+output, reason, and timestamp. A clean `loop finalize` or `loop end`, and the
+next `loop start`, keep a work directory that still holds that file and warn
+with its path instead of removing it; the CLI checks only that the file is
+there, not what it says or where else you copied work. Once you prove the
+target or a pushed branch contains the copied work, remove the directory with
+`simple-changes workdir remove <path>`.
 
 ## Parallel agents
 

@@ -67,6 +67,12 @@ export interface RunWorkDirectoryRemoval {
 
 const WORKTREE_LINE = /^worktree (.+)$/u;
 
+/**
+ * Marks a work directory that holds a file-level copy of uncommitted work,
+ * which may be its only copy, so a run's clean close keeps the directory.
+ */
+export const PRESERVATION_MANIFEST = "preservation-manifest.json";
+
 /** Every checkout Git has registered for the repository at `directory`. */
 export const registeredCheckouts = (directory: string): string[] =>
   runGit(directory, ["worktree", "list", "--porcelain"])
@@ -512,9 +518,26 @@ export const bindRunWorkDirectory = (
   return path;
 };
 
+// Present even as a dangling link, the manifest keeps the directory.
+const assertNoPreservationCopy = (path: string): void => {
+  try {
+    lstatSync(join(path, PRESERVATION_MANIFEST));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return;
+    }
+    throw error;
+  }
+  throw new SimpleChangesError(
+    `It holds ${PRESERVATION_MANIFEST}, so it may hold the only copy of uncommitted work. Once the target or a pushed branch is proven to contain that work, remove it with \`simple-changes workdir remove ${path}\`.`,
+    EXIT_CODES.unsafe
+  );
+};
+
 /**
  * Removes every work directory bound to the run, then its bindings. A path
- * that fails validation is kept, reported, and never removed.
+ * that fails validation, or still holds a preservation copy's manifest, is
+ * kept, reported, and never removed.
  */
 export const removeRunWorkDirectories = (
   repository: WorkDirectoryRepository,
@@ -528,6 +551,7 @@ export const removeRunWorkDirectories = (
     try {
       assertRepositoryWorkDirectory(repository, binding.path);
       assertHoldsNoCheckout(repository, binding.path);
+      assertNoPreservationCopy(binding.path);
       rmSync(binding.path, { force: true, recursive: true });
       result.removed.push(binding.path);
     } catch (error) {

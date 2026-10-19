@@ -26,6 +26,7 @@ import {
   bindRunWorkDirectory,
   createWorkDirectory,
   locateWorkDirectoryRepository,
+  PRESERVATION_MANIFEST,
   removeFinishedRunWorkDirectories,
   removeRunWorkDirectories,
   removeWorkDirectory,
@@ -555,6 +556,45 @@ describe("work directory safety", () => {
     for (const path of [join(base, "a"), join(base, "a", "b"), root]) {
       expect(mode(path)).toBe(0o700);
     }
+  });
+
+  test("keeps a directory that holds a preservation copy until removed on request", () => {
+    const { base, environment } = workRoot();
+    const { location } = repository();
+    const bind = (agentId: string): string =>
+      bindRunWorkDirectory(location, "run-a", agentId, null, null, environment);
+    const preserving = bind("preserving");
+    const linked = bind("linked");
+    const ordinary = bind("ordinary");
+    writeFileSync(join(preserving, PRESERVATION_MANIFEST), "{}\n");
+    writeFileSync(join(preserving, "feature.patch"), "diff\n");
+    // Even a dangling link with the manifest's name keeps its directory.
+    symlinkSync(join(base, "missing"), join(linked, PRESERVATION_MANIFEST));
+    // Any other manifest name is ordinary scratch.
+    writeFileSync(join(ordinary, "manifest.json"), "{}\n");
+
+    const removal = removeRunWorkDirectories(location, "run-a");
+
+    expect(removal.removed).toEqual([ordinary]);
+    expect(
+      [...removal.kept].sort((left, right) =>
+        left.path.localeCompare(right.path)
+      )
+    ).toEqual(
+      [linked, preserving]
+        .sort((left, right) => left.localeCompare(right))
+        .map((path) => ({
+          path,
+          reason: expect.stringContaining(
+            `It holds ${PRESERVATION_MANIFEST}, so it may hold the only copy of uncommitted work`
+          ),
+        }))
+    );
+    expect(readFileSync(join(preserving, "feature.patch"), "utf8")).toBe(
+      "diff\n"
+    );
+    expect(removeWorkDirectory(location, preserving, null)).toBe(preserving);
+    expect(existsSync(preserving)).toBe(false);
   });
 
   test("never removes a directory that holds a registered checkout", () => {

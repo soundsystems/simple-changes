@@ -538,7 +538,7 @@ describe("shipment finalization", () => {
     expect(readdirSync(managedRoot)).toEqual(["repo"]);
     expect(result.cleanup.errors).toEqual([]);
     expect(result.cleanup.notes).toEqual([
-      `Kept the empty managed worktree folders ${repositoryDirectory} and ${managedRoot}: Simple Changes never removes a worktree's parent folder. Whoever made them can run \`rmdir ${repositoryDirectory} ${managedRoot}\`.`,
+      `Kept the empty managed worktree folders ${repositoryDirectory} and ${managedRoot}: Simple Changes never removes a worktree's parent folder.`,
     ]);
   });
 
@@ -621,7 +621,7 @@ describe("shipment finalization", () => {
     expect(existsSync(fixture.prepared.path)).toBe(false);
     expect(existsSync(sharedRepository)).toBe(true);
     expect(lstatSync(linkedRoot).isSymbolicLink()).toBe(true);
-    // A suggested rmdir would act through the link, so nothing is named.
+    // A folder seen behind the link is never named.
     expect(result.cleanup.notes).toEqual([]);
   });
 

@@ -42,9 +42,8 @@ const realDirectoryEntries = (directory: string): string[] | null => {
   }
 };
 
-// The managed folders that hold nothing, deepest first, reached only through
-// real directories: a folder behind a symbolic link is never named, so the
-// suggested rmdir never acts through one.
+// The managed folders that hold nothing, deepest first. A folder seen behind a
+// symbolic link is skipped; the result only reports what was seen.
 const emptyManagedFolders = (primaryCheckout: string): string[] => {
   const { repository, root } = managedWorktreeDirectories(primaryCheckout);
   const anchor = dirname(root);
@@ -68,9 +67,10 @@ const emptyManagedFolders = (primaryCheckout: string): string[] => {
 };
 
 /**
- * A non-fatal note naming the managed worktree folders a cleanup left empty,
- * so whoever made them can remove them; Simple Changes removes none. Never
- * throws: a folder it cannot inspect is a note too.
+ * A non-fatal, informational note naming the managed worktree folders a
+ * cleanup left empty; Simple Changes removes none. It suggests no command:
+ * a command built from inspected pathnames could act on a folder swapped in
+ * after the inspection. Never throws: a folder it cannot inspect is a note.
  */
 export const emptyManagedWorktreeFolderNotes = (
   primaryCheckout: string
@@ -87,8 +87,7 @@ export const emptyManagedWorktreeFolderNotes = (
   if (folders.length === 0) {
     return [];
   }
-  const named = folders.join(" and ");
   return [
-    `Kept the empty managed worktree folder${folders.length === 1 ? "" : "s"} ${named}: Simple Changes never removes a worktree's parent folder. Whoever made ${folders.length === 1 ? "it" : "them"} can run \`rmdir ${folders.join(" ")}\`.`,
+    `Kept the empty managed worktree folder${folders.length === 1 ? "" : "s"} ${folders.join(" and ")}: Simple Changes never removes a worktree's parent folder.`,
   ];
 };

@@ -433,9 +433,9 @@ Finalization never removes a worktree's parent folder, including the managed
 `.simple-changes-worktrees/<repository>/` folder and its root that
 `prepare-agent` creates: a folder's name does not prove who made it, and no
 removal by name can be bound to the folder it checked. When its removals leave
-the managed folders empty, finalization names them in the cleanup's `notes`,
-with the `rmdir` command, so whoever made them can remove them. It never names
-a folder reached through a symbolic link, and a note never blocks completion.
+the managed folders empty, finalization names them in the cleanup's `notes`.
+The notes only report what cleanup saw, skip a folder seen behind a symbolic
+link, suggest no command, and never block completion.
 Before synchronizing a clean preserved primary, finalization records its old
 baseline and exact expected result. A retry can reconcile that intent only when
 the primary is clean at the same target branch and commit; unrelated edits

@@ -354,9 +354,9 @@ controller's exact disposition and guarded removal or wait for closure; never
 fall back to raw Git removal or filesystem deletion. `--dry-run`
 changes nothing; the destructive form still reports the exact plan before
 applying it. Like `worktree cleanup`, it never removes a worktree's parent
-folder and names the empty managed ones in `notes`. Prune never edits lease
-state, worktree claims, or recorded receipts, and unlike `worktree cleanup` it
-does not release claims.
+folder, and outside a dry run it names the empty managed ones in `notes`.
+Prune never edits lease state, worktree claims, or recorded receipts, and
+unlike `worktree cleanup` it does not release claims.
 Cleanup and metadata refresh take the same short integration lock before the
 coordination lock, then re-read inventory and registrations. If an integration
 operation is busy, retry cleanup after it finishes; leave the shipment running.

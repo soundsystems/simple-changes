@@ -37,7 +37,7 @@ describe("empty managed worktree folder notes", () => {
     const both = managedFixture();
     mkdirSync(both.repository, { recursive: true });
     expect(emptyManagedWorktreeFolderNotes(both.primary)).toEqual([
-      `Kept the empty managed worktree folders ${both.repository} and ${both.root}: Simple Changes never removes a worktree's parent folder. Whoever made them can run \`rmdir ${both.repository} ${both.root}\`.`,
+      `Kept the empty managed worktree folders ${both.repository} and ${both.root}: Simple Changes never removes a worktree's parent folder.`,
     ]);
     expect(existsSync(both.repository)).toBe(true);
 
@@ -45,16 +45,28 @@ describe("empty managed worktree folder notes", () => {
     mkdirSync(shared.repository, { recursive: true });
     mkdirSync(join(shared.root, "other-repository"));
     expect(emptyManagedWorktreeFolderNotes(shared.primary)).toEqual([
-      expect.stringContaining(
-        `Kept the empty managed worktree folder ${shared.repository}: Simple Changes never removes a worktree's parent folder. Whoever made it can run \`rmdir ${shared.repository}\`.`
-      ),
+      `Kept the empty managed worktree folder ${shared.repository}: Simple Changes never removes a worktree's parent folder.`,
     ]);
 
     const rootOnly = managedFixture();
     mkdirSync(rootOnly.root);
     expect(emptyManagedWorktreeFolderNotes(rootOnly.primary)).toEqual([
-      expect.stringContaining(`\`rmdir ${rootOnly.root}\``),
+      `Kept the empty managed worktree folder ${rootOnly.root}: Simple Changes never removes a worktree's parent folder.`,
     ]);
+  });
+
+  test("suggests no command, even for a path a shell would split", () => {
+    const fixture = createTestRepository();
+    fixtures.push(fixture);
+    const spaced = join(fixture.base, "it's a $(dir)");
+    mkdirSync(spaced);
+    const primary = join(spaced, "repo");
+    const { repository } = managedWorktreeDirectories(primary);
+    mkdirSync(repository, { recursive: true });
+    const notes = emptyManagedWorktreeFolderNotes(primary);
+    expect(notes).toHaveLength(1);
+    expect(notes[0]).toContain(repository);
+    expect(notes[0]).not.toContain("rmdir");
   });
 
   test("says nothing about folders that hold anything or do not exist", () => {

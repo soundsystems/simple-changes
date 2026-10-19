@@ -390,6 +390,38 @@ describe("standalone worktree cleanup", () => {
     expect(history[1]?.cleanupId).toBe(receipt.cleanupId);
   });
 
+  test("removes empty managed worktree directories but never another parent", () => {
+    const fixture = repository();
+    const managedRoot = join(fixture.base, ".simple-changes-worktrees");
+    const managedWorktree = join(managedRoot, "repo", "run-delivery-agent");
+    git(fixture.root, [
+      "worktree",
+      "add",
+      "-b",
+      "managed-unit",
+      managedWorktree,
+    ]);
+    const adHocParent = join(fixture.base, "repo-worktrees");
+    const adHocWorktree = join(adHocParent, "ad-hoc-unit");
+    git(fixture.root, ["worktree", "add", "-b", "ad-hoc-unit", adHocWorktree]);
+
+    const receipt = standaloneWorktreeCleanup({
+      agentId: "cleaner",
+      approvedBy: "the-user",
+      reason: "Reconcile orphaned worktrees with no loop record.",
+      repositoryPath: fixture.root,
+    });
+
+    expect(receipt.removed.map((item) => item.path)).toEqual(
+      expect.arrayContaining([adHocWorktree, managedWorktree])
+    );
+    expect(receipt.removed).toHaveLength(2);
+    expect(existsSync(managedRoot)).toBe(false);
+    expect(existsSync(adHocWorktree)).toBe(false);
+    expect(existsSync(adHocParent)).toBe(true);
+    expect(receipt.errors).toEqual([]);
+  });
+
   test("preserves the local branch represented by a remote target ref", () => {
     const fixture = repository();
     const targetWorktree = join(fixture.base, "target-main");

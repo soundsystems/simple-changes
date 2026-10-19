@@ -24,6 +24,10 @@ import {
   readLoopLease,
   withLoopStateLock,
 } from "./loop-lease.ts";
+import {
+  isManagedWorktreePath,
+  removeEmptyManagedWorktreeDirectories,
+} from "./managed-worktrees.ts";
 import { runGit } from "./process.ts";
 import { validateSchema } from "./schema.ts";
 import type {
@@ -406,6 +410,9 @@ const removeProvenWorktrees = (
     const {
       repository: { primaryCheckout },
     } = captureInventory(repositoryPath);
+    if (isManagedWorktreePath(primaryCheckout, candidate.worktree.path)) {
+      removeEmptyManagedWorktreeDirectories(primaryCheckout);
+    }
     const branchDeleted = deleteContainedBranch(
       primaryCheckout,
       candidate.worktree.branch,
@@ -460,9 +467,8 @@ const pruneStaleWorktreeMetadata = (
     );
     return [];
   }
-  const remaining = new Set(
-    captureInventory(repositoryPath).worktrees.map((worktree) => worktree.path)
-  );
+  const after = captureInventory(repositoryPath);
+  const remaining = new Set(after.worktrees.map((worktree) => worktree.path));
   const pruned: string[] = [];
   for (const worktree of prunable) {
     if (remaining.has(worktree.path)) {
@@ -472,6 +478,10 @@ const pruneStaleWorktreeMetadata = (
       continue;
     }
     pruned.push(worktree.path);
+  }
+  const { primaryCheckout } = after.repository;
+  if (pruned.some((path) => isManagedWorktreePath(primaryCheckout, path))) {
+    removeEmptyManagedWorktreeDirectories(primaryCheckout);
   }
   return pruned.sort((left, right) => left.localeCompare(right));
 };

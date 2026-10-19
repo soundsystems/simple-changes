@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 import {
@@ -503,6 +503,51 @@ describe("shipment finalization", () => {
     expect(readFileSync(join(fixture.root, "personal.txt"), "utf8")).toBe(
       "unrelated work\n"
     );
+    expect(existsSync(join(fixture.base, ".simple-changes-worktrees"))).toBe(
+      false
+    );
+  });
+
+  test("removes the managed directories its prepared worktree left empty", () => {
+    const fixture = deliveredFixture(false, true, true);
+    if (!fixture.prepared) {
+      throw new Error("Missing run-created delivery author fixture");
+    }
+    const repositoryDirectory = dirname(fixture.prepared.path);
+    const managedRoot = dirname(repositoryDirectory);
+    expect(managedRoot).toBe(join(fixture.base, ".simple-changes-worktrees"));
+    const result = finalizeLoop(
+      fixture.root,
+      fixture.lease.runId,
+      "controller",
+      "Close and remove the prepared author."
+    );
+    expect(result.outcome).toBe("completed");
+    expect(result.cleanup.removedWorktrees).toContain(fixture.prepared.path);
+    expect(existsSync(repositoryDirectory)).toBe(false);
+    expect(existsSync(managedRoot)).toBe(false);
+  });
+
+  test("keeps a managed directory that still holds anything else", () => {
+    const fixture = deliveredFixture(false, true, true);
+    if (!fixture.prepared) {
+      throw new Error("Missing run-created delivery author fixture");
+    }
+    const repositoryDirectory = dirname(fixture.prepared.path);
+    const managedRoot = dirname(repositoryDirectory);
+    writeFixture(managedRoot, "other-repository/notes.txt", "keep\n");
+    const result = finalizeLoop(
+      fixture.root,
+      fixture.lease.runId,
+      "controller",
+      "Close and remove the prepared author."
+    );
+    expect(result.outcome).toBe("completed");
+    expect(existsSync(fixture.prepared.path)).toBe(false);
+    expect(existsSync(repositoryDirectory)).toBe(false);
+    expect(
+      readFileSync(join(managedRoot, "other-repository/notes.txt"), "utf8")
+    ).toBe("keep\n");
   });
 
   test("explicit exclusions do not excuse a missing source without removal evidence", () => {

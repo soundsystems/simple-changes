@@ -298,7 +298,12 @@ to adopt staged, unstaged, or untracked content, and a registered author loses
 mutation authority after switching away from the recorded branch.
 
 An independent feature agent instead creates its own isolated worktree and runs
-`worktree claim` as the immediate next command. Do not inspect project files
+`worktree claim` as the immediate next command. Create it under the managed
+`.simple-changes-worktrees/<repository>/` directory beside the primary checkout,
+never in a folder made for it, such as `mkdir -p ~/Developer/<repo>-worktrees`:
+cleanup removes the managed directories once empty, and nothing removes a folder
+an agent made. If you made one anyway, `rmdir` it (never `rm -r`) after its
+worktree is removed, and only when it is empty and you created it. Do not inspect project files
 from the new checkout, install dependencies, format, generate, edit, stage, or
 commit there before the claim succeeds. It does not acquire a second integration
 lease and does not need `prepare-agent` unless its work is being assigned into
@@ -368,6 +373,18 @@ harness scratch directory, or any other shared directory, and never a
 directory you did not create or receive. A file another agent reads after
 you finish stays where it is until finalization removes it: leave the
 directory in place and report the path.
+
+Preserve uncommitted work in Git, not as loose copies: commit it on its own
+branch, and have its owner record the
+`worktree pause --disposition preserve-in-place` receipt
+([paused changes](recovery.md#released-claims-and-paused-changes)). Never
+snapshot a checkout as patches or loose files beside it, in the folder that
+holds your repositories, or anywhere else outside Git. When a file-level copy
+is unavoidable, it goes only in your work directory, with a `manifest.json`
+recording the repository path, remote URL, HEAD SHA, branch, `git status
+--porcelain` output, reason, and timestamp. A clean finalization removes the
+work directory, so before the run closes, prove the target or a pushed branch
+contains the copied work; then remove the copy with the directory.
 
 ## Parallel agents
 

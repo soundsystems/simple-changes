@@ -1270,6 +1270,24 @@ describe("Simple Changes skill contract", () => {
     expect(normalizedConcurrency).toContain(
       "never delete by pattern, extension, or age in the work root, a harness scratch directory, or any other shared directory"
     );
+    // Uncommitted work is preserved in Git; a loose copy lives only in the
+    // agent's work directory with a manifest, never beside a checkout.
+    expect(normalizedConcurrency).toContain(
+      "Preserve uncommitted work in Git, not as loose copies"
+    );
+    expect(normalizedConcurrency).toContain(
+      "When a file-level copy is unavoidable, it goes only in your work directory, with a `manifest.json`"
+    );
+    expect(normalizedConcurrency).toContain(
+      "prove the target or a pushed branch contains the copied work"
+    );
+    // Independent worktrees use the managed directory cleanup removes.
+    expect(normalizedConcurrency).toContain(
+      "Create it under the managed `.simple-changes-worktrees/<repository>/` directory beside the primary checkout"
+    );
+    expect(normalizedConcurrency).toContain(
+      "only when it is empty and you created it"
+    );
     expect(normalizedConcurrency).toContain(
       "the controller confirms that the registered branch head equals the reported commit"
     );

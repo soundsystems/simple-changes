@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync, realpathSync } from "node:fs";
-import { basename, dirname, resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import {
   PATCH_EQUIVALENCE_MAX_COMMITS,
   type TargetContainmentMethod,
@@ -25,6 +25,7 @@ import {
   writeLease,
 } from "./loop-lease-core.ts";
 import { verificationAgainst } from "./loop-lease-verify.ts";
+import { managedWorktreeDirectories, slug } from "./managed-worktrees.ts";
 import { runGit } from "./process.ts";
 import type {
   LoopLease,
@@ -36,16 +37,6 @@ import type {
   WorktreeInventory,
 } from "./types.ts";
 import { markCoordinationResumeReady } from "./worktree-coordination.ts";
-
-const slug = (value: string, fallback: string): string => {
-  const normalized = value
-    .normalize("NFKD")
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/gu, "-")
-    .replace(/^-+|-+$/gu, "")
-    .slice(0, 48);
-  return normalized || fallback;
-};
 
 const assertLegacyRunAllowsMutation = (
   lease: LoopLease,
@@ -280,15 +271,9 @@ export const prepareAgentWorktree = (
       }
       const agentSlug = slug(agentId, "agent");
       const runSlug = lease.runId.slice(4, 16);
-      const repositorySlug = slug(
-        basename(lease.primaryCheckout),
-        "repository"
-      );
       const branch = `simple-changes/${purpose}-${agentSlug}-${runSlug}`;
       const path = resolve(
-        dirname(lease.primaryCheckout),
-        ".simple-changes-worktrees",
-        repositorySlug,
+        managedWorktreeDirectories(lease.primaryCheckout).repository,
         `${runSlug}-${purpose}-${agentSlug}`
       );
       if (existsSync(path)) {

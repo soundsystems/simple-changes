@@ -57,6 +57,10 @@ import {
   unmutatedCloseReady,
   verificationAgainst,
 } from "./loop-lease-verify.ts";
+import {
+  isManagedWorktreePath,
+  removeEmptyManagedWorktreeDirectories,
+} from "./managed-worktrees.ts";
 import { recordedPreservedSourceOverrides } from "./preserved-source-override.ts";
 import { primaryDeliveryProof } from "./primary-delivery-proof.ts";
 import { runGit } from "./process.ts";
@@ -673,6 +677,25 @@ const pruneAutomaticWorktreeMetadata = (
   return { lease: currentLease, removed };
 };
 
+// A run that prepared worktrees made the managed directories that held them;
+// once its removals leave them empty, they go too.
+const removeRunManagedWorktreeDirectories = (
+  lease: LoopLease,
+  primaryCheckout: string
+): void => {
+  const preparedPaths = [
+    ...lease.worktrees
+      .filter((worktree) => worktree.createdByRun)
+      .map((worktree) => worktree.path),
+    ...lease.preparations.map((preparation) => preparation.path),
+  ];
+  if (
+    preparedPaths.some((path) => isManagedWorktreePath(primaryCheckout, path))
+  ) {
+    removeEmptyManagedWorktreeDirectories(primaryCheckout);
+  }
+};
+
 const removeTargetContainedBranches = (
   lease: LoopLease,
   repositoryPath: string,
@@ -1182,6 +1205,7 @@ const automaticFinalizationCleanup = (
     cleanup
   );
   ({ lease } = staleRemoval);
+  removeRunManagedWorktreeDirectories(lease, repositoryPath);
   removeTargetContainedBranches(
     lease,
     repositoryPath,

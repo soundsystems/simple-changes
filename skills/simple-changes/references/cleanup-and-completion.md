@@ -429,6 +429,9 @@ run-created and opening worktree removals remain in the historical audit.
 Because Git prunes stale registrations together, finalization defers all
 metadata pruning if any missing checkout is outside the freshly audited set.
 Unique work, retained checkouts, and active claims keep their registrations.
+Once its removals leave them empty, finalization of a run that prepared
+worktrees also removes the managed `.simple-changes-worktrees/<repository>/`
+directory and its root; it never removes any other parent directory.
 Before synchronizing a clean preserved primary, finalization records its old
 baseline and exact expected result. A retry can reconcile that intent only when
 the primary is clean at the same target branch and commit; unrelated edits

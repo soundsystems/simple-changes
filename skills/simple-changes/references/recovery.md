@@ -310,7 +310,8 @@ shipment. It removes only what is proven safe right now: an unclaimed clean
 worktree whose head the refreshed target contains by exact ancestry or
 complete per-commit patch equivalence, and stale metadata whose directory no
 longer exists; it then releases orphaned claims whose worktree is gone and
-records them as `releasedClaims` on the receipt. Every live claim on an
+records them as `releasedClaims` on the receipt. A removal that empties the
+managed `.simple-changes-worktrees` directories removes them too. Every live claim on an
 existing checkout, dirty checkout, or unmatched head is
 preserved and named with the exact next command (equivalence audit, claim
 takeover, or loop lifecycle). The whole pass is recorded as an append-only

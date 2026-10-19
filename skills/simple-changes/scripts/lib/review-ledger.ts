@@ -29,10 +29,12 @@ import {
 } from "./authoring.ts";
 import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
 import {
+  type DecodedText,
+  decodeUtf8,
   EXTENSIONS_KEY,
+  keptExactly,
   RESPELLED,
   type RecordExtensions,
-  spelledAsSerialized,
   unknownKeyMessage,
 } from "./extensions.ts";
 import { currentHarnessSession } from "./harness-session.ts";
@@ -1205,14 +1207,15 @@ const readLedgerFile = (
   if (!isFile) {
     return malformed([`${path} must be a regular file`]);
   }
-  let text: string;
+  let decoded: DecodedText;
   try {
-    text = readFileSync(path, "utf8");
+    decoded = decodeUtf8(readFileSync(path));
   } catch (error) {
     return malformed([
       `${path} could not be read (${errorCode(error)}); fix access to it before any ledger write`,
     ]);
   }
+  const { text } = decoded;
   let parsed: unknown;
   try {
     parsed = JSON.parse(text);
@@ -1223,11 +1226,12 @@ const readLedgerFile = (
   if (validation.reason) {
     return malformed(validation.errors, validation.reason);
   }
-  // A value parsed from text JSON.stringify would spell differently would be
-  // respelled by the next write, so it never leaves the reader.
+  // A value parsed from text JSON.stringify would spell differently, or from
+  // bytes that were not valid UTF-8, would be respelled by the next write, so
+  // it never leaves the reader.
   if (
     holdsExtensions(parsed as ReviewLedger) &&
-    !spelledAsSerialized(text, parsed)
+    !keptExactly(decoded, parsed)
   ) {
     return malformed([
       `${path} holds extensions ${RESPELLED}, so they could not be kept exactly; restore the file as a Simple Changes runtime wrote it`,

@@ -445,9 +445,10 @@ key beside it fails with a hint to update the runtime. A reader accepts its
 members without interpreting them. A sidecar or answer holding extensions must
 spell its JSON as Simple Changes writes it, apart from whitespace, so the file
 keeps them exactly; a number, escape, key order, or repeated key spelled
-otherwise makes the sidecar malformed and the answer refused. An
-answer replaces the whole file, so it keeps only the extensions it holds;
-setup never writes one itself. Runtimes before 0.32.0 reject it.
+otherwise, or a byte that is not valid UTF-8, makes the sidecar malformed and
+the answer refused. An answer replaces the whole file, so it keeps only the
+extensions it holds; setup never writes one itself. Runtimes before 0.32.0
+reject it.
 
 Before writing, resolve the role; `most-capable` is the most capable model the
 target agent itself reports, never ranked from memory. Use the nearest effort

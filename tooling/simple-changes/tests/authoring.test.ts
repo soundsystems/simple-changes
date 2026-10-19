@@ -596,6 +596,30 @@ describe("authoring extensions", () => {
       });
       expect(readFileSync(saved, "utf8")).toBe(text);
     }
+    // A byte that is not valid UTF-8 would come back as U+FFFD.
+    const [head, tail] = LITERAL_ANSWER.split('"future": 1e+21');
+    const invalid = Buffer.concat([
+      Buffer.from(`${head}"future": "a`),
+      Buffer.from([0xff]),
+      Buffer.from(`b"${tail}`),
+    ]);
+    const invalidFile = join(directory, "invalid.json");
+    writeFileSync(invalidFile, invalid);
+    expect(readAuthoringFile(invalidFile)).toMatchObject({
+      errors: [
+        `${invalidFile} holds extensions ${RESPELLED}, so they could not be kept exactly; write it as JSON.stringify writes JSON`,
+      ],
+      state: "malformed",
+    });
+    expect(
+      refusal(() =>
+        writeAuthoringSidecar(invalidFile, JSON.parse(invalid.toString()), true)
+      )
+    ).toContain(`Refusing to overwrite ${invalidFile}`);
+    expect(readFileSync(invalidFile).equals(invalid)).toBe(true);
+    expect(refusal(() => parseAuthoringAnswer(`@${invalidFile}`))).toContain(
+      `--authoring holds extensions ${RESPELLED}`
+    );
     // Other spacing loses nothing, so such a sidecar reads.
     const spaced = join(directory, "spaced.json");
     writeFileSync(spaced, LITERAL_ANSWER.replaceAll("  ", "    "));
@@ -610,6 +634,15 @@ describe("authoring extensions", () => {
     });
     const plainFile = join(directory, "plain.json");
     writeFileSync(plainFile, plain);
+    expect(readAuthoringFile(plainFile).state).toBe("valid");
+    writeFileSync(
+      plainFile,
+      Buffer.concat([
+        Buffer.from('{"harnesses":{"gamma":{"model":"m'),
+        Buffer.from([0xff]),
+        Buffer.from('"}},"roles":{},"schemaVersion":1}'),
+      ])
+    );
     expect(readAuthoringFile(plainFile).state).toBe("valid");
   });
 });

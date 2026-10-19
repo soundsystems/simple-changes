@@ -41,7 +41,7 @@
     },
     "effort": { "enum": ["low", "medium", "high", "xhigh", "max"] },
     "extensions": {
-      "description": "Optional, on each role: members a newer Simple Changes recorded beside the role. A reader accepts any members without interpreting them, and a write keeps them exactly: a sidecar or answer holding them must spell its JSON as JSON.stringify does, apart from whitespace, or the sidecar is malformed and the answer refused (checked by hand). A field belongs here only when a reader that ignores it, or finds it absent, can only be stricter, never looser; a field that could loosen a gate goes outside extensions, where a reader that does not know it refuses the sidecar, and its error says a newer Simple Changes may have written it. Setup never writes extensions itself. Runtimes before 0.32.0 reject it.",
+      "description": "Optional, on each role: members a newer Simple Changes recorded beside the role. A reader accepts any members without interpreting them, and a write keeps them exactly: a sidecar or answer holding them must spell its JSON as JSON.stringify does, apart from whitespace, in valid UTF-8, or the sidecar is malformed and the answer refused (checked by hand). A field belongs here only when a reader that ignores it, or finds it absent, can only be stricter, never looser; a field that could loosen a gate goes outside extensions, where a reader that does not know it refuses the sidecar, and its error says a newer Simple Changes may have written it. Setup never writes extensions itself. Runtimes before 0.32.0 reject it.",
       "type": "object"
     },
     "harnessEntry": {

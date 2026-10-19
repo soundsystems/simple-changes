@@ -14,10 +14,12 @@ import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
 import {
+  type DecodedText,
+  decodeUtf8,
   EXTENSIONS_KEY,
+  keptExactly,
   RESPELLED,
   type RecordExtensions,
-  spelledAsSerialized,
   unknownKeyMessage,
 } from "./extensions.ts";
 import {
@@ -617,13 +619,13 @@ export const readAuthoringFile = (
     };
   }
   try {
-    const text = readFileSync(path, "utf8");
-    const parsed: unknown = JSON.parse(text);
+    const decoded = decodeUtf8(readFileSync(path));
+    const parsed: unknown = JSON.parse(decoded.text);
     const result = validateAuthoringSidecar(parsed, skill);
     if (!result.value) {
       return { errors: result.errors, path, state: "malformed" };
     }
-    if (holdsRoleExtensions(parsed) && !spelledAsSerialized(text, parsed)) {
+    if (holdsRoleExtensions(parsed) && !keptExactly(decoded, parsed)) {
       return {
         errors: [
           `${path} holds extensions ${RESPELLED}, so they could not be kept exactly; write it as JSON.stringify writes JSON`,
@@ -1463,22 +1465,24 @@ export const AUTHORING_GUIDANCE = 28;
 /**
  * Parses `setup --authoring`: JSON text, or `@path` to a JSON file. The
  * sidecar is written from the parsed value, so an answer holding extensions
- * must spell its JSON as JSON.stringify does, apart from whitespace; any
- * other spelling (an integer past 2^53, `1e400`, `1.0`, an optional escape,
- * integer-like keys out of order, a repeated key) would change on the way to
- * the file and is refused.
+ * must spell its JSON as JSON.stringify does, apart from whitespace, in
+ * valid UTF-8; any other spelling (an integer past 2^53, `1e400`, `1.0`, an
+ * optional escape, integer-like keys out of order, a repeated key, a byte
+ * that is not UTF-8) would change on the way to the file and is refused.
  */
 export const parseAuthoringAnswer = (
   text: string,
   option = "--authoring"
 ): unknown => {
-  let source: string;
+  // Command-line text is already a string; only a file's bytes can be
+  // invalid UTF-8.
+  let source: DecodedText;
   let parsed: unknown;
   try {
     source = text.startsWith("@")
-      ? readFileSync(resolve(text.slice(1)), "utf8")
-      : text;
-    parsed = JSON.parse(source) as unknown;
+      ? decodeUtf8(readFileSync(resolve(text.slice(1))))
+      : { exact: true, text };
+    parsed = JSON.parse(source.text) as unknown;
   } catch (error) {
     throw SimpleChangesError.withCause(
       `${option} must be JSON or @path to a JSON file: ${(error as Error).message}`,
@@ -1486,7 +1490,7 @@ export const parseAuthoringAnswer = (
       error
     );
   }
-  if (holdsRoleExtensions(parsed) && !spelledAsSerialized(source, parsed)) {
+  if (holdsRoleExtensions(parsed) && !keptExactly(source, parsed)) {
     throw new SimpleChangesError(
       `${option} holds extensions ${RESPELLED}, so they would not be kept exactly. Spell the answer as JSON.stringify writes it.`,
       EXIT_CODES.usage

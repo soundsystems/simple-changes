@@ -14,11 +14,12 @@
 //
 // A writer serializes what a reader parsed, so members are kept exactly only
 // when their text is already spelled the way JSON.stringify spells it. Every
-// Simple Changes runtime writes JSON that way. Text spelled otherwise (an
-// integer past 2^53, `1e400`, `1.0`, `-0`, an optional escape, integer-like
-// keys out of order, a repeated key) would change on the way back, so a
-// reader reports a file holding extensions in such text as malformed, and an
-// answer in such text is refused: no parsed value that would be respelled
+// Simple Changes runtime writes JSON that way, as valid UTF-8. Text spelled
+// otherwise (an integer past 2^53, `1e400`, `1.0`, `-0`, an optional escape,
+// integer-like keys out of order, a repeated key) or bytes that are not valid
+// UTF-8 (decoding replaces them with U+FFFD) would change on the way back, so
+// a reader reports a file holding extensions in such text as malformed, and
+// an answer in such text is refused: no parsed value that would be respelled
 // ever reaches a writer.
 
 export const EXTENSIONS_KEY = "extensions";
@@ -28,7 +29,7 @@ export type RecordExtensions = Record<string, unknown>;
 
 /** What differs in JSON text that a write would respell. */
 export const RESPELLED =
-  "spelled otherwise than Simple Changes writes JSON (a number, string escape, key order or repeated key differs)";
+  "spelled otherwise than Simple Changes writes JSON (a number, string escape, key order, repeated key, or invalid UTF-8)";
 
 /** Why an unknown key beside an `extensions` object may be there. */
 export const NEWER_RUNTIME_HINT =
@@ -55,3 +56,24 @@ export const spelledAsSerialized = (text: string, value: unknown): boolean =>
   text.replace(STRING_OR_WHITESPACE, (token) =>
     token.startsWith('"') ? token : ""
   ) === JSON.stringify(value);
+
+/** A file's text, and whether its bytes were valid UTF-8. */
+export interface DecodedText {
+  // True when encoding `text` again gives back exactly the bytes read.
+  exact: boolean;
+  text: string;
+}
+
+/** Decodes file bytes as UTF-8, noting whether any byte was replaced. */
+export const decodeUtf8 = (bytes: Buffer): DecodedText => {
+  const text = bytes.toString("utf8");
+  return { exact: Buffer.from(text, "utf8").equals(bytes), text };
+};
+
+/**
+ * Whether writing `value` back keeps every byte of its members: the bytes
+ * were valid UTF-8 and the text spells the value as JSON.stringify does,
+ * apart from whitespace between tokens.
+ */
+export const keptExactly = (decoded: DecodedText, value: unknown): boolean =>
+  decoded.exact && spelledAsSerialized(decoded.text, value);

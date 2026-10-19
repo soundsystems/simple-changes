@@ -4653,7 +4653,19 @@ describe("forward-compatible extensions", () => {
     ["a repeated key", member('"n": 1,', '"n": 2')],
   ];
   const RESPELLED_ERROR =
-    "holds extensions spelled otherwise than Simple Changes writes JSON (a number, string escape, key order or repeated key differs), so they could not be kept exactly";
+    "holds extensions spelled otherwise than Simple Changes writes JSON (a number, string escape, key order, repeated key, or invalid UTF-8), so they could not be kept exactly";
+  // The text's bytes with each `@@BYTE@@` replaced by 0xff, which is never
+  // valid UTF-8.
+  const withInvalidByte = (text: string): Buffer =>
+    Buffer.concat(
+      text
+        .split("@@BYTE@@")
+        .flatMap((part, index) =>
+          index === 0
+            ? [Buffer.from(part)]
+            : [Buffer.from([0xff]), Buffer.from(part)]
+        )
+    );
 
   test("a ledger holding extensions a rewrite would respell reads as malformed, one that differs only in spacing is never rewritten, and the file is kept", () => {
     const { commit, common, owner, path, run } = recordedRun();
@@ -4703,6 +4715,24 @@ describe("forward-compatible extensions", () => {
         text,
       });
     }
+    // A byte that is not valid UTF-8 would come back as U+FFFD, so such a
+    // ledger is malformed too.
+    for (const level of LEVELS) {
+      const { text } = spliced(base, commit, member('"n": "a@@BYTE@@b"'), [
+        level,
+      ]);
+      const bytes = withInvalidByte(text);
+      writeFileSync(path, bytes);
+      expect({ level, state: readReviewLedger(common).state }).toEqual({
+        level,
+        state: "malformed",
+      });
+      expect(change).toThrow(RESPELLED_ERROR);
+      expect({ kept: readFileSync(path).equals(bytes), level }).toEqual({
+        kept: true,
+        level,
+      });
+    }
     // Other spacing loses nothing, so the ledger reads, and a transaction
     // that changes nothing succeeds, but nothing rewrites it.
     for (const level of LEVELS) {
@@ -4736,11 +4766,19 @@ describe("forward-compatible extensions", () => {
     // Without extensions, a respelled file is read and written as before.
     const plainText = readFileSync(path, "utf8").replace(ONE_MEMBER, "");
     expect(plainText).not.toContain('"extensions"');
+    expect(plainText).toContain('"model": "model-beta"');
     writeFileSync(
       path,
-      plainText.replace('"schemaVersion": 1', '"schemaVersion":  1.0')
+      withInvalidByte(
+        plainText
+          .replace('"schemaVersion": 1', '"schemaVersion":  1.0')
+          .replace('"model": "model-beta"', '"model": "model-@@BYTE@@"')
+      )
     );
-    expect(readReviewLedger(common).state).toBe("valid");
+    expect(readReviewLedger(common)).toMatchObject({
+      errors: [],
+      state: "valid",
+    });
     const third = commitFile(run.author, "c.txt", "c\n");
     expect(
       attestCommits({
@@ -4842,6 +4880,15 @@ describe("forward-compatible extensions", () => {
       );
       expect(readFileSync(path, "utf8")).toBe(respelledText);
     }
+    // Nor does a ledger whose bytes are not valid UTF-8.
+    const invalid = withInvalidByte(
+      spliced(base, commit, member('"n": "a@@BYTE@@b"'), ["attempt"]).text
+    );
+    writeFileSync(path, invalid);
+    expect(
+      refusalOf(() => write(JSON.parse(invalid.toString()) as ReviewLedger))
+    ).toContain("Refusing to replace the malformed review ledger");
+    expect(readFileSync(path).equals(invalid)).toBe(true);
     // Neither does its parsed value over a file that differs only in spacing.
     const { text: spacedText } = spliced(base, commit, member('"n":  1'), [
       "attempt",

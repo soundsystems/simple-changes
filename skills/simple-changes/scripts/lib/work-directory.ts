@@ -68,10 +68,12 @@ export interface RunWorkDirectoryRemoval {
 const WORKTREE_LINE = /^worktree (.+)$/u;
 
 /**
- * Marks a work directory that holds a file-level copy of uncommitted work,
- * which may be its only copy, so a run's clean close keeps the directory.
+ * The directory, at the top of a work directory, that holds a file-level copy
+ * of uncommitted work, which may be its only copy, so a run's clean close
+ * keeps the work directory. The agent makes it read-only, so a recursive
+ * delete by an older runtime, which lacks this check, fails inside it.
  */
-export const PRESERVATION_MANIFEST = "preservation-manifest.json";
+export const PRESERVATION_COPY = "preservation-copy";
 
 /** Every checkout Git has registered for the repository at `directory`. */
 export const registeredCheckouts = (directory: string): string[] =>
@@ -518,10 +520,11 @@ export const bindRunWorkDirectory = (
   return path;
 };
 
-// Present even as a dangling link, the manifest keeps the directory.
+// Present in any form, even as a dangling link, the copy keeps the directory.
 const assertNoPreservationCopy = (path: string): void => {
+  const copy = join(path, PRESERVATION_COPY);
   try {
-    lstatSync(join(path, PRESERVATION_MANIFEST));
+    lstatSync(copy);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") {
       return;
@@ -529,15 +532,15 @@ const assertNoPreservationCopy = (path: string): void => {
     throw error;
   }
   throw new SimpleChangesError(
-    `It holds ${PRESERVATION_MANIFEST}, so it may hold the only copy of uncommitted work. Once the target or a pushed branch is proven to contain that work, remove it with \`simple-changes workdir remove ${path}\`.`,
+    `It holds ${PRESERVATION_COPY}, so it may hold the only copy of uncommitted work. Once the target or a pushed branch is proven to contain that work, run \`chmod -R u+w ${copy}\` and \`simple-changes workdir remove ${path}\`.`,
     EXIT_CODES.unsafe
   );
 };
 
 /**
  * Removes every work directory bound to the run, then its bindings. A path
- * that fails validation, or still holds a preservation copy's manifest, is
- * kept, reported, and never removed.
+ * that fails validation, or still holds a preservation copy, is kept,
+ * reported, and never removed.
  */
 export const removeRunWorkDirectories = (
   repository: WorkDirectoryRepository,

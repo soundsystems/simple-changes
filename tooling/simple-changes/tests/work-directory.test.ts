@@ -26,7 +26,7 @@ import {
   bindRunWorkDirectory,
   createWorkDirectory,
   locateWorkDirectoryRepository,
-  PRESERVATION_MANIFEST,
+  PRESERVATION_COPY,
   removeFinishedRunWorkDirectories,
   removeRunWorkDirectories,
   removeWorkDirectory,
@@ -566,12 +566,14 @@ describe("work directory safety", () => {
     const preserving = bind("preserving");
     const linked = bind("linked");
     const ordinary = bind("ordinary");
-    writeFileSync(join(preserving, PRESERVATION_MANIFEST), "{}\n");
-    writeFileSync(join(preserving, "feature.patch"), "diff\n");
-    // Even a dangling link with the manifest's name keeps its directory.
-    symlinkSync(join(base, "missing"), join(linked, PRESERVATION_MANIFEST));
-    // Any other manifest name is ordinary scratch.
-    writeFileSync(join(ordinary, "manifest.json"), "{}\n");
+    const copy = join(preserving, PRESERVATION_COPY);
+    mkdirSync(copy);
+    writeFileSync(join(copy, "manifest.json"), "{}\n");
+    writeFileSync(join(copy, "feature.patch"), "diff\n");
+    // Even a dangling link with the copy's name keeps its directory.
+    symlinkSync(join(base, "missing"), join(linked, PRESERVATION_COPY));
+    // Any other name is ordinary scratch.
+    mkdirSync(join(ordinary, "preserved"));
 
     const removal = removeRunWorkDirectories(location, "run-a");
 
@@ -586,16 +588,45 @@ describe("work directory safety", () => {
         .map((path) => ({
           path,
           reason: expect.stringContaining(
-            `It holds ${PRESERVATION_MANIFEST}, so it may hold the only copy of uncommitted work`
+            `It holds ${PRESERVATION_COPY}, so it may hold the only copy of uncommitted work`
           ),
         }))
     );
-    expect(readFileSync(join(preserving, "feature.patch"), "utf8")).toBe(
-      "diff\n"
-    );
+    expect(readFileSync(join(copy, "feature.patch"), "utf8")).toBe("diff\n");
     expect(removeWorkDirectory(location, preserving, null)).toBe(preserving);
     expect(existsSync(preserving)).toBe(false);
   });
+
+  test.skipIf(process.getuid?.() === 0)(
+    "a read-only preservation copy survives a recursive delete",
+    () => {
+      const { environment } = workRoot();
+      const { location } = repository();
+      const directory = bindRunWorkDirectory(
+        location,
+        "run-a",
+        "preserving",
+        null,
+        null,
+        environment
+      );
+      const copy = join(directory, PRESERVATION_COPY);
+      mkdirSync(copy);
+      writeFileSync(join(copy, "feature.patch"), "diff\n");
+      chmodSync(copy, 0o500);
+      try {
+        // What a runtime without the check does at a clean close.
+        expect(() =>
+          rmSync(directory, { force: true, recursive: true })
+        ).toThrow();
+        expect(readFileSync(join(copy, "feature.patch"), "utf8")).toBe(
+          "diff\n"
+        );
+      } finally {
+        chmodSync(copy, 0o700);
+      }
+    }
+  );
 
   test("never removes a directory that holds a registered checkout", () => {
     const { environment } = workRoot();

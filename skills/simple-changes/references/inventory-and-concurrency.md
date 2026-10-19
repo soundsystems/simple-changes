@@ -355,8 +355,8 @@ run used, including those of authors who finished and of controllers who
 handed off. A `loop finalize` that completes or closes without mutation, and a
 successful `loop end`, remove exactly those directories and report them as
 `removedWorkDirectories`; the CLI keeps what it ingested in its own state. A
-directory that holds a registered checkout or a preservation copy's manifest
-is kept and reported instead. A
+directory that holds a registered checkout or a preservation copy is kept and
+reported instead. A
 paused or relinquished run keeps them for the resume. Because every directory
 is unique, two runs, or two sessions sharing an agent ID, never share or remove
 each other's files. Under the loop locks, the next `loop start` removes the
@@ -384,14 +384,18 @@ branch, and have its owner record the
 ([paused changes](recovery.md#released-claims-and-paused-changes)). Never
 snapshot a checkout as patches or loose files beside it, in the folder that
 holds your repositories, or anywhere else outside Git. When a file-level copy
-is unavoidable, it goes only in your work directory, with a
-`preservation-manifest.json` at the top of that directory recording the
-repository path, remote URL, HEAD SHA, branch, `git status --porcelain`
-output, reason, and timestamp. A clean `loop finalize` or `loop end`, and the
-next `loop start`, keep a work directory that still holds that file and warn
-with its path instead of removing it; the CLI checks only that the file is
-there, not what it says or where else you copied work. Once you prove the
-target or a pushed branch contains the copied work, remove the directory with
+is unavoidable, it goes only in a `preservation-copy` directory at the top of
+your work directory, with a `manifest.json` in it recording the repository
+path, remote URL, HEAD SHA, branch, `git status --porcelain` output, reason,
+and timestamp. Then make it read-only:
+`chmod -R a-w "$WORK_DIR/preservation-copy"`. A clean `loop finalize` or
+`loop end`, and the next `loop start`, keep a work directory that holds
+`preservation-copy` and warn with its path instead of removing it; the CLI
+checks only that the directory is there, not what it holds or where else you
+copied work. Read-only, the copy also survives a recursive delete that does
+not make it writable first, such as an older runtime's cleanup. Once you prove
+the target or a pushed branch contains the copied work, run
+`chmod -R u+w "$WORK_DIR/preservation-copy"` and remove the directory with
 `simple-changes workdir remove <path>`.
 
 ## Parallel agents

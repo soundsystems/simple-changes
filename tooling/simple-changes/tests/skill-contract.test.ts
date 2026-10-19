@@ -1277,10 +1277,13 @@ describe("Simple Changes skill contract", () => {
       "Preserve uncommitted work in Git, not as loose copies"
     );
     expect(normalizedConcurrency).toContain(
-      "When a file-level copy is unavoidable, it goes only in your work directory, with a `preservation-manifest.json` at the top of that directory"
+      "When a file-level copy is unavoidable, it goes only in a `preservation-copy` directory at the top of your work directory, with a `manifest.json` in it"
     );
     expect(normalizedConcurrency).toContain(
-      "keep a work directory that still holds that file and warn with its path instead of removing it; the CLI checks only that the file is there, not what it says"
+      'Then make it read-only: `chmod -R a-w "$WORK_DIR/preservation-copy"`'
+    );
+    expect(normalizedConcurrency).toContain(
+      "keep a work directory that holds `preservation-copy` and warn with its path instead of removing it; the CLI checks only that the directory is there, not what it holds"
     );
     expect(normalizedConcurrency).toContain(
       "prove the target or a pushed branch contains the copied work"

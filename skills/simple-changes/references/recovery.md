@@ -313,7 +313,8 @@ longer exists; it then releases orphaned claims whose worktree is gone and
 records them as `releasedClaims` on the receipt. Like
 [finalization](cleanup-and-completion.md#complete-and-finalize), it never
 removes a worktree's parent folder; it names the empty managed
-`.simple-changes-worktrees` folders in the result's `notes`, which the receipt
+`.simple-changes-worktrees` folders older runtimes created in the
+result's `notes`, which the receipt
 history does not keep, because older runtimes validate it strictly. Every live
 claim on an
 existing checkout, dirty checkout, or unmatched head is

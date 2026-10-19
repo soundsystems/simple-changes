@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, realpathSync } from "node:fs";
+import { existsSync, lstatSync, realpathSync, statSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import {
   PATCH_EQUIVALENCE_MAX_COMMITS,
@@ -25,7 +25,7 @@ import {
   writeLease,
 } from "./loop-lease-core.ts";
 import { verificationAgainst } from "./loop-lease-verify.ts";
-import { managedWorktreeDirectories, slug } from "./managed-worktrees.ts";
+import { preparedWorktreePath, slug } from "./managed-worktrees.ts";
 import { runGit } from "./process.ts";
 import type {
   LoopLease,
@@ -45,6 +45,28 @@ const assertLegacyRunAllowsMutation = (
 ): void => {
   if (targetUsesGitLab(inventory) && !lease.openingRemoteInventory) {
     throw new SimpleChangesError(message, EXIT_CODES.unsafe);
+  }
+};
+
+// Whether anything, even a dangling symbolic link, already holds `path`.
+const pathEntryExists = (path: string): boolean => {
+  try {
+    lstatSync(path);
+    return true;
+  } catch (error) {
+    const { code } = error as NodeJS.ErrnoException;
+    if (code === "ENOENT" || code === "ENOTDIR") {
+      return false;
+    }
+    throw error;
+  }
+};
+
+const isDirectory = (path: string): boolean => {
+  try {
+    return statSync(path).isDirectory();
+  } catch {
+    return false;
   }
 };
 
@@ -207,7 +229,7 @@ export const prepareAgentWorktree = (
         if (currentWorktree) {
           return finalizePreparation(currentLease, preparation);
         }
-        if (existsSync(preparation.path)) {
+        if (pathEntryExists(preparation.path)) {
           throw new SimpleChangesError(
             `Prepared path ${preparation.path} exists but is not the registered Git worktree. Preserve it for inspection.`,
             EXIT_CODES.unsafe
@@ -232,7 +254,17 @@ export const prepareAgentWorktree = (
             EXIT_CODES.unsafe
           );
         }
-        mkdirSync(dirname(preparation.path), { recursive: true });
+        // `git worktree add` creates any missing parent folders, and Simple
+        // Changes never creates one: a new preparation sits beside the
+        // primary checkout, whose folder exists. A preparation recorded in
+        // the older managed layout resumes only while its folder still exists.
+        const parent = dirname(preparation.path);
+        if (!isDirectory(parent)) {
+          throw new SimpleChangesError(
+            `The folder ${parent} that holds prepared path ${preparation.path} is missing or is not a directory, and Simple Changes never creates a worktree's parent folder. Restore that folder, then run the same command again.`,
+            EXIT_CODES.unsafe
+          );
+        }
         if (branchResult.exitCode === 0) {
           runGit(currentLease.primaryCheckout, [
             "worktree",
@@ -272,11 +304,12 @@ export const prepareAgentWorktree = (
       const agentSlug = slug(agentId, "agent");
       const runSlug = lease.runId.slice(4, 16);
       const branch = `simple-changes/${purpose}-${agentSlug}-${runSlug}`;
-      const path = resolve(
-        managedWorktreeDirectories(lease.primaryCheckout).repository,
-        `${runSlug}-${purpose}-${agentSlug}`
-      );
-      if (existsSync(path)) {
+      const path = preparedWorktreePath(lease.primaryCheckout, {
+        agent: agentSlug,
+        purpose,
+        run: runSlug,
+      });
+      if (pathEntryExists(path)) {
         throw new SimpleChangesError(
           `Refusing to reuse unregistered agent worktree path ${path}.`,
           EXIT_CODES.unsafe

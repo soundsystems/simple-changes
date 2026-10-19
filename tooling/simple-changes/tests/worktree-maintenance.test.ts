@@ -3,6 +3,7 @@ import {
   existsSync,
   lstatSync,
   mkdirSync,
+  readdirSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -396,6 +397,36 @@ describe("standalone worktree cleanup", () => {
       removed: [],
     });
     expect(history[1]?.cleanupId).toBe(receipt.cleanupId);
+  });
+
+  test("removes a worktree beside the primary and leaves nothing behind", () => {
+    const fixture = repository();
+    const before = readdirSync(fixture.base).sort();
+    const flatWorktree = join(fixture.base, ".simple-changes-repo--flat-unit");
+    git(fixture.root, ["worktree", "add", "-b", "flat-unit", flatWorktree]);
+
+    const receipt = standaloneWorktreeCleanup({
+      agentId: "cleaner",
+      approvedBy: "the-user",
+      reason: "Reconcile orphaned worktrees with no loop record.",
+      repositoryPath: fixture.root,
+    });
+
+    expect(receipt.removed.map((item) => item.path)).toEqual([flatWorktree]);
+    expect(readdirSync(fixture.base).sort()).toEqual(before);
+    expect(receipt.notes).toEqual([]);
+    expect(receipt.errors).toEqual([]);
+
+    git(fixture.root, ["worktree", "add", "-b", "flat-prune", flatWorktree]);
+    const report = pruneRepository({
+      approvedBy: "the-user",
+      dryRun: false,
+      reason: "Remove merged worktrees.",
+      repositoryPath: fixture.root,
+    });
+    expect(report.removed.map((item) => item.path)).toEqual([flatWorktree]);
+    expect(readdirSync(fixture.base).sort()).toEqual(before);
+    expect(report.notes.join("\n")).not.toContain("managed worktree folder");
   });
 
   test("keeps managed worktree folders and names the empty ones", () => {

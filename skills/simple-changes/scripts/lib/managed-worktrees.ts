@@ -1,5 +1,6 @@
 import { lstatSync, readdirSync, realpathSync } from "node:fs";
 import { basename, dirname, resolve } from "node:path";
+import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
 
 export const slug = (value: string, fallback: string): string => {
   const normalized = value
@@ -11,10 +12,54 @@ export const slug = (value: string, fallback: string): string => {
   return normalized || fallback;
 };
 
-// `prepare-agent` places every worktree it creates under
+// Slugs hold only lowercase letters, digits, and single hyphens between
+// them, so `--` separates the fields of a prepared worktree's name without
+// ambiguity: different fields always give different names.
+const PREPARED_WORKTREE_NAME =
+  /^\.simple-changes-[a-z0-9]+(?:-[a-z0-9]+)*(?:--[a-z0-9]+(?:-[a-z0-9]+)*){3}$/u;
+const MAX_NAME_BYTES = 255;
+
+/**
+ * Where `prepare-agent` creates an agent's worktree: directly beside the
+ * primary checkout, as
+ * `<parent of the primary>/.simple-changes-<repository>--<run>--<purpose>--<agent>`.
+ * That parent already holds the primary checkout, so `git worktree add`
+ * creates only this one directory and Simple Changes never creates a parent
+ * folder. Every field is reduced to a slug, so the name holds no path
+ * separator or `..` and cannot leave that parent.
+ */
+export const preparedWorktreePath = (
+  primaryCheckout: string,
+  fields: { agent: string; purpose: string; run: string }
+): string => {
+  const parent = dirname(primaryCheckout);
+  const name = `.simple-changes-${[
+    slug(basename(primaryCheckout), "repository"),
+    slug(fields.run, "run"),
+    slug(fields.purpose, "work"),
+    slug(fields.agent, "agent"),
+  ].join("--")}`;
+  const path = resolve(parent, name);
+  if (
+    !PREPARED_WORKTREE_NAME.test(name) ||
+    Buffer.byteLength(name) > MAX_NAME_BYTES ||
+    dirname(path) !== parent ||
+    basename(path) !== name
+  ) {
+    throw new SimpleChangesError(
+      `Refusing to prepare an agent worktree named ${JSON.stringify(name)} beside ${primaryCheckout}.`,
+      EXIT_CODES.unsafe
+    );
+  }
+  return path;
+};
+
+// The older layout: `prepare-agent` placed each worktree under
 // `<parent of the primary>/.simple-changes-worktrees/<repository slug>/`.
-// Simple Changes never removes these folders: their names do not prove who
-// made them, and no removal by name can be bound to the folder it checked.
+// Worktrees made there keep working, because every command finds a run's
+// worktrees by the paths the run recorded. Simple Changes never removes
+// these folders: their names do not prove who made them, and no removal by
+// name can be bound to the folder it checked.
 export const managedWorktreeDirectories = (
   primaryCheckout: string
 ): { repository: string; root: string } => {

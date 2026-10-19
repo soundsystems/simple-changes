@@ -429,11 +429,13 @@ run-created and opening worktree removals remain in the historical audit.
 Because Git prunes stale registrations together, finalization defers all
 metadata pruning if any missing checkout is outside the freshly audited set.
 Unique work, retained checkouts, and active claims keep their registrations.
-Finalization never removes a worktree's parent folder, including the managed
-`.simple-changes-worktrees/<repository>/` folder and its root that
-`prepare-agent` creates: a folder's name does not prove who made it, and no
-removal by name can be bound to the folder it checked. When its removals leave
-the managed folders empty, finalization names them in the cleanup's `notes`.
+`prepare-agent` creates each worktree directly beside the primary checkout, so
+removing it with Git leaves nothing behind. Finalization never removes a
+worktree's parent folder, including the managed
+`.simple-changes-worktrees/<repository>/` folder and its root that older
+runtimes created: a folder's name does not prove who made it, and no removal
+by name can be bound to the folder it checked. When its removals leave those
+managed folders empty, finalization names them in the cleanup's `notes`.
 The notes only report what cleanup saw, skip a folder seen behind a symbolic
 link, suggest no command, and never block completion.
 Before synchronizing a clean preserved primary, finalization records its old

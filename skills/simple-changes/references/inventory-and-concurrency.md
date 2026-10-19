@@ -289,8 +289,17 @@ An agent joining the same integration unit must begin with `prepare-agent`. The 
 pending preparation before creating a unique branch and sibling worktree from
 the pinned target revision, then registers the completed worktree with the
 active run and returns its exact path and the agent's
-[work directory](#agent-work-directories). Use that path as the agent's working
-directory before it edits, formats, generates, stages, or commits files.
+[work directory](#agent-work-directories). The worktree goes directly beside
+the primary checkout, at
+`.simple-changes-<repository>--<run>--<purpose>--<agent>`, so Git creates only
+that one directory and no parent folder; each part is reduced to lowercase
+letters, digits, and hyphens, so the name cannot leave that folder. The
+command refuses, creating nothing, when anything already holds that path or the
+branch name. Worktrees an older runtime made under
+`.simple-changes-worktrees/<repository>/` keep working, because every command
+finds a run's worktrees by the paths the run recorded. Use the returned path
+as the agent's working directory before it edits, formats, generates, stages,
+or commits files.
 Repeating the command for the same agent ID returns the existing registration;
 if creation stopped partway through, the same command validates and resumes the
 recorded preparation instead of guessing or creating another branch. It refuses
@@ -298,14 +307,16 @@ to adopt staged, unstaged, or untracked content, and a registered author loses
 mutation authority after switching away from the recorded branch.
 
 An independent feature agent instead creates its own isolated worktree and runs
-`worktree claim` as the immediate next command. Create it under the managed
-`.simple-changes-worktrees/<repository>/` directory beside the primary checkout,
-never in a folder made for it, such as `mkdir -p ~/Developer/<repo>-worktrees`.
-Simple Changes never removes a worktree's parent folder; cleanup names an
-empty managed folder in its notes. If your command made a parent folder,
-`rmdir` it (never `rm -r`) after its worktree is removed, and only when it is
-empty and you created it. Do not inspect project files from the new checkout,
-install dependencies, format, generate, edit, stage, or commit there before the
+`worktree claim` as the immediate next command. Create it directly beside the
+primary checkout, as `.simple-changes-<repository>--<name>`, so it needs no
+parent folder; never in a folder made for it, such as
+`mkdir -p ~/Developer/<repo>-worktrees`. Simple Changes never removes a
+worktree's parent folder; cleanup names an empty folder left in the older
+`.simple-changes-worktrees/<repository>/` layout in its notes. If your command
+made a parent folder, `rmdir` it (never `rm -r`) after its worktree is removed,
+and only when it is empty and you created it. Do not inspect project files
+from the new checkout, install dependencies, format, generate, edit, stage, or
+commit there before the
 claim succeeds. It does not acquire a second integration
 lease and does not need `prepare-agent` unless its work is being assigned into
 the active integration run.

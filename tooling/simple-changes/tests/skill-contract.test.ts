@@ -1291,13 +1291,23 @@ describe("Simple Changes skill contract", () => {
     expect(normalizedConcurrency).toContain(
       "prove the target or a pushed branch contains the copied work"
     );
-    // Independent worktrees use the managed directory; Simple Changes never
-    // removes a parent folder, it only names empty managed ones.
+    // Worktrees go directly beside the primary, so none needs a parent
+    // folder; Simple Changes never removes one, it only names empty folders
+    // the older managed layout left.
     expect(normalizedConcurrency).toContain(
-      "Create it under the managed `.simple-changes-worktrees/<repository>/` directory beside the primary checkout"
+      "The worktree goes directly beside the primary checkout, at `.simple-changes-<repository>--<run>--<purpose>--<agent>`, so Git creates only that one directory and no parent folder"
     );
     expect(normalizedConcurrency).toContain(
-      "Simple Changes never removes a worktree's parent folder; cleanup names an empty managed folder in its notes"
+      "The command refuses, creating nothing, when anything already holds that path or the branch name."
+    );
+    expect(normalizedConcurrency).toContain(
+      "Worktrees an older runtime made under `.simple-changes-worktrees/<repository>/` keep working"
+    );
+    expect(normalizedConcurrency).toContain(
+      "Create it directly beside the primary checkout, as `.simple-changes-<repository>--<name>`, so it needs no parent folder"
+    );
+    expect(normalizedConcurrency).toContain(
+      "Simple Changes never removes a worktree's parent folder; cleanup names an empty folder left in the older `.simple-changes-worktrees/<repository>/` layout in its notes"
     );
     expect(normalizedConcurrency).toContain(
       "only when it is empty and you created it"

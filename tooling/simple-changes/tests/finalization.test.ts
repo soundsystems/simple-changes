@@ -10,7 +10,7 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 import {
@@ -40,6 +40,7 @@ import {
 import {
   createTestRepository,
   git,
+  prepareLegacyLayoutAgentWorktree,
   type TestRepository,
   writeFixture,
 } from "./helpers.ts";
@@ -58,7 +59,9 @@ function deliveredFixture(
   excludePrimary = false,
   runCreated = false,
   // Runs just before `prepare-agent`, to set up its managed parent folders.
-  beforePrepare?: (base: string) => void
+  beforePrepare?: (base: string) => void,
+  // Prepares the author in the older managed layout, as an older runtime did.
+  legacyLayout = false
 ) {
   const fixture = createTestRepository();
   fixtures.push(fixture);
@@ -120,8 +123,11 @@ function deliveredFixture(
   };
   recordShipmentScope(author, lease.runId, "controller", plan);
   beforePrepare?.(fixture.base);
+  const prepare = legacyLayout
+    ? prepareLegacyLayoutAgentWorktree
+    : prepareAgentWorktree;
   const prepared = runCreated
-    ? prepareAgentWorktree(author, lease.runId, "delivery-author", "delivery")
+    ? prepare(author, lease.runId, "delivery-author", "delivery")
     : null;
   git(author, ["add", "feature.txt"]);
   git(author, ["commit", "-m", "Feature"]);
@@ -517,8 +523,34 @@ describe("shipment finalization", () => {
     );
   });
 
-  test("keeps the managed folders its prepared worktree left empty and names them", () => {
-    const fixture = deliveredFixture(false, true, true);
+  test("removes a prepared worktree and leaves nothing beside the primary", () => {
+    let before: string[] = [];
+    const fixture = deliveredFixture(false, true, true, (base) => {
+      before = readdirSync(base).sort();
+    });
+    if (!fixture.prepared) {
+      throw new Error("Missing run-created delivery author fixture");
+    }
+    expect(dirname(fixture.prepared.path)).toBe(fixture.base);
+    expect(readdirSync(fixture.base).sort()).toEqual(
+      [...before, basename(fixture.prepared.path)].sort()
+    );
+    const result = finalizeLoop(
+      fixture.root,
+      fixture.lease.runId,
+      "controller",
+      "Close and remove the prepared author."
+    );
+    expect(result.outcome).toBe("completed");
+    expect(result.cleanup.removedWorktrees).toContain(fixture.prepared.path);
+    expect(existsSync(fixture.prepared.path)).toBe(false);
+    expect(readdirSync(fixture.base).sort()).toEqual(before);
+    expect(result.cleanup.errors).toEqual([]);
+    expect(result.cleanup.notes).toEqual([]);
+  });
+
+  test("keeps the older layout's managed folders its prepared worktree left empty and names them", () => {
+    const fixture = deliveredFixture(false, true, true, undefined, true);
     if (!fixture.prepared) {
       throw new Error("Missing run-created delivery author fixture");
     }
@@ -542,8 +574,8 @@ describe("shipment finalization", () => {
     ]);
   });
 
-  test("names only the managed folder that is empty", () => {
-    const fixture = deliveredFixture(false, true, true);
+  test("names only the older layout's managed folder that is empty", () => {
+    const fixture = deliveredFixture(false, true, true, undefined, true);
     if (!fixture.prepared) {
       throw new Error("Missing run-created delivery author fixture");
     }
@@ -569,16 +601,22 @@ describe("shipment finalization", () => {
     ]);
   });
 
-  test("keeps managed folders a person made before prepare-agent", () => {
-    const fixture = deliveredFixture(false, true, true, (base) => {
-      mkdirSync(join(base, ".simple-changes-worktrees", "repo"), {
-        recursive: true,
-      });
-      writeFileSync(
-        join(base, ".simple-changes-worktrees", "repo", "mine.txt"),
-        "mine\n"
-      );
-    });
+  test("keeps older-layout managed folders a person made before prepare-agent", () => {
+    const fixture = deliveredFixture(
+      false,
+      true,
+      true,
+      (base) => {
+        mkdirSync(join(base, ".simple-changes-worktrees", "repo"), {
+          recursive: true,
+        });
+        writeFileSync(
+          join(base, ".simple-changes-worktrees", "repo", "mine.txt"),
+          "mine\n"
+        );
+      },
+      true
+    );
     if (!fixture.prepared) {
       throw new Error("Missing run-created delivery author fixture");
     }
@@ -598,13 +636,19 @@ describe("shipment finalization", () => {
   });
 
   test("never removes or names anything through a symbolically linked managed root", () => {
-    const fixture = deliveredFixture(false, true, true, (base) => {
-      mkdirSync(join(base, "shared"));
-      symlinkSync(
-        join(base, "shared"),
-        join(base, ".simple-changes-worktrees")
-      );
-    });
+    const fixture = deliveredFixture(
+      false,
+      true,
+      true,
+      (base) => {
+        mkdirSync(join(base, "shared"));
+        symlinkSync(
+          join(base, "shared"),
+          join(base, ".simple-changes-worktrees")
+        );
+      },
+      true
+    );
     if (!fixture.prepared) {
       throw new Error("Missing run-created delivery author fixture");
     }

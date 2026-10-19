@@ -146,6 +146,17 @@ binds the exact path, branch, HEAD, and digest, so a checkout that changed
 after its pause, a claim released before acceptance, another owner's live
 claim, and the former owner's old receipt are all refused.
 
+`worktree resume-ready` needs the owner's pause receipt for the current run.
+A receipt the owner gave an earlier run also counts while it still records
+the claim's exact path, branch, HEAD, digest, and owner, and either the
+current lease registers the claim with that receipt, or the run it was given
+to was replaced through an approved `loop replan` whose archived lease
+registered the claim with it and the current run registers the checkout, with
+no claim link of its own, at exactly that state. So an unchanged checkout the
+replaced run adopted needs no new pause. Otherwise the refusal prints the
+owner's `worktree pause` for the current run; once the owner runs it from its
+own session, the controller marks the claim resume-ready.
+
 Use `loop adopt-worktree` for a paused worktree that appeared after loop start.
 Use `loop accept-paused-change` for an opening preserved worktree whose owner
 changed it before pausing. Both commands require the receipt's run, repository,
@@ -403,6 +414,10 @@ Do not edit the lease or widen its frozen scope by hand.
 3. Keep the returned `replanned` receipt and start a fresh loop through the normal
    workflow. Inventory and reconcile all remaining work and provider truth;
    replan does not prove that earlier merge or deployment actions never occurred.
+   An unchanged checkout the old run adopted keeps its owner's pause receipt
+   for `worktree resume-ready`, as
+   [released claims and paused changes](#released-claims-and-paused-changes)
+   describes.
 
 Replan takes the existing state lock before the coordination lock and never
 recovers held locks. It refuses unfinished author preparations, recorded shipment

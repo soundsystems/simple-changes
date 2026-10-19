@@ -16,10 +16,12 @@ import { sha256, sha256Json } from "./hash.ts";
 import { captureInventory, locateRepository } from "./inventory.ts";
 import { runGit } from "./process.ts";
 import { redactSecrets } from "./redact.ts";
+import { replannedRegistrations } from "./replan-history.ts";
 import { RUN_ID_PATTERN } from "./run-id.ts";
 import { validateSchema } from "./schema.ts";
 import type {
   LoopLease,
+  LoopWorktreeLease,
   RepositoryInventory,
   WorktreeClaim,
   WorktreeClaimObservation,
@@ -1150,11 +1152,14 @@ const transitionClaim = (
   actorAgentId: string,
   state: WorktreeCoordinationState,
   updates: Partial<WorktreeClaim> = {},
-  allowedStates?: readonly WorktreeCoordinationState[]
+  allowedStates?: readonly WorktreeCoordinationState[],
+  // Checked against the document read under the lock, before anything else.
+  assertAllowed?: (document: WorktreeCoordinationDocument) => void
 ): WorktreeClaim =>
   withCoordinationLock(commonGitDirectory, `worktree ${state}`, () => {
     let document =
       readCoordinationDocumentFromCommonDirectory(commonGitDirectory);
+    assertAllowed?.(document);
     const claim = document.claims.find((item) => item.claimId === claimId);
     if (!claim) {
       throw new SimpleChangesError(
@@ -1229,19 +1234,6 @@ export const markCoordinationResumeReady = (
       EXIT_CODES.usage
     );
   }
-  const document =
-    readCoordinationDocumentFromCommonDirectory(commonGitDirectory);
-  if (
-    !document.receipts.some(
-      (receipt) =>
-        receipt.claimId === claimId && receipt.requestingRunId === runId
-    )
-  ) {
-    throw new SimpleChangesError(
-      "Resume-ready requires an owner pause receipt for this exact run.",
-      EXIT_CODES.unsafe
-    );
-  }
   return transitionClaim(
     commonGitDirectory,
     claimId,
@@ -1255,8 +1247,121 @@ export const markCoordinationResumeReady = (
         targetSha,
       },
     },
-    ["paused", "adopted-preserved", "detached", "attached", "resume-ready"]
+    ["paused", "adopted-preserved", "detached", "attached", "resume-ready"],
+    (document) => {
+      if (
+        !hasResumeReadyReceipt(commonGitDirectory, document, claimId, runId)
+      ) {
+        throw new SimpleChangesError(
+          resumeReadyRefusal(document, claimId, runId),
+          EXIT_CODES.unsafe
+        );
+      }
+    }
   );
+};
+
+// The receipt still records the claim's exact path, branch, HEAD, digest,
+// and owner.
+const receiptDescribesClaim = (
+  receipt: WorktreePauseReceipt,
+  claim: WorktreeClaim
+): boolean =>
+  receipt.claimId === claim.claimId &&
+  receipt.path === claim.path &&
+  receipt.branch === claim.branch &&
+  receipt.headSha === claim.headSha &&
+  receipt.changeDigest === claim.changeDigest &&
+  receipt.ownerAgentId === claim.owner.agentId;
+
+// A registration that links this exact claim and receipt at its path.
+const registersReceipt = (
+  registered: Pick<
+    LoopWorktreeLease,
+    "claimId" | "path" | "pauseReceiptId" | "role"
+  >,
+  receipt: WorktreePauseReceipt
+): boolean =>
+  registered.role === "preserved" &&
+  registered.path === receipt.path &&
+  registered.claimId === receipt.claimId &&
+  registered.pauseReceiptId === receipt.receiptId;
+
+/**
+ * Whether run `runId` may mark the claim resume-ready. The owner's pause
+ * receipt for this exact run always may. A receipt the owner gave an earlier
+ * run may when it still describes the claim exactly and either the active
+ * lease registers this claim with it, or the run that took it was replaced
+ * through an approved `loop replan` whose archived lease registered it and
+ * the active lease registers the checkout, unlinked, at exactly the
+ * receipt's state.
+ */
+const hasResumeReadyReceipt = (
+  commonGitDirectory: string,
+  document: WorktreeCoordinationDocument,
+  claimId: string,
+  runId: string
+): boolean => {
+  const receipts = document.receipts.filter(
+    (receipt) => receipt.claimId === claimId
+  );
+  if (receipts.some((receipt) => receipt.requestingRunId === runId)) {
+    return true;
+  }
+  const claim = document.claims.find((item) => item.claimId === claimId);
+  const lease = activeLoop(commonGitDirectory);
+  if (
+    !(claim && lease && lease.runId === runId) ||
+    claim.commonGitDirectory !== commonGitDirectory
+  ) {
+    return false;
+  }
+  return receipts.some(
+    (receipt) =>
+      receiptDescribesClaim(receipt, claim) &&
+      (lease.worktrees.some((item) => registersReceipt(item, receipt)) ||
+        inheritedThroughReplan(commonGitDirectory, lease, receipt))
+  );
+};
+
+// The active lease registers the receipt's checkout, with no claim link of
+// its own, at exactly the receipt's state, and the run the owner paused for
+// was replaced through an approved `loop replan` whose archived lease
+// registered this claim with this receipt.
+const inheritedThroughReplan = (
+  commonGitDirectory: string,
+  lease: LoopLease,
+  receipt: WorktreePauseReceipt
+): boolean => {
+  const registered = lease.worktrees.find((item) => item.path === receipt.path);
+  return (
+    registered !== undefined &&
+    registered.role === "preserved" &&
+    !registered.createdByRun &&
+    registered.claimId === undefined &&
+    registered.pauseReceiptId === undefined &&
+    registered.branch === receipt.branch &&
+    registered.baselineHeadSha === receipt.headSha &&
+    registered.baselineChangeDigest === receipt.changeDigest &&
+    replannedRegistrations(commonGitDirectory, receipt.requestingRunId).some(
+      (archived) => registersReceipt(archived, receipt)
+    )
+  );
+};
+
+const resumeReadyRefusal = (
+  document: WorktreeCoordinationDocument,
+  claimId: string,
+  runId: string
+): string => {
+  const claim = document.claims.find((item) => item.claimId === claimId);
+  const base = `Resume-ready requires an owner pause receipt for this exact run, or an earlier receipt that still describes claim ${claimId} exactly and that run ${runId}'s lease, or the archived lease of a run an approved \`loop replan\` replaced, registered for this claim.`;
+  if (!claim || claim.state === "detached") {
+    return base;
+  }
+  const agent = commandWord(claim.owner.agentId);
+  const path = commandWord(claim.path);
+  return `${base} Ask owner ${claim.owner.agentId} to run \`simple-changes worktree pause --agent-id ${agent} --worktree ${path} --run-id ${runId} --disposition preserve-in-place --reason <why> --repo ${path}\` from its own session, then mark it resume-ready again. Do not run it under that agent ID from another session.`;
 };
 
 export const detachClaimedWorktree = (

@@ -37,6 +37,7 @@ import {
   loadHarnessDefinitions,
   MODEL_ID_ALIASES,
   packagedHarnessDataPath,
+  parseAuthoringAnswer,
   parseAuthoringRequest,
   REVIEW_LOOP_DEFAULTS,
   readAuthoringFile,
@@ -46,6 +47,8 @@ import {
   validateAuthoringSidecar,
   writeAuthoringSidecar,
 } from "../../../skills/simple-changes/scripts/lib/authoring.ts";
+import { recommendedAuthoringAnswer } from "../../../skills/simple-changes/scripts/lib/authoring-onboarding.ts";
+import { RESPELLED } from "../../../skills/simple-changes/scripts/lib/extensions.ts";
 import { captureInventory } from "../../../skills/simple-changes/scripts/lib/inventory.ts";
 import { resolveReviewer } from "../../../skills/simple-changes/scripts/lib/review-ledger.ts";
 import { createTestRepository, git, type TestRepository } from "./helpers.ts";
@@ -303,6 +306,51 @@ const VALIDATION_TABLE: { name: string; valid: boolean; value: unknown }[] = [
     valid: false,
     value: loose({ constructor: { extra: true, model: 42 } }),
   },
+  {
+    name: "extensions on each role",
+    valid: true,
+    value: loose(
+      {},
+      {
+        proposals: {
+          extensions: { future: { list: [1, null, "kept"] } },
+          harness: "running",
+        },
+        review: { extensions: {}, harness: "running" },
+      }
+    ),
+  },
+  ...[[], null, "kept", 1].map((extensions) => ({
+    name: `role extensions of ${JSON.stringify(extensions)}`,
+    valid: false,
+    value: loose({}, { review: { extensions, harness: "running" } }),
+  })),
+  {
+    name: "an unknown role key beside extensions",
+    valid: false,
+    value: loose(
+      {},
+      { review: { extensions: {}, graded: 1, harness: "running" } }
+    ),
+  },
+  {
+    name: "extensions on the sidecar",
+    valid: false,
+    value: { ...EMPTY, extensions: {} },
+  },
+  {
+    name: "extensions in an agent entry",
+    valid: false,
+    value: loose({ gamma: { extensions: {}, model: "y" } }),
+  },
+  {
+    name: "extensions in a review loop",
+    valid: false,
+    value: loose(
+      {},
+      { review: { harness: "running", reviewLoop: { extensions: {} } } }
+    ),
+  },
   { name: "unknown top-level key", valid: false, value: { ...EMPTY, x: 1 } },
   {
     name: "schema version 2",
@@ -351,6 +399,251 @@ describe("authoring sidecar validation", () => {
     for (const { name, valid, value } of VALIDATION_TABLE) {
       expect({ name, valid: schemaValid(value) }).toEqual({ name, valid });
     }
+  });
+});
+
+describe("authoring extensions", () => {
+  const HINT =
+    "is not allowed (a newer Simple Changes may have written it; update this runtime)";
+
+  test("an unknown role key names a newer runtime, other unknown keys do not, and a Simple Changelogs role has no extensions", () => {
+    expect(
+      validateAuthoringSidecar(
+        loose(
+          { gamma: { command: "x", model: "y" } },
+          {
+            proposals: { extensions: [], harness: "running" },
+            review: { graded: true, harness: "running" },
+          }
+        )
+      ).errors
+    ).toEqual([
+      "roles.proposals.extensions must be an object",
+      `roles.review.graded ${HINT}`,
+      "harnesses.gamma.command is not allowed",
+    ]);
+    expect(validateAuthoringSidecar({ ...EMPTY, graded: true }).errors).toEqual(
+      ["sidecar.graded is not allowed"]
+    );
+    expect(
+      validateAuthoringSidecar(
+        loose({}, { "release-notes": { extensions: {}, harness: "running" } }),
+        "simple-changelogs"
+      ).errors
+    ).toEqual(["roles.release-notes.extensions is not allowed"]);
+  });
+
+  // An answer a newer runtime could pass, as literal text spelled and
+  // indented exactly as Simple Changes writes JSON: an exponent, escapes,
+  // a raw non-ASCII character, and names that are inherited properties.
+  const LITERAL_ANSWER = [
+    "{",
+    '  "harnesses": {',
+    '    "alpha-agent": {',
+    '      "effort": "high",',
+    '      "model": "alpha-model"',
+    "    }",
+    "  },",
+    '  "roles": {',
+    '    "proposals": {',
+    '      "extensions": {',
+    '        "__proto__": {',
+    '          "polluted": true',
+    "        },",
+    '        "constructor": "kept",',
+    '        "future": 1e+21,',
+    '        "nested": {',
+    '          "list": [',
+    "            1.5,",
+    "            null,",
+    '            "é \\"q\\" \\\\ \\u0001",',
+    "            []",
+    "          ],",
+    '          "empty": {}',
+    "        }",
+    "      },",
+    '      "harness": "running"',
+    "    },",
+    '    "review": {',
+    '      "adversarial": true,',
+    '      "escalateOnFindings": "xhigh",',
+    '      "extensions": {},',
+    '      "harness": "alpha-agent",',
+    '      "reviewLoop": {',
+    '        "roundCap": 3',
+    "      }",
+    "    }",
+    "  },",
+    '  "schemaVersion": 1',
+    "}",
+    "",
+  ].join("\n");
+  // The same answer on one line, the way a command line passes it.
+  const compact = (text: string): string =>
+    text.replace(/"(?:[^"\\]|\\.)*"|\s+/gsu, (token) =>
+      token.startsWith('"') ? token : ""
+    );
+
+  test("an answer's literal extensions are written byte for byte, never read, and a fresh answer writes none", () => {
+    const directory = temporary("extensions");
+    const path = join(directory, "authoring.json");
+    // A fresh answer, as setup records it, carries no extensions.
+    const fresh = recommendedAuthoringAnswer(["alpha-agent", "beta-agent"]);
+    expect(writeAuthoringSidecar(path, fresh, true).written).toBe(true);
+    expect(readFileSync(path, "utf8")).not.toContain('"extensions"');
+    // The literal answer, inline, on one line, or from a file, is written as
+    // exactly that text.
+    const answerFile = join(directory, "answer.json");
+    writeFileSync(answerFile, LITERAL_ANSWER);
+    for (const text of [
+      LITERAL_ANSWER,
+      compact(LITERAL_ANSWER),
+      `@${answerFile}`,
+    ]) {
+      rmSync(path, { force: true });
+      const answer = parseAuthoringAnswer(text);
+      expect(writeAuthoringSidecar(path, answer, true).written).toBe(true);
+      expect(readFileSync(path, "utf8")).toBe(LITERAL_ANSWER);
+    }
+    const read = readAuthoringFile(path);
+    expect(read.state).toBe("valid");
+    expect(read.value?.roles.proposals?.extensions?.future).toBe(1e21);
+    // Writing back what was read changes nothing on disk.
+    expect(writeAuthoringSidecar(path, read.value, true).written).toBe(false);
+    expect(readFileSync(path, "utf8")).toBe(LITERAL_ANSWER);
+    // Resolution reads the same roles with and without them.
+    const extended = read.value as AuthoringSidecar;
+    const plain = structuredClone(extended);
+    for (const role of Object.values(plain.roles)) {
+      Reflect.deleteProperty(role, "extensions");
+    }
+    const at = (value: AuthoringSidecar) => [
+      { layer: "repository" as const, path, value },
+    ];
+    for (const role of ["proposals", "review"] as const) {
+      expect(resolveAuthoringRole(role, at(extended), "alpha-agent")).toEqual(
+        resolveAuthoringRole(role, at(plain), "alpha-agent")
+      );
+    }
+  });
+
+  test("an answer, request or sidecar file whose extensions would be respelled is refused, and the file is never replaced", () => {
+    const respelled: [string, string][] = [
+      ["an integer past 2^53", '"future": 9007199254740993'],
+      ["an overflowing number", '"future": 1e400'],
+      ["a trailing zero", '"future": 1.0'],
+      ["negative zero", '"future": -0'],
+      ["an optional escape", '"future": "\\u0061"'],
+      ["integer-like keys out of order", '"future": {"2": "two", "1": "one"}'],
+      ["a repeated key", '"future": 1, "future": 2'],
+    ];
+    const directory = temporary("respelled");
+    const refusal = (parse: () => unknown): string => {
+      try {
+        parse();
+      } catch (error) {
+        return (error as Error).message;
+      }
+      return "accepted";
+    };
+    for (const [name, member] of respelled) {
+      const text = LITERAL_ANSWER.replace('"future": 1e+21', member);
+      expect(text).not.toBe(LITERAL_ANSWER);
+      const file = join(directory, "answer.json");
+      writeFileSync(file, text);
+      for (const answer of [text, `@${file}`]) {
+        expect({
+          name,
+          refusal: refusal(() => parseAuthoringAnswer(answer)),
+        }).toEqual({
+          name,
+          refusal: expect.stringContaining(
+            `--authoring holds extensions ${RESPELLED}, so they would not be kept exactly`
+          ),
+        });
+      }
+      expect({
+        name,
+        refusal: refusal(() => parseAuthoringRequest(text)),
+      }).toEqual({
+        name,
+        refusal: expect.stringContaining(
+          `--authoring-request holds extensions ${RESPELLED}`
+        ),
+      });
+      // The same text as a saved sidecar is malformed, so it hands out no
+      // value to write back, and no answer replaces it.
+      const saved = join(directory, "authoring.json");
+      writeFileSync(saved, text);
+      expect({ name, read: readAuthoringFile(saved) }).toEqual({
+        name,
+        read: {
+          errors: [
+            `${saved} holds extensions ${RESPELLED}, so they could not be kept exactly; write it as JSON.stringify writes JSON`,
+          ],
+          path: saved,
+          state: "malformed",
+        },
+      });
+      expect({
+        name,
+        refusal: refusal(() =>
+          writeAuthoringSidecar(saved, JSON.parse(text), true)
+        ),
+      }).toEqual({
+        name,
+        refusal: expect.stringContaining(`Refusing to overwrite ${saved}`),
+      });
+      expect(readFileSync(saved, "utf8")).toBe(text);
+    }
+    // A byte that is not valid UTF-8 would come back as U+FFFD.
+    const [head, tail] = LITERAL_ANSWER.split('"future": 1e+21');
+    const invalid = Buffer.concat([
+      Buffer.from(`${head}"future": "a`),
+      Buffer.from([0xff]),
+      Buffer.from(`b"${tail}`),
+    ]);
+    const invalidFile = join(directory, "invalid.json");
+    writeFileSync(invalidFile, invalid);
+    expect(readAuthoringFile(invalidFile)).toMatchObject({
+      errors: [
+        `${invalidFile} holds extensions ${RESPELLED}, so they could not be kept exactly; write it as JSON.stringify writes JSON`,
+      ],
+      state: "malformed",
+    });
+    expect(
+      refusal(() =>
+        writeAuthoringSidecar(invalidFile, JSON.parse(invalid.toString()), true)
+      )
+    ).toContain(`Refusing to overwrite ${invalidFile}`);
+    expect(readFileSync(invalidFile).equals(invalid)).toBe(true);
+    expect(refusal(() => parseAuthoringAnswer(`@${invalidFile}`))).toContain(
+      `--authoring holds extensions ${RESPELLED}`
+    );
+    // Other spacing loses nothing, so such a sidecar reads.
+    const spaced = join(directory, "spaced.json");
+    writeFileSync(spaced, LITERAL_ANSWER.replaceAll("  ", "    "));
+    expect(readAuthoringFile(spaced).state).toBe("valid");
+    // Without extensions, other spellings are accepted as before.
+    const plain =
+      '{"harnesses":{},"roles":{"review":{"harness":"\\u0072unning","reviewLoop":{"roundCap":3.0}}},"schemaVersion":1}';
+    expect(parseAuthoringAnswer(plain)).toEqual({
+      harnesses: {},
+      roles: { review: { harness: "running", reviewLoop: { roundCap: 3 } } },
+      schemaVersion: 1,
+    });
+    const plainFile = join(directory, "plain.json");
+    writeFileSync(plainFile, plain);
+    expect(readAuthoringFile(plainFile).state).toBe("valid");
+    writeFileSync(
+      plainFile,
+      Buffer.concat([
+        Buffer.from('{"harnesses":{"gamma":{"model":"m'),
+        Buffer.from([0xff]),
+        Buffer.from('"}},"roles":{},"schemaVersion":1}'),
+      ])
+    );
+    expect(readAuthoringFile(plainFile).state).toBe("valid");
   });
 });
 

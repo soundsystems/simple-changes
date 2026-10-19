@@ -63,8 +63,13 @@ const recordsFile = (root: string): string =>
 
 const managedRecords = (
   root: string
-): { device: string; inode: string; path: string; runId: string }[] =>
-  JSON.parse(readFileSync(recordsFile(root), "utf8")).directories;
+): {
+  device: string;
+  inode: string;
+  path: string;
+  runId: string;
+  token: string;
+}[] => JSON.parse(readFileSync(recordsFile(root), "utf8")).directories;
 
 function deliveredFixture(
   squash = false,
@@ -551,6 +556,9 @@ describe("shipment finalization", () => {
       expect(record.device).toBe(identity.dev.toString());
       expect(record.inode).toBe(identity.ino.toString());
       expect(record.runId).toBe(fixture.lease.runId);
+      expect(
+        readFileSync(join(record.path, ".simple-changes-directory"), "utf8")
+      ).toBe(`${record.token}\n`);
     }
     const result = finalizeLoop(
       fixture.root,
@@ -680,8 +688,13 @@ describe("shipment finalization", () => {
     expect(result.cleanup.removedManagedDirectories).toEqual([]);
     expect(existsSync(sharedRepository)).toBe(true);
     expect(lstatSync(linkedRoot).isSymbolicLink()).toBe(true);
+    // prepare-agent records nothing it makes through a link, so nothing here
+    // is Simple Changes' to remove.
+    expect(existsSync(recordsFile(fixture.root))).toBe(false);
     expect(result.cleanup.notes).toEqual([
-      expect.stringContaining(`${linkedRoot} is a symbolic link`),
+      expect.stringContaining(
+        `Kept empty ${join(linkedRoot, "repo")}: this repository has no record`
+      ),
     ]);
   });
 

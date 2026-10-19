@@ -431,15 +431,21 @@ metadata pruning if any missing checkout is outside the freshly audited set.
 Unique work, retained checkouts, and active claims keep their registrations.
 Once its removals leave them empty, finalization also removes the managed
 `.simple-changes-worktrees/<repository>/` directory and its root, but only one
-`prepare-agent` recorded creating. It records each level it makes itself, by
-path, device, and inode, in `managed-worktree-directories.json` in the Simple
-Changes state directory under the Git common directory, and never a level that
-already existed. A directory without a matching record stays: one a person,
-plain Git, or an older runtime made, one `prepare-agent` reused, one reached
-through a symbolic link at any level, and one replaced since it was made.
-Cleanup reports what it removed as `removedManagedDirectories` and a kept or
-unremovable directory in `notes`, which never block completion. It never
-removes any other parent directory.
+`prepare-agent` recorded creating. For each level it makes itself, and never
+for one that already existed, it writes a `.simple-changes-directory` marker
+holding a random token inside, and records the path, device, inode, and token
+in `managed-worktree-directories.json` in the Simple Changes state directory
+under the Git common directory. A level counts as empty when the marker is its
+only entry. Cleanup walks down from the folder holding the managed root, enters
+each level, and checks it is the real directory it just inspected before
+acting on the next name inside it, so no symbolic link, present or swapped in
+during the pass, can redirect a removal. A directory without a matching record,
+identity, and marker stays: one a person, plain Git, or an older runtime made,
+one `prepare-agent` reused, one reached through a symbolic link at any level,
+and one replaced or recreated since it was made. Cleanup reports what it
+removed as `removedManagedDirectories` and a kept or unremovable directory in
+`notes`, which never block completion. It never removes any other parent
+directory.
 Before synchronizing a clean preserved primary, finalization records its old
 baseline and exact expected result. A retry can reconcile that intent only when
 the primary is clean at the same target branch and commit; unrelated edits

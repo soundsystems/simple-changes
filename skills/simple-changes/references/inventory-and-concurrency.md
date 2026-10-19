@@ -302,10 +302,11 @@ An independent feature agent instead creates its own isolated worktree and runs
 `.simple-changes-worktrees/<repository>/` directory beside the primary checkout,
 never in a folder made for it, such as `mkdir -p ~/Developer/<repo>-worktrees`.
 Cleanup removes a managed directory once it is empty only when Simple Changes
-recorded creating it (`prepare-agent` records each level it makes); a folder
-that `git worktree add`, an agent, or a person made has no record and stays. If
-your command made a parent folder, `rmdir` it (never `rm -r`) after its
-worktree is removed, and only when it is empty and you created it. Do not
+recorded creating it (`prepare-agent` records and marks each level it makes);
+a folder that `git worktree add`, an agent, or a person made has no record and
+stays. If your command made a parent folder, `rmdir` it (never `rm -r`) after
+its worktree is removed, and only when it is empty and you created it. Never
+delete a `.simple-changes-directory` marker. Do not
 inspect project files from the new checkout, install dependencies, format, generate, edit, stage, or
 commit there before the claim succeeds. It does not acquire a second integration
 lease and does not need `prepare-agent` unless its work is being assigned into

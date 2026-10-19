@@ -48,16 +48,57 @@ import {
   takeoverCommand,
 } from "./worktree-coordination.ts";
 
-const removalDispositionForPath = (
+// The path's removal disposition, recorded against the run's target ref, that
+// `accepts` admits.
+const removalDisposition = (
   lease: LoopLease,
-  path: string
+  path: string,
+  accepts: (disposition: LoopWorktreeDisposition) => boolean
 ): LoopWorktreeDisposition | undefined =>
   (lease.dispositions ?? []).find(
     (disposition) =>
       disposition.outcome === "remove-after-audit" &&
       disposition.path === path &&
       disposition.targetRef === lease.targetRef &&
-      disposition.targetRevision === resolvedCurrentTargetRevision(lease)
+      accepts(disposition)
+  );
+
+const atCurrentTarget = (
+  lease: LoopLease,
+  disposition: LoopWorktreeDisposition
+): boolean =>
+  disposition.targetRevision === resolvedCurrentTargetRevision(lease);
+
+/**
+ * The removal disposition that accepts a registered checkout's absence. An
+ * intended removal holds only at the target revision its audit used. A
+ * removal that finalization recorded as completed is history: its audit
+ * proved containment at its recorded revision, so a later move of the target,
+ * such as a guarded fetch after a resume, does not turn the run's own removal
+ * into a missing worktree.
+ */
+const removalDispositionForPath = (
+  lease: LoopLease,
+  path: string
+): LoopWorktreeDisposition | undefined =>
+  removalDisposition(
+    lease,
+    path,
+    (disposition) =>
+      disposition.status === "completed" || atCurrentTarget(lease, disposition)
+  );
+
+/**
+ * The removal disposition a merge-time branch pin honors: only one at the
+ * current target revision, whatever its status, so a branch that moves after
+ * its checkout was removed is still reported once the target moves.
+ */
+const currentRemovalDispositionForPath = (
+  lease: LoopLease,
+  path: string
+): LoopWorktreeDisposition | undefined =>
+  removalDisposition(lease, path, (disposition) =>
+    atCurrentTarget(lease, disposition)
   );
 
 // Absent means nothing is at the path and Git either no longer lists the
@@ -685,7 +726,7 @@ const registeredBranchViolations = (
       unit.recordedHeads.includes(head) ||
       flagged.has(unit.path) ||
       retired.has(unit.path) ||
-      removalDispositionForPath(lease, unit.path)
+      currentRemovalDispositionForPath(lease, unit.path)
     ) {
       continue;
     }

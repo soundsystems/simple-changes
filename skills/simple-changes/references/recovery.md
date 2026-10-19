@@ -109,28 +109,53 @@ Takeover requires the exact current run ID and manifest digest plus approver and
 
 ## Released claims and paused changes
 
-A released claim is never refreshed, so `loop verify` and `loop
-status` then print the exact recovery: the owner claims and pauses the checkout
-with `preserve-in-place`, and the controller runs `loop accept-paused-change`.
+A released claim is never refreshed. When a release leaves a registered
+checkout's link stale, `loop verify` and `loop status` print the exact
+recovery: the owner claims and pauses the checkout with `preserve-in-place`,
+and the controller runs `loop accept-paused-change`.
+
+An owner whose pause the controller accepted (the checkout is registered
+`adopted-preserved`) finishes with the checkout by releasing its claim through
+`worktree release` or `initialize --mode handoff`; it does not claim and pause
+again. The release records the checkout's exact path, branch, HEAD, and status
+digest. While that recorded state is also the state of the pause receipt the
+run accepted and of the registered baseline, the checkout has not changed, and
+no newer claim holds it, `loop verify` treats the unit as the stable state the
+run accepted, the same way it treats a concurrent author's completed release,
+and unrelated guarded mutations keep running. Every other case reports
+`coordination-claim-stale` with its cause and the claim, pause, and accept
+steps: a release for any other reason, a release that recorded a different
+state or, from an older client, no state, a change after the release, and a
+new live claim.
 
 A claim never moves from one owner to another, so a handoff of an unchanged
-adopted (`adopted-preserved`) checkout, such as from a controller's bridge
-identity back to the author who must attest its commits, is a release and a
-new claim. The former owner releases its claim, and the new owner claims the
-checkout with its own agent ID and adapter. The release reopens the link:
-`loop verify` reports `coordination-claim-stale` for that path, naming the
-former owner and saying the new owner may run the same steps instead, and
-every guarded mutation of the run, unrelated ones included, stays blocked until
-the link is current again, so finish the handoff before other work. Under
-`allow-claimed` with the shipment scope still open, the new owner's valid claim
-on a checkout on its own branch (not detached, and not the primary or target
-branch) registers it as a concurrent author, which completes the handoff.
-Otherwise, including for a detached checkout and after the scope froze when a
-controller relinquished or handed off, verification now names the new owner,
-who runs `worktree pause --disposition preserve-in-place`, and the controller
-runs `loop accept-paused-change` with that receipt. The pause binds the exact path, branch, HEAD, and digest, so a
-checkout that changed after its pause, a claim released before acceptance,
-another owner's live claim, and the former owner's old receipt are all refused.
+adopted checkout, such as from a controller's bridge identity back to the
+author who must attest its commits, is a release and a new claim. The former
+owner's exact release keeps the unit current, as above, and the new owner then
+claims the checkout with its own agent ID and adapter. Under `allow-claimed`
+with the shipment scope still open, the new owner's valid claim on a checkout
+on its own branch (not detached, and not the primary or target branch)
+registers it as a concurrent author, which completes the handoff. Otherwise,
+including for a detached checkout and after the scope froze when a controller
+relinquished or handed off, the new claim makes the link stale: verification
+names the new owner, and every guarded mutation of the run, unrelated ones
+included, stays blocked until the link is current again. So the new owner runs
+`worktree pause --disposition preserve-in-place` right after it claims, and
+the controller runs `loop accept-paused-change` with that receipt. The pause
+binds the exact path, branch, HEAD, and digest, so a checkout that changed
+after its pause, a claim released before acceptance, another owner's live
+claim, and the former owner's old receipt are all refused.
+
+`worktree resume-ready` needs the owner's pause receipt for the current run.
+A receipt the owner gave an earlier run also counts while it still records
+the claim's exact path, branch, HEAD, digest, and owner, and either the
+current lease registers the claim with that receipt, or the run it was given
+to was replaced through an approved `loop replan` whose archived lease
+registered the claim with it and the current run registers the checkout, with
+no claim link of its own, at exactly that state. So an unchanged checkout the
+replaced run adopted needs no new pause. Otherwise the refusal prints the
+owner's `worktree pause` for the current run; once the owner runs it from its
+own session, the controller marks the claim resume-ready.
 
 Use `loop adopt-worktree` for a paused worktree that appeared after loop start.
 Use `loop accept-paused-change` for an opening preserved worktree whose owner
@@ -151,7 +176,9 @@ only after proving it clean with zero unique commits. When a preserved checkout,
 including one registered by `loop rebaseline`, has been removed by its owning
 task, record that absence with `loop retire-absent-worktree` on named approval;
 it requires the path to be gone from disk and from Git's worktree list, deletes
-nothing, and proves no delivery.
+nothing, and proves no delivery. A worktree the run's own finalization removed
+needs no retirement: its completed removal disposition keeps accepting the
+absence after a resume, even once a guarded fetch moves the target.
 
 If a preserved worktree the run did not create, whether registered at loop
 start, adopted, or added by `loop rebaseline`, has already disappeared because
@@ -387,6 +414,10 @@ Do not edit the lease or widen its frozen scope by hand.
 3. Keep the returned `replanned` receipt and start a fresh loop through the normal
    workflow. Inventory and reconcile all remaining work and provider truth;
    replan does not prove that earlier merge or deployment actions never occurred.
+   An unchanged checkout the old run adopted keeps its owner's pause receipt
+   for `worktree resume-ready`, as
+   [released claims and paused changes](#released-claims-and-paused-changes)
+   describes.
 
 Replan takes the existing state lock before the coordination lock and never
 recovers held locks. It refuses unfinished author preparations, recorded shipment

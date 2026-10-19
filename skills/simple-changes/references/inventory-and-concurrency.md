@@ -721,11 +721,12 @@ A paused worktree that appeared after loop start, or an opening preserved
 worktree whose owner changed it before pausing, is registered with `loop
 adopt-worktree` or `loop accept-paused-change` as
 [recovery](recovery.md#released-claims-and-paused-changes) describes. `loop
-allow` remains the separate exceptional user-approved override path. Releasing
-the claim of an adopted checkout reopens its link and blocks the run's guarded
-mutations until the new owner's claim is registered or its pause is accepted,
-so release it only to hand the checkout to a new owner, who claims it right
-away, as that section describes.
+allow` remains the separate exceptional user-approved override path. An
+owner's completed release of an adopted checkout that records its exact
+accepted state keeps the link current, so the run keeps shipping. A release
+that records any other state, or a new owner's claim that the run does not
+register as a concurrent author, blocks the run's guarded mutations until a
+pause of the checkout's current state is accepted, as that section describes.
 
 Harness support is not uniform. The host orchestration layer must probe exact
 discovery, delivery, waiting, scope, and worktree-identity capabilities before
@@ -807,9 +808,13 @@ zero-unique-commit result before deletion.
 The disposition permits only that opening worktree's absence. It does not
 remove the path, authorize `--force`, delete its branch, suppress other
 violations, survive an intervening worktree change, or match when its recorded
-target ref or revision differs from the active lease. Run the exact removal
-through `loop exec` so preflight sees the recorded disposition and postflight
-proves only the authorized path disappeared.
+target ref differs from the active lease's or, until finalization records the
+removal as completed, when its recorded target revision differs. Run the exact
+removal through `loop exec` so preflight sees the recorded disposition and
+postflight proves only the authorized path disappeared. A removal recorded as
+completed keeps accepting the absence after the target moves, such as through
+a guarded fetch in a resumed run, so the run does not report its own finished
+removal as `missing-preserved-worktree`.
 
 If a preserved worktree the run did not create has already disappeared
 because its owning task removed it, `loop retire-absent-worktree` records the

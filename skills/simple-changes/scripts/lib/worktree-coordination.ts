@@ -1690,11 +1690,13 @@ const releasedClaim = (
  * already hold the coordination lock. Such a claim protects nothing: the
  * checkout is absent and branch protection is decided separately, so leaving
  * it active only strands the owner's bookkeeping until a manual takeover.
+ * Claims named in `keep` stay as they are.
  */
 export const releaseAbsentWorktreeClaimsUnderLock = (
   commonGitDirectory: string,
   inventory: RepositoryInventory,
-  actorAgentIdInput: string
+  actorAgentIdInput: string,
+  keep: ReadonlySet<string> = new Set()
 ): WorktreeClaim[] => {
   const actorAgentId = requiredText(actorAgentIdInput, "agent ID", 128);
   const presentPaths = new Set(
@@ -1710,7 +1712,8 @@ export const releaseAbsentWorktreeClaimsUnderLock = (
     if (
       claim.commonGitDirectory !== commonGitDirectory ||
       !ABSENT_RELEASABLE_STATES.has(claim.state) ||
-      presentPaths.has(claim.path)
+      presentPaths.has(claim.path) ||
+      keep.has(claim.claimId)
     ) {
       continue;
     }

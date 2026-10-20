@@ -311,14 +311,16 @@ const uniqueByRealPath = (candidates: string[]): string[] => {
   return [...seen.values()];
 };
 
+/** The release surfaces a repository holds: the changelog and policy files. */
+export const releaseSurfacesIn = (repositoryRoot: string): string[] =>
+  RELEASE_SURFACES.filter((path) => existsSync(resolve(repositoryRoot, path)));
+
 export const inspectChangelogCoordination = (
   repositoryRoot: string | null,
   options: ChangelogDiscoveryOptions = {}
 ): ChangelogCoordination => {
   const releaseSurfaces = repositoryRoot
-    ? RELEASE_SURFACES.filter((path) =>
-        existsSync(resolve(repositoryRoot, path))
-      )
+    ? releaseSurfacesIn(repositoryRoot)
     : [];
   const repositoryProviders = repositoryRoot
     ? REPOSITORY_SKILL_ROOTS.flatMap((root) =>

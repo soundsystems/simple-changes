@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://simple-changes.dev/schemas/changelog-author.schema.json",
+  "title": "Simple Changes changelog authors",
+  "description": "Sidecar beside the loop lease that binds each changelog-only author added to a registered unit after the run's shipment scope froze. The author may change only the release surfaces recorded here; verification reports any other change it makes. It lives outside the lease so older clients can still read the lease.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "runId", "authors"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "runId": { "type": "string", "pattern": "^run-[a-z0-9-]+$" },
+    "authors": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/author" }
+    }
+  },
+  "$defs": {
+    "author": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "agentId",
+        "baseRevision",
+        "branch",
+        "path",
+        "recordedAt",
+        "releaseSurfaces",
+        "unitId"
+      ],
+      "properties": {
+        "agentId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "baseRevision": { "type": "string", "pattern": "^[0-9a-f]{40,64}$" },
+        "branch": { "type": "string", "minLength": 1 },
+        "path": { "type": "string", "minLength": 1 },
+        "recordedAt": { "type": "string", "format": "date-time" },
+        "releaseSurfaces": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "unitId": { "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}

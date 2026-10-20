@@ -12,7 +12,13 @@ import {
 } from "./emergency-shipping.ts";
 import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
 import { sha256, sha256Json } from "./hash.ts";
-import { captureInventory, locateRepository } from "./inventory.ts";
+import {
+  assertExactBranch,
+  captureInventory,
+  exactBranchRefusal,
+  isLossyName,
+  locateRepository,
+} from "./inventory.ts";
 import {
   assertControllerActive,
   assertMatchingRun,
@@ -141,6 +147,31 @@ const completedHandoffContainment = (
   ).method;
 };
 
+// Why finalization may release an active claim as obsolete, or null when it
+// may not.
+const obsoleteClaimReleaseReason = (
+  lease: LoopLease,
+  claim: WorktreeClaim,
+  worktree: WorktreeInventory,
+  repositoryPath: string,
+  targetRevision: string
+): FinalizationReleasedClaim["releaseReason"] | null => {
+  if (claim.state !== "active") {
+    return null;
+  }
+  if (worktree.prunable) {
+    return "worktree-absent";
+  }
+  return claim.owner.agentId === lease.ownerAgentId &&
+    claim.headSha === worktree.headSha &&
+    claim.changeDigest === worktree.changeDigest &&
+    worktree.changes.length === 0 &&
+    worktree.headSha &&
+    targetContainsRevision(repositoryPath, targetRevision, worktree.headSha)
+    ? "shipped"
+    : null;
+};
+
 /**
  * Release claims that finalization has already proven obsolete and demote
  * their lease entries from `concurrent-author` to unchanged `preserved`, so
@@ -160,7 +191,10 @@ const reconcileConcurrentAuthorClaims = (
   inventory: RepositoryInventory,
   repositoryPath: string,
   targetRevision: string,
-  cleanup: FinalizationCleanupResult
+  cleanup: FinalizationCleanupResult,
+  // Receives each claim kept because its checkout's branch is not exact, so
+  // the absent-claim sweep later in finalization keeps it too.
+  keptClaims: Set<string>
 ): LoopLease => {
   const coordination = readCoordinationDocumentFromCommonDirectory(
     lease.commonGitDirectory
@@ -196,7 +230,17 @@ const reconcileConcurrentAuthorClaims = (
       repositoryPath,
       targetRevision
     );
+    // The demotion records the checkout's observed branch, so a name that
+    // is not exact leaves the registration and its claim as they are.
+    const refusal = exactBranchRefusal(
+      worktree.branch,
+      `the loop registration of ${worktree.path}`
+    );
     if (handoffContainment) {
+      if (refusal) {
+        cleanup.errors.push(refusal);
+        continue;
+      }
       const { claimId: _claimId, ...rest } = registered;
       demoted.set(registered.path, {
         ...rest,
@@ -208,23 +252,21 @@ const reconcileConcurrentAuthorClaims = (
       );
       continue;
     }
-    if (claim.state !== "active") {
+    const releaseReason = obsoleteClaimReleaseReason(
+      lease,
+      claim,
+      worktree,
+      repositoryPath,
+      targetRevision
+    );
+    if (!releaseReason) {
       continue;
     }
-    let releaseReason: FinalizationReleasedClaim["releaseReason"] | null = null;
-    if (worktree.prunable) {
-      releaseReason = "worktree-absent";
-    } else if (
-      claim.owner.agentId === lease.ownerAgentId &&
-      claim.headSha === worktree.headSha &&
-      claim.changeDigest === worktree.changeDigest &&
-      worktree.changes.length === 0 &&
-      worktree.headSha &&
-      targetContainsRevision(repositoryPath, targetRevision, worktree.headSha)
-    ) {
-      releaseReason = "shipped";
-    }
-    if (!releaseReason) {
+    // Checked before the release, so a refusal never leaves the claim
+    // released while its registration stays a concurrent author.
+    if (refusal) {
+      cleanup.errors.push(refusal);
+      keptClaims.add(claim.claimId);
       continue;
     }
     releaseClaimUnderLock(
@@ -273,6 +315,10 @@ const automaticRemovalDisposition = (
       EXIT_CODES.unsafe
     );
   }
+  assertExactBranch(
+    worktree.branch,
+    `the removal disposition of ${worktree.path}`
+  );
   const containment = targetContainmentAudit(
     lease.primaryCheckout,
     targetRevision,
@@ -405,7 +451,15 @@ const completeAutomaticDispositions = (
     ...lease,
     dispositions: (lease.dispositions ?? []).map((disposition) =>
       completedPaths.has(disposition.path)
-        ? { ...disposition, completedAt, status: "completed" }
+        ? {
+            ...disposition,
+            // A completed disposition makes its branch eligible for
+            // deletion by name, so it never keeps a name that is not exact,
+            // such as one an older runtime recorded.
+            branch: isLossyName(disposition.branch) ? null : disposition.branch,
+            completedAt,
+            status: "completed",
+          }
         : disposition
     ),
     updatedAt: completedAt,
@@ -500,7 +554,11 @@ const reconcileAbsentRetainedWorktrees = (
     return [
       {
         approvedBy: `mode:${lease.mode}`,
-        branch: worktree.branch,
+        // This retires an existing record, which stays possible for a
+        // branch an older runtime recorded under a name that is not exact,
+        // but the disposition does not repeat that name: a completed
+        // disposition's branch is deleted by name later in finalization.
+        branch: isLossyName(worktree.branch) ? null : worktree.branch,
         changeDigest: worktree.baselineChangeDigest,
         completedAt,
         containmentMethod: "target-contained" as const,
@@ -706,8 +764,11 @@ const removeTargetContainedBranches = (
       .map((disposition) => disposition.branch as string)
   );
   const deletion = deleteTargetContainedBranches({
+    // Deletion acts on names, so a branch whose name is not exact is never
+    // deleted automatically, whichever record named it.
     branches: inventory.branches.filter(
       (branch) =>
+        !isLossyName(branch.name) &&
         branch.name !== targetBranch &&
         branch.worktreePath === null &&
         (openingBranches.get(branch.name) === branch.sha ||
@@ -995,7 +1056,7 @@ const reconcilePrimarySynchronization = (
     lease.primaryCheckout,
     lease.targetRef
   );
-  if (!targetBranch) {
+  if (!targetBranch || isLossyName(targetBranch)) {
     return lease;
   }
   let targetRevision: string;
@@ -1103,9 +1164,12 @@ const bindAutomaticPrimaryBranchChange = (
   const registered = lease.worktrees.find(
     (worktree) => worktree.path === lease.primaryCheckout
   );
+  // A branch that is not exact is never recorded: the registration keeps its
+  // branch, and verification reports the checkout's move.
   if (
     !(primary && registered?.mutationAllowed) ||
-    registered.branch === primary.branch
+    registered.branch === primary.branch ||
+    isLossyName(primary.branch)
   ) {
     return lease;
   }
@@ -1156,20 +1220,45 @@ const automaticFinalizationCleanup = (
     );
     return { cleanup, lease };
   }
+  // The primary's synchronization records the target branch by name and
+  // switches to it, so a name that is not exact stops automatic cleanup.
+  const targetRefusal = exactBranchRefusal(
+    targetBranch,
+    `the primary synchronization of ${inventoryInput.repository.primaryCheckout}`
+  );
+  if (targetRefusal) {
+    cleanup.errors.push(targetRefusal);
+    return { cleanup, lease };
+  }
   const repositoryPath = inventoryInput.repository.primaryCheckout;
   lease = completeAbsentRemovalIntents(lease, inventoryInput, targetRevision);
+  const keptClaims = new Set<string>();
   lease = reconcileConcurrentAuthorClaims(
     lease,
     inventoryInput,
     repositoryPath,
     targetRevision,
-    cleanup
+    cleanup,
+    keptClaims
   );
+  // A removal disposition records the checkout's branch, so a checkout on a
+  // name that is not exact stays in place. Leaving it out of the candidates
+  // also keeps stale metadata pruning, which needs every prunable checkout
+  // audited, from running.
   const candidates = automaticCleanupCandidates(
     lease,
     inventoryInput,
     targetRevision
-  );
+  ).filter((candidate) => {
+    const refusal = exactBranchRefusal(
+      candidate.branch,
+      `the removal disposition of ${candidate.path}`
+    );
+    if (refusal) {
+      cleanup.errors.push(refusal);
+    }
+    return refusal === null;
+  });
   const liveRemoval = removeAutomaticWorktrees(
     lease,
     repositoryPath,
@@ -1255,7 +1344,8 @@ const automaticFinalizationCleanup = (
   for (const claim of releaseAbsentWorktreeClaimsUnderLock(
     lease.commonGitDirectory,
     captureInventory(repositoryPath),
-    lease.ownerAgentId
+    lease.ownerAgentId,
+    keptClaims
   )) {
     cleanup.releasedClaims.push({
       claimId: claim.claimId,
@@ -1731,7 +1821,9 @@ const preservesUnchangedPrimary = (
     (worktree) => worktree.path === lease.primaryCheckout
   );
   const scope = lease.shipmentScope;
-  if (!(primary && registered && scope)) {
+  // The proof compares branches by name, which a branch that is not exact
+  // cannot prove.
+  if (!(primary && registered && scope) || isLossyName(primary.branch)) {
     return false;
   }
   const units = scope.plan.units.filter(
@@ -1943,6 +2035,7 @@ const releaseDeliveredSourceClaims = (
       sourcePaths.has(claim.path) &&
       source &&
       source.branch === claim.branch &&
+      !isLossyName(source.branch) &&
       source.changes.length === 0
     ) {
       releaseClaimUnderLock(

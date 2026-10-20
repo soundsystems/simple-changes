@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { AuthoringSidecar } from "./authoring.ts";
+import { assertNotChangelogAuthorCheckout } from "./changelog-authors.ts";
 import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
 import { currentHarnessSession } from "./harness-session.ts";
 import { sha256Json } from "./hash.ts";
@@ -106,6 +107,10 @@ const resolveExistingLoopStart = (
     return existing;
   }
   if (lifecycle.status === "relinquished" && mode === "resume") {
+    assertNotChangelogAuthorCheckout(
+      existing,
+      inventory.repository.currentCheckout
+    );
     return transferController(
       existing,
       inventory,

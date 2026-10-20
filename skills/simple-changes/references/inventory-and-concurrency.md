@@ -487,6 +487,32 @@ replacement inspects the existing commits and uncommitted changes before
 editing. A resumed run whose scope froze can finish registered agents but
 cannot prepare new ones.
 
+One exception lets a frozen run finish a changelog the repository requires
+for work it already scoped. `prepare-agent --run-id <run> --agent-id <new ID>
+--purpose changelog --unit <unit ID>` adds a changelog-only author to a unit
+the frozen shipment scope registers. It creates no unit, widens no scope, and
+needs no new approval. It is refused before the scope freezes, for any other
+purpose, for a unit the frozen scope does not register, for an agent ID
+already registered some other way, and when the primary checkout holds no
+release surface (`CHANGELOG.md`, `DEVELOPER_CHANGELOG.md`,
+`CMS_CHANGELOG.json`, or a Simple Changelogs policy file). Without `--unit`, a
+frozen run still refuses every new author. The output's `changelogAuthor`
+names the unit and the release surfaces the author may change, recorded when
+it was prepared, and its checkout never becomes the controller's: resume or
+take over the run from the controller's own checkout. Any other change, in its
+worktree, on its branch (even after its checkout is removed), or in a commit
+it attested since it was prepared, is a
+`changelog-author-outside-release-surfaces` violation: the unit is stale and
+verification refuses it, as it does when Git no longer has a commit it
+attested. Restore those paths
+and integrate no commit that changes them; an attested commit stays in the
+review ledger, so its unit stays stale for the run, and the work moves to a
+replan or a fresh loop. The author attests every commit as usual, which
+changes the unit's authors digest, so reviews recorded before the attestation
+stop counting: record the authors of the new head and review it again. The
+controller integrates the author's commit into the unit like any prepared
+author's.
+
 Read-only work pinned to one exact head may also run in parallel: independent
 review and local reproduction of required checks. An agent never reviews a
 unit it authored. Reproduce checks inside the unit's registered worktree after

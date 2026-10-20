@@ -56,8 +56,27 @@ const nullableSha = (value: string | undefined): string | null => {
   return value;
 };
 
-const absoluteGitPath = (root: string, value: string): string =>
-  realpathSync(isAbsolute(value) ? value : resolve(root, value));
+// Git answers a path question with a path. An empty answer resolves to the
+// working directory, which is some other repository or none, so it is refused.
+export const gitReportedPath = (output: string, question: string): string => {
+  const path = withoutLineEnds(output);
+  if (path === "") {
+    throw new SimpleChangesError(
+      `git rev-parse ${question} printed no path; refusing to resolve the working directory in its place.`,
+      EXIT_CODES.inventory
+    );
+  }
+  return path;
+};
+
+const absoluteGitPath = (
+  root: string,
+  value: string,
+  question: string
+): string => {
+  const path = gitReportedPath(value, question);
+  return realpathSync(isAbsolute(path) ? path : resolve(root, path));
+};
 
 // Git output is decoded as UTF-8 with replacement (process.ts), so each byte
 // that is not valid UTF-8 reads as U+FFFD, and names made of different such
@@ -822,14 +841,25 @@ const repositoryDirectories = (
   const [bareOutput = "", gitDirectory = "", commonGitDirectory = ""] = lines;
   return {
     bare: bareOutput.trim() === "true",
-    commonGitDirectory: absoluteGitPath(root, commonGitDirectory.trim()),
-    gitDirectory: absoluteGitPath(root, gitDirectory.trim()),
+    commonGitDirectory: absoluteGitPath(
+      root,
+      commonGitDirectory.trim(),
+      "--git-common-dir"
+    ),
+    gitDirectory: absoluteGitPath(
+      root,
+      gitDirectory.trim(),
+      "--absolute-git-dir"
+    ),
   };
 };
 
 const repositoryRoot = (directory: string): string =>
   realpathSync(
-    runGit(directory, ["rev-parse", "--show-toplevel"]).stdout.trim()
+    gitReportedPath(
+      runGit(directory, ["rev-parse", "--show-toplevel"]).stdout.trim(),
+      "--show-toplevel"
+    )
   );
 
 export interface RepositoryLocation {
@@ -847,7 +877,8 @@ export const locateRepository = (directory: string): RepositoryLocation => {
     repository: {
       commonGitDirectory: absoluteGitPath(
         root,
-        runGit(root, ["rev-parse", "--git-common-dir"]).stdout.trim()
+        runGit(root, ["rev-parse", "--git-common-dir"]).stdout.trim(),
+        "--git-common-dir"
       ),
     },
   };

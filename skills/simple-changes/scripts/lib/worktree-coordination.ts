@@ -16,6 +16,7 @@ import { sha256, sha256Json } from "./hash.ts";
 import {
   assertExactBranch,
   captureInventory,
+  gitReportedPath,
   isLossyName,
   locateRepository,
 } from "./inventory.ts";
@@ -745,7 +746,10 @@ const activeLoopTakeoverRefusal = (
 
 export const assertNoGitOperation = (worktreePath: string): void => {
   const gitDirectory = realpathSync(
-    runGit(worktreePath, ["rev-parse", "--absolute-git-dir"]).stdout.trim()
+    gitReportedPath(
+      runGit(worktreePath, ["rev-parse", "--absolute-git-dir"]).stdout.trim(),
+      "--absolute-git-dir"
+    )
   );
   const markers = [
     "MERGE_HEAD",

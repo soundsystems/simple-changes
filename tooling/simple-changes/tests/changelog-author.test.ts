@@ -301,7 +301,7 @@ describe("a changelog-only author after the shipment scope froze", () => {
     expect(verifyLoop(root, { forMerge: true }).ok).toBe(false);
   });
 
-  test("the bound survives a controller transfer and a removed checkout, and fails closed on a missing attested commit", () => {
+  test("the bound survives a removed checkout, refuses a controller transfer into the checkout, and fails closed on a missing attested commit", () => {
     const run = scopedRun();
     freezeAndResume(run);
     const { root } = run.fixture;
@@ -316,17 +316,22 @@ describe("a changelog-only author after the shipment scope froze", () => {
     expect(branchOnly?.message).toContain(`its branch ${prepared.branch}`);
     git(root, ["worktree", "add", prepared.path, prepared.branch]);
 
-    // The run resumes from the author's checkout, which becomes the
-    // controller's: the bound still applies there.
+    // The author's checkout never becomes the controller's, which could
+    // change anything there; the controller resumes from its own checkout.
     attestAsAuthor(prepared.path, [outside]);
     expect(
       finalizeLoop(root, run.lease.runId, "next-controller", "Turn ended.")
         .outcome
     ).toBe("relinquished");
-    const transferred = startLoop(prepared.path, "third-controller", "resume");
+    const transfer = refusalOf(() =>
+      startLoop(prepared.path, "third-controller", "resume")
+    );
+    expect(transfer).toContain("cannot become the controller's checkout");
     expect(
-      transferred.worktrees.find((item) => item.path === prepared.path)?.role
-    ).toBe("controller");
+      readLoopLease(root)?.worktrees.find((item) => item.path === prepared.path)
+    ).toMatchObject({ agentId: AUTHOR, role: "author" });
+    const resumed = startLoop(root, "third-controller", "resume");
+    expect(resumed.ownerAgentId).toBe("third-controller");
     expect(violationsAt(root, prepared.path)).toEqual([
       expect.objectContaining({ code: STALE }),
     ]);

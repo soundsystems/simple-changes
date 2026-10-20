@@ -451,7 +451,15 @@ const completeAutomaticDispositions = (
     ...lease,
     dispositions: (lease.dispositions ?? []).map((disposition) =>
       completedPaths.has(disposition.path)
-        ? { ...disposition, completedAt, status: "completed" }
+        ? {
+            ...disposition,
+            // A completed disposition makes its branch eligible for
+            // deletion by name, so it never keeps a name that is not exact,
+            // such as one an older runtime recorded.
+            branch: isLossyName(disposition.branch) ? null : disposition.branch,
+            completedAt,
+            status: "completed",
+          }
         : disposition
     ),
     updatedAt: completedAt,
@@ -756,8 +764,11 @@ const removeTargetContainedBranches = (
       .map((disposition) => disposition.branch as string)
   );
   const deletion = deleteTargetContainedBranches({
+    // Deletion acts on names, so a branch whose name is not exact is never
+    // deleted automatically, whichever record named it.
     branches: inventory.branches.filter(
       (branch) =>
+        !isLossyName(branch.name) &&
         branch.name !== targetBranch &&
         branch.worktreePath === null &&
         (openingBranches.get(branch.name) === branch.sha ||

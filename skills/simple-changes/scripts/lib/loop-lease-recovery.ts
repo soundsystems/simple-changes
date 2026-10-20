@@ -18,6 +18,7 @@ import {
 import { hostname } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { assertNotChangelogAuthorCheckout } from "./changelog-authors.ts";
 import { targetContainsRevision } from "./cleanup-core.ts";
 import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
 import { sha256, sha256Json } from "./hash.ts";
@@ -281,6 +282,10 @@ export const takeoverLoop = (
           EXIT_CODES.usage
         );
       }
+      assertNotChangelogAuthorCheckout(
+        lease,
+        inventory.repository.currentCheckout
+      );
       return transferController(
         lease,
         inventory,

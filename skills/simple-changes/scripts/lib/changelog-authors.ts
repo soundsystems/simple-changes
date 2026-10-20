@@ -55,6 +55,27 @@ export const readChangelogAuthors = (
 };
 
 /**
+ * A changelog author's checkout never becomes a controller's: a controller
+ * may change anything, so a transfer there would lift the bound. Called
+ * before `loop start --mode resume` or an approved takeover transfers the
+ * controller into `checkout`.
+ */
+export const assertNotChangelogAuthorCheckout = (
+  lease: LoopLease,
+  checkout: string
+): void => {
+  const binding = readChangelogAuthors(lease).find(
+    (item) => item.path === checkout
+  );
+  if (binding) {
+    throw new SimpleChangesError(
+      `${checkout} is the checkout of changelog author ${binding.agentId} for unit ${binding.unitId}, which may change only ${binding.releaseSurfaces.join(", ")}, so it cannot become the controller's checkout. Resume or take over ${lease.runId} from the controller's own checkout instead.`,
+      EXIT_CODES.unsafe
+    );
+  }
+};
+
+/**
  * Replaces this run's bindings. The caller holds the loop state lock; an
  * empty list removes the sidecar.
  */

@@ -2007,6 +2007,77 @@ describe("loop worktree records and finalization name only exact branches", () =
     ).toContain(branch);
   });
 
+  test("finalization completes an older removal intent on such a branch without its name and never deletes that branch", () => {
+    const fixture = repository();
+    const lease = as(SESSION_A, () =>
+      startLoop(fixture.root, "controller", "integrate")
+    );
+    // An older runtime recorded an intended removal of a checkout that is
+    // now gone, naming a branch that holds U+FFFD; that branch exists and
+    // the target contains it.
+    const branch = "release/done�";
+    git(fixture.root, ["branch", branch, "HEAD"]);
+    const path = join(fixture.base, "removed-work");
+    // It also recorded a completed one that already names such a branch.
+    const completedBranch = "release/old�";
+    git(fixture.root, ["branch", completedBranch, "HEAD"]);
+    rewriteLeaseUnderOldRule(fixture.root, (stored) => {
+      const now = new Date().toISOString();
+      stored.dispositions = [
+        {
+          approvedBy: "mode:integrate",
+          branch: completedBranch,
+          changeDigest: "0".repeat(64),
+          completedAt: now,
+          containmentMethod: "target-contained",
+          createdAt: now,
+          headSha: stored.targetRevision,
+          outcome: "remove-after-audit",
+          path: join(fixture.base, "older-removed-work"),
+          reason: "Recorded by an older runtime.",
+          status: "completed",
+          targetRef: stored.targetRef,
+          targetRevision: stored.targetRevision,
+          uniqueCommitCount: 0,
+        },
+        {
+          approvedBy: "mode:integrate",
+          branch,
+          changeDigest: "0".repeat(64),
+          containmentMethod: "target-contained",
+          createdAt: new Date().toISOString(),
+          headSha: stored.targetRevision,
+          outcome: "remove-after-audit",
+          path,
+          reason: "Recorded by an older runtime.",
+          status: "intended",
+          targetRef: stored.targetRef,
+          targetRevision: stored.targetRevision,
+          uniqueCommitCount: 0,
+        },
+      ];
+    });
+    const finalized = as(SESSION_A, () =>
+      finalizeLoop(
+        fixture.root,
+        lease.runId,
+        "controller",
+        "Complete the recorded removal."
+      )
+    );
+    expect(
+      finalized.lease?.dispositions?.find((item) => item.path === path)
+    ).toMatchObject({ branch: null, status: "completed" });
+    expect(finalized.cleanup.removedBranches).toEqual([]);
+    const heads = git(fixture.root, [
+      "for-each-ref",
+      "--format=%(refname)",
+      "refs/heads/",
+    ]);
+    expect(heads).toContain(branch);
+    expect(heads).toContain(completedBranch);
+  });
+
   test("finalization does not switch the primary to a target branch whose name holds U+FFFD", () => {
     const fixture = repository();
     const target = "release/real�";

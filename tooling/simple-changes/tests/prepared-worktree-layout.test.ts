@@ -3,11 +3,15 @@ import {
   existsSync,
   lstatSync,
   mkdirSync,
+  mkdtempSync,
   readdirSync,
   readFileSync,
+  realpathSync,
+  rmSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
+import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { spawnSync } from "bun";
 import {
@@ -145,6 +149,41 @@ describe("prepared worktree layout", () => {
     expect(dirname(prepared.path)).toBe(fixture.base);
     expect(readdirSync(fixture.base).sort()).toEqual(
       [basename(prepared.path), "repo"].sort()
+    );
+  });
+
+  test("accepts names that end in a hyphen once shortened", () => {
+    // Each value is cut at 48 characters right after a hyphen.
+    const base = realpathSync(
+      mkdtempSync(join(tmpdir(), "simple-changes-test-"))
+    );
+    repositories.push({
+      base,
+      cleanup: () => rmSync(base, { force: true, recursive: true }),
+      root: base,
+    });
+    const long = (letter: string) => `${letter.repeat(47)}-${letter}`;
+    const root = join(base, long("r"));
+    mkdirSync(root);
+    git(root, ["init", "-b", "main"]);
+    git(root, ["config", "user.name", "Simple Changes Tests"]);
+    git(root, ["config", "user.email", "tests@simple-changes.invalid"]);
+    git(root, ["commit", "--allow-empty", "-m", "Initial fixture"]);
+    const lease = startLoop(root, "controller", "integrate");
+    const prepared = prepareAgentWorktree(
+      root,
+      lease.runId,
+      long("a"),
+      long("p")
+    );
+    expect(prepared.path).toBe(
+      join(
+        base,
+        `.simple-changes-${"r".repeat(47)}--${lease.runId.slice(4, 16)}--${"p".repeat(47)}--${"a".repeat(47)}`
+      )
+    );
+    expect(readdirSync(base).sort()).toEqual(
+      [basename(prepared.path), long("r")].sort()
     );
   });
 

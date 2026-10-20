@@ -18,6 +18,7 @@ export const slug = (value: string, fallback: string): string => {
 const PREPARED_WORKTREE_NAME =
   /^\.simple-changes-[a-z0-9]+(?:-[a-z0-9]+)*(?:--[a-z0-9]+(?:-[a-z0-9]+)*){3}$/u;
 const MAX_NAME_BYTES = 255;
+const TRAILING_HYPHENS = /-+$/u;
 
 /**
  * Where `prepare-agent` creates an agent's worktree: directly beside the
@@ -33,11 +34,15 @@ export const preparedWorktreePath = (
   fields: { agent: string; purpose: string; run: string }
 ): string => {
   const parent = dirname(primaryCheckout);
+  // `slug` trims hyphens before it truncates, so a long value can end in
+  // one; trim it again so no field runs into its `--` separator.
+  const field = (value: string, fallback: string): string =>
+    slug(value, fallback).replace(TRAILING_HYPHENS, "") || fallback;
   const name = `.simple-changes-${[
-    slug(basename(primaryCheckout), "repository"),
-    slug(fields.run, "run"),
-    slug(fields.purpose, "work"),
-    slug(fields.agent, "agent"),
+    field(basename(primaryCheckout), "repository"),
+    field(fields.run, "run"),
+    field(fields.purpose, "work"),
+    field(fields.agent, "agent"),
   ].join("--")}`;
   const path = resolve(parent, name);
   if (

@@ -70,6 +70,23 @@ export const LOSSY_NAME_CHARACTER = "\uFFFD";
 export const isLossyName = (name: string | null): boolean =>
   name?.includes(LOSSY_NAME_CHARACTER) === true;
 
+const EXACT_BRANCH_NEXT_STEP =
+  "Rename the branch to a valid UTF-8 name without U+FFFD, then retry.";
+
+/**
+ * Why `branch` cannot be recorded as evidence in `what`, or null when its
+ * decoded name is exact. For a step that reports instead of throwing, such as
+ * finalization's automatic cleanup.
+ */
+export const exactBranchRefusal = (
+  branch: string | null,
+  what: string,
+  next = EXACT_BRANCH_NEXT_STEP
+): string | null =>
+  isLossyName(branch)
+    ? `Branch ${JSON.stringify(branch)} is not valid UTF-8 or contains the replacement character U+FFFD, so Simple Changes cannot name it exactly and will not record it in ${what}. ${next}`
+    : null;
+
 /**
  * Refuses to record `branch` as evidence in `what` unless its decoded name is
  * the branch's exact name. Evidence is compared with what Git reports as
@@ -79,13 +96,11 @@ export const isLossyName = (name: string | null): boolean =>
 export const assertExactBranch = (
   branch: string | null,
   what: string,
-  next = "Rename the branch to a valid UTF-8 name without U+FFFD, then retry."
+  next = EXACT_BRANCH_NEXT_STEP
 ): void => {
-  if (isLossyName(branch)) {
-    throw new SimpleChangesError(
-      `Branch ${JSON.stringify(branch)} is not valid UTF-8 or contains the replacement character U+FFFD, so Simple Changes cannot name it exactly and will not record it in ${what}. ${next}`,
-      EXIT_CODES.unsafe
-    );
+  const refusal = exactBranchRefusal(branch, what, next);
+  if (refusal) {
+    throw new SimpleChangesError(refusal, EXIT_CODES.unsafe);
   }
 };
 

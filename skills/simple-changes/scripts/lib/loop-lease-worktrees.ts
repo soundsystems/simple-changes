@@ -6,7 +6,11 @@ import {
   targetContainmentAudit,
 } from "./cleanup-core.ts";
 import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
-import { captureInventory, locateRepository } from "./inventory.ts";
+import {
+  assertExactBranch,
+  captureInventory,
+  locateRepository,
+} from "./inventory.ts";
 import {
   assertControllerActive,
   assertMatchingRun,
@@ -14,6 +18,7 @@ import {
   assertShipmentScopeRecorded,
   currentTargetRevision,
   DIGEST_PATTERN,
+  exactWorktreeLease,
   readLeaseFromCommonDirectory,
   requiredText,
   requireLease,
@@ -21,7 +26,6 @@ import {
   targetUsesGitLab,
   withMutationEvidence,
   withStateLock,
-  worktreeLease,
   writeLease,
 } from "./loop-lease-core.ts";
 import { verificationAgainst } from "./loop-lease-verify.ts";
@@ -190,7 +194,7 @@ export const prepareAgentWorktree = (
           updatedAt: completedAt,
           worktrees: [
             ...currentLease.worktrees,
-            worktreeLease(createdWorktree, "author", agentId, true),
+            exactWorktreeLease(createdWorktree, "author", agentId, true),
           ],
         };
         writeLease(completedLease);
@@ -220,6 +224,12 @@ export const prepareAgentWorktree = (
         currentLease: LoopLease,
         preparation: LoopWorktreePreparation
       ): PreparedAgentWorktree => {
+        // A new preparation's branch is built from slugs, so it is always
+        // exact; one an older runtime recorded is checked before Git runs.
+        assertExactBranch(
+          preparation.branch,
+          `the loop registration of ${preparation.path}`
+        );
         const preparedPath = existsSync(preparation.path)
           ? realpathSync(preparation.path)
           : preparation.path;
@@ -532,6 +542,7 @@ export const authorizeWorktreeRemoval = (
       assertControllerActive(lease);
       const { containmentMethod, current, path, targetRevision } =
         auditWorktreeRemoval(lease, inventory, pathInput, changeDigest);
+      assertExactBranch(current.branch, `the removal disposition of ${path}`);
       const disposition: LoopWorktreeDisposition = {
         approvedBy,
         branch: current.branch,
@@ -661,7 +672,7 @@ export const retainExcludedWorktree = (
       );
       const createdAt = new Date().toISOString();
       const retained: LoopWorktreeLease = {
-        ...worktreeLease(current, "retained", null, false),
+        ...exactWorktreeLease(current, "retained", null, false),
         retention: { approvedBy, createdAt, reason },
       };
       const candidate: LoopLease = {

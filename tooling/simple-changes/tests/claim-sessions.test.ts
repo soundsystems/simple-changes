@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 import {
   appendFileSync,
+  existsSync,
   mkdirSync,
   readFileSync,
   rmSync,
@@ -13,12 +14,18 @@ import { captureInventory } from "../../../skills/simple-changes/scripts/lib/inv
 import {
   acceptPausedWorktreeChange,
   adoptPausedWorktree,
+  authorizeWorktreeRemoval,
+  finalizeLoop,
+  loopLeasePath,
   loopStatus,
+  prepareAgentWorktree,
   readLoopLease,
   rebaselineLoopWorktrees,
+  retainExcludedWorktree,
   startLoop,
   verifyLoop,
 } from "../../../skills/simple-changes/scripts/lib/loop-lease.ts";
+import { preparedWorktreePath } from "../../../skills/simple-changes/scripts/lib/managed-worktrees.ts";
 import {
   parseReadyWorkInput,
   readReadyReceipts,
@@ -26,6 +33,7 @@ import {
 } from "../../../skills/simple-changes/scripts/lib/ready-work.ts";
 import { attestCommits } from "../../../skills/simple-changes/scripts/lib/review-ledger.ts";
 import type {
+  LoopLease,
   WorktreeCoordinationDocument,
   WorktreeInventory,
 } from "../../../skills/simple-changes/scripts/lib/types.ts";
@@ -1645,5 +1653,343 @@ describe("evidence is recorded only on a branch Simple Changes can name exactly"
     expect(refused).toContain(`Branch ${JSON.stringify(branch)}`);
     expect(refused).toContain("contains the replacement character U+FFFD");
     expect(readWorktreeCoordination(fixture.root).claims).toEqual([]);
+  });
+});
+
+// Rewrites the active loop's lease as a runtime before 0.32.0 could have
+// written it: `change` edits the stored lease in place.
+const rewriteLeaseUnderOldRule = (
+  root: string,
+  change: (lease: LoopLease) => void
+): void => {
+  const lease = readLoopLease(root);
+  if (!lease) {
+    throw new Error("Expected an active loop lease");
+  }
+  change(lease);
+  writeFileSync(
+    loopLeasePath(lease.commonGitDirectory),
+    `${JSON.stringify(lease, null, 2)}\n`
+  );
+};
+
+// The branch prepare-agent creates: fixed text and slugs only.
+const PREPARED_BRANCH_PATTERN = /^simple-changes\/[a-z0-9-]+$/u;
+
+const registrationAt = (root: string, path: string) =>
+  readLoopLease(root)?.worktrees.find((item) => item.path === path);
+
+describe("loop worktree records and finalization name only exact branches", () => {
+  test("a removal disposition and a retained registration are refused on such a branch, and nothing is written", () => {
+    const fixture = repository();
+    const disposed = addWorktree(fixture, "raw-disposition-work");
+    const retained = addWorktree(fixture, "raw-retain-work");
+    const lease = as(SESSION_A, () =>
+      startLoop(fixture.root, "controller", "integrate")
+    );
+    checkOutRawByteBranch(disposed);
+    checkOutRawByteBranch(retained, 0x81);
+    const leasePath = loopLeasePath(lease.commonGitDirectory);
+    const before = readFileSync(leasePath);
+    const removal = refusalOf(() =>
+      as(SESSION_A, () =>
+        authorizeWorktreeRemoval(
+          fixture.root,
+          lease.runId,
+          "controller",
+          disposed,
+          worktreeAt(fixture.root, disposed).changeDigest,
+          "the-user",
+          "The work is already in the target."
+        )
+      )
+    );
+    expect(removal).toContain(NOT_EXACT);
+    expect(removal).toContain(`the removal disposition of ${disposed}`);
+    const retention = refusalOf(() =>
+      as(SESSION_A, () =>
+        retainExcludedWorktree(
+          fixture.root,
+          lease.runId,
+          "controller",
+          retained,
+          worktreeAt(fixture.root, retained).changeDigest,
+          "the-user",
+          "Keep it out of this shipment."
+        )
+      )
+    );
+    expect(retention).toContain(NOT_EXACT);
+    expect(retention).toContain(`the loop registration of ${retained}`);
+    expect(readFileSync(leasePath)).toEqual(before);
+
+    // Negative control: the same steps record a UTF-8 branch.
+    git(disposed, ["checkout", "-b", "exact-disposition-work"]);
+    const disposedLease = as(SESSION_A, () =>
+      authorizeWorktreeRemoval(
+        fixture.root,
+        lease.runId,
+        "controller",
+        disposed,
+        worktreeAt(fixture.root, disposed).changeDigest,
+        "the-user",
+        "The work is already in the target."
+      )
+    );
+    expect(
+      disposedLease.dispositions?.find((item) => item.path === disposed)?.branch
+    ).toBe("exact-disposition-work");
+    git(retained, ["checkout", "-b", "exact-retain-work"]);
+    const retainedLease = as(SESSION_A, () =>
+      retainExcludedWorktree(
+        fixture.root,
+        lease.runId,
+        "controller",
+        retained,
+        worktreeAt(fixture.root, retained).changeDigest,
+        "the-user",
+        "Keep it out of this shipment."
+      )
+    );
+    expect(
+      retainedLease.worktrees.find((item) => item.path === retained)
+    ).toMatchObject({ branch: "exact-retain-work", role: "retained" });
+  });
+
+  test("prepare-agent registers its exact slug branch and refuses a recorded preparation on a lossy name before Git runs", () => {
+    const fixture = repository();
+    const lease = as(SESSION_A, () =>
+      startLoop(fixture.root, "controller", "integrate")
+    );
+    // The branch prepare-agent builds is made of slugs, so it is exact even
+    // for an agent ID or purpose that is not ASCII.
+    const prepared = as(SESSION_A, () =>
+      prepareAgentWorktree(
+        fixture.root,
+        lease.runId,
+        "autor-é�",
+        "résumé � notes"
+      )
+    );
+    expect(prepared.branch).toMatch(PREPARED_BRANCH_PATTERN);
+    expect(registrationAt(fixture.root, prepared.path)).toMatchObject({
+      branch: prepared.branch,
+      role: "author",
+    });
+
+    // A pending preparation an older runtime recorded under a lossy name.
+    const path = preparedWorktreePath(lease.primaryCheckout, {
+      agent: "late-author",
+      purpose: "work",
+      run: lease.runId.slice(4, 16),
+    });
+    const branch = "simple-changes/work-late-author-�";
+    rewriteLeaseUnderOldRule(fixture.root, (stored) => {
+      stored.preparations.push({
+        agentId: "late-author",
+        baseRevision: stored.targetRevision,
+        branch,
+        createdAt: new Date().toISOString(),
+        path,
+        purpose: "work",
+      });
+    });
+    const refused = refusalOf(() =>
+      as(SESSION_A, () =>
+        prepareAgentWorktree(fixture.root, lease.runId, "late-author", "work")
+      )
+    );
+    expect(refused).toContain(NOT_EXACT);
+    expect(refused).toContain(`the loop registration of ${path}`);
+    expect(existsSync(path)).toBe(false);
+    expect(
+      git(fixture.root, ["for-each-ref", "--format=%(refname)", "refs/heads/"])
+    ).not.toContain("late-author");
+    expect(registrationAt(fixture.root, path)).toBeUndefined();
+  });
+
+  // A concurrent author, claimed before loop start, whose claim and
+  // registration name a lossy branch, as a runtime before 0.32.0 recorded
+  // them after the checkout moved to a raw-byte branch at the same commit.
+  const oldRuleConcurrentAuthor = (
+    fixture: TestRepository,
+    name: string,
+    owner: string
+  ) => {
+    const path = addWorktree(fixture, name);
+    const claim = as(SESSION_A, () =>
+      claimWorktree(fixture.root, owner, path, "claude-code")
+    );
+    const lease = as(SESSION_A, () =>
+      startLoop(fixture.root, "controller", "integrate")
+    );
+    expect(registrationAt(fixture.root, path)?.role).toBe("concurrent-author");
+    return { claim, lease, path };
+  };
+
+  const moveToLossyBranchUnderOldRule = (
+    fixture: TestRepository,
+    claimId: string,
+    path: string
+  ): void => {
+    checkOutRawByteBranch(path);
+    recordUnderOldRule(fixture.root, claimId, LOSSY_BRANCH);
+    rewriteLeaseUnderOldRule(fixture.root, (stored) => {
+      for (const item of stored.worktrees) {
+        if (item.path === path) {
+          item.branch = LOSSY_BRANCH;
+        }
+      }
+    });
+    expect(verifyLoop(fixture.root).ok).toBe(true);
+  };
+
+  test.each([
+    ["shipped", false],
+    ["worktree-absent", true],
+  ])(
+    "finalization neither releases nor demotes the controller's %s claim on such a branch",
+    (_reason, absent) => {
+      const fixture = repository();
+      const { claim, lease, path } = oldRuleConcurrentAuthor(
+        fixture,
+        absent ? "raw-absent-work" : "raw-shipped-work",
+        "controller"
+      );
+      moveToLossyBranchUnderOldRule(fixture, claim.claimId, path);
+      if (absent) {
+        rmSync(path, { force: true, recursive: true });
+      }
+      const finalized = as(SESSION_A, () =>
+        finalizeLoop(
+          fixture.root,
+          lease.runId,
+          "controller",
+          "The claimed work is already in the target."
+        )
+      );
+      const refusal = finalized.cleanup.errors.find((error) =>
+        error.includes(NOT_EXACT)
+      );
+      expect(refusal).toContain(`the loop registration of ${path}`);
+      expect(finalized.outcome).toBe("relinquished");
+      expect(finalized.cleanup.releasedClaims).toEqual([]);
+      // The claim was checked before its release, so it stays active and
+      // the registration it backs is unchanged.
+      expect(claimOf(fixture.root, claim.claimId)?.state).toBe("active");
+      expect(registrationAt(fixture.root, path)).toMatchObject({
+        branch: LOSSY_BRANCH,
+        claimId: claim.claimId,
+        role: "concurrent-author",
+      });
+      expect(
+        readLoopLease(fixture.root)?.dispositions?.some(
+          (item) => item.path === path
+        ) ?? false
+      ).toBe(false);
+      expect(existsSync(path)).toBe(!absent);
+    }
+  );
+
+  test("finalization does not demote or dispose of a completed handoff on such a branch", () => {
+    const fixture = repository();
+    const { claim, lease, path } = oldRuleConcurrentAuthor(
+      fixture,
+      "raw-handoff-work",
+      "author-1"
+    );
+    expect(
+      as(SESSION_A, () => releaseHandoffWorktreeClaim(path, "author-1"))
+    ).toMatchObject({ releaseReason: "handoff", state: "released" });
+    moveToLossyBranchUnderOldRule(fixture, claim.claimId, path);
+    const finalized = as(SESSION_A, () =>
+      finalizeLoop(
+        fixture.root,
+        lease.runId,
+        "controller",
+        "The handed-off work is already in the target."
+      )
+    );
+    expect(
+      finalized.cleanup.errors.find((error) => error.includes(NOT_EXACT))
+    ).toContain(`the loop registration of ${path}`);
+    expect(finalized.cleanup.removedWorktrees).not.toContain(path);
+    expect(existsSync(path)).toBe(true);
+    expect(registrationAt(fixture.root, path)).toMatchObject({
+      branch: LOSSY_BRANCH,
+      role: "concurrent-author",
+    });
+    expect(
+      readLoopLease(fixture.root)?.dispositions?.some(
+        (item) => item.path === path
+      ) ?? false
+    ).toBe(false);
+  });
+
+  test("finalization keeps an unchanged opening worktree on such a branch instead of recording its removal", () => {
+    const fixture = repository();
+    const path = addWorktree(fixture, "raw-opening-work");
+    const kept = addWorktree(fixture, "exact-opening-work");
+    const lease = as(SESSION_A, () =>
+      startLoop(fixture.root, "controller", "integrate")
+    );
+    checkOutRawByteBranch(path);
+    expect(verifyLoop(fixture.root).ok).toBe(true);
+    const finalized = as(SESSION_A, () =>
+      finalizeLoop(
+        fixture.root,
+        lease.runId,
+        "controller",
+        "Clean up worktrees already in the target."
+      )
+    );
+    expect(
+      finalized.cleanup.errors.find((error) => error.includes(NOT_EXACT))
+    ).toContain(`the removal disposition of ${path}`);
+    expect(existsSync(path)).toBe(true);
+    expect(
+      readLoopLease(fixture.root)?.dispositions?.some(
+        (item) => item.path === path
+      ) ?? false
+    ).toBe(false);
+    // Negative control: the UTF-8 checkout beside it is still removed.
+    expect(finalized.cleanup.removedWorktrees).toContain(kept);
+    expect(existsSync(kept)).toBe(false);
+  });
+
+  test("finalization does not switch the primary to a target branch whose name holds U+FFFD", () => {
+    const fixture = repository();
+    const target = "release/real�";
+    git(fixture.root, [
+      "remote",
+      "add",
+      "origin",
+      "https://example.invalid/repo.git",
+    ]);
+    git(fixture.root, ["update-ref", `refs/remotes/origin/${target}`, "HEAD"]);
+    git(fixture.root, [
+      "symbolic-ref",
+      "refs/remotes/origin/HEAD",
+      `refs/remotes/origin/${target}`,
+    ]);
+    const lease = as(SESSION_A, () =>
+      startLoop(fixture.root, "controller", "integrate")
+    );
+    const finalized = as(SESSION_A, () =>
+      finalizeLoop(
+        fixture.root,
+        lease.runId,
+        "controller",
+        "Synchronize the primary with the target."
+      )
+    );
+    expect(
+      finalized.cleanup.errors.find((error) => error.includes(NOT_EXACT))
+    ).toContain(`Branch ${JSON.stringify(target)}`);
+    expect(finalized.cleanup.primaryUpdated).toBe(false);
+    expect(git(fixture.root, ["branch", "--show-current"])).toBe("main");
+    expect(
+      git(fixture.root, ["for-each-ref", "--format=%(refname)", "refs/heads/"])
+    ).toBe("refs/heads/main");
   });
 });

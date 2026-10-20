@@ -914,8 +914,9 @@ const worktreeLease = (
 /**
  * `worktreeLease` for a registration that records an observed branch, which
  * must be the branch's exact name. Loop start, admission, rebaseline,
- * adoption, and acceptance register through it; the registrations that
- * prepare-agent, retain-worktree, and finalization write do not yet.
+ * adoption, acceptance, prepare-agent, and retain-worktree register through
+ * it. Finalization checks the branch itself first, because it reports a
+ * refusal as a cleanup error instead of stopping.
  */
 const exactWorktreeLease = (
   worktree: WorktreeInventory,

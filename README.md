@@ -622,7 +622,11 @@ temporary directory. An agent that starts another agent creates and names a
 folder for it, or names the one a Simple Changes run prepared for it, and when
 the task ends each agent deletes exactly its own folder, never another agent's
 and never by pattern across a shared directory, and leaves a folder a Simple
-Changes run reported for the run to remove.
+Changes run reported for the run to remove. The rule also keeps uncommitted
+work in Git on a branch rather than as loose copies, allows an unavoidable file
+copy only in a read-only `preservation-copy` directory in that folder, with a
+`manifest.json`, until a branch or the target contains the work, and keeps agents from creating worktrees in folders they make beside
+the repositories.
 During a run, `simple-changes workdir --agent-id ID` prints that folder for the
 files an agent passes to the CLI, `prepare-agent` reports one per delegated
 author, and a clean finalization removes them. The block's markers never

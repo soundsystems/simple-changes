@@ -151,6 +151,21 @@ describe("repository instruction pointers", () => {
     expect(rule).not.toContain("Delete them when the task ends");
   });
 
+  test("keeps preservation copies and worktree parents out of project folders", () => {
+    // A hand-made patch snapshot and an empty `mkdir -p` worktree parent
+    // were both left beside the repositories after their work was merged.
+    const rule = renderScratchFileRule();
+    for (const phrase of [
+      "Preserve uncommitted work in Git, committed on a branch of its own, not as loose copies",
+      "put it in a `preservation-copy` directory at the top of your folder (in a Simple Changes run, its work directory) with a `manifest.json` recording the repository path, remote URL, HEAD SHA, branch, `git status --porcelain` output, reason, and time",
+      "make that directory read-only, and remove it only once a branch or the target contains that work",
+      "never in a folder you make beside the repositories",
+      "remove it with `rmdir` once its worktrees are gone",
+    ]) {
+      expect(rule).toContain(phrase);
+    }
+  });
+
   test("reports whether a scratch-file block is current, stale, or absent", () => {
     const fixture = createTestRepository();
     repositories.push(fixture);

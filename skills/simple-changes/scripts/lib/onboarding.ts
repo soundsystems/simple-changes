@@ -676,7 +676,7 @@ const INSTRUCTION_POINTER_CHOICES = [
 const SCRATCH_FILE_RULE_CHOICES = [
   {
     description:
-      "Add or update one managed rule: each agent keeps scratch files, captured output, proof bundles, and handoff notes in one scratch folder of its own, outside your project folders, and deletes only that folder when the task ends.",
+      "Add or update one managed rule: each agent keeps scratch files, captured output, proof bundles, and handoff notes in one scratch folder of its own, outside your project folders, and deletes only that folder when the task ends; uncommitted work is preserved in Git, not as loose copies beside your projects.",
     label: "Add the rule",
     value: "add",
   },

@@ -3724,6 +3724,10 @@ const renderRemovedWorkDirectories = (removed: readonly string[]): string =>
     ? `Removed ${removed.length} agent work director${removed.length === 1 ? "y" : "ies"}.\n`
     : "";
 
+// A cleanup's non-fatal notes, one per line.
+const renderCleanupNotes = (notes: readonly string[]): string =>
+  notes.map((note) => `Note: ${note}\n`).join("");
+
 const runLoopFinalizationAction = (
   action: string,
   options: CliOptions,
@@ -3838,7 +3842,7 @@ const runLoopFinalizationAction = (
         removedWorkDirectories,
       },
       options.json,
-      `Completed and released ${runId}. Normalized ${result.cleanup.cleanedPrimaryPaths.length} target-equivalent primary path(s), removed ${result.cleanup.removedWorktrees.length} worktree(s) and ${result.cleanup.removedBranches.length} branch(es); pruned ${result.cleanup.prunedWorktreeMetadata} stale worktree record(s); released ${result.cleanup.releasedClaims.length} finished or orphaned worktree claim(s).\n${renderRemovedWorkDirectories(removedWorkDirectories)}`
+      `Completed and released ${runId}. Normalized ${result.cleanup.cleanedPrimaryPaths.length} target-equivalent primary path(s), removed ${result.cleanup.removedWorktrees.length} worktree(s) and ${result.cleanup.removedBranches.length} branch(es); pruned ${result.cleanup.prunedWorktreeMetadata} stale worktree record(s); released ${result.cleanup.releasedClaims.length} finished or orphaned worktree claim(s).\n${renderCleanupNotes(result.cleanup.notes)}${renderRemovedWorkDirectories(removedWorkDirectories)}`
     );
     return true;
   }
@@ -4598,7 +4602,7 @@ const runWorktreeMaintenance = (
     writeOutput(
       receipt,
       options.json,
-      `Standalone cleanup ${receipt.cleanupId} vs ${receipt.targetRef}: removed ${receipt.removed.length} proven worktree(s), pruned ${receipt.prunedPaths.length} stale record(s), released ${(receipt.releasedClaims ?? []).length} orphaned claim(s), preserved ${receipt.preserved.length}.\n${receipt.preserved.map((entry) => `- preserved ${entry.path}: ${entry.reason}`).join("\n")}${receipt.preserved.length > 0 ? "\n" : ""}`
+      `Standalone cleanup ${receipt.cleanupId} vs ${receipt.targetRef}: removed ${receipt.removed.length} proven worktree(s), pruned ${receipt.prunedPaths.length} stale record(s), released ${(receipt.releasedClaims ?? []).length} orphaned claim(s), preserved ${receipt.preserved.length}.\n${receipt.preserved.map((entry) => `- preserved ${entry.path}: ${entry.reason}`).join("\n")}${receipt.preserved.length > 0 ? "\n" : ""}${renderCleanupNotes(receipt.notes)}`
     );
     return true;
   }

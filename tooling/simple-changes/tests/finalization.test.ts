@@ -1,7 +1,16 @@
 import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { spawn } from "node:child_process";
-import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { basename, dirname, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 import {
@@ -31,6 +40,7 @@ import {
 import {
   createTestRepository,
   git,
+  prepareLegacyLayoutAgentWorktree,
   type TestRepository,
   writeFixture,
 } from "./helpers.ts";
@@ -47,7 +57,11 @@ afterEach(() => {
 function deliveredFixture(
   squash = false,
   excludePrimary = false,
-  runCreated = false
+  runCreated = false,
+  // Runs just before `prepare-agent`, to set up its managed parent folders.
+  beforePrepare?: (base: string) => void,
+  // Prepares the author in the older managed layout, as an older runtime did.
+  legacyLayout = false
 ) {
   const fixture = createTestRepository();
   fixtures.push(fixture);
@@ -108,8 +122,12 @@ function deliveredFixture(
       })),
   };
   recordShipmentScope(author, lease.runId, "controller", plan);
+  beforePrepare?.(fixture.base);
+  const prepare = legacyLayout
+    ? prepareLegacyLayoutAgentWorktree
+    : prepareAgentWorktree;
   const prepared = runCreated
-    ? prepareAgentWorktree(author, lease.runId, "delivery-author", "delivery")
+    ? prepare(author, lease.runId, "delivery-author", "delivery")
     : null;
   git(author, ["add", "feature.txt"]);
   git(author, ["commit", "-m", "Feature"]);
@@ -503,6 +521,152 @@ describe("shipment finalization", () => {
     expect(readFileSync(join(fixture.root, "personal.txt"), "utf8")).toBe(
       "unrelated work\n"
     );
+  });
+
+  test("removes a prepared worktree and leaves nothing beside the primary", () => {
+    let before: string[] = [];
+    const fixture = deliveredFixture(false, true, true, (base) => {
+      before = readdirSync(base).sort();
+    });
+    if (!fixture.prepared) {
+      throw new Error("Missing run-created delivery author fixture");
+    }
+    expect(dirname(fixture.prepared.path)).toBe(fixture.base);
+    expect(readdirSync(fixture.base).sort()).toEqual(
+      [...before, basename(fixture.prepared.path)].sort()
+    );
+    const result = finalizeLoop(
+      fixture.root,
+      fixture.lease.runId,
+      "controller",
+      "Close and remove the prepared author."
+    );
+    expect(result.outcome).toBe("completed");
+    expect(result.cleanup.removedWorktrees).toContain(fixture.prepared.path);
+    expect(existsSync(fixture.prepared.path)).toBe(false);
+    expect(readdirSync(fixture.base).sort()).toEqual(before);
+    expect(result.cleanup.errors).toEqual([]);
+    expect(result.cleanup.notes).toEqual([]);
+  });
+
+  test("keeps the older layout's managed folders its prepared worktree left empty and names them", () => {
+    const fixture = deliveredFixture(false, true, true, undefined, true);
+    if (!fixture.prepared) {
+      throw new Error("Missing run-created delivery author fixture");
+    }
+    const repositoryDirectory = dirname(fixture.prepared.path);
+    const managedRoot = dirname(repositoryDirectory);
+    expect(managedRoot).toBe(join(fixture.base, ".simple-changes-worktrees"));
+    const result = finalizeLoop(
+      fixture.root,
+      fixture.lease.runId,
+      "controller",
+      "Close and remove the prepared author."
+    );
+    expect(result.outcome).toBe("completed");
+    expect(result.cleanup.removedWorktrees).toContain(fixture.prepared.path);
+    expect(existsSync(fixture.prepared.path)).toBe(false);
+    expect(readdirSync(repositoryDirectory)).toEqual([]);
+    expect(readdirSync(managedRoot)).toEqual(["repo"]);
+    expect(result.cleanup.errors).toEqual([]);
+    expect(result.cleanup.notes).toEqual([
+      `Kept the empty managed worktree folder ${repositoryDirectory} and its parent ${managedRoot}, which holds only that folder: Simple Changes never removes a worktree's parent folder.`,
+    ]);
+  });
+
+  test("names only the older layout's managed folder that is empty", () => {
+    const fixture = deliveredFixture(false, true, true, undefined, true);
+    if (!fixture.prepared) {
+      throw new Error("Missing run-created delivery author fixture");
+    }
+    const repositoryDirectory = dirname(fixture.prepared.path);
+    const managedRoot = dirname(repositoryDirectory);
+    writeFixture(managedRoot, "other-repository/notes.txt", "keep\n");
+    const result = finalizeLoop(
+      fixture.root,
+      fixture.lease.runId,
+      "controller",
+      "Close and remove the prepared author."
+    );
+    expect(result.outcome).toBe("completed");
+    expect(existsSync(fixture.prepared.path)).toBe(false);
+    expect(existsSync(repositoryDirectory)).toBe(true);
+    expect(
+      readFileSync(join(managedRoot, "other-repository/notes.txt"), "utf8")
+    ).toBe("keep\n");
+    expect(result.cleanup.notes).toEqual([
+      expect.stringContaining(
+        `Kept the empty managed worktree folder ${repositoryDirectory}:`
+      ),
+    ]);
+  });
+
+  test("keeps older-layout managed folders a person made before prepare-agent", () => {
+    const fixture = deliveredFixture(
+      false,
+      true,
+      true,
+      (base) => {
+        mkdirSync(join(base, ".simple-changes-worktrees", "repo"), {
+          recursive: true,
+        });
+        writeFileSync(
+          join(base, ".simple-changes-worktrees", "repo", "mine.txt"),
+          "mine\n"
+        );
+      },
+      true
+    );
+    if (!fixture.prepared) {
+      throw new Error("Missing run-created delivery author fixture");
+    }
+    const repositoryDirectory = dirname(fixture.prepared.path);
+    const result = finalizeLoop(
+      fixture.root,
+      fixture.lease.runId,
+      "controller",
+      "Close and remove the prepared author."
+    );
+    expect(result.outcome).toBe("completed");
+    expect(existsSync(fixture.prepared.path)).toBe(false);
+    expect(readFileSync(join(repositoryDirectory, "mine.txt"), "utf8")).toBe(
+      "mine\n"
+    );
+    expect(result.cleanup.notes).toEqual([]);
+  });
+
+  test("never removes or names anything through a symbolically linked managed root", () => {
+    const fixture = deliveredFixture(
+      false,
+      true,
+      true,
+      (base) => {
+        mkdirSync(join(base, "shared"));
+        symlinkSync(
+          join(base, "shared"),
+          join(base, ".simple-changes-worktrees")
+        );
+      },
+      true
+    );
+    if (!fixture.prepared) {
+      throw new Error("Missing run-created delivery author fixture");
+    }
+    const linkedRoot = join(fixture.base, ".simple-changes-worktrees");
+    const sharedRepository = join(fixture.base, "shared", "repo");
+    expect(dirname(fixture.prepared.path)).toBe(sharedRepository);
+    const result = finalizeLoop(
+      fixture.root,
+      fixture.lease.runId,
+      "controller",
+      "Close and remove the prepared author."
+    );
+    expect(result.outcome).toBe("completed");
+    expect(existsSync(fixture.prepared.path)).toBe(false);
+    expect(existsSync(sharedRepository)).toBe(true);
+    expect(lstatSync(linkedRoot).isSymbolicLink()).toBe(true);
+    // A folder seen behind the link is never named.
+    expect(result.cleanup.notes).toEqual([]);
   });
 
   test("explicit exclusions do not excuse a missing source without removal evidence", () => {

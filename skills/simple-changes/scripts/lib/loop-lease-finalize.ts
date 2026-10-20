@@ -57,6 +57,7 @@ import {
   unmutatedCloseReady,
   verificationAgainst,
 } from "./loop-lease-verify.ts";
+import { emptyManagedWorktreeFolderNotes } from "./managed-worktrees.ts";
 import { recordedPreservedSourceOverrides } from "./preserved-source-override.ts";
 import { primaryDeliveryProof } from "./primary-delivery-proof.ts";
 import { runGit } from "./process.ts";
@@ -99,6 +100,8 @@ export interface FinalizationReleasedClaim {
 export interface FinalizationCleanupResult {
   cleanedPrimaryPaths: string[];
   errors: string[];
+  /** Non-fatal: unlike `errors`, a note never blocks completion. */
+  notes: string[];
   primaryUpdated: boolean;
   prunedWorktreeMetadata: number;
   releasedClaims: FinalizationReleasedClaim[];
@@ -109,6 +112,7 @@ export interface FinalizationCleanupResult {
 const emptyFinalizationCleanup = (): FinalizationCleanupResult => ({
   cleanedPrimaryPaths: [],
   errors: [],
+  notes: [],
   primaryUpdated: false,
   prunedWorktreeMetadata: 0,
   releasedClaims: [],
@@ -1182,6 +1186,8 @@ const automaticFinalizationCleanup = (
     cleanup
   );
   ({ lease } = staleRemoval);
+  // Parent folders stay; the removals above may have emptied managed ones.
+  cleanup.notes.push(...emptyManagedWorktreeFolderNotes(repositoryPath));
   removeTargetContainedBranches(
     lease,
     repositoryPath,

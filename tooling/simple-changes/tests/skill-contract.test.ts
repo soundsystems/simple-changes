@@ -1273,6 +1273,48 @@ describe("Simple Changes skill contract", () => {
     expect(normalizedConcurrency).toContain(
       "never delete by pattern, extension, or age in the work root, a harness scratch directory, or any other shared directory"
     );
+    // Uncommitted work is preserved in Git; a loose copy lives only in the
+    // agent's work directory with a manifest, never beside a checkout, and
+    // the manifest keeps that directory when the run closes.
+    expect(normalizedConcurrency).toContain(
+      "Preserve uncommitted work in Git, not as loose copies"
+    );
+    expect(normalizedConcurrency).toContain(
+      "When a file-level copy is unavoidable, it goes only in a `preservation-copy` directory at the top of your work directory, with a `manifest.json` in it"
+    );
+    expect(normalizedConcurrency).toContain(
+      'Then make it read-only: `chmod -R a-w "$WORK_DIR/preservation-copy"`'
+    );
+    expect(normalizedConcurrency).toContain(
+      "keep a work directory that holds `preservation-copy` and warn with its path instead of removing it; the CLI checks only that the directory is there, not what it holds"
+    );
+    expect(normalizedConcurrency).toContain(
+      "It does not stop a process running as root: when a runtime running as root may close the run, commit the work to its own branch instead"
+    );
+    expect(normalizedConcurrency).toContain(
+      "prove the target or a pushed branch contains the copied work"
+    );
+    // Worktrees go directly beside the primary, so none needs a parent
+    // folder; Simple Changes never removes one, it only names empty folders
+    // the older managed layout left.
+    expect(normalizedConcurrency).toContain(
+      "The worktree goes directly beside the primary checkout, at `.simple-changes-<repository>--<run>--<purpose>--<agent>`, so Git creates only that one directory and no parent folder"
+    );
+    expect(normalizedConcurrency).toContain(
+      "The command refuses, creating nothing, when anything already holds that path or the branch name."
+    );
+    expect(normalizedConcurrency).toContain(
+      "Worktrees an older runtime made under `.simple-changes-worktrees/<repository>/` keep working"
+    );
+    expect(normalizedConcurrency).toContain(
+      "Create it directly beside the primary checkout, as `.simple-changes-<repository>--<name>`, so it needs no parent folder"
+    );
+    expect(normalizedConcurrency).toContain(
+      "Simple Changes never removes a worktree's parent folder; cleanup names an empty folder left in the older `.simple-changes-worktrees/<repository>/` layout in its notes"
+    );
+    expect(normalizedConcurrency).toContain(
+      "only when it is empty and you created it"
+    );
     expect(normalizedConcurrency).toContain(
       "the controller confirms that the registered branch head equals the reported commit"
     );

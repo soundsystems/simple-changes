@@ -625,11 +625,12 @@ and never by pattern across a shared directory, and leaves a folder a Simple
 Changes run reported for the run to remove. The rule also keeps uncommitted
 work in Git on a branch rather than as loose copies, allows an unavoidable file
 copy only in a read-only `preservation-copy` directory in that folder, with a
-`manifest.json`, until a branch or the target contains the work, and keeps agents from creating worktrees in folders they make beside
+`manifest.json`, until a pushed branch or the target contains the work, and keeps agents from creating worktrees in folders they make beside
 the repositories.
 During a run, `simple-changes workdir --agent-id ID` prints that folder for the
 files an agent passes to the CLI, `prepare-agent` reports one per delegated
-author, and a clean finalization removes them. The block's markers never
+author, and a clean finalization removes them, except one that holds a
+`preservation-copy`. The block's markers never
 change, so `initialize` reports a block an earlier release wrote as `stale`,
 with a `scratch-file-rule refresh --instruction-file PATH` command that
 rewrites it in place; setup with the flag does the same.

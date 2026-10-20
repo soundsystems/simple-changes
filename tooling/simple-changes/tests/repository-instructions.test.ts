@@ -158,7 +158,7 @@ describe("repository instruction pointers", () => {
     for (const phrase of [
       "Preserve uncommitted work in Git, committed on a branch of its own, not as loose copies",
       "put it in a `preservation-copy` directory at the top of your folder (in a Simple Changes run, its work directory) with a `manifest.json` recording the repository path, remote URL, HEAD SHA, branch, `git status --porcelain` output, reason, and time",
-      "make that directory read-only, and remove it only once a branch or the target contains that work",
+      "make that directory read-only, and remove it only once a pushed branch or the target contains that work",
       "never in a folder you make beside the repositories",
       "remove it with `rmdir` once its worktrees are gone",
     ]) {

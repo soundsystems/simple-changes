@@ -546,7 +546,11 @@ const reconcileAbsentRetainedWorktrees = (
     return [
       {
         approvedBy: `mode:${lease.mode}`,
-        branch: worktree.branch,
+        // This retires an existing record, which stays possible for a
+        // branch an older runtime recorded under a name that is not exact,
+        // but the disposition does not repeat that name: a completed
+        // disposition's branch is deleted by name later in finalization.
+        branch: isLossyName(worktree.branch) ? null : worktree.branch,
         changeDigest: worktree.baselineChangeDigest,
         completedAt,
         containmentMethod: "target-contained" as const,

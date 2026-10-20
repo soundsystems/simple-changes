@@ -2,6 +2,7 @@ import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { spawnSync } from "bun";
 import {
   REVIEW_LOOP_DEFAULTS,
   type RepositoryAuthoring,
@@ -33,6 +34,10 @@ import type {
   ChangePlan,
   LoopLease,
 } from "../../../skills/simple-changes/scripts/lib/types.ts";
+import {
+  claimWorktree,
+  releaseWorktreeClaim,
+} from "../../../skills/simple-changes/scripts/lib/worktree-coordination.ts";
 import {
   createTestRepository,
   git,
@@ -294,6 +299,66 @@ describe("a changelog-only author after the shipment scope froze", () => {
     expect(attested?.message).toContain(outside);
     expect(attested?.message).toContain('"src/other.ts"');
     expect(verifyLoop(root, { forMerge: true }).ok).toBe(false);
+  });
+
+  test("the bound survives a controller transfer and a removed checkout, and fails closed on a missing attested commit", () => {
+    const run = scopedRun();
+    freezeAndResume(run);
+    const { root } = run.fixture;
+    const prepared = prepareChangelogAuthor(run);
+    const base = git(prepared.path, ["rev-parse", "HEAD"]);
+    const outside = commitFile(prepared.path, "src/other.ts", "export {};\n");
+
+    // The checkout is removed while its branch survives.
+    git(root, ["worktree", "remove", prepared.path]);
+    const [branchOnly] = violationsAt(root, prepared.path);
+    expect(branchOnly?.code).toBe(STALE);
+    expect(branchOnly?.message).toContain(`its branch ${prepared.branch}`);
+    git(root, ["worktree", "add", prepared.path, prepared.branch]);
+
+    // The run resumes from the author's checkout, which becomes the
+    // controller's: the bound still applies there.
+    attestAsAuthor(prepared.path, [outside]);
+    expect(
+      finalizeLoop(root, run.lease.runId, "next-controller", "Turn ended.")
+        .outcome
+    ).toBe("relinquished");
+    const transferred = startLoop(prepared.path, "third-controller", "resume");
+    expect(
+      transferred.worktrees.find((item) => item.path === prepared.path)?.role
+    ).toBe("controller");
+    expect(violationsAt(root, prepared.path)).toEqual([
+      expect.objectContaining({ code: STALE }),
+    ]);
+
+    // An attested commit Git no longer has cannot be checked, so the unit
+    // stays stale.
+    git(prepared.path, ["reset", "--hard", base]);
+    git(root, ["reflog", "expire", "--expire=now", "--all"]);
+    git(root, ["gc", "--prune=now", "--quiet"]);
+    expect(
+      spawnSync(["git", "-C", root, "cat-file", "-e", `${outside}^{commit}`])
+        .exitCode
+    ).not.toBe(0);
+    const [missing] = violationsAt(root, prepared.path);
+    expect(missing?.code).toBe(STALE);
+    expect(missing?.message).toContain(`${outside} it attested is missing`);
+  });
+
+  test("an earlier use of the author's agent ID is not held against it", () => {
+    const run = scopedRun();
+    const { root } = run.fixture;
+    // Before this run bound it, the same agent ID attested code elsewhere.
+    const elsewhere = join(run.fixture.base, "earlier-work");
+    git(root, ["worktree", "add", "-b", "earlier-work", elsewhere]);
+    const claim = claimWorktree(root, AUTHOR, elsewhere, "claude-code");
+    const earlier = commitFile(elsewhere, "src/earlier.ts", "export {};\n");
+    attestAsAuthor(elsewhere, [earlier]);
+    releaseWorktreeClaim(root, AUTHOR, claim.claimId);
+    git(root, ["worktree", "remove", elsewhere]);
+    freezeAndResume(run);
+    const prepared = prepareChangelogAuthor(run);
+    expect(violationsAt(root, prepared.path)).toEqual([]);
   });
 
   test("reviews recorded before the changelog author attests stop counting", () => {

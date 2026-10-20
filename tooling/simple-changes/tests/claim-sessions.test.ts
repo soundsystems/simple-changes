@@ -1957,6 +1957,56 @@ describe("loop worktree records and finalization name only exact branches", () =
     expect(existsSync(kept)).toBe(false);
   });
 
+  test("finalization retires an absent retained record on such a branch without repeating its name", () => {
+    const fixture = repository();
+    const path = addWorktree(fixture, "retained-absent-work");
+    const lease = as(SESSION_A, () =>
+      startLoop(fixture.root, "controller", "integrate")
+    );
+    as(SESSION_A, () =>
+      retainExcludedWorktree(
+        fixture.root,
+        lease.runId,
+        "controller",
+        path,
+        worktreeAt(fixture.root, path).changeDigest,
+        "the-user",
+        "Keep it out of this shipment."
+      )
+    );
+    // An older runtime recorded the retained branch under a name holding
+    // U+FFFD; that branch exists, target-contained, and the checkout is gone.
+    const branch = "release/retained�";
+    git(fixture.root, ["branch", branch, "HEAD"]);
+    rewriteLeaseUnderOldRule(fixture.root, (stored) => {
+      for (const item of stored.worktrees) {
+        if (item.path === path) {
+          item.branch = branch;
+        }
+      }
+    });
+    git(fixture.root, ["worktree", "remove", path]);
+    const finalized = as(SESSION_A, () =>
+      finalizeLoop(
+        fixture.root,
+        lease.runId,
+        "controller",
+        "The retained checkout is gone."
+      )
+    );
+    // The record is retired, so the absent checkout is no violation, but the
+    // completed disposition names no branch, so none is deleted by that name.
+    expect(
+      finalized.lease?.dispositions?.find((item) => item.path === path)
+    ).toMatchObject({ branch: null, status: "completed" });
+    expect(finalized.verification.violations).not.toContainEqual(
+      expect.objectContaining({ code: "missing-retained-worktree", path })
+    );
+    expect(
+      git(fixture.root, ["for-each-ref", "--format=%(refname)", "refs/heads/"])
+    ).toContain(branch);
+  });
+
   test("finalization does not switch the primary to a target branch whose name holds U+FFFD", () => {
     const fixture = repository();
     const target = "release/real�";

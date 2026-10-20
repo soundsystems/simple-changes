@@ -75,46 +75,59 @@ export const writeChangelogAuthors = (
   );
 };
 
-// Whether the run still registers, or is preparing, the binding's author at
-// its path. A binding left by a preparation that stopped before the lease
-// recorded it binds nobody.
+// The local branch the author was prepared on, when it still exists.
+const branchTip = (
+  lease: LoopLease,
+  binding: ChangelogAuthorBinding
+): string | null => {
+  const result = runGit(
+    lease.primaryCheckout,
+    [
+      "rev-parse",
+      "--verify",
+      "--quiet",
+      `refs/heads/${binding.branch}^{commit}`,
+    ],
+    true
+  );
+  return result.exitCode === 0 && result.stdout.trim()
+    ? result.stdout.trim()
+    : null;
+};
+
+// Whether the binding binds an author: the run records a preparation or a
+// registration at its path, whatever the role or agent there now (a
+// controller transfer from that checkout changes both), or its branch
+// exists. A binding left by a preparation that stopped before the lease
+// recorded it, and so before Git made the branch, binds nobody.
 const bindingIsLive = (
   lease: LoopLease,
   binding: ChangelogAuthorBinding
 ): boolean =>
-  lease.worktrees.some(
-    (worktree) =>
-      worktree.agentId === binding.agentId &&
-      worktree.path === binding.path &&
-      worktree.role === "author"
-  ) ||
-  lease.preparations.some(
-    (preparation) =>
-      preparation.agentId === binding.agentId &&
-      preparation.path === binding.path
-  );
+  lease.worktrees.some((worktree) => worktree.path === binding.path) ||
+  lease.preparations.some((preparation) => preparation.path === binding.path) ||
+  branchTip(lease, binding) !== null;
 
 const nulSeparated = (output: string): string[] =>
   output.split("\0").filter(Boolean);
 
-// The paths the author's branch and uncommitted changes change relative to
-// where its branch meets the current target, or null when Git cannot say.
-const worktreePaths = (
+// The paths `head` changes relative to where it meets the current target,
+// plus `uncommitted`, or null when Git cannot say.
+const changedPaths = (
+  lease: LoopLease,
   binding: ChangelogAuthorBinding,
-  worktree: WorktreeInventory,
+  head: string | null,
+  uncommitted: string[],
   targetRevision: string | null
 ): string[] | null => {
-  const uncommitted = worktree.changes.flatMap((change) =>
-    change.originalPath ? [change.path, change.originalPath] : [change.path]
-  );
-  if (!worktree.headSha) {
+  if (!head) {
     return uncommitted;
   }
   let from = binding.baseRevision;
   if (targetRevision) {
     const meeting = runGit(
-      worktree.path,
-      ["merge-base", worktree.headSha, targetRevision],
+      lease.primaryCheckout,
+      ["merge-base", head, targetRevision],
       true
     );
     if (meeting.exitCode === 0 && meeting.stdout.trim()) {
@@ -122,8 +135,8 @@ const worktreePaths = (
     }
   }
   const committed = runGit(
-    worktree.path,
-    ["diff", "--name-only", "-z", "--no-renames", from, worktree.headSha],
+    lease.primaryCheckout,
+    ["diff", "--name-only", "-z", "--no-renames", from, head],
     true
   );
   return committed.exitCode === 0
@@ -135,9 +148,11 @@ const isAncestor = (cwd: string, commit: string, of: string): boolean =>
   runGit(cwd, ["merge-base", "--is-ancestor", commit, of], true).exitCode === 0;
 
 // The paths each commit the author attested changes itself: for a merge,
-// only paths that differ from every parent. Commits already in the base the
-// author started from, and commits this repository no longer has, are not
-// its work in this run.
+// only paths that differ from every parent. Only attestations recorded under
+// its agent ID since it was bound count, so an earlier use of that ID is not
+// held against it; of those, a commit already in the base it started from is
+// not its work, and a commit the repository no longer has cannot be checked,
+// which fails closed.
 const attestedPaths = (
   lease: LoopLease,
   binding: ChangelogAuthorBinding
@@ -150,20 +165,31 @@ const attestedPaths = (
   }
   const commits: string[] = [];
   const paths: string[] = [];
+  const boundAt = Date.parse(binding.recordedAt);
   for (const [commit, attestations] of Object.entries(
     state.ledger.attestations
   )) {
     if (
       !attestations.some(
-        (attestation) => attestation.logicalId === binding.agentId
-      ) ||
+        (attestation) =>
+          attestation.logicalId === binding.agentId &&
+          !(Date.parse(attestation.recordedAt) < boundAt)
+      )
+    ) {
+      continue;
+    }
+    if (
       runGit(
         lease.primaryCheckout,
         ["cat-file", "-e", `${commit}^{commit}`],
         true
-      ).exitCode !== 0 ||
-      isAncestor(lease.primaryCheckout, commit, binding.baseRevision)
+      ).exitCode !== 0
     ) {
+      return {
+        error: `the commit ${commit} it attested is missing from this repository, so what it changes cannot be checked`,
+      };
+    }
+    if (isAncestor(lease.primaryCheckout, commit, binding.baseRevision)) {
       continue;
     }
     const changed = runGit(
@@ -205,23 +231,52 @@ const listed = (paths: readonly string[]): string => {
 const sortedUnique = (paths: Iterable<string>): string[] =>
   [...new Set(paths)].sort((left, right) => left.localeCompare(right));
 
-// What the author's present worktree changes outside its release surfaces.
+// What the author's checkout, and its branch, change outside its release
+// surfaces. The branch is checked even after the checkout is removed.
 const worktreeProblems = (
+  lease: LoopLease,
   binding: ChangelogAuthorBinding,
   worktree: WorktreeInventory | undefined,
   targetRevision: string | null
 ): string[] => {
-  if (!worktree) {
-    return [];
+  const problems: string[] = [];
+  const check = (
+    what: string,
+    head: string | null,
+    uncommitted: string[]
+  ): void => {
+    const changed = changedPaths(
+      lease,
+      binding,
+      head,
+      uncommitted,
+      targetRevision
+    );
+    if (changed === null) {
+      problems.push(`Git could not list what ${what} changes`);
+      return;
+    }
+    const outside = sortedUnique(changed).filter(
+      (path) => !binding.releaseSurfaces.includes(path)
+    );
+    if (outside.length > 0) {
+      problems.push(`${what} changes ${listed(outside)}`);
+    }
+  };
+  if (worktree) {
+    check(
+      "its worktree",
+      worktree.headSha,
+      worktree.changes.flatMap((change) =>
+        change.originalPath ? [change.path, change.originalPath] : [change.path]
+      )
+    );
   }
-  const changed = worktreePaths(binding, worktree, targetRevision);
-  if (changed === null) {
-    return ["Git could not list what its branch changes"];
+  const tip = branchTip(lease, binding);
+  if (tip && tip !== worktree?.headSha) {
+    check(`its branch ${binding.branch}`, tip, []);
   }
-  const outside = sortedUnique(changed).filter(
-    (path) => !binding.releaseSurfaces.includes(path)
-  );
-  return outside.length > 0 ? [`its worktree changes ${listed(outside)}`] : [];
+  return problems;
 };
 
 // What the commits the author attested change outside its release surfaces.
@@ -263,7 +318,7 @@ export const changelogAuthorViolations = (
       (item) => item.path === binding.path && !item.prunable
     );
     const problems = [
-      ...worktreeProblems(binding, worktree, targetRevision),
+      ...worktreeProblems(lease, binding, worktree, targetRevision),
       ...attestationProblems(lease, binding),
     ];
     if (problems.length === 0) {

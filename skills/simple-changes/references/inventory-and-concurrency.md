@@ -498,9 +498,12 @@ release surface (`CHANGELOG.md`, `DEVELOPER_CHANGELOG.md`,
 `CMS_CHANGELOG.json`, or a Simple Changelogs policy file). Without `--unit`, a
 frozen run still refuses every new author. The output's `changelogAuthor`
 names the unit and the release surfaces the author may change, recorded when
-it was prepared. Any other change, in its worktree, on its branch, or in a
-commit it attested, is a `changelog-author-outside-release-surfaces`
-violation: the unit is stale and verification refuses it. Restore those paths
+it was prepared. Any other change, in its worktree, on its branch (even after
+its checkout is removed or becomes the controller's), or in a commit it
+attested since it was prepared, is a
+`changelog-author-outside-release-surfaces` violation: the unit is stale and
+verification refuses it, as it does when Git no longer has a commit it
+attested. Restore those paths
 and integrate no commit that changes them; an attested commit stays in the
 review ledger, so its unit stays stale for the run, and the work moves to a
 replan or a fresh loop. The author attests every commit as usual, which

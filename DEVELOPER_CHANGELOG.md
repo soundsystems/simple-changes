@@ -1,5 +1,288 @@
 # Developer changelog
 
+## 0.32.0 - 2026-10-20
+
+- Flat prepared layout (new `lib/managed-worktrees.ts`): `slug` moved here
+  from `loop-lease-worktrees.ts`. `preparedWorktreePath(primaryCheckout,
+  { agent, purpose, run })` builds `<parent of the primary>/` plus
+  `.simple-changes-<repository>--<run>--<purpose>--<agent>`, re-slugs
+  each field, trims a trailing hyphen that `slug`'s 48-character cut can
+  leave (147f2b1; before it, a long field could join into `---`,
+  fail validation, and refuse every `prepare-agent` in that repository),
+  and throws `unsafe` unless the name matches
+  `^\.simple-changes-<slug>(--<slug>){3}$`, is at most 255 bytes, and
+  resolves to a direct child of the primary's parent. The branch is still
+  `simple-changes/<purpose>-<agent>-<run>` with the run's 12-character
+  slug.
+- `prepareAgentWorktree` (`lib/loop-lease-worktrees.ts`) takes its path
+  from `preparedWorktreePath` and drops `mkdirSync(..., { recursive })`.
+  The pre-creation checks use the new local `pathEntryExists` (`lstat`),
+  so a dangling link counts as taken. A resumed preparation needs its
+  parent folder to be a directory before `git worktree add`, which would
+  otherwise create missing parents, and refuses with "The folder <parent>
+  that holds prepared path <path> is missing or is not a directory ...";
+  the pending preparation stays recorded.
+- Parent folders: c0b2363 made finalization and standalone cleanup
+  `rmdir` the emptied `.simple-changes-worktrees/<repository>/` folder and
+  its root. Review found that no removal by name can be bound to the folder
+  it checked, through removal by records (98a05ba) and by pinned traversal
+  with creation markers (8418c7e), so 14acd50 removed it again: no version
+  in this release removes a parent folder. `managedWorktreeDirectories`
+  names the older layout, and `emptyManagedWorktreeFolderNotes` returns at
+  most one note naming the empty folder, and its root when that folder is
+  all the root holds. It reads with `lstat` and `readdir`, requires the
+  folder above the managed root to resolve to itself, skips anything
+  behind a symbolic link, suggests no command, and never throws (a folder
+  it cannot inspect becomes the note).
+- Notes plumbing: `FinalizationCleanupResult` gains `notes: string[]`,
+  which never become blockers; `automaticFinalizationCleanup` appends the
+  note after its removals and metadata prune, so `loop finalize`,
+  `loop close-equivalent`, and the finalization receipt carry it.
+  `standaloneWorktreeCleanup` returns `WorktreeCleanupResult` (the receipt
+  plus `notes`); `cleanups.json` still gets the unchanged receipt, which
+  older runtimes validate strictly. `pruneRepository` appends the note to
+  its `notes` outside a dry run. `simple-changes.ts` prints each as a
+  `Note:` line after `loop finalize` and `worktree cleanup`
+  (`renderCleanupNotes`).
+- Preservation copies (`lib/work-directory.ts`): `PRESERVATION_COPY`
+  (`preservation-copy`) and `assertNoPreservationCopy` in
+  `removeRunWorkDirectories`, so finalize, `loop end`, and
+  `removeFinishedRunWorkDirectories` at the next `loop start` keep a bound
+  work directory that holds one, even as a dangling link, and report it in
+  `kept` with shell-quoted `chmod -R u+w` and `simple-changes workdir
+  remove` commands (`shellWord`). The check is existence only, and an
+  explicit `workdir remove` still deletes the directory.
+- Scratch-file rule (`lib/repository-instructions.ts`, 3ee021e, wording
+  03989f9): `SCRATCH_FILE_RULE` adds two sentences, Git-first preservation
+  with the `preservation-copy` directory and its `manifest.json` fields
+  (repository path, remote URL, HEAD SHA, branch, `git status --porcelain`
+  output, reason, time), removed only once a pushed branch or the target
+  holds the work, and worktrees only where the brief or a run puts them,
+  with `rmdir` for a parent an agent made. The markers are unchanged, so
+  `inspectInstructionRule` reports every installed block as `stale` and
+  `initialize` offers `scratch-file-rule refresh --instruction-file PATH`.
+  The `add` choice text in `onboarding.ts`, the README, and
+  `setup-and-policy.md` follow; `repository-instructions.test.ts` pins the
+  new phrases.
+- Changelog-only author (new `lib/changelog-authors.ts`, issue
+  soundsystems/simple-changes#18 item 2): `prepareAgentWorktree` takes an
+  optional sixth parameter `unitId` (CLI `--unit ID`, `CliOptions.unitId`).
+  `changelogAuthorSurfaces` requires `--purpose changelog` (usage), a
+  frozen scope (`effectiveShipmentScopeFrozenAt`), a unit in
+  `shipmentScope.plan.units`, and a nonempty `releaseSurfacesIn(primary)`
+  (new export from `changelog-coordination.ts`, used by
+  `inspectChangelogCoordination` unchanged); otherwise `unsafe`.
+  With `--unit`, `assertChangelogBinding` refuses an agent registered or
+  pending without a matching binding. The binding
+  (`ChangelogAuthorBinding`: agent, base, branch, path, `recordedAt`,
+  surfaces, unit) is written to
+  `<common dir>/simple-changes/changelog-author/<runId>.json`
+  (`CHANGELOG_AUTHOR_DIRECTORY`, receipt-sidecar helpers, new
+  `changelog-author.schema.json`, `SCHEMA_NAMES`) before the preparation
+  enters the lease, so an author is never registered unbound; an ordinary
+  new preparation drops a stale binding for its agent, and an empty list
+  removes the file. `reusedRegistration` is extracted unchanged, and the
+  result gains `changelogAuthor` plus a text line.
+- `changelogAuthorViolations` (appended in `verificationAgainst`) reports
+  `changelog-author-outside-release-surfaces` per live binding (a lease
+  registration or preparation at its path, or its branch still exists)
+  when any of these touch a path outside its surfaces: the worktree's
+  uncommitted changes; `git diff --name-only` from the merge base with the
+  current target (or the recorded base) to its HEAD; its branch tip, even
+  without a checkout; and every commit the author attested at or after
+  `recordedAt` that is not in its base, read with `diff-tree -c`, so a
+  merge counts only paths that differ from every parent. A malformed
+  ledger, a missing attested commit, or a Git failure is a violation, not
+  a throw. `assertNotChangelogAuthorCheckout` refuses `loop start --mode
+  resume` (`loop-lease-start.ts`) and an approved `loop takeover`
+  (`loop-lease-recovery.ts`) before `transferController` into a bound
+  checkout. `prepare-agent` without `--unit` keeps
+  `assertNewAuthorPreparationAllowed` and its message.
+- Accepted releases (`lib/loop-lease-verify.ts`, issue #3):
+  `completedReleaseMatches` keeps its signature and delegates to
+  `releaseAdmits(ownerAgentId, ...)`. The new `acceptedReleaseMatches`
+  lets a `preserved` registration with `claimId` and `pauseReceiptId` pass
+  the adopted-link check when its claim was released for `owner-release`
+  or `handoff` by the receipt's owner with `releaseRecordedState`, the
+  receipt, the release, and the registered branch and baseline all equal
+  the present checkout, and no live claim holds the path;
+  `preserved-worktree-changed` still runs. `claimContextFor` builds each
+  checkout's context, now with `linkedReceipt`, and `staleAdoptedLinkCause`
+  words the `coordination-claim-stale` message by cause.
+- Resume-ready (`lib/worktree-coordination.ts`): `transitionClaim` takes
+  an optional `assertAllowed`, run under the coordination lock before the
+  claim lookup. `hasResumeReadyReceipt` accepts a receipt for this run, or
+  an earlier one that still describes the claim (`receiptDescribesClaim`)
+  when the active lease registers it (`registersReceipt`) or the run was
+  replaced by an approved, completed `loop replan` whose archive registered
+  it while the active lease registers the checkout unlinked at exactly the
+  receipt's state (`inheritedThroughReplan`). The archive comes from the
+  new `lib/replan-history.ts` `replannedRegistrations`, which reads
+  `history/<run>/replan-*/` without following links or opening FIFOs and
+  counts an attempt only when the archive equals the lease its intent
+  recorded. `resumeReadyRefusal` keeps the old first sentence and adds the
+  owner's `worktree pause --run-id <current run>` command, except for a
+  detached claim.
+- Completed removals (issue #18 item 1): `removalDispositionForPath`
+  accepts a `remove-after-audit` disposition with `status: "completed"`
+  at any target revision (still the lease's `targetRef`), for the
+  `missing-preserved-worktree` and `missing-retained-worktree` checks. The
+  new `currentRemovalDispositionForPath` keeps the current-revision rule
+  for the merge-time pin in `registeredBranchViolations`, so a branch that
+  moves after its checkout was removed is still reported.
+- Exact branch names (issue #16; `lib/inventory.ts`):
+  `LOSSY_NAME_CHARACTER`, `isLossyName`, `exactBranchRefusal`, and
+  `assertExactBranch` (exit `unsafe`, "Branch <json> is not valid UTF-8 or
+  contains the replacement character U+FFFD, so Simple Changes cannot name
+  it exactly and will not record it in <what>. Rename the branch ...").
+  Git decoding in `process.ts` is unchanged. The new
+  `exactWorktreeLease` (`loop-lease-core.ts`) guards registrations in loop
+  start (controller, concurrent author, preserved), rebaseline, adoption,
+  acceptance, prepare-agent, and retain-worktree; `worktreeLease` itself
+  stays unguarded. `claimWorktree` (including a no-op re-claim),
+  `pauseClaimedWorktree`, `recordReadyWork`, `authorizeWorktreeRemoval`,
+  and `resumePreparation` assert first. `withConcurrentAuthorAdmissions`
+  skips a claim on a lossy branch instead of throwing, because
+  `requireLease`, `loop status`, and `loop verify` all admit as they read.
+  `releasedEvidence` returns nothing on a lossy branch, so a release
+  writes no `event-released-state-` event and no loop admits it.
+  `approvedTakeoverState` uses the helper for a reassign only, with the
+  new wording; `REPLACEMENT_CHARACTER` is gone.
+- Finalization (`lib/loop-lease-finalize.ts`):
+  `reconcileConcurrentAuthorClaims` checks the branch before a handoff
+  demotion or an obsolete-claim release (reason logic moved unchanged to
+  `obsoleteClaimReleaseReason`) and reports a cleanup error instead; the
+  new `keptClaims` set goes to the new `keep` parameter of
+  `releaseAbsentWorktreeClaimsUnderLock`, so the absent-claim sweep keeps
+  those claims. `automaticFinalizationCleanup`
+  stops before primary synchronization on a lossy target branch and drops
+  lossy cleanup candidates with an error, which also skips stale-metadata
+  pruning. `completeAutomaticDispositions` and
+  `reconcileAbsentRetainedWorktrees` record a lossy branch as null,
+  `removeTargetContainedBranches` skips lossy names, and
+  `reconcilePrimarySynchronization`, `bindAutomaticPrimaryBranchChange`,
+  `preservesUnchangedPrimary`, and `releaseDeliveredSourceClaims` fail
+  closed without an error.
+- #16 residue, unchanged on purpose: comparisons of recorded and observed
+  branches are as before, so a record an older runtime wrote with a lossy
+  name can still match another raw-byte branch until it is released or
+  replaced. `openingBranches` still records every local branch name, since
+  refusing would block every loop start in a repository holding such a
+  ref; its consumers fail safe. A takeover `--release` still records the
+  branch in its receipt, and the `shipped` release condition compares HEAD
+  and digest but not branch.
+- Extensions (new `lib/extensions.ts`, issue #14): `EXTENSIONS_KEY`,
+  `RecordExtensions`, `NEWER_RUNTIME_HINT`, `unknownKeyMessage`,
+  `RESPELLED`, `spelledAsSerialized` (text spells the value as
+  `JSON.stringify` does, apart from whitespace), `decodeUtf8`, and
+  `keptExactly`. In `review-ledger.ts`, `Checker.keys` takes `extensible`
+  and requires `extensions` to be an object without looking inside; the
+  extensible levels are the root, attestations, completions, and attempts,
+  and only their unknown-key errors carry the hint. Proposal records,
+  heads, waivers, replays, `completes` items, an attempt's `requested`,
+  `verified`, and `severities`, and the `record-review` receipt stay
+  exact. `ReviewLedger`, `Attestation`, `IdentityCompletion`, and
+  `ReviewAttempt` gain `extensions?`; `emptyReviewLedger()` has none.
+- Ledger exactness: `readReviewLedger` reads raw bytes through
+  `readLedgerFile` and reports a ledger holding extensions that is not
+  `keptExactly` as `malformed`. `writeReviewLedger` and the transaction
+  writer go through `assertReplaceable`, which refuses to replace a
+  malformed ledger (new for direct callers), a ledger holding extensions
+  whose text is not exactly `serializeLedger(parsed)` ("(its spacing
+  differs)"), and any write that drops or changes an extensions object,
+  matching records by commit and `identityKey`, by commit and
+  `completionKey`, or by `attemptId`. The authors digest, identity,
+  completion, and attempt keys read only named fields, so extensions never
+  move a gate, and a `record-review` retry still returns `unchanged`.
+- Authoring (`lib/authoring.ts`): `unknownKeys` takes `extensible`, and
+  `roleErrors` makes `roles.<role>` extensible only in a Simple Changes
+  sidecar; a Simple Changelogs sidecar, the root, `harnesses.<id>`, and
+  `reviewLoop` stay exact. `parseAuthoringAnswer` (also behind
+  `--authoring-request`) refuses an answer whose roles hold extensions
+  unless `spelledAsSerialized` holds, and `readAuthoringFile` and the
+  `@path` branch read raw bytes and report a sidecar that is not
+  `keptExactly` as malformed, which `writeLockedSidecar` already refuses to
+  overwrite. Setup writes whole answers and never reads and rewrites a
+  sidecar; a write keeps values, not spacing (docs a5601d5). Schemas:
+  `$defs.extensions` in `review-ledger.schema.json` (root, attestation,
+  completion, attempt) and `authoring.schema.json` (`role`, `reviewRole`).
+- CI recovery contract (docs only, issue #11, 36d4d33):
+  `references/providers/gitlab.md` gains a Contents list and "Recover a
+  passed pipeline whose publication failed": a two-phase adapter records a
+  `forge` receipt with `status: partial` naming the pipeline id and attempt
+  in `immutableResultId` and the exact `headRevision` and `baseRevision`;
+  recovery re-reads that pipeline, re-checks project, merge request,
+  revisions, run ownership, required jobs, and the head pipeline, and
+  republishes idempotently. `providers/github.md` points to it.
+- Compatibility: the lease, coordination document, receipts, review
+  ledger, sidecar, outcome, and `cleanups.json` keep their schemas, and
+  0.32.0 writes no `extensions`, so 0.31.x reads every file it writes. The
+  new `changelog-author/<run>.json` sidecar is ignored by older runtimes,
+  which then neither show nor enforce the release-surface bound and reject
+  `--unit` as an unknown option. Runtimes before 0.32.0 reject a ledger or
+  sidecar holding `extensions`; the point helps only from 0.32.0 on, and
+  the 0.31.0 boundary (#14's original report) is unchanged. A pending flat
+  preparation resumed by an older runtime runs `mkdir -p` on a folder that
+  already exists. Older runtimes delete a work directory holding
+  `preservation-copy`; the read-only bits stop that only when they run as
+  an ordinary user.
+- Tests: new `prepared-worktree-layout.test.ts`,
+  `managed-worktrees.test.ts`, `changelog-author.test.ts`,
+  `preserved-handoff.test.ts`, `resume-ready-receipts.test.ts`,
+  `replan-history.test.ts`, and `finalized-removals.test.ts` (interrupted
+  finalize, remote advance, resume, guarded fetch, finalize; an intended
+  disposition at the old target still reports the path).
+  `claim-sessions.test.ts` adds two describe blocks of nine tests each on
+  a raw-byte packed-ref branch, with UTF-8 and U+00A0 positive controls.
+  `review-ledger.test.ts` adds seven extension tests (both validators, the
+  hint, end-to-end byte preservation, the respelling and invalid-UTF-8
+  matrix, and the writer refusals); `authoring.test.ts` adds validation
+  rows and an "authoring extensions" block. `finalization.test.ts`,
+  `worktree-maintenance.test.ts`, `work-directory.test.ts`,
+  `skill-contract.test.ts`, and `loop-lease.test.ts` follow the layout,
+  notes, and preservation-copy changes; older-layout cases now prepare
+  through a recorded older preparation (`legacyLayout`,
+  `prepareLegacyLayoutAgentWorktree`).
+- Reviews, all GPT-6.1 Sol. Worktree cleanup and ownership (c0b2363 to
+  f1bc79f): round 1 at high on c0b2363 found two should-fix, that folder
+  names do not prove who made a folder and that a symbolically linked root
+  let `rmdir` act outside it. Rounds 2 to 4 at xhigh each found a
+  should-fix race in parent removal, through removal by records (98a05ba)
+  and by pinned traversal with creation markers (8418c7e), so the approach
+  changed to keeping parent folders and reporting them (14acd50, 423b4dd).
+  Round 5 at xhigh found one nit, and round 6, at xhigh over
+  a9a23ed..f1bc79f, was clean. The user then chose the flat layout: its
+  first full-range round at xhigh found the `---` should-fix fixed in
+  147f2b1, and the scoped and final full-range rounds were clean.
+- Reviews of #3 and #18 item 1 (89573c5): round 1 at high over the full
+  range at c27b72a found no blocking or should-fix finding; one coverage
+  note, treated as a nit, was answered with the `replan-history` tests.
+  Round 2 at high, scoped, and round 3 at high over the full range at
+  89573c5 were clean. The first #16 pass (2d45c2f) took one round at
+  high over the full range, which was clean.
+- Reviews of #18 item 2 and the remaining #16 sites (6de62a5): round 1 at
+  high found five should-fix: a controller transfer into the author's
+  checkout dropped its bound, a removed checkout hid its branch, an
+  earlier use of the agent ID was held against the author, a missing
+  attested commit was skipped, and absent-retained reconciliation recorded
+  a lossy name. 01e0b50 fixed them. Round 2 at xhigh, scoped, found two
+  should-fix in the same areas, so per the convergence rule the approach
+  changed: a changelog author's checkout never becomes the controller's,
+  and lossy names are guarded once, where a disposition completes and
+  where branches are deleted (6de62a5). Round 3 at xhigh, scoped, and
+  round 4 at xhigh over the full range at 6de62a5 were clean.
+- Reviews of the rest: round 7 on #14 led to the sidecar-spacing docs fix
+  (a5601d5). The #11 docs were clean at high, and the scratch-file rule
+  drew one should-fix and one nit at high, then a clean round at xhigh.
+- Still open for 0.33.0: #18 item 3 (a replan approval goes stale when a
+  concurrent owner releases its claim), #4, and #17.
+- Guidance 32 adds behavior changes for the layout, preservation copies,
+  the changelog-only author, accepted releases with finished removals, and
+  exact branch names, an onboarding change for the scratch-file rule, and
+  integration changes for extensions and the CI contract, with four notice
+  bullets and no required answer.
+<!-- simple-changelogs-signature agent="Claude Opus 5.5 high" at="2026-10-20T13:33:59-05:00" -->
+
 ## 0.31.1 - 2026-10-17
 
 - Exact takeover evidence (`lib/worktree-coordination.ts`, issue

@@ -65,6 +65,8 @@ const REMOTE_BRANCH_SUPERSESSION_DIRECTORY = "remote-branch-supersession";
 
 const PRESERVED_SOURCE_OVERRIDE_DIRECTORY = "preserved-source-override";
 
+const CHANGELOG_AUTHOR_DIRECTORY = "changelog-author";
+
 const DIGEST_PATTERN = /^[0-9a-f]{64}$/u;
 
 const PERMISSION_DENIED_CODES = new Set(["EACCES", "EPERM", "EROFS"]);
@@ -1149,6 +1151,7 @@ const currentTargetRevision = (lease: LoopLease): string => {
 };
 
 type ReceiptSidecarDirectory =
+  | typeof CHANGELOG_AUTHOR_DIRECTORY
   | typeof PRESERVED_SOURCE_OVERRIDE_DIRECTORY
   | typeof REMOTE_BRANCH_ANCESTRY_DIRECTORY
   | typeof REMOTE_BRANCH_SUPERSESSION_DIRECTORY;
@@ -1391,6 +1394,7 @@ export {
   assertMatchingRun,
   assertNewAuthorPreparationAllowed,
   assertShipmentScopeRecorded,
+  CHANGELOG_AUTHOR_DIRECTORY,
   concurrentClaimFor,
   controllerLifecycle,
   currentTargetRevision,

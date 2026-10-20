@@ -30,6 +30,7 @@ export const SCHEMA_NAMES = [
   "post-cleanup-recovery",
   "shipment-outcome",
   "preserved-source-override",
+  "changelog-author",
   "remote-branch-reconciliation",
   "remote-branch-ancestry",
   "remote-branch-supersession",

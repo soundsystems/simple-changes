@@ -1,6 +1,12 @@
 import { existsSync, lstatSync, realpathSync, statSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import {
+  CHANGELOG_AUTHOR_PURPOSE,
+  readChangelogAuthors,
+  writeChangelogAuthors,
+} from "./changelog-authors.ts";
+import { releaseSurfacesIn } from "./changelog-coordination.ts";
+import {
   PATCH_EQUIVALENCE_MAX_COMMITS,
   type TargetContainmentMethod,
   targetContainmentAudit,
@@ -18,6 +24,7 @@ import {
   assertShipmentScopeRecorded,
   currentTargetRevision,
   DIGEST_PATTERN,
+  effectiveShipmentScopeFrozenAt,
   exactWorktreeLease,
   readLeaseFromCommonDirectory,
   requiredText,
@@ -32,6 +39,7 @@ import { verificationAgainst } from "./loop-lease-verify.ts";
 import { preparedWorktreePath, slug } from "./managed-worktrees.ts";
 import { runGit } from "./process.ts";
 import type {
+  ChangelogAuthorBinding,
   LoopLease,
   LoopOverride,
   LoopWorktreeDisposition,
@@ -78,10 +86,174 @@ export interface PreparedAgentWorktree {
   agentId: string;
   baseRevision: string;
   branch: string;
+  /**
+   * Present only for a changelog-only author added to a registered unit
+   * after the shipment scope froze: the unit, and the only paths it may
+   * change.
+   */
+  changelogAuthor?: { releaseSurfaces: string[]; unitId: string };
   created: boolean;
   path: string;
   runId: string;
 }
+
+/**
+ * The release surfaces a changelog-only author may change, once `prepare-agent
+ * --unit` has shown that it may join the unit: the run's scope froze, the
+ * purpose is a changelog, the frozen scope registers the unit, and the
+ * repository holds at least one release surface. Anything else is refused;
+ * it never creates a unit or widens the scope.
+ */
+const changelogAuthorSurfaces = (
+  lease: LoopLease,
+  unitId: string,
+  purpose: string
+): string[] => {
+  if (purpose !== CHANGELOG_AUTHOR_PURPOSE) {
+    throw new SimpleChangesError(
+      `--unit prepares only a changelog author, so pass --purpose ${CHANGELOG_AUTHOR_PURPOSE}. Any other author would widen a shipment whose scope froze.`,
+      EXIT_CODES.usage
+    );
+  }
+  if (!effectiveShipmentScopeFrozenAt(lease)) {
+    throw new SimpleChangesError(
+      `--unit adds a changelog author to a registered unit only after the shipment scope of ${lease.runId} froze, and this run's scope has not frozen. Prepare the author without --unit.`,
+      EXIT_CODES.unsafe
+    );
+  }
+  const units = lease.shipmentScope?.plan.units ?? [];
+  if (!units.some((unit) => unit.id === unitId)) {
+    throw new SimpleChangesError(
+      `Unit ${JSON.stringify(unitId)} is not registered in the frozen shipment scope of ${lease.runId} (registered units: ${units.map((unit) => unit.id).join(", ") || "none"}). A changelog author joins only a registered unit and never adds one.`,
+      EXIT_CODES.unsafe
+    );
+  }
+  const surfaces = releaseSurfacesIn(lease.primaryCheckout);
+  if (surfaces.length === 0) {
+    throw new SimpleChangesError(
+      `${lease.primaryCheckout} holds no release surface (a changelog or Simple Changelogs policy file), so a changelog-only author would have nothing it may change.`,
+      EXIT_CODES.unsafe
+    );
+  }
+  return surfaces;
+};
+
+// `--unit` adds a new author, or returns one it already bound to that unit;
+// it never binds an author registered or being prepared some other way.
+const assertChangelogBinding = (
+  agentId: string,
+  unitId: string | null,
+  binding: ChangelogAuthorBinding | undefined,
+  registeredPath: string
+): void => {
+  if (
+    unitId !== null &&
+    !(binding && binding.unitId === unitId && binding.path === registeredPath)
+  ) {
+    throw new SimpleChangesError(
+      `Agent ${agentId} is already registered or being prepared at ${registeredPath} without being bound to unit ${JSON.stringify(unitId)} as its changelog author. Use a new agent ID for the changelog author.`,
+      EXIT_CODES.unsafe
+    );
+  }
+};
+
+// Records a new preparation's changelog binding, or drops a stale binding
+// for its agent when it is an ordinary author. The binding is written before
+// the preparation, so the author is never registered unbound; a binding left
+// by an attempt that stopped before the lease recorded it binds nobody and is
+// replaced here.
+const bindChangelogAuthor = (
+  lease: LoopLease,
+  bindings: ChangelogAuthorBinding[],
+  preparation: LoopWorktreePreparation,
+  changelog: { releaseSurfaces: string[]; unitId: string } | null
+): void => {
+  const others = bindings.filter(
+    (item) => item.agentId !== preparation.agentId
+  );
+  if (changelog) {
+    writeChangelogAuthors(lease, [
+      ...others,
+      {
+        agentId: preparation.agentId,
+        baseRevision: preparation.baseRevision,
+        branch: preparation.branch,
+        path: preparation.path,
+        recordedAt: preparation.createdAt,
+        releaseSurfaces: changelog.releaseSurfaces,
+        unitId: changelog.unitId,
+      },
+    ]);
+  } else if (others.length !== bindings.length) {
+    writeChangelogAuthors(lease, others);
+  }
+};
+
+/**
+ * Whether a new author may be prepared: after the scope froze, only a
+ * changelog author for a registered unit, whose release surfaces this
+ * returns. Null means an ordinary author.
+ */
+const newAuthorReleaseSurfaces = (
+  lease: LoopLease,
+  unitId: string | null,
+  purpose: string
+): string[] | null => {
+  if (unitId !== null) {
+    return changelogAuthorSurfaces(lease, unitId, purpose);
+  }
+  assertNewAuthorPreparationAllowed(lease);
+  return null;
+};
+
+// An agent's existing registration, which prepare-agent returns unchanged.
+const reusedRegistration = (
+  lease: LoopLease,
+  inventory: RepositoryInventory,
+  existing: LoopWorktreeLease,
+  binding: ChangelogAuthorBinding | undefined
+): PreparedAgentWorktree => {
+  const agentId = existing.agentId as string;
+  if (!(existing.branch && existing.mutationAllowed)) {
+    throw new SimpleChangesError(
+      `Agent ${agentId} is registered without an authoring worktree.`,
+      EXIT_CODES.unsafe
+    );
+  }
+  const existingWorktree = inventory.worktrees.find(
+    (worktree) => worktree.path === existing.path
+  );
+  if (!existingWorktree || existingWorktree.branch !== existing.branch) {
+    throw new SimpleChangesError(
+      `Agent ${agentId} must resume prepared path ${existing.path} on registered branch ${existing.branch}; current branch is ${existingWorktree?.branch ?? "missing or detached"}.`,
+      EXIT_CODES.unsafe
+    );
+  }
+  return {
+    agentId,
+    baseRevision: existing.baselineHeadSha ?? lease.targetRevision,
+    branch: existing.branch,
+    created: false,
+    path: existing.path,
+    runId: lease.runId,
+    ...changelogAuthorReport(
+      binding?.path === existing.path ? binding : undefined
+    ),
+  };
+};
+
+// What prepare-agent reports about a changelog-only author.
+const changelogAuthorReport = (
+  binding: ChangelogAuthorBinding | undefined
+): Pick<PreparedAgentWorktree, "changelogAuthor"> =>
+  binding
+    ? {
+        changelogAuthor: {
+          releaseSurfaces: [...binding.releaseSurfaces],
+          unitId: binding.unitId,
+        },
+      }
+    : {};
 
 /**
  * Prepares, or returns the existing registration of, the agent's worktree
@@ -95,10 +267,15 @@ export const prepareAgentWorktree = (
   runId: string,
   agentIdInput: string,
   purposeInput: string,
-  onPrepared?: (prepared: PreparedAgentWorktree) => void
+  onPrepared?: (prepared: PreparedAgentWorktree) => void,
+  // `--unit`: add a changelog-only author to this registered unit after the
+  // shipment scope froze.
+  unitIdInput?: string
 ): PreparedAgentWorktree => {
   const agentId = requiredText(agentIdInput, "agent ID");
   const purpose = slug(requiredText(purposeInput, "purpose"), "work");
+  const unitId =
+    unitIdInput === undefined ? null : requiredText(unitIdInput, "unit ID");
   const opening = locateRepository(repositoryPath);
   const prepared = (result: PreparedAgentWorktree): PreparedAgentWorktree => {
     if (onPrepared) {
@@ -129,33 +306,16 @@ export const prepareAgentWorktree = (
         inventory,
         "This legacy run has no opening remote inventory and cannot prepare new authoring work; use close-only post-cleanup recovery. Next: run `simple-changes loop recover-post-cleanup` when cleanup is already complete, or `simple-changes loop close-equivalent` when the work is already contained in the target."
       );
+      const bindings = readChangelogAuthors(lease);
+      const binding = bindings.find((item) => item.agentId === agentId);
       const existing = lease.worktrees.find(
         (worktree) => worktree.agentId === agentId
       );
       if (existing) {
-        if (!(existing.branch && existing.mutationAllowed)) {
-          throw new SimpleChangesError(
-            `Agent ${agentId} is registered without an authoring worktree.`,
-            EXIT_CODES.unsafe
-          );
-        }
-        const existingWorktree = inventory.worktrees.find(
-          (worktree) => worktree.path === existing.path
+        assertChangelogBinding(agentId, unitId, binding, existing.path);
+        return prepared(
+          reusedRegistration(lease, inventory, existing, binding)
         );
-        if (!existingWorktree || existingWorktree.branch !== existing.branch) {
-          throw new SimpleChangesError(
-            `Agent ${agentId} must resume prepared path ${existing.path} on registered branch ${existing.branch}; current branch is ${existingWorktree?.branch ?? "missing or detached"}.`,
-            EXIT_CODES.unsafe
-          );
-        }
-        return prepared({
-          agentId,
-          baseRevision: existing.baselineHeadSha ?? lease.targetRevision,
-          branch: existing.branch,
-          created: false,
-          path: existing.path,
-          runId: lease.runId,
-        });
       }
 
       const finalizePreparation = (
@@ -217,6 +377,12 @@ export const prepareAgentWorktree = (
           created: true,
           path: createdWorktree.path,
           runId: currentLease.runId,
+          ...changelogAuthorReport(
+            readChangelogAuthors(currentLease).find(
+              (item) =>
+                item.agentId === agentId && item.path === preparation.path
+            )
+          ),
         });
       };
 
@@ -299,9 +465,10 @@ export const prepareAgentWorktree = (
         (preparation) => preparation.agentId === agentId
       );
       if (pending) {
+        assertChangelogBinding(agentId, unitId, binding, pending.path);
         return resumePreparation(lease, pending);
       }
-      assertNewAuthorPreparationAllowed(lease);
+      const releaseSurfaces = newAuthorReleaseSurfaces(lease, unitId, purpose);
       const verification = verificationAgainst(lease, inventory);
       if (!verification.ok) {
         throw new SimpleChangesError(
@@ -346,6 +513,14 @@ export const prepareAgentWorktree = (
         path,
         purpose,
       };
+      bindChangelogAuthor(
+        lease,
+        bindings,
+        newPreparation,
+        releaseSurfaces !== null && unitId !== null
+          ? { releaseSurfaces, unitId }
+          : null
+      );
       const preparingLease = writeLease({
         ...withMutationEvidence(lease, newPreparation.createdAt),
         preparations: [...lease.preparations, newPreparation],

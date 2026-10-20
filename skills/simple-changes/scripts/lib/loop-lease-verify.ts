@@ -1,3 +1,4 @@
+import { changelogAuthorViolations } from "./changelog-authors.ts";
 import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
 import { captureInventory, locateRepository } from "./inventory.ts";
 import {
@@ -1189,6 +1190,7 @@ const verificationAgainst = (
       });
     }
   }
+  violations.push(...changelogAuthorViolations(lease, inventory));
   return {
     active: true,
     checkedAt: new Date().toISOString(),

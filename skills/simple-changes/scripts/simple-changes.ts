@@ -474,7 +474,7 @@ Usage:
   simple-changes prune --approved-by ID --reason TEXT [--target REF]
     [--dry-run] [--json] [--repo PATH]
   simple-changes prepare-agent --run-id ID --agent-id ID --purpose SLUG
-    [--json] [--repo PATH]
+    [--unit ID] [--json] [--repo PATH]
   simple-changes workdir --agent-id ID [--json] [--repo PATH]
   simple-changes workdir remove PATH [--json] [--repo PATH]
   simple-changes scratch-file-rule refresh --instruction-file PATH
@@ -633,6 +633,8 @@ interface CliOptions {
   templatePath?: string;
   uiArtifacts: boolean;
   uiArtifactVersioning?: RepoPolicy["uiArtifactVersioning"];
+  // prepare-agent --unit: the registered unit a changelog author joins.
+  unitId?: string;
   untilMerged?: string;
   versionAuthorized: boolean;
   worktreePath?: string;
@@ -715,6 +717,7 @@ const VALUED_OPTIONS = new Set([
   "--target",
   "--template",
   "--ui-versioning",
+  "--unit",
   "--until-merged",
   "--version",
   "--worktree",
@@ -1150,6 +1153,7 @@ const applyLoopValuedOption = (
     "--state": "statePath",
     "--status-digest": "statusDigest",
     "--template": "templatePath",
+    "--unit": "unitId",
     "--until-merged": "untilMerged",
     "--upstream": "forkUpstream",
   };
@@ -5303,7 +5307,8 @@ const runPrepareAgent = (options: CliOptions): void => {
         null,
         null
       );
-    }
+    },
+    options.unitId
   );
   // Commit attestation is a required step of every author's workflow: the
   // review ledger cannot reconstruct who wrote a commit after the fact.
@@ -5315,7 +5320,11 @@ const runPrepareAgent = (options: CliOptions): void => {
   writeOutput(
     { ...prepared, afterEveryCommit, workDir },
     options.json,
-    `${prepared.created ? "Created" : "Reused"} ${prepared.path}\nBranch: ${prepared.branch}\nRun: ${prepared.runId}\nWork directory: ${workDir}\nRequired after every commit: ${afterEveryCommit}\n`
+    `${prepared.created ? "Created" : "Reused"} ${prepared.path}\nBranch: ${prepared.branch}\nRun: ${prepared.runId}\n${
+      prepared.changelogAuthor
+        ? `Changelog author for unit ${prepared.changelogAuthor.unitId}: change only ${prepared.changelogAuthor.releaseSurfaces.join(", ")}.\n`
+        : ""
+    }Work directory: ${workDir}\nRequired after every commit: ${afterEveryCommit}\n`
   );
 };
 

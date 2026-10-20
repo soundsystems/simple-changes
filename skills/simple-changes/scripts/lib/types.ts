@@ -1469,9 +1469,31 @@ export interface LoopLease {
   worktrees: LoopWorktreeLease[];
 }
 
+/**
+ * A changelog-only author added to a registered unit after the run's
+ * shipment scope froze. It may change only `releaseSurfaces`.
+ */
+export interface ChangelogAuthorBinding {
+  agentId: string;
+  baseRevision: string;
+  branch: string;
+  path: string;
+  recordedAt: string;
+  releaseSurfaces: string[];
+  unitId: string;
+}
+
+/** The sidecar beside the lease that holds a run's changelog authors. */
+export interface ChangelogAuthorRecord {
+  authors: ChangelogAuthorBinding[];
+  runId: string;
+  schemaVersion: 1;
+}
+
 export interface LoopViolation {
   changeDigest: string | null;
   code:
+    | "changelog-author-outside-release-surfaces"
     | "common-git-directory-mismatch"
     | "missing-preserved-worktree"
     | "missing-retained-worktree"

@@ -5498,6 +5498,11 @@ describe("active integration-loop lease", () => {
       "author",
       "run-created"
     );
+    // A run-created author retires only on exact-byte target proof, which
+    // unique work the target lacks fails.
+    writeFixture(prepared.path, "unique.txt", "not in the target\n");
+    git(prepared.path, ["add", "unique.txt"]);
+    git(prepared.path, ["commit", "-m", "Unique author work"]);
     git(fixture.root, ["worktree", "remove", "--force", prepared.path]);
     expect(() =>
       retireAbsentWorktree(
@@ -5508,7 +5513,7 @@ describe("active integration-loop lease", () => {
         "user",
         "Run-created"
       )
-    ).toThrow("must name a preserved registration");
+    ).toThrow("exact-byte target proof failed");
     expect(() =>
       retireAbsentWorktree(
         controller,

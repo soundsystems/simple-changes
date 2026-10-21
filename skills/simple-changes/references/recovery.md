@@ -199,6 +199,20 @@ anything, never proves a scoped unit was delivered, and never authorizes
 branch cleanup; do not recreate a deleted checkout merely to satisfy the
 record.
 
+A run-created authoring checkout whose work reached the target inside a
+broader commit fails ancestry and patch-equivalence containment, so automatic
+cleanup keeps it. After the user approves removing that checkout, keep its
+branch and record `loop retire-absent-worktree` on the same approval. For a
+run-created registration it also requires exact-byte target proof: the branch
+still exists under its exact registered name, is unique to that registration
+and checked out nowhere, and every path its commits since the merge base
+touched equals the current target's bytes. A byte difference, a missing or
+shared branch, or a merge commit in that range refuses with nothing recorded.
+The proof goes in its own immutable recovery-history record, not the lease,
+and accounts for the checkout in verification, `loop close-equivalent`, and
+`loop recover-post-cleanup` only while the branch stays at the proven head. It
+deletes nothing, forces no Git operation, and claims no ancestry or delivery.
+
 ## Repair bookkeeping after cleanup
 
 A legacy ledger may lack persisted opening evidence even though cleanup already

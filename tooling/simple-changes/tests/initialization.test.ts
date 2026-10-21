@@ -74,7 +74,7 @@ describe("first-run initialization", () => {
     expect(from19.changes.map((item) => item.version)).toEqual([
       20, 20, 21, 21, 21, 22, 22, 22, 22, 23, 23, 24, 24, 24, 25, 25, 25, 26,
       26, 26, 27, 27, 27, 28, 28, 28, 28, 28, 28, 28, 29, 29, 29, 29, 30, 30,
-      31, 31, 31, 31, 31, 31, 31, 31, 31,
+      31, 31, 31, 31, 31, 31, 31, 31, 31, 32, 32, 32, 32, 32, 32, 32, 32,
     ]);
     expect(
       from19.changes.filter((item) => item.version === 27).at(-1)?.summary
@@ -100,8 +100,13 @@ describe("first-run initialization", () => {
     expect(
       from19.changes.find((item) => item.version === 31)?.summary
     ).toContain("Adversarial review compares canonical model IDs");
-    expect(from19.changes.at(-1)?.summary).toContain(
+    expect(
+      from19.changes.filter((item) => item.version === 31).at(-1)?.summary
+    ).toContain(
       "Every path built from a run ID requires the `run-[a-z0-9-]+` form"
+    );
+    expect(from19.changes.at(-1)?.summary).toContain(
+      "The GitLab provider reference documents recovery of a passed hosted CI run"
     );
     const from29 = inspectGuidanceUpdate(
       {
@@ -111,7 +116,8 @@ describe("first-run initialization", () => {
       changelogCoordination
     );
     expect(from29.changes.map((item) => item.version)).toEqual([
-      30, 30, 31, 31, 31, 31, 31, 31, 31, 31, 31,
+      30, 30, 31, 31, 31, 31, 31, 31, 31, 31, 31, 32, 32, 32, 32, 32, 32, 32,
+      32,
     ]);
     expect(from29.summaryBullets.join(" ")).toContain(
       "`author attest --complete-identity`"
@@ -124,9 +130,23 @@ describe("first-run initialization", () => {
       changelogCoordination
     );
     expect(from30.changes.map((item) => item.version)).toEqual([
-      31, 31, 31, 31, 31, 31, 31, 31, 31,
+      31, 31, 31, 31, 31, 31, 31, 31, 31, 32, 32, 32, 32, 32, 32, 32, 32,
     ]);
     expect(from30.requiredAnswers).toEqual([]);
+    const from31 = inspectGuidanceUpdate(
+      {
+        ...DEFAULT_POLICY,
+        guidance: { disposition: "accepted", version: 31 },
+      },
+      changelogCoordination
+    );
+    expect(from31.changes.map((item) => item.version)).toEqual([
+      32, 32, 32, 32, 32, 32, 32, 32,
+    ]);
+    expect(from31.requiredAnswers).toEqual([]);
+    expect(from31.summaryBullets.join(" ")).toContain(
+      "`scratch-file-rule refresh`"
+    );
     expect(from30.summaryBullets.join(" ")).toContain(
       "compares the model IDs your coding agents report"
     );
@@ -349,7 +369,7 @@ describe("first-run initialization", () => {
           available: true,
           owner: "simple-changelogs",
         },
-        currentVersion: 31,
+        currentVersion: 32,
         headline: "**Simple Changes has recently been updated.**",
         presentationOrder: [
           "required-answers",

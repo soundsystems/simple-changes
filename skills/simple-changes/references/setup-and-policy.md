@@ -283,7 +283,16 @@ the system temporary directory. An agent that starts another agent gives it a
 folder of its own and names it in the brief, and when the task ends it deletes
 exactly its own folder, never another agent's and never by pattern across a
 shared directory, unless the user asks to keep it or a Simple Changes run
-reported it, which the run's clean finalization removes. Offer **Add the rule**
+reported it, which the run's clean finalization removes unless it holds a
+`preservation-copy`. It also keeps
+uncommitted work in Git on a branch of its own rather than as loose copies,
+allows an unavoidable file copy only in a read-only `preservation-copy`
+directory at the top of that folder (a run's work directory, in a run) with a
+`manifest.json` (repository path, remote URL, HEAD SHA, branch, `git status
+--porcelain` output, reason, and time) until a pushed branch or the target contains
+the work, and has agents create
+worktrees where their brief or a Simple Changes run puts them, removing with
+`rmdir` any parent folder they made once its worktrees are gone. Offer **Add the rule**
 first and **Leave it out** second. Non-interactive setup adds it only with
 `--scratch-file-rule add`; omitting the flag leaves the file as it is, and
 adding the rule needs exactly one target. The markers never change, so
@@ -436,6 +445,20 @@ or `null` for no cap). For the stricter value, `any` beats
 Runtimes before 0.31.0 reject a sidecar holding `reviewLoop`, so it is written
 only for answers other than the recommended ones. See
 [review rounds](review-and-merge.md#review-rounds).
+
+Each role may also carry an `extensions` object for fields a newer Simple
+Changes adds, under the
+[review ledger's rule](review-and-merge.md#review-identity-and-the-review-ledger):
+only a field whose absence leaves a reader stricter goes there, and an unknown
+key beside it fails with a hint to update the runtime. A reader accepts its
+members without interpreting them. A sidecar or answer holding extensions must
+spell its JSON as Simple Changes writes it, apart from whitespace, so every
+member keeps its exact value; a number, escape, key order, or repeated key
+spelled otherwise, or a byte that is not valid UTF-8, makes the sidecar
+malformed and the answer refused. A write keeps every value but may change the
+file's spacing, as it does for a sidecar without extensions. An answer replaces the whole file, so it keeps only the
+extensions it holds; setup never writes one itself. Runtimes before 0.32.0
+reject it.
 
 Before writing, resolve the role; `most-capable` is the most capable model the
 target agent itself reports, never ranked from memory. Use the nearest effort

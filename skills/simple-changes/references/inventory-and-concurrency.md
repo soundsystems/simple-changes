@@ -289,8 +289,17 @@ An agent joining the same integration unit must begin with `prepare-agent`. The 
 pending preparation before creating a unique branch and sibling worktree from
 the pinned target revision, then registers the completed worktree with the
 active run and returns its exact path and the agent's
-[work directory](#agent-work-directories). Use that path as the agent's working
-directory before it edits, formats, generates, stages, or commits files.
+[work directory](#agent-work-directories). The worktree goes directly beside
+the primary checkout, at
+`.simple-changes-<repository>--<run>--<purpose>--<agent>`, so Git creates only
+that one directory and no parent folder; each part is reduced to lowercase
+letters, digits, and hyphens, so the name cannot leave that folder. The
+command refuses, creating nothing, when anything already holds that path or the
+branch name. Worktrees an older runtime made under
+`.simple-changes-worktrees/<repository>/` keep working, because every command
+finds a run's worktrees by the paths the run recorded. Use the returned path
+as the agent's working directory before it edits, formats, generates, stages,
+or commits files.
 Repeating the command for the same agent ID returns the existing registration;
 if creation stopped partway through, the same command validates and resumes the
 recorded preparation instead of guessing or creating another branch. It refuses
@@ -298,9 +307,17 @@ to adopt staged, unstaged, or untracked content, and a registered author loses
 mutation authority after switching away from the recorded branch.
 
 An independent feature agent instead creates its own isolated worktree and runs
-`worktree claim` as the immediate next command. Do not inspect project files
+`worktree claim` as the immediate next command. Create it directly beside the
+primary checkout, as `.simple-changes-<repository>--<name>`, so it needs no
+parent folder; never in a folder made for it, such as
+`mkdir -p ~/Developer/<repo>-worktrees`. Simple Changes never removes a
+worktree's parent folder; cleanup names an empty folder left in the older
+`.simple-changes-worktrees/<repository>/` layout in its notes. If your command
+made a parent folder, `rmdir` it (never `rm -r`) after its worktree is removed,
+and only when it is empty and you created it. Do not inspect project files
 from the new checkout, install dependencies, format, generate, edit, stage, or
-commit there before the claim succeeds. It does not acquire a second integration
+commit there before the
+claim succeeds. It does not acquire a second integration
 lease and does not need `prepare-agent` unless its work is being assigned into
 the active integration run.
 
@@ -347,7 +364,8 @@ run used, including those of authors who finished and of controllers who
 handed off. A `loop finalize` that completes or closes without mutation, and a
 successful `loop end`, remove exactly those directories and report them as
 `removedWorkDirectories`; the CLI keeps what it ingested in its own state. A
-directory that holds a registered checkout is kept and reported instead. A
+directory that holds a registered checkout or a preservation copy is kept and
+reported instead. A
 paused or relinquished run keeps them for the resume. Because every directory
 is unique, two runs, or two sessions sharing an agent ID, never share or remove
 each other's files. Under the loop locks, the next `loop start` removes the
@@ -368,6 +386,29 @@ harness scratch directory, or any other shared directory, and never a
 directory you did not create or receive. A file another agent reads after
 you finish stays where it is until finalization removes it: leave the
 directory in place and report the path.
+
+Preserve uncommitted work in Git, not as loose copies: commit it on its own
+branch, and have its owner record the
+`worktree pause --disposition preserve-in-place` receipt
+([paused changes](recovery.md#released-claims-and-paused-changes)). Never
+snapshot a checkout as patches or loose files beside it, in the folder that
+holds your repositories, or anywhere else outside Git. When a file-level copy
+is unavoidable, it goes only in a `preservation-copy` directory at the top of
+your work directory, with a `manifest.json` in it recording the repository
+path, remote URL, HEAD SHA, branch, `git status --porcelain` output, reason,
+and timestamp. Then make it read-only:
+`chmod -R a-w "$WORK_DIR/preservation-copy"`. A clean `loop finalize` or
+`loop end`, and the next `loop start`, keep a work directory that holds
+`preservation-copy` and warn with its path instead of removing it; the CLI
+checks only that the directory is there, not what it holds or where else you
+copied work. Read-only, the copy also survives a recursive delete by a process
+that honors file permissions, such as an older runtime's cleanup run as an
+ordinary user. It does not stop a process running as root: when a runtime
+running as root may close the run, commit the work to its own branch instead,
+because a file copy has no protection then. Once you prove the target or a
+pushed branch contains the copied work, run
+`chmod -R u+w "$WORK_DIR/preservation-copy"` and remove the directory with
+`simple-changes workdir remove <path>`.
 
 ## Parallel agents
 
@@ -445,6 +486,32 @@ the existing registration instead of creating a second worktree. The
 replacement inspects the existing commits and uncommitted changes before
 editing. A resumed run whose scope froze can finish registered agents but
 cannot prepare new ones.
+
+One exception lets a frozen run finish a changelog the repository requires
+for work it already scoped. `prepare-agent --run-id <run> --agent-id <new ID>
+--purpose changelog --unit <unit ID>` adds a changelog-only author to a unit
+the frozen shipment scope registers. It creates no unit, widens no scope, and
+needs no new approval. It is refused before the scope freezes, for any other
+purpose, for a unit the frozen scope does not register, for an agent ID
+already registered some other way, and when the primary checkout holds no
+release surface (`CHANGELOG.md`, `DEVELOPER_CHANGELOG.md`,
+`CMS_CHANGELOG.json`, or a Simple Changelogs policy file). Without `--unit`, a
+frozen run still refuses every new author. The output's `changelogAuthor`
+names the unit and the release surfaces the author may change, recorded when
+it was prepared, and its checkout never becomes the controller's: resume or
+take over the run from the controller's own checkout. Any other change, in its
+worktree, on its branch (even after its checkout is removed), or in a commit
+it attested since it was prepared, is a
+`changelog-author-outside-release-surfaces` violation: the unit is stale and
+verification refuses it, as it does when Git no longer has a commit it
+attested. Restore those paths
+and integrate no commit that changes them; an attested commit stays in the
+review ledger, so its unit stays stale for the run, and the work moves to a
+replan or a fresh loop. The author attests every commit as usual, which
+changes the unit's authors digest, so reviews recorded before the attestation
+stop counting: record the authors of the new head and review it again. The
+controller integrates the author's commit into the unit like any prepared
+author's.
 
 Read-only work pinned to one exact head may also run in parallel: independent
 review and local reproduction of required checks. An agent never reviews a
@@ -721,11 +788,12 @@ A paused worktree that appeared after loop start, or an opening preserved
 worktree whose owner changed it before pausing, is registered with `loop
 adopt-worktree` or `loop accept-paused-change` as
 [recovery](recovery.md#released-claims-and-paused-changes) describes. `loop
-allow` remains the separate exceptional user-approved override path. Releasing
-the claim of an adopted checkout reopens its link and blocks the run's guarded
-mutations until the new owner's claim is registered or its pause is accepted,
-so release it only to hand the checkout to a new owner, who claims it right
-away, as that section describes.
+allow` remains the separate exceptional user-approved override path. An
+owner's completed release of an adopted checkout that records its exact
+accepted state keeps the link current, so the run keeps shipping. A release
+that records any other state, or a new owner's claim that the run does not
+register as a concurrent author, blocks the run's guarded mutations until a
+pause of the checkout's current state is accepted, as that section describes.
 
 Harness support is not uniform. The host orchestration layer must probe exact
 discovery, delivery, waiting, scope, and worktree-identity capabilities before
@@ -807,9 +875,13 @@ zero-unique-commit result before deletion.
 The disposition permits only that opening worktree's absence. It does not
 remove the path, authorize `--force`, delete its branch, suppress other
 violations, survive an intervening worktree change, or match when its recorded
-target ref or revision differs from the active lease. Run the exact removal
-through `loop exec` so preflight sees the recorded disposition and postflight
-proves only the authorized path disappeared.
+target ref differs from the active lease's or, until finalization records the
+removal as completed, when its recorded target revision differs. Run the exact
+removal through `loop exec` so preflight sees the recorded disposition and
+postflight proves only the authorized path disappeared. A removal recorded as
+completed keeps accepting the absence after the target moves, such as through
+a guarded fetch in a resumed run, so the run does not report its own finished
+removal as `missing-preserved-worktree`.
 
 If a preserved worktree the run did not create has already disappeared
 because its owning task removed it, `loop retire-absent-worktree` records the

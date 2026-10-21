@@ -1,5 +1,149 @@
 # Changelog
 
+## 0.32.0 - 2026-10-20
+
+- `prepare-agent` now creates each agent's worktree directly beside the
+  primary checkout, as
+  `.simple-changes-<repository>--<run>--<purpose>--<agent>`, instead of
+  under `.simple-changes-worktrees/<repository>/`. The folder that holds
+  the primary checkout already exists, so Git creates only the worktree's
+  own folder and Simple Changes creates no parent folder; removing the
+  worktree at cleanup leaves nothing behind. Each part of the name is
+  reduced to lowercase letters, digits, and hyphens, so it cannot leave
+  that folder, and `prepare-agent` refuses, creating nothing, when anything
+  already holds the path, even a dangling symbolic link. The branch name is
+  unchanged. Agents that claim a worktree of their own are now told to
+  create it beside the primary checkout too, as
+  `.simple-changes-<repository>--<name>`, never in a folder made for it.
+- Worktrees an older release made under `.simple-changes-worktrees/` keep
+  working, because every command finds a run's worktrees by the paths the
+  run recorded. A preparation an older release recorded there resumes only
+  while its folder still exists; if the folder is gone, `prepare-agent`
+  asks you to restore it instead of creating it. Simple Changes never
+  removes a worktree's parent folder. When `loop finalize`,
+  `loop close-equivalent`, `worktree cleanup`, or `prune` leaves one of
+  those older folders empty, it names the folder in an informational note
+  in its JSON `notes`, also printed after `loop finalize`, `worktree
+  cleanup`, and `prune`, and leaves it for you. A note never blocks
+  completion.
+- Keep uncommitted work in Git: commit it on a branch of its own and have
+  its owner record a `worktree pause --disposition preserve-in-place`
+  receipt. When a file copy is unavoidable, the agent puts it in a
+  read-only `preservation-copy` directory at the top of its work directory,
+  with a `manifest.json`. A clean `loop finalize` or `loop end`, and the
+  next `loop start`, now keep a work directory that holds
+  `preservation-copy` and report it with the `chmod -R u+w` and
+  `simple-changes workdir remove` commands to run once the target or a
+  pushed branch holds that work. The check only sees that the directory
+  exists. Its read-only files also stop an older release's cleanup run as
+  an ordinary user, but not a process running as root, so commit the work
+  to a branch when that can happen.
+- The optional scratch-file rule that setup writes to AGENTS.md or
+  CLAUDE.md now also tells agents to preserve uncommitted work in Git
+  rather than as loose copies, to keep an unavoidable file copy only in
+  that read-only `preservation-copy` directory until a pushed branch or the
+  target contains the work, and to create worktrees where their brief or a
+  Simple Changes run puts them, never in a folder made beside your
+  repositories, removing any such folder they made with `rmdir` once its
+  worktrees are gone. Because the rule's text changed, `initialize` reports
+  a copy an earlier release wrote as `stale` and offers
+  `simple-changes scratch-file-rule refresh --instruction-file <path>`,
+  which rewrites only that block.
+- A run whose shipment scope froze, for example because the turn-end
+  finalize relinquished it, can now add a changelog-only author to a unit
+  the frozen scope already registers:
+  `simple-changes prepare-agent --run-id <run> --agent-id <new ID>
+  --purpose changelog --unit <unit ID>`. It creates no unit, widens no
+  scope, and needs no new approval. The author may change only the release
+  surfaces the primary checkout held when it was prepared, out of
+  `CHANGELOG.md`, `DEVELOPER_CHANGELOG.md`, `CMS_CHANGELOG.json`, and the
+  Simple Changelogs policy files; the new `changelogAuthor` output lists
+  them. `--unit` is refused before the scope freezes, for any other
+  purpose, for a unit the scope does not register, for an agent ID already
+  registered another way, and in a repository with no release surface.
+  Without `--unit`, a frozen run still refuses every new author.
+- Any other change by that author, whether uncommitted, on its branch even
+  after its checkout is removed, or in a commit it attested, makes
+  `loop verify` report the new `changelog-author-outside-release-surfaces`
+  violation and the unit stale. An attested commit stays in the review
+  ledger, so that unit then stays stale for the run; replan it or ship the
+  work in a fresh loop. The author's checkout never becomes the
+  controller's: `loop start --mode resume` and an approved `loop takeover`
+  run from it are refused. Its attestation changes the unit's authors
+  digest, so reviews recorded before it stop counting and the head needs a
+  fresh review.
+- An owner whose pause the controller accepted can now release its claim
+  as finished work with `worktree release` or `initialize --mode handoff`,
+  without claiming and pausing again. While the release recorded the
+  checkout's exact path, branch, HEAD, and status digest, that state
+  matches the accepted pause and the registered baseline, and no newer
+  claim holds the checkout, `loop verify` stays clean and the run keeps
+  shipping. Before, that release made every guarded step fail with
+  `coordination-claim-stale`, which on an adopted checkout now says which
+  of these no longer holds.
+- `worktree resume-ready` now works in a run that replaced another through
+  an approved `loop replan`, using the owner's pause receipt for the
+  replaced run, while the checkout is unchanged. When it still refuses, it
+  prints the owner's exact `worktree pause` command for the current run.
+- A resumed run no longer reports a worktree its own finalization removed
+  as missing. Before, once a guarded fetch moved the target, that path was
+  reported as `missing-preserved-worktree` and needed a
+  `retire-absent-worktree` approval. A removal that finalization recorded
+  as completed now stays accepted after the target moves; a removal that
+  is only intended still holds only at the target revision its audit used.
+- Simple Changes now records a branch only by its exact name, which fixes
+  the known limit 0.31.1 listed. Git output is read as UTF-8, so a branch
+  name that is not valid UTF-8, or that contains U+FFFD, can read the same
+  as another one. `worktree claim`, `worktree pause`,
+  `worktree release --ready-receipt`, `loop rebaseline`,
+  `loop adopt-worktree`, `loop accept-paused-change`,
+  `loop dispose-worktree`, and `loop retain-worktree` refuse such a branch
+  with exit 5, name the checkout, and write nothing, and `loop start`
+  refuses while any worktree of the repository is on one. Rename the
+  branch to a valid UTF-8 name and retry. `loop finalize` reports such a
+  branch as a cleanup error, leaves that claim, registration, and checkout
+  as they are, and never deletes a branch whose name is not exact.
+  Releasing such a claim stays allowed but records no checkout state, and
+  `loop status` and `loop verify` no longer admit an older claim on such a
+  branch as a concurrent author; verification names the worktree by path
+  instead. Records an older release wrote keep their names until they are
+  released or replaced.
+- The review ledger and the authoring file now have an `extensions`
+  object, at the ledger root, on each attestation, completion, and review
+  attempt, and on each role in the authoring file. A later Simple Changes
+  can add a field there without 0.32.0 or later reading the file as
+  malformed: a reader accepts its members without interpreting them, and
+  only a field whose absence leaves a reader stricter goes there. An
+  unknown key beside it now says a newer Simple Changes may have written
+  it and to update this runtime. Nothing writes `extensions` yet, so files
+  0.32.0 writes keep the shape 0.31.x reads, but releases before 0.32.0
+  reject a ledger or authoring file that holds it.
+- A ledger or authoring file that holds extensions must spell its JSON the
+  way Simple Changes writes it, which usually matters only after a hand
+  edit. A number, string escape, key order, or repeated key spelled
+  otherwise, or a byte that is not valid UTF-8, makes the file malformed,
+  and such a ledger blocks acceptance and ledger writes until it is
+  restored; an authoring answer spelled that way is refused. A ledger write
+  keeps every extension byte for byte, and a ledger holding extensions
+  that differs only in spacing is read but never rewritten. A write to the
+  authoring file keeps every extension value but may change its spacing.
+- The GitLab provider reference now describes how a repository adapter
+  recovers a hosted CI run that passed but whose result it failed to
+  publish: it records a `partial` provider receipt naming the exact
+  pipeline and attempt, and recovery checks that exact pipeline again and
+  republishes its result without starting another run or adopting an
+  unrelated passing one. The GitHub reference points to the same contract.
+  Simple Changes runs no CI itself, so its behavior is unchanged.
+- Sharing a repository with an older release: it ignores the new
+  `changelog-author` record, so it treats a changelog-only author as an
+  ordinary prepared author without the release-surface limit, and it
+  rejects `prepare-agent --unit` as an unknown option. The lease,
+  coordination, ledger, and outcome formats are unchanged.
+- The guidance 32 update notice describes the worktree layout, the stale
+  scratch-file rule, the changelog-only author, and the extension point,
+  and needs no answer.
+<!-- simple-changelogs-signature agent="Claude Opus 5.5 high" at="2026-10-20T13:31:42-05:00" -->
+
 ## 0.31.1 - 2026-10-17
 
 - **Bug Fixes & Improvements**:
@@ -508,78 +652,3 @@
   your releases changes, because older Simple Changelogs names no tag. Hosted
   GitHub or GitLab Releases are out of scope.
 <!-- simple-changelogs-signature agent="Claude Opus 5.5 xhigh" at="2026-10-07T14:50:00-05:00" -->
-
-## 0.25.2 - 2026-10-06
-
-- `acknowledge-update` now records a guidance decision by changing only the
-  `guidance` disposition and version in `.simple-changes.json`. Every other
-  saved byte stays as written, including your settings, key order, spacing,
-  and line endings. It used to save the settings in effect for that run, so a
-  policy this clone had not confirmed lost its elevated settings (push
-  `configure-harness` was saved as `ask`) and gained default fields such as
-  `proposalScheduling`. Acknowledging still grants no authority. Repeating
-  the decision already recorded writes nothing, so a confirmed policy stays
-  confirmed. For a policy with elevated settings, a new decision changes the
-  bytes its trust receipt covers, so setup must confirm it again, and one that
-  would turn an unconfirmed file back into bytes an earlier receipt confirmed
-  is refused, with nothing written; run setup to confirm the policy instead.
-  Setup and `acknowledge-update` now take the repository lock outside a loop
-  too, so either can fail as busy while the other runs.
-- `update-local-forks` no longer rewrites version text in a fork. Each
-  fork-owned line that names the previous Simple Changes release, or the
-  previous `CURRENT_GUIDANCE_VERSION`, is listed in the plan with its line
-  number and a suggested replacement, and you change it by hand. Most forks
-  have one such line, in a test that checks the bundled version. Files the
-  fork carries unchanged from upstream take upstream's new bytes and are never
-  listed, so a carried line such as "Simple Changes 0.25.0 or later" keeps its
-  meaning. Plan again instead of applying a plan saved by 0.25.1 that rewrites
-  version text or a file it marks current; apply refuses it.
-<!-- simple-changelogs-signature agent="Claude Opus 5.5 xhigh" at="2026-10-06T19:45:00-05:00" -->
-
-## 0.25.1 - 2026-10-05
-
-- `update-local-forks` now moves a fork's pin when a release received review
-  fixes after its release notes were written. It pins a verified commit that
-  carries exactly the installed release tree, instead of refusing and leaving
-  the pin to be set by hand. It still never pins a guess: if the installed
-  skill matches no commit of that release byte for byte, the plan keeps the
-  pin and says how many commits it checked.
-- The byte-for-byte check now compares raw file contents and file names. A
-  release whose file contents contain invalid UTF-8 can now verify, and a
-  look-alike install whose bytes or names differ no longer does. Applying a
-  plan made by this version writes every file's contents byte for byte,
-  including merges and version rewrites. Plan again instead of applying a
-  plan saved by an earlier version when any file involved holds invalid UTF-8.
-  A release or install with a file name that is not valid UTF-8 is refused
-  instead of pinned, and non-ASCII file names such as `café.txt` now update
-  and delete cleanly after they are pinned.
-- Pin updates no longer rewrite past release entries in a fork's maintenance
-  notes when their `#` headings name a commit, range, or date, or when they
-  continue the history log, including notes with Windows line endings. The
-  lines under a heading that starts with "Current" are still updated when that
-  heading is not inside a history section. Underlined (Setext) headings are
-  not recognized.
-<!-- simple-changelogs-signature agent="Claude Opus 5.5 xhigh" at="2026-10-05T22:00:40-05:00" -->
-
-## 0.25.0 - 2026-10-05
-
-- Your repository can now add an `execGuard` check to `.simple-changes.json`.
-  Simple Changes runs it, with the command appended, before every
-  `loop exec` command, and refuses the command when the check fails. For
-  example, it can block a merge until hosted CI has passed for that exact
-  commit; the check decides which commands it gates. Add it only once every
-  copy of Simple Changes that reads your repository, forks included, is
-  0.25.0 or later, because older copies reject the setting.
-- A run that already recorded its shipment but can no longer finish can now
-  be archived with your named approval through `loop archive-recorded`. Its
-  records are kept, it is never reported as shipped, and `loop status` and
-  `loop replan-status` point to it where `loop replan` refuses.
-- When a teammate's in-progress checkout shipped in an equivalent but not
-  identical form after an independent review, you can now approve keeping
-  that checkout as it is. `loop record-outcome` takes your approval with
-  `--approved-by` and `--approval-reference`, and the run checks again before
-  it finishes that nothing in that checkout moved.
-- Setup run from a repository's own fork of Simple Changes now names that fork
-  in the instructions it writes to `AGENTS.md` or `CLAUDE.md`, instead of the
-  general `simple-changes` skill.
-<!-- simple-changelogs-signature agent="Claude Opus 5.5 xhigh" at="2026-10-05T19:22:39-05:00" -->

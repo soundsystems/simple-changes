@@ -1,3 +1,4 @@
+import { changelogAuthorViolations } from "./changelog-authors.ts";
 import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
 import { captureInventory, locateRepository } from "./inventory.ts";
 import {
@@ -39,6 +40,7 @@ import type {
   WorktreeClaimReleaseReason,
   WorktreeCoordinationDocument,
   WorktreeInventory,
+  WorktreePauseReceipt,
 } from "./types.ts";
 import {
   coordinationLinkIsCurrent,
@@ -48,16 +50,57 @@ import {
   takeoverCommand,
 } from "./worktree-coordination.ts";
 
-const removalDispositionForPath = (
+// The path's removal disposition, recorded against the run's target ref, that
+// `accepts` admits.
+const removalDisposition = (
   lease: LoopLease,
-  path: string
+  path: string,
+  accepts: (disposition: LoopWorktreeDisposition) => boolean
 ): LoopWorktreeDisposition | undefined =>
   (lease.dispositions ?? []).find(
     (disposition) =>
       disposition.outcome === "remove-after-audit" &&
       disposition.path === path &&
       disposition.targetRef === lease.targetRef &&
-      disposition.targetRevision === resolvedCurrentTargetRevision(lease)
+      accepts(disposition)
+  );
+
+const atCurrentTarget = (
+  lease: LoopLease,
+  disposition: LoopWorktreeDisposition
+): boolean =>
+  disposition.targetRevision === resolvedCurrentTargetRevision(lease);
+
+/**
+ * The removal disposition that accepts a registered checkout's absence. An
+ * intended removal holds only at the target revision its audit used. A
+ * removal that finalization recorded as completed is history: its audit
+ * proved containment at its recorded revision, so a later move of the target,
+ * such as a guarded fetch after a resume, does not turn the run's own removal
+ * into a missing worktree.
+ */
+const removalDispositionForPath = (
+  lease: LoopLease,
+  path: string
+): LoopWorktreeDisposition | undefined =>
+  removalDisposition(
+    lease,
+    path,
+    (disposition) =>
+      disposition.status === "completed" || atCurrentTarget(lease, disposition)
+  );
+
+/**
+ * The removal disposition a merge-time branch pin honors: only one at the
+ * current target revision, whatever its status, so a branch that moves after
+ * its checkout was removed is still reported once the target moves.
+ */
+const currentRemovalDispositionForPath = (
+  lease: LoopLease,
+  path: string
+): LoopWorktreeDisposition | undefined =>
+  removalDisposition(lease, path, (disposition) =>
+    atCurrentTarget(lease, disposition)
   );
 
 // Absent means nothing is at the path and Git either no longer lists the
@@ -97,8 +140,10 @@ const retiredAbsentPaths = (
 const COMPLETED_RELEASE_REASONS: ReadonlySet<WorktreeClaimReleaseReason> =
   new Set(["handoff", "owner-release"]);
 
-const completedReleaseMatches = (
-  registered: LoopWorktreeLease,
+// Whether `ownerAgentId`'s completed release of `claim` admits the present
+// checkout, as the comment above describes.
+const releaseAdmits = (
+  ownerAgentId: string | null,
   claim: WorktreeClaim | undefined,
   worktree: WorktreeInventory,
   { liveClaim, releaseRecorded }: ReleaseContext
@@ -107,12 +152,52 @@ const completedReleaseMatches = (
   claim.releaseReason !== undefined &&
   COMPLETED_RELEASE_REASONS.has(claim.releaseReason) &&
   releaseRecorded &&
-  claim.owner.agentId === registered.agentId &&
+  claim.owner.agentId === ownerAgentId &&
   claim.path === worktree.path &&
   claim.branch === worktree.branch &&
   claim.headSha === worktree.headSha &&
   claim.changeDigest === worktree.changeDigest &&
   liveClaim === undefined;
+
+const completedReleaseMatches = (
+  registered: LoopWorktreeLease,
+  claim: WorktreeClaim | undefined,
+  worktree: WorktreeInventory,
+  release: ReleaseContext
+): boolean => releaseAdmits(registered.agentId, claim, worktree, release);
+
+/**
+ * A preserved checkout whose pause the controller accepted, then released as
+ * finished work by the owner who paused it, is the stable state the run
+ * accepted, just as a concurrent author's completed release is. The
+ * registration names the claim and its pause receipt; the receipt, the
+ * release, and the registered baseline all record the checkout's exact
+ * present path, branch, HEAD, and digest; and no newer claim holds it. Any
+ * other release, or any change since, still needs a new pause and accept.
+ */
+const acceptedReleaseMatches = (
+  registered: LoopWorktreeLease,
+  worktree: WorktreeInventory,
+  claims: WorktreeClaimContext
+): boolean => {
+  const { linkedClaim, linkedReceipt } = claims;
+  return (
+    registered.role === "preserved" &&
+    linkedClaim !== undefined &&
+    linkedReceipt !== undefined &&
+    linkedClaim.claimId === registered.claimId &&
+    linkedReceipt.receiptId === registered.pauseReceiptId &&
+    linkedReceipt.claimId === linkedClaim.claimId &&
+    linkedReceipt.path === worktree.path &&
+    linkedReceipt.branch === worktree.branch &&
+    linkedReceipt.headSha === worktree.headSha &&
+    linkedReceipt.changeDigest === worktree.changeDigest &&
+    registered.branch === worktree.branch &&
+    registered.baselineHeadSha === worktree.headSha &&
+    registered.baselineChangeDigest === worktree.changeDigest &&
+    releaseAdmits(linkedReceipt.ownerAgentId, linkedClaim, worktree, claims)
+  );
+};
 
 interface ReleaseContext {
   /** The unreleased claim that holds the checkout now, if any. */
@@ -139,6 +224,8 @@ interface WorktreeClaimContext extends ReleaseContext {
   concurrentClaim: WorktreeClaim | undefined;
   /** The claim the registration names, in any state. */
   linkedClaim: WorktreeClaim | undefined;
+  /** The pause receipt the registration names, if it still exists. */
+  linkedReceipt: WorktreePauseReceipt | undefined;
 }
 
 const SAFE_COMMAND_WORD_PATTERN = /^[A-Za-z0-9._:/@%+=,-]+$/u;
@@ -471,6 +558,7 @@ const pinnedUnitRecovery = (
     linkedClaim: coordination.claims.find(
       (claim) => claim.claimId === registered.claimId
     ),
+    linkedReceipt: undefined,
     liveClaim: liveClaimFor(coordination, lease.commonGitDirectory, unit.path),
     releaseRecorded: false,
   });
@@ -685,7 +773,7 @@ const registeredBranchViolations = (
       unit.recordedHeads.includes(head) ||
       flagged.has(unit.path) ||
       retired.has(unit.path) ||
-      removalDispositionForPath(lease, unit.path)
+      currentRemovalDispositionForPath(lease, unit.path)
     ) {
       continue;
     }
@@ -734,6 +822,33 @@ const staleConcurrentClaimCause = (
     return `The registered claim ${claimId} of this concurrent author worktree is ${linkedClaim.state} or records another branch.`;
   }
   return `The registered claim ${claimId} of this concurrent author worktree no longer exists.`;
+};
+
+// Why an adopted checkout's link to the claim and pause receipt the run
+// accepted is no longer current.
+const staleAdoptedLinkCause = (
+  registered: LoopWorktreeLease,
+  { linkedClaim, liveClaim, releaseRecorded }: WorktreeClaimContext
+): string => {
+  const claimId = registered.claimId ?? "(none)";
+  if (liveClaim && liveClaim.claimId !== registered.claimId) {
+    return `This adopted worktree is now held by claim ${liveClaim.claimId} of ${liveClaim.owner.agentId}, not by its accepted claim ${claimId}.`;
+  }
+  if (linkedClaim?.state === "released") {
+    const reason = linkedClaim.releaseReason ?? "unrecorded";
+    if (
+      !(
+        linkedClaim.releaseReason &&
+        COMPLETED_RELEASE_REASONS.has(linkedClaim.releaseReason)
+      )
+    ) {
+      return `The accepted claim ${claimId} of this adopted worktree was released (${reason}), which does not hand its work off.`;
+    }
+    return releaseRecorded
+      ? `This adopted worktree, the pause the run accepted, and the exact state ${linkedClaim.owner.agentId} released under claim ${claimId} (${reason}) no longer all match.`
+      : `The accepted claim ${claimId} of this adopted worktree was released (${reason}) without recording the checkout's state at release, so no state is admitted.`;
+  }
+  return "The adopted worktree claim or pause receipt no longer matches current coordination and Git evidence.";
 };
 
 const concurrentClaimViolations = (
@@ -881,14 +996,15 @@ const currentWorktreeViolations = (
       registered.claimId,
       registered.pauseReceiptId,
       worktree
-    )
+    ) &&
+    !acceptedReleaseMatches(registered, worktree, claims)
   ) {
     const recovery = staleClaimRecovery(lease, registered, worktree, claims);
     violations.push({
       changeDigest: worktree.changeDigest,
       code: "coordination-claim-stale",
       headSha: worktree.headSha,
-      message: `The adopted worktree claim or pause receipt no longer matches current coordination and Git evidence. ${recovery.text}`,
+      message: `${staleAdoptedLinkCause(registered, claims)} ${recovery.text}`,
       nextCommands: recovery.commands,
       path: worktree.path,
     });
@@ -918,6 +1034,37 @@ const currentWorktreeViolations = (
     });
   }
   return violations;
+};
+
+// The coordination records one checkout's verification reads: the claim and
+// pause receipt its registration names, and the claim that holds it now.
+const claimContextFor = (
+  lease: LoopLease,
+  coordination: WorktreeCoordinationDocument,
+  worktree: WorktreeInventory,
+  registered: LoopWorktreeLease | undefined,
+  concurrentClaim: WorktreeClaim | undefined
+): WorktreeClaimContext => {
+  const linkedClaim = registered?.claimId
+    ? coordination.claims.find((claim) => claim.claimId === registered.claimId)
+    : undefined;
+  return {
+    concurrentClaim,
+    linkedClaim,
+    linkedReceipt: registered?.pauseReceiptId
+      ? coordination.receipts.find(
+          (receipt) => receipt.receiptId === registered.pauseReceiptId
+        )
+      : undefined,
+    liveClaim: liveClaimFor(
+      coordination,
+      lease.commonGitDirectory,
+      worktree.path
+    ),
+    releaseRecorded:
+      linkedClaim !== undefined &&
+      releaseRecordedState(coordination, linkedClaim.claimId),
+  };
 };
 
 const verificationAgainst = (
@@ -986,30 +1133,19 @@ const verificationAgainst = (
       targetBranch
     );
     const registered = registeredByPath.get(worktree.path);
-    const linkedClaim = registered?.claimId
-      ? coordination.claims.find(
-          (claim) => claim.claimId === registered.claimId
-        )
-      : undefined;
-    const liveClaim = liveClaimFor(
-      coordination,
-      lease.commonGitDirectory,
-      worktree.path
-    );
     violations.push(
       ...currentWorktreeViolations(
         lease,
         worktree,
         registered,
         preparationByPath.get(worktree.path),
-        {
-          concurrentClaim,
-          linkedClaim,
-          liveClaim,
-          releaseRecorded:
-            linkedClaim !== undefined &&
-            releaseRecordedState(coordination, linkedClaim.claimId),
-        }
+        claimContextFor(
+          lease,
+          coordination,
+          worktree,
+          registered,
+          concurrentClaim
+        )
       )
     );
   }
@@ -1054,6 +1190,7 @@ const verificationAgainst = (
       });
     }
   }
+  violations.push(...changelogAuthorViolations(lease, inventory));
   return {
     active: true,
     checkedAt: new Date().toISOString(),

@@ -1,5 +1,13 @@
 import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
-import { existsSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readdirSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { captureInventory } from "../../../skills/simple-changes/scripts/lib/inventory.ts";
 import {
@@ -16,6 +24,7 @@ import {
 } from "../../../skills/simple-changes/scripts/lib/worktree-coordination.ts";
 import { auditWorktreeEquivalence } from "../../../skills/simple-changes/scripts/lib/worktree-equivalence.ts";
 import {
+  pruneRepository,
   readWorktreeCleanups,
   refreshWorktreeIndex,
   standaloneWorktreeCleanup,
@@ -388,6 +397,131 @@ describe("standalone worktree cleanup", () => {
       removed: [],
     });
     expect(history[1]?.cleanupId).toBe(receipt.cleanupId);
+  });
+
+  test("removes a worktree beside the primary and leaves nothing behind", () => {
+    const fixture = repository();
+    const before = readdirSync(fixture.base).sort();
+    const flatWorktree = join(fixture.base, ".simple-changes-repo--flat-unit");
+    git(fixture.root, ["worktree", "add", "-b", "flat-unit", flatWorktree]);
+
+    const receipt = standaloneWorktreeCleanup({
+      agentId: "cleaner",
+      approvedBy: "the-user",
+      reason: "Reconcile orphaned worktrees with no loop record.",
+      repositoryPath: fixture.root,
+    });
+
+    expect(receipt.removed.map((item) => item.path)).toEqual([flatWorktree]);
+    expect(readdirSync(fixture.base).sort()).toEqual(before);
+    expect(receipt.notes).toEqual([]);
+    expect(receipt.errors).toEqual([]);
+
+    git(fixture.root, ["worktree", "add", "-b", "flat-prune", flatWorktree]);
+    const report = pruneRepository({
+      approvedBy: "the-user",
+      dryRun: false,
+      reason: "Remove merged worktrees.",
+      repositoryPath: fixture.root,
+    });
+    expect(report.removed.map((item) => item.path)).toEqual([flatWorktree]);
+    expect(readdirSync(fixture.base).sort()).toEqual(before);
+    expect(report.notes.join("\n")).not.toContain("managed worktree folder");
+  });
+
+  test("keeps managed worktree folders and names the empty ones", () => {
+    const fixture = repository();
+    const managedRoot = join(fixture.base, ".simple-changes-worktrees");
+    const managedDirectory = join(managedRoot, "repo");
+    const managedWorktree = join(managedDirectory, "run-delivery-agent");
+    git(fixture.root, [
+      "worktree",
+      "add",
+      "-b",
+      "managed-unit",
+      managedWorktree,
+    ]);
+    const adHocParent = join(fixture.base, "repo-worktrees");
+    const adHocWorktree = join(adHocParent, "ad-hoc-unit");
+    git(fixture.root, ["worktree", "add", "-b", "ad-hoc-unit", adHocWorktree]);
+
+    const receipt = standaloneWorktreeCleanup({
+      agentId: "cleaner",
+      approvedBy: "the-user",
+      reason: "Reconcile orphaned worktrees with no loop record.",
+      repositoryPath: fixture.root,
+    });
+
+    expect(receipt.removed.map((item) => item.path)).toEqual(
+      expect.arrayContaining([adHocWorktree, managedWorktree])
+    );
+    expect(receipt.removed).toHaveLength(2);
+    expect(existsSync(managedWorktree)).toBe(false);
+    expect(existsSync(managedDirectory)).toBe(true);
+    expect(existsSync(adHocWorktree)).toBe(false);
+    expect(existsSync(adHocParent)).toBe(true);
+    expect(receipt.notes).toEqual([
+      expect.stringContaining(
+        `Kept the empty managed worktree folder ${managedDirectory} and its parent ${managedRoot}, which holds only that folder:`
+      ),
+    ]);
+    expect(receipt.errors).toEqual([]);
+    // The receipt history keeps only the fields older runtimes validate.
+    const history = readWorktreeCleanups(commonGitDirectory(fixture.root));
+    expect(history.at(-1)).not.toHaveProperty("notes");
+  });
+
+  test("never removes a folder outside a symbolically linked managed root", () => {
+    const fixture = repository();
+    const shared = join(fixture.base, "shared");
+    mkdirSync(shared);
+    const linkedRoot = join(fixture.base, ".simple-changes-worktrees");
+    symlinkSync(shared, linkedRoot);
+    git(fixture.root, [
+      "worktree",
+      "add",
+      "-b",
+      "example",
+      join(linkedRoot, "repo", "example"),
+    ]);
+    const sharedRepository = join(shared, "repo");
+
+    const receipt = standaloneWorktreeCleanup({
+      agentId: "cleaner",
+      approvedBy: "the-user",
+      reason: "Reconcile orphaned worktrees with no loop record.",
+      repositoryPath: fixture.root,
+    });
+
+    expect(receipt.removed.map((item) => item.path)).toEqual([
+      join(sharedRepository, "example"),
+    ]);
+    expect(existsSync(sharedRepository)).toBe(true);
+    expect(lstatSync(linkedRoot).isSymbolicLink()).toBe(true);
+    expect(receipt.notes).toEqual([]);
+  });
+
+  test("prune keeps the managed folders it empties and names them", () => {
+    const fixture = repository();
+    const managedRoot = join(fixture.base, ".simple-changes-worktrees");
+    const managedDirectory = join(managedRoot, "repo");
+    const managedWorktree = join(managedDirectory, "unit");
+    git(fixture.root, ["worktree", "add", "-b", "unit", managedWorktree]);
+
+    const report = pruneRepository({
+      approvedBy: "the-user",
+      dryRun: false,
+      reason: "Remove merged worktrees.",
+      repositoryPath: fixture.root,
+    });
+
+    expect(report.removed.map((item) => item.path)).toEqual([managedWorktree]);
+    expect(existsSync(managedDirectory)).toBe(true);
+    expect(report.notes).toContainEqual(
+      expect.stringContaining(
+        `Kept the empty managed worktree folder ${managedDirectory} and its parent ${managedRoot}, which holds only that folder:`
+      )
+    );
   });
 
   test("preserves the local branch represented by a remote target ref", () => {

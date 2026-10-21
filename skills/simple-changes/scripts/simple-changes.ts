@@ -296,7 +296,7 @@ import {
   standaloneWorktreeCleanup,
 } from "./lib/worktree-maintenance.ts";
 
-const VERSION = "0.31.1";
+const VERSION = "0.32.0";
 const SCRIPT_FILE = fileURLToPath(import.meta.url);
 const PLAIN_SHELL_WORD_PATTERN = /^[\w./-]+$/u;
 const PACKAGE_ROOT = resolve(dirname(SCRIPT_FILE), "..");
@@ -474,7 +474,7 @@ Usage:
   simple-changes prune --approved-by ID --reason TEXT [--target REF]
     [--dry-run] [--json] [--repo PATH]
   simple-changes prepare-agent --run-id ID --agent-id ID --purpose SLUG
-    [--json] [--repo PATH]
+    [--unit ID] [--json] [--repo PATH]
   simple-changes workdir --agent-id ID [--json] [--repo PATH]
   simple-changes workdir remove PATH [--json] [--repo PATH]
   simple-changes scratch-file-rule refresh --instruction-file PATH
@@ -633,6 +633,8 @@ interface CliOptions {
   templatePath?: string;
   uiArtifacts: boolean;
   uiArtifactVersioning?: RepoPolicy["uiArtifactVersioning"];
+  // prepare-agent --unit: the registered unit a changelog author joins.
+  unitId?: string;
   untilMerged?: string;
   versionAuthorized: boolean;
   worktreePath?: string;
@@ -715,6 +717,7 @@ const VALUED_OPTIONS = new Set([
   "--target",
   "--template",
   "--ui-versioning",
+  "--unit",
   "--until-merged",
   "--version",
   "--worktree",
@@ -1150,6 +1153,7 @@ const applyLoopValuedOption = (
     "--state": "statePath",
     "--status-digest": "statusDigest",
     "--template": "templatePath",
+    "--unit": "unitId",
     "--until-merged": "untilMerged",
     "--upstream": "forkUpstream",
   };
@@ -3724,6 +3728,10 @@ const renderRemovedWorkDirectories = (removed: readonly string[]): string =>
     ? `Removed ${removed.length} agent work director${removed.length === 1 ? "y" : "ies"}.\n`
     : "";
 
+// A cleanup's non-fatal notes, one per line.
+const renderCleanupNotes = (notes: readonly string[]): string =>
+  notes.map((note) => `Note: ${note}\n`).join("");
+
 const runLoopFinalizationAction = (
   action: string,
   options: CliOptions,
@@ -3838,7 +3846,7 @@ const runLoopFinalizationAction = (
         removedWorkDirectories,
       },
       options.json,
-      `Completed and released ${runId}. Normalized ${result.cleanup.cleanedPrimaryPaths.length} target-equivalent primary path(s), removed ${result.cleanup.removedWorktrees.length} worktree(s) and ${result.cleanup.removedBranches.length} branch(es); pruned ${result.cleanup.prunedWorktreeMetadata} stale worktree record(s); released ${result.cleanup.releasedClaims.length} finished or orphaned worktree claim(s).\n${renderRemovedWorkDirectories(removedWorkDirectories)}`
+      `Completed and released ${runId}. Normalized ${result.cleanup.cleanedPrimaryPaths.length} target-equivalent primary path(s), removed ${result.cleanup.removedWorktrees.length} worktree(s) and ${result.cleanup.removedBranches.length} branch(es); pruned ${result.cleanup.prunedWorktreeMetadata} stale worktree record(s); released ${result.cleanup.releasedClaims.length} finished or orphaned worktree claim(s).\n${renderCleanupNotes(result.cleanup.notes)}${renderRemovedWorkDirectories(removedWorkDirectories)}`
     );
     return true;
   }
@@ -4598,7 +4606,7 @@ const runWorktreeMaintenance = (
     writeOutput(
       receipt,
       options.json,
-      `Standalone cleanup ${receipt.cleanupId} vs ${receipt.targetRef}: removed ${receipt.removed.length} proven worktree(s), pruned ${receipt.prunedPaths.length} stale record(s), released ${(receipt.releasedClaims ?? []).length} orphaned claim(s), preserved ${receipt.preserved.length}.\n${receipt.preserved.map((entry) => `- preserved ${entry.path}: ${entry.reason}`).join("\n")}${receipt.preserved.length > 0 ? "\n" : ""}`
+      `Standalone cleanup ${receipt.cleanupId} vs ${receipt.targetRef}: removed ${receipt.removed.length} proven worktree(s), pruned ${receipt.prunedPaths.length} stale record(s), released ${(receipt.releasedClaims ?? []).length} orphaned claim(s), preserved ${receipt.preserved.length}.\n${receipt.preserved.map((entry) => `- preserved ${entry.path}: ${entry.reason}`).join("\n")}${receipt.preserved.length > 0 ? "\n" : ""}${renderCleanupNotes(receipt.notes)}`
     );
     return true;
   }
@@ -5299,7 +5307,8 @@ const runPrepareAgent = (options: CliOptions): void => {
         null,
         null
       );
-    }
+    },
+    options.unitId
   );
   // Commit attestation is a required step of every author's workflow: the
   // review ledger cannot reconstruct who wrote a commit after the fact.
@@ -5311,7 +5320,11 @@ const runPrepareAgent = (options: CliOptions): void => {
   writeOutput(
     { ...prepared, afterEveryCommit, workDir },
     options.json,
-    `${prepared.created ? "Created" : "Reused"} ${prepared.path}\nBranch: ${prepared.branch}\nRun: ${prepared.runId}\nWork directory: ${workDir}\nRequired after every commit: ${afterEveryCommit}\n`
+    `${prepared.created ? "Created" : "Reused"} ${prepared.path}\nBranch: ${prepared.branch}\nRun: ${prepared.runId}\n${
+      prepared.changelogAuthor
+        ? `Changelog author for unit ${prepared.changelogAuthor.unitId}: change only ${prepared.changelogAuthor.releaseSurfaces.join(", ")}.\n`
+        : ""
+    }Work directory: ${workDir}\nRequired after every commit: ${afterEveryCommit}\n`
   );
 };
 

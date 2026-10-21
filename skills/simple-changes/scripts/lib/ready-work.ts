@@ -15,7 +15,11 @@ import {
 } from "./author-coverage.ts";
 import { revisionContainmentMethod } from "./cleanup-core.ts";
 import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
-import { captureInventory, locateRepository } from "./inventory.ts";
+import {
+  assertExactBranch,
+  captureInventory,
+  locateRepository,
+} from "./inventory.ts";
 import { withLoopStateLock } from "./loop-lease-core.ts";
 import { runGit } from "./process.ts";
 import { redactSecrets } from "./redact.ts";
@@ -376,6 +380,8 @@ export const recordReadyWork = (
         );
       }
       assertNoGitOperation(current.path);
+      // The receipt and the handoff release both record the branch.
+      assertExactBranch(current.branch, `a ready receipt for ${current.path}`);
       const { coverage, leftUncovered } = assertReadyCoverage(
         readyRangeCoverage(current.path, inventory.targetRef, current.headSha),
         {

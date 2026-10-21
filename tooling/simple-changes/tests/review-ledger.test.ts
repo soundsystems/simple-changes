@@ -142,6 +142,8 @@ const reviewerShape = <T>(value: T): T => {
 };
 const STAMP = "2026-10-08T12:00:00.000Z";
 const PROPOSAL = "group/project!42";
+// A one-member extensions object at the end of a record, as a ledger holds it.
+const ONE_MEMBER = /,\n *"extensions": \{\n *"n": 1\n *\}/u;
 
 // Harness sessions the adapter recognizes; the test harness strips the real
 // ones in its preload, so each test names the session it runs as.
@@ -4219,5 +4221,718 @@ describe("identity completion", () => {
     expect(JSON.parse(again.stdout)).toMatchObject({
       completion: [{ commit, status: "unchanged" }],
     });
+  });
+});
+
+describe("forward-compatible extensions", () => {
+  const C = fakeSha(31);
+  const HINT =
+    "is not allowed (a newer Simple Changes may have written it; update this runtime)";
+  // Members of every JSON kind, nested, under names that are also inherited
+  // object properties. Nothing reads them.
+  const membersFor = (level: string): Record<string, unknown> =>
+    JSON.parse(
+      `{"__proto__":{"polluted":true},"constructor":"kept","future":1.5,"${level}":{"list":[1,null,"é",{"flag":false}],"note":"kept"}}`
+    ) as Record<string, unknown>;
+  type Level = "root" | "attestation" | "completion" | "attempt";
+  const LEVELS: Level[] = ["root", "attestation", "completion", "attempt"];
+  // The message a call throws, or "accepted".
+  const refusalOf = (call: () => unknown): string => {
+    try {
+      call();
+    } catch (error) {
+      return (error as Error).message;
+    }
+    return "accepted";
+  };
+  const PATHS: Record<Level, string> = {
+    attempt: `proposals.${PROPOSAL}.attempts[0]`,
+    attestation: `attestations.${C}[1]`,
+    completion: `completions.${C}[0]`,
+    root: "ledger",
+  };
+  // Fresh records for every ledger, so a change to one never reaches another.
+  const partial = () => author("alpha", { agent: null, instance: null });
+  const full = () => author("alpha");
+  // The record at one level, in the shapes the builders below produce.
+  const recordAt = (ledger: ReviewLedger, level: Level) => {
+    const records: Record<Level, Record<string, unknown> | undefined> = {
+      attempt: ledger.proposals[PROPOSAL]?.attempts[0] as
+        | Record<string, unknown>
+        | undefined,
+      attestation: ledger.attestations[C]?.[1] as
+        | Record<string, unknown>
+        | undefined,
+      completion: ledger.completions?.[C]?.[0] as
+        | Record<string, unknown>
+        | undefined,
+      root: ledger as unknown as Record<string, unknown>,
+    };
+    const record = records[level];
+    if (!record) {
+      throw new Error(`no ${level} record`);
+    }
+    return record;
+  };
+  // A ledger with a record at every level that has extension points.
+  const plain = (): ReviewLedger => {
+    const ledger = emptyReviewLedger();
+    attestInMemory(ledger, C, partial());
+    attestInMemory(ledger, C, full());
+    const { recordedAt: _, ...completer } = full();
+    const { recordedAt: __, ...completed } = partial();
+    ledger.completions = {
+      [C]: [
+        {
+          ...completer,
+          completes: [completed],
+          logicalId: "agent-alpha",
+          recordedAt: STAMP,
+        },
+      ],
+    };
+    addHead(ledger, C, [C]);
+    ledger.proposals[PROPOSAL]?.attempts.push({
+      acceptanceReason: null,
+      accepted: true,
+      attemptId: randomUUID(),
+      authorsDigest: headCoverage(ledger, [C]).authorsDigest,
+      coverageWaiverId: null,
+      effort: "xhigh",
+      effortSource: "configured",
+      findingsCount: 1,
+      headRevision: C,
+      recordedAt: STAMP,
+      requested: { effort: "xhigh", harness: "codex", model: "model-beta" },
+      severities: { blocking: 0, nit: 1, shouldFix: 0 },
+      verdict: "findings",
+      verified: REVIEWER_B,
+    });
+    return ledger;
+  };
+  const extended = (): ReviewLedger => {
+    const ledger = plain();
+    for (const level of LEVELS) {
+      recordAt(ledger, level).extensions = membersFor(level);
+    }
+    return ledger;
+  };
+  const schema = (): Record<string, unknown> =>
+    JSON.parse(readFileSync(schemaPath, "utf8")) as Record<string, unknown>;
+  const both = (value: unknown): [boolean, boolean] => {
+    let schemaValid = true;
+    try {
+      validateSchemaDocument("review-ledger", schema(), value);
+    } catch {
+      schemaValid = false;
+    }
+    return [schemaValid, validateReviewLedger(value).reason === null];
+  };
+
+  test("the root, attestations, completions and attempts accept any extensions, which nothing reads, and the schema agrees", () => {
+    const ledger = extended();
+    expect(both(plain())).toEqual([true, true]);
+    expect(both(ledger)).toEqual([true, true]);
+    // An empty object is an extension point too.
+    for (const level of LEVELS) {
+      const empty = plain();
+      recordAt(empty, level).extensions = {};
+      expect({ level, verdicts: both(empty) }).toEqual({
+        level,
+        verdicts: [true, true],
+      });
+    }
+    // Nothing interprets them: coverage, the digest, the completion and the
+    // acceptance gate read the same with and without them.
+    const gate = (value: ReviewLedger) => {
+      const { authorsDigest, fullyCovered, gaps, unattributed } = headCoverage(
+        value,
+        [C]
+      );
+      return { authorsDigest, fullyCovered, gaps, unattributed };
+    };
+    expect(gate(ledger)).toEqual(gate(plain()));
+    expect(resolveEffectiveAuthors(ledger, C).authors).toHaveLength(1);
+    for (const adversarial of [false, true]) {
+      const verdict = (value: ReviewLedger) => {
+        const { coverage: _, ...decision } = decide(value, C, REVIEWER_B, {
+          adversarial,
+        });
+        return decision;
+      };
+      expect(verdict(ledger)).toEqual(verdict(plain()));
+    }
+    expect(
+      escalatingAttempt(
+        ledger.proposals[PROPOSAL]?.attempts[0] as Parameters<
+          typeof escalatingAttempt
+        >[0],
+        "blocking-or-should-fix"
+      )
+    ).toBe(false);
+  });
+
+  test("an unknown key beside extensions still fails with an update hint, and a non-object extensions fails", () => {
+    for (const level of LEVELS) {
+      const unknown = extended();
+      recordAt(unknown, level).graded = true;
+      expect({ level, verdicts: both(unknown) }).toEqual({
+        level,
+        verdicts: [false, false],
+      });
+      expect(validateReviewLedger(unknown).errors).toEqual([
+        `${PATHS[level]}.graded ${HINT}`,
+      ]);
+      for (const value of [[], null, "kept", 1, true]) {
+        const broken = plain();
+        recordAt(broken, level).extensions = value;
+        expect({ level, value, verdicts: both(broken) }).toEqual({
+          level,
+          value,
+          verdicts: [false, false],
+        });
+        expect(validateReviewLedger(broken).errors).toContain(
+          `${PATHS[level]}.extensions must be an object`
+        );
+      }
+    }
+  });
+
+  test("records without extension points refuse an extensions key and give no update hint", () => {
+    const ledger = plain();
+    replayInMemory(ledger, fakeSha(32), [C], "verified");
+    const head = ledger.proposals[PROPOSAL]?.heads[C] as unknown as Record<
+      string,
+      unknown
+    >;
+    const attempt = recordAt(ledger, "attempt");
+    const completion = recordAt(ledger, "completion");
+    const targets: [string, () => Record<string, unknown>][] = [
+      [`proposals.${PROPOSAL}.heads.${C}`, () => head],
+      [`proposals.${PROPOSAL}`, () => ledger.proposals[PROPOSAL] as never],
+      [`replays.${fakeSha(32)}`, () => ledger.replays[fakeSha(32)] as never],
+      [`${PATHS.attempt}.verified`, () => attempt.verified as never],
+      [`${PATHS.attempt}.requested`, () => attempt.requested as never],
+      [`${PATHS.attempt}.severities`, () => attempt.severities as never],
+      [
+        `${PATHS.completion}.completes[0]`,
+        () => (completion.completes as never[])[0] as never,
+      ],
+    ];
+    for (const [path, target] of targets) {
+      const record = target();
+      record.extensions = { future: 1 };
+      expect({ path, verdicts: both(ledger) }).toEqual({
+        path,
+        verdicts: [false, false],
+      });
+      expect(validateReviewLedger(ledger).errors).toContain(
+        `${path}.extensions is not allowed`
+      );
+      Reflect.deleteProperty(record, "extensions");
+    }
+    expect(both(ledger)).toEqual([true, true]);
+  });
+
+  // A repository whose ledger holds an attestation, a completion and a graded
+  // review, written end to end by this runtime.
+  const recordedRun = () => {
+    const run = preparedRun();
+    const commit = commitFile(run.author, "a.txt", "a\n");
+    const owner = {
+      commits: [commit],
+      environment: { CODEX_THREAD_ID: "thread-owner" },
+      logicalId: "author-a",
+      repositoryPath: run.author,
+    };
+    const recordAuthors = (head: string) =>
+      recordProposalAuthors({
+        base: run.base,
+        environment: ENV_A,
+        head,
+        proposalId: PROPOSAL,
+        repositoryPath: run.author,
+      });
+    const review = (head: string) =>
+      recordReviewAttempt({
+        attemptId: randomUUID(),
+        authoring: stubAuthoring(),
+        head,
+        proposalId: PROPOSAL,
+        receipt: reviewReceipt(REVIEWER_B, {
+          findingsCount: 2,
+          severities: { blocking: 0, nit: 1, shouldFix: 1 },
+          verdict: "findings",
+        }),
+        repositoryPath: run.author,
+      });
+    attestCommits(owner);
+    attestCommits({ ...owner, agent: "GPT-6", instance: "domain_db_preview" });
+    attestCommits({
+      ...owner,
+      agent: "GPT-6",
+      completeIdentity: true,
+      instance: "domain_db_preview",
+    });
+    recordAuthors(commit);
+    review(commit);
+    const common = commonDirectory(run.root);
+    return {
+      commit,
+      common,
+      owner,
+      path: reviewLedgerPath(common),
+      recordAuthors,
+      review,
+      run,
+    };
+  };
+  const PLACEHOLDER = /^( *)"extensions": "@@(\w+)@@"/gmu;
+  // The ledger text with the literal `extensions` text `literal(indent)`
+  // spliced in at each level, as a newer runtime would write it. The rest of
+  // the file is exactly what this runtime wrote.
+  const spliced = (
+    ledger: ReviewLedger,
+    commit: string,
+    literal: (indent: string) => string,
+    levels: Level[] = LEVELS
+  ): { indents: Record<string, string>; text: string } => {
+    const marked = structuredClone(ledger) as unknown as Record<
+      string,
+      unknown
+    >;
+    const markers: Record<Level, Record<string, unknown> | undefined> = {
+      attempt: (marked as unknown as ReviewLedger).proposals[PROPOSAL]
+        ?.attempts[0] as Record<string, unknown> | undefined,
+      attestation: (marked as unknown as ReviewLedger).attestations[
+        commit
+      ]?.[1] as Record<string, unknown> | undefined,
+      completion: (marked as unknown as ReviewLedger).completions?.[
+        commit
+      ]?.[0] as Record<string, unknown> | undefined,
+      root: marked,
+    };
+    for (const level of levels) {
+      const record = markers[level];
+      if (!record) {
+        throw new Error(`no ${level} record`);
+      }
+      record.extensions = `@@${level}@@`;
+    }
+    const root = Object.hasOwn(marked, "extensions")
+      ? { extensions: marked.extensions, ...marked }
+      : marked;
+    const indents: Record<string, string> = {};
+    const text = `${JSON.stringify(root, null, 2)}\n`.replace(
+      PLACEHOLDER,
+      (_match, indent: string, level: string) => {
+        indents[level] = indent;
+        return `${indent}"extensions": ${literal(indent)}`;
+      }
+    );
+    return { indents, text };
+  };
+  // Members of every JSON kind, spelled and indented exactly as Simple
+  // Changes writes JSON, as literal text: an exponent, an escaped quote,
+  // backslash and control character, a raw non-ASCII character, and names
+  // that are inherited object properties.
+  const canonicalMembers = (indent: string): string =>
+    [
+      "{",
+      `${indent}  "__proto__": {`,
+      `${indent}    "polluted": true`,
+      `${indent}  },`,
+      `${indent}  "constructor": "kept",`,
+      `${indent}  "future": 1e+21,`,
+      `${indent}  "nested": {`,
+      `${indent}    "list": [`,
+      `${indent}      1.5,`,
+      `${indent}      null,`,
+      `${indent}      "é \\"quoted\\" \\\\ \\u0001",`,
+      `${indent}      []`,
+      `${indent}    ],`,
+      `${indent}    "empty": {}`,
+      `${indent}  }`,
+      `${indent}}`,
+    ].join("\n");
+
+  test("every write keeps literal extensions byte for byte through a read-modify-write, and a new ledger writes none", () => {
+    expect(Object.hasOwn(emptyReviewLedger(), "extensions")).toBe(false);
+    const { commit, common, owner, path, recordAuthors, review, run } =
+      recordedRun();
+    // Written end to end by this runtime: no extensions anywhere.
+    expect(readFileSync(path, "utf8")).not.toContain('"extensions"');
+    // A newer runtime's file: literal extensions at every level.
+    const { indents, text: seededText } = spliced(
+      readReviewLedger(common).ledger,
+      commit,
+      canonicalMembers
+    );
+    expect(Object.keys(indents).sort()).toEqual([...LEVELS].sort());
+    writeFileSync(path, seededText);
+    const reread = readReviewLedger(common);
+    expect(reread.state).toBe("valid");
+    expect(reread.ledger.extensions?.future).toBe(1e21);
+    expect(Object.hasOwn(reread.ledger.extensions ?? {}, "__proto__")).toBe(
+      true
+    );
+    // Rewriting what was read reproduces the file byte for byte.
+    withLoopStateLock(common, "test", () => {
+      writeReviewLedger(heldLoopLock(common, "test"), reread.ledger);
+    });
+    expect(readFileSync(path, "utf8")).toBe(seededText);
+    // A transaction that changes nothing writes nothing.
+    expect(attestCommits(owner).attestations).toEqual([
+      { commit, status: "unchanged" },
+    ]);
+    expect(recordAuthors(commit).status).toBe("unchanged");
+    expect(readFileSync(path, "utf8")).toBe(seededText);
+    // Transactions that change the ledger, including the derived records
+    // every write refreshes, keep every record holding extensions and the
+    // literal text of each.
+    const before = reread.ledger;
+    const second = commitFile(run.author, "b.txt", "b\n");
+    attestCommits({
+      ...owner,
+      agent: "GPT-6",
+      commits: [second],
+      instance: "domain_db_preview",
+    });
+    recordAuthors(second);
+    review(second);
+    const afterText = readFileSync(path, "utf8");
+    expect(afterText).not.toBe(seededText);
+    for (const level of LEVELS) {
+      const indent = indents[level] as string;
+      expect({
+        kept: afterText.includes(
+          `${indent}"extensions": ${canonicalMembers(indent)}`
+        ),
+        level,
+      }).toEqual({ kept: true, level });
+    }
+    expect(afterText.split('"extensions"')).toHaveLength(LEVELS.length + 1);
+    const kept = readReviewLedger(common).ledger;
+    expect(Object.keys(kept)).toEqual(Object.keys(before));
+    expect(JSON.stringify(kept.attestations[commit])).toBe(
+      JSON.stringify(before.attestations[commit])
+    );
+    expect(JSON.stringify(kept.completions?.[commit])).toBe(
+      JSON.stringify(before.completions?.[commit])
+    );
+    expect(JSON.stringify(kept.proposals[PROPOSAL]?.attempts[0])).toBe(
+      JSON.stringify(before.proposals[PROPOSAL]?.attempts[0])
+    );
+    // The new records carry none.
+    expect(kept.proposals[PROPOSAL]?.attempts).toHaveLength(2);
+    expect(
+      Object.hasOwn(kept.attestations[second]?.[0] ?? {}, "extensions")
+    ).toBe(false);
+    expect(
+      Object.hasOwn(kept.proposals[PROPOSAL]?.attempts[1] ?? {}, "extensions")
+    ).toBe(false);
+  });
+
+  // An extensions object of one or more member lines, inside text otherwise
+  // exactly as written.
+  const member =
+    (...memberLines: string[]) =>
+    (indent: string): string =>
+      [
+        "{",
+        ...memberLines.map((line) => `${indent}  ${line}`),
+        `${indent}}`,
+      ].join("\n");
+  const RESPELLED_TEXT: [string, (indent: string) => string][] = [
+    ["an integer past 2^53", member('"n": 9007199254740993')],
+    ["an overflowing number", member('"n": 1e400')],
+    ["a trailing zero", member('"n": 1.0')],
+    ["negative zero", member('"n": -0')],
+    ["an optional escape", member('"n": "\\u0061"')],
+    ["integer-like keys out of order", member('"2": "two",', '"1": "one"')],
+    ["a repeated key", member('"n": 1,', '"n": 2')],
+  ];
+  const RESPELLED_ERROR =
+    "holds extensions spelled otherwise than Simple Changes writes JSON (a number, string escape, key order, repeated key, or invalid UTF-8), so they could not be kept exactly";
+  // The text's bytes with each `@@BYTE@@` replaced by 0xff, which is never
+  // valid UTF-8.
+  const withInvalidByte = (text: string): Buffer =>
+    Buffer.concat(
+      text
+        .split("@@BYTE@@")
+        .flatMap((part, index) =>
+          index === 0
+            ? [Buffer.from(part)]
+            : [Buffer.from([0xff]), Buffer.from(part)]
+        )
+    );
+
+  test("a ledger holding extensions a rewrite would respell reads as malformed, one that differs only in spacing is never rewritten, and the file is kept", () => {
+    const { commit, common, owner, path, run } = recordedRun();
+    const base = readReviewLedger(common).ledger;
+    const second = commitFile(run.author, "b.txt", "b\n");
+    const change = () =>
+      attestCommits({
+        ...owner,
+        agent: "GPT-6",
+        commits: [second],
+        instance: "domain_db_preview",
+      });
+    // Every spelling at one level, and one at each other level: the check
+    // reads the whole file whichever record holds the extensions.
+    const cases: [Level, string, (indent: string) => string][] = [
+      ...RESPELLED_TEXT.map(
+        ([name, literal]): [Level, string, (indent: string) => string] => [
+          "attempt",
+          name,
+          literal,
+        ]
+      ),
+      ...LEVELS.filter((level) => level !== "attempt").map(
+        (level): [Level, string, (indent: string) => string] => [
+          level,
+          "an integer past 2^53",
+          member('"n": 9007199254740993'),
+        ]
+      ),
+    ];
+    for (const [level, name, literal] of cases) {
+      const { text } = spliced(base, commit, literal, [level]);
+      writeFileSync(path, text);
+      const read = readReviewLedger(common);
+      expect({ errors: read.errors, level, name, state: read.state }).toEqual({
+        errors: [
+          `${path} ${RESPELLED_ERROR}; restore the file as a Simple Changes runtime wrote it`,
+        ],
+        level,
+        name,
+        state: "malformed",
+      });
+      expect(change).toThrow(RESPELLED_ERROR);
+      expect({ level, name, text: readFileSync(path, "utf8") }).toEqual({
+        level,
+        name,
+        text,
+      });
+    }
+    // A byte that is not valid UTF-8 would come back as U+FFFD, so such a
+    // ledger is malformed too.
+    for (const level of LEVELS) {
+      const { text } = spliced(base, commit, member('"n": "a@@BYTE@@b"'), [
+        level,
+      ]);
+      const bytes = withInvalidByte(text);
+      writeFileSync(path, bytes);
+      expect({ level, state: readReviewLedger(common).state }).toEqual({
+        level,
+        state: "malformed",
+      });
+      expect(change).toThrow(RESPELLED_ERROR);
+      expect({ kept: readFileSync(path).equals(bytes), level }).toEqual({
+        kept: true,
+        level,
+      });
+    }
+    // Other spacing loses nothing, so the ledger reads, and a transaction
+    // that changes nothing succeeds, but nothing rewrites it.
+    for (const level of LEVELS) {
+      const { text } = spliced(base, commit, member('"n":  1'), [level]);
+      writeFileSync(path, text);
+      expect({ level, state: readReviewLedger(common).state }).toEqual({
+        level,
+        state: "valid",
+      });
+      expect(attestCommits(owner).attestations).toEqual([
+        { commit, status: "unchanged" },
+      ]);
+      expect(change).toThrow(
+        "holds extensions but is not exactly the text Simple Changes writes (its spacing differs)"
+      );
+      expect({ level, text: readFileSync(path, "utf8") }).toEqual({
+        level,
+        text,
+      });
+    }
+    // The same member spelled as Simple Changes writes it is written.
+    const { text } = spliced(base, commit, member('"n": 1'), ["attempt"]);
+    writeFileSync(path, text);
+    expect(change().attestations).toEqual([
+      { commit: second, status: "recorded" },
+    ]);
+    expect(
+      readReviewLedger(common).ledger.proposals[PROPOSAL]?.attempts[0]
+        ?.extensions
+    ).toEqual({ n: 1 });
+    // Without extensions, a respelled file is read and written as before.
+    const plainText = readFileSync(path, "utf8").replace(ONE_MEMBER, "");
+    expect(plainText).not.toContain('"extensions"');
+    expect(plainText).toContain('"model": "model-beta"');
+    writeFileSync(
+      path,
+      withInvalidByte(
+        plainText
+          .replace('"schemaVersion": 1', '"schemaVersion":  1.0')
+          .replace('"model": "model-beta"', '"model": "model-@@BYTE@@"')
+      )
+    );
+    expect(readReviewLedger(common)).toMatchObject({
+      errors: [],
+      state: "valid",
+    });
+    const third = commitFile(run.author, "c.txt", "c\n");
+    expect(
+      attestCommits({
+        ...owner,
+        agent: "GPT-6",
+        commits: [third],
+        instance: "domain_db_preview",
+      }).attestations
+    ).toEqual([{ commit: third, status: "recorded" }]);
+  });
+
+  test("the exported writer refuses to replace a malformed ledger or to drop or change an extensions object the file holds", () => {
+    const { commit, common, path } = recordedRun();
+    const base = readReviewLedger(common).ledger;
+    const { indents, text: seededText } = spliced(
+      base,
+      commit,
+      canonicalMembers
+    );
+    const write = (ledger: ReviewLedger) =>
+      withLoopStateLock(common, "test", () =>
+        writeReviewLedger(heldLoopLock(common, "test"), ledger)
+      );
+    const attempt = `proposals.${PROPOSAL}.attempts[0].extensions`;
+    const edits: [string, (ledger: ReviewLedger) => void, string][] = [
+      [
+        "drops the root's",
+        (ledger) => Reflect.deleteProperty(ledger, "extensions"),
+        "ledger.extensions",
+      ],
+      [
+        "changes an attestation's",
+        (ledger) => {
+          const record = ledger.attestations[commit]?.[1] as Attestation;
+          record.extensions = { ...record.extensions, future: 1 };
+        },
+        `attestations.${commit}[1].extensions`,
+      ],
+      [
+        "removes a completion holding them",
+        (ledger) => {
+          Reflect.deleteProperty(ledger, "completions");
+        },
+        `completions.${commit}[0].extensions`,
+      ],
+      [
+        "drops an attempt's",
+        (ledger) =>
+          Reflect.deleteProperty(
+            ledger.proposals[PROPOSAL]?.attempts[0] ?? {},
+            "extensions"
+          ),
+        attempt,
+      ],
+    ];
+    for (const [name, edit, lost] of edits) {
+      writeFileSync(path, seededText);
+      const ledger = structuredClone(readReviewLedger(common).ledger);
+      edit(ledger);
+      expect({ name, refusal: refusalOf(() => write(ledger)) }).toEqual({
+        name,
+        refusal: expect.stringContaining(
+          `Refusing to write a review ledger that drops or changes ${lost}`
+        ),
+      });
+      expect(readFileSync(path, "utf8")).toBe(seededText);
+    }
+    // Adding a record keeps every extensions object, so it is written.
+    writeFileSync(path, seededText);
+    const added = structuredClone(readReviewLedger(common).ledger);
+    attestInMemory(added, commit, author("late"));
+    write(added);
+    const addedText = readFileSync(path, "utf8");
+    for (const level of LEVELS) {
+      const indent = indents[level] as string;
+      expect({
+        kept: addedText.includes(
+          `${indent}"extensions": ${canonicalMembers(indent)}`
+        ),
+        level,
+      }).toEqual({ kept: true, level });
+    }
+    // A respelled file is malformed, so neither its parsed value nor an
+    // empty ledger replaces it.
+    const { text: respelledText } = spliced(
+      base,
+      commit,
+      member('"n": 9007199254740993'),
+      ["attempt"]
+    );
+    writeFileSync(path, respelledText);
+    for (const ledger of [
+      JSON.parse(respelledText) as ReviewLedger,
+      readReviewLedger(common).ledger,
+      emptyReviewLedger(),
+    ]) {
+      expect(refusalOf(() => write(ledger))).toContain(
+        `Refusing to replace the malformed review ledger at ${path} (ledger-malformed): ${path} ${RESPELLED_ERROR}`
+      );
+      expect(readFileSync(path, "utf8")).toBe(respelledText);
+    }
+    // Nor does a ledger whose bytes are not valid UTF-8.
+    const invalid = withInvalidByte(
+      spliced(base, commit, member('"n": "a@@BYTE@@b"'), ["attempt"]).text
+    );
+    writeFileSync(path, invalid);
+    expect(
+      refusalOf(() => write(JSON.parse(invalid.toString()) as ReviewLedger))
+    ).toContain("Refusing to replace the malformed review ledger");
+    expect(readFileSync(path).equals(invalid)).toBe(true);
+    // Neither does its parsed value over a file that differs only in spacing.
+    const { text: spacedText } = spliced(base, commit, member('"n":  1'), [
+      "attempt",
+    ]);
+    writeFileSync(path, spacedText);
+    expect(
+      refusalOf(() => write(JSON.parse(spacedText) as ReviewLedger))
+    ).toContain("(its spacing differs)");
+    expect(readFileSync(path, "utf8")).toBe(spacedText);
+  });
+
+  test("a refused ledger names the newer runtime as a likely writer, only at a record with extension points", () => {
+    const run = preparedRun();
+    const commit = commitFile(run.author, "a.txt", "a\n");
+    attestAsA(run.author, [commit]);
+    const common = commonDirectory(run.root);
+    const path = reviewLedgerPath(common);
+    const original = readReviewLedger(common).ledger;
+    const write = (ledger: unknown) =>
+      writeFileSync(path, `${JSON.stringify(ledger, null, 2)}\n`);
+    write({ ...original, graded: true });
+    expect(readReviewLedger(common)).toMatchObject({
+      errors: [`ledger.graded ${HINT}`],
+      reason: "ledger-malformed",
+      state: "malformed",
+    });
+    expect(() => attestAsA(run.author, [commit])).toThrow(
+      `ledger.graded ${HINT}`
+    );
+    write({
+      ...original,
+      replays: {
+        [commit]: {
+          graded: true,
+          inheritedGaps: { uncoveredEdits: [], unresolvedSources: [] },
+          ownGaps: { uncoveredEdit: false, unresolvedSources: [] },
+          recordedAt: STAMP,
+          sources: [run.base],
+          verification: "verified",
+        },
+      },
+    });
+    expect(readReviewLedger(common).errors).toEqual([
+      `replays.${commit}.graded is not allowed`,
+    ]);
   });
 });

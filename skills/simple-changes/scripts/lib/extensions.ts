@@ -1,0 +1,79 @@
+// Forward-compatible extension points for the strictly validated files that
+// runtimes of different versions share: the review ledger and the authoring
+// sidecar. Each record that has one may carry a single `extensions` object
+// beside its own keys. A reader accepts any members in it without
+// interpreting them, and a writer keeps them byte for byte through a
+// read-modify-write, so a newer runtime can add a field without breaking an
+// older reader. Nothing writes `extensions` today, so a new file holds none.
+//
+// The rule for what may go there: a field whose absence, or a reader's
+// ignorance of it, can only make that reader stricter, never looser. For
+// example, an ungraded finding still escalates, so graded severities would
+// qualify. A field that could loosen a gate must sit outside `extensions`,
+// where a reader that does not know it refuses the whole record.
+//
+// A writer serializes what a reader parsed, so members are kept exactly only
+// when their text is already spelled the way JSON.stringify spells it. Every
+// Simple Changes runtime writes JSON that way, as valid UTF-8. Text spelled
+// otherwise (an integer past 2^53, `1e400`, `1.0`, `-0`, an optional escape,
+// integer-like keys out of order, a repeated key) or bytes that are not valid
+// UTF-8 (decoding replaces them with U+FFFD) would change on the way back, so
+// a reader reports a file holding extensions in such text as malformed, and
+// an answer in such text is refused: no parsed value that would be respelled
+// ever reaches a writer.
+
+export const EXTENSIONS_KEY = "extensions";
+
+/** Members a newer runtime recorded beside a record; kept and never read. */
+export type RecordExtensions = Record<string, unknown>;
+
+/** What differs in JSON text that a write would respell. */
+export const RESPELLED =
+  "spelled otherwise than Simple Changes writes JSON (a number, string escape, key order, repeated key, or invalid UTF-8)";
+
+/** Why an unknown key beside an `extensions` object may be there. */
+export const NEWER_RUNTIME_HINT =
+  "a newer Simple Changes may have written it; update this runtime";
+
+/**
+ * The error text for a key a record does not allow. At a record that has
+ * `extensions`, an unknown key most likely came from a newer runtime, so the
+ * text says how to recover.
+ */
+export const unknownKeyMessage = (extensible: boolean): string =>
+  extensible ? `is not allowed (${NEWER_RUNTIME_HINT})` : "is not allowed";
+
+// A JSON string token, or a run of whitespace between tokens.
+const STRING_OR_WHITESPACE = /"(?:[^"\\]|\\.)*"|[\t\n\r ]+/gsu;
+
+/**
+ * Whether `text`, which parses to `value`, spells it exactly as
+ * JSON.stringify does, apart from whitespace between tokens. Serializing the
+ * parsed value then reproduces every number, string, key and key order the
+ * text holds.
+ */
+export const spelledAsSerialized = (text: string, value: unknown): boolean =>
+  text.replace(STRING_OR_WHITESPACE, (token) =>
+    token.startsWith('"') ? token : ""
+  ) === JSON.stringify(value);
+
+/** A file's text, and whether its bytes were valid UTF-8. */
+export interface DecodedText {
+  // True when encoding `text` again gives back exactly the bytes read.
+  exact: boolean;
+  text: string;
+}
+
+/** Decodes file bytes as UTF-8, noting whether any byte was replaced. */
+export const decodeUtf8 = (bytes: Buffer): DecodedText => {
+  const text = bytes.toString("utf8");
+  return { exact: Buffer.from(text, "utf8").equals(bytes), text };
+};
+
+/**
+ * Whether writing `value` back keeps every byte of its members: the bytes
+ * were valid UTF-8 and the text spells the value as JSON.stringify does,
+ * apart from whitespace between tokens.
+ */
+export const keptExactly = (decoded: DecodedText, value: unknown): boolean =>
+  decoded.exact && spelledAsSerialized(decoded.text, value);

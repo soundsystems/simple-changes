@@ -511,6 +511,7 @@ describe("active integration-loop lease", () => {
     expect(finalized.cleanup).toEqual({
       cleanedPrimaryPaths: [],
       errors: [],
+      notes: [],
       primaryUpdated: false,
       prunedWorktreeMetadata: 0,
       releasedClaims: [],
@@ -4236,19 +4237,10 @@ describe("active integration-loop lease", () => {
           (violation) => violation.path === path
         );
 
-      // Releasing the bridge claim reopens the link; nothing holds the
-      // checkout, so the hint names the bridge owner and the new-owner route.
+      // The bridge owner's exact release of the accepted checkout keeps its
+      // link current, so the run's other work goes on during the handoff.
       releaseWorktreeClaim(fixture.root, "bridge-owner", bridge.claimId);
-      const released = stale();
-      expect(released.map(({ code }) => code)).toEqual([
-        "coordination-claim-stale",
-      ]);
-      expect(released[0]?.message).toContain(
-        "If the checkout is passing to a new owner, the new owner runs the same claim and pause with its own agent ID and adapter instead"
-      );
-      expect(released[0]?.nextCommands?.[0]).toContain(
-        "--agent-id bridge-owner"
-      );
+      expect(stale()).toEqual([]);
       // The released bridge receipt can no longer be accepted.
       expect(() =>
         acceptPausedWorktreeChange(

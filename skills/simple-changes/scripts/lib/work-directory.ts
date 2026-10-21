@@ -66,6 +66,21 @@ export interface RunWorkDirectoryRemoval {
 }
 
 const WORKTREE_LINE = /^worktree (.+)$/u;
+const PLAIN_SHELL_WORD_PATTERN = /^[\w./-]+$/u;
+
+// One shell word, quoted unless it is plainly safe as it is.
+const shellWord = (value: string): string =>
+  PLAIN_SHELL_WORD_PATTERN.test(value)
+    ? value
+    : `'${value.replaceAll("'", "'\\''")}'`;
+
+/**
+ * The directory, at the top of a work directory, that holds a file-level copy
+ * of uncommitted work, which may be its only copy, so a run's clean close
+ * keeps the work directory. The agent makes it read-only, so a recursive
+ * delete by an older runtime, which lacks this check, fails inside it.
+ */
+export const PRESERVATION_COPY = "preservation-copy";
 
 /** Every checkout Git has registered for the repository at `directory`. */
 export const registeredCheckouts = (directory: string): string[] =>
@@ -512,9 +527,27 @@ export const bindRunWorkDirectory = (
   return path;
 };
 
+// Present in any form, even as a dangling link, the copy keeps the directory.
+const assertNoPreservationCopy = (path: string): void => {
+  const copy = join(path, PRESERVATION_COPY);
+  try {
+    lstatSync(copy);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return;
+    }
+    throw error;
+  }
+  throw new SimpleChangesError(
+    `It holds ${PRESERVATION_COPY}, so it may hold the only copy of uncommitted work. Once the target or a pushed branch is proven to contain that work, run \`chmod -R u+w ${shellWord(copy)}\` and \`simple-changes workdir remove ${shellWord(path)}\`.`,
+    EXIT_CODES.unsafe
+  );
+};
+
 /**
  * Removes every work directory bound to the run, then its bindings. A path
- * that fails validation is kept, reported, and never removed.
+ * that fails validation, or still holds a preservation copy, is kept,
+ * reported, and never removed.
  */
 export const removeRunWorkDirectories = (
   repository: WorkDirectoryRepository,
@@ -528,6 +561,7 @@ export const removeRunWorkDirectories = (
     try {
       assertRepositoryWorkDirectory(repository, binding.path);
       assertHoldsNoCheckout(repository, binding.path);
+      assertNoPreservationCopy(binding.path);
       rmSync(binding.path, { force: true, recursive: true });
       result.removed.push(binding.path);
     } catch (error) {

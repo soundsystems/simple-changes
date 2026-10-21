@@ -1,7 +1,7 @@
 import type { AuthoringQuestionState, DetectedHarness } from "./authoring.ts";
 import type { ChangelogCoordination, RepoPolicy } from "./types.ts";
 
-export const CURRENT_GUIDANCE_VERSION = 31;
+export const CURRENT_GUIDANCE_VERSION = 32;
 
 export type GuidanceUpdateAction =
   | "review-settings"
@@ -1026,6 +1026,82 @@ const GUIDANCE_UPDATES: GuidanceUpdateDefinition[] = [
       },
     ],
     version: 31,
+  },
+  {
+    changelogReviewRelevant: false,
+    changes: [
+      {
+        kind: "behavior",
+        summary:
+          "`prepare-agent` creates each worktree directly beside the primary checkout as `.simple-changes-<repository>--<run>--<purpose>--<agent>`, each part reduced to lowercase letters, digits, and hyphens, so Git creates only that folder and Simple Changes creates no parent; it refuses, creating nothing, when anything holds the path, even a dangling link. Worktrees in the older `.simple-changes-worktrees/<repository>/` layout keep working by their recorded paths, and a preparation recorded there resumes only while its folder exists. Simple Changes never removes a worktree's parent folder: `loop finalize`, `loop close-equivalent`, `worktree cleanup`, and `prune` name an older-layout folder their removals left empty in non-blocking `notes`.",
+        version: 32,
+      },
+      {
+        kind: "behavior",
+        summary:
+          "Uncommitted work is preserved in Git, on its own branch with the owner's `worktree pause --disposition preserve-in-place` receipt. An unavoidable file copy goes in a read-only `preservation-copy` directory at the top of the agent's work directory with a `manifest.json`, and a clean `loop finalize` or `loop end`, and the next `loop start`, keep a work directory holding one and report the `chmod -R u+w` and `workdir remove` commands to run once the target or a pushed branch contains the work. The check is existence only, and the read-only bits stop an older runtime's cleanup only when it runs as an ordinary user.",
+        version: 32,
+      },
+      {
+        kind: "onboarding",
+        summary:
+          "The managed scratch-file rule also tells agents to preserve uncommitted work in Git rather than as loose copies, to keep an unavoidable file copy only in a read-only `preservation-copy` directory with its manifest until a pushed branch or the target contains the work, and to create worktrees where their brief or a Simple Changes run puts them, never in a folder made beside the repositories, removing with `rmdir` any such folder they made. Every block an earlier release wrote is now `stale`, and `initialize` offers `scratch-file-rule refresh --instruction-file <path>`, which rewrites only that block.",
+        version: 32,
+      },
+      {
+        kind: "behavior",
+        summary:
+          "After a run's shipment scope froze, `prepare-agent --purpose changelog --unit <unit ID>` adds a changelog-only author to a unit the frozen scope registers, without a new unit, a wider scope, or a new approval, bound in a `changelog-author/<run>.json` sidecar to the release surfaces the primary held when it was prepared. Any change it makes outside them, uncommitted, on its branch even after its checkout is removed, or in a commit it attested, is a `changelog-author-outside-release-surfaces` violation that keeps the unit stale, and stale for the run once attested; its checkout never becomes the controller's, and its attestation changes the authors digest, so earlier reviews stop counting. Older runtimes ignore the sidecar and reject `--unit`.",
+        version: 32,
+      },
+      {
+        kind: "behavior",
+        summary:
+          "An owner whose pause the controller accepted may release its claim with `worktree release` or `initialize --mode handoff` without pausing again: while the release recorded the checkout's exact state, which equals the accepted pause receipt and the registered baseline, and no newer claim holds it, the link stays current, and `coordination-claim-stale` otherwise names its cause. `worktree resume-ready` accepts the owner's receipt for a run an approved `loop replan` replaced while the checkout is unchanged, and prints the owner's `worktree pause` command when it refuses. A removal finalization recorded as completed stays accepted after the target moves, so a resumed run no longer reports its own removal as `missing-preserved-worktree`.",
+        version: 32,
+      },
+      {
+        kind: "behavior",
+        summary:
+          "A branch is recorded only by its exact name: claims, pauses, ready receipts, loop start, rebaseline, adoption, acceptance, `dispose-worktree`, `retain-worktree`, and a resumed `prepare-agent` preparation refuse a branch whose name is not valid UTF-8 or contains U+FFFD with exit 5, naming the checkout and writing nothing. Finalization reports it as a cleanup error, leaves that claim, registration, and checkout as they are, and never deletes such a branch; a release stays allowed but records no checkout state, and an older claim on such a branch is no longer admitted as a concurrent author. Records written before 0.32.0 keep their names until released or replaced.",
+        version: 32,
+      },
+      {
+        kind: "integration",
+        summary:
+          "The review ledger (root, attestations, completions, review attempts) and each role of a Simple Changes authoring sidecar accept an optional `extensions` object that readers keep without interpreting; a later release puts a field there only when a reader that ignores it can only be stricter, and an unknown key beside it asks to update the runtime. A file holding extensions must spell its JSON as Simple Changes writes it, or it reads as malformed; a ledger write keeps them byte for byte and refuses to drop or change them, and a sidecar write keeps their values but may change spacing. Nothing writes `extensions` yet, and runtimes before 0.32.0 reject a ledger or sidecar holding it.",
+        version: 32,
+      },
+      {
+        kind: "integration",
+        summary:
+          "The GitLab provider reference documents recovery of a passed hosted CI run whose publication failed: the repository adapter records a `partial` forge receipt naming the exact pipeline and attempt, and recovery re-checks that exact pipeline and republishes without dispatching another run or adopting an unrelated passing one; the GitHub reference points to the same contract. Core Simple Changes runs no CI.",
+        version: 32,
+      },
+    ],
+    noticeBullets: [
+      {
+        priority: 190,
+        summary:
+          "If you added the scratch-file rule to your agent instruction file, such as AGENTS.md, your copy is now out of date: the rule also keeps uncommitted work in Git and worktrees out of folders made beside your repositories. `initialize` reports it as stale and offers `scratch-file-rule refresh`, which rewrites only that block.",
+      },
+      {
+        priority: 185,
+        summary:
+          "Agent worktrees now go directly beside your repository, so cleanup no longer leaves empty folders behind. Worktrees in the older `.simple-changes-worktrees` folder keep working, and Simple Changes never removes that folder for you; cleanup only names it once it is empty.",
+      },
+      {
+        priority: 185,
+        summary:
+          "A run whose scope froze can now add an author that changes only your changelog files to a unit it already registered, with `prepare-agent --purpose changelog --unit <id>`; any other change by that author makes the unit stale.",
+      },
+      {
+        priority: 180,
+        summary:
+          "The review ledger and authoring settings can now carry fields from newer Simple Changes versions. Nothing writes them yet, but copies older than 0.32.0 cannot read files that hold them, so keep every copy that shares a repository on 0.32.0 or later.",
+      },
+    ],
+    version: 32,
   },
 ];
 

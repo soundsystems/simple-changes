@@ -18,6 +18,7 @@ import {
 import { hostname } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { assertNotChangelogAuthorCheckout } from "./changelog-authors.ts";
 import { targetContainsRevision } from "./cleanup-core.ts";
 import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
 import { sha256, sha256Json } from "./hash.ts";
@@ -29,6 +30,7 @@ import {
   currentTargetRevision,
   DIGEST_PATTERN,
   effectiveShipmentScopeFrozenAt,
+  exactWorktreeLease,
   forgetLeaseSession,
   gitLabProjectForTargetRef,
   LEASE_STALE_AFTER_MS,
@@ -61,7 +63,6 @@ import {
   transferController,
   withMutationEvidence,
   withStateLock,
-  worktreeLease,
   writeImmutableRecoveryEvent,
   writeLease,
 } from "./loop-lease-core.ts";
@@ -281,6 +282,10 @@ export const takeoverLoop = (
           EXIT_CODES.usage
         );
       }
+      assertNotChangelogAuthorCheckout(
+        lease,
+        inventory.repository.currentCheckout
+      );
       return transferController(
         lease,
         inventory,
@@ -562,7 +567,7 @@ export const adoptPausedWorktree = (
         );
       }
       const adopted: LoopWorktreeLease = {
-        ...worktreeLease(evidence.current, "preserved", null, false),
+        ...exactWorktreeLease(evidence.current, "preserved", null, false),
         claimId: evidence.claimId,
         coordinationState: "adopted-preserved",
         pauseReceiptId: evidence.pauseReceiptId,
@@ -675,7 +680,7 @@ export const rebaselineLoopWorktrees = (
         worktrees: [
           ...lease.worktrees,
           ...additions.map((worktree) =>
-            worktreeLease(worktree, "preserved", null, false)
+            exactWorktreeLease(worktree, "preserved", null, false)
           ),
         ],
       };
@@ -728,7 +733,7 @@ export const acceptPausedWorktreeChange = (
         );
       }
       const accepted: LoopWorktreeLease = {
-        ...worktreeLease(evidence.current, "preserved", null, false),
+        ...exactWorktreeLease(evidence.current, "preserved", null, false),
         claimId: evidence.claimId,
         coordinationState: "adopted-preserved",
         pauseReceiptId: evidence.pauseReceiptId,

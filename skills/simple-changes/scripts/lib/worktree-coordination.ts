@@ -13,13 +13,20 @@ import { dirname, resolve } from "node:path";
 import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
 import { currentHarnessSession } from "./harness-session.ts";
 import { sha256, sha256Json } from "./hash.ts";
-import { captureInventory, locateRepository } from "./inventory.ts";
+import {
+  assertExactBranch,
+  captureInventory,
+  isLossyName,
+  locateRepository,
+} from "./inventory.ts";
 import { runGit } from "./process.ts";
 import { redactSecrets } from "./redact.ts";
+import { replannedRegistrations } from "./replan-history.ts";
 import { RUN_ID_PATTERN } from "./run-id.ts";
 import { validateSchema } from "./schema.ts";
 import type {
   LoopLease,
+  LoopWorktreeLease,
   RepositoryInventory,
   WorktreeClaim,
   WorktreeClaimObservation,
@@ -936,6 +943,9 @@ export const claimWorktree = (
           EXIT_CODES.unsafe
         );
       }
+      // A claim records the branch, and a re-claim affirms that the claim
+      // still names it, so neither may stand on a name that is not exact.
+      assertExactBranch(worktree.branch, `a claim on ${worktree.path}`);
       if (existing) {
         if (!claimNeedsRefresh(document, existing, worktree, session)) {
           return existing;
@@ -1077,6 +1087,9 @@ export const pauseClaimedWorktree = (
           EXIT_CODES.unsafe
         );
       }
+      // A claim recorded before 0.32.0 may name a lossy branch, which the
+      // comparison above cannot tell from another one.
+      assertExactBranch(current.branch, `a pause receipt for ${current.path}`);
       const acknowledgedAt = new Date().toISOString();
       const receipt: WorktreePauseReceipt = {
         acknowledgedAt,
@@ -1150,11 +1163,14 @@ const transitionClaim = (
   actorAgentId: string,
   state: WorktreeCoordinationState,
   updates: Partial<WorktreeClaim> = {},
-  allowedStates?: readonly WorktreeCoordinationState[]
+  allowedStates?: readonly WorktreeCoordinationState[],
+  // Checked against the document read under the lock, before anything else.
+  assertAllowed?: (document: WorktreeCoordinationDocument) => void
 ): WorktreeClaim =>
   withCoordinationLock(commonGitDirectory, `worktree ${state}`, () => {
     let document =
       readCoordinationDocumentFromCommonDirectory(commonGitDirectory);
+    assertAllowed?.(document);
     const claim = document.claims.find((item) => item.claimId === claimId);
     if (!claim) {
       throw new SimpleChangesError(
@@ -1229,19 +1245,6 @@ export const markCoordinationResumeReady = (
       EXIT_CODES.usage
     );
   }
-  const document =
-    readCoordinationDocumentFromCommonDirectory(commonGitDirectory);
-  if (
-    !document.receipts.some(
-      (receipt) =>
-        receipt.claimId === claimId && receipt.requestingRunId === runId
-    )
-  ) {
-    throw new SimpleChangesError(
-      "Resume-ready requires an owner pause receipt for this exact run.",
-      EXIT_CODES.unsafe
-    );
-  }
   return transitionClaim(
     commonGitDirectory,
     claimId,
@@ -1255,8 +1258,121 @@ export const markCoordinationResumeReady = (
         targetSha,
       },
     },
-    ["paused", "adopted-preserved", "detached", "attached", "resume-ready"]
+    ["paused", "adopted-preserved", "detached", "attached", "resume-ready"],
+    (document) => {
+      if (
+        !hasResumeReadyReceipt(commonGitDirectory, document, claimId, runId)
+      ) {
+        throw new SimpleChangesError(
+          resumeReadyRefusal(document, claimId, runId),
+          EXIT_CODES.unsafe
+        );
+      }
+    }
   );
+};
+
+// The receipt still records the claim's exact path, branch, HEAD, digest,
+// and owner.
+const receiptDescribesClaim = (
+  receipt: WorktreePauseReceipt,
+  claim: WorktreeClaim
+): boolean =>
+  receipt.claimId === claim.claimId &&
+  receipt.path === claim.path &&
+  receipt.branch === claim.branch &&
+  receipt.headSha === claim.headSha &&
+  receipt.changeDigest === claim.changeDigest &&
+  receipt.ownerAgentId === claim.owner.agentId;
+
+// A registration that links this exact claim and receipt at its path.
+const registersReceipt = (
+  registered: Pick<
+    LoopWorktreeLease,
+    "claimId" | "path" | "pauseReceiptId" | "role"
+  >,
+  receipt: WorktreePauseReceipt
+): boolean =>
+  registered.role === "preserved" &&
+  registered.path === receipt.path &&
+  registered.claimId === receipt.claimId &&
+  registered.pauseReceiptId === receipt.receiptId;
+
+/**
+ * Whether run `runId` may mark the claim resume-ready. The owner's pause
+ * receipt for this exact run always may. A receipt the owner gave an earlier
+ * run may when it still describes the claim exactly and either the active
+ * lease registers this claim with it, or the run that took it was replaced
+ * through an approved `loop replan` whose archived lease registered it and
+ * the active lease registers the checkout, unlinked, at exactly the
+ * receipt's state.
+ */
+const hasResumeReadyReceipt = (
+  commonGitDirectory: string,
+  document: WorktreeCoordinationDocument,
+  claimId: string,
+  runId: string
+): boolean => {
+  const receipts = document.receipts.filter(
+    (receipt) => receipt.claimId === claimId
+  );
+  if (receipts.some((receipt) => receipt.requestingRunId === runId)) {
+    return true;
+  }
+  const claim = document.claims.find((item) => item.claimId === claimId);
+  const lease = activeLoop(commonGitDirectory);
+  if (
+    !(claim && lease && lease.runId === runId) ||
+    claim.commonGitDirectory !== commonGitDirectory
+  ) {
+    return false;
+  }
+  return receipts.some(
+    (receipt) =>
+      receiptDescribesClaim(receipt, claim) &&
+      (lease.worktrees.some((item) => registersReceipt(item, receipt)) ||
+        inheritedThroughReplan(commonGitDirectory, lease, receipt))
+  );
+};
+
+// The active lease registers the receipt's checkout, with no claim link of
+// its own, at exactly the receipt's state, and the run the owner paused for
+// was replaced through an approved `loop replan` whose archived lease
+// registered this claim with this receipt.
+const inheritedThroughReplan = (
+  commonGitDirectory: string,
+  lease: LoopLease,
+  receipt: WorktreePauseReceipt
+): boolean => {
+  const registered = lease.worktrees.find((item) => item.path === receipt.path);
+  return (
+    registered !== undefined &&
+    registered.role === "preserved" &&
+    !registered.createdByRun &&
+    registered.claimId === undefined &&
+    registered.pauseReceiptId === undefined &&
+    registered.branch === receipt.branch &&
+    registered.baselineHeadSha === receipt.headSha &&
+    registered.baselineChangeDigest === receipt.changeDigest &&
+    replannedRegistrations(commonGitDirectory, receipt.requestingRunId).some(
+      (archived) => registersReceipt(archived, receipt)
+    )
+  );
+};
+
+const resumeReadyRefusal = (
+  document: WorktreeCoordinationDocument,
+  claimId: string,
+  runId: string
+): string => {
+  const claim = document.claims.find((item) => item.claimId === claimId);
+  const base = `Resume-ready requires an owner pause receipt for this exact run. An earlier receipt counts only while it still records claim ${claimId}'s exact state and run ${runId}'s lease, or the archived lease of a run that an approved \`loop replan\` replaced, registers it for the claim.`;
+  if (!claim || claim.state === "detached") {
+    return base;
+  }
+  const agent = commandWord(claim.owner.agentId);
+  const path = commandWord(claim.path);
+  return `${base} Ask owner ${claim.owner.agentId} to run \`simple-changes worktree pause --agent-id ${agent} --worktree ${path} --run-id ${runId} --disposition preserve-in-place --reason <why> --repo ${path}\` from its own session, then mark it resume-ready again. Do not run it under that agent ID from another session.`;
 };
 
 export const detachClaimedWorktree = (
@@ -1498,7 +1614,9 @@ export const attachClaimedWorktree = (
  * claim is never refreshed, so recording the released state lets an active
  * loop admit exactly that state and fail closed on any later change. Git does
  * not mark a locked worktree prunable when its directory is deleted, so the
- * directory itself must exist.
+ * directory itself must exist. A branch Simple Changes cannot name exactly
+ * records nothing: the release still happens, but no loop can admit that
+ * state as the one the owner handed off.
  */
 const releasedEvidence = (
   inventory: RepositoryInventory,
@@ -1508,7 +1626,7 @@ const releasedEvidence = (
     (worktree) =>
       worktree.path === path && !worktree.prunable && existsSync(worktree.path)
   );
-  return current
+  return current && !isLossyName(current.branch)
     ? {
         branch: current.branch,
         changeDigest: current.changeDigest,
@@ -1572,11 +1690,13 @@ const releasedClaim = (
  * already hold the coordination lock. Such a claim protects nothing: the
  * checkout is absent and branch protection is decided separately, so leaving
  * it active only strands the owner's bookkeeping until a manual takeover.
+ * Claims named in `keep` stay as they are.
  */
 export const releaseAbsentWorktreeClaimsUnderLock = (
   commonGitDirectory: string,
   inventory: RepositoryInventory,
-  actorAgentIdInput: string
+  actorAgentIdInput: string,
+  keep: ReadonlySet<string> = new Set()
 ): WorktreeClaim[] => {
   const actorAgentId = requiredText(actorAgentIdInput, "agent ID", 128);
   const presentPaths = new Set(
@@ -1592,7 +1712,8 @@ export const releaseAbsentWorktreeClaimsUnderLock = (
     if (
       claim.commonGitDirectory !== commonGitDirectory ||
       !ABSENT_RELEASABLE_STATES.has(claim.state) ||
-      presentPaths.has(claim.path)
+      presentPaths.has(claim.path) ||
+      keep.has(claim.claimId)
     ) {
       continue;
     }
@@ -2107,16 +2228,16 @@ const approvedTakeoverState = (
       EXIT_CODES.unsafe
     );
   }
-  // Git output is decoded as UTF-8 with replacement, so two branch names made
-  // of different invalid bytes read the same; such a name cannot be shown to
-  // be the approved one, so a reassign, which hands that state on, fails
-  // closed. A release adopts nothing and is the only way to retire such a
-  // claim once its checkout is gone, so it stays allowed.
-  for (const branch of [current.branch, expected.branch]) {
-    if (action === "reassign" && branch?.includes(REPLACEMENT_CHARACTER)) {
-      throw new SimpleChangesError(
-        `Branch ${JSON.stringify(branch)} is not valid UTF-8, so Simple Changes cannot name it exactly and no approval can be matched to it. Rename the branch to a UTF-8 name, re-observe the worktree, and retry the takeover, or release the claim with \`--release\`.`,
-        EXIT_CODES.unsafe
+  // A lossy branch name cannot be shown to be the approved one, so a
+  // reassign, which hands that state on, fails closed. A release adopts
+  // nothing and is the only way to retire such a claim once its checkout is
+  // gone, so it stays allowed.
+  if (action === "reassign") {
+    for (const branch of [current.branch, expected.branch]) {
+      assertExactBranch(
+        branch,
+        "a takeover, and no approval can be matched to it",
+        "Rename the branch to a valid UTF-8 name without U+FFFD, re-observe the worktree, and retry the takeover, or release the claim with `--release`."
       );
     }
   }
@@ -2134,7 +2255,6 @@ const approvedTakeoverState = (
 };
 
 const STATUS_DIGEST_PATTERN = /^[0-9a-f]{64}$/u;
-const REPLACEMENT_CHARACTER = "\uFFFD";
 
 /**
  * One value of the approval's evidence, kept exactly as given. Each must

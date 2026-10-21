@@ -11,7 +11,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, resolve } from "node:path";
+import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
 import { CURRENT_GUIDANCE_VERSION } from "./guidance-updates.ts";
 import { sha256 } from "./hash.ts";
@@ -102,6 +102,40 @@ const repositoryPolicyTrustPath = (commonGitDirectory: string): string =>
     commonGitDirectory,
     "simple-changes/policy-trust.json"
   );
+
+/**
+ * Primary-relative paths whose exact bytes carry repository policy: the
+ * policy file itself, and any path inside the checkout that the private
+ * trust receipt binds by digest. Rewriting one of these undoes approved
+ * policy or invalidates its trust receipt, so cleanup that would rewrite
+ * primary paths treats them as consequential. A receipt that cannot be
+ * read adds nothing; the policy file is always included.
+ */
+export const trustBoundPolicyPaths = (
+  primaryCheckout: string,
+  commonGitDirectory: string
+): string[] => {
+  const paths = new Set([".simple-changes.json"]);
+  try {
+    const receipt = JSON.parse(
+      readFileSync(repositoryPolicyTrustPath(commonGitDirectory), "utf8")
+    ) as { policyPath?: unknown };
+    if (typeof receipt.policyPath === "string") {
+      const bound = relative(realpathSync(primaryCheckout), receipt.policyPath);
+      if (
+        bound &&
+        bound !== ".." &&
+        !bound.startsWith(`..${sep}`) &&
+        !isAbsolute(bound)
+      ) {
+        paths.add(bound.split(sep).join("/"));
+      }
+    }
+  } catch {
+    // The policy file alone stays consequential.
+  }
+  return [...paths].sort();
+};
 
 const requiresRepositoryTrust = (policy: RepoPolicy): boolean =>
   policy.gitPushAuthorization === "configure-harness" ||

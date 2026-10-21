@@ -64,6 +64,7 @@ import {
   verificationAgainst,
 } from "./loop-lease-verify.ts";
 import { emptyManagedWorktreeFolderNotes } from "./managed-worktrees.ts";
+import { trustBoundPolicyPaths } from "./policy.ts";
 import { recordedPreservedSourceOverrides } from "./preserved-source-override.ts";
 import { primaryDeliveryProof } from "./primary-delivery-proof.ts";
 import { runGit } from "./process.ts";
@@ -882,17 +883,122 @@ const preservesProvenMixedPrimary = (
   );
 };
 
+/**
+ * Policy paths that normalization restored to the primary's old HEAD on
+ * the expectation that synchronization would land the target's identical
+ * bytes over them, with whether each was staged at the target's entry.
+ */
+interface NormalizedPolicyPaths {
+  headSha: string;
+  paths: { path: string; stagedAtTarget: boolean }[];
+}
+
+// Whether a primary whose every change is target-equivalent will reach the
+// target once those changes are normalized: the switch and fast-forward
+// that follow can only land on the target from here.
+const primaryCanReachTarget = (
+  inventory: RepositoryInventory,
+  primary: WorktreeInventory,
+  targetBranch: string,
+  targetRevision: string
+): boolean => {
+  const localTarget = inventory.branches.find(
+    (branch) => branch.name === targetBranch
+  );
+  if (!localTarget) {
+    return primary.branch !== targetBranch;
+  }
+  if (
+    primary.branch !== targetBranch &&
+    localTarget.worktreePath !== null &&
+    localTarget.worktreePath !== primary.path
+  ) {
+    return false;
+  }
+  return (
+    localTarget.sha === targetRevision ||
+    targetContainsRevision(primary.path, targetRevision, localTarget.sha)
+  );
+};
+
+/**
+ * Restoring the repository policy, or any path its trust receipt binds, to
+ * an old HEAD undoes approved policy and invalidates the receipt. Those
+ * paths are normalized only when every primary change is normalized with
+ * them and the primary can then reach the target, whose bytes are the ones
+ * kept now. Otherwise they keep their bytes and trust, and a note says so.
+ */
+const withoutStrandedPolicyPaths = (
+  lease: LoopLease,
+  inventory: RepositoryInventory,
+  primary: WorktreeInventory,
+  eligiblePaths: Set<string>,
+  targetBranch: string,
+  targetRevision: string,
+  cleanup: FinalizationCleanupResult
+): NormalizedPolicyPaths | null => {
+  const consequential = new Set(
+    trustBoundPolicyPaths(lease.primaryCheckout, lease.commonGitDirectory)
+  );
+  const policyPaths = [...eligiblePaths].filter((path) =>
+    consequential.has(path)
+  );
+  if (!(primary.headSha && policyPaths.length > 0)) {
+    return null;
+  }
+  const everyChangeNormalized = primary.changes.every((change) =>
+    [change.originalPath, change.path]
+      .filter((path): path is string => Boolean(path))
+      .every((path) => eligiblePaths.has(path))
+  );
+  if (
+    everyChangeNormalized &&
+    primaryCanReachTarget(inventory, primary, targetBranch, targetRevision)
+  ) {
+    return {
+      headSha: primary.headSha,
+      paths: policyPaths.map((path) => ({
+        path,
+        stagedAtTarget: diffMatchesRevision(
+          lease.primaryCheckout,
+          targetRevision,
+          [path],
+          true
+        ),
+      })),
+    };
+  }
+  // A rename keeps both of its sides together, so neither is half restored.
+  for (const change of primary.changes) {
+    const sides = [change.originalPath, change.path].filter(
+      (path): path is string => Boolean(path)
+    );
+    if (sides.some((path) => consequential.has(path))) {
+      for (const path of sides) {
+        eligiblePaths.delete(path);
+      }
+    }
+  }
+  for (const path of policyPaths) {
+    cleanup.notes.push(
+      `Kept ${path} in the primary checkout byte for byte: it already equals ${lease.targetRef}, and the primary cannot synchronize to the target now, so restoring its older HEAD copy would undo approved repository policy and its trust receipt.`
+    );
+  }
+  return null;
+};
+
 const reconcileTargetEquivalentPrimaryChanges = (
   lease: LoopLease,
   inventory: RepositoryInventory,
+  targetBranch: string,
   targetRevision: string,
   cleanup: FinalizationCleanupResult
-): void => {
+): NormalizedPolicyPaths | null => {
   const primary = inventory.worktrees.find(
     (worktree) => worktree.path === lease.primaryCheckout
   );
   if (!(primary?.headSha && primary.changes.length > 0)) {
-    return;
+    return null;
   }
   const eligiblePaths = new Set<string>();
   for (const change of primary.changes) {
@@ -928,10 +1034,22 @@ const reconcileTargetEquivalentPrimaryChanges = (
     }
   }
   if (eligiblePaths.size === 0) {
-    return;
+    return null;
   }
   if (preservesProvenMixedPrimary(lease, inventory, primary, eligiblePaths)) {
-    return;
+    return null;
+  }
+  const normalizedPolicy = withoutStrandedPolicyPaths(
+    lease,
+    inventory,
+    primary,
+    eligiblePaths,
+    targetBranch,
+    targetRevision,
+    cleanup
+  );
+  if (eligiblePaths.size === 0) {
+    return null;
   }
   const freshPrimary = captureInventory(lease.primaryCheckout).worktrees.find(
     (worktree) => worktree.path === lease.primaryCheckout
@@ -940,7 +1058,7 @@ const reconcileTargetEquivalentPrimaryChanges = (
     cleanup.errors.push(
       "The primary checkout changed while target-equivalent paths were being audited; no primary path was cleaned."
     );
-    return;
+    return null;
   }
   const paths = [...eligiblePaths].sort();
   const restored = runGit(
@@ -959,10 +1077,65 @@ const reconcileTargetEquivalentPrimaryChanges = (
     cleanup.errors.push(
       `Could not normalize target-equivalent primary paths: ${restored.stderr.trim() || restored.stdout.trim()}`
     );
-    return;
+    return normalizedPolicy;
   }
   cleanup.cleanedPrimaryPaths.push(...paths);
   cleanup.primaryUpdated = true;
+  return normalizedPolicy;
+};
+
+/**
+ * When synchronization did not land the target after all, puts back the
+ * policy bytes normalization replaced, from the target that held the same
+ * bytes, and the staged entry when it was staged. A path that changed
+ * since normalization is left as it is and reported.
+ */
+const restoreStrandedPolicyPaths = (
+  lease: LoopLease,
+  normalized: NormalizedPolicyPaths | null,
+  targetRevision: string,
+  cleanup: FinalizationCleanupResult
+): void => {
+  for (const { path, stagedAtTarget } of normalized?.paths ?? []) {
+    if (diffMatchesRevision(lease.primaryCheckout, targetRevision, [path])) {
+      continue;
+    }
+    if (
+      !(
+        normalized &&
+        diffMatchesRevision(lease.primaryCheckout, normalized.headSha, [path])
+      )
+    ) {
+      cleanup.errors.push(
+        `Repository policy path ${path} changed after it was normalized and before the primary synchronized; it was left as it is. Restore the approved bytes and confirm the policy with \`simple-changes setup\`.`
+      );
+      continue;
+    }
+    const restored = runGit(
+      lease.primaryCheckout,
+      [
+        "restore",
+        `--source=${targetRevision}`,
+        ...(stagedAtTarget ? ["--staged"] : []),
+        "--worktree",
+        "--",
+        path,
+      ],
+      true
+    );
+    if (restored.exitCode !== 0) {
+      cleanup.errors.push(
+        `Could not put back repository policy path ${path} after the primary did not synchronize: ${restored.stderr.trim() || restored.stdout.trim()}`
+      );
+      continue;
+    }
+    cleanup.cleanedPrimaryPaths = cleanup.cleanedPrimaryPaths.filter(
+      (cleaned) => cleaned !== path
+    );
+    cleanup.notes.push(
+      `Put back ${path} in the primary checkout byte for byte because the primary did not synchronize to ${lease.targetRef}; approved repository policy and its trust receipt are unchanged.`
+    );
+  }
 };
 
 const fastForwardCleanPrimary = (
@@ -1293,9 +1466,10 @@ const automaticFinalizationCleanup = (
       targetRevision
     )
   ) {
-    reconcileTargetEquivalentPrimaryChanges(
+    const normalizedPolicy = reconcileTargetEquivalentPrimaryChanges(
       lease,
       inventory,
+      targetBranch,
       targetRevision,
       cleanup
     );
@@ -1312,6 +1486,12 @@ const automaticFinalizationCleanup = (
       lease,
       inventory,
       targetBranch,
+      targetRevision,
+      cleanup
+    );
+    restoreStrandedPolicyPaths(
+      lease,
+      normalizedPolicy,
       targetRevision,
       cleanup
     );

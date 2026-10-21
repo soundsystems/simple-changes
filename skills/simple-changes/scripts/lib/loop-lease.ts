@@ -22,6 +22,7 @@ export type {
   FinalizationReleasedClaim,
   FinalizationRemovedBranch,
   LoopEndResult,
+  LoopFinalizationHeldUnit,
   LoopFinalizationOptions,
   LoopFinalizationReceipt,
   LoopFinalizationResult,
@@ -29,6 +30,12 @@ export type {
   LoopUnmutatedCloseReceipt,
 } from "./loop-lease-finalize.ts";
 export { endLoop, finalizeLoop } from "./loop-lease-finalize.ts";
+export type {
+  HoldUnitApproval,
+  HoldUnitRequest,
+  HoldUnitResult,
+} from "./loop-lease-hold.ts";
+export { holdScopedUnit } from "./loop-lease-hold.ts";
 export type {
   GuardedLoopCommand,
   GuardedLoopCommandInput,

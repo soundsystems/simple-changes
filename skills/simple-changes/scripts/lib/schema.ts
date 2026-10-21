@@ -31,6 +31,7 @@ export const SCHEMA_NAMES = [
   "shipment-outcome",
   "preserved-source-override",
   "changelog-author",
+  "held-units",
   "remote-branch-reconciliation",
   "remote-branch-ancestry",
   "remote-branch-supersession",

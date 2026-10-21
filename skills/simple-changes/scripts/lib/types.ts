@@ -1490,6 +1490,63 @@ export interface ChangelogAuthorRecord {
   schemaVersion: 1;
 }
 
+/**
+ * The exact state `loop hold-unit` observed for one frozen scoped unit. The
+ * user approves its digest, so any change to it before recording refuses.
+ */
+export interface HeldUnitObservation {
+  claim: {
+    branch: string | null;
+    claimId: string;
+    ownerAgentId: string;
+    state: WorktreeCoordinationState;
+  } | null;
+  controllerAgentId: string;
+  paths: Array<{
+    openingEntry: string | null;
+    path: string;
+    sourceEntry: string | null;
+  }>;
+  readinessEvidence: string[];
+  reason: string;
+  runId: string;
+  scopePlanDigest: string;
+  source: {
+    branch: string | null;
+    changeDigest: string;
+    headSha: string | null;
+    isPrimary: boolean;
+    worktree: string;
+  };
+  target: { ref: string; revision: string };
+  unitDigest: string;
+  unitId: string;
+}
+
+/** One immutable hold: a scoped unit kept preserved, never delivered. */
+export interface HeldUnitHold {
+  authorization: {
+    approvalReference: string;
+    approvedAt: string;
+    approvedBy: string;
+  };
+  /** The held unit's paths, in the shape of the scope's plan exclusions. */
+  exclusions: Array<{ path: string; reason: string; worktreePath: string }>;
+  holdDigest: string;
+  observation: HeldUnitObservation;
+  observationDigest: string;
+  recordedAt: string;
+  /** The original unit exactly as the frozen scope recorded it. */
+  unit: ChangeUnit;
+}
+
+/** The sidecar beside the lease that holds a run's held units. */
+export interface HeldUnitsRecord {
+  holds: HeldUnitHold[];
+  runId: string;
+  schemaVersion: 1;
+}
+
 export interface LoopViolation {
   changeDigest: string | null;
   code:

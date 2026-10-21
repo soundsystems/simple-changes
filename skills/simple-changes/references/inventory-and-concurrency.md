@@ -3,6 +3,7 @@
 Contents:
 
 - Integration-controller lease and concurrent authors
+- Bounded lock waits
 - New agents during an active loop
 - Agent work directories
 - Parallel agents
@@ -222,7 +223,8 @@ provider writes, and any command that targets another worktree or branch unless
 the matching integration boundary and authority apply.
 
 When a genuine integration lock is busy, wait or retry only that short shared
-operation; unrelated authors continue. Never pause them, demand a lease-null
+operation, with [`--wait-lock`](#bounded-lock-waits) where the command offers
+it; unrelated authors continue. Never pause them, demand a lease-null
 handoff, export patches, or clean worktrees merely to free the lock. When lock
 creation instead fails with `EPERM`, `EACCES`, `EROFS`, or another
 permission-denied result, treat it as a local harness/filesystem authorization
@@ -282,6 +284,51 @@ leader that exits while background descendants remain does not complete the
 guarded mutation. Terminate those descendants and reject the command before
 releasing the lock. If the process group cannot be terminated, retain the lock
 so explicit recovery must prove the remaining processes inactive.
+
+## Bounded lock waits
+
+Metadata writers take the loop state lock for a moment, so a healthy
+concurrent holder, such as another author's attestation or a controller's
+`loop exec`, makes them exit 5 at once. These writers accept `--wait-lock`
+to wait for that holder instead:
+
+- `author attest`, `proposal record-authors`, `proposal record-review`, and
+  `proposal waive-coverage`, the [review ledger
+  steps](change-requests.md#review-ledger-steps);
+- `loop record-scope`, `loop refresh-scope`, and `loop record-outcome`;
+- `worktree release --ready-receipt`.
+
+`--timeout-ms <n>` bounds the wait: 60000 by default, at most 600000, and
+only with `--wait-lock`. Any other command refuses the flags with exit 2.
+Without the flag, every command behaves exactly as before.
+
+While a live owner holds the lock, the writer polls it. Once the lock is free
+it takes it like any other command and runs once: only a busy acquisition is
+retried, never an operation that started. No order among several waiters is
+promised. A wait never breaks, steals, takes over, or recovers a lock. It ends
+early, exit 5, when the owner's process is gone on this host, because only
+`loop recover` may clear that lock under the [stale-lock
+rules](recovery.md#locks-and-stale-leases), and when the writer runs inside
+the owner itself, such as inside a `loop exec`, because the owner cannot
+finish first. A lock owned on another host, or one whose owner metadata
+cannot be read, is waited on until the bound. The wait covers the loop state lock
+only: once `loop record-outcome` or `worktree release --ready-receipt` holds
+it, a busy worktree coordination lock still exits 5 at once, before anything
+is written.
+
+Every early end and every timeout exits 5 with the usual busy message and
+writes nothing. With `--json`, the error on stderr adds `lockWait`:
+`executed: false`, `operation` (the writer, such as `author attest`),
+`outcome` (`timed-out`, `owner-not-running`, or `caller-inside-owner`),
+`owner` (`pid`, `hostname`, `operation`, and `createdAt`, plus any recorded
+child process or process group; `null` when its metadata was unreadable),
+`timeoutMs`, and `waitedMs`. Because nothing ran, the same command may run
+again later. Use the flag instead of a hand-written retry loop, and never
+wrap the command in one that removes or rewrites the lock.
+
+Reading needs no wait: `initialize --mode preview --proposal <id> --head
+<sha>` resolves the reviewer without taking the loop lock or writing the
+ledger, so it works while a writer holds the lock.
 
 ## New agents during an active loop
 
@@ -594,7 +641,8 @@ nothing: each receipt's `coverage` in `worktree status` keeps showing them,
 and review stays blocked until they are attested or the owner waives them on
 the proposal. The check and the release hold the loop lock every ledger write
 takes, so, like `author attest`, it reports the lock busy while another
-command holds it, such as a running `loop exec`: retry after that returns.
+command holds it, such as a running `loop exec`: retry after that returns, or
+pass [`--wait-lock`](#bounded-lock-waits).
 
 `worktree status --json` lists every receipt under `readyWork` with its
 freshness: `current` while the branch is still at the receipted head and the

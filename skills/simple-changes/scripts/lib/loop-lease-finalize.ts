@@ -30,6 +30,7 @@ import {
   loopManifestDigest,
   matchingOverride,
   matchingRemovalDisposition,
+  PRESERVED_SOURCE_HANDOFF_DIRECTORY,
   PRESERVED_SOURCE_OVERRIDE_DIRECTORY,
   REMOTE_RECONCILIATION_MODES,
   readImmutableRecoveryEvent,
@@ -51,6 +52,7 @@ import {
 } from "./loop-lease-core.ts";
 import { assertCurrentRemoteBranchReconciliation } from "./loop-lease-remote.ts";
 import {
+  preservedSourceHandoffIssue,
   preservedSourceOverrideIssue,
   targetTreeEntry,
   worktreeSourceEntry,
@@ -64,7 +66,10 @@ import {
   verificationAgainst,
 } from "./loop-lease-verify.ts";
 import { emptyManagedWorktreeFolderNotes } from "./managed-worktrees.ts";
-import { recordedPreservedSourceOverrides } from "./preserved-source-override.ts";
+import {
+  type PreservedSourceEvidence,
+  recordedPreservedSourceEvidence,
+} from "./preserved-source-override.ts";
 import { primaryDeliveryProof } from "./primary-delivery-proof.ts";
 import { runGit } from "./process.ts";
 import {
@@ -77,7 +82,6 @@ import type {
   LoopViolation,
   LoopWorktreeDisposition,
   LoopWorktreeLease,
-  PreservedSourceOverrideReceipt,
   RepositoryInventory,
   WorktreeClaim,
   WorktreeInventory,
@@ -1435,21 +1439,24 @@ const missingShipmentScopeBlockers = (lease: LoopLease): string[] =>
     : [];
 
 /**
- * The overrides recorded beside the lease for its exact shipment outcome.
- * Throws when the stored receipt and its sidecar no longer recompose into the
- * complete receipt the recorded digest names.
+ * The overrides and handoffs recorded beside the lease for its exact shipment
+ * outcome. Throws when the stored receipt and its sidecars no longer
+ * recompose into the complete receipt the recorded digest names.
  */
-const storedPreservedSourceOverrides = (
-  lease: LoopLease
-): PreservedSourceOverrideReceipt[] => {
+const storedPreservedSources = (lease: LoopLease): PreservedSourceEvidence => {
   const outcome = lease.shipmentOutcome;
   if (!outcome) {
-    return [];
+    return { handoffs: [], overrides: [] };
   }
-  return recordedPreservedSourceOverrides(
+  return recordedPreservedSourceEvidence(
     readReceiptSidecar(
       lease.commonGitDirectory,
       PRESERVED_SOURCE_OVERRIDE_DIRECTORY,
+      lease.runId
+    ),
+    readReceiptSidecar(
+      lease.commonGitDirectory,
+      PRESERVED_SOURCE_HANDOFF_DIRECTORY,
       lease.runId
     ),
     lease.runId,
@@ -1460,11 +1467,62 @@ const storedPreservedSourceOverrides = (
 
 const recordedOutcomeIntact = (lease: LoopLease): boolean => {
   try {
-    storedPreservedSourceOverrides(lease);
+    storedPreservedSources(lease);
     return true;
   } catch {
     return false;
   }
+};
+
+type RecordedUnit = NonNullable<
+  LoopLease["shipmentOutcome"]
+>["receipt"]["units"][number];
+
+type ScopedUnit = NonNullable<
+  LoopLease["shipmentScope"]
+>["plan"]["units"][number];
+
+/**
+ * Why the override or handoff recorded for one unit no longer holds, or null
+ * when it does or the unit has neither.
+ */
+const preservedSourceIssue = (
+  lease: LoopLease,
+  inventory: RepositoryInventory,
+  unit: RecordedUnit,
+  expected: ScopedUnit,
+  evidence: PreservedSourceEvidence
+): string | null => {
+  const outcome = lease.shipmentOutcome;
+  if (!outcome) {
+    return null;
+  }
+  const override = evidence.overrides.find(
+    (item) => item.unitId === expected.id
+  );
+  if (override) {
+    return preservedSourceOverrideIssue(
+      lease,
+      inventory,
+      outcome.receipt,
+      unit,
+      override,
+      expected,
+      outcome.recordedAt
+    );
+  }
+  const handoff = evidence.handoffs.find((item) => item.unitId === expected.id);
+  return handoff
+    ? preservedSourceHandoffIssue(
+        lease,
+        inventory,
+        outcome.receipt,
+        unit,
+        handoff,
+        expected,
+        outcome.recordedAt
+      )
+    : null;
 };
 
 const shipmentOutcomeCompletionBlockers = (
@@ -1502,32 +1560,22 @@ const shipmentOutcomeCompletionBlockers = (
       ? []
       : [`Shipment outcome entry changed after review: ${item.path}`]
   );
-  let overrides: PreservedSourceOverrideReceipt[];
+  let evidence: PreservedSourceEvidence;
   try {
-    overrides = storedPreservedSourceOverrides(lease);
+    evidence = storedPreservedSources(lease);
   } catch (error) {
     return [
       ...targetBlockers,
       error instanceof Error ? error.message : String(error),
     ];
   }
-  // A preserved-source override holds only while its source, claim, and
-  // target entries stay exactly as approved.
+  // A preserved-source override or handoff holds only while its source,
+  // claim, pause, copy, and target entries stay exactly as approved.
   const sourceBlockers = lease.shipmentScope.plan.units.flatMap((expected) => {
     const unit = receipt.units.find((item) => item.unitId === expected.id);
-    const override = overrides.find((item) => item.unitId === expected.id);
-    if (!(unit && override)) {
-      return [];
-    }
-    const issue = preservedSourceOverrideIssue(
-      lease,
-      inventory,
-      receipt,
-      unit,
-      override,
-      expected,
-      lease.shipmentOutcome?.recordedAt ?? ""
-    );
+    const issue = unit
+      ? preservedSourceIssue(lease, inventory, unit, expected, evidence)
+      : null;
     return issue
       ? [
           `Manually approved preserved source ${expected.sourceWorktree} changed after recording: ${issue}`,
@@ -1783,25 +1831,19 @@ const hasVerifiedDelivery = (
     ) {
       return true;
     }
-    // A user-approved preserved source stays dirty in its author's claimed
-    // checkout; it counts only while its override still holds exactly. The
-    // completion blockers above already proved the sidecar readable.
-    const override = storedPreservedSourceOverrides(lease).find(
-      (item) => item.unitId === unit.id
-    );
+    // A user-approved preserved source stays dirty in its owner's claimed
+    // checkout; it counts only while its override or handoff still holds
+    // exactly. The completion blockers above already proved the sidecars
+    // readable.
+    const evidence = storedPreservedSources(lease);
     const recorded = outcome.units.find((item) => item.unitId === unit.id);
     return Boolean(
-      override &&
-        recorded &&
-        preservedSourceOverrideIssue(
-          lease,
-          inventory,
-          outcome,
-          recorded,
-          override,
-          unit,
-          lease.shipmentOutcome?.recordedAt ?? ""
-        ) === null
+      recorded &&
+        [...evidence.overrides, ...evidence.handoffs].some(
+          (item) => item.unitId === unit.id
+        ) &&
+        preservedSourceIssue(lease, inventory, recorded, unit, evidence) ===
+          null
     );
   });
 };

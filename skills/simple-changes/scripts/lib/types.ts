@@ -344,6 +344,43 @@ export interface PreservedSourceOverrideReceipt {
   unitId: string;
 }
 
+/**
+ * A user-approved handoff on a `delivered` unit whose source is a dirty
+ * checkout, detached or on a branch, that its original owner paused in place
+ * and the controller accepted. A committed copy of the source's exact bytes
+ * reached the target, independently reviewed changes may follow it, and the
+ * source stays preserved under its owner's claim.
+ */
+export interface PreservedSourceHandoffReceipt {
+  approvalReason: string;
+  approvalReference: string;
+  approvedAt: string;
+  approvedBy: string;
+  claimId: string;
+  /** The commit that copied the source's exact bytes into the target line. */
+  copyRevision: string;
+  decision: "reviewed-handoff";
+  ownerAgentId: string;
+  paths: Array<{
+    copyEntry: string | null;
+    path: string;
+    sourceEntry: string | null;
+    targetEntry: string | null;
+  }>;
+  pauseReceiptId: string;
+  preservation: "keep-source-in-place";
+  reviewedAt: string;
+  reviewerAgentId: string;
+  reviewReference: string;
+  runId: string;
+  sourceBranch: string | null;
+  sourceChangeDigest: string;
+  sourceHeadRevision: string;
+  sourceWorktree: string;
+  targetRevision: string;
+  unitId: string;
+}
+
 export interface ShipmentOutcomeReceipt {
   additionalPaths: Array<
     ShipmentOutcomePath & {
@@ -372,6 +409,7 @@ export interface ShipmentOutcomeReceipt {
 export type ShipmentOutcomeInput = Omit<ShipmentOutcomeReceipt, "units"> & {
   units: Array<
     ShipmentOutcomeReceipt["units"][number] & {
+      preservedSourceHandoff?: PreservedSourceHandoffReceipt;
       preservedSourceOverride?: PreservedSourceOverrideReceipt;
     }
   >;
@@ -380,6 +418,14 @@ export type ShipmentOutcomeInput = Omit<ShipmentOutcomeReceipt, "units"> & {
 /** The sidecar beside the lease that holds one outcome's overrides. */
 export interface PreservedSourceOverrideRecord {
   overrides: PreservedSourceOverrideReceipt[];
+  receiptDigest: string;
+  runId: string;
+  schemaVersion: 1;
+}
+
+/** The sidecar beside the lease that holds one outcome's source handoffs. */
+export interface PreservedSourceHandoffRecord {
+  handoffs: PreservedSourceHandoffReceipt[];
   receiptDigest: string;
   runId: string;
   schemaVersion: 1;

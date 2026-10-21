@@ -1,5 +1,5 @@
-import { existsSync, readFileSync, realpathSync } from "node:fs";
-import { basename, resolve } from "node:path";
+import { existsSync, readdirSync, readFileSync, realpathSync } from "node:fs";
+import { basename, isAbsolute, relative, resolve, sep } from "node:path";
 import { globalSkillRoots } from "./skill-roots.ts";
 import type { ChangelogCoordination } from "./types.ts";
 
@@ -311,6 +311,76 @@ const uniqueByRealPath = (candidates: string[]): string[] => {
   return [...seen.values()];
 };
 
+const staysInside = (realRoot: string, path: string): boolean => {
+  let realTarget: string;
+  try {
+    realTarget = realpathSync(path);
+  } catch {
+    return false;
+  }
+  const offset = relative(realRoot, realTarget);
+  return (
+    offset !== ".." && !offset.startsWith(`..${sep}`) && !isAbsolute(offset)
+  );
+};
+
+const compareNames = (left: string, right: string): number => {
+  if (left === right) {
+    return 0;
+  }
+  return left < right ? -1 : 1;
+};
+
+// A repository may install its own changelog provider under a folder name of
+// its choosing (for example `hash-changelog-maintainer`). Such a folder counts
+// only when it carries a valid provider marker and the folder, its SKILL.md,
+// and its marker all really live inside the repository, so a symlink can never
+// pass a global or foreign installation off as repository-selected. Only the
+// direct children of the repository skill roots are listed; global roots are
+// still matched by installation name alone.
+const markedRepositoryProviders = (repositoryRoot: string): string[] => {
+  let realRoot: string;
+  try {
+    realRoot = realpathSync(repositoryRoot);
+  } catch {
+    return [];
+  }
+  return REPOSITORY_SKILL_ROOTS.flatMap((root) => {
+    const skillRoot = resolve(repositoryRoot, root);
+    let names: string[];
+    try {
+      names = readdirSync(skillRoot).sort(compareNames);
+    } catch {
+      return [];
+    }
+    return (
+      names
+        // Installation names are already visited by name; on a
+        // case-insensitive file system a differently cased spelling of one is
+        // the same folder.
+        .filter(
+          (name) =>
+            !(
+              INSTALLATION_NAMES.includes(name.toLowerCase()) &&
+              existsSync(resolve(skillRoot, name.toLowerCase(), "SKILL.md"))
+            )
+        )
+        .map((name) => resolve(skillRoot, name, "SKILL.md"))
+        .filter(
+          (provider) =>
+            existsSync(provider) &&
+            readProviderMarker(provider) !== null &&
+            staysInside(realRoot, resolve(provider, "..")) &&
+            staysInside(realRoot, provider) &&
+            staysInside(
+              realRoot,
+              resolve(provider, "..", PROVIDER_MARKER_FILENAME)
+            )
+        )
+    );
+  });
+};
+
 /** The release surfaces a repository holds: the changelog and policy files. */
 export const releaseSurfacesIn = (repositoryRoot: string): string[] =>
   RELEASE_SURFACES.filter((path) => existsSync(resolve(repositoryRoot, path)));
@@ -322,12 +392,20 @@ export const inspectChangelogCoordination = (
   const releaseSurfaces = repositoryRoot
     ? releaseSurfacesIn(repositoryRoot)
     : [];
+  // Installation names first, in their established order, then renamed
+  // repository folders that declare a marker. Every repository candidate
+  // precedes every global one, and the stable handoff sort below keeps that
+  // order within each capability group, so a repository-selected provider
+  // drives the guidance comparison instead of a global installation.
   const repositoryProviders = repositoryRoot
-    ? REPOSITORY_SKILL_ROOTS.flatMap((root) =>
-        INSTALLATION_NAMES.map((name) =>
-          resolve(repositoryRoot, root, name, "SKILL.md")
-        )
-      ).filter(existsSync)
+    ? [
+        ...REPOSITORY_SKILL_ROOTS.flatMap((root) =>
+          INSTALLATION_NAMES.map((name) =>
+            resolve(repositoryRoot, root, name, "SKILL.md")
+          )
+        ).filter(existsSync),
+        ...markedRepositoryProviders(repositoryRoot),
+      ]
     : [];
   const globalProviders = globalSkillRoots(options)
     .flatMap((root) =>

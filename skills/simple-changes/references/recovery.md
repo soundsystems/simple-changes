@@ -471,7 +471,8 @@ with a recorded outcome, and `loop replan-status` returns it as `nextCommand`.
 
 It requires an intact, nonempty historical receipt: the receipt's run ID matches
 the lease, its digest matches the recorded one (together with any
-[preserved-source overrides](focused-units.md#preserved-source-override) stored
+[preserved-source overrides](focused-units.md#preserved-source-override) and
+[handoffs](focused-units.md#preserved-source-handoff) stored
 beside the lease, which must be present and unchanged), every recorded path's entry
 matches the receipt's target tree, and the current target contains that target
 revision. It still refuses unfinished author preparations, target-equivalent

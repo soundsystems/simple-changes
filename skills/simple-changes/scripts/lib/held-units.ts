@@ -140,6 +140,17 @@ const assertHoldIntact = (lease: HeldUnitLease, hold: HeldUnitHold): void => {
     tampered(lease.runId, unitId, "its observation digest does not match");
   }
   const { observation } = hold;
+  const approver = hold.authorization.approvedBy.trim();
+  if (
+    approver === observation.controllerAgentId.trim() ||
+    approver === observation.claim?.ownerAgentId.trim()
+  ) {
+    tampered(
+      lease.runId,
+      unitId,
+      "its approver is the controller or the claim owner, not the user"
+    );
+  }
   if (
     observation.runId !== lease.runId ||
     observation.unitId !== unitId ||
@@ -179,9 +190,25 @@ const assertHoldIntact = (lease: HeldUnitLease, hold: HeldUnitHold): void => {
  */
 export const readHeldUnits = (lease: HeldUnitLease): HeldUnitHold[] => {
   const holds = readHeldUnitRecord(lease);
-  // Each hold wrote an immutable history event when it was recorded, so a
-  // removed, replaced, or truncated sidecar no longer covers every event.
-  for (const event of heldUnitEvents(lease)) {
+  const events = heldUnitEvents(lease);
+  // Each hold wrote an immutable history event when it was recorded, and
+  // the two must match both ways: a removed, replaced, or truncated sidecar
+  // no longer covers every event, and a hold added by hand has no event.
+  for (const hold of holds) {
+    if (
+      !events.some(
+        (event) =>
+          event.holdDigest === hold.holdDigest && event.unitId === hold.unit.id
+      )
+    ) {
+      tampered(
+        lease.runId,
+        hold.unit.id,
+        "the run's history has no event for this hold"
+      );
+    }
+  }
+  for (const event of events) {
     if (
       !holds.some(
         (hold) =>

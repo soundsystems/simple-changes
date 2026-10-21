@@ -191,7 +191,9 @@ Attribution is declared, never inferred from filenames: each
 colon, then state the evidence, and must not name another scoped unit's ID.
 A filename, especially a shared one such as a changelog, does not say which
 unit failed. The command also
-refuses a unit that is not in the frozen scope, a unit already held, a unit
+refuses a unit whose exact opening bytes are already in the target at every
+path (record it as delivered or target-equivalent), a unit that is not in
+the frozen scope, a unit already held, a unit
 a scoped unit that is not held depends on, a missing source checkout, and a run that
 already recorded its outcome: a hold never reinterprets a recorded outcome.
 Genuinely new scope still needs a new shipment run or an approved replan.
@@ -207,9 +209,10 @@ changes the same filename. Any edit to the record, a record from another run,
 or one that no longer matches the frozen unit fails closed. Each hold also
 writes an immutable event to the run's history,
 `<common-git-dir>/simple-changes/history/<run-id>/held-unit-<hold digest>.json`,
-and every event must name a hold in the record, so removing or replacing the
-record, before or after the outcome, stops all automatic cleanup and blocks
-completion. The held source head is pinned at
+and events and holds must match both ways, so removing, replacing, or adding
+to the record by hand, before or after the outcome, stops all automatic
+cleanup and blocks completion; a recorded hold whose approver is the
+controller or the claim owner fails the same way. The held source head is pinned at
 `refs/simple-changes/held/<run-id>/<unit ID>`, which is kept afterward, so no
 branch deletion, by this runtime or an older one, can leave the held commit
 unreachable.
@@ -217,7 +220,8 @@ unreachable.
 `loop record-outcome` then refuses the held unit in `units` and no longer
 requires it; account for any of its paths the target changed as
 `additionalPaths`. Finalization never removes, demotes, or releases a held
-unit's source checkout or claim, never deletes its branch, and never
+unit's source checkout or claim, keeps that claim even when someone else
+removed the checkout, never deletes its branch, and never
 switches, fast-forwards, or normalizes a primary checkout a held unit was
 packaged from, clean or not. A held primary path counts as excluded
 in the primary delivery proof, so the other units can still verify delivery.
@@ -244,4 +248,7 @@ and branches the target contains, including a branch whose commits are only
 patch-equivalent to the target's, primary paths whose bytes equal the target,
 and switching a clean primary to the target branch. The held head stays
 reachable through its pin, so no held byte is lost, but a branch name may be.
+An older runtime may also record a new outcome over the bound one; it then
+still requires the held unit, so it can report it as delivered only when its
+exact opening bytes have since reached the target.
 Finish a run that held a unit with Simple Changes 0.33.0 or later.

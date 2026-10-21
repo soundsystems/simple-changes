@@ -26,6 +26,7 @@ import {
 } from "./loop-lease-core.ts";
 import {
   OUTCOME_DRAFT_MARKER,
+  targetTreeEntry,
   worktreeSourceEntry,
 } from "./loop-lease-shipment.ts";
 import { liveClaimFor } from "./loop-lease-verify.ts";
@@ -460,6 +461,22 @@ export const holdScopedUnit = (
         reason,
         readinessEvidence
       );
+      // A unit whose exact opening bytes are already in the target is
+      // delivered or target-equivalent, never held.
+      if (
+        observation.paths.every(
+          (item) =>
+            targetTreeEntry(
+              lease.primaryCheckout,
+              observation.target.revision,
+              item.path
+            ) === item.openingEntry
+        )
+      ) {
+        refuse(
+          `Every path of unit ${unit.id} already has its exact opening source result in ${lease.targetRef} at ${observation.target.revision}, so nothing is left to hold. Record it in the outcome as delivered or target-equivalent instead.`
+        );
+      }
       const observationDigest = sha256Json(observation);
       const summary = observationSummary(observation, unit, observationDigest);
       const command = approvalCommand(observation, observationDigest);

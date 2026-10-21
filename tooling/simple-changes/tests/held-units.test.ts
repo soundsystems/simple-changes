@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import {
   existsSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   rmSync,
   writeFileSync,
@@ -13,6 +14,7 @@ import { sha256Json } from "../../../skills/simple-changes/scripts/lib/hash.ts";
 import {
   assertHeldScopeConservation,
   heldUnitExclusions,
+  heldUnitHoldDigest,
   readHeldUnits,
 } from "../../../skills/simple-changes/scripts/lib/held-units.ts";
 import {
@@ -665,6 +667,48 @@ describe("loop hold-unit", () => {
     );
     expect(() => readHeldUnits(other.lease)).toThrow("not the one");
 
+    // A hold with no history event, such as one written by hand, is refused,
+    // and so is a hold the controller approved itself, digests and all.
+    const events = join(root, ".git", "simple-changes", "history", lease.runId);
+    const eventNames = readdirSync(events).filter((name) =>
+      name.startsWith("held-unit-")
+    );
+    expect(eventNames).toHaveLength(2);
+    const [firstEvent] = eventNames;
+    const eventPath = join(events, firstEvent ?? "");
+    const eventText = readFileSync(eventPath, "utf8");
+    rmSync(eventPath);
+    expect(() => readHeldUnits(lease)).toThrow(
+      "the run's history has no event for this hold"
+    );
+    writeFileSync(eventPath, eventText);
+    const selfApproved = JSON.parse(original) as {
+      holds: HeldUnitHold[];
+    };
+    const [first] = selfApproved.holds;
+    if (!first) {
+      throw new Error("Expected a hold");
+    }
+    const { holdDigest: _holdDigest, ...content } = {
+      ...first,
+      authorization: { ...first.authorization, approvedBy: CONTROLLER },
+    };
+    const forgedDigest = heldUnitHoldDigest(content);
+    selfApproved.holds[0] = { ...content, holdDigest: forgedDigest };
+    writeFileSync(path, JSON.stringify(selfApproved));
+    writeFileSync(
+      join(events, `held-unit-${forgedDigest}.json`),
+      JSON.stringify({
+        ...JSON.parse(eventText),
+        holdDigest: forgedDigest,
+      })
+    );
+    expect(() => readHeldUnits(lease)).toThrow(
+      "its approver is the controller or the claim owner"
+    );
+    rmSync(join(events, `held-unit-${forgedDigest}.json`));
+    writeFileSync(path, original);
+
     // With the original record restored, the outcome records and closes.
     recordShipmentOutcome(root, lease.runId, CONTROLLER, draft);
     // Removing the record after the outcome leaves the held unit unreported,
@@ -731,6 +775,14 @@ describe("held unit in a claimed author checkout", () => {
     const { base, root } = fixture;
     writeFixture(root, "CHANGELOG.md", "# Changelog\n");
     commitAll(root, "Base fixture");
+    // A remote-tracking target moves without touching the primary checkout.
+    git(root, ["remote", "add", "origin", "https://example.invalid/repo.git"]);
+    git(root, ["update-ref", "refs/remotes/origin/main", "HEAD"]);
+    git(root, [
+      "symbolic-ref",
+      "refs/remotes/origin/HEAD",
+      "refs/remotes/origin/main",
+    ]);
     const shipping = join(base, "shipping");
     const role = join(base, "role");
     git(root, ["worktree", "add", "-q", "-b", "shipping", shipping]);
@@ -779,7 +831,11 @@ describe("held unit in a claimed author checkout", () => {
     expect(shippingUnit).not.toBe("");
     const roleHead = commitAll(role, "Role checks under review");
     commitAll(shipping, "Feature");
-    git(root, ["merge", "-q", "--ff-only", "shipping"]);
+    git(root, [
+      "update-ref",
+      "refs/remotes/origin/main",
+      git(shipping, ["rev-parse", "HEAD"]),
+    ]);
 
     // A filename the shipping unit also scopes does not identify the unit.
     expect(() =>
@@ -859,6 +915,48 @@ describe("held unit in a claimed author checkout", () => {
     expect(readFileSync(join(role, "CHANGELOG.md"), "utf8")).toBe(
       "# Changelog\n\n- Role checks.\n"
     );
+  });
+
+  test("keeps a held claim when its checkout is gone, and refuses to hold work the target already has", () => {
+    const { claim, lease, role, roleUnit, root, shipping, shippingUnit } =
+      claimedFixture();
+    commitAll(shipping, "Feature");
+    git(root, [
+      "update-ref",
+      "refs/remotes/origin/main",
+      git(shipping, ["rev-parse", "HEAD"]),
+    ]);
+    // The shipping unit's exact bytes are in the target: nothing to hold.
+    expect(() =>
+      holdUnit(shipping, lease.runId, shippingUnit, [
+        `${shippingUnit}: needs another look.`,
+      ])
+    ).toThrow("so nothing is left to hold");
+    approvedHold(shipping, lease.runId, roleUnit, [
+      `${roleUnit}: failed independent review.`,
+    ]);
+    recordShipmentOutcome(
+      shipping,
+      lease.runId,
+      CONTROLLER,
+      reviewed(draftShipmentOutcome(shipping, lease.runId).draft)
+    );
+    // Someone removes the held checkout; its claim still protects the work.
+    git(root, ["worktree", "remove", "--force", role]);
+    const result = finalizeLoop(
+      shipping,
+      lease.runId,
+      CONTROLLER,
+      "Finish with the held checkout gone."
+    );
+    expect(
+      result.cleanup.releasedClaims.map((item) => item.claimId)
+    ).not.toContain(claim.claimId);
+    expect(
+      readWorktreeCoordination(root).claims.find(
+        (item) => item.claimId === claim.claimId
+      )?.state
+    ).toBe("active");
   });
 
   test("refuses an approval after the claim changed", () => {

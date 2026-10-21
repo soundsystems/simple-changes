@@ -1338,7 +1338,12 @@ const automaticFinalizationCleanup = (
   }
   const repositoryPath = inventoryInput.repository.primaryCheckout;
   lease = completeAbsentRemovalIntents(lease, inventoryInput, targetRevision);
-  const keptClaims = new Set<string>();
+  // A held unit's claim stays, even when its checkout is gone.
+  const keptClaims = new Set<string>(
+    protection.holds.flatMap((hold) =>
+      hold.observation.claim ? [hold.observation.claim.claimId] : []
+    )
+  );
   lease = reconcileConcurrentAuthorClaims(
     lease,
     inventoryInput,

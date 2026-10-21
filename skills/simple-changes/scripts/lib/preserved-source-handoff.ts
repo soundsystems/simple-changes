@@ -71,9 +71,6 @@ const registrationFailure = (
     !current ||
     current.isPrimary ||
     current.changes.length === 0 ||
-    // A rename's or copy's original path is not a scoped path, so the copy
-    // could never prove that its removal shipped.
-    current.changes.some((change) => change.originalPath !== null) ||
     !registered ||
     registered.role !== "preserved" ||
     registered.createdByRun ||
@@ -82,7 +79,7 @@ const registrationFailure = (
     !registered.pauseReceiptId ||
     !opening
   ) {
-    return "preserved-source handoff requires a delivered unit from a dirty, non-primary source the run registered as preserved through an accepted pause, with no renames in the source or rename originals";
+    return "preserved-source handoff requires a delivered unit from a dirty, non-primary source the run registered as preserved through an accepted pause, with no rename originals";
   }
   if (
     current.path !== context.sourceWorktree ||
@@ -98,6 +95,38 @@ const registrationFailure = (
     current.changeDigest !== opening.changeDigest
   ) {
     return "preserved source no longer matches its exact opening and accepted branch, head, and status digest";
+  }
+  return null;
+};
+
+// A file-level entry whose bytes are its whole content, or a deletion. A
+// gitlink records only a nested HEAD, never that checkout's own changes.
+const PLAIN_ENTRY_PATTERN = /^(100644|100755|120000):blob:[0-9a-f]+$/u;
+
+/**
+ * The supported-source contract: the handoff applies only when this unit is
+ * the whole source and every change in it is a plain file-level change, so
+ * the per-path entries compared below are the complete source. Any other
+ * shape, such as a rename or copy (its original path is outside the entries),
+ * a conflict, a dirty submodule or nested repository, or a change left to
+ * another unit, preserved, or excluded, is refused rather than trusted.
+ */
+const sourceContractFailure = (context: CheckedContext): string | null => {
+  const scoped = new Set(context.scopePaths);
+  const outside = context.current.changes.find(
+    (change) =>
+      change.conflicted ||
+      change.originalPath !== null ||
+      !scoped.has(change.path)
+  );
+  if (outside) {
+    return `preserved-source handoff supports only a source whose every change is a plain, unrenamed, unconflicted change in this unit; ${outside.path} is not`;
+  }
+  for (const path of context.scopePaths) {
+    const entry = context.openingEntries.get(path) ?? null;
+    if (entry !== null && !PLAIN_ENTRY_PATTERN.test(entry)) {
+      return `preserved-source handoff supports only regular files, executables, symlinks, and deletions; ${path} is not`;
+    }
   }
   return null;
 };
@@ -294,6 +323,7 @@ export const preservedSourceHandoffFailure = (
     registered,
   };
   return (
+    sourceContractFailure(checked) ??
     ownershipFailure(checked) ??
     approvalFailure(checked, recordedAt) ??
     bindingFailure(checked) ??

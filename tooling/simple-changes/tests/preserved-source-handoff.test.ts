@@ -65,6 +65,7 @@ const RECORDED_AT = "2026-10-03T00:30:00.000Z";
 
 const MISSING_ERROR = /approval for the preserved-source handoff is missing/;
 const REGISTRATION_ERROR = /registered as preserved through an accepted pause/;
+const CONTRACT_ERROR = /supports only/;
 const FROZEN_ERROR = /exact opening and accepted branch/;
 const PAUSE_ERROR = /accepted preserve-in-place pause/;
 const CLAIM_ERROR = /original owner's accepted claim/;
@@ -303,6 +304,9 @@ describe("preserved-source handoff evidence", () => {
         }
       })
     ).toMatch(REGISTRATION_ERROR);
+  });
+
+  test("refuses a source outside the supported plain-file contract", () => {
     // A renamed source file's original path is outside the scope, so its
     // removal could never be shown to ship.
     expect(
@@ -312,7 +316,92 @@ describe("preserved-source handoff evidence", () => {
           first.originalPath = "old-feature.ts";
         }
       })
-    ).toMatch(REGISTRATION_ERROR);
+    ).toMatch(CONTRACT_ERROR);
+    expect(
+      edited((snapshot) => {
+        const [first] = snapshot.current?.changes ?? [];
+        if (first) {
+          first.conflicted = true;
+        }
+      })
+    ).toMatch(CONTRACT_ERROR);
+    // A dirty path the unit does not scope is left out of the handoff.
+    expect(
+      edited((snapshot) => {
+        const [first] = snapshot.current?.changes ?? [];
+        if (first && snapshot.current) {
+          snapshot.current.changes.push({ ...first, path: "notes/extra.md" });
+        }
+      })
+    ).toMatch(CONTRACT_ERROR);
+    // A gitlink records only a nested HEAD, never its own uncommitted edits.
+    const gitlink = `160000:commit:${"c".repeat(40)}`;
+    expect(
+      edited((snapshot) => {
+        const [first] = snapshot.current?.changes ?? [];
+        if (first && snapshot.current) {
+          snapshot.current.changes.push({ ...first, path: "module" });
+        }
+        snapshot.scopePaths = [...snapshot.scopePaths, "module"];
+        snapshot.openingEntries = new Map([
+          ...snapshot.openingEntries,
+          ["module", gitlink],
+        ]);
+        snapshot.sourceEntry = (path) =>
+          path === "module" ? gitlink : (sourceEntries.get(path) ?? null);
+        snapshot.copy = {
+          ...snapshot.copy,
+          entry: (path) =>
+            path === "module" ? gitlink : (sourceEntries.get(path) ?? null),
+        };
+        snapshot.finalPaths = [
+          ...snapshot.finalPaths,
+          { entry: gitlink, path: "module" },
+        ];
+        snapshot.targetEntry = (path) =>
+          path === "module" ? gitlink : (targetEntries.get(path) ?? null);
+        snapshot.handoff?.paths.push({
+          copyEntry: gitlink,
+          path: "module",
+          sourceEntry: gitlink,
+          targetEntry: gitlink,
+        });
+      })
+    ).toMatch(CONTRACT_ERROR);
+    // Executables, symlinks, and deletions are plain file-level changes.
+    for (const entry of [
+      `100755:blob:${"d".repeat(40)}`,
+      `120000:blob:${"e".repeat(40)}`,
+      null,
+    ]) {
+      const snapshot = context();
+      const entries = new Map([...sourceEntries, ["feature.ts", entry]]);
+      snapshot.openingEntries = entries;
+      snapshot.sourceEntry = (path) => entries.get(path) ?? null;
+      snapshot.copy = {
+        ...snapshot.copy,
+        entry: (path) => entries.get(path) ?? null,
+      };
+      const finals = new Map([...targetEntries, ["feature.ts", entry]]);
+      snapshot.finalPaths = [...finals].map(([path, value]) => ({
+        entry: value,
+        path,
+      }));
+      snapshot.targetEntry = (path) => finals.get(path) ?? null;
+      if (snapshot.handoff) {
+        snapshot.handoff.paths = snapshot.handoff.paths.map((item) =>
+          item.path === "feature.ts"
+            ? {
+                ...item,
+                copyEntry: entry,
+                sourceEntry: entry,
+                targetEntry: entry,
+              }
+            : item
+        );
+      }
+      expect(preservedSourceHandoffFailure(snapshot, RECORDED_AT)).toBeNull();
+    }
   });
 
   test("refuses a dirty source that changed after the pause", () => {
@@ -985,7 +1074,7 @@ describe("loop record-outcome with a detached preserved-source handoff", () => {
     expect(fixture.handoff.paths.map((item) => item.path)).toContain(
       "GUIDE.md"
     );
-    expect(() => fixture.record()).toThrow(REGISTRATION_ERROR);
+    expect(() => fixture.record()).toThrow(CONTRACT_ERROR);
   });
 
   test("refuses missing review of the semantic entries", () => {

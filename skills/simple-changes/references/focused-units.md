@@ -180,10 +180,14 @@ a handoff, never both.
 Recording requires:
 
 - a dirty, non-primary source the run registered as preserved through the
-  accepted pause, with no renamed or copied files in the source and no rename
-  originals in the outcome, still at the exact branch, head,
-  and status digest it had at loop start, in the pause receipt, and in its
-  registration;
+  accepted pause, with no rename originals in the outcome, still at the exact
+  branch, head, and status digest it had at loop start, in the pause receipt,
+  and in its registration;
+- a source this unit covers whole, within the supported contract: every dirty
+  path in it is one of the unit's scoped paths (none left to another unit,
+  preserved, or excluded), none is conflicted, renamed, or copied, and each is
+  a regular file, executable, symlink, or deletion. A dirty submodule or nested
+  repository is refused, because its entry records only its HEAD;
 - the owner's claim, created before the run started, still `adopted-preserved`
   at that exact state, and the owner's own `preserve-in-place` receipt for this
   run; the handoff's owner must be that claim's and receipt's owner, and never

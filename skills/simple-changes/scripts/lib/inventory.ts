@@ -138,7 +138,10 @@ const parseWorktreeList = (output: string): RawWorktree[] =>
       };
     });
 
-const parseStatus = (worktreePath: string, output: string): GitChange[] => {
+export const parseStatus = (
+  worktreePath: string,
+  output: string
+): GitChange[] => {
   const records = output.split("\0");
   const changes: GitChange[] = [];
   let recordIndex = 0;

@@ -66,6 +66,7 @@ const RECORDED_AT = "2026-10-03T00:30:00.000Z";
 const MISSING_ERROR = /approval for the preserved-source handoff is missing/;
 const REGISTRATION_ERROR = /registered as preserved through an accepted pause/;
 const CONTRACT_ERROR = /supports only/;
+const STATUS_ERROR = /could not read the source's complete status/;
 const FROZEN_ERROR = /exact opening and accepted branch/;
 const PAUSE_ERROR = /accepted preserve-in-place pause/;
 const CLAIM_ERROR = /original owner's accepted claim/;
@@ -165,6 +166,7 @@ const context = (): PreservedSourceHandoffContext => {
     },
     current,
     disposition: "delivered",
+    exhaustiveChanges: () => current.changes,
     finalPaths: [...targetEntries].map(([path, entry]) => ({ entry, path })),
     handoff,
     opening: {
@@ -206,6 +208,7 @@ const context = (): PreservedSourceHandoffContext => {
     runStartedAt: RUN_STARTED_AT,
     scopePaths: [...sourceEntries.keys()],
     sourceEntry: (path) => sourceEntries.get(path) ?? null,
+    sourceKind: (path) => (sourceEntries.has(path) ? "file" : "absent"),
     sourceWorktree: SOURCE,
     targetEntry: (path) => targetEntries.get(path) ?? null,
     targetRevision: TARGET_HEAD,
@@ -368,6 +371,43 @@ describe("preserved-source handoff evidence", () => {
         });
       })
     ).toMatch(CONTRACT_ERROR);
+    // The handoff's own status must be readable and list only scoped paths,
+    // such as a submodule whose edits the shared inventory ignores.
+    expect(
+      edited((snapshot) => {
+        snapshot.exhaustiveChanges = () => null;
+      })
+    ).toMatch(STATUS_ERROR);
+    expect(
+      edited((snapshot) => {
+        const changes = snapshot.current?.changes ?? [];
+        const [first] = changes;
+        snapshot.exhaustiveChanges = () =>
+          first ? [...changes, { ...first, path: "module" }] : changes;
+      })
+    ).toMatch(CONTRACT_ERROR);
+    expect(
+      edited((snapshot) => {
+        const changes = snapshot.current?.changes ?? [];
+        snapshot.exhaustiveChanges = () => changes.slice(1);
+      })
+    ).toMatch(CONTRACT_ERROR);
+    // A directory is not a file, and a null entry needs a proven absence: a
+    // nested repository with no commit reads as null but is present.
+    expect(
+      edited((snapshot) => {
+        snapshot.sourceKind = () => "other";
+      })
+    ).toMatch(CONTRACT_ERROR);
+    expect(
+      edited((snapshot) => {
+        const entries = new Map([...sourceEntries, ["feature.ts", null]]);
+        snapshot.openingEntries = entries;
+        snapshot.sourceEntry = (path) => entries.get(path) ?? null;
+        snapshot.sourceKind = (path) =>
+          path === "feature.ts" ? "other" : "file";
+      })
+    ).toMatch(CONTRACT_ERROR);
     // Executables, symlinks, and deletions are plain file-level changes.
     for (const entry of [
       `100755:blob:${"d".repeat(40)}`,
@@ -378,6 +418,8 @@ describe("preserved-source handoff evidence", () => {
       const entries = new Map([...sourceEntries, ["feature.ts", entry]]);
       snapshot.openingEntries = entries;
       snapshot.sourceEntry = (path) => entries.get(path) ?? null;
+      snapshot.sourceKind = (path) =>
+        entries.get(path) === null ? "absent" : "file";
       snapshot.copy = {
         ...snapshot.copy,
         entry: (path) => entries.get(path) ?? null,
@@ -775,18 +817,58 @@ describe("loop record-outcome with a detached preserved-source handoff", () => {
    * an independently reviewed docs change.
    */
   const handoffFixture = (
-    options: { copyDocs?: string; copyExtra?: boolean; rename?: boolean } = {}
+    options: {
+      copyDocs?: string;
+      copyExtra?: boolean;
+      ignoredSubmodule?: boolean;
+      nestedRepository?: boolean;
+      rename?: boolean;
+    } = {}
   ) => {
     const fixture = createTestRepository();
     repositories.push(fixture);
     writeFixture(fixture.root, "docs.md", "# Workflow\n");
     commitAll(fixture.root, "Docs baseline");
+    if (options.ignoredSubmodule) {
+      const library = join(fixture.base, "library");
+      git(fixture.base, ["init", "-b", "main", library]);
+      git(library, ["config", "user.name", "Simple Changes Tests"]);
+      git(library, ["config", "user.email", "tests@simple-changes.invalid"]);
+      writeFixture(library, "library.ts", "export const library = 1;\n");
+      commitAll(library, "Library baseline");
+      git(fixture.root, [
+        "-c",
+        "protocol.file.allow=always",
+        "submodule",
+        "add",
+        library,
+        "module",
+      ]);
+      commitAll(fixture.root, "Add the library submodule");
+      // Shared configuration hides the submodule from ordinary status.
+      git(fixture.root, ["config", "submodule.module.ignore", "all"]);
+    }
     const source = join(fixture.base, "detached-source");
     git(fixture.root, ["worktree", "add", "--detach", source]);
     writeFixture(source, "feature.ts", FEATURE);
     writeFixture(source, "docs.md", ORIGINAL_DOCS);
     if (options.rename) {
       git(source, ["mv", "README.md", "GUIDE.md"]);
+    }
+    if (options.nestedRepository) {
+      // A nested repository with no commit yet, holding files of its own.
+      git(source, ["init", "-q", "nested"]);
+      writeFixture(source, "nested/inner.ts", "export const inner = 1;\n");
+    }
+    if (options.ignoredSubmodule) {
+      git(source, [
+        "-c",
+        "protocol.file.allow=always",
+        "submodule",
+        "update",
+        "--init",
+      ]);
+      writeFixture(source, "module/library.ts", "export const edited = 1;\n");
     }
     const claim = claimWorktree(source, "owner", source, "claude-code");
     const lease = startLoop(fixture.root, "controller", "ship");
@@ -796,20 +878,21 @@ describe("loop record-outcome with a detached preserved-source handoff", () => {
       opening,
       compareSnapshots(opening, opening)
     );
-    const plan: ChangePlan = {
-      ...preview,
-      units: preview.units
-        .filter((planned) => planned.sourceWorktree === source)
-        .map((planned) => ({
-          ...planned,
-          operations: ["commit"],
-          requiredAuthority: ["local-write"],
-        })),
-    };
-    const [unit, ...otherUnits] = plan.units;
-    if (!unit || otherUnits.length > 0) {
-      throw new Error("Expected one unit for the detached source");
+    // The whole source is one unit, as the handoff requires.
+    const sourceUnits = preview.units.filter(
+      (planned) => planned.sourceWorktree === source
+    );
+    const [first] = sourceUnits;
+    if (!first) {
+      throw new Error("Expected a unit for the detached source");
     }
+    const unit = {
+      ...first,
+      operations: ["commit" as const],
+      paths: sourceUnits.flatMap((planned) => planned.paths).sort(),
+      requiredAuthority: ["local-write" as const],
+    };
+    const plan: ChangePlan = { ...preview, units: [unit] };
     recordShipmentScope(fixture.root, lease.runId, "controller", plan);
     const pause = pauseClaimedWorktree(
       source,
@@ -838,8 +921,13 @@ describe("loop record-outcome with a detached preserved-source handoff", () => {
     const copy = commitAll(fixture.root, "Copy the detached source");
     writeFixture(fixture.root, "docs.md", REVIEWED_DOCS);
     const target = commitAll(fixture.root, "Integrate reviewed docs");
-    const entryAt = (revision: string, path: string): string =>
-      `100644:blob:${git(fixture.root, ["rev-parse", `${revision}:${path}`])}`;
+    const entryAt = (revision: string, path: string): string | null => {
+      try {
+        return `100644:blob:${git(fixture.root, ["rev-parse", `${revision}:${path}`])}`;
+      } catch {
+        return null;
+      }
+    };
     const stored = readLoopLease(fixture.root) as LoopLease;
     const openingEntry = (path: string): string | null =>
       stored.shipmentScope?.openingChanges.find(
@@ -1073,6 +1161,20 @@ describe("loop record-outcome with a detached preserved-source handoff", () => {
     const fixture = handoffFixture({ rename: true });
     expect(fixture.handoff.paths.map((item) => item.path)).toContain(
       "GUIDE.md"
+    );
+    expect(() => fixture.record()).toThrow(CONTRACT_ERROR);
+  });
+
+  test("refuses a source holding a nested repository with no commit", () => {
+    const fixture = handoffFixture({ nestedRepository: true });
+    expect(fixture.handoff.paths.map((item) => item.path)).toContain("nested/");
+    expect(() => fixture.record()).toThrow(CONTRACT_ERROR);
+  });
+
+  test("refuses a source whose submodule edits ordinary status ignores", () => {
+    const fixture = handoffFixture({ ignoredSubmodule: true });
+    expect(fixture.handoff.paths.map((item) => item.path)).not.toContain(
+      "module"
     );
     expect(() => fixture.record()).toThrow(CONTRACT_ERROR);
   });

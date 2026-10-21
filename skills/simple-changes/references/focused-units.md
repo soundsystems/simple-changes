@@ -183,11 +183,14 @@ Recording requires:
   accepted pause, with no rename originals in the outcome, still at the exact
   branch, head, and status digest it had at loop start, in the pause receipt,
   and in its registration;
-- a source this unit covers whole, within the supported contract: every dirty
-  path in it is one of the unit's scoped paths (none left to another unit,
-  preserved, or excluded), none is conflicted, renamed, or copied, and each is
-  a regular file, executable, symlink, or deletion. A dirty submodule or nested
-  repository is refused, because its entry records only its HEAD;
+- a source this unit covers whole, within the supported contract: the
+  handoff's own `git status --untracked-files=all --ignore-submodules=none` of
+  the source lists exactly the unit's scoped paths (none left to another unit,
+  preserved, or excluded, and none hidden by a submodule's `ignore` setting),
+  none is conflicted, renamed, or copied, and each is a regular file,
+  executable, or symlink that is present, or a deletion that is absent. A
+  submodule, nested repository, or other directory is refused, because its
+  entry does not record its own files;
 - the owner's claim, created before the run started, still `adopted-preserved`
   at that exact state, and the owner's own `preserve-in-place` receipt for this
   run; the handoff's owner must be that claim's and receipt's owner, and never

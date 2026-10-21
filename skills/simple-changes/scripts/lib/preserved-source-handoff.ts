@@ -1,5 +1,6 @@
 import { isLossyName } from "./inventory.ts";
 import type {
+  GitChange,
   LoopOpeningWorktree,
   LoopWorktreeLease,
   PreservedSourceHandoffReceipt,
@@ -28,6 +29,9 @@ export interface PreservedSourceHandoffCopy {
   entry: (path: string) => string | null;
 }
 
+/** What the source checkout holds at a path, read with `lstat`. */
+export type PreservedSourceKind = "absent" | "file" | "other";
+
 export interface PreservedSourceHandoffContext {
   claim: WorktreeClaim | undefined;
   commonGitDirectory: string;
@@ -35,6 +39,11 @@ export interface PreservedSourceHandoffContext {
   copy: PreservedSourceHandoffCopy;
   current: WorktreeInventory | undefined;
   disposition: "delivered" | "target-equivalent";
+  /**
+   * The source's own complete status, untracked files listed one by one and
+   * submodules never ignored; null when it cannot be read.
+   */
+  exhaustiveChanges: () => readonly GitChange[] | null;
   finalPaths: readonly ShipmentOutcomePath[];
   handoff: PreservedSourceHandoffReceipt | undefined;
   opening: LoopOpeningWorktree | undefined;
@@ -47,6 +56,8 @@ export interface PreservedSourceHandoffContext {
   runStartedAt: string;
   scopePaths: readonly string[];
   sourceEntry: (path: string) => string | null;
+  /** A regular file or symlink is a file; a directory or anything else is not. */
+  sourceKind: (path: string) => PreservedSourceKind;
   sourceWorktree: string;
   targetEntry: (path: string) => string | null;
   targetRevision: string;
@@ -106,26 +117,38 @@ const PLAIN_ENTRY_PATTERN = /^(100644|100755|120000):blob:[0-9a-f]+$/u;
 /**
  * The supported-source contract: the handoff applies only when this unit is
  * the whole source and every change in it is a plain file-level change, so
- * the per-path entries compared below are the complete source. Any other
- * shape, such as a rename or copy (its original path is outside the entries),
- * a conflict, a dirty submodule or nested repository, or a change left to
- * another unit, preserved, or excluded, is refused rather than trusted.
+ * the per-path entries compared below are the complete source. Completeness
+ * comes from the handoff's own evidence, not the shared inventory: its own
+ * status with submodules never ignored must list exactly the scoped paths,
+ * and `lstat` must show each blob path as a file and each deletion as absent.
+ * Any other shape, such as a rename or copy (its original path is outside
+ * the entries), a conflict, a submodule or nested repository, a directory,
+ * or a change left to another unit, preserved, or excluded, is refused.
  */
 const sourceContractFailure = (context: CheckedContext): string | null => {
   const scoped = new Set(context.scopePaths);
-  const outside = context.current.changes.find(
+  const exhaustive = context.exhaustiveChanges();
+  if (!exhaustive) {
+    return "preserved-source handoff could not read the source's complete status";
+  }
+  const listed = new Set(exhaustive.map((change) => change.path));
+  const outside = [...context.current.changes, ...exhaustive].find(
     (change) =>
       change.conflicted ||
       change.originalPath !== null ||
       !scoped.has(change.path)
   );
-  if (outside) {
-    return `preserved-source handoff supports only a source whose every change is a plain, unrenamed, unconflicted change in this unit; ${outside.path} is not`;
+  if (outside || listed.size !== scoped.size) {
+    return `preserved-source handoff supports only a source whose every change is a plain, unrenamed, unconflicted change in this unit; ${outside?.path ?? "its complete status"} is not`;
   }
   for (const path of context.scopePaths) {
     const entry = context.openingEntries.get(path) ?? null;
-    if (entry !== null && !PLAIN_ENTRY_PATTERN.test(entry)) {
-      return `preserved-source handoff supports only regular files, executables, symlinks, and deletions; ${path} is not`;
+    const kind = context.sourceKind(path);
+    if (
+      (entry === null && kind !== "absent") ||
+      (entry !== null && !(PLAIN_ENTRY_PATTERN.test(entry) && kind === "file"))
+    ) {
+      return `preserved-source handoff supports only regular files, executables, symlinks, and proven deletions; ${path} is not`;
     }
   }
   return null;

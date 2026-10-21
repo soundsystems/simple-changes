@@ -1,5 +1,16 @@
-import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, realpathSync, symlinkSync } from "node:fs";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
+// biome-ignore lint/performance/noNamespaceImport: spyOn must patch the namespace the discovery code's named imports read.
+import * as fs from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { inspectChangelogCoordination } from "../../../skills/simple-changes/scripts/lib/changelog-coordination.ts";
 import {
@@ -9,6 +20,16 @@ import {
 } from "./helpers.ts";
 
 let repositories: TestRepository[] = [];
+
+const temporaryFilesAreCaseSensitive = (() => {
+  const probe = mkdtempSync(join(tmpdir(), "simple-changes-case-"));
+  try {
+    writeFileSync(join(probe, "Probe"), "");
+    return !existsSync(join(probe, "probe"));
+  } finally {
+    rmSync(probe, { force: true, recursive: true });
+  }
+})();
 
 afterEach(() => {
   for (const fixture of repositories) {
@@ -836,6 +857,87 @@ describe("repository-owned renamed changelog providers", () => {
       globalWins(fixture, skillRoot);
     }
   });
+
+  test("neither lists a linked skill root nor reads a marker outside the repository", () => {
+    const fixture = createTestRepository();
+    repositories.push(fixture);
+    const skillRoot = withNewerGlobal(fixture);
+    writeProvider(skillRoot, "hash-changelog-maintainer", markerFor());
+    mkdirSync(join(fixture.root, ".agents"), { recursive: true });
+    symlinkSync(skillRoot, join(fixture.root, ".agents/skills"), "dir");
+    writeProvider(fixture.base, "outside/linked-folder", markerFor());
+    mkdirSync(join(fixture.root, ".claude/skills"), { recursive: true });
+    symlinkSync(
+      join(fixture.base, "outside/linked-folder"),
+      join(fixture.root, ".claude/skills/linked-folder"),
+      "dir"
+    );
+    const listing = spyOn(fs, "readdirSync");
+    const reading = spyOn(fs, "readFileSync");
+    try {
+      globalWins(fixture, skillRoot);
+      const listed = listing.mock.calls.map(([path]) => String(path));
+      const read = reading.mock.calls.map(([path]) => String(path));
+      // Positive control: the in-repository skill root is still listed.
+      expect(listed).toContain(join(fixture.root, ".claude/skills"));
+      expect(listed).not.toContain(join(fixture.root, ".agents/skills"));
+      for (const marker of [
+        join(
+          fixture.root,
+          ".agents/skills/hash-changelog-maintainer/changelog-provider.json"
+        ),
+        join(
+          fixture.root,
+          ".claude/skills/linked-folder/changelog-provider.json"
+        ),
+      ]) {
+        expect(read).not.toContain(marker);
+      }
+    } finally {
+      listing.mockRestore();
+      reading.mockRestore();
+    }
+  });
+
+  test.skipIf(temporaryFilesAreCaseSensitive)(
+    "keeps one entry for a differently cased installation folder on a case-insensitive file system",
+    () => {
+      const fixture = createTestRepository();
+      repositories.push(fixture);
+      const skillRoot = withNewerGlobal(fixture);
+      writeProvider(fixture.root, "skills/Simple-Changelogs", markerFor());
+
+      expect(inspectWith(fixture, skillRoot).providers).toEqual([
+        join(fixture.root, "skills/simple-changelogs/SKILL.md"),
+        join(skillRoot, "simple-changelogs/SKILL.md"),
+      ]);
+    }
+  );
+
+  test.skipIf(!temporaryFilesAreCaseSensitive)(
+    "discovers a distinct differently cased marked folder on a case-sensitive file system",
+    () => {
+      const fixture = createTestRepository();
+      repositories.push(fixture);
+      const skillRoot = withNewerGlobal(fixture);
+      writeProvider(
+        fixture.root,
+        "skills/simple-changelogs",
+        markerFor({ distribution: "web" })
+      );
+      writeProvider(fixture.root, "skills/Simple-Changelogs", markerFor());
+
+      const result = inspectWith(fixture, skillRoot);
+      expect(result.guidanceUpdate).toMatchObject({
+        provider: join(fixture.root, "skills/Simple-Changelogs/SKILL.md"),
+        status: "current",
+      });
+      expect(result.providers).toEqual([
+        join(fixture.root, "skills/Simple-Changelogs/SKILL.md"),
+        join(skillRoot, "simple-changelogs/SKILL.md"),
+      ]);
+    }
+  );
 
   test("does not let a discovery-only renamed provider shadow a handoff-capable one", () => {
     const fixture = createTestRepository();

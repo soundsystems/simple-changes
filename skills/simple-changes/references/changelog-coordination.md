@@ -39,9 +39,10 @@ listed this way; they are matched by installation name only.
 Selection order: a handoff-capable provider always comes before a
 discovery-only one. Within each group, repository installation names come
 first, then renamed repository folders, then global installations. A
-repository-selected provider therefore drives the installed-guidance
-comparison, and a newer global install never reports an update the repository
-did not choose.
+handoff-capable repository-selected provider therefore drives the
+installed-guidance comparison ahead of any global install. A discovery-only
+repository provider still yields to a handoff-capable global one, whose
+guidance version is then compared.
 
 Keep these states distinct:
 

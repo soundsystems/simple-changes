@@ -347,35 +347,36 @@ const markedRepositoryProviders = (repositoryRoot: string): string[] => {
   }
   return REPOSITORY_SKILL_ROOTS.flatMap((root) => {
     const skillRoot = resolve(repositoryRoot, root);
+    // A skill root that leaves the repository (one linked to a global root,
+    // say) is never listed, so no global folder is ever matched by marker.
+    if (!staysInside(realRoot, skillRoot)) {
+      return [];
+    }
     let names: string[];
     try {
       names = readdirSync(skillRoot).sort(compareNames);
     } catch {
       return [];
     }
+    // Installation names are already visited by name. A differently cased
+    // spelling of one is kept as a candidate: when it is the same folder on a
+    // case-insensitive file system, its real path matches and the real-path
+    // de-duplication below keeps only the installation-name entry.
     return (
       names
-        // Installation names are already visited by name; on a
-        // case-insensitive file system a differently cased spelling of one is
-        // the same folder.
-        .filter(
-          (name) =>
-            !(
-              INSTALLATION_NAMES.includes(name.toLowerCase()) &&
-              existsSync(resolve(skillRoot, name.toLowerCase(), "SKILL.md"))
-            )
-        )
+        .filter((name) => !Object.hasOwn(DISTRIBUTION_BY_INSTALLATION, name))
         .map((name) => resolve(skillRoot, name, "SKILL.md"))
+        // Containment is settled before the marker is read, so nothing outside
+        // the repository is opened on the way to rejecting it.
         .filter(
           (provider) =>
-            existsSync(provider) &&
-            readProviderMarker(provider) !== null &&
             staysInside(realRoot, resolve(provider, "..")) &&
             staysInside(realRoot, provider) &&
             staysInside(
               realRoot,
               resolve(provider, "..", PROVIDER_MARKER_FILENAME)
-            )
+            ) &&
+            readProviderMarker(provider) !== null
         )
     );
   });

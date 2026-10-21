@@ -924,13 +924,16 @@ const primaryCanFastForwardInPlace = (
 };
 
 /**
- * Finalization never writes the bytes of the repository policy, or of any
- * path its trust receipt binds: restoring an older HEAD copy undoes
+ * Normalization never writes the bytes of a dirty repository policy, or of
+ * any path its trust receipt binds: restoring an older HEAD copy undoes
  * approved policy and invalidates the receipt. Those paths, with both
  * sides of a rename, leave the restore set. When every other dirty path is
  * normalizable and the primary can fast-forward in place, they are carried
  * through the fast-forward instead; otherwise they stay byte for byte and a
- * note names them.
+ * note names them. Synchronizing a clean policy file to a target that
+ * committed different policy is not normalization: it adopts the target's
+ * policy, which the receipt does not bind, so consequential settings stay
+ * reduced until `setup` confirms them.
  */
 const withoutPolicyPaths = (
   lease: LoopLease,
@@ -980,7 +983,7 @@ const withoutPolicyPaths = (
   }
   for (const change of policyChanges) {
     cleanup.notes.push(
-      `Kept ${change.path} in the primary checkout byte for byte: finalization never rewrites repository policy, and the primary cannot fast-forward to ${lease.targetRef} now, so its approved bytes and trust receipt stay as they are.`
+      `Kept ${change.path} in the primary checkout byte for byte: finalization never restores repository policy to an older copy, and the primary cannot fast-forward to ${lease.targetRef} now, so its approved bytes and trust receipt stay as they are.`
     );
   }
   return [];

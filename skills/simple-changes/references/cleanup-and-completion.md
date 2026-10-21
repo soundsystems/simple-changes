@@ -373,12 +373,14 @@ gone, each with a recorded `releaseReason`), and normalizes
 tracked dirty-primary paths
 only when their worktree state exactly matches the refreshed target and their
 index state is recoverable from the current head or target with ordinary index
-flags. Finalization never rewrites the repository policy file, or any path
-its trust receipt binds. When every other dirty primary path is normalizable
-and the primary can fast-forward in place, such a path already equal to the
-target is staged at the target entry and carried through the fast-forward
-unwritten. Otherwise it keeps its approved bytes and trust, and a cleanup note
-names it. Branch eligibility is unchanged (not the target, not attached to a
+flags. Normalization never rewrites a dirty repository policy file, or any
+path its trust receipt binds, to an older copy. When every other dirty primary
+path is normalizable and the primary can fast-forward in place, such a path
+already equal to the target is staged at the target entry and carried through
+the fast-forward unwritten. Otherwise it keeps its approved bytes and trust,
+and a cleanup note names it. Synchronizing to a target that committed
+different policy adopts that policy; the trust receipt binds exact bytes, so
+consequential settings stay reduced until `setup` confirms the new policy. Branch eligibility is unchanged (not the target, not attached to a
 worktree, and an unchanged opening branch, run-owned, or reconciled-absent),
 but containment accepts either exact ancestry or full patch equivalence: a
 branch whose every unique commit patch-id-matches a target commit (the normal

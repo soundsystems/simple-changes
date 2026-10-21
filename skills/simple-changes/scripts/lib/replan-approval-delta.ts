@@ -91,7 +91,7 @@ const changedClaimFields = (
 
 type ClaimReleaseResult =
   | { refusal: string }
-  | { release: ReplanAcceptedRelease };
+  | { event: WorktreeCoordinationEvent; release: ReplanAcceptedRelease };
 
 // The checkout evidence and holder checks of a release whose claim and event
 // are already proven to be the owner's own completed release.
@@ -131,6 +131,7 @@ const releasedCheckout = (
     };
   }
   return {
+    event,
     release: {
       branch: current.branch,
       changeDigest: current.changeDigest,
@@ -219,36 +220,60 @@ const appendedEvents = (
 };
 
 // Appended events that no accepted release explains and that no claim
-// refusal already reports.
+// refusal already reports. Events match by identity, not ID, so a repeated
+// event ID cannot pass an unrelated event off as a release.
 const unexplainedEvents = (
   appended: WorktreeCoordinationEvent[],
-  releases: ReplanAcceptedRelease[],
-  before: Map<string, WorktreeClaim>,
-  after: Map<string, WorktreeClaim>
-): string[] => {
-  const explained = new Set(releases.map((release) => release.eventId));
-  return appended
-    .filter(
-      (event) =>
-        !explained.has(event.eventId) &&
-        before.has(event.claimId) &&
-        after.has(event.claimId) &&
-        same(before.get(event.claimId), after.get(event.claimId))
-    )
+  explained: Set<WorktreeCoordinationEvent>,
+  reported: Set<string>
+): string[] =>
+  appended
+    .filter((event) => !(explained.has(event) || reported.has(event.claimId)))
     .map(
       (event) =>
-        `New coordination event ${event.eventId}: ${event.actorAgentId} set unchanged claim ${event.claimId} to ${event.state}.`
-    )
-    .concat(
-      appended
-        .filter(
-          (event) => !(before.has(event.claimId) || after.has(event.claimId))
-        )
-        .map(
-          (event) =>
-            `New coordination event ${event.eventId}: ${event.actorAgentId} set unknown claim ${event.claimId} to ${event.state}.`
-        )
+        `New coordination event ${event.eventId}: ${event.actorAgentId} set claim ${event.claimId} to ${event.state}, which no verified release explains.`
     );
+
+const duplicateEventIds = (
+  document: WorktreeCoordinationDocument
+): string[] => {
+  const seen = new Set<string>();
+  const repeated = new Set<string>();
+  for (const event of document.events) {
+    if (seen.has(event.eventId)) {
+      repeated.add(event.eventId);
+    }
+    seen.add(event.eventId);
+  }
+  return [...repeated].map(
+    (eventId) => `The current coordination repeats event ${eventId}.`
+  );
+};
+
+// A release moves its claim to the end of the claims list, in release order;
+// every other claim keeps the position the approval observed.
+const claimOrderRefusal = (
+  approved: WorktreeCoordinationDocument,
+  current: WorktreeCoordinationDocument,
+  appended: WorktreeCoordinationEvent[],
+  explained: Set<WorktreeCoordinationEvent>
+): string[] => {
+  const releasedIds = appended
+    .filter((event) => explained.has(event))
+    .map((event) => event.claimId);
+  const released = new Set(releasedIds);
+  const expected = [
+    ...approved.claims
+      .map((claim) => claim.claimId)
+      .filter((claimId) => !released.has(claimId)),
+    ...releasedIds,
+  ];
+  return same(
+    expected,
+    current.claims.map((claim) => claim.claimId)
+  )
+    ? []
+    : ["Claims were reordered beyond what the verified releases explain."];
 };
 
 const claimDelta = (
@@ -261,8 +286,12 @@ const claimDelta = (
   const before = claimsById(approved.claims, "approved", refusals);
   const after = claimsById(current.claims, "current", refusals);
   const releases: ReplanAcceptedRelease[] = [];
+  const explained = new Set<WorktreeCoordinationEvent>();
+  // Claims already reported as removed, new, or not a verified release.
+  const reported = new Set<string>();
   for (const [claimId, claim] of before) {
     if (!after.has(claimId)) {
+      reported.add(claimId);
       refusals.push(
         `Claim ${claimId} on ${claim.path} (owner ${claim.owner.agentId}) was removed.`
       );
@@ -271,6 +300,7 @@ const claimDelta = (
   for (const [claimId, claim] of after) {
     const earlier = before.get(claimId);
     if (!earlier) {
+      reported.add(claimId);
       const reason = claim.releaseReason ? `, ${claim.releaseReason}` : "";
       refusals.push(
         `New claim ${claimId} on ${claim.path} (owner ${claim.owner.agentId}, ${claim.state}${reason}).`
@@ -278,13 +308,21 @@ const claimDelta = (
     } else if (!same(earlier, claim)) {
       const result = claimRelease(earlier, claim, appended, current, worktrees);
       if ("refusal" in result) {
+        reported.add(claimId);
         refusals.push(result.refusal);
       } else {
+        explained.add(result.event);
         releases.push(result.release);
       }
     }
   }
-  refusals.push(...unexplainedEvents(appended, releases, before, after));
+  refusals.push(
+    ...duplicateEventIds(current),
+    ...unexplainedEvents(appended, explained, reported)
+  );
+  if (reported.size === 0) {
+    refusals.push(...claimOrderRefusal(approved, current, appended, explained));
+  }
   return releases.sort((left, right) =>
     left.claimId.localeCompare(right.claimId)
   );

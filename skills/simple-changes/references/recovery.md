@@ -466,8 +466,9 @@ target revision are unchanged:
 
 Any other difference refuses: a changed source or target; a new, removed or
 reassigned claim; a takeover; a release by another agent, without recorded
-checkout state, or with other evidence; a changed pause receipt; or a
-rewritten coordination event. The refusal prints the exact delta with the
+checkout state, or with other evidence; a changed pause receipt; a
+rewritten, repeated or unexplained coordination event; or claims reordered
+beyond the release moving its own claim to the end. The refusal prints the exact delta with the
 approved and current coordination digests, and changes nothing. Review that
 delta with the user and get a fresh approval from a new `loop replan-status`.
 A stored observation that is missing or no longer matches its digest refuses
@@ -480,7 +481,8 @@ release. `replan.json` keeps the approved observation and its existing format,
 which older runtimes validate; an older runtime retrying such an attempt
 before the move refuses, because the current observation differs from the
 approved one. A retry after a crash proves the same delta again and must find
-exactly the recorded one. `loop archive-recorded` applies the same rule.
+exactly the recorded one, and every retry re-derives the recorded releases
+from the two recorded observations. `loop archive-recorded` applies the same rule.
 
 ## Archive a recorded run that cannot finish
 

@@ -2260,7 +2260,8 @@ const readReplanDeltaRecord = (
       sha256Json(record.observation.coordination) ||
     stored.currentStatusDigest !== sha256Json(stored.currentObservation) ||
     stored.currentCoordinationDigest !==
-      sha256Json(stored.currentObservation.coordination)
+      sha256Json(stored.currentObservation.coordination) ||
+    !recordedReleasesProven(record.observation, stored)
   ) {
     throw new SimpleChangesError(
       "Replan approval delta does not match its exact intent.",
@@ -2268,6 +2269,46 @@ const readReplanDeltaRecord = (
     );
   }
   return stored;
+};
+
+// The recorded releases are exactly the verified releases between the
+// intent's approved observation and the recorded current one. The checkouts
+// are those the releases name; their match with the observed checkouts was
+// proven, under an unchanged inventory digest, when the delta was accepted.
+const recordedReleasesProven = (
+  approved: ReplanObservation,
+  stored: LoopReplanDeltaRecord
+): boolean => {
+  try {
+    validateSchema(
+      "worktree-coordination",
+      stored.currentObservation.coordination
+    );
+  } catch {
+    return false;
+  }
+  const checkouts = stored.acceptedReleases.map((release) => ({
+    bare: false,
+    branch: release.branch,
+    changeDigest: release.changeDigest,
+    changes: [],
+    detached: release.branch === null,
+    headSha: release.headSha,
+    isCurrent: false,
+    isPrimary: false,
+    locked: false,
+    path: release.path,
+    prunable: false,
+  }));
+  const delta = replanApprovalDelta(
+    approved,
+    stored.currentObservation,
+    checkouts
+  );
+  return (
+    replanDeltaAccepted(delta) &&
+    sha256Json(delta.acceptedReleases) === sha256Json(stored.acceptedReleases)
+  );
 };
 
 // Record the accepted delta before the transition. A record already published

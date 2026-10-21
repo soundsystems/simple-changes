@@ -409,6 +409,34 @@ test("a crash before the move retries the recorded delta, and a later change ref
   expect(existsSync(archive)).toBe(false);
 });
 
+test("a completed retry refuses a delta record whose releases were altered", () => {
+  const fixture = racedFixture();
+  ownerRelease(fixture);
+  const result = replanLoop(fixture.root, fixture.request);
+  const path = join(fixture.attempt, "replan-approval-delta.json");
+  const bytes = readFileSync(path);
+  for (const alter of [
+    (release: Record<string, unknown>) => {
+      release.ownerAgentId = "invented-owner";
+    },
+    (release: Record<string, unknown>) => {
+      release.headSha = "f".repeat(40);
+    },
+    (release: Record<string, unknown>) => {
+      release.eventId = "event-released-state-invented";
+    },
+  ]) {
+    const record = JSON.parse(bytes.toString());
+    alter(record.acceptedReleases[0]);
+    writeFileSync(path, JSON.stringify(record));
+    expect(() => replanLoop(fixture.root, fixture.request)).toThrow(
+      "does not match its exact intent"
+    );
+  }
+  writeFileSync(path, bytes);
+  expect(replanLoop(fixture.root, fixture.request)).toEqual(result);
+});
+
 test("a stray delta file refuses an exact or unmatched replan", () => {
   const fixture = racedFixture();
   const lease = readFileSync(fixture.activePath);
@@ -552,7 +580,51 @@ test("the pure delta accepts exactly one owner release and refuses each other di
     refused(
       observationFixture([claimFixture()], [releaseEvent({ state: "paused" })])
     )
-  ).toContain("set unchanged claim claim-one to paused");
+  ).toContain(
+    "set claim claim-one to paused, which no verified release explains"
+  );
+  // An unrelated event cannot share the release's event ID.
+  expect(
+    refused(
+      observationFixture(
+        [released, claimFixture({ claimId: "claim-two", path: "/other" })],
+        [
+          releaseEvent(),
+          releaseEvent({ claimId: "claim-two", state: "paused" }),
+        ]
+      ),
+      [checkout],
+      observationFixture([
+        claimFixture(),
+        claimFixture({ claimId: "claim-two", path: "/other" }),
+      ])
+    )
+  ).toContain("repeats event event-released-state-1");
+  // Untouched claims keep their observed order; only the release moves.
+  const three = ["claim-two", "claim-three"].map((claimId) =>
+    claimFixture({ claimId, path: `/${claimId}` })
+  );
+  const [two, threeClaim] = three;
+  if (!(two && threeClaim)) {
+    throw new Error("missing claims");
+  }
+  const ordered = observationFixture([claimFixture(), two, threeClaim]);
+  expect(
+    replanDeltaAccepted(
+      replanApprovalDelta(
+        ordered,
+        observationFixture([two, threeClaim, released], [releaseEvent()]),
+        [checkout]
+      )
+    )
+  ).toBe(true);
+  expect(
+    refused(
+      observationFixture([threeClaim, two, released], [releaseEvent()]),
+      [checkout],
+      ordered
+    )
+  ).toContain("Claims were reordered");
   const withReceipt = observationFixture([released], [releaseEvent()]);
   withReceipt.coordination.receipts = [
     {

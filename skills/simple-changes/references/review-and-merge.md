@@ -162,9 +162,10 @@ runtime. Runtimes before 0.32.0 reject `extensions` too.
   configured reviewer stays eligible; `alternative-only` means only another
   harness running the same model would, which the owner must choose;
   `closed` means this author would leave no eligible reviewer; `unknown`
-  means evidence is missing, such as a display name or effort label instead
-  of a model ID, an unattributed commit, or an unreadable ledger, and counts
-  as closed. An effort label, even inside an ID such as `model-5-5-xhigh`, is
+  means evidence is missing, such as an author or review model named by a
+  display name, effort label, or `most-capable` instead of a model ID, an
+  attested author with neither instance nor session, an unattributed commit,
+  or an unreadable ledger, and counts as closed. An effort label, even inside an ID such as `model-5-5-xhigh`, is
   never a different model, and a coverage waiver does not count here. For
   anything but `open`, pick another author model or harness, or ask the
   owner, before dispatching.

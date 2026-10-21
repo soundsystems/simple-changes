@@ -7,6 +7,7 @@ import {
   higherEffort,
   isHarnessId,
   isModelName,
+  MOST_CAPABLE,
   type RepositoryAuthoring,
 } from "./authoring.ts";
 import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
@@ -66,7 +67,8 @@ export type RoomVerdict =
   | "unknown-author"
   | "unknown-model"
   | "unknown-target"
-  | "effort-label-only";
+  | "effort-label-only"
+  | "executor-unknown";
 
 export interface RoomConflict extends RoomAuthor {
   verdict: Exclude<RoomVerdict, "distinct">;
@@ -79,6 +81,7 @@ export type RoomReason =
   | "author-identity-missing"
   | "authors-not-recorded"
   | "coverage-incomplete"
+  | "independence-unproven"
   | "ledger-cycle"
   | "ledger-malformed"
   | "model-differs-only-by-effort"
@@ -245,7 +248,7 @@ const differsOnlyByEffort = (left: string, right: string): boolean =>
   left !== right &&
   left.replace(EFFORT_SUFFIX, "") === right.replace(EFFORT_SUFFIX, "");
 
-const roomVerdict = (
+const diversityVerdict = (
   target: { harness: string; model: string },
   author: RoomAuthor
 ): RoomVerdict => {
@@ -265,10 +268,33 @@ const roomVerdict = (
     : verdict;
 };
 
+/**
+ * The gate rejects every reviewer as `independence-unproven` beside an
+ * attested author that recorded neither an instance nor a session, under
+ * either adversarial setting. A would-be author attests from its own
+ * session, so it is not judged here.
+ */
+const executorUnknown = (author: RoomAuthor): boolean =>
+  author.source === "attested" &&
+  author.instance === null &&
+  author.session === null;
+
+const roomVerdict = (
+  target: { harness: string; model: string },
+  author: RoomAuthor,
+  adversarial: boolean
+): RoomVerdict => {
+  const verdict = adversarial ? diversityVerdict(target, author) : "distinct";
+  return verdict === "distinct" && executorUnknown(author)
+    ? "executor-unknown"
+    : verdict;
+};
+
 // The precedence pre-dispatch resolution uses: a proven match rules the
 // route out before any missing evidence leaves it unknown.
 const VERDICT_REASONS: [Exclude<RoomVerdict, "distinct">, RoomReason][] = [
   ["same", "reviewer-not-distinct"],
+  ["executor-unknown", "independence-unproven"],
   ["unknown-author", "author-identity-missing"],
   ["unknown-target", "reviewer-model-id-missing"],
   ["unknown-model", "most-capable-unresolved"],
@@ -277,11 +303,12 @@ const VERDICT_REASONS: [Exclude<RoomVerdict, "distinct">, RoomReason][] = [
 
 const evaluate = (
   target: { harness: string; model: string },
-  authors: readonly RoomAuthor[]
+  authors: readonly RoomAuthor[],
+  adversarial: boolean
 ): Pick<RoomCandidate, "conflicts" | "eligibility" | "reason"> => {
   const conflicts: RoomConflict[] = [];
   for (const author of authors) {
-    const verdict = roomVerdict(target, author);
+    const verdict = roomVerdict(target, author, adversarial);
     if (verdict !== "distinct") {
       conflicts.push({ ...author, verdict });
     }
@@ -352,6 +379,8 @@ const REASON_TEXT: Record<RoomReason, string> = {
     "the proposal has no recorded head and no range was given, so its authors are unknown",
   "coverage-incomplete":
     "some commits have no attested author, so not every author is known",
+  "independence-unproven":
+    "an attested author recorded neither an instance nor a session, so no reviewer can be shown to be a different executor",
   "ledger-cycle": "the review ledger holds a replay cycle",
   "ledger-malformed":
     "the review ledger is malformed, so its authors are unknown",
@@ -596,12 +625,19 @@ const candidateRoute = (
   if (noDelegation) {
     return settled("ruled-out", "no-delegation");
   }
-  if (!review.adversarial) {
-    return settled("eligible", null);
+  // Diversity compares model IDs only: a reviewer model that is not one
+  // (a display name, an effort label, the sentinel) proves no route.
+  if (review.adversarial && context.modelId === null) {
+    return settled(
+      "unknown",
+      review.model.trim() === MOST_CAPABLE
+        ? "most-capable-unresolved"
+        : "reviewer-model-id-missing"
+    );
   }
   const target = { harness, model: review.model };
-  const withAll = evaluate(target, context.authors);
-  const attestedOnly = evaluate(target, context.attested);
+  const withAll = evaluate(target, context.authors, review.adversarial);
+  const attestedOnly = evaluate(target, context.attested, review.adversarial);
   return {
     ...base,
     ...withAll,

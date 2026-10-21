@@ -26,8 +26,10 @@ import {
 } from "../../../skills/simple-changes/scripts/lib/loop-lease.ts";
 import {
   attestCommits,
+  type ReviewLedger,
   recordProposalAuthors,
   recordReviewAttempt,
+  reviewLedgerPath,
 } from "../../../skills/simple-changes/scripts/lib/review-ledger.ts";
 import {
   parseVerifiedRoute,
@@ -384,6 +386,71 @@ describe("reviewer room", () => {
       head: commit,
     });
     expect(across.status).toBe("open");
+  });
+
+  test("a reviewer model that is not an ID proves no route, even across harnesses", () => {
+    const run = preparedRun();
+    const commit = commitFile(run.author, "a.txt", "a\n");
+    attestAs(run, commit, "model-beta", ENV_OTHER, "instance-b");
+    const author = [parseWouldAuthor(`${OTHER}/model-delta`)];
+    for (const [model, reason] of [
+      ["most-capable", "most-capable-unresolved"],
+      ["Model Review", "reviewer-model-id-missing"],
+      [`${REVIEW_MODEL} xhigh`, "reviewer-model-id-missing"],
+    ] as const) {
+      const result = room(run, author, {
+        authoring: stubAuthoring({ model }),
+      });
+      expect([model, result.status, result.reason]).toEqual([
+        model,
+        "unknown",
+        reason,
+      ]);
+      expect(configured(result).eligibility).toBe("unknown");
+    }
+    // Negative control: the same cross-harness route with a model ID is open.
+    expect(room(run, author).status).toBe("open");
+    // Without adversarial review the model is not compared.
+    expect(
+      room(run, author, {
+        authoring: stubAuthoring({ adversarial: false, model: "most-capable" }),
+      }).status
+    ).toBe("open");
+  });
+
+  test("an attested author with neither instance nor session leaves independence unproven", () => {
+    const run = preparedRun();
+    const commit = commitFile(run.author, "a.txt", "a\n");
+    attestAs(run, commit, "model-beta", ENV_OTHER, "instance-b");
+    const author = [parseWouldAuthor(`${OTHER}/model-delta`)];
+    // Negative control: the recorded instance and session prove independence.
+    expect(room(run, author).status).toBe("open");
+    const path = reviewLedgerPath(
+      locateRepository(run.root).repository.commonGitDirectory
+    );
+    const ledger = JSON.parse(readFileSync(path, "utf8")) as ReviewLedger;
+    for (const attestation of ledger.attestations[commit] ?? []) {
+      attestation.instance = null;
+      attestation.session = null;
+    }
+    writeFileSync(path, `${JSON.stringify(ledger, null, 2)}\n`);
+    for (const adversarial of [true, false]) {
+      const result = room(run, author, {
+        authoring: stubAuthoring({ adversarial }),
+      });
+      expect([adversarial, result.status, result.reason]).toEqual([
+        adversarial,
+        "unknown",
+        "independence-unproven",
+      ]);
+      expect(configured(result).conflicts).toEqual([
+        expect.objectContaining({
+          agent: "model-beta",
+          commits: [commit],
+          verdict: "executor-unknown",
+        }),
+      ]);
+    }
   });
 
   test("an effort label never counts as a different model", () => {

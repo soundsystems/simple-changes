@@ -4207,6 +4207,16 @@ const runLoopRecoveryAction = (
         ? `Archived ${result.request.runId} (${result.outcome}); this transition did not ship or clean work. All historical receipts are preserved. Start a fresh loop through the normal workflow and reconcile current provider state.\n`
         : `Replanned ${result.request.runId}; the original lease is archived, this transition did not ship or clean work. Start a fresh loop through the normal workflow.\n`
     );
+    if (result.approvalDelta && !options.json) {
+      process.stdout.write(
+        `The approved coordination digest ${result.approvalDelta.approvedCoordinationDigest} changed to ${result.approvalDelta.currentCoordinationDigest} only through verified owner releases, recorded in replan-approval-delta.json: ${result.approvalDelta.acceptedReleases
+          .map(
+            (release) =>
+              `${release.ownerAgentId} released ${release.claimId} on ${release.path} (${release.releaseReason})`
+          )
+          .join("; ")}.\n`
+      );
+    }
     return true;
   }
   if (action === "close-equivalent") {

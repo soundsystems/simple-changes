@@ -418,7 +418,8 @@ Do not edit the lease or widen its frozen scope by hand.
    `--status-digest <observed-status> --approved-by <user> --reason <reason>`.
    Both commands must use the same checkout: inventory digests include checkout
    identity. Any change to the bound evidence requires a fresh observation and
-   approval. An earlier approval to ship does not by itself authorize replan.
+   approval, except a verified owner release (below). An earlier approval to
+   ship does not by itself authorize replan.
 3. Keep the returned `replanned` receipt and start a fresh loop through the normal
    workflow. Inventory and reconcile all remaining work and provider truth;
    replan does not prove that earlier merge or deployment actions never occurred.
@@ -445,6 +446,41 @@ in place. A matching retry verifies this archive and returns the receipt without
 touching a newer active loop. A crash before the move can retry the exact request;
 if work changed meanwhile, a newly approved request creates a separate attempt
 and preserves the earlier intent. Never delete or modify an intent to retry.
+
+**When a concurrent owner releases its claim during the approval.**
+`loop replan-status` keeps each observation it shows at
+`<common-git-dir>/simple-changes/history/<run-id>/status-observations/<status-digest>.json`.
+When the current observation no longer matches the approved status digest,
+replan compares the two exactly. It keeps the approval only when every
+difference is a verified owner release and the source inventory digest and
+target revision are unchanged:
+
+- the claim's own owner released its own live claim, with `worktree release`
+  (`owner-release`) or a completed-work handoff (`handoff`), and the release
+  event is that owner's;
+- the release recorded the checkout's branch, head and status digest at
+  release time, and they equal the checkout the approval observed (path,
+  branch, head, status digest);
+- no other claim now holds that checkout, and no claim field changed except
+  its state, release reason, time and recorded checkout evidence.
+
+Any other difference refuses: a changed source or target; a new, removed or
+reassigned claim; a takeover; a release by another agent, without recorded
+checkout state, or with other evidence; a changed pause receipt; or a
+rewritten coordination event. The refusal prints the exact delta with the
+approved and current coordination digests, and changes nothing. Review that
+delta with the user and get a fresh approval from a new `loop replan-status`.
+A stored observation that is missing or no longer matches its digest refuses
+the same way, without a delta.
+
+An accepted delta is recorded in the attempt directory as
+`replan-approval-delta.json`, before the lease moves: the approved and current
+status and coordination digests, the current observation, and each accepted
+release. `replan.json` keeps the approved observation and its existing format,
+which older runtimes validate; an older runtime retrying such an attempt
+before the move refuses, because the current observation differs from the
+approved one. A retry after a crash proves the same delta again and must find
+exactly the recorded one. `loop archive-recorded` applies the same rule.
 
 ## Archive a recorded run that cannot finish
 

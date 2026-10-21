@@ -258,4 +258,66 @@ describe("finalization keeps approved repository policy", () => {
       expect.stringContaining("Kept .simple-changes.json")
     );
   });
+  test("carries approved policy unwritten when merges autostash", () => {
+    const fixture = approvedPolicyFixture();
+    git(fixture.root, ["config", "merge.autoStash", "true"]);
+    const stamp = policyFileStamp(fixture.root);
+    const lease = startLoop(fixture.root, "controller", "integrate");
+
+    const finalized = finalizeLoop(
+      fixture.root,
+      lease.runId,
+      "controller",
+      "Synchronize with autostash configured."
+    );
+
+    expect(finalized).toMatchObject({ blockers: [], outcome: "completed" });
+    expect(policyFileStamp(fixture.root)).toBe(stamp);
+    expect(git(fixture.root, ["status", "--short"])).toBe("");
+    expect(policyTrust(fixture.root)).toBe("trusted");
+  });
+
+  test("a tracked file name that looks like a pathspec never widens a restore to the policy", () => {
+    const fixture = repository();
+    const patternName = ":(glob)*.json";
+    writeFixture(fixture.root, ".simple-changes.json", openingPolicy);
+    writeFixture(fixture.root, patternName, "opening\n");
+    git(fixture.root, ["add", "--", ".simple-changes.json"]);
+    git(fixture.root, ["--literal-pathspecs", "add", "--", patternName]);
+    git(fixture.root, ["commit", "--quiet", "-m", "Add opening files"]);
+    withOrigin(fixture.root);
+    advanceTarget(fixture.root, { ".simple-changes.json": approvedPolicy });
+    git(fixture.root, ["checkout", "--quiet", "--detach", "origin/main"]);
+    writeFixture(fixture.root, patternName, "target\n");
+    git(fixture.root, ["--literal-pathspecs", "add", "--", patternName]);
+    git(fixture.root, ["commit", "--quiet", "-m", "Advance the pattern file"]);
+    git(fixture.root, ["update-ref", "refs/remotes/origin/main", "HEAD"]);
+    git(fixture.root, ["checkout", "--quiet", "main"]);
+    writeFixture(fixture.root, ".simple-changes.json", approvedPolicy);
+    writeFixture(fixture.root, patternName, "target\n");
+    // Unrelated unique work keeps the primary from synchronizing.
+    writeFixture(fixture.root, "notes.txt", "unrelated draft\n");
+    writeRepositoryPolicyTrustReceipt(
+      fixture.root,
+      resolve(fixture.root, ".git"),
+      "user",
+      "Approve the migration policy"
+    );
+    const stamp = policyFileStamp(fixture.root);
+    const lease = startLoop(fixture.root, "controller", "integrate");
+
+    const finalized = finalizeLoop(
+      fixture.root,
+      lease.runId,
+      "controller",
+      "The primary still holds unrelated work."
+    );
+
+    expect(finalized.cleanup.cleanedPrimaryPaths).toEqual([patternName]);
+    expect(readFileSync(join(fixture.root, patternName), "utf8")).toBe(
+      "opening\n"
+    );
+    expect(policyFileStamp(fixture.root)).toBe(stamp);
+    expect(policyTrust(fixture.root)).toBe("trusted");
+  });
 });

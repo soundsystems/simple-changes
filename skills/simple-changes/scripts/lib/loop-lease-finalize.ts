@@ -825,6 +825,10 @@ const switchCleanPrimaryToTarget = (
   );
 };
 
+// Primary paths are file names, never patterns: a tracked name such as
+// `:(glob)*.json` must not widen a restore to the repository policy.
+const LITERAL_PATHSPECS = "--literal-pathspecs";
+
 const diffMatchesRevision = (
   repositoryPath: string,
   revision: string,
@@ -834,6 +838,7 @@ const diffMatchesRevision = (
   runGit(
     repositoryPath,
     [
+      LITERAL_PATHSPECS,
       "diff",
       ...(cached ? ["--cached"] : []),
       ...(cached ? ["--ita-visible-in-index"] : []),
@@ -852,7 +857,7 @@ const indexHasOnlyOrdinaryEntries = (
   paths.every((path) => {
     const result = runGit(
       repositoryPath,
-      ["ls-files", "--debug", "--", path],
+      [LITERAL_PATHSPECS, "ls-files", "--debug", "--", path],
       true
     );
     if (result.exitCode !== 0) {
@@ -1007,7 +1012,14 @@ const stagePolicyPathsAtTarget = (
   };
   const staged = runGit(
     lease.primaryCheckout,
-    ["restore", `--source=${targetRevision}`, "--staged", "--", ...paths],
+    [
+      LITERAL_PATHSPECS,
+      "restore",
+      `--source=${targetRevision}`,
+      "--staged",
+      "--",
+      ...paths,
+    ],
     true
   );
   if (staged.exitCode !== 0) {
@@ -1102,6 +1114,7 @@ const reconcileTargetEquivalentPrimaryChanges = (
   const restored = runGit(
     lease.primaryCheckout,
     [
+      LITERAL_PATHSPECS,
       "restore",
       `--source=${primary.headSha}`,
       "--staged",
@@ -1156,7 +1169,14 @@ const settleCarriedPolicyPaths = (
     ) {
       runGit(
         lease.primaryCheckout,
-        ["restore", `--source=${carried.headSha}`, "--staged", "--", path],
+        [
+          LITERAL_PATHSPECS,
+          "restore",
+          `--source=${carried.headSha}`,
+          "--staged",
+          "--",
+          path,
+        ],
         true
       );
     }
@@ -1204,7 +1224,8 @@ const fastForwardCleanPrimary = (
   }
   const result = runGit(
     lease.primaryCheckout,
-    ["merge", "--ff-only", targetRevision],
+    // Autostash would stash and rewrite carried policy bytes.
+    ["merge", "--ff-only", "--no-autostash", targetRevision],
     true
   );
   if (result.exitCode === 0) {

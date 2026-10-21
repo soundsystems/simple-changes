@@ -57,6 +57,23 @@ const namesUnitId = (text: string, id: string): boolean =>
     "iu"
   ).test(text);
 
+const WHITESPACE = /\s+/u;
+
+// Quotes, brackets, and sentence punctuation around a word.
+const WORD_EDGES = /^[\s"'`([{<,;:!?]+|[\s"'`)\]}>,;:!?.]+$/gu;
+
+/**
+ * The whole words of `text`, without surrounding quotes, brackets, or
+ * punctuation, so `tests/role.ts` never counts as a mention of `role.ts`.
+ */
+const wordsOf = (text: string): Set<string> =>
+  new Set(
+    text
+      .split(WHITESPACE)
+      .map((word) => word.replace(WORD_EDGES, ""))
+      .filter(Boolean)
+  );
+
 const boundedText = (value: string, name: string): string => {
   const text = requiredText(value, name);
   if ([...text].length > MAX_TEXT_LENGTH) {
@@ -77,9 +94,10 @@ const boundedText = (value: string, name: string): string => {
 /**
  * Why the cited readiness evidence cannot establish that this unit, and only
  * this unit, failed its readiness condition, or null. Each item must name
- * the held unit by its ID or by a path no other scoped unit shares, and must
- * not name another scoped unit's ID: a shared filename such as a changelog,
- * or evidence about several units, does not say which unit is not ready.
+ * the held unit by its ID or by a whole path no other scoped unit shares,
+ * and must name neither another scoped unit's ID nor a path only another
+ * unit scopes: a shared filename such as a changelog, or evidence about
+ * several units, does not say which unit is not ready.
  */
 export const readinessEvidenceFailure = (
   unit: Pick<ChangeUnit, "id" | "paths">,
@@ -95,17 +113,26 @@ export const readinessEvidenceFailure = (
   const others = scopedUnits.filter((item) => item.id !== unit.id);
   const sharedPaths = new Set(others.flatMap((item) => item.paths));
   const ownPaths = unit.paths.filter((path) => !sharedPaths.has(path));
+  const heldPaths = new Set(unit.paths);
   for (const [index, item] of evidence.entries()) {
     const label = `readiness evidence ${index + 1}`;
+    const words = wordsOf(item);
     const other = others.find((candidate) => namesUnitId(item, candidate.id));
     if (other) {
       return `${label} also names scoped unit ${other.id}, so it does not say which unit failed`;
     }
-    if (
-      !(
-        namesUnitId(item, unit.id) ||
-        ownPaths.some((path) => item.includes(path))
+    const otherPath = others
+      .flatMap((candidate) =>
+        candidate.paths
+          .filter((path) => !heldPaths.has(path) && words.has(path))
+          .map((path) => ({ id: candidate.id, path }))
       )
+      .at(0);
+    if (otherPath) {
+      return `${label} names ${otherPath.path}, which only scoped unit ${otherPath.id} scopes, so it does not say which unit failed`;
+    }
+    if (
+      !(namesUnitId(item, unit.id) || ownPaths.some((path) => words.has(path)))
     ) {
       return `${label} names neither unit ${unit.id} nor a path only that unit scopes${ownPaths.length < unit.paths.length ? " (a filename another unit shares does not identify it)" : ""}`;
     }

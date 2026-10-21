@@ -32,6 +32,7 @@ import {
 import { assertSafeRelativePath } from "./path-safety.ts";
 import { validatePlanConservation } from "./planner.ts";
 import {
+  boundOutcomeDigest,
   preservedSourceOverrideFailure,
   splitShipmentOutcomeInput,
 } from "./preserved-source-override.ts";
@@ -1343,6 +1344,13 @@ export const recordShipmentOutcome = (
             targetDeltaPaths
           );
           assertCompleteTargetDelta(lease, receipt, accountedPaths);
+          // The recorded digest also binds every held unit, so a runtime
+          // that does not know held units refuses this outcome, and a hold
+          // added, removed, or changed later no longer matches it.
+          const outcomeDigest = boundOutcomeDigest(
+            receiptDigest,
+            holds.map((hold) => hold.holdDigest)
+          );
           // A null record removes a sidecar left by an earlier outcome.
           writeReceiptSidecar(
             lease,
@@ -1351,7 +1359,7 @@ export const recordShipmentOutcome = (
               ? null
               : {
                   overrides,
-                  receiptDigest,
+                  receiptDigest: outcomeDigest,
                   runId: lease.runId,
                   schemaVersion: 1,
                 }
@@ -1359,11 +1367,15 @@ export const recordShipmentOutcome = (
           writeLease({
             ...withMutationEvidence(lease, recordedAt),
             ownerProcess: ownerProcessEvidence(recordedAt),
-            shipmentOutcome: { receipt, receiptDigest, recordedAt },
+            shipmentOutcome: {
+              receipt,
+              receiptDigest: outcomeDigest,
+              recordedAt,
+            },
             updatedAt: recordedAt,
           });
           return {
-            receiptDigest,
+            receiptDigest: outcomeDigest,
             recordedAt,
             summary: `Reviewed shipment outcome: ${receipt.units.length} scoped work item(s) and ${receipt.additionalPaths.length} additional final-target path(s) accounted at ${receipt.targetRevision}.${
               holds.length > 0

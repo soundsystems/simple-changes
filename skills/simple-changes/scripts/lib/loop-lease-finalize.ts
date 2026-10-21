@@ -1384,7 +1384,11 @@ const automaticFinalizationCleanup = (
     protection.branches
   );
   let inventory = captureInventory(repositoryPath);
+  // A held unit packaged from the primary checkout keeps that checkout on
+  // its branch with its bytes, clean or not: no switch, fast-forward, or
+  // normalization.
   if (
+    !protection.sources.has(lease.primaryCheckout) &&
     preparePrimarySynchronization(
       lease,
       inventory,
@@ -1554,7 +1558,8 @@ const storedPreservedSourceOverrides = (
     ),
     lease.runId,
     outcome.receipt,
-    outcome.receiptDigest
+    outcome.receiptDigest,
+    readHeldUnits(lease).map((hold) => hold.holdDigest)
   );
 };
 

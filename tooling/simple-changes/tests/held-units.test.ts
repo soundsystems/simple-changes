@@ -25,6 +25,7 @@ import {
 } from "../../../skills/simple-changes/scripts/lib/loop-lease.ts";
 import { readinessEvidenceFailure } from "../../../skills/simple-changes/scripts/lib/loop-lease-hold.ts";
 import { buildPreviewPlan } from "../../../skills/simple-changes/scripts/lib/planner.ts";
+import { recordedPreservedSourceOverrides } from "../../../skills/simple-changes/scripts/lib/preserved-source-override.ts";
 import {
   draftShipmentOutcome,
   type ShipmentOutcomeDraftReceipt,
@@ -340,6 +341,21 @@ describe("loop hold-unit", () => {
     expect(recorded.summary).toContain(
       "2 held unit(s) stay preserved and are not reported as delivered: role, guide."
     );
+    // The recorded digest binds the holds, so a runtime that does not read
+    // the held-unit record refuses the outcome instead of closing over it.
+    const stored = readLoopLease(root)?.shipmentOutcome;
+    if (!stored) {
+      throw new Error("Expected a recorded outcome");
+    }
+    expect(stored.receiptDigest).not.toBe(sha256Json(stored.receipt));
+    expect(() =>
+      recordedPreservedSourceOverrides(
+        null,
+        lease.runId,
+        stored.receipt,
+        stored.receiptDigest
+      )
+    ).toThrow("record the outcome again");
 
     const result = finalizeLoop(
       root,
@@ -455,6 +471,63 @@ describe("loop hold-unit", () => {
     expect(() =>
       holdUnit(root, lease.runId, "unknown", ["Unit unknown failed."])
     ).toThrow("is not in the frozen shipment scope");
+  });
+
+  test("never switches or normalizes a clean held primary checkout", () => {
+    const fixture = repository();
+    const { root } = fixture;
+    git(root, ["remote", "add", "origin", "https://example.invalid/repo.git"]);
+    git(root, ["update-ref", "refs/remotes/origin/main", "HEAD"]);
+    git(root, [
+      "symbolic-ref",
+      "refs/remotes/origin/HEAD",
+      "refs/remotes/origin/main",
+    ]);
+    git(root, ["switch", "-q", "-c", "work"]);
+    writeFixture(root, "feature.txt", "draft feature\n");
+    writeFixture(root, "role/check.ts", "export const check = 1;\n");
+    const lease = startLoop(root, CONTROLLER, "ship");
+    const opening = captureInventory(root);
+    const preview = buildPreviewPlan(
+      opening,
+      opening,
+      compareSnapshots(opening, opening)
+    );
+    const [template] = preview.units;
+    if (!template) {
+      throw new Error("Expected a previewed unit");
+    }
+    recordShipmentScope(root, lease.runId, CONTROLLER, {
+      ...preview,
+      units: [
+        unitFrom(template, "feature", "Ship the feature", ["feature.txt"]),
+        unitFrom(template, "role", "Add role checks", ["role/check.ts"]),
+      ],
+    });
+    const prepared = prepareAgentWorktree(
+      root,
+      lease.runId,
+      "delivery-author",
+      "delivery"
+    );
+    writeFixture(prepared.path, "feature.txt", "draft feature\n");
+    const target = commitAll(prepared.path, "Feature");
+    git(root, ["update-ref", "refs/remotes/origin/main", target]);
+    // The primary commits its own copy, so it is clean on its branch.
+    const held = commitAll(root, "Work in progress");
+    approvedHold(root, lease.runId, "role", ["Unit role failed review."]);
+    recordShipmentOutcome(
+      root,
+      lease.runId,
+      CONTROLLER,
+      reviewed(draftShipmentOutcome(root, lease.runId).draft)
+    );
+    finalizeLoop(root, lease.runId, CONTROLLER, "Finish with role held.");
+    expect(git(root, ["branch", "--show-current"])).toBe("work");
+    expect(git(root, ["rev-parse", "HEAD"])).toBe(held);
+    expect(readFileSync(join(root, "role/check.ts"), "utf8")).toBe(
+      "export const check = 1;\n"
+    );
   });
 
   test("refuses missing or ambiguous readiness evidence", () => {
@@ -883,6 +956,19 @@ describe("readiness evidence", () => {
     expect(
       readinessEvidenceFailure(role, units, ["CHANGELOG.md is wrong."])
     ).toContain("a filename another unit shares does not identify it");
+    // A path is matched whole: another unit's longer path is not this one.
+    const app = { id: "app", paths: ["role.ts"] };
+    const nested = [app, { id: "suite", paths: ["tests/role.ts"] }];
+    expect(
+      readinessEvidenceFailure(app, nested, [
+        "tests/role.ts failed independent review.",
+      ])
+    ).toContain("names tests/role.ts, which only scoped unit suite scopes");
+    expect(
+      readinessEvidenceFailure(app, nested, [
+        "`role.ts` failed independent review.",
+      ])
+    ).toBeNull();
     expect(
       readinessEvidenceFailure(role, units, [
         "Unit role failed review.",

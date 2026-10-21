@@ -186,9 +186,10 @@ and refuses when anything in the observation changed, so a moved source head,
 changed status or bytes, a changed claim, or a moved target needs a new
 approval. The approver must be neither the controller nor the claim owner.
 
-Each `--readiness-evidence` item must name the held unit by its ID or by a path
-no other scoped unit shares, and must not name another scoped unit; a shared
-filename such as a changelog does not say which unit failed. The command also
+Each `--readiness-evidence` item must name the held unit by its ID or by a
+whole path no other scoped unit shares, and must name neither another scoped
+unit nor a path only another unit scopes; a shared filename such as a
+changelog does not say which unit failed. The command also
 refuses a unit that is not in the frozen scope, a unit already held, a unit
 a scoped unit that is not held depends on, a missing source checkout, and a run that
 already recorded its outcome: a hold never reinterprets a recorded outcome.
@@ -208,7 +209,8 @@ or one that no longer matches the frozen unit fails closed.
 requires it; account for any of its paths the target changed as
 `additionalPaths`. Finalization never removes, demotes, or releases a held
 unit's source checkout or claim, never deletes its branch, and never
-normalizes its primary-checkout bytes. A held primary path counts as excluded
+switches, fast-forwards, or normalizes a primary checkout a held unit was
+packaged from, clean or not. A held primary path counts as excluded
 in the primary delivery proof, so the other units can still verify delivery.
 A unit that shares a non-primary checkout with a held unit cannot be verified
 delivered while the held bytes keep that checkout dirty. The finalization
@@ -216,8 +218,12 @@ receipt reports each held unit under `heldUnits`, apart from verified
 delivery, with whether its source still matches the hold.
 
 The record is a new file, so the lease and outcome receipts keep their
-shapes and earlier runs, receipts, and frozen scopes read as before. An older
-runtime ignores the record and still requires the held unit in the outcome,
-so it refuses to record an outcome without it and never reports the run's
-delivery as verified: it can only be stricter. Finish a run that held a unit
-with Simple Changes 0.33.0 or later.
+shapes and earlier runs, receipts, and frozen scopes read as before. The
+outcome digest the lease records also binds every hold, so adding, removing,
+or changing a hold after the outcome blocks completion. An older runtime
+ignores the record: it still requires the held unit in the outcome, so it
+refuses to record one without it, and because the recorded digest is no
+longer the plain receipt digest, Simple Changes 0.25.0 and later refuse to
+finish, end, or archive the run, reporting a missing preserved-source override
+file. It can only be stricter. Finish a run that held a unit with Simple
+Changes 0.33.0 or later.

@@ -1,6 +1,10 @@
 import { existsSync, readdirSync } from "node:fs";
 import { resolve } from "node:path";
-import { targetContainsRevision } from "./cleanup-core.ts";
+import {
+  targetContainmentAudit,
+  targetContainsRevision,
+} from "./cleanup-core.ts";
+import { proveExactByteTargetContainment } from "./exact-byte-proof.ts";
 import { sha256Json } from "./hash.ts";
 import {
   nothingAtPath,
@@ -131,12 +135,30 @@ export const readRunCreatedRetirements = (
   return retirements;
 };
 
+// A retained branch that is gone, such as one this run's own cleanup deleted
+// once the target contained it, still accounts for the proven head only
+// while the target contains that head by ancestry or patch equivalence, or
+// the head still proves exact-byte against the current target.
+const deletedBranchHeadAccounted = (
+  lease: LoopLease,
+  targetRevision: string,
+  headSha: string
+): boolean =>
+  targetContainmentAudit(lease.primaryCheckout, targetRevision, headSha)
+    .method !== null ||
+  proveExactByteTargetContainment(lease.primaryCheckout, {
+    sourceHead: headSha,
+    targetRevision,
+  }).status === "proven";
+
 /**
  * The retirement that still accounts for a run-created registration: it
  * names this exact registration, the checkout is absent from disk and from
- * Git's live worktree list, the retained branch still points at the head
- * the proof read, and the current target still contains the target the
- * proof compared against. Anything else leaves the registration unretired.
+ * Git's live worktree list, and the current target still contains the
+ * target the proof compared against. The retained branch must still point
+ * at the head the proof read; once it is gone, the target must still
+ * account for that head. A branch that moved, or anything else, leaves the
+ * registration unretired.
  */
 export const currentRunCreatedRetirement = (
   lease: LoopLease,
@@ -155,13 +177,13 @@ export const currentRunCreatedRetirement = (
   if (!nothingAtPath(registered.path) || (live && !live.prunable)) {
     return;
   }
+  const targetRevision = resolvedCurrentTargetRevision(lease);
+  if (!targetRevision) {
+    return;
+  }
   const branchHead = inventory.branches.find(
     (branch) => branch.name === registered.branch
   )?.sha;
-  const targetRevision = resolvedCurrentTargetRevision(lease);
-  if (!(branchHead && targetRevision)) {
-    return;
-  }
   return retirements.find(
     (retirement) =>
       retirement.path === registered.path &&
@@ -170,7 +192,13 @@ export const currentRunCreatedRetirement = (
       retirement.baselineChangeDigest === registered.baselineChangeDigest &&
       retirement.baselineHeadSha === registered.baselineHeadSha &&
       retirement.targetRef === lease.targetRef &&
-      retirement.branchHeadSha === branchHead &&
+      (branchHead === undefined
+        ? deletedBranchHeadAccounted(
+            lease,
+            targetRevision,
+            retirement.branchHeadSha
+          )
+        : retirement.branchHeadSha === branchHead) &&
       targetContainsRevision(
         lease.primaryCheckout,
         targetRevision,

@@ -192,4 +192,52 @@ describe("finalization keeps approved repository policy", () => {
       expect.stringContaining("Put back .simple-changes.json")
     );
   });
+  test("puts approved policy back after a switch lands a local target branch that is behind", () => {
+    const fixture = repository();
+    writeFixture(fixture.root, ".simple-changes.json", openingPolicy);
+    git(fixture.root, ["add", ".simple-changes.json"]);
+    git(fixture.root, ["commit", "--quiet", "-m", "Add opening policy"]);
+    git(fixture.root, ["branch", "work"]);
+    const intermediatePolicy = policyText({
+      ...DEFAULT_POLICY,
+      productionDeploy: "deny",
+    });
+    writeFixture(fixture.root, ".simple-changes.json", intermediatePolicy);
+    git(fixture.root, ["commit", "--quiet", "-am", "Intermediate policy"]);
+    withOrigin(fixture.root);
+    advanceTarget(fixture.root, {
+      ".simple-changes.json": approvedPolicy,
+      "README.md": "# Current target\n",
+    });
+    git(fixture.root, ["switch", "--quiet", "work"]);
+    writeFixture(fixture.root, ".simple-changes.json", approvedPolicy);
+    writeFixture(fixture.root, "README.md", "# Current target\n");
+    writeRepositoryPolicyTrustReceipt(
+      fixture.root,
+      resolve(fixture.root, ".git"),
+      "user",
+      "Approve the migration policy"
+    );
+    const lease = startLoop(fixture.root, "controller", "integrate");
+    // The switch to the local target branch succeeds; the fast-forward to
+    // the unsigned refreshed target is refused.
+    git(fixture.root, ["config", "merge.verifySignatures", "true"]);
+
+    const finalized = finalizeLoop(
+      fixture.root,
+      lease.runId,
+      "controller",
+      "The fast-forward is refused after the switch."
+    );
+
+    expect(finalized.outcome).toBe("relinquished");
+    expect(git(fixture.root, ["branch", "--show-current"])).toBe("main");
+    expect(
+      readFileSync(join(fixture.root, ".simple-changes.json"), "utf8")
+    ).toBe(approvedPolicy);
+    expect(policyTrust(fixture.root)).toBe("trusted");
+    expect(finalized.cleanup.notes).toContainEqual(
+      expect.stringContaining("Put back .simple-changes.json")
+    );
+  });
 });

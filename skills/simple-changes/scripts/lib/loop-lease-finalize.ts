@@ -1087,8 +1087,10 @@ const reconcileTargetEquivalentPrimaryChanges = (
 /**
  * When synchronization did not land the target after all, puts back the
  * policy bytes normalization replaced, from the target that held the same
- * bytes, and the staged entry when it was staged. A path that changed
- * since normalization is left as it is and reported.
+ * bytes, and the staged entry when it was staged. That covers bytes the
+ * normalization wrote from the old HEAD and bytes a switch that did happen
+ * wrote from the current HEAD, such as a local target branch behind the
+ * refreshed target. A path that changed otherwise is left and reported.
  */
 const restoreStrandedPolicyPaths = (
   lease: LoopLease,
@@ -1103,7 +1105,10 @@ const restoreStrandedPolicyPaths = (
     if (
       !(
         normalized &&
-        diffMatchesRevision(lease.primaryCheckout, normalized.headSha, [path])
+        (diffMatchesRevision(lease.primaryCheckout, normalized.headSha, [
+          path,
+        ]) ||
+          diffMatchesRevision(lease.primaryCheckout, "HEAD", [path]))
       )
     ) {
       cleanup.errors.push(

@@ -1,10 +1,11 @@
 import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { proveExactByteTargetContainment } from "../../../skills/simple-changes/scripts/lib/exact-byte-proof.ts";
 import { captureInventory } from "../../../skills/simple-changes/scripts/lib/inventory.ts";
 import {
   closeLoopTargetEquivalent,
+  loopLeasePath,
   prepareAgentWorktree,
   readLoopLease,
   retainExcludedWorktree,
@@ -12,6 +13,7 @@ import {
   startLoop,
   verifyLoop,
 } from "../../../skills/simple-changes/scripts/lib/loop-lease.ts";
+import type { LoopLease } from "../../../skills/simple-changes/scripts/lib/types.ts";
 import {
   createTestRepository,
   git,
@@ -338,5 +340,72 @@ describe("run-created author retirement", () => {
       )
     ).toThrow("must name a preserved registration");
     expect(retirementRecords(fixture.root, lease.runId)).toEqual([]);
+  });
+  test("a retirement keeps accounting for a legacy preserved author after cleanup deletes its contained branch", () => {
+    const fixture = repository();
+    withOrigin(fixture.root);
+    const lease = startLoop(fixture.root, "controller", "integrate");
+    const prepared = prepareAgentWorktree(
+      fixture.root,
+      lease.runId,
+      "tester",
+      "unit-a"
+    );
+    writeFixture(prepared.path, "a.txt", "alpha\n");
+    git(prepared.path, ["add", "a.txt"]);
+    git(prepared.path, ["commit", "--quiet", "-m", "Author a"]);
+    // The target contains the author's commit by ancestry.
+    git(fixture.root, ["checkout", "--quiet", "--detach", prepared.branch]);
+    writeFixture(fixture.root, "b.txt", "beta\n");
+    git(fixture.root, ["add", "b.txt"]);
+    git(fixture.root, ["commit", "--quiet", "-m", "Later target work"]);
+    git(fixture.root, ["update-ref", "refs/remotes/origin/main", "HEAD"]);
+    git(fixture.root, ["checkout", "--quiet", "main"]);
+    git(fixture.root, ["worktree", "remove", prepared.path]);
+    // An older runtime could leave a run-created author registered as
+    // preserved.
+    const leasePath = loopLeasePath(
+      captureInventory(fixture.root).repository.commonGitDirectory
+    );
+    const stored = JSON.parse(readFileSync(leasePath, "utf8")) as LoopLease;
+    stored.worktrees = stored.worktrees.map((worktree) =>
+      worktree.path === prepared.path
+        ? {
+            ...worktree,
+            agentId: null,
+            mutationAllowed: false,
+            role: "preserved",
+          }
+        : worktree
+    );
+    writeFileSync(leasePath, `${JSON.stringify(stored, null, 2)}\n`, "utf8");
+    expect(verifyLoop(fixture.root).violations).toContainEqual(
+      expect.objectContaining({
+        code: "missing-preserved-worktree",
+        path: prepared.path,
+      })
+    );
+
+    retireAbsentWorktree(
+      fixture.root,
+      lease.runId,
+      "controller",
+      prepared.path,
+      "user",
+      "The user approved removing the delivered checkout."
+    );
+    expect(verifyLoop(fixture.root).ok).toBe(true);
+
+    const closed = closeLoopTargetEquivalent(
+      fixture.root,
+      lease.runId,
+      "controller",
+      "user",
+      "The target contains the author's work."
+    );
+    expect(closed.outcome).toBe("target-equivalent");
+    expect(closed.cleanup.removedBranches).toContainEqual(
+      expect.objectContaining({ branch: prepared.branch })
+    );
   });
 });

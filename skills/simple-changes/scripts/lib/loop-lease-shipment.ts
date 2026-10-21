@@ -10,6 +10,7 @@ import {
   controllerLifecycle,
   currentTargetRevision,
   effectiveShipmentScopeFrozenAt,
+  type LoopLockWait,
   matchingOverride,
   ownerProcessEvidence,
   PRESERVED_SOURCE_OVERRIDE_DIRECTORY,
@@ -18,8 +19,8 @@ import {
   requireLease,
   resolvedCurrentTargetRevision,
   scopeInvariantDigest,
+  withLoopStateLockBounded,
   withMutationEvidence,
-  withStateLock,
   writeLease,
   writeReceiptSidecar,
 } from "./loop-lease-core.ts";
@@ -533,13 +534,14 @@ export const recordShipmentScope = (
   runIdInput: string,
   agentIdInput: string,
   planInput: unknown,
-  refresh = false
+  refresh = false,
+  lockWait?: LoopLockWait
 ): ShipmentScopeReceipt => {
   const runId = requiredRunId(runIdInput);
   const agentId = requiredText(agentIdInput, "agent ID");
   const plan = validateSchema<ChangePlan>("change-plan", planInput);
   const opening = locateRepository(repositoryPath);
-  return withStateLock(
+  return withLoopStateLockBounded(
     opening.repository.commonGitDirectory,
     "record shipment scope",
     () => {
@@ -640,7 +642,8 @@ export const recordShipmentScope = (
         runId,
         summary: shipmentScopeSummary(activePlan, inventory),
       };
-    }
+    },
+    lockWait
   );
 };
 
@@ -1241,7 +1244,8 @@ export const recordShipmentOutcome = (
   runIdInput: string,
   agentIdInput: string,
   receiptInput: unknown,
-  approval?: PreservedSourceApproval
+  approval?: PreservedSourceApproval,
+  lockWait?: LoopLockWait
 ): ShipmentOutcomeRecord => {
   const runId = requiredRunId(runIdInput);
   const agentId = requiredText(agentIdInput, "agent ID");
@@ -1266,7 +1270,7 @@ export const recordShipmentOutcome = (
   const opening = locateRepository(repositoryPath);
   // The coordination lock keeps the claim a preserved-source override binds
   // from changing between validation and the lease write.
-  return withStateLock(
+  return withLoopStateLockBounded(
     opening.repository.commonGitDirectory,
     "record shipment outcome",
     () =>
@@ -1349,7 +1353,8 @@ export const recordShipmentOutcome = (
             summary: `Reviewed shipment outcome: ${receipt.units.length} scoped work item(s) and ${receipt.additionalPaths.length} additional final-target path(s) accounted at ${receipt.targetRevision}.`,
           };
         }
-      )
+      ),
+    lockWait
   );
 };
 

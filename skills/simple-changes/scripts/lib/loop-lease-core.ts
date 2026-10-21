@@ -15,6 +15,7 @@ import {
 import { hostname } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+import { spawnSync } from "bun";
 import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
 import {
   currentHarnessSession,
@@ -397,6 +398,261 @@ export const withLoopStateLockWaiting = <T>(
     }
   };
   return attempt();
+};
+
+/** `--wait-lock`: how long a metadata writer may wait for the loop lock. */
+export interface LoopLockWait {
+  /** Base poll interval; each poll adds up to as much again at random. */
+  intervalMs?: number;
+  timeoutMs: number;
+}
+
+/** `--wait-lock` without `--timeout-ms` waits this long. */
+export const LOOP_LOCK_WAIT_DEFAULT_MS = 60_000;
+
+/** The longest `--timeout-ms` a metadata writer accepts. */
+export const LOOP_LOCK_WAIT_MAX_MS = 600_000;
+
+const LOOP_LOCK_WAIT_POLL_MS = 100;
+
+/**
+ * Why a bounded wait ended without the lock: the timeout passed, the owner's
+ * process is gone on this host (only `loop recover` may clear its lock), or
+ * this command runs inside the owner's own process tree, so the owner cannot
+ * finish first.
+ */
+export type LoopLockWaitOutcome =
+  | "timed-out"
+  | "owner-not-running"
+  | "caller-inside-owner";
+
+/** The lock owner as a bounded wait reports it, without its token. */
+export type LoopLockOwnerSummary = Omit<LoopLockOwner, "token">;
+
+export interface LoopLockWaitReport {
+  /** Always false: the operation never ran, so nothing was written. */
+  executed: false;
+  /** The operation that waited, such as `author attest`. */
+  operation: string;
+  outcome: LoopLockWaitOutcome;
+  /** The holder when the wait ended; null when its metadata was unreadable. */
+  owner: LoopLockOwnerSummary | null;
+  timeoutMs: number;
+  waitedMs: number;
+}
+
+/** The existing lock-busy exit, with the structured report of the wait. */
+export class LoopLockWaitError extends SimpleChangesError {
+  readonly lockWait: LoopLockWaitReport;
+
+  constructor(message: string, report: LoopLockWaitReport, cause: unknown) {
+    super(message, EXIT_CODES.unsafe, { cause });
+    this.name = "LoopLockWaitError";
+    this.lockWait = report;
+  }
+}
+
+// A synchronous pause: the ledger and metadata writers are synchronous, and
+// nothing else runs in their process while they wait.
+const sleepSync = (milliseconds: number): void => {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, milliseconds);
+};
+
+interface CallerProcessTree {
+  ancestors: Set<number>;
+  processGroupId: number | null;
+}
+
+let callerProcessTreeCache: CallerProcessTree | undefined;
+
+const PROCESS_LIST_FIELDS = /\s+/u;
+
+// `ps -A -o pid=,ppid=,pgid=`: each process's parent, and this process's
+// group.
+const processParents = (
+  listing: string
+): { parents: Map<number, number>; processGroupId: number | null } => {
+  const parents = new Map<number, number>();
+  let processGroupId: number | null = null;
+  for (const line of listing.split("\n")) {
+    const [pid, ppid, pgid] = line
+      .trim()
+      .split(PROCESS_LIST_FIELDS)
+      .map(Number) as [number, number, number];
+    if (Number.isSafeInteger(pid) && Number.isSafeInteger(ppid)) {
+      parents.set(pid, ppid);
+      if (pid === process.pid && Number.isSafeInteger(pgid)) {
+        processGroupId = pgid;
+      }
+    }
+  }
+  return { parents, processGroupId };
+};
+
+// This process and every ancestor, read once from `ps`. When `ps` cannot be
+// read, only this process and its parent are known.
+const callerProcessTree = (): CallerProcessTree => {
+  if (callerProcessTreeCache) {
+    return callerProcessTreeCache;
+  }
+  const ancestors = new Set([process.pid, process.ppid]);
+  const listed =
+    process.platform === "win32"
+      ? null
+      : spawnSync(["ps", "-A", "-o", "pid=,ppid=,pgid="], {
+          stderr: "ignore",
+          stdout: "pipe",
+          timeout: 5000,
+        });
+  const { parents, processGroupId } = processParents(
+    listed?.exitCode === 0 ? listed.stdout.toString() : ""
+  );
+  let current = parents.get(process.ppid);
+  while (current !== undefined && current > 0 && !ancestors.has(current)) {
+    ancestors.add(current);
+    current = parents.get(current);
+  }
+  callerProcessTreeCache = { ancestors, processGroupId };
+  return callerProcessTreeCache;
+};
+
+const callerRunsInsideOwner = (owner: LoopLockOwner): boolean => {
+  if (owner.hostname !== hostname()) {
+    return false;
+  }
+  const tree = callerProcessTree();
+  return (
+    tree.ancestors.has(owner.pid) ||
+    (owner.childProcessId !== undefined &&
+      tree.ancestors.has(owner.childProcessId)) ||
+    (owner.processGroupId !== undefined &&
+      tree.processGroupId === owner.processGroupId)
+  );
+};
+
+const lockOwnerSummary = (
+  owner: LoopLockOwner | null
+): LoopLockOwnerSummary | null => {
+  if (!owner) {
+    return null;
+  }
+  const { token: _token, ...summary } = owner;
+  return summary;
+};
+
+const LOCK_WAIT_ENDINGS: Record<
+  LoopLockWaitOutcome,
+  (owner: LoopLockOwner | null, waited: string) => string
+> = {
+  "caller-inside-owner": (owner, waited) =>
+    `This command runs inside ${owner?.operation ?? "the owner"} itself, so waiting cannot end before it does; ${waited}. Run it after that operation returns.`,
+  "owner-not-running": (owner, waited) =>
+    `Its owner PID ${owner?.pid ?? "unknown"} is not running on this host, so waiting cannot free it; ${waited}. A wait never recovers a lock: follow the stale-lock rules of loop recover.`,
+  "timed-out": (_owner, waited) => `${waited}.`,
+};
+
+const loopLockWaitError = (
+  busy: unknown,
+  outcome: LoopLockWaitOutcome,
+  owner: LoopLockOwner | null,
+  operationName: string,
+  wait: LoopLockWait,
+  waitedMs: number
+): LoopLockWaitError => {
+  const waited = `${operationName} waited ${waitedMs}ms of its ${wait.timeoutMs}ms bound, did not run, and wrote nothing`;
+  return new LoopLockWaitError(
+    `${(busy as Error).message} ${LOCK_WAIT_ENDINGS[outcome](owner, waited)}`,
+    {
+      executed: false,
+      operation: operationName,
+      outcome,
+      owner: lockOwnerSummary(owner),
+      timeoutMs: wait.timeoutMs,
+      waitedMs,
+    },
+    busy
+  );
+};
+
+// Why a bounded wait must end now, or null to keep waiting. A missing owner
+// file may be one another holder is still writing, so only a readable owner
+// ends the wait early.
+const lockWaitEnding = (
+  commonGitDirectory: string,
+  owner: LoopLockOwner | null,
+  wait: LoopLockWait,
+  waitedMs: number
+): LoopLockWaitOutcome | null => {
+  if (owner && callerRunsInsideOwner(owner)) {
+    return "caller-inside-owner";
+  }
+  if (
+    owner &&
+    owner.hostname === hostname() &&
+    !processIsAlive(owner.pid) &&
+    // An owner that released its lock and exited after it was read is not
+    // stale: only a lock still holding the dead owner's token is.
+    readLockOwner(commonGitDirectory)?.token === owner.token
+  ) {
+    return "owner-not-running";
+  }
+  return waitedMs >= wait.timeoutMs ? "timed-out" : null;
+};
+
+/**
+ * `withLoopStateLock` with an optional bounded wait (`--wait-lock`). Without
+ * `wait` it is exactly `withLoopStateLock`. With it, a lock another live
+ * holder owns is polled until it frees or `timeoutMs` passes; the wait never
+ * breaks, steals, takes over, or recovers the lock. It stops at once when the
+ * owner's process is gone on this host or this command runs inside the
+ * owner. Only a failed acquisition is retried: once the lock is held the
+ * operation runs exactly once, and an error from it is never retried.
+ */
+export const withLoopStateLockBounded = <T>(
+  commonGitDirectory: string,
+  operationName: string,
+  operation: () => T,
+  wait?: LoopLockWait
+): T => {
+  if (!wait) {
+    return withStateLock(commonGitDirectory, operationName, operation);
+  }
+  const startedAt = Date.now();
+  const intervalMs = wait.intervalMs ?? LOOP_LOCK_WAIT_POLL_MS;
+  let lock: StateLock | null = null;
+  while (!lock) {
+    try {
+      lock = acquireStateLock(commonGitDirectory, operationName);
+    } catch (error) {
+      if (!isStateLockBusy(error)) {
+        throw error;
+      }
+      const owner = readLockOwner(commonGitDirectory);
+      const waitedMs = Date.now() - startedAt;
+      const outcome = lockWaitEnding(commonGitDirectory, owner, wait, waitedMs);
+      if (outcome) {
+        throw loopLockWaitError(
+          error,
+          outcome,
+          owner,
+          operationName,
+          wait,
+          waitedMs
+        );
+      }
+      sleepSync(
+        Math.min(
+          intervalMs + Math.floor(Math.random() * intervalMs),
+          wait.timeoutMs - waitedMs
+        )
+      );
+    }
+  }
+  try {
+    return operation();
+  } finally {
+    lock.release();
+  }
 };
 
 const withAsyncStateLock = async <T>(

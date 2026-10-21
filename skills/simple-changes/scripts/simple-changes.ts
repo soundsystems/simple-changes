@@ -396,7 +396,7 @@ Usage:
     [--approved-by USER --approval-reference REFERENCE]
     [--json] [--repo PATH]
   simple-changes loop hold-unit --run-id ID --agent-id ID --unit UNIT_ID
-    --reason TEXT --readiness-evidence TEXT [--readiness-evidence TEXT ...]
+    --reason TEXT --readiness-evidence "UNIT_ID: TEXT" [...]
     [--approved-by USER --approval-reference REFERENCE
      --observation-digest SHA256] [--json] [--repo PATH]
   simple-changes loop exec --run-id ID --agent-id ID [--json] [--repo PATH]

@@ -2,9 +2,12 @@ import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
 import { sha256Json } from "./hash.ts";
 import {
   assertHeldScopeConservation,
+  type HeldUnitEvent,
+  heldUnitEventPath,
   heldUnitExclusions,
   heldUnitHoldDigest,
   heldUnitIds,
+  heldUnitPinRef,
   readHeldUnits,
 } from "./held-units.ts";
 import { captureInventory, locateRepository } from "./inventory.ts";
@@ -18,6 +21,7 @@ import {
   requiredText,
   requireLease,
   withStateLock,
+  writeImmutableRecoveryEvent,
   writeReceiptSidecar,
 } from "./loop-lease-core.ts";
 import {
@@ -25,6 +29,7 @@ import {
   worktreeSourceEntry,
 } from "./loop-lease-shipment.ts";
 import { liveClaimFor } from "./loop-lease-verify.ts";
+import { runGit } from "./process.ts";
 import { validateSchema } from "./schema.ts";
 import type {
   ChangeUnit,
@@ -50,24 +55,12 @@ const shellWord = (value: string): string =>
 
 const REGEX_SPECIAL = /[.*+?^${}()|[\]\\]/gu;
 
-// Whether `text` names `id` as a whole unit ID, not as part of a longer one.
+// Whether `text` names `id` as a whole unit ID: not inside a longer ID, a
+// path, or a filename, though a sentence may end right after it.
 const namesUnitId = (text: string, id: string): boolean =>
   new RegExp(
-    `(^|[^A-Za-z0-9-])${id.replace(REGEX_SPECIAL, "\\$&")}($|[^A-Za-z0-9-])`,
+    `(^|[^A-Za-z0-9_./~-])${id.replace(REGEX_SPECIAL, "\\$&")}(?![A-Za-z0-9_/~-]|\\.[A-Za-z0-9_~-])`,
     "iu"
-  ).test(text);
-
-/**
- * Whether `text` mentions `path` as a whole path: no path character right
- * before it, and right after it only the end, a character that cannot
- * continue a path, or a dot that ends a sentence. So `tests/role.ts:12`,
- * `(role.ts)`, and `role.ts,` mention their paths, while `tests/role.ts`
- * never mentions `role.ts`.
- */
-const mentionsPath = (text: string, path: string): boolean =>
-  new RegExp(
-    `(^|[^A-Za-z0-9_./~-])${path.replace(REGEX_SPECIAL, "\\$&")}(?![A-Za-z0-9_/~-]|\\.[A-Za-z0-9_~-])`,
-    "u"
   ).test(text);
 
 const boundedText = (value: string, name: string): string => {
@@ -89,15 +82,15 @@ const boundedText = (value: string, name: string): string => {
 
 /**
  * Why the cited readiness evidence cannot establish that this unit, and only
- * this unit, failed its readiness condition, or null. Each item must name
- * the held unit by its ID or by a whole path no other scoped unit shares,
- * and must name neither another scoped unit's ID nor a path only another
- * unit scopes: a shared filename such as a changelog, or evidence about
- * several units, does not say which unit is not ready.
+ * this unit, failed its readiness condition, or null. Attribution is
+ * structured, never inferred from filenames: each item starts with the held
+ * unit's exact ID and a colon, then states the evidence, and the evidence
+ * names no other scoped unit. A shared filename such as a changelog, or
+ * evidence about several units, does not say which unit is not ready.
  */
 export const readinessEvidenceFailure = (
-  unit: Pick<ChangeUnit, "id" | "paths">,
-  scopedUnits: readonly Pick<ChangeUnit, "id" | "paths">[],
+  unit: Pick<ChangeUnit, "id">,
+  scopedUnits: readonly Pick<ChangeUnit, "id">[],
   evidence: readonly string[]
 ): string | null => {
   if (evidence.length === 0) {
@@ -106,33 +99,19 @@ export const readinessEvidenceFailure = (
   if (evidence.length > MAX_READINESS_EVIDENCE) {
     return `at most ${MAX_READINESS_EVIDENCE} readiness evidence items may be cited`;
   }
+  const prefix = `${unit.id}:`;
   const others = scopedUnits.filter((item) => item.id !== unit.id);
-  const sharedPaths = new Set(others.flatMap((item) => item.paths));
-  const ownPaths = unit.paths.filter((path) => !sharedPaths.has(path));
-  const heldPaths = new Set(unit.paths);
   for (const [index, item] of evidence.entries()) {
     const label = `readiness evidence ${index + 1}`;
-    const other = others.find((candidate) => namesUnitId(item, candidate.id));
+    const body = item.startsWith(prefix)
+      ? item.slice(prefix.length).trim()
+      : "";
+    if (!body) {
+      return `${label} must start with "${unit.id}: " and then state the evidence, so it says which unit it is about`;
+    }
+    const other = others.find((candidate) => namesUnitId(body, candidate.id));
     if (other) {
       return `${label} also names scoped unit ${other.id}, so it does not say which unit failed`;
-    }
-    const otherPath = others
-      .flatMap((candidate) =>
-        candidate.paths
-          .filter((path) => !heldPaths.has(path) && mentionsPath(item, path))
-          .map((path) => ({ id: candidate.id, path }))
-      )
-      .at(0);
-    if (otherPath) {
-      return `${label} names ${otherPath.path}, which only scoped unit ${otherPath.id} scopes, so it does not say which unit failed`;
-    }
-    if (
-      !(
-        namesUnitId(item, unit.id) ||
-        ownPaths.some((path) => mentionsPath(item, path))
-      )
-    ) {
-      return `${label} names neither unit ${unit.id} nor a path only that unit scopes${ownPaths.length < unit.paths.length ? " (a filename another unit shares does not identify it)" : ""}`;
     }
   }
   return null;
@@ -384,14 +363,45 @@ const recordHold = (
   };
   const next = [...holds, hold];
   assertHeldScopeConservation(scope, next);
-  writeReceiptSidecar(
-    lease,
-    HELD_UNITS_DIRECTORY,
-    validateSchema<HeldUnitsRecord>("held-units", {
-      holds: next,
+  const record = validateSchema<HeldUnitsRecord>("held-units", {
+    holds: next,
+    runId: lease.runId,
+    schemaVersion: 1,
+  });
+  // First keep the held head reachable, then record the hold, then bind it
+  // durably in the run's history. A failure before the last step leaves at
+  // most a harmless pin or a hold without its event, never an event without
+  // its hold.
+  const head = observation.source.headSha;
+  if (head) {
+    const pinned = runGit(
+      lease.primaryCheckout,
+      [
+        "update-ref",
+        "-m",
+        `simple-changes: pin held unit ${unit.id}`,
+        heldUnitPinRef(lease.runId, unit.id),
+        head,
+      ],
+      true
+    );
+    if (pinned.exitCode !== 0) {
+      throw new SimpleChangesError(
+        `Could not pin held head ${head} of unit ${unit.id}: ${pinned.stderr.trim()}. Nothing was held.`,
+        EXIT_CODES.unsafe
+      );
+    }
+  }
+  writeReceiptSidecar(lease, HELD_UNITS_DIRECTORY, record);
+  writeImmutableRecoveryEvent<HeldUnitEvent>(
+    heldUnitEventPath(lease.commonGitDirectory, lease.runId, hold.holdDigest),
+    {
+      holdDigest: hold.holdDigest,
+      kind: "held-unit",
+      recordedAt,
       runId: lease.runId,
-      schemaVersion: 1,
-    })
+      unitId: unit.id,
+    }
   );
   return hold;
 };
@@ -438,7 +448,7 @@ export const holdScopedUnit = (
       );
       if (evidenceFailure) {
         throw new SimpleChangesError(
-          `Readiness evidence for unit ${unit.id} is missing or ambiguous: ${evidenceFailure}. Cite the independent evidence that this unit failed its readiness condition, with --readiness-evidence naming the unit.`,
+          `Readiness evidence for unit ${unit.id} is missing or ambiguous: ${evidenceFailure}. Cite the independent evidence that this unit failed its readiness condition as --readiness-evidence "${unit.id}: <evidence>".`,
           EXIT_CODES.validation
         );
       }

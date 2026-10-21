@@ -214,6 +214,57 @@ const approvedHold = (
   });
 };
 
+/**
+ * A clean primary checkout on its own branch holds a committed unit: the
+ * primary commits its copy of both units after the feature ships elsewhere,
+ * and the role unit is held.
+ */
+const cleanHeldPrimary = () => {
+  const fixture = repository();
+  const { root } = fixture;
+  git(root, ["remote", "add", "origin", "https://example.invalid/repo.git"]);
+  git(root, ["update-ref", "refs/remotes/origin/main", "HEAD"]);
+  git(root, [
+    "symbolic-ref",
+    "refs/remotes/origin/HEAD",
+    "refs/remotes/origin/main",
+  ]);
+  git(root, ["switch", "-q", "-c", "work"]);
+  writeFixture(root, "feature.txt", "draft feature\n");
+  writeFixture(root, "role/check.ts", "export const check = 1;\n");
+  const lease = startLoop(root, CONTROLLER, "ship");
+  const opening = captureInventory(root);
+  const preview = buildPreviewPlan(
+    opening,
+    opening,
+    compareSnapshots(opening, opening)
+  );
+  const [template] = preview.units;
+  if (!template) {
+    throw new Error("Expected a previewed unit");
+  }
+  recordShipmentScope(root, lease.runId, CONTROLLER, {
+    ...preview,
+    units: [
+      unitFrom(template, "feature", "Ship the feature", ["feature.txt"]),
+      unitFrom(template, "role", "Add role checks", ["role/check.ts"]),
+    ],
+  });
+  const prepared = prepareAgentWorktree(
+    root,
+    lease.runId,
+    "delivery-author",
+    "delivery"
+  );
+  writeFixture(prepared.path, "feature.txt", "draft feature\n");
+  const target = commitAll(prepared.path, "Feature");
+  git(root, ["update-ref", "refs/remotes/origin/main", target]);
+  // The primary commits its own copy, so it is clean on its branch.
+  const held = commitAll(root, "Work in progress");
+  approvedHold(root, lease.runId, "role", ["role: failed review."]);
+  return { held, lease, root };
+};
+
 const reviewed = ({
   draftReview: _draftReview,
   ...draft
@@ -248,7 +299,7 @@ describe("loop hold-unit", () => {
     });
 
     const role = approvedHold(root, lease.runId, "role", [
-      "Both independent reviewers found two P2 defects in unit role at its current source.",
+      "role: Both independent reviewers found two P2 defects at its current source.",
     ]);
     expect(role.status).toBe("held");
     expect(role.hold?.exclusions).toEqual([
@@ -275,7 +326,7 @@ describe("loop hold-unit", () => {
       "role/check.ts",
     ]);
     approvedHold(root, lease.runId, "guide", [
-      "docs/guide.md is not ready: the guide still describes the old flow.",
+      "guide: the guide still describes the old flow.",
     ]);
 
     // The draft no longer proposes a disposition for a held unit and flags
@@ -397,7 +448,7 @@ describe("loop hold-unit", () => {
   test("refuses a missing or partial approval, an approver who is not the user, and stale source or target evidence", () => {
     const { lease, root } = primaryFixture();
     deliverFeature(root, lease.runId);
-    const evidence = ["Unit role failed review with two P2 defects."];
+    const evidence = ["role: failed review with two P2 defects."];
 
     expect(() =>
       holdUnit(root, lease.runId, "role", evidence, { approvedBy: APPROVER })
@@ -475,53 +526,16 @@ describe("loop hold-unit", () => {
       "already held"
     );
     expect(() =>
-      holdUnit(root, lease.runId, "unknown", ["Unit unknown failed."])
+      holdUnit(root, lease.runId, "unknown", ["unknown: failed."])
     ).toThrow("is not in the frozen shipment scope");
   });
 
   test("never switches or normalizes a clean held primary checkout", () => {
-    const fixture = repository();
-    const { root } = fixture;
-    git(root, ["remote", "add", "origin", "https://example.invalid/repo.git"]);
-    git(root, ["update-ref", "refs/remotes/origin/main", "HEAD"]);
-    git(root, [
-      "symbolic-ref",
-      "refs/remotes/origin/HEAD",
-      "refs/remotes/origin/main",
-    ]);
-    git(root, ["switch", "-q", "-c", "work"]);
-    writeFixture(root, "feature.txt", "draft feature\n");
-    writeFixture(root, "role/check.ts", "export const check = 1;\n");
-    const lease = startLoop(root, CONTROLLER, "ship");
-    const opening = captureInventory(root);
-    const preview = buildPreviewPlan(
-      opening,
-      opening,
-      compareSnapshots(opening, opening)
-    );
-    const [template] = preview.units;
-    if (!template) {
-      throw new Error("Expected a previewed unit");
-    }
-    recordShipmentScope(root, lease.runId, CONTROLLER, {
-      ...preview,
-      units: [
-        unitFrom(template, "feature", "Ship the feature", ["feature.txt"]),
-        unitFrom(template, "role", "Add role checks", ["role/check.ts"]),
-      ],
-    });
-    const prepared = prepareAgentWorktree(
-      root,
-      lease.runId,
-      "delivery-author",
-      "delivery"
-    );
-    writeFixture(prepared.path, "feature.txt", "draft feature\n");
-    const target = commitAll(prepared.path, "Feature");
-    git(root, ["update-ref", "refs/remotes/origin/main", target]);
-    // The primary commits its own copy, so it is clean on its branch.
-    const held = commitAll(root, "Work in progress");
-    approvedHold(root, lease.runId, "role", ["Unit role failed review."]);
+    const { held, lease, root } = cleanHeldPrimary();
+    // The held head stays reachable whatever any runtime does to branches.
+    expect(
+      git(root, ["rev-parse", `refs/simple-changes/held/${lease.runId}/role`])
+    ).toBe(held);
     recordShipmentOutcome(
       root,
       lease.runId,
@@ -536,12 +550,38 @@ describe("loop hold-unit", () => {
     );
   });
 
+  test("a hold record removed before the outcome still stops cleanup", () => {
+    const { held, lease, root } = cleanHeldPrimary();
+    rmSync(heldFile(root, lease.runId));
+    expect(() => readHeldUnits(lease)).toThrow(
+      "the held-unit record no longer contains that hold"
+    );
+    expect(() => draftShipmentOutcome(root, lease.runId)).toThrow(
+      "no longer contains that hold"
+    );
+    const result = finalizeLoop(
+      root,
+      lease.runId,
+      CONTROLLER,
+      "Try to finish without the hold record."
+    );
+    expect(result.outcome).toBe("relinquished");
+    expect(result.cleanup.removedWorktrees).toEqual([]);
+    expect(result.cleanup.errors).toContainEqual(
+      expect.stringContaining("so automatic cleanup did not run")
+    );
+    expect(git(root, ["branch", "--show-current"])).toBe("work");
+    expect(git(root, ["rev-parse", "HEAD"])).toBe(held);
+  });
+
   test("refuses missing or ambiguous readiness evidence", () => {
     const { lease, root } = primaryFixture();
     for (const evidence of [
       [],
       ["Review found two defects."],
-      ["Units role and feature both failed review."],
+      ["role/check.ts fails the permission ratchet test."],
+      ["role: Units role and feature both failed review."],
+      ["role:"],
     ]) {
       expect(() => holdUnit(root, lease.runId, "role", evidence)).toThrow(
         AMBIGUOUS_ERROR
@@ -552,10 +592,9 @@ describe("loop hold-unit", () => {
         "SIMPLE-CHANGES-DRAFT: replace with the evidence for unit role.",
       ])
     ).toThrow("placeholder");
-    // A path only this unit scopes identifies it.
     expect(
       holdUnit(root, lease.runId, "role", [
-        "role/check.ts fails the permission ratchet test.",
+        "role: role/check.ts fails the permission ratchet test.",
       ]).status
     ).toBe("approval-required");
   });
@@ -564,34 +603,34 @@ describe("loop hold-unit", () => {
     const dependent = primaryFixture(["role"]);
     expect(() =>
       holdUnit(dependent.root, dependent.lease.runId, "role", [
-        "Unit role failed review.",
+        "role: failed review.",
       ])
     ).toThrow("Scoped unit feature depends on role");
 
     const { lease, root } = primaryFixture();
     const target = deliverFeature(root, lease.runId);
-    approvedHold(root, lease.runId, "role", ["Unit role failed review."]);
-    approvedHold(root, lease.runId, "guide", ["Unit guide is not ready."]);
+    approvedHold(root, lease.runId, "role", ["role: failed review."]);
+    approvedHold(root, lease.runId, "guide", ["guide: not ready."]);
     const draft = draftShipmentOutcome(root, lease.runId);
     recordShipmentOutcome(root, lease.runId, CONTROLLER, reviewed(draft.draft));
     expect(target).toBe(draft.draft.targetRevision);
     // A recorded outcome already reports the feature as delivered.
     expect(() =>
-      holdUnit(root, lease.runId, "feature", ["Unit feature failed review."])
+      holdUnit(root, lease.runId, "feature", ["feature: failed review."])
     ).toThrow("already recorded its shipment outcome");
 
     const bare = repository();
     const scopeless = startLoop(bare.root, CONTROLLER, "integrate");
     expect(() =>
-      holdUnit(bare.root, scopeless.runId, "role", ["Unit role failed."])
+      holdUnit(bare.root, scopeless.runId, "role", ["role: failed."])
     ).toThrow("has no recorded shipment scope");
   });
 
   test("fails closed when a hold record is edited, copied, or does not match the frozen scope", () => {
     const { lease, root } = primaryFixture();
     const target = deliverFeature(root, lease.runId);
-    approvedHold(root, lease.runId, "role", ["Unit role failed review."]);
-    approvedHold(root, lease.runId, "guide", ["Unit guide is not ready."]);
+    approvedHold(root, lease.runId, "role", ["role: failed review."]);
+    approvedHold(root, lease.runId, "guide", ["guide: not ready."]);
     const path = heldFile(root, lease.runId);
     const original = readFileSync(path, "utf8");
     const draft = reviewed(draftShipmentOutcome(root, lease.runId).draft);
@@ -643,9 +682,7 @@ describe("loop hold-unit", () => {
     // the run's own target-contained author checkout.
     expect(blocked.cleanup.removedWorktrees).toEqual([]);
     expect(blocked.cleanup.errors).toContainEqual(
-      expect.stringContaining(
-        "no longer matches its preserved-source overrides or held units, so automatic cleanup did not run"
-      )
+      expect.stringContaining("so automatic cleanup did not run")
     );
     expect(blocked.receipt.heldUnits).toBeUndefined();
     expect(readFileSync(join(root, "role/check.ts"), "utf8")).toBe(
@@ -747,9 +784,14 @@ describe("held unit in a claimed author checkout", () => {
     // A filename the shipping unit also scopes does not identify the unit.
     expect(() =>
       holdUnit(root, lease.runId, roleUnit, ["The CHANGELOG.md line is wrong."])
-    ).toThrow("a filename another unit shares does not identify it");
+    ).toThrow(`must start with "${roleUnit}: "`);
+    expect(() =>
+      holdUnit(root, lease.runId, roleUnit, [
+        `${roleUnit}: ${shippingUnit} shares the broken changelog line.`,
+      ])
+    ).toThrow(`also names scoped unit ${shippingUnit}`);
     const held = approvedHold(shipping, lease.runId, roleUnit, [
-      `Unit ${roleUnit} failed independent review: two P2 defects.`,
+      `${roleUnit}: failed independent review with two P2 defects.`,
     ]);
     expect(held.observation.claim).toEqual({
       branch: "role",
@@ -821,7 +863,7 @@ describe("held unit in a claimed author checkout", () => {
 
   test("refuses an approval after the claim changed", () => {
     const { claim, lease, role, roleUnit, shipping } = claimedFixture();
-    const evidence = [`Unit ${roleUnit} failed review.`];
+    const evidence = [`${roleUnit}: failed review.`];
     const preview = holdUnit(shipping, lease.runId, roleUnit, evidence);
     releaseWorktreeClaim(shipping, CONTROLLER, claim.claimId);
     claimWorktree(shipping, "another-author", role, "test");
@@ -953,62 +995,48 @@ describe("readiness evidence", () => {
     { id: "feature", paths: ["CHANGELOG.md", "feature.txt"] },
   ];
 
-  test("must name the unit, and only that unit", () => {
+  test("must start with the unit's ID and name no other unit", () => {
     expect(readinessEvidenceFailure(role, units, [])).toContain(
       "no readiness evidence"
     );
     expect(
-      readinessEvidenceFailure(role, units, ["Unit role failed review."])
+      readinessEvidenceFailure(role, units, ["role: failed review."])
     ).toBeNull();
-    expect(
-      readinessEvidenceFailure(role, units, ["role/check.ts fails its test."])
-    ).toBeNull();
-    // A longer ID that contains this one is not this unit.
-    expect(
-      readinessEvidenceFailure(role, units, ["Unit role-2 failed review."])
-    ).toContain("also names scoped unit role-2");
-    expect(
-      readinessEvidenceFailure(role, units, ["CHANGELOG.md is wrong."])
-    ).toContain("a filename another unit shares does not identify it");
-    // A path is matched whole: another unit's longer path is not this one.
-    const app = { id: "app", paths: ["role.ts"] };
-    const nested = [app, { id: "suite", paths: ["tests/role.ts"] }];
-    expect(
-      readinessEvidenceFailure(app, nested, [
-        "tests/role.ts failed independent review.",
-      ])
-    ).toContain("names tests/role.ts, which only scoped unit suite scopes");
-    expect(
-      readinessEvidenceFailure(app, nested, [
-        "`role.ts` failed independent review.",
-      ])
-    ).toBeNull();
+    // Attribution is declared, never inferred from a filename, shared or not.
     for (const item of [
-      "app failed review at tests/role.ts:12.",
-      "app failed review in tests/role.ts, line 4.",
-      "app failed review (tests/role.ts).",
+      "role/check.ts fails its test.",
+      "CHANGELOG.md is wrong.",
+      "Unit role failed review.",
+      "role failed review.",
+      "role:",
+      "role:   ",
+      "role-2: failed review.",
     ]) {
-      expect(readinessEvidenceFailure(app, nested, [item])).toContain(
-        "names tests/role.ts, which only scoped unit suite scopes"
+      expect(readinessEvidenceFailure(role, units, [item])).toContain(
+        'must start with "role: "'
       );
     }
-    for (const item of [
-      "role.ts:12 fails its check.",
-      "Review flagged role.ts, twice.",
-      "Review flagged (role.ts).",
-    ]) {
-      expect(readinessEvidenceFailure(app, nested, [item])).toBeNull();
-    }
-    // A longer path that starts with this one is not a mention of it.
-    expect(
-      readinessEvidenceFailure(app, nested, ["role.tsx is broken."])
-    ).toContain("names neither unit app");
+    // A longer ID that contains this one is another unit.
     expect(
       readinessEvidenceFailure(role, units, [
-        "Unit role failed review.",
+        "role: the same defect as role-2.",
+      ])
+    ).toContain("also names scoped unit role-2");
+    expect(
+      readinessEvidenceFailure(role, units, ["role: feature also failed."])
+    ).toContain("also names scoped unit feature");
+    // An ID inside a path or filename is not a mention of that unit.
+    expect(
+      readinessEvidenceFailure(role, units, [
+        "role: feature.txt.bak and features/x.ts are untouched; see role.ts:12.",
+      ])
+    ).toBeNull();
+    expect(
+      readinessEvidenceFailure(role, units, [
+        "role: failed review.",
         "Something else failed.",
       ])
-    ).toContain("readiness evidence 2 names neither unit role");
+    ).toContain('readiness evidence 2 must start with "role: "');
   });
 });
 
@@ -1031,7 +1059,7 @@ describe("loop hold-unit command", () => {
           "--reason",
           REASON,
           "--readiness-evidence",
-          "Unit role failed review.",
+          "role: failed review.",
           ...extra,
         ],
         {

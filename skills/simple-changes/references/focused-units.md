@@ -169,7 +169,7 @@ it equivalent. Hold it instead:
 ```sh
 simple-changes loop hold-unit --run-id <run> --agent-id <controller> \
   --unit <unit ID> --reason <why> \
-  --readiness-evidence <the failed-readiness evidence for this unit>
+  --readiness-evidence "<unit ID>: <the failed-readiness evidence>"
 ```
 
 Without approval flags the command changes nothing. It prints the exact state
@@ -186,10 +186,11 @@ and refuses when anything in the observation changed, so a moved source head,
 changed status or bytes, a changed claim, or a moved target needs a new
 approval. The approver must be neither the controller nor the claim owner.
 
-Each `--readiness-evidence` item must name the held unit by its ID or by a
-whole path no other scoped unit shares, and must name neither another scoped
-unit nor a path only another unit scopes; a shared filename such as a
-changelog does not say which unit failed. The command also
+Attribution is declared, never inferred from filenames: each
+`--readiness-evidence` item must start with the held unit's exact ID and a
+colon, then state the evidence, and must not name another scoped unit's ID.
+A filename, especially a shared one such as a changelog, does not say which
+unit failed. The command also
 refuses a unit that is not in the frozen scope, a unit already held, a unit
 a scoped unit that is not held depends on, a missing source checkout, and a run that
 already recorded its outcome: a hold never reinterprets a recorded outcome.
@@ -203,7 +204,15 @@ authorization, and the unit's paths as exclusions bound to its source
 checkout, so the frozen scope still accounts for every original path once
 per checkout: delivered, preserved, or excluded, even when another checkout
 changes the same filename. Any edit to the record, a record from another run,
-or one that no longer matches the frozen unit fails closed.
+or one that no longer matches the frozen unit fails closed. Each hold also
+writes an immutable event to the run's history,
+`<common-git-dir>/simple-changes/history/<run-id>/held-unit-<hold digest>.json`,
+and every event must name a hold in the record, so removing or replacing the
+record, before or after the outcome, stops all automatic cleanup and blocks
+completion. The held source head is pinned at
+`refs/simple-changes/held/<run-id>/<unit ID>`, which is kept afterward, so no
+branch deletion, by this runtime or an older one, can leave the held commit
+unreachable.
 
 `loop record-outcome` then refuses the held unit in `units` and no longer
 requires it; account for any of its paths the target changed as
@@ -231,7 +240,8 @@ file. It can only be stricter about completion: it never reports the run's
 delivery as verified, releases the held claim, or closes the run. Its
 ordinary housekeeping before that refusal is not hold-aware, but it touches
 only state the target already contains or a branch keeps: clean checkouts
-and branches the target contains, primary paths whose bytes equal the
-target, and switching a clean primary to the target branch, whose own branch
-and commits stay. Finish a run that held a unit with Simple Changes 0.33.0 or
-later.
+and branches the target contains, including a branch whose commits are only
+patch-equivalent to the target's, primary paths whose bytes equal the target,
+and switching a clean primary to the target branch. The held head stays
+reachable through its pin, so no held byte is lost, but a branch name may be.
+Finish a run that held a unit with Simple Changes 0.33.0 or later.

@@ -1,6 +1,13 @@
+import { existsSync, readdirSync } from "node:fs";
+import { resolve } from "node:path";
 import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
 import { sha256Json } from "./hash.ts";
-import { HELD_UNITS_DIRECTORY, readReceiptSidecar } from "./loop-lease-core.ts";
+import {
+  HELD_UNITS_DIRECTORY,
+  readImmutableRecoveryEvent,
+  readReceiptSidecar,
+  recoveryHistoryDirectory,
+} from "./loop-lease-core.ts";
 import { validateSchema } from "./schema.ts";
 import type {
   ChangeUnit,
@@ -23,6 +30,77 @@ type HeldUnitLease = Pick<
   LoopLease,
   "commonGitDirectory" | "runId" | "shipmentScope"
 >;
+
+const HELD_UNIT_EVENT_PATTERN = /^held-unit-([0-9a-f]{64})\.json$/u;
+
+/** The immutable history event a hold writes when it is recorded. */
+export interface HeldUnitEvent {
+  holdDigest: string;
+  kind: "held-unit";
+  recordedAt: string;
+  runId: string;
+  unitId: string;
+}
+
+/**
+ * Where a hold's immutable history event lives. Every event must name a hold
+ * in the sidecar, so removing or replacing the sidecar fails closed.
+ */
+export const heldUnitEventPath = (
+  commonGitDirectory: string,
+  runId: string,
+  holdDigest: string
+): string =>
+  resolve(
+    recoveryHistoryDirectory(commonGitDirectory, runId),
+    `held-unit-${holdDigest}.json`
+  );
+
+/**
+ * The ref that keeps a held source head reachable, so no branch deletion, by
+ * any runtime, can orphan the held commit. It is kept afterward.
+ */
+export const heldUnitPinRef = (runId: string, unitId: string): string =>
+  `refs/simple-changes/held/${runId}/${unitId}`;
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
+// Every hold event this run's history records, verified against its name.
+const heldUnitEvents = (lease: HeldUnitLease): HeldUnitEvent[] => {
+  const directory = recoveryHistoryDirectory(
+    lease.commonGitDirectory,
+    lease.runId
+  );
+  if (!existsSync(directory)) {
+    return [];
+  }
+  return readdirSync(directory)
+    .filter((name) => HELD_UNIT_EVENT_PATTERN.test(name))
+    .sort()
+    .map((name) => {
+      const event = readImmutableRecoveryEvent<object>(
+        resolve(directory, name)
+      );
+      const digest = HELD_UNIT_EVENT_PATTERN.exec(name)?.[1];
+      if (
+        !(
+          isRecord(event) &&
+          event.kind === "held-unit" &&
+          event.runId === lease.runId &&
+          event.holdDigest === digest &&
+          typeof event.unitId === "string" &&
+          typeof event.recordedAt === "string"
+        )
+      ) {
+        throw new SimpleChangesError(
+          `The held-unit history event ${name} for ${lease.runId} is not one loop hold-unit wrote. Restore the run's history; never edit a hold.`,
+          EXIT_CODES.unsafe
+        );
+      }
+      return event as unknown as HeldUnitEvent;
+    });
+};
 
 /** The held unit's paths in the shape of the scope's plan exclusions. */
 export const heldUnitExclusions = (
@@ -100,6 +178,26 @@ const assertHoldIntact = (lease: HeldUnitLease, hold: HeldUnitHold): void => {
  * what `loop hold-unit` recorded.
  */
 export const readHeldUnits = (lease: HeldUnitLease): HeldUnitHold[] => {
+  const holds = readHeldUnitRecord(lease);
+  // Each hold wrote an immutable history event when it was recorded, so a
+  // removed, replaced, or truncated sidecar no longer covers every event.
+  for (const event of heldUnitEvents(lease)) {
+    if (
+      !holds.some(
+        (hold) =>
+          hold.holdDigest === event.holdDigest && hold.unit.id === event.unitId
+      )
+    ) {
+      throw new SimpleChangesError(
+        `Unit ${event.unitId} was held in ${lease.runId} at ${event.recordedAt}, but the held-unit record no longer contains that hold. Restore the record this run wrote; nothing is cleaned or closed until then.`,
+        EXIT_CODES.unsafe
+      );
+    }
+  }
+  return holds;
+};
+
+const readHeldUnitRecord = (lease: HeldUnitLease): HeldUnitHold[] => {
   const stored = readReceiptSidecar(
     lease.commonGitDirectory,
     HELD_UNITS_DIRECTORY,

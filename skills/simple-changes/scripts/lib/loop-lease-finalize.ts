@@ -1327,6 +1327,15 @@ const automaticFinalizationCleanup = (
     );
     return { cleanup, lease };
   }
+  // The recorded outcome digest binds its overrides and holds. Check it
+  // before any cleanup, so a removed or edited record can never leave held
+  // work unprotected while cleanup runs.
+  if (lease.shipmentOutcome && !recordedOutcomeIntact(lease)) {
+    cleanup.errors.push(
+      `The recorded shipment outcome for ${lease.runId} no longer matches its preserved-source overrides or held units, so automatic cleanup did not run.`
+    );
+    return { cleanup, lease };
+  }
   const repositoryPath = inventoryInput.repository.primaryCheckout;
   lease = completeAbsentRemovalIntents(lease, inventoryInput, targetRevision);
   const keptClaims = new Set<string>();

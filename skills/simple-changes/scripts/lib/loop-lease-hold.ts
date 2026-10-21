@@ -57,22 +57,18 @@ const namesUnitId = (text: string, id: string): boolean =>
     "iu"
   ).test(text);
 
-const WHITESPACE = /\s+/u;
-
-// Quotes, brackets, and sentence punctuation around a word.
-const WORD_EDGES = /^[\s"'`([{<,;:!?]+|[\s"'`)\]}>,;:!?.]+$/gu;
-
 /**
- * The whole words of `text`, without surrounding quotes, brackets, or
- * punctuation, so `tests/role.ts` never counts as a mention of `role.ts`.
+ * Whether `text` mentions `path` as a whole path: no path character right
+ * before it, and right after it only the end, a character that cannot
+ * continue a path, or a dot that ends a sentence. So `tests/role.ts:12`,
+ * `(role.ts)`, and `role.ts,` mention their paths, while `tests/role.ts`
+ * never mentions `role.ts`.
  */
-const wordsOf = (text: string): Set<string> =>
-  new Set(
-    text
-      .split(WHITESPACE)
-      .map((word) => word.replace(WORD_EDGES, ""))
-      .filter(Boolean)
-  );
+const mentionsPath = (text: string, path: string): boolean =>
+  new RegExp(
+    `(^|[^A-Za-z0-9_./~-])${path.replace(REGEX_SPECIAL, "\\$&")}(?![A-Za-z0-9_/~-]|\\.[A-Za-z0-9_~-])`,
+    "u"
+  ).test(text);
 
 const boundedText = (value: string, name: string): string => {
   const text = requiredText(value, name);
@@ -116,7 +112,6 @@ export const readinessEvidenceFailure = (
   const heldPaths = new Set(unit.paths);
   for (const [index, item] of evidence.entries()) {
     const label = `readiness evidence ${index + 1}`;
-    const words = wordsOf(item);
     const other = others.find((candidate) => namesUnitId(item, candidate.id));
     if (other) {
       return `${label} also names scoped unit ${other.id}, so it does not say which unit failed`;
@@ -124,7 +119,7 @@ export const readinessEvidenceFailure = (
     const otherPath = others
       .flatMap((candidate) =>
         candidate.paths
-          .filter((path) => !heldPaths.has(path) && words.has(path))
+          .filter((path) => !heldPaths.has(path) && mentionsPath(item, path))
           .map((path) => ({ id: candidate.id, path }))
       )
       .at(0);
@@ -132,7 +127,10 @@ export const readinessEvidenceFailure = (
       return `${label} names ${otherPath.path}, which only scoped unit ${otherPath.id} scopes, so it does not say which unit failed`;
     }
     if (
-      !(namesUnitId(item, unit.id) || ownPaths.some((path) => words.has(path)))
+      !(
+        namesUnitId(item, unit.id) ||
+        ownPaths.some((path) => mentionsPath(item, path))
+      )
     ) {
       return `${label} names neither unit ${unit.id} nor a path only that unit scopes${ownPaths.length < unit.paths.length ? " (a filename another unit shares does not identify it)" : ""}`;
     }

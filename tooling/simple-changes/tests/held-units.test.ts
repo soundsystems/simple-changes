@@ -1,5 +1,11 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "bun";
@@ -624,7 +630,7 @@ describe("loop hold-unit", () => {
     recordShipmentOutcome(root, lease.runId, CONTROLLER, draft);
     // Removing the record after the outcome leaves the held unit unreported,
     // which blocks completion instead of releasing it.
-    writeFileSync(path, "{}");
+    rmSync(path);
     const blocked = finalizeLoop(
       root,
       lease.runId,
@@ -633,6 +639,14 @@ describe("loop hold-unit", () => {
     );
     expect(blocked.outcome).toBe("relinquished");
     expect(blocked.receipt.deliveryStatus).toBe("unverified");
+    // The digest is checked before cleanup, so nothing was cleaned, not even
+    // the run's own target-contained author checkout.
+    expect(blocked.cleanup.removedWorktrees).toEqual([]);
+    expect(blocked.cleanup.errors).toContainEqual(
+      expect.stringContaining(
+        "no longer matches its preserved-source overrides or held units, so automatic cleanup did not run"
+      )
+    );
     expect(blocked.receipt.heldUnits).toBeUndefined();
     expect(readFileSync(join(root, "role/check.ts"), "utf8")).toBe(
       "export const check = 1;\n"
@@ -969,6 +983,26 @@ describe("readiness evidence", () => {
         "`role.ts` failed independent review.",
       ])
     ).toBeNull();
+    for (const item of [
+      "app failed review at tests/role.ts:12.",
+      "app failed review in tests/role.ts, line 4.",
+      "app failed review (tests/role.ts).",
+    ]) {
+      expect(readinessEvidenceFailure(app, nested, [item])).toContain(
+        "names tests/role.ts, which only scoped unit suite scopes"
+      );
+    }
+    for (const item of [
+      "role.ts:12 fails its check.",
+      "Review flagged role.ts, twice.",
+      "Review flagged (role.ts).",
+    ]) {
+      expect(readinessEvidenceFailure(app, nested, [item])).toBeNull();
+    }
+    // A longer path that starts with this one is not a mention of it.
+    expect(
+      readinessEvidenceFailure(app, nested, ["role.tsx is broken."])
+    ).toContain("names neither unit app");
     expect(
       readinessEvidenceFailure(role, units, [
         "Unit role failed review.",

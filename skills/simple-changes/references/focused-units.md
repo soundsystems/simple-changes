@@ -220,10 +220,18 @@ delivery, with whether its source still matches the hold.
 The record is a new file, so the lease and outcome receipts keep their
 shapes and earlier runs, receipts, and frozen scopes read as before. The
 outcome digest the lease records also binds every hold, so adding, removing,
-or changing a hold after the outcome blocks completion. An older runtime
+or changing a hold after the outcome blocks completion, and finalization
+checks that digest before any cleanup, so a removed or edited record never
+leaves held work unprotected. An older runtime
 ignores the record: it still requires the held unit in the outcome, so it
 refuses to record one without it, and because the recorded digest is no
 longer the plain receipt digest, Simple Changes 0.25.0 and later refuse to
 finish, end, or archive the run, reporting a missing preserved-source override
-file. It can only be stricter. Finish a run that held a unit with Simple
-Changes 0.33.0 or later.
+file. It can only be stricter about completion: it never reports the run's
+delivery as verified, releases the held claim, or closes the run. Its
+ordinary housekeeping before that refusal is not hold-aware, but it touches
+only state the target already contains or a branch keeps: clean checkouts
+and branches the target contains, primary paths whose bytes equal the
+target, and switching a clean primary to the target branch, whose own branch
+and commits stay. Finish a run that held a unit with Simple Changes 0.33.0 or
+later.

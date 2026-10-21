@@ -1,5 +1,11 @@
 import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { sha256Json } from "../../../skills/simple-changes/scripts/lib/hash.ts";
 import {
@@ -66,7 +72,7 @@ const RECORDED_AT = "2026-10-03T00:30:00.000Z";
 const MISSING_ERROR = /approval for the preserved-source handoff is missing/;
 const REGISTRATION_ERROR = /registered as preserved through an accepted pause/;
 const CONTRACT_ERROR = /supports only/;
-const STATUS_ERROR = /could not read the source's complete status/;
+const SYMLINK_ERROR = /lib\/helper\.ts is under a symlinked directory/;
 const FROZEN_ERROR = /exact opening and accepted branch/;
 const PAUSE_ERROR = /accepted preserve-in-place pause/;
 const CLAIM_ERROR = /original owner's accepted claim/;
@@ -166,7 +172,6 @@ const context = (): PreservedSourceHandoffContext => {
     },
     current,
     disposition: "delivered",
-    exhaustiveChanges: () => current.changes,
     finalPaths: [...targetEntries].map(([path, entry]) => ({ entry, path })),
     handoff,
     opening: {
@@ -207,8 +212,8 @@ const context = (): PreservedSourceHandoffContext => {
     runId: RUN_ID,
     runStartedAt: RUN_STARTED_AT,
     scopePaths: [...sourceEntries.keys()],
+    sourceDelta: () => ({ entries: new Map(sourceEntries) }),
     sourceEntry: (path) => sourceEntries.get(path) ?? null,
-    sourceKind: (path) => (sourceEntries.has(path) ? "file" : "absent"),
     sourceWorktree: SOURCE,
     targetEntry: (path) => targetEntries.get(path) ?? null,
     targetRevision: TARGET_HEAD,
@@ -328,13 +333,30 @@ describe("preserved-source handoff evidence", () => {
         }
       })
     ).toMatch(CONTRACT_ERROR);
-    // A dirty path the unit does not scope is left out of the handoff.
+    // A changed path the unit does not scope is left out of the handoff, even
+    // one Git status hides (assume-unchanged, skip-worktree, a submodule
+    // ignore setting, or core.filemode=false).
     expect(
       edited((snapshot) => {
-        const [first] = snapshot.current?.changes ?? [];
-        if (first && snapshot.current) {
-          snapshot.current.changes.push({ ...first, path: "notes/extra.md" });
-        }
+        snapshot.sourceDelta = () => ({
+          entries: new Map([...sourceEntries, ["hidden.ts", CODE_ENTRY]]),
+        });
+      })
+    ).toMatch(CONTRACT_ERROR);
+    // A scoped path that no longer differs from the source HEAD.
+    expect(
+      edited((snapshot) => {
+        snapshot.sourceDelta = () => ({
+          entries: new Map([["feature.ts", CODE_ENTRY]]),
+        });
+      })
+    ).toMatch(CONTRACT_ERROR);
+    // A directory, submodule, nested repository, or symlinked directory.
+    expect(
+      edited((snapshot) => {
+        snapshot.sourceDelta = () => ({
+          failure: "nested is a directory, submodule, or nested repository",
+        });
       })
     ).toMatch(CONTRACT_ERROR);
     // A gitlink records only a nested HEAD, never its own uncommitted edits.
@@ -352,6 +374,9 @@ describe("preserved-source handoff evidence", () => {
         ]);
         snapshot.sourceEntry = (path) =>
           path === "module" ? gitlink : (sourceEntries.get(path) ?? null);
+        snapshot.sourceDelta = () => ({
+          entries: new Map([...sourceEntries, ["module", gitlink]]),
+        });
         snapshot.copy = {
           ...snapshot.copy,
           entry: (path) =>
@@ -371,43 +396,6 @@ describe("preserved-source handoff evidence", () => {
         });
       })
     ).toMatch(CONTRACT_ERROR);
-    // The handoff's own status must be readable and list only scoped paths,
-    // such as a submodule whose edits the shared inventory ignores.
-    expect(
-      edited((snapshot) => {
-        snapshot.exhaustiveChanges = () => null;
-      })
-    ).toMatch(STATUS_ERROR);
-    expect(
-      edited((snapshot) => {
-        const changes = snapshot.current?.changes ?? [];
-        const [first] = changes;
-        snapshot.exhaustiveChanges = () =>
-          first ? [...changes, { ...first, path: "module" }] : changes;
-      })
-    ).toMatch(CONTRACT_ERROR);
-    expect(
-      edited((snapshot) => {
-        const changes = snapshot.current?.changes ?? [];
-        snapshot.exhaustiveChanges = () => changes.slice(1);
-      })
-    ).toMatch(CONTRACT_ERROR);
-    // A directory is not a file, and a null entry needs a proven absence: a
-    // nested repository with no commit reads as null but is present.
-    expect(
-      edited((snapshot) => {
-        snapshot.sourceKind = () => "other";
-      })
-    ).toMatch(CONTRACT_ERROR);
-    expect(
-      edited((snapshot) => {
-        const entries = new Map([...sourceEntries, ["feature.ts", null]]);
-        snapshot.openingEntries = entries;
-        snapshot.sourceEntry = (path) => entries.get(path) ?? null;
-        snapshot.sourceKind = (path) =>
-          path === "feature.ts" ? "other" : "file";
-      })
-    ).toMatch(CONTRACT_ERROR);
     // Executables, symlinks, and deletions are plain file-level changes.
     for (const entry of [
       `100755:blob:${"d".repeat(40)}`,
@@ -418,8 +406,7 @@ describe("preserved-source handoff evidence", () => {
       const entries = new Map([...sourceEntries, ["feature.ts", entry]]);
       snapshot.openingEntries = entries;
       snapshot.sourceEntry = (path) => entries.get(path) ?? null;
-      snapshot.sourceKind = (path) =>
-        entries.get(path) === null ? "absent" : "file";
+      snapshot.sourceDelta = () => ({ entries: new Map(entries) });
       snapshot.copy = {
         ...snapshot.copy,
         entry: (path) => entries.get(path) ?? null,
@@ -820,14 +807,19 @@ describe("loop record-outcome with a detached preserved-source handoff", () => {
     options: {
       copyDocs?: string;
       copyExtra?: boolean;
+      hiddenEdit?: boolean;
       ignoredSubmodule?: boolean;
       nestedRepository?: boolean;
       rename?: boolean;
+      symlinkedDirectory?: boolean;
     } = {}
   ) => {
     const fixture = createTestRepository();
     repositories.push(fixture);
     writeFixture(fixture.root, "docs.md", "# Workflow\n");
+    if (options.symlinkedDirectory) {
+      writeFixture(fixture.root, "lib/helper.ts", "export const helper = 1;\n");
+    }
     commitAll(fixture.root, "Docs baseline");
     if (options.ignoredSubmodule) {
       const library = join(fixture.base, "library");
@@ -854,6 +846,22 @@ describe("loop record-outcome with a detached preserved-source handoff", () => {
     writeFixture(source, "docs.md", ORIGINAL_DOCS);
     if (options.rename) {
       git(source, ["mv", "README.md", "GUIDE.md"]);
+    }
+    if (options.hiddenEdit) {
+      // Status no longer reports this tracked edit.
+      git(source, ["update-index", "--assume-unchanged", "README.md"]);
+      writeFixture(source, "README.md", "# Fixture, edited out of sight\n");
+    }
+    if (options.symlinkedDirectory) {
+      // The tracked directory is replaced by a link to bytes outside it.
+      const outside = join(fixture.base, "outside");
+      writeFixture(
+        fixture.base,
+        "outside/helper.ts",
+        "export const helper = 2;\n"
+      );
+      rmSync(join(source, "lib"), { force: true, recursive: true });
+      symlinkSync(outside, join(source, "lib"));
     }
     if (options.nestedRepository) {
       // A nested repository with no commit yet, holding files of its own.
@@ -1177,6 +1185,19 @@ describe("loop record-outcome with a detached preserved-source handoff", () => {
       "module"
     );
     expect(() => fixture.record()).toThrow(CONTRACT_ERROR);
+  });
+
+  test("refuses a source whose tracked edit Git status is told to hide", () => {
+    const fixture = handoffFixture({ hiddenEdit: true });
+    expect(fixture.handoff.paths.map((item) => item.path)).not.toContain(
+      "README.md"
+    );
+    expect(() => fixture.record()).toThrow(CONTRACT_ERROR);
+  });
+
+  test("refuses a source whose tracked directory became a symlink", () => {
+    const fixture = handoffFixture({ symlinkedDirectory: true });
+    expect(() => fixture.record()).toThrow(SYMLINK_ERROR);
   });
 
   test("refuses missing review of the semantic entries", () => {

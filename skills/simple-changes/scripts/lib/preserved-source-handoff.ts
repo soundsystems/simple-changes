@@ -1,6 +1,6 @@
 import { isLossyName } from "./inventory.ts";
+import type { SourceWorktreeDelta } from "./source-worktree-delta.ts";
 import type {
-  GitChange,
   LoopOpeningWorktree,
   LoopWorktreeLease,
   PreservedSourceHandoffReceipt,
@@ -29,9 +29,6 @@ export interface PreservedSourceHandoffCopy {
   entry: (path: string) => string | null;
 }
 
-/** What the source checkout holds at a path, read with `lstat`. */
-export type PreservedSourceKind = "absent" | "file" | "other";
-
 export interface PreservedSourceHandoffContext {
   claim: WorktreeClaim | undefined;
   commonGitDirectory: string;
@@ -39,11 +36,6 @@ export interface PreservedSourceHandoffContext {
   copy: PreservedSourceHandoffCopy;
   current: WorktreeInventory | undefined;
   disposition: "delivered" | "target-equivalent";
-  /**
-   * The source's own complete status, untracked files listed one by one and
-   * submodules never ignored; null when it cannot be read.
-   */
-  exhaustiveChanges: () => readonly GitChange[] | null;
   finalPaths: readonly ShipmentOutcomePath[];
   handoff: PreservedSourceHandoffReceipt | undefined;
   opening: LoopOpeningWorktree | undefined;
@@ -55,9 +47,12 @@ export interface PreservedSourceHandoffContext {
   /** When the run started; the owner's claim must be older. */
   runStartedAt: string;
   scopePaths: readonly string[];
+  /**
+   * The source's changes against its HEAD read from the filesystem, never
+   * from Git status or index flags, or why its shape is unsupported.
+   */
+  sourceDelta: () => SourceWorktreeDelta;
   sourceEntry: (path: string) => string | null;
-  /** A regular file or symlink is a file; a directory or anything else is not. */
-  sourceKind: (path: string) => PreservedSourceKind;
   sourceWorktree: string;
   targetEntry: (path: string) => string | null;
   targetRevision: string;
@@ -118,37 +113,43 @@ const PLAIN_ENTRY_PATTERN = /^(100644|100755|120000):blob:[0-9a-f]+$/u;
  * The supported-source contract: the handoff applies only when this unit is
  * the whole source and every change in it is a plain file-level change, so
  * the per-path entries compared below are the complete source. Completeness
- * comes from the handoff's own evidence, not the shared inventory: its own
- * status with submodules never ignored must list exactly the scoped paths,
- * and `lstat` must show each blob path as a file and each deletion as absent.
- * Any other shape, such as a rename or copy (its original path is outside
- * the entries), a conflict, a submodule or nested repository, a directory,
- * or a change left to another unit, preserved, or excluded, is refused.
+ * comes from the filesystem, not from Git status, which index flags and
+ * configuration can tell to look away: the source's changes against its HEAD
+ * must be exactly the scoped paths at their opening entries. Any other shape,
+ * such as a rename or copy, a conflict, a submodule, nested repository, or
+ * directory, a symlinked directory, or a change left to another unit,
+ * preserved, or excluded, is refused rather than trusted.
  */
 const sourceContractFailure = (context: CheckedContext): string | null => {
+  const unsupported = (detail: string): string =>
+    `preserved-source handoff supports only a source whose every change is a plain file-level change in this unit; ${detail}`;
   const scoped = new Set(context.scopePaths);
-  const exhaustive = context.exhaustiveChanges();
-  if (!exhaustive) {
-    return "preserved-source handoff could not read the source's complete status";
-  }
-  const listed = new Set(exhaustive.map((change) => change.path));
-  const outside = [...context.current.changes, ...exhaustive].find(
-    (change) =>
-      change.conflicted ||
-      change.originalPath !== null ||
-      !scoped.has(change.path)
+  const marked = context.current.changes.find(
+    (change) => change.conflicted || change.originalPath !== null
   );
-  if (outside || listed.size !== scoped.size) {
-    return `preserved-source handoff supports only a source whose every change is a plain, unrenamed, unconflicted change in this unit; ${outside?.path ?? "its complete status"} is not`;
+  if (marked) {
+    return unsupported(`${marked.path} is conflicted, renamed, or copied`);
+  }
+  const delta = context.sourceDelta();
+  if ("failure" in delta) {
+    return unsupported(delta.failure);
+  }
+  const unscoped = [...delta.entries.keys()].find((path) => !scoped.has(path));
+  if (unscoped !== undefined) {
+    return unsupported(`${unscoped} changed but is not in this unit`);
   }
   for (const path of context.scopePaths) {
     const entry = context.openingEntries.get(path) ?? null;
-    const kind = context.sourceKind(path);
-    if (
-      (entry === null && kind !== "absent") ||
-      (entry !== null && !(PLAIN_ENTRY_PATTERN.test(entry) && kind === "file"))
-    ) {
-      return `preserved-source handoff supports only regular files, executables, symlinks, and proven deletions; ${path} is not`;
+    if (!delta.entries.has(path)) {
+      return unsupported(`${path} no longer differs from the source HEAD`);
+    }
+    if (entry !== null && !PLAIN_ENTRY_PATTERN.test(entry)) {
+      return unsupported(
+        `${path} is not a regular file, executable, or symlink`
+      );
+    }
+    if (delta.entries.get(path) !== entry) {
+      return `preserved source entry changed for ${path}`;
     }
   }
   return null;

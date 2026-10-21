@@ -4,11 +4,7 @@ import { resolve } from "node:path";
 import { targetContainsRevision } from "./cleanup-core.ts";
 import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
 import { sha256Json } from "./hash.ts";
-import {
-  captureInventory,
-  locateRepository,
-  parseStatus,
-} from "./inventory.ts";
+import { captureInventory, locateRepository } from "./inventory.ts";
 import {
   assertControllerActive,
   controllerLifecycle,
@@ -37,7 +33,6 @@ import { assertSafeRelativePath } from "./path-safety.ts";
 import { validatePlanConservation } from "./planner.ts";
 import {
   type PreservedSourceHandoffCopy,
-  type PreservedSourceKind,
   preservedSourceHandoffFailure,
 } from "./preserved-source-handoff.ts";
 import {
@@ -46,9 +41,9 @@ import {
 } from "./preserved-source-override.ts";
 import { runGit } from "./process.ts";
 import { validateSchema } from "./schema.ts";
+import { sourceWorktreeDelta } from "./source-worktree-delta.ts";
 import type {
   ChangePlan,
-  GitChange,
   LoopLease,
   LoopVerification,
   PreservedSourceHandoffReceipt,
@@ -980,49 +975,6 @@ const handoffCopy = (
   entry: (path) => targetTreeEntry(lease.primaryCheckout, copyRevision, path),
 });
 
-// The source's own complete status for a handoff: unlike the shared
-// inventory, a submodule's changes are never ignored.
-const exhaustiveSourceChanges = (
-  sourceWorktree: string
-): GitChange[] | null => {
-  const status = runGit(
-    sourceWorktree,
-    [
-      "status",
-      "--porcelain=v1",
-      "-z",
-      "--untracked-files=all",
-      "--ignore-submodules=none",
-    ],
-    true
-  );
-  if (status.exitCode !== 0) {
-    return null;
-  }
-  try {
-    return parseStatus(sourceWorktree, status.stdout);
-  } catch {
-    return null;
-  }
-};
-
-// What the source holds at a path: a regular file or symlink, nothing, or
-// something else, such as a directory or nested repository.
-const sourcePathKind = (
-  sourceWorktree: string,
-  path: string
-): PreservedSourceKind => {
-  try {
-    assertSafeRelativePath(sourceWorktree, path);
-    const stat = lstatSync(resolve(sourceWorktree, path));
-    return stat.isFile() || stat.isSymbolicLink() ? "file" : "other";
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code === "ENOENT"
-      ? "absent"
-      : "other";
-  }
-};
-
 /**
  * Rechecks a user-approved preserved-source handoff against the original
  * owner's claim and accepted pause, the source checkout, the committed copy,
@@ -1060,7 +1012,6 @@ const preservedSourceHandoffIssue = (
       copy: handoffCopy(lease, receipt, handoff?.copyRevision ?? ""),
       current: inventory.worktrees.find((item) => item.path === sourceWorktree),
       disposition: unit.disposition,
-      exhaustiveChanges: () => exhaustiveSourceChanges(sourceWorktree),
       finalPaths: unit.finalPaths,
       handoff,
       opening: lease.openingWorktrees?.find(
@@ -1075,8 +1026,17 @@ const preservedSourceHandoffIssue = (
       runId: lease.runId,
       runStartedAt: lease.createdAt,
       scopePaths: expected.paths,
+      sourceDelta: () => {
+        const head = inventory.worktrees.find(
+          (item) => item.path === sourceWorktree
+        )?.headSha;
+        return head
+          ? sourceWorktreeDelta(sourceWorktree, head, (path) =>
+              worktreeSourceEntry(sourceWorktree, path)
+            )
+          : { failure: "its HEAD cannot be resolved" };
+      },
       sourceEntry: (path) => worktreeSourceEntry(sourceWorktree, path),
-      sourceKind: (path) => sourcePathKind(sourceWorktree, path),
       sourceWorktree,
       targetEntry: (path) =>
         targetTreeEntry(lease.primaryCheckout, receipt.targetRevision, path),

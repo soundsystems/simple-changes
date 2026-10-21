@@ -16,16 +16,16 @@ import { fileURLToPath } from "node:url";
 import { spawnSync, which } from "bun";
 import {
   assertStateDestination,
+  ensureStateDirectory,
+  ensureStateDirectoryOf,
   verifiedGitDirectories,
 } from "../../../skills/simple-changes/scripts/lib/git-location.ts";
 import {
   captureInventory,
   locateRepository,
 } from "../../../skills/simple-changes/scripts/lib/inventory.ts";
-import { withLoopStateLock } from "../../../skills/simple-changes/scripts/lib/loop-lease-core.ts";
 import { gitAnswerIsRequired } from "../../../skills/simple-changes/scripts/lib/process.ts";
 import { recordProposalAuthors } from "../../../skills/simple-changes/scripts/lib/review-ledger.ts";
-import { withWorktreeCoordinationLock } from "../../../skills/simple-changes/scripts/lib/worktree-coordination.ts";
 import {
   createTestRepository,
   git,
@@ -337,7 +337,7 @@ describe("the common Git directory behind Simple Changes state", () => {
     ).toBe(primaryGit);
   });
 
-  test("a symbolic link among the state directory's entries refuses every lock and ledger write", () => {
+  test("a state writer refuses a linked directory on its own path and writes nothing through it", () => {
     const fixture = createTestRepository();
     cleanups.push(fixture.cleanup);
     const elsewhere = join(fixture.base, "elsewhere");
@@ -348,31 +348,75 @@ describe("the common Git directory behind Simple Changes state", () => {
       elsewhere,
       join(common, "simple-changes", "worktree-coordination")
     );
-    const reason = "is a symbolic link, so state written through it";
-    expect(() =>
-      assertStateDestination(common, { repository: fixture.root })
-    ).toThrow(reason);
-    expect(() =>
-      withWorktreeCoordinationLock(common, "test", () => null)
-    ).toThrow(reason);
-    expect(() => withLoopStateLock(common, "test", () => null)).toThrow(reason);
-    const base = git(fixture.root, ["rev-parse", "HEAD"]);
-    writeFixture(fixture.root, "b.txt", "b\n");
-    git(fixture.root, ["add", "b.txt"]);
-    git(fixture.root, ["commit", "-m", "Change"]);
-    expect(() =>
-      recordProposalAuthors({
-        base,
-        environment: {},
-        head: git(fixture.root, ["rev-parse", "HEAD"]),
-        proposalId: "17",
-        repositoryPath: fixture.root,
-      })
-    ).toThrow(reason);
+    const worktree = join(fixture.base, "claimed");
+    git(fixture.root, ["worktree", "add", "-b", "claimed", worktree]);
+    const claimed = spawnSync(
+      [
+        process.execPath,
+        cliPath,
+        "worktree",
+        "claim",
+        "--agent-id",
+        "agent-a",
+        "--worktree",
+        worktree,
+        "--adapter",
+        "claude-code",
+        "--json",
+        "--repo",
+        fixture.root,
+      ],
+      { env: process.env, stderr: "pipe", stdout: "pipe" }
+    );
+    expect(claimed.exitCode).toBe(4);
+    expect(decoder.decode(claimed.stderr)).toContain(
+      "is not a plain directory, so state written through it would land somewhere else"
+    );
     expect(readdirSync(elsewhere)).toEqual([]);
-    expect(readdirSync(join(common, "simple-changes"))).toEqual([
-      "worktree-coordination",
-    ]);
+  });
+
+  test("a link at any depth, or an entry that cannot be inspected, refuses the directory", () => {
+    const fixture = createTestRepository();
+    cleanups.push(fixture.cleanup);
+    const elsewhere = join(fixture.base, "elsewhere");
+    mkdirSync(elsewhere);
+    const common = realpathSync(join(fixture.root, ".git"));
+    const state = join(common, "simple-changes");
+    mkdirSync(join(state, "history"), { recursive: true });
+    symlinkSync(elsewhere, join(state, "history", "run-linked"));
+    expect(() =>
+      ensureStateDirectory(
+        common,
+        join(state, "history", "run-linked", "replan-x")
+      )
+    ).toThrow("is not a plain directory");
+    expect(readdirSync(elsewhere)).toEqual([]);
+    // A directory this process may search but not list still shows the link.
+    chmodSync(state, 0o300);
+    try {
+      expect(() =>
+        ensureStateDirectory(
+          common,
+          join(state, "history", "run-linked", "replan-x")
+        )
+      ).toThrow("is not a plain directory");
+      chmodSync(state, 0o000);
+      expect(() =>
+        ensureStateDirectory(common, join(state, "history", "run-new"))
+      ).toThrow("Could not inspect");
+    } finally {
+      chmodSync(state, 0o700);
+    }
+    expect(readdirSync(elsewhere)).toEqual([]);
+    expect(() =>
+      ensureStateDirectory(common, join(common, "objects", "x"))
+    ).toThrow("is not inside");
+    expect(() =>
+      ensureStateDirectory(common, join(state, "..", "..", "outside"))
+    ).toThrow("is not inside");
+    const created = join(state, "history", "run-new", "replan-y");
+    expect(ensureStateDirectory(common, created)).toBe(created);
+    expect(ensureStateDirectoryOf(created)).toBe(created);
   });
 
   test("a checkout whose .git entry points at another Git directory is refused", () => {

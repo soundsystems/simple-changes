@@ -7,7 +7,6 @@ import {
   fsyncSync,
   linkSync,
   lstatSync,
-  mkdirSync,
   openSync,
   readFileSync,
   realpathSync,
@@ -21,6 +20,7 @@ import { fileURLToPath } from "node:url";
 import { assertNotChangelogAuthorCheckout } from "./changelog-authors.ts";
 import { targetContainsRevision } from "./cleanup-core.ts";
 import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
+import { ensureStateDirectoryOf } from "./git-location.ts";
 import { sha256, sha256Json } from "./hash.ts";
 import { captureInventory, locateRepository } from "./inventory.ts";
 import {
@@ -1934,7 +1934,7 @@ const syncReplanPath = (path: string): void => {
 // Publish without replacing an existing audit record. A partial temporary write
 // is never considered an intent; retries validate every field of a published one.
 const publishReplanIntent = (path: string, record: LoopReplanRecord): void => {
-  mkdirSync(dirname(path), { mode: 0o700, recursive: true });
+  ensureStateDirectoryOf(dirname(path));
   // Persist each new history ancestor before an intent can authorize removal
   // of the active directory entry, including on filesystems with delayed metadata.
   let ancestor = dirname(path);

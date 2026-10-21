@@ -11,7 +11,7 @@ import {
 import { hostname } from "node:os";
 import { dirname, resolve } from "node:path";
 import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
-import { assertStateDestination, gitReportedPath } from "./git-location.ts";
+import { ensureStateDirectory, gitReportedPath } from "./git-location.ts";
 import { currentHarnessSession } from "./harness-session.ts";
 import { sha256, sha256Json } from "./hash.ts";
 import {
@@ -209,11 +209,8 @@ const acquireNamedLock = (
   operation: string,
   label: string
 ): (() => void) => {
-  assertStateDestination(commonGitDirectory, {
-    repository: commonGitDirectory,
-  });
   const root = stateRoot(commonGitDirectory);
-  mkdirSync(root, { mode: 0o700, recursive: true });
+  ensureStateDirectory(commonGitDirectory, root);
   try {
     mkdirSync(lockPath, { mode: 0o700 });
   } catch (error) {
@@ -357,7 +354,7 @@ const writeCoordinationDocument = (
     document
   );
   const root = coordinationRoot(commonGitDirectory);
-  mkdirSync(root, { mode: 0o700, recursive: true });
+  ensureStateDirectory(commonGitDirectory, root);
   const temporaryPath = resolve(
     root,
     `${STATE_FILENAME}.${process.pid}.${randomUUID()}.tmp`
@@ -2110,7 +2107,7 @@ const writeWorktreeTakeovers = (
   receipts: WorktreeTakeoverReceipt[]
 ): void => {
   const root = coordinationRoot(commonGitDirectory);
-  mkdirSync(root, { mode: 0o700, recursive: true });
+  ensureStateDirectory(commonGitDirectory, root);
   const temporaryPath = resolve(
     root,
     `${TAKEOVERS_FILENAME}.${process.pid}.${randomUUID()}.tmp`

@@ -1,12 +1,20 @@
 import {
-  type Dirent,
   lstatSync,
-  readdirSync,
+  mkdirSync,
   readFileSync,
   realpathSync,
+  type Stats,
   statSync,
 } from "node:fs";
-import { isAbsolute, join, resolve } from "node:path";
+import {
+  basename,
+  dirname,
+  isAbsolute,
+  join,
+  relative,
+  resolve,
+  sep,
+} from "node:path";
 import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
 import { gitExecutable } from "./process.ts";
 
@@ -162,13 +170,34 @@ export const isCommonGitDirectory = (path: string): boolean =>
   isDirectory(join(path, "refs")) &&
   !isFile(join(path, "commondir"));
 
+const errorCode = (error: unknown): string =>
+  (error as NodeJS.ErrnoException | null)?.code ?? "unknown error";
+
+// The entry at `path` without following a link: null only when it does not
+// exist; any other failure to look refuses, since an entry that cannot be
+// inspected cannot be shown to stay inside the Git directory.
+const inspectedEntry = (
+  path: string,
+  context: GitLocationContext
+): Stats | null => {
+  try {
+    return lstatSync(path);
+  } catch (error) {
+    if (errorCode(error) === "ENOENT") {
+      return null;
+    }
+    return refuse(
+      `Could not inspect ${bounded(path)} (${errorCode(error)}).`,
+      context
+    );
+  }
+};
+
 /**
  * Refuses unless `commonGitDirectory` is a repository's own Git directory and
  * its `simple-changes` state directory, when it exists, is a plain directory
- * there with no symbolic link among its entries, since a linked entry (such
- * as `worktree-coordination`) would send state written through it somewhere
- * else. Deeper, run-scoped directories are created by Simple Changes itself
- * inside these. Callers run it before they create any lock or state file.
+ * there rather than a link. Callers run it before they take a lock; each write
+ * then creates its own directory with `ensureStateDirectory`.
  */
 export const assertStateDestination = (
   commonGitDirectory: string,
@@ -181,31 +210,88 @@ export const assertStateDestination = (
     );
   }
   const stateDirectory = join(commonGitDirectory, STATE_DIRECTORY);
-  let isPlainDirectory = true;
-  try {
-    isPlainDirectory = lstatSync(stateDirectory).isDirectory();
-  } catch {
-    // Not there yet: the first state write creates it.
-  }
-  if (!isPlainDirectory) {
+  const entry = inspectedEntry(stateDirectory, context);
+  if (entry && (entry.isSymbolicLink() || !entry.isDirectory())) {
     refuse(
       `${bounded(stateDirectory)} is not a plain directory inside the Git directory, so state written there would land somewhere else.`,
       context
     );
   }
-  let entries: Dirent[] = [];
-  try {
-    entries = readdirSync(stateDirectory, { withFileTypes: true });
-  } catch {
-    // Not there yet.
-  }
-  const linked = entries.find((entry) => entry.isSymbolicLink());
-  if (linked) {
+};
+
+/**
+ * Creates `directory`, which must lie in `<commonGitDirectory>/simple-changes`,
+ * one component at a time without following links, and refuses unless every
+ * component from the common Git directory down is a plain directory: a
+ * symbolic link at any depth, an entry that is not a directory, or an entry
+ * that cannot be inspected would let the write land outside the Git
+ * directory. Every state writer creates its directory through this instead of
+ * a recursive `mkdir`, which follows links. Returns the directory's path.
+ */
+export const ensureStateDirectory = (
+  commonGitDirectory: string,
+  directory: string
+): string => {
+  const context: GitLocationContext = { repository: commonGitDirectory };
+  assertStateDestination(commonGitDirectory, context);
+  const offset = relative(resolve(commonGitDirectory), resolve(directory));
+  const segments = offset.split(sep);
+  if (
+    offset === "" ||
+    isAbsolute(offset) ||
+    segments[0] !== STATE_DIRECTORY ||
+    segments.includes("..")
+  ) {
     refuse(
-      `${bounded(join(stateDirectory, linked.name))} is a symbolic link, so state written through it would land somewhere else.`,
+      `${bounded(directory)} is not inside ${bounded(join(commonGitDirectory, STATE_DIRECTORY))}.`,
       context
     );
   }
+  let current = resolve(commonGitDirectory);
+  for (const segment of segments) {
+    current = join(current, segment);
+    let entry = inspectedEntry(current, context);
+    if (entry === null) {
+      try {
+        mkdirSync(current, { mode: 0o700 });
+      } catch (error) {
+        if (errorCode(error) !== "EEXIST") {
+          refuse(
+            `Could not create ${bounded(current)} (${errorCode(error)}).`,
+            context
+          );
+        }
+      }
+      entry = inspectedEntry(current, context);
+    }
+    if (!entry || entry.isSymbolicLink() || !entry.isDirectory()) {
+      refuse(
+        `${bounded(current)} is not a plain directory, so state written through it would land somewhere else.`,
+        context
+      );
+    }
+  }
+  return current;
+};
+
+/**
+ * `ensureStateDirectory` for a writer that knows only its directory: the
+ * common Git directory is the nearest ancestor holding a `simple-changes`
+ * directory on the way to it that is a repository's Git directory.
+ */
+export const ensureStateDirectoryOf = (directory: string): string => {
+  let current = resolve(directory);
+  while (dirname(current) !== current) {
+    const parent = dirname(current);
+    if (basename(current) === STATE_DIRECTORY && isCommonGitDirectory(parent)) {
+      return ensureStateDirectory(parent, directory);
+    }
+    current = parent;
+  }
+  return refuse(
+    `${bounded(directory)} is not inside a repository's Simple Changes state directory.`,
+    { repository: directory }
+  );
 };
 
 // Where the checkout's `.git` entry points: its own real path when it is a

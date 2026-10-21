@@ -1,11 +1,5 @@
 import { randomUUID } from "node:crypto";
-import {
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  renameSync,
-  writeFileSync,
-} from "node:fs";
+import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import {
   type AuthorCoverage,
@@ -15,6 +9,7 @@ import {
 } from "./author-coverage.ts";
 import { revisionContainmentMethod } from "./cleanup-core.ts";
 import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
+import { ensureStateDirectory } from "./git-location.ts";
 import {
   assertExactBranch,
   captureInventory,
@@ -100,7 +95,7 @@ const writeReadyReceipts = (
   receipts: ReadyWorkReceipt[]
 ): void => {
   const root = worktreeCoordinationDirectory(commonGitDirectory);
-  mkdirSync(root, { mode: 0o700, recursive: true });
+  ensureStateDirectory(commonGitDirectory, root);
   const temporaryPath = resolve(
     root,
     `${READY_RECEIPTS_FILENAME}.${process.pid}.${randomUUID()}.tmp`

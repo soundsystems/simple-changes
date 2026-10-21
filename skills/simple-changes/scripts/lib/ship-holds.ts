@@ -1,17 +1,12 @@
 import { randomUUID } from "node:crypto";
-import {
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  renameSync,
-  writeFileSync,
-} from "node:fs";
+import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import {
   revisionContainmentMethod,
   type TargetContainmentMethod,
 } from "./cleanup-core.ts";
 import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
+import { ensureStateDirectory } from "./git-location.ts";
 import { sha256Json } from "./hash.ts";
 import { captureInventory, locateRepository } from "./inventory.ts";
 import { readLeaseFromCommonDirectory } from "./loop-lease.ts";
@@ -145,7 +140,7 @@ const writeShipHoldDocument = (
     waivers: document.waivers.filter((waiver) => waiver.runId === run),
   });
   const root = worktreeCoordinationDirectory(commonGitDirectory);
-  mkdirSync(root, { mode: 0o700, recursive: true });
+  ensureStateDirectory(commonGitDirectory, root);
   const temporaryPath = resolve(
     root,
     `${HOLDS_FILENAME}.${process.pid}.${randomUUID()}.tmp`

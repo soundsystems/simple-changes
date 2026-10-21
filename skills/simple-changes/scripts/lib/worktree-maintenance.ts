@@ -1,11 +1,5 @@
 import { randomUUID } from "node:crypto";
-import {
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  renameSync,
-  writeFileSync,
-} from "node:fs";
+import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import {
   type ContainedBranchPreservation,
@@ -17,6 +11,7 @@ import {
 } from "./cleanup-core.ts";
 import { probeCoordinationAdapter } from "./coordination-adapter.ts";
 import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
+import { ensureStateDirectory } from "./git-location.ts";
 import { captureInventory, locateRepository } from "./inventory.ts";
 import {
   type LeaseLiveness,
@@ -181,7 +176,7 @@ const appendWorktreeCleanup = (
 ): void => {
   const path = cleanupsPath(commonGitDirectory);
   const history = readWorktreeCleanups(commonGitDirectory);
-  mkdirSync(dirname(path), { mode: 0o700, recursive: true });
+  ensureStateDirectory(commonGitDirectory, dirname(path));
   const temporaryPath = `${path}.${process.pid}.${randomUUID()}.tmp`;
   writeFileSync(
     temporaryPath,

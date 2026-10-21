@@ -438,7 +438,12 @@ branch onto the updated target through `loop exec`.
    and require `created: true` from its first call: a repeated ID returns
    whatever that ID already registered, including the controller's checkout.
    Concurrent calls collide on the busy state lock, so agents gain nothing by
-   preparing their own worktrees.
+   preparing their own worktrees. Under adversarial review, first run
+   `reviewer room --would-author <harness id>/<model ID>` for each planned
+   author, with the unit's range and proposal when they exist, and dispatch
+   only when it reports `open`; otherwise choose another author model or
+   harness, or ask the owner
+   ([review identity](review-and-merge.md#review-identity-and-the-review-ledger)).
 2. Start the agents together. Give each one its exact prepared path, branch,
    agent ID, and unit scope, and the `workDir` `prepare-agent` reported; the
    checks to run; and its boundary: edit, generate, format, check, stage, and

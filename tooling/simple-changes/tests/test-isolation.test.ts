@@ -2,10 +2,8 @@ import { describe, expect, test } from "bun:test";
 import { realpathSync } from "node:fs";
 import { dirname, relative } from "node:path";
 import { spawnSync } from "bun";
-import {
-  gitReportedPath,
-  locateRepository,
-} from "../../../skills/simple-changes/scripts/lib/inventory.ts";
+import { gitReportedPath } from "../../../skills/simple-changes/scripts/lib/git-location.ts";
+import { locateRepository } from "../../../skills/simple-changes/scripts/lib/inventory.ts";
 import { createTestRepository } from "./helpers.ts";
 
 // A full check runs from this repository or a worktree that shares its `.git`,

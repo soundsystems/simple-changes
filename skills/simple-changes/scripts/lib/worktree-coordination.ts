@@ -11,12 +11,12 @@ import {
 import { hostname } from "node:os";
 import { dirname, resolve } from "node:path";
 import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
+import { assertStateDestination, gitReportedPath } from "./git-location.ts";
 import { currentHarnessSession } from "./harness-session.ts";
 import { sha256, sha256Json } from "./hash.ts";
 import {
   assertExactBranch,
   captureInventory,
-  gitReportedPath,
   isLossyName,
   locateRepository,
 } from "./inventory.ts";
@@ -209,6 +209,9 @@ const acquireNamedLock = (
   operation: string,
   label: string
 ): (() => void) => {
+  assertStateDestination(commonGitDirectory, {
+    repository: commonGitDirectory,
+  });
   const root = stateRoot(commonGitDirectory);
   mkdirSync(root, { mode: 0o700, recursive: true });
   try {
@@ -747,8 +750,9 @@ const activeLoopTakeoverRefusal = (
 export const assertNoGitOperation = (worktreePath: string): void => {
   const gitDirectory = realpathSync(
     gitReportedPath(
-      runGit(worktreePath, ["rev-parse", "--absolute-git-dir"]).stdout.trim(),
-      "--absolute-git-dir"
+      runGit(worktreePath, ["rev-parse", "--absolute-git-dir"]).stdout,
+      "--absolute-git-dir",
+      { repository: worktreePath }
     )
   );
   const markers = [

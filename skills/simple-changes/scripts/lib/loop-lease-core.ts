@@ -16,6 +16,7 @@ import { hostname } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
+import { assertStateDestination } from "./git-location.ts";
 import {
   currentHarnessSession,
   forgetControllerSession,
@@ -258,6 +259,9 @@ const acquireStateLock = (
   commonGitDirectory: string,
   operationName: string
 ): StateLock => {
+  assertStateDestination(commonGitDirectory, {
+    repository: commonGitDirectory,
+  });
   const directory = stateDirectory(commonGitDirectory);
   const lockPath = loopLockPath(commonGitDirectory);
   mkdirSync(directory, { mode: 0o700, recursive: true });

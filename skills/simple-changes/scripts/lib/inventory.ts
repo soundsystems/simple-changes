@@ -10,9 +10,10 @@ import {
   readSync,
   realpathSync,
 } from "node:fs";
-import { isAbsolute, resolve } from "node:path";
+import { resolve } from "node:path";
 import { inspectChangelogCoordination } from "./changelog-coordination.ts";
 import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
+import { gitReportedPath, verifiedGitDirectories } from "./git-location.ts";
 import { sha256 } from "./hash.ts";
 import { assertSafeRelativePath } from "./path-safety.ts";
 import { loadPolicy } from "./policy.ts";
@@ -54,28 +55,6 @@ const nullableSha = (value: string | undefined): string | null => {
     return null;
   }
   return value;
-};
-
-// Git answers a path question with a path. An empty answer resolves to the
-// working directory, which is some other repository or none, so it is refused.
-export const gitReportedPath = (output: string, question: string): string => {
-  const path = withoutLineEnds(output);
-  if (path === "") {
-    throw new SimpleChangesError(
-      `git rev-parse ${question} printed no path; refusing to resolve the working directory in its place.`,
-      EXIT_CODES.inventory
-    );
-  }
-  return path;
-};
-
-const absoluteGitPath = (
-  root: string,
-  value: string,
-  question: string
-): string => {
-  const path = gitReportedPath(value, question);
-  return realpathSync(isAbsolute(path) ? path : resolve(root, path));
 };
 
 // Git output is decoded as UTF-8 with replacement (process.ts), so each byte
@@ -826,9 +805,11 @@ const REPOSITORY_DIRECTORY_FLAGS = [
 
 // One rev-parse answers all three questions, one line each in flag order. A
 // Git directory path containing a newline cannot be split that way, so it
-// falls back to asking one flag at a time.
+// falls back to asking one flag at a time. The answers are verified to name
+// one repository this checkout belongs to before anything uses them.
 const repositoryDirectories = (
-  root: string
+  root: string,
+  repository: string
 ): { bare: boolean; commonGitDirectory: string; gitDirectory: string } => {
   let lines = runGit(root, ["rev-parse", ...REPOSITORY_DIRECTORY_FLAGS])
     .stdout.replace(TRAILING_NEWLINE_PATTERN, "")
@@ -841,15 +822,10 @@ const repositoryDirectories = (
   const [bareOutput = "", gitDirectory = "", commonGitDirectory = ""] = lines;
   return {
     bare: bareOutput.trim() === "true",
-    commonGitDirectory: absoluteGitPath(
+    ...verifiedGitDirectories(
       root,
-      commonGitDirectory.trim(),
-      "--git-common-dir"
-    ),
-    gitDirectory: absoluteGitPath(
-      root,
-      gitDirectory.trim(),
-      "--absolute-git-dir"
+      { commonGitDirectory, gitDirectory },
+      repository
     ),
   };
 };
@@ -857,8 +833,9 @@ const repositoryDirectories = (
 const repositoryRoot = (directory: string): string =>
   realpathSync(
     gitReportedPath(
-      runGit(directory, ["rev-parse", "--show-toplevel"]).stdout.trim(),
-      "--show-toplevel"
+      runGit(directory, ["rev-parse", "--show-toplevel"]).stdout,
+      "--show-toplevel",
+      { repository: directory }
     )
   );
 
@@ -875,11 +852,8 @@ export const locateRepository = (directory: string): RepositoryLocation => {
   const root = repositoryRoot(directory);
   return {
     repository: {
-      commonGitDirectory: absoluteGitPath(
-        root,
-        runGit(root, ["rev-parse", "--git-common-dir"]).stdout.trim(),
-        "--git-common-dir"
-      ),
+      commonGitDirectory: repositoryDirectories(root, directory)
+        .commonGitDirectory,
     },
   };
 };
@@ -891,8 +865,10 @@ export const captureInventory = (
   const root = repositoryRoot(directory);
   const currentCheckout = root;
   const readGit = memoizedGitReader();
-  const { bare, commonGitDirectory, gitDirectory } =
-    repositoryDirectories(root);
+  const { bare, commonGitDirectory, gitDirectory } = repositoryDirectories(
+    root,
+    directory
+  );
   const rawWorktrees = parseWorktreeList(
     runGit(root, ["worktree", "list", "--porcelain"]).stdout
   );

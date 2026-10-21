@@ -582,20 +582,135 @@ export const runGuardInProcessGroup = async (
     })
   ).exitCode;
 
+// `rev-parse` options whose successful answer can be empty.
+const REV_PARSE_MAY_PRINT_NOTHING = new Set([
+  "--all",
+  "--branches",
+  "--disambiguate",
+  "--exclude",
+  "--flags",
+  "--glob",
+  "--no-flags",
+  "--no-revs",
+  "--parseopt",
+  "--remotes",
+  "--revs-only",
+  "--shared-index-path",
+  "--show-superproject-working-tree",
+  "--sq",
+  "--sq-quote",
+  "--symbolic",
+  "--symbolic-full-name",
+  "--tags",
+]);
+
+// The subcommand and its arguments, past Git's own leading options.
+const gitSubcommand = (args: readonly string[]): readonly string[] => {
+  let index = 0;
+  while (args[index]?.startsWith("-")) {
+    index += args[index] === "-c" || args[index] === "-C" ? 2 : 1;
+  }
+  return args.slice(index);
+};
+
+/**
+ * Whether Git, exiting 0, always prints something for this read-only
+ * question: an empty value still prints a line break. Zero bytes with exit 0
+ * then means the answer was lost between Git and this process, which has been
+ * seen under heavy load. Listings that may be empty (`remote`, `status`,
+ * `for-each-ref`) are not such questions.
+ */
+export const gitAnswerIsRequired = (args: readonly string[]): boolean => {
+  const [subcommand, ...rest] = gitSubcommand(args);
+  const positional = rest.filter((argument) => !argument.startsWith("-"));
+  switch (subcommand) {
+    case "rev-parse":
+      return (
+        rest.length > 0 &&
+        !rest.some((argument) =>
+          REV_PARSE_MAY_PRINT_NOTHING.has(argument.split("=", 1)[0] ?? "")
+        )
+      );
+    case "symbolic-ref":
+      return (
+        positional.length === 1 &&
+        !rest.some((argument) => argument === "-d" || argument === "--delete")
+      );
+    case "config":
+      return rest.some((argument) =>
+        ["--get", "--get-all", "--get-regexp"].includes(argument)
+      );
+    case "remote":
+      return rest[0] === "get-url";
+    case "worktree":
+      return rest[0] === "list";
+    default:
+      return false;
+  }
+};
+
+const LOST_ANSWER_LIMIT = 240;
+
+const boundedText = (value: string): string =>
+  value.length > LOST_ANSWER_LIMIT
+    ? `${JSON.stringify(value.slice(0, LOST_ANSWER_LIMIT))} (first ${LOST_ANSWER_LIMIT} of ${value.length} characters)`
+    : JSON.stringify(value);
+
+const lostGitAnswer = (
+  executable: string,
+  cwd: string,
+  args: readonly string[]
+): SimpleChangesError => {
+  let workingDirectory = "(unavailable)";
+  try {
+    workingDirectory = process.cwd();
+  } catch {
+    // Reported as unavailable.
+  }
+  return new SimpleChangesError(
+    `git ${boundedText(args.join(" "))} exited 0 without printing its answer, twice. Git always prints one for this question, so the output was lost on its way to this process (seen under heavy load). Refusing to act on a missing answer; retry the command. Diagnostics: git executable ${boundedText(executable)}; working directory ${boundedText(workingDirectory)}; repository ${boundedText(cwd)}.`,
+    EXIT_CODES.inventory
+  );
+};
+
+/**
+ * Runs Git in `cwd`. A read-only question that Git always answers, but which
+ * comes back with exit 0 and no output, is asked once more; a second empty
+ * answer refuses with a retryable error instead of returning it, so no caller
+ * turns a lost answer into a wrong path, revision or remote.
+ */
 export const runGit = (
   cwd: string,
   args: readonly string[],
   allowFailure = false,
   environment: Record<string, string> = {}
-): CommandResult =>
-  runCommand(
-    gitExecutable(),
-    ["-C", cwd, ...args],
-    cwd,
-    allowFailure,
-    "git",
-    environment
-  );
+): CommandResult => {
+  const executable = gitExecutable();
+  const run = () =>
+    runCommand(
+      executable,
+      ["-C", cwd, ...args],
+      cwd,
+      allowFailure,
+      "git",
+      environment
+    );
+  const result = run();
+  if (
+    !(
+      result.exitCode === 0 &&
+      result.stdout === "" &&
+      gitAnswerIsRequired(args)
+    )
+  ) {
+    return result;
+  }
+  const retried = run();
+  if (retried.exitCode === 0 && retried.stdout === "") {
+    throw lostGitAnswer(executable, cwd, args);
+  }
+  return retried;
+};
 
 export type GitRequest = GitWorkerRequest;
 
@@ -672,7 +787,11 @@ export const runGitConcurrently = (
       : null;
   return requests.map((request, index) => {
     const result = results?.[index];
-    return result && result.exitCode === 0
+    // A lost answer from the worker is asked again directly, where runGit
+    // retries it and refuses rather than return it.
+    return result &&
+      result.exitCode === 0 &&
+      !(result.stdout === "" && gitAnswerIsRequired(request.args))
       ? result
       : runGit(request.cwd, request.args);
   });

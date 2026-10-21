@@ -303,6 +303,16 @@ describe("preserved-source handoff evidence", () => {
         }
       })
     ).toMatch(REGISTRATION_ERROR);
+    // A renamed source file's original path is outside the scope, so its
+    // removal could never be shown to ship.
+    expect(
+      edited((snapshot) => {
+        const [first] = snapshot.current?.changes ?? [];
+        if (first) {
+          first.originalPath = "old-feature.ts";
+        }
+      })
+    ).toMatch(REGISTRATION_ERROR);
   });
 
   test("refuses a dirty source that changed after the pause", () => {
@@ -676,7 +686,7 @@ describe("loop record-outcome with a detached preserved-source handoff", () => {
    * an independently reviewed docs change.
    */
   const handoffFixture = (
-    options: { copyDocs?: string; copyExtra?: boolean } = {}
+    options: { copyDocs?: string; copyExtra?: boolean; rename?: boolean } = {}
   ) => {
     const fixture = createTestRepository();
     repositories.push(fixture);
@@ -686,6 +696,9 @@ describe("loop record-outcome with a detached preserved-source handoff", () => {
     git(fixture.root, ["worktree", "add", "--detach", source]);
     writeFixture(source, "feature.ts", FEATURE);
     writeFixture(source, "docs.md", ORIGINAL_DOCS);
+    if (options.rename) {
+      git(source, ["mv", "README.md", "GUIDE.md"]);
+    }
     const claim = claimWorktree(source, "owner", source, "claude-code");
     const lease = startLoop(fixture.root, "controller", "ship");
     const opening = captureInventory(fixture.root);
@@ -728,6 +741,10 @@ describe("loop record-outcome with a detached preserved-source handoff", () => {
     writeFixture(fixture.root, "docs.md", options.copyDocs ?? ORIGINAL_DOCS);
     if (options.copyExtra) {
       writeFixture(fixture.root, "README.md", "# Fixture, copied\n");
+    }
+    if (options.rename) {
+      // The copy adds the renamed file but keeps the original in place.
+      writeFixture(fixture.root, "GUIDE.md", "# Fixture\n");
     }
     const copy = commitAll(fixture.root, "Copy the detached source");
     writeFixture(fixture.root, "docs.md", REVIEWED_DOCS);
@@ -961,6 +978,14 @@ describe("loop record-outcome with a detached preserved-source handoff", () => {
   test("refuses a copy commit that carries unrelated changes", () => {
     const fixture = handoffFixture({ copyExtra: true });
     expect(() => fixture.record()).toThrow(PROVENANCE_ERROR);
+  });
+
+  test("refuses a source whose rename original the copy never removed", () => {
+    const fixture = handoffFixture({ rename: true });
+    expect(fixture.handoff.paths.map((item) => item.path)).toContain(
+      "GUIDE.md"
+    );
+    expect(() => fixture.record()).toThrow(REGISTRATION_ERROR);
   });
 
   test("refuses missing review of the semantic entries", () => {

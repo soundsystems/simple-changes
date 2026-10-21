@@ -71,6 +71,9 @@ const registrationFailure = (
     !current ||
     current.isPrimary ||
     current.changes.length === 0 ||
+    // A rename's or copy's original path is not a scoped path, so the copy
+    // could never prove that its removal shipped.
+    current.changes.some((change) => change.originalPath !== null) ||
     !registered ||
     registered.role !== "preserved" ||
     registered.createdByRun ||
@@ -79,7 +82,7 @@ const registrationFailure = (
     !registered.pauseReceiptId ||
     !opening
   ) {
-    return "preserved-source handoff requires a delivered unit from a dirty, non-primary source the run registered as preserved through an accepted pause, with no rename originals";
+    return "preserved-source handoff requires a delivered unit from a dirty, non-primary source the run registered as preserved through an accepted pause, with no renames in the source or rename originals";
   }
   if (
     current.path !== context.sourceWorktree ||

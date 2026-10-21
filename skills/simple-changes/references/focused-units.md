@@ -180,7 +180,8 @@ a handoff, never both.
 Recording requires:
 
 - a dirty, non-primary source the run registered as preserved through the
-  accepted pause, with no rename originals, still at the exact branch, head,
+  accepted pause, with no renamed or copied files in the source and no rename
+  originals in the outcome, still at the exact branch, head,
   and status digest it had at loop start, in the pause receipt, and in its
   registration;
 - the owner's claim, created before the run started, still `adopted-preserved`

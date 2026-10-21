@@ -248,7 +248,11 @@ and branches the target contains, including a branch whose commits are only
 patch-equivalent to the target's, primary paths whose bytes equal the target,
 and switching a clean primary to the target branch. The held head stays
 reachable through its pin, so no held byte is lost, but a branch name may be.
-An older runtime may also record a new outcome over the bound one; it then
-still requires the held unit, so it can report it as delivered only when its
-exact opening bytes have since reached the target.
+An older runtime can also record a new outcome over the bound one, which
+replaces the binding. It still requires the held unit in that outcome, and
+for a unit packaged from the primary checkout its reviewed-primary-result
+exception accepts `delivered` with whatever the target now holds, so it can
+misreport a held primary unit as delivered and then close the run. Never
+record, finish, end, or archive a run that held a unit with a runtime older
+than 0.33.0.
 Finish a run that held a unit with Simple Changes 0.33.0 or later.

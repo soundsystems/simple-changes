@@ -400,7 +400,8 @@ Every finalization writes a durable receipt before releasing or relinquishing
 the controller. It reports `shipmentStatus`, `controllerStatus`,
 `deliveryStatus`, `cleanupStatus`, `blocksNextShipment`, blockers, preserved
 worktrees, and, when `review-ledger.json` exists, the review attempts recorded
-during the run per proposal (`reviewAttempts`). A closed shipment with pending cleanup does not block the next
+during the run per proposal (`reviewAttempts`), and any units held with `loop
+hold-unit` (`heldUnits`), which stay preserved and never count as delivered. A closed shipment with pending cleanup does not block the next
 shipment; run guarded `prune` separately when safe. Incomplete finalization
 relinquishes durable state and exits nonzero. The exception is an untouched Ship
 run, with no recorded scope and no mutation evidence: finalization closes it

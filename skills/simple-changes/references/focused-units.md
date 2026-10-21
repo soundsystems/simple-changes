@@ -4,6 +4,7 @@ Contents:
 
 - Group work into units
 - Preserved-source override
+- Held unit
 
 ## Group work into units
 
@@ -101,7 +102,12 @@ every placeholder with the reviewed reason, delete `draftReview`, then run
 any placeholder marker and rechecks every entry. No runtime's schema accepts
 `draftReview`, so even an empty draft (no scoped units and no target change)
 and an older runtime refuse the draft until it is reviewed; only 0.28.0 and
-later also refuse a leftover marker.
+later also refuse a leftover marker. The draft never suggests a disposition
+for a [held unit](#held-unit): it leaves the unit out of `units`, warns that
+it is held, and when the target changed one of its paths, it attributes that
+change to the other unit that scopes the same filename or lists it as an
+`external-target-change` whose placeholder says the filename match does not
+show the held unit shipped.
 
 ## Preserved-source override
 
@@ -150,3 +156,68 @@ evidence; it never substitutes for them. Finish, end, or archive a run that
 recorded an override only with Simple Changes 0.25.0 or later: an older runtime
 still reads its lease but ignores the override file, so it cannot enforce these
 checks.
+
+## Held unit
+
+A frozen scope cannot reclassify a unit, and an outcome may report a scoped
+unit only as `delivered` or `target-equivalent`. When a scoped unit is
+deliberately kept out of this shipment, for example because independent review
+found defects, neither is true: path movement such as a shared changelog edit
+does not show that it shipped, and a path absent from the target does not make
+it equivalent. Hold it instead:
+
+```sh
+simple-changes loop hold-unit --run-id <run> --agent-id <controller> \
+  --unit <unit ID> --reason <why> \
+  --readiness-evidence <the failed-readiness evidence for this unit>
+```
+
+Without approval flags the command changes nothing. It prints the exact state
+it observed and its digest: the unit and its paths, the source checkout,
+branch, head, status digest, and each path's current and opening entry, the
+active claim and its owner, the target revision, the reason, and the cited
+evidence. Show that observation to the user and ask now. A hold needs the
+user's fresh approval of that exact observation; an earlier conditional
+instruction, such as "hold it if review finds defects", never stands in for
+it. After the user approves, run the printed command with `--approved-by
+<user> --approval-reference <where they approved> --observation-digest
+<digest>`. The command observes again under the loop and coordination locks
+and refuses when anything in the observation changed, so a moved source head,
+changed status or bytes, a changed claim, or a moved target needs a new
+approval. The approver must be neither the controller nor the claim owner.
+
+Each `--readiness-evidence` item must name the held unit by its ID or by a path
+no other scoped unit shares, and must not name another scoped unit; a shared
+filename such as a changelog does not say which unit failed. The command also
+refuses a unit that is not in the frozen scope, a unit already held, a unit
+a scoped unit that is not held depends on, a missing source checkout, and a run that
+already recorded its outcome: a hold never reinterprets a recorded outcome.
+Genuinely new scope still needs a new shipment run or an approved replan.
+
+The hold is immutable and lives beside the lease in
+`<common-git-dir>/simple-changes/held-units/<run-id>.json`, defined by
+`evals/schemas/held-units.schema.json`. It keeps the original unit exactly as
+the frozen scope recorded it, the approved observation and its digest, the
+authorization, and the unit's paths as exclusions bound to its source
+checkout, so the frozen scope still accounts for every original path once
+per checkout: delivered, preserved, or excluded, even when another checkout
+changes the same filename. Any edit to the record, a record from another run,
+or one that no longer matches the frozen unit fails closed.
+
+`loop record-outcome` then refuses the held unit in `units` and no longer
+requires it; account for any of its paths the target changed as
+`additionalPaths`. Finalization never removes, demotes, or releases a held
+unit's source checkout or claim, never deletes its branch, and never
+normalizes its primary-checkout bytes. A held primary path counts as excluded
+in the primary delivery proof, so the other units can still verify delivery.
+A unit that shares a non-primary checkout with a held unit cannot be verified
+delivered while the held bytes keep that checkout dirty. The finalization
+receipt reports each held unit under `heldUnits`, apart from verified
+delivery, with whether its source still matches the hold.
+
+The record is a new file, so the lease and outcome receipts keep their
+shapes and earlier runs, receipts, and frozen scopes read as before. An older
+runtime ignores the record and still requires the held unit in the outcome,
+so it refuses to record an outcome without it and never reports the run's
+delivery as verified: it can only be stricter. Finish a run that held a unit
+with Simple Changes 0.33.0 or later.

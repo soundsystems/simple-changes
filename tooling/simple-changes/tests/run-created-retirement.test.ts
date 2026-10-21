@@ -245,7 +245,7 @@ describe("run-created author retirement", () => {
     expect(git(fixture.root, ["rev-parse", branch])).toBe(branchHead);
   });
 
-  test("a retirement stops applying once the retained branch moves", () => {
+  test("a retirement stops applying once the retained branch moves or is deleted", () => {
     const { branch, fixture, path, runId } = absentAuthorFixture();
     retireAbsentWorktree(
       fixture.root,
@@ -263,6 +263,17 @@ describe("run-created author retirement", () => {
         "controller",
         "user",
         "Moved"
+      )
+    ).toThrow("nothing-to-ship is unproven");
+    // Deleting the moved branch does not bring the retirement back.
+    git(fixture.root, ["branch", "-D", branch]);
+    expect(() =>
+      closeLoopTargetEquivalent(
+        fixture.root,
+        runId,
+        "controller",
+        "user",
+        "Deleted"
       )
     ).toThrow("nothing-to-ship is unproven");
   });
@@ -341,7 +352,7 @@ describe("run-created author retirement", () => {
     ).toThrow("must name a preserved registration");
     expect(retirementRecords(fixture.root, lease.runId)).toEqual([]);
   });
-  test("a retirement keeps accounting for a legacy preserved author after cleanup deletes its contained branch", () => {
+  test("cleanup keeps the contained branch a legacy preserved author retirement relies on", () => {
     const fixture = repository();
     withOrigin(fixture.root);
     const lease = startLoop(fixture.root, "controller", "integrate");
@@ -404,8 +415,11 @@ describe("run-created author retirement", () => {
       "The target contains the author's work."
     );
     expect(closed.outcome).toBe("target-equivalent");
-    expect(closed.cleanup.removedBranches).toContainEqual(
+    expect(closed.cleanup.removedBranches).not.toContainEqual(
       expect.objectContaining({ branch: prepared.branch })
+    );
+    expect(git(fixture.root, ["branch", "--list", prepared.branch])).toContain(
+      prepared.branch
     );
   });
 });

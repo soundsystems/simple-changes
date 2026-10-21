@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
-import { chmodSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import {
   finalizeLoop,
@@ -110,11 +110,19 @@ const approvedPolicyFixture = (): TestRepository => {
 const policyTrust = (root: string): string =>
   loadPolicy(root, { commonGitDirectory: resolve(root, ".git") }).trust;
 
+// The policy file's identity and modification time: equal values mean
+// finalization never wrote it.
+const policyFileStamp = (root: string): string => {
+  const status = statSync(join(root, ".simple-changes.json"));
+  return `${status.ino}:${status.mtimeMs}`;
+};
+
 describe("finalization keeps approved repository policy", () => {
   test("keeps approved policy bytes and trust when the primary cannot synchronize, and still normalizes other paths", () => {
     const fixture = approvedPolicyFixture();
     // Unrelated unique work keeps the primary from synchronizing.
     writeFixture(fixture.root, "notes.txt", "unrelated draft\n");
+    const stamp = policyFileStamp(fixture.root);
     const lease = startLoop(fixture.root, "controller", "integrate");
 
     const finalized = finalizeLoop(
@@ -124,6 +132,7 @@ describe("finalization keeps approved repository policy", () => {
       "The primary still holds unrelated work."
     );
 
+    expect(policyFileStamp(fixture.root)).toBe(stamp);
     expect(finalized.outcome).toBe("relinquished");
     expect(
       readFileSync(join(fixture.root, ".simple-changes.json"), "utf8")
@@ -141,8 +150,9 @@ describe("finalization keeps approved repository policy", () => {
     );
   });
 
-  test("normalizes policy that synchronization lands byte for byte", () => {
+  test("carries approved policy through the fast-forward without rewriting it", () => {
     const fixture = approvedPolicyFixture();
+    const stamp = policyFileStamp(fixture.root);
     const lease = startLoop(fixture.root, "controller", "integrate");
 
     const finalized = finalizeLoop(
@@ -153,22 +163,24 @@ describe("finalization keeps approved repository policy", () => {
     );
 
     expect(finalized).toMatchObject({ blockers: [], outcome: "completed" });
-    expect([...finalized.cleanup.cleanedPrimaryPaths].sort()).toEqual([
-      ".simple-changes.json",
-      "README.md",
-    ]);
+    expect(finalized.cleanup.cleanedPrimaryPaths).toEqual(["README.md"]);
+    expect(finalized.cleanup.notes).toContainEqual(
+      expect.stringContaining("Carried .simple-changes.json")
+    );
     expect(git(fixture.root, ["status", "--short"])).toBe("");
     expect(git(fixture.root, ["rev-parse", "main"])).toBe(
       git(fixture.root, ["rev-parse", "origin/main"])
     );
+    expect(policyFileStamp(fixture.root)).toBe(stamp);
     expect(
       readFileSync(join(fixture.root, ".simple-changes.json"), "utf8")
     ).toBe(approvedPolicy);
     expect(policyTrust(fixture.root)).toBe("trusted");
   });
 
-  test("puts approved policy back when synchronization fails after normalization", () => {
+  test("keeps approved policy and its index entry when the fast-forward fails", () => {
     const fixture = approvedPolicyFixture();
+    const stamp = policyFileStamp(fixture.root);
     const lease = startLoop(fixture.root, "controller", "integrate");
     // Every reference update fails, so the fast-forward cannot land.
     const hook = join(fixture.root, ".git", "hooks", "reference-transaction");
@@ -187,12 +199,16 @@ describe("finalization keeps approved repository policy", () => {
       readFileSync(join(fixture.root, ".simple-changes.json"), "utf8")
     ).toBe(approvedPolicy);
     expect(policyTrust(fixture.root)).toBe("trusted");
+    expect(policyFileStamp(fixture.root)).toBe(stamp);
     expect(finalized.cleanup.cleanedPrimaryPaths).toEqual(["README.md"]);
     expect(finalized.cleanup.notes).toContainEqual(
-      expect.stringContaining("Put back .simple-changes.json")
+      expect.stringContaining("Kept .simple-changes.json")
     );
+    // The entry staged for the fast-forward returned to the HEAD entry.
+    expect(git(fixture.root, ["diff", "--cached", "--name-only"])).toBe("");
   });
-  test("puts approved policy back after a switch lands a local target branch that is behind", () => {
+
+  test("keeps approved policy when the primary would need a switch to a lagging local target", () => {
     const fixture = repository();
     writeFixture(fixture.root, ".simple-changes.json", openingPolicy);
     git(fixture.root, ["add", ".simple-changes.json"]);
@@ -212,6 +228,7 @@ describe("finalization keeps approved repository policy", () => {
     git(fixture.root, ["switch", "--quiet", "work"]);
     writeFixture(fixture.root, ".simple-changes.json", approvedPolicy);
     writeFixture(fixture.root, "README.md", "# Current target\n");
+    const stamp = policyFileStamp(fixture.root);
     writeRepositoryPolicyTrustReceipt(
       fixture.root,
       resolve(fixture.root, ".git"),
@@ -219,25 +236,26 @@ describe("finalization keeps approved repository policy", () => {
       "Approve the migration policy"
     );
     const lease = startLoop(fixture.root, "controller", "integrate");
-    // The switch to the local target branch succeeds; the fast-forward to
-    // the unsigned refreshed target is refused.
+    // Even if a switch happened, the fast-forward to the unsigned refreshed
+    // target would be refused.
     git(fixture.root, ["config", "merge.verifySignatures", "true"]);
 
     const finalized = finalizeLoop(
       fixture.root,
       lease.runId,
       "controller",
-      "The fast-forward is refused after the switch."
+      "The primary would need a switch."
     );
 
     expect(finalized.outcome).toBe("relinquished");
-    expect(git(fixture.root, ["branch", "--show-current"])).toBe("main");
+    expect(git(fixture.root, ["branch", "--show-current"])).toBe("work");
+    expect(policyFileStamp(fixture.root)).toBe(stamp);
     expect(
       readFileSync(join(fixture.root, ".simple-changes.json"), "utf8")
     ).toBe(approvedPolicy);
     expect(policyTrust(fixture.root)).toBe("trusted");
     expect(finalized.cleanup.notes).toContainEqual(
-      expect.stringContaining("Put back .simple-changes.json")
+      expect.stringContaining("Kept .simple-changes.json")
     );
   });
 });

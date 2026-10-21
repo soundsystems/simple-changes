@@ -1,10 +1,6 @@
 import { existsSync, readdirSync } from "node:fs";
 import { resolve } from "node:path";
-import {
-  targetContainmentAudit,
-  targetContainsRevision,
-} from "./cleanup-core.ts";
-import { proveExactByteTargetContainment } from "./exact-byte-proof.ts";
+import { targetContainsRevision } from "./cleanup-core.ts";
 import { sha256Json } from "./hash.ts";
 import {
   nothingAtPath,
@@ -135,30 +131,14 @@ export const readRunCreatedRetirements = (
   return retirements;
 };
 
-// A retained branch that is gone, such as one this run's own cleanup deleted
-// once the target contained it, still accounts for the proven head only
-// while the target contains that head by ancestry or patch equivalence, or
-// the head still proves exact-byte against the current target.
-const deletedBranchHeadAccounted = (
-  lease: LoopLease,
-  targetRevision: string,
-  headSha: string
-): boolean =>
-  targetContainmentAudit(lease.primaryCheckout, targetRevision, headSha)
-    .method !== null ||
-  proveExactByteTargetContainment(lease.primaryCheckout, {
-    sourceHead: headSha,
-    targetRevision,
-  }).status === "proven";
-
 /**
  * The retirement that still accounts for a run-created registration: it
  * names this exact registration, the checkout is absent from disk and from
- * Git's live worktree list, and the current target still contains the
- * target the proof compared against. The retained branch must still point
- * at the head the proof read; once it is gone, the target must still
- * account for that head. A branch that moved, or anything else, leaves the
- * registration unretired.
+ * Git's live worktree list, the retained branch still points at the head
+ * the proof read, and the current target still contains the target the
+ * proof compared against. A branch that moved or is gone, or anything
+ * else, leaves the registration unretired. Automatic cleanup keeps such a
+ * branch for that reason (see `retirementBackedBranches`).
  */
 export const currentRunCreatedRetirement = (
   lease: LoopLease,
@@ -184,6 +164,9 @@ export const currentRunCreatedRetirement = (
   const branchHead = inventory.branches.find(
     (branch) => branch.name === registered.branch
   )?.sha;
+  if (!branchHead) {
+    return;
+  }
   return retirements.find(
     (retirement) =>
       retirement.path === registered.path &&
@@ -192,13 +175,7 @@ export const currentRunCreatedRetirement = (
       retirement.baselineChangeDigest === registered.baselineChangeDigest &&
       retirement.baselineHeadSha === registered.baselineHeadSha &&
       retirement.targetRef === lease.targetRef &&
-      (branchHead === undefined
-        ? deletedBranchHeadAccounted(
-            lease,
-            targetRevision,
-            retirement.branchHeadSha
-          )
-        : retirement.branchHeadSha === branchHead) &&
+      retirement.branchHeadSha === branchHead &&
       targetContainsRevision(
         lease.primaryCheckout,
         targetRevision,
@@ -229,5 +206,22 @@ export const retiredRunCreatedPaths = (
         currentRunCreatedRetirement(lease, inventory, registered, retirements)
       )
       .map((registered) => registered.path)
+  );
+};
+
+/**
+ * Branches a current run-created retirement relies on. Automatic cleanup
+ * keeps them, and completion does not ask to delete them, because deleting
+ * one would end the retirement that accounts for its checkout.
+ */
+export const retirementBackedBranches = (
+  lease: LoopLease,
+  inventory: RepositoryInventory
+): Set<string> => {
+  const retired = retiredRunCreatedPaths(lease, inventory);
+  return new Set(
+    lease.worktrees
+      .filter((registered) => retired.has(registered.path))
+      .flatMap((registered) => (registered.branch ? [registered.branch] : []))
   );
 };

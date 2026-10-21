@@ -210,8 +210,10 @@ touched equals the current target's bytes. A byte difference, a missing or
 shared branch, or a merge commit in that range refuses with nothing recorded.
 The proof goes in its own immutable recovery-history record, not the lease,
 and accounts for the checkout in verification, `loop close-equivalent`, and
-`loop recover-post-cleanup` only while the branch stays at the proven head. It
-deletes nothing, forces no Git operation, and claims no ancestry or delivery.
+`loop recover-post-cleanup` only while the branch stays at the proven head, so
+automatic cleanup keeps that branch; a moved or deleted branch ends the
+retirement. It deletes nothing, forces no Git operation, and claims no
+ancestry or delivery.
 
 ## Repair bookkeeping after cleanup
 

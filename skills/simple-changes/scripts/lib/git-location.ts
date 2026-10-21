@@ -1,4 +1,11 @@
-import { lstatSync, readFileSync, realpathSync, statSync } from "node:fs";
+import {
+  type Dirent,
+  lstatSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  statSync,
+} from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
 import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
 import { gitExecutable } from "./process.ts";
@@ -15,7 +22,7 @@ import { gitExecutable } from "./process.ts";
 const STATE_DIRECTORY = "simple-changes";
 const DIAGNOSTIC_LIMIT = 240;
 const LINE_ENDS = /[\r\n]+$/u;
-const GITDIR_LINE = /^gitdir: ([^\r\n]+)/mu;
+const GITDIR_PREFIX = "gitdir: ";
 
 /** What a refusal reports about where the command looked. */
 export interface GitLocationContext {
@@ -158,8 +165,10 @@ export const isCommonGitDirectory = (path: string): boolean =>
 /**
  * Refuses unless `commonGitDirectory` is a repository's own Git directory and
  * its `simple-changes` state directory, when it exists, is a plain directory
- * there rather than a link that sends state elsewhere. Callers run it before
- * they create any lock or state file.
+ * there with no symbolic link among its entries, since a linked entry (such
+ * as `worktree-coordination`) would send state written through it somewhere
+ * else. Deeper, run-scoped directories are created by Simple Changes itself
+ * inside these. Callers run it before they create any lock or state file.
  */
 export const assertStateDestination = (
   commonGitDirectory: string,
@@ -184,10 +193,25 @@ export const assertStateDestination = (
       context
     );
   }
+  let entries: Dirent[] = [];
+  try {
+    entries = readdirSync(stateDirectory, { withFileTypes: true });
+  } catch {
+    // Not there yet.
+  }
+  const linked = entries.find((entry) => entry.isSymbolicLink());
+  if (linked) {
+    refuse(
+      `${bounded(join(stateDirectory, linked.name))} is a symbolic link, so state written through it would land somewhere else.`,
+      context
+    );
+  }
 };
 
 // Where the checkout's `.git` entry points: its own real path when it is a
-// directory, its `gitdir:` line when it is a file, null when there is none.
+// directory, the path after `gitdir: ` when it is a file, null when there is
+// none. Like Git, only trailing line ends are removed, so a path with a line
+// break inside it is kept whole.
 const checkoutMarkerTarget = (
   root: string,
   context: GitLocationContext
@@ -201,7 +225,10 @@ const checkoutMarkerTarget = (
   if (isDirectory(marker)) {
     return realpathOrNull(marker);
   }
-  const pointer = GITDIR_LINE.exec(readText(marker) ?? "")?.[1];
+  const text = readText(marker) ?? "";
+  const pointer = text.startsWith(GITDIR_PREFIX)
+    ? text.slice(GITDIR_PREFIX.length).replace(LINE_ENDS, "")
+    : "";
   const target = pointer ? realpathOrNull(resolve(root, pointer)) : null;
   return (
     target ??

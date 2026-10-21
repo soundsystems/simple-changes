@@ -22,8 +22,10 @@ import {
   captureInventory,
   locateRepository,
 } from "../../../skills/simple-changes/scripts/lib/inventory.ts";
+import { withLoopStateLock } from "../../../skills/simple-changes/scripts/lib/loop-lease-core.ts";
 import { gitAnswerIsRequired } from "../../../skills/simple-changes/scripts/lib/process.ts";
 import { recordProposalAuthors } from "../../../skills/simple-changes/scripts/lib/review-ledger.ts";
+import { withWorktreeCoordinationLock } from "../../../skills/simple-changes/scripts/lib/worktree-coordination.ts";
 import {
   createTestRepository,
   git,
@@ -295,6 +297,82 @@ describe("the common Git directory behind Simple Changes state", () => {
     expect(existsSync(join(setup.linked, "simple-changes"))).toBe(false);
     expect(existsSync(join(setup.primaryGit, "simple-changes"))).toBe(false);
     expect(untracked(setup.linked)).toBe("");
+  });
+
+  test("a Git directory path with a line break inside it still resolves", () => {
+    // Git keeps everything after `gitdir: ` but the trailing line ends, so a
+    // linked worktree's `.git` file can hold a line break inside its path.
+    const base = realpathSync(
+      mkdtempSync(join(tmpdir(), "simple-changes-line-break-"))
+    );
+    cleanups.push(() => rmSync(base, { force: true, recursive: true }));
+    const primary = join(base, "main\nrepository");
+    mkdirSync(primary);
+    git(primary, ["init", "-b", "main"]);
+    git(primary, [
+      "-c",
+      "user.name=Simple Changes Tests",
+      "-c",
+      "user.email=tests@simple-changes.invalid",
+      "commit",
+      "--allow-empty",
+      "-m",
+      "Initial fixture",
+    ]);
+    const linked = join(base, "linked");
+    git(primary, ["worktree", "add", "-b", "linked", linked]);
+    const primaryGit = join(primary, ".git");
+    expect(locateRepository(linked).repository.commonGitDirectory).toBe(
+      primaryGit
+    );
+    expect(
+      verifiedGitDirectories(
+        linked,
+        {
+          commonGitDirectory: `${primaryGit}\n`,
+          gitDirectory: `${join(primaryGit, "worktrees", "linked")}\n`,
+        },
+        linked
+      ).commonGitDirectory
+    ).toBe(primaryGit);
+  });
+
+  test("a symbolic link among the state directory's entries refuses every lock and ledger write", () => {
+    const fixture = createTestRepository();
+    cleanups.push(fixture.cleanup);
+    const elsewhere = join(fixture.base, "elsewhere");
+    mkdirSync(elsewhere);
+    const common = realpathSync(join(fixture.root, ".git"));
+    mkdirSync(join(common, "simple-changes"));
+    symlinkSync(
+      elsewhere,
+      join(common, "simple-changes", "worktree-coordination")
+    );
+    const reason = "is a symbolic link, so state written through it";
+    expect(() =>
+      assertStateDestination(common, { repository: fixture.root })
+    ).toThrow(reason);
+    expect(() =>
+      withWorktreeCoordinationLock(common, "test", () => null)
+    ).toThrow(reason);
+    expect(() => withLoopStateLock(common, "test", () => null)).toThrow(reason);
+    const base = git(fixture.root, ["rev-parse", "HEAD"]);
+    writeFixture(fixture.root, "b.txt", "b\n");
+    git(fixture.root, ["add", "b.txt"]);
+    git(fixture.root, ["commit", "-m", "Change"]);
+    expect(() =>
+      recordProposalAuthors({
+        base,
+        environment: {},
+        head: git(fixture.root, ["rev-parse", "HEAD"]),
+        proposalId: "17",
+        repositoryPath: fixture.root,
+      })
+    ).toThrow(reason);
+    expect(readdirSync(elsewhere)).toEqual([]);
+    expect(readdirSync(join(common, "simple-changes"))).toEqual([
+      "worktree-coordination",
+    ]);
   });
 
   test("a checkout whose .git entry points at another Git directory is refused", () => {

@@ -476,13 +476,14 @@ the same way, without a delta.
 
 An accepted delta is recorded in the attempt directory as
 `replan-approval-delta.json`, before the lease moves: the approved and current
-status and coordination digests, the current observation, and each accepted
-release. `replan.json` keeps the approved observation and its existing format,
+status and coordination digests, the current observation, the exact inventory
+text whose digest the approval bound, and each accepted release. `replan.json` keeps the approved observation and its existing format,
 which older runtimes validate; an older runtime retrying such an attempt
 before the move refuses, because the current observation differs from the
 approved one. A retry after a crash proves the same delta again and must find
 exactly the recorded one, and every retry re-derives the recorded releases
-from the two recorded observations. `loop archive-recorded` applies the same rule.
+from the two recorded observations and the recorded inventory, which must
+still hash to the approved inventory digest. `loop archive-recorded` applies the same rule.
 
 ## Archive a recorded run that cannot finish
 

@@ -433,6 +433,33 @@ test("a completed retry refuses a delta record whose releases were altered", () 
       "does not match its exact intent"
     );
   }
+  // Consistently rewriting the release evidence and the current observation,
+  // with recomputed digests, still cannot leave the approved inventory.
+  const forged = JSON.parse(bytes.toString());
+  const forgedSha = "f".repeat(40);
+  forged.acceptedReleases[0].headSha = forgedSha;
+  for (const claim of forged.currentObservation.coordination.claims) {
+    if (claim.claimId === fixture.claim.claimId) {
+      claim.headSha = forgedSha;
+    }
+  }
+  forged.currentStatusDigest = sha256Json(forged.currentObservation);
+  forged.currentCoordinationDigest = sha256Json(
+    forged.currentObservation.coordination
+  );
+  writeFileSync(path, JSON.stringify(forged));
+  expect(() => replanLoop(fixture.root, fixture.request)).toThrow(
+    "does not match its exact intent"
+  );
+  const inventory = JSON.parse(bytes.toString());
+  inventory.inventoryDigestInput = inventory.inventoryDigestInput.replace(
+    fixture.claim.headSha ?? "",
+    forgedSha
+  );
+  writeFileSync(path, JSON.stringify(inventory));
+  expect(() => replanLoop(fixture.root, fixture.request)).toThrow(
+    "does not match its exact intent"
+  );
   writeFileSync(path, bytes);
   expect(replanLoop(fixture.root, fixture.request)).toEqual(result);
 });

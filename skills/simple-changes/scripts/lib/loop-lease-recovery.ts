@@ -22,7 +22,11 @@ import { assertNotChangelogAuthorCheckout } from "./changelog-authors.ts";
 import { targetContainsRevision } from "./cleanup-core.ts";
 import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
 import { sha256, sha256Json } from "./hash.ts";
-import { captureInventory, locateRepository } from "./inventory.ts";
+import {
+  captureInventory,
+  inventoryDigestInput,
+  locateRepository,
+} from "./inventory.ts";
 import {
   assertControllerActive,
   assertMatchingRun,
@@ -1900,6 +1904,11 @@ export interface LoopReplanDeltaRecord {
   currentObservation: ReplanObservation;
   currentStatusDigest: string;
   fullLeaseDigest: string;
+  /**
+   * The exact text whose SHA-256 is the approved (and unchanged) inventory
+   * digest, so every read re-proves the released checkouts against it.
+   */
+  inventoryDigestInput: string;
   kind: "loop-replan-approval-delta";
   recordedAt: string;
   requestDigest: string;
@@ -2168,7 +2177,8 @@ const approvedReplanObservation = (
 const replanDeltaRecord = (
   record: LoopReplanRecord,
   current: ReplanObservation,
-  delta: ReplanApprovalDelta
+  delta: ReplanApprovalDelta,
+  inventory: RepositoryInventory
 ): LoopReplanDeltaRecord => ({
   acceptedReleases: delta.acceptedReleases,
   approvedCoordinationDigest: delta.approvedCoordinationDigest,
@@ -2177,6 +2187,7 @@ const replanDeltaRecord = (
   currentObservation: current,
   currentStatusDigest: sha256Json(current),
   fullLeaseDigest: record.fullLeaseDigest,
+  inventoryDigestInput: inventoryDigestInput(inventory),
   kind: "loop-replan-approval-delta",
   recordedAt: new Date().toISOString(),
   requestDigest: sha256Json(record.request),
@@ -2228,6 +2239,7 @@ const readReplanDeltaRecord = (
         currentObservation: { type: "object" },
         currentStatusDigest: digest,
         fullLeaseDigest: digest,
+        inventoryDigestInput: { minLength: 1, type: "string" },
         kind: { const: "loop-replan-approval-delta" },
         recordedAt: { format: "date-time", type: "string" },
         requestDigest: digest,
@@ -2242,6 +2254,7 @@ const readReplanDeltaRecord = (
         "currentObservation",
         "currentStatusDigest",
         "fullLeaseDigest",
+        "inventoryDigestInput",
         "kind",
         "recordedAt",
         "requestDigest",
@@ -2272,43 +2285,35 @@ const readReplanDeltaRecord = (
 };
 
 // The recorded releases are exactly the verified releases between the
-// intent's approved observation and the recorded current one. The checkouts
-// are those the releases name; their match with the observed checkouts was
-// proven, under an unchanged inventory digest, when the delta was accepted.
+// intent's approved observation and the recorded current one, against the
+// checkouts of the recorded inventory, whose digest is the approved one.
 const recordedReleasesProven = (
   approved: ReplanObservation,
   stored: LoopReplanDeltaRecord
 ): boolean => {
+  if (sha256(stored.inventoryDigestInput) !== approved.inventoryDigest) {
+    return false;
+  }
   try {
     validateSchema(
       "worktree-coordination",
       stored.currentObservation.coordination
     );
+    const { worktrees } = JSON.parse(stored.inventoryDigestInput) as {
+      worktrees: WorktreeInventory[];
+    };
+    const delta = replanApprovalDelta(
+      approved,
+      stored.currentObservation,
+      Array.isArray(worktrees) ? worktrees : []
+    );
+    return (
+      replanDeltaAccepted(delta) &&
+      sha256Json(delta.acceptedReleases) === sha256Json(stored.acceptedReleases)
+    );
   } catch {
     return false;
   }
-  const checkouts = stored.acceptedReleases.map((release) => ({
-    bare: false,
-    branch: release.branch,
-    changeDigest: release.changeDigest,
-    changes: [],
-    detached: release.branch === null,
-    headSha: release.headSha,
-    isCurrent: false,
-    isPrimary: false,
-    locked: false,
-    path: release.path,
-    prunable: false,
-  }));
-  const delta = replanApprovalDelta(
-    approved,
-    stored.currentObservation,
-    checkouts
-  );
-  return (
-    replanDeltaAccepted(delta) &&
-    sha256Json(delta.acceptedReleases) === sha256Json(stored.acceptedReleases)
-  );
 };
 
 // Record the accepted delta before the transition. A record already published
@@ -2598,7 +2603,13 @@ const archivePendingReplan = (
         EXIT_CODES.unsafe
       );
     }
-    approvalDelta = replanDeltaRecord(record, current, delta);
+    if (sha256(inventoryDigestInput(inventory)) !== inventory.baselineDigest) {
+      throw new SimpleChangesError(
+        "Replan cannot record the inventory its approval delta was proven against.",
+        EXIT_CODES.unsafe
+      );
+    }
+    approvalDelta = replanDeltaRecord(record, current, delta, inventory);
   }
   if (request.archiveRecordedOutcome) {
     assertArchivableRecordedOutcome(record.lease);

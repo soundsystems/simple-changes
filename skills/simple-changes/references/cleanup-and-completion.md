@@ -333,37 +333,31 @@ preserved outcomes, but they must be named and reported; they cannot disappear
 from the ledger. For GitLab reconciliation, report every disposition and every
 preserved uncertain branch.
 
-A legacy ledger may lack persisted opening evidence even though cleanup already
-finished. Do not fabricate an initial inventory from later observations;
-[recovery](recovery.md#repair-bookkeeping-after-cleanup) describes the approved
-`loop recover-post-cleanup` path.
+For a legacy ledger that lacks persisted opening evidence after cleanup already
+finished, follow [recovery](recovery.md#repair-bookkeeping-after-cleanup).
 
 ## Complete and finalize
 
-Recovery for inherited or broken state, including claim takeover, equivalence
-evidence, `loop close-equivalent`, `loop rebaseline`, standalone `worktree
-cleanup`, lease-less `prune`, stale lease recovery, `worktree refresh-index`,
-`loop replan`, and `loop archive-recorded`, lives in [recovery](recovery.md).
+Recovery for inherited or broken state lives in [recovery](recovery.md).
 
-Finalization performs the proven-safe cleanup described in
-[cleanup and completion](#complete-and-finalize) and releases
+Finalization performs the proven-safe cleanup described below and releases
 completed state. An exact verified shipment can close while unrelated work
 remains preserved; its durable finalization receipt reports delivery and cleanup
-separately. If delivery or safety blockers remain, it relinquishes durable state
-and exits nonzero. The exception is an untouched Ship run, one that owed a
-scope, recorded none, and changed nothing: finalization closes it instead of
-freezing its scope, so ending a turn on a scope question never strands it.
-`loop end` closes it the same way; then start a fresh loop for a new baseline.
+separately. Incomplete finalization relinquishes durable state and exits
+nonzero. The exception is an untouched Ship run, one that owed a scope,
+recorded none, and changed nothing: finalization closes it instead of freezing
+its scope, with `shipmentStatus: unstarted` and an `abort-unmutated.json`
+receipt, whether or not the repository moved, so ending a turn on a scope
+question never strands it. `loop end` closes it the same way; a fresh `loop
+start` then takes a new baseline, the same one on an unchanged repository, so
+nothing is lost.
 
 A dirty primary requires classification before completion. Finalization
 safely normalizes tracked target-identical paths; classify every remaining
 path against the refreshed target, ship genuine newer work, and prune proven
-obsolete or generated entries. An exact verified shipment may close with an
-unchanged primary explicitly preserved in its scope, an unchanged primary
-whose scoped dirty paths shipped as reviewed results now in the target, or
-unrelated late arrivals. Report pending cleanup separately and use guarded
-`prune` when safe; do not keep a delivered shipment open solely for that
-housekeeping.
+obsolete or generated entries. Report pending cleanup separately and use
+guarded `prune` when safe; do not keep a delivered shipment open solely for
+that housekeeping.
 
 Before reporting completion:
 
@@ -391,16 +385,12 @@ Before reporting completion:
    audited and current branch revisions are contained in the refreshed target,
    and no active claim remains. Missing branch evidence or unique work remains a
    blocker.
-   An unchanged clean unclaimed opening worktree whose exact head is contained
-   in the refreshed target is an automatic finalization cleanup candidate; use
-   `loop retain-worktree` when that checkout should remain. For changed opening
-   work later proven obsolete, record a user-approved `loop dispose-worktree`
-   disposition only when it is clean and has zero unique commits. Remove that
-   exact path through `loop exec`; audit its branch separately. When a
-   preserved checkout has already been removed by its owning task, record
-   `loop retire-absent-worktree` as
-   [recovery](recovery.md#absent-and-obsolete-worktrees) describes; do not
-   recreate a deleted checkout merely to satisfy the record. Remove every
+   Opening worktrees follow
+   [opening-worktree dispositions](inventory-and-concurrency.md#opening-worktree-dispositions);
+   audit a disposed worktree's branch separately. When a preserved checkout has
+   already been removed by its owning task, record `loop
+   retire-absent-worktree` as
+   [recovery](recovery.md#absent-and-obsolete-worktrees) describes. Remove every
    run-created authoring worktree only after
    its branch is merged,
    otherwise accounted for, or explicitly preserved. Completed-run release must refuse to
@@ -502,13 +492,8 @@ failure while settling containment (such as a missing ancestor object), any
 answer short of a positive proof in a shallow clone, or holds that cannot be
 read (a shallow clone always loses its fork-point holds). Holds apply first,
 so a held branch's unsettled audit is neither pending nor an error. Unknown
-evidence never reads as clean. Incomplete finalization
-relinquishes durable state and exits nonzero. The exception is an untouched Ship
-run, with no recorded scope and no mutation evidence: finalization closes it
-with `shipmentStatus: unstarted` and an `abort-unmutated.json` receipt instead
-of freezing its scope, whether or not the repository moved, and `loop end`
-closes it the same way. A fresh `loop start` on an unchanged repository takes
-the same baseline, so nothing is lost.
+evidence never reads as clean.
+
 An authorized agent resumes a relinquished run with `loop start --mode resume
 --agent-id <you>` without takeover approval; its existing frozen scope and
 safety checks remain in force. Under the same lock, beside the lease it
@@ -521,11 +506,14 @@ retained exclusions, active claims, and branches with unique commits remain
 preserved.
 
 For every automatic opening-worktree removal or stale-metadata prune,
-finalization persists the exact freshly revalidated removal intent before the
-destructive Git operation. If the process dies afterward, `loop recover` may
-clear only stale loop and coordination locks owned by that same dead local PID;
-the persisted intent then permits the next finalization attempt to account for
-that exact absence, mark the disposition completed, and continue. Both
+finalization holds the loop and worktree-coordination locks, re-reads each
+candidate's branch, head, digest, and claim state, and persists the exact
+removal intent before the destructive Git operation. If the process dies
+afterward, `loop recover` may clear only stale loop and coordination locks
+owned by that same dead local PID; the persisted intent then permits the next
+finalization attempt to account for that exact absence only, mark the
+disposition completed, and continue, without weakening any other
+preserved-worktree check. Both
 run-created and opening worktree removals remain in the historical audit.
 Because Git prunes stale registrations together, finalization defers all
 metadata pruning if any missing checkout is outside the freshly audited set.

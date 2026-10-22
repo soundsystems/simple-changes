@@ -132,8 +132,7 @@ caller's agent ID owns the exact registered controller or run-author worktree on
 its recorded branch. It rejects any new unclaimed worktree, branch switch,
 incomplete preparation, missing baseline worktree, or head/content change in a
 preserved worktree. Run `loop verify` before merge, deployment, cleanup, and
-completion even when every earlier operation passed. When it fails, resolve
-exactly what it reports and run it again; proceed only on a passing result.
+completion even when every earlier operation passed.
 
 `loop exec` pins every registered unit the run does not author itself to its
 recorded head: a released or handed-off author's recorded state, and a
@@ -186,14 +185,9 @@ under the existing integration and coordination locks. Its empty units do not
 prove delivery: committed-source and release-generated target changes must still
 be accounted for in the exact outcome's `additionalPaths`, including rename
 originals, removals, and tree entries. It does not retroactively repair old runs.
-Unrelated changes since `loop start`, such as a claimed author's edits, are
-accounted for in that plan; a moved target, changed policy, failing
-verification, or a changed controller or scoped source worktree still blocks
-it. A worktree marked `preserved` in the safety lease is protected from
-deletion; that label never excludes its finished changes from shipment scope
-by itself.
-Do not infer shipment exclusion from a `preserved` lease role: it means only
-that the checkout cannot be changed or removed by the controller.
+A `preserved` lease role means only that the controller cannot change or remove
+the checkout; it never excludes its finished changes from shipment scope
+([focused units](focused-units.md#group-work-into-units)).
 If independent review requires source changes, generate a new non-mutating
 preview from the exact current inventory and record it with `loop refresh-scope
 --receipt <change-plan.json>` before another mutation. This controller-only
@@ -223,12 +217,9 @@ Use these boundaries after an author is registered:
 | Read Git/provider state | Merge, cherry-pick, or rebase work into the integration branch |
 | Write normal worktree-local caches or build output | Push, mutate proposals, merge remotely, deploy, or clean repository objects |
 
-After registration, both run-prepared and independently claimed authors edit,
-generate, format, test, stage, and commit normally and concurrently in their
-own distinct worktrees and branches; those author-local operations do not use
-the global controller lock. Run only shared integration mutations through
-`loop exec`, including target movement, integration merges or cherry-picks,
-pushes, worktree/branch lifecycle changes, and cleanup.
+Author-local operations do not use the global controller lock. Run only shared
+integration mutations through `loop exec`: target movement, integration merges
+or cherry-picks, pushes, worktree and branch lifecycle changes, and cleanup.
 
 Git already uses separate per-worktree indexes and atomic locks for distinct
 branch refs and object writes. Simple Changes should not add a repository-wide
@@ -241,13 +232,12 @@ When a genuine integration lock is busy, wait or retry only that short shared
 operation, with [`--wait-lock`](#bounded-lock-waits) where the command offers
 it; unrelated authors continue. Never pause them, demand a lease-null
 handoff, export patches, or clean worktrees merely to free the lock. When lock
-creation instead fails with `EPERM`, `EACCES`, `EROFS`, or another
-permission-denied result, treat it as a local harness/filesystem authorization
-failure. It is not evidence of a live lock owner, so do not run recovery or
-coordinate an owner pause until actual lock metadata proves contention.
-A permission-denied error while creating controller state is a
-harness/filesystem permission problem, not lock contention: preserve work in
-place, fix that exact permission boundary, and keep unrelated authoring active.
+creation or controller state creation instead fails with `EPERM`, `EACCES`,
+`EROFS`, or another permission-denied result, treat it as a local
+harness/filesystem authorization failure. It is not evidence of a live lock
+owner, so do not run recovery or coordinate an owner pause until actual lock
+metadata proves contention: preserve work in place, fix that exact permission
+boundary, and keep unrelated authoring active.
 
 The default `concurrentWork: "allow-claimed"` policy recognizes an active owner
 claim on a distinct non-primary branch as `concurrent-author`. The author may
@@ -315,7 +305,6 @@ to wait for that holder instead:
 
 `--timeout-ms <n>` bounds the wait: 60000 by default, at most 600000, and
 only with `--wait-lock`. Any other command refuses the flags with exit 2.
-Without the flag, every command behaves exactly as before.
 
 While a live owner holds the lock, the writer polls it. Once the lock is free
 it takes it like any other command and runs once: only a busy acquisition is
@@ -484,15 +473,9 @@ independent unit to its own agent instead of authoring the units one after
 another. Delegation changes who edits a unit, not what the agents share. When
 the host cannot start agents or report their completion, author the units
 consecutively; that is a harness limit, not a policy change.
-When scheduling allows parallel authoring and the host can start isolated
-agents, delegate independent units instead of authoring them one after
-another: the controller prepares every agent's worktree with `prepare-agent`
-under a new agent ID, each agent edits and checks only inside its own, and the
-controller alone pushes, merges, and finalizes.
 
-`consecutive` delegates only for necessary isolation, `balanced` delegates
-when the time saved is meaningful, and `parallel` delegates every independent
-unit while still confirming unusually expensive fan-out. Every prepared branch
+How much to delegate follows the `proposalScheduling` values at the start of
+this reference. Every prepared branch
 starts from the lease's pinned target revision, so a unit that needs another
 unit's result is either authored by the controller after that result is
 integrated or delegated only after the controller refreshes its prepared
@@ -598,31 +581,24 @@ controller. A snapshot split across agents is not one baseline.
 
 ## Ready work blocked by another shipping controller
 
-When a separate task already owns the active shipping controller, finished and
-verified work must remain on its exact worktree, branch, and commit. Do not
-start a competing shipment. Offer the user two choices in plain language:
+When a separate task already owns the active shipping controller, keep finished
+and verified work on its exact worktree, branch, and commit, with its checks,
+release impact, and constraints, and do not start a competing shipment. Ask the
+fold-or-wait question in [shipment holds](../SKILL.md#shipment-holds) in plain
+language, and do not assume an answer:
 
-- **Fold into the active shipment:** with explicit approval, record a
+- **Fold into the active shipment:** only with explicit approval, record a
   [ready-work receipt](#ready-work-receipts) with `worktree release
   --ready-receipt <file>`. The active controller finds it through `worktree
   status --json` at its next planning point, so no message is needed. When the
   host can identify and contact the exact owning task, you may also tell it
-  that the receipt is recorded.
-- **Ship separately afterward:** preserve the claim and work unchanged, wait
-  for the active shipment to close, then begin a fresh shipment.
+  that the receipt is recorded; never guess a recipient.
+- **Ship separately afterward:** leave the claim and work untouched, wait for
+  the active shipment to close, then begin a fresh shipment.
 
-When completed, verified work is ready but another task already owns the active
-shipping controller, preserve its exact worktree, branch, commit, checks,
-release impact, and constraints instead of starting a second shipment. Do not
-contact the other task until the user chooses the first option. The receipt
-requests integration but grants no ownership, merge, deploy, migration, or
-cleanup authority. If the user chooses the second option, leave the work
-untouched and wait for the active shipment to close.
-
-Do not imply that another task accepted, integrated, shipped, or deployed the
-work before confirmation. A ready-work receipt is coordination, not authority
-to take ownership, merge, deploy, apply migrations, or clean up. Never guess a
-recipient; the recorded receipt reaches every controller without one.
+Do not contact the other task until the user chooses the first option, and do
+not imply that another task accepted, integrated, shipped, or deployed the work
+before confirmation.
 
 ## Ready-work receipts
 
@@ -652,21 +628,18 @@ same lock interval it releases the claim as a completed-work `handoff` that
 records the receipted evidence, so an active loop that admitted the author
 keeps integrating instead of reporting a stale claim.
 
-The runtime first checks author coverage of every commit the target lacks
-from the head, the same check `author coverage` makes. While a commit has no
-attested author, carries a replay source with none, or is an inconclusive
-replay nobody attested an edit on, it records nothing, keeps the claim the
-owner's so the owner can still attest, and prints the exact SHAs with the
-owner's own `author attest` commands. A commit another agent made, such as
+The runtime first runs the `author coverage` check on every commit the target
+lacks from the head. While any coverage gap remains, it records nothing, keeps
+the claim the owner's so the owner can still attest, and prints the exact SHAs
+with the owner's own `author attest` commands. A commit another agent made, such as
 unmerged work this branch is stacked on, is that agent's to attest from its
 own session. To hand off anyway, name exactly those SHAs with
 `--leave-uncovered <sha>[,<sha>...]`. That is not a waiver and records
 nothing: each receipt's `coverage` in `worktree status` keeps showing them,
 and review stays blocked until they are attested or the owner waives them on
-the proposal. The check and the release hold the loop lock every ledger write
-takes, so, like `author attest`, it reports the lock busy while another
-command holds it, such as a running `loop exec`: retry after that returns, or
-pass [`--wait-lock`](#bounded-lock-waits).
+the proposal. The check and the release take the loop lock, so a busy holder,
+such as a running `loop exec`, makes it exit 5 unless you pass
+[`--wait-lock`](#bounded-lock-waits).
 
 `worktree status --json` lists every receipt under `readyWork` with its
 freshness: `current` while the branch is still at the receipted head and the
@@ -675,7 +648,7 @@ contains the head. For a stale receipt, ask the owner for a new one; never ship
 newer commits on an old receipt. A controller plans current receipts as
 ordinary released units and carries their migrations and deployment
 constraints into the shipment. A receipt is evidence, not authority: it never
-grants merge, deploy, migration, or cleanup permission.
+grants ownership, merge, deploy, migration, or cleanup permission.
 
 ## Shipment holds
 
@@ -810,20 +783,15 @@ session share its claims, and a harness without a session variable binds
 nothing. The session comes from the environment, so this stops mistakes and
 misread recovery steps, not deliberate impersonation.
 
-When the work is complete and verified, the same owner unlocks it with
-`worktree release`, or with `initialize --mode handoff`, which releases the
-author's own claim on that checkout as it proceeds; released work becomes an
-ordinary stable unit that this or any later controller may ship.
-
-Release the claim when the work is done, after attesting every commit on it:
-a released claim can attest nothing. An active claim excludes its
-checkout from packaging, merge, and cleanup, so a finished branch stays
-unshippable until its owner runs `worktree release --claim-id <id>` or hands
-the work off with `initialize --mode handoff --agent-id <owner>`, which
-releases the owner's own claim on the current checkout the moment the handoff
-proceeds. Do not release a claim to "free" a lock or to make a controller's
-inventory smaller; release it because the work is complete, verified, and
-committed on its branch. `worktree status --json` lists every claim, pause
+An active claim excludes its checkout from packaging, merge, and cleanup, so a
+finished branch stays unshippable until its owner runs `worktree release
+--claim-id <id>` or hands the work off with `initialize --mode handoff
+--agent-id <owner>`, which releases the owner's own claim on the current
+checkout the moment the handoff proceeds; released work becomes an ordinary
+stable unit that this or any later controller may ship. Release the claim only
+because the work is complete, verified, and committed on its branch, never to
+"free" a lock or to make a controller's inventory smaller, and only after
+attesting every commit on it: a released claim can attest nothing. `worktree status --json` lists every claim, pause
 receipt, and recorded release reason; `worktree request` builds the
 adapter-shaped pause, detach, or resume message for one exact owner and sends
 nothing by itself: the request's `state` is always `constructed`.
@@ -846,10 +814,9 @@ itself with that approval and records the checkout through its own pause and
 `loop accept-paused-change`; the run keeps its controller and its shipment
 scope, so do not relinquish it to recover.
 
-Under `allow-claimed`, a healthy distinct active claim does not block the loop;
-its owner keeps working and the controller excludes it. A valid active claim
-also promotes an opening `preserved` registration automatically. Do not ask for
-user approval or call `loop allow` for ordinary claimed concurrency. When strict
+Do not ask for user approval or call `loop allow` for ordinary claimed
+concurrency under `allow-claimed`, described
+[above](#integration-controller-lease-and-concurrent-authors). When strict
 policy or a real collision blocks a loop, contact only the exact claimed owner.
 The owner runs `worktree pause` at a safe boundary. `preserve-in-place` accepts
 dirty work but rejects active Git operations and conflicts;
@@ -901,36 +868,23 @@ and reason. It does not accept a wildcard, repository-wide permission, or stale
 digest. A later edit or commit changes the evidence and blocks the loop again.
 
 `loop end` is the strict non-mutating completed-run primitive. At the terminal
-boundary use `loop finalize` instead: in integration/reconciliation modes it
-first removes unchanged clean target-contained worktrees and branches, prunes
-stale worktree metadata, normalizes recoverable tracked primary paths already
-identical to the target, and restores the primary. It then performs the
-same completion gates and releases the lease when they pass, or relinquishes
-the controller with a nonzero exit while preserving the incomplete run.
+boundary use `loop finalize` instead: it first performs the proven-safe
+cleanup in
+[complete and finalize](cleanup-and-completion.md#complete-and-finalize), then
+applies the same completion gates.
 
 The opening lease records exact local branch names and revisions. Automatic
 branch deletion accepts only an unchanged opening branch or a branch created by
 the current run; an unattached branch that appears or moves later is preserved.
-Final cleanup holds both loop and worktree-coordination locks, re-reads each
-candidate's branch, head, digest, and claim state immediately before removal,
-and durably records the exact opening-worktree removal intent before invoking
-Git. If the controller dies after removal, that intent authorizes only the
-matching absence so stale-lock recovery can resume without weakening any other
-preserved-worktree check.
 
 ## Opening-worktree dispositions
 
-Claims allow healthy concurrent-author edits without pausing. A strict
-collision requires an exact owner claim/pause exchange. Retain a clean
-unrelated checkout rather than removing it. An unchanged clean opening checkout
-is automatically removed at finalization when it is unclaimed, unretained, and
-its exact head is already contained in the refreshed target.
-
-Do not reinterpret changed, dirty, claimed, retained, late-arriving, or unique
-opening work as cleanup. An opening worktree that remains unchanged across the
-run, is clean and unclaimed, and has an exact head already contained in the
-refreshed target is a normal automatic cleanup candidate. Use
-`loop retain-worktree` when that checkout should stay. For exceptional changed
+Retain a clean unrelated checkout rather than removing it. An opening worktree
+that remains unchanged across the run, is clean, unclaimed, and unretained, and
+has an exact head already contained in the refreshed target is removed
+automatically at finalization; use `loop retain-worktree` when that checkout
+should stay. Do not reinterpret changed, dirty, claimed, retained,
+late-arriving, or unique opening work as cleanup. For exceptional changed
 opening work, and for a worktree adopted into the lease mid-run through
 `adopt-worktree` or `accept-paused-change`, `loop dispose-worktree` records a
 manual removal disposition under the active lease; never fall back to raw

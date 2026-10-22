@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://simple-changes.dev/schemas/held-units.schema.json",
   "title": "Simple Changes held units",
-  "description": "Sidecar beside the loop lease that records each frozen scoped unit `loop hold-unit` kept preserved instead of delivered. Each hold is immutable: it keeps the original unit, its paths, the exact source, claim, and target state the user approved, the readiness evidence the controller cited, and the approval. A held unit is never delivered or target-equivalent. It lives outside the lease so older clients can still read the lease; a client that ignores it still requires every scoped unit in the outcome, so it can only be stricter.",
+  "description": "Sidecar beside the loop lease that records each frozen scoped unit `loop hold-unit` kept preserved instead of delivered. Each hold is immutable: it keeps the original unit, its paths, the exact source, claim, and target state the user approved, the readiness evidence the controller cited, and the approval. A held unit is never delivered or target-equivalent. It is the source of truth for held units; the lease of a run with holds carries only a `heldUnits` key bound to these holds, so clients before 0.33.0 refuse that lease, while a lease without holds keeps its earlier shape.",
   "type": "object",
   "additionalProperties": false,
   "required": ["schemaVersion", "runId", "holds"],

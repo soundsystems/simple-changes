@@ -20,9 +20,10 @@ import type {
  * After a run's shipment scope froze, `loop hold-unit` may move one scoped
  * unit to an explicit hold: its exact source stays preserved and the run
  * reports it as held, never as delivered or target-equivalent. Holds live in
- * a sidecar beside the lease, because older runtimes validate the lease and
- * its outcome strictly; a runtime that ignores the sidecar still requires the
- * unit in the outcome, so it can only be stricter.
+ * a sidecar beside the lease, with immutable history events and a pinned
+ * head. The lease of a run with holds also carries a `heldUnits` key bound to
+ * them, which runtimes before 0.33.0 do not know, so they refuse that lease
+ * entirely; a lease without holds keeps its earlier shape.
  */
 export const HELD_UNIT_REASON_PREFIX = "Held by loop hold-unit: ";
 

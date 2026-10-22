@@ -2142,8 +2142,13 @@ const allHeldCompletion = (
   ) {
     return false;
   }
+  // The target must be exactly the pinned one, not only an equal tree: a
+  // target that moved, even by an empty commit, is not an all-held close.
   const target = currentTargetRevision(lease);
-  if (shipmentOutcomeCompletionBlockers(lease, inventory, target).length > 0) {
+  if (
+    target !== lease.targetRevision ||
+    shipmentOutcomeCompletionBlockers(lease, inventory, target).length > 0
+  ) {
     return false;
   }
   const primary = inventory.worktrees.find((worktree) => worktree.isPrimary);

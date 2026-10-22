@@ -897,6 +897,36 @@ describe("held-only and renamed held work", () => {
     );
   });
 
+  test("an all-held run whose target moved, even by an empty commit, does not close", () => {
+    const { lease, root } = primaryFixture();
+    for (const unitId of ["feature", "role", "guide"]) {
+      approvedHold(root, lease.runId, unitId, [`${unitId}: not ready.`]);
+    }
+    const base = git(root, ["rev-parse", "origin/main"]);
+    const empty = git(root, [
+      "commit-tree",
+      "-p",
+      base,
+      "-m",
+      "Empty target commit",
+      `${base}^{tree}`,
+    ]);
+    git(root, ["update-ref", "refs/remotes/origin/main", empty]);
+    const { draft } = draftShipmentOutcome(root, lease.runId);
+    expect(draft).toMatchObject({ additionalPaths: [], units: [] });
+    recordShipmentOutcome(root, lease.runId, CONTROLLER, reviewed(draft));
+    const result = finalizeLoop(
+      root,
+      lease.runId,
+      CONTROLLER,
+      "Everything is held, but the target moved."
+    );
+    expect(result.outcome).toBe("relinquished");
+    expect(readFileSync(join(root, "feature.txt"), "utf8")).toBe(
+      "draft feature\n"
+    );
+  });
+
   test("a held rename in the primary protects its original path too", () => {
     const fixture = repository();
     const { root } = fixture;

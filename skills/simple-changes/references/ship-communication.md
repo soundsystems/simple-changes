@@ -35,21 +35,16 @@ it to the shortest message that covers:
   changes the reviewer silently.
 
 If completed, verified work is blocked only because a different task owns the
-active shipping controller, include this choice instead of stopping at a
-deployment disclaimer: **Do you want me to ask that agent to fold this work
-into the active shipment, or should I wait until that shipment finishes and
-ship this separately afterward?** Do not contact the other task or assume a
-selection before the user answers.
+active shipping controller, include the fold-or-wait choice from
+[questions and blockers](user-communication.md#questions-and-blockers) instead
+of stopping at a deployment disclaimer.
 
 If opening local changes exist, the brief must be the summary returned after
 `loop record-scope --receipt <change-plan.json>`. Do not push an early subset
 and audit the other worktrees afterward. The recorded plan must first account
-for every changed path across the primary checkout and all linked worktrees.
-It describes the repository as it is when scope is recorded: a claimed author's
-edits since `loop start` belong in the preserved section, while every included
-unit must still hold exactly the bytes its worktree had at `loop start`.
-Safety-lease `preserved` status protects a checkout from mutation or deletion;
-it does not prove that finished work is unrelated or excluded.
+for every changed path across the primary checkout and all linked worktrees, as
+[inventory and concurrency](inventory-and-concurrency.md#integration-controller-lease-and-concurrent-authors)
+describes for `loop record-scope`.
 For each included unit, show a short feature/outcome description, its branch or
 detached revision, and its source worktree. List preserved and excluded work in
 separate short sections. Refine generic directory-based planner labels before
@@ -103,20 +98,17 @@ already prove.
 
 Name `expedited` or `break-glass` in the pre-ship brief and list the closed
 evidence labels that produced the inference. Do not persist or replay the raw
-request. Urgency-only language authorizes neither production nor post-deploy
-review. A manually configured advanced `shippingMode: "break-glass"` may
-authorize deploy-before-review ordering, but it still supplies no production
-authority and does not waive rollback evidence. When active user impact or tested production readiness recommends
-break-glass without authorizing it, continue safe expedited work and use one
-concise blocking question at the deploy-before-review boundary.
+request. Which requests and settings authorize break-glass is in
+[deployments](deployments.md#emergency-ship-exception). When active user impact
+or tested production readiness recommends break-glass without authorizing it,
+continue safe expedited work and use one concise blocking question at the
+deploy-before-review boundary.
 
 When the current request explicitly says to deploy first or review after
 deployment, state rather than re-ask the exact consequence: one checked,
 revision-bound candidate may reach production before independent review, then
 review and forward reconciliation begin immediately. Report the previous live
-revision and rollback capability before deploying. Known provider-native
-rollback is sufficient; do not delay break-glass with a current-production
-lookup solely to manufacture an anchor identifier.
+revision and rollback capability before deploying.
 
 After the first deployment, use the durable status names verbatim:
 
@@ -195,9 +187,7 @@ The final response then compares the pre-ship brief with the observed result:
 
 Do not report planned work as shipped. If the run stops before production, name
 the highest completed boundary and the exact reason the remaining work did not
-ship. Lead with the practical outcome; place required revisions, digests, and
-receipt identities afterward instead of making the user decode them first.
-Never leave internal cross-references such as “Annotation 1” or footnote
+ship. Never leave internal cross-references such as “Annotation 1” or footnote
 markers that resolve nowhere in the message, and state what evidence supports
 the shipment rather than listing evidence that was deliberately not relied on;
 if a disclaimer matters, say its practical consequence in one sentence.
@@ -226,11 +216,8 @@ Prefer the same receipt led by the actual change:
 
 When the run finalizes or reconciles a public release, end with **Latest customer
 notes**: two to five practical notes summarized from the public notes for the
-exact selected version in the delivery receipt. Group them under a few useful
-customer-facing areas when appropriate, and render each note as a Markdown
-blockquote (`>`) rather than another operational bullet. This is a concise
-customer recap, not a second audit log. Exclude developer notes, signatures,
-unreleased sections, and changes from newer releases. Omit it for internal-only
+exact selected version in the delivery receipt, each a Markdown blockquote
+(`>`) rather than another operational bullet, as
+[final responses](user-communication.md#final-responses) describes. Exclude
+unreleased sections and changes from newer releases. Omit it for internal-only
 or `release:none` work.
-If production is still blocked, report that first and make clear that the notes
-describe the reconciled release rather than a completed deployment.

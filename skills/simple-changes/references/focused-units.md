@@ -212,7 +212,10 @@ writes an immutable event to the run's history,
 and events and holds must match both ways, so removing, replacing, or adding
 to the record by hand, before or after the outcome, stops all automatic
 cleanup and blocks completion; a recorded hold whose approver is the
-controller or the claim owner fails the same way. The held source head is pinned at
+controller or the claim owner fails the same way. A source checkout on a
+branch name that is not exact, such as a raw-byte name Git output decodes
+with U+FFFD, cannot be observed or held, since a second such name would share
+its approval. The held source head is pinned at
 `refs/simple-changes/held/<run-id>/<unit ID>`, which is kept afterward, so no
 branch deletion, by this runtime or an older one, can leave the held commit
 unreachable.
@@ -220,8 +223,9 @@ unreachable.
 `loop record-outcome` then refuses the held unit in `units` and no longer
 requires it; account for any of its paths the target changed as
 `additionalPaths`. Finalization never removes, demotes, or releases a held
-unit's source checkout or claim, keeps that claim even when someone else
-removed the checkout, never deletes its branch, and never
+unit's source checkout or claim, keeps that claim, and any claim that later
+replaced it on the same checkout, even when someone else removed the
+checkout, never deletes its branch, and never
 switches, fast-forwards, or normalizes a primary checkout a held unit was
 packaged from, clean or not. A held primary path counts as excluded
 in the primary delivery proof, and so does the original path of a held

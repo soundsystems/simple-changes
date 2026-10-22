@@ -1368,12 +1368,17 @@ const automaticFinalizationCleanup = (
   }
   const repositoryPath = inventoryInput.repository.primaryCheckout;
   lease = completeAbsentRemovalIntents(lease, inventoryInput, targetRevision);
-  // A held unit's claim stays, even when its checkout is gone.
-  const keptClaims = new Set<string>(
-    protection.holds.flatMap((hold) =>
+  // A held unit's claim stays, even when its checkout is gone, and so does
+  // every claim on a held source checkout: a claim that replaced the one
+  // observed at hold time protects the same held work.
+  const keptClaims = new Set<string>([
+    ...protection.holds.flatMap((hold) =>
       hold.observation.claim ? [hold.observation.claim.claimId] : []
-    )
-  );
+    ),
+    ...readCoordinationDocumentFromCommonDirectory(lease.commonGitDirectory)
+      .claims.filter((claim) => protection.sources.has(claim.path))
+      .map((claim) => claim.claimId),
+  ]);
   lease = reconcileConcurrentAuthorClaims(
     lease,
     inventoryInput,
@@ -1493,7 +1498,8 @@ const automaticFinalizationCleanup = (
     lease.commonGitDirectory,
     captureInventory(repositoryPath),
     lease.ownerAgentId,
-    keptClaims
+    keptClaims,
+    protection.sources
   )) {
     cleanup.releasedClaims.push({
       claimId: claim.claimId,

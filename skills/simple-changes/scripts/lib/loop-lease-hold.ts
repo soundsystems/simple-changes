@@ -11,7 +11,11 @@ import {
   heldUnitsDigest,
   readHeldUnits,
 } from "./held-units.ts";
-import { captureInventory, locateRepository } from "./inventory.ts";
+import {
+  assertExactBranch,
+  captureInventory,
+  locateRepository,
+} from "./inventory.ts";
 import {
   assertControllerActive,
   assertMatchingRun,
@@ -250,6 +254,10 @@ const observeHeldUnit = (
       `Source checkout ${unit.sourceWorktree} of unit ${unit.id} is missing, so there is no exact source to preserve. Restore it, or replan the run.`
     );
   }
+  // The observation digest binds the branch name as Git decodes it, so two
+  // raw-byte names that decode alike would share one approval. Only an exact
+  // name can be observed, approved, and pinned.
+  assertExactBranch(source.branch, `the held-unit observation of ${unit.id}`);
   const claim = liveClaimFor(
     readCoordinationDocumentFromCommonDirectory(lease.commonGitDirectory),
     lease.commonGitDirectory,

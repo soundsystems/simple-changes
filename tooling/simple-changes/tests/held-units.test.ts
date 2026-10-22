@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import {
+  appendFileSync,
   existsSync,
   mkdirSync,
   readdirSync,
@@ -7,7 +8,7 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "bun";
 import { sha256Json } from "../../../skills/simple-changes/scripts/lib/hash.ts";
@@ -102,6 +103,31 @@ const cliPath = fileURLToPath(
     import.meta.url
   )
 );
+
+// Points the checkout's HEAD, at its current commit, at `release/` plus the
+// raw byte `byte`, which Git output decodes as `release/\uFFFD` (#16). The
+// ref is packed, since a file system may refuse such a loose ref.
+const checkOutRawByteBranch = (path: string, byte: number): void => {
+  const sha = git(path, ["rev-parse", "HEAD"]);
+  const common = resolve(path, git(path, ["rev-parse", "--git-common-dir"]));
+  appendFileSync(
+    join(common, "packed-refs"),
+    Buffer.concat([
+      Buffer.from(`${sha} refs/heads/release/`),
+      Buffer.from([byte]),
+      Buffer.from("\n"),
+    ])
+  );
+  const made = spawnSync(
+    [
+      "sh",
+      "-c",
+      `git symbolic-ref HEAD "$(printf 'refs/heads/release/\\${byte.toString(8)}')"`,
+    ],
+    { cwd: path, stderr: "pipe", stdout: "pipe" }
+  );
+  expect(new TextDecoder().decode(made.stderr)).toBe("");
+};
 
 const heldFile = (root: string, runId: string): string =>
   join(root, ".git", "simple-changes", "held-units", `${runId}.json`);
@@ -1289,6 +1315,65 @@ describe("held unit in a claimed author checkout", () => {
     expect(closed.receipt.deliveryStatus).toBe("unverified");
     expect(existsSync(join(pinned.role, "role.ts"))).toBe(true);
     expect(existsSync(join(pinned.shipping, "feature.txt"))).toBe(true);
+  });
+
+  test("keeps a replacement claim on a held checkout when that checkout is gone", () => {
+    const { claim, lease, role, roleUnit, root, shipping } = claimedFixture();
+    commitAll(shipping, "Feature");
+    git(root, [
+      "update-ref",
+      "refs/remotes/origin/main",
+      git(shipping, ["rev-parse", "HEAD"]),
+    ]);
+    approvedHold(shipping, lease.runId, roleUnit, [
+      `${roleUnit}: failed independent review.`,
+    ]);
+    recordShipmentOutcome(
+      shipping,
+      lease.runId,
+      CONTROLLER,
+      reviewed(draftShipmentOutcome(shipping, lease.runId).draft)
+    );
+    // The claim observed at hold time is released and replaced, then the
+    // held checkout is removed.
+    releaseWorktreeClaim(shipping, CONTROLLER, claim.claimId);
+    const replacement = claimWorktree(shipping, "another-author", role, "test");
+    git(root, ["worktree", "remove", "--force", role]);
+    const result = finalizeLoop(
+      shipping,
+      lease.runId,
+      CONTROLLER,
+      "Finish with the held checkout gone under a new claim."
+    );
+    expect(
+      result.cleanup.releasedClaims.map((item) => item.claimId)
+    ).not.toContain(replacement.claimId);
+    expect(
+      readWorktreeCoordination(root).claims.find(
+        (item) => item.claimId === replacement.claimId
+      )?.state
+    ).toBe("active");
+  });
+
+  test("refuses to observe a held source on a branch name that is not exact", () => {
+    const { lease, role, roleUnit, root, shipping } = claimedFixture();
+    const evidence = [`${roleUnit}: failed review.`];
+    checkOutRawByteBranch(role, 0x80);
+    const notExact =
+      "is not valid UTF-8 or contains the replacement character U+FFFD";
+    expect(() => holdUnit(shipping, lease.runId, roleUnit, evidence)).toThrow(
+      notExact
+    );
+    // A second raw-byte name that decodes alike cannot reuse an approval.
+    checkOutRawByteBranch(role, 0x81);
+    expect(() =>
+      holdUnit(shipping, lease.runId, roleUnit, evidence, {
+        approvalReference: "chat:user-approval-4",
+        approvedBy: APPROVER,
+        observationDigest: "0".repeat(64),
+      })
+    ).toThrow(notExact);
+    expect(existsSync(heldFile(root, lease.runId))).toBe(false);
   });
 
   test("refuses an approval after the claim changed", () => {

@@ -1,6 +1,12 @@
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, renameSync, writeFileSync } from "node:fs";
-import { isAbsolute, resolve } from "node:path";
+import {
+  existsSync,
+  mkdirSync,
+  realpathSync,
+  renameSync,
+  writeFileSync,
+} from "node:fs";
+import { dirname, isAbsolute, resolve, sep } from "node:path";
 import {
   localBranchForTargetRef,
   PATCH_EQUIVALENCE_MAX_COMMITS,
@@ -12,6 +18,10 @@ import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
 import { proveExactByteTargetContainment } from "./exact-byte-proof.ts";
 import { sha256Json } from "./hash.ts";
 import { parseWorktreeList } from "./inventory.ts";
+import {
+  type ArchiveRetentionPolicy,
+  archiveRetentionPolicy,
+} from "./policy.ts";
 import { runGit } from "./process.ts";
 import { headCoverage, readReviewLedger } from "./review-ledger.ts";
 import { validateSchema } from "./schema.ts";
@@ -20,7 +30,24 @@ import type {
   WorktreeClaim,
   WorktreeInventory,
 } from "./types.ts";
-import { readWorktreeTakeovers } from "./worktree-coordination.ts";
+import {
+  type ArchiveBranchConfig,
+  type ArchivePinRef,
+  archivePinNamespace,
+  assertArchiveCapacity,
+  compareLiveWithManifest,
+  copyWorktreeIntoArchive,
+  DEFAULT_MAX_ARCHIVE_BYTES,
+  measureTree,
+  newArchiveId,
+  type WorktreeArchiveManifest,
+  worktreeArchivesRoot,
+  writeWorktreeArchiveManifest,
+} from "./worktree-archive.ts";
+import {
+  readWorktreeTakeovers,
+  repositoryIdFor,
+} from "./worktree-coordination.ts";
 
 /** The most unique source commits one receipt may map. */
 export const REPLACEMENT_LINEAGE_MAX_COMMITS = PATCH_EQUIVALENCE_MAX_COMMITS;
@@ -28,7 +55,40 @@ export const REPLACEMENT_LINEAGE_MAX_COMMITS = PATCH_EQUIVALENCE_MAX_COMMITS;
 /** How long a user's approval stays usable after it was given. */
 export const REPLACEMENT_LINEAGE_APPROVAL_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
-const PIN_PREFIX = "refs/simple-changes/superseded/replacement-lineage-";
+const DAY_MS = 86_400_000;
+const DIFFERENCE_SUMMARY_LIMIT = 5;
+
+/**
+ * Environment variables that redirect what every Git command reads or
+ * removes: with one set, the inventory, the boundary's reads and
+ * `git worktree remove`'s own check would look at another index, directory
+ * or object store than the checkout's. A reviewed removal and a restore
+ * refuse them.
+ */
+export const GIT_ENVIRONMENT_REDIRECTS = [
+  "GIT_INDEX_FILE",
+  "GIT_DIR",
+  "GIT_WORK_TREE",
+  "GIT_COMMON_DIR",
+  "GIT_OBJECT_DIRECTORY",
+  "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+  "GIT_NAMESPACE",
+] as const;
+
+/** Refuses, writing nothing, when the environment redirects what Git reads. */
+export const assertPlainGitEnvironment = (
+  environment: Record<string, string | undefined> = process.env
+): void => {
+  const set = GIT_ENVIRONMENT_REDIRECTS.filter(
+    (name) => environment[name] !== undefined
+  );
+  if (set.length > 0) {
+    throw new SimpleChangesError(
+      `The environment sets ${set.join(", ")}, which would make Git read or remove something other than the checkout itself. Unset ${set.length === 1 ? "it" : "them"} and run the command again. Nothing was written or removed.`,
+      EXIT_CODES.unsafe
+    );
+  }
+};
 
 /**
  * The reviewed lineage of one clean local source checkout, as the controller
@@ -65,27 +125,57 @@ export type ReplacementLineageByteProof =
   | { baseRevision: string; status: "proven"; touchedPaths: string[] }
   | { differingPaths: string[]; reason: string; status: "not-proven" };
 
+/** What the archive of the checkout will be, measured before anything is written. */
+export interface ReplacementLineageArchivePlan {
+  /** Regular file bytes of the checkout folder and its private Git directory. */
+  bytes: number;
+  /** When automatic pruning may remove the archive, from the policy in force. */
+  expiresAt: string;
+  /** The per-archive cap this run applies. */
+  maxArchiveBytes: number;
+  /** `<common>/worktrees/<name>`, which `git worktree remove` deletes. */
+  privateGitDirectory: string;
+  retention: ArchiveRetentionPolicy;
+}
+
 export interface VerifiedReplacementLineage {
+  archive: ReplacementLineageArchivePlan;
   byteProof: ReplacementLineageByteProof;
-  pinRef: string;
+  commonGitDirectory: string;
+  now: Date;
   /** The primary checkout every removal Git command runs from. */
   primaryCheckout: string;
   receipt: ReplacementLineageReceipt;
   receiptDigest: string;
+  repositoryId: string;
   /** The current cleanup target revision, which contains the reviewed one. */
   targetRevision: string;
   uniqueCommits: string[];
   worktree: WorktreeInventory & { headSha: string };
 }
 
+/** The archive a removal made (or, in a plan, would make). */
+export interface ReplacementLineageArchiveOutcome {
+  /** Null in a plan: the ID is chosen when the archive is written. */
+  archiveId: string | null;
+  bytes: number;
+  expiresAt: string;
+  path: string | null;
+  retention: { days: number; maxTotalBytes: number };
+  /** Policy values that were not usable and fell back to the default. */
+  retentionFallbacks: string[];
+}
+
 export interface ReplacementLineageOutcome {
+  archive: ReplacementLineageArchiveOutcome;
   branch: string | null;
   branchDeleted: boolean;
   byteProof: ReplacementLineageByteProof;
   headSha: string;
   method: typeof REVIEWED_REPLACEMENT_METHOD;
   path: string;
-  pinRef: string;
+  /** The refs that keep the head and every object the checkout named. */
+  pinRefs: string[];
   receiptDigest: string;
   recordPaths: string[];
   removalId: string | null;
@@ -95,6 +185,13 @@ export interface ReplacementLineageOutcome {
 
 export interface ReplacementLineageRemovalRecord {
   approvedBy: string;
+  archive: {
+    archiveId: string;
+    bytes: number;
+    expiresAt: string;
+    path: string;
+    retention: { days: number; maxTotalBytes: number };
+  } | null;
   byteProof: ReplacementLineageByteProof;
   cleanupId: string | null;
   command: "prune" | "worktree-cleanup";
@@ -106,7 +203,7 @@ export interface ReplacementLineageRemovalRecord {
     worktreeRemoved: boolean;
   } | null;
   phase: "intent" | "completed";
-  pinRef: string;
+  pinRefs: ArchivePinRef[];
   reason: string;
   receipt: ReplacementLineageReceipt;
   receiptDigest: string;
@@ -134,6 +231,8 @@ export interface ReplacementLineageContext {
   inventory: RepositoryInventory;
   leaseBranches: ReadonlySet<string>;
   leasePaths: ReadonlyMap<string, string>;
+  /** The per-archive size cap; the module default when absent. */
+  maxArchiveBytes?: number | undefined;
   now: Date;
   receipt: ReplacementLineageReceipt;
   targetRef: string;
@@ -385,32 +484,82 @@ const assertMapping = (
 };
 
 // The reviewer and the approver are neither an author nor the controller.
-// Authors are the declared one, every agent that ever held a claim on this
-// checkout (its current owner and every owner a takeover replaced, along the
-// whole chain), and every agent the review ledger attests for a unique commit,
-// directly, through a replay record's sources, or in a completion's records.
-const assertIndependence = (
+// Authors are the declared one, the recorded owner of every claim on this
+// checkout's path or branch (a released claim still records its last
+// owner), both sides of every reassign takeover the history holds for those
+// claims, and every agent the review ledger attests for a unique commit,
+// directly, through a replay record's sources, or in a completion's
+// records. The agent who carried out a release takeover never owned the
+// claim and is not an author. A claim that visibly references a takeover
+// the history does not hold refuses: its earlier owners cannot be read.
+const TAKEOVER_OWNER_REFERENCE = "takeover:";
+
+const claimsOnCheckout = (
+  context: ReplacementLineageContext
+): WorktreeClaim[] => {
+  const { source } = context.receipt;
+  return context.claims.filter(
+    (claim) =>
+      claim.path === source.path ||
+      (source.branch !== null && claim.branch === source.branch)
+  );
+};
+
+// Every agent the claims on this checkout and the takeover receipts for
+// them show as an owner; refuses a claim whose takeover the history lacks.
+const claimOwners = (
+  context: ReplacementLineageContext,
+  refuse: Refuse
+): Set<string> => {
+  const owners = new Set<string>();
+  const claims = claimsOnCheckout(context);
+  const claimIds = new Set(claims.map((claim) => claim.claimId));
+  for (const claim of claims) {
+    owners.add(claim.owner.agentId.trim());
+  }
+  const takeovers = readWorktreeTakeovers(
+    context.inventory.repository.commonGitDirectory
+  ).filter(
+    (takeover) =>
+      takeover.path === context.receipt.source.path ||
+      claimIds.has(takeover.claimId)
+  );
+  for (const takeover of takeovers) {
+    if (takeover.action === "reassign") {
+      owners.add(takeover.previousOwner.agentId.trim());
+      owners.add(takeover.newAgentId.trim());
+    }
+  }
+  for (const claim of claims) {
+    const hasReceipt = (action: "reassign" | "release"): boolean =>
+      takeovers.some(
+        (takeover) =>
+          takeover.action === action && takeover.claimId === claim.claimId
+      );
+    if (
+      claim.owner.ownerRef?.startsWith(TAKEOVER_OWNER_REFERENCE) &&
+      !hasReceipt("reassign")
+    ) {
+      refuse(
+        `claim ${claim.claimId} records that a takeover handed it to ${claim.owner.agentId} (owner reference ${claim.owner.ownerRef}), but the takeover history holds no reassign receipt for it, so its earlier owners cannot be read. Restore the takeover history, or, if the owner reference was given by hand, release the claim and claim the checkout again without it. The removal is reversible once it runs, but the reviewer must still be shown independent.`
+      );
+    }
+    if (claim.releaseReason === "takeover" && !hasReceipt("release")) {
+      refuse(
+        `claim ${claim.claimId} records that a takeover released it, but the takeover history holds no release receipt for it, so the history is incomplete. Restore the takeover history and run the command again.`
+      );
+    }
+  }
+  return owners;
+};
+
+// Every agent the review ledger attests for a unique commit, directly,
+// through a replay record's sources, or in a completion's records.
+const attestedAuthors = (
   context: ReplacementLineageContext,
   unique: readonly string[],
   refuse: Refuse
-): void => {
-  const { approval, review, source } = context.receipt;
-  const authors = new Set<string>([source.authorAgentId.trim()]);
-  const claimIds = new Set<string>();
-  for (const entry of context.claims) {
-    if (entry.path === source.path) {
-      claimIds.add(entry.claimId);
-      authors.add(entry.owner.agentId.trim());
-    }
-  }
-  for (const takeover of readWorktreeTakeovers(
-    context.inventory.repository.commonGitDirectory
-  )) {
-    if (takeover.path === source.path || claimIds.has(takeover.claimId)) {
-      authors.add(takeover.previousOwner.agentId.trim());
-      authors.add(takeover.newAgentId.trim());
-    }
-  }
+): Set<string> => {
   const ledger = readReviewLedger(
     context.inventory.repository.commonGitDirectory
   );
@@ -419,6 +568,7 @@ const assertIndependence = (
       "the review ledger is malformed, so the source commits' attested authors cannot be read."
     );
   }
+  const authors = new Set<string>();
   const coverage = headCoverage(ledger.ledger, unique);
   for (const commit of unique) {
     for (const attestation of [
@@ -430,6 +580,20 @@ const assertIndependence = (
       }
     }
   }
+  return authors;
+};
+
+const assertIndependence = (
+  context: ReplacementLineageContext,
+  unique: readonly string[],
+  refuse: Refuse
+): void => {
+  const { approval, review, source } = context.receipt;
+  const authors = new Set<string>([
+    source.authorAgentId.trim(),
+    ...claimOwners(context, refuse),
+    ...attestedAuthors(context, unique, refuse),
+  ]);
   const reviewer = review.reviewerAgentId;
   if (sameAgent(reviewer, context.controllerAgentId)) {
     refuse(
@@ -452,6 +616,76 @@ const assertIndependence = (
   }
 };
 
+const isInside = (child: string, parent: string): boolean =>
+  child === parent || child.startsWith(`${parent}${sep}`);
+
+// The checkout's private Git directory, which `git worktree remove` deletes
+// and the archive must hold: `<common>/worktrees/<name>` of a linked
+// checkout that lies outside the Git directory and the archives.
+const sourcePrivateGitDirectory = (
+  worktreePath: string,
+  commonGitDirectory: string,
+  refuse: Refuse
+): string => {
+  const listed = runGit(
+    worktreePath,
+    ["rev-parse", "--absolute-git-dir"],
+    true
+  );
+  if (listed.exitCode !== 0) {
+    return refuse(
+      `Git could not name the checkout's private directory: ${listed.stderr.trim()}`
+    );
+  }
+  const directory = realpathSync(listed.stdout.trim());
+  const common = realpathSync(commonGitDirectory);
+  if (dirname(directory) !== resolve(common, "worktrees")) {
+    refuse(
+      `its private Git directory ${directory} is not under ${resolve(common, "worktrees")}, so it is not a linked checkout this command can archive.`
+    );
+  }
+  const real = realpathSync(worktreePath);
+  if (isInside(real, common) || isInside(real, worktreeArchivesRoot(common))) {
+    refuse(
+      `the checkout ${worktreePath} lies inside the repository's Git directory or its archives, which an archive cannot hold.`
+    );
+  }
+  return directory;
+};
+
+// Measures and bounds the archive before anything is written, so a dry run
+// reports the size and the expiry the user approves.
+const archivePlan = (
+  context: ReplacementLineageContext,
+  worktreePath: string,
+  refuse: Refuse
+): ReplacementLineageArchivePlan => {
+  const { commonGitDirectory } = context.inventory.repository;
+  const privateGitDirectory = sourcePrivateGitDirectory(
+    worktreePath,
+    commonGitDirectory,
+    refuse
+  );
+  const retention = archiveRetentionPolicy(context.inventory.policy.value);
+  const maxArchiveBytes = context.maxArchiveBytes ?? DEFAULT_MAX_ARCHIVE_BYTES;
+  const bytes =
+    measureTree(worktreePath).bytes + measureTree(privateGitDirectory).bytes;
+  assertArchiveCapacity({
+    bytes,
+    maxArchiveBytes,
+    root: worktreeArchivesRoot(commonGitDirectory),
+  });
+  return {
+    bytes,
+    expiresAt: new Date(
+      context.now.getTime() + retention.days * DAY_MS
+    ).toISOString(),
+    maxArchiveBytes,
+    privateGitDirectory,
+    retention,
+  };
+};
+
 /**
  * Checks a reviewed replacement lineage receipt against live Git and the
  * coordination state, and returns what removal would rely on. It reads only,
@@ -471,12 +705,18 @@ const assertIndependence = (
  * Byte identity is recorded, not required: when the replacement kept the
  * source's bytes, the exact-byte proof says so; when review changed them,
  * the reviewed mapping, the review, and the approval are the evidence.
+ *
+ * It also plans the archive the removal will make: the checkout's private
+ * Git directory, the size of both, the per-archive cap and the free space,
+ * and the expiry the retention policy gives, so a dry run shows the user
+ * what the approval covers.
  */
 export const verifyReplacementLineage = (
   context: ReplacementLineageContext
 ): VerifiedReplacementLineage => {
   const { receipt } = context;
   const refuse = refusalFor(receipt.source.path);
+  assertPlainGitEnvironment();
   if (!isAbsolute(receipt.source.path)) {
     refuse("source.path must be an absolute checkout path.", EXIT_CODES.usage);
   }
@@ -520,12 +760,16 @@ export const verifyReplacementLineage = (
           status: "not-proven",
         };
   const receiptDigest = sha256Json(receipt);
+  const { commonGitDirectory } = context.inventory.repository;
   return {
+    archive: archivePlan(context, worktree.path, refuse),
     byteProof,
-    pinRef: `${PIN_PREFIX}${receiptDigest}/${receipt.source.headRevision}`,
+    commonGitDirectory,
+    now: context.now,
     primaryCheckout: primary,
     receipt,
     receiptDigest,
+    repositoryId: repositoryIdFor(commonGitDirectory),
     targetRevision: context.targetRevision,
     uniqueCommits: unique,
     worktree,
@@ -536,13 +780,24 @@ export const verifyReplacementLineage = (
 export const plannedReplacementLineage = (
   verified: VerifiedReplacementLineage
 ): ReplacementLineageOutcome => ({
+  archive: {
+    archiveId: null,
+    bytes: verified.archive.bytes,
+    expiresAt: verified.archive.expiresAt,
+    path: null,
+    retention: {
+      days: verified.archive.retention.days,
+      maxTotalBytes: verified.archive.retention.maxTotalBytes,
+    },
+    retentionFallbacks: verified.archive.retention.fallbacks,
+  },
   branch: verified.worktree.branch,
   branchDeleted: false,
   byteProof: verified.byteProof,
   headSha: verified.worktree.headSha,
   method: REVIEWED_REPLACEMENT_METHOD,
   path: verified.worktree.path,
-  pinRef: verified.pinRef,
+  pinRefs: [],
   receiptDigest: verified.receiptDigest,
   recordPaths: [],
   removalId: null,
@@ -588,6 +843,7 @@ const writeRecord = (
 const CALLBACK_FREE_BASE = [
   "--no-pager",
   "--no-lazy-fetch",
+  "--no-optional-locks",
   "-c",
   "core.hooksPath=/dev/null",
   "-c",
@@ -755,8 +1011,9 @@ const listedWorktrees = (primary: string, overrides: readonly string[]) =>
 // Why the verified checkout no longer matches the receipt, or null when it
 // still does. It runs inside the callback-free boundary and reads status
 // first, then the head and branch, so nothing it runs can move the head
-// after it was read: clean status, the reviewed head and branch, still
-// registered and unlocked, and no other checkout on its branch.
+// after it was read: clean status, the reviewed head and branch, the same
+// private Git directory, still registered and unlocked, and no other
+// checkout on its branch.
 const reviewedCheckoutDrift = (
   verified: VerifiedReplacementLineage,
   overrides: readonly string[]
@@ -823,6 +1080,27 @@ const reviewedCheckoutDrift = (
   if (current !== branch) {
     return `it is on ${current ?? "a detached HEAD"}, not the reviewed ${branch ?? "detached HEAD"}`;
   }
+  const privateDirectory = runGit(
+    path,
+    [...overrides, "rev-parse", "--absolute-git-dir"],
+    true
+  ).stdout.trim();
+  if (
+    !privateDirectory ||
+    realpathSync(privateDirectory) !== verified.archive.privateGitDirectory
+  ) {
+    return `its private Git directory is ${privateDirectory || "unknown"}, not ${verified.archive.privateGitDirectory}`;
+  }
+  return registrationDrift(verified, overrides);
+};
+
+// The checkout as Git's registry sees it from the primary: registered,
+// unlocked, and alone on its branch.
+const registrationDrift = (
+  verified: VerifiedReplacementLineage,
+  overrides: readonly string[]
+): string | null => {
+  const { path, branch } = verified.worktree;
   const worktrees = listedWorktrees(verified.primaryCheckout, overrides);
   const entry = worktrees.find((worktree) => worktree.path === path);
   if (!entry || entry.prunable) {
@@ -845,14 +1123,123 @@ const reviewedCheckoutDrift = (
   return null;
 };
 
+/** What the checkout's own refs name, read before it is copied. */
+export interface ReviewedSourceState {
+  /** The `branch.<name>.*` entries of the checkout's branch, restored with it. */
+  branchConfig: ArchiveBranchConfig[];
+  /** Each object a per-worktree ref or pseudo-ref names, with that name. */
+  namedObjects: Array<{ name: string; object: string }>;
+}
+
+// The ref namespaces Git keeps per worktree, and the pseudo-refs that can
+// name an object nothing else reaches (an autostash, a rebase's original
+// head), read through Git so the ref backend does not matter.
+const PER_WORKTREE_REF_NAMESPACES = [
+  "refs/bisect",
+  "refs/worktree",
+  "refs/rewritten",
+] as const;
+const PSEUDO_REFS = [
+  "ORIG_HEAD",
+  "MERGE_HEAD",
+  "CHERRY_PICK_HEAD",
+  "REVERT_HEAD",
+  "REBASE_HEAD",
+  "MERGE_AUTOSTASH",
+  "AUTO_MERGE",
+  "BISECT_EXPECTED_REV",
+  "FETCH_HEAD",
+] as const;
+const OBJECT_ID_PATTERN = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u;
+const EXTENDED_REGEX_SPECIALS = /[.*+?^${}()|[\]\\]/gu;
+
+const namedObjectsOf = (
+  path: string,
+  overrides: readonly string[]
+): ReviewedSourceState["namedObjects"] => {
+  const found: ReviewedSourceState["namedObjects"] = [];
+  const refs = runGit(
+    path,
+    [
+      ...overrides,
+      "for-each-ref",
+      "--format=%(refname)%00%(objectname)",
+      ...PER_WORKTREE_REF_NAMESPACES,
+    ],
+    true
+  );
+  if (refs.exitCode === 0) {
+    for (const line of refs.stdout.split("\n")) {
+      const [name, object] = line.split("\0");
+      if (name && object && OBJECT_ID_PATTERN.test(object)) {
+        found.push({ name, object });
+      }
+    }
+  }
+  for (const name of PSEUDO_REFS) {
+    const resolved = runGit(
+      path,
+      [...overrides, "rev-parse", "--verify", "--quiet", name],
+      true
+    );
+    const object = resolved.stdout.trim();
+    if (resolved.exitCode === 0 && OBJECT_ID_PATTERN.test(object)) {
+      found.push({ name, object });
+    }
+  }
+  return found;
+};
+
+// The branch's configuration section in the shared local configuration,
+// which branch deletion removes and restore puts back.
+const branchConfigurationOf = (
+  primary: string,
+  branch: string | null,
+  overrides: readonly string[]
+): ArchiveBranchConfig[] => {
+  if (branch === null) {
+    return [];
+  }
+  const listed = runGit(
+    primary,
+    [
+      ...overrides,
+      "config",
+      "--local",
+      "-z",
+      "--get-regexp",
+      `^branch\\.${branch.replace(EXTENDED_REGEX_SPECIALS, "\\$&")}\\.`,
+    ],
+    true
+  );
+  if (listed.exitCode !== 0) {
+    return [];
+  }
+  return listed.stdout
+    .split("\0")
+    .filter(Boolean)
+    .map((entry) => {
+      const split = entry.indexOf("\n");
+      return split < 0
+        ? { key: entry, value: "" }
+        : { key: entry.slice(0, split), value: entry.slice(split + 1) };
+    })
+    .filter((entry) => entry.key.startsWith(`branch.${branch}.`));
+};
+
 /**
  * Confirms the callback-free boundary and re-reads the verified checkout
  * inside it before a cleanup writes or removes anything, and refuses the
  * whole run when the boundary cannot be confirmed or the checkout changed.
+ * Returns what the checkout's own refs name and its branch configuration:
+ * the last Git commands that run in the source before `git worktree
+ * remove`, so that nothing rewrites it between the archive copy and the
+ * comparison that precedes removal.
  */
 export const assertReviewedReplacementUnchanged = (
   verified: VerifiedReplacementLineage
-): void => {
+): ReviewedSourceState => {
+  assertPlainGitEnvironment();
   const overrides = callbackFreeOverrides(
     verified.primaryCheckout,
     verified.worktree.path
@@ -864,6 +1251,14 @@ export const assertReviewedReplacementUnchanged = (
       `${drift}. Review the checkout again and write a new receipt.`
     );
   }
+  return {
+    branchConfig: branchConfigurationOf(
+      verified.primaryCheckout,
+      verified.worktree.branch,
+      overrides
+    ),
+    namedObjects: namedObjectsOf(verified.worktree.path, overrides),
+  };
 };
 
 export interface ReplacementLineageRemovalOptions {
@@ -874,12 +1269,193 @@ export interface ReplacementLineageRemovalOptions {
   controllerAgentId: string;
   errors: string[];
   reason: string;
+  /** From `assertReviewedReplacementUnchanged`, read just before this call. */
+  source: ReviewedSourceState;
   verified: VerifiedReplacementLineage;
 }
 
+const summarizeDifferences = (differences: readonly string[]): string => {
+  const shown = differences.slice(0, DIFFERENCE_SUMMARY_LIMIT).join("; ");
+  const more = differences.length - DIFFERENCE_SUMMARY_LIMIT;
+  return more > 0 ? `${shown}; and ${more} more` : shown;
+};
+
+interface ArchivedSource {
+  directory: string;
+  /** Why the pins are incomplete, or null; the manifest lists what was pinned. */
+  failure: string | null;
+  manifest: WorktreeArchiveManifest;
+}
+
+const zeroObject = (object: string): string => "0".repeat(object.length);
+
+// Pins the head and every object the checkout named under the archive's own
+// namespace, each created only when absent and without dereferencing, so
+// two archives never share a pin and nothing outside the namespace moves.
+const pinArchive = (
+  verified: VerifiedReplacementLineage,
+  source: ReviewedSourceState,
+  candidates: readonly string[],
+  archiveId: string,
+  overrides: readonly string[]
+): { failure: string | null; pinRefs: ArchivePinRef[] } => {
+  const primary = verified.primaryCheckout;
+  const { headSha, branch, path } = verified.worktree;
+  const namespace = archivePinNamespace(archiveId);
+  const pinRefs: ArchivePinRef[] = [];
+  const write = (ref: string, object: string): string | null => {
+    const written = runGit(
+      primary,
+      [
+        ...overrides,
+        "update-ref",
+        "--no-deref",
+        "-m",
+        `simple-changes: archive ${archiveId} of ${branch ?? path}`,
+        ref,
+        object,
+        zeroObject(object),
+      ],
+      true
+    );
+    if (written.exitCode !== 0) {
+      return `Could not pin ${object} at ${ref}: ${written.stderr.trim()}`;
+    }
+    const readBack = runGit(
+      primary,
+      [...overrides, "rev-parse", "--verify", "--quiet", ref],
+      true
+    ).stdout.trim();
+    if (readBack !== object) {
+      return `Pinned ${ref}, but it reads back as ${readBack || "nothing"}, not ${object}.`;
+    }
+    pinRefs.push({ object, ref });
+    return null;
+  };
+  const headFailure = write(`${namespace}/head`, headSha);
+  if (headFailure) {
+    return { failure: headFailure, pinRefs };
+  }
+  const objects = new Set<string>([
+    ...source.namedObjects.map((named) => named.object),
+    ...candidates,
+  ]);
+  objects.delete(headSha);
+  for (const object of [...objects].sort()) {
+    const known = runGit(
+      primary,
+      [...overrides, "cat-file", "-t", object],
+      true
+    );
+    if (known.exitCode !== 0) {
+      continue;
+    }
+    const failure = write(`${namespace}/objects/${object}`, object);
+    if (failure) {
+      return { failure, pinRefs };
+    }
+  }
+  return { failure: null, pinRefs };
+};
+
+// Measures and bounds the checkout again, copies it and its private Git
+// directory into a new archive, pins what it names, and writes the manifest.
+// A size, space or copy problem leaves no archive; a pin problem leaves the
+// archive with the pins it got and reports it.
+const archiveSource = (
+  verified: VerifiedReplacementLineage,
+  source: ReviewedSourceState,
+  removalId: string,
+  overrides: readonly string[]
+): ArchivedSource => {
+  const { archive, commonGitDirectory, receipt, receiptDigest, worktree } =
+    verified;
+  const bytes =
+    measureTree(worktree.path).bytes +
+    measureTree(archive.privateGitDirectory).bytes;
+  assertArchiveCapacity({
+    bytes,
+    maxArchiveBytes: archive.maxArchiveBytes,
+    root: worktreeArchivesRoot(commonGitDirectory),
+  });
+  const createdAt = new Date();
+  const archiveId = newArchiveId(createdAt, receiptDigest);
+  const copy = copyWorktreeIntoArchive({
+    archiveId,
+    checkoutPath: worktree.path,
+    commonGitDirectory,
+    privateGitDirectory: archive.privateGitDirectory,
+  });
+  const pins = pinArchive(
+    verified,
+    source,
+    copy.objectIdCandidates,
+    archiveId,
+    overrides
+  );
+  const manifest: WorktreeArchiveManifest = {
+    archiveId,
+    branchConfig: source.branchConfig,
+    checkout: copy.checkout,
+    commonGitDirectory,
+    createdAt: createdAt.toISOString(),
+    expiresAt: archive.expiresAt,
+    gitDirectory: copy.gitDirectory,
+    kind: "worktree-archive",
+    pinRefs: pins.pinRefs,
+    privateGitDirectory: archive.privateGitDirectory,
+    receiptDigest,
+    removalId,
+    replacementCommits: [
+      ...new Set(receipt.commits.flatMap((entry) => entry.replacementCommits)),
+    ].sort(),
+    repositoryId: verified.repositoryId,
+    retention: {
+      days: archive.retention.days,
+      maxTotalBytes: archive.retention.maxTotalBytes,
+    },
+    schemaVersion: 1,
+    source: {
+      branch: worktree.branch,
+      changeDigest: worktree.changeDigest,
+      headSha: worktree.headSha,
+      path: worktree.path,
+    },
+    targetRef: receipt.targetRef,
+  };
+  writeWorktreeArchiveManifest(copy.directory, manifest);
+  return { directory: copy.directory, failure: pins.failure, manifest };
+};
+
+// A test-only seam: a change to the checkout between the archive copy and
+// the comparison that precedes removal, which the comparison must catch.
+const changeAfterArchiveForTests = (): void => {
+  const target = process.env.SIMPLE_CHANGES_TEST_MUTATE_AFTER_ARCHIVE;
+  if (process.env.NODE_ENV === "test" && target) {
+    writeFileSync(target, "changed after the archive\n");
+  }
+};
+
+// Why the archived checkout no longer matches its manifest, or null: a file
+// comparison only, so no Git command touches the source between the copy
+// and the removal, then the registry read from the primary.
+const liveDrift = (
+  verified: VerifiedReplacementLineage,
+  manifest: WorktreeArchiveManifest,
+  overrides: readonly string[]
+): string | null => {
+  const differences = compareLiveWithManifest(manifest);
+  if (differences.length > 0) {
+    return `it changed after it was archived (${summarizeDifferences(differences)})`;
+  }
+  return registrationDrift(verified, overrides);
+};
+
 // Deletes the source branch only while no checkout has it checked out and it
 // still points at the pinned head, with an exact old-value ref update rather
-// than a forced branch deletion, inside the callback-free boundary.
+// than a forced branch deletion, never following a symbolic ref, inside the
+// callback-free boundary. Its configuration section goes with it, as
+// `git branch -d` does; the manifest holds the entries for restore.
 const deleteReviewedBranch = (
   verified: VerifiedReplacementLineage,
   branch: string,
@@ -916,12 +1492,19 @@ const deleteReviewedBranch = (
   }
   const deleted = runGit(
     primary,
-    [...overrides, "update-ref", "-d", `refs/heads/${branch}`, headSha],
+    [
+      ...overrides,
+      "update-ref",
+      "--no-deref",
+      "-d",
+      `refs/heads/${branch}`,
+      headSha,
+    ],
     true
   );
   if (deleted.exitCode !== 0) {
     stepErrors.push(
-      `Could not delete reviewed replacement branch ${branch}; its head stays pinned at ${verified.pinRef}: ${deleted.stderr.trim()}`
+      `Could not delete reviewed replacement branch ${branch}; its head stays pinned in the archive: ${deleted.stderr.trim()}`
     );
     return false;
   }
@@ -935,59 +1518,70 @@ const deleteReviewedBranch = (
 
 /**
  * Removes a verified source checkout without forcing anything, with every
- * Git command inside the callback-free boundary: it confirms the boundary,
- * pins the reviewed head under
- * `refs/simple-changes/superseded/replacement-lineage-<receipt digest>/<head>`
- * so the source history survives, records the intent, re-reads the checkout
- * (status first, then head and branch) as the last step before plain
- * `git worktree remove`, deletes the branch only while it still points at
- * the pinned head and no other checkout uses it, and records the outcome. A
- * failure at any step stops the later ones and is reported; callers run it
+ * Git command inside the callback-free boundary, and reversibly: it measures
+ * and bounds the archive, copies the checkout folder and its private Git
+ * directory into `<common>/simple-changes/archives/<id>/` with a verified
+ * manifest, pins the reviewed head and every object the checkout named under
+ * `refs/simple-changes/archives/<id>/`, records the intent, compares the
+ * live files with the manifest as the last step before plain `git worktree
+ * remove` (no Git command runs in the source in between), deletes the
+ * branch only while it still points at the pinned head and no other
+ * checkout uses it, and records the outcome. A failure at any step stops
+ * the later ones and is reported; a failure before the archive is complete
+ * leaves no archive, and one after it keeps the archive. Callers run it
  * before every other removal and stop the run when the checkout was not
  * removed.
  */
 export const removeReviewedReplacement = (
   options: ReplacementLineageRemovalOptions
 ): ReplacementLineageOutcome => {
-  const { errors, verified } = options;
+  const { errors, source, verified } = options;
   const outcome = plannedReplacementLineage(verified);
-  const { path, headSha, branch } = verified.worktree;
+  const { path, branch } = verified.worktree;
   const primary = verified.primaryCheckout;
   const overrides = callbackFreeOverrides(primary, path);
-  const pinned = runGit(
-    primary,
-    [
-      ...overrides,
-      "update-ref",
-      "-m",
-      `simple-changes: pin reviewed replacement source ${branch ?? path}`,
-      verified.pinRef,
-      headSha,
-    ],
-    true
-  );
-  if (
-    pinned.exitCode !== 0 ||
-    runGit(
-      primary,
-      [...overrides, "rev-parse", "--verify", "--quiet", verified.pinRef],
-      true
-    ).stdout.trim() !== headSha
-  ) {
+  assertPlainGitEnvironment();
+  const removalId = `lineage-${randomUUID()}`;
+  let archived: ArchivedSource;
+  try {
+    archived = archiveSource(verified, source, removalId, overrides);
+  } catch (error) {
+    if (error instanceof SimpleChangesError) {
+      errors.push(
+        `${path} was preserved; no archive was made. ${error.message}`
+      );
+      return outcome;
+    }
+    throw error;
+  }
+  const { manifest } = archived;
+  outcome.archive = {
+    ...outcome.archive,
+    archiveId: manifest.archiveId,
+    path: archived.directory,
+  };
+  outcome.pinRefs = manifest.pinRefs.map((pin) => pin.ref);
+  if (archived.failure) {
     errors.push(
-      `Could not pin reviewed replacement head ${headSha} at ${verified.pinRef}; ${path} was preserved. ${pinned.stderr.trim()}`.trim()
+      `${path} was preserved. ${archived.failure} Archive ${manifest.archiveId} at ${archived.directory} is complete and expires at ${manifest.expiresAt}.`
     );
     return outcome;
   }
-  const removalId = `lineage-${randomUUID()}`;
   const base = {
     approvedBy: options.approvedBy,
+    archive: {
+      archiveId: manifest.archiveId,
+      bytes: outcome.archive.bytes,
+      expiresAt: manifest.expiresAt,
+      path: archived.directory,
+      retention: manifest.retention,
+    },
     byteProof: verified.byteProof,
     cleanupId: options.cleanupId,
     command: options.command,
     controllerAgentId: options.controllerAgentId,
     kind: "replacement-lineage-removal" as const,
-    pinRef: verified.pinRef,
+    pinRefs: manifest.pinRefs,
     reason: options.reason,
     receipt: verified.receipt,
     receiptDigest: verified.receiptDigest,
@@ -1005,11 +1599,12 @@ export const removeReviewedReplacement = (
       recordedAt: new Date().toISOString(),
     })
   );
+  changeAfterArchiveForTests();
   const stepErrors: string[] = [];
-  const drift = reviewedCheckoutDrift(verified, overrides);
+  const drift = liveDrift(verified, manifest, overrides);
   if (drift) {
     stepErrors.push(
-      `Preserved reviewed replacement checkout ${path}: ${drift}. The reviewed head stays pinned at ${verified.pinRef}.`
+      `Preserved reviewed replacement checkout ${path}: ${drift}. Archive ${manifest.archiveId} and its pins stay until they expire (${manifest.expiresAt}); review the checkout again, or prune the archive with \`simple-changes worktree prune-archives --archive ${manifest.archiveId}\`.`
     );
   } else {
     const removal = runGit(
@@ -1021,7 +1616,7 @@ export const removeReviewedReplacement = (
       outcome.worktreeRemoved = true;
     } else {
       stepErrors.push(
-        `Could not remove reviewed replacement checkout ${path}: ${removal.stderr.trim() || removal.stdout.trim()}`
+        `Reviewed replacement checkout ${path} was not removed by this run (${removal.stderr.trim() || removal.stdout.trim()}); Git may have deleted some of its files or unregistered it, so inspect the folder and \`git worktree list\`. Archive ${manifest.archiveId} restores it: \`simple-changes worktree restore-archive --archive ${manifest.archiveId}\`.`
       );
     }
   }

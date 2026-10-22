@@ -295,6 +295,7 @@ import {
   type WorkDirectoryRepository,
   workDirectoryContaining,
 } from "./lib/work-directory.ts";
+import type { ArchivePruneResult } from "./lib/worktree-archive.ts";
 import {
   attachClaimedWorktree,
   claimWorktree,
@@ -309,9 +310,12 @@ import {
 } from "./lib/worktree-coordination.ts";
 import { auditWorktreeEquivalence } from "./lib/worktree-equivalence.ts";
 import {
+  listArchivedWorktrees,
   type PruneReport,
+  pruneArchivedWorktrees,
   pruneRepository,
   refreshWorktreeIndex,
+  restoreArchivedWorktree,
   standaloneWorktreeCleanup,
 } from "./lib/worktree-maintenance.ts";
 
@@ -482,7 +486,13 @@ Usage:
     [--json] [--repo PATH]
   simple-changes worktree refresh-index [--json] [--repo PATH]
   simple-changes worktree cleanup --agent-id ID --approved-by ID --reason TEXT
-    [--target REF] [--lineage-receipt FILE] [--json] [--repo PATH]
+    [--target REF] [--lineage-receipt FILE [--max-archive-bytes N]]
+    [--json] [--repo PATH]
+  simple-changes worktree archives [--json] [--repo PATH]
+  simple-changes worktree restore-archive --archive ID [--extract-to DIR]
+    [--json] [--repo PATH]
+  simple-changes worktree prune-archives (--archive ID | --older-than DAYS)
+    --approved-by ID --reason TEXT [--dry-run] [--json] [--repo PATH]
   simple-changes hold add --agent-id ID --adapter ID
     --hold-scope ship|deploy|migrations --severity delay|halt --reason TEXT
     [--until-merged BRANCH] [--owner-ref REF] [--json] [--repo PATH]
@@ -498,7 +508,8 @@ Usage:
   simple-changes hold publish --agent-id ID --hold-id ID [--remote NAME]
     [--json] [--repo PATH]
   simple-changes prune --approved-by ID --reason TEXT [--target REF]
-    [--agent-id ID --lineage-receipt FILE] [--dry-run] [--json] [--repo PATH]
+    [--agent-id ID --lineage-receipt FILE [--max-archive-bytes N]]
+    [--dry-run] [--json] [--repo PATH]
   simple-changes prepare-agent --run-id ID --agent-id ID --purpose SLUG
     [--unit ID] [--json] [--repo PATH]
   simple-changes workdir --agent-id ID [--json] [--repo PATH]
@@ -557,6 +568,51 @@ Exit codes:
 loop lock a live holder owns, then runs once; it never recovers a lock.
 `;
 
+const WHOLE_NUMBER_PATTERN = /^[0-9]+$/u;
+
+// A whole number at or above `minimum`, as --max-archive-bytes and
+// --older-than take.
+const wholeNumberOption = (
+  option: string,
+  value: string,
+  minimum: number
+): number => {
+  const parsed = WHOLE_NUMBER_PATTERN.test(value) ? Number(value) : Number.NaN;
+  if (!Number.isSafeInteger(parsed) || parsed < minimum) {
+    throw new SimpleChangesError(
+      `${option} must be a whole number${minimum > 0 ? ` of at least ${minimum}` : ""}.`,
+      EXIT_CODES.usage
+    );
+  }
+  return parsed;
+};
+
+// The worktree archive options: an archive ID, an extraction folder, and
+// the two whole-number limits.
+const archiveOption = (
+  option: string,
+  value: string,
+  options: CliOptions
+): boolean => {
+  if (option === "--archive") {
+    options.archiveId = value;
+    return true;
+  }
+  if (option === "--extract-to") {
+    options.extractTo = resolve(value);
+    return true;
+  }
+  if (option === "--max-archive-bytes") {
+    options.maxArchiveBytes = wholeNumberOption(option, value, 1);
+    return true;
+  }
+  if (option === "--older-than") {
+    options.olderThanDays = wholeNumberOption(option, value, 0);
+    return true;
+  }
+  return false;
+};
+
 interface CliOptions {
   acknowledgePushScope: boolean;
   adapter?: string;
@@ -567,6 +623,7 @@ interface CliOptions {
   applyPlanPath?: string;
   approvalReference?: string;
   approvedBy?: string;
+  archiveId?: string;
   attemptId?: string;
   // setup --authoring: the authoring answer as JSON or @path.
   authoring?: string;
@@ -594,6 +651,7 @@ interface CliOptions {
   disposition?: "preserve-in-place" | "detach-clean-checkout";
   dryRun: boolean;
   evidencePaths: string[];
+  extractTo?: string;
   filePath?: string;
   forkDeltas?: string;
   forkDestination?: string;
@@ -618,11 +676,13 @@ interface CliOptions {
   lineageReceiptPath?: string;
   localOnly: boolean;
   manifestDigest?: string;
+  maxArchiveBytes?: number;
   migrationHandling?: RepoPolicy["migrationHandling"];
   migrationTargets: RepoPolicy["migrationTargets"];
   mode?: InitializationMode;
   // loop hold-unit --observation-digest: the observation the user approved.
   observationDigest?: string;
+  olderThanDays?: number;
   openingRemoteInventoryPath?: string;
   outputPath?: string;
   overrideHalt: boolean;
@@ -778,6 +838,10 @@ const VALUED_OPTIONS = new Set([
   "--instance",
   "--leave-uncovered",
   "--lineage-receipt",
+  "--max-archive-bytes",
+  "--older-than",
+  "--archive",
+  "--extract-to",
   "--proposal",
   "--replays",
   "--session",
@@ -1259,6 +1323,9 @@ const applyLoopValuedOption = (
   }
   if (option === "--lineage-receipt") {
     options.lineageReceiptPath = resolve(value);
+    return true;
+  }
+  if (archiveOption(option, value, options)) {
     return true;
   }
   if (option === "--disposition") {
@@ -4023,7 +4090,7 @@ const runLoopFinalizationAction = (
         removedWorkDirectories,
       },
       options.json,
-      `Completed and released ${runId}. Normalized ${result.cleanup.cleanedPrimaryPaths.length} target-equivalent primary path(s), removed ${result.cleanup.removedWorktrees.length} worktree(s) and ${result.cleanup.removedBranches.length} branch(es); pruned ${result.cleanup.prunedWorktreeMetadata} stale worktree record(s); released ${result.cleanup.releasedClaims.length} finished or orphaned worktree claim(s).\n${renderHeldUnits(result.receipt.heldUnits)}${renderCleanupNotes(result.cleanup.notes)}${renderRemoteBranchCleanup(result.receipt.remoteBranches)}${renderRemovedWorkDirectories(removedWorkDirectories)}`
+      `Completed and released ${runId}. Normalized ${result.cleanup.cleanedPrimaryPaths.length} target-equivalent primary path(s), removed ${result.cleanup.removedWorktrees.length} worktree(s) and ${result.cleanup.removedBranches.length} branch(es); pruned ${result.cleanup.prunedWorktreeMetadata} stale worktree record(s); released ${result.cleanup.releasedClaims.length} finished or orphaned worktree claim(s).\n${renderHeldUnits(result.receipt.heldUnits)}${renderArchivePruning(result.archivePruning, false)}${renderCleanupNotes(result.cleanup.notes)}${renderRemoteBranchCleanup(result.receipt.remoteBranches)}${renderRemovedWorkDirectories(removedWorkDirectories)}`
     );
     return true;
   }
@@ -4825,16 +4892,112 @@ const renderReviewedReplacement = (
     outcome.byteProof.status === "proven"
       ? "its touched files equal the reviewed target byte for byte"
       : "the replacement changed bytes, so the reviewed mapping is the evidence";
+  const { archive } = outcome;
+  const retention = `${archive.bytes} bytes; it expires ${archive.expiresAt} (${archive.retention.days} day(s) by repository policy), or sooner once the archives together exceed ${archive.retention.maxTotalBytes} bytes`;
+  const fallbacks = archive.retentionFallbacks
+    .map((fallback) => `\n  note: ${fallback}`)
+    .join("");
   if (dryRun) {
-    return `Reviewed replacement: would pin ${outcome.headSha} at ${outcome.pinRef} and remove ${outcome.path} (${outcome.uniqueCommits.length} mapped commit(s); ${proof}).\n`;
+    return `Reviewed replacement: would archive ${outcome.path} (${retention}), pin ${outcome.headSha} and every object the checkout names, and remove it (${outcome.uniqueCommits.length} mapped commit(s); ${proof}).${fallbacks}\n`;
   }
-  return `Reviewed replacement: ${outcome.worktreeRemoved ? "removed" : "kept"} ${outcome.path}${outcome.branch ? `, branch ${outcome.branch} ${outcome.branchDeleted ? "deleted" : "kept"}` : ""}; head ${outcome.headSha} ${outcome.removalId ? `pinned at ${outcome.pinRef}` : "not pinned"} (${proof}).\n`;
+  const archived = archive.archiveId
+    ? `archived as ${archive.archiveId} at ${archive.path} (${retention}); ${outcome.pinRefs.length} pin(s) under refs/simple-changes/archives/${archive.archiveId}/`
+    : "not archived";
+  return `Reviewed replacement: ${outcome.worktreeRemoved ? "removed" : "kept"} ${outcome.path}${outcome.branch ? `, branch ${outcome.branch} ${outcome.branchDeleted ? "deleted" : "kept"}` : ""}; ${archived} (${proof}). Restore it with \`simple-changes worktree restore-archive --archive ${archive.archiveId ?? "<id>"}\`.${fallbacks}\n`;
+};
+
+const renderArchivePruning = (
+  pruning: ArchivePruneResult | null,
+  dryRun: boolean
+): string => {
+  if (!pruning) {
+    return "";
+  }
+  const lines = [
+    ...pruning.pruned.map(
+      (entry) =>
+        `${dryRun ? "Would prune" : "Pruned"} archive ${entry.archiveId} (${entry.cause}, ${entry.bytes} bytes, ${entry.pinRefsDeleted.length} pin(s)${entry.pinRefsKept.length > 0 ? `, ${entry.pinRefsKept.length} pin(s) kept` : ""}).${entry.notes.map((note) => `\n  note: ${note}`).join("")}`
+    ),
+    ...pruning.keptForAttention.map(
+      (entry) =>
+        `! Archive ${entry.archiveId} needs attention: ${entry.reason} Restore it with \`${entry.restoreCommand}\`, or prune it by ID.`
+    ),
+    ...pruning.skipped.map(
+      (entry) => `- skipped archive ${entry.archiveId}: ${entry.reason}`
+    ),
+  ];
+  return lines.length > 0 ? `${lines.join("\n")}\n` : "";
+};
+
+const renderArchiveListing = (
+  archives: ReturnType<typeof listArchivedWorktrees>
+): string => {
+  if (archives.length === 0) {
+    return "No worktree archives.\n";
+  }
+  return `${archives
+    .map((entry) => {
+      if (!entry.manifest) {
+        return `${entry.archiveId}: unreadable (${entry.error ?? "no manifest"})`;
+      }
+      const { manifest } = entry;
+      const state = entry.restoring
+        ? `; a restore started ${entry.restoring.startedAt} has not finished`
+        : "";
+      return `${entry.archiveId}: ${manifest.source.path} (${manifest.source.branch ?? "detached"} at ${manifest.source.headSha}), ${manifest.checkout.bytes + manifest.gitDirectory.bytes} bytes, created ${manifest.createdAt}, expires ${manifest.expiresAt}, ${manifest.pinRefs.length} pin(s)${state}`;
+    })
+    .join("\n")}\n`;
+};
+
+// The worktree archive commands: list, restore or extract, and the manual
+// prune.
+const runWorktreeArchives = (action: string, options: CliOptions): boolean => {
+  if (action === "archives") {
+    const archives = listArchivedWorktrees(options.repo);
+    writeOutput(archives, options.json, renderArchiveListing(archives));
+    return true;
+  }
+  if (action === "restore-archive") {
+    const result = restoreArchivedWorktree({
+      archiveId: requireCliOption(options.archiveId, "--archive"),
+      extractTo: options.extractTo,
+      repositoryPath: options.repo,
+    });
+    writeOutput(
+      result,
+      options.json,
+      result.extracted
+        ? `Copied archive ${options.archiveId} into ${result.destination} (${result.bytes} bytes); the archive itself is unchanged.\n`
+        : `Restored ${result.path} from archive ${result.archiveId} at ${result.headSha}${result.branch ? ` on branch ${result.branch}${result.branchCreated ? " (recreated)" : ""}` : " (detached)"}. The archive stays until it expires.\n`
+    );
+    return true;
+  }
+  if (action === "prune-archives") {
+    const result = pruneArchivedWorktrees({
+      approvedBy: requireCliOption(options.approvedBy, "--approved-by"),
+      archiveId: options.archiveId,
+      dryRun: options.dryRun,
+      olderThanDays: options.olderThanDays,
+      reason: requireCliOption(options.reason, "--reason"),
+      repositoryPath: options.repo,
+    });
+    writeOutput(
+      result,
+      options.json,
+      `${renderArchivePruning(result, options.dryRun) || `${options.dryRun ? "Would prune" : "Pruned"} no archives.\n`}Archives hold ${result.totalBytesAfter} bytes${options.dryRun ? " after this plan" : ""}.\n`
+    );
+    return true;
+  }
+  return false;
 };
 
 const runWorktreeMaintenance = (
   action: string,
   options: CliOptions
 ): boolean => {
+  if (runWorktreeArchives(action, options)) {
+    return true;
+  }
   if (action === "refresh-index") {
     const result = refreshWorktreeIndex(options.repo);
     writeOutput(
@@ -4851,6 +5014,7 @@ const runWorktreeMaintenance = (
       lineageReceipt: options.lineageReceiptPath
         ? readJsonFile(options.lineageReceiptPath)
         : undefined,
+      maxArchiveBytes: options.maxArchiveBytes,
       reason: requireCliOption(options.reason, "--reason"),
       repositoryPath: options.repo,
       targetRef: options.targetRef,
@@ -4858,7 +5022,7 @@ const runWorktreeMaintenance = (
     writeOutput(
       receipt,
       options.json,
-      `Standalone cleanup ${receipt.cleanupId} vs ${receipt.targetRef}: removed ${receipt.removed.length} proven worktree(s), pruned ${receipt.prunedPaths.length} stale record(s), released ${(receipt.releasedClaims ?? []).length} orphaned claim(s), preserved ${receipt.preserved.length}.\n${receipt.preserved.map((entry) => `- preserved ${entry.path}: ${entry.reason}`).join("\n")}${receipt.preserved.length > 0 ? "\n" : ""}${renderReviewedReplacement(receipt.reviewedReplacement, false)}${receipt.errors.map((error) => `! ${error}\n`).join("")}${renderCleanupNotes(receipt.notes)}`
+      `Standalone cleanup ${receipt.cleanupId} vs ${receipt.targetRef}: removed ${receipt.removed.length} proven worktree(s), pruned ${receipt.prunedPaths.length} stale record(s), released ${(receipt.releasedClaims ?? []).length} orphaned claim(s), preserved ${receipt.preserved.length}.\n${receipt.preserved.map((entry) => `- preserved ${entry.path}: ${entry.reason}`).join("\n")}${receipt.preserved.length > 0 ? "\n" : ""}${renderReviewedReplacement(receipt.reviewedReplacement, false)}${renderArchivePruning(receipt.archivePruning, false)}${receipt.errors.map((error) => `! ${error}\n`).join("")}${renderCleanupNotes(receipt.notes)}`
     );
     return true;
   }
@@ -5378,6 +5542,10 @@ const renderPrune = (report: PruneReport): string => {
   if (lineage) {
     lines.push(lineage.trimEnd());
   }
+  const pruning = renderArchivePruning(report.archivePruning, report.dryRun);
+  if (pruning) {
+    lines.push(pruning.trimEnd());
+  }
   lines.push(...report.notes, ...report.errors.map((error) => `! ${error}`));
   return `${lines.join("\n")}\n`;
 };
@@ -5390,6 +5558,7 @@ const runPrune = (options: CliOptions): void => {
     lineageReceipt: options.lineageReceiptPath
       ? readJsonFile(options.lineageReceiptPath)
       : undefined,
+    maxArchiveBytes: options.maxArchiveBytes,
     reason: options.reason,
     repositoryPath: options.repo,
     targetRef: options.targetRef,

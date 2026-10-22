@@ -70,7 +70,7 @@ import {
   verificationAgainst,
 } from "./loop-lease-verify.ts";
 import { emptyManagedWorktreeFolderNotes } from "./managed-worktrees.ts";
-import { trustBoundPolicyPaths } from "./policy.ts";
+import { archiveRetentionPolicy, trustBoundPolicyPaths } from "./policy.ts";
 import {
   type PreservedSourceEvidence,
   recordedPreservedSourceEvidence,
@@ -97,6 +97,10 @@ import type {
   WorktreeClaim,
   WorktreeInventory,
 } from "./types.ts";
+import {
+  type ArchivePruneResult,
+  pruneWorktreeArchives,
+} from "./worktree-archive.ts";
 import {
   readCoordinationDocumentFromCommonDirectory,
   releaseAbsentWorktreeClaimsUnderLock,
@@ -2168,6 +2172,12 @@ const loopCompletionBlockers = (
 };
 
 export interface LoopFinalizationResult {
+  /**
+   * Expired worktree archives pruned once the run closed, or null when the
+   * run was relinquished or pruning could not run (then `cleanup.notes`
+   * says why). Not part of the finalization receipt.
+   */
+  archivePruning: ArchivePruneResult | null;
   blockers: string[];
   cleanup: FinalizationCleanupResult;
   closedWithoutMutation?: LoopUnmutatedClose;
@@ -2762,6 +2772,7 @@ const finalizeUnmutatedRun = (
   forgetLeaseSession(lease);
   removeControllerBinding(lease);
   return {
+    archivePruning: null,
     blockers: [],
     cleanup,
     closedWithoutMutation: closeUnmutatedRun(
@@ -2851,6 +2862,7 @@ const finalizeOwnedLoop = (
     forgetLeaseSession(lease);
     removeControllerBinding(lease);
     return {
+      archivePruning: null,
       blockers,
       cleanup: automaticCleanup.cleanup,
       lease: null,
@@ -2862,6 +2874,7 @@ const finalizeOwnedLoop = (
   }
   const updated = relinquishController(lease, reason, now, awaitingUser);
   return {
+    archivePruning: null,
     blockers,
     cleanup: automaticCleanup.cleanup,
     lease: updated,
@@ -2975,6 +2988,39 @@ const finalizeRun = (
   }
 };
 
+// Reported in the result and its notes, never in the strict receipt, and a
+// pruning failure never undoes a finished run.
+const pruneArchivesAtFinalize = (
+  inventory: RepositoryInventory,
+  result: LoopFinalizationResult
+): ArchivePruneResult | null => {
+  const retention = archiveRetentionPolicy(inventory.policy.value);
+  result.cleanup.notes.push(
+    ...retention.fallbacks.map((fallback) => `Archive retention: ${fallback}.`)
+  );
+  try {
+    return pruneWorktreeArchives({
+      command: "loop-finalize",
+      commonGitDirectory: inventory.repository.commonGitDirectory,
+      dryRun: false,
+      now: new Date(),
+      primaryCheckout: inventory.repository.primaryCheckout,
+      retention: {
+        days: retention.days,
+        maxTotalBytes: retention.maxTotalBytes,
+      },
+    });
+  } catch (error) {
+    if (error instanceof SimpleChangesError) {
+      result.cleanup.notes.push(
+        `Expired worktree archives were not pruned: ${error.message}`
+      );
+      return null;
+    }
+    throw error;
+  }
+};
+
 export const finalizeLoop = (
   repositoryPath: string,
   runId: string,
@@ -3014,7 +3060,14 @@ export const finalizeLoop = (
           if (result.outcome !== "relinquished") {
             options.onClosed?.();
           }
-          return result;
+          // A closed run is a natural cleanup point; a relinquished one is
+          // not over, so its archives wait.
+          return result.outcome === "relinquished"
+            ? result
+            : {
+                ...result,
+                archivePruning: pruneArchivesAtFinalize(inventory, result),
+              };
         }
       )
   );

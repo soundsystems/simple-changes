@@ -21,7 +21,8 @@
     "targetRevision",
     "uniqueCommits",
     "byteProof",
-    "pinRef",
+    "pinRefs",
+    "archive",
     "outcome"
   ],
   "properties": {
@@ -84,9 +85,52 @@
         }
       ]
     },
-    "pinRef": {
-      "type": "string",
-      "pattern": "^refs/simple-changes/superseded/replacement-lineage-[0-9a-f]{64}/(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+    "pinRefs": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["ref", "object"],
+        "properties": {
+          "ref": {
+            "type": "string",
+            "pattern": "^refs/simple-changes/archives/archive-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{8}-[0-9a-f]{8}/(?:head|objects/[0-9a-f]{40}|objects/[0-9a-f]{64})$"
+          },
+          "object": {
+            "type": "string",
+            "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+          }
+        }
+      }
+    },
+    "archive": {
+      "anyOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["archiveId", "path", "bytes", "expiresAt", "retention"],
+          "properties": {
+            "archiveId": {
+              "type": "string",
+              "pattern": "^archive-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{8}-[0-9a-f]{8}$"
+            },
+            "path": { "type": "string", "minLength": 1 },
+            "bytes": { "type": "integer", "minimum": 0 },
+            "expiresAt": { "type": "string", "format": "date-time" },
+            "retention": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["days", "maxTotalBytes"],
+              "properties": {
+                "days": { "type": "integer", "minimum": 1 },
+                "maxTotalBytes": { "type": "integer", "minimum": 1 }
+              }
+            }
+          }
+        }
+      ]
     },
     "outcome": {
       "anyOf": [

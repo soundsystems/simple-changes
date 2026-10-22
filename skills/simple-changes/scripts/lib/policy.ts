@@ -42,6 +42,67 @@ export const DEFAULT_POLICY: RepoPolicy = {
   uiArtifactVersioning: "repository-convention",
 };
 
+/** Worktree archives are kept this long unless the policy says otherwise. */
+export const DEFAULT_ARCHIVE_RETENTION_DAYS = 14;
+/** Worktree archives together stay under this size unless the policy says otherwise. */
+export const DEFAULT_ARCHIVE_TOTAL_BYTES = 2 * 1024 ** 3;
+const ARCHIVE_RETENTION_MAX_DAYS = 3650;
+const ARCHIVE_TOTAL_MIN_BYTES = 1024 ** 2;
+const ARCHIVE_TOTAL_MAX_BYTES = 1024 ** 4;
+
+export interface ArchiveRetentionPolicy {
+  days: number;
+  /** Which settings were not usable and fell back to the default. */
+  fallbacks: string[];
+  maxTotalBytes: number;
+}
+
+const retentionValue = (
+  value: unknown,
+  minimum: number,
+  maximum: number
+): number | null =>
+  typeof value === "number" &&
+  Number.isInteger(value) &&
+  value >= minimum &&
+  value <= maximum
+    ? value
+    : null;
+
+/**
+ * The archive retention a policy asks for, with safe fallback: a value that
+ * is not a whole number in range (0, a negative number, a fraction, a
+ * string) falls back to the default and is named in `fallbacks`, so a
+ * mistake in the policy file never shortens retention to nothing.
+ */
+export const archiveRetentionPolicy = (
+  policy: Pick<RepoPolicy, "archiveRetention">
+): ArchiveRetentionPolicy => {
+  const setting = policy.archiveRetention ?? {};
+  const fallbacks: string[] = [];
+  const days = retentionValue(setting.days, 1, ARCHIVE_RETENTION_MAX_DAYS);
+  if (days === null && setting.days !== undefined) {
+    fallbacks.push(
+      `archiveRetention.days ${JSON.stringify(setting.days)} is not a whole number from 1 to ${ARCHIVE_RETENTION_MAX_DAYS}; using ${DEFAULT_ARCHIVE_RETENTION_DAYS}`
+    );
+  }
+  const maxTotalBytes = retentionValue(
+    setting.maxTotalBytes,
+    ARCHIVE_TOTAL_MIN_BYTES,
+    ARCHIVE_TOTAL_MAX_BYTES
+  );
+  if (maxTotalBytes === null && setting.maxTotalBytes !== undefined) {
+    fallbacks.push(
+      `archiveRetention.maxTotalBytes ${JSON.stringify(setting.maxTotalBytes)} is not a whole number from ${ARCHIVE_TOTAL_MIN_BYTES} to ${ARCHIVE_TOTAL_MAX_BYTES}; using ${DEFAULT_ARCHIVE_TOTAL_BYTES}`
+    );
+  }
+  return {
+    days: days ?? DEFAULT_ARCHIVE_RETENTION_DAYS,
+    fallbacks,
+    maxTotalBytes: maxTotalBytes ?? DEFAULT_ARCHIVE_TOTAL_BYTES,
+  };
+};
+
 type StoredRepoPolicy = Omit<
   RepoPolicy,
   | "changelogHandling"

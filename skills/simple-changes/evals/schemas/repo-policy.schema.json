@@ -38,6 +38,15 @@
     "gitPushAuthorization": {
       "enum": ["configure-harness", "ask", "never"]
     },
+    "archiveRetention": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "How long worktree archives are kept: days (default 14) and maxTotalBytes (default 2 GiB). Any value is accepted here; a value that is not a whole number in range falls back to the default, never to 0.",
+      "properties": {
+        "days": { "description": "Whole days from 1 to 3650." },
+        "maxTotalBytes": { "description": "Whole bytes from 1 MiB to 1 TiB." }
+      }
+    },
     "changelogHandling": {
       "enum": ["delegate-if-available", "preserve-and-report", "ask"]
     },

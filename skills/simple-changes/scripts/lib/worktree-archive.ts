@@ -1648,6 +1648,8 @@ export interface ArchivePruneInput {
   commonGitDirectory: string;
   dryRun: boolean;
   gitOptions?: readonly string[];
+  /** Archives this run made; never pruned by the run itself. */
+  keep?: readonly string[];
   /** Absent for automatic pruning. */
   manual?: {
     approvedBy: string;
@@ -1794,7 +1796,14 @@ const markerAge = (marker: RestoringMarker, now: Date): string => {
     : `${Math.round(minutes / 60)} hours`;
 };
 
-const skipReason = (listing: ArchiveListing, now: Date): string | null => {
+const skipReason = (
+  listing: ArchiveListing,
+  now: Date,
+  keep: readonly string[]
+): string | null => {
+  if (keep.includes(listing.archiveId)) {
+    return "It was made by this run, so it is kept until a later cleanup point.";
+  }
   if (listing.error !== null || !listing.manifest) {
     return `Its state does not parse (${listing.error ?? "no manifest"}), so it is left alone. Inspect ${listing.directory}; remove it with \`simple-changes worktree prune-archives --archive ${listing.archiveId} --approved-by <user> --reason <why>\` when it is not needed.`;
   }
@@ -1830,7 +1839,11 @@ const classifyListings = (
 ): PruneItem[] => {
   const eligible: PruneItem[] = [];
   for (const listing of listings) {
-    const reason = skipReason(listing, context.input.now);
+    const reason = skipReason(
+      listing,
+      context.input.now,
+      context.input.keep ?? []
+    );
     const failure =
       reason === null && listing.manifest
         ? recheckFailure(context, listing.manifest)

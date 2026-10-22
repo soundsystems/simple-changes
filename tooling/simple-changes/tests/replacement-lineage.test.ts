@@ -2,9 +2,12 @@ import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 import {
   chmodSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   readdirSync,
   readFileSync,
+  realpathSync,
+  rmSync,
   utimesSync,
   writeFileSync,
 } from "node:fs";
@@ -12,9 +15,15 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "bun";
 import { SimpleChangesError } from "../../../skills/simple-changes/scripts/lib/errors.ts";
-import { captureInventory } from "../../../skills/simple-changes/scripts/lib/inventory.ts";
-import { startLoop } from "../../../skills/simple-changes/scripts/lib/loop-lease.ts";
 import {
+  captureInventory,
+  parseWorktreeList,
+} from "../../../skills/simple-changes/scripts/lib/inventory.ts";
+import { startLoop } from "../../../skills/simple-changes/scripts/lib/loop-lease.ts";
+import { DEFAULT_POLICY } from "../../../skills/simple-changes/scripts/lib/policy.ts";
+import {
+  GIT_ENVIRONMENT_REDIRECTS,
+  type ReplacementLineageOutcome,
   type ReplacementLineageReceipt,
   replacementLineageDirectory,
 } from "../../../skills/simple-changes/scripts/lib/replacement-lineage.ts";
@@ -25,13 +34,26 @@ import {
 } from "../../../skills/simple-changes/scripts/lib/review-ledger.ts";
 import { validateSchema } from "../../../skills/simple-changes/scripts/lib/schema.ts";
 import {
+  ARCHIVE_ID_PATTERN,
+  type ArchivePinRef,
+  compareTrees,
+  listWorktreeArchives,
+  readArchivePruneLog,
+  readWorktreeArchiveManifest,
+  restoringMarkerPath,
+  scanTree,
+  worktreeArchivesRoot,
+} from "../../../skills/simple-changes/scripts/lib/worktree-archive.ts";
+import {
   claimWorktree,
   releaseWorktreeClaim,
   takeoverWorktreeClaim,
+  worktreeTakeoversPath,
 } from "../../../skills/simple-changes/scripts/lib/worktree-coordination.ts";
 import {
   pruneRepository,
   readWorktreeCleanups,
+  restoreArchivedWorktree,
   standaloneWorktreeCleanup,
 } from "../../../skills/simple-changes/scripts/lib/worktree-maintenance.ts";
 import {
@@ -54,7 +76,7 @@ const CLI_PATH = resolve(
   "../../../skills/simple-changes/scripts/simple-changes.ts"
 );
 const PIN_REF_PATTERN =
-  /^refs\/simple-changes\/superseded\/replacement-lineage-[0-9a-f]{64}\/[0-9a-f]{40}$/u;
+  /^refs\/simple-changes\/archives\/archive-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{8}-[0-9a-f]{8}\/head$/u;
 const AGENT_REQUIRED_PATTERN =
   /agent ID \(with a lineage receipt\) is required/u;
 const UNPROVEN_HEAD_PATTERN = /neither contained in nor patch-equivalent/u;
@@ -89,6 +111,17 @@ const PARTIAL_CLONE_PATTERN = /is a partial clone/u;
 const CONFIGURED_HOOK_PATTERN =
   /configures a hook through hook\.audit\.command/u;
 const STAMP = "2026-10-08T12:00:00.000Z";
+const DAY = 86_400_000;
+const ADAPTER = "test-adapter";
+const HEAD_PIN_PATTERN = /\/head$/u;
+const CHANGED_AFTER_ARCHIVE_PATTERN = /changed after it was archived/u;
+const ONE_BYTE_CAP_PATTERN = /more than the 1-byte limit/u;
+const PATH_TAKEN_PATTERN = /already exists/u;
+const BRANCH_ELSEWHERE_PATTERN = /now points at [0-9a-f]{40}/u;
+const MISSING_REASSIGN_PATTERN = /holds no reassign receipt/u;
+const REDIRECTED_GIT_PATTERN =
+  /would make Git read or remove something other than the checkout itself/u;
+const DAYS_FALLBACK_PATTERN = /^archiveRetention\.days 0 /u;
 
 let repositories: TestRepository[] = [];
 
@@ -253,6 +286,7 @@ const expectNothingWritten = (lineage: LineageFixture): void => {
   expect(pinRefs(root)).toBe("");
   const common = commonDirectory(root);
   expect(existsSync(replacementLineageDirectory(common))).toBe(false);
+  expect(existsSync(worktreeArchivesRoot(common))).toBe(false);
   expect(readWorktreeCleanups(common)).toEqual([]);
 };
 
@@ -568,6 +602,57 @@ const lineageRecords = (root: string): Record<string, unknown>[] => {
     );
 };
 
+// The checkout's private Git directory, `<common>/worktrees/<name>`.
+const privateGitDirectoryOf = (path: string): string =>
+  realpathSync(git(path, ["rev-parse", "--absolute-git-dir"]));
+
+// Every value of one key in the shared local configuration; none when unset.
+const configValues = (root: string, key: string): string[] => {
+  const result = spawnSync(
+    ["git", "-C", root, "config", "--local", "--get-all", key],
+    { stderr: "pipe", stdout: "pipe" }
+  );
+  const output = decoder.decode(result.stdout).trim();
+  return result.exitCode === 0 && output !== "" ? output.split("\n") : [];
+};
+
+// The archive a reviewed removal reports having written.
+const reportedArchive = (report: {
+  reviewedReplacement: ReplacementLineageOutcome | null;
+}): { archiveId: string; path: string } => {
+  const archive = report.reviewedReplacement?.archive;
+  if (!(archive?.archiveId && archive.path)) {
+    throw new Error("Expected the reviewed removal to name its archive");
+  }
+  return { archiveId: archive.archiveId, path: archive.path };
+};
+
+const restoreLineage = (lineage: LineageFixture, archiveId: string) =>
+  restoreArchivedWorktree({ archiveId, repositoryPath: lineage.fixture.root });
+
+// A repository policy file in the primary checkout with this retention.
+const writeRetentionPolicy = (
+  lineage: LineageFixture,
+  archiveRetention: Record<string, unknown>
+): void => {
+  writeFileSync(
+    join(lineage.fixture.root, ".simple-changes.json"),
+    `${JSON.stringify({ ...DEFAULT_POLICY, archiveRetention }, null, 2)}\n`
+  );
+};
+
+// An archive keeps a read-only folder's mode, which a plain recursive
+// removal of the fixture cannot delete; this makes every folder writable.
+const makeTreeWritable = (path: string): void => {
+  if (lstatSync(path, { throwIfNoEntry: false })?.isDirectory() !== true) {
+    return;
+  }
+  chmodSync(path, 0o755);
+  for (const name of readdirSync(path)) {
+    makeTreeWritable(join(path, name));
+  }
+};
+
 describe("reviewed replacement lineage cleanup", () => {
   test("without a receipt, prune keeps the replaced source and names branch audit", () => {
     const lineage = lineageFixture(false);
@@ -616,7 +701,7 @@ describe("reviewed replacement lineage cleanup", () => {
     expect(worktreePaths(root)).not.toContain(lineage.path);
     expect(existsSync(lineage.path)).toBe(false);
     expect(branchExists(root, "source-unit")).toBe(false);
-    const pin = report.reviewedReplacement?.pinRef ?? "";
+    const pin = report.reviewedReplacement?.pinRefs[0] ?? "";
     expect(pin).toMatch(PIN_REF_PATTERN);
     expect(git(root, ["rev-parse", pin])).toBe(lineage.headSha);
     expect(git(root, ["rev-list", "--count", `main..${pin}`])).toBe("2");
@@ -634,7 +719,9 @@ describe("reviewed replacement lineage cleanup", () => {
         cleanupId: null,
         command: "prune",
         controllerAgentId: CONTROLLER,
-        pinRef: pin,
+        pinRefs: expect.arrayContaining([
+          { object: lineage.headSha, ref: pin },
+        ]),
         receipt,
       });
     }
@@ -684,7 +771,7 @@ describe("reviewed replacement lineage cleanup", () => {
     });
     expect(worktreePaths(root)).not.toContain(lineage.path);
     expect(
-      git(root, ["rev-parse", result.reviewedReplacement?.pinRef ?? ""])
+      git(root, ["rev-parse", result.reviewedReplacement?.pinRefs[0] ?? ""])
     ).toBe(lineage.headSha);
     const history = readWorktreeCleanups(commonDirectory(root));
     expect(history.map((entry) => entry.phase)).toEqual([
@@ -1004,13 +1091,13 @@ describe("reviewed replacement lineage cleanup", () => {
 
   const expectReviewedHeadRemoved = (
     lineage: LineageFixture,
-    report: { reviewedReplacement: { pinRef: string } | null },
+    report: { reviewedReplacement: { pinRefs: string[] } | null },
     marker: string
   ): void => {
     const { root } = lineage.fixture;
     expect(existsSync(marker)).toBe(false);
     expect(worktreePaths(root)).not.toContain(lineage.path);
-    const pin = report.reviewedReplacement?.pinRef ?? "";
+    const pin = report.reviewedReplacement?.pinRefs[0] ?? "";
     expect(git(root, ["rev-parse", pin])).toBe(lineage.headSha);
     // Nothing but the reviewed head was ever checked out there: no commit
     // outside the target other than the two reviewed ones exists.
@@ -1379,8 +1466,10 @@ describe("reviewed replacement lineage cleanup", () => {
     expect(branchExists(root, "source-unit")).toBe(true);
     expect(readWorktreeCleanups(commonDirectory(root))).toEqual([]);
     const pins = pinRefs(root).split("\n");
-    expect(pins).toHaveLength(1);
-    expect(git(root, ["rev-parse", pins[0] ?? ""])).toBe(lineage.headSha);
+    const head = pins.find((pin) => pin.endsWith("/head")) ?? "";
+    expect(head).toMatch(PIN_REF_PATTERN);
+    expect(git(root, ["rev-parse", head])).toBe(lineage.headSha);
+    expect(existsSync(worktreeArchivesRoot(commonDirectory(root)))).toBe(true);
     const completed = lineageRecords(root).find(
       (record) => record.phase === "completed"
     );
@@ -1485,5 +1574,530 @@ describe("reviewed replacement lineage cleanup", () => {
       AGENT_REQUIRED_PATTERN
     );
     expectNothingWritten(lineage);
+  });
+
+  // The archive copies a read-only folder with its mode, so a checkout that
+  // held one (the stopped-run tests above) leaves an archive the fixture's
+  // plain recursive removal cannot delete. Runs before the file's cleanup.
+  afterEach(() => {
+    for (const fixture of repositories) {
+      makeTreeWritable(fixture.base);
+    }
+  });
+
+  test("an archived reviewed source restores byte for byte on its recreated branch", () => {
+    const lineage = lineageFixture(false);
+    const { root } = lineage.fixture;
+    // The receipt reads the live status first; hash only what the removal sees.
+    const receipt = receiptFor(lineage);
+    const privateDirectory = privateGitDirectoryOf(lineage.path);
+    const before = {
+      checkout: scanTree(lineage.path),
+      git: scanTree(privateDirectory),
+    };
+
+    const report = prune(lineage, receipt);
+
+    expect(report.errors).toEqual([]);
+    const archive = reportedArchive(report);
+    expect(archive.archiveId).toMatch(ARCHIVE_ID_PATTERN);
+    expect(report.reviewedReplacement?.pinRefs[0] ?? "").toMatch(
+      HEAD_PIN_PATTERN
+    );
+    expect(existsSync(lineage.path)).toBe(false);
+    expect(existsSync(privateDirectory)).toBe(false);
+    expect(branchExists(root, "source-unit")).toBe(false);
+    const manifest = readWorktreeArchiveManifest(archive.path);
+    expect(manifest).toMatchObject({
+      archiveId: archive.archiveId,
+      privateGitDirectory: privateDirectory,
+      source: {
+        branch: "source-unit",
+        headSha: lineage.headSha,
+        path: lineage.path,
+      },
+    });
+
+    const restored = restoreLineage(lineage, archive.archiveId);
+    // Hashed before any status of the test's own could refresh the index.
+    const after = {
+      checkout: scanTree(lineage.path),
+      git: scanTree(privateDirectory),
+    };
+
+    expect(compareTrees(before.checkout, after.checkout)).toEqual([]);
+    expect(compareTrees(before.git, after.git)).toEqual([]);
+    expect(restored).toMatchObject({
+      archiveId: archive.archiveId,
+      branch: "source-unit",
+      branchCreated: true,
+      extracted: false,
+      headSha: lineage.headSha,
+      path: lineage.path,
+    });
+    expect(
+      parseWorktreeList(git(root, ["worktree", "list", "--porcelain"])).find(
+        (worktree) => worktree.path === lineage.path
+      )
+    ).toMatchObject({ branch: "source-unit", headSha: lineage.headSha });
+    expect(git(root, ["rev-parse", "refs/heads/source-unit"])).toBe(
+      lineage.headSha
+    );
+    expect(
+      git(lineage.path, ["--no-optional-locks", "status", "--porcelain"])
+    ).toBe("");
+  });
+
+  test("an autostash the checkout holds is archived, pinned and restored", () => {
+    const lineage = lineageFixture(false);
+    const { root } = lineage.fixture;
+    const other = git(root, [
+      "commit-tree",
+      "main^{tree}",
+      "-p",
+      "main",
+      "-m",
+      "Diverging work on another branch",
+    ]);
+    git(root, ["branch", "other", other]);
+    writeFixture(lineage.path, "a.ts", "export const a = 'stashed';\n");
+    git(lineage.path, [
+      "-c",
+      "user.name=t",
+      "-c",
+      "user.email=t@t",
+      "merge",
+      "--squash",
+      "--autostash",
+      "-s",
+      "ours",
+      "other",
+    ]);
+    expect(git(lineage.path, ["status", "--porcelain"])).toBe("");
+    const privateDirectory = privateGitDirectoryOf(lineage.path);
+    const stash = readFileSync(
+      join(privateDirectory, "MERGE_AUTOSTASH"),
+      "utf8"
+    ).trim();
+    expect(git(root, ["cat-file", "-t", stash])).toBe("commit");
+
+    const report = prune(lineage, receiptFor(lineage));
+
+    expect(report.errors).toEqual([]);
+    expect(report.reviewedReplacement?.worktreeRemoved).toBe(true);
+    const archive = reportedArchive(report);
+    expect(
+      readFileSync(join(archive.path, "git", "MERGE_AUTOSTASH"), "utf8").trim()
+    ).toBe(stash);
+    const pin = `refs/simple-changes/archives/${archive.archiveId}/objects/${stash}`;
+    expect(report.reviewedReplacement?.pinRefs).toContain(pin);
+    expect(git(root, ["rev-parse", pin])).toBe(stash);
+
+    restoreLineage(lineage, archive.archiveId);
+
+    expect(
+      readFileSync(join(privateDirectory, "MERGE_AUTOSTASH"), "utf8").trim()
+    ).toBe(stash);
+  });
+
+  test("a change between the archive copy and the final comparison stops the run and keeps the archive", () => {
+    const lineage = lineageFixture(false);
+    const { root } = lineage.fixture;
+    const receipt = receiptFor(lineage);
+
+    expectRefusal(
+      () =>
+        withEnvironment(
+          {
+            NODE_ENV: "test",
+            SIMPLE_CHANGES_TEST_MUTATE_AFTER_ARCHIVE: join(
+              lineage.path,
+              "a.ts"
+            ),
+          },
+          () => prune(lineage, receipt)
+        ),
+      STOPPED_PATTERN
+    );
+
+    expect(existsSync(lineage.path)).toBe(true);
+    expect(worktreePaths(root)).toContain(lineage.path);
+    expect(worktreePaths(root)).toContain(lineage.merged);
+    expect(branchExists(root, "source-unit")).toBe(true);
+    expect(branchExists(root, "merged-unit")).toBe(true);
+    expect(readWorktreeCleanups(commonDirectory(root))).toEqual([]);
+    const archives = listWorktreeArchives(commonDirectory(root));
+    expect(archives).toHaveLength(1);
+    const manifest = readWorktreeArchiveManifest(archives[0]?.directory ?? "");
+    expect(manifest.source.headSha).toBe(lineage.headSha);
+    expect(manifest.pinRefs.length).toBeGreaterThan(0);
+    for (const pin of manifest.pinRefs) {
+      expect(git(root, ["rev-parse", pin.ref])).toBe(pin.object);
+    }
+    const completed = lineageRecords(root).find(
+      (record) => record.phase === "completed"
+    );
+    const outcome = completed?.outcome as
+      | { errors: string[]; worktreeRemoved: boolean }
+      | undefined;
+    expect(outcome?.worktreeRemoved).toBe(false);
+    expect(outcome?.errors[0] ?? "").toMatch(CHANGED_AFTER_ARCHIVE_PATTERN);
+    expect(completed?.archive).toMatchObject({
+      archiveId: manifest.archiveId,
+    });
+  });
+
+  test("an archive over the per-archive size cap is refused before anything is copied", () => {
+    const lineage = lineageFixture(false);
+    const receipt = receiptFor(lineage);
+    expectRefusal(
+      () =>
+        pruneRepository({
+          agentId: CONTROLLER,
+          approvedBy: APPROVER,
+          dryRun: false,
+          lineageReceipt: receipt,
+          maxArchiveBytes: 1,
+          reason: "Remove the reviewed obsolete source.",
+          repositoryPath: lineage.fixture.root,
+        }),
+      ONE_BYTE_CAP_PATTERN
+    );
+    expectNothingWritten(lineage);
+  });
+
+  test("restore refuses a path that exists again and writes nothing", () => {
+    const lineage = lineageFixture(false);
+    const { root } = lineage.fixture;
+    const privateDirectory = privateGitDirectoryOf(lineage.path);
+    const archive = reportedArchive(prune(lineage, receiptFor(lineage)));
+    mkdirSync(lineage.path);
+
+    expectRefusal(
+      () => restoreLineage(lineage, archive.archiveId),
+      PATH_TAKEN_PATTERN
+    );
+
+    expect(existsSync(restoringMarkerPath(archive.path))).toBe(false);
+    expect(readdirSync(lineage.path)).toEqual([]);
+    expect(existsSync(privateDirectory)).toBe(false);
+    expect(branchExists(root, "source-unit")).toBe(false);
+    expect(worktreePaths(root)).not.toContain(lineage.path);
+  });
+
+  test("restore refuses a branch that now points at another commit and writes nothing", () => {
+    const lineage = lineageFixture(false);
+    const { root } = lineage.fixture;
+    const privateDirectory = privateGitDirectoryOf(lineage.path);
+    const archive = reportedArchive(prune(lineage, receiptFor(lineage)));
+    git(root, ["branch", "source-unit", "main"]);
+
+    expectRefusal(
+      () => restoreLineage(lineage, archive.archiveId),
+      BRANCH_ELSEWHERE_PATTERN
+    );
+
+    expect(existsSync(lineage.path)).toBe(false);
+    expect(existsSync(privateDirectory)).toBe(false);
+    expect(existsSync(restoringMarkerPath(archive.path))).toBe(false);
+    expect(git(root, ["rev-parse", "refs/heads/source-unit"])).toBe(
+      git(root, ["rev-parse", "main"])
+    );
+  });
+
+  test("a reviewer who released the author's claim by takeover stays eligible", () => {
+    const lineage = lineageFixture(false);
+    const { root } = lineage.fixture;
+    const claim = claimWorktree(root, AUTHOR, lineage.path, ADAPTER);
+    const current = captureInventory(root).worktrees.find(
+      (worktree) => worktree.path === lineage.path
+    );
+    takeoverWorktreeClaim({
+      action: "release",
+      approvedBy: APPROVER,
+      claimId: claim.claimId,
+      expectedBranch: current?.branch ?? null,
+      expectedHeadSha: current?.headSha ?? null,
+      expectedStatusDigest: current?.changeDigest ?? "",
+      newAgentId: REVIEWER,
+      reason: "The author's session ended and cannot be contacted.",
+      repositoryPath: root,
+    });
+
+    const report = prune(lineage, receiptFor(lineage), { dryRun: true });
+
+    expect(report.reviewedReplacement?.path).toBe(lineage.path);
+    expectNothingWritten(lineage);
+  });
+
+  test("a claim handed over by a takeover the history no longer holds is refused", () => {
+    const lineage = lineageFixture(false);
+    claimThroughTakeovers(lineage, "former-owner", [AUTHOR]);
+    rmSync(worktreeTakeoversPath(commonDirectory(lineage.fixture.root)));
+
+    expectRefusal(
+      () => prune(lineage, receiptFor(lineage)),
+      MISSING_REASSIGN_PATTERN
+    );
+
+    expectNothingWritten(lineage);
+  });
+
+  test("a takeover chain whose history is present keeps its earlier owner from reviewing", () => {
+    const lineage = lineageFixture(false);
+    claimThroughTakeovers(lineage, "former-owner", [AUTHOR]);
+
+    const report = prune(lineage, receiptFor(lineage), { dryRun: true });
+    expect(report.reviewedReplacement?.path).toBe(lineage.path);
+
+    const receipt = receiptFor(lineage);
+    receipt.review.reviewerAgentId = "former-owner";
+    expectRefusal(() => prune(lineage, receipt), REVIEWER_IS_AUTHOR_PATTERN);
+    expectNothingWritten(lineage);
+  });
+
+  test("the prune command refuses a missing receipt file, naming it, and writes nothing", () => {
+    const lineage = lineageFixture(false);
+    const missing = "/nonexistent.json";
+    expect(existsSync(missing)).toBe(false);
+    const result = spawnSync(
+      [
+        process.execPath,
+        CLI_PATH,
+        "prune",
+        "--agent-id",
+        CONTROLLER,
+        "--approved-by",
+        APPROVER,
+        "--lineage-receipt",
+        missing,
+        "--dry-run",
+        "--json",
+        "--repo",
+        lineage.fixture.root,
+      ],
+      { stderr: "pipe", stdout: "pipe" }
+    );
+    expect(result.exitCode).not.toBe(0);
+    const lastLine =
+      decoder.decode(result.stderr).trim().split("\n").at(-1) ?? "";
+    const failure = JSON.parse(lastLine) as { error: string; ok: boolean };
+    expect(failure.ok).toBe(false);
+    expect(failure.error).toContain(missing);
+    expectNothingWritten(lineage);
+  });
+
+  // A value Git can still run with, so the refusal comes from the environment
+  // check itself: this repository's own folders for the three variables that
+  // locate the repository, an empty folder for the others.
+  const redirectFor = (
+    lineage: LineageFixture,
+    variable: (typeof GIT_ENVIRONMENT_REDIRECTS)[number]
+  ): string => {
+    const { base, root } = lineage.fixture;
+    if (variable === "GIT_DIR") {
+      return join(root, ".git");
+    }
+    if (variable === "GIT_WORK_TREE") {
+      return root;
+    }
+    if (variable === "GIT_COMMON_DIR") {
+      return commonDirectory(root);
+    }
+    const folder = join(base, "redirected");
+    mkdirSync(folder, { recursive: true });
+    return folder;
+  };
+
+  for (const variable of GIT_ENVIRONMENT_REDIRECTS) {
+    test(`refuses the reviewed removal while ${variable} is set and writes nothing`, () => {
+      const lineage = lineageFixture(false);
+      const receipt = receiptFor(lineage);
+      const redirect = redirectFor(lineage, variable);
+      expectRefusal(
+        () =>
+          withEnvironment({ [variable]: redirect }, () =>
+            prune(lineage, receipt)
+          ),
+        REDIRECTED_GIT_PATTERN
+      );
+      expectNothingWritten(lineage);
+    });
+  }
+
+  // Todo: pruneRepository runs Git (locateRepository) before the environment
+  // check, so a value Git cannot use surfaces Git's own error instead.
+  for (const variable of [
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_COMMON_DIR",
+  ] as const) {
+    test(`refuses in plain words while ${variable} names a folder that holds no repository`, () => {
+      const lineage = lineageFixture(false);
+      const receipt = receiptFor(lineage);
+      const redirect = join(lineage.fixture.base, "redirected");
+      mkdirSync(redirect);
+      expectRefusal(
+        () =>
+          withEnvironment({ [variable]: redirect }, () =>
+            prune(lineage, receipt)
+          ),
+        REDIRECTED_GIT_PATTERN
+      );
+      expectNothingWritten(lineage);
+    });
+  }
+
+  test("a per-worktree ref to a commit nothing else reaches is pinned and restored", () => {
+    const lineage = lineageFixture(false);
+    const { root } = lineage.fixture;
+    const rescue = git(lineage.path, [
+      "commit-tree",
+      "HEAD^{tree}",
+      "-p",
+      "HEAD",
+      "-m",
+      "Work only a per-worktree ref keeps",
+    ]);
+    git(lineage.path, ["update-ref", "refs/worktree/rescue", rescue]);
+
+    const report = prune(lineage, receiptFor(lineage));
+
+    expect(report.errors).toEqual([]);
+    const archive = reportedArchive(report);
+    const pin = `refs/simple-changes/archives/${archive.archiveId}/objects/${rescue}`;
+    expect(git(root, ["rev-parse", pin])).toBe(rescue);
+    expect(existsSync(lineage.path)).toBe(false);
+
+    restoreLineage(lineage, archive.archiveId);
+
+    expect(git(lineage.path, ["rev-parse", "refs/worktree/rescue"])).toBe(
+      rescue
+    );
+  });
+
+  test("a branch description goes with the removed branch and comes back with it", () => {
+    const lineage = lineageFixture(false);
+    const { root } = lineage.fixture;
+    const key = "branch.source-unit.description";
+    git(root, ["config", key, "Keep me"]);
+
+    const archive = reportedArchive(prune(lineage, receiptFor(lineage)));
+    expect(configValues(root, key)).toEqual([]);
+    expect(readWorktreeArchiveManifest(archive.path).branchConfig).toEqual([
+      { key, value: "Keep me" },
+    ]);
+
+    restoreLineage(lineage, archive.archiveId);
+    expect(configValues(root, key)).toEqual(["Keep me"]);
+  });
+
+  test("restore leaves a branch section written after the removal as it is", () => {
+    const lineage = lineageFixture(false);
+    const { root } = lineage.fixture;
+    const key = "branch.source-unit.description";
+    git(root, ["config", key, "Keep me"]);
+    const archive = reportedArchive(prune(lineage, receiptFor(lineage)));
+    git(root, ["config", key, "Written after the removal"]);
+
+    restoreLineage(lineage, archive.archiveId);
+
+    expect(configValues(root, key)).toEqual(["Written after the removal"]);
+  });
+
+  test("the dry run states the archive's size, expiry and retention in force", () => {
+    const lineage = lineageFixture(false);
+    const now = new Date();
+    const plannedArchive = () =>
+      prune(lineage, receiptFor(lineage, now.getTime()), { dryRun: true, now })
+        .reviewedReplacement?.archive;
+    const inDays = (days: number): string =>
+      new Date(now.getTime() + days * DAY).toISOString();
+
+    const standard = plannedArchive();
+    expect(standard).toMatchObject({
+      archiveId: null,
+      expiresAt: inDays(14),
+      path: null,
+      retention: { days: 14, maxTotalBytes: 2 * 1024 ** 3 },
+      retentionFallbacks: [],
+    });
+    expect(standard?.bytes ?? 0).toBeGreaterThan(0);
+
+    writeRetentionPolicy(lineage, { days: 3 });
+    expect(plannedArchive()).toMatchObject({
+      expiresAt: inDays(3),
+      retention: { days: 3 },
+      retentionFallbacks: [],
+    });
+
+    writeRetentionPolicy(lineage, { days: 0 });
+    const fallback = plannedArchive();
+    expect(fallback).toMatchObject({
+      expiresAt: inDays(14),
+      retention: { days: 14 },
+    });
+    expect(fallback?.retentionFallbacks).toHaveLength(1);
+    expect(fallback?.retentionFallbacks[0] ?? "").toMatch(
+      DAYS_FALLBACK_PATTERN
+    );
+    expectNothingWritten(lineage);
+  });
+
+  test("the removed checkout leaves the inventory and both records name the archive and its pins", () => {
+    const lineage = lineageFixture(false);
+    const { root } = lineage.fixture;
+    const report = prune(lineage, receiptFor(lineage));
+    const outcome = report.reviewedReplacement;
+    const archive = reportedArchive(report);
+    const namespace = `refs/simple-changes/archives/${archive.archiveId}/`;
+
+    expect(worktreePaths(root)).not.toContain(lineage.path);
+    expect(outcome?.pinRefs.length ?? 0).toBeGreaterThan(0);
+    const records = lineageRecords(root);
+    expect(
+      records
+        .map((record) => String(record.phase))
+        .sort((left, right) => left.localeCompare(right))
+    ).toEqual(["completed", "intent"]);
+    for (const record of records) {
+      validateSchema("replacement-lineage-removal", record);
+      expect(record.archive).toMatchObject({
+        archiveId: archive.archiveId,
+        bytes: outcome?.archive.bytes,
+        expiresAt: outcome?.archive.expiresAt,
+        path: archive.path,
+      });
+      const pins = record.pinRefs as ArchivePinRef[];
+      expect(pins.length).toBeGreaterThan(0);
+      expect(pins.every((pin) => pin.ref.startsWith(namespace))).toBe(true);
+      expect(pins.map((pin) => pin.ref)).toEqual(outcome?.pinRefs ?? []);
+      expect(pins).toContainEqual({
+        object: lineage.headSha,
+        ref: `${namespace}head`,
+      });
+    }
+  });
+
+  // Todo: prune runs the automatic archive prune before the boundary check,
+  // so a refusal that says nothing was written has already pruned an archive.
+  test("a reviewed removal the boundary refuses prunes no expired archive", () => {
+    const lineage = lineageFixture(false);
+    const { root } = lineage.fixture;
+    // A removal approved 15 days ago left an archive that has now expired.
+    const past = new Date(Date.now() - 15 * DAY);
+    const first = reportedArchive(
+      prune(lineage, receiptFor(lineage, past.getTime()), { now: past })
+    );
+    restoreLineage(lineage, first.archiveId);
+    git(root, ["config", "filter.a=b.clean", "cat"]);
+
+    expectRefusal(
+      () => prune(lineage, receiptFor(lineage)),
+      UNOVERRIDABLE_PATTERN
+    );
+
+    expect(existsSync(first.path)).toBe(true);
+    expect(readArchivePruneLog(commonDirectory(root))).toEqual([]);
   });
 });

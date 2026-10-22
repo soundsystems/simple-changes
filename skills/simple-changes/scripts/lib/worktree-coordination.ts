@@ -1805,6 +1805,21 @@ export const releaseRecordedState = (
   );
 
 /**
+ * Whether `event` is the release of `claimId` that recorded the checkout's
+ * exact state at release time.
+ */
+export const releaseEventRecordedState =
+  (claimId: string) =>
+  (event: WorktreeCoordinationEvent): boolean =>
+    event.claimId === claimId &&
+    event.state === "released" &&
+    event.eventId.startsWith(RELEASED_STATE_EVENT_PREFIX);
+
+/** Whether a claim in `state` still holds its checkout. */
+export const isLiveClaimState = (state: WorktreeCoordinationState): boolean =>
+  LIVE_STATES.has(state);
+
+/**
  * Completed-work handoff: the author declares the checkout it is running in
  * finished, so its own live claim there is released and the work becomes an
  * ordinary stable unit that any controller may ship. A claim held by a

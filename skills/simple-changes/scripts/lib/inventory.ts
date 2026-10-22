@@ -858,6 +858,45 @@ export const locateRepository = (directory: string): RepositoryLocation => {
   };
 };
 
+type InventoryDigestFields = Pick<
+  RepositoryInventory,
+  | "branches"
+  | "capabilities"
+  | "localChanges"
+  | "policy"
+  | "repository"
+  | "stashes"
+  | "targetRef"
+  | "worktrees"
+>;
+
+/**
+ * The exact text whose SHA-256 is an inventory's `baselineDigest`, so a
+ * stored copy can be verified against that digest later.
+ */
+export const inventoryDigestInput = (fields: InventoryDigestFields): string =>
+  JSON.stringify({
+    branches: fields.branches,
+    capabilities: fields.capabilities,
+    localChanges: fields.localChanges,
+    policy: fields.policy,
+    repository: {
+      bare: fields.repository.bare,
+      branch: fields.repository.branch,
+      commonGitDirectory: fields.repository.commonGitDirectory,
+      currentCheckout: fields.repository.currentCheckout,
+      gitDirectory: fields.repository.gitDirectory,
+      headSha: fields.repository.headSha,
+      primaryCheckout: fields.repository.primaryCheckout,
+      remoteBindings: fields.repository.remoteBindings,
+      root: fields.repository.root,
+      targetRemote: fields.repository.targetRemote,
+    },
+    stashes: fields.stashes,
+    targetRef: fields.targetRef,
+    worktrees: fields.worktrees,
+  });
+
 export const captureInventory = (
   directory: string,
   options: CaptureInventoryOptions = {}
@@ -905,7 +944,7 @@ export const captureInventory = (
   );
   const capabilities = discoverCapabilities(readGit, primaryCheckout, options);
   const policy = loadPolicy(primaryCheckout, { commonGitDirectory });
-  const digestInput = JSON.stringify({
+  const digestInput = inventoryDigestInput({
     branches,
     capabilities,
     localChanges,

@@ -336,7 +336,10 @@ longer exists; it then releases orphaned claims whose worktree is gone and
 records them as `releasedClaims` on the receipt. With `--lineage-receipt
 <file>` it also removes the one clean checkout that the
 [reviewed lineage receipt](replacement-lineage.md#remove-a-reviewed-replaced-checkout)
-names, after pinning its head. Like
+names, after archiving it (`worktree restore-archive --archive <id>`
+brings it back until the archive expires; see
+[archive retention](replacement-lineage.md#archive-retention)), and it
+prunes expired archives at the end of a successful pass. Like
 [finalization](cleanup-and-completion.md#complete-and-finalize), it never
 removes a worktree's parent folder; it names the empty managed
 `.simple-changes-worktrees` folders older runtimes created in the
@@ -372,8 +375,12 @@ whose work shipped through changed replacement commits stays preserved unless
 `--agent-id <you> --lineage-receipt <file>` supplies a user-approved,
 independently reviewed
 [lineage receipt](replacement-lineage.md#remove-a-reviewed-replaced-checkout);
-prune then pins its head and removes it as `reviewed-replacement`, or refuses
-the whole run, writing nothing. Prune defers the
+prune then archives it, pins its head and every object it names, and removes
+it as `reviewed-replacement`, or refuses the whole run, writing nothing;
+`worktree restore-archive --archive <id>` brings the checkout back until the
+archive expires, and prune reports the expired archives it pruned at the end
+of a successful pass ([archive
+retention](replacement-lineage.md#archive-retention)). Prune defers the
 lease's registered work to its controller, even when the run is stale or
 relinquished, and cleans only eligible unrelated state. An old heartbeat or
 released claim is not removal authority. For registered cleanup, use the

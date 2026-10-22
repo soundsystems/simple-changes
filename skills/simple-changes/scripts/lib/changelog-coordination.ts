@@ -299,11 +299,14 @@ const canonicalPath = (path: string): string => {
 
 // Symlinked skill roots (for example ~/.codex/skills -> ~/.agents/skills)
 // expose one installed provider under several paths. Keep the first path seen
-// for each real location so the same installation is never counted twice.
+// for each real installation folder so the same installation is never counted
+// twice. The folder, not SKILL.md, is the identity: it holds the marker and
+// the setup helper, so two folders whose SKILL.md links to one shared file
+// are still two installations with their own capabilities.
 const uniqueByRealPath = (candidates: string[]): string[] => {
   const seen = new Map<string, string>();
   for (const candidate of candidates) {
-    const key = canonicalPath(candidate);
+    const key = canonicalPath(resolve(candidate, ".."));
     if (!seen.has(key)) {
       seen.set(key, candidate);
     }

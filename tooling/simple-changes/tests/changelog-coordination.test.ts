@@ -939,6 +939,40 @@ describe("repository-owned renamed changelog providers", () => {
     }
   );
 
+  test("keeps two installation folders apart when their SKILL.md files link to one file", () => {
+    const fixture = createTestRepository();
+    repositories.push(fixture);
+    const skillRoot = withNewerGlobal(fixture);
+    writeFixture(
+      fixture.root,
+      "tools/shared/SKILL.md",
+      "---\nname: shared\ndescription: Test fixture.\n---\n"
+    );
+    writeFixture(
+      fixture.root,
+      `${RENAMED}/changelog-provider.json`,
+      markerFor({ receiptVersions: [], requestVersions: [] })
+    );
+    for (const skill of [
+      join(fixture.root, `${RENAMED}/SKILL.md`),
+      join(skillRoot, "simple-changelogs/SKILL.md"),
+    ]) {
+      rmSync(skill, { force: true });
+      symlinkSync(join(fixture.root, "tools/shared/SKILL.md"), skill);
+    }
+
+    const result = inspectWith(fixture, skillRoot);
+    expect(result.providers).toEqual([
+      join(skillRoot, "simple-changelogs/SKILL.md"),
+      join(fixture.root, `${RENAMED}/SKILL.md`),
+    ]);
+    expect(result).toMatchObject({
+      capabilityAvailable: true,
+      capabilityStatus: "unverified",
+      guidanceUpdate: { installedVersion: 12, status: "update-available" },
+    });
+  });
+
   test("does not let a discovery-only renamed provider shadow a handoff-capable one", () => {
     const fixture = createTestRepository();
     repositories.push(fixture);

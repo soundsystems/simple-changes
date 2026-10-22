@@ -15,6 +15,8 @@ import {
 import {
   acceptPausedWorktreeChange,
   finalizeLoop,
+  type HoldUnitApproval,
+  holdScopedUnit,
   readLoopLease,
   recordShipmentOutcome,
   recordShipmentScope,
@@ -807,6 +809,7 @@ describe("loop record-outcome with a detached preserved-source handoff", () => {
     options: {
       copyDocs?: string;
       copyExtra?: boolean;
+      heldSibling?: boolean;
       hiddenEdit?: boolean;
       ignoredSubmodule?: boolean;
       nestedRepository?: boolean;
@@ -879,6 +882,12 @@ describe("loop record-outcome with a detached preserved-source handoff", () => {
       writeFixture(source, "module/library.ts", "export const edited = 1;\n");
     }
     const claim = claimWorktree(source, "owner", source, "claude-code");
+    const sibling = join(fixture.base, "sibling");
+    if (options.heldSibling) {
+      // A second checkout whose unit review found not ready.
+      git(fixture.root, ["worktree", "add", "-q", "-b", "sibling", sibling]);
+      writeFixture(sibling, "sibling.txt", "held work\n");
+    }
     const lease = startLoop(fixture.root, "controller", "ship");
     const opening = captureInventory(fixture.root);
     const preview = buildPreviewPlan(
@@ -900,8 +909,32 @@ describe("loop record-outcome with a detached preserved-source handoff", () => {
       paths: sourceUnits.flatMap((planned) => planned.paths).sort(),
       requiredAuthority: ["local-write" as const],
     };
-    const plan: ChangePlan = { ...preview, units: [unit] };
+    const siblingUnits = preview.units
+      .filter((planned) => planned.sourceWorktree === sibling)
+      .map((planned) => ({
+        ...planned,
+        operations: ["commit" as const],
+        requiredAuthority: ["local-write" as const],
+      }));
+    const plan: ChangePlan = { ...preview, units: [unit, ...siblingUnits] };
     recordShipmentScope(fixture.root, lease.runId, "controller", plan);
+    for (const held of siblingUnits) {
+      const hold = (holdApproval?: HoldUnitApproval) =>
+        holdScopedUnit(fixture.root, {
+          agentId: "controller",
+          ...(holdApproval ? { approval: holdApproval } : {}),
+          readinessEvidence: [`${held.id}: failed independent review.`],
+          reason: "Review found defects.",
+          runId: lease.runId,
+          unitId: held.id,
+        });
+      const observed = hold();
+      hold({
+        approvalReference: "chat:hold-approval",
+        approvedBy: "repository-owner",
+        observationDigest: observed.observationDigest,
+      });
+    }
     const pause = pauseClaimedWorktree(
       source,
       "owner",
@@ -1098,6 +1131,35 @@ describe("loop record-outcome with a detached preserved-source handoff", () => {
     expect(result.outcome).toBe("completed");
     expect(result.receipt.deliveryStatus).toBe("verified");
     expect(readLoopLease(fixture.root)).toBeNull();
+    expectSourcePreserved(fixture);
+  });
+
+  test("a handoff beside a held unit binds the hold-bound outcome digest and finalizes", () => {
+    const fixture = handoffFixture({ heldSibling: true });
+    fixture.record();
+    const lease = readLoopLease(fixture.root) as LoopLease;
+    const digest = lease.shipmentOutcome?.receiptDigest ?? "";
+    // The hold binds the recorded digest, so it differs from the receipt's.
+    expect(digest).not.toBe(sha256Json(fixture.outcome()));
+    const sidecar = JSON.parse(
+      readFileSync(fixture.sidecarPath, "utf8")
+    ) as PreservedSourceHandoffRecord;
+    expect(sidecar.receiptDigest).toBe(digest);
+    const result = finalizeLoop(
+      fixture.root,
+      fixture.lease.runId,
+      "controller",
+      "The copy shipped; the original source and the held unit stay."
+    );
+    expect(result.blockers).toEqual([]);
+    expect(result.outcome).toBe("completed");
+    expect(result.receipt.deliveryStatus).toBe("verified");
+    expect(
+      result.receipt.heldUnits?.map((held) => held.sourceWorktree)
+    ).toEqual([join(fixture.base, "sibling")]);
+    expect(
+      readFileSync(join(fixture.base, "sibling", "sibling.txt"), "utf8")
+    ).toBe("held work\n");
     expectSourcePreserved(fixture);
   });
 

@@ -973,6 +973,38 @@ describe("repository-owned renamed changelog providers", () => {
     });
   });
 
+  test("never reads an inherited property as a renamed folder's distribution", () => {
+    for (const name of ["constructor", "__proto__", "toString"]) {
+      for (const storedDistribution of ["full", null]) {
+        const fixture = createTestRepository();
+        repositories.push(fixture);
+        const skillRoot = withNewerGlobal(fixture);
+        writeFixture(
+          fixture.root,
+          ".simple-changelogs.json",
+          `${JSON.stringify({
+            ...(storedDistribution ? { distribution: storedDistribution } : {}),
+            guidance: { version: 9 },
+            schemaVersion: 1,
+          })}\n`
+        );
+        const folder = `.agents/skills/${name}`;
+        writeProvider(
+          fixture.root,
+          folder,
+          markerFor({ distribution: undefined })
+        );
+
+        const result = inspectWith(fixture, skillRoot);
+        expect(result.guidanceUpdate).toMatchObject({
+          provider: join(fixture.root, `${folder}/SKILL.md`),
+          status: "current",
+        });
+        expect(result.providerDistribution).toBeNull();
+      }
+    }
+  });
+
   test("does not let a discovery-only renamed provider shadow a handoff-capable one", () => {
     const fixture = createTestRepository();
     repositories.push(fixture);

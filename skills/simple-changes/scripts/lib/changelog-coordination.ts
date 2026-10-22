@@ -241,12 +241,20 @@ const storedGuidanceVersion = (repositoryRoot: string | null): StoredPolicy => {
   return { distribution: null, path: null, version: null };
 };
 
+// Only an own key names an installation: a renamed folder such as
+// `constructor` or `__proto__` must not read an inherited object property.
+const installationDistribution = (provider: string): string | null => {
+  const name = basename(resolve(provider, ".."));
+  return Object.hasOwn(DISTRIBUTION_BY_INSTALLATION, name)
+    ? (DISTRIBUTION_BY_INSTALLATION[name] ?? null)
+    : null;
+};
+
 // Declared marker first, then the installation directory name; null when
 // only SKILL.md prose could say which distribution this is.
 const providerDistribution = (provider: string): string | null =>
   readProviderMarker(provider)?.distribution ??
-  DISTRIBUTION_BY_INSTALLATION[basename(resolve(provider, ".."))] ??
-  null;
+  installationDistribution(provider);
 
 // Only a marker can declare a provider discovery-only; an installation without
 // a marker is assumed handoff-capable and its capability record decides.

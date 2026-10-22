@@ -72,7 +72,8 @@ version, and protocol capabilities); discovery falls back to installation-name
 inference only when no marker is present. A repository can keep its own
 provider under any folder name in its skill folders when that folder carries
 the marker and really lives inside the repository; it is then selected ahead
-of global installations.
+of global installations, except that a discovery-only provider still yields to
+one that can take the release handoff.
 
 The installed directory is self-contained. Its release-note surface is
 read-only: `release-notes` displays Simple Changes' packaged public history. It

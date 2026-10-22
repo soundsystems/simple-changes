@@ -15,7 +15,10 @@ import {
   captureInventory,
   locateRepository,
 } from "./inventory.ts";
-import { withLoopStateLock } from "./loop-lease-core.ts";
+import {
+  type LoopLockWait,
+  withLoopStateLockBounded,
+} from "./loop-lease-core.ts";
 import { runGit } from "./process.ts";
 import { redactSecrets } from "./redact.ts";
 import { validateSchema } from "./schema.ts";
@@ -307,6 +310,8 @@ export interface ReadyWorkRecordResult {
 export interface ReadyWorkOptions {
   /** `--leave-uncovered`: exactly the outstanding commits another agent made. */
   leaveUncovered?: readonly string[];
+  /** `--wait-lock`: wait this long for a busy loop lock instead of failing. */
+  lockWait?: LoopLockWait;
 }
 
 const readyClaim = (
@@ -357,79 +362,95 @@ export const recordReadyWork = (
   // Every review-ledger write holds the loop lock, so holding it here (loop
   // lock, then coordination lock, the established order) keeps an attestation
   // from landing between the coverage check and the release it allows.
-  return withLoopStateLock(commonGitDirectory, "worktree ready", () =>
-    withWorktreeCoordinationLock(commonGitDirectory, "worktree ready", () => {
-      const inventory = captureInventory(repositoryPath);
-      const claim = readyClaim(commonGitDirectory, agentId, claimId, inventory);
-      const current = inventory.worktrees.find(
-        (item) => item.path === claim.path
-      );
-      if (
-        !(current?.branch && current.headSha) ||
-        current.detached ||
-        current.changes.length > 0
-      ) {
-        throw new SimpleChangesError(
-          "Ready work requires the claimed checkout to be present, attached to a branch, and clean: commit every change first.",
-          EXIT_CODES.unsafe
-        );
-      }
-      assertNoGitOperation(current.path);
-      // The receipt and the handoff release both record the branch.
-      assertExactBranch(current.branch, `a ready receipt for ${current.path}`);
-      const { coverage, leftUncovered } = assertReadyCoverage(
-        readyRangeCoverage(current.path, inventory.targetRef, current.headSha),
-        {
+  return withLoopStateLockBounded(
+    commonGitDirectory,
+    "worktree ready",
+    () =>
+      withWorktreeCoordinationLock(commonGitDirectory, "worktree ready", () => {
+        const inventory = captureInventory(repositoryPath);
+        const claim = readyClaim(
+          commonGitDirectory,
           agentId,
-          branch: current.branch,
-          claimId: claim.claimId,
-          path: current.path,
-        },
-        options.leaveUncovered ?? []
-      );
-      const receipt = validateSchema<ReadyWorkReceipt>("ready-work-receipt", {
-        branch: current.branch,
-        changeDigest: current.changeDigest,
-        checks: input.checks,
-        claimId: claim.claimId,
-        deploymentConstraints: input.deploymentConstraints,
-        headSha: current.headSha,
-        migrations: input.migrations,
-        owner: claim.owner,
-        path: current.path,
-        receiptId: `ready-${randomUUID()}`,
-        recordedAt: new Date().toISOString(),
-        releaseImpact: input.releaseImpact,
-        schemaVersion: 1,
-        scope: input.scope,
-        unresolvedAuthority: input.unresolvedAuthority,
-      });
-      // Keep one receipt per claim and drop the ones the target already
-      // contains, so the file only holds handoffs a controller still plans.
-      writeReadyReceipts(commonGitDirectory, [
-        ...readReadyReceipts(commonGitDirectory).filter(
-          (item) =>
-            item.claimId !== claim.claimId &&
-            readyFreshness(inventory, item).freshness !== "shipped"
-        ),
-        receipt,
-      ]);
-      // Ready work is a completed-work handoff. `handoff` with the exact
-      // receipted evidence lets an active loop that admitted this author keep
-      // integrating, and older installed clients already accept the reason.
-      const released = releaseClaimUnderLock(
-        commonGitDirectory,
-        claim.claimId,
-        agentId,
-        "handoff",
-        {
+          claimId,
+          inventory
+        );
+        const current = inventory.worktrees.find(
+          (item) => item.path === claim.path
+        );
+        if (
+          !(current?.branch && current.headSha) ||
+          current.detached ||
+          current.changes.length > 0
+        ) {
+          throw new SimpleChangesError(
+            "Ready work requires the claimed checkout to be present, attached to a branch, and clean: commit every change first.",
+            EXIT_CODES.unsafe
+          );
+        }
+        assertNoGitOperation(current.path);
+        // The receipt and the handoff release both record the branch.
+        assertExactBranch(
+          current.branch,
+          `a ready receipt for ${current.path}`
+        );
+        const { coverage, leftUncovered } = assertReadyCoverage(
+          readyRangeCoverage(
+            current.path,
+            inventory.targetRef,
+            current.headSha
+          ),
+          {
+            agentId,
+            branch: current.branch,
+            claimId: claim.claimId,
+            path: current.path,
+          },
+          options.leaveUncovered ?? []
+        );
+        const receipt = validateSchema<ReadyWorkReceipt>("ready-work-receipt", {
           branch: current.branch,
           changeDigest: current.changeDigest,
+          checks: input.checks,
+          claimId: claim.claimId,
+          deploymentConstraints: input.deploymentConstraints,
           headSha: current.headSha,
-        }
-      );
-      return { claim: released, coverage, leftUncovered, receipt };
-    })
+          migrations: input.migrations,
+          owner: claim.owner,
+          path: current.path,
+          receiptId: `ready-${randomUUID()}`,
+          recordedAt: new Date().toISOString(),
+          releaseImpact: input.releaseImpact,
+          schemaVersion: 1,
+          scope: input.scope,
+          unresolvedAuthority: input.unresolvedAuthority,
+        });
+        // Keep one receipt per claim and drop the ones the target already
+        // contains, so the file only holds handoffs a controller still plans.
+        writeReadyReceipts(commonGitDirectory, [
+          ...readReadyReceipts(commonGitDirectory).filter(
+            (item) =>
+              item.claimId !== claim.claimId &&
+              readyFreshness(inventory, item).freshness !== "shipped"
+          ),
+          receipt,
+        ]);
+        // Ready work is a completed-work handoff. `handoff` with the exact
+        // receipted evidence lets an active loop that admitted this author keep
+        // integrating, and older installed clients already accept the reason.
+        const released = releaseClaimUnderLock(
+          commonGitDirectory,
+          claim.claimId,
+          agentId,
+          "handoff",
+          {
+            branch: current.branch,
+            changeDigest: current.changeDigest,
+            headSha: current.headSha,
+          }
+        );
+        return { claim: released, coverage, leftUncovered, receipt };
+      }),
+    options.lockWait
   );
 };
 

@@ -44,9 +44,10 @@ import { currentHarnessSession } from "./harness-session.ts";
 import { sha256 } from "./hash.ts";
 import { captureInventory, locateRepository } from "./inventory.ts";
 import {
+  type LoopLockWait,
   loopLockPath,
   readLeaseFromCommonDirectory,
-  withLoopStateLock,
+  withLoopStateLockBounded,
 } from "./loop-lease-core.ts";
 import { gitExecutable, runGit, runGitWithInput } from "./process.ts";
 import type {
@@ -1454,35 +1455,48 @@ const assertOutsideLoopExec = (commonGitDirectory: string): void => {
  * so every `extensions` member is written back as it was read; the writer
  * refuses a write that could not keep them byte for byte. Lock order stays
  * loop lock, then coordination lock; this never takes the coordination lock.
+ *
+ * Without `wait`, any `loop exec` holder refuses the write at once, as it
+ * always has. A bounded wait (`--wait-lock`) refuses at once only a holder
+ * this command runs inside, and waits out another process's `loop exec`
+ * like any other live holder; the transaction itself still runs once.
  */
 const withLedgerTransaction = <T>(
   commonGitDirectory: string,
   operation: string,
-  mutate: (ledger: ReviewLedger, lock: HeldLoopLock) => T
+  mutate: (ledger: ReviewLedger, lock: HeldLoopLock) => T,
+  wait?: LoopLockWait
 ): T => {
   assertStateDestination(commonGitDirectory, {
     repository: commonGitDirectory,
   });
-  assertOutsideLoopExec(commonGitDirectory);
-  return withLoopStateLock(commonGitDirectory, operation, () => {
-    const lock = heldLoopLock(commonGitDirectory, operation);
-    const file = readLedgerFile(commonGitDirectory, {});
-    const current = file.state;
-    if (current.state === "malformed") {
-      throw new SimpleChangesError(
-        `The review ledger at ${current.path} is malformed (${current.reason}): ${current.errors.join("; ")}. Repair or remove it; it is never repaired silently.`,
-        EXIT_CODES.validation
-      );
-    }
-    const before = JSON.stringify(current.ledger);
-    const ledger = structuredClone(current.ledger);
-    const result = mutate(ledger, lock);
-    refreshDerivedRecords(ledger);
-    if (JSON.stringify(ledger) !== before) {
-      writeLedger(lock, ledger, file);
-    }
-    return result;
-  });
+  if (!wait) {
+    assertOutsideLoopExec(commonGitDirectory);
+  }
+  return withLoopStateLockBounded(
+    commonGitDirectory,
+    operation,
+    () => {
+      const lock = heldLoopLock(commonGitDirectory, operation);
+      const file = readLedgerFile(commonGitDirectory, {});
+      const current = file.state;
+      if (current.state === "malformed") {
+        throw new SimpleChangesError(
+          `The review ledger at ${current.path} is malformed (${current.reason}): ${current.errors.join("; ")}. Repair or remove it; it is never repaired silently.`,
+          EXIT_CODES.validation
+        );
+      }
+      const before = JSON.stringify(current.ledger);
+      const ledger = structuredClone(current.ledger);
+      const result = mutate(ledger, lock);
+      refreshDerivedRecords(ledger);
+      if (JSON.stringify(ledger) !== before) {
+        writeLedger(lock, ledger, file);
+      }
+      return result;
+    },
+    wait
+  );
 };
 
 // ---------------------------------------------------------------------------
@@ -2886,6 +2900,8 @@ export interface AuthorAttestInput extends ExecutingIdentityInput {
    */
   completeIdentity?: boolean;
   contribution?: "implementation";
+  /** `--wait-lock`: wait this long for a busy loop lock instead of failing. */
+  lockWait?: LoopLockWait;
   replays?: readonly string[];
   repositoryPath: string;
   /** A controller replay: the released or handed-off delegated worktree. */
@@ -3722,7 +3738,8 @@ export const attestCommits = (input: AuthorAttestInput): AuthorAttestResult => {
         ledgerPath: reviewLedgerPath(commonGitDirectory),
         replay,
       };
-    }
+    },
+    input.lockWait
   );
 };
 
@@ -3734,6 +3751,8 @@ export interface RecordAuthorsInput extends ExecutingIdentityInput {
   /** The parsed `--receipt` JSON: `{ "copyAuthors": [...] }`. */
   copyAuthorsReceipt?: unknown;
   head: string;
+  /** `--wait-lock`: wait this long for a busy loop lock instead of failing. */
+  lockWait?: LoopLockWait;
   proposalId: string;
   repositoryPath: string;
 }
@@ -3958,7 +3977,8 @@ export const recordProposalAuthors = (
         status,
         unattributed: coverage.unattributed,
       };
-    }
+    },
+    input.lockWait
   );
 };
 
@@ -3970,6 +3990,8 @@ export interface RecordReviewInput {
   /** Resolved from the primary checkout's sidecars when omitted. */
   authoring?: Pick<RepositoryAuthoring, "effective" | "repairRequired">;
   head: string;
+  /** `--wait-lock`: wait this long for a busy loop lock instead of failing. */
+  lockWait?: LoopLockWait;
   proposalId: string;
   /** The parsed `--receipt` JSON describing the returned review. */
   receipt: unknown;
@@ -4286,7 +4308,8 @@ export const recordReviewAttempt = (
         ledgerPath,
         status: "recorded" as const,
       };
-    }
+    },
+    input.lockWait
   );
 };
 
@@ -4296,6 +4319,8 @@ export const recordReviewAttempt = (
 export interface WaiveCoverageInput {
   authorsDigest: string;
   head: string;
+  /** `--wait-lock`: wait this long for a busy loop lock instead of failing. */
+  lockWait?: LoopLockWait;
   proposalId: string;
   /** `{ approvedBy, reason, unattributed, gaps }`. */
   receipt: unknown;
@@ -4476,7 +4501,8 @@ export const waiveProposalCoverage = (
         status: existing ? ("unchanged" as const) : ("recorded" as const),
         waiver,
       };
-    }
+    },
+    input.lockWait
   );
 };
 

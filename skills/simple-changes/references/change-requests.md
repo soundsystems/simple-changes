@@ -249,3 +249,19 @@ The receipt adds description authors only: `{"copyAuthors": [{"source":
 the `instance`, `session`, `harness`, and `agent` the delegate reported
 (`null` for anything it did not). Description authors never count for
 independence.
+
+Each step takes the loop lock for a moment and exits 5 at once while another
+command holds it, such as another author's attestation or a controller's
+`loop exec`. Pass `--wait-lock [--timeout-ms <n>]` to `author attest`,
+`proposal record-authors`, `proposal record-review`, or `proposal
+waive-coverage` to wait for a live holder instead, 60000 ms by default and
+at most 600000; the step then runs once. A step run inside `loop exec` still
+refuses at once, and a wait never recovers a dead owner's lock. On exit 5
+nothing was recorded, and `--json` reports `lockWait` with `executed: false`,
+the owner, `operation`, and `waitedMs`; see [bounded lock
+waits](inventory-and-concurrency.md#bounded-lock-waits). Do not write your own
+retry loop around these steps.
+
+To check the reviewer before dispatch without writing, run `initialize --mode
+preview --proposal <id> --head <sha>`: it resolves the reviewer read-only,
+without taking the loop lock, so a busy lock never blocks it.

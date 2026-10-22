@@ -73,7 +73,11 @@ import {
   finalizeLoop,
   grantLoopOverride,
   guardLoopMutation,
+  LOOP_LOCK_WAIT_DEFAULT_MS,
+  LOOP_LOCK_WAIT_MAX_MS,
   type LoopEquivalenceEvidence,
+  type LoopLockWait,
+  LoopLockWaitError,
   loopLeasePath,
   loopManifestDigest,
   loopReplanStatus,
@@ -384,15 +388,17 @@ Usage:
     [--remote NAME | --local-only] [--json] [--repo PATH]
   simple-changes loop guard --run-id ID --agent-id ID [--json] [--repo PATH]
   simple-changes loop record-scope --run-id ID --agent-id ID
-    --receipt CHANGE_PLAN_FILE [--json] [--repo PATH]
+    --receipt CHANGE_PLAN_FILE [--wait-lock [--timeout-ms N]]
+    [--json] [--repo PATH]
   simple-changes loop refresh-scope --run-id ID --agent-id ID
-    --receipt CHANGE_PLAN_FILE [--json] [--repo PATH]
+    --receipt CHANGE_PLAN_FILE [--wait-lock [--timeout-ms N]]
+    [--json] [--repo PATH]
   simple-changes loop draft-outcome --run-id ID [--changelog-receipt FILE]
     [--output FILE] [--json] [--repo PATH]
   simple-changes loop record-outcome --run-id ID --agent-id ID
     --receipt SHIPMENT_OUTCOME_FILE
     [--approved-by USER --approval-reference REFERENCE]
-    [--json] [--repo PATH]
+    [--wait-lock [--timeout-ms N]] [--json] [--repo PATH]
   simple-changes loop exec --run-id ID --agent-id ID [--json] [--repo PATH]
     -- COMMAND [ARG ...]
   simple-changes loop recover --agent-id ID [--json] [--repo PATH]
@@ -446,7 +452,8 @@ Usage:
   simple-changes worktree resume-ready --run-id ID --agent-id ID --claim-id ID
     [--json] [--repo PATH]
   simple-changes worktree release --agent-id ID --claim-id ID
-    [--ready-receipt FILE [--leave-uncovered SHA[,SHA ...]]]
+    [--ready-receipt FILE [--leave-uncovered SHA[,SHA ...]]
+      [--wait-lock [--timeout-ms N]]]
     [--json] [--repo PATH]
   simple-changes worktree takeover --claim-id ID --agent-id NEW_OWNER
     --head SHA|none (--branch NAME | --detached) --status-digest SHA256
@@ -499,16 +506,17 @@ Usage:
   simple-changes proposal audit --file FILE [--template FILE] [--json]
   simple-changes proposal record-authors --proposal ID --base SHA --head SHA
     [--receipt COPY_AUTHORS_FILE] [--instance ID] [--agent MODEL_ID]
-    [--json] [--repo PATH]
+    [--wait-lock [--timeout-ms N]] [--json] [--repo PATH]
   simple-changes proposal record-review --proposal ID --head SHA
     --attempt-id UUID --receipt ATTEMPT_FILE [--authoring-request JSON|@FILE]
-    [--json] [--repo PATH]
+    [--wait-lock [--timeout-ms N]] [--json] [--repo PATH]
   simple-changes proposal waive-coverage --proposal ID --head SHA
-    --authors-digest SHA256 --receipt WAIVER_FILE [--json] [--repo PATH]
+    --authors-digest SHA256 --receipt WAIVER_FILE
+    [--wait-lock [--timeout-ms N]] [--json] [--repo PATH]
   simple-changes author attest --commit SHA [--commit SHA ...] [--agent-id ID]
     [--contribution implementation] [--replays SHA[,SHA ...]]
     [--worktree PATH] [--instance ID] [--agent MODEL_ID] [--complete-identity]
-    [--json] [--repo PATH]
+    [--wait-lock [--timeout-ms N]] [--json] [--repo PATH]
   simple-changes author coverage --base REF --head REF [--json] [--repo PATH]
   simple-changes skill check [--skill-dir PATH] [--json]
   simple-changes validate KIND FILE [--json]
@@ -521,6 +529,9 @@ ${schemaKindLines}
 Exit codes:
   0 success, 2 usage, 3 invalid contract, 4 inventory failure, 5 unsafe state,
   6 release notes older than the packaged window (printed a link instead)
+
+--wait-lock waits up to --timeout-ms (default ${LOOP_LOCK_WAIT_DEFAULT_MS}, at most ${LOOP_LOCK_WAIT_MAX_MS}) for a
+loop lock a live holder owns, then runs once; it never recovers a lock.
 `;
 
 interface CliOptions {
@@ -637,6 +648,10 @@ interface CliOptions {
   unitId?: string;
   untilMerged?: string;
   versionAuthorized: boolean;
+  // --wait-lock and --timeout-ms: a metadata writer's bounded wait for a
+  // busy loop lock.
+  waitLock: boolean;
+  waitLockTimeoutMs?: number;
   worktreePath?: string;
   write: boolean;
   yes: boolean;
@@ -731,6 +746,8 @@ const VALUED_OPTIONS = new Set([
   "--proposal",
   "--replays",
   "--session",
+  // Metadata writers: the bound of --wait-lock.
+  "--timeout-ms",
 ]);
 
 const BOOLEAN_OPTIONS = new Set([
@@ -753,6 +770,7 @@ const BOOLEAN_OPTIONS = new Set([
   "--stale-lease",
   "--tag-automation-authorized",
   "--ui-artifacts",
+  "--wait-lock",
   "--write",
   "--yes",
   // setup --authoring confirms with --confirm (the same as --yes).
@@ -1306,6 +1324,31 @@ const applyLedgerValuedOption = (
   return false;
 };
 
+const applyLockWaitValuedOption = (
+  options: CliOptions,
+  option: string,
+  value: string
+): boolean => {
+  if (option !== "--timeout-ms") {
+    return false;
+  }
+  const timeoutMs = Number(value);
+  if (
+    !(
+      Number.isInteger(timeoutMs) &&
+      timeoutMs >= 0 &&
+      timeoutMs <= LOOP_LOCK_WAIT_MAX_MS
+    )
+  ) {
+    throw new SimpleChangesError(
+      `--timeout-ms must be an integer from 0 to ${LOOP_LOCK_WAIT_MAX_MS}`,
+      EXIT_CODES.usage
+    );
+  }
+  options.waitLockTimeoutMs = timeoutMs;
+  return true;
+};
+
 const applyValuedOption = (
   options: CliOptions,
   option: string,
@@ -1317,7 +1360,8 @@ const applyValuedOption = (
     applyAuthoringValuedOption(options, option, value) ||
     applyLoopValuedOption(options, option, value) ||
     applyHoldValuedOption(options, option, value) ||
-    applyLedgerValuedOption(options, option, value)
+    applyLedgerValuedOption(options, option, value) ||
+    applyLockWaitValuedOption(options, option, value)
   ) {
     return;
   }
@@ -1445,6 +1489,8 @@ const applyBooleanOption = (options: CliOptions, option: string): void => {
     options.releaseClaim = true;
   } else if (option === "--ui-artifacts") {
     options.uiArtifacts = true;
+  } else if (option === "--wait-lock") {
+    options.waitLock = true;
   } else {
     options.yes = true;
   }
@@ -1482,6 +1528,7 @@ const parseOptions = (args: string[]): CliOptions => {
     tagAutomationAuthorized: false,
     uiArtifacts: false,
     versionAuthorized: false,
+    waitLock: false,
     write: false,
     yes: false,
   };
@@ -3401,6 +3448,7 @@ const runProposalLedgerCommand = (
       ...(options.instanceId === undefined
         ? {}
         : { instance: options.instanceId }),
+      ...lockWaitInput(options),
     });
     writeOutput(result, options.json, renderRecordedAuthors(result));
     return;
@@ -3416,6 +3464,7 @@ const runProposalLedgerCommand = (
       receipt,
       repositoryPath: options.repo,
       ...(request === undefined ? {} : { request }),
+      ...lockWaitInput(options),
     });
     writeOutput(result, options.json, renderRecordedReview(result));
     return;
@@ -3426,6 +3475,7 @@ const runProposalLedgerCommand = (
     proposalId,
     receipt,
     repositoryPath: options.repo,
+    ...lockWaitInput(options),
   });
   writeOutput(result, options.json, renderWaiver(result));
 };
@@ -3528,6 +3578,7 @@ const runAuthorCommand = (options: CliOptions): number => {
     ...(options.worktreePath === undefined
       ? {}
       : { worktreePath: options.worktreePath }),
+    ...lockWaitInput(options),
   });
   writeOutput(result, options.json, renderAttestation(result));
   return EXIT_CODES.success;
@@ -4388,7 +4439,8 @@ const runLoopCommand = async (options: CliOptions): Promise<void> => {
       runId,
       agentId,
       readJsonFile(requireCliOption(options.receiptPath, "--receipt")),
-      action === "refresh-scope"
+      action === "refresh-scope",
+      lockWaitOption(options)
     );
     writeOutput(receipt, options.json, `${receipt.summary}\n`);
     return;
@@ -4402,7 +4454,8 @@ const runLoopCommand = async (options: CliOptions): Promise<void> => {
       {
         approvalReference: options.approvalReference,
         approvedBy: options.approvedBy,
-      }
+      },
+      lockWaitOption(options)
     );
     writeOutput(outcome, options.json, `${outcome.summary}\n`);
     return;
@@ -4644,7 +4697,7 @@ const runWorktreeReadyRelease = (
     agentId,
     requireCliOption(options.claimId, "--claim-id"),
     parseReadyWorkInput(readJsonFile(readyReceiptPath)),
-    { leaveUncovered: options.leaveUncovered }
+    { leaveUncovered: options.leaveUncovered, ...lockWaitInput(options) }
   );
   writeOutput(
     result,
@@ -5633,6 +5686,53 @@ const runHarnessCommand = (options: CliOptions): void => {
   );
 };
 
+// The metadata writers that take the loop lock and accept --wait-lock.
+// `worktree release` takes it only with --ready-receipt.
+const LOCK_WAIT_COMMANDS = new Set([
+  "author attest",
+  "loop record-outcome",
+  "loop record-scope",
+  "loop refresh-scope",
+  "proposal record-authors",
+  "proposal record-review",
+  "proposal waive-coverage",
+  "worktree release",
+]);
+
+// Refused before anything runs, so a flag never silently does nothing.
+const assertLockWaitApplies = (command: string, options: CliOptions): void => {
+  if (options.waitLockTimeoutMs !== undefined && !options.waitLock) {
+    throw new SimpleChangesError(
+      "--timeout-ms applies only with --wait-lock.",
+      EXIT_CODES.usage
+    );
+  }
+  if (!options.waitLock) {
+    return;
+  }
+  const name = `${command} ${options.positional[0] ?? ""}`;
+  if (
+    !LOCK_WAIT_COMMANDS.has(name) ||
+    (name === "worktree release" && !options.readyReceiptPath)
+  ) {
+    throw new SimpleChangesError(
+      `--wait-lock applies only to ${[...LOCK_WAIT_COMMANDS].sort().join(", ")} (with --ready-receipt).`,
+      EXIT_CODES.usage
+    );
+  }
+};
+
+// --wait-lock: wait for a busy loop lock for the bound instead of failing.
+const lockWaitOption = (options: CliOptions): LoopLockWait | undefined =>
+  options.waitLock
+    ? { timeoutMs: options.waitLockTimeoutMs ?? LOOP_LOCK_WAIT_DEFAULT_MS }
+    : undefined;
+
+const lockWaitInput = (options: CliOptions): { lockWait?: LoopLockWait } => {
+  const lockWait = lockWaitOption(options);
+  return lockWait ? { lockWait } : {};
+};
+
 const executeCommand = async (
   command: string,
   options: CliOptions
@@ -5641,6 +5741,7 @@ const executeCommand = async (
     process.stdout.write(HELP);
     return EXIT_CODES.success;
   }
+  assertLockWaitApplies(command, options);
   switch (command) {
     case "help":
     case "--help":
@@ -5803,9 +5904,14 @@ export const runCli = async (args: string[]): Promise<number> => {
           );
     const wantsJson = args.includes("--json");
     const message = redactSecrets(simpleError.message);
+    // A bounded lock wait that ended without the lock adds its report.
+    const lockWait =
+      simpleError instanceof LoopLockWaitError
+        ? { lockWait: simpleError.lockWait }
+        : {};
     process.stderr.write(
       wantsJson
-        ? `${JSON.stringify({ error: message, exitCode: simpleError.exitCode, ok: false })}\n`
+        ? `${JSON.stringify({ error: message, exitCode: simpleError.exitCode, ok: false, ...lockWait })}\n`
         : `simple-changes: ${message}\n`
     );
     return simpleError.exitCode;

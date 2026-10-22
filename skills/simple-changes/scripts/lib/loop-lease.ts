@@ -1,9 +1,19 @@
 // biome-ignore-all lint/performance/noBarrelFile: loop-lease.ts keeps the import path callers and repository forks already use; the implementation lives in the loop-lease-*.ts modules.
 
-export type { LeaseLiveness, LoopLockOwner } from "./loop-lease-core.ts";
+export type {
+  LeaseLiveness,
+  LoopLockOwner,
+  LoopLockOwnerSummary,
+  LoopLockWait,
+  LoopLockWaitOutcome,
+  LoopLockWaitReport,
+} from "./loop-lease-core.ts";
 export {
   controllerBindingPath,
   LEASE_STALE_AFTER_MS,
+  LOOP_LOCK_WAIT_DEFAULT_MS,
+  LOOP_LOCK_WAIT_MAX_MS,
+  LoopLockWaitError,
   leaseLiveness,
   loopLeasePath,
   loopLockPath,
@@ -15,6 +25,7 @@ export {
   SESSION_EXIT_GRACE_MS,
   turnEndReminder,
   withLoopStateLock,
+  withLoopStateLockBounded,
   withLoopStateLockWaiting,
 } from "./loop-lease-core.ts";
 export type {

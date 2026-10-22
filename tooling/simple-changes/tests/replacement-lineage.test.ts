@@ -1,5 +1,12 @@
 import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
-import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "bun";
@@ -10,6 +17,11 @@ import {
   type ReplacementLineageReceipt,
   replacementLineageDirectory,
 } from "../../../skills/simple-changes/scripts/lib/replacement-lineage.ts";
+import {
+  applyReplayRecord,
+  emptyReviewLedger,
+  reviewLedgerPath,
+} from "../../../skills/simple-changes/scripts/lib/review-ledger.ts";
 import { validateSchema } from "../../../skills/simple-changes/scripts/lib/schema.ts";
 import {
   claimWorktree,
@@ -63,6 +75,11 @@ const UNKNOWN_FIELD_PATTERN = /Invalid replacement-lineage-receipt/u;
 const EXTRA_MAPPING_PATTERN = /does not describe this history/u;
 const EDITED_BRANCH_PATTERN = /not the reviewed other-branch/u;
 const ALREADY_CONTAINED_PATTERN = /\(target-contained\)/u;
+const SHARED_BRANCH_PATTERN = /also has branch source-unit checked out/u;
+const APPROVER_IS_AUTHOR_PATTERN =
+  /approver the-user is the reviewer, the controller, or an author/u;
+const STOPPED_PATTERN = /Stopped before any other removal/u;
+const STAMP = "2026-10-08T12:00:00.000Z";
 
 let repositories: TestRepository[] = [];
 
@@ -228,6 +245,75 @@ const expectNothingWritten = (lineage: LineageFixture): void => {
   const common = commonDirectory(root);
   expect(existsSync(replacementLineageDirectory(common))).toBe(false);
   expect(readWorktreeCleanups(common)).toEqual([]);
+};
+
+/**
+ * Seeds the review ledger so the first unique commit is a replay of an
+ * earlier source commit, which `replaySourceAuthor` attested. The unique
+ * commit's own attestation names only the declared author, so only the
+ * replay provenance makes the other agent an author.
+ */
+const seedReplayAuthor = (
+  lineage: LineageFixture,
+  replaySourceAuthor: string
+): void => {
+  const { root } = lineage.fixture;
+  const replaySource = git(root, [
+    "commit-tree",
+    "HEAD^{tree}",
+    "-m",
+    "Earlier source the unique commit replays",
+  ]);
+  const unique = lineage.commits[0] ?? "";
+  const identity = (logicalId: string) => ({
+    agent: `model-${logicalId}`,
+    harness: "claude-code",
+    instance: `instance-${logicalId}`,
+    logicalId,
+    recordedAt: STAMP,
+    session: `session-${logicalId}`,
+  });
+  const ledger = emptyReviewLedger();
+  ledger.attestations[replaySource] = [identity(replaySourceAuthor)];
+  ledger.attestations[unique] = [identity(AUTHOR)];
+  applyReplayRecord(
+    ledger,
+    unique,
+    {
+      detail: "test",
+      orderedSources: [replaySource],
+      verification: "verified",
+    },
+    STAMP
+  );
+  const path = reviewLedgerPath(commonDirectory(root));
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, `${JSON.stringify(ledger, null, 2)}\n`);
+};
+
+/**
+ * A reference-transaction hook that, once the reviewed head's pin commits,
+ * adds a clean commit to the source checkout: the head moves after every
+ * earlier audit, exactly between the pin and the removal.
+ */
+const moveSourceWhenPinned = (lineage: LineageFixture): void => {
+  const { root } = lineage.fixture;
+  const hooks = join(lineage.fixture.base, "hooks");
+  mkdirSync(hooks, { recursive: true });
+  const hook = join(hooks, "reference-transaction");
+  writeFileSync(
+    hook,
+    [
+      "#!/bin/sh",
+      '[ "$1" = committed ] || exit 0',
+      "grep -q ' refs/simple-changes/' || exit 0",
+      `env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE -u GIT_PREFIX git -C '${lineage.path}' commit -q --allow-empty -m 'Clean unreviewed work' >/dev/null 2>&1`,
+      "exit 0",
+      "",
+    ].join("\n")
+  );
+  chmodSync(hook, 0o755);
+  git(root, ["config", "core.hooksPath", hooks]);
 };
 
 const expectRefusal = (run: () => unknown, pattern: RegExp): void => {
@@ -604,6 +690,36 @@ describe("reviewed replacement lineage cleanup", () => {
       },
     },
     {
+      name: "a reviewer who authored a replay source of a unique commit",
+      pattern: REVIEWER_IS_AUTHOR_PATTERN,
+      setUp: (lineage) => {
+        seedReplayAuthor(lineage, REVIEWER);
+        return {};
+      },
+    },
+    {
+      name: "an approver who authored a replay source of a unique commit",
+      pattern: APPROVER_IS_AUTHOR_PATTERN,
+      setUp: (lineage) => {
+        seedReplayAuthor(lineage, APPROVER);
+        return {};
+      },
+    },
+    {
+      name: "a second checkout on the source branch",
+      pattern: SHARED_BRANCH_PATTERN,
+      setUp: (lineage) => {
+        git(lineage.fixture.root, [
+          "worktree",
+          "add",
+          "--force",
+          join(lineage.fixture.base, "source-unit-copy"),
+          "source-unit",
+        ]);
+        return {};
+      },
+    },
+    {
       name: "an edited branch name",
       pattern: EDITED_BRANCH_PATTERN,
       setUp: (_lineage, receipt) => {
@@ -626,6 +742,66 @@ describe("reviewed replacement lineage cleanup", () => {
       expectNothingWritten(lineage);
     });
   }
+
+  test("a seeded ledger whose replay sources the declared author wrote is accepted", () => {
+    const lineage = lineageFixture(false);
+    seedReplayAuthor(lineage, AUTHOR);
+    const report = prune(lineage, receiptFor(lineage), { dryRun: true });
+    expect(report.reviewedReplacement?.path).toBe(lineage.path);
+  });
+
+  const expectStoppedAfterPin = (
+    lineage: LineageFixture,
+    movedHead: string
+  ): void => {
+    const { root } = lineage.fixture;
+    expect(movedHead).not.toBe(lineage.headSha);
+    const paths = worktreePaths(root);
+    expect(paths).toContain(lineage.path);
+    expect(paths).toContain(lineage.merged);
+    expect(branchExists(root, "merged-unit")).toBe(true);
+    expect(readWorktreeCleanups(commonDirectory(root))).toEqual([]);
+    const pins = pinRefs(root).split("\n");
+    expect(pins).toHaveLength(1);
+    expect(git(root, ["rev-parse", pins[0] ?? ""])).toBe(lineage.headSha);
+    const completed = lineageRecords(root).find(
+      (record) => record.phase === "completed"
+    );
+    expect(completed?.outcome).toMatchObject({
+      branchDeleted: false,
+      worktreeRemoved: false,
+    });
+  };
+
+  test("prune keeps a detached source whose head moves after the pin and stops the run", () => {
+    const lineage = lineageFixture(false);
+    git(lineage.path, ["checkout", "-q", "--detach"]);
+    const receipt = receiptFor(lineage);
+    receipt.source.branch = null;
+    receipt.source.changeDigest = liveDigest(lineage);
+    moveSourceWhenPinned(lineage);
+    expectRefusal(() => prune(lineage, receipt), STOPPED_PATTERN);
+    expectStoppedAfterPin(lineage, git(lineage.path, ["rev-parse", "HEAD"]));
+  });
+
+  test("worktree cleanup keeps a source whose head moves after the pin and writes no cleanup history", () => {
+    const lineage = lineageFixture(false);
+    const receipt = receiptFor(lineage);
+    moveSourceWhenPinned(lineage);
+    expectRefusal(
+      () =>
+        standaloneWorktreeCleanup({
+          agentId: CONTROLLER,
+          approvedBy: APPROVER,
+          lineageReceipt: receipt,
+          reason: "Remove the reviewed obsolete source.",
+          repositoryPath: lineage.fixture.root,
+        }),
+      STOPPED_PATTERN
+    );
+    expectStoppedAfterPin(lineage, git(lineage.path, ["rev-parse", "HEAD"]));
+    expect(branchExists(lineage.fixture.root, "source-unit")).toBe(true);
+  });
 
   test("refuses a head the target already contains, naming target-contained", () => {
     const lineage = lineageFixture(false);

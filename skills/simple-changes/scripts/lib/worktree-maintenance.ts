@@ -25,6 +25,7 @@ import {
 import { emptyManagedWorktreeFolderNotes } from "./managed-worktrees.ts";
 import { runGit } from "./process.ts";
 import {
+  assertReviewedReplacementUnchanged,
   parseReplacementLineageReceipt,
   plannedReplacementLineage,
   type ReplacementLineageOutcome,
@@ -398,6 +399,37 @@ const verifiedLineage = (
       })
     : null;
 
+// Removes the verified checkout before any other removal or cleanup history
+// write. When it was not removed, the run stops there, so a lineage failure
+// never leaves other checkouts removed or the strict history written.
+const removeLineageFirst = (
+  lineage: VerifiedReplacementLineage | null,
+  options: Omit<
+    Parameters<typeof removeReviewedReplacement>[0],
+    "errors" | "verified"
+  >,
+  errors: string[]
+): ReplacementLineageOutcome | null => {
+  if (!lineage) {
+    return null;
+  }
+  assertReviewedReplacementUnchanged(options.repositoryPath, lineage);
+  const lineageErrors: string[] = [];
+  const outcome = removeReviewedReplacement({
+    ...options,
+    errors: lineageErrors,
+    verified: lineage,
+  });
+  if (!outcome.worktreeRemoved) {
+    throw new SimpleChangesError(
+      `Stopped before any other removal: the reviewed replacement checkout ${lineage.worktree.path} was not removed. ${lineageErrors.join(" ")} Its lineage records are in ${outcome.recordPaths.join(", ") || "no file"}.`,
+      EXIT_CODES.unsafe
+    );
+  }
+  errors.push(...lineageErrors);
+  return outcome;
+};
+
 const parsedLineageReceipt = (
   value: unknown
 ): ReplacementLineageReceipt | null =>
@@ -654,6 +686,19 @@ export const standaloneWorktreeCleanup = (
           targetRevision,
         } satisfies WorktreeCleanupReceipt
       );
+      const reviewedReplacement = removeLineageFirst(
+        lineage,
+        {
+          approvedBy,
+          cleanupId,
+          command: "worktree-cleanup",
+          commonGitDirectory,
+          controllerAgentId: agentId,
+          reason,
+          repositoryPath: options.repositoryPath,
+        },
+        errors
+      );
       appendWorktreeCleanup(commonGitDirectory, intent);
       const removed = removeProvenWorktrees(
         options.repositoryPath,
@@ -661,19 +706,6 @@ export const standaloneWorktreeCleanup = (
         classification.removable,
         errors
       );
-      const reviewedReplacement = lineage
-        ? removeReviewedReplacement({
-            approvedBy,
-            cleanupId,
-            command: "worktree-cleanup",
-            commonGitDirectory,
-            controllerAgentId: agentId,
-            errors,
-            reason,
-            repositoryPath: options.repositoryPath,
-            verified: lineage,
-          })
-        : null;
       const prunedPaths = pruneStaleWorktreeMetadata(
         options.repositoryPath,
         classification.prunable,
@@ -1008,35 +1040,35 @@ export const pruneRepository = (options: PruneOptions): PruneReport => {
     if (options.dryRun) {
       return report;
     }
+    const outcome = removeLineageFirst(
+      lineage,
+      {
+        approvedBy: approvedBy ?? "",
+        cleanupId: null,
+        command: "prune",
+        commonGitDirectory,
+        controllerAgentId: lineageAgentId ?? "",
+        reason: reason ?? "",
+        repositoryPath: options.repositoryPath,
+      },
+      errors
+    );
     const removed: PruneRemoval[] = removeProvenWorktrees(
       options.repositoryPath,
       targetRef,
       classification.removable,
       errors
     );
-    if (lineage) {
-      const outcome = removeReviewedReplacement({
-        approvedBy: approvedBy ?? "",
-        cleanupId: null,
-        command: "prune",
-        commonGitDirectory,
-        controllerAgentId: lineageAgentId ?? "",
-        errors,
-        reason: reason ?? "",
-        repositoryPath: options.repositoryPath,
-        verified: lineage,
-      });
+    if (lineage && outcome) {
       report.reviewedReplacement = outcome;
-      if (outcome.worktreeRemoved) {
-        removed.push({
-          branch: outcome.branch,
-          branchDeleted: outcome.branchDeleted,
-          changeDigest: lineage.worktree.changeDigest,
-          containment: REVIEWED_REPLACEMENT_METHOD,
-          headSha: outcome.headSha,
-          path: outcome.path,
-        });
-      }
+      removed.push({
+        branch: outcome.branch,
+        branchDeleted: outcome.branchDeleted,
+        changeDigest: lineage.worktree.changeDigest,
+        containment: REVIEWED_REPLACEMENT_METHOD,
+        headSha: outcome.headSha,
+        path: outcome.path,
+      });
     }
     report.removed = sortedByPath(removed);
     report.prunedPaths = pruneStaleWorktreeMetadata(

@@ -81,7 +81,8 @@ receipt (`evals/schemas/replacement-lineage-receipt.schema.json`) names:
 Build it from `branch audit` and the reviewer's verdict, then run `prune
 --dry-run` first. The command checks every fact against live Git and refuses,
 writing nothing, when the checkout is dirty, locked, claimed (any claim not
-released), or registered by an open lease; its branch or head differs from the
+released), or registered by an open lease; another checkout has its branch
+checked out; its branch or head differs from the
 receipt (for example, it moved after the review); the clone is shallow; the
 target already contains the head (cleanup then removes it as
 `target-contained` or `patch-equivalent`, with no receipt); a unique commit is
@@ -89,7 +90,8 @@ unmapped or the mapping names a commit that is not unique; a replacement is not
 in the reviewed target or is an ancestor of the head; the current target no
 longer contains the reviewed target; the reviewer is the controller, the
 declared author, an agent that ever claimed the checkout, or an attested
-author of a unique commit; the approver is the reviewer, the controller, or an
+author of a unique commit, including an author it inherits from a replay
+record's sources; the approver is the reviewer, the controller, or an
 author, or differs from `--approved-by`; or the approval predates the review,
 is in the future, or is more than 24 hours old.
 
@@ -102,10 +104,15 @@ reviewed mapping, the review, and the approval are the evidence.
 Before removal, the command pins the head at
 `refs/simple-changes/superseded/replacement-lineage-<receipt digest>/<head>`,
 so the source history survives; restore the branch from that ref if needed.
-It writes an intent record, removes the checkout with plain `git worktree
-remove`, deletes the branch only while it still points at the pinned head,
-and writes a completion record, both under
-`<git common dir>/simple-changes/replacement-lineage/`. It forces nothing.
+It writes an intent record, reads the checkout once more, removes it with
+plain `git worktree remove`, deletes the branch only while no checkout uses
+it and it still points at the pinned head, and writes a completion record,
+both under `<git common dir>/simple-changes/replacement-lineage/`. It forces
+nothing. This removal runs before every other removal and before `worktree
+cleanup` writes its history. If the checkout changed after verification, or
+was not removed for any other reason, the run stops there: no other checkout
+is removed and no cleanup history is written, and the pin and the two records
+say what happened. Review the checkout again before writing a new receipt.
 The removal is reported as method `reviewed-replacement`, in
 `reviewedReplacement` and in prune's plan; `worktree cleanup` keeps it out of
 its cleanup history, which older runtimes validate strictly.

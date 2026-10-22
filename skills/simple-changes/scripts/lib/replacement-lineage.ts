@@ -13,7 +13,7 @@ import { proveExactByteTargetContainment } from "./exact-byte-proof.ts";
 import { sha256Json } from "./hash.ts";
 import { captureInventory } from "./inventory.ts";
 import { runGit } from "./process.ts";
-import { readReviewLedger } from "./review-ledger.ts";
+import { headCoverage, readReviewLedger } from "./review-ledger.ts";
 import { validateSchema } from "./schema.ts";
 import type {
   RepositoryInventory,
@@ -233,6 +233,18 @@ const reviewedCheckout = (
       `the checkout's head is ${worktree.headSha ?? "unresolved"}, not the reviewed ${source.headRevision}; it moved after the review.`
     );
   }
+  const sharing = inventory.worktrees.find(
+    (candidate) =>
+      candidate.path !== source.path &&
+      !candidate.prunable &&
+      source.branch !== null &&
+      candidate.branch === source.branch
+  );
+  if (sharing) {
+    refuse(
+      `checkout ${sharing.path} also has branch ${source.branch} checked out, so deleting the branch would break it.`
+    );
+  }
   const claim = context.claims.find(
     (candidate) =>
       candidate.state !== "released" &&
@@ -371,7 +383,8 @@ const assertMapping = (
 
 // The reviewer and the approver are neither an author nor the controller.
 // Authors are the declared one, every agent that ever held a claim on this
-// checkout, and every agent the review ledger attests for a unique commit.
+// checkout, and every agent the review ledger attests for a unique commit,
+// directly, through a replay record's sources, or in a completion's records.
 const assertIndependence = (
   context: ReplacementLineageContext,
   unique: readonly string[],
@@ -392,8 +405,12 @@ const assertIndependence = (
       "the review ledger is malformed, so the source commits' attested authors cannot be read."
     );
   }
+  const coverage = headCoverage(ledger.ledger, unique);
   for (const commit of unique) {
-    for (const attestation of ledger.ledger.attestations[commit] ?? []) {
+    for (const attestation of [
+      ...(coverage.authors[commit] ?? []),
+      ...(coverage.recordedAuthors[commit] ?? []),
+    ]) {
       if (attestation.logicalId) {
         authors.add(attestation.logicalId.trim());
       }
@@ -556,8 +573,9 @@ export interface ReplacementLineageRemovalOptions {
   verified: VerifiedReplacementLineage;
 }
 
-// Deletes the source branch only while it still points at the pinned head,
-// with an exact old-value ref update rather than a forced branch deletion.
+// Deletes the source branch only while no checkout has it checked out and it
+// still points at the pinned head, with an exact old-value ref update rather
+// than a forced branch deletion.
 const deleteReviewedBranch = (
   primary: string,
   branch: string,
@@ -565,6 +583,15 @@ const deleteReviewedBranch = (
   pinRef: string,
   stepErrors: string[]
 ): boolean => {
+  const user = captureInventory(primary).worktrees.find(
+    (worktree) => !worktree.prunable && worktree.branch === branch
+  );
+  if (user) {
+    stepErrors.push(
+      `Kept branch ${branch}: checkout ${user.path} has it checked out.`
+    );
+    return false;
+  }
   const tip = runGit(
     primary,
     ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}^{commit}`],
@@ -591,24 +618,16 @@ const deleteReviewedBranch = (
   return true;
 };
 
-/**
- * Removes a verified source checkout without forcing anything. It re-reads
- * the checkout, pins the reviewed head under
- * `refs/simple-changes/superseded/replacement-lineage-<receipt digest>/<head>`
- * so the source history survives, records the intent, removes the worktree
- * with plain `git worktree remove`, deletes the branch only while it still
- * points at the pinned head, and records the outcome. A failure at any step
- * stops the later ones and is reported.
- */
-export const removeReviewedReplacement = (
-  options: ReplacementLineageRemovalOptions
-): ReplacementLineageOutcome => {
-  const { errors, verified } = options;
-  const outcome = plannedReplacementLineage(verified);
+// Why the verified checkout no longer matches the receipt, or null when it
+// still does: same path, branch, head, and clean status, unlocked, and no
+// other checkout on its branch.
+const reviewedCheckoutDrift = (
+  repositoryPath: string,
+  verified: VerifiedReplacementLineage
+): string | null => {
   const { path, headSha, branch, changeDigest } = verified.worktree;
-  const current = captureInventory(options.repositoryPath);
-  const primary = current.repository.primaryCheckout;
-  const fresh = current.worktrees.find(
+  const { worktrees } = captureInventory(repositoryPath);
+  const fresh = worktrees.find(
     (worktree) =>
       worktree.path === path &&
       !worktree.prunable &&
@@ -619,11 +638,59 @@ export const removeReviewedReplacement = (
       worktree.changes.length === 0
   );
   if (!fresh) {
-    errors.push(
-      `Reviewed replacement checkout ${path} changed during the final audit and was preserved; nothing was pinned or recorded.`
-    );
-    return outcome;
+    return "its branch, head, status, or lock changed after verification";
   }
+  if (
+    branch !== null &&
+    worktrees.some(
+      (worktree) =>
+        worktree.path !== path &&
+        !worktree.prunable &&
+        worktree.branch === branch
+    )
+  ) {
+    return `another checkout now has branch ${branch} checked out`;
+  }
+  return null;
+};
+
+/**
+ * Re-reads the verified checkout before a cleanup writes or removes
+ * anything, and refuses the whole run when it changed since verification.
+ */
+export const assertReviewedReplacementUnchanged = (
+  repositoryPath: string,
+  verified: VerifiedReplacementLineage
+): void => {
+  const drift = reviewedCheckoutDrift(repositoryPath, verified);
+  if (drift) {
+    throw new SimpleChangesError(
+      `Refusing the reviewed replacement removal of ${verified.worktree.path}: ${drift}. Nothing was written or removed. Review the checkout again and write a new receipt.`,
+      EXIT_CODES.unsafe
+    );
+  }
+};
+
+/**
+ * Removes a verified source checkout without forcing anything. It pins the
+ * reviewed head under
+ * `refs/simple-changes/superseded/replacement-lineage-<receipt digest>/<head>`
+ * so the source history survives, records the intent, re-reads the checkout
+ * as the last step before plain `git worktree remove` (so no write of its
+ * own, or hook a write triggers, falls between that audit and the removal),
+ * deletes the branch only while it still points at the pinned head and no
+ * other checkout uses it, and records the outcome. A failure at any step
+ * stops the later ones and is reported; callers run it before every other
+ * removal and stop the run when the checkout was not removed.
+ */
+export const removeReviewedReplacement = (
+  options: ReplacementLineageRemovalOptions
+): ReplacementLineageOutcome => {
+  const { errors, verified } = options;
+  const outcome = plannedReplacementLineage(verified);
+  const { path, headSha, branch } = verified.worktree;
+  const primary = captureInventory(options.repositoryPath).repository
+    .primaryCheckout;
   const pinned = runGit(
     primary,
     [
@@ -675,17 +742,24 @@ export const removeReviewedReplacement = (
     })
   );
   const stepErrors: string[] = [];
-  const removal = runGit(
-    options.repositoryPath,
-    ["worktree", "remove", path],
-    true
-  );
-  if (removal.exitCode === 0) {
-    outcome.worktreeRemoved = true;
-  } else {
+  const drift = reviewedCheckoutDrift(options.repositoryPath, verified);
+  if (drift) {
     stepErrors.push(
-      `Could not remove reviewed replacement checkout ${path}: ${removal.stderr.trim() || removal.stdout.trim()}`
+      `Preserved reviewed replacement checkout ${path}: ${drift}. The reviewed head stays pinned at ${verified.pinRef}.`
     );
+  } else {
+    const removal = runGit(
+      options.repositoryPath,
+      ["worktree", "remove", path],
+      true
+    );
+    if (removal.exitCode === 0) {
+      outcome.worktreeRemoved = true;
+    } else {
+      stepErrors.push(
+        `Could not remove reviewed replacement checkout ${path}: ${removal.stderr.trim() || removal.stdout.trim()}`
+      );
+    }
   }
   if (outcome.worktreeRemoved && branch) {
     outcome.branchDeleted = deleteReviewedBranch(

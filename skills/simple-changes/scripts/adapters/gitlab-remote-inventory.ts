@@ -52,6 +52,7 @@ interface GitLabMergeRequest {
   source_branch?: unknown;
   source_project_id?: unknown;
   state?: unknown;
+  target_branch?: unknown;
   target_project_id?: unknown;
 }
 
@@ -202,6 +203,35 @@ const normalizeMergeRequest = (request: GitLabMergeRequest) => {
   };
 };
 
+/**
+ * Every open merge request on a page, forks included: the project listing
+ * returns merge requests into this project, so each target names one of this
+ * project's branches, and a branch an open merge request targets is never
+ * proposed for deletion.
+ */
+const openProposalTargets = (requests: readonly GitLabMergeRequest[]) =>
+  requests
+    .filter(
+      (request) =>
+        typeof request.state === "string" &&
+        PROPOSAL_STATES[request.state] === "open"
+    )
+    .map((request) => {
+      if (
+        typeof request.iid !== "number" ||
+        typeof request.target_branch !== "string" ||
+        request.target_branch.length === 0
+      ) {
+        return fail(
+          "GitLab returned an open merge request without an IID or target branch."
+        );
+      }
+      return {
+        objectId: String(request.iid),
+        targetBranch: request.target_branch,
+      };
+    });
+
 interface Snapshot {
   branches: RawPage<GitLabBranch>[];
   normalized: Pick<RemoteInventoryPages, "branchPages" | "proposalPages">;
@@ -243,6 +273,7 @@ const readSnapshot = (
         ({ cursorIn, cursorOut, responseDigest, rows }) => ({
           cursorIn,
           cursorOut,
+          openProposalTargets: openProposalTargets(rows),
           proposals: rows
             .filter(
               (request) =>
@@ -262,6 +293,9 @@ const snapshotContent = (snapshot: Snapshot): string =>
   JSON.stringify({
     branches: snapshot.normalized.branchPages.map((page) => page.branches),
     proposals: snapshot.normalized.proposalPages.map((page) => page.proposals),
+    targets: snapshot.normalized.proposalPages.map(
+      (page) => page.openProposalTargets
+    ),
   });
 
 const STABLE_READ_ATTEMPTS = 4;

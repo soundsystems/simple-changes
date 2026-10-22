@@ -63,6 +63,8 @@ const REMOTE_BRANCH_ANCESTRY_DIRECTORY = "remote-branch-ancestry";
 
 const REMOTE_BRANCH_SUPERSESSION_DIRECTORY = "remote-branch-supersession";
 
+const REMOTE_BRANCH_OPEN_TARGETS_DIRECTORY = "remote-branch-open-targets";
+
 const PRESERVED_SOURCE_OVERRIDE_DIRECTORY = "preserved-source-override";
 
 const CHANGELOG_AUTHOR_DIRECTORY = "changelog-author";
@@ -1154,7 +1156,8 @@ type ReceiptSidecarDirectory =
   | typeof CHANGELOG_AUTHOR_DIRECTORY
   | typeof PRESERVED_SOURCE_OVERRIDE_DIRECTORY
   | typeof REMOTE_BRANCH_ANCESTRY_DIRECTORY
-  | typeof REMOTE_BRANCH_SUPERSESSION_DIRECTORY;
+  | typeof REMOTE_BRANCH_SUPERSESSION_DIRECTORY
+  | typeof REMOTE_BRANCH_OPEN_TARGETS_DIRECTORY;
 
 const receiptSidecarPath = (
   commonGitDirectory: string,
@@ -1414,6 +1417,7 @@ export {
   processIsAlive,
   RECOVERY_HISTORY_DIRECTORY,
   REMOTE_BRANCH_ANCESTRY_DIRECTORY,
+  REMOTE_BRANCH_OPEN_TARGETS_DIRECTORY,
   REMOTE_BRANCH_SUPERSESSION_DIRECTORY,
   REMOTE_RECONCILIATION_MODES,
   readImmutableRecoveryEvent,

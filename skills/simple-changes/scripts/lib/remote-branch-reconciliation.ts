@@ -6,6 +6,8 @@ import type {
   PostCleanupRecoveryReceipt,
   RemoteBranchAncestryProof,
   RemoteBranchAncestryRecord,
+  RemoteBranchOpenProposalTarget,
+  RemoteBranchOpenTargetsRecord,
   RemoteBranchReconciliationEntry,
   RemoteBranchReconciliationReceipt,
   RemoteBranchSupersession,
@@ -19,6 +21,10 @@ const ANCESTRY_PROOF_SCHEMA = {
 
 const SUPERSESSION_SCHEMA = {
   $ref: "remote-branch-supersession.schema.json#/$defs/supersession",
+};
+
+const OPEN_TARGETS_SCHEMA = {
+  $ref: "remote-branch-open-targets.schema.json#/$defs/targets",
 };
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -664,20 +670,36 @@ const supersessionsByBranch = (
 
 /**
  * The receipt input may carry `mergedHeadAncestry` or `supersession` on a
- * branch entry. Both are split out before the receipt is validated and
- * embedded in the lease, so the lease keeps the original receipt schema that
- * older clients read.
+ * branch entry, and `openProposalTargets` at its top level. All are split out
+ * before the receipt is validated and embedded in the lease, so the lease
+ * keeps the original receipt schema that older clients read. Absent
+ * `openProposalTargets` means the targets are unknown, never that none exist.
  */
 export const splitRemoteBranchReconciliationInput = (
   value: unknown
 ): {
   ancestryProofs: RemoteBranchAncestryProof[];
+  openProposalTargets: RemoteBranchOpenProposalTarget[] | null;
   receipt: unknown;
   supersessions: RemoteBranchSupersession[];
 } => {
   if (!(isRecord(value) && Array.isArray(value.branches))) {
-    return { ancestryProofs: [], receipt: value, supersessions: [] };
+    return {
+      ancestryProofs: [],
+      openProposalTargets: null,
+      receipt: value,
+      supersessions: [],
+    };
   }
+  const { openProposalTargets: targetsInput, ...receiptValue } = value;
+  const openProposalTargets =
+    "openProposalTargets" in value
+      ? validateSchemaDocument<RemoteBranchOpenProposalTarget[]>(
+          "remote-branch-open-targets list",
+          OPEN_TARGETS_SCHEMA,
+          targetsInput
+        )
+      : null;
   const ancestryProofs: RemoteBranchAncestryProof[] = [];
   const supersessions: RemoteBranchSupersession[] = [];
   const branches = value.branches.map((branch: unknown) => {
@@ -731,7 +753,39 @@ export const splitRemoteBranchReconciliationInput = (
     }
     return entry;
   });
-  return { ancestryProofs, receipt: { ...value, branches }, supersessions };
+  return {
+    ancestryProofs,
+    openProposalTargets,
+    receipt: { ...receiptValue, branches },
+    supersessions,
+  };
+};
+
+/**
+ * Re-joins an open-targets sidecar with the exact receipt it was recorded
+ * for. Unlike the proof sidecars it only ever narrows a report, so a record
+ * for another run or receipt reads as unknown targets rather than failing.
+ */
+export const openProposalTargetsForReceipt = (
+  value: unknown,
+  runId: string,
+  receipt: RemoteBranchReconciliationReceipt
+): RemoteBranchOpenProposalTarget[] | null => {
+  if (value === null) {
+    return null;
+  }
+  try {
+    const record = validateSchema<RemoteBranchOpenTargetsRecord>(
+      "remote-branch-open-targets",
+      value
+    );
+    return record.runId === runId &&
+      record.receiptDigest === remoteBranchReconciliationDigest(receipt)
+      ? record.openProposalTargets
+      : null;
+  } catch {
+    return null;
+  }
 };
 
 export const remoteBranchReconciliationDigest = (

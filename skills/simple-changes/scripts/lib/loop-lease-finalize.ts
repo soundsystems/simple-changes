@@ -49,7 +49,10 @@ import {
   writeImmutableRecoveryEvent,
   writeLease,
 } from "./loop-lease-core.ts";
-import { assertCurrentRemoteBranchReconciliation } from "./loop-lease-remote.ts";
+import {
+  assertCurrentRemoteBranchReconciliation,
+  recordedOpenProposalTargets,
+} from "./loop-lease-remote.ts";
 import {
   preservedSourceOverrideIssue,
   targetTreeEntry,
@@ -67,6 +70,10 @@ import { emptyManagedWorktreeFolderNotes } from "./managed-worktrees.ts";
 import { recordedPreservedSourceOverrides } from "./preserved-source-override.ts";
 import { primaryDeliveryProof } from "./primary-delivery-proof.ts";
 import { runGit } from "./process.ts";
+import {
+  type RemoteBranchCleanupReport,
+  remoteBranchCleanupReport,
+} from "./remote-branch-prune.ts";
 import {
   type ReviewAttemptsReport,
   reviewAttemptsForFinalization,
@@ -1721,6 +1728,12 @@ export interface LoopFinalizationReceipt {
   leaseDigest: string;
   preservedWorktrees: string[];
   reason: string;
+  /**
+   * Preserved provider branches the evidence says are finished, when a
+   * remote-branch reconciliation receipt was recorded. Any pending entry or
+   * error makes `cleanupStatus` pending.
+   */
+  remoteBranches?: RemoteBranchCleanupReport;
   /** Review attempts recorded during the run, per proposal, when a ledger exists. */
   reviewAttempts?: ReviewAttemptsReport;
   runId: string;
@@ -1728,6 +1741,45 @@ export interface LoopFinalizationReceipt {
   shipmentStatus: "closed" | "open" | "unstarted";
   targetRevision: string | null;
 }
+
+/**
+ * Reports preserved provider branches that are finished but still present, so
+ * a run that kept them can never read as clean. It reads only the recorded
+ * receipt and local evidence, and a failure becomes a reported error, which
+ * counts as pending, rather than a failed finalization.
+ */
+const remoteBranchesField = (
+  lease: LoopLease,
+  inventory: RepositoryInventory
+): Pick<LoopFinalizationReceipt, "remoteBranches"> => {
+  const receipt = lease.remoteBranchReconciliation;
+  if (!receipt) {
+    return {};
+  }
+  try {
+    return {
+      remoteBranches: remoteBranchCleanupReport({
+        claims: readCoordinationDocumentFromCommonDirectory(
+          lease.commonGitDirectory
+        ).claims,
+        inventory,
+        openTargets: recordedOpenProposalTargets(lease),
+        receipt,
+      }),
+    };
+  } catch (error) {
+    return {
+      remoteBranches: {
+        errors: [
+          `Remote branch cleanup could not be checked: ${error instanceof Error ? error.message : String(error)}`,
+        ],
+        held: [],
+        openProposalTargets: "unknown",
+        pending: [],
+      },
+    };
+  }
+};
 
 const reviewAttemptsField = (
   lease: LoopLease
@@ -1982,13 +2034,16 @@ const finalizationDecision = (
           controllerStatus: "relinquished",
           shipmentStatus: "open",
         };
+  const remoteBranches = remoteBranchesField(lease, finalInventory);
   const cleanupPending =
     loopCompletionBlockers(
       lease,
       finalInventory,
       strictVerification,
       cleanup.errors
-    ).length > 0;
+    ).length > 0 ||
+    (remoteBranches.remoteBranches?.pending.length ?? 0) > 0 ||
+    (remoteBranches.remoteBranches?.errors.length ?? 0) > 0;
   const now = new Date().toISOString();
   const receipt: LoopFinalizationReceipt = {
     ...lifecycle,
@@ -2004,6 +2059,7 @@ const finalizationDecision = (
       .map((worktree) => worktree.path)
       .sort((left, right) => left.localeCompare(right)),
     reason,
+    ...remoteBranches,
     ...reviewAttemptsField(lease),
     runId: lease.runId,
     schemaVersion: 1,

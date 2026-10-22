@@ -129,9 +129,12 @@ discovered:
    merged-head ancestry case below), and any work whose ownership or
    obsolescence is ambiguous.
 4. Delete a merged-MR branch only when the branch's current head is the exact
-   recorded head of that merged MR, no open MR uses it, it is unprotected, and
-   provider evidence proves there are no later commits. Record
-   `merged-proposal-head` proof; an MR setting or branch name is not proof.
+   recorded head of that merged MR, no open MR uses it as its source or
+   target, it is unprotected, and provider evidence proves there are no later
+   commits. Record `merged-proposal-head` proof; an MR setting or branch name
+   is not proof. The final `remote-inventory build` proposes these deletions
+   on its own (below), so a merged MR's surviving source branch is never left
+   behind by default.
 5. Audit closed/unmerged branches separately from branches with no MR.
    Preserve either class unless exact Git/provider evidence proves the target
    contains the head or the provider diff is empty. Only then may it be deleted
@@ -203,7 +206,11 @@ SHA-256 of the raw page; the builder hashes the normalized items when it is
 absent), and its items: branches as `{ name, headRevision, protected }`,
 proposals as `{ objectId, sourceBranch, state, headRevision }` with `state`
 one of `open`, `merged`, or `closed`. A proposal page accounts only the
-proposals whose source branch is in the ledger.
+proposals whose source branch is in the ledger. A proposal page may also list
+`openProposalTargets`: every open proposal on that raw page, forks included,
+as `{ objectId, targetBranch }`. It must name every open proposal the page
+carries. Only when every page has the list does the final receipt carry
+`openProposalTargets` and the build propose deletions.
 
 Without `--opening-remote-inventory` the builder writes an opening receipt:
 one snapshot, every branch preserved (the target, protected branches, branches
@@ -225,6 +232,50 @@ command still checks every proof. It also refuses a branch or proposal listed
 twice (the listing shifted while paging; fetch again), a broken cursor chain,
 a missing target, a deleted branch with an open proposal, and a branch whose
 protection changed during the run.
+
+### Deletion proposals and held branches
+
+The final build also proposes deletions; it deletes nothing. Its summary lists
+`deletionProposals`, each with `name`, `headRevision`, `basis`, and `proof`.
+With basis `merged-proposal-head`, it proposes a branch with no decision only
+when all of these hold:
+
+- the branch is unprotected and not the target;
+- its head is the same in the opening and final inventories;
+- a final merged MR on that branch recorded exactly that head
+  (`proposalObjectId`);
+- no MR open in the final inventory has it as its source;
+- every proposal page lists `openProposalTargets` and none of them targets
+  it;
+- no worktree has it checked out, no unreleased claim holds it or names it as
+  a resume target, it is not the upstream of a live branch, and its head is
+  not the exact fork point of a live branch from the target (a fresh
+  integration branch that still equals the target).
+
+The build reads the worktrees and claims from `--repo`. A merged-MR head that
+fails only the last two checks is listed in `heldBranches` with every reason
+and is not proposed. When the pages lack open MR targets or the local state
+cannot be read, every merged-MR head is held.
+
+Delete each proposal the guarded way: `loop guard`, a provider deletion of
+exactly that branch at that head, then `loop verify`. Then fetch fresh final
+pages and build again. The deleted branch is then recorded as
+`deleted-merged`, and `loop reconcile-remote-branches` checks it as usual.
+Skipping a proposal is allowed. The branch stays preserved, and `loop
+finalize` reports it as pending cleanup.
+
+A `--decisions` entry for a branch that is still present approves deleting it,
+and the build lists it with basis `decision`. Use this for a branch that
+finalization reported as contained in the target, once the user or
+controller approves. The same rules then apply as for a deleted branch's
+decision: one of `obsoleteProof` or `supersession`, no merged MR record, and
+a supersession at the exact head. The build refuses the entry when the branch
+is the target or protected, moved during the run (decide it from the next
+run's opening inventory), has an open MR from it or into it, or is held by a
+live worktree or claim. Delete it the guarded way and build again with the
+same decisions file. The entry then records the deletion, and the
+reconciliation command still checks its proof. A merged-MR head needs no
+entry; an entry for one is refused.
 
 A source branch whose MR was open at the opening inventory, then merged at that
 same head or after a fast-forward, and deleted by GitLab is recorded as
@@ -401,7 +452,40 @@ the controller. It reports `shipmentStatus`, `controllerStatus`,
 `deliveryStatus`, `cleanupStatus`, `blocksNextShipment`, blockers, preserved
 worktrees, and, when `review-ledger.json` exists, the review attempts recorded
 during the run per proposal (`reviewAttempts`). A closed shipment with pending cleanup does not block the next
-shipment; run guarded `prune` separately when safe. Incomplete finalization
+shipment; run guarded `prune` separately when safe.
+
+When the run recorded a remote-branch reconciliation receipt, the
+finalization receipt also carries `remoteBranches`. It lists every preserved
+provider branch that the evidence shows is finished, judged at its final
+head. The branch must be preserved as ambiguous or audited, must not be the
+target or protected, and must have no MR open from it. It qualifies in one of
+two ways:
+
+- `merged-proposal-head`: a merged MR recorded exactly its unchanged head;
+  the entry names the MR in `proposalObjectId`.
+- `target-contained` or `patch-equivalent`: Git finds its head locally and the
+  target contains it by exact ancestry or full patch-id equivalence. These
+  branches are never deleted automatically: one may be work that just
+  started.
+
+Each entry has `name` and `headRevision`, plus `movedDuringRun` when the head
+moved or arrived during the run. Entries go into `pending` or `held`:
+
+- `pending`: any pending entry makes `cleanupStatus` `pending`, never
+  `complete`, even when everything else is clean. Report each branch with its
+  proof. Approve a deletion with a `--decisions` entry in a run whose opening
+  inventory has the branch at that head, then delete it the guarded way.
+- `held`: an open MR targets the branch, or a live worktree or claim holds it
+  (the same holds the build uses). Each entry carries its `reasons`. A held
+  branch is reported but does not make cleanup pending: no decision is due
+  until the MR, worktree, or claim ends, and the next finalization reports it
+  again then.
+
+Open MR targets come from the final receipt's `openProposalTargets`, which
+`loop reconcile-remote-branches` keeps in a sidecar beside the lease. Without
+that sidecar, `openProposalTargets` is `unknown`, so an open MR's target
+cannot be held and is reported as pending. A check that fails is listed in
+`errors` and also makes cleanup pending. Incomplete finalization
 relinquishes durable state and exits nonzero. The exception is an untouched Ship
 run, with no recorded scope and no mutation evidence: finalization closes it
 with `shipmentStatus: unstarted` and an `abort-unmutated.json` receipt instead

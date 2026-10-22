@@ -175,6 +175,11 @@ import type { ReleaseNotes } from "./lib/release-notes.ts";
 import { extractReleaseNotes } from "./lib/release-notes.ts";
 import { runReleaseTag } from "./lib/release-tag.ts";
 import {
+  type RemoteBranchCleanupItem,
+  type RemoteBranchCleanupReport,
+  remoteBranchHolds,
+} from "./lib/remote-branch-prune.ts";
+import {
   buildRemoteInventory,
   type RemoteInventoryBuild,
 } from "./lib/remote-inventory.ts";
@@ -3732,6 +3737,29 @@ const renderRemovedWorkDirectories = (removed: readonly string[]): string =>
 const renderCleanupNotes = (notes: readonly string[]): string =>
   notes.map((note) => `Note: ${note}\n`).join("");
 
+const remoteBranchProofText = (item: RemoteBranchCleanupItem): string =>
+  `${item.proof === "merged-proposal-head" ? `merged proposal ${item.proposalObjectId} at this exact head` : `target contains it (${item.proof})`}${item.movedDuringRun ? ", moved during this run" : ""}`;
+
+const renderRemoteBranchCleanup = (
+  report: RemoteBranchCleanupReport | undefined
+): string => {
+  if (!report) {
+    return "";
+  }
+  const lines = [
+    ...report.pending.map(
+      (item) =>
+        `Remote branch pending cleanup: ${item.name} at ${item.headRevision}, ${remoteBranchProofText(item)}.\n`
+    ),
+    ...report.held.map(
+      (item) =>
+        `Remote branch kept while in use: ${item.name} at ${item.headRevision}, ${remoteBranchProofText(item)}; ${item.reasons.join("; ")}.\n`
+    ),
+    ...report.errors.map((error) => `Remote branch cleanup: ${error}\n`),
+  ];
+  return lines.join("");
+};
+
 const runLoopFinalizationAction = (
   action: string,
   options: CliOptions,
@@ -3846,7 +3874,7 @@ const runLoopFinalizationAction = (
         removedWorkDirectories,
       },
       options.json,
-      `Completed and released ${runId}. Normalized ${result.cleanup.cleanedPrimaryPaths.length} target-equivalent primary path(s), removed ${result.cleanup.removedWorktrees.length} worktree(s) and ${result.cleanup.removedBranches.length} branch(es); pruned ${result.cleanup.prunedWorktreeMetadata} stale worktree record(s); released ${result.cleanup.releasedClaims.length} finished or orphaned worktree claim(s).\n${renderCleanupNotes(result.cleanup.notes)}${renderRemovedWorkDirectories(removedWorkDirectories)}`
+      `Completed and released ${runId}. Normalized ${result.cleanup.cleanedPrimaryPaths.length} target-equivalent primary path(s), removed ${result.cleanup.removedWorktrees.length} worktree(s) and ${result.cleanup.removedBranches.length} branch(es); pruned ${result.cleanup.prunedWorktreeMetadata} stale worktree record(s); released ${result.cleanup.releasedClaims.length} finished or orphaned worktree claim(s).\n${renderCleanupNotes(result.cleanup.notes)}${renderRemoteBranchCleanup(result.receipt.remoteBranches)}${renderRemovedWorkDirectories(removedWorkDirectories)}`
     );
     return true;
   }
@@ -5249,6 +5277,28 @@ const renderRemoteInventoryBuild = (build: RemoteInventoryBuild): string => {
         lines.push(`${label}: ${names.join(", ")}`);
       }
     }
+    if (summary.deletionProposals.length > 0) {
+      lines.push(
+        "Proposed deletions (for each: run `loop guard`, delete exactly that branch at that head, run `loop verify`; then fetch and build the final inventory again):",
+        ...summary.deletionProposals.map(
+          (proposal) =>
+            `  ${proposal.name} at ${proposal.headRevision}: ${
+              proposal.basis === "decision"
+                ? `approved by the decisions file (${proposal.proof})`
+                : `merged proposal ${proposal.proposalObjectId} at this exact head`
+            }`
+        )
+      );
+    }
+    if (summary.heldBranches.length > 0) {
+      lines.push(
+        "Merged-proposal heads kept and not proposed:",
+        ...summary.heldBranches.map(
+          (held) =>
+            `  ${held.name} at ${held.headRevision}: ${held.reasons.join("; ")}`
+        )
+      );
+    }
   }
   return `${lines.join("\n")}\n`;
 };
@@ -5269,7 +5319,23 @@ const runRemoteInventoryCommand = (options: CliOptions): void => {
   }
   const build = buildRemoteInventory(readJsonFile(pagesPath), {
     ...(options.openingRemoteInventoryPath
-      ? { opening: readJsonFile(options.openingRemoteInventoryPath) }
+      ? {
+          opening: readJsonFile(options.openingRemoteInventoryPath),
+          // Live worktrees and claims keep a branch; read only locally.
+          resolveHolds: (targetBranch: string, targetRevision: string) => {
+            const inventory = captureInventory(options.repo, {
+              skipWorktreeStatus: true,
+            });
+            return remoteBranchHolds({
+              claims: readCoordinationDocumentFromCommonDirectory(
+                inventory.repository.commonGitDirectory
+              ).claims,
+              inventory,
+              targetBranch,
+              targetRevision,
+            });
+          },
+        }
       : {}),
     ...(options.decisionsPath
       ? { decisions: readJsonFile(options.decisionsPath) }

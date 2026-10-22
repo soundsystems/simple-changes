@@ -385,7 +385,29 @@ describe("remote-inventory build", () => {
         },
         opening,
       })
-    ).toThrow("not deleted during the run: feat/open");
+    ).toThrow("the decision for feat/open cannot approve deleting it");
+    expect(() =>
+      buildRemoteInventory(final, {
+        decisions: {
+          deletedBranches: [
+            {
+              evidence: ["Never existed."],
+              name: "never/listed",
+              obsoleteProof: "target-contains-head",
+            },
+            {
+              evidence: ["Contained."],
+              name: "old/closed",
+              obsoleteProof: "target-contains-head",
+            },
+          ],
+          schemaVersion: 1,
+        },
+        opening,
+      })
+    ).toThrow(
+      "neither deleted during the run nor present in both inventories: never/listed"
+    );
     const twice = {
       evidence: ["Contained."],
       name: "old/closed",
@@ -580,6 +602,7 @@ describe("GitLab fetcher listing stability", () => {
                 source_branch: "main",
                 source_project_id: 1,
                 state: "opened",
+                target_branch: "next",
                 target_project_id: 1,
               },
             ],
@@ -818,6 +841,7 @@ describe("remote inventory through the CLI and a loop", () => {
           source_branch: "branch-001",
           source_project_id: 7,
           state: "locked",
+          target_branch: "main",
           target_project_id: 7,
         },
         {
@@ -841,6 +865,7 @@ describe("remote inventory through the CLI and a loop", () => {
           source_branch: "main",
           source_project_id: 99,
           state: "opened",
+          target_branch: "branch-004",
           target_project_id: 7,
         },
       ])
@@ -889,6 +914,11 @@ describe("remote inventory through the CLI and a loop", () => {
         sourceBranch: "branch-003",
         state: "merged",
       },
+    ]);
+    // Every open merge request names its target, a fork's included.
+    expect(pages.proposalPages[0]?.openProposalTargets).toEqual([
+      { objectId: "5", targetBranch: "main" },
+      { objectId: "6", targetBranch: "branch-004" },
     ]);
     expect(buildRemoteInventory(pages).summary).toMatchObject({
       branches: 101,

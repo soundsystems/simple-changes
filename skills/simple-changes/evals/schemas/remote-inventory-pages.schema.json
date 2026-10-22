@@ -72,6 +72,19 @@
         "cursorIn": { "$ref": "#/$defs/cursor" },
         "cursorOut": { "$ref": "#/$defs/cursor" },
         "responseDigest": { "$ref": "#/$defs/responseDigest" },
+        "openProposalTargets": {
+          "description": "Every open proposal on this raw page, from any source project, and the branch it targets. Only when every proposal page carries it can the builder prove that no open proposal targets a branch; without it the builder proposes no deletion.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["objectId", "targetBranch"],
+            "properties": {
+              "objectId": { "type": "string", "minLength": 1 },
+              "targetBranch": { "type": "string", "minLength": 1 }
+            }
+          }
+        },
         "proposals": {
           "type": "array",
           "items": {

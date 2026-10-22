@@ -62,7 +62,11 @@ bun skills/simple-changes/scripts/adapters/gitlab-remote-inventory.ts \
 numeric ID. `--raw-dir` keeps each raw page; its `responseDigest` is the SHA-256
 of those saved bytes. A `locked` merge request counts as open, which preserves
 its branch, and merge requests from forks are left out because their source
-branches belong to the fork. Pass `--hostname` for a self-managed instance.
+branches belong to the fork. Each proposal page also lists
+`openProposalTargets`, every open merge request on that page with its
+`target_branch`, forks included, because a fork's merge request still targets
+this project's branch. The builder never proposes deleting a branch an open
+merge request targets. Pass `--hostname` for a self-managed instance.
 
 ## Gate merges on hosted CI
 

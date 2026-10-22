@@ -89,12 +89,11 @@ set. A provider-native command that applies every pending migration is not
 eligible for automatic policy authorization unless its adapter constrains and
 proves that exact set; otherwise request explicit authority.
 Only an `auto-apply` result grants saved-policy authority to continue without
-another permission prompt; follow every other result exactly.
-Apply only through `simple-changes migration decision` and
-`simple-changes migration apply` with the closed evidence described in
-[high-risk actions](migrations-and-high-risk-actions.md). Broad apply-all, stale, replayed, target-mismatched, or
-command-changed plans require new review/authority. Do not apply a migration
-while installed-client compatibility is `incompatible` or `unverified`.
+another permission prompt; follow every other result exactly. Never apply a
+migration any other way. Broad apply-all, stale, replayed, target-mismatched,
+or command-changed plans require new review or authority. Do not apply a
+migration while installed-client compatibility is `incompatible` or
+`unverified`.
 
 - `ask-after-review`: request exact apply authority after the audit.
 - `auto-apply-reviewed-routine`: proceed without another prompt only when the
@@ -112,12 +111,9 @@ operation, and target. Backfills and repairs remain separately authorized even
 when stored near schema migrations.
 
 Delegate execution to repository-native or specialized guidance and record a
-redacted receipt. After any apply, re-read remote migration history and verify
-the planned postconditions; command exit alone is not success evidence.
+redacted receipt; command exit alone is not success evidence.
 
-Provider-native promotion of an already verified production artifact and
-bounded reconciliation of exact provider-managed targets already owned by the
-same project remain inside authorized production deployment finalization.
-Creating or transferring domains, editing external DNS, changing wildcard
-ownership, or attaching a target whose ownership is not proven remains a
-separate DNS/domain action under this checkpoint.
+Which provider-managed target changes stay inside authorized production
+deployment finalization, and which DNS and domain changes remain separate
+actions under this checkpoint, is in
+[deployments](deployments.md#reconcile-stale-provider-managed-targets).

@@ -70,7 +70,6 @@ reconciliation or added by external target movement as a short
 the exact entries and refuses an omitted unit, wrong blob/mode/gitlink, moved
 target, or unreported final-target delta. The controller records this receipt;
 it adds no user approval step, and existing cleanup safety remains unchanged.
-This controller audit step is not another user decision.
 
 Start from a draft instead of writing the receipt by hand:
 

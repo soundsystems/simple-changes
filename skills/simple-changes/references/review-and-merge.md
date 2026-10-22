@@ -45,16 +45,14 @@ standard and still build the wrong thing. A requirement deliberately left
 out belongs in the proposal's Summary as out of scope; otherwise a Spec
 finding is actionable like any other.
 
-Emergency Ship does not weaken merge policy. `expedited` completes independent
-review before merge and initial deployment. Current-request or saved-policy
-authorized `break-glass`
-may deploy one exact candidate before focused checks and independent review,
-but it does not merge through protected branches early or represent the
-deployment as approval. Request review of the exact deployed revision
-immediately after its health verification and focused checks. If review
-requests changes, move to `rollback-required` and either restore the recorded
-production revision or produce a separately checked corrective revision.
-Never merge or release-reconcile a rejected live candidate as though it passed.
+Emergency Ship does not weaken merge policy
+([deployments](deployments.md#emergency-ship-exception)): `break-glass` never
+merges through protected branches early or represents the deployment as
+approval. Request review of the exact deployed revision immediately after its
+health verification and focused checks. If review requests changes, move to
+`rollback-required` and either restore the recorded production revision or
+produce a separately checked corrective revision. Never merge or
+release-reconcile a rejected live candidate as though it passed.
 
 Address actionable findings inside the intended unit, rerun relevant checks,
 push the new revision, and request/re-run review against that revision. Keep
@@ -122,13 +120,10 @@ runtime. Runtimes before 0.32.0 reject `extensions` too.
 - **Attestation.** Authors attest every commit, and replays link rewritten
   commits to their sources ([ledger steps](change-requests.md#review-ledger-steps)).
   Effective authors follow those links at read time, so a later attestation
-  anywhere in a commit's ancestry counts at once. An author may complete its
-  own earlier attestation that lacked an instance or model ID, a display
-  name included (`--complete-identity`); the earlier record stays in the
-  ledger and still rules out any reviewer it ruled out as the same executor,
-  but its missing instance or model ID no longer leaves independence or
-  diversity unknown. No
-  other commit or replay source changes. A completion an earlier runtime
+  anywhere in a commit's ancestry counts at once. An author's
+  `--complete-identity` completion of its own earlier attestation (step 1
+  there) means the missing instance or model ID no longer leaves independence
+  or diversity unknown; no other commit or replay source changes. A completion an earlier runtime
   wrote under its rule, which compared reported names, stays valid; a
   display name it added is still not a model ID.
   A runtime before 0.31.0 reads a ledger holding a completion that adds a

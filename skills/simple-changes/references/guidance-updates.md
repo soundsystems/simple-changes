@@ -111,8 +111,7 @@ reports that state is busy, retry it after the other finishes.
 If the user selects `configure-harness` or says “auto push,” give the exact
 scoped-push explanation and confirmation from
 [harness-aware Git push authorization](harness-push-authorization.md) before
-saving. Do not translate “auto push” directly into a policy write before that
-confirmation.
+saving.
 
 ## Detect the companion update separately
 
@@ -155,8 +154,7 @@ default.
 
 ## Resolve required changelog updates before a loop
 
-Resolve installed update choices before acquiring a loop. When the request
-requires changelog work, call initialization with
+When the request requires changelog work, call initialization with
 `--changelog-required`. If the companion update is available, initialization
 returns `preLoopActionRequired: true` and `mutationAllowed: false`.
 

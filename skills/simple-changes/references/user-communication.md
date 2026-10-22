@@ -28,19 +28,13 @@ checkout is 16 commits behind” over “target divergence is 0/16.”
 ## Keep technical detail available, not dominant
 
 Do not lead with controller, lease, ledger, manifest, digest, receipt,
-target-contained, relinquished, mutation boundary, or guarded execution. These
-terms describe implementation and audit evidence; they are rarely the user's
-main concern.
+target-contained, relinquished, mutation boundary, mutation path, or guarded
+execution. These terms describe implementation and audit evidence; translate
+them into ordinary language first, and expand into full technical detail when
+the user asks.
 
-Do not lead with internal terms such as controller, lease, ledger, digest,
-relinquished, target-contained, or mutation path. Translate them into ordinary
-language first. Include exact revisions, paths, commands, provider identities,
-or durable state names when they affect safety, authority, verification, or the
-user's next decision, but place them after the simple explanation. Expand into
-full technical detail when the user asks. Never expose raw machine output or
-internal bookkeeping as the explanation itself.
-
-Mention technical detail when it is needed to:
+Mention technical detail, such as exact revisions, paths, commands, provider
+identities, or durable state names, when it is needed to:
 
 - identify the exact repository, branch, revision, path, environment, or
   provider the user is authorizing;
@@ -50,9 +44,10 @@ Mention technical detail when it is needed to:
 - answer a request for technical specifics.
 
 Even then, explain the practical meaning first. Put exact IDs, commands, and
-audit evidence in a short follow-up sentence or compact list. Never paste raw
-JSON, a full internal state record, or a machine error when a short translation
-answers the question.
+audit evidence in a short follow-up sentence or compact list. Never expose raw
+machine output or internal bookkeeping as the explanation itself, and never
+paste raw JSON, a full internal state record, or a machine error when a short
+translation answers the question.
 
 When review, audit, or verification finds two or more issues, list every
 finding as its own concise bullet. Do not replace the list with an abstract
@@ -80,14 +75,9 @@ Avoid narrating every failed internal attempt. If nothing is lost, say so.
 
 When completed, verified work is blocked only because another task owns the
 active shipment, do not end with merely “not deployed.” Say that the work is
-preserved and ready, then ask:
-
-> Do you want me to ask that agent to fold this work into the active shipment,
-> or should I wait until that shipment finishes and ship this separately
-> afterward?
-
-The first choice requires explicit approval before contacting the other task.
-The second keeps the work untouched until a fresh shipment can begin.
+preserved and ready, then ask the fold-or-wait question in
+[shipment holds](../SKILL.md#shipment-holds); the two choices are in
+[inventory and concurrency](inventory-and-concurrency.md#ready-work-blocked-by-another-shipping-controller).
 
 ## Examples
 
@@ -163,9 +153,3 @@ section when no public release was finalized or reconciled, or when the work was
 internal-only or `release:none`. Never use release-note prose to imply that a
 preserved, blocked, preview-only, or unmerged unit shipped. If useful, offer the
 full version-bound notes after the concise summary.
-
-When Ship finalizes or reconciles a public release, end with concise **Latest
-customer notes** sourced from that exact version's public release notes; omit
-them for preview-only, internal-only, or `release:none` work. For Ship, compare
-the pre-ship brief with the result and report review-driven changes or
-explicitly state none.

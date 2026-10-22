@@ -46,10 +46,8 @@ found, whether multiple UI artifacts are relevant, and the exact instruction
 file that could receive a pointer. Do not ask for a decision already supplied by
 the request or proven repository policy.
 
-Before the first screen, inspect the normal private policy path. When saved
-global personal defaults exist, disclose them and ask whether to use them
-unchanged for this run (see Preference storage below). If the user declines,
-continue onboarding.
+Before the first screen, check for saved global personal defaults as
+[preference storage](#preference-storage) describes.
 
 ## Question presentation contract
 
@@ -169,12 +167,6 @@ Offer option 3 only when **Deploy automatically** was selected in the
 production question; otherwise mention in one sentence that an advanced
 break-glass mode exists and requires automatic production deployment.
 
-Do not require a second “authorized for break-glass” phrase when saved
-break-glass ordering and automatic production authority are both effective.
-Native provider rollback is sufficient and does not require a blocking
-pre-deploy lookup. Explicit current-request direction always overrides saved
-preferences.
-
 Then, only when this run will actually produce more than one independent
 change proposal, ask **When there are multiple independent change proposals,
 what should I optimize for? Choose one:** Use **PRs** for a detected GitHub
@@ -245,13 +237,9 @@ Choose one:**
 4. **Never apply automatically**: Audit and report migrations, but leave every
    remote apply for a separate workflow.
 
-Both automatic tiers review the generated/native operations before apply and
-require verified backup or rollback evidence plus planned post-apply checks.
-They never auto-apply destructive or data-deleting, irreversible, unbounded,
-lock-heavy, target-mismatched, or unprotected changes. The routine tier also
-asks before every reviewed migration classified as non-routine. The broader
-eligible tier may proceed with a reviewed non-routine migration only when none
-of those exclusions apply.
+Explain that both automatic tiers still review every operation, need verified
+backup or rollback evidence and planned post-apply checks, and never cover the
+exclusions in [high-risk actions](migrations-and-high-risk-actions.md).
 
 For either automatic tier, collect and display every exact
 `provider:project:environment` target. Do not accept an automatic tier without
@@ -266,8 +254,7 @@ When relevant, ask **How should changelog work be handled? Choose one:**
 3. **Ask before delegating**: Confirm before handing the changelog portion to a
    compatible skill.
 
-Explain that Simple Changes never writes release notes itself and that this
-preference grants no version, release, deployment, or publication authority.
+Explain that Simple Changes never writes release notes itself.
 When compatible Simple Changelogs is installed, preselect **Delegate when
 available**. When changelog work is relevant but the skill is not installed or
 compatible, first explain that it owns release classification and release-note
@@ -286,8 +273,8 @@ shipment, or later?**
 - **Later:** Leave the skill installed but unconfigured and preserve/report
   changelog work until the user asks to set it up.
 
-Installation consent and setup timing grant no version, release, publication,
-deployment, or data-write authority.
+This preference, installation consent, and setup timing grant no version,
+release, publication, deployment, or data-write authority.
 
 Ask UI artifact naming only when several screenshots, design exports, static
 previews, or similar iterations will be saved and no repository convention

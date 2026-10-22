@@ -90,9 +90,7 @@ that step again until it passes. When the fix changed source, return to step 4
 (in Ship, record the fresh preview with `loop refresh-scope`); when the
 target, policy, controller checkout, or a scoped source worktree changed,
 return to step 3. Other modes follow the same order without the written
-checklist. Ship's pre-ship brief and permission checklist are in
-[Communicate](#communicate); multi-agent gates are in
-[Shipment holds](#shipment-holds).
+checklist.
 
 ## Authority and invariants
 
@@ -166,8 +164,7 @@ for this run.
 When changelog work is required, resolve the Simple Changelogs notice and the user's
 owner-controlled walkthrough, continue, defer, or release-notes choice before
 `loop start`. Do not start a Ship loop, send the pre-ship brief, acquire a
-lease, then pause it for this explanation. Continue only after initialization
-returns `preLoopActionRequired: false`. Repository policy that grants push,
+lease, then pause it for this explanation. Repository policy that grants push,
 automatic migration, break-glass, or production authority is effective only
 with the private digest-bound local trust receipt described in
 [setup and policy](references/setup-and-policy.md); a repository policy symlink

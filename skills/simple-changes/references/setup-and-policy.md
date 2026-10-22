@@ -50,9 +50,7 @@ Classify the request mode and whether it requires changelog work, then run:
 simple-changes initialize --mode <mode> [--changelog-required] --json
 ```
 
-When initialization reports `turnEndGuard` as not installed or outdated and
-it has no `installCommand`, as from a fork with no current global install, tell
-the user to install the guard from the globally installed Simple Changes; see
+For a `turnEndGuard` with no `installCommand`, see
 [turn-end guard](cleanup-and-completion.md#turn-end-guard).
 
 When it reports `scratchFileRule`, each listed instruction file (the
@@ -80,21 +78,13 @@ onboarding is required before any local branch, commit, push, proposal, merge,
 cleanup, or deployment mutation.
 
 Start onboarding automatically; do not add a separate “would you like to set
-this up?” gate. Explain that onboarding is available and offer recommended,
-customized, and run-only setup. The request mode supplies the finish choice for
-queue, sweep, integrate, reconcile, and ship. Ask only unresolved questions,
-confirm the receipt, persist the selected scope, and continue the original task.
+this up?” gate. The request mode supplies the finish choice for queue, sweep,
+integrate, reconcile, and ship.
 
 Ask **How should changelog work be handled?** only when established changelog
-surfaces or a compatible changelog skill are discovered. Offer delegation when
-available, preservation and reporting, or asking before delegation. The safe
-fallback is preservation. When compatible Simple Changelogs is discovered,
-delegation is the recommended default. When changelog surfaces exist without a
-compatible installation, explain the skill and ask whether to install it. If
-the user agrees, separately ask whether its owner-controlled setup should run
-now, after the current shipment, or later; never silently combine installation
-with setup. Setup never grants release, version, publication, deployment, or
-data-write authority.
+surfaces or a compatible changelog skill are discovered. The safe fallback is
+preservation; the options, the install offer, and setup timing are in
+[onboarding](onboarding.md#customized-questions).
 
 Public patch/minor/major behavior remains owned by Simple Changelogs and is
 never stored in `.simple-changes.json`. When first Ship use needs both products'
@@ -107,16 +97,14 @@ version-owning release train applies.
 
 Ask **When I save multiple UI iterations, how should their version names be
 chosen?** only when the current task will preserve multiple UI artifacts and no
-repository convention already answers it. Offer repository convention
-(recommended), number and ISO date, ISO date only, or zero-padded number only.
-This preference applies to saved screenshots, design exports, and static
-previews, not source files, Git revisions, deployments, packages, or releases.
+repository convention already answers it; the options are in
+[onboarding](onboarding.md#customized-questions).
 
 In an interactive terminal, `initialize` directly launches setup. In a
-non-interactive agent runtime, it emits a closed machine-readable status. The
-agent must translate that status into the same onboarding questions in chat,
-then call `setup` with explicit flags. A valid repository or personal policy
-suppresses repeat onboarding.
+non-interactive agent runtime, it emits a closed machine-readable status that
+the agent presents as onboarding in chat, as
+[onboarding](onboarding.md#confirm-apply-and-continue) describes. A valid
+repository or personal policy suppresses repeat onboarding.
 
 A saved policy with an older meaningful guidance version triggers the separate
 installed-update checkpoint before write-capable mutation or loop creation. It
@@ -295,9 +283,8 @@ worktrees where their brief or a Simple Changes run puts them, removing with
 `rmdir` any parent folder they made once its worktrees are gone. Offer **Add the rule**
 first and **Leave it out** second. Non-interactive setup adds it only with
 `--scratch-file-rule add`; omitting the flag leaves the file as it is, and
-adding the rule needs exactly one target. The markers never change, so
-`initialize` reports a block an earlier release wrote as `stale`, and
-`scratch-file-rule refresh`, or setup run again, rewrites it in place.
+adding the rule needs exactly one target. Setup run again also rewrites a
+`stale` block in place.
 
 Then offer the optional review-loop rule for the same file, in its own
 `<!-- simple-changes:review-loop:start -->` and `:end -->` markers. It applies
@@ -364,9 +351,9 @@ permission:
 - `proceed`: continue only when `mutationAllowed` is true and use
   `resolvedMode` as the finish boundary.
 
-The readiness question is: **The implementation and checks are complete. Is
-this ready for Simple Changes, or do you want more changes first?** The choices
-are **Ready, hand it off** and **More changes first**.
+Ask the readiness question in
+[completed-work handoff](../SKILL.md#completed-work-handoff) with the choices
+**Ready, hand it off** and **More changes first**.
 
 The pointer may be considered only after completed, attributable implementation
 that changed repository files and passed proportionate verification. Planning,

@@ -13,11 +13,9 @@ Contents:
 - Replan a frozen shipment without cleanup
 - Archive a recorded run that cannot finish
 
-Read this reference when `loop status`, `loop verify`, or finalization reports
-a blocker, a stale, relinquished, or frozen run, a released or orphaned claim,
-or a missing, late, or changed worktree; when merged work or orphaned worktrees
-have no loop to clean them up; and when an editor's or desktop app's worktree
-list is stale after cleanup. Every path here preserves uncertain work. None replaces the normal
+Read this reference whenever the [reference router](../SKILL.md#reference-router)
+sends you here, including when an editor's or desktop app's worktree list is
+stale after cleanup. Every path here preserves uncertain work. None replaces the normal
 lifecycle in `SKILL.md`: initialize, hold one lease, mutate through `loop exec`,
 verify, and finalize before every terminal response.
 
@@ -31,9 +29,9 @@ authoritative Git inventory.
 If a controller disappears before finalization, do not delete the state file or
 infer abandonment from elapsed time or a dead helper PID: helper commands exit
 between agent steps. Re-read `loop status` and follow its recovery guidance using
-explicit session authority. A stale lease can use `loop recover --stale-lease`;
-an active takeover requires the exact current run ID and manifest digest,
-approver, and reason. Any intervening manifest change invalidates takeover evidence.
+explicit session authority: [stale lease recovery](#locks-and-stale-leases) or
+[takeover](#controller-handoff-and-takeover). Any intervening manifest change
+invalidates takeover evidence.
 
 If an older relinquished run already finished cleanup but lacks opening remote
 evidence, never relabel later observations as its opening inventory; use the
@@ -74,17 +72,9 @@ it; [cleanup and completion](cleanup-and-completion.md#complete-and-finalize)
 describes how `loop recover` and the next finalization attempt account for
 either after a process dies.
 
-When a lease
-itself is stale, `loop recover --stale-lease --run-id "$RUN_ID" --agent-id
-"$AGENT_ID" --approved-by "$USER" --reason "$WHY"` clears the bookkeeping
-record on explicit user authority while preserving every worktree and receipt.
-Reuse session authority that already covers this recovery. A dead helper PID or
-old heartbeat alone does not establish that the owning agent has stopped.
-
-**Stale lease recovery.** A lease whose owner died mid-run used to block every
-other agent in the repository until a human-approved `loop takeover`. Each
-operation that already writes lease state now records a heartbeat: the lease's
-`updatedAt` plus the owner process identity. A lease is `live` while that
+**Stale lease recovery.** Each operation that writes lease state records a
+heartbeat: the lease's `updatedAt` plus the owner process identity. A lease is
+`live` while that
 process is provably running or the heartbeat is recent, `stale` only when the
 owner cannot be proven alive and the heartbeat is older than the published
 threshold, and `unknown` when its timestamp cannot be parsed. `loop status`
@@ -96,7 +86,9 @@ terminal records, and preserves every worktree, branch, claim, and durable
 receipt. It clears the bookkeeping record only, never user work; run `prune`
 afterward to reconcile whatever local cleanup the dead owner never finished.
 (`loop recover --agent-id <you>` still recovers a dead *lock*; run it first if
-one remains.)
+one remains.) Reuse session authority that already covers this recovery. A dead
+helper PID or old heartbeat alone does not establish that the owning agent has
+stopped.
 Do not clear another task's run merely to complete a concurrent prune request.
 If that task is still shipping, defer its cleanup; recover the run only on
 explicit recovery authority after checking its owner.
@@ -172,32 +164,20 @@ exceptional user-approved override path.
 ## Absent and obsolete worktrees
 
 For changed opening work that later becomes obsolete, use `loop dispose-worktree`
-only after proving it clean with zero unique commits. When a preserved checkout,
-including one registered by `loop rebaseline`, has been removed by its owning
-task, record that absence with `loop retire-absent-worktree` on named approval;
-it requires the path to be gone from disk and from Git's worktree list, deletes
-nothing, and proves no delivery. A worktree the run's own finalization removed
-needs no retirement: its completed removal disposition keeps accepting the
-absence after a resume, even once a guarded fetch moves the target.
+only after proving it clean with zero unique commits.
 
-If a preserved worktree the run did not create, whether registered at loop
-start, adopted, or added by `loop rebaseline`, has already disappeared because
-its owning task removed it, `loop retire-absent-worktree` records the absence
-instead. It
-accepts only a path missing from disk and from the live worktree list, needs
-the loop owner and a named approver, binds to the exact registered baseline,
-and leaves branches, claims, and delivery proof untouched.
-
-When a
-preserved checkout has already been removed by its owning task, whether it
-was registered at loop start, adopted, or added by `loop rebaseline`, record
-`loop retire-absent-worktree` with a named approver and reason. It requires
-the path to be absent from both the filesystem and `git worktree list`,
-binds to the exact registered baseline, writes an immutable retirement
-receipt, and clears only the missing-worktree violation. It never deletes
-anything, never proves a scoped unit was delivered, and never authorizes
-branch cleanup; do not recreate a deleted checkout merely to satisfy the
-record.
+When a preserved checkout the run did not create, whether registered at loop
+start, adopted, or added by `loop rebaseline`, has already been removed by its
+owning task, the loop owner records `loop retire-absent-worktree` with a named
+approver and reason. It requires the path to be absent from both the
+filesystem and `git worktree list`, binds to the exact registered baseline,
+writes an immutable retirement receipt, and clears only the missing-worktree
+violation. It never deletes anything, never proves a scoped unit was
+delivered, never authorizes branch cleanup, and leaves branches and claims
+untouched; do not recreate a deleted checkout merely to satisfy the record. A
+worktree the run's own finalization removed needs no retirement: its completed
+removal disposition keeps accepting the absence after a resume, even once a
+guarded fetch moves the target.
 
 A run-created authoring checkout whose work reached the target inside a
 broader commit fails ancestry and patch-equivalence containment, so automatic
@@ -218,8 +198,8 @@ ancestry or delivery.
 ## Repair bookkeeping after cleanup
 
 A legacy ledger may lack persisted opening evidence even though cleanup already
-finished. Do not fabricate an initial inventory from later observations.
-`loop recover-post-cleanup` is the recovery for already-complete cleanup (and
+finished. Do not fabricate an initial inventory from later observations; `loop
+recover-post-cleanup` is the recovery for already-complete cleanup (and
 `loop close-equivalent` below for work already contained in the target): it
 needs explicit approval,
 two complete matching final inventories observed at increasing times, exact
@@ -370,13 +350,7 @@ instead.
 ## Cleanup without a loop
 
 Cleanup is not tied to finalization. When work is merged but no loop will
-finalize it, run `prune --approved-by "$USER" --reason "$WHY"` (add
-`--dry-run` to see the plan first): it applies the same proven-safe audit
-without a lease, naming the containment method for every removal, and defers
-anything registered by an open lease to that run's controller. A stale heartbeat
-or released author claim never authorizes removing its registrations. Use the
-controller's audited removal path or wait for closure; never bypass this with
-raw Git removal or filesystem deletion.
+finalize it, run lease-less `prune` (add `--dry-run` to see the plan first).
 
 **Lease-less prune.** Cleanup that only ever runs inside `loop finalize`
 leaves residue whenever an agent merges its work and stops, merges outside a

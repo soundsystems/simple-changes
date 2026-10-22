@@ -1,4 +1,7 @@
-import { targetContainmentAudit } from "./cleanup-core.ts";
+import {
+  PATCH_EQUIVALENCE_MAX_COMMITS,
+  targetContainmentAudit,
+} from "./cleanup-core.ts";
 import { runGit } from "./process.ts";
 import type {
   RemoteBranchOpenProposalTarget,
@@ -287,8 +290,12 @@ const headIsLocal = (repositoryPath: string, head: string): boolean =>
  * branch unheld, which reports more as pending, not fewer.
  */
 /**
- * The finished-branch proof for one reportable entry, or null when nothing
- * proves it. A containment check that fails is recorded as an error.
+ * The finished-branch proof for one reportable entry, or null when Git proves
+ * the target does not contain it. Reporting judges the final head alone, so a
+ * branch that moved or arrived still counts when a final merged MR recorded
+ * that head. A head Git cannot audit (missing locally, or too far ahead for
+ * patch equivalence) is recorded as an error, which keeps cleanup pending:
+ * unknown never reads as clean.
  */
 const cleanupItem = (
   entry: RemoteBranchReconciliationEntry & { finalHeadRevision: string },
@@ -298,36 +305,43 @@ const cleanupItem = (
   errors: string[]
 ): RemoteBranchCleanupItem | null => {
   const head = entry.finalHeadRevision;
-  const merged = mergedHeadDeletionCandidate(entry, receipt.targetBranch);
+  const moved =
+    entry.initialHeadRevision === head ? {} : { movedDuringRun: true as const };
+  const merged = finalProposals(entry).find(
+    (proposal) => proposal.state === "merged" && proposal.headRevision === head
+  );
   if (merged) {
     return {
       headRevision: head,
+      ...moved,
       name: entry.name,
       proof: "merged-proposal-head",
-      proposalObjectId: merged.proposalObjectId,
+      proposalObjectId: merged.objectId,
     };
   }
   if (!headIsLocal(repositoryPath, head)) {
+    errors.push(
+      `Head ${head} of ${entry.name} is not present locally, so its containment could not be checked; fetch the branch and finalize again.`
+    );
     return null;
   }
   try {
-    const { method } = targetContainmentAudit(
+    const { exceededMaxCommits, method } = targetContainmentAudit(
       repositoryPath,
       receipt.targetRevision,
       head,
       patchIdCache
     );
+    if (exceededMaxCommits) {
+      errors.push(
+        `${entry.name} at ${head} has more than ${PATCH_EQUIVALENCE_MAX_COMMITS} commits outside the target, too many to prove by patch equivalence; classify it yourself.`
+      );
+      return null;
+    }
     if (!method) {
       return null;
     }
-    return {
-      headRevision: head,
-      ...(entry.initialHeadRevision === head
-        ? {}
-        : { movedDuringRun: true as const }),
-      name: entry.name,
-      proof: method,
-    };
+    return { headRevision: head, ...moved, name: entry.name, proof: method };
   } catch (error) {
     errors.push(
       `Containment of ${entry.name} at ${head} could not be checked: ${error instanceof Error ? error.message : String(error)}`

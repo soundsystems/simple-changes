@@ -461,8 +461,8 @@ head. The branch must be preserved as ambiguous or audited, must not be the
 target or protected, and must have no MR open from it. It qualifies in one of
 two ways:
 
-- `merged-proposal-head`: a merged MR recorded exactly its unchanged head;
-  the entry names the MR in `proposalObjectId`.
+- `merged-proposal-head`: a final merged MR recorded exactly that head; the
+  entry names the MR in `proposalObjectId`.
 - `target-contained` or `patch-equivalent`: Git finds its head locally and the
   target contains it by exact ancestry or full patch-id equivalence. These
   branches are never deleted automatically: one may be work that just
@@ -485,7 +485,10 @@ Open MR targets come from the final receipt's `openProposalTargets`, which
 `loop reconcile-remote-branches` keeps in a sidecar beside the lease. Without
 that sidecar, `openProposalTargets` is `unknown`, so an open MR's target
 cannot be held and is reported as pending. A check that fails is listed in
-`errors` and also makes cleanup pending. Incomplete finalization
+`errors` and also makes cleanup pending: a head missing locally (fetch it and
+finalize again), a head with more than 200 commits outside the target (too
+many to prove by patch equivalence, so classify it yourself), or holds that
+cannot be read. Unknown evidence never reads as clean. Incomplete finalization
 relinquishes durable state and exits nonzero. The exception is an untouched Ship
 run, with no recorded scope and no mutation evidence: finalization closes it
 with `shipmentStatus: unstarted` and an `abort-unmutated.json` receipt instead

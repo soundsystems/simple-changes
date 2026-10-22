@@ -735,6 +735,44 @@ const deletionBlockers = (
 };
 
 /**
+ * The receipt rules a supersession must pass once its branch is deleted,
+ * checked before the deletion is proposed: the exact head, distinct
+ * replacements other than that head, a nonblank approver and reason, and no
+ * open or merged record in either inventory (a user-approved deletion counts
+ * every observed proposal). Git still verifies the replacements where the
+ * receipt is recorded.
+ */
+const supersessionIssue = (
+  supersession: NonNullable<
+    RemoteInventoryDecisions["deletedBranches"][number]["supersession"]
+  >,
+  head: string,
+  proposals: readonly ProposalRecord[]
+): string | null => {
+  if (supersession.initialHeadRevision !== head) {
+    return `its supersession names head ${supersession.initialHeadRevision}, but the branch is at ${head}`;
+  }
+  const replacements = supersession.replacementRevisions;
+  if (
+    new Set(replacements).size !== replacements.length ||
+    replacements.includes(head)
+  ) {
+    return "supersession replacements must be distinct target commits other than the deleted head";
+  }
+  if (!(supersession.approvedBy.trim() && supersession.reason.trim())) {
+    return "supersession requires a nonblank approver and reason";
+  }
+  if (
+    proposals.some(
+      (proposal) => proposal.state === "open" || proposal.state === "merged"
+    )
+  ) {
+    return "a supersession counts every observed proposal, and one was open or merged";
+  }
+  return null;
+};
+
+/**
  * A decision for a branch still present approves deleting it: the build
  * proposes the deletion, and once the branch is gone the same decision
  * records it. It is checked now exactly as it will be then, and it never
@@ -788,13 +826,11 @@ const presentDecisionProposal = (
       `the decision for ${name} must name exactly one of obsoleteProof or supersession`
     );
   }
-  if (
-    decision.supersession &&
-    decision.supersession.initialHeadRevision !== head
-  ) {
-    refuse(
-      `its supersession names head ${decision.supersession.initialHeadRevision}, but the branch is at ${head}`
-    );
+  if (decision.supersession) {
+    const issue = supersessionIssue(decision.supersession, head, proposals);
+    if (issue) {
+      refuse(issue);
+    }
   }
   const reasons = blockers(name, head);
   if (reasons.length > 0) {

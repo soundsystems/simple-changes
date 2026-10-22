@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
+import { spawnSync } from "bun";
 import { captureInventory } from "../../../skills/simple-changes/scripts/lib/inventory.ts";
 import {
   executeLoopMutation,
@@ -435,6 +436,59 @@ describe("remote-inventory build decisions still win", () => {
         decisions: decisions("main"),
       })
     ).toThrow("canonical target or a protected branch");
+    const superseded = (supersession: object) => ({
+      deletedBranches: [
+        {
+          evidence: ["The user judged it repackaged into main."],
+          name: "docs/old",
+          supersession: {
+            approvedBy: "user",
+            initialHeadRevision: SHA.other,
+            reason: "Repackaged into main.",
+            replacementRevisions: [SHA.target],
+            ...supersession,
+          },
+        },
+      ],
+      schemaVersion: 1,
+    });
+    expect(
+      finalBuild(openingSnapshot([docs]), final([main(), release(), docs]), {
+        decisions: superseded({}),
+      }).summary.deletionProposals
+    ).toContainEqual({
+      basis: "decision",
+      headRevision: SHA.other,
+      name: "docs/old",
+      proof: "supersession",
+    });
+    // The receipt would refuse these once the branch is gone, so the build
+    // refuses them before anyone deletes it.
+    expect(() =>
+      finalBuild(openingSnapshot([docs]), final([main(), release(), docs]), {
+        decisions: superseded({ replacementRevisions: [SHA.other] }),
+      })
+    ).toThrow("other than the deleted head");
+    expect(() =>
+      finalBuild(openingSnapshot([docs]), final([main(), release(), docs]), {
+        decisions: superseded({ approvedBy: " " }),
+      })
+    ).toThrow("nonblank approver and reason");
+    expect(() =>
+      finalBuild(
+        openingSnapshot([docs], [mr("99", "docs/old", "open", SHA.other)]),
+        pages(
+          CLOSED,
+          [main(), release(), docs],
+          [
+            mr("96", "release/1", "merged", SHA.release),
+            mr("99", "docs/old", "closed", SHA.other),
+          ],
+          []
+        ),
+        { decisions: superseded({}) }
+      )
+    ).toThrow("counts every observed proposal");
     // A merged-proposal head needs no decision, exactly as after deletion.
     expect(() =>
       finalBuild(openingSnapshot([docs]), final([main(), release(), docs]), {
@@ -628,6 +682,111 @@ describe("loop finalize never reports a surviving merged branch as clean", () =>
       { headRevision: opening, name: "docs/old", proof: "target-contained" },
     ]);
   }, 180_000);
+});
+
+describe("remote branch cleanup report never reads unknown as clean", () => {
+  const finalReceipt = (
+    opening: RemoteInventoryPages,
+    final: RemoteInventoryPages
+  ) =>
+    buildRemoteInventory(final, {
+      opening: buildRemoteInventory(opening).receipt,
+      resolveHolds: noHolds,
+    }).receipt;
+  const report = (root: string, receipt: ReturnType<typeof finalReceipt>) =>
+    remoteBranchCleanupReport({
+      claims: [],
+      inventory: captureInventory(root, { skipWorktreeStatus: true }),
+      openTargets: [],
+      receipt,
+    });
+
+  test("a moved or arrived branch merged at its final head is pending even when its head is not local", () => {
+    const { root } = repository();
+    const head = git(root, ["rev-parse", "HEAD"]);
+    const arrived: Branch = {
+      headRevision: SHA.feature,
+      name: "fix/late",
+      protected: false,
+    };
+    const receipt = finalReceipt(
+      pages(
+        OPENED,
+        [main(head), release()],
+        [mr("96", "release/1", "open", SHA.release)],
+        [{ objectId: "96", targetBranch: "main" }]
+      ),
+      pages(
+        CLOSED,
+        [main(head), release(SHA.moved), arrived],
+        [
+          mr("96", "release/1", "merged", SHA.moved),
+          mr("97", "fix/late", "merged", SHA.feature),
+        ],
+        []
+      )
+    );
+    expect(report(root, receipt)).toEqual({
+      errors: [],
+      held: [],
+      openProposalTargets: "recorded",
+      pending: [
+        {
+          headRevision: SHA.moved,
+          movedDuringRun: true,
+          name: "release/1",
+          proof: "merged-proposal-head",
+          proposalObjectId: "96",
+        },
+        {
+          headRevision: SHA.feature,
+          movedDuringRun: true,
+          name: "fix/late",
+          proof: "merged-proposal-head",
+          proposalObjectId: "97",
+        },
+      ],
+    });
+  });
+
+  test("a head missing locally or too far ahead to audit is an error, which keeps cleanup pending", () => {
+    const { root } = repository();
+    const head = git(root, ["rev-parse", "HEAD"]);
+    // 201 commits past the target, more than patch equivalence audits.
+    const stream = [
+      ...Array.from({ length: 201 }, (_, index) =>
+        [
+          "commit refs/heads/long",
+          `mark :${index + 1}`,
+          "committer Simple Changes Tests <tests@simple-changes.invalid> 0 +0000",
+          "data 1",
+          "c",
+          index === 0 ? `from ${head}` : `from :${index}`,
+          "",
+        ].join("\n")
+      ),
+      "",
+    ].join("\n");
+    const imported = spawnSync(["git", "-C", root, "fast-import", "--quiet"], {
+      stdin: new TextEncoder().encode(stream),
+    });
+    expect(imported.exitCode).toBe(0);
+    const long = git(root, ["rev-parse", "long"]);
+    const branches: Branch[] = [
+      main(head),
+      { headRevision: long, name: "long", protected: false },
+      { headRevision: SHA.other, name: "not-fetched", protected: false },
+    ];
+    const snapshot = pages(OPENED, branches, [], []);
+    const result = report(root, finalReceipt(snapshot, snapshot));
+    expect(result.pending).toEqual([]);
+    expect(result.errors.join(" ")).toContain(
+      "too many to prove by patch equivalence"
+    );
+    expect(result.errors.join(" ")).toContain(
+      `Head ${SHA.other} of not-fetched is not present locally`
+    );
+  }, 120_000);
 });
 
 describe("remote branch cleanup report holds", () => {

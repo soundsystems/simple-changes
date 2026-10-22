@@ -11,6 +11,9 @@ Thanks for helping make repository integration safer and easier to understand.
    provider notes instead of copying them.
 4. Add a credential-free fixture and test for every behavior change.
 5. Run `bun run check` before opening a change proposal.
+6. Read the [threat model](SECURITY.md#threat-model) before designing a
+   safety change, and include it in every independent review prompt. Reviews
+   grade severity against it.
 
 Provider support is evidence-based. A provider becomes first-class only after it
 passes the shared capability suite; documentation and fixtures alone mean

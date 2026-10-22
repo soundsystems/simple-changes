@@ -116,15 +116,20 @@ core.fsmonitor=false`, and with `clean`, `smudge`, and `process` emptied and
 `required` off for every filter driver that the effective configuration of
 the primary or the source checkout defines (system, global, local,
 `config.worktree`, included files, and `GIT_CONFIG_*` environment).
-Attributes from any source only name drivers, so this covers them all. The
+Attributes from any source only name drivers, so emptying the drivers is
+meant to cover every attribute source. The
 command reads these settings back in both checkouts first and refuses,
 writing nothing, when either does not confirm them. It also refuses a source
 with submodules, a partial clone, a hook configured through `hook.*`, and
-`core.virtualFilesystem`.
-So no program the repository or the user configures runs between reading the
-checkout and removing it. A filter-managed file whose status Git would have
+`core.virtualFilesystem`. A filter-managed file whose status Git would have
 to rehash can then read as changed, and the command then keeps the checkout.
-The other removal methods keep running the repository's hooks as before.
+
+These settings are hardening, not a guarantee. As on the other removal paths,
+programs that the repository or the user configures are trusted: one this
+boundary does not recognize can still run during the removal. A known case is
+a filter driver whose name the command cannot read back exactly, such as an
+empty name or one that is not valid UTF-8. Configure only programs you trust
+in a repository where you remove reviewed replacements.
 
 This removal runs before every other removal and before `worktree cleanup`
 writes its history. If the checkout changed after verification, or

@@ -568,10 +568,11 @@ const writeRecord = (
 // through branch deletion, every Git command runs with these options: no
 // pager, no lazy fetch, hooks and fsmonitor off, and every filter driver
 // either checkout's effective configuration defines emptied. With
-// submodules, partial clones, and configured hooks refused, no program the
-// repository or the user configures can run between reading the checkout
-// and removing it. Attributes only name drivers, so emptying every defined
-// driver covers every attribute source.
+// submodules, partial clones, and configured hooks refused, this keeps the
+// programs it recognizes from running between reading the checkout and
+// removing it. It is hardening, not a guarantee: as on the other removal
+// paths, configured programs are trusted, and a filter driver whose name
+// does not read back exactly (empty, or not valid UTF-8) is not covered.
 const CALLBACK_FREE_BASE = [
   "--no-pager",
   "--no-lazy-fetch",
@@ -596,10 +597,11 @@ const boundaryRefusal = (path: string, detail: string): SimpleChangesError =>
 
 // Every `name value` pair of the effective configuration in one checkout,
 // across system, global, local, worktree, included, and environment scopes.
+// A key written without `=` has a null value, which Git reads as true.
 const effectiveConfig = (
   context: string,
   options: readonly string[]
-): Array<{ key: string; value: string }> => {
+): Array<{ key: string; value: string | null }> => {
   const listed = runGit(context, [...options, "config", "--list", "-z"], true);
   if (listed.exitCode !== 0) {
     return [];
@@ -610,7 +612,7 @@ const effectiveConfig = (
     .map((entry) => {
       const split = entry.indexOf("\n");
       return split < 0
-        ? { key: entry, value: "" }
+        ? { key: entry, value: null }
         : { key: entry.slice(0, split), value: entry.slice(split + 1) };
     });
 };
@@ -637,7 +639,8 @@ const scanContext = (
       );
     }
     const promisor =
-      PROMISOR_KEY_PATTERN.test(key) && !FALSE_VALUES.has(value.toLowerCase());
+      PROMISOR_KEY_PATTERN.test(key) &&
+      (value === null || !FALSE_VALUES.has(value.toLowerCase()));
     if (key === "extensions.partialclone" || promisor) {
       throw boundaryRefusal(
         source,
@@ -664,7 +667,7 @@ const unconfirmedIn = (
   overrides: readonly string[],
   drivers: ReadonlySet<string>
 ): string[] => {
-  const effective = new Map<string, string>();
+  const effective = new Map<string, string | null>();
   for (const { key, value } of effectiveConfig(context, overrides)) {
     effective.set(key, value);
   }

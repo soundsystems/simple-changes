@@ -1249,6 +1249,20 @@ describe("reviewed replacement lineage cleanup", () => {
     expectNothingWritten(lineage);
   });
 
+  test("refuses a valueless promisor remote and writes nothing", () => {
+    const lineage = lineageFixture(false);
+    const config = join(commonDirectory(lineage.fixture.root), "config");
+    writeFileSync(
+      config,
+      `${readFileSync(config, "utf8")}[remote "origin"]\n\tpromisor\n`
+    );
+    expectRefusal(
+      () => prune(lineage, receiptFor(lineage)),
+      PARTIAL_CLONE_PATTERN
+    );
+    expectNothingWritten(lineage);
+  });
+
   test("refuses a partial clone and writes nothing", () => {
     const lineage = lineageFixture(false);
     git(lineage.fixture.root, ["config", "remote.origin.promisor", "true"]);

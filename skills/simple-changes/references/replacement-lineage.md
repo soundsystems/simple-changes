@@ -110,15 +110,21 @@ branch only while no checkout uses it and it still points at the pinned head,
 and writes a completion record, both under
 `<git common dir>/simple-changes/replacement-lineage/`. It forces nothing.
 
-From that last read through the branch deletion, and in the check before the
-pin, every Git command runs with `-c core.hooksPath=/dev/null -c
-core.fsmonitor=false` and with every configured filter driver's `clean`,
-`smudge`, and `process` emptied and `required` off, so no program the
-repository configures runs between reading the checkout and removing it. The
-command reads these settings back first and refuses, writing nothing, when Git
-does not confirm them. A filter-managed file whose status Git would have to
-rehash can then read as changed, and the command then keeps the checkout. The
-other removal methods keep running the repository's hooks as before.
+From the check before the pin through the branch deletion, every Git command
+runs with `--no-pager --no-lazy-fetch -c core.hooksPath=/dev/null -c
+core.fsmonitor=false`, and with `clean`, `smudge`, and `process` emptied and
+`required` off for every filter driver that the effective configuration of
+the primary or the source checkout defines (system, global, local,
+`config.worktree`, included files, and `GIT_CONFIG_*` environment).
+Attributes from any source only name drivers, so this covers them all. The
+command reads these settings back in both checkouts first and refuses,
+writing nothing, when either does not confirm them. It also refuses a source
+with submodules, a partial clone, a hook configured through `hook.*`, and
+`core.virtualFilesystem`.
+So no program the repository or the user configures runs between reading the
+checkout and removing it. A filter-managed file whose status Git would have
+to rehash can then read as changed, and the command then keeps the checkout.
+The other removal methods keep running the repository's hooks as before.
 
 This removal runs before every other removal and before `worktree cleanup`
 writes its history. If the checkout changed after verification, or

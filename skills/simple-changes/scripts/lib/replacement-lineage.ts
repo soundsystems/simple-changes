@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdirSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
 import {
   localBranchForTargetRef,
@@ -564,18 +564,27 @@ const writeRecord = (
   return path;
 };
 
-// The reviewed removal's own Git boundary. From the last audit through
-// branch deletion, every Git command runs with hooks and fsmonitor off and
-// with every configured filter driver emptied, so no program the repository
-// configures can run between reading the checkout and removing it.
+// The reviewed removal's own Git boundary. From the check before the pin
+// through branch deletion, every Git command runs with these options: no
+// pager, no lazy fetch, hooks and fsmonitor off, and every filter driver
+// either checkout's effective configuration defines emptied. With
+// submodules, partial clones, and configured hooks refused, no program the
+// repository or the user configures can run between reading the checkout
+// and removing it. Attributes only name drivers, so emptying every defined
+// driver covers every attribute source.
 const CALLBACK_FREE_BASE = [
+  "--no-pager",
+  "--no-lazy-fetch",
   "-c",
   "core.hooksPath=/dev/null",
   "-c",
   "core.fsmonitor=false",
 ] as const;
 const FILTER_COMMAND_KEYS = ["clean", "smudge", "process"] as const;
-const FILTER_KEY_PATTERN = /^filter\.(.+)\.(clean|smudge|process)$/u;
+const FILTER_KEY_PATTERN = /^filter\.(.+)\.(clean|smudge|process|required)$/u;
+const CONFIGURED_HOOK_PATTERN = /^hook\./u;
+const PROMISOR_KEY_PATTERN = /^remote\..+\.promisor$/u;
+const FALSE_VALUES = new Set(["false", "no", "off", "0", ""]);
 const LINE_ENDS = /[\r\n]+$/u;
 const HEADS_PREFIX = /^refs\/heads\//u;
 
@@ -585,75 +594,139 @@ const boundaryRefusal = (path: string, detail: string): SimpleChangesError =>
     EXIT_CODES.unsafe
   );
 
-/**
- * The `-c` overrides that keep repository-configured programs from running,
- * confirmed in effect by reading them back. Throws when Git does not report
- * hooks at /dev/null, fsmonitor off, and every filter driver's commands
- * empty and not required.
- */
-const callbackFreeOverrides = (primary: string, path: string): string[] => {
-  const listed = runGit(
-    primary,
-    [
-      ...CALLBACK_FREE_BASE,
-      "config",
-      "--name-only",
-      "--get-regexp",
-      FILTER_KEY_PATTERN.source,
-    ],
-    true
-  );
-  const drivers = new Set<string>();
-  for (const key of listed.stdout.split("\n").filter(Boolean)) {
-    const driver = FILTER_KEY_PATTERN.exec(key)?.[1];
-    if (!driver || driver.includes("=")) {
+// Every `name value` pair of the effective configuration in one checkout,
+// across system, global, local, worktree, included, and environment scopes.
+const effectiveConfig = (
+  context: string,
+  options: readonly string[]
+): Array<{ key: string; value: string }> => {
+  const listed = runGit(context, [...options, "config", "--list", "-z"], true);
+  if (listed.exitCode !== 0) {
+    return [];
+  }
+  return listed.stdout
+    .split("\0")
+    .filter(Boolean)
+    .map((entry) => {
+      const split = entry.indexOf("\n");
+      return split < 0
+        ? { key: entry, value: "" }
+        : { key: entry.slice(0, split), value: entry.slice(split + 1) };
+    });
+};
+
+// Collects the filter drivers one checkout's effective configuration
+// defines, and refuses a configured hook, a partial clone, or a driver name
+// the command line cannot override.
+const scanContext = (
+  context: string,
+  source: string,
+  drivers: Set<string>
+): void => {
+  for (const { key, value } of effectiveConfig(context, CALLBACK_FREE_BASE)) {
+    if (CONFIGURED_HOOK_PATTERN.test(key)) {
       throw boundaryRefusal(
-        path,
+        source,
+        `${context} configures a hook through ${key}, which hooks off cannot stop.`
+      );
+    }
+    if (key === "core.virtualfilesystem" && value !== "") {
+      throw boundaryRefusal(
+        source,
+        `${context} sets core.virtualFilesystem, a program some Git builds run during status.`
+      );
+    }
+    const promisor =
+      PROMISOR_KEY_PATTERN.test(key) && !FALSE_VALUES.has(value.toLowerCase());
+    if (key === "extensions.partialclone" || promisor) {
+      throw boundaryRefusal(
+        source,
+        `${context} is a partial clone (${key}), where reading a missing object would start a fetch.`
+      );
+    }
+    const driver = FILTER_KEY_PATTERN.exec(key)?.[1];
+    if (driver === undefined) {
+      continue;
+    }
+    if (driver.includes("=")) {
+      throw boundaryRefusal(
+        source,
         `filter configuration key ${JSON.stringify(key)} cannot be overridden on the command line.`
       );
     }
     drivers.add(driver);
   }
-  const overrides: string[] = [...CALLBACK_FREE_BASE];
+};
+
+// What one checkout does not read back as overridden.
+const unconfirmedIn = (
+  context: string,
+  overrides: readonly string[],
+  drivers: ReadonlySet<string>
+): string[] => {
+  const effective = new Map<string, string>();
+  for (const { key, value } of effectiveConfig(context, overrides)) {
+    effective.set(key, value);
+  }
+  const wanted = new Map<string, string>([
+    ["core.hookspath", "/dev/null"],
+    ["core.fsmonitor", "false"],
+  ]);
   for (const driver of drivers) {
+    for (const key of FILTER_COMMAND_KEYS) {
+      wanted.set(`filter.${driver}.${key}`, "");
+    }
+    wanted.set(`filter.${driver}.required`, "false");
+  }
+  const missing = [...wanted]
+    .filter(([key, value]) => effective.get(key) !== value)
+    .map(([key]) => `${key} in ${context}`);
+  for (const key of effective.keys()) {
+    const driver = FILTER_KEY_PATTERN.exec(key)?.[1];
+    if (driver !== undefined && !drivers.has(driver)) {
+      missing.push(`${key} in ${context}`);
+    }
+  }
+  const hooks = runGit(
+    context,
+    [...overrides, "rev-parse", "--git-path", "hooks"],
+    true
+  ).stdout.replace(LINE_ENDS, "");
+  if (hooks !== "/dev/null") {
+    missing.push(`the hooks directory in ${context}`);
+  }
+  return missing;
+};
+
+/**
+ * The options that keep configured programs from running, confirmed in
+ * effect in both the primary and the source checkout, whose effective
+ * configurations differ (worktree config, `includeIf`). Throws, before
+ * anything is written, when either checkout configures a hook through
+ * `hook.*`, is a partial clone (a missing object would start a fetch), names
+ * a filter driver the command line cannot override, or does not read back
+ * hooks at /dev/null, fsmonitor off, and every driver emptied.
+ */
+const callbackFreeOverrides = (primary: string, source: string): string[] => {
+  const contexts = [primary, source];
+  const drivers = new Set<string>();
+  for (const context of contexts) {
+    scanContext(context, source, drivers);
+  }
+  const overrides: string[] = [...CALLBACK_FREE_BASE];
+  for (const driver of [...drivers].sort()) {
     for (const key of FILTER_COMMAND_KEYS) {
       overrides.push("-c", `filter.${driver}.${key}=`);
     }
     overrides.push("-c", `filter.${driver}.required=false`);
   }
-  const effective = (key: string): string | null => {
-    const read = runGit(primary, [...overrides, "config", "--get", key], true);
-    return read.exitCode === 0 ? read.stdout.replace(LINE_ENDS, "") : null;
-  };
-  const unconfirmed: string[] = [];
-  if (effective("core.hooksPath") !== "/dev/null") {
-    unconfirmed.push("core.hooksPath");
-  }
-  if (effective("core.fsmonitor") !== "false") {
-    unconfirmed.push("core.fsmonitor");
-  }
-  const hooks = runGit(
-    primary,
-    [...overrides, "rev-parse", "--git-path", "hooks"],
-    true
-  ).stdout.replace(LINE_ENDS, "");
-  if (hooks !== "/dev/null") {
-    unconfirmed.push("the hooks directory");
-  }
-  for (const driver of drivers) {
-    for (const key of FILTER_COMMAND_KEYS) {
-      if (effective(`filter.${driver}.${key}`) !== "") {
-        unconfirmed.push(`filter.${driver}.${key}`);
-      }
-    }
-    if (effective(`filter.${driver}.required`) !== "false") {
-      unconfirmed.push(`filter.${driver}.required`);
-    }
-  }
+  const unconfirmed = contexts.flatMap((context) =>
+    unconfirmedIn(context, overrides, drivers)
+  );
   if (unconfirmed.length > 0) {
     throw boundaryRefusal(
-      path,
-      `Git did not confirm the overrides that keep repository-configured programs from running (${unconfirmed.join(", ")}).`
+      source,
+      `Git did not confirm the overrides that keep configured programs from running (${unconfirmed.join(", ")}).`
     );
   }
   return overrides;
@@ -674,9 +747,39 @@ const reviewedCheckoutDrift = (
   overrides: readonly string[]
 ): string | null => {
   const { path, headSha, branch } = verified.worktree;
+  const staged = runGit(
+    path,
+    [...overrides, "ls-files", "--stage", "-z"],
+    true
+  );
+  const modules = runGit(
+    path,
+    [
+      ...overrides,
+      "rev-parse",
+      "--path-format=absolute",
+      "--git-path",
+      "modules",
+    ],
+    true
+  ).stdout.replace(LINE_ENDS, "");
+  if (
+    staged.exitCode !== 0 ||
+    staged.stdout.split("\0").some((line) => line.startsWith("160000 ")) ||
+    existsSync(modules)
+  ) {
+    return "it has submodules, whose own configuration and status the boundary cannot cover";
+  }
   const status = runGit(
     path,
-    [...overrides, "status", "--porcelain=v1", "-z", "--untracked-files=all"],
+    [
+      ...overrides,
+      "status",
+      "--porcelain=v1",
+      "-z",
+      "--untracked-files=all",
+      "--ignore-submodules=all",
+    ],
     true
   );
   if (status.exitCode !== 0) {

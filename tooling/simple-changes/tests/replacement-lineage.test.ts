@@ -5,6 +5,7 @@ import {
   mkdirSync,
   readdirSync,
   readFileSync,
+  utimesSync,
   writeFileSync,
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -81,6 +82,11 @@ const APPROVER_IS_AUTHOR_PATTERN =
 const STOPPED_PATTERN = /Stopped before any other removal/u;
 const NOT_REVIEWED_HEAD_PATTERN = /not the reviewed [0-9a-f]{40}/u;
 const UNOVERRIDABLE_PATTERN = /cannot be overridden on the command line/u;
+const SUBMODULE_PATTERN = /it has submodules/u;
+const VIRTUAL_FILESYSTEM_PATTERN = /sets core\.virtualFilesystem/u;
+const PARTIAL_CLONE_PATTERN = /is a partial clone/u;
+const CONFIGURED_HOOK_PATTERN =
+  /configures a hook through hook\.audit\.command/u;
 const STAMP = "2026-10-08T12:00:00.000Z";
 
 let repositories: TestRepository[] = [];
@@ -337,8 +343,9 @@ const installCallback = (
 
 // A clean commit on the source checkout, which moves its head (detached or
 // on its branch) to work nobody reviewed.
+// It never needs the index, which a running status holds locked.
 const moveSource = (lineage: LineageFixture): string =>
-  `git -C '${lineage.path}' commit -q --allow-empty -m 'Clean unreviewed work'`;
+  `sh -c 'B=$(git -C "${lineage.path}" commit-tree "HEAD^{tree}" -p HEAD -m "Clean unreviewed work") && git -C "${lineage.path}" update-ref HEAD "$B"'`;
 
 const pinExists = (lineage: LineageFixture): string =>
   `[ -d '${join(commonDirectory(lineage.fixture.root), "refs", "simple-changes")}' ] && [ -d '${lineage.path}' ]`;
@@ -351,6 +358,156 @@ const detachedReceipt = (
   receipt.source.branch = null;
   receipt.source.changeDigest = liveDigest(lineage);
   return receipt;
+};
+
+// Every hook name githooks(5) documents for Git 2.50.
+const HOOK_NAMES = [
+  "applypatch-msg",
+  "pre-applypatch",
+  "post-applypatch",
+  "pre-commit",
+  "pre-merge-commit",
+  "prepare-commit-msg",
+  "commit-msg",
+  "post-commit",
+  "pre-rebase",
+  "post-checkout",
+  "post-merge",
+  "pre-push",
+  "pre-receive",
+  "update",
+  "proc-receive",
+  "post-receive",
+  "post-update",
+  "reference-transaction",
+  "push-to-checkout",
+  "pre-auto-gc",
+  "post-rewrite",
+  "sendemail-validate",
+  "fsmonitor-watchman",
+  "p4-changelist",
+  "p4-prepare-changelist",
+  "p4-post-changelist",
+  "p4-pre-submit",
+  "post-index-change",
+] as const;
+
+/**
+ * A program that, once the pin exists, marks that it ran and moves the
+ * source head, then exits; as a clean filter it passes content through.
+ */
+const actingScript = (
+  lineage: LineageFixture,
+  name: string,
+  tail: string
+): { marker: string; script: string } => {
+  const directory = join(lineage.fixture.base, "programs");
+  mkdirSync(directory, { recursive: true });
+  const marker = join(lineage.fixture.base, `${name}-acted`);
+  const script = join(directory, name);
+  writeFileSync(
+    script,
+    [
+      "#!/bin/sh",
+      `if ${pinExists(lineage)} && [ ! -e '${marker}' ]; then`,
+      `  touch '${marker}'`,
+      `  ${UNSET_GIT_ENV} ${moveSource(lineage)} >/dev/null 2>&1`,
+      "fi",
+      tail,
+      "",
+    ].join("\n")
+  );
+  chmodSync(script, 0o755);
+  return { marker, script };
+};
+
+// A long-running filter-process program (Git's pkt-line protocol, clean
+// only) that acts like `actingScript` before answering each request.
+const actingProcessFilter = (
+  lineage: LineageFixture
+): { marker: string; script: string } => {
+  const { marker, script: act } = actingScript(lineage, "process-act", "");
+  const script = join(lineage.fixture.base, "programs", "process-filter");
+  writeFileSync(
+    script,
+    `#!${process.execPath}
+const fs = require("node:fs");
+const { execFileSync } = require("node:child_process");
+let buffer = Buffer.alloc(0);
+const readExact = (length) => {
+  while (buffer.length < length) {
+    const chunk = Buffer.alloc(65536);
+    let read = 0;
+    try { read = fs.readSync(0, chunk, 0, chunk.length, null); }
+    catch (error) { if (error.code === "EAGAIN") { continue; } throw error; }
+    if (read === 0) { process.exit(0); }
+    buffer = Buffer.concat([buffer, chunk.subarray(0, read)]);
+  }
+  const out = buffer.subarray(0, length);
+  buffer = buffer.subarray(length);
+  return out;
+};
+const readPacket = () => {
+  const length = Number.parseInt(readExact(4).toString(), 16);
+  return length === 0 ? null : readExact(length - 4);
+};
+const readList = () => {
+  const items = [];
+  for (let packet = readPacket(); packet !== null; packet = readPacket()) { items.push(packet); }
+  return items;
+};
+const write = (data) => {
+  const bytes = Buffer.from(data);
+  fs.writeSync(1, (bytes.length + 4).toString(16).padStart(4, "0"));
+  fs.writeSync(1, bytes);
+};
+const flush = () => fs.writeSync(1, "0000");
+readList(); write("git-filter-server\\n"); write("version=2\\n"); flush();
+readList(); write("capability=clean\\n"); flush();
+for (;;) {
+  readList();
+  const content = readList();
+  execFileSync(${JSON.stringify(act)});
+  write("status=success\\n"); flush();
+  for (const packet of content) { write(packet); }
+  flush(); flush();
+}
+`
+  );
+  chmodSync(script, 0o755);
+  return { marker, script };
+};
+
+// Keeps a tracked source file stat-dirty, so every status rehashes it
+// through whatever filter its attributes name.
+const keepRehashing = (lineage: LineageFixture): void => {
+  const future = new Date(Date.now() + 365 * 24 * 60 * MINUTE);
+  utimesSync(join(lineage.path, "a.ts"), future, future);
+};
+
+const infoAttributes = (lineage: LineageFixture, line: string): void => {
+  const info = join(commonDirectory(lineage.fixture.root), "info");
+  mkdirSync(info, { recursive: true });
+  writeFileSync(join(info, "attributes"), `${line}\n`);
+};
+
+// Runs `run` with extra process environment, restoring it afterwards.
+const withEnvironment = <T>(extra: Record<string, string>, run: () => T): T => {
+  const saved = Object.fromEntries(
+    Object.keys(extra).map((key) => [key, process.env[key]])
+  );
+  Object.assign(process.env, extra);
+  try {
+    return run();
+  } finally {
+    for (const [key, value] of Object.entries(saved)) {
+      if (value === undefined) {
+        Reflect.deleteProperty(process.env, key);
+      } else {
+        process.env[key] = value;
+      }
+    }
+  }
 };
 
 const expectRefusal = (run: () => unknown, pattern: RegExp): void => {
@@ -876,6 +1033,252 @@ describe("reviewed replacement lineage cleanup", () => {
     expectRefusal(
       () => prune(lineage, receiptFor(lineage)),
       UNOVERRIDABLE_PATTERN
+    );
+    expectNothingWritten(lineage);
+  });
+
+  test("no hook of any name runs from the pin through branch deletion", () => {
+    const lineage = lineageFixture(false);
+    const hooks = join(lineage.fixture.base, "all-hooks");
+    mkdirSync(hooks, { recursive: true });
+    const markers: string[] = [];
+    for (const name of HOOK_NAMES) {
+      const { marker, script } = actingScript(
+        lineage,
+        name,
+        "cat >/dev/null 2>&1; exit 0"
+      );
+      writeFileSync(join(hooks, name), readFileSync(script));
+      chmodSync(join(hooks, name), 0o755);
+      markers.push(marker);
+    }
+    git(lineage.fixture.root, ["config", "core.hooksPath", hooks]);
+    const report = prune(lineage, receiptFor(lineage));
+    expect(report.errors).toEqual([]);
+    expect(report.reviewedReplacement?.branchDeleted).toBe(true);
+    expect(markers.filter((marker) => existsSync(marker))).toEqual([]);
+  });
+
+  test("a hooks path set through GIT_CONFIG_* environment does not run", () => {
+    const lineage = lineageFixture(false);
+    const hooks = join(lineage.fixture.base, "env-hooks");
+    mkdirSync(hooks, { recursive: true });
+    const { marker, script } = actingScript(
+      lineage,
+      "env-reference-transaction",
+      "cat >/dev/null 2>&1; exit 0"
+    );
+    writeFileSync(join(hooks, "reference-transaction"), readFileSync(script));
+    chmodSync(join(hooks, "reference-transaction"), 0o755);
+    const receipt = receiptFor(lineage);
+    const report = withEnvironment(
+      {
+        GIT_CONFIG_COUNT: "1",
+        GIT_CONFIG_KEY_0: "core.hooksPath",
+        GIT_CONFIG_VALUE_0: hooks,
+      },
+      () => prune(lineage, receipt)
+    );
+    expect(report.errors).toEqual([]);
+    expect(existsSync(marker)).toBe(false);
+  });
+
+  const filterScopes: Array<{
+    name: string;
+    /** Configures the acting filter and returns the environment to run in. */
+    setUp: (lineage: LineageFixture, filter: string) => Record<string, string>;
+  }> = [
+    {
+      name: "the shared local config, named in info/attributes",
+      setUp: (lineage, filter) => {
+        git(lineage.fixture.root, ["config", "filter.watch.clean", filter]);
+        infoAttributes(lineage, "a.ts filter=watch");
+        return {};
+      },
+    },
+    {
+      name: "only the source's config.worktree",
+      setUp: (lineage, filter) => {
+        git(lineage.fixture.root, [
+          "config",
+          "extensions.worktreeConfig",
+          "true",
+        ]);
+        git(lineage.path, [
+          "config",
+          "--worktree",
+          "filter.watch.clean",
+          filter,
+        ]);
+        infoAttributes(lineage, "a.ts filter=watch");
+        return {};
+      },
+    },
+    {
+      name: "an includeIf onbranch file only the source sees, named in core.attributesFile",
+      setUp: (lineage, filter) => {
+        const included = join(lineage.fixture.base, "source-only.gitconfig");
+        writeFileSync(included, `[filter "watch"]\n\tclean = ${filter}\n`);
+        git(lineage.fixture.root, [
+          "config",
+          "includeIf.onbranch:source-unit.path",
+          included,
+        ]);
+        const attributes = join(lineage.fixture.base, "attributes");
+        writeFileSync(attributes, "a.ts filter=watch\n");
+        git(lineage.fixture.root, [
+          "config",
+          "core.attributesFile",
+          attributes,
+        ]);
+        return {};
+      },
+    },
+    {
+      name: "a global config file named by GIT_CONFIG_GLOBAL",
+      setUp: (lineage, filter) => {
+        const global = join(lineage.fixture.base, "global.gitconfig");
+        writeFileSync(global, `[filter "watch"]\n\tclean = ${filter}\n`);
+        infoAttributes(lineage, "a.ts filter=watch");
+        return { GIT_CONFIG_GLOBAL: global };
+      },
+    },
+    {
+      name: "GIT_CONFIG_* environment",
+      setUp: (lineage, filter) => {
+        infoAttributes(lineage, "a.ts filter=watch");
+        return {
+          GIT_CONFIG_COUNT: "1",
+          GIT_CONFIG_KEY_0: "filter.watch.clean",
+          GIT_CONFIG_VALUE_0: filter,
+        };
+      },
+    },
+  ];
+
+  for (const scope of filterScopes) {
+    test(`a clean filter from ${scope.name} does not run inside the boundary`, () => {
+      const lineage = lineageFixture(false);
+      const { marker, script } = actingScript(
+        lineage,
+        "clean-filter",
+        "exec cat"
+      );
+      const environment = scope.setUp(lineage, script);
+      keepRehashing(lineage);
+      const report = withEnvironment(environment, () => {
+        const receipt = receiptFor(lineage);
+        return prune(lineage, receipt);
+      });
+      expect(report.errors).toEqual([]);
+      expect(report.reviewedReplacement?.worktreeRemoved).toBe(true);
+      expect(existsSync(marker)).toBe(false);
+    });
+  }
+
+  test("a filter-process program does not run inside the boundary", () => {
+    const lineage = lineageFixture(false);
+    const { marker, script } = actingProcessFilter(lineage);
+    git(lineage.fixture.root, ["config", "filter.watch.process", script]);
+    infoAttributes(lineage, "a.ts filter=watch");
+    keepRehashing(lineage);
+    const report = prune(lineage, receiptFor(lineage));
+    expect(report.errors).toEqual([]);
+    expect(report.reviewedReplacement?.worktreeRemoved).toBe(true);
+    expect(existsSync(marker)).toBe(false);
+  });
+
+  test("the acting clean filter runs in an ordinary status outside the boundary (control)", () => {
+    const lineage = lineageFixture(false);
+    const { marker, script } = actingScript(
+      lineage,
+      "clean-filter",
+      "exec cat"
+    );
+    git(lineage.fixture.root, ["config", "filter.watch.clean", script]);
+    infoAttributes(lineage, "a.ts filter=watch");
+    keepRehashing(lineage);
+    // Once the pin exists, an ordinary status outside the boundary runs it.
+    mkdirSync(
+      join(commonDirectory(lineage.fixture.root), "refs", "simple-changes"),
+      {
+        recursive: true,
+      }
+    );
+    git(lineage.path, ["status", "--porcelain"]);
+    expect(existsSync(marker)).toBe(true);
+  });
+
+  test("the acting filter-process program runs in an ordinary status outside the boundary (control)", () => {
+    const lineage = lineageFixture(false);
+    const { marker, script } = actingProcessFilter(lineage);
+    git(lineage.fixture.root, ["config", "filter.watch.process", script]);
+    infoAttributes(lineage, "a.ts filter=watch");
+    keepRehashing(lineage);
+    mkdirSync(
+      join(commonDirectory(lineage.fixture.root), "refs", "simple-changes"),
+      { recursive: true }
+    );
+    expect(git(lineage.path, ["status", "--porcelain"])).toBe("");
+    expect(existsSync(marker)).toBe(true);
+  });
+
+  test("refuses a source with a submodule and writes nothing", () => {
+    const lineage = lineageFixture(false);
+    const initial = git(lineage.fixture.root, [
+      "rev-list",
+      "--max-parents=0",
+      "HEAD",
+    ]);
+    git(lineage.path, [
+      "update-index",
+      "--add",
+      "--cacheinfo",
+      `160000,${initial},sub`,
+    ]);
+    git(lineage.path, ["commit", "-q", "-m", "Add a submodule"]);
+    // An uninitialized submodule's empty folder keeps the checkout clean.
+    mkdirSync(join(lineage.path, "sub"));
+    lineage.commits = git(lineage.path, [
+      "rev-list",
+      "--reverse",
+      "main..HEAD",
+    ]).split("\n");
+    lineage.headSha = git(lineage.path, ["rev-parse", "HEAD"]);
+    expectRefusal(() => prune(lineage, receiptFor(lineage)), SUBMODULE_PATTERN);
+    expectNothingWritten(lineage);
+  });
+
+  test("refuses a partial clone and writes nothing", () => {
+    const lineage = lineageFixture(false);
+    git(lineage.fixture.root, ["config", "remote.origin.promisor", "true"]);
+    expectRefusal(
+      () => prune(lineage, receiptFor(lineage)),
+      PARTIAL_CLONE_PATTERN
+    );
+    expectNothingWritten(lineage);
+  });
+
+  test("refuses a configured virtual filesystem program and writes nothing", () => {
+    const lineage = lineageFixture(false);
+    git(lineage.fixture.root, [
+      "config",
+      "core.virtualFilesystem",
+      "/bin/true",
+    ]);
+    expectRefusal(
+      () => prune(lineage, receiptFor(lineage)),
+      VIRTUAL_FILESYSTEM_PATTERN
+    );
+    expectNothingWritten(lineage);
+  });
+
+  test("refuses a hook configured through hook.* and writes nothing", () => {
+    const lineage = lineageFixture(false);
+    git(lineage.path, ["config", "hook.audit.command", "true"]);
+    expectRefusal(
+      () => prune(lineage, receiptFor(lineage)),
+      CONFIGURED_HOOK_PATTERN
     );
     expectNothingWritten(lineage);
   });

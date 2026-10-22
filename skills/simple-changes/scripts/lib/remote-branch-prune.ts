@@ -310,11 +310,51 @@ const cleanupItem = (
       proposalObjectId: merged.objectId,
     };
   }
-  if (!headIsLocal(repositoryPath, head)) {
-    errors.push(
-      `Head ${head} of ${entry.name} is not present locally, so its containment could not be checked; fetch the branch and finalize again.`
-    );
+  const unsettled = (why: string): null => {
+    errors.push(`${entry.name} at ${head}: ${why}`);
     return null;
+  };
+  if (!headIsLocal(repositoryPath, head)) {
+    return unsettled(
+      "the head is not present locally, so its containment could not be checked; fetch the branch and finalize again."
+    );
+  }
+  const commit = `${head}^{commit}`;
+  const target = `${receipt.targetRevision}^{commit}`;
+  // The cleanup audit reads any Git failure as "not contained", which keeps a
+  // local branch safely but would let a report read unknown as clean, so the
+  // two answers it cannot tell apart are settled here first.
+  const ancestry = runGit(
+    repositoryPath,
+    ["merge-base", "--is-ancestor", commit, target],
+    true
+  );
+  if (ancestry.exitCode === 0) {
+    return {
+      headRevision: head,
+      ...moved,
+      name: entry.name,
+      proof: "target-contained",
+    };
+  }
+  if (ancestry.exitCode !== 1) {
+    return unsettled(
+      `Git could not check ancestry (${ancestry.stderr.trim() || `exit ${ancestry.exitCode}`}).`
+    );
+  }
+  const base = runGit(repositoryPath, ["merge-base", commit, target], true);
+  if (
+    base.exitCode === 1 &&
+    base.stdout.trim() === "" &&
+    base.stderr.trim() === ""
+  ) {
+    // No shared history: definitively not contained.
+    return null;
+  }
+  if (base.exitCode !== 0) {
+    return unsettled(
+      `Git could not find a merge base (${base.stderr.trim() || `exit ${base.exitCode}`}).`
+    );
   }
   try {
     const { exceededMaxCommits, method } = targetContainmentAudit(
@@ -324,20 +364,17 @@ const cleanupItem = (
       patchIdCache
     );
     if (exceededMaxCommits) {
-      errors.push(
-        `${entry.name} at ${head} has more than ${PATCH_EQUIVALENCE_MAX_COMMITS} commits outside the target, too many to prove by patch equivalence; classify it yourself.`
+      return unsettled(
+        `more than ${PATCH_EQUIVALENCE_MAX_COMMITS} commits lie outside the target, too many to prove by patch equivalence; classify it yourself.`
       );
-      return null;
     }
-    if (!method) {
-      return null;
-    }
-    return { headRevision: head, ...moved, name: entry.name, proof: method };
+    return method
+      ? { headRevision: head, ...moved, name: entry.name, proof: method }
+      : null;
   } catch (error) {
-    errors.push(
-      `Containment of ${entry.name} at ${head} could not be checked: ${error instanceof Error ? error.message : String(error)}`
+    return unsettled(
+      `its containment could not be checked (${error instanceof Error ? error.message : String(error)}).`
     );
-    return null;
   }
 };
 

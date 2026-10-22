@@ -1,4 +1,6 @@
 import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
+import { rmSync } from "node:fs";
+import { join } from "node:path";
 import { spawnSync } from "bun";
 import { captureInventory } from "../../../skills/simple-changes/scripts/lib/inventory.ts";
 import {
@@ -787,6 +789,45 @@ describe("remote branch cleanup report never reads unknown as clean", () => {
     expect(report(root, receipt).errors).toHaveLength(1);
   });
 
+  test("a Git failure while settling containment is an error, never clean", () => {
+    const { root } = repository();
+    const head = git(root, ["rev-parse", "HEAD"]);
+    git(root, ["switch", "-c", "side"]);
+    writeFixture(root, "side.txt", "one\n");
+    git(root, ["add", "side.txt"]);
+    git(root, ["commit", "-m", "Side one"]);
+    const lost = git(root, ["rev-parse", "HEAD"]);
+    writeFixture(root, "side.txt", "two\n");
+    git(root, ["commit", "-am", "Side two"]);
+    const side = git(root, ["rev-parse", "HEAD"]);
+    git(root, ["switch", "main"]);
+    // The head is readable, but an ancestor object is gone.
+    rmSync(join(root, ".git", "objects", lost.slice(0, 2), lost.slice(2)));
+    const snapshot = pages(
+      OPENED,
+      [main(head), { headRevision: side, name: "side", protected: false }],
+      [],
+      []
+    );
+    const receipt = finalReceipt(snapshot, snapshot);
+    const unheld = report(root, receipt);
+    expect(unheld.pending).toEqual([]);
+    expect(unheld.errors.join(" ")).toContain(`side at ${side}: Git could not`);
+    // Held, the same failure is neither pending nor an error.
+    const held = remoteBranchCleanupReport({
+      claims: [],
+      inventory: captureInventory(root, { skipWorktreeStatus: true }),
+      openTargets: [{ objectId: "97", targetBranch: "side" }],
+      receipt,
+    });
+    expect(held).toEqual({
+      errors: [],
+      held: [],
+      openProposalTargets: "recorded",
+      pending: [],
+    });
+  });
+
   test("a head missing locally or too far ahead to audit is an error, which keeps cleanup pending", () => {
     const { root } = repository();
     const head = git(root, ["rev-parse", "HEAD"]);
@@ -822,7 +863,7 @@ describe("remote branch cleanup report never reads unknown as clean", () => {
       "too many to prove by patch equivalence"
     );
     expect(result.errors.join(" ")).toContain(
-      `Head ${SHA.other} of not-fetched is not present locally`
+      `not-fetched at ${SHA.other}: the head is not present locally`
     );
   }, 120_000);
 });

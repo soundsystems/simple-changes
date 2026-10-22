@@ -487,8 +487,11 @@ that sidecar, `openProposalTargets` is `unknown`, so an open MR's target
 cannot be held and is reported as pending. A check that fails is listed in
 `errors` and also makes cleanup pending: a head missing locally (fetch it and
 finalize again), a head with more than 200 commits outside the target (too
-many to prove by patch equivalence, so classify it yourself), or holds that
-cannot be read. Unknown evidence never reads as clean. Incomplete finalization
+many to prove by patch equivalence, so classify it yourself), any other Git
+failure while settling containment (such as a missing ancestor object), or
+holds that cannot be read. Holds apply first, so a held branch's unsettled
+audit is neither pending nor an error. Unknown evidence never reads as
+clean. Incomplete finalization
 relinquishes durable state and exits nonzero. The exception is an untouched Ship
 run, with no recorded scope and no mutation evidence: finalization closes it
 with `shipmentStatus: unstarted` and an `abort-unmutated.json` receipt instead

@@ -8,6 +8,7 @@ import {
   heldUnitHoldDigest,
   heldUnitIds,
   heldUnitPinRef,
+  heldUnitsDigest,
   readHeldUnits,
 } from "./held-units.ts";
 import { captureInventory, locateRepository } from "./inventory.ts";
@@ -22,6 +23,7 @@ import {
   requireLease,
   withStateLock,
   writeImmutableRecoveryEvent,
+  writeLease,
   writeReceiptSidecar,
 } from "./loop-lease-core.ts";
 import {
@@ -369,10 +371,10 @@ const recordHold = (
     runId: lease.runId,
     schemaVersion: 1,
   });
-  // First keep the held head reachable, then record the hold, then bind it
-  // durably in the run's history. A failure before the last step leaves at
-  // most a harmless pin or a hold without its event, never an event without
-  // its hold.
+  // First keep the held head reachable, then mark the lease, then record the
+  // hold, then bind it durably in the run's history. A failure after the pin
+  // leaves a state every reader refuses until it is restored, never a hold
+  // that a reader could ignore.
   const head = observation.source.headSha;
   if (head) {
     const pinned = runGit(
@@ -393,6 +395,14 @@ const recordHold = (
       );
     }
   }
+  // The lease key makes runtimes that predate holds refuse this run from
+  // now on; it is written before the record, so a failure between them
+  // fails closed rather than leaving holds an older runtime could ignore.
+  writeLease({
+    ...lease,
+    heldUnits: { holdsDigest: heldUnitsDigest(next) },
+    updatedAt: recordedAt,
+  });
   writeReceiptSidecar(lease, HELD_UNITS_DIRECTORY, record);
   writeImmutableRecoveryEvent<HeldUnitEvent>(
     heldUnitEventPath(lease.commonGitDirectory, lease.runId, hold.holdDigest),

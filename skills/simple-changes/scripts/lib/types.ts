@@ -1406,6 +1406,11 @@ export interface LoopLease {
    * predates it and cannot prove that it never mutated.
    */
   firstMutationAt?: string | null;
+  /**
+   * Present only on a run that held a unit: the digest of its holds, so a
+   * runtime that predates holds refuses to read this lease at all.
+   */
+  heldUnits?: { holdsDigest: string };
   mode: Exclude<RequestMode, "pause" | "preview" | "sync">;
   openingBranches?: Array<{ name: string; sha: string }>;
   /**

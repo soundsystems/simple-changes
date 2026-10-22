@@ -39,6 +39,15 @@
     },
     "createdAt": { "type": "string", "format": "date-time" },
     "updatedAt": { "type": "string", "format": "date-time" },
+    "heldUnits": {
+      "description": "Present only on a run that held a unit with loop hold-unit: the digest of every hold in held-units/<run>.json, in order. Runtimes before 0.33.0 do not know this key, so they refuse to read the lease of such a run instead of recording, finishing, ending, archiving, or cleaning it.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["holdsDigest"],
+      "properties": {
+        "holdsDigest": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+      }
+    },
     "firstMutationAt": {
       "anyOf": [{ "type": "string", "format": "date-time" }, { "type": "null" }]
     },

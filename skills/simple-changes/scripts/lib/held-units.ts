@@ -28,8 +28,17 @@ export const HELD_UNIT_REASON_PREFIX = "Held by loop hold-unit: ";
 
 type HeldUnitLease = Pick<
   LoopLease,
-  "commonGitDirectory" | "runId" | "shipmentScope"
+  "commonGitDirectory" | "heldUnits" | "runId" | "shipmentScope"
 >;
+
+/**
+ * The digest the lease's `heldUnits` key carries: every hold's digest, in
+ * record order. The key exists only on a run with holds, so a runtime that
+ * predates holds refuses that lease, and a lease without holds keeps its
+ * exact earlier shape and digest.
+ */
+export const heldUnitsDigest = (holds: readonly HeldUnitHold[]): string =>
+  sha256Json(holds.map((hold) => hold.holdDigest));
 
 const HELD_UNIT_EVENT_PATTERN = /^held-unit-([0-9a-f]{64})\.json$/u;
 
@@ -220,6 +229,18 @@ export const readHeldUnits = (lease: HeldUnitLease): HeldUnitHold[] => {
         EXIT_CODES.unsafe
       );
     }
+  }
+  // The lease carries the holds digest exactly when the run holds a unit.
+  const marker = lease.heldUnits?.holdsDigest;
+  if (
+    holds.length === 0
+      ? marker !== undefined
+      : marker !== heldUnitsDigest(holds)
+  ) {
+    throw new SimpleChangesError(
+      `The lease of ${lease.runId} and its held-unit record disagree about which units are held. Restore the record and lease this run wrote; nothing is cleaned or closed until then.`,
+      EXIT_CODES.unsafe
+    );
   }
   return holds;
 };

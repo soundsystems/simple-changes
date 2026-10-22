@@ -193,9 +193,9 @@ A filename, especially a shared one such as a changelog, does not say which
 unit failed. The command also
 refuses a unit whose exact opening bytes are already in the target at every
 path (record it as delivered or target-equivalent), a unit that is not in
-the frozen scope, a unit already held, a unit
-a scoped unit that is not held depends on, a missing source checkout, and a run that
-already recorded its outcome: a hold never reinterprets a recorded outcome.
+the frozen scope, a unit already held, a unit that a scoped unit that is not
+held depends on, a missing source checkout, and a run that already recorded
+its outcome: a hold never reinterprets a recorded outcome.
 Genuinely new scope still needs a new shipment run or an approved replan.
 
 The hold is immutable and lives beside the lease in
@@ -224,35 +224,30 @@ unit's source checkout or claim, keeps that claim even when someone else
 removed the checkout, never deletes its branch, and never
 switches, fast-forwards, or normalizes a primary checkout a held unit was
 packaged from, clean or not. A held primary path counts as excluded
-in the primary delivery proof, so the other units can still verify delivery.
+in the primary delivery proof, and so does the original path of a held
+rename, so the other units can still verify delivery. A run that held every
+unit, with an exactly empty outcome because the target did not move, closes
+with its held work in place and `deliveryStatus: unverified`.
 A unit that shares a non-primary checkout with a held unit cannot be verified
 delivered while the held bytes keep that checkout dirty. The finalization
 receipt reports each held unit under `heldUnits`, apart from verified
 delivery, with whether its source still matches the hold.
 
-The record is a new file, so the lease and outcome receipts keep their
-shapes and earlier runs, receipts, and frozen scopes read as before. The
-outcome digest the lease records also binds every hold, so adding, removing,
-or changing a hold after the outcome blocks completion, and finalization
-checks that digest before any cleanup, so a removed or edited record never
-leaves held work unprotected. An older runtime
-ignores the record: it still requires the held unit in the outcome, so it
-refuses to record one without it, and because the recorded digest is no
-longer the plain receipt digest, Simple Changes 0.25.0 and later refuse to
-finish, end, or archive the run, reporting a missing preserved-source override
-file. It can only be stricter about completion: it never reports the run's
-delivery as verified, releases the held claim, or closes the run. Its
-ordinary housekeeping before that refusal is not hold-aware, but it touches
-only state the target already contains or a branch keeps: clean checkouts
-and branches the target contains, including a branch whose commits are only
-patch-equivalent to the target's, primary paths whose bytes equal the target,
-and switching a clean primary to the target branch. The held head stays
-reachable through its pin, so no held byte is lost, but a branch name may be.
-An older runtime can also record a new outcome over the bound one, which
-replaces the binding. It still requires the held unit in that outcome, and
-for a unit packaged from the primary checkout its reviewed-primary-result
-exception accepts `delivered` with whatever the target now holds, so it can
-misreport a held primary unit as delivered and then close the run. Never
-record, finish, end, or archive a run that held a unit with a runtime older
-than 0.33.0.
-Finish a run that held a unit with Simple Changes 0.33.0 or later.
+Holding a unit is the one change to a run's lease. The first hold adds a
+`heldUnits` key holding the digest of every hold, and each later hold updates
+it. A run without holds keeps its lease and its outcome digest exactly as
+before, so earlier runs, receipts, and frozen scopes read as they always did.
+The key only makes older readers refuse: runtimes before 0.33.0 validate the
+lease strictly, so once a run holds a unit, every older command that reads
+the active lease refuses it, including `loop status`, `loop verify`, `loop
+record-outcome`, `loop finalize`, `loop end`, `loop archive-recorded`, and the
+worktree commands that check the active loop. An older runtime therefore
+cannot record an outcome over a held run, report it delivered, clean it up,
+or release a held checkout's claim through finalization. This runtime refuses
+a lease whose key disagrees with the held-unit record, including a key that
+was removed. The outcome digest the lease records also binds every hold, so
+adding, removing, or changing a hold after the outcome blocks completion, and
+finalization checks the record, the lease key, and that digest before any
+cleanup. The sidecar, the history events, and the pinned refs stay the
+source of truth; use Simple Changes 0.33.0 or later for every step of a run
+that held a unit.

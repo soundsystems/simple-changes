@@ -129,6 +129,30 @@ interface HeldProtection {
 }
 
 /**
+ * The primary-checkout paths held units own: their scoped paths and, for a
+ * scoped rename, the original path it moved from, which the primary's status
+ * and delivery proof also report.
+ */
+const heldPrimaryPaths = (
+  lease: LoopLease,
+  holds: readonly HeldUnitHold[]
+): Set<string> => {
+  const scoped = holds
+    .filter((hold) => hold.unit.sourceWorktree === lease.primaryCheckout)
+    .flatMap((hold) => hold.unit.paths);
+  const held = new Set(scoped);
+  const originals = (lease.shipmentScope?.openingChanges ?? []).flatMap(
+    (change) =>
+      change.worktreePath === lease.primaryCheckout &&
+      held.has(change.path) &&
+      change.originalPath
+        ? [change.originalPath]
+        : []
+  );
+  return new Set([...scoped, ...originals]);
+};
+
+/**
  * What this run's held units protect from finalization cleanup, or null when
  * the hold record cannot be read, in which case callers clean nothing.
  */
@@ -146,11 +170,7 @@ const heldProtection = (lease: LoopLease): HeldProtection | null => {
       )
     ),
     holds,
-    primaryPaths: new Set(
-      holds
-        .filter((hold) => hold.unit.sourceWorktree === lease.primaryCheckout)
-        .flatMap((hold) => hold.unit.paths)
-    ),
+    primaryPaths: heldPrimaryPaths(lease, holds),
     sources: new Set(holds.map((hold) => hold.unit.sourceWorktree)),
     unitIds: heldUnitIds(holds),
   };
@@ -2100,6 +2120,38 @@ const preservesUnchangedPrimary = (
   });
 };
 
+/**
+ * A run that held every scoped unit delivered nothing. It may close, with
+ * delivery left unverified, when its intact outcome is exactly empty (so the
+ * target did not move), and any dirty primary is unchanged from its baseline
+ * with every dirty path held, preserved, or excluded.
+ */
+const allHeldCompletion = (
+  lease: LoopLease,
+  inventory: RepositoryInventory
+): boolean => {
+  const scope = lease.shipmentScope;
+  const outcome = lease.shipmentOutcome?.receipt;
+  const protection = heldProtection(lease);
+  if (
+    !(scope && outcome && protection) ||
+    scope.plan.units.length === 0 ||
+    !scope.plan.units.every((unit) => protection.unitIds.has(unit.id)) ||
+    outcome.units.length > 0 ||
+    outcome.additionalPaths.length > 0
+  ) {
+    return false;
+  }
+  const target = currentTargetRevision(lease);
+  if (shipmentOutcomeCompletionBlockers(lease, inventory, target).length > 0) {
+    return false;
+  }
+  const primary = inventory.worktrees.find((worktree) => worktree.isPrimary);
+  return (
+    !primary?.changes.length || preservesUnchangedPrimary(lease, inventory)
+  );
+};
+
 const shipmentFinalizationVerification = (
   lease: LoopLease,
   inventory: RepositoryInventory,
@@ -2160,10 +2212,21 @@ const finalizationDecision = (
   const primary = finalInventory.worktrees.find(
     (worktree) => worktree.isPrimary
   );
+  let heldOnly = false;
+  if (!verifiedDelivery) {
+    try {
+      heldOnly = allHeldCompletion(lease, finalInventory);
+    } catch {
+      // The ordinary blockers below report unresolved target evidence.
+    }
+  }
+  // A run that held every unit closes like a scoped delivery, with its held
+  // work preserved in place, but never reports verified delivery.
   const scopedCompletion =
-    verifiedDelivery &&
-    (!primary?.changes.length ||
-      preservesUnchangedPrimary(lease, finalInventory));
+    heldOnly ||
+    (verifiedDelivery &&
+      (!primary?.changes.length ||
+        preservesUnchangedPrimary(lease, finalInventory)));
   const verification = shipmentFinalizationVerification(
     lease,
     finalInventory,

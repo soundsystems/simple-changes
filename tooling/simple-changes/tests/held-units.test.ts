@@ -15,6 +15,7 @@ import {
   assertHeldScopeConservation,
   heldUnitExclusions,
   heldUnitHoldDigest,
+  heldUnitsDigest,
   readHeldUnits,
 } from "../../../skills/simple-changes/scripts/lib/held-units.ts";
 import {
@@ -25,6 +26,7 @@ import {
   finalizeLoop,
   type HoldUnitApproval,
   holdScopedUnit,
+  loopLeasePath,
   prepareAgentWorktree,
   readLoopLease,
   recordShipmentOutcome,
@@ -34,6 +36,10 @@ import {
 import { readinessEvidenceFailure } from "../../../skills/simple-changes/scripts/lib/loop-lease-hold.ts";
 import { buildPreviewPlan } from "../../../skills/simple-changes/scripts/lib/planner.ts";
 import { recordedPreservedSourceOverrides } from "../../../skills/simple-changes/scripts/lib/preserved-source-override.ts";
+import {
+  schemaPath,
+  validateSchemaDocument,
+} from "../../../skills/simple-changes/scripts/lib/schema.ts";
 import {
   draftShipmentOutcome,
   type ShipmentOutcomeDraftReceipt,
@@ -764,6 +770,198 @@ describe("loop hold-unit", () => {
   });
 });
 
+// A 0.32.0 reader: the same strict lease schema without the held-units key.
+const olderLeaseSchema = (): Record<string, unknown> => {
+  const schema = JSON.parse(readFileSync(schemaPath("loop-lease"), "utf8")) as {
+    properties: Record<string, unknown>;
+  };
+  Reflect.deleteProperty(schema.properties, "heldUnits");
+  return schema;
+};
+
+const readOlder = (root: string): unknown =>
+  validateSchemaDocument(
+    "loop-lease",
+    olderLeaseSchema(),
+    JSON.parse(readFileSync(loopLeasePath(join(root, ".git")), "utf8"))
+  );
+
+describe("held-unit lease key", () => {
+  test("an older reader refuses a lease once it holds a unit, and never before", () => {
+    const { lease, root } = primaryFixture();
+    const leaseFile = loopLeasePath(join(root, ".git"));
+    const before = readFileSync(leaseFile, "utf8");
+    expect(before).not.toContain('"heldUnits"');
+    expect(() => readOlder(root)).not.toThrow();
+    // Observing a hold, or being refused one, writes nothing.
+    const preview = holdUnit(root, lease.runId, "role", [
+      "role: failed review.",
+    ]);
+    expect(() =>
+      holdUnit(root, lease.runId, "role", ["role: failed review."], {
+        approvalReference: "chat:user-approval-5",
+        approvedBy: APPROVER,
+        observationDigest: "0".repeat(64),
+      })
+    ).toThrow(STALE_ERROR);
+    expect(readFileSync(leaseFile, "utf8")).toBe(before);
+    holdUnit(root, lease.runId, "role", ["role: failed review."], {
+      approvalReference: "chat:user-approval-5",
+      approvedBy: APPROVER,
+      observationDigest: preview.observationDigest,
+    });
+    const held = readLoopLease(root) as LoopLease;
+    expect(held.heldUnits).toEqual({
+      holdsDigest: heldUnitsDigest(readHeldUnits(held)),
+    });
+    expect(() => readOlder(root)).toThrow("heldUnits");
+    // A second hold rebinds the key to both holds.
+    approvedHold(root, lease.runId, "guide", ["guide: not ready."]);
+    const both = readLoopLease(root) as LoopLease;
+    expect(readHeldUnits(both)).toHaveLength(2);
+    expect(both.heldUnits?.holdsDigest).not.toBe(held.heldUnits?.holdsDigest);
+    // Dropping the key does not make the run readable as unheld.
+    const { heldUnits: _heldUnits, ...stripped } = both;
+    writeFileSync(leaseFile, `${JSON.stringify(stripped, null, 2)}\n`);
+    expect(() => readHeldUnits(readLoopLease(root) as LoopLease)).toThrow(
+      "disagree about which units are held"
+    );
+  });
+
+  test("a run without holds keeps its exact lease shape and outcome digest", () => {
+    const fixture = repository();
+    const { root } = fixture;
+    writeFixture(root, "contact.ts", "export const email = 'old';\n");
+    commitAll(root, "Base fixture");
+    writeFixture(root, "contact.ts", "export const email = 'new';\n");
+    const lease = startLoop(root, CONTROLLER, "ship");
+    const inventory = captureInventory(root);
+    recordShipmentScope(
+      root,
+      lease.runId,
+      CONTROLLER,
+      buildPreviewPlan(
+        inventory,
+        inventory,
+        compareSnapshots(inventory, inventory)
+      )
+    );
+    commitAll(root, "Ship the scoped change");
+    recordShipmentOutcome(
+      root,
+      lease.runId,
+      CONTROLLER,
+      reviewed(draftShipmentOutcome(root, lease.runId).draft)
+    );
+    const recorded = readLoopLease(root) as LoopLease;
+    expect("heldUnits" in recorded).toBe(false);
+    expect(() => readOlder(root)).not.toThrow();
+    const stored = recorded.shipmentOutcome;
+    expect(stored?.receiptDigest).toBe(sha256Json(stored?.receipt));
+    const result = finalizeLoop(root, lease.runId, CONTROLLER, "Done.");
+    expect(result.outcome).toBe("completed");
+    expect("heldUnits" in result.receipt).toBe(false);
+  });
+});
+
+describe("held-only and renamed held work", () => {
+  test("a run that held every unit closes with its work in place and delivery unverified", () => {
+    const { lease, root } = primaryFixture();
+    for (const unitId of ["feature", "role", "guide"]) {
+      approvedHold(root, lease.runId, unitId, [`${unitId}: not ready.`]);
+    }
+    const { draft } = draftShipmentOutcome(root, lease.runId);
+    expect(draft).toMatchObject({ additionalPaths: [], units: [] });
+    recordShipmentOutcome(root, lease.runId, CONTROLLER, reviewed(draft));
+    const result = finalizeLoop(
+      root,
+      lease.runId,
+      CONTROLLER,
+      "Everything is held."
+    );
+    expect(result.blockers).toEqual([]);
+    expect(result.outcome).toBe("completed");
+    expect(result.receipt.deliveryStatus).toBe("unverified");
+    expect(result.receipt.targetRevision).toBeNull();
+    expect(result.receipt.heldUnits?.map((unit) => unit.unitId)).toEqual([
+      "feature",
+      "role",
+      "guide",
+    ]);
+    expect(readFileSync(join(root, "feature.txt"), "utf8")).toBe(
+      "draft feature\n"
+    );
+    expect(readFileSync(join(root, "CHANGELOG.md"), "utf8")).toBe(
+      "# Changelog\n\n- Role checks.\n"
+    );
+  });
+
+  test("a held rename in the primary protects its original path too", () => {
+    const fixture = repository();
+    const { root } = fixture;
+    writeFixture(root, "old-name.ts", "export const name = 1;\n");
+    commitAll(root, "Base fixture");
+    git(root, ["remote", "add", "origin", "https://example.invalid/repo.git"]);
+    git(root, ["update-ref", "refs/remotes/origin/main", "HEAD"]);
+    git(root, [
+      "symbolic-ref",
+      "refs/remotes/origin/HEAD",
+      "refs/remotes/origin/main",
+    ]);
+    git(root, ["mv", "old-name.ts", "new-name.ts"]);
+    writeFixture(root, "feature.txt", "draft feature\n");
+    const lease = startLoop(root, CONTROLLER, "ship");
+    const opening = captureInventory(root);
+    const preview = buildPreviewPlan(
+      opening,
+      opening,
+      compareSnapshots(opening, opening)
+    );
+    const [template] = preview.units;
+    if (!template) {
+      throw new Error("Expected a previewed unit");
+    }
+    recordShipmentScope(root, lease.runId, CONTROLLER, {
+      ...preview,
+      units: [
+        unitFrom(template, "feature", "Ship the feature", ["feature.txt"]),
+        unitFrom(template, "rename", "Rename the module", ["new-name.ts"]),
+      ],
+    });
+    approvedHold(root, lease.runId, "rename", ["rename: not ready."]);
+    const prepared = prepareAgentWorktree(
+      root,
+      lease.runId,
+      "delivery-author",
+      "delivery"
+    );
+    writeFixture(prepared.path, "feature.txt", "draft feature\n");
+    git(root, [
+      "update-ref",
+      "refs/remotes/origin/main",
+      commitAll(prepared.path, "Feature"),
+    ]);
+    recordShipmentOutcome(
+      root,
+      lease.runId,
+      CONTROLLER,
+      reviewed(draftShipmentOutcome(root, lease.runId).draft)
+    );
+    const result = finalizeLoop(
+      root,
+      lease.runId,
+      CONTROLLER,
+      "Ship the feature with the rename held."
+    );
+    expect(result.blockers).toEqual([]);
+    expect(result.outcome).toBe("completed");
+    expect(result.receipt.deliveryStatus).toBe("verified");
+    expect(git(root, ["status", "--porcelain"])).toContain(
+      "R  old-name.ts -> new-name.ts"
+    );
+  });
+});
+
 describe("held unit in a claimed author checkout", () => {
   /**
    * Two claimed checkouts both change `CHANGELOG.md`: `shipping` ships it
@@ -1193,6 +1391,10 @@ describe("loop hold-unit command", () => {
       status: string;
     };
     expect(result.status).toBe("held");
-    expect(readHeldUnits(lease).map((hold) => hold.unit.id)).toEqual(["role"]);
+    expect(
+      readHeldUnits(readLoopLease(root) as LoopLease).map(
+        (hold) => hold.unit.id
+      )
+    ).toEqual(["role"]);
   });
 });

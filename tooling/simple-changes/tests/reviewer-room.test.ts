@@ -544,6 +544,37 @@ describe("reviewer room", () => {
       "unknown",
       "coverage-incomplete",
     ]);
+    // No route reads eligible while the room is not provably open.
+    expect(configured(partial)).toMatchObject({
+      eligibility: "unknown",
+      reason: "coverage-incomplete",
+    });
+    expect(configured(unrecorded)).toMatchObject({
+      eligibility: "unknown",
+      reason: "authors-not-recorded",
+    });
+    // The same holds for a recorded head that carries the unattested commit.
+    const third = git(run.author, ["rev-parse", "HEAD"]);
+    recordProposalAuthors({
+      base: run.base,
+      environment: ENV_OTHER,
+      head: third,
+      proposalId: PROPOSAL,
+      repositoryPath: run.author,
+    });
+    const recorded = room(run, [author], {
+      authoring: stubAuthoring({ harness: OTHER, model: "model-epsilon" }),
+      proposal: true,
+      range: false,
+    });
+    expect([recorded.status, configured(recorded).eligibility]).toEqual([
+      "unknown",
+      "unknown",
+    ]);
+    // A proven conflict still closes the room while coverage is incomplete.
+    const stillClosed = room(run, [author]);
+    expect(stillClosed.status).toBe("closed");
+    expect(configured(stillClosed).eligibility).toBe("ruled-out");
   });
 });
 

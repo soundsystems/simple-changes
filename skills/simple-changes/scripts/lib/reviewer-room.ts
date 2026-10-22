@@ -647,36 +647,64 @@ const candidateRoute = (
   };
 };
 
-const roomStatus = (
+// The one room-wide reason evidence is missing, or null. It is decided once
+// and applied to every route below, so no route reads eligible while the
+// room as a whole is not provably open.
+const roomWideReason = (
   input: ReviewerRoomInput,
   state: ReviewLedgerState,
-  evidence: Pick<RoomEvidence, "covered" | "proposal">,
-  candidates: readonly RoomCandidate[]
-): { reason: RoomReason | null; status: RoomStatus } => {
-  const { covered, proposal } = evidence;
-  const [configured] = candidates as [RoomCandidate];
+  evidence: Pick<RoomEvidence, "covered" | "proposal">
+): RoomReason | null => {
   if (input.authoring.repairRequired) {
-    return { reason: "authoring-repair", status: "unknown" };
-  }
-  // More authors only rule out more routes, so a room the known authors
-  // already close stays closed whatever evidence is still missing.
-  if (candidates.every((item) => item.eligibility === "ruled-out")) {
-    return { reason: configured.reason, status: "closed" };
+    return "authoring-repair";
   }
   if (state.reason !== null) {
-    return { reason: state.reason, status: "unknown" };
+    return state.reason;
   }
   // A named proposal the ledger has no head for, with no range beside it,
   // has authors nobody can list yet.
   if (
     input.proposalId !== undefined &&
     input.base === undefined &&
-    !proposal?.recordedHead
+    !evidence.proposal?.recordedHead
   ) {
-    return { reason: "authors-not-recorded", status: "unknown" };
+    return "authors-not-recorded";
   }
-  if (!covered) {
-    return { reason: "coverage-incomplete", status: "unknown" };
+  return evidence.covered ? null : "coverage-incomplete";
+};
+
+// A proven conflict stays ruled out, since more evidence can only add
+// authors; any other route the room-wide reason leaves unknown. A sidecar
+// that needs repair leaves the settings themselves unknown, so every route
+// is unknown then.
+const applyRoomWide = (
+  candidates: readonly RoomCandidate[],
+  reason: RoomReason | null
+): RoomCandidate[] =>
+  candidates.map((candidate) =>
+    reason !== null &&
+    (candidate.eligibility === "eligible" || reason === "authoring-repair")
+      ? {
+          ...candidate,
+          eligibility: "unknown",
+          reason,
+          ruledOutByWouldAuthor: false,
+        }
+      : candidate
+  );
+
+const roomStatus = (
+  candidates: readonly RoomCandidate[],
+  roomWide: RoomReason | null
+): { reason: RoomReason | null; status: RoomStatus } => {
+  const [configured] = candidates as [RoomCandidate];
+  // More authors only rule out more routes, so a room the known authors
+  // already close stays closed whatever evidence is still missing.
+  if (candidates.every((item) => item.eligibility === "ruled-out")) {
+    return { reason: configured.reason, status: "closed" };
+  }
+  if (roomWide !== null) {
+    return { reason: roomWide, status: "unknown" };
   }
   if (configured.eligibility === "eligible") {
     return { reason: null, status: "open" };
@@ -732,7 +760,7 @@ export const reviewerRoom = (input: ReviewerRoomInput): ReviewerRoom => {
     request: input.request ?? null,
     routes,
   };
-  const candidates = [candidateRoute(context, configuredHarness, "configured")];
+  const routed = [candidateRoute(context, configuredHarness, "configured")];
   const seen = new Set<string>(configuredHarness ? [configuredHarness] : []);
   const others: [string, RoomCandidate["route"]][] = [
     ...input.authoring.detectedHarnesses.map(
@@ -745,10 +773,12 @@ export const reviewerRoom = (input: ReviewerRoomInput): ReviewerRoom => {
   for (const [harness, route] of others) {
     if (!seen.has(harness)) {
       seen.add(harness);
-      candidates.push(candidateRoute(context, harness, route));
+      routed.push(candidateRoute(context, harness, route));
     }
   }
-  const { reason, status } = roomStatus(input, state, evidence, candidates);
+  const roomWide = roomWideReason(input, state, evidence);
+  const candidates = applyRoomWide(routed, roomWide);
+  const { reason, status } = roomStatus(candidates, roomWide);
   return {
     adversarial: review.adversarial,
     authors: [...context.authors],

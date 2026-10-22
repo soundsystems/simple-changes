@@ -21,6 +21,7 @@ import {
 } from "../../../skills/simple-changes/scripts/lib/remote-inventory.ts";
 import type { ShipmentOutcomeReceipt } from "../../../skills/simple-changes/scripts/lib/types.ts";
 import { readCoordinationDocumentFromCommonDirectory } from "../../../skills/simple-changes/scripts/lib/worktree-coordination.ts";
+import { commitEquivalenceAgainstTarget } from "../../../skills/simple-changes/scripts/lib/worktree-equivalence.ts";
 import {
   createTestRepository,
   git,
@@ -826,6 +827,41 @@ describe("remote branch cleanup report never reads unknown as clean", () => {
       openProposalTargets: "recorded",
       pending: [],
     });
+  });
+
+  test("the patch audit consumes the settled merge base, so a Git failure is never a no", () => {
+    const { root } = repository();
+    const head = git(root, ["rev-parse", "HEAD"]);
+    // Without the option the audit would find its own base and answer.
+    expect(() =>
+      commitEquivalenceAgainstTarget(root, head, head, {
+        mergeBase: "0".repeat(40),
+      })
+    ).toThrow();
+    // A blob missing under a branch commit fails the patch audit after the
+    // merge base is settled; the report says so instead of reading clean.
+    git(root, ["switch", "-c", "blobless"]);
+    writeFixture(root, "lost.txt", "a blob that goes missing\n");
+    git(root, ["add", "lost.txt"]);
+    git(root, ["commit", "-m", "Add a blob"]);
+    const branchHead = git(root, ["rev-parse", "HEAD"]);
+    const blob = git(root, ["rev-parse", "HEAD:lost.txt"]);
+    git(root, ["switch", "main"]);
+    rmSync(join(root, ".git", "objects", blob.slice(0, 2), blob.slice(2)));
+    const snapshot = pages(
+      OPENED,
+      [
+        main(head),
+        { headRevision: branchHead, name: "blobless", protected: false },
+      ],
+      [],
+      []
+    );
+    const result = report(root, finalReceipt(snapshot, snapshot));
+    expect(result.pending).toEqual([]);
+    expect(result.errors.join(" ")).toContain(
+      `blobless at ${branchHead}: its containment could not be checked`
+    );
   });
 
   test("a head missing locally or too far ahead to audit is an error, which keeps cleanup pending", () => {

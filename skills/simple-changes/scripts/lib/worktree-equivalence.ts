@@ -128,6 +128,12 @@ const patchIdFor = (cwd: string, sha: string): string | null => {
 
 export interface CommitEquivalenceOptions {
   maxCommits?: number;
+  /**
+   * A merge base the caller already settled. When given, it is used as is
+   * and no `merge-base` call can fail quietly into "no merge base"; every
+   * remaining Git call throws on failure.
+   */
+  mergeBase?: string;
   targetPatchIdCache?: Map<string, Map<string, string>> | undefined;
 }
 
@@ -145,11 +151,10 @@ export const commitEquivalenceAgainstTarget = (
   targetRevision: string,
   options: CommitEquivalenceOptions = {}
 ): CommitEquivalenceResult => {
-  const mergeBaseResult = runGit(
-    repositoryPath,
-    ["merge-base", headSha, targetRevision],
-    true
-  );
+  const mergeBaseResult =
+    options.mergeBase === undefined
+      ? runGit(repositoryPath, ["merge-base", headSha, targetRevision], true)
+      : { exitCode: 0, stderr: "", stdout: options.mergeBase };
   if (mergeBaseResult.exitCode !== 0) {
     return {
       commitCount: 0,

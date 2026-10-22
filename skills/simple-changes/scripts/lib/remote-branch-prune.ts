@@ -1,7 +1,4 @@
-import {
-  PATCH_EQUIVALENCE_MAX_COMMITS,
-  targetContainmentAudit,
-} from "./cleanup-core.ts";
+import { PATCH_EQUIVALENCE_MAX_COMMITS } from "./cleanup-core.ts";
 import { runGit } from "./process.ts";
 import type {
   RemoteBranchOpenProposalTarget,
@@ -10,6 +7,7 @@ import type {
   RepositoryInventory,
   WorktreeClaim,
 } from "./types.ts";
+import { commitEquivalenceAgainstTarget } from "./worktree-equivalence.ts";
 
 /**
  * Remote branches a reconciliation receipt preserves but that the evidence
@@ -323,7 +321,8 @@ const cleanupItem = (
   const target = `${receipt.targetRevision}^{commit}`;
   // The cleanup audit reads any Git failure as "not contained", which keeps a
   // local branch safely but would let a report read unknown as clean, so the
-  // two answers it cannot tell apart are settled here first.
+  // report settles ancestry and the merge base itself and hands that base to
+  // the patch audit.
   const ancestry = runGit(
     repositoryPath,
     ["merge-base", "--is-ancestor", commit, target],
@@ -357,19 +356,30 @@ const cleanupItem = (
     );
   }
   try {
-    const { exceededMaxCommits, method } = targetContainmentAudit(
+    // Consume the settled merge base: every Git call left on this path
+    // throws on failure instead of reading as "not contained".
+    const equivalence = commitEquivalenceAgainstTarget(
       repositoryPath,
-      receipt.targetRevision,
       head,
-      patchIdCache
+      receipt.targetRevision,
+      {
+        maxCommits: PATCH_EQUIVALENCE_MAX_COMMITS,
+        mergeBase: base.stdout.trim(),
+        targetPatchIdCache: patchIdCache,
+      }
     );
-    if (exceededMaxCommits) {
+    if (equivalence.exceededMaxCommits) {
       return unsettled(
         `more than ${PATCH_EQUIVALENCE_MAX_COMMITS} commits lie outside the target, too many to prove by patch equivalence; classify it yourself.`
       );
     }
-    return method
-      ? { headRevision: head, ...moved, name: entry.name, proof: method }
+    return equivalence.commitCount > 0 && equivalence.fullyMatched
+      ? {
+          headRevision: head,
+          ...moved,
+          name: entry.name,
+          proof: "patch-equivalent",
+        }
       : null;
   } catch (error) {
     return unsettled(

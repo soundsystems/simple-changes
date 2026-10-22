@@ -664,11 +664,14 @@ describe("reviewer room command", () => {
       })}\n`
     );
     const { commonGitDirectory } = locateRepository(run.root).repository;
+    // Git status may refresh a racily clean index, so the test reads it
+    // before the snapshot it compares; the command itself never refreshes.
+    const status = git(run.author, ["status", "--porcelain"]);
     const before = {
       git: snapshot(commonGitDirectory),
       home: snapshot(home),
       sidecar: readFileSync(sidecar, "utf8"),
-      status: git(run.author, ["status", "--porcelain"]),
+      status,
     };
     const cli = (wouldAuthor: string, json = true, extra: string[] = []) => {
       const result = spawnSync(
@@ -730,10 +733,13 @@ describe("reviewer room command", () => {
     expect(open.stdout).toContain("Nothing was written.");
     const usage = cli("no-slash");
     expect(usage.exitCode).toBe(2);
-    expect({
+    const after = {
       git: snapshot(commonGitDirectory),
       home: snapshot(home),
       sidecar: readFileSync(sidecar, "utf8"),
+    };
+    expect({
+      ...after,
       status: git(run.author, ["status", "--porcelain"]),
     }).toEqual(before);
   });

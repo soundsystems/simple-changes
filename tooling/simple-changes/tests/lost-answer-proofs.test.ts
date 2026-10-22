@@ -26,6 +26,7 @@ setDefaultTimeout(
 // answer (exit 0, no output, as seen under heavy load) and check that each
 // proof refuses rather than reading the lost answer as "nothing there".
 
+const ENTRY_PATTERN = /^100644:blob:[0-9a-f]{40}$/u;
 const decoder = new TextDecoder();
 let cleanups: (() => void)[] = [];
 
@@ -201,5 +202,48 @@ console.log(JSON.stringify("entries" in result ? { paths: [...result.entries.key
     const { remaining, reply } = delta(1);
     expect(remaining).toBe(0);
     expect(reply).toEqual({ failure: "its index cannot be read" });
+  });
+});
+
+describe("target tree entry with a lost Git answer", () => {
+  const entry = (path: string, lost: number) => {
+    const fixture = repository();
+    writeFixture(fixture.root, "a.txt", "tracked\n");
+    git(fixture.root, ["add", "a.txt"]);
+    git(fixture.root, ["commit", "--quiet", "-m", "Track a"]);
+    const head = git(fixture.root, ["rev-parse", "HEAD"]);
+    return runInChild(
+      `import { targetTreeEntry } from ${JSON.stringify(libraryPath("loop-lease-shipment.ts"))};
+try {
+  console.log(JSON.stringify({ entry: targetTreeEntry(${JSON.stringify(fixture.root)}, ${JSON.stringify(head)}, ${JSON.stringify(path)}) }));
+} catch (error) {
+  console.log(JSON.stringify({ error: error.message, exitCode: error.exitCode }));
+}
+`,
+      "ls-tree",
+      lost
+    );
+  };
+
+  test("with every answer kept, a present path has its entry and an absent one none (control)", () => {
+    const present = entry("a.txt", 0);
+    expect(present.remaining).toBe(0);
+    expect((present.reply as { entry: string }).entry).toMatch(ENTRY_PATTERN);
+    expect(entry("missing.txt", 0).reply).toEqual({ entry: null });
+  });
+
+  test("a lost listing for a present path refuses instead of reading it as absent", () => {
+    const { remaining, reply } = entry("a.txt", 1);
+    expect(remaining).toBe(0);
+    expect(reply).toMatchObject({ exitCode: 4 });
+    expect((reply as { error: string }).error).toContain(
+      "its answer was lost; retry the command"
+    );
+  });
+
+  test("a lost listing for an absent path is still an absence", () => {
+    const { remaining, reply } = entry("missing.txt", 1);
+    expect(remaining).toBe(0);
+    expect(reply).toEqual({ entry: null });
   });
 });

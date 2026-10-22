@@ -1578,21 +1578,42 @@ export const targetTreeEntry = (
   targetRevision: string,
   path: string
 ): string | null => {
+  let output: string;
   try {
     // A literal pathspec, so a file named like pathspec magic (`:README.md`)
     // reads its own entry rather than another file's.
-    const output = runGit(repositoryPath, [
+    output = runGit(repositoryPath, [
       "--literal-pathspecs",
       "ls-tree",
       targetRevision,
       "--",
       path,
     ]).stdout.trim();
-    const match = LS_TREE_ENTRY_PATTERN.exec(output);
-    return match ? `${match[1]}:${match[2]}:${match[3]}` : null;
   } catch {
     return null;
   }
+  const match = LS_TREE_ENTRY_PATTERN.exec(output);
+  if (match) {
+    return `${match[1]}:${match[2]}:${match[3]}`;
+  }
+  // An empty listing means the path is absent, or that Git's answer was
+  // lost. The exit code of a direct tree lookup tells them apart: it fails
+  // only when the path is absent, so a success means the answer was lost.
+  // The lookup also resolves a submodule entry whose commit is not local.
+  if (
+    output === "" &&
+    runGit(
+      repositoryPath,
+      ["rev-parse", "--verify", "--quiet", `${targetRevision}:${path}`],
+      true
+    ).exitCode === 0
+  ) {
+    throw new SimpleChangesError(
+      `git ls-tree printed no entry for ${path} at ${targetRevision}, but the path is there, so its answer was lost; retry the command.`,
+      EXIT_CODES.inventory
+    );
+  }
+  return null;
 };
 
 export {

@@ -1,5 +1,11 @@
 # Replacement lineage and old source branches
 
+Contents:
+
+- Audit before reapplying
+- Remove a reviewed replaced checkout
+- Record future replacements
+
 An old branch can have unique commits even when its feature is already shipped.
 Rebasing with conflict resolutions, moving a shipment to a replacement branch,
 or relocating release notes can change its patch ID. Neither an unmatched patch
@@ -47,11 +53,62 @@ and changed file paths can defeat legacy discovery. Query merged proposals
 across branch names and use the full historical range when needed.
 
 `worktree equivalence` includes the same advisory audit when it has unmatched
-commits. Cleanup continues to require its existing ancestry or patch proofs.
-This command neither changes that decision nor supplies an equivalence receipt.
-When semantic review establishes already-shipped work but mechanical cleanup
-still refuses it, preserve the source and report that distinction. Do not
-fabricate a patch match or bypass the guard with forced branch/worktree removal.
+commits. Neither audit changes a cleanup decision or supplies a receipt:
+cleanup still requires ancestry or patch proof unless the user approves a
+reviewed lineage receipt (below). Without one, preserve a source that review
+shows already shipped and report that distinction. Do not fabricate a patch
+match or bypass the guard with forced branch/worktree removal.
+
+## Remove a reviewed replaced checkout
+
+A clean local checkout whose unique commits shipped through different
+replacement commits can be removed with a lineage receipt, passed as
+`--lineage-receipt <file>` to `prune` (with `--agent-id <you>`) or
+`worktree cleanup`. Without the flag, both commands behave as before. The
+receipt (`evals/schemas/replacement-lineage-receipt.schema.json`) names:
+
+- the source: `path`, `branch` (or null when detached), `headRevision`,
+  `changeDigest` (the clean status digest from the live inventory), and
+  `authorAgentId`;
+- `targetRef` and the reviewed `targetRevision`;
+- `commits`: each commit the reviewed target lacks, once, with the
+  replacement commits in the target that carry it;
+- `review`: an independent `reviewerAgentId`, `reviewReference`,
+  `reviewedAt`, and `decision: "replaced-in-target"`;
+- `approval`: the user's `approvedBy`, `approvalReference`, `approvedAt`, and
+  `reason`, given after the review.
+
+Build it from `branch audit` and the reviewer's verdict, then run `prune
+--dry-run` first. The command checks every fact against live Git and refuses,
+writing nothing, when the checkout is dirty, locked, claimed (any claim not
+released), or registered by an open lease; its branch or head differs from the
+receipt (for example, it moved after the review); the clone is shallow; the
+target already contains the head (cleanup then removes it as
+`target-contained` or `patch-equivalent`, with no receipt); a unique commit is
+unmapped or the mapping names a commit that is not unique; a replacement is not
+in the reviewed target or is an ancestor of the head; the current target no
+longer contains the reviewed target; the reviewer is the controller, the
+declared author, an agent that ever claimed the checkout, or an attested
+author of a unique commit; the approver is the reviewer, the controller, or an
+author, or differs from `--approved-by`; or the approval predates the review,
+is in the future, or is more than 24 hours old.
+
+Byte identity is recorded, not required. The command runs the exact-byte
+proof against the reviewed target and reports `byteProof`: `proven` when every
+path the source touched equals the target, or `not-proven` with the differing
+paths when the replacement refined the bytes during review. In that case the
+reviewed mapping, the review, and the approval are the evidence.
+
+Before removal, the command pins the head at
+`refs/simple-changes/superseded/replacement-lineage-<receipt digest>/<head>`,
+so the source history survives; restore the branch from that ref if needed.
+It writes an intent record, removes the checkout with plain `git worktree
+remove`, deletes the branch only while it still points at the pinned head,
+and writes a completion record, both under
+`<git common dir>/simple-changes/replacement-lineage/`. It forces nothing.
+The removal is reported as method `reviewed-replacement`, in
+`reviewedReplacement` and in prune's plan; `worktree cleanup` keeps it out of
+its cleanup history, which older runtimes validate strictly.
 
 ## Record future replacements
 

@@ -333,7 +333,10 @@ shipment. It removes only what is proven safe right now: an unclaimed clean
 worktree whose head the refreshed target contains by exact ancestry or
 complete per-commit patch equivalence, and stale metadata whose directory no
 longer exists; it then releases orphaned claims whose worktree is gone and
-records them as `releasedClaims` on the receipt. Like
+records them as `releasedClaims` on the receipt. With `--lineage-receipt
+<file>` it also removes the one clean checkout that the
+[reviewed lineage receipt](replacement-lineage.md#remove-a-reviewed-replaced-checkout)
+names, after pinning its head. Like
 [finalization](cleanup-and-completion.md#complete-and-finalize), it never
 removes a worktree's parent folder; it names the empty managed
 `.simple-changes-worktrees` folders older runtimes created in the
@@ -364,7 +367,13 @@ contains by the same two proofs. Each disposition names its containment method
 (`target-contained` or `patch-equivalent`), and everything preserved is named
 with its reason: the primary checkout, the target branch, any dirty or
 actively claimed checkout, every path or branch registered by an open lease,
-and any branch beyond the patch-equivalence commit bound. Prune defers the
+and any branch beyond the patch-equivalence commit bound. A clean checkout
+whose work shipped through changed replacement commits stays preserved unless
+`--agent-id <you> --lineage-receipt <file>` supplies a user-approved,
+independently reviewed
+[lineage receipt](replacement-lineage.md#remove-a-reviewed-replaced-checkout);
+prune then pins its head and removes it as `reviewed-replacement`, or refuses
+the whole run, writing nothing. Prune defers the
 lease's registered work to its controller, even when the run is stale or
 relinquished, and cleans only eligible unrelated state. An old heartbeat or
 released claim is not removal authority. For registered cleanup, use the

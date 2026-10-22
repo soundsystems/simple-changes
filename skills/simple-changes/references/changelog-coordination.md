@@ -25,6 +25,25 @@ CLI recognizes `.simple-changelogs.json`, `CHANGELOG.md`,
 (including `simple-changelogs-cms`) under repository-local or configured skill
 roots.
 
+A repository may also install its own provider under a folder name of its
+choosing, such as `.agents/skills/hash-changelog-maintainer`. Discovery lists
+the direct children of each repository skill root (`skills`, `.agents/skills`,
+`.codex/skills`, `.claude/skills`, `.cursor/skills`) and keeps a renamed folder
+only when its `changelog-provider.json` is a valid marker (`provider:
+"simple-changelogs"`, `schemaVersion: 1`) and the real paths of the folder, its
+`SKILL.md`, and its marker all stay inside the repository. A folder without a
+marker, with a marker for another provider or schema, or reached through a
+symlink that leaves the repository is ignored. Global skill roots are never
+listed this way; they are matched by installation name only.
+
+Selection order: a handoff-capable provider always comes before a
+discovery-only one. Within each group, repository installation names come
+first, then renamed repository folders, then global installations. A
+handoff-capable repository-selected provider therefore drives the
+installed-guidance comparison ahead of any global install. A discovery-only
+repository provider still yields to a handoff-capable global one, whose
+guidance version is then compared.
+
 Keep these states distinct:
 
 - **relevant and available**: delegation can run;

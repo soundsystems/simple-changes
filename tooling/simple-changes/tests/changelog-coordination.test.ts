@@ -1,5 +1,16 @@
-import { afterEach, describe, expect, test } from "bun:test";
-import { symlinkSync } from "node:fs";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
+// biome-ignore lint/performance/noNamespaceImport: spyOn must patch the namespace the discovery code's named imports read.
+import * as fs from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { inspectChangelogCoordination } from "../../../skills/simple-changes/scripts/lib/changelog-coordination.ts";
 import {
@@ -9,6 +20,16 @@ import {
 } from "./helpers.ts";
 
 let repositories: TestRepository[] = [];
+
+const temporaryFilesAreCaseSensitive = (() => {
+  const probe = mkdtempSync(join(tmpdir(), "simple-changes-case-"));
+  try {
+    writeFileSync(join(probe, "Probe"), "");
+    return !existsSync(join(probe, "probe"));
+  } finally {
+    rmSync(probe, { force: true, recursive: true });
+  }
+})();
 
 afterEach(() => {
   for (const fixture of repositories) {
@@ -579,6 +600,432 @@ describe("changelog coordination discovery", () => {
       status: "current",
       storedVersion: 9,
       summaryBullets: [],
+    });
+  });
+});
+
+describe("repository-owned renamed changelog providers", () => {
+  const RENAMED = ".agents/skills/hash-changelog-maintainer";
+  const markerFor = (overrides: Record<string, unknown> = {}): string =>
+    `${JSON.stringify({
+      distribution: "full",
+      features: ["classify-prepare-verify", "guidance-update-notices"],
+      guidanceVersion: 9,
+      provider: "simple-changelogs",
+      receiptVersions: [1, 2],
+      requestVersions: [1],
+      schemaVersion: 1,
+      ...overrides,
+    })}\n`;
+  const writeProvider = (
+    root: string,
+    folder: string,
+    marker: string | null,
+    guidanceVersion = 9
+  ): void => {
+    writeFixture(
+      root,
+      `${folder}/SKILL.md`,
+      `---\nname: ${folder.split("/").at(-1)}\ndescription: Test fixture.\n---\n\nCurrent guidance version: ${guidanceVersion}\n`
+    );
+    if (marker !== null) {
+      writeFixture(root, `${folder}/changelog-provider.json`, marker);
+    }
+  };
+  // The reported failure: a newer global install would otherwise be selected
+  // and demand a guidance update the repository never chose.
+  const withNewerGlobal = (fixture: TestRepository): string => {
+    const skillRoot = join(fixture.base, "global-skills");
+    writeProvider(
+      skillRoot,
+      "simple-changelogs",
+      markerFor({ guidanceVersion: 12 }),
+      12
+    );
+    writeFixture(
+      skillRoot,
+      "simple-changelogs/references/guidance-updates.md",
+      "# Guidance Updates\n\n## Guidance 12\n\nGlobal behavior changed.\n"
+    );
+    writeFixture(
+      fixture.root,
+      ".simple-changelogs.json",
+      `${JSON.stringify({ distribution: "full", guidance: { version: 9 }, schemaVersion: 1 })}\n`
+    );
+    return skillRoot;
+  };
+  const inspectWith = (fixture: TestRepository, skillRoot: string) =>
+    inspectChangelogCoordination(fixture.root, {
+      environment: { SIMPLE_CHANGES_SKILL_ROOTS: skillRoot },
+    });
+  const globalWins = (fixture: TestRepository, skillRoot: string): void => {
+    const result = inspectWith(fixture, skillRoot);
+    const globalProvider = join(skillRoot, "simple-changelogs/SKILL.md");
+    // Compared by real path: a repository skill root linked to the global
+    // root reaches the same global installation by its installation name.
+    expect(result.providers.map((path) => realpathSync(path))).toEqual([
+      globalProvider,
+    ]);
+    expect(result.guidanceUpdate).toMatchObject({
+      installedVersion: 12,
+      status: "update-available",
+    });
+    expect(realpathSync(result.guidanceUpdate.provider ?? "")).toBe(
+      globalProvider
+    );
+  };
+
+  test("selects a renamed repository folder with a valid marker over a newer global install", () => {
+    const fixture = createTestRepository();
+    repositories.push(fixture);
+    const skillRoot = withNewerGlobal(fixture);
+    writeProvider(fixture.root, RENAMED, markerFor());
+    writeFixture(fixture.root, `${RENAMED}/scripts/setup.ts`, "export {};\n");
+
+    const result = inspectWith(fixture, skillRoot);
+    expect(result).toMatchObject({
+      capabilityAvailable: true,
+      capabilityStatus: "unverified",
+      guidanceUpdate: {
+        actions: [],
+        detailsPath: null,
+        installedVersion: 9,
+        provider: join(fixture.root, `${RENAMED}/SKILL.md`),
+        status: "current",
+        storedVersion: 9,
+      },
+      providerDistribution: "full",
+      providerEvidence: "marker",
+      relevant: true,
+    });
+    expect(result.providers).toEqual([
+      join(fixture.root, `${RENAMED}/SKILL.md`),
+      join(skillRoot, "simple-changelogs/SKILL.md"),
+    ]);
+    expect(result.capabilityHelpers[0]).toBe(
+      join(fixture.root, `${RENAMED}/scripts/setup.ts`)
+    );
+  });
+
+  test("discovers a renamed repository folder linked to another folder inside the repository", () => {
+    const fixture = createTestRepository();
+    repositories.push(fixture);
+    const skillRoot = withNewerGlobal(fixture);
+    writeProvider(fixture.root, "tools/hash-changelog-maintainer", markerFor());
+    mkdirSync(join(fixture.root, ".agents/skills"), { recursive: true });
+    symlinkSync(
+      join(fixture.root, "tools/hash-changelog-maintainer"),
+      join(fixture.root, RENAMED),
+      "dir"
+    );
+
+    expect(inspectWith(fixture, skillRoot).guidanceUpdate).toMatchObject({
+      provider: join(fixture.root, `${RENAMED}/SKILL.md`),
+      status: "current",
+    });
+  });
+
+  test("keeps an installation-name repository provider ahead of a renamed one", () => {
+    const fixture = createTestRepository();
+    repositories.push(fixture);
+    const skillRoot = withNewerGlobal(fixture);
+    writeProvider(fixture.root, RENAMED, markerFor());
+    writeProvider(fixture.root, "skills/simple-changelogs", null);
+
+    expect(inspectWith(fixture, skillRoot).providers).toEqual([
+      join(fixture.root, "skills/simple-changelogs/SKILL.md"),
+      join(fixture.root, `${RENAMED}/SKILL.md`),
+      join(skillRoot, "simple-changelogs/SKILL.md"),
+    ]);
+  });
+
+  test("ignores a renamed repository folder without a marker", () => {
+    const fixture = createTestRepository();
+    repositories.push(fixture);
+    const skillRoot = withNewerGlobal(fixture);
+    writeProvider(fixture.root, RENAMED, null);
+
+    globalWins(fixture, skillRoot);
+  });
+
+  test("ignores a renamed repository folder whose marker names another provider or schema", () => {
+    for (const marker of [
+      markerFor({ provider: "hash-changelogs" }),
+      markerFor({ schemaVersion: 2 }),
+      "{not json\n",
+    ]) {
+      const fixture = createTestRepository();
+      repositories.push(fixture);
+      const skillRoot = withNewerGlobal(fixture);
+      writeProvider(fixture.root, RENAMED, marker);
+
+      globalWins(fixture, skillRoot);
+    }
+  });
+
+  test("never discovers a renamed folder in a global skill root", () => {
+    const fixture = createTestRepository();
+    repositories.push(fixture);
+    const skillRoot = join(fixture.base, "global-skills");
+    writeProvider(skillRoot, "hash-changelog-maintainer", markerFor());
+    writeFixture(
+      fixture.root,
+      ".simple-changelogs.json",
+      `${JSON.stringify({ distribution: "full", guidance: { version: 9 }, schemaVersion: 1 })}\n`
+    );
+
+    expect(inspectWith(fixture, skillRoot)).toMatchObject({
+      capabilityAvailable: false,
+      capabilityStatus: "absent",
+      guidanceUpdate: { provider: null, status: "absent" },
+      providers: [],
+    });
+  });
+
+  test("ignores a renamed repository folder whose real path leaves the repository", () => {
+    const outsideLinks = [
+      // The folder itself links to an installation outside the repository.
+      (fixture: TestRepository, skillRoot: string) => {
+        writeProvider(skillRoot, "hash-changelog-maintainer", markerFor());
+        mkdirSync(join(fixture.root, ".agents/skills"), { recursive: true });
+        symlinkSync(
+          join(skillRoot, "hash-changelog-maintainer"),
+          join(fixture.root, RENAMED),
+          "dir"
+        );
+      },
+      // The whole repository skill root links to a global root.
+      (fixture: TestRepository, skillRoot: string) => {
+        writeProvider(skillRoot, "hash-changelog-maintainer", markerFor());
+        mkdirSync(join(fixture.root, ".agents"), { recursive: true });
+        symlinkSync(skillRoot, join(fixture.root, ".agents/skills"), "dir");
+      },
+      // The folder and marker are inside, but SKILL.md links outside.
+      (fixture: TestRepository) => {
+        writeFixture(
+          fixture.root,
+          `${RENAMED}/changelog-provider.json`,
+          markerFor()
+        );
+        writeFixture(
+          fixture.base,
+          "outside/SKILL.md",
+          "---\nname: outside\ndescription: Test fixture.\n---\n"
+        );
+        symlinkSync(
+          join(fixture.base, "outside/SKILL.md"),
+          join(fixture.root, `${RENAMED}/SKILL.md`)
+        );
+      },
+      // The folder links outside, though its SKILL.md and marker link back in.
+      (fixture: TestRepository) => {
+        writeProvider(fixture.root, "tools/inside-copy", markerFor());
+        writeFixture(fixture.base, "outside/scripts/setup.ts", "export {};\n");
+        for (const file of ["SKILL.md", "changelog-provider.json"]) {
+          symlinkSync(
+            join(fixture.root, `tools/inside-copy/${file}`),
+            join(fixture.base, `outside/${file}`)
+          );
+        }
+        mkdirSync(join(fixture.root, ".agents/skills"), { recursive: true });
+        symlinkSync(
+          join(fixture.base, "outside"),
+          join(fixture.root, RENAMED),
+          "dir"
+        );
+      },
+      // The folder is inside, but its marker links outside.
+      (fixture: TestRepository) => {
+        writeProvider(fixture.root, RENAMED, null);
+        writeFixture(
+          fixture.base,
+          "outside/changelog-provider.json",
+          markerFor()
+        );
+        symlinkSync(
+          join(fixture.base, "outside/changelog-provider.json"),
+          join(fixture.root, `${RENAMED}/changelog-provider.json`)
+        );
+      },
+    ];
+    for (const link of outsideLinks) {
+      const fixture = createTestRepository();
+      repositories.push(fixture);
+      const skillRoot = withNewerGlobal(fixture);
+      link(fixture, skillRoot);
+
+      globalWins(fixture, skillRoot);
+    }
+  });
+
+  test("neither lists a linked skill root nor reads a marker outside the repository", () => {
+    const fixture = createTestRepository();
+    repositories.push(fixture);
+    const skillRoot = withNewerGlobal(fixture);
+    writeProvider(skillRoot, "hash-changelog-maintainer", markerFor());
+    mkdirSync(join(fixture.root, ".agents"), { recursive: true });
+    symlinkSync(skillRoot, join(fixture.root, ".agents/skills"), "dir");
+    writeProvider(fixture.base, "outside/linked-folder", markerFor());
+    mkdirSync(join(fixture.root, ".claude/skills"), { recursive: true });
+    symlinkSync(
+      join(fixture.base, "outside/linked-folder"),
+      join(fixture.root, ".claude/skills/linked-folder"),
+      "dir"
+    );
+    const listing = spyOn(fs, "readdirSync");
+    const reading = spyOn(fs, "readFileSync");
+    try {
+      globalWins(fixture, skillRoot);
+      const listed = listing.mock.calls.map(([path]) => String(path));
+      const read = reading.mock.calls.map(([path]) => String(path));
+      // Positive control: the in-repository skill root is still listed.
+      expect(listed).toContain(join(fixture.root, ".claude/skills"));
+      expect(listed).not.toContain(join(fixture.root, ".agents/skills"));
+      for (const marker of [
+        join(
+          fixture.root,
+          ".agents/skills/hash-changelog-maintainer/changelog-provider.json"
+        ),
+        join(
+          fixture.root,
+          ".claude/skills/linked-folder/changelog-provider.json"
+        ),
+      ]) {
+        expect(read).not.toContain(marker);
+      }
+    } finally {
+      listing.mockRestore();
+      reading.mockRestore();
+    }
+  });
+
+  test.skipIf(temporaryFilesAreCaseSensitive)(
+    "keeps one entry for a differently cased installation folder on a case-insensitive file system",
+    () => {
+      const fixture = createTestRepository();
+      repositories.push(fixture);
+      const skillRoot = withNewerGlobal(fixture);
+      writeProvider(fixture.root, "skills/Simple-Changelogs", markerFor());
+
+      expect(inspectWith(fixture, skillRoot).providers).toEqual([
+        join(fixture.root, "skills/simple-changelogs/SKILL.md"),
+        join(skillRoot, "simple-changelogs/SKILL.md"),
+      ]);
+    }
+  );
+
+  test.skipIf(!temporaryFilesAreCaseSensitive)(
+    "discovers a distinct differently cased marked folder on a case-sensitive file system",
+    () => {
+      const fixture = createTestRepository();
+      repositories.push(fixture);
+      const skillRoot = withNewerGlobal(fixture);
+      writeProvider(
+        fixture.root,
+        "skills/simple-changelogs",
+        markerFor({ distribution: "web" })
+      );
+      writeProvider(fixture.root, "skills/Simple-Changelogs", markerFor());
+
+      const result = inspectWith(fixture, skillRoot);
+      expect(result.guidanceUpdate).toMatchObject({
+        provider: join(fixture.root, "skills/Simple-Changelogs/SKILL.md"),
+        status: "current",
+      });
+      expect(result.providers).toEqual([
+        join(fixture.root, "skills/Simple-Changelogs/SKILL.md"),
+        join(skillRoot, "simple-changelogs/SKILL.md"),
+      ]);
+    }
+  );
+
+  test("keeps two installation folders apart when their SKILL.md files link to one file", () => {
+    const fixture = createTestRepository();
+    repositories.push(fixture);
+    const skillRoot = withNewerGlobal(fixture);
+    writeFixture(
+      fixture.root,
+      "tools/shared/SKILL.md",
+      "---\nname: shared\ndescription: Test fixture.\n---\n"
+    );
+    writeFixture(
+      fixture.root,
+      `${RENAMED}/changelog-provider.json`,
+      markerFor({ receiptVersions: [], requestVersions: [] })
+    );
+    for (const skill of [
+      join(fixture.root, `${RENAMED}/SKILL.md`),
+      join(skillRoot, "simple-changelogs/SKILL.md"),
+    ]) {
+      rmSync(skill, { force: true });
+      symlinkSync(join(fixture.root, "tools/shared/SKILL.md"), skill);
+    }
+
+    const result = inspectWith(fixture, skillRoot);
+    expect(result.providers).toEqual([
+      join(skillRoot, "simple-changelogs/SKILL.md"),
+      join(fixture.root, `${RENAMED}/SKILL.md`),
+    ]);
+    expect(result).toMatchObject({
+      capabilityAvailable: true,
+      capabilityStatus: "unverified",
+      guidanceUpdate: { installedVersion: 12, status: "update-available" },
+    });
+  });
+
+  test("never reads an inherited property as a renamed folder's distribution", () => {
+    for (const name of ["constructor", "__proto__", "toString"]) {
+      for (const storedDistribution of ["full", null]) {
+        const fixture = createTestRepository();
+        repositories.push(fixture);
+        const skillRoot = withNewerGlobal(fixture);
+        writeFixture(
+          fixture.root,
+          ".simple-changelogs.json",
+          `${JSON.stringify({
+            ...(storedDistribution ? { distribution: storedDistribution } : {}),
+            guidance: { version: 9 },
+            schemaVersion: 1,
+          })}\n`
+        );
+        const folder = `.agents/skills/${name}`;
+        writeProvider(
+          fixture.root,
+          folder,
+          markerFor({ distribution: undefined })
+        );
+
+        const result = inspectWith(fixture, skillRoot);
+        expect(result.guidanceUpdate).toMatchObject({
+          provider: join(fixture.root, `${folder}/SKILL.md`),
+          status: "current",
+        });
+        expect(result.providerDistribution).toBeNull();
+      }
+    }
+  });
+
+  test("does not let a discovery-only renamed provider shadow a handoff-capable one", () => {
+    const fixture = createTestRepository();
+    repositories.push(fixture);
+    const skillRoot = withNewerGlobal(fixture);
+    writeProvider(
+      fixture.root,
+      RENAMED,
+      markerFor({ receiptVersions: [], requestVersions: [] })
+    );
+
+    const result = inspectWith(fixture, skillRoot);
+    expect(result.providers).toEqual([
+      join(skillRoot, "simple-changelogs/SKILL.md"),
+      join(fixture.root, `${RENAMED}/SKILL.md`),
+    ]);
+    expect(result).toMatchObject({
+      capabilityAvailable: true,
+      guidanceUpdate: {
+        provider: join(skillRoot, "simple-changelogs/SKILL.md"),
+        status: "update-available",
+      },
     });
   });
 });

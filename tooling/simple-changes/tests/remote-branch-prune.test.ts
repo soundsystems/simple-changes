@@ -17,6 +17,7 @@ import {
 } from "../../../skills/simple-changes/scripts/lib/remote-branch-prune.ts";
 import {
   buildRemoteInventory,
+  type RemoteInventoryHoldResolver,
   type RemoteInventoryPages,
 } from "../../../skills/simple-changes/scripts/lib/remote-inventory.ts";
 import type { ShipmentOutcomeReceipt } from "../../../skills/simple-changes/scripts/lib/types.ts";
@@ -959,5 +960,155 @@ describe("remote branch cleanup report holds", () => {
     );
     // Unknown targets are said so, never read as none.
     expect(report(null).openProposalTargets).toBe("unknown");
+  });
+});
+
+describe("round 5: the target's upstream and shallow clones", () => {
+  const commit = (root: string, file: string, text: string): string => {
+    writeFixture(root, file, text);
+    git(root, ["add", file]);
+    git(root, ["commit", "-m", `Write ${file}`]);
+    return git(root, ["rev-parse", "HEAD"]);
+  };
+  const mergedBuild = (
+    head: string,
+    name: string,
+    branchHead: string,
+    resolveHolds: RemoteInventoryHoldResolver
+  ) => {
+    const branches = [
+      main(head),
+      { headRevision: branchHead, name, protected: false },
+    ];
+    return buildRemoteInventory(
+      pages(CLOSED, branches, [mr("50", name, "merged", branchHead)], []),
+      {
+        opening: buildRemoteInventory(
+          pages(
+            OPENED,
+            branches,
+            [mr("50", name, "open", branchHead)],
+            [{ objectId: "50", targetBranch: "main" }]
+          )
+        ).receipt,
+        resolveHolds,
+      }
+    );
+  };
+
+  test("a target checkout's upstream holds that branch", () => {
+    const { root } = repository();
+    git(root, ["remote", "add", "origin", "git@gitlab.com:group/project.git"]);
+    git(root, ["switch", "-c", "kept"]);
+    const keptHead = commit(root, "kept.txt", "kept\n");
+    git(root, ["switch", "main"]);
+    git(root, ["branch", "-D", "kept"]);
+    const head = git(root, ["rev-parse", "HEAD"]);
+    git(root, ["update-ref", "refs/remotes/origin/kept", keptHead]);
+    // Control: with main tracking nothing, the merged head is proposed.
+    expect(
+      mergedBuild(
+        head,
+        "kept",
+        keptHead,
+        localHolds(root)
+      ).summary.deletionProposals.map((proposal) => proposal.name)
+    ).toEqual(["kept"]);
+    git(root, ["config", "branch.main.remote", "origin"]);
+    git(root, ["config", "branch.main.merge", "refs/heads/kept"]);
+    const held = mergedBuild(head, "kept", keptHead, localHolds(root));
+    expect(held.summary.deletionProposals).toEqual([]);
+    expect(held.summary.heldBranches).toEqual([
+      {
+        headRevision: keptHead,
+        name: "kept",
+        reasons: [`upstream of main, checked out in ${root}`],
+      },
+    ]);
+  });
+
+  /**
+   * A full source and a depth-2 clone of it: `side` (two commits deep) is
+   * contained in `main` (five commits deep), but the clone cannot see the
+   * history that joins them.
+   */
+  const shallowPair = () => {
+    const source = repository();
+    git(source.root, ["switch", "-c", "side"]);
+    const sideHead = commit(source.root, "side.txt", "side\n");
+    git(source.root, ["switch", "main"]);
+    git(source.root, ["merge", "--ff-only", "side"]);
+    commit(source.root, "two.txt", "two\n");
+    commit(source.root, "three.txt", "three\n");
+    const head = commit(source.root, "four.txt", "four\n");
+    const clone = join(source.base, "shallow");
+    git(source.base, [
+      "clone",
+      "--quiet",
+      "--depth",
+      "2",
+      "--no-single-branch",
+      `file://${source.root}`,
+      clone,
+    ]);
+    expect(git(clone, ["rev-parse", "--is-shallow-repository"])).toBe("true");
+    expect(git(clone, ["cat-file", "-t", sideHead])).toBe("commit");
+    return { clone, head, sideHead, source: source.root };
+  };
+
+  test("a shallow clone withholds every merged-head proposal", () => {
+    const { clone, head, sideHead, source } = shallowPair();
+    // Control: with full history the same merged head is proposed.
+    expect(
+      mergedBuild(
+        head,
+        "side",
+        sideHead,
+        localHolds(source)
+      ).summary.deletionProposals.map((proposal) => proposal.name)
+    ).toEqual(["side"]);
+    const built = mergedBuild(head, "side", sideHead, localHolds(clone));
+    expect(built.summary.deletionProposals).toEqual([]);
+    expect(built.summary.heldBranches[0]?.reasons.join(" ")).toContain(
+      "git fetch --unshallow"
+    );
+  });
+
+  test("a shallow clone cannot prove a branch is not contained", () => {
+    const { clone, head, sideHead, source } = shallowPair();
+    const snapshot = pages(
+      OPENED,
+      [main(head), { headRevision: sideHead, name: "side", protected: false }],
+      [],
+      []
+    );
+    const { receipt } = buildRemoteInventory(snapshot, {
+      opening: buildRemoteInventory(snapshot).receipt,
+      resolveHolds: noHolds,
+    });
+    const report = (root: string, openTargets: Target[]) =>
+      remoteBranchCleanupReport({
+        claims: [],
+        inventory: captureInventory(root, { skipWorktreeStatus: true }),
+        openTargets,
+        receipt,
+      });
+    // Control: full history proves containment.
+    expect(report(source, []).pending).toEqual([
+      { headRevision: sideHead, name: "side", proof: "target-contained" },
+    ]);
+    const shallow = report(clone, []);
+    expect(shallow.pending).toEqual([]);
+    expect(shallow.errors).toContainEqual(
+      expect.stringContaining(`side at ${sideHead}: the clone is shallow`)
+    );
+    // Held, the branch raises no error of its own; only the lost fork-point
+    // holds are reported.
+    const held = report(clone, [{ objectId: "97", targetBranch: "side" }]);
+    expect(held.pending).toEqual([]);
+    expect(held.errors.some((error) => error.includes("side at"))).toBe(false);
+    expect(held.errors.join(" ")).toContain(
+      "Fork-point holds could not be computed"
+    );
   });
 });

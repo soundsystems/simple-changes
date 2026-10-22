@@ -164,6 +164,46 @@ const nameHolds = (
 };
 
 /**
+ * Whether Git could be missing history here. Anything other than an explicit
+ * "false" counts as shallow, so an old Git or a failed check never reads as
+ * full history.
+ */
+export const mayBeShallow = (repositoryPath: string): boolean =>
+  runGit(
+    repositoryPath,
+    ["rev-parse", "--is-shallow-repository"],
+    true
+  ).stdout.trim() !== "false";
+
+const SHALLOW_ADVICE =
+  "the clone is shallow, so Git cannot prove what the target does or does not contain; run `git fetch --unshallow` and try again";
+
+/**
+ * Holds that need no history: checkouts, claims, resume targets, and the
+ * upstream of every live branch, the target's included (a target checkout
+ * tracking another provider branch keeps that branch).
+ */
+export const remoteBranchNameHolds = (
+  input: RemoteBranchHoldInput
+): { byName: Map<string, string[]>; live: Map<string, string> } => {
+  const { inventory, targetBranch } = input;
+  const { targetRemote } = inventory.repository;
+  const byName = new Map<string, string[]>();
+  const live = nameHolds(input, byName);
+  for (const [branch, why] of live) {
+    const local = inventory.branches.find((item) => item.name === branch);
+    const upstream =
+      local?.upstream && targetRemote
+        ? branchNameForRef(local.upstream, targetRemote)
+        : null;
+    if (upstream && upstream !== targetBranch) {
+      addHold(byName, upstream, `upstream of ${branch}, ${why}`);
+    }
+  }
+  return { byName, live };
+};
+
+/**
  * Where a live branch forked from the target. No shared history means no fork
  * point; any other Git failure throws, because a hold that cannot be computed
  * must not read as no hold.
@@ -191,30 +231,27 @@ const forkPoint = (
 };
 
 /**
- * Collects the holds. Fork points need Git; a fork point that cannot be
- * computed throws, so a caller deciding deletions can refuse instead of
- * proposing one it could not check.
+ * Collects the holds. Fork points need full history: in a shallow clone, or
+ * when a fork point cannot be computed, this throws, so a caller deciding
+ * deletions withholds every proposal instead of proposing one it could not
+ * check.
  */
 export const remoteBranchHolds = (
   input: RemoteBranchHoldInput
 ): RemoteBranchHolds => {
   const { inventory, targetBranch, targetRevision } = input;
-  const { primaryCheckout, targetRemote } = inventory.repository;
-  const byName = new Map<string, string[]>();
+  const { primaryCheckout } = inventory.repository;
+  if (mayBeShallow(primaryCheckout)) {
+    throw new Error(`fork points cannot be computed: ${SHALLOW_ADVICE}`);
+  }
+  const { byName, live } = remoteBranchNameHolds(input);
   const byRevision = new Map<string, string[]>();
-  const live = nameHolds(input, byName);
   for (const [branch, why] of live) {
+    // The target forks from itself; only its upstream (above) holds.
     if (branch === targetBranch) {
       continue;
     }
     const local = inventory.branches.find((item) => item.name === branch);
-    const upstream =
-      local?.upstream && targetRemote
-        ? branchNameForRef(local.upstream, targetRemote)
-        : null;
-    if (upstream && upstream !== targetBranch) {
-      addHold(byName, upstream, `upstream of ${branch}, ${why}`);
-    }
     const head =
       local?.sha ??
       inventory.worktrees.find((worktree) => worktree.branch === branch)
@@ -291,7 +328,8 @@ const cleanupItem = (
   receipt: RemoteBranchReconciliationReceipt,
   repositoryPath: string,
   patchIdCache: Map<string, Map<string, string>>,
-  errors: string[]
+  errors: string[],
+  shallow: boolean
 ): RemoteBranchCleanupItem | null => {
   const head = entry.finalHeadRevision;
   const moved =
@@ -312,6 +350,10 @@ const cleanupItem = (
     errors.push(`${entry.name} at ${head}: ${why}`);
     return null;
   };
+  // Git's "no" needs full history; only a positive proof survives a shallow
+  // clone.
+  const notContained = (): null =>
+    shallow ? unsettled(`${SHALLOW_ADVICE}.`) : null;
   if (!headIsLocal(repositoryPath, head)) {
     return unsettled(
       "the head is not present locally, so its containment could not be checked; fetch the branch and finalize again."
@@ -347,8 +389,8 @@ const cleanupItem = (
     base.stdout.trim() === "" &&
     base.stderr.trim() === ""
   ) {
-    // No shared history: definitively not contained.
-    return null;
+    // No shared history: definitively not contained, given full history.
+    return notContained();
   }
   if (base.exitCode !== 0) {
     return unsettled(
@@ -380,7 +422,7 @@ const cleanupItem = (
           name: entry.name,
           proof: "patch-equivalent",
         }
-      : null;
+      : notContained();
   } catch (error) {
     return unsettled(
       `its containment could not be checked (${error instanceof Error ? error.message : String(error)}).`
@@ -405,19 +447,31 @@ export const remoteBranchCleanupReport = (
   const { claims, inventory, openTargets, receipt } = input;
   const repositoryPath = inventory.repository.primaryCheckout;
   const errors: string[] = [];
+  const holdInput = {
+    claims,
+    inventory,
+    targetBranch: receipt.targetBranch,
+    targetRevision: receipt.targetRevision,
+  };
   let holds: RemoteBranchHolds = { byName: new Map(), byRevision: new Map() };
   try {
-    holds = remoteBranchHolds({
-      claims,
-      inventory,
-      targetBranch: receipt.targetBranch,
-      targetRevision: receipt.targetRevision,
-    });
+    holds = remoteBranchHolds(holdInput);
   } catch (error) {
+    // Holds by name need no history; only fork-point holds are lost, which
+    // reports more as pending, never fewer.
+    try {
+      holds = {
+        byName: remoteBranchNameHolds(holdInput).byName,
+        byRevision: new Map(),
+      };
+    } catch {
+      // Keep no holds at all.
+    }
     errors.push(
-      `Live branch holds could not be read, so none is applied: ${error instanceof Error ? error.message : String(error)}`
+      `Fork-point holds could not be computed, so none is applied: ${error instanceof Error ? error.message : String(error)}`
     );
   }
+  const shallow = mayBeShallow(repositoryPath);
   const report: RemoteBranchCleanupReport = {
     errors,
     held: [],
@@ -442,7 +496,8 @@ export const remoteBranchCleanupReport = (
       receipt,
       repositoryPath,
       patchIdCache,
-      reasons.length > 0 ? [] : errors
+      reasons.length > 0 ? [] : errors,
+      shallow
     );
     if (!item) {
       continue;

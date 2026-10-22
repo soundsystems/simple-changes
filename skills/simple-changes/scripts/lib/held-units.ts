@@ -7,6 +7,7 @@ import {
   readImmutableRecoveryEvent,
   readReceiptSidecar,
   recoveryHistoryDirectory,
+  STATE_DIRECTORY,
 } from "./loop-lease-core.ts";
 import { validateSchema } from "./schema.ts";
 import type {
@@ -285,6 +286,52 @@ const readHeldUnitRecord = (lease: HeldUnitLease): HeldUnitHold[] => {
     assertHoldIntact(lease, hold);
   }
   return record.holds;
+};
+
+const HELD_UNITS_RECORD_PATTERN = /^(run-[a-z0-9-]+)\.json$/u;
+
+/**
+ * The source checkout of every hold any run recorded. Held-unit records stay
+ * after a run closes, and a held checkout's claim keeps protecting the held
+ * work after finalization, so standalone cleanup keeps those claims too.
+ * Throws when a record cannot be read or names another run, so a caller
+ * releases nothing rather than a held checkout's claim.
+ */
+export const recordedHeldSourcePaths = (
+  commonGitDirectory: string
+): Set<string> => {
+  const directory = resolve(
+    commonGitDirectory,
+    STATE_DIRECTORY,
+    HELD_UNITS_DIRECTORY
+  );
+  if (!existsSync(directory)) {
+    return new Set();
+  }
+  const paths = new Set<string>();
+  for (const name of readdirSync(directory).sort()) {
+    const runId = HELD_UNITS_RECORD_PATTERN.exec(name)?.[1];
+    if (!runId) {
+      continue;
+    }
+    const stored = readReceiptSidecar(
+      commonGitDirectory,
+      HELD_UNITS_DIRECTORY,
+      runId
+    );
+    const record = validateSchema<HeldUnitsRecord>("held-units", stored);
+    if (record.runId !== runId) {
+      throw new SimpleChangesError(
+        `The held-unit record ${name} names run ${record.runId}. Restore the record that run wrote.`,
+        EXIT_CODES.unsafe
+      );
+    }
+    for (const hold of record.holds) {
+      paths.add(hold.unit.sourceWorktree);
+      paths.add(hold.observation.source.worktree);
+    }
+  }
+  return paths;
 };
 
 /**

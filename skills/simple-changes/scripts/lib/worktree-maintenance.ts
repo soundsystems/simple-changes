@@ -12,6 +12,7 @@ import {
 import { probeCoordinationAdapter } from "./coordination-adapter.ts";
 import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
 import { ensureStateDirectory } from "./git-location.ts";
+import { recordedHeldSourcePaths } from "./held-units.ts";
 import { captureInventory, locateRepository } from "./inventory.ts";
 import {
   type LeaseLiveness,
@@ -24,6 +25,7 @@ import { runGit } from "./process.ts";
 import { validateSchema } from "./schema.ts";
 import type {
   RepositoryInventory,
+  WorktreeClaim,
   WorktreeCoordinationState,
   WorktreeInventory,
 } from "./types.ts";
@@ -481,6 +483,32 @@ const pruneStaleWorktreeMetadata = (
   return pruned.sort((left, right) => left.localeCompare(right));
 };
 
+// Releases absent claims except on held checkouts. An unreadable held-unit
+// record releases nothing and reports why.
+const releaseAbsentHeldAwareClaims = (
+  commonGitDirectory: string,
+  inventory: RepositoryInventory,
+  agentId: string,
+  errors: string[]
+): WorktreeClaim[] => {
+  let heldPaths: Set<string>;
+  try {
+    heldPaths = recordedHeldSourcePaths(commonGitDirectory);
+  } catch (error) {
+    errors.push(
+      `No absent worktree claim was released: the held-unit records could not be read (${error instanceof Error ? error.message : String(error)}).`
+    );
+    return [];
+  }
+  return releaseAbsentWorktreeClaimsUnderLock(
+    commonGitDirectory,
+    inventory,
+    agentId,
+    new Set(),
+    heldPaths
+  );
+};
+
 /**
  * Audited standalone cleanup for repositories with no loop record at all.
  * Removes only worktrees that are proven safe right now: unclaimed, clean,
@@ -568,10 +596,13 @@ export const standaloneWorktreeCleanup = (
       );
       // A claim whose checkout is gone (removed above, pruned above, or already
       // absent) protects nothing; release it so it stops demanding a takeover.
-      const releasedClaims = releaseAbsentWorktreeClaimsUnderLock(
+      // A held unit's checkout is the exception: its claim keeps protecting
+      // the held work after the run closed, as finalization keeps it.
+      const releasedClaims = releaseAbsentHeldAwareClaims(
         commonGitDirectory,
         captureInventory(options.repositoryPath),
-        agentId
+        agentId,
+        errors
       )
         .map((claim) => ({
           claimId: claim.claimId,

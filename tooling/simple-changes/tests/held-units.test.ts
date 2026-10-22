@@ -60,6 +60,7 @@ import {
   readWorktreeCoordination,
   releaseWorktreeClaim,
 } from "../../../skills/simple-changes/scripts/lib/worktree-coordination.ts";
+import { standaloneWorktreeCleanup } from "../../../skills/simple-changes/scripts/lib/worktree-maintenance.ts";
 import {
   createTestRepository,
   git,
@@ -1469,6 +1470,58 @@ describe("held unit in a claimed author checkout", () => {
       )
     ).toThrow("a held checkout is never retired");
     expect(readLoopLease(shipping)).toEqual(before);
+  });
+
+  test("worktree cleanup after the run keeps a removed held checkout's claim and releases others", () => {
+    const { base, claim, lease, role, roleUnit, root, shipping } =
+      claimedFixture();
+    commitAll(shipping, "Feature");
+    git(root, [
+      "update-ref",
+      "refs/remotes/origin/main",
+      git(shipping, ["rev-parse", "HEAD"]),
+    ]);
+    approvedHold(shipping, lease.runId, roleUnit, [
+      `${roleUnit}: failed independent review.`,
+    ]);
+    recordShipmentOutcome(
+      shipping,
+      lease.runId,
+      CONTROLLER,
+      reviewed(draftShipmentOutcome(shipping, lease.runId).draft)
+    );
+    const finalized = finalizeLoop(
+      shipping,
+      lease.runId,
+      CONTROLLER,
+      "Close the shipment with the role unit held."
+    );
+    expect(finalized.outcome).toBe("completed");
+    expect(readLoopLease(root)).toBeNull();
+    // After the run, the held checkout is removed, and so is an unrelated
+    // claimed checkout (the negative control).
+    git(root, ["worktree", "remove", "--force", role]);
+    const other = join(base, "other");
+    git(root, ["worktree", "add", "-q", "-b", "other", other]);
+    const otherClaim = claimWorktree(root, "other-agent", other, "test");
+    git(root, ["worktree", "remove", "--force", other]);
+    const receipt = standaloneWorktreeCleanup({
+      agentId: CONTROLLER,
+      approvedBy: APPROVER,
+      reason: "Clean up after the shipment.",
+      repositoryPath: root,
+    });
+    expect(receipt.errors).toEqual([]);
+    expect(receipt.releasedClaims?.map((item) => item.claimId)).toEqual([
+      otherClaim.claimId,
+    ]);
+    const { claims } = readWorktreeCoordination(root);
+    expect(claims.find((item) => item.claimId === claim.claimId)?.state).toBe(
+      "active"
+    );
+    expect(
+      claims.find((item) => item.claimId === otherClaim.claimId)?.state
+    ).toBe("released");
   });
 
   test("a run that held every claimed checkout closes only at its exact pinned target", () => {

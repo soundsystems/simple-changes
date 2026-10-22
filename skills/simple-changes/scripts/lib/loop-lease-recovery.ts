@@ -23,7 +23,7 @@ import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
 import { proveExactByteTargetContainment } from "./exact-byte-proof.ts";
 import { ensureStateDirectory } from "./git-location.ts";
 import { sha256, sha256Json } from "./hash.ts";
-import { assertNoHeldUnits } from "./held-units.ts";
+import { assertNoHeldUnits, readHeldUnits } from "./held-units.ts";
 import {
   captureInventory,
   inventoryDigestInput,
@@ -448,6 +448,20 @@ const retireRunCreatedWorktree = (
  * record is bound to the exact registered baseline and to named approval.
  * Nothing is deleted, no delivery is proven, and no branch cleanup follows.
  */
+// A held unit's checkout keeps its claim and pinned head; recording it as
+// retired would account for held work as absent instead of held.
+const assertNotHeldSource = (lease: LoopLease, path: string): void => {
+  const heldHere = readHeldUnits(lease).filter(
+    (hold) => hold.unit.sourceWorktree === path
+  );
+  if (heldHere.length > 0) {
+    throw new SimpleChangesError(
+      `Worktree ${path} is the source of held unit(s) ${heldHere.map((hold) => hold.unit.id).join(", ")}, and a held checkout is never retired. Its claim and pinned head keep the held work; finish the run with loop finalize, which reports held units apart from delivered work, or replan it.`,
+      EXIT_CODES.unsafe
+    );
+  }
+};
+
 export const retireAbsentWorktree = (
   repositoryPath: string,
   runId: string,
@@ -498,6 +512,7 @@ export const retireAbsentWorktree = (
           EXIT_CODES.unsafe
         );
       }
+      assertNotHeldSource(lease, path);
       if (!nothingAtPath(path)) {
         throw new SimpleChangesError(
           `Worktree ${path} still exists on disk. Retirement records an absence; use loop allow, loop retain-worktree, or loop dispose-worktree for a checkout that is present.`,

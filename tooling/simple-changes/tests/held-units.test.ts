@@ -34,6 +34,7 @@ import {
   readLoopLease,
   recordShipmentOutcome,
   recordShipmentScope,
+  retireAbsentWorktree,
   startLoop,
 } from "../../../skills/simple-changes/scripts/lib/loop-lease.ts";
 import { readinessEvidenceFailure } from "../../../skills/simple-changes/scripts/lib/loop-lease-hold.ts";
@@ -1253,7 +1254,7 @@ describe("held unit in a claimed author checkout", () => {
    * with its feature, while `role` commits its own changelog line and role
    * check but stays held. The controller owns both claims.
    */
-  const claimedFixture = () => {
+  const claimedFixture = (claimed = true) => {
     const fixture = repository();
     const { base, root } = fixture;
     writeFixture(root, "CHANGELOG.md", "# Changelog\n");
@@ -1274,7 +1275,9 @@ describe("held unit in a claimed author checkout", () => {
     writeFixture(shipping, "feature.txt", "feature\n");
     writeFixture(role, "CHANGELOG.md", "# Changelog\n\n- Role checks.\n");
     writeFixture(role, "role.ts", "export const role = 1;\n");
-    const claim = claimWorktree(root, CONTROLLER, role, "test");
+    const claim = claimed
+      ? claimWorktree(root, CONTROLLER, role, "test")
+      : null;
     const lease = startLoop(shipping, CONTROLLER, "ship");
     const opening = captureInventory(shipping);
     const preview = buildPreviewPlan(
@@ -1296,7 +1299,8 @@ describe("held unit in a claimed author checkout", () => {
     );
     return {
       ...fixture,
-      claim,
+      // Only the unclaimed variant leaves it unset, and its tests never read it.
+      claim: claim as ReturnType<typeof claimWorktree>,
       lease,
       plan,
       role,
@@ -1440,6 +1444,31 @@ describe("held unit in a claimed author checkout", () => {
         (item) => item.claimId === claim.claimId
       )?.state
     ).toBe("active");
+  });
+
+  test("never retires a held checkout that is gone", () => {
+    // Unclaimed, the held checkout is a preserved registration, the kind
+    // loop retire-absent-worktree accepts once its checkout is gone.
+    const { lease, role, roleUnit, root, shipping } = claimedFixture(false);
+    approvedHold(shipping, lease.runId, roleUnit, [
+      `${roleUnit}: failed independent review.`,
+    ]);
+    git(root, ["worktree", "remove", "--force", role]);
+    const before = readLoopLease(shipping) as LoopLease;
+    expect(
+      before.worktrees.find((worktree) => worktree.path === role)?.role
+    ).toBe("preserved");
+    expect(() =>
+      retireAbsentWorktree(
+        shipping,
+        lease.runId,
+        CONTROLLER,
+        role,
+        APPROVER,
+        "The held checkout was removed."
+      )
+    ).toThrow("a held checkout is never retired");
+    expect(readLoopLease(shipping)).toEqual(before);
   });
 
   test("a run that held every claimed checkout closes only at its exact pinned target", () => {

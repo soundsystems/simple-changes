@@ -281,15 +281,6 @@ const headIsLocal = (repositoryPath: string, head: string): boolean =>
     .exitCode === 0;
 
 /**
- * Builds the report from the recorded receipt and fresh local evidence. A
- * preserved branch counts as pending when the provider proves it merged at
- * its exact head, or when Git proves the target contains its head by exact
- * ancestry or full patch-id equivalence. A head Git cannot find is not
- * provable and stays one of the preserved uncertain branches the run already
- * reports. Holds move a branch to `held`; an error computing them leaves every
- * branch unheld, which reports more as pending, not fewer.
- */
-/**
  * The finished-branch proof for one reportable entry, or null when Git proves
  * the target does not contain it. Reporting judges the final head alone, so a
  * branch that moved or arrived still counts when a final merged MR recorded
@@ -350,6 +341,17 @@ const cleanupItem = (
   }
 };
 
+/**
+ * Builds the report from the recorded receipt and fresh local evidence. A
+ * preserved branch counts as pending when a final merged MR recorded its
+ * final head, or when Git proves the target contains that head by exact
+ * ancestry or full patch-id equivalence. Holds are applied first and move a
+ * proven branch to `held`; a held branch whose audit cannot settle is left
+ * out, because it is in use and not proven finished. For an unheld branch,
+ * evidence Git cannot settle is an error, which keeps cleanup pending, and an
+ * error computing the holds leaves every branch unheld: unknown evidence
+ * reports more as pending, never fewer.
+ */
 export const remoteBranchCleanupReport = (
   input: RemoteBranchCleanupInput
 ): RemoteBranchCleanupReport => {
@@ -380,22 +382,24 @@ export const remoteBranchCleanupReport = (
     if (!reportable(entry, receipt.targetBranch)) {
       continue;
     }
-    const item = cleanupItem(
-      entry,
-      receipt,
-      repositoryPath,
-      patchIdCache,
-      errors
-    );
-    if (!item) {
-      continue;
-    }
+    // Holds come first: a branch in use never counts, so what its audit
+    // could not settle is not an error either.
     const reasons = holdReasons(
       entry.name,
       entry.finalHeadRevision,
       holds,
       openTargets
     );
+    const item = cleanupItem(
+      entry,
+      receipt,
+      repositoryPath,
+      patchIdCache,
+      reasons.length > 0 ? [] : errors
+    );
+    if (!item) {
+      continue;
+    }
     if (reasons.length > 0) {
       report.held.push({ ...item, reasons });
     } else {

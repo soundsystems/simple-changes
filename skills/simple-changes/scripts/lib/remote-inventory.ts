@@ -9,6 +9,7 @@ import {
   coverageDigest,
   remoteInventoryDigest,
   splitRemoteBranchReconciliationInput,
+  validateLedgerBranchEntry,
   validateOpeningRemoteInventory,
   validateRemoteBranchReconciliation,
 } from "./remote-branch-reconciliation.ts";
@@ -735,64 +736,34 @@ const deletionBlockers = (
 };
 
 /**
- * The receipt rules a supersession must pass once its branch is deleted,
- * checked before the deletion is proposed: the exact head, distinct
- * replacements other than that head, a nonblank approver and reason, and no
- * open or merged record in either inventory (a user-approved deletion counts
- * every observed proposal). Git still verifies the replacements where the
- * receipt is recorded.
- */
-const supersessionIssue = (
-  supersession: NonNullable<
-    RemoteInventoryDecisions["deletedBranches"][number]["supersession"]
-  >,
-  head: string,
-  proposals: readonly ProposalRecord[]
-): string | null => {
-  if (supersession.initialHeadRevision !== head) {
-    return `its supersession names head ${supersession.initialHeadRevision}, but the branch is at ${head}`;
-  }
-  const replacements = supersession.replacementRevisions;
-  if (
-    new Set(replacements).size !== replacements.length ||
-    replacements.includes(head)
-  ) {
-    return "supersession replacements must be distinct target commits other than the deleted head";
-  }
-  if (!(supersession.approvedBy.trim() && supersession.reason.trim())) {
-    return "supersession requires a nonblank approver and reason";
-  }
-  if (
-    proposals.some(
-      (proposal) => proposal.state === "open" || proposal.state === "merged"
-    )
-  ) {
-    return "a supersession counts every observed proposal, and one was open or merged";
-  }
-  return null;
-};
-
-/**
  * A decision for a branch still present approves deleting it: the build
  * proposes the deletion, and once the branch is gone the same decision
- * records it. It is checked now exactly as it will be then, and it never
- * overrides what keeps a branch: an open proposal from or into it, a live
- * worktree or claim, protection, the target, or a head that moved during the
- * run (the receipt would check the opening head, not the deleted one).
+ * records it. Rather than restating the receipt's rules, it builds the entry
+ * exactly as the later build will and judges it with the receipt's own
+ * per-branch validator, so a proposal is made only when the identical
+ * decision will record the deletion. On top of that it refuses what the
+ * receipt cannot see: a head that moved during the run (the receipt would
+ * check the opening head, not the deleted one), an open proposal into the
+ * branch, and a live worktree or claim.
  */
 const presentDecisionProposal = (
   opening: RemoteBranchReconciliationEntry,
   current: RemoteInventoryBranchItem,
-  proposals: readonly ProposalRecord[],
-  decision: RemoteInventoryDecisions["deletedBranches"][number],
-  targetBranch: string,
+  proposals: ProposalRecord[],
+  decisions: RemoteInventoryDecisions,
+  target: { targetBranch: string; targetRevision: string },
   blockers: DeletionBlockers
 ): RemoteInventoryDeletionProposal => {
   const { name } = current;
   const head = current.headRevision;
   const refuse = (why: string): never =>
     fail(`the decision for ${name} cannot approve deleting it: ${why}`);
-  if (name === targetBranch || current.protected) {
+  const reason = (error: unknown): string =>
+    (error instanceof Error ? error.message : String(error)).replace(
+      "Cannot build the remote inventory: ",
+      ""
+    );
+  if (name === target.targetBranch || current.protected) {
     refuse("it is the canonical target or a protected branch");
   }
   if (opening.initialHeadRevision !== head) {
@@ -800,37 +771,28 @@ const presentDecisionProposal = (
       `its head moved from ${opening.initialHeadRevision} to ${head} during the run; decide it from the next run's opening inventory`
     );
   }
-  const finalRecords = proposals.filter(
-    (proposal) => proposal.observedFinally !== false
-  );
-  if (finalRecords.some((proposal) => proposal.state === "open")) {
-    refuse("a proposal on it is still open");
-  }
-  if (
-    finalRecords.some(
-      (proposal) =>
-        proposal.state === "merged" && proposal.headRevision === head
-    )
-  ) {
-    fail(
-      `branch ${name} is already proposed for deletion by its merged proposal; remove its decision`
+  let deleted: RemoteInventoryBranchEntry;
+  try {
+    deleted = deletedEntry(opening, proposals, decisions);
+  } catch (error) {
+    return refuse(
+      `once it is deleted, the build would refuse it (${reason(error)})`
     );
   }
-  if (finalRecords.some((proposal) => proposal.state === "merged")) {
+  const { mergedHeadAncestry, supersession, ...entry } = deleted;
+  if (mergedHeadAncestry || entry.disposition === "deleted-merged") {
+    return refuse("its merged proposal already proves it; remove its decision");
+  }
+  try {
+    validateLedgerBranchEntry(
+      entry,
+      target,
+      supersession ? { ...supersession, branch: name } : undefined
+    );
+  } catch (error) {
     refuse(
-      "it has a merged proposal record that does not prove its deletion, so no decision can record it; report it to the user"
+      `once it is deleted, the receipt would refuse it (${reason(error)})`
     );
-  }
-  if (Boolean(decision.obsoleteProof) === Boolean(decision.supersession)) {
-    fail(
-      `the decision for ${name} must name exactly one of obsoleteProof or supersession`
-    );
-  }
-  if (decision.supersession) {
-    const issue = supersessionIssue(decision.supersession, head, proposals);
-    if (issue) {
-      refuse(issue);
-    }
   }
   const reasons = blockers(name, head);
   if (reasons.length > 0) {
@@ -840,7 +802,7 @@ const presentDecisionProposal = (
     basis: "decision",
     headRevision: head,
     name,
-    proof: decision.obsoleteProof ?? "supersession",
+    proof: entry.obsoleteProof ?? "supersession",
   };
 };
 
@@ -938,15 +900,17 @@ const buildFinal = (
       ) {
         moved.push(current.name);
       }
-      const decision = decisionFor(decisions, current.name);
-      if (decision !== undefined) {
+      if (decisions && decisionFor(decisions, current.name) !== undefined) {
         approved.push(
           presentDecisionProposal(
             openingBranch,
             current,
             proposals,
-            decision,
-            input.targetBranch,
+            decisions,
+            {
+              targetBranch: input.targetBranch,
+              targetRevision: snapshot.target.headRevision,
+            },
             blockers
           )
         );

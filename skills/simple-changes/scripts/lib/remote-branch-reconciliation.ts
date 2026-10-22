@@ -669,6 +669,33 @@ const supersessionsByBranch = (
 };
 
 /**
+ * Judges one ledger branch exactly as a full receipt would, for a caller that
+ * must know before acting whether an entry it has not recorded yet will be
+ * accepted. Only the target branch and revision of the receipt matter here.
+ */
+export const validateLedgerBranchEntry = (
+  branch: RemoteBranchReconciliationEntry,
+  context: Pick<
+    RemoteBranchReconciliationReceipt,
+    "targetBranch" | "targetRevision"
+  >,
+  supersession?: RemoteBranchSupersession
+): void => {
+  const approval = supersession
+    ? supersessionsByBranch(
+        { branches: [branch] } as RemoteBranchReconciliationReceipt,
+        [supersession]
+      ).get(branch.name)
+    : undefined;
+  validateLedgerBranch(
+    branch,
+    context as RemoteBranchReconciliationReceipt,
+    undefined,
+    approval
+  );
+};
+
+/**
  * The receipt input may carry `mergedHeadAncestry` or `supersession` on a
  * branch entry, and `openProposalTargets` at its top level. All are split out
  * before the receipt is validated and embedded in the lease, so the lease

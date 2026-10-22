@@ -488,7 +488,16 @@ describe("remote-inventory build decisions still win", () => {
         ),
         { decisions: superseded({}) }
       )
-    ).toThrow("counts every observed proposal");
+    ).toThrow("an open proposal branch cannot be deleted");
+    // A closed MR seen only at the opening still counts for a supersession,
+    // so the receipt would refuse it once the branch is gone.
+    expect(() =>
+      finalBuild(
+        openingSnapshot([docs], [mr("99", "docs/old", "closed", SHA.other)]),
+        final([main(), release(), docs]),
+        { decisions: superseded({}) }
+      )
+    ).toThrow("once it is deleted, the receipt would refuse it");
     // A merged-proposal head needs no decision, exactly as after deletion.
     expect(() =>
       finalBuild(openingSnapshot([docs]), final([main(), release(), docs]), {
@@ -747,6 +756,35 @@ describe("remote branch cleanup report never reads unknown as clean", () => {
         },
       ],
     });
+  });
+
+  test("a held branch's unsettled audit is neither pending nor an error", () => {
+    const { root } = repository();
+    const head = git(root, ["rev-parse", "HEAD"]);
+    const snapshot = pages(
+      OPENED,
+      [
+        main(head),
+        { headRevision: SHA.other, name: "release/next", protected: false },
+      ],
+      [],
+      []
+    );
+    const receipt = finalReceipt(snapshot, snapshot);
+    const held = remoteBranchCleanupReport({
+      claims: [],
+      inventory: captureInventory(root, { skipWorktreeStatus: true }),
+      openTargets: [{ objectId: "97", targetBranch: "release/next" }],
+      receipt,
+    });
+    expect(held).toEqual({
+      errors: [],
+      held: [],
+      openProposalTargets: "recorded",
+      pending: [],
+    });
+    // Unheld, the same missing head is an error.
+    expect(report(root, receipt).errors).toHaveLength(1);
   });
 
   test("a head missing locally or too far ahead to audit is an error, which keeps cleanup pending", () => {

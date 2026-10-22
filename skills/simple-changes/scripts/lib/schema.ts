@@ -47,6 +47,8 @@ export const SCHEMA_NAMES = [
   "proposal-audit",
   "loop-lease",
   "loop-close-equivalent",
+  "worktree-archive",
+  "worktree-archive-prune",
   "worktree-coordination",
   "worktree-takeover",
   "ready-work-receipt",

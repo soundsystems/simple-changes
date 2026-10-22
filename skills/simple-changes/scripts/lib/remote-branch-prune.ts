@@ -179,6 +179,55 @@ const SHALLOW_ADVICE =
   "the clone is shallow, so Git cannot prove what the target does or does not contain; run `git fetch --unshallow` and try again";
 
 /**
+ * The provider branch a local branch tracks on the target remote, or null
+ * when it tracks none there. It reads the canonical identity from
+ * `branch.<name>.remote` and `branch.<name>.merge`, never the abbreviated
+ * display name, which Git lengthens (`remotes/origin/kept`) when a local
+ * branch shares the remote-tracking name. When the config cannot be read it
+ * falls back to the full `%(upstream)` refname, and throws when that fails
+ * too, so an unknown upstream never reads as none.
+ */
+const trackedProviderBranch = (
+  repositoryPath: string,
+  branch: string,
+  targetRemote: string
+): string | null => {
+  const config = (key: "merge" | "remote") =>
+    runGit(
+      repositoryPath,
+      ["config", "--get", `branch.${branch}.${key}`],
+      true
+    );
+  const remote = config("remote");
+  const merge = config("merge");
+  if (remote.exitCode === 1 || merge.exitCode === 1) {
+    // Not set: the branch tracks nothing.
+    return null;
+  }
+  if (remote.exitCode === 0 && merge.exitCode === 0) {
+    const ref = merge.stdout.trim();
+    return remote.stdout.trim() === targetRemote
+      ? (ref.startsWith("refs/heads/")
+          ? ref.slice("refs/heads/".length)
+          : ref) || null
+      : null;
+  }
+  const upstream = runGit(
+    repositoryPath,
+    ["for-each-ref", "--format=%(upstream)", `refs/heads/${branch}`],
+    true
+  );
+  if (upstream.exitCode !== 0) {
+    throw new Error(
+      `cannot read the upstream of ${branch}: ${upstream.stderr.trim() || `exit ${upstream.exitCode}`}`
+    );
+  }
+  const full = upstream.stdout.trim();
+  const prefix = `refs/remotes/${targetRemote}/`;
+  return full.startsWith(prefix) ? full.slice(prefix.length) || null : null;
+};
+
+/**
  * Holds that need no history: checkouts, claims, resume targets, and the
  * upstream of every live branch, the target's included (a target checkout
  * tracking another provider branch keeps that branch).
@@ -187,15 +236,13 @@ export const remoteBranchNameHolds = (
   input: RemoteBranchHoldInput
 ): { byName: Map<string, string[]>; live: Map<string, string> } => {
   const { inventory, targetBranch } = input;
-  const { targetRemote } = inventory.repository;
+  const { primaryCheckout, targetRemote } = inventory.repository;
   const byName = new Map<string, string[]>();
   const live = nameHolds(input, byName);
   for (const [branch, why] of live) {
-    const local = inventory.branches.find((item) => item.name === branch);
-    const upstream =
-      local?.upstream && targetRemote
-        ? branchNameForRef(local.upstream, targetRemote)
-        : null;
+    const upstream = targetRemote
+      ? trackedProviderBranch(primaryCheckout, branch, targetRemote)
+      : null;
     if (upstream && upstream !== targetBranch) {
       addHold(byName, upstream, `upstream of ${branch}, ${why}`);
     }

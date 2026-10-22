@@ -1027,6 +1027,45 @@ describe("round 5: the target's upstream and shallow clones", () => {
     ]);
   });
 
+  test("an upstream is held by its canonical name when a local branch shares the tracking name", () => {
+    const { root } = repository();
+    git(root, ["remote", "add", "origin", "git@gitlab.com:group/project.git"]);
+    git(root, ["switch", "-c", "kept"]);
+    const keptHead = commit(root, "kept.txt", "kept\n");
+    git(root, ["switch", "main"]);
+    git(root, ["branch", "-D", "kept"]);
+    const head = git(root, ["rev-parse", "HEAD"]);
+    git(root, ["update-ref", "refs/remotes/origin/kept", keptHead]);
+    // A local branch literally named origin/kept makes Git lengthen the
+    // abbreviated upstream.
+    git(root, ["branch", "origin/kept", head]);
+    // Control: with main tracking nothing, the merged head is proposed.
+    expect(
+      mergedBuild(
+        head,
+        "kept",
+        keptHead,
+        localHolds(root)
+      ).summary.deletionProposals.map((proposal) => proposal.name)
+    ).toEqual(["kept"]);
+    git(root, ["config", "branch.main.remote", "origin"]);
+    git(root, ["config", "branch.main.merge", "refs/heads/kept"]);
+    expect(
+      captureInventory(root, { skipWorktreeStatus: true }).branches.find(
+        (branch) => branch.name === "main"
+      )?.upstream
+    ).toBe("remotes/origin/kept");
+    const held = mergedBuild(head, "kept", keptHead, localHolds(root));
+    expect(held.summary.deletionProposals).toEqual([]);
+    expect(held.summary.heldBranches).toEqual([
+      {
+        headRevision: keptHead,
+        name: "kept",
+        reasons: [`upstream of main, checked out in ${root}`],
+      },
+    ]);
+  });
+
   /**
    * A full source and a depth-2 clone of it: `side` (two commits deep) is
    * contained in `main` (five commits deep), but the clone cannot see the

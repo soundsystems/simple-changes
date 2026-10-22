@@ -413,7 +413,7 @@ const removeLineageFirst = (
   if (!lineage) {
     return null;
   }
-  assertReviewedReplacementUnchanged(options.repositoryPath, lineage);
+  assertReviewedReplacementUnchanged(lineage);
   const lineageErrors: string[] = [];
   const outcome = removeReviewedReplacement({
     ...options,
@@ -695,7 +695,6 @@ export const standaloneWorktreeCleanup = (
           commonGitDirectory,
           controllerAgentId: agentId,
           reason,
-          repositoryPath: options.repositoryPath,
         },
         errors
       );
@@ -1049,7 +1048,6 @@ export const pruneRepository = (options: PruneOptions): PruneReport => {
         commonGitDirectory,
         controllerAgentId: lineageAgentId ?? "",
         reason: reason ?? "",
-        repositoryPath: options.repositoryPath,
       },
       errors
     );

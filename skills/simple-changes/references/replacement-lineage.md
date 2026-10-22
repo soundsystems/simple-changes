@@ -104,15 +104,28 @@ reviewed mapping, the review, and the approval are the evidence.
 Before removal, the command pins the head at
 `refs/simple-changes/superseded/replacement-lineage-<receipt digest>/<head>`,
 so the source history survives; restore the branch from that ref if needed.
-It writes an intent record, reads the checkout once more, removes it with
-plain `git worktree remove`, deletes the branch only while no checkout uses
-it and it still points at the pinned head, and writes a completion record,
-both under `<git common dir>/simple-changes/replacement-lineage/`. It forces
-nothing. This removal runs before every other removal and before `worktree
-cleanup` writes its history. If the checkout changed after verification, or
+It writes an intent record, reads the checkout once more (status first, then
+its head and branch), removes it with plain `git worktree remove`, deletes the
+branch only while no checkout uses it and it still points at the pinned head,
+and writes a completion record, both under
+`<git common dir>/simple-changes/replacement-lineage/`. It forces nothing.
+
+From that last read through the branch deletion, and in the check before the
+pin, every Git command runs with `-c core.hooksPath=/dev/null -c
+core.fsmonitor=false` and with every configured filter driver's `clean`,
+`smudge`, and `process` emptied and `required` off, so no program the
+repository configures runs between reading the checkout and removing it. The
+command reads these settings back first and refuses, writing nothing, when Git
+does not confirm them. A filter-managed file whose status Git would have to
+rehash can then read as changed, and the command then keeps the checkout. The
+other removal methods keep running the repository's hooks as before.
+
+This removal runs before every other removal and before `worktree cleanup`
+writes its history. If the checkout changed after verification, or
 was not removed for any other reason, the run stops there: no other checkout
 is removed and no cleanup history is written, and the pin and the two records
 say what happened. Review the checkout again before writing a new receipt.
+
 The removal is reported as method `reviewed-replacement`, in
 `reviewedReplacement` and in prune's plan; `worktree cleanup` keeps it out of
 its cleanup history, which older runtimes validate strictly.

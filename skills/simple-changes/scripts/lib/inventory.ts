@@ -108,7 +108,7 @@ export const assertExactBranch = (
 const withoutLineEnds = (output: string): string =>
   output.replace(TRAILING_LINE_ENDS, "");
 
-const parseWorktreeList = (output: string): RawWorktree[] =>
+export const parseWorktreeList = (output: string): RawWorktree[] =>
   withoutLineEnds(output)
     .split(WORKTREE_BLOCK_PATTERN)
     .filter(Boolean)

@@ -79,6 +79,8 @@ const SHARED_BRANCH_PATTERN = /also has branch source-unit checked out/u;
 const APPROVER_IS_AUTHOR_PATTERN =
   /approver the-user is the reviewer, the controller, or an author/u;
 const STOPPED_PATTERN = /Stopped before any other removal/u;
+const NOT_REVIEWED_HEAD_PATTERN = /not the reviewed [0-9a-f]{40}/u;
+const UNOVERRIDABLE_PATTERN = /cannot be overridden on the command line/u;
 const STAMP = "2026-10-08T12:00:00.000Z";
 
 let repositories: TestRepository[] = [];
@@ -291,29 +293,64 @@ const seedReplayAuthor = (
   writeFileSync(path, `${JSON.stringify(ledger, null, 2)}\n`);
 };
 
+const UNSET_GIT_ENV =
+  "env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE -u GIT_PREFIX -u GIT_COMMON_DIR";
+
 /**
- * A reference-transaction hook that, once the reviewed head's pin commits,
- * adds a clean commit to the source checkout: the head moves after every
- * earlier audit, exactly between the pin and the removal.
+ * Installs one repository-configured program that acts once, when `when`
+ * (a shell condition) holds, by running `action` (a shell command). Its
+ * marker file shows whether it ever acted. `kind` picks a hook in
+ * core.hooksPath or the fsmonitor hook.
  */
-const moveSourceWhenPinned = (lineage: LineageFixture): void => {
-  const { root } = lineage.fixture;
-  const hooks = join(lineage.fixture.base, "hooks");
+const installCallback = (
+  lineage: LineageFixture,
+  kind: "reference-transaction" | "fsmonitor",
+  when: string,
+  action: string
+): string => {
+  const { base, root } = lineage.fixture;
+  const hooks = join(base, "hooks");
   mkdirSync(hooks, { recursive: true });
-  const hook = join(hooks, "reference-transaction");
+  const marker = join(base, `${kind}-acted`);
+  const script = join(hooks, kind === "fsmonitor" ? "fsmonitor-watch" : kind);
   writeFileSync(
-    hook,
+    script,
     [
       "#!/bin/sh",
-      '[ "$1" = committed ] || exit 0',
-      "grep -q ' refs/simple-changes/' || exit 0",
-      `env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE -u GIT_PREFIX git -C '${lineage.path}' commit -q --allow-empty -m 'Clean unreviewed work' >/dev/null 2>&1`,
-      "exit 0",
+      kind === "fsmonitor" ? "" : "input=$(cat)",
+      `[ -e '${marker}' ] && exit ${kind === "fsmonitor" ? 1 : 0}`,
+      `${when} || exit ${kind === "fsmonitor" ? 1 : 0}`,
+      `touch '${marker}'`,
+      `${UNSET_GIT_ENV} ${action} >/dev/null 2>&1`,
+      `exit ${kind === "fsmonitor" ? 1 : 0}`,
       "",
     ].join("\n")
   );
-  chmodSync(hook, 0o755);
-  git(root, ["config", "core.hooksPath", hooks]);
+  chmodSync(script, 0o755);
+  if (kind === "fsmonitor") {
+    git(root, ["config", "core.fsmonitor", script]);
+  } else {
+    git(root, ["config", "core.hooksPath", hooks]);
+  }
+  return marker;
+};
+
+// A clean commit on the source checkout, which moves its head (detached or
+// on its branch) to work nobody reviewed.
+const moveSource = (lineage: LineageFixture): string =>
+  `git -C '${lineage.path}' commit -q --allow-empty -m 'Clean unreviewed work'`;
+
+const pinExists = (lineage: LineageFixture): string =>
+  `[ -d '${join(commonDirectory(lineage.fixture.root), "refs", "simple-changes")}' ] && [ -d '${lineage.path}' ]`;
+
+const detachedReceipt = (
+  lineage: LineageFixture
+): ReplacementLineageReceipt => {
+  git(lineage.path, ["checkout", "-q", "--detach"]);
+  const receipt = receiptFor(lineage);
+  receipt.source.branch = null;
+  receipt.source.changeDigest = liveDigest(lineage);
+  return receipt;
 };
 
 const expectRefusal = (run: () => unknown, pattern: RegExp): void => {
@@ -750,16 +787,121 @@ describe("reviewed replacement lineage cleanup", () => {
     expect(report.reviewedReplacement?.path).toBe(lineage.path);
   });
 
-  const expectStoppedAfterPin = (
+  const expectReviewedHeadRemoved = (
     lineage: LineageFixture,
-    movedHead: string
+    report: { reviewedReplacement: { pinRef: string } | null },
+    marker: string
   ): void => {
     const { root } = lineage.fixture;
-    expect(movedHead).not.toBe(lineage.headSha);
-    const paths = worktreePaths(root);
-    expect(paths).toContain(lineage.path);
-    expect(paths).toContain(lineage.merged);
+    expect(existsSync(marker)).toBe(false);
+    expect(worktreePaths(root)).not.toContain(lineage.path);
+    const pin = report.reviewedReplacement?.pinRef ?? "";
+    expect(git(root, ["rev-parse", pin])).toBe(lineage.headSha);
+    // Nothing but the reviewed head was ever checked out there: no commit
+    // outside the target other than the two reviewed ones exists.
+    expect(
+      git(root, ["log", "--all", "--format=%s", "--grep=Clean unreviewed"])
+    ).toBe("");
+  };
+
+  test("prune runs no fsmonitor hook between its last read and the removal", () => {
+    const lineage = lineageFixture(false);
+    const receipt = detachedReceipt(lineage);
+    const marker = installCallback(
+      lineage,
+      "fsmonitor",
+      pinExists(lineage),
+      moveSource(lineage)
+    );
+    const report = prune(lineage, receipt);
+    expect(report.errors).toEqual([]);
+    expectReviewedHeadRemoved(lineage, report, marker);
+  });
+
+  test("prune runs no reference-transaction hook when it pins the head", () => {
+    const lineage = lineageFixture(false);
+    const receipt = detachedReceipt(lineage);
+    const marker = installCallback(
+      lineage,
+      "reference-transaction",
+      `[ "$1" = committed ] && printf '%s' "$input" | grep -q ' refs/simple-changes/'`,
+      moveSource(lineage)
+    );
+    const report = prune(lineage, receipt);
+    expect(report.errors).toEqual([]);
+    expectReviewedHeadRemoved(lineage, report, marker);
+  });
+
+  test("worktree cleanup runs no reference-transaction hook when it deletes the branch", () => {
+    const lineage = lineageFixture(false);
+    const copy = join(lineage.fixture.base, "source-unit-attached");
+    const marker = installCallback(
+      lineage,
+      "reference-transaction",
+      `[ "$1" = prepared ] && printf '%s' "$input" | grep -q ' 0\\{40\\} refs/heads/source-unit$'`,
+      `git -C '${lineage.fixture.root}' worktree add --force '${copy}' source-unit`
+    );
+    const result = standaloneWorktreeCleanup({
+      agentId: CONTROLLER,
+      approvedBy: APPROVER,
+      lineageReceipt: receiptFor(lineage),
+      reason: "Remove the reviewed obsolete source.",
+      repositoryPath: lineage.fixture.root,
+    });
+    expect(result.errors).toEqual([]);
+    expect(result.reviewedReplacement?.branchDeleted).toBe(true);
+    expect(existsSync(marker)).toBe(false);
+    expect(existsSync(copy)).toBe(false);
+    expect(branchExists(lineage.fixture.root, "source-unit")).toBe(false);
+  });
+
+  test("a head an fsmonitor hook moves during verification is refused before anything is written", () => {
+    const lineage = lineageFixture(false);
+    const receipt = detachedReceipt(lineage);
+    const marker = installCallback(
+      lineage,
+      "fsmonitor",
+      "true",
+      moveSource(lineage)
+    );
+    expectRefusal(() => prune(lineage, receipt), NOT_REVIEWED_HEAD_PATTERN);
+    expect(existsSync(marker)).toBe(true);
+    expectNothingWritten(lineage);
+  });
+
+  test("an unconfirmed boundary refuses before anything is written", () => {
+    const lineage = lineageFixture(false);
+    // A driver name Git cannot take back on the command line.
+    git(lineage.fixture.root, ["config", "filter.a=b.clean", "cat"]);
+    expectRefusal(
+      () => prune(lineage, receiptFor(lineage)),
+      UNOVERRIDABLE_PATTERN
+    );
+    expectNothingWritten(lineage);
+  });
+
+  // A checkout whose ignored, read-only folder `git worktree remove` cannot
+  // delete: the reviewed removal fails without any callback.
+  const unremovableSource = (lineage: LineageFixture): (() => void) => {
+    mkdirSync(join(commonDirectory(lineage.fixture.root), "info"), {
+      recursive: true,
+    });
+    writeFileSync(
+      join(commonDirectory(lineage.fixture.root), "info", "exclude"),
+      "kept/\n"
+    );
+    const kept = join(lineage.path, "kept");
+    mkdirSync(kept);
+    writeFileSync(join(kept, "file"), "kept\n");
+    chmodSync(kept, 0o555);
+    return () => chmodSync(kept, 0o755);
+  };
+
+  const expectStoppedAfterPin = (lineage: LineageFixture): void => {
+    const { root } = lineage.fixture;
+    expect(worktreePaths(root)).toContain(lineage.merged);
     expect(branchExists(root, "merged-unit")).toBe(true);
+    expect(branchExists(root, "source-unit")).toBe(true);
     expect(readWorktreeCleanups(commonDirectory(root))).toEqual([]);
     const pins = pinRefs(root).split("\n");
     expect(pins).toHaveLength(1);
@@ -773,34 +915,36 @@ describe("reviewed replacement lineage cleanup", () => {
     });
   };
 
-  test("prune keeps a detached source whose head moves after the pin and stops the run", () => {
+  test("prune stops before any other removal when the reviewed removal fails", () => {
     const lineage = lineageFixture(false);
-    git(lineage.path, ["checkout", "-q", "--detach"]);
-    const receipt = receiptFor(lineage);
-    receipt.source.branch = null;
-    receipt.source.changeDigest = liveDigest(lineage);
-    moveSourceWhenPinned(lineage);
-    expectRefusal(() => prune(lineage, receipt), STOPPED_PATTERN);
-    expectStoppedAfterPin(lineage, git(lineage.path, ["rev-parse", "HEAD"]));
+    const restore = unremovableSource(lineage);
+    try {
+      expectRefusal(() => prune(lineage, receiptFor(lineage)), STOPPED_PATTERN);
+      expectStoppedAfterPin(lineage);
+    } finally {
+      restore();
+    }
   });
 
-  test("worktree cleanup keeps a source whose head moves after the pin and writes no cleanup history", () => {
+  test("worktree cleanup writes no cleanup history when the reviewed removal fails", () => {
     const lineage = lineageFixture(false);
-    const receipt = receiptFor(lineage);
-    moveSourceWhenPinned(lineage);
-    expectRefusal(
-      () =>
-        standaloneWorktreeCleanup({
-          agentId: CONTROLLER,
-          approvedBy: APPROVER,
-          lineageReceipt: receipt,
-          reason: "Remove the reviewed obsolete source.",
-          repositoryPath: lineage.fixture.root,
-        }),
-      STOPPED_PATTERN
-    );
-    expectStoppedAfterPin(lineage, git(lineage.path, ["rev-parse", "HEAD"]));
-    expect(branchExists(lineage.fixture.root, "source-unit")).toBe(true);
+    const restore = unremovableSource(lineage);
+    try {
+      expectRefusal(
+        () =>
+          standaloneWorktreeCleanup({
+            agentId: CONTROLLER,
+            approvedBy: APPROVER,
+            lineageReceipt: receiptFor(lineage),
+            reason: "Remove the reviewed obsolete source.",
+            repositoryPath: lineage.fixture.root,
+          }),
+        STOPPED_PATTERN
+      );
+      expectStoppedAfterPin(lineage);
+    } finally {
+      restore();
+    }
   });
 
   test("refuses a head the target already contains, naming target-contained", () => {

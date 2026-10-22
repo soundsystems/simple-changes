@@ -11,7 +11,7 @@ import {
 import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
 import { proveExactByteTargetContainment } from "./exact-byte-proof.ts";
 import { sha256Json } from "./hash.ts";
-import { captureInventory } from "./inventory.ts";
+import { parseWorktreeList } from "./inventory.ts";
 import { runGit } from "./process.ts";
 import { headCoverage, readReviewLedger } from "./review-ledger.ts";
 import { validateSchema } from "./schema.ts";
@@ -67,6 +67,8 @@ export type ReplacementLineageByteProof =
 export interface VerifiedReplacementLineage {
   byteProof: ReplacementLineageByteProof;
   pinRef: string;
+  /** The primary checkout every removal Git command runs from. */
+  primaryCheckout: string;
   receipt: ReplacementLineageReceipt;
   receiptDigest: string;
   /** The current cleanup target revision, which contains the reviewed one. */
@@ -509,6 +511,7 @@ export const verifyReplacementLineage = (
   return {
     byteProof,
     pinRef: `${PIN_PREFIX}${receiptDigest}/${receipt.source.headRevision}`,
+    primaryCheckout: primary,
     receipt,
     receiptDigest,
     targetRevision: context.targetRevision,
@@ -561,84 +564,154 @@ const writeRecord = (
   return path;
 };
 
-export interface ReplacementLineageRemovalOptions {
-  approvedBy: string;
-  cleanupId: string | null;
-  command: "prune" | "worktree-cleanup";
-  commonGitDirectory: string;
-  controllerAgentId: string;
-  errors: string[];
-  reason: string;
-  repositoryPath: string;
-  verified: VerifiedReplacementLineage;
-}
+// The reviewed removal's own Git boundary. From the last audit through
+// branch deletion, every Git command runs with hooks and fsmonitor off and
+// with every configured filter driver emptied, so no program the repository
+// configures can run between reading the checkout and removing it.
+const CALLBACK_FREE_BASE = [
+  "-c",
+  "core.hooksPath=/dev/null",
+  "-c",
+  "core.fsmonitor=false",
+] as const;
+const FILTER_COMMAND_KEYS = ["clean", "smudge", "process"] as const;
+const FILTER_KEY_PATTERN = /^filter\.(.+)\.(clean|smudge|process)$/u;
+const LINE_ENDS = /[\r\n]+$/u;
+const HEADS_PREFIX = /^refs\/heads\//u;
 
-// Deletes the source branch only while no checkout has it checked out and it
-// still points at the pinned head, with an exact old-value ref update rather
-// than a forced branch deletion.
-const deleteReviewedBranch = (
-  primary: string,
-  branch: string,
-  headSha: string,
-  pinRef: string,
-  stepErrors: string[]
-): boolean => {
-  const user = captureInventory(primary).worktrees.find(
-    (worktree) => !worktree.prunable && worktree.branch === branch
+const boundaryRefusal = (path: string, detail: string): SimpleChangesError =>
+  new SimpleChangesError(
+    `Refusing the reviewed replacement removal of ${path}: ${detail} Nothing was written or removed.`,
+    EXIT_CODES.unsafe
   );
-  if (user) {
-    stepErrors.push(
-      `Kept branch ${branch}: checkout ${user.path} has it checked out.`
-    );
-    return false;
-  }
-  const tip = runGit(
+
+/**
+ * The `-c` overrides that keep repository-configured programs from running,
+ * confirmed in effect by reading them back. Throws when Git does not report
+ * hooks at /dev/null, fsmonitor off, and every filter driver's commands
+ * empty and not required.
+ */
+const callbackFreeOverrides = (primary: string, path: string): string[] => {
+  const listed = runGit(
     primary,
-    ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}^{commit}`],
-    true
-  ).stdout.trim();
-  if (tip !== headSha) {
-    stepErrors.push(
-      `Kept branch ${branch}: it no longer points at the reviewed head ${headSha}.`
-    );
-    return false;
-  }
-  const deleted = runGit(
-    primary,
-    ["update-ref", "-d", `refs/heads/${branch}`, headSha],
+    [
+      ...CALLBACK_FREE_BASE,
+      "config",
+      "--name-only",
+      "--get-regexp",
+      FILTER_KEY_PATTERN.source,
+    ],
     true
   );
-  if (deleted.exitCode !== 0) {
-    stepErrors.push(
-      `Could not delete reviewed replacement branch ${branch}; its head stays pinned at ${pinRef}: ${deleted.stderr.trim()}`
-    );
-    return false;
+  const drivers = new Set<string>();
+  for (const key of listed.stdout.split("\n").filter(Boolean)) {
+    const driver = FILTER_KEY_PATTERN.exec(key)?.[1];
+    if (!driver || driver.includes("=")) {
+      throw boundaryRefusal(
+        path,
+        `filter configuration key ${JSON.stringify(key)} cannot be overridden on the command line.`
+      );
+    }
+    drivers.add(driver);
   }
-  runGit(primary, ["config", "--remove-section", `branch.${branch}`], true);
-  return true;
+  const overrides: string[] = [...CALLBACK_FREE_BASE];
+  for (const driver of drivers) {
+    for (const key of FILTER_COMMAND_KEYS) {
+      overrides.push("-c", `filter.${driver}.${key}=`);
+    }
+    overrides.push("-c", `filter.${driver}.required=false`);
+  }
+  const effective = (key: string): string | null => {
+    const read = runGit(primary, [...overrides, "config", "--get", key], true);
+    return read.exitCode === 0 ? read.stdout.replace(LINE_ENDS, "") : null;
+  };
+  const unconfirmed: string[] = [];
+  if (effective("core.hooksPath") !== "/dev/null") {
+    unconfirmed.push("core.hooksPath");
+  }
+  if (effective("core.fsmonitor") !== "false") {
+    unconfirmed.push("core.fsmonitor");
+  }
+  const hooks = runGit(
+    primary,
+    [...overrides, "rev-parse", "--git-path", "hooks"],
+    true
+  ).stdout.replace(LINE_ENDS, "");
+  if (hooks !== "/dev/null") {
+    unconfirmed.push("the hooks directory");
+  }
+  for (const driver of drivers) {
+    for (const key of FILTER_COMMAND_KEYS) {
+      if (effective(`filter.${driver}.${key}`) !== "") {
+        unconfirmed.push(`filter.${driver}.${key}`);
+      }
+    }
+    if (effective(`filter.${driver}.required`) !== "false") {
+      unconfirmed.push(`filter.${driver}.required`);
+    }
+  }
+  if (unconfirmed.length > 0) {
+    throw boundaryRefusal(
+      path,
+      `Git did not confirm the overrides that keep repository-configured programs from running (${unconfirmed.join(", ")}).`
+    );
+  }
+  return overrides;
 };
 
-// Why the verified checkout no longer matches the receipt, or null when it
-// still does: same path, branch, head, and clean status, unlocked, and no
-// other checkout on its branch.
-const reviewedCheckoutDrift = (
-  repositoryPath: string,
-  verified: VerifiedReplacementLineage
-): string | null => {
-  const { path, headSha, branch, changeDigest } = verified.worktree;
-  const { worktrees } = captureInventory(repositoryPath);
-  const fresh = worktrees.find(
-    (worktree) =>
-      worktree.path === path &&
-      !worktree.prunable &&
-      !worktree.locked &&
-      worktree.headSha === headSha &&
-      worktree.branch === branch &&
-      worktree.changeDigest === changeDigest &&
-      worktree.changes.length === 0
+const listedWorktrees = (primary: string, overrides: readonly string[]) =>
+  parseWorktreeList(
+    runGit(primary, [...overrides, "worktree", "list", "--porcelain"]).stdout
   );
-  if (!fresh) {
-    return "its branch, head, status, or lock changed after verification";
+
+// Why the verified checkout no longer matches the receipt, or null when it
+// still does. It runs inside the callback-free boundary and reads status
+// first, then the head and branch, so nothing it runs can move the head
+// after it was read: clean status, the reviewed head and branch, still
+// registered and unlocked, and no other checkout on its branch.
+const reviewedCheckoutDrift = (
+  verified: VerifiedReplacementLineage,
+  overrides: readonly string[]
+): string | null => {
+  const { path, headSha, branch } = verified.worktree;
+  const status = runGit(
+    path,
+    [...overrides, "status", "--porcelain=v1", "-z", "--untracked-files=all"],
+    true
+  );
+  if (status.exitCode !== 0) {
+    return `its status could not be read (${status.stderr.trim()})`;
+  }
+  if (status.stdout !== "") {
+    return "it has uncommitted changes";
+  }
+  const head = runGit(
+    path,
+    [...overrides, "rev-parse", "--verify", "--quiet", "HEAD^{commit}"],
+    true
+  ).stdout.trim();
+  if (head !== headSha) {
+    return `its head is ${head || "unresolved"}, not the reviewed ${headSha}`;
+  }
+  const symbolic = runGit(
+    path,
+    [...overrides, "symbolic-ref", "--quiet", "HEAD"],
+    true
+  );
+  const current =
+    symbolic.exitCode === 0
+      ? symbolic.stdout.replace(LINE_ENDS, "").replace(HEADS_PREFIX, "")
+      : null;
+  if (current !== branch) {
+    return `it is on ${current ?? "a detached HEAD"}, not the reviewed ${branch ?? "detached HEAD"}`;
+  }
+  const worktrees = listedWorktrees(verified.primaryCheckout, overrides);
+  const entry = worktrees.find((worktree) => worktree.path === path);
+  if (!entry || entry.prunable) {
+    return "it is no longer a registered checkout";
+  }
+  if (entry.locked) {
+    return "it is locked";
   }
   if (
     branch !== null &&
@@ -649,39 +722,111 @@ const reviewedCheckoutDrift = (
         worktree.branch === branch
     )
   ) {
-    return `another checkout now has branch ${branch} checked out`;
+    return `another checkout has branch ${branch} checked out`;
   }
   return null;
 };
 
 /**
- * Re-reads the verified checkout before a cleanup writes or removes
- * anything, and refuses the whole run when it changed since verification.
+ * Confirms the callback-free boundary and re-reads the verified checkout
+ * inside it before a cleanup writes or removes anything, and refuses the
+ * whole run when the boundary cannot be confirmed or the checkout changed.
  */
 export const assertReviewedReplacementUnchanged = (
-  repositoryPath: string,
   verified: VerifiedReplacementLineage
 ): void => {
-  const drift = reviewedCheckoutDrift(repositoryPath, verified);
+  const overrides = callbackFreeOverrides(
+    verified.primaryCheckout,
+    verified.worktree.path
+  );
+  const drift = reviewedCheckoutDrift(verified, overrides);
   if (drift) {
-    throw new SimpleChangesError(
-      `Refusing the reviewed replacement removal of ${verified.worktree.path}: ${drift}. Nothing was written or removed. Review the checkout again and write a new receipt.`,
-      EXIT_CODES.unsafe
+    throw boundaryRefusal(
+      verified.worktree.path,
+      `${drift}. Review the checkout again and write a new receipt.`
     );
   }
 };
 
+export interface ReplacementLineageRemovalOptions {
+  approvedBy: string;
+  cleanupId: string | null;
+  command: "prune" | "worktree-cleanup";
+  commonGitDirectory: string;
+  controllerAgentId: string;
+  errors: string[];
+  reason: string;
+  verified: VerifiedReplacementLineage;
+}
+
+// Deletes the source branch only while no checkout has it checked out and it
+// still points at the pinned head, with an exact old-value ref update rather
+// than a forced branch deletion, inside the callback-free boundary.
+const deleteReviewedBranch = (
+  verified: VerifiedReplacementLineage,
+  branch: string,
+  overrides: readonly string[],
+  stepErrors: string[]
+): boolean => {
+  const primary = verified.primaryCheckout;
+  const { headSha } = verified.worktree;
+  const user = listedWorktrees(primary, overrides).find(
+    (worktree) => !worktree.prunable && worktree.branch === branch
+  );
+  if (user) {
+    stepErrors.push(
+      `Kept branch ${branch}: checkout ${user.path} has it checked out.`
+    );
+    return false;
+  }
+  const tip = runGit(
+    primary,
+    [
+      ...overrides,
+      "rev-parse",
+      "--verify",
+      "--quiet",
+      `refs/heads/${branch}^{commit}`,
+    ],
+    true
+  ).stdout.trim();
+  if (tip !== headSha) {
+    stepErrors.push(
+      `Kept branch ${branch}: it no longer points at the reviewed head ${headSha}.`
+    );
+    return false;
+  }
+  const deleted = runGit(
+    primary,
+    [...overrides, "update-ref", "-d", `refs/heads/${branch}`, headSha],
+    true
+  );
+  if (deleted.exitCode !== 0) {
+    stepErrors.push(
+      `Could not delete reviewed replacement branch ${branch}; its head stays pinned at ${verified.pinRef}: ${deleted.stderr.trim()}`
+    );
+    return false;
+  }
+  runGit(
+    primary,
+    [...overrides, "config", "--remove-section", `branch.${branch}`],
+    true
+  );
+  return true;
+};
+
 /**
- * Removes a verified source checkout without forcing anything. It pins the
- * reviewed head under
+ * Removes a verified source checkout without forcing anything, with every
+ * Git command inside the callback-free boundary: it confirms the boundary,
+ * pins the reviewed head under
  * `refs/simple-changes/superseded/replacement-lineage-<receipt digest>/<head>`
  * so the source history survives, records the intent, re-reads the checkout
- * as the last step before plain `git worktree remove` (so no write of its
- * own, or hook a write triggers, falls between that audit and the removal),
- * deletes the branch only while it still points at the pinned head and no
- * other checkout uses it, and records the outcome. A failure at any step
- * stops the later ones and is reported; callers run it before every other
- * removal and stop the run when the checkout was not removed.
+ * (status first, then head and branch) as the last step before plain
+ * `git worktree remove`, deletes the branch only while it still points at
+ * the pinned head and no other checkout uses it, and records the outcome. A
+ * failure at any step stops the later ones and is reported; callers run it
+ * before every other removal and stop the run when the checkout was not
+ * removed.
  */
 export const removeReviewedReplacement = (
   options: ReplacementLineageRemovalOptions
@@ -689,11 +834,12 @@ export const removeReviewedReplacement = (
   const { errors, verified } = options;
   const outcome = plannedReplacementLineage(verified);
   const { path, headSha, branch } = verified.worktree;
-  const primary = captureInventory(options.repositoryPath).repository
-    .primaryCheckout;
+  const primary = verified.primaryCheckout;
+  const overrides = callbackFreeOverrides(primary, path);
   const pinned = runGit(
     primary,
     [
+      ...overrides,
       "update-ref",
       "-m",
       `simple-changes: pin reviewed replacement source ${branch ?? path}`,
@@ -706,7 +852,7 @@ export const removeReviewedReplacement = (
     pinned.exitCode !== 0 ||
     runGit(
       primary,
-      ["rev-parse", "--verify", "--quiet", verified.pinRef],
+      [...overrides, "rev-parse", "--verify", "--quiet", verified.pinRef],
       true
     ).stdout.trim() !== headSha
   ) {
@@ -742,15 +888,15 @@ export const removeReviewedReplacement = (
     })
   );
   const stepErrors: string[] = [];
-  const drift = reviewedCheckoutDrift(options.repositoryPath, verified);
+  const drift = reviewedCheckoutDrift(verified, overrides);
   if (drift) {
     stepErrors.push(
       `Preserved reviewed replacement checkout ${path}: ${drift}. The reviewed head stays pinned at ${verified.pinRef}.`
     );
   } else {
     const removal = runGit(
-      options.repositoryPath,
-      ["worktree", "remove", path],
+      primary,
+      [...overrides, "worktree", "remove", path],
       true
     );
     if (removal.exitCode === 0) {
@@ -763,10 +909,9 @@ export const removeReviewedReplacement = (
   }
   if (outcome.worktreeRemoved && branch) {
     outcome.branchDeleted = deleteReviewedBranch(
-      primary,
+      verified,
       branch,
-      headSha,
-      verified.pinRef,
+      overrides,
       stepErrors
     );
   }

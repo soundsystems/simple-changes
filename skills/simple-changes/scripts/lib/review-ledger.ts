@@ -2528,12 +2528,17 @@ export const identityReasonHint = (
   }
 };
 
-interface ReviewerTarget {
+export interface ReviewerTarget {
   agent: string | null;
   harness: string | null;
 }
 
-const targetDistinctness = (
+/**
+ * Diversity between a reviewer target and one author, before dispatch. A
+ * provisional author is a configured plan; any other author is a reported
+ * identity, where the sentinel or a blank name is missing evidence.
+ */
+export const targetDistinctness = (
   target: { harness: string; model: string },
   author: ReviewerTarget,
   provisional: boolean
@@ -4579,7 +4584,7 @@ const revalidateAttempt = (
 
 // The primary checkout holds the repository sidecar: the first non-bare
 // entry Git lists, exactly as inventory resolves it.
-const primaryCheckoutOf = (cwd: string): string => {
+export const primaryCheckoutOf = (cwd: string): string => {
   const blocks = runGit(cwd, ["worktree", "list", "--porcelain"]).stdout.split(
     BLANK_LINE
   );

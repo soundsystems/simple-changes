@@ -199,6 +199,7 @@ import {
   attestCommits,
   type CommitGaps,
   identityReasonHint,
+  primaryCheckoutOf,
   type RecordAuthorsResult,
   type RecordReviewResult,
   type ReviewLedgerResumeState,
@@ -208,6 +209,12 @@ import {
   type WaiveCoverageResult,
   waiveProposalCoverage,
 } from "./lib/review-ledger.ts";
+import {
+  parseVerifiedRoute,
+  parseWouldAuthor,
+  renderReviewerRoom,
+  reviewerRoom,
+} from "./lib/reviewer-room.ts";
 import {
   type RuntimeFreshness,
   runtimeFreshness,
@@ -518,6 +525,10 @@ Usage:
     [--worktree PATH] [--instance ID] [--agent MODEL_ID] [--complete-identity]
     [--wait-lock [--timeout-ms N]] [--json] [--repo PATH]
   simple-changes author coverage --base REF --head REF [--json] [--repo PATH]
+  simple-changes reviewer room --would-author HARNESS/MODEL_ID
+    [--would-author HARNESS/MODEL_ID ...] [--base REF --head REF]
+    [--proposal ID] [--verified-route HARNESS/MODEL_ID@EFFORT ...]
+    [--authoring-request JSON|@FILE] [--json] [--repo PATH]
   simple-changes skill check [--skill-dir PATH] [--json]
   simple-changes validate KIND FILE [--json]
   simple-changes verify-markdown FILE [--json]
@@ -647,12 +658,16 @@ interface CliOptions {
   // prepare-agent --unit: the registered unit a changelog author joins.
   unitId?: string;
   untilMerged?: string;
+  // reviewer room --verified-route: routes the controller really ran.
+  verifiedRoutes: string[];
   versionAuthorized: boolean;
   // --wait-lock and --timeout-ms: a metadata writer's bounded wait for a
   // busy loop lock.
   waitLock: boolean;
   waitLockTimeoutMs?: number;
   worktreePath?: string;
+  // reviewer room --would-author: the authors about to be dispatched.
+  wouldAuthors: string[];
   write: boolean;
   yes: boolean;
 }
@@ -748,6 +763,9 @@ const VALUED_OPTIONS = new Set([
   "--session",
   // Metadata writers: the bound of --wait-lock.
   "--timeout-ms",
+  // reviewer room.
+  "--verified-route",
+  "--would-author",
 ]);
 
 const BOOLEAN_OPTIONS = new Set([
@@ -1295,6 +1313,14 @@ const applyLedgerValuedOption = (
     options.commits.push(value);
     return true;
   }
+  if (option === "--would-author") {
+    options.wouldAuthors.push(value);
+    return true;
+  }
+  if (option === "--verified-route") {
+    options.verifiedRoutes.push(value);
+    return true;
+  }
   if (option === "--replays") {
     options.replays = [
       ...(options.replays ?? []),
@@ -1527,8 +1553,10 @@ const parseOptions = (args: string[]): CliOptions => {
     staleLease: false,
     tagAutomationAuthorized: false,
     uiArtifacts: false,
+    verifiedRoutes: [],
     versionAuthorized: false,
     waitLock: false,
+    wouldAuthors: [],
     write: false,
     yes: false,
   };
@@ -3582,6 +3610,40 @@ const runAuthorCommand = (options: CliOptions): number => {
   });
   writeOutput(result, options.json, renderAttestation(result));
   return EXIT_CODES.success;
+};
+
+// `reviewer room` reads Git, the review ledger and the authoring sidecars
+// and writes nothing, so a controller may run it before every dispatch.
+const runReviewerCommand = (options: CliOptions): number => {
+  if (options.positional.length !== 1 || options.positional[0] !== "room") {
+    throw new SimpleChangesError("reviewer requires room", EXIT_CODES.usage);
+  }
+  // Every input is parsed before anything is read.
+  const wouldAuthors = options.wouldAuthors.map(parseWouldAuthor);
+  const verifiedRoutes = options.verifiedRoutes.map(parseVerifiedRoute);
+  const request =
+    options.authoringRequest === undefined
+      ? null
+      : parseAuthoringRequest(options.authoringRequest);
+  const room = withReadOnlyGit(() =>
+    reviewerRoom({
+      authoring: resolveRepositoryAuthoring(primaryCheckoutOf(options.repo), {
+        request,
+        writeCapable: false,
+      }),
+      repositoryRoot: options.repo,
+      request,
+      verifiedRoutes,
+      wouldAuthors,
+      ...(options.baseRef === undefined ? {} : { base: options.baseRef }),
+      ...(options.headRef === undefined ? {} : { head: options.headRef }),
+      ...(options.proposalId === undefined
+        ? {}
+        : { proposalId: options.proposalId }),
+    })
+  );
+  writeOutput(room, options.json, renderReviewerRoom(room));
+  return room.status === "open" ? EXIT_CODES.success : EXIT_CODES.validation;
 };
 
 const PROPOSAL_LEDGER_ACTIONS = new Set([
@@ -5859,6 +5921,8 @@ const executeCommand = async (
       return EXIT_CODES.success;
     case "author":
       return runAuthorCommand(options);
+    case "reviewer":
+      return runReviewerCommand(options);
     case "release-notes":
       return runReleaseNotes(options);
     case "negotiate-changelog":

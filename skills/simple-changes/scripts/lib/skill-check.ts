@@ -358,6 +358,7 @@ const VENDOR_NEUTRAL_FILES = [
   "scripts/lib/authoring.ts",
   "scripts/lib/authoring-onboarding.ts",
   "scripts/lib/review-ledger.ts",
+  "scripts/lib/reviewer-room.ts",
   "evals/schemas/authoring.schema.json",
   "evals/schemas/harnesses.schema.json",
   "evals/schemas/review-ledger.schema.json",

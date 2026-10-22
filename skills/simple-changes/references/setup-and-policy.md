@@ -418,8 +418,8 @@ A sidecar that changes while an answer is being written is never replaced.
 Precedence, highest first: the current request, the repository sidecar, the
 personal sidecar, then the running agent's most capable model at `xhigh`.
 The current request reaches the CLI as `--authoring-request <json-or-@path>`
-(a complete sidecar object) on `initialize`, `proposal record-review`, and
-`loop start --mode resume`: validated like a file, applied to that invocation,
+(a complete sidecar object) on `initialize`, `proposal record-review`,
+`reviewer room`, and `loop start --mode resume`: validated like a file, applied to that invocation,
 never written, never an answer. It replaces roles and agent entries like any
 layer, except that `review.adversarial`, `review.escalateOnFindings`, and
 `review.reviewLoop` combine with the saved result by the stricter value, so a

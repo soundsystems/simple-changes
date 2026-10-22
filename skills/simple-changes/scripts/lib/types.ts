@@ -1507,6 +1507,12 @@ export interface HeldUnitObservation {
     state: WorktreeCoordinationState;
   } | null;
   controllerAgentId: string;
+  /**
+   * Each original path of the unit's own renames or copies that is not an
+   * opening change of its own, with the source checkout's exact entry there:
+   * absent after a rename, the kept bytes after a copy.
+   */
+  originalPaths: Array<{ path: string; sourceEntry: string | null }>;
   paths: Array<{
     openingEntry: string | null;
     path: string;

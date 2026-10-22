@@ -1020,7 +1020,7 @@ describe("held-only and renamed held work", () => {
   });
 });
 
-describe("holding a rename against the target", () => {
+describe("holding a rename or copy against the target", () => {
   // The primary renames old-name.ts to new-name.ts; the target then gets a
   // commit that adds an identical new-name.ts and, when `removeOriginal`
   // holds, also removes old-name.ts.
@@ -1081,6 +1081,9 @@ describe("holding a rename against the target", () => {
     ]);
     expect(held.status).toBe("held");
     expect(held.hold?.unit.id).toBe("rename");
+    expect(held.hold?.observation.originalPaths).toEqual([
+      { path: "old-name.ts", sourceEntry: null },
+    ]);
   });
 
   test("refuses to hold a rename whose whole result is already in the target", () => {
@@ -1089,6 +1092,80 @@ describe("holding a rename against the target", () => {
       holdUnit(root, lease.runId, "rename", ["rename: not ready."])
     ).toThrow("so nothing is left to hold");
     expect(existsSync(heldFile(root, lease.runId))).toBe(false);
+  });
+
+  // With status.renames=copies, the primary copies src.ts to copy.ts and
+  // modifies src.ts, so Git reports `C copy.ts <- src.ts` and `M src.ts`.
+  // The `copy` unit owns copy.ts and the `source` unit owns src.ts. The
+  // target then gets the exact copy.ts, keeping src.ts unmodified, when
+  // `targetHasCopy` holds.
+  const ORIGINAL = "one\ntwo\nthree\nfour\nfive\n";
+  const copyRun = (targetHasCopy: boolean) => {
+    const fixture = repository();
+    const { base, root } = fixture;
+    git(root, ["config", "status.renames", "copies"]);
+    writeFixture(root, "src.ts", ORIGINAL);
+    commitAll(root, "Base fixture");
+    git(root, ["remote", "add", "origin", "https://example.invalid/repo.git"]);
+    git(root, ["update-ref", "refs/remotes/origin/main", "HEAD"]);
+    git(root, [
+      "symbolic-ref",
+      "refs/remotes/origin/HEAD",
+      "refs/remotes/origin/main",
+    ]);
+    writeFixture(root, "copy.ts", ORIGINAL);
+    writeFixture(root, "src.ts", `${ORIGINAL}six\n`);
+    git(root, ["add", "copy.ts", "src.ts"]);
+    const lease = startLoop(root, CONTROLLER, "ship");
+    const opening = captureInventory(root);
+    expect(
+      opening.localChanges.find((change) => change.path === "copy.ts")
+        ?.originalPath
+    ).toBe("src.ts");
+    const preview = buildPreviewPlan(
+      opening,
+      opening,
+      compareSnapshots(opening, opening)
+    );
+    const [template] = preview.units;
+    if (!template) {
+      throw new Error("Expected a previewed unit");
+    }
+    recordShipmentScope(root, lease.runId, CONTROLLER, {
+      ...preview,
+      units: [
+        unitFrom(template, "copy", "Copy the module", ["copy.ts"]),
+        unitFrom(template, "source", "Extend the source", ["src.ts"]),
+      ],
+    });
+    if (targetHasCopy) {
+      const other = join(base, "target-author");
+      git(root, ["worktree", "add", "-q", "--detach", other, "origin/main"]);
+      writeFixture(other, "copy.ts", ORIGINAL);
+      git(root, [
+        "update-ref",
+        "refs/remotes/origin/main",
+        commitAll(other, "Target change"),
+      ]);
+      git(root, ["worktree", "remove", "--force", other]);
+    }
+    return { lease, root };
+  };
+
+  test("refuses to hold a copy whose exact destination the target has, with the source kept", () => {
+    const { lease, root } = copyRun(true);
+    expect(git(root, ["show", "origin/main:src.ts"])).toBe(ORIGINAL.trim());
+    expect(() =>
+      holdUnit(root, lease.runId, "copy", ["copy: not ready."])
+    ).toThrow("so nothing is left to hold");
+    expect(existsSync(heldFile(root, lease.runId))).toBe(false);
+  });
+
+  test("holds a copy the target does not have, and its source is not an original path", () => {
+    const { lease, root } = copyRun(false);
+    const held = approvedHold(root, lease.runId, "copy", ["copy: not ready."]);
+    expect(held.status).toBe("held");
+    expect(held.hold?.observation.originalPaths).toEqual([]);
   });
 });
 

@@ -7,6 +7,7 @@ import {
   heldUnitExclusions,
   heldUnitHoldDigest,
   heldUnitIds,
+  heldUnitOriginalPaths,
   heldUnitPinRef,
   heldUnitsDigest,
   readHeldUnits,
@@ -280,6 +281,10 @@ const observeHeldUnit = (
         }
       : null,
     controllerAgentId: lease.ownerAgentId,
+    originalPaths: heldUnitOriginalPaths(scope, unit).map((path) => ({
+      path,
+      sourceEntry: worktreeSourceEntry(source.path, path),
+    })),
     paths: unit.paths.map((path) => ({
       openingEntry: openingEntry(path),
       path,
@@ -303,31 +308,24 @@ const observeHeldUnit = (
 };
 
 /**
- * Whether the target already has the unit's exact opening result. A rename's
- * result includes its original path's removal, so the unit's own rename
- * originals must also be absent from the target.
+ * Whether the target already has the unit's exact opening result: every
+ * path's opening entry, and at each of the unit's original paths the entry
+ * the source checkout has there (absent after a rename, the kept bytes after
+ * a copy), never an entry inferred from the kind of change.
  */
 const openingResultInTarget = (
   lease: LoopLease,
-  scope: NonNullable<LoopLease["shipmentScope"]>,
-  unit: ChangeUnit,
   observation: HeldUnitObservation
 ): boolean => {
-  const ownedPaths = new Set(unit.paths);
-  const renameOriginals = scope.openingChanges.flatMap((change) =>
-    change.worktreePath === unit.sourceWorktree &&
-    ownedPaths.has(change.path) &&
-    change.originalPath &&
-    !ownedPaths.has(change.originalPath)
-      ? [change.originalPath]
-      : []
-  );
   const inTarget = (path: string): string | null =>
     targetTreeEntry(lease.primaryCheckout, observation.target.revision, path);
   return (
     observation.paths.every(
       (item) => inTarget(item.path) === item.openingEntry
-    ) && renameOriginals.every((path) => inTarget(path) === null)
+    ) &&
+    observation.originalPaths.every(
+      (item) => inTarget(item.path) === item.sourceEntry
+    )
   );
 };
 
@@ -348,6 +346,10 @@ const observationSummary = (
     ...observation.paths.map(
       (item) =>
         `- ${item.path}: source ${entryLabel(item.sourceEntry)}; opening ${entryLabel(item.openingEntry)}`
+    ),
+    ...observation.originalPaths.map(
+      (item) =>
+        `- ${item.path} (original path): source ${entryLabel(item.sourceEntry)}`
     ),
     `Claim: ${claim ? `${claim.claimId} owned by ${claim.ownerAgentId} (${claim.state})` : "none"}.`,
     `Target: ${target.ref} at ${target.revision}.`,
@@ -510,7 +512,7 @@ export const holdScopedUnit = (
       );
       // A unit whose exact opening result is already in the target is
       // delivered or target-equivalent, never held.
-      if (openingResultInTarget(lease, scope, unit, observation)) {
+      if (openingResultInTarget(lease, observation)) {
         refuse(
           `Every path of unit ${unit.id} already has its exact opening source result in ${lease.targetRef} at ${observation.target.revision}, so nothing is left to hold. Record it in the outcome as delivered or target-equivalent instead.`
         );

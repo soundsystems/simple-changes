@@ -191,6 +191,19 @@ const assertHoldIntact = (lease: HeldUnitLease, hold: HeldUnitHold): void => {
       "it does not match a unit of this run's frozen shipment scope"
     );
   }
+  if (
+    lease.shipmentScope &&
+    !sameJson(
+      observation.originalPaths.map((item) => item.path),
+      heldUnitOriginalPaths(lease.shipmentScope, hold.unit)
+    )
+  ) {
+    tampered(
+      lease.runId,
+      unitId,
+      "its observed original paths do not match the unit's renames in the frozen scope"
+    );
+  }
 };
 
 /**
@@ -289,6 +302,38 @@ export const assertNoHeldUnits = (
       EXIT_CODES.unsafe
     );
   }
+};
+
+/**
+ * The original paths of a unit's own renames and copies whose state is part
+ * of the unit's result. An original that is an opening change of its own,
+ * such as the modified source of a copy (Git reports a copy only from a
+ * modified source), belongs to whichever unit, preserved set, or exclusion
+ * scopes that change, so it is not listed here.
+ */
+export const heldUnitOriginalPaths = (
+  scope: NonNullable<LoopLease["shipmentScope"]>,
+  unit: Pick<ChangeUnit, "paths" | "sourceWorktree">
+): string[] => {
+  const owned = new Set(unit.paths);
+  const ownChanges = new Set(
+    scope.openingChanges
+      .filter((change) => change.worktreePath === unit.sourceWorktree)
+      .map((change) => change.path)
+  );
+  return [
+    ...new Set(
+      scope.openingChanges.flatMap((change) =>
+        change.worktreePath === unit.sourceWorktree &&
+        owned.has(change.path) &&
+        change.originalPath &&
+        !owned.has(change.originalPath) &&
+        !ownChanges.has(change.originalPath)
+          ? [change.originalPath]
+          : []
+      )
+    ),
+  ].sort();
 };
 
 /** The IDs of this run's held units. */

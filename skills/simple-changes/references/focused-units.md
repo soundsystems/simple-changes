@@ -192,8 +192,11 @@ colon, then state the evidence, and must not name another scoped unit's ID.
 A filename, especially a shared one such as a changelog, does not say which
 unit failed. The command also
 refuses a unit whose exact opening bytes are already in the target at every
-path, with the original path of each of its renames gone from the target
-(record it as delivered or target-equivalent), a unit that is not in
+path, and at each original path of its own renames or copies the exact entry
+its source checkout has there, which the hold observes: absent after a
+rename, the kept bytes after a copy (record it as delivered or
+target-equivalent). A copy's modified source is its own change, decided by
+whatever scopes it. It also refuses a unit that is not in
 the frozen scope, a unit already held, a unit that a scoped unit that is not
 held depends on, a missing source checkout, and a run that already recorded
 its outcome: a hold never reinterprets a recorded outcome.
@@ -229,8 +232,9 @@ replaced it on the same checkout, even when someone else removed the
 checkout, never deletes its branch, and never
 switches, fast-forwards, or normalizes a primary checkout a held unit was
 packaged from, clean or not. A held primary path counts as excluded
-in the primary delivery proof, and so does the original path of a held
-rename, so the other units can still verify delivery. A run that held every
+in the primary delivery proof, and so does each original path the hold
+observed, such as where a held rename moved from, so the other units can
+still verify delivery. A run that held every
 unit delivered none of its scope: it never reports verified delivery. `loop
 finalize` closes it with an exactly empty outcome and its held work in place
 (`deliveryStatus: unverified`), and both `loop finalize` and `loop end`

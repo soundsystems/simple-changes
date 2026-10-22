@@ -139,28 +139,24 @@ const allUnitsHeld = (
 };
 
 /**
- * The primary-checkout paths held units own: their scoped paths and, for a
- * scoped rename, the original path it moved from, which the primary's status
- * and delivery proof also report.
+ * The primary-checkout paths held units own: their scoped paths and the
+ * original paths the hold observed as part of their result, such as the path
+ * a held rename moved from, which the primary's status and delivery proof
+ * also report. A copy's modified source is its own change, owned by whatever
+ * scopes it, so it is not included.
  */
 const heldPrimaryPaths = (
   lease: LoopLease,
   holds: readonly HeldUnitHold[]
-): Set<string> => {
-  const scoped = holds
-    .filter((hold) => hold.unit.sourceWorktree === lease.primaryCheckout)
-    .flatMap((hold) => hold.unit.paths);
-  const held = new Set(scoped);
-  const originals = (lease.shipmentScope?.openingChanges ?? []).flatMap(
-    (change) =>
-      change.worktreePath === lease.primaryCheckout &&
-      held.has(change.path) &&
-      change.originalPath
-        ? [change.originalPath]
-        : []
+): Set<string> =>
+  new Set(
+    holds
+      .filter((hold) => hold.unit.sourceWorktree === lease.primaryCheckout)
+      .flatMap((hold) => [
+        ...hold.unit.paths,
+        ...hold.observation.originalPaths.map((item) => item.path),
+      ])
   );
-  return new Set([...scoped, ...originals]);
-};
 
 /**
  * What this run's held units protect from finalization cleanup, or null when
@@ -1949,7 +1945,7 @@ const heldSourceMatches = (
     return false;
   }
   try {
-    return hold.observation.paths.every(
+    return [...hold.observation.paths, ...hold.observation.originalPaths].every(
       (item) =>
         worktreeSourceEntry(current.path, item.path) === item.sourceEntry
     );

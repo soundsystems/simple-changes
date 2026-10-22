@@ -1020,6 +1020,78 @@ describe("held-only and renamed held work", () => {
   });
 });
 
+describe("holding a rename against the target", () => {
+  // The primary renames old-name.ts to new-name.ts; the target then gets a
+  // commit that adds an identical new-name.ts and, when `removeOriginal`
+  // holds, also removes old-name.ts.
+  const renameRun = (removeOriginal: boolean) => {
+    const fixture = repository();
+    const { base, root } = fixture;
+    writeFixture(root, "old-name.ts", "export const name = 1;\n");
+    commitAll(root, "Base fixture");
+    git(root, ["remote", "add", "origin", "https://example.invalid/repo.git"]);
+    git(root, ["update-ref", "refs/remotes/origin/main", "HEAD"]);
+    git(root, [
+      "symbolic-ref",
+      "refs/remotes/origin/HEAD",
+      "refs/remotes/origin/main",
+    ]);
+    git(root, ["mv", "old-name.ts", "new-name.ts"]);
+    writeFixture(root, "feature.txt", "draft feature\n");
+    const lease = startLoop(root, CONTROLLER, "ship");
+    const opening = captureInventory(root);
+    const preview = buildPreviewPlan(
+      opening,
+      opening,
+      compareSnapshots(opening, opening)
+    );
+    const [template] = preview.units;
+    if (!template) {
+      throw new Error("Expected a previewed unit");
+    }
+    recordShipmentScope(root, lease.runId, CONTROLLER, {
+      ...preview,
+      units: [
+        unitFrom(template, "feature", "Ship the feature", ["feature.txt"]),
+        unitFrom(template, "rename", "Rename the module", ["new-name.ts"]),
+      ],
+    });
+    const other = join(base, "target-author");
+    git(root, ["worktree", "add", "-q", "--detach", other, "origin/main"]);
+    writeFixture(other, "new-name.ts", "export const name = 1;\n");
+    if (removeOriginal) {
+      git(other, ["rm", "-q", "old-name.ts"]);
+    }
+    git(root, [
+      "update-ref",
+      "refs/remotes/origin/main",
+      commitAll(other, "Target change"),
+    ]);
+    git(root, ["worktree", "remove", "--force", other]);
+    return { lease, root };
+  };
+
+  test("holds a rename whose destination the target added while keeping its original", () => {
+    const { lease, root } = renameRun(false);
+    expect(git(root, ["ls-tree", "--name-only", "origin/main"])).toContain(
+      "old-name.ts"
+    );
+    const held = approvedHold(root, lease.runId, "rename", [
+      "rename: not ready.",
+    ]);
+    expect(held.status).toBe("held");
+    expect(held.hold?.unit.id).toBe("rename");
+  });
+
+  test("refuses to hold a rename whose whole result is already in the target", () => {
+    const { lease, root } = renameRun(true);
+    expect(() =>
+      holdUnit(root, lease.runId, "rename", ["rename: not ready."])
+    ).toThrow("so nothing is left to hold");
+    expect(existsSync(heldFile(root, lease.runId))).toBe(false);
+  });
+});
+
 describe("whole-run recovery on a held run", () => {
   test("close-equivalent refuses a run that held a unit, even when the target now contains it", () => {
     const fixture = repository();

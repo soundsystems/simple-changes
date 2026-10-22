@@ -302,6 +302,35 @@ const observeHeldUnit = (
   };
 };
 
+/**
+ * Whether the target already has the unit's exact opening result. A rename's
+ * result includes its original path's removal, so the unit's own rename
+ * originals must also be absent from the target.
+ */
+const openingResultInTarget = (
+  lease: LoopLease,
+  scope: NonNullable<LoopLease["shipmentScope"]>,
+  unit: ChangeUnit,
+  observation: HeldUnitObservation
+): boolean => {
+  const ownedPaths = new Set(unit.paths);
+  const renameOriginals = scope.openingChanges.flatMap((change) =>
+    change.worktreePath === unit.sourceWorktree &&
+    ownedPaths.has(change.path) &&
+    change.originalPath &&
+    !ownedPaths.has(change.originalPath)
+      ? [change.originalPath]
+      : []
+  );
+  const inTarget = (path: string): string | null =>
+    targetTreeEntry(lease.primaryCheckout, observation.target.revision, path);
+  return (
+    observation.paths.every(
+      (item) => inTarget(item.path) === item.openingEntry
+    ) && renameOriginals.every((path) => inTarget(path) === null)
+  );
+};
+
 const entryLabel = (entry: string | null): string =>
   entry === null ? "absent" : entry;
 
@@ -479,18 +508,9 @@ export const holdScopedUnit = (
         reason,
         readinessEvidence
       );
-      // A unit whose exact opening bytes are already in the target is
+      // A unit whose exact opening result is already in the target is
       // delivered or target-equivalent, never held.
-      if (
-        observation.paths.every(
-          (item) =>
-            targetTreeEntry(
-              lease.primaryCheckout,
-              observation.target.revision,
-              item.path
-            ) === item.openingEntry
-        )
-      ) {
+      if (openingResultInTarget(lease, scope, unit, observation)) {
         refuse(
           `Every path of unit ${unit.id} already has its exact opening source result in ${lease.targetRef} at ${observation.target.revision}, so nothing is left to hold. Record it in the outcome as delivered or target-equivalent instead.`
         );

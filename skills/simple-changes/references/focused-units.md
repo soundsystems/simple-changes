@@ -192,7 +192,8 @@ colon, then state the evidence, and must not name another scoped unit's ID.
 A filename, especially a shared one such as a changelog, does not say which
 unit failed. The command also
 refuses a unit whose exact opening bytes are already in the target at every
-path (record it as delivered or target-equivalent), a unit that is not in
+path, with the original path of each of its renames gone from the target
+(record it as delivered or target-equivalent), a unit that is not in
 the frozen scope, a unit already held, a unit that a scoped unit that is not
 held depends on, a missing source checkout, and a run that already recorded
 its outcome: a hold never reinterprets a recorded outcome.

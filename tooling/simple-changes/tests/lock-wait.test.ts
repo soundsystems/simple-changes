@@ -54,9 +54,12 @@ interface CliResult {
   stdout: string;
 }
 
-const runCli = async (args: string[]): Promise<CliResult> => {
+const runCli = async (
+  args: string[],
+  extra: Record<string, string> = {}
+): Promise<CliResult> => {
   const child = spawn([process.execPath, cliPath, ...args], {
-    env: environment,
+    env: { ...environment, ...extra },
     stderr: "pipe",
     stdout: "pipe",
   });
@@ -126,6 +129,7 @@ interface Holder {
   child: Subprocess;
   pid: number;
   release: () => Promise<void>;
+  releaseFile: string;
 }
 
 // Another live process holding the loop lock until it is released.
@@ -160,6 +164,7 @@ const holdLock = async (
       writeFileSync(releaseFile, "");
       expect(await child.exited).toBe(0);
     },
+    releaseFile,
   };
 };
 
@@ -185,6 +190,43 @@ const ledgerAttestations = (checkout: Checkout): unknown[] => {
     attestations: Record<string, unknown[]>;
   };
   return ledger.attestations[checkout.commit] ?? [];
+};
+
+const NO_PROCESS_LIST = {
+  NODE_ENV: "test",
+  SIMPLE_CHANGES_TEST_PROCESS_LIST: "unavailable",
+};
+
+// `author attest --wait-lock` run by a holder that, like `loop exec`, holds
+// the lock while it runs the command through two shell wrappers.
+const nestedAttest = async (
+  checkout: Checkout,
+  extra: Record<string, string>
+) => {
+  const resultFile = join(checkout.fixture.base, "nested.json");
+  const holder = spawn(
+    [
+      process.execPath,
+      holderPath,
+      checkout.common,
+      "loop exec",
+      join(checkout.fixture.base, "unused.flag"),
+      "0",
+      resultFile,
+      "--",
+      process.execPath,
+      cliPath,
+      ...attestArgs(checkout, "--wait-lock", "--timeout-ms", "120000"),
+    ],
+    { env: { ...environment, ...extra }, stderr: "inherit", stdout: "ignore" }
+  );
+  holders.push(holder);
+  expect(await holder.exited).toBe(0);
+  const result = JSON.parse(readFileSync(resultFile, "utf8")) as {
+    exitCode: number;
+    stderr: string;
+  };
+  return { holderPid: holder.pid, report: errorReport(result), result };
 };
 
 interface ErrorReport {
@@ -329,40 +371,42 @@ describe("bounded loop-lock waits for metadata writers", () => {
     expect(ledgerAttestations(checkout)).toHaveLength(1);
   });
 
-  test("refuses at once a wait for an owner the command runs inside", async () => {
+  test("refuses at once a wait for an owner the command runs inside, through wrappers", async () => {
     const checkout = claimedCommit();
-    const resultFile = join(checkout.fixture.base, "nested.json");
-    const holder = spawn(
-      [
-        process.execPath,
-        holderPath,
-        checkout.common,
-        "loop exec",
-        join(checkout.fixture.base, "unused.flag"),
-        "0",
-        resultFile,
-        "--",
-        process.execPath,
-        cliPath,
-        ...attestArgs(checkout, "--wait-lock", "--timeout-ms", "120000"),
-      ],
-      { env: environment, stderr: "inherit", stdout: "ignore" }
-    );
-    holders.push(holder);
-    expect(await holder.exited).toBe(0);
-    const nested = JSON.parse(readFileSync(resultFile, "utf8")) as {
-      exitCode: number;
-      stderr: string;
-    };
-    expect(nested.exitCode).toBe(EXIT_CODES.unsafe);
-    const report = errorReport(nested);
+    const { holderPid, report, result } = await nestedAttest(checkout, {});
+    expect(result.exitCode).toBe(EXIT_CODES.unsafe);
     expect(report.lockWait).toMatchObject({
       executed: false,
       outcome: "caller-inside-owner",
-      owner: { operation: "loop exec", pid: holder.pid },
+      owner: { operation: "loop exec", pid: holderPid },
     });
     expect(report.lockWait?.waitedMs).toBeLessThan(60_000);
     expect(ledgerAttestations(checkout)).toEqual([]);
+  });
+
+  test("without a process list, never waits on an owner running a child it may be part of", async () => {
+    const checkout = claimedCommit();
+    const { report, result } = await nestedAttest(checkout, NO_PROCESS_LIST);
+    expect(result.exitCode).toBe(EXIT_CODES.unsafe);
+    expect(report.lockWait).toMatchObject({
+      executed: false,
+      outcome: "caller-ancestry-unknown",
+      owner: { operation: "loop exec" },
+    });
+    expect(report.lockWait?.owner).toHaveProperty("childProcessId");
+    expect(report.lockWait?.waitedMs).toBeLessThan(60_000);
+    expect(ledgerAttestations(checkout)).toEqual([]);
+    // An owner running no child is still waited on without a process list.
+    const holder = await holdLock(checkout);
+    const waiting = runCli(
+      attestArgs(checkout, "--wait-lock", "--timeout-ms", "120000"),
+      NO_PROCESS_LIST
+    );
+    await sleep(1000);
+    expect(ledgerAttestations(checkout)).toEqual([]);
+    await holder.release();
+    expect((await waiting).exitCode).toBe(0);
+    expect(ledgerAttestations(checkout)).toHaveLength(1);
   });
 
   test("proposal record-authors waits the same way and records once", async () => {
@@ -502,6 +546,55 @@ describe("bounded loop-lock waits for metadata writers", () => {
     expect(released.stderr).toBe("");
     expect(released.exitCode).toBe(0);
     expect(claimState()).toBe("released");
+  });
+
+  test("never starts an acquisition after the bound, even when a pause oversleeps it", async () => {
+    const checkout = claimedCommit();
+    const holder = await holdLock(checkout);
+    const lockPath = loopLockPath(checkout.common);
+    const realNow = Date.now;
+    const realWait = Atomics.wait;
+    const pause = new Int32Array(new SharedArrayBuffer(4));
+    let skewMs = 0;
+    let calls = 0;
+    // The first pause oversleeps its 200 ms bound, and the holder releases
+    // the lock meanwhile, so a late attempt would find it free.
+    Date.now = () => realNow() + skewMs;
+    Atomics.wait = ((target: unknown) => {
+      if (target !== pause) {
+        skewMs += 1000;
+        writeFileSync(holder.releaseFile, "");
+        while (existsSync(lockPath)) {
+          realWait(pause, 0, 0, 20);
+        }
+      }
+      return "timed-out";
+    }) as typeof Atomics.wait;
+    let thrown: unknown = null;
+    try {
+      withLoopStateLockBounded(
+        checkout.common,
+        "late attempt",
+        () => {
+          calls += 1;
+        },
+        { timeoutMs: 200 }
+      );
+    } catch (error) {
+      thrown = error;
+    } finally {
+      Date.now = realNow;
+      Atomics.wait = realWait;
+    }
+    expect(await holder.child.exited).toBe(0);
+    expect(calls).toBe(0);
+    expect(thrown).toBeInstanceOf(LoopLockWaitError);
+    expect((thrown as LoopLockWaitError).lockWait).toMatchObject({
+      executed: false,
+      outcome: "timed-out",
+      owner: { pid: holder.pid },
+    });
+    expect(existsSync(lockPath)).toBe(false);
   });
 
   test("an operation that fails under the lock runs once and is never retried", () => {

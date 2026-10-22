@@ -310,8 +310,11 @@ early, exit 5, when the owner's process is gone on this host, because only
 `loop recover` may clear that lock under the [stale-lock
 rules](recovery.md#locks-and-stale-leases), and when the writer runs inside
 the owner itself, such as inside a `loop exec`, because the owner cannot
-finish first. A lock owned on another host, or one whose owner metadata
-cannot be read, is waited on until the bound. The wait covers the loop state lock
+finish first. When this host's process list cannot be read, it also ends
+early for an owner that runs a child command, such as `loop exec`, since the
+writer may be part of it. A lock owned on another host, or one whose owner
+metadata cannot be read, is waited on until the bound, and no acquisition
+starts after it. The wait covers the loop state lock
 only: once `loop record-outcome` or `worktree release --ready-receipt` holds
 it, a busy worktree coordination lock still exits 5 at once, before anything
 is written.
@@ -319,7 +322,8 @@ is written.
 Every early end and every timeout exits 5 with the usual busy message and
 writes nothing. With `--json`, the error on stderr adds `lockWait`:
 `executed: false`, `operation` (the writer, such as `author attest`),
-`outcome` (`timed-out`, `owner-not-running`, or `caller-inside-owner`),
+`outcome` (`timed-out`, `owner-not-running`, `caller-inside-owner`, or
+`caller-ancestry-unknown`),
 `owner` (`pid`, `hostname`, `operation`, and `createdAt`, plus any recorded
 child process or process group; `null` when its metadata was unreadable),
 `timeoutMs`, and `waitedMs`. Because nothing ran, the same command may run

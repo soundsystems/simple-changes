@@ -417,14 +417,16 @@ const LOOP_LOCK_WAIT_POLL_MS = 100;
 
 /**
  * Why a bounded wait ended without the lock: the timeout passed, the owner's
- * process is gone on this host (only `loop recover` may clear its lock), or
- * this command runs inside the owner's own process tree, so the owner cannot
- * finish first.
+ * process is gone on this host (only `loop recover` may clear its lock), this
+ * command runs inside the owner's own process tree, so the owner cannot
+ * finish first, or this host's process list could not be read while the
+ * owner runs a child this command may be part of.
  */
 export type LoopLockWaitOutcome =
   | "timed-out"
   | "owner-not-running"
-  | "caller-inside-owner";
+  | "caller-inside-owner"
+  | "caller-ancestry-unknown";
 
 /** The lock owner as a bounded wait reports it, without its token. */
 export type LoopLockOwnerSummary = Omit<LoopLockOwner, "token">;
@@ -460,6 +462,8 @@ const sleepSync = (milliseconds: number): void => {
 
 interface CallerProcessTree {
   ancestors: Set<number>;
+  /** False when the process list could not be read. */
+  known: boolean;
   processGroupId: number | null;
 }
 
@@ -489,46 +493,75 @@ const processParents = (
   return { parents, processGroupId };
 };
 
+// The process list, or null when it cannot be read. Tests make it
+// unavailable to cover a host without `ps`.
+const readProcessList = (): string | null => {
+  if (
+    process.platform === "win32" ||
+    (process.env.NODE_ENV === "test" &&
+      process.env.SIMPLE_CHANGES_TEST_PROCESS_LIST === "unavailable")
+  ) {
+    return null;
+  }
+  try {
+    const listed = spawnSync(["ps", "-A", "-o", "pid=,ppid=,pgid="], {
+      stderr: "ignore",
+      stdout: "pipe",
+      timeout: 5000,
+    });
+    return listed.exitCode === 0 ? listed.stdout.toString() : null;
+  } catch {
+    return null;
+  }
+};
+
 // This process and every ancestor, read once from `ps`. When `ps` cannot be
-// read, only this process and its parent are known.
+// read, only this process and its parent are known, and `known` is false.
 const callerProcessTree = (): CallerProcessTree => {
   if (callerProcessTreeCache) {
     return callerProcessTreeCache;
   }
   const ancestors = new Set([process.pid, process.ppid]);
-  const listed =
-    process.platform === "win32"
-      ? null
-      : spawnSync(["ps", "-A", "-o", "pid=,ppid=,pgid="], {
-          stderr: "ignore",
-          stdout: "pipe",
-          timeout: 5000,
-        });
-  const { parents, processGroupId } = processParents(
-    listed?.exitCode === 0 ? listed.stdout.toString() : ""
-  );
+  const listing = readProcessList();
+  const { parents, processGroupId } = processParents(listing ?? "");
   let current = parents.get(process.ppid);
   while (current !== undefined && current > 0 && !ancestors.has(current)) {
     ancestors.add(current);
     current = parents.get(current);
   }
-  callerProcessTreeCache = { ancestors, processGroupId };
+  callerProcessTreeCache = {
+    ancestors,
+    known: listing !== null,
+    processGroupId,
+  };
   return callerProcessTreeCache;
 };
 
-const callerRunsInsideOwner = (owner: LoopLockOwner): boolean => {
+// Whether this command runs inside the owner: true, false, or null when the
+// process list could not be read and nothing known proves it.
+const callerRunsInsideOwner = (owner: LoopLockOwner): boolean | null => {
   if (owner.hostname !== hostname()) {
     return false;
   }
   const tree = callerProcessTree();
-  return (
+  if (
     tree.ancestors.has(owner.pid) ||
     (owner.childProcessId !== undefined &&
       tree.ancestors.has(owner.childProcessId)) ||
     (owner.processGroupId !== undefined &&
       tree.processGroupId === owner.processGroupId)
-  );
+  ) {
+    return true;
+  }
+  return tree.known ? false : null;
 };
+
+// Only an owner running a child command, as `loop exec` does, can have this
+// command inside it without being its direct parent.
+const ownerRunsChild = (owner: LoopLockOwner): boolean =>
+  owner.childStarting === true ||
+  owner.childProcessId !== undefined ||
+  owner.processGroupId !== undefined;
 
 const lockOwnerSummary = (
   owner: LoopLockOwner | null
@@ -544,6 +577,8 @@ const LOCK_WAIT_ENDINGS: Record<
   LoopLockWaitOutcome,
   (owner: LoopLockOwner | null, waited: string) => string
 > = {
+  "caller-ancestry-unknown": (owner, waited) =>
+    `This host's process list could not be read, so it is unknown whether this command runs inside ${owner?.operation ?? "the owner"}, which runs a child command; it does not wait on it, and ${waited}. Run it after that operation returns.`,
   "caller-inside-owner": (owner, waited) =>
     `This command runs inside ${owner?.operation ?? "the owner"} itself, so waiting cannot end before it does; ${waited}. Run it after that operation returns.`,
   "owner-not-running": (owner, waited) =>
@@ -583,8 +618,12 @@ const lockWaitEnding = (
   wait: LoopLockWait,
   waitedMs: number
 ): LoopLockWaitOutcome | null => {
-  if (owner && callerRunsInsideOwner(owner)) {
+  const inside = owner ? callerRunsInsideOwner(owner) : false;
+  if (inside === true) {
     return "caller-inside-owner";
+  }
+  if (inside === null && owner && ownerRunsChild(owner)) {
+    return "caller-ancestry-unknown";
   }
   if (
     owner &&
@@ -604,9 +643,11 @@ const lockWaitEnding = (
  * `wait` it is exactly `withLoopStateLock`. With it, a lock another live
  * holder owns is polled until it frees or `timeoutMs` passes; the wait never
  * breaks, steals, takes over, or recovers the lock. It stops at once when the
- * owner's process is gone on this host or this command runs inside the
- * owner. Only a failed acquisition is retried: once the lock is held the
- * operation runs exactly once, and an error from it is never retried.
+ * owner's process is gone on this host, when this command runs inside the
+ * owner, and, without a readable process list, when the owner runs a child
+ * this command may be part of. No acquisition starts after the bound. Only
+ * a failed acquisition is retried: once the lock is held the operation runs
+ * exactly once, and an error from it is never retried.
  */
 export const withLoopStateLockBounded = <T>(
   commonGitDirectory: string,
@@ -620,7 +661,20 @@ export const withLoopStateLockBounded = <T>(
   const startedAt = Date.now();
   const intervalMs = wait.intervalMs ?? LOOP_LOCK_WAIT_POLL_MS;
   let lock: StateLock | null = null;
+  let busy: { error: unknown; owner: LoopLockOwner | null } | null = null;
   while (!lock) {
+    // No acquisition starts past the bound, even when a pause overslept it.
+    const elapsedMs = Date.now() - startedAt;
+    if (busy && elapsedMs > wait.timeoutMs) {
+      throw loopLockWaitError(
+        busy.error,
+        "timed-out",
+        busy.owner,
+        operationName,
+        wait,
+        elapsedMs
+      );
+    }
     try {
       lock = acquireStateLock(commonGitDirectory, operationName);
     } catch (error) {
@@ -628,6 +682,7 @@ export const withLoopStateLockBounded = <T>(
         throw error;
       }
       const owner = readLockOwner(commonGitDirectory);
+      busy = { error, owner };
       const waitedMs = Date.now() - startedAt;
       const outcome = lockWaitEnding(commonGitDirectory, owner, wait, waitedMs);
       if (outcome) {

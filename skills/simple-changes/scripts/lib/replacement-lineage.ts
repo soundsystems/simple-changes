@@ -20,6 +20,7 @@ import type {
   WorktreeClaim,
   WorktreeInventory,
 } from "./types.ts";
+import { readWorktreeTakeovers } from "./worktree-coordination.ts";
 
 /** The most unique source commits one receipt may map. */
 export const REPLACEMENT_LINEAGE_MAX_COMMITS = PATCH_EQUIVALENCE_MAX_COMMITS;
@@ -385,7 +386,8 @@ const assertMapping = (
 
 // The reviewer and the approver are neither an author nor the controller.
 // Authors are the declared one, every agent that ever held a claim on this
-// checkout, and every agent the review ledger attests for a unique commit,
+// checkout (its current owner and every owner a takeover replaced, along the
+// whole chain), and every agent the review ledger attests for a unique commit,
 // directly, through a replay record's sources, or in a completion's records.
 const assertIndependence = (
   context: ReplacementLineageContext,
@@ -394,9 +396,19 @@ const assertIndependence = (
 ): void => {
   const { approval, review, source } = context.receipt;
   const authors = new Set<string>([source.authorAgentId.trim()]);
+  const claimIds = new Set<string>();
   for (const entry of context.claims) {
     if (entry.path === source.path) {
+      claimIds.add(entry.claimId);
       authors.add(entry.owner.agentId.trim());
+    }
+  }
+  for (const takeover of readWorktreeTakeovers(
+    context.inventory.repository.commonGitDirectory
+  )) {
+    if (takeover.path === source.path || claimIds.has(takeover.claimId)) {
+      authors.add(takeover.previousOwner.agentId.trim());
+      authors.add(takeover.newAgentId.trim());
     }
   }
   const ledger = readReviewLedger(

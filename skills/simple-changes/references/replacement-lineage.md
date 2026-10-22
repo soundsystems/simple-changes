@@ -89,7 +89,8 @@ target already contains the head (cleanup then removes it as
 unmapped or the mapping names a commit that is not unique; a replacement is not
 in the reviewed target or is an ancestor of the head; the current target no
 longer contains the reviewed target; the reviewer is the controller, the
-declared author, an agent that ever claimed the checkout, or an attested
+declared author, an agent that ever claimed the checkout (including every
+owner a takeover replaced), or an attested
 author of a unique commit, including an author it inherits from a replay
 record's sources; the approver is the reviewer, the controller, or an
 author, or differs from `--approved-by`; or the approval predates the review,

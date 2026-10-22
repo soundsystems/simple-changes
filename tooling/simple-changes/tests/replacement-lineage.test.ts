@@ -27,6 +27,7 @@ import { validateSchema } from "../../../skills/simple-changes/scripts/lib/schem
 import {
   claimWorktree,
   releaseWorktreeClaim,
+  takeoverWorktreeClaim,
 } from "../../../skills/simple-changes/scripts/lib/worktree-coordination.ts";
 import {
   pruneRepository,
@@ -510,6 +511,39 @@ const withEnvironment = <T>(extra: Record<string, string>, run: () => T): T => {
   }
 };
 
+/**
+ * `firstOwner` claims the source checkout, approved takeovers hand the claim
+ * along `chain`, and the last owner releases it, so only the takeover
+ * history still names the earlier owners.
+ */
+const claimThroughTakeovers = (
+  lineage: LineageFixture,
+  firstOwner: string,
+  chain: readonly string[]
+): void => {
+  const { root } = lineage.fixture;
+  const claim = claimWorktree(root, firstOwner, lineage.path, "claude-code");
+  let owner = firstOwner;
+  for (const next of chain) {
+    const current = captureInventory(root).worktrees.find(
+      (worktree) => worktree.path === lineage.path
+    );
+    takeoverWorktreeClaim({
+      action: "reassign",
+      approvedBy: APPROVER,
+      claimId: claim.claimId,
+      expectedBranch: current?.branch ?? null,
+      expectedHeadSha: current?.headSha ?? null,
+      expectedStatusDigest: current?.changeDigest ?? "",
+      newAgentId: next,
+      reason: "The first session ended and cannot be contacted.",
+      repositoryPath: root,
+    });
+    owner = next;
+  }
+  releaseWorktreeClaim(root, owner, claim.claimId);
+};
+
 const expectRefusal = (run: () => unknown, pattern: RegExp): void => {
   let caught: unknown = null;
   try {
@@ -830,6 +864,22 @@ describe("reviewed replacement lineage cleanup", () => {
       },
     },
     {
+      name: "a reviewer a takeover chain replaced as the checkout's owner",
+      pattern: REVIEWER_IS_AUTHOR_PATTERN,
+      setUp: (lineage) => {
+        claimThroughTakeovers(lineage, REVIEWER, ["middle-agent", AUTHOR]);
+        return {};
+      },
+    },
+    {
+      name: "an approver a takeover replaced as the checkout's owner",
+      pattern: APPROVER_IS_AUTHOR_PATTERN,
+      setUp: (lineage) => {
+        claimThroughTakeovers(lineage, APPROVER, [AUTHOR]);
+        return {};
+      },
+    },
+    {
       name: "a reviewer who is the controller",
       pattern: REVIEWER_IS_CONTROLLER_PATTERN,
       setUp: (_lineage, receipt) => {
@@ -936,6 +986,14 @@ describe("reviewed replacement lineage cleanup", () => {
       expectNothingWritten(lineage);
     });
   }
+
+  test("a takeover history of unrelated agents leaves the reviewer and approver eligible", () => {
+    const lineage = lineageFixture(false);
+    claimThroughTakeovers(lineage, "former-owner", ["middle-agent", AUTHOR]);
+    const report = prune(lineage, receiptFor(lineage), { dryRun: true });
+    expect(report.reviewedReplacement?.path).toBe(lineage.path);
+    expectNothingWritten(lineage);
+  });
 
   test("a seeded ledger whose replay sources the declared author wrote is accepted", () => {
     const lineage = lineageFixture(false);

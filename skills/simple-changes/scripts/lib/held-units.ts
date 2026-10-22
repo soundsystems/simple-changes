@@ -272,6 +272,24 @@ const readHeldUnitRecord = (lease: HeldUnitLease): HeldUnitHold[] => {
   return record.holds;
 };
 
+/**
+ * Refuses a recovery that closes a run as a whole when the run held a unit,
+ * or its hold record cannot be read: such a close would report the held work
+ * as equivalent or finished instead of held.
+ */
+export const assertNoHeldUnits = (
+  lease: HeldUnitLease,
+  action: string
+): void => {
+  const holds = readHeldUnits(lease);
+  if (holds.length > 0) {
+    throw new SimpleChangesError(
+      `Loop ${lease.runId} held ${holds.map((hold) => hold.unit.id).join(", ")}, so ${action} cannot close it: that would report held work as finished. Record its outcome and run \`simple-changes loop finalize\`, which reports held units apart from delivered work, or replan the run.`,
+      EXIT_CODES.unsafe
+    );
+  }
+};
+
 /** The IDs of this run's held units. */
 export const heldUnitIds = (holds: readonly HeldUnitHold[]): Set<string> =>
   new Set(holds.map((hold) => hold.unit.id));

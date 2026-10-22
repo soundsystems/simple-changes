@@ -227,7 +227,10 @@ packaged from, clean or not. A held primary path counts as excluded
 in the primary delivery proof, and so does the original path of a held
 rename, so the other units can still verify delivery. A run that held every
 unit, with an exactly empty outcome because the target did not move, closes
-with its held work in place and `deliveryStatus: unverified`.
+with its held work in place and `deliveryStatus: unverified`. Whole-run recovery
+closes, `loop close-equivalent` and `loop recover-post-cleanup`, refuse a run
+that held a unit, because they would report held work as finished; finish it
+with `loop finalize` or replan it.
 A unit that shares a non-primary checkout with a held unit cannot be verified
 delivered while the held bytes keep that checkout dirty. The finalization
 receipt reports each held unit under `heldUnits`, apart from verified

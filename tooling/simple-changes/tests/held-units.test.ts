@@ -23,6 +23,7 @@ import {
   compareSnapshots,
 } from "../../../skills/simple-changes/scripts/lib/inventory.ts";
 import {
+  closeLoopTargetEquivalent,
   finalizeLoop,
   type HoldUnitApproval,
   holdScopedUnit,
@@ -959,6 +960,47 @@ describe("held-only and renamed held work", () => {
     expect(git(root, ["status", "--porcelain"])).toContain(
       "R  old-name.ts -> new-name.ts"
     );
+  });
+});
+
+describe("whole-run recovery on a held run", () => {
+  test("close-equivalent refuses a run that held a unit, even when the target now contains it", () => {
+    const fixture = repository();
+    const { root } = fixture;
+    git(root, ["remote", "add", "origin", "https://example.invalid/repo.git"]);
+    git(root, ["update-ref", "refs/remotes/origin/main", "HEAD"]);
+    git(root, [
+      "symbolic-ref",
+      "refs/remotes/origin/HEAD",
+      "refs/remotes/origin/main",
+    ]);
+    writeFixture(root, "role/check.ts", "export const check = 1;\n");
+    const lease = startLoop(root, CONTROLLER, "ship");
+    const opening = captureInventory(root);
+    recordShipmentScope(
+      root,
+      lease.runId,
+      CONTROLLER,
+      buildPreviewPlan(opening, opening, compareSnapshots(opening, opening))
+    );
+    const [unit] =
+      (readLoopLease(root) as LoopLease).shipmentScope?.plan.units ?? [];
+    const head = commitAll(root, "Role checks under review");
+    approvedHold(root, lease.runId, unit?.id ?? "", [
+      `${unit?.id ?? ""}: failed independent review.`,
+    ]);
+    git(root, ["update-ref", "refs/remotes/origin/main", head]);
+    expect(() =>
+      closeLoopTargetEquivalent(
+        root,
+        lease.runId,
+        CONTROLLER,
+        APPROVER,
+        "The target contains the work.",
+        []
+      )
+    ).toThrow("so loop close-equivalent cannot close it");
+    expect(readLoopLease(root)?.runId).toBe(lease.runId);
   });
 });
 

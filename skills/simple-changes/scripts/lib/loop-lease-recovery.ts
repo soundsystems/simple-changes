@@ -22,6 +22,7 @@ import { assertNotChangelogAuthorCheckout } from "./changelog-authors.ts";
 import { targetContainsRevision } from "./cleanup-core.ts";
 import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
 import { sha256, sha256Json } from "./hash.ts";
+import { assertNoHeldUnits } from "./held-units.ts";
 import { captureInventory, locateRepository } from "./inventory.ts";
 import {
   assertControllerActive,
@@ -1092,6 +1093,7 @@ export const recoverPostCleanupLoop = (
         const inventory = captureInventory(repositoryPath);
         const lease = requireLease(inventory);
         assertMatchingRun(lease, runId);
+        assertNoHeldUnits(lease, "loop recover-post-cleanup");
         const { absentPaths, intent } = preparePostCleanupRecoveryIntent(
           commonGitDirectory,
           inventory,
@@ -1622,6 +1624,7 @@ export const closeLoopTargetEquivalent = (
         const inventory = captureInventory(repositoryPath);
         let lease = requireLease(inventory);
         assertMatchingRun(lease, runId);
+        assertNoHeldUnits(lease, "loop close-equivalent");
         const lifecycle = controllerLifecycle(lease);
         if (lifecycle.status === "active" && lease.ownerAgentId !== agentId) {
           throw new SimpleChangesError(

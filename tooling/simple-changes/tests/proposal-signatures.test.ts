@@ -165,9 +165,11 @@ describe("proposal signatures", () => {
     };
     const agent = reviewSignatureAgent(attempt);
     expect(agent).toBe("Fable 5.1");
+    const fixture = createTestRepository();
+    repositories.push(fixture);
     expect(
       buildProposalSignatureBlock({
-        repositoryPath: process.cwd(),
+        repositoryPath: fixture.root,
         self: { agent: agent ?? "", role: "reviewed" },
       }).block
     ).toBe("[[Reviewed by Fable 5.1]]");

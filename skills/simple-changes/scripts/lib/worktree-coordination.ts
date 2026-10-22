@@ -11,6 +11,7 @@ import {
 import { hostname } from "node:os";
 import { dirname, resolve } from "node:path";
 import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
+import { ensureStateDirectory, gitReportedPath } from "./git-location.ts";
 import { currentHarnessSession } from "./harness-session.ts";
 import { sha256, sha256Json } from "./hash.ts";
 import {
@@ -209,7 +210,7 @@ const acquireNamedLock = (
   label: string
 ): (() => void) => {
   const root = stateRoot(commonGitDirectory);
-  mkdirSync(root, { mode: 0o700, recursive: true });
+  ensureStateDirectory(commonGitDirectory, root);
   try {
     mkdirSync(lockPath, { mode: 0o700 });
   } catch (error) {
@@ -353,7 +354,7 @@ const writeCoordinationDocument = (
     document
   );
   const root = coordinationRoot(commonGitDirectory);
-  mkdirSync(root, { mode: 0o700, recursive: true });
+  ensureStateDirectory(commonGitDirectory, root);
   const temporaryPath = resolve(
     root,
     `${STATE_FILENAME}.${process.pid}.${randomUUID()}.tmp`
@@ -745,7 +746,11 @@ const activeLoopTakeoverRefusal = (
 
 export const assertNoGitOperation = (worktreePath: string): void => {
   const gitDirectory = realpathSync(
-    runGit(worktreePath, ["rev-parse", "--absolute-git-dir"]).stdout.trim()
+    gitReportedPath(
+      runGit(worktreePath, ["rev-parse", "--absolute-git-dir"]).stdout,
+      "--absolute-git-dir",
+      { repository: worktreePath }
+    )
   );
   const markers = [
     "MERGE_HEAD",
@@ -2102,7 +2107,7 @@ const writeWorktreeTakeovers = (
   receipts: WorktreeTakeoverReceipt[]
 ): void => {
   const root = coordinationRoot(commonGitDirectory);
-  mkdirSync(root, { mode: 0o700, recursive: true });
+  ensureStateDirectory(commonGitDirectory, root);
   const temporaryPath = resolve(
     root,
     `${TAKEOVERS_FILENAME}.${process.pid}.${randomUUID()}.tmp`

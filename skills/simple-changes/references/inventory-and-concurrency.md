@@ -29,6 +29,18 @@ Capture the opening inventory before mutation:
 Inventory hashes changed regular files in bounded chunks and records special
 files without reading FIFOs, sockets, or devices.
 
+Shared state (review ledger, loop lease, coordination, holds, work-directory
+bindings) lives under the common Git directory, and every command verifies
+Git's answer for it before taking a lock or writing there. A command refuses
+with exit code 4, writes nothing, and prints a bounded `Diagnostics:` line (Git
+executable, working directory, repository, Git's raw answers) when the answer is
+empty, does not exist, names the checkout itself, is not a repository's Git
+directory, or is one this checkout does not belong to. A Git question that
+always has an answer but returns none, as happens under heavy load, is asked
+once more and then refused the same way. Rerun the command once; if it refuses
+again, report the diagnostics. Never substitute the checkout root or another
+path, and never create state files by hand.
+
 Before interpreting unique commits on an old branch as new work, run
 `branch audit --head <source-ref> --target <ref> --json` from the primary
 checkout. Resolve any replacement candidates before creating an author

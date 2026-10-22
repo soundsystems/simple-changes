@@ -1579,6 +1579,7 @@ describe("post-return gate and approval", () => {
 
 describe("reviewer resolution before dispatch", () => {
   test("provisional resolution compares only under adversarial review", () => {
+    const { root } = repository();
     const resolve = (
       review: Partial<ResolvedReviewRole>,
       proposals: Partial<ResolvedAuthoringRole> = {},
@@ -1587,7 +1588,7 @@ describe("reviewer resolution before dispatch", () => {
       reviewerShape(
         resolveReviewer({
           authoring: stubAuthoring(review, proposals, repairRequired),
-          repositoryRoot: process.cwd(),
+          repositoryRoot: root,
         })
       );
     const same = { harness: "claude-code", model: "model-alpha" };
@@ -1732,7 +1733,7 @@ describe("reviewer resolution before dispatch", () => {
       resolveReviewer({
         authoring: stubAuthoring(),
         proposalId: PROPOSAL,
-        repositoryRoot: process.cwd(),
+        repositoryRoot: root,
       })
     ).toThrow("given together");
     // Inputs are validated before any status, a repair included.
@@ -1742,15 +1743,15 @@ describe("reviewer resolution before dispatch", () => {
         authoring: repairing,
         head: "not-a-sha",
         proposalId: PROPOSAL,
-        repositoryRoot: process.cwd(),
+        repositoryRoot: root,
       })
     ).toThrow("--head must be a commit SHA");
     expect(() =>
       resolveReviewer({
         authoring: repairing,
-        head: git(process.cwd(), ["rev-parse", "HEAD"]),
+        head: git(root, ["rev-parse", "HEAD"]),
         proposalId: "has space",
-        repositoryRoot: process.cwd(),
+        repositoryRoot: root,
       })
     ).toThrow("--proposal must be");
   });

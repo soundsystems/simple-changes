@@ -17,6 +17,10 @@ import { dirname, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
 import {
+  ensureStateDirectory,
+  ensureStateDirectoryOf,
+} from "./git-location.ts";
+import {
   currentHarnessSession,
   forgetControllerSession,
   recordControllerSession,
@@ -154,7 +158,7 @@ const writeImmutableRecoveryEvent = <T extends object>(
   if (existsSync(path)) {
     return readImmutableRecoveryEvent<T>(path);
   }
-  mkdirSync(dirname(path), { mode: 0o700, recursive: true });
+  ensureStateDirectoryOf(dirname(path));
   const temporaryPath = `${path}.${process.pid}.${randomUUID()}.tmp`;
   writeFileSync(temporaryPath, `${JSON.stringify(value, null, 2)}\n`, {
     encoding: "utf8",
@@ -260,7 +264,7 @@ const acquireStateLock = (
 ): StateLock => {
   const directory = stateDirectory(commonGitDirectory);
   const lockPath = loopLockPath(commonGitDirectory);
-  mkdirSync(directory, { mode: 0o700, recursive: true });
+  ensureStateDirectory(commonGitDirectory, directory);
   try {
     mkdirSync(lockPath, { mode: 0o700 });
   } catch (error) {
@@ -442,7 +446,7 @@ export const readLeaseFromCommonDirectory = (
 const writeLease = (lease: LoopLease): LoopLease => {
   const validated = validateSchema<LoopLease>("loop-lease", lease);
   const directory = stateDirectory(validated.commonGitDirectory);
-  mkdirSync(directory, { mode: 0o700, recursive: true });
+  ensureStateDirectory(validated.commonGitDirectory, directory);
   const temporaryPath = resolve(
     directory,
     `${STATE_FILENAME}.${process.pid}.${randomUUID()}.tmp`
@@ -567,7 +571,7 @@ const writeControllerBinding = (
   };
   try {
     const path = controllerBindingPath(lease.commonGitDirectory);
-    mkdirSync(dirname(path), { mode: 0o700, recursive: true });
+    ensureStateDirectory(lease.commonGitDirectory, dirname(path));
     const temporary = `${path}.${process.pid}.${randomUUID()}.tmp`;
     writeFileSync(temporary, `${JSON.stringify(binding, null, 2)}\n`, {
       mode: 0o600,
@@ -1196,7 +1200,7 @@ const writeReceiptSidecar = (
     rmSync(path, { force: true });
     return;
   }
-  mkdirSync(dirname(path), { mode: 0o700, recursive: true });
+  ensureStateDirectory(lease.commonGitDirectory, dirname(path));
   const temporaryPath = `${path}.${process.pid}.${randomUUID()}.tmp`;
   writeFileSync(temporaryPath, `${JSON.stringify(record, null, 2)}\n`, {
     encoding: "utf8",

@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
 import {
   lstatSync,
-  mkdirSync,
   mkdtempSync,
   readFileSync,
   realpathSync,
@@ -37,6 +36,10 @@ import {
   type RecordExtensions,
   unknownKeyMessage,
 } from "./extensions.ts";
+import {
+  assertStateDestination,
+  ensureStateDirectory,
+} from "./git-location.ts";
 import { currentHarnessSession } from "./harness-session.ts";
 import { sha256 } from "./hash.ts";
 import { captureInventory, locateRepository } from "./inventory.ts";
@@ -1402,7 +1405,7 @@ const writeLedger = (
   }
   assertReplaceable(previous, ledger);
   const path = reviewLedgerPath(lock.commonGitDirectory);
-  mkdirSync(dirname(path), { mode: 0o700, recursive: true });
+  ensureStateDirectory(lock.commonGitDirectory, dirname(path));
   const temporary = `${path}.${process.pid}.${randomUUID()}.tmp`;
   try {
     writeFileSync(temporary, serializeLedger(ledger), {
@@ -1457,6 +1460,9 @@ const withLedgerTransaction = <T>(
   operation: string,
   mutate: (ledger: ReviewLedger, lock: HeldLoopLock) => T
 ): T => {
+  assertStateDestination(commonGitDirectory, {
+    repository: commonGitDirectory,
+  });
   assertOutsideLoopExec(commonGitDirectory);
   return withLoopStateLock(commonGitDirectory, operation, () => {
     const lock = heldLoopLock(commonGitDirectory, operation);

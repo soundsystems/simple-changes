@@ -13,6 +13,7 @@ import {
 import { homedir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
+import { ensureStateDirectory } from "./git-location.ts";
 import { CURRENT_GUIDANCE_VERSION } from "./guidance-updates.ts";
 import { sha256 } from "./hash.ts";
 import { assertNoSymlinkAncestors } from "./path-safety.ts";
@@ -589,7 +590,7 @@ export const writeRepositoryPolicyTrustReceipt = (
     schemaVersion: 1,
   };
   const receiptPath = repositoryPolicyTrustPath(commonGitDirectory);
-  mkdirSync(dirname(receiptPath), { mode: 0o700, recursive: true });
+  ensureStateDirectory(commonGitDirectory, dirname(receiptPath));
   if (existsSync(receiptPath)) {
     const status = lstatSync(receiptPath);
     if (status.isSymbolicLink() || !status.isFile()) {

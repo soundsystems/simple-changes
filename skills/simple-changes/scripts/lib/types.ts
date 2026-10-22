@@ -1508,9 +1508,9 @@ export interface HeldUnitObservation {
   } | null;
   controllerAgentId: string;
   /**
-   * Each original path of the unit's own renames or copies that is not an
-   * opening change of its own, with the source checkout's exact entry there:
-   * absent after a rename, the kept bytes after a copy.
+   * Each original path of the unit's own renames that is not an opening
+   * change of its own, with the source checkout's entry there, which must
+   * be absent, as it was when the scope froze.
    */
   originalPaths: Array<{ path: string; sourceEntry: string | null }>;
   paths: Array<{

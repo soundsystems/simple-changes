@@ -113,7 +113,7 @@
         },
         "controllerAgentId": { "type": "string", "minLength": 1 },
         "originalPaths": {
-          "description": "Each original path of the unit's own renames or copies that is not an opening change of its own, with the source checkout's exact entry there: absent after a rename, the kept bytes after a copy.",
+          "description": "Each original path of the unit's own renames that is not an opening change of its own, with the source checkout's entry there, which must be absent (null), as it was when the scope froze.",
           "type": "array",
           "items": {
             "type": "object",
@@ -121,7 +121,7 @@
             "required": ["path", "sourceEntry"],
             "properties": {
               "path": { "type": "string", "minLength": 1 },
-              "sourceEntry": { "$ref": "#/$defs/entry" }
+              "sourceEntry": { "type": "null" }
             }
           }
         },

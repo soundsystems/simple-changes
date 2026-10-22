@@ -193,15 +193,16 @@ const assertHoldIntact = (lease: HeldUnitLease, hold: HeldUnitHold): void => {
   }
   if (
     lease.shipmentScope &&
-    !sameJson(
+    (!sameJson(
       observation.originalPaths.map((item) => item.path),
       heldUnitOriginalPaths(lease.shipmentScope, hold.unit)
-    )
+    ) ||
+      observation.originalPaths.some((item) => item.sourceEntry !== null))
   ) {
     tampered(
       lease.runId,
       unitId,
-      "its observed original paths do not match the unit's renames in the frozen scope"
+      "its observed original paths do not match the unit's renames in the frozen scope, or one was not absent"
     );
   }
 };

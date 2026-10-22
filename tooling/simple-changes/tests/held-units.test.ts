@@ -1094,6 +1094,42 @@ describe("holding a rename or copy against the target", () => {
     expect(existsSync(heldFile(root, lease.runId))).toBe(false);
   });
 
+  // After the scope froze, old-name.ts is recreated with its base bytes.
+  const DRIFTED = "exists again";
+  const recreateOriginal = (root: string) =>
+    writeFixture(root, "old-name.ts", "export const name = 1;\n");
+
+  test("refuses, writing nothing, a rename whose original exists again, when the target kept the original", () => {
+    const { lease, root } = renameRun(false);
+    recreateOriginal(root);
+    expect(() =>
+      holdUnit(root, lease.runId, "rename", ["rename: not ready."])
+    ).toThrow(DRIFTED);
+    expect(existsSync(heldFile(root, lease.runId))).toBe(false);
+  });
+
+  test("refuses, writing nothing, a rename whose original exists again, when the target has the whole rename", () => {
+    const { lease, root } = renameRun(true);
+    recreateOriginal(root);
+    expect(() =>
+      holdUnit(root, lease.runId, "rename", ["rename: not ready."])
+    ).toThrow(DRIFTED);
+    expect(existsSync(heldFile(root, lease.runId))).toBe(false);
+  });
+
+  test("holds a rename again once a recreated original is gone", () => {
+    const { lease, root } = renameRun(false);
+    recreateOriginal(root);
+    rmSync(join(root, "old-name.ts"));
+    const held = approvedHold(root, lease.runId, "rename", [
+      "rename: not ready.",
+    ]);
+    expect(held.status).toBe("held");
+    expect(held.hold?.observation.originalPaths).toEqual([
+      { path: "old-name.ts", sourceEntry: null },
+    ]);
+  });
+
   // With status.renames=copies, the primary copies src.ts to copy.ts and
   // modifies src.ts, so Git reports `C copy.ts <- src.ts` and `M src.ts`.
   // The `copy` unit owns copy.ts and the `source` unit owns src.ts. The

@@ -192,11 +192,11 @@ colon, then state the evidence, and must not name another scoped unit's ID.
 A filename, especially a shared one such as a changelog, does not say which
 unit failed. The command also
 refuses a unit whose exact opening bytes are already in the target at every
-path, and at each original path of its own renames or copies the exact entry
-its source checkout has there, which the hold observes: absent after a
-rename, the kept bytes after a copy (record it as delivered or
-target-equivalent). A copy's modified source is its own change, decided by
-whatever scopes it. It also refuses a unit that is not in
+path and has each original path of its own renames absent (record it as
+delivered or target-equivalent). A copy's modified source is its own change,
+decided by whatever scopes it. A rename's original was absent when the scope
+froze, so if it exists again in the source checkout, the command refuses,
+records nothing, and asks you to replan. It also refuses a unit that is not in
 the frozen scope, a unit already held, a unit that a scoped unit that is not
 held depends on, a missing source checkout, and a run that already recorded
 its outcome: a hold never reinterprets a recorded outcome.

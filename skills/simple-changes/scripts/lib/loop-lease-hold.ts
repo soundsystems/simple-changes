@@ -271,6 +271,21 @@ const observeHeldUnit = (
     );
     return matches.length === 1 ? (matches[0]?.sourceEntry ?? null) : null;
   };
+  // An original path that is not an opening change of its own was absent
+  // when the scope froze: Git lists a path that still exists as its own
+  // change, and reports a copy only from a modified source, which is its own
+  // change. One that exists now drifted after the freeze, so the frozen
+  // result can no longer be judged.
+  const originalPaths = heldUnitOriginalPaths(scope, unit).map((path) => ({
+    path,
+    sourceEntry: worktreeSourceEntry(source.path, path),
+  }));
+  const drifted = originalPaths.filter((item) => item.sourceEntry !== null);
+  if (drifted.length > 0) {
+    return refuse(
+      `Unit ${unit.id} moved ${drifted.map((item) => item.path).join(", ")} away when its scope froze, but ${drifted.length === 1 ? "that path exists" : "those paths exist"} again in ${source.path}, so its frozen result can no longer be judged against the target. Nothing was recorded. Ask the user to replan the run.`
+    );
+  }
   return {
     claim: claim
       ? {
@@ -281,10 +296,7 @@ const observeHeldUnit = (
         }
       : null,
     controllerAgentId: lease.ownerAgentId,
-    originalPaths: heldUnitOriginalPaths(scope, unit).map((path) => ({
-      path,
-      sourceEntry: worktreeSourceEntry(source.path, path),
-    })),
+    originalPaths,
     paths: unit.paths.map((path) => ({
       openingEntry: openingEntry(path),
       path,
@@ -309,9 +321,9 @@ const observeHeldUnit = (
 
 /**
  * Whether the target already has the unit's exact opening result: every
- * path's opening entry, and at each of the unit's original paths the entry
- * the source checkout has there (absent after a rename, the kept bytes after
- * a copy), never an entry inferred from the kind of change.
+ * path's opening entry, and each of the unit's original paths absent, as it
+ * was in the source when the scope froze. The observation already refused
+ * an original that exists again.
  */
 const openingResultInTarget = (
   lease: LoopLease,
@@ -322,10 +334,7 @@ const openingResultInTarget = (
   return (
     observation.paths.every(
       (item) => inTarget(item.path) === item.openingEntry
-    ) &&
-    observation.originalPaths.every(
-      (item) => inTarget(item.path) === item.sourceEntry
-    )
+    ) && observation.originalPaths.every((item) => inTarget(item.path) === null)
   );
 };
 

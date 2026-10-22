@@ -90,10 +90,7 @@ declares itself in a machine-readable `changelog-provider.json` beside its
 distribution matching and installed-guidance comparison. Only when no marker is
 installed may discovery fall back to the installation directory name and
 SKILL.md prose, and it must then report `providerEvidence: "inferred"` rather
-than presenting a guess as a declaration. A discovery-only marker advertises
-empty `requestVersions` and `receiptVersions`; never negotiate a handoff with
-it. When a handoff-capable provider and a discovery-only provider are both
-installed, the handoff-capable one is selected.
+than presenting a guess as a declaration.
 
 Installed-update detection is a narrower read-only pre-loop check, not
 capability negotiation. Compare the selected provider's declared current
@@ -115,12 +112,8 @@ The preference grants coordination behavior, not permission to invent release
 intent, create new destinations, publish a release, change a version, or bypass
 the changelog workflow's own authority checks.
 
-When compatible Simple Changelogs is installed, default changelog handling to
-**Delegate when available**. When changelog work is relevant but the skill is
-not installed or compatible, offer installation and setup timing per
-[onboarding](onboarding.md); never install it silently, and
-installation grants no version, release, publication, deployment, or
-data-write authority.
+The recommended default, the install offer, and setup timing follow
+[onboarding](onboarding.md#customized-questions).
 
 ## Use a closed three-phase transaction
 
@@ -206,9 +199,8 @@ policy and the number; the protocol only carries the decision so Simple
 Changes can bind it. It needs request v2 and receipt v3, and the negotiated
 versions alone decide whether it is available. The `shared-version-lines`
 feature is optional and informational: negotiation reports it, but nothing
-gates on it. A provider may leave it out until it gates real behavior; one
-that advertises it must still wait until every controller in the repository
-is 0.23.0 or later.
+gates on it. A provider may leave it out until it gates real behavior, and
+advertising it follows the version rule above.
 
 - **Request v2** adds `releaseSetTrains`: every train released together from
   one input target revision under one `releaseSetId`, or null. It is null
@@ -280,11 +272,6 @@ Create or push a Git tag only through `release-tag`, and only the tag a
 verified receipt names, under the release's existing approval and reviewed tag
 automation, to the run's own single-URL target remote. Never move, replace,
 or delete a tag, and never tag from Sync or as a delegated author.
-
-When the receipt names a release tag, run `release-tag
---dry-run` before the release merge, publish it with `release-tag` before
-any deployment, and require `already-present` at final verification, even
-with no deployment; see [release tags](#release-tags).
 
 Simple Changes 0.27.0 and later understand request v3 and receipt v4.
 Controllers from 0.13.0 to 0.26 ignore those versions and negotiate exactly
@@ -397,9 +384,9 @@ pairs:
 | `push-rejected` | `retry-after-fix` | The remote refused the push |
 | `readback-failed` | `retry-after-fix` | The remote does not show the pushed tag |
 
-A blocked tag stops that release's deployment. Before the merge,
-`tag-exists-elsewhere` means the version is taken; after it, someone tagged in
-between, so stop and ask. Any nonzero tag push is `push-rejected`, even when
+A blocked tag stops that release's deployment. After the merge,
+`tag-exists-elsewhere` means someone tagged in between, so stop and ask. Any
+nonzero tag push is `push-rejected`, even when
 another writer published the same tag on the same commit first; a re-run then
 reports `already-present`. A rejected push is never retried another way:
 report Git's own message, then the user pushes with sufficient rights,

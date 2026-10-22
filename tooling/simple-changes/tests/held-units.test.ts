@@ -24,6 +24,7 @@ import {
 } from "../../../skills/simple-changes/scripts/lib/inventory.ts";
 import {
   closeLoopTargetEquivalent,
+  endLoop,
   finalizeLoop,
   type HoldUnitApproval,
   holdScopedUnit,
@@ -1227,6 +1228,67 @@ describe("held unit in a claimed author checkout", () => {
         (item) => item.claimId === claim.claimId
       )?.state
     ).toBe("active");
+  });
+
+  test("a run that held every claimed checkout closes only at its exact pinned target", () => {
+    const holdBoth = () => {
+      const fixture = claimedFixture();
+      for (const unitId of [fixture.shippingUnit, fixture.roleUnit]) {
+        approvedHold(fixture.shipping, fixture.lease.runId, unitId, [
+          `${unitId}: not ready.`,
+        ]);
+      }
+      return fixture;
+    };
+    const recordEmpty = (shipping: string, runId: string) => {
+      const { draft } = draftShipmentOutcome(shipping, runId);
+      expect(draft).toMatchObject({ additionalPaths: [], units: [] });
+      recordShipmentOutcome(shipping, runId, CONTROLLER, reviewed(draft));
+    };
+
+    const moved = holdBoth();
+    const base = git(moved.root, ["rev-parse", "origin/main"]);
+    git(moved.root, [
+      "update-ref",
+      "refs/remotes/origin/main",
+      git(moved.root, [
+        "commit-tree",
+        "-p",
+        base,
+        "-m",
+        "Empty target commit",
+        `${base}^{tree}`,
+      ]),
+    ]);
+    recordEmpty(moved.shipping, moved.lease.runId);
+    expect(() =>
+      endLoop(moved.shipping, moved.lease.runId, CONTROLLER)
+    ).toThrow("closes only at its pinned target");
+    const refused = finalizeLoop(
+      moved.shipping,
+      moved.lease.runId,
+      CONTROLLER,
+      "Everything is held, but the target moved."
+    );
+    expect(refused.outcome).toBe("relinquished");
+    expect(refused.receipt.deliveryStatus).toBe("unverified");
+    expect(refused.blockers).toContainEqual(
+      expect.stringContaining("closes only at its pinned target")
+    );
+
+    const pinned = holdBoth();
+    recordEmpty(pinned.shipping, pinned.lease.runId);
+    const closed = finalizeLoop(
+      pinned.shipping,
+      pinned.lease.runId,
+      CONTROLLER,
+      "Everything is held."
+    );
+    expect(closed.blockers).toEqual([]);
+    expect(closed.outcome).toBe("completed");
+    expect(closed.receipt.deliveryStatus).toBe("unverified");
+    expect(existsSync(join(pinned.role, "role.ts"))).toBe(true);
+    expect(existsSync(join(pinned.shipping, "feature.txt"))).toBe(true);
   });
 
   test("refuses an approval after the claim changed", () => {

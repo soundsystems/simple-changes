@@ -128,6 +128,16 @@ interface HeldProtection {
   unitIds: Set<string>;
 }
 
+/** Whether the run's scope has units and every one of them is held. */
+const allUnitsHeld = (
+  lease: LoopLease,
+  holds: readonly HeldUnitHold[]
+): boolean => {
+  const units = lease.shipmentScope?.plan.units ?? [];
+  const held = heldUnitIds(holds);
+  return units.length > 0 && units.every((unit) => held.has(unit.id));
+};
+
 /**
  * The primary-checkout paths held units own: their scoped paths and, for a
  * scoped rename, the original path it moved from, which the primary's status
@@ -1668,6 +1678,14 @@ const shipmentOutcomeCompletionBlockers = (
     }
     return [];
   });
+  // A run that held every scoped unit delivered none of its scope. It closes
+  // only at the exact pinned target, however it closes, and never as a
+  // verified delivery.
+  if (allUnitsHeld(lease, holds) && targetRevision !== lease.targetRevision) {
+    unitBlockers.push(
+      `Every scoped unit of ${lease.runId} is held, so it delivered nothing, but the target moved from ${lease.targetRevision} to ${targetRevision ?? "unresolved"}. A run that held all of its work closes only at its pinned target; replan it instead.`
+    );
+  }
   // A preserved-source override holds only while its source, claim, and
   // target entries stay exactly as approved.
   const sourceBlockers = lease.shipmentScope.plan.units.flatMap((expected) => {
@@ -1991,8 +2009,13 @@ const hasVerifiedDelivery = (
     return false;
   }
   // Held units are reported separately and never count as delivered; the
-  // blockers above already proved the hold record readable.
-  const held = heldUnitIds(readHeldUnits(lease));
+  // blockers above already proved the hold record readable. A run that held
+  // every unit delivered none of its scope.
+  const holds = readHeldUnits(lease);
+  if (allUnitsHeld(lease, holds)) {
+    return false;
+  }
+  const held = heldUnitIds(holds);
   return scope.plan.units.every((unit) => {
     if (held.has(unit.id)) {
       return true;
@@ -2142,13 +2165,9 @@ const allHeldCompletion = (
   ) {
     return false;
   }
-  // The target must be exactly the pinned one, not only an equal tree: a
-  // target that moved, even by an empty commit, is not an all-held close.
+  // The blockers include the exact pinned-target rule for all-held runs.
   const target = currentTargetRevision(lease);
-  if (
-    target !== lease.targetRevision ||
-    shipmentOutcomeCompletionBlockers(lease, inventory, target).length > 0
-  ) {
+  if (shipmentOutcomeCompletionBlockers(lease, inventory, target).length > 0) {
     return false;
   }
   const primary = inventory.worktrees.find((worktree) => worktree.isPrimary);

@@ -226,8 +226,11 @@ switches, fast-forwards, or normalizes a primary checkout a held unit was
 packaged from, clean or not. A held primary path counts as excluded
 in the primary delivery proof, and so does the original path of a held
 rename, so the other units can still verify delivery. A run that held every
-unit, with an exactly empty outcome because the target did not move, closes
-with its held work in place and `deliveryStatus: unverified`. Whole-run recovery
+unit delivered none of its scope: it never reports verified delivery. `loop
+finalize` closes it with an exactly empty outcome and its held work in place
+(`deliveryStatus: unverified`), and both `loop finalize` and `loop end`
+refuse it unless the target is still its exact pinned revision. If the target
+moved, even by an empty commit, replan the run instead. Whole-run recovery
 closes, `loop close-equivalent` and `loop recover-post-cleanup`, refuse a run
 that held a unit, because they would report held work as finished; finish it
 with `loop finalize` or replan it.

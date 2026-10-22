@@ -393,7 +393,12 @@ describe("bounded loop-lock waits for metadata writers", () => {
       outcome: "caller-ancestry-unknown",
       owner: { operation: "loop exec" },
     });
-    expect(report.lockWait?.owner).toHaveProperty("childProcessId");
+    // The writer may read the owner before or after the holder records its
+    // child's PID; either phase shows the owner runs a child.
+    const owner = report.lockWait?.owner;
+    expect(
+      owner?.childStarting === true || typeof owner?.childProcessId === "number"
+    ).toBe(true);
     expect(report.lockWait?.waitedMs).toBeLessThan(60_000);
     expect(ledgerAttestations(checkout)).toEqual([]);
     // An owner running no child is still waited on without a process list.
@@ -555,13 +560,17 @@ describe("bounded loop-lock waits for metadata writers", () => {
     const realNow = Date.now;
     const realWait = Atomics.wait;
     const pause = new Int32Array(new SharedArrayBuffer(4));
+    // The clock stands still except where the first pause oversleeps its
+    // 200 ms bound by a second, while the holder releases the lock, so a
+    // late attempt would find it free.
+    const frozenAt = realNow();
     let skewMs = 0;
+    let pauses = 0;
     let calls = 0;
-    // The first pause oversleeps its 200 ms bound, and the holder releases
-    // the lock meanwhile, so a late attempt would find it free.
-    Date.now = () => realNow() + skewMs;
+    Date.now = () => frozenAt + skewMs;
     Atomics.wait = ((target: unknown) => {
       if (target !== pause) {
+        pauses += 1;
         skewMs += 1000;
         writeFileSync(holder.releaseFile, "");
         while (existsSync(lockPath)) {
@@ -585,7 +594,9 @@ describe("bounded loop-lock waits for metadata writers", () => {
     } finally {
       Date.now = realNow;
       Atomics.wait = realWait;
+      writeFileSync(holder.releaseFile, "");
     }
+    expect(pauses).toBe(1);
     expect(await holder.child.exited).toBe(0);
     expect(calls).toBe(0);
     expect(thrown).toBeInstanceOf(LoopLockWaitError);

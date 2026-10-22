@@ -167,7 +167,7 @@ export const releasePathsFromChangelogReceipt = (value: unknown): string[] => {
  * source result its scope recorded. The disposition comes from path movement
  * alone, and an edit to a shared file or an absent path proves neither
  * delivery nor equivalence. Only a reviewed primary result or an approved
- * preserved-source override lets the recorder accept such an entry.
+ * preserved-source override or handoff lets the recorder accept such an entry.
  */
 const sourceMismatchWarning = (
   unit: { id: string; sourceWorktree: string },
@@ -194,7 +194,7 @@ const sourceMismatchWarning = (
   }
   const shown = mismatched.slice(0, MISMATCH_PATH_LIMIT).join(", ");
   const more = mismatched.length - MISMATCH_PATH_LIMIT;
-  return `Unit ${unit.id} is suggested as ${disposition}, but the final target entry for ${shown}${more > 0 ? ` and ${more} more path(s)` : ""} differs from the opening source result its scope recorded, so loop record-outcome refuses this disposition unless a reviewed primary-checkout result or an approved preserved-source override covers it. A changed shared file or an absent path does not show that the unit shipped; check it before recording.`;
+  return `Unit ${unit.id} is suggested as ${disposition}, but the final target entry for ${shown}${more > 0 ? ` and ${more} more path(s)` : ""} differs from the opening source result its scope recorded, so loop record-outcome refuses this disposition unless a reviewed primary-checkout result, an approved preserved-source override, or an approved preserved-source handoff covers it. A changed shared file or an absent path does not show that the unit shipped; check it before recording.`;
 };
 
 export const draftShipmentOutcome = (

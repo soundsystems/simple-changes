@@ -69,6 +69,10 @@ const REMOTE_BRANCH_SUPERSESSION_DIRECTORY = "remote-branch-supersession";
 
 const PRESERVED_SOURCE_OVERRIDE_DIRECTORY = "preserved-source-override";
 
+// Its own sidecar, so an older runtime's strict override reader never sees a
+// handoff and an outcome carrying one fails closed there.
+const PRESERVED_SOURCE_HANDOFF_DIRECTORY = "preserved-source-handoff";
+
 const CHANGELOG_AUTHOR_DIRECTORY = "changelog-author";
 
 const DIGEST_PATTERN = /^[0-9a-f]{64}$/u;
@@ -1156,6 +1160,7 @@ const currentTargetRevision = (lease: LoopLease): string => {
 
 type ReceiptSidecarDirectory =
   | typeof CHANGELOG_AUTHOR_DIRECTORY
+  | typeof PRESERVED_SOURCE_HANDOFF_DIRECTORY
   | typeof PRESERVED_SOURCE_OVERRIDE_DIRECTORY
   | typeof REMOTE_BRANCH_ANCESTRY_DIRECTORY
   | typeof REMOTE_BRANCH_SUPERSESSION_DIRECTORY;
@@ -1413,6 +1418,7 @@ export {
   matchingRemovalDisposition,
   nothingAtPath,
   ownerProcessEvidence,
+  PRESERVED_SOURCE_HANDOFF_DIRECTORY,
   PRESERVED_SOURCE_OVERRIDE_DIRECTORY,
   processGroupIsAlive,
   processIsAlive,

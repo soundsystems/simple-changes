@@ -12,6 +12,7 @@ import {
   effectiveShipmentScopeFrozenAt,
   matchingOverride,
   ownerProcessEvidence,
+  PRESERVED_SOURCE_HANDOFF_DIRECTORY,
   PRESERVED_SOURCE_OVERRIDE_DIRECTORY,
   requiredRunId,
   requiredText,
@@ -31,15 +32,21 @@ import {
 import { assertSafeRelativePath } from "./path-safety.ts";
 import { validatePlanConservation } from "./planner.ts";
 import {
+  type PreservedSourceHandoffCopy,
+  preservedSourceHandoffFailure,
+} from "./preserved-source-handoff.ts";
+import {
   preservedSourceOverrideFailure,
   splitShipmentOutcomeInput,
 } from "./preserved-source-override.ts";
 import { runGit } from "./process.ts";
 import { validateSchema } from "./schema.ts";
+import { sourceWorktreeDelta } from "./source-worktree-delta.ts";
 import type {
   ChangePlan,
   LoopLease,
   LoopVerification,
+  PreservedSourceHandoffReceipt,
   PreservedSourceOverrideReceipt,
   RepositoryInventory,
   ShipmentOutcomeReceipt,
@@ -915,18 +922,167 @@ const preservedSourceOverrideIssue = (
   );
 };
 
+// The copy commit a handoff names, read lazily from the primary's Git.
+const handoffCopy = (
+  lease: LoopLease,
+  receipt: ShipmentOutcomeReceipt,
+  copyRevision: string
+): PreservedSourceHandoffCopy => ({
+  changedPaths: () => {
+    const parents = runGit(
+      lease.primaryCheckout,
+      ["rev-list", "--parents", "--max-count=1", `${copyRevision}^{commit}`],
+      true
+    );
+    const [commit, parent, ...others] = parents.stdout.trim().split(" ");
+    if (
+      parents.exitCode !== 0 ||
+      commit !== copyRevision ||
+      !parent ||
+      others.length > 0
+    ) {
+      return null;
+    }
+    const diff = runGit(
+      lease.primaryCheckout,
+      [
+        "diff-tree",
+        "-r",
+        "--no-renames",
+        "--name-only",
+        "-z",
+        "--ignore-submodules=none",
+        parent,
+        copyRevision,
+        "--",
+      ],
+      true
+    );
+    return diff.exitCode === 0 ? diff.stdout.split("\0").filter(Boolean) : null;
+  },
+  containedInOpeningTarget: () =>
+    targetContainsRevision(
+      lease.primaryCheckout,
+      lease.targetRevision,
+      copyRevision
+    ),
+  containedInTarget: () =>
+    targetContainsRevision(
+      lease.primaryCheckout,
+      receipt.targetRevision,
+      copyRevision
+    ),
+  entry: (path) => targetTreeEntry(lease.primaryCheckout, copyRevision, path),
+});
+
+/**
+ * Rechecks a user-approved preserved-source handoff against the original
+ * owner's claim and accepted pause, the source checkout, the committed copy,
+ * and the exact target tree. Reads the coordination document, so callers
+ * hold the worktree-coordination lock.
+ */
+const preservedSourceHandoffIssue = (
+  lease: LoopLease,
+  inventory: RepositoryInventory,
+  receipt: ShipmentOutcomeReceipt,
+  unit: OutcomeUnit,
+  handoff: PreservedSourceHandoffReceipt | undefined,
+  expected: PlannedUnit,
+  recordedAt: string
+): string | null => {
+  const { sourceWorktree } = expected;
+  const registered = lease.worktrees.find(
+    (worktree) => worktree.path === sourceWorktree
+  );
+  const document = readCoordinationDocumentFromCommonDirectory(
+    lease.commonGitDirectory
+  );
+  const openingEntries = new Map(
+    (lease.shipmentScope?.openingChanges ?? [])
+      .filter((change) => change.worktreePath === sourceWorktree)
+      .map((change) => [change.path, change.sourceEntry])
+  );
+  return preservedSourceHandoffFailure(
+    {
+      claim: document.claims.find(
+        (item) => item.claimId === registered?.claimId
+      ),
+      commonGitDirectory: lease.commonGitDirectory,
+      controllerAgentId: lease.ownerAgentId,
+      copy: handoffCopy(lease, receipt, handoff?.copyRevision ?? ""),
+      current: inventory.worktrees.find((item) => item.path === sourceWorktree),
+      disposition: unit.disposition,
+      finalPaths: unit.finalPaths,
+      handoff,
+      opening: lease.openingWorktrees?.find(
+        (worktree) => worktree.path === sourceWorktree
+      ),
+      openingEntries,
+      originalPaths: unit.originalPaths,
+      pauseReceipt: document.receipts.find(
+        (item) => item.receiptId === registered?.pauseReceiptId
+      ),
+      registered,
+      runId: lease.runId,
+      runStartedAt: lease.createdAt,
+      scopePaths: expected.paths,
+      sourceDelta: () => {
+        const head = inventory.worktrees.find(
+          (item) => item.path === sourceWorktree
+        )?.headSha;
+        return head
+          ? sourceWorktreeDelta(sourceWorktree, head, (path) =>
+              worktreeSourceEntry(sourceWorktree, path)
+            )
+          : { failure: "its HEAD cannot be resolved" };
+      },
+      sourceEntry: (path) => worktreeSourceEntry(sourceWorktree, path),
+      sourceWorktree,
+      targetEntry: (path) =>
+        targetTreeEntry(lease.primaryCheckout, receipt.targetRevision, path),
+      targetRevision: receipt.targetRevision,
+      unitId: unit.unitId,
+    },
+    recordedAt
+  );
+};
+
+interface PreservedSourceEvidenceForUnit {
+  handoff: PreservedSourceHandoffReceipt | undefined;
+  override: PreservedSourceOverrideReceipt | undefined;
+}
+
 const assertDirectOutcomeMatchesSource = (
   lease: LoopLease,
   inventory: RepositoryInventory,
   receipt: ShipmentOutcomeReceipt,
   unit: OutcomeUnit,
-  override: PreservedSourceOverrideReceipt | undefined,
+  { handoff, override }: PreservedSourceEvidenceForUnit,
   expected: PlannedUnit,
   openingChanges: OpeningShipmentChange[],
   recordedAt: string
 ): void => {
   let reviewedPrimaryResultAllowed: boolean | null = null;
   let preservedSourceOverrideAllowed = false;
+  if (handoff) {
+    const issue = preservedSourceHandoffIssue(
+      lease,
+      inventory,
+      receipt,
+      unit,
+      handoff,
+      expected,
+      recordedAt
+    );
+    if (issue) {
+      throw new SimpleChangesError(
+        `Shipment outcome unit ${unit.unitId} has invalid preserved-source handoff: ${issue}.`,
+        EXIT_CODES.validation
+      );
+    }
+    // The handoff proved every scoped path's source, copy, and final entry.
+    return;
+  }
   if (override) {
     const issue = preservedSourceOverrideIssue(
       lease,
@@ -984,7 +1140,10 @@ const validateShipmentOutcomeUnits = (
   receipt: ShipmentOutcomeReceipt,
   targetDeltaPaths: Set<string>,
   renameOriginals: Map<string, string>,
-  overrides: readonly PreservedSourceOverrideReceipt[],
+  evidence: {
+    handoffs: readonly PreservedSourceHandoffReceipt[];
+    overrides: readonly PreservedSourceOverrideReceipt[];
+  },
   recordedAt: string
 ): { accountedPaths: Set<string>; scopedPaths: Set<string> } => {
   const scope = lease.shipmentScope;
@@ -1036,7 +1195,12 @@ const validateShipmentOutcomeUnits = (
       inventory,
       receipt,
       unit,
-      overrides.find((item) => item.unitId === unit.unitId),
+      {
+        handoff: evidence.handoffs.find((item) => item.unitId === unit.unitId),
+        override: evidence.overrides.find(
+          (item) => item.unitId === unit.unitId
+        ),
+      },
       expected,
       scope.openingChanges,
       recordedAt
@@ -1120,16 +1284,20 @@ export interface PreservedSourceApproval {
 
 /**
  * The approval flags on `loop record-outcome` must restate every
- * preserved-source override exactly, and are refused when no override exists.
+ * preserved-source override and handoff exactly, and are refused when the
+ * outcome has neither.
  */
 const assertPreservedSourceApproval = (
-  overrides: readonly PreservedSourceOverrideReceipt[],
+  approved: readonly (
+    | PreservedSourceHandoffReceipt
+    | PreservedSourceOverrideReceipt
+  )[],
   approval: PreservedSourceApproval | undefined
 ): void => {
-  if (overrides.length === 0) {
+  if (approved.length === 0) {
     if (approval?.approvedBy || approval?.approvalReference) {
       throw new SimpleChangesError(
-        "Manual approval flags require a preserved-source override in the outcome.",
+        "Manual approval flags require a preserved-source override or handoff in the outcome.",
         EXIT_CODES.validation
       );
     }
@@ -1144,14 +1312,14 @@ const assertPreservedSourceApproval = (
     "manual preserved-source approval reference"
   );
   if (
-    overrides.some(
+    approved.some(
       (item) =>
         item.approvedBy !== approvedBy ||
         item.approvalReference !== approvalReference
     )
   ) {
     throw new SimpleChangesError(
-      "Manual preserved-source approval flags must match every exact outcome override.",
+      "Manual preserved-source approval flags must match every exact outcome override and handoff.",
       EXIT_CODES.validation
     );
   }
@@ -1258,11 +1426,11 @@ export const recordShipmentOutcome = (
   // Placeholders are refused before anything else reads the receipt, with
   // or without preserved-source overrides.
   assertNoOutcomeDraftPlaceholders(receiptInput);
-  // Overrides ride on the receipt's units but are stored beside the lease;
-  // the recorded digest covers the complete receipt, overrides included.
-  const { overrides, receipt, receiptDigest } =
+  // Overrides and handoffs ride on the receipt's units but are stored beside
+  // the lease; the recorded digest covers the complete receipt, both included.
+  const { handoffs, overrides, receipt, receiptDigest } =
     splitShipmentOutcomeInput(receiptInput);
-  assertPreservedSourceApproval(overrides, approval);
+  assertPreservedSourceApproval([...overrides, ...handoffs], approval);
   const opening = locateRepository(repositoryPath);
   // The coordination lock keeps the claim a preserved-source override binds
   // from changing between validation and the lease write.
@@ -1313,7 +1481,7 @@ export const recordShipmentOutcome = (
             receipt,
             targetDeltaPaths,
             renameOriginals,
-            overrides,
+            { handoffs, overrides },
             recordedAt
           );
           validateAdditionalShipmentPaths(
@@ -1332,6 +1500,18 @@ export const recordShipmentOutcome = (
               ? null
               : {
                   overrides,
+                  receiptDigest,
+                  runId: lease.runId,
+                  schemaVersion: 1,
+                }
+          );
+          writeReceiptSidecar(
+            lease,
+            PRESERVED_SOURCE_HANDOFF_DIRECTORY,
+            handoffs.length === 0
+              ? null
+              : {
+                  handoffs,
                   receiptDigest,
                   runId: lease.runId,
                   schemaVersion: 1,
@@ -1378,6 +1558,7 @@ export const targetTreeEntry = (
 export {
   openingScopeFailure,
   owesFirstScope,
+  preservedSourceHandoffIssue,
   preservedSourceOverrideIssue,
   worktreeSourceEntry,
 };

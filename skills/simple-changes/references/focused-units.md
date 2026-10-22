@@ -4,6 +4,7 @@ Contents:
 
 - Group work into units
 - Preserved-source override
+- Preserved-source handoff
 
 ## Group work into units
 
@@ -150,3 +151,73 @@ evidence; it never substitutes for them. Finish, end, or archive a run that
 recorded an override only with Simple Changes 0.25.0 or later: an older runtime
 still reads its lease but ignores the override file, so it cannot enforce these
 checks.
+
+## Preserved-source handoff
+
+A third exception covers a dirty source checkout, detached or on a branch, that
+the run must keep in place while it ships a committed copy of that source. The
+source's original owner claimed it before the run started and paused it for
+this run with `worktree pause --disposition preserve-in-place`, and the
+controller accepted that pause with `loop accept-paused-change`. The run then
+committed an exact copy of the source's bytes and may have integrated
+independently reviewed changes, such as docs or notes, on top. Like the
+override, it is user-approved and never a routine path.
+
+Record the unit as `delivered` with a `preservedSourceHandoff` object that
+binds: `runId`, `unitId`, the owner's `claimId`, `ownerAgentId`, and
+`pauseReceiptId`; `sourceWorktree`, `sourceBranch` (`null` when detached),
+`sourceHeadRevision`, and `sourceChangeDigest`; `copyRevision`, the commit that
+copied the source; the bound `targetRevision`; `paths` with each scoped path's
+opening `sourceEntry`, its `copyEntry` in the copy commit, and its final
+`targetEntry`; `decision: "reviewed-handoff"`, `reviewerAgentId`,
+`reviewReference`, and `reviewedAt`; and the user's
+`preservation: "keep-source-in-place"`, `approvedBy`, `approvalReference`,
+`approvalReason`, and `approvedAt`. Restate the approval with the same
+`--approved-by` and `--approval-reference` flags as for an override; they must
+match every override and handoff in the receipt. A unit carries an override or
+a handoff, never both.
+
+Recording requires:
+
+- a dirty, non-primary source the run registered as preserved through the
+  accepted pause, with no rename originals in the outcome, still at the exact
+  branch, head, and status digest it had at loop start, in the pause receipt,
+  and in its registration;
+- a source this unit covers whole, within the supported contract. The handoff
+  reads the source's changes from the filesystem, not from Git status, which
+  index flags (assume-unchanged, skip-worktree) and settings
+  (`core.filemode`, a submodule's `ignore`) can tell to look away: every path
+  in the source HEAD tree or listed by
+  `git ls-files --cached --others --exclude-standard` is read directly, a
+  regular file hashed with `git hash-object` and its mode taken from its own
+  executable bits. The paths that differ from HEAD must be exactly the unit's
+  scoped paths at their opening entries (none left to another unit,
+  preserved, or excluded), none may be conflicted, renamed, or copied, and
+  each must be a regular file, executable, symlink, or deletion. A submodule,
+  nested repository, untracked directory, or a path under a symlinked
+  directory is refused. Ignored files stay outside the change set, as
+  everywhere else. Every tracked file is hashed, so a large source takes
+  longer to record and finalize;
+- the owner's claim, created before the run started, still `adopted-preserved`
+  at that exact state, and the owner's own `preserve-in-place` receipt for this
+  run; the handoff's owner must be that claim's and receipt's owner, and never
+  the controller;
+- every scoped path covered exactly once, with unchanged source bytes, a copy
+  commit holding exactly those bytes, and the exact final target entries;
+- a copy commit with one parent that changes only this unit's scoped paths,
+  is in the final target, and was not in the run's opening target;
+- a reviewer who is neither the controller nor the owner, and an approval given
+  after the review, by someone other than either, no more than one hour before
+  recording.
+
+The runtime keeps handoffs out of the lease, in
+`<common-git-dir>/simple-changes/preserved-source-handoff/<run-id>.json`, a
+file of its own defined by `evals/schemas/preserved-source-handoff.schema.json`,
+and the recorded outcome digest covers them. `loop finalize` and `loop end`
+recheck all of it under the coordination lock, and the run closes as delivered
+with the source and its claim untouched only while nothing moved: a source,
+claim, pause, copy, or target change, including a target advance that drops a
+reviewed entry, or an edited or missing handoff file blocks completion. An
+older runtime does not read that file, so the digest it recomputes cannot match
+and it refuses to finish, end, or archive such a run; use Simple Changes 0.33.0
+or later.

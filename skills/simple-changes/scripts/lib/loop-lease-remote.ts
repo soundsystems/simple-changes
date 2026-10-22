@@ -13,6 +13,7 @@ import {
   MISSING_REMOTE_RECONCILIATION_BLOCKER,
   ownerProcessEvidence,
   REMOTE_BRANCH_ANCESTRY_DIRECTORY,
+  REMOTE_BRANCH_OPEN_TARGETS_DIRECTORY,
   REMOTE_BRANCH_SUPERSESSION_DIRECTORY,
   REMOTE_RECONCILIATION_MODES,
   readReceiptSidecar,
@@ -29,6 +30,7 @@ import {
 import { verificationAgainst } from "./loop-lease-verify.ts";
 import { runGit } from "./process.ts";
 import {
+  openProposalTargetsForReceipt,
   remoteBranchReconciliationDigest,
   remoteInventoryDigest,
   splitRemoteBranchReconciliationInput,
@@ -41,6 +43,8 @@ import type {
   LoopLease,
   RemoteBranchAncestryProof,
   RemoteBranchAncestryRecord,
+  RemoteBranchOpenProposalTarget,
+  RemoteBranchOpenTargetsRecord,
   RemoteBranchReconciliationReceipt,
   RemoteBranchSupersession,
   RemoteBranchSupersessionRecord,
@@ -96,6 +100,53 @@ const writeRemoteBranchSupersession = (
           }
         )
   );
+
+/**
+ * Open proposal targets follow the same sidecar rules. They only narrow the
+ * cleanup report `loop finalize` writes, so a missing or mismatched record
+ * reads as unknown targets, which reports more branches as pending, not fewer.
+ */
+const writeRemoteBranchOpenTargets = (
+  lease: LoopLease,
+  receipt: RemoteBranchReconciliationReceipt,
+  targets: RemoteBranchOpenProposalTarget[] | null
+): void =>
+  writeReceiptSidecar(
+    lease,
+    REMOTE_BRANCH_OPEN_TARGETS_DIRECTORY,
+    targets === null
+      ? null
+      : validateSchema<RemoteBranchOpenTargetsRecord>(
+          "remote-branch-open-targets",
+          {
+            openProposalTargets: targets,
+            receiptDigest: remoteBranchReconciliationDigest(receipt),
+            runId: lease.runId,
+            schemaVersion: 1,
+          }
+        )
+  );
+
+/** The open proposal targets recorded with the lease's receipt, or null. */
+export const recordedOpenProposalTargets = (
+  lease: LoopLease
+): RemoteBranchOpenProposalTarget[] | null => {
+  const receipt = lease.remoteBranchReconciliation;
+  if (!receipt) {
+    return null;
+  }
+  let stored: unknown = null;
+  try {
+    stored = readReceiptSidecar(
+      lease.commonGitDirectory,
+      REMOTE_BRANCH_OPEN_TARGETS_DIRECTORY,
+      lease.runId
+    );
+  } catch {
+    return null;
+  }
+  return openProposalTargetsForReceipt(stored, lease.runId, receipt);
+};
 
 /**
  * The receipt validator is pure, so an ancestry proof is only a claim until
@@ -603,6 +654,7 @@ export const recordRemoteBranchReconciliation = (
       pinSupersededHeads(lease.primaryCheckout, lease.runId, supersessions);
       writeRemoteBranchAncestry(lease, receipt, ancestryProofs);
       writeRemoteBranchSupersession(lease, receipt, supersessions);
+      writeRemoteBranchOpenTargets(lease, receipt, split.openProposalTargets);
       const reconciledAt = new Date().toISOString();
       return writeLease({
         ...withMutationEvidence(lease, reconciledAt),

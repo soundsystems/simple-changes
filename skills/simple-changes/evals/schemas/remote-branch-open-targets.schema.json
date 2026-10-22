@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://simple-changes.dev/schemas/remote-branch-open-targets.schema.json",
+  "title": "Simple Changes remote branch open proposal targets",
+  "description": "Sidecar beside the loop lease for one remote-branch reconciliation receipt: every open proposal the final inventory saw, from any source project, and the branch it targets. `loop finalize` reads it so a branch an open proposal targets is reported as held, never as pending cleanup. Kept out of the lease so older clients can still read the lease; when it is absent, finalization treats the targets as unknown.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "runId",
+    "receiptDigest",
+    "openProposalTargets"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "runId": { "type": "string", "minLength": 1 },
+    "receiptDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "openProposalTargets": { "$ref": "#/$defs/targets" }
+  },
+  "$defs": {
+    "targets": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["objectId", "targetBranch"],
+        "properties": {
+          "objectId": { "type": "string", "minLength": 1 },
+          "targetBranch": { "type": "string", "minLength": 1 }
+        }
+      }
+    }
+  }
+}

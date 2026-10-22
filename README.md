@@ -413,6 +413,7 @@ simple-changes help
 `release-delivery-receipt`, `release-tag-receipt`,
 `remote-branch-reconciliation`,
 `remote-branch-ancestry`, `remote-branch-supersession`,
+`remote-branch-open-targets`,
 `remote-inventory-pages`, `remote-inventory-decisions`,
 `release-consistency`, `release-notes`, `release-notes-pointer`,
 `proposal-audit`,

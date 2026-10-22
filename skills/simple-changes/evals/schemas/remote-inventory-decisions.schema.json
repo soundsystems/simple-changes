@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://simple-changes.dev/schemas/remote-inventory-decisions.schema.json",
   "title": "Simple Changes remote inventory deletion decisions",
-  "description": "Judgments `simple-changes remote-inventory build` cannot make from provider data alone: for each opening branch deleted during the run with no merged-proposal proof, either a containment proof that `loop reconcile-remote-branches` checks (`target-contains-head` with Git; `provider-diff-empty` only from the provider's own compare result) or a user-approved supersession.",
+  "description": "Judgments `simple-changes remote-inventory build` cannot make from provider data alone: for each opening branch deleted during the run with no merged-proposal proof, either a containment proof that `loop reconcile-remote-branches` checks (`target-contains-head` with Git; `provider-diff-empty` only from the provider's own compare result) or a user-approved supersession. An entry for a branch still present at its unchanged opening head approves deleting it: the build proposes that deletion, and the same entry records it once the branch is gone.",
   "type": "object",
   "additionalProperties": false,
   "required": ["schemaVersion", "deletedBranches"],

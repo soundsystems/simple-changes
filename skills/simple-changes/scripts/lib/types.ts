@@ -1352,6 +1352,19 @@ export interface RemoteBranchSupersessionRecord {
   supersessions: RemoteBranchSupersession[];
 }
 
+/** An open proposal the final inventory saw, from any source project. */
+export interface RemoteBranchOpenProposalTarget {
+  objectId: string;
+  targetBranch: string;
+}
+
+export interface RemoteBranchOpenTargetsRecord {
+  openProposalTargets: RemoteBranchOpenProposalTarget[];
+  receiptDigest: string;
+  runId: string;
+  schemaVersion: 1;
+}
+
 export interface RemoteBranchReconciliationEntry {
   classification:
     | "canonical-target"

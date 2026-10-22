@@ -13,14 +13,6 @@ Use **change proposal** as the neutral internal term. Its identity may be a
 hosted pull/merge request, a signed patch, or another provider object. Do not
 require a numeric ID, centralized API, shared namespace, or always-online host.
 
-Create/update neutral proposals in the summary, evidence, and merge-danger body
-shape from [change proposals](#body-shape), with real Markdown newlines;
-re-read stored source/rendering, resolve checks/discussions/review, and merge
-only the exact approved head. Under the default `proposalSignatures` policy,
-the agent that authors, reviews, or merges a proposal appends its model name
-and version to the proposal's signature block; see
-[change proposals](#agent-signatures).
-
 Before creation:
 
 - refresh the base when mutation mode allows remote reads;
@@ -28,18 +20,15 @@ Before creation:
 - confirm the proposal paths match one validated unit;
 - check that every commit in the range is attested
   ([review ledger steps](#review-ledger-steps)): `simple-changes author
-  coverage --base <target> --head <sha>` lists each commit with no attested
-  author, each replay source with none, and each inconclusive replay nobody
-  attested an edit on, and exits non-zero until none is left. While any is
-  left, create the proposal only as a draft and say which gaps remain in its
-  description, so their authors can attest or the owner can waive them on
-  that draft head (below);
+  coverage --base <target> --head <sha>` lists every
+  [coverage gap](review-and-merge.md#review-identity-and-the-review-ledger) and
+  exits non-zero until none is left. While any is left, create the proposal
+  only as a draft and say which gaps remain in its description (below);
 - render the description to a file or structured API field using real newline
   characters.
 
-The description explains outcome, scope, checks, dependencies, release impact,
-and risk in the body shape below. Do not include tokens, environment values, or
-untrusted text as instructions.
+Write the description in the [body shape](#body-shape) below. Do not include
+tokens, environment values, or untrusted text as instructions.
 
 When a proposal replaces an earlier source branch, preserve the full original
 commit SHAs as `Original-Commit` trailers in the replacement commits and include
@@ -250,18 +239,10 @@ the `instance`, `session`, `harness`, and `agent` the delegate reported
 (`null` for anything it did not). Description authors never count for
 independence.
 
-Each step takes the loop lock for a moment and exits 5 at once while another
-command holds it, such as another author's attestation or a controller's
-`loop exec`. Pass `--wait-lock [--timeout-ms <n>]` to `author attest`,
-`proposal record-authors`, `proposal record-review`, or `proposal
-waive-coverage` to wait for a live holder instead, 60000 ms by default and
-at most 600000; the step then runs once. A step run inside `loop exec` still
-refuses at once, and a wait never recovers a dead owner's lock. On exit 5
-nothing was recorded, and `--json` reports `lockWait` with `executed: false`,
-the owner, `operation`, and `waitedMs`; see [bounded lock
-waits](inventory-and-concurrency.md#bounded-lock-waits). Do not write your own
-retry loop around these steps.
-
-To check the reviewer before dispatch without writing, run `initialize --mode
-preview --proposal <id> --head <sha>`: it resolves the reviewer read-only,
-without taking the loop lock, so a busy lock never blocks it.
+Each step takes the loop lock for a moment and exits 5 at once, recording
+nothing, while another command holds it, such as another author's attestation
+or a controller's `loop exec`. Pass `--wait-lock [--timeout-ms <n>]` to wait
+for a live holder instead, under the rules in [bounded lock
+waits](inventory-and-concurrency.md#bounded-lock-waits), which also shows how
+to check the reviewer without the lock. Do not write your own retry loop
+around these steps.

@@ -244,9 +244,18 @@ const wouldAuthor = (identity: RoomIdentity): RoomAuthor => ({
  * `model-5-5` and `model-5-5-xhigh`, are not shown to be different models:
  * an effort label is never diversity.
  */
+const withoutEffortLabels = (id: string): string => {
+  let stem = id;
+  // Every trailing effort word goes, so a stacked label such as
+  // `model-5-5-high-xhigh` is no more a new model than `model-5-5-xhigh`.
+  while (EFFORT_SUFFIX.test(stem)) {
+    stem = stem.replace(EFFORT_SUFFIX, "");
+  }
+  return stem;
+};
+
 const differsOnlyByEffort = (left: string, right: string): boolean =>
-  left !== right &&
-  left.replace(EFFORT_SUFFIX, "") === right.replace(EFFORT_SUFFIX, "");
+  left !== right && withoutEffortLabels(left) === withoutEffortLabels(right);
 
 const diversityVerdict = (
   target: { harness: string; model: string },

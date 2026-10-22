@@ -470,6 +470,22 @@ describe("reviewer room", () => {
         reason,
       ]);
     }
+    // Stacked labels on either side are no different model either.
+    for (const [reviewer, wouldBe] of [
+      [`${REVIEW_MODEL}-high`, `${REVIEW_MODEL}-high-xhigh`],
+      [`${REVIEW_MODEL}-high-xhigh`, `${REVIEW_MODEL}-high`],
+      [REVIEW_MODEL, `${REVIEW_MODEL}-high.xhigh`],
+    ] as const) {
+      const stacked = room(run, [parseWouldAuthor(`${SAME}/${wouldBe}`)], {
+        authoring: stubAuthoring({ model: reviewer }),
+      });
+      expect([reviewer, wouldBe, stacked.status, stacked.reason]).toEqual([
+        reviewer,
+        wouldBe,
+        "unknown",
+        "model-differs-only-by-effort",
+      ]);
+    }
     // A reviewer model carrying the label is no different either.
     const labelled = room(run, [parseWouldAuthor(`${SAME}/${REVIEW_MODEL}`)], {
       authoring: stubAuthoring({ model: `${REVIEW_MODEL}-max` }),
